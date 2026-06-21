@@ -18,5 +18,13 @@ build/
 Thumbs.db
 .vscode-test/
 
+# Local editor settings (machine-specific; not for distribution)
+.vscode/settings.json
+
 # Logs
 *.log
+
+# Local development tool artifacts
+.claude/
+CLAUDE.md
+nul

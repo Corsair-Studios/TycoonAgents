@@ -1,9 +1,9 @@
 # TycoonAgents
 
-A live, game-style visualization of AI coding-agent activity — reframed as a builder/tycoon simulation. Instead of office workers typing at desks, animated workers move around a build site and **construct** structures as your agents do real work. Watching your agent fleet should feel like watching something get *built*.
+A live, game-style visualization of AI coding-agent activity — reframed as a builder/tycoon simulation. Instead of desk-bound workers typing at terminals, animated workers move around a build site and **construct** structures as your agents do real work. Watching your agent fleet should feel like watching something get *built*.
 
 > **Status:** v0 — foundation & design.
-> This is a **clean-room build** from the specification in [docs/DESIGN.md](docs/DESIGN.md). No code is ported from any prior project; the implementation is written fresh from this design. Shared lineage with earlier work is *conceptual* (the idea/genre of visualizing agent activity), not code.
+> This is an original build from the specification in [docs/DESIGN.md](docs/DESIGN.md); the implementation is written fresh from this design.
 
 ## Highlights (planned)
 - **Tycoon build-progression** — work *simulates construction*, not just status. A session builds up a site.

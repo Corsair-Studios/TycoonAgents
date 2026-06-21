@@ -1,6 +1,6 @@
 # TycoonAgents — Design
 
-> **v0 working draft.** Authored fresh as a clean-room specification. The implementation is built **from this document**, not ported from any prior codebase. Lineage with earlier work (e.g. OfficeAgents) is conceptual — the *idea* of visualizing agent activity — not code or assets.
+> **v0 working draft.** This is an original specification; the implementation is built **from this document**.
 
 ---
 
@@ -61,7 +61,7 @@ The key architectural split: **art is data, not code.**
 The visualization is **source-agnostic**.
 - Define a **Provider** interface that emits normalized events: `WorkerSpawned`, `WorkerActivity{kind}`, `TaskCompleted`, `WorkerStopped`, `Error`, `SessionStart/Stop`.
 - Planned providers:
-  - **Claude Code** — hook-based (the approach proven by the v1 bridge).
+  - **Claude Code** — hook-based (hooks emit normalized events).
   - **Other agent harnesses / CLIs.**
   - **Local models** (e.g. Ollama) or a direct **API** loop.
 - The core state model and renderer consume only normalized events — never provider internals. Adding a provider never touches the renderer.
@@ -76,13 +76,9 @@ The visualization is **source-agnostic**.
 
 Design rule: **dependencies point inward toward the state model.** The state model knows nothing about VS Code, Claude, or any provider.
 
-## 8. Relationship to OfficeAgents (v1)
-- OfficeAgents is treated as **v1** — the working bridge that already demonstrates the core idea and can be shown to employers today.
-- TycoonAgents is a **fresh, independent build** from this spec: new core loop (build-progression), new interface, external theme builder, multi-LLM. The only thing carried over is the *idea*, which is not ownable; the code and assets are written fresh.
-
 ---
 
-## 9. Decisions (v0 defaults — set while you were away; revisit freely)
+## 8. Decisions (v0 defaults — set while you were away; revisit freely)
 I made reasonable calls so the foundation isn't blocked. Override any of these:
 - **Project/repo name:** `TycoonAgents` (matches the directory + attribution). Candidate display name: **"Agent Tycoon"** — pending a trademark sanity-check ("Tycoon" is heavy in gaming).
 - **Default world theme:** construction-site-that-grows-into-a-settlement.
@@ -93,12 +89,12 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 - **Repo structure:** monorepo; the UEFN **Power Tools** live at `packages/uefn-power-tools/` as the single source of truth, with the standalone distribution published from it (decided 2026-06-21). See `DISTRIBUTION.md`.
 - **Power Tools license:** MIT, included in the suite (decided 2026-06-21).
 
-## 10. Open — needs your call
+## 9. Open — needs your call
 - **Name finalization + trademark check.**
 - **Release/distribution model:** VS Code Marketplace, standalone, or both.
 - **Whether to design web-playable from day one** (affects host abstraction effort).
 
-## 11. Suggested build order (when implementation starts)
+## 10. Suggested build order (when implementation starts)
 1. Define the **normalized event types** + the **Provider** interface (section 6).
 2. Build the **state model** (section 7.3) with unit tests — no rendering, no host.
 3. Stand up the **Claude Code provider** (hook -> normalized events).
@@ -107,11 +103,11 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 6. Extract the **standalone theme builder**.
 7. Add a second provider (local/API) to prove the abstraction.
 
-## 12. Attribution & licensing
+## 11. Attribution & licensing
 - Attribution policy: see [`ATTRIBUTION.md`](ATTRIBUTION.md) — significant files only, a footprint line in managed `CLAUDE.md` / agent files, and the panel-UI credit; never stamps user-generated code.
 - License: **MIT** — see `LICENSE`.
 
-## 13. Distribution, packaging & repo hygiene
+## 12. Distribution, packaging & repo hygiene
 - **See [`DISTRIBUTION.md`](DISTRIBUTION.md)** for the full install-robustness + dual-ship requirements (single source of truth, ship-plugin-not-framework, doctor/repair, merge-over-existing, cross-platform).
 - **License:** MIT — free, open source; the repo is public for anyone to use (`LICENSE`).
 - **Ship the plugin, not the framework.** The published VS Code extension (VSIX) must contain ONLY the runtime plugin. Exclude the build/dev framework, generators, tests, design docs, and any meta-tooling used to *build* the plugin. This is enforced by **`.vscodeignore`** (vsce uses `.vscodeignore`, not `.gitignore`); maintain it exclude-by-default and verify each release's contents.
