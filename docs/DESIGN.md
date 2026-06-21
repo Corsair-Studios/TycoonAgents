@@ -108,7 +108,7 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 7. Add a second provider (local/API) to prove the abstraction.
 
 ## 12. Attribution & licensing
-- Every source file carries the header in [`CODE-HEADER.md`](CODE-HEADER.md).
+- Attribution policy: see [`ATTRIBUTION.md`](ATTRIBUTION.md) — significant files only, a footprint line in managed `CLAUDE.md` / agent files, and the panel-UI credit; never stamps user-generated code.
 - License: **MIT** — see `LICENSE`.
 
 ## 13. Distribution, packaging & repo hygiene
