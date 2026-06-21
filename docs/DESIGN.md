@@ -90,6 +90,8 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 - **First host:** VS Code extension; core kept host-agnostic.
 - **Renderer:** canvas-based 2D sprite animation (proven, lightweight, theme-friendly).
 - **License:** MIT — open source and free (decided 2026-06-21).
+- **Repo structure:** monorepo; the UEFN **Power Tools** live at `packages/uefn-power-tools/` as the single source of truth, with the standalone distribution published from it (decided 2026-06-21). See `DISTRIBUTION.md`.
+- **Power Tools license:** MIT, included in the suite (decided 2026-06-21).
 
 ## 10. Open — needs your call
 - **Name finalization + trademark check.**
@@ -110,6 +112,7 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 - License: **MIT** — see `LICENSE`.
 
 ## 13. Distribution, packaging & repo hygiene
+- **See [`DISTRIBUTION.md`](DISTRIBUTION.md)** for the full install-robustness + dual-ship requirements (single source of truth, ship-plugin-not-framework, doctor/repair, merge-over-existing, cross-platform).
 - **License:** MIT — free, open source; the repo is public for anyone to use (`LICENSE`).
 - **Ship the plugin, not the framework.** The published VS Code extension (VSIX) must contain ONLY the runtime plugin. Exclude the build/dev framework, generators, tests, design docs, and any meta-tooling used to *build* the plugin. This is enforced by **`.vscodeignore`** (vsce uses `.vscodeignore`, not `.gitignore`); maintain it exclude-by-default and verify each release's contents.
 - **Multi-agent support.** The shippable VS Code version targets **Claude Code agents** first; the provider abstraction (section 6) is what lets it support other vendors' agents later without touching the renderer.
