@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit"

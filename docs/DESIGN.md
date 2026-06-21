@@ -29,6 +29,21 @@ Driven by a **normalized activity event stream** (see section 6), not by any one
 
 The precise event->state mapping is owned by the provider + a small mapping config, so it can be tuned without touching the renderer.
 
+## 3.1 Character animation set
+Workers *build, move, sit, and gather* — so TycoonAgents needs a richer animation set than a desk-bound visualizer. Each theme supplies these per character; the theme manifest (section 5) enumerates them and allows per-character variants.
+
+Initial required clips:
+- **walk** — locomotion to/from sites.
+- **idle (arms down)** — facing camera, neutral.
+- **idle (arms up)** — alternate idle / reaching.
+- **build (set)** — several construction actions (hammer, assemble, haul, wire), mapped from activity kinds.
+- **sit** — idle, seated.
+- **gather** — grouping around objects when idle (the campfire / water-cooler equivalent).
+- **arrive / leave** — entrance and exit.
+- **celebrate / dance** — task-completion flourish. **The dance varies per character** and is expected to be AI-image-generated, so the manifest must allow each character its own unique dance clip(s).
+
+This is the initial contract the theme manifest schema must cover; expect it to grow.
+
 ## 4. The world / build site
 - A plot that **fills in as work happens**. The default flagship theme is a **construction site that grows into a small settlement** (the most legible mapping for "agents building software").
 - Tycoon elements to layer in: a build queue, progress/milestone meters, optional resources, and (later) cross-session persistence.
@@ -74,9 +89,9 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 - **Progression:** **session-ephemeral** for v1; the state model is designed so a persistent save file can be added later without rework.
 - **First host:** VS Code extension; core kept host-agnostic.
 - **Renderer:** canvas-based 2D sprite animation (proven, lightweight, theme-friendly).
+- **License:** MIT — open source and free (decided 2026-06-21).
 
 ## 10. Open — needs your call
-- **License** — deliberately left open. Given the IP-independence context, this is yours (and possibly your attorney's) to choose before any public release. Candidates to weigh: a permissive OSS license vs. "source-available." Not decided unilaterally.
 - **Name finalization + trademark check.**
 - **Release/distribution model:** VS Code Marketplace, standalone, or both.
 - **Whether to design web-playable from day one** (affects host abstraction effort).
@@ -92,4 +107,11 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 
 ## 12. Attribution & licensing
 - Every source file carries the header in [`CODE-HEADER.md`](CODE-HEADER.md).
-- License: see section 10 (TBD before public release).
+- License: **MIT** — see `LICENSE`.
+
+## 13. Distribution, packaging & repo hygiene
+- **License:** MIT — free, open source; the repo is public for anyone to use (`LICENSE`).
+- **Ship the plugin, not the framework.** The published VS Code extension (VSIX) must contain ONLY the runtime plugin. Exclude the build/dev framework, generators, tests, design docs, and any meta-tooling used to *build* the plugin. This is enforced by **`.vscodeignore`** (vsce uses `.vscodeignore`, not `.gitignore`); maintain it exclude-by-default and verify each release's contents.
+- **Multi-agent support.** The shippable VS Code version targets **Claude Code agents** first; the provider abstraction (section 6) is what lets it support other vendors' agents later without touching the renderer.
+- **End-user team hygiene (important).** Many users share a repo with teammates who do NOT use Claude Code (or any agent). Their per-developer agent artifacts — `.claude/`, `CLAUDE.md`, local settings/agent files — must not get force-committed and pollute a shared repo. TycoonAgents should make this easy: on setup, add the recommended ignore entries to the user's project `.gitignore` (and/or document the set).
+- **Unreal Engine / Fortnite (UEFN) users — OPEN:** the same "ignore per-developer agent files" need applies in UEFN/Fortnite projects. The intended ignore mechanism there (referred to as "URC") needs clarification before we target it.

@@ -21,4 +21,4 @@ Releases: _repository not yet created — link TBD_.
 Every source file carries a short attribution header (see `docs/CODE-HEADER.md`). The header is a courtesy credit, **not** a restriction — end users are free to remove it.
 
 ## License
-TBD — to be chosen before any public release.
+**MIT** — free and open source. See [LICENSE](LICENSE). Anyone is welcome to use it.
