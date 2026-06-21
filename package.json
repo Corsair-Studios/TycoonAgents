@@ -3,7 +3,26 @@
   "version": "0.0.0",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
+  "displayName": "TycoonAgents",
+  "publisher": "tycoonagents",
   "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./out/src/host/vscode/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "tycoonagents.open",
+        "title": "TycoonAgents: Open Panel"
+      },
+      {
+        "command": "tycoonagents.demo",
+        "title": "TycoonAgents: Run Demo"
+      }
+    ]
+  },
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
@@ -11,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/vscode": "^1.85.0",
     "typescript": "^5.4.0"
   }
 }
