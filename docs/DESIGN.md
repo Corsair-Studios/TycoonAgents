@@ -181,7 +181,7 @@ The hub is reachable both from the hamburger button and a **`D` hotkey** (active
 - **Two-way messaging:** today the webview-to-host channel is effectively one-way (the host pushes `state`). The hub requires a return path — the webview posts `{ type: "command", cmd, args }` (e.g. `demo`, `reset`, `installSkill`) and the host acts on it. Menu open/closed and active section are webview-local; anything that changes app state round-trips to the host.
 
 ### 12.3 Game framing
-- The hub is the **site office** — the clipboard where you manage the crew, equipment (skills), blueprints (plans), and badges. Opening it doesn't pause the build; the scene keeps running behind it.
+- The hub is the **site trailer** — the clipboard where you manage the crew, equipment (skills), blueprints (plans), and badges. Opening it doesn't pause the build; the scene keeps running behind it.
 
 ## 13. Suggested build order (when implementation starts)
 1. Define the **normalized event types** + the **Provider** interface (section 6).
