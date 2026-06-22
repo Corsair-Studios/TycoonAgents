@@ -122,7 +122,33 @@ export class TycoonPanel {
   <title>TycoonAgents</title>
 </head>
 <body>
+  <!-- Canvas kept in DOM so existing render loop does not crash; hidden via CSS -->
   <canvas id="stage"></canvas>
+
+  <!-- Metrics panel: primary full-panel view -->
+  <div id="metrics-panel">
+    <div id="metrics-header">
+      <span class="header-dot"></span>
+      <span class="header-title">TycoonAgents &mdash; Agent Metrics</span>
+    </div>
+    <div id="metrics-body">
+      <div id="metrics-empty">No agents yet &mdash; start a session to see activity.</div>
+      <table id="metrics-table" style="display:none">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Status</th>
+            <th class="col-tasks">Tasks</th>
+            <th class="col-mcp">MCP</th>
+            <th>Time</th>
+            <th class="col-tokens">Tokens</th>
+          </tr>
+        </thead>
+        <tbody id="metrics-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

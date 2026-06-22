@@ -61,8 +61,87 @@
           workerOrder.splice(i, 1);
         }
       }
+      // Update metrics panel
+      renderMetrics(state.agentMetrics);
     }
   });
+
+  // ── Metrics panel ───────────────────────────────────────────────
+
+  /**
+   * Format milliseconds as "Xm Ys".
+   * @param {number} ms
+   * @returns {string}
+   */
+  function fmtMs(ms) {
+    if (!ms || ms < 0) return "0m 0s";
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}m ${s}s`;
+  }
+
+  /**
+   * Render the agentMetrics array into the DOM table.
+   * @param {Array<{id:string,name:string,status:string,taskCount:number,mcpCount:number,activeMs:number,tokens:number}>|undefined} metrics
+   */
+  function renderMetrics(metrics) {
+    const emptyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-empty"));
+    const tableEl = /** @type {HTMLElement} */ (document.getElementById("metrics-table"));
+    const tbodyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-tbody"));
+
+    if (!emptyEl || !tableEl || !tbodyEl) return;
+
+    if (!metrics || metrics.length === 0) {
+      emptyEl.style.display = "";
+      tableEl.style.display = "none";
+      return;
+    }
+
+    emptyEl.style.display = "none";
+    tableEl.style.display = "";
+
+    // Rebuild rows
+    tbodyEl.innerHTML = "";
+    for (const agent of metrics) {
+      const status = (agent.status || "idle").toLowerCase();
+      const row = document.createElement("tr");
+
+      const nameTd = document.createElement("td");
+      nameTd.className = "col-name";
+      nameTd.textContent = agent.name || agent.id;
+      row.appendChild(nameTd);
+
+      const statusTd = document.createElement("td");
+      const pill = document.createElement("span");
+      pill.className = `status-pill ${status}`;
+      pill.textContent = status;
+      statusTd.appendChild(pill);
+      row.appendChild(statusTd);
+
+      const tasksTd = document.createElement("td");
+      tasksTd.className = "col-tasks";
+      tasksTd.textContent = String(agent.taskCount ?? 0);
+      row.appendChild(tasksTd);
+
+      const mcpTd = document.createElement("td");
+      mcpTd.className = "col-mcp";
+      mcpTd.textContent = String(agent.mcpCount ?? 0);
+      row.appendChild(mcpTd);
+
+      const timeTd = document.createElement("td");
+      timeTd.className = "col-time";
+      timeTd.textContent = fmtMs(agent.activeMs);
+      row.appendChild(timeTd);
+
+      const tokensTd = document.createElement("td");
+      tokensTd.className = "col-tokens";
+      tokensTd.textContent = String(agent.tokens ?? 0);
+      row.appendChild(tokensTd);
+
+      tbodyEl.appendChild(row);
+    }
+  }
 
   function drawWorker(x, groundY, worker, idx) {
     const color = STATE_COLOR[worker.state] || "#9a9a9a";
