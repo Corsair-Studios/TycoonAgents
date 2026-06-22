@@ -1,14 +1,27 @@
 # TycoonAgents
 
-A live, game-style visualization of AI coding-agent activity — reframed as a builder/tycoon simulation. Instead of desk-bound workers typing at terminals, animated workers move around a build site and **construct** structures as your agents do real work. Watching your agent fleet should feel like watching something get *built*.
+**TycoonAgents is an AI build harness first, and a visualization second.** It's built to make the most of your tokens: instead of running everything on one expensive model, it routes work to a fleet of sub-agents — each on the model that fits the job — so your project gets built in the most cost-effective way possible. A heavyweight model coordinates and makes the calls; cheaper, faster models pick up the work they're suited for.
 
-> **Status:** v0 — foundation & design.
-> This is an original build from the specification in [docs/DESIGN.md](docs/DESIGN.md); the implementation is written fresh from this design.
+Sitting on top of that harness is a live, game-style visualization of your agent fleet.
 
-## Highlights (planned)
-- **Tycoon build-progression** — work *simulates construction*, not just status. A session builds up a site.
-- **External theme builder** — characters, structures, and worlds are user-authored **data**, loaded at runtime. Art lives outside the engine; the community can make and share themes.
-- **Multi-LLM** — a provider abstraction so activity can come from Claude Code, other agent harnesses, or local/API models.
+> **Status:** v0 — foundation & design. See [docs/DESIGN.md](docs/DESIGN.md) for the full product & architecture design.
+
+## What the visualization shows
+At a glance, per agent:
+- **Who's active** — which workers are working right now
+- **Work completed** — how much each agent has gotten done
+- **Token cost** — what each agent is costing you
+- **Tasks completed** — how many tasks each agent has finished
+- **Response rate** — how reliably each agent responds
+- **MCP usage** — how many times each agent has called an MCP
+
+## The tycoon layer
+- **Build & defend** — agents work on objects across your site and defend the base from incoming attacks.
+- **Achievements & badges** — earn badges for milestones as you complete your codebase.
+- **Theme builder** — create and share your own themes; characters, structures, and worlds are user-authored data loaded at runtime.
+
+## Multi-LLM
+A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
 
 ## Project layout
 - [`docs/DESIGN.md`](docs/DESIGN.md) — product & architecture design (start here).
@@ -16,7 +29,7 @@ A live, game-style visualization of AI coding-agent activity — reframed as a b
 
 ## Attribution
 Authored by **TycoonAgents** — https://x.com/thetrashbyrd
-Releases: _repository not yet created — link TBD_.
+Releases: _link TBD_.
 
 Attribution is intentionally light (see [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md)): a short, removable header on *significant* files only, a one-line footprint in the managed block of `CLAUDE.md` / agent files, and a clickable credit in the panel UI — TycoonAgents never stamps the user's own generated code.
 
