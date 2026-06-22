@@ -23,6 +23,9 @@ At a glance, per agent:
 ## Multi-LLM
 A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
 
+## UEFN Power Tools
+TycoonAgents includes a **UEFN component** for Unreal Editor for Fortnite: a **Node.js MCP server** paired with a **Python bridge** that let your agents inspect and edit a *live* UEFN level. The Python bridge runs inside UEFN and communicates over file-based IPC; the MCP server exposes its capabilities to Claude Code agents as tools — `uefn_status`, `uefn_list_devices`, `uefn_get_property`, `uefn_set_property`, `uefn_select_actor`, `uefn_run_audit`, and `uefn_get_level_info`.
+
 ## Project layout
 - [`docs/DESIGN.md`](docs/DESIGN.md) — product & architecture design (start here).
 - [`docs/ATTRIBUTION.md`](docs/ATTRIBUTION.md) — layered attribution policy (significant files only, harness footprint, panel UI credit).
