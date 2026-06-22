@@ -102,6 +102,7 @@ Before any building starts, TycoonAgents runs a planning pipeline that turns int
 - **Existing codebase:** review it (search-retrieval on Haiku + an architect pass) to produce a **context model** of structure, stack, and conventions.
 - **Empty directory:** enter a guided dialogue — what is being built, goals, constraints, target users — and ask for any existing documentation. If there is none, **offer to co-author it**.
 - **Output:** one approved **Project Brief** (`docs/PROJECT-BRIEF.md`), the canonical statement of intent. All later review is checked against it.
+- **Brief contents** (template: `docs/templates/PROJECT-BRIEF.template.md`): one-liner; problem & motivation; goals and **non-goals**; target users; scope (must-have vs later); constraints (stack, integrations, performance, timeline/budget); **success criteria** (observable — these seed phase acceptance criteria); existing assets; glossary; open questions & risks.
 
 ### 10.2 Crew Assembly — roster derivation (adaptive)
 - Every project installs the same **three core agents**: the **orchestrator** (coordinator), the **fallback agent**, and **search-retrieval** (always Haiku).
@@ -114,6 +115,7 @@ Before any building starts, TycoonAgents runs a planning pipeline that turns int
 - Each phase declares **acceptance criteria up front**, derived from the brief — this is what makes drift detectable.
 - Each phase also carries a **gate policy** (see Build & Inspect), chosen here and approved by the user.
 - **Output:** an approved **Roadmap** (`docs/ROADMAP.md`).
+- **Phase shape** (template: `docs/templates/ROADMAP.template.md`): each phase has a one-line goal; tasks tagged with the owning specialist; **acceptance criteria** pinned before work starts (traceable to Brief success criteria); a **review method** (the exact demo the user runs to verify real behavior); a **gate** (`stop`/`auto`) with a risk level; dependencies; and a milestone badge. Status moves planned → in-progress → in-review → accepted.
 
 ### 10.4 Build & Inspect — execution with review gates
 - Specialists build a phase. At the phase boundary, the phase's **gate** decides whether to stop:
@@ -130,7 +132,34 @@ A phase is a **structure** on the site; its tasks are agents constructing it; co
 - `docs/PROJECT-BRIEF.md` and `docs/ROADMAP.md` are **user-owned project content** — committed, human-readable, and kept free of TycoonAgents-internal references per the attribution & licensing policy.
 - Phase and gate **state** for the visualization lives in the managed `.claude/` area, not in the user's committed docs.
 
-## 11. Suggested build order (when implementation starts)
+## 11. Skills
+
+TycoonAgents ships a first-class, clean-room **skills system** — reusable capability packs (each a `SKILL.md` plus assets) that agents can invoke. Unlike a one-time install dump, the catalog stays visible and manageable so it never gets lost.
+
+### 11.1 Integrated panel browser
+- Skills are browsed, installed, and removed **inside the TycoonAgents panel** — installed and available skills are always visible, with one-click install/remove **per project**.
+- Each skill shows: name, description, category, source (bundled/remote), and which agent(s) it routes to.
+
+### 11.2 Registry
+- A TycoonAgents **skills registry** (its own schema) lists every known skill with: `id`, `name`, `description`, `category`, `source` (bundled vs remote URL), and `agentKeywords` (so a skill ties into the same keyword routing as agents).
+- **Bundled** skills ship with TycoonAgents; **remote** skills are fetched from a declared URL on demand. Both appear in the browser; only installed ones land in the project.
+
+### 11.3 Install model
+- Installing copies a skill into the managed `.claude/skills/<id>/` and is **idempotent** — re-install/upgrade never silently clobbers user edits (merge or prompt, per the install-robustness rules in the Distribution section).
+- A **doctor/verify** command lists exactly which skills are installed and from where — the visible-state principle, so the catalog never "gets lost" after install.
+- Removal is clean: no orphaned hooks or keyword entries left behind.
+
+### 11.4 Clean-room & provenance
+- TycoonAgents authors its **own** registry, installer, and curation. Skills that merely wrap public tools (e.g. git, a browser-automation CLI, deploy CLIs, third-party LLM CLIs) are fine to offer; no predecessor registry code, curation, or wording is carried over.
+- Each skill records its **source/provenance** so third-party skills are attributed and TycoonAgents-original skills are marked as such.
+
+### 11.5 Default set (lean)
+- Ship a small, broadly useful **default bundle** (e.g. a session-orientation skill, a git workflow skill, a browser-automation skill, a skill-authoring skill) plus the **UEFN / Power Tools** skills that pair with that component. Everything else is browsable, not force-installed — avoiding the "dozens of skills dumped, then lost" problem.
+
+### 11.6 Game mapping
+- A skill is **equipment** the crew can be issued; installing one equips the relevant specialist, shown in the panel. Browsing the catalog is visiting the **tool shed**.
+
+## 12. Suggested build order (when implementation starts)
 1. Define the **normalized event types** + the **Provider** interface (section 6).
 2. Build the **state model** (section 7.3) with unit tests — no rendering, no host.
 3. Stand up the **Claude Code provider** (hook -> normalized events).
@@ -139,11 +168,11 @@ A phase is a **structure** on the site; its tasks are agents constructing it; co
 6. Extract the **standalone theme builder**.
 7. Add a second provider (local/API) to prove the abstraction.
 
-## 12. Attribution & licensing
+## 13. Attribution & licensing
 - Attribution policy: see [`ATTRIBUTION.md`](ATTRIBUTION.md) — significant files only, a footprint line in managed `CLAUDE.md` / agent files, and the panel-UI credit; never stamps user-generated code.
 - License: **MIT** — see `LICENSE`.
 
-## 13. Distribution, packaging & repo hygiene
+## 14. Distribution, packaging & repo hygiene
 - **See [`DISTRIBUTION.md`](DISTRIBUTION.md)** for the full install-robustness + dual-ship requirements (single source of truth, ship-plugin-not-framework, doctor/repair, merge-over-existing, cross-platform).
 - **License:** MIT — free, open source; the repo is public for anyone to use (`LICENSE`).
 - **Ship the plugin, not the framework.** The published VS Code extension (VSIX) must contain ONLY the runtime plugin. Exclude the build/dev framework, generators, tests, design docs, and any meta-tooling used to *build* the plugin. This is enforced by **`.vscodeignore`** (vsce uses `.vscodeignore`, not `.gitignore`); maintain it exclude-by-default and verify each release's contents.
