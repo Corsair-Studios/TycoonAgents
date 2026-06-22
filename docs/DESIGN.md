@@ -94,7 +94,43 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 - **Release/distribution model:** VS Code Marketplace, standalone, or both.
 - **Whether to design web-playable from day one** (affects host abstraction effort).
 
-## 10. Suggested build order (when implementation starts)
+## 10. Planning & onboarding flow
+
+Before any building starts, TycoonAgents runs a planning pipeline that turns intent into an approved, phased plan. The planner is itself visualized agent work — an Opus "foreman" coordinator runs intake and planning before the project's specialists exist.
+
+### 10.1 Site Survey — context acquisition
+- **Existing codebase:** review it (search-retrieval on Haiku + an architect pass) to produce a **context model** of structure, stack, and conventions.
+- **Empty directory:** enter a guided dialogue — what is being built, goals, constraints, target users — and ask for any existing documentation. If there is none, **offer to co-author it**.
+- **Output:** one approved **Project Brief** (`docs/PROJECT-BRIEF.md`), the canonical statement of intent. All later review is checked against it.
+
+### 10.2 Crew Assembly — roster derivation (adaptive)
+- Every project installs the same **three core agents**: the **orchestrator** (coordinator), the **fallback agent**, and **search-retrieval** (always Haiku).
+- From the brief, TycoonAgents then **derives the project's specialists** — which to add (e.g. coding, testing, VS Code integration, UX/UI, workspace-monitor) and the model each runs on, using the cost-aware Haiku/Sonnet/Opus split.
+- The user approves the proposed roster; TycoonAgents then scaffolds `.claude/agents/` to match.
+- **Output:** an approved, project-specific roster — the three core agents plus the derived specialists.
+
+### 10.3 The Master Plan — phase rollout
+- Decompose the brief into **phases**, each a coherent, *demoable* increment with its own tasks (assigned to specialists).
+- Each phase declares **acceptance criteria up front**, derived from the brief — this is what makes drift detectable.
+- Each phase also carries a **gate policy** (see Build & Inspect), chosen here and approved by the user.
+- **Output:** an approved **Roadmap** (`docs/ROADMAP.md`).
+
+### 10.4 Build & Inspect — execution with review gates
+- Specialists build a phase. At the phase boundary, the phase's **gate** decides whether to stop:
+  - **Configurable per phase.** Each phase's gate is set in the Master Plan — ambiguous or high-risk phases **hard-stop** for explicit sign-off; low-risk phases may **auto-proceed**. The default is stop.
+- At a stop, TycoonAgents presents the **real, running result** (a live demo) next to the phase's pre-stated acceptance criteria. The user verifies **demonstrated behavior vs. stated intent**:
+  - **Match** → mark the phase accepted and proceed.
+  - **Drift, misunderstanding, or tangent** → capture the correction and **re-plan** the phase (and any affected downstream phases) before continuing.
+- Drift protection is concrete: because intent was pinned to each phase *before* coding, the gate is a comparison against criteria, not a judgment call.
+
+### 10.5 Game mapping
+A phase is a **structure** on the site; its tasks are agents constructing it; completion makes the structure *stand*; the gate is the user **inspecting the building** before the crew moves on; acceptance awards a **milestone badge**. Planning and review are first-class parts of the simulation, not a side panel.
+
+### 10.6 Artifacts
+- `docs/PROJECT-BRIEF.md` and `docs/ROADMAP.md` are **user-owned project content** — committed, human-readable, and kept free of TycoonAgents-internal references per the attribution & licensing policy.
+- Phase and gate **state** for the visualization lives in the managed `.claude/` area, not in the user's committed docs.
+
+## 11. Suggested build order (when implementation starts)
 1. Define the **normalized event types** + the **Provider** interface (section 6).
 2. Build the **state model** (section 7.3) with unit tests — no rendering, no host.
 3. Stand up the **Claude Code provider** (hook -> normalized events).
@@ -103,11 +139,11 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 6. Extract the **standalone theme builder**.
 7. Add a second provider (local/API) to prove the abstraction.
 
-## 11. Attribution & licensing
+## 12. Attribution & licensing
 - Attribution policy: see [`ATTRIBUTION.md`](ATTRIBUTION.md) — significant files only, a footprint line in managed `CLAUDE.md` / agent files, and the panel-UI credit; never stamps user-generated code.
 - License: **MIT** — see `LICENSE`.
 
-## 12. Distribution, packaging & repo hygiene
+## 13. Distribution, packaging & repo hygiene
 - **See [`DISTRIBUTION.md`](DISTRIBUTION.md)** for the full install-robustness + dual-ship requirements (single source of truth, ship-plugin-not-framework, doctor/repair, merge-over-existing, cross-platform).
 - **License:** MIT — free, open source; the repo is public for anyone to use (`LICENSE`).
 - **Ship the plugin, not the framework.** The published VS Code extension (VSIX) must contain ONLY the runtime plugin. Exclude the build/dev framework, generators, tests, design docs, and any meta-tooling used to *build* the plugin. This is enforced by **`.vscodeignore`** (vsce uses `.vscodeignore`, not `.gitignore`); maintain it exclude-by-default and verify each release's contents.
