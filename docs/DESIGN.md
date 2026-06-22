@@ -99,7 +99,7 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 Before any building starts, TycoonAgents runs a planning pipeline that turns intent into an approved, phased plan. The planner is itself visualized agent work — an Opus "foreman" coordinator runs intake and planning before the project's specialists exist.
 
 ### 10.1 Site Survey — context acquisition
-- **Existing codebase:** review it (search-retrieval on Haiku + an architect pass) to produce a **context model** of structure, stack, and conventions.
+- **Existing codebase:** build a **context model** with [Graphify](https://github.com/safishamsi/graphify) — a local tree-sitter code knowledge-graph that emits a graph plus a markdown report of structure, stack, and conventions — then an architect pass interprets it. The graph **persists to accelerate search**: the search-retrieval agent consults it before grepping (via a PreToolUse hook), so retrieval gets faster as the map fills in.
 - **Empty directory:** enter a guided dialogue — what is being built, goals, constraints, target users — and ask for any existing documentation. If there is none, **offer to co-author it**.
 - **Output:** one approved **Project Brief** (`docs/PROJECT-BRIEF.md`), the canonical statement of intent. All later review is checked against it.
 - **Brief contents** (template: `docs/templates/PROJECT-BRIEF.template.md`): one-liner; problem & motivation; goals and **non-goals**; target users; scope (must-have vs later); constraints (stack, integrations, performance, timeline/budget); **success criteria** (observable — these seed phase acceptance criteria); existing assets; glossary; open questions & risks.
@@ -154,12 +154,36 @@ TycoonAgents ships a first-class, clean-room **skills system** — reusable capa
 - Each skill records its **source/provenance** so third-party skills are attributed and TycoonAgents-original skills are marked as such.
 
 ### 11.5 Default set (lean)
-- Ship a small, broadly useful **default bundle** (e.g. a session-orientation skill, a git workflow skill, a browser-automation skill, a skill-authoring skill) plus the **UEFN / Power Tools** skills that pair with that component. Everything else is browsable, not force-installed — avoiding the "dozens of skills dumped, then lost" problem.
+- Ship a small, broadly useful **default bundle** (e.g. a session-orientation skill, a git workflow skill, a browser-automation skill, a skill-authoring skill, and a **code knowledge-graph skill ([Graphify](https://github.com/safishamsi/graphify), MIT)** that powers Site Survey and search acceleration) plus the **UEFN / Power Tools** skills that pair with that component. Everything else is browsable, not force-installed — avoiding the "dozens of skills dumped, then lost" problem.
 
 ### 11.6 Game mapping
 - A skill is **equipment** the crew can be issued; installing one equips the relevant specialist, shown in the panel. Browsing the catalog is visiting the **tool shed**.
 
-## 12. Suggested build order (when implementation starts)
+## 12. Panel UI — menu hub (hamburger)
+
+The webview is a full-screen **canvas** (the game scene) with a thin **DOM overlay** for chrome. Primary navigation is a **hamburger menu hub** in a top corner that slides out a panel — the single home for everything the user manages.
+
+### 12.1 Hub sections
+- **Run control** — Live ⇄ Demo (simulation) toggle; clear / reset metrics.
+- **Skills** — the integrated browser (section 11).
+- **Themes** — theme selector (section 5).
+- **Planning** — Brief / Roadmap / current phase + gate status (section 10).
+- **Settings** — token-cost display, metric toggles, agent-discovery path.
+- **Achievements** — badges earned.
+- **Debug / diagnostics** — health check (the **doctor** from the Distribution section: validates hooks, agents dir, write access), copy a bug report, manually inject an event / MCP call, FPS readout, and a **debug-overlay** toggle (walkable area + points of interest, agent paths and positions, plus a live agent-state table and routing-decision log).
+- **Layout editor** (mode) — reposition scene elements (workers, props, points of interest) with z-order controls; pauses agent behavior while active and exits on `Escape`.
+
+The hub is reachable both from the hamburger button and a **`D` hotkey** (active only when no text input is focused), preserving the quick-toggle muscle memory.
+
+### 12.2 Architecture
+- **DOM overlay over canvas:** the canvas keeps rendering the scene; menu chrome is HTML/CSS positioned on top. Rich, scrollable UI and keyboard accessibility come for free.
+- **Accessible by default:** keyboard-navigable, focus management, ARIA roles.
+- **Two-way messaging:** today the webview-to-host channel is effectively one-way (the host pushes `state`). The hub requires a return path — the webview posts `{ type: "command", cmd, args }` (e.g. `demo`, `reset`, `installSkill`) and the host acts on it. Menu open/closed and active section are webview-local; anything that changes app state round-trips to the host.
+
+### 12.3 Game framing
+- The hub is the **site office** — the clipboard where you manage the crew, equipment (skills), blueprints (plans), and badges. Opening it doesn't pause the build; the scene keeps running behind it.
+
+## 13. Suggested build order (when implementation starts)
 1. Define the **normalized event types** + the **Provider** interface (section 6).
 2. Build the **state model** (section 7.3) with unit tests — no rendering, no host.
 3. Stand up the **Claude Code provider** (hook -> normalized events).
@@ -168,11 +192,11 @@ TycoonAgents ships a first-class, clean-room **skills system** — reusable capa
 6. Extract the **standalone theme builder**.
 7. Add a second provider (local/API) to prove the abstraction.
 
-## 13. Attribution & licensing
+## 14. Attribution & licensing
 - Attribution policy: see [`ATTRIBUTION.md`](ATTRIBUTION.md) — significant files only, a footprint line in managed `CLAUDE.md` / agent files, and the panel-UI credit; never stamps user-generated code.
 - License: **MIT** — see `LICENSE`.
 
-## 14. Distribution, packaging & repo hygiene
+## 15. Distribution, packaging & repo hygiene
 - **See [`DISTRIBUTION.md`](DISTRIBUTION.md)** for the full install-robustness + dual-ship requirements (single source of truth, ship-plugin-not-framework, doctor/repair, merge-over-existing, cross-platform).
 - **License:** MIT — free, open source; the repo is public for anyone to use (`LICENSE`).
 - **Ship the plugin, not the framework.** The published VS Code extension (VSIX) must contain ONLY the runtime plugin. Exclude the build/dev framework, generators, tests, design docs, and any meta-tooling used to *build* the plugin. This is enforced by **`.vscodeignore`** (vsce uses `.vscodeignore`, not `.gitignore`); maintain it exclude-by-default and verify each release's contents.
