@@ -136,6 +136,10 @@ td.col-name {
   text-overflow: ellipsis;
 }
 
+td.col-name.name--active {
+  color: var(--status-active);
+}
+
 /* Status pill */
 .status-pill {
   display: inline-block;

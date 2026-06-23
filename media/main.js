@@ -119,8 +119,8 @@
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // Compute max activeMs for bar scaling (at least 1 to avoid divide-by-zero)
-    const maxActiveMs = Math.max(1, ...metrics.map(a => a.activeMs || 0));
+    // Compute max tokens for bar scaling (at least 1 to avoid divide-by-zero)
+    const maxTokens = Math.max(1, ...metrics.map(a => a.tokens || 0));
 
     // Rebuild rows
     tbodyEl.innerHTML = "";
@@ -141,12 +141,12 @@
       row.title = tooltipText;
 
       const nameTd = document.createElement("td");
-      nameTd.className = "col-name";
+      nameTd.className = `col-name${status === "active" ? " name--active" : ""}`;
       nameTd.textContent = displayName;
       row.appendChild(nameTd);
 
       // Progress bar replacing status pill
-      const fillPct = Math.round(Math.min((agent.activeMs || 0) / maxActiveMs, 1) * 100);
+      const fillPct = Math.round(Math.min((agent.tokens || 0) / maxTokens, 1) * 100);
       const statusTd = document.createElement("td");
       statusTd.className = "col-status";
       const track = document.createElement("div");
