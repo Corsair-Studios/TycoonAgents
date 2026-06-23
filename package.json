@@ -10,7 +10,7 @@
     "vscode": "^1.85.0"
   },
   "main": "./out/src/host/vscode/extension.js",
-  "activationEvents": [],
+  "activationEvents": ["onCommand:tycoonagents.open", "onCommand:tycoonagents.demo"],
   "contributes": {
     "commands": [
       {
@@ -23,10 +23,17 @@
       }
     ]
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Corsair-Studios/TycoonAgents"
+  },
+  "categories": ["Visualization", "Other"],
   "scripts": {
+    "vscode:prepublish": "npm run build",
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
-    "test": "tsc -p . && node --test \"out/test/**/*.test.js\""
+    "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^20",
