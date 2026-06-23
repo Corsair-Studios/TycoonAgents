@@ -119,8 +119,18 @@
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // Compute max tokens for bar scaling (at least 1 to avoid divide-by-zero)
-    const maxTokens = Math.max(1, ...metrics.map(a => a.tokens || 0));
+    // Approximate relative model prices (tunable weights — not exact billing rates).
+    // Used only to scale the status bar; raw token counts still shown in TOKENS column.
+    function costWeight(model) {
+      const m = (model || "").toLowerCase();
+      if (m.includes("opus"))   return 15;
+      if (m.includes("sonnet")) return 3;
+      if (m.includes("haiku"))  return 0.8;
+      return 1;
+    }
+
+    // Cost-weighted max: weight each agent's tokens by approximate model cost.
+    const maxWeighted = Math.max(1, ...metrics.map(a => (a.tokens || 0) * costWeight(a.model)));
 
     // Rebuild rows
     tbodyEl.innerHTML = "";
@@ -146,7 +156,7 @@
       row.appendChild(nameTd);
 
       // Progress bar replacing status pill
-      const fillPct = Math.round(Math.min((agent.tokens || 0) / maxTokens, 1) * 100);
+      const fillPct = Math.round(Math.min(((agent.tokens || 0) * costWeight(agent.model)) / maxWeighted, 1) * 100);
       const statusTd = document.createElement("td");
       statusTd.className = "col-status";
       const track = document.createElement("div");
