@@ -170,3 +170,46 @@ td.col-tokens { color: var(--col-tokens); font-variant-numeric: tabular-nums; }
 #metrics-body::-webkit-scrollbar { width: 6px; }
 #metrics-body::-webkit-scrollbar-track { background: var(--bg); }
 #metrics-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Status progress bar */
+td.col-status {
+  width: 120px;
+  min-width: 80px;
+}
+
+.status-bar-track {
+  background: #27272A;
+  border-radius: 3px;
+  height: 12px;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.status-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  min-width: 2px;
+  transition: width 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  position: relative;
+}
+
+.status-bar-fill--active {
+  background: var(--status-active);
+}
+
+.status-bar-fill--idle {
+  background: var(--status-idle);
+}
+
+.status-bar-label {
+  font-size: 9px;
+  color: rgba(0, 0, 0, 0.55);
+  padding-right: 3px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}

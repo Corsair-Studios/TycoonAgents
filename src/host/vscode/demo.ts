@@ -31,20 +31,52 @@ export function runDemo(runtime: Runtime): { dispose(): void } {
   // 1. Session start
   after(t++, () => runtime.ingest({ type: "SessionStart", at: now() }));
 
-  // 2. Spawn orchestrator
+  // 2. Spawn orchestrator with real identity
   after(t++, () =>
-    runtime.ingest({ type: "WorkerSpawned", at: now(), workerId: "orchestrator", role: "orchestrator" })
+    runtime.ingest({
+      type: "WorkerSpawned",
+      at: now(),
+      workerId: "orchestrator",
+      role: "orchestrator",
+      model: "Opus",
+      description: "Coordinates work and delegates to specialists.",
+    })
   );
 
-  // 3. Spawn two sub-workers
+  // 3. Spawn real sub-agents with identities
   after(t++, () =>
-    runtime.ingest({ type: "WorkerSpawned", at: now(), workerId: "worker-1", role: "Task" })
+    runtime.ingest({
+      type: "WorkerSpawned",
+      at: now(),
+      workerId: "primary-agent",
+      role: "Task",
+      name: "Fallback Agent",
+      model: "Sonnet",
+      description: "Fallback for tasks that don't match a specialist.",
+    })
   );
   after(t++, () =>
-    runtime.ingest({ type: "WorkerSpawned", at: now(), workerId: "worker-2", role: "Task" })
+    runtime.ingest({
+      type: "WorkerSpawned",
+      at: now(),
+      workerId: "search-retrieval",
+      role: "Task",
+      model: "Haiku",
+      description: "Fast code search, file finding, and lookups.",
+    })
+  );
+  after(t++, () =>
+    runtime.ingest({
+      type: "WorkerSpawned",
+      at: now(),
+      workerId: "coding-specialist",
+      role: "Task",
+      model: "Sonnet",
+      description: "Core implementation in src/core and src/providers.",
+    })
   );
 
-  // 4. Cycle activities for orchestrator and subs
+  // 4. Cycle activities for all agents (staggered so each hits "wire" regularly)
   const activityCycle: ActivityKind[] = ["survey", "build", "haul", "wire", "shell"];
   let cycleIdx = 0;
 
@@ -55,31 +87,34 @@ export function runDemo(runtime: Runtime): { dispose(): void } {
       const kind = activityCycle[cycleIdx % activityCycle.length];
       cycleIdx++;
       runtime.ingest({ type: "WorkerActivity", at: now(), workerId: "orchestrator", kind });
-      runtime.ingest({ type: "WorkerActivity", at: now(), workerId: "worker-1", kind: activityCycle[(cycleIdx + 1) % activityCycle.length] });
-      runtime.ingest({ type: "WorkerActivity", at: now(), workerId: "worker-2", kind: activityCycle[(cycleIdx + 2) % activityCycle.length] });
+      runtime.ingest({ type: "WorkerActivity", at: now(), workerId: "primary-agent", kind: activityCycle[(cycleIdx + 1) % activityCycle.length] });
+      runtime.ingest({ type: "WorkerActivity", at: now(), workerId: "search-retrieval", kind: activityCycle[(cycleIdx + 2) % activityCycle.length] });
+      runtime.ingest({ type: "WorkerActivity", at: now(), workerId: "coding-specialist", kind: activityCycle[(cycleIdx + 3) % activityCycle.length] });
     }, STEP_MS);
   });
 
-  // 5. Emit a few TaskCompleted events to drive build progress
-  for (let i = 0; i < 5; i++) {
-    const workerIdx = i % 2 === 0 ? "worker-1" : "worker-2";
+  // 5. Emit TaskCompleted events spread across all four agents
+  const taskAgents = ["primary-agent", "search-retrieval", "coding-specialist", "orchestrator", "primary-agent", "coding-specialist"];
+  for (let i = 0; i < taskAgents.length; i++) {
+    const workerId = taskAgents[i];
     after(t + 3 + i * 2, () =>
-      runtime.ingest({ type: "TaskCompleted", at: now(), workerId: workerIdx, label: `task-${i + 1}` })
+      runtime.ingest({ type: "TaskCompleted", at: now(), workerId, label: `task-${i + 1}` })
     );
   }
 
-  // 6. Stop sub-workers
-  const stopAt = t + 16;
-  after(stopAt, () => runtime.ingest({ type: "WorkerStopped", at: now(), workerId: "worker-1" }));
-  after(stopAt + 1, () => runtime.ingest({ type: "WorkerStopped", at: now(), workerId: "worker-2" }));
+  // 6. Stop sub-agents with token counts
+  const stopAt = t + 18;
+  after(stopAt, () => runtime.ingest({ type: "WorkerStopped", at: now(), workerId: "search-retrieval", tokens: 450 }));
+  after(stopAt + 1, () => runtime.ingest({ type: "WorkerStopped", at: now(), workerId: "primary-agent", tokens: 800 }));
+  after(stopAt + 2, () => runtime.ingest({ type: "WorkerStopped", at: now(), workerId: "coding-specialist", tokens: 2100 }));
 
   // 7. Session stop
-  after(stopAt + 2, () => {
+  after(stopAt + 3, () => {
     if (interval) {
       clearInterval(interval);
       interval = undefined;
     }
-    runtime.ingest({ type: "WorkerStopped", at: now(), workerId: "orchestrator" });
+    runtime.ingest({ type: "WorkerStopped", at: now(), workerId: "orchestrator", tokens: 1200 });
     runtime.ingest({ type: "SessionStop", at: now() });
   });
 

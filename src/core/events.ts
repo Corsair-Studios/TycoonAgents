@@ -21,7 +21,7 @@ export type ActivityKind =
 export type NormalizedEvent =
   | { type: "SessionStart"; at: number }
   | { type: "SessionStop"; at: number }
-  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string }
+  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string }
   | { type: "WorkerActivity"; at: number; workerId: WorkerId; kind: ActivityKind; detail?: string }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string }
   | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number }

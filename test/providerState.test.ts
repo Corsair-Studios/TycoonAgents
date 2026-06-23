@@ -242,3 +242,56 @@ test("WorkerStopped with tokens is reflected in agentMetrics.tokens", () => {
   assert.ok(metric);
   assert.equal(metric!.tokens, 4200);
 });
+
+// ---------------------------------------------------------------------------
+// Name override map and new AgentMetric fields
+// ---------------------------------------------------------------------------
+
+test("primary-agent id yields name 'Fallback Agent' via override map", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "primary-agent",
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "primary-agent");
+  assert.ok(metric, "metric should exist for primary-agent");
+  assert.equal(metric!.name, "Fallback Agent");
+});
+
+test("WorkerSpawned with explicit name overrides the computed name", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "primary-agent",
+    name: "Fallback Agent",
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "primary-agent");
+  assert.ok(metric);
+  assert.equal(metric!.name, "Fallback Agent");
+});
+
+test("WorkerSpawned with model and description populates those fields on AgentMetric", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+    model: "Sonnet",
+    description: "Core implementation in src/core and src/providers.",
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "coding-specialist");
+  assert.ok(metric, "metric should exist for coding-specialist");
+  assert.equal(metric!.model, "Sonnet");
+  assert.equal(metric!.description, "Core implementation in src/core and src/providers.");
+});
+
+test("WorkerSpawned without model/description leaves those fields undefined", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "search-retrieval",
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "search-retrieval");
+  assert.ok(metric);
+  assert.equal(metric!.model, undefined);
+  assert.equal(metric!.description, undefined);
+});

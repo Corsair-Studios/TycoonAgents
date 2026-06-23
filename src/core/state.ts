@@ -31,6 +31,10 @@ export interface AgentMetric {
   id: string;
   /** Human-readable display name derived from id (kebab -> Title Case). */
   name: string;
+  /** LLM model this agent runs on (e.g. "Opus", "Sonnet", "Haiku"). */
+  model?: string;
+  /** One-line description of this agent's role. */
+  description?: string;
   status: "active" | "idle" | "done" | "error";
   /** Number of TaskCompleted events attributed to this agent. */
   taskCount: number;
@@ -59,8 +63,16 @@ export interface WorldState {
   _agentMetricsInternal: AgentMetricInternal[];
 }
 
+/** Override map: workerId values that should not use the default title-case formatter. */
+const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
+  "primary-agent": "Fallback Agent",
+};
+
 /** Convert a workerId / kebab-case string to Title Case display name. */
 function toDisplayName(id: string): string {
+  if (id in DISPLAY_NAME_OVERRIDES) {
+    return DISPLAY_NAME_OVERRIDES[id];
+  }
   return id
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -110,6 +122,8 @@ function upsertMetric(
   const fresh: AgentMetricInternal = {
     id: workerId,
     name: toDisplayName(workerId),
+    model: undefined,
+    description: undefined,
     status: "idle",
     taskCount: 0,
     mcpCount: 0,
@@ -151,6 +165,10 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
         event.workerId,
         (m) => ({
           ...m,
+          // If the event provides an explicit name, use it; otherwise keep computed name.
+          name: event.name ?? m.name,
+          model: event.model ?? m.model,
+          description: event.description ?? m.description,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
         }),
