@@ -44,13 +44,16 @@ export interface AgentMetric {
   activeMs: number;
   /** Cumulative tokens consumed by this agent, summed from SubagentStop events. */
   tokens: number;
-}
-
-/** Internal tracking record for computing activeMs across pause/resume cycles. */
-interface AgentMetricInternal extends AgentMetric {
-  /** Epoch-ms timestamp of when this agent last became active (null if not currently active). */
+  /**
+   * Epoch-ms timestamp of when this agent last became active, or null if not
+   * currently active. Exposed so the webview can show live elapsed time while
+   * an agent is still working (activeMs only finalizes on WorkerStopped).
+   */
   workStartAt: number | null;
 }
+
+/** Internal tracking record (kept as an alias now that workStartAt is public). */
+type AgentMetricInternal = AgentMetric;
 
 export interface WorldState {
   sessionActive: boolean;
@@ -87,6 +90,9 @@ export function initialWorldState(): WorldState {
     _agentMetricsInternal: [],
   };
 }
+
+/** Agent id used for the main session / coordinator row. */
+const ORCHESTRATOR_ID = "orchestrator";
 
 const ACTIVITY_TO_STATE: Record<string, WorkerState> = {
   survey: "survey",
@@ -134,9 +140,9 @@ function upsertMetric(
   return [...internals, updater(fresh)];
 }
 
-/** Strip the internal field to produce the public AgentMetric list. */
+/** Produce the public AgentMetric list (workStartAt is now part of the public shape). */
 function toPublicMetrics(internals: AgentMetricInternal[]): AgentMetric[] {
-  return internals.map(({ workStartAt: _ws, ...pub }) => pub);
+  return internals.map((m) => ({ ...m }));
 }
 
 /** Compute how many ms have elapsed since workStartAt (0 if not active). */
@@ -148,11 +154,89 @@ function elapsedSince(workStartAt: number | null, now: number): number {
 // NOTE: skeleton - mappings are intentionally minimal; tune per docs/DESIGN.md section 3.
 export function applyEvent(state: WorldState, event: NormalizedEvent): WorldState {
   switch (event.type) {
-    case "SessionStart":
-      return { ...state, sessionActive: true };
+    case "SessionStart": {
+      // The orchestrator (main session) is working for the whole turn — light it
+      // up the moment the user submits, covering the thinking phase before any
+      // tool call. Only the canvas worker depends on a spawn; the metric does not.
+      const afterOrchestrator = upsertMetric(
+        state._agentMetricsInternal,
+        ORCHESTRATOR_ID,
+        (m) => ({
+          ...m,
+          status: "active" as const,
+          workStartAt: m.workStartAt ?? event.at,
+        }),
+      );
+      // Sweep: clear any non-orchestrator agents that were left active by a prior
+      // dead turn. Do NOT credit activeMs — the workStartAt is from a prior turn
+      // and the elapsed time is untrustworthy.
+      const nextInternals = afterOrchestrator.map((m) =>
+        m.id !== ORCHESTRATOR_ID && (m.status === "active" || m.workStartAt !== null)
+          ? { ...m, status: "idle" as const, workStartAt: null }
+          : m,
+      );
+      return {
+        ...state,
+        sessionActive: true,
+        _agentMetricsInternal: nextInternals,
+        agentMetrics: toPublicMetrics(nextInternals),
+      };
+    }
 
-    case "SessionStop":
-      return { ...state, sessionActive: false };
+    case "SessionStop": {
+      // Turn ended: finalize the orchestrator's active time and fold in the
+      // per-turn token delta + model carried on the Stop event.
+      const afterOrchestrator = upsertMetric(
+        state._agentMetricsInternal,
+        ORCHESTRATOR_ID,
+        (m) => ({
+          ...m,
+          status: "idle" as const,
+          activeMs: m.activeMs + elapsedSince(m.workStartAt, event.at),
+          tokens: m.tokens + (event.tokens ?? 0),
+          model: event.model ?? m.model,
+          workStartAt: null,
+        }),
+      );
+      // Sweep: finalize any non-orchestrator agents that are still active due to
+      // a missed SubagentStop (e.g. process died before the hook fired).
+      const nextInternals = afterOrchestrator.map((m) =>
+        m.id !== ORCHESTRATOR_ID && (m.status === "active" || m.workStartAt !== null)
+          ? {
+              ...m,
+              status: "idle" as const,
+              activeMs: m.activeMs + elapsedSince(m.workStartAt, event.at),
+              workStartAt: null,
+            }
+          : m,
+      );
+      return {
+        ...state,
+        sessionActive: false,
+        _agentMetricsInternal: nextInternals,
+        agentMetrics: toPublicMetrics(nextInternals),
+      };
+    }
+
+    case "WorkerRegistered": {
+      // Seed (or enrich) an idle roster entry. Never activates the agent and
+      // never disturbs stats that real activity may have already accumulated.
+      const nextInternals = upsertMetric(
+        state._agentMetricsInternal,
+        event.workerId,
+        (m) => ({
+          ...m,
+          name: event.name ?? m.name,
+          model: event.model ?? m.model,
+          description: event.description ?? m.description,
+        }),
+      );
+      return {
+        ...state,
+        _agentMetricsInternal: nextInternals,
+        agentMetrics: toPublicMetrics(nextInternals),
+      };
+    }
 
     case "WorkerSpawned": {
       const nextWorkers = {
@@ -182,15 +266,15 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
     }
 
     case "WorkerActivity": {
+      // Update the worker's canvas state only if it exists, but ALWAYS update the
+      // metric — seeded agents (and the orchestrator) have metrics with no worker.
       const worker = state.workers[event.workerId];
-      if (!worker) {
-        return state;
-      }
-      const nextWorkerState: WorkerState = ACTIVITY_TO_STATE[event.kind] ?? "build";
-      const nextWorkers = {
-        ...state.workers,
-        [event.workerId]: { ...worker, state: nextWorkerState },
-      };
+      const nextWorkers = worker
+        ? {
+            ...state.workers,
+            [event.workerId]: { ...worker, state: ACTIVITY_TO_STATE[event.kind] ?? "build" },
+          }
+        : state.workers;
       // Update metrics: increment mcpCount for wire activity; keep/start active timer.
       const isMcp = event.kind === "wire";
       const nextInternals = upsertMetric(
@@ -213,6 +297,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
     }
 
     case "TaskCompleted": {
+      // Canvas worker is optional; the metric always updates.
       const worker = state.workers[event.workerId];
       const nextWorkers = worker
         ? { ...state.workers, [event.workerId]: { ...worker, state: "celebrate" as WorkerState } }
@@ -238,14 +323,11 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
     }
 
     case "WorkerStopped": {
+      // Canvas worker is optional; the metric (tokens, activeMs) always finalizes.
       const worker = state.workers[event.workerId];
-      if (!worker) {
-        return state;
-      }
-      const nextWorkers = {
-        ...state.workers,
-        [event.workerId]: { ...worker, state: "leave" as WorkerState },
-      };
+      const nextWorkers = worker
+        ? { ...state.workers, [event.workerId]: { ...worker, state: "leave" as WorkerState } }
+        : state.workers;
       // Finalize activeMs: add elapsed since workStartAt, then clear the timer.
       // Accumulate tokens when the event carries a count.
       const nextInternals = upsertMetric(

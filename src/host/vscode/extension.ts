@@ -10,6 +10,7 @@ import { Runtime } from "./runtime";
 import { TycoonPanel } from "./panel";
 import { runDemo } from "./demo";
 import { ClaudeCodeProvider } from "../../providers/claude-code/claudeCodeProvider";
+import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 
 let provider: ClaudeCodeProvider | undefined;
 let demoDisposable: { dispose(): void } | undefined;
@@ -30,6 +31,26 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
         "";
       const activityFile = path.join(projectRoot, ".claude", "tycoon", "activity.jsonl");
+
+      // Seed the full installed-agent roster so every agent appears as an idle
+      // row from the start, regardless of whether it has done any work yet.
+      const agentsDir = path.join(projectRoot, ".claude", "agents");
+      for (const agent of loadAgentRoster(agentsDir)) {
+        // Post-process: shorten the search-retrieval agent's display name.
+        const displayName =
+          agent.id === "search-retrieval"
+            ? agent.name.replace(/ Agent$/, "")
+            : agent.name;
+        runtime.ingest({
+          type: "WorkerRegistered",
+          at: Date.now(),
+          workerId: agent.id,
+          name: displayName,
+          ...(agent.model !== undefined ? { model: agent.model } : {}),
+          ...(agent.description !== undefined ? { description: agent.description } : {}),
+        });
+      }
+
       provider = new ClaudeCodeProvider({ activityFile });
       provider.start((e) => runtime.ingest(e));
 
@@ -55,6 +76,16 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   context.subscriptions.push(openCmd, demoCmd);
+
+  // Auto-open the live panel on startup if the setting is enabled
+  const autoShow = vscode.workspace
+    .getConfiguration("tycoonagents")
+    .get<boolean>("autoShow", true);
+  if (autoShow) {
+    setTimeout(() => {
+      vscode.commands.executeCommand("tycoonagents.open");
+    }, 500);
+  }
 }
 
 export function deactivate(): void {

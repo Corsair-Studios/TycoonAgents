@@ -31,32 +31,69 @@ export function toolToActivityKind(tool: string): ActivityKind {
 }
 
 /**
- * Pure: translate one HookRecord into a normalized event (or null if unmapped).
+ * Pure: translate one HookRecord into zero or more normalized events.
+ * Returns [] if unmapped.
  * NOTE (v1 simplification): worker identity uses the hook payload's session id;
  * precise parent<->sub-agent correlation is a later refinement.
  */
-export function mapHookRecord(record: HookRecord): NormalizedEvent | null {
+export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
   const workerId = record.workerId ?? "orchestrator";
   switch (record.event) {
     case "UserPromptSubmit":
-      return { type: "SessionStart", at: record.at };
+      return [{ type: "SessionStart", at: record.at }];
     case "Stop":
-      return { type: "SessionStop", at: record.at };
+      return [
+        {
+          type: "SessionStop",
+          at: record.at,
+          ...(record.tokens !== undefined ? { tokens: record.tokens } : {}),
+          ...(record.model !== undefined ? { model: record.model } : {}),
+        },
+      ];
     case "SubagentStop":
-      return {
-        type: "WorkerStopped",
-        at: record.at,
-        workerId,
-        ...(record.tokens !== undefined ? { tokens: record.tokens } : {}),
-      };
+      // ORDER MATTERS: TaskCompleted first so task count increments before the
+      // worker goes idle; WorkerStopped last so the idle timer is finalized.
+      return [
+        { type: "TaskCompleted", at: record.at, workerId },
+        {
+          type: "WorkerStopped",
+          at: record.at,
+          workerId,
+          ...(record.tokens !== undefined ? { tokens: record.tokens } : {}),
+        },
+      ];
     case "PreToolUse": {
-      if (!record.tool) return null;
-      if (SPAWN_TOOLS.has(record.tool)) {
-        return { type: "WorkerSpawned", at: record.at, workerId, role: record.tool };
+      if (!record.tool) return [];
+      if (record.tool === "Task" || record.tool === "Agent") {
+        // Spawn credit always goes to orchestrator (v1 simplification).
+        return [
+          {
+            type: "WorkerSpawned",
+            at: record.at,
+            workerId,
+            role: record.tool,
+            ...(record.model !== undefined ? { model: record.model } : {}),
+            ...(record.agentDescription !== undefined ? { description: record.agentDescription } : {}),
+          },
+          { type: "TaskCompleted", at: record.at, workerId: "orchestrator" },
+        ];
       }
-      return { type: "WorkerActivity", at: record.at, workerId, kind: toolToActivityKind(record.tool), detail: record.tool };
+      if (record.tool === "Skill") {
+        // Skill spawns emit WorkerSpawned only — no TaskCompleted.
+        return [
+          {
+            type: "WorkerSpawned",
+            at: record.at,
+            workerId,
+            role: record.tool,
+            ...(record.model !== undefined ? { model: record.model } : {}),
+            ...(record.agentDescription !== undefined ? { description: record.agentDescription } : {}),
+          },
+        ];
+      }
+      return [{ type: "WorkerActivity", at: record.at, workerId, kind: toolToActivityKind(record.tool), detail: record.tool }];
     }
     default:
-      return null;
+      return [];
   }
 }

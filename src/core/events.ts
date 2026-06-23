@@ -20,7 +20,11 @@ export type ActivityKind =
 
 export type NormalizedEvent =
   | { type: "SessionStart"; at: number }
-  | { type: "SessionStop"; at: number }
+  // SessionStop carries the orchestrator's per-turn token delta + model (from the
+  // Stop hook's transcript read) so the orchestrator row shows real token usage.
+  | { type: "SessionStop"; at: number; tokens?: number; model?: string }
+  // Identity-only registration: seeds an idle roster entry without marking it active.
+  | { type: "WorkerRegistered"; at: number; workerId: WorkerId; name?: string; model?: string; description?: string }
   | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string }
   | { type: "WorkerActivity"; at: number; workerId: WorkerId; kind: ActivityKind; detail?: string }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string }

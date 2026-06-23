@@ -16,9 +16,11 @@ const T = 1700000000000;
 function fold(records: HookRecord[]): WorldState {
   let state = initialWorldState();
   for (const record of records) {
-    const event = mapHookRecord(record);
-    if (event) {
-      state = applyEvent(state, event);
+    const events = mapHookRecord(record);
+    // mapHookRecord now returns NormalizedEvent[]; fold every event in order.
+    const arr = Array.isArray(events) ? events : (events ? [events] : []);
+    for (const ev of arr) {
+      state = applyEvent(state, ev);
     }
   }
   return state;
@@ -113,13 +115,18 @@ test("initialWorldState has no workers and sessionActive false", () => {
   assert.equal(state.completedTasks, 0);
 });
 
-test("WorkerActivity on unknown workerId leaves state unchanged", () => {
+test("WorkerActivity on a never-spawned id updates the metric but creates no canvas worker", () => {
   const state = fold([
     { event: "UserPromptSubmit", at: T },
-    // no spawn, so worker doesn't exist
+    // no spawn, so no canvas worker exists...
     { event: "PreToolUse", tool: "Read", workerId: "ghost", at: T + 200 },
   ]);
+  // ...but the metric must still be created and marked active (this is the fix
+  // that lets the orchestrator/seeded agents light up without a spawn).
   assert.equal(state.workers["ghost"], undefined);
+  const metric = state.agentMetrics.find((m) => m.id === "ghost");
+  assert.ok(metric, "metric should be created for activity without a spawn");
+  assert.equal(metric!.status, "active");
 });
 
 // ---------------------------------------------------------------------------
@@ -294,4 +301,166 @@ test("WorkerSpawned without model/description leaves those fields undefined", ()
   assert.ok(metric);
   assert.equal(metric!.model, undefined);
   assert.equal(metric!.description, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Orchestrator lifecycle + per-turn token capture
+// ---------------------------------------------------------------------------
+
+test("SessionStart marks the orchestrator metric active", () => {
+  const state = fold([{ event: "UserPromptSubmit", at: T }]);
+  const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orch, "orchestrator metric should exist after SessionStart");
+  assert.equal(orch!.status, "active");
+});
+
+test("orchestrator tool activity keeps it active even with no spawn", () => {
+  const state = fold([
+    { event: "UserPromptSubmit", at: T },
+    { event: "PreToolUse", tool: "Edit", workerId: "orchestrator", at: T + 100 },
+  ]);
+  const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orch);
+  assert.equal(orch!.status, "active");
+  assert.equal(state.workers["orchestrator"], undefined); // metrics-only, no desk
+});
+
+test("Stop finalizes the orchestrator with its per-turn token delta + model", () => {
+  const state = fold([
+    { event: "UserPromptSubmit", at: T },
+    { event: "PreToolUse", tool: "Read", workerId: "orchestrator", at: T + 100 },
+    { event: "Stop", workerId: "orchestrator", tokens: 8400, model: "claude-opus-4-6", at: T + 5000 },
+  ]);
+  const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orch);
+  assert.equal(orch!.status, "idle");
+  assert.equal(orch!.tokens, 8400);
+  assert.equal(orch!.model, "claude-opus-4-6");
+  // active from SessionStart (T) to Stop (T+5000)
+  assert.equal(orch!.activeMs, 5000);
+  assert.equal(state.sessionActive, false);
+});
+
+test("orchestrator tokens accumulate across multiple turns", () => {
+  const state = fold([
+    { event: "UserPromptSubmit", at: T },
+    { event: "Stop", workerId: "orchestrator", tokens: 1000, at: T + 1000 },
+    { event: "UserPromptSubmit", at: T + 2000 },
+    { event: "Stop", workerId: "orchestrator", tokens: 2500, at: T + 3000 },
+  ]);
+  const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orch);
+  assert.equal(orch!.tokens, 3500);
+});
+
+test("Stop maps to SessionStop carrying tokens and model", () => {
+  const events = mapHookRecord({ event: "Stop", workerId: "orchestrator", tokens: 99, model: "claude-opus-4-6", at: T });
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 1);
+  const event = events[0];
+  assert.equal(event.type, "SessionStop");
+  if (event.type === "SessionStop") {
+    assert.equal(event.tokens, 99);
+    assert.equal(event.model, "claude-opus-4-6");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// New contract: task-count tracking via mapped events through applyEvent
+// ---------------------------------------------------------------------------
+
+test("Task spawn (via hook) bumps orchestrator taskCount to 1", () => {
+  // PreToolUse Task → [WorkerSpawned, TaskCompleted{workerId:"orchestrator"}]
+  // The trailing TaskCompleted must increment orchestrator.taskCount.
+  const state = fold([
+    { event: "UserPromptSubmit", at: T },
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", at: T + 100 },
+  ]);
+  const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orch, "orchestrator metric must exist");
+  assert.equal(orch!.taskCount, 1, "orchestrator taskCount should be 1 after spawning one Task");
+});
+
+test("Skill spawn does NOT bump orchestrator taskCount", () => {
+  // PreToolUse Skill → [WorkerSpawned] only — no trailing TaskCompleted.
+  const state = fold([
+    { event: "UserPromptSubmit", at: T },
+    { event: "PreToolUse", tool: "Skill", workerId: "office-ready-test", at: T + 100 },
+  ]);
+  const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
+  // orchestrator may or may not exist; if it does, taskCount must be 0.
+  if (orch) {
+    assert.equal(orch!.taskCount, 0, "Skill spawn must not increment orchestrator taskCount");
+  }
+});
+
+test("SubagentStop for 'coding-specialist': taskCount===1, status idle, workStartAt null", () => {
+  // SubagentStop → [TaskCompleted{workerId:"coding-specialist"}, WorkerStopped{workerId:"coding-specialist"}]
+  // TaskCompleted increments taskCount and sets status active; WorkerStopped then sets idle + clears timer.
+  // The net result: taskCount===1 AND status idle AND workStartAt===null.
+  const state = fold([
+    { event: "UserPromptSubmit", at: T },
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", at: T + 100 },
+    { event: "SubagentStop", workerId: "coding-specialist", at: T + 600 },
+  ]);
+  const metric = state.agentMetrics.find((m) => m.id === "coding-specialist");
+  assert.ok(metric, "metric for coding-specialist must exist");
+  assert.equal(metric!.taskCount, 1, "taskCount should be 1 (from TaskCompleted inside SubagentStop)");
+  assert.equal(metric!.status, "idle", "status should be idle (WorkerStopped fires after TaskCompleted)");
+  assert.equal(metric!.workStartAt, null, "timer must be finalized (not restarted by the preceding TaskCompleted)");
+});
+
+// ---------------------------------------------------------------------------
+// Stale-state reconciliation: stuck-active agent cleanup
+// ---------------------------------------------------------------------------
+
+test("SessionStop finalizes ALL active subagents, not just the orchestrator", () => {
+  // Drive "search-retrieval" to active via WorkerSpawned, then stop the session.
+  // The subagent's stop event never arrives — simulating a killed process.
+  const spawnAt = T + 100;
+  const stopAt = T + 5000;
+  let state = initialWorldState();
+  // SessionStart → orchestrator goes active
+  state = applyEvent(state, { type: "SessionStart", at: T });
+  // WorkerSpawned → search-retrieval goes active, workStartAt = spawnAt
+  state = applyEvent(state, { type: "WorkerSpawned", at: spawnAt, workerId: "search-retrieval" });
+  // SessionStop → should finalize BOTH orchestrator AND search-retrieval
+  state = applyEvent(state, { type: "SessionStop", at: stopAt });
+
+  const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orch, "orchestrator metric must exist");
+  assert.equal(orch!.status, "idle", "orchestrator should be idle after SessionStop");
+
+  const sub = state.agentMetrics.find((m) => m.id === "search-retrieval");
+  assert.ok(sub, "search-retrieval metric must exist");
+  assert.equal(sub!.status, "idle", "search-retrieval should be finalized to idle by SessionStop");
+  assert.equal(sub!.workStartAt, null, "search-retrieval workStartAt must be null after SessionStop");
+  // activeMs must have grown by (stopAt - spawnAt) = 4900
+  assert.equal(sub!.activeMs, stopAt - spawnAt, "search-retrieval activeMs must credit elapsed time up to SessionStop");
+});
+
+test("SessionStart clears stale active subagents WITHOUT crediting activeMs", () => {
+  // Simulate a previous turn where "search-retrieval" was left active (process died,
+  // no WorkerStopped ever fired). The activeMs at the point of death is 0.
+  // A new SessionStart arrives much later — it must reset status/workStartAt
+  // but must NOT add any elapsed time (the stale workStartAt is untrustworthy).
+  const staleStartAt = T + 100;
+  const newSessionAt = T + 60_000; // 60s later
+  let state = initialWorldState();
+  // Drive search-retrieval to active (workStartAt = staleStartAt, activeMs = 0)
+  state = applyEvent(state, { type: "SessionStart", at: T });
+  state = applyEvent(state, { type: "WorkerSpawned", at: staleStartAt, workerId: "search-retrieval" });
+  // No stop event — agent is stuck active. Capture activeMs before the new session.
+  const stuckMetric = state.agentMetrics.find((m) => m.id === "search-retrieval");
+  assert.ok(stuckMetric, "search-retrieval must be active before the new session");
+  const activeMsBefore = stuckMetric!.activeMs;
+
+  // New turn begins — SessionStart should sweep away the stale agent
+  state = applyEvent(state, { type: "SessionStart", at: newSessionAt });
+
+  const sub = state.agentMetrics.find((m) => m.id === "search-retrieval");
+  assert.ok(sub, "search-retrieval metric must still exist after new SessionStart");
+  assert.equal(sub!.status, "idle", "stale active agent must be reset to idle by SessionStart");
+  assert.equal(sub!.workStartAt, null, "workStartAt must be cleared by SessionStart sweep");
+  assert.equal(sub!.activeMs, activeMsBefore, "activeMs must NOT increase — stale time must not be credited");
 });

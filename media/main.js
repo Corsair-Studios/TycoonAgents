@@ -4,11 +4,195 @@
  * Attribution header - optional; end users may remove it.
  */
 
-// Canvas renderer for TycoonAgents webview.
+// Canvas renderer and panel controller for TycoonAgents webview.
 // Receives WorldState from the VS Code extension host via postMessage.
 
 (function () {
   const vscode = acquireVsCodeApi();
+
+  // ── Resize handle: drag to control metrics panel height ─────────
+
+  const metricsPanelEl = /** @type {HTMLElement} */ (document.getElementById("metrics-panel"));
+  const resizeHandleEl = /** @type {HTMLElement} */ (document.getElementById("resize-handle"));
+
+  const MIN_METRICS_PX = 44;   // header must always stay visible
+
+  /** Apply a metrics panel height in px, clamped to valid range. */
+  function applyMetricsHeight(px) {
+    const clamped = Math.max(MIN_METRICS_PX, Math.min(px, window.innerHeight));
+    metricsPanelEl.style.setProperty("height", `${clamped}px`);
+    return clamped;
+  }
+
+  /** Persist the current metrics height into webview state. */
+  function saveMetricsHeight(px) {
+    const prev = vscode.getState() || {};
+    vscode.setState({ ...prev, metricsHeight: px });
+  }
+
+  // Restore saved height before first render to avoid a layout flash.
+  (function restoreSavedHeight() {
+    const saved = vscode.getState();
+    if (saved && typeof saved.metricsHeight === "number") {
+      applyMetricsHeight(saved.metricsHeight);
+    }
+  })();
+
+  // Re-clamp saved px height if the window is resized (e.g. sidebar width change).
+  window.addEventListener("resize", () => {
+    const saved = vscode.getState();
+    if (saved && typeof saved.metricsHeight === "number") {
+      applyMetricsHeight(saved.metricsHeight);
+    }
+  });
+
+  // Pointer-drag on the resize handle.
+  resizeHandleEl.addEventListener("pointerdown", (e) => {
+    resizeHandleEl.setPointerCapture(e.pointerId);
+    resizeHandleEl.classList.add("dragging");
+
+    function onMove(ev) {
+      // Metrics height = distance from pointer to bottom of viewport.
+      const px = window.innerHeight - ev.clientY;
+      applyMetricsHeight(px);
+    }
+
+    function onUp(ev) {
+      const px = window.innerHeight - ev.clientY;
+      const clamped = applyMetricsHeight(px);
+      saveMetricsHeight(clamped);
+      resizeHandleEl.classList.remove("dragging");
+      resizeHandleEl.removeEventListener("pointermove", onMove);
+      resizeHandleEl.removeEventListener("pointerup", onUp);
+    }
+
+    resizeHandleEl.addEventListener("pointermove", onMove);
+    resizeHandleEl.addEventListener("pointerup", onUp);
+  });
+
+  // ── Hamburger menu: scaffold for future panel actions ───────────
+
+  const menuBtnEl     = /** @type {HTMLElement} */ (document.getElementById("menu-btn"));
+  const menuPopoverEl = /** @type {HTMLElement} */ (document.getElementById("menu-popover"));
+
+  function openMenu() {
+    menuPopoverEl.removeAttribute("hidden");
+    menuBtnEl.setAttribute("aria-expanded", "true");
+  }
+
+  function closeMenu() {
+    menuPopoverEl.setAttribute("hidden", "");
+    menuBtnEl.setAttribute("aria-expanded", "false");
+  }
+
+  menuBtnEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (menuPopoverEl.hasAttribute("hidden")) {
+      openMenu();
+    } else {
+      closeMenu();
+    }
+  });
+
+  // Close on click outside.
+  document.addEventListener("click", (e) => {
+    if (!menuPopoverEl.hasAttribute("hidden") &&
+        !menuPopoverEl.contains(/** @type {Node} */ (e.target)) &&
+        e.target !== menuBtnEl) {
+      closeMenu();
+    }
+  });
+
+  // ── Modal helpers (generic: works for any modal element) ────────
+
+  /**
+   * Open a modal element and focus its close button.
+   * @param {HTMLElement} modalEl
+   * @param {HTMLElement} closeBtnEl
+   */
+  function openModal(modalEl, closeBtnEl) {
+    modalEl.removeAttribute("hidden");
+    closeBtnEl.focus();
+  }
+
+  /**
+   * Close a modal element and return focus to the menu button.
+   * @param {HTMLElement} modalEl
+   */
+  function closeModal(modalEl) {
+    modalEl.setAttribute("hidden", "");
+    menuBtnEl.focus();
+  }
+
+  // ── About modal ─────────────────────────────────────────────────
+
+  const aboutModalEl  = /** @type {HTMLElement} */ (document.getElementById("about-modal"));
+  const aboutBackdrop = /** @type {HTMLElement} */ (document.getElementById("about-backdrop"));
+  const modalCloseBtn = /** @type {HTMLElement} */ (document.getElementById("modal-close"));
+  const menuAboutBtn  = /** @type {HTMLElement} */ (document.getElementById("menu-about"));
+
+  menuAboutBtn.addEventListener("click", () => {
+    closeMenu();
+    openModal(aboutModalEl, modalCloseBtn);
+  });
+
+  modalCloseBtn.addEventListener("click", () => {
+    closeModal(aboutModalEl);
+  });
+
+  aboutBackdrop.addEventListener("click", () => {
+    closeModal(aboutModalEl);
+  });
+
+  // ── Skills modal ─────────────────────────────────────────────────
+
+  const skillsModalEl   = /** @type {HTMLElement} */ (document.getElementById("skills-modal"));
+  const skillsBackdrop  = /** @type {HTMLElement} */ (document.getElementById("skills-backdrop"));
+  const skillsCloseBtn  = /** @type {HTMLElement} */ (document.getElementById("skills-modal-close"));
+  const menuSkillsBtn   = /** @type {HTMLElement} */ (document.getElementById("menu-skills"));
+  const skillsListEl    = /** @type {HTMLElement} */ (document.getElementById("skills-list"));
+
+  menuSkillsBtn.addEventListener("click", () => {
+    closeMenu();
+    openModal(skillsModalEl, skillsCloseBtn);
+    vscode.postMessage({ type: "getSkills" });
+  });
+
+  skillsCloseBtn.addEventListener("click", () => {
+    closeModal(skillsModalEl);
+  });
+
+  skillsBackdrop.addEventListener("click", () => {
+    closeModal(skillsModalEl);
+  });
+
+  // Close on Escape — modals take priority; skills modal checked first since
+  // it was opened more recently, then about modal, then menu.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (!skillsModalEl.hasAttribute("hidden")) {
+        closeModal(skillsModalEl);
+      } else if (!aboutModalEl.hasAttribute("hidden")) {
+        closeModal(aboutModalEl);
+      } else if (!menuPopoverEl.hasAttribute("hidden")) {
+        closeMenu();
+        menuBtnEl.focus();
+      }
+    }
+  });
+
+  // ── Skills list install-button handler (event delegation) ────────
+
+  skillsListEl.addEventListener("click", (e) => {
+    const btn = /** @type {HTMLElement|null} */ (
+      /** @type {HTMLElement} */ (e.target).closest("[data-skill-id]")
+    );
+    if (!btn || btn.hasAttribute("disabled")) return;
+    const id = btn.getAttribute("data-skill-id");
+    btn.textContent = "Installing…";
+    btn.setAttribute("disabled", "");
+    vscode.postMessage({ type: "installSkill", id });
+  });
 
   const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("stage"));
   const ctx = canvas.getContext("2d");
@@ -63,8 +247,102 @@
       }
       // Update metrics panel
       renderMetrics(state.agentMetrics);
+    } else if (msg && msg.type === "skills") {
+      renderSkillsList(msg.skills, msg.error);
+    } else if (msg && msg.type === "skillInstalled") {
+      handleSkillInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error);
     }
   });
+
+  /**
+   * Rebuild #skills-list from the catalog payload.
+   * @param {Array<{id:string,name:string,description:string,installed:boolean}>} skills
+   * @param {string|undefined} error
+   */
+  function renderSkillsList(skills, error) {
+    skillsListEl.innerHTML = "";
+    if (error) {
+      const errEl = document.createElement("p");
+      errEl.className = "skills-error";
+      errEl.textContent = error;
+      skillsListEl.appendChild(errEl);
+      return;
+    }
+    if (!skills || skills.length === 0) {
+      const emptyEl = document.createElement("p");
+      emptyEl.className = "skills-empty";
+      emptyEl.textContent = "No skills available.";
+      skillsListEl.appendChild(emptyEl);
+      return;
+    }
+    for (const skill of skills) {
+      const row = document.createElement("div");
+      row.className = "skill-row";
+      row.dataset.skillRowId = skill.id;
+
+      const textBlock = document.createElement("div");
+      textBlock.className = "skill-text";
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "skill-name";
+      nameEl.textContent = skill.name;
+
+      const descEl = document.createElement("span");
+      descEl.className = "skill-desc";
+      descEl.textContent = skill.description;
+
+      textBlock.appendChild(nameEl);
+      textBlock.appendChild(descEl);
+
+      const btn = document.createElement("button");
+      btn.className = "skill-btn" + (skill.installed ? " skill-btn--installed" : "");
+      if (skill.installed) {
+        btn.textContent = "Installed";
+        btn.setAttribute("disabled", "");
+      } else {
+        btn.textContent = "Install";
+        btn.setAttribute("data-skill-id", skill.id);
+      }
+
+      row.appendChild(textBlock);
+      row.appendChild(btn);
+      skillsListEl.appendChild(row);
+    }
+  }
+
+  /**
+   * Update a skill row after an install attempt.
+   * @param {string} id
+   * @param {boolean} ok
+   * @param {boolean|undefined} alreadyExisted
+   * @param {string|undefined} error
+   */
+  function handleSkillInstalled(id, ok, alreadyExisted, error) {
+    const btn = /** @type {HTMLElement|null} */ (
+      skillsListEl.querySelector(`[data-skill-id="${CSS.escape(id)}"]`)
+    );
+    if (!btn) return;
+    if (ok) {
+      btn.textContent = "Installed";
+      btn.classList.add("skill-btn--installed");
+      btn.setAttribute("disabled", "");
+      btn.removeAttribute("data-skill-id");
+    } else {
+      btn.textContent = "Install";
+      btn.removeAttribute("disabled");
+      // Show error near the row
+      const row = btn.closest(".skill-row");
+      if (row) {
+        let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
+        if (!errSpan) {
+          errSpan = document.createElement("span");
+          errSpan.className = "skill-install-error";
+          row.appendChild(errSpan);
+        }
+        errSpan.textContent = error || "Install failed";
+      }
+    }
+  }
 
   // ── Metrics panel ───────────────────────────────────────────────
 
@@ -100,10 +378,55 @@
   }
 
   /**
+   * Conjugate a verb into its third-person singular form.
+   * @param {string} verb
+   * @returns {string}
+   */
+  function thirdPersonVerb(verb) {
+    const lower = verb.toLowerCase();
+    const irregular = { are: "is", have: "has", do: "does", go: "goes" };
+    let conj;
+    if (irregular[lower]) conj = irregular[lower];
+    else if (/(s|sh|ch|x|z|o)$/.test(lower)) conj = lower + "es";
+    else if (/[^aeiou]y$/.test(lower)) conj = lower.slice(0, -1) + "ies";
+    else conj = lower + "s";
+    return verb[0] === verb[0].toUpperCase() ? conj[0].toUpperCase() + conj.slice(1) : conj;
+  }
+
+  /**
+   * Rewrite a second-person agent description into a third-person role blurb
+   * for hover tooltips (e.g. "You are the Orchestrator — you coordinate work"
+   * → "Coordinates work"). The agent name is shown separately, so a leading
+   * self-introduction is dropped.
+   * @param {string|undefined} desc
+   * @returns {string}
+   */
+  function describeRole(desc) {
+    if (!desc) return "";
+    let s = String(desc).trim();
+    // Drop a leading self-introduction "You are the/a/an <Name> — " so the
+    // descriptive clause leads (the name is shown separately).
+    s = s.replace(/^you\s+are\s+(?:the|a|an)\s+[^—:-]+?\s*[—–-]\s*/i, "");
+    // Otherwise drop just the "You are " lead-in.
+    s = s.replace(/^you\s+are\s+/i, "");
+    // Convert sentence-initial "You <verb>" (start, or after . ! ?) to third person.
+    s = s.replace(/(^|[.!?]\s+)you\s+([a-z]+)/gi, (_, pre, verb) => pre + thirdPersonVerb(verb));
+    // Pronouns.
+    s = s.replace(/\byour\b/gi, "its");
+    s = s.replace(/\byou\b/gi, "it");
+    // Capitalize first character.
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  }
+
+  /**
    * Render the agentMetrics array into the DOM table.
    * @param {Array<{id:string,name:string,status:string,taskCount:number,mcpCount:number,activeMs:number,tokens:number,model?:string,description?:string}>|undefined} metrics
    */
+  /** Last metrics array received, re-rendered on a timer so live time ticks. */
+  let lastMetrics = [];
+
   function renderMetrics(metrics) {
+    lastMetrics = metrics || [];
     const emptyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-empty"));
     const tableEl = /** @type {HTMLElement} */ (document.getElementById("metrics-table"));
     const tbodyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-tbody"));
@@ -119,18 +442,12 @@
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // Approximate relative model prices (tunable weights — not exact billing rates).
-    // Used only to scale the status bar; raw token counts still shown in TOKENS column.
-    function costWeight(model) {
-      const m = (model || "").toLowerCase();
-      if (m.includes("opus"))   return 15;
-      if (m.includes("sonnet")) return 3;
-      if (m.includes("haiku"))  return 0.8;
-      return 1;
-    }
-
-    // Cost-weighted max: weight each agent's tokens by approximate model cost.
-    const maxWeighted = Math.max(1, ...metrics.map(a => (a.tokens || 0) * costWeight(a.model)));
+    // Raw tokens per minute of active time: each agent's token total divided by
+    // its finalized active minutes (no model weighting). Used to scale the status bar.
+    const maxTokensPerMin = Math.max(1, ...metrics.map(a => {
+      const mins = (a.activeMs || 0) / 60000;
+      return mins > 0 ? (a.tokens || 0) / mins : 0;
+    }));
 
     // Rebuild rows
     tbodyEl.innerHTML = "";
@@ -138,63 +455,90 @@
       const status = (agent.status || "idle").toLowerCase();
       const row = document.createElement("tr");
 
-      // Tooltip: show description and model on hover
       const displayName = agent.name || agent.id;
-      let tooltipText = displayName;
-      if (agent.model && agent.description) {
-        tooltipText = `${displayName} — ${agent.model}\n${agent.description}`;
-      } else if (agent.model) {
-        tooltipText = `${displayName} — ${agent.model}`;
-      } else if (agent.description) {
-        tooltipText = `${displayName}\n${agent.description}`;
-      }
-      row.title = tooltipText;
 
       const nameTd = document.createElement("td");
       nameTd.className = `col-name${status === "active" ? " name--active" : ""}`;
       nameTd.textContent = displayName;
+      // Per-column tooltip: agent name + model + third-person role description.
+      const role = describeRole(agent.description);
+      let nameTitle = displayName;
+      if (agent.model && role) {
+        nameTitle = `${displayName} — ${agent.model}\n${role}`;
+      } else if (agent.model) {
+        nameTitle = `${displayName} — ${agent.model}`;
+      } else if (role) {
+        nameTitle = `${displayName}\n${role}`;
+      }
+      nameTd.title = nameTitle;
       row.appendChild(nameTd);
 
-      // Progress bar replacing status pill
-      const fillPct = Math.round(Math.min(((agent.tokens || 0) * costWeight(agent.model)) / maxWeighted, 1) * 100);
+      // Status bar: green while active, gray while idle. Width encodes the
+      // raw tokens per minute of active time (tokens / activeMs minutes), normalized
+      // to the agent with the highest tokens-per-minute. Active agents always show
+      // a visible green sliver so "working" is never invisible.
+      const mins = (agent.activeMs || 0) / 60000;
+      const tokensPerMin = mins > 0 ? (agent.tokens || 0) / mins : null;
+      const isActive = status === "active";
+      const rawPct = tokensPerMin !== null
+        ? Math.round(Math.min(tokensPerMin / maxTokensPerMin, 1) * 100)
+        : 0;
+      const fillPct = isActive ? Math.max(rawPct, 15) : rawPct;
       const statusTd = document.createElement("td");
       statusTd.className = "col-status";
+      statusTd.title = "Tokens/min — average tokens generated per minute of active time. The bar is scaled to the busiest agent.";
       const track = document.createElement("div");
       track.className = "status-bar-track";
       const fill = document.createElement("div");
-      fill.className = `status-bar-fill ${status === "active" ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
+      fill.className = `status-bar-fill ${isActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
       fill.style.width = `${fillPct}%`;
       const label = document.createElement("span");
       label.className = "status-bar-label";
-      label.textContent = `${fillPct}%`;
-      fill.appendChild(label);
+      label.textContent = isActive ? "active" : (tokensPerMin !== null ? fmtTokens(Math.round(tokensPerMin)) : "—");
       track.appendChild(fill);
+      track.appendChild(label);
       statusTd.appendChild(track);
       row.appendChild(statusTd);
 
       const tasksTd = document.createElement("td");
       tasksTd.className = "col-tasks";
+      tasksTd.title = "Tasks — number of Task-tool delegations routed to this agent.";
       tasksTd.textContent = String(agent.taskCount ?? 0);
       row.appendChild(tasksTd);
 
       const mcpTd = document.createElement("td");
       mcpTd.className = "col-mcp";
+      mcpTd.title = "MCP — number of MCP tool calls this agent has made.";
       mcpTd.textContent = String(agent.mcpCount ?? 0);
       row.appendChild(mcpTd);
 
+      // Show live elapsed time while active (activeMs only finalizes on stop).
+      const liveMs = isActive && agent.workStartAt
+        ? agent.activeMs + Math.max(0, Date.now() - agent.workStartAt)
+        : agent.activeMs;
       const timeTd = document.createElement("td");
       timeTd.className = "col-time";
-      timeTd.textContent = fmtMs(agent.activeMs);
+      timeTd.title = "Active time this agent has spent working.";
+      timeTd.textContent = fmtMs(liveMs);
       row.appendChild(timeTd);
 
       const tokensTd = document.createElement("td");
       tokensTd.className = "col-tokens";
+      tokensTd.title = "Total tokens this agent has consumed.";
       tokensTd.textContent = fmtTokens(agent.tokens ?? 0);
       row.appendChild(tokensTd);
 
       tbodyEl.appendChild(row);
     }
   }
+
+  // Re-render once a second so any active agent's live time keeps advancing
+  // between state pushes.
+  setInterval(() => {
+    if (lastMetrics.length && lastMetrics.some((a) => (a.status || "").toLowerCase() === "active")) {
+      renderMetrics(lastMetrics);
+    }
+  }, 1000);
 
   function drawWorker(x, groundY, worker, idx) {
     const color = STATE_COLOR[worker.state] || "#9a9a9a";

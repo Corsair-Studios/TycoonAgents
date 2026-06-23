@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.4",
+  "version": "0.0.15",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
@@ -10,7 +10,7 @@
     "vscode": "^1.85.0"
   },
   "main": "./out/src/host/vscode/extension.js",
-  "activationEvents": ["onCommand:tycoonagents.open", "onCommand:tycoonagents.demo"],
+  "activationEvents": ["onStartupFinished", "onCommand:tycoonagents.open", "onCommand:tycoonagents.demo"],
   "contributes": {
     "commands": [
       {
@@ -21,7 +21,17 @@
         "command": "tycoonagents.demo",
         "title": "TycoonAgents: Run Demo"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "TycoonAgents",
+      "properties": {
+        "tycoonagents.autoShow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open the live agent panel when a workspace opens."
+        }
+      }
+    }
   },
   "repository": {
     "type": "git",

@@ -11,151 +11,271 @@ import type { HookRecord } from "../src/providers/claude-code/hookRecord";
 
 const T = 1700000000000;
 
-test("UserPromptSubmit -> SessionStart", () => {
+// ---------------------------------------------------------------------------
+// Return-type contract: mapHookRecord always returns NormalizedEvent[]
+// ---------------------------------------------------------------------------
+
+test("UserPromptSubmit -> [SessionStart] (length 1)", () => {
   const record: HookRecord = { event: "UserPromptSubmit", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "SessionStart");
-  assert.equal(event!.at, T);
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events), "result must be an array");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "SessionStart");
+  assert.equal(events[0].at, T);
 });
 
-test("Stop -> SessionStop", () => {
+test("Stop -> [SessionStop] (length 1)", () => {
   const record: HookRecord = { event: "Stop", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "SessionStop");
-  assert.equal(event!.at, T);
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "SessionStop");
+  assert.equal(events[0].at, T);
 });
 
-test("SubagentStop -> WorkerStopped with workerId", () => {
+// ---------------------------------------------------------------------------
+// SubagentStop → [TaskCompleted, WorkerStopped] — order matters
+// ---------------------------------------------------------------------------
+
+test("SubagentStop -> array of length 2", () => {
   const record: HookRecord = { event: "SubagentStop", workerId: "agent-1", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerStopped");
-  if (event!.type === "WorkerStopped") {
-    assert.equal(event.workerId, "agent-1");
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 2);
+});
+
+test("SubagentStop -> TaskCompleted FIRST, WorkerStopped SECOND", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "agent-1", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "TaskCompleted");
+  assert.equal(events[1].type, "WorkerStopped");
+});
+
+test("SubagentStop TaskCompleted carries correct workerId", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "agent-1", at: T };
+  const events = mapHookRecord(record);
+  const tc = events[0];
+  assert.equal(tc.type, "TaskCompleted");
+  if (tc.type === "TaskCompleted") {
+    assert.equal(tc.workerId, "agent-1");
   }
 });
 
-test("SubagentStop with no workerId falls back to 'orchestrator'", () => {
+test("SubagentStop WorkerStopped carries correct workerId", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "agent-1", at: T };
+  const events = mapHookRecord(record);
+  const ws = events[1];
+  assert.equal(ws.type, "WorkerStopped");
+  if (ws.type === "WorkerStopped") {
+    assert.equal(ws.workerId, "agent-1");
+  }
+});
+
+test("SubagentStop with no workerId falls back to 'orchestrator' on both events", () => {
   const record: HookRecord = { event: "SubagentStop", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerStopped");
-  if (event!.type === "WorkerStopped") {
-    assert.equal(event.workerId, "orchestrator");
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 2);
+  assert.equal(events[0].type, "TaskCompleted");
+  assert.equal(events[1].type, "WorkerStopped");
+  if (events[0].type === "TaskCompleted") {
+    assert.equal(events[0].workerId, "orchestrator");
+  }
+  if (events[1].type === "WorkerStopped") {
+    assert.equal(events[1].workerId, "orchestrator");
   }
 });
 
 test("SubagentStop with tokens propagates tokens to WorkerStopped", () => {
   const record: HookRecord = { event: "SubagentStop", workerId: "agent-2", tokens: 3500, at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerStopped");
-  if (event!.type === "WorkerStopped") {
-    assert.equal(event.tokens, 3500);
+  const events = mapHookRecord(record);
+  const ws = events[1];
+  assert.equal(ws.type, "WorkerStopped");
+  if (ws.type === "WorkerStopped") {
+    assert.equal(ws.tokens, 3500);
   }
 });
 
 test("SubagentStop without tokens emits WorkerStopped with no tokens field", () => {
   const record: HookRecord = { event: "SubagentStop", workerId: "agent-3", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerStopped");
-  if (event!.type === "WorkerStopped") {
-    assert.equal(event.tokens, undefined);
+  const events = mapHookRecord(record);
+  const ws = events[1];
+  assert.equal(ws.type, "WorkerStopped");
+  if (ws.type === "WorkerStopped") {
+    assert.equal(ws.tokens, undefined);
   }
 });
 
-test("PreToolUse Task -> WorkerSpawned with role 'Task'", () => {
+// ---------------------------------------------------------------------------
+// PreToolUse Task/Agent → [WorkerSpawned, TaskCompleted{workerId:"orchestrator"}]
+// ---------------------------------------------------------------------------
+
+test("PreToolUse Task -> array of length 2", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-1", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerSpawned");
-  if (event!.type === "WorkerSpawned") {
-    assert.equal(event.role, "Task");
-    assert.equal(event.workerId, "sess-1");
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 2);
+});
+
+test("PreToolUse Task -> WorkerSpawned FIRST with role 'Task'", () => {
+  const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-1", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].role, "Task");
+    assert.equal(events[0].workerId, "sess-1");
   }
 });
 
-test("PreToolUse Agent -> WorkerSpawned with role 'Agent'", () => {
+test("PreToolUse Task -> trailing TaskCompleted with workerId 'orchestrator'", () => {
+  const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-1", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[1].type, "TaskCompleted");
+  if (events[1].type === "TaskCompleted") {
+    assert.equal(events[1].workerId, "orchestrator");
+  }
+});
+
+test("PreToolUse Agent -> array of length 2 with WorkerSpawned then TaskCompleted", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Agent", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerSpawned");
-  if (event!.type === "WorkerSpawned") {
-    assert.equal(event.role, "Agent");
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 2);
+  assert.equal(events[0].type, "WorkerSpawned");
+  assert.equal(events[1].type, "TaskCompleted");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].role, "Agent");
+  }
+  if (events[1].type === "TaskCompleted") {
+    assert.equal(events[1].workerId, "orchestrator");
   }
 });
 
-test("PreToolUse Skill -> WorkerSpawned with role 'Skill'", () => {
+// ---------------------------------------------------------------------------
+// PreToolUse Skill → [WorkerSpawned] ONLY (NO trailing TaskCompleted)
+// ---------------------------------------------------------------------------
+
+test("PreToolUse Skill -> array of length 1 (no TaskCompleted)", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Skill", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerSpawned");
-  if (event!.type === "WorkerSpawned") {
-    assert.equal(event.role, "Skill");
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 1, "Skill spawn must NOT emit a trailing TaskCompleted");
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].role, "Skill");
   }
 });
 
-test("PreToolUse Read -> WorkerActivity survey", () => {
+// ---------------------------------------------------------------------------
+// PreToolUse non-spawn tool → [WorkerActivity]
+// ---------------------------------------------------------------------------
+
+test("PreToolUse Read -> [WorkerActivity survey] (length 1)", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Read", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerActivity");
-  if (event!.type === "WorkerActivity") {
-    assert.equal(event.kind, "survey");
-    assert.equal(event.detail, "Read");
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "WorkerActivity");
+  if (events[0].type === "WorkerActivity") {
+    assert.equal(events[0].kind, "survey");
+    assert.equal(events[0].detail, "Read");
   }
 });
 
-test("PreToolUse Write -> WorkerActivity haul", () => {
+test("PreToolUse Write -> [WorkerActivity haul]", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Write", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerActivity");
-  if (event!.type === "WorkerActivity") {
-    assert.equal(event.kind, "haul");
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "WorkerActivity");
+  if (events[0].type === "WorkerActivity") {
+    assert.equal(events[0].kind, "haul");
   }
 });
 
-test("PreToolUse Edit -> WorkerActivity build", () => {
+test("PreToolUse Edit -> [WorkerActivity build]", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Edit", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerActivity");
-  if (event!.type === "WorkerActivity") {
-    assert.equal(event.kind, "build");
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "WorkerActivity");
+  if (events[0].type === "WorkerActivity") {
+    assert.equal(events[0].kind, "build");
   }
 });
 
-test("PreToolUse Bash -> WorkerActivity shell", () => {
+test("PreToolUse Bash -> [WorkerActivity shell]", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Bash", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerActivity");
-  if (event!.type === "WorkerActivity") {
-    assert.equal(event.kind, "shell");
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "WorkerActivity");
+  if (events[0].type === "WorkerActivity") {
+    assert.equal(events[0].kind, "shell");
   }
 });
 
-test("PreToolUse mcp__x__y -> WorkerActivity wire", () => {
+test("PreToolUse mcp__x__y -> [WorkerActivity wire]", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "mcp__x__y", at: T };
-  const event = mapHookRecord(record);
-  assert.ok(event !== null);
-  assert.equal(event!.type, "WorkerActivity");
-  if (event!.type === "WorkerActivity") {
-    assert.equal(event.kind, "wire");
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "WorkerActivity");
+  if (events[0].type === "WorkerActivity") {
+    assert.equal(events[0].kind, "wire");
   }
 });
 
-test("PreToolUse with no tool -> null", () => {
+// ---------------------------------------------------------------------------
+// Unmapped / edge cases → []
+// ---------------------------------------------------------------------------
+
+test("PreToolUse with no tool -> [] (empty array)", () => {
   const record: HookRecord = { event: "PreToolUse", at: T };
-  const event = mapHookRecord(record);
-  assert.equal(event, null);
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 0);
 });
 
-// toolToActivityKind direct tests
+test("unmapped event -> [] (empty array)", () => {
+  // Cast to bypass TypeScript to simulate an unknown event type from a future hook version.
+  const record = { event: "SomeFutureEvent", at: T } as unknown as HookRecord;
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Model and agentDescription propagation
+// ---------------------------------------------------------------------------
+
+test("PreToolUse Task with model and agentDescription -> WorkerSpawned propagates both", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "coding-specialist",
+    model: "claude-sonnet-4-6",
+    agentDescription: "Writes and edits TypeScript source code",
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].model, "claude-sonnet-4-6");
+    assert.equal(events[0].description, "Writes and edits TypeScript source code");
+    assert.equal(events[0].workerId, "coding-specialist");
+  }
+});
+
+test("PreToolUse Task without model or agentDescription -> WorkerSpawned has no model/description", () => {
+  const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-2", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].model, undefined);
+    assert.equal(events[0].description, undefined);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// toolToActivityKind direct tests (unchanged)
+// ---------------------------------------------------------------------------
+
 test("toolToActivityKind: Grep -> survey", () => {
   assert.equal(toolToActivityKind("Grep"), "survey");
 });

@@ -1,0 +1,9 @@
+[
+  { "id": "git", "name": "Git", "description": "Branch, commit, PR, and history workflows with safe defaults." },
+  { "id": "uefn", "name": "UEFN", "description": "Unreal Editor for Fortnite + Verse device scripting and live-edit workflows." },
+  { "id": "unreal-engine", "name": "Unreal Engine", "description": "Unreal Engine C++/Blueprint gameplay, actors, and editor workflows." },
+  { "id": "godot", "name": "Godot", "description": "Godot 4 GDScript nodes, scenes, signals, and game systems." },
+  { "id": "unity", "name": "Unity", "description": "Unity C# MonoBehaviour components, prefabs, and scene workflows." },
+  { "id": "threejs", "name": "Three.js", "description": "Three.js scenes, meshes, lighting, and render-loop lifecycle." },
+  { "id": "playwright", "name": "Playwright", "description": "Browser automation, UI QA, screenshots, and accessibility checks." }
+]

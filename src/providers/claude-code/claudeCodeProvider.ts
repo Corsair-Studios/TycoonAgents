@@ -58,8 +58,7 @@ export class ClaudeCodeProvider implements Provider {
         } catch {
           continue;
         }
-        const event = mapHookRecord(record);
-        if (event) emit(event);
+        for (const event of mapHookRecord(record)) emit(event);
       }
     } catch {
       // ignore transient FS errors; keep polling
