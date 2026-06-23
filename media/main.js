@@ -69,6 +69,24 @@
   // ── Metrics panel ───────────────────────────────────────────────
 
   /**
+   * Format a token count compactly.
+   * < 1000      → "450"
+   * 1k–999k     → "1.2k", "2.1k"  (trailing ".0" trimmed)
+   * >= 1 000 000 → "1.5M"          (trailing ".0" trimmed)
+   * @param {number} n
+   * @returns {string}
+   */
+  function fmtTokens(n) {
+    if (!n || n < 1000) return String(n ?? 0);
+    if (n < 1_000_000) {
+      const val = (n / 1000).toFixed(1).replace(/\.0$/, "");
+      return `${val}k`;
+    }
+    const val = (n / 1_000_000).toFixed(1).replace(/\.0$/, "");
+    return `${val}M`;
+  }
+
+  /**
    * Format milliseconds as "Xm Ys".
    * @param {number} ms
    * @returns {string}
@@ -161,7 +179,7 @@
 
       const tokensTd = document.createElement("td");
       tokensTd.className = "col-tokens";
-      tokensTd.textContent = String(agent.tokens ?? 0);
+      tokensTd.textContent = fmtTokens(agent.tokens ?? 0);
       row.appendChild(tokensTd);
 
       tbodyEl.appendChild(row);

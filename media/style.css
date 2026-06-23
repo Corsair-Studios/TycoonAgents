@@ -124,6 +124,7 @@ html, body {
   padding: 9px 10px;
   vertical-align: middle;
   white-space: nowrap;
+  font-size: 12px;
 }
 
 /* Agent name column */
