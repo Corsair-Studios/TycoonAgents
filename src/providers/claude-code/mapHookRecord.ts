@@ -43,7 +43,12 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent | null {
     case "Stop":
       return { type: "SessionStop", at: record.at };
     case "SubagentStop":
-      return { type: "WorkerStopped", at: record.at, workerId };
+      return {
+        type: "WorkerStopped",
+        at: record.at,
+        workerId,
+        ...(record.tokens !== undefined ? { tokens: record.tokens } : {}),
+      };
     case "PreToolUse": {
       if (!record.tool) return null;
       if (SPAWN_TOOLS.has(record.tool)) {

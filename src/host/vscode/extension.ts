@@ -6,7 +6,6 @@
 
 import * as vscode from "vscode";
 import * as path from "path";
-import * as os from "os";
 import { Runtime } from "./runtime";
 import { TycoonPanel } from "./panel";
 import { runDemo } from "./demo";
@@ -24,7 +23,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Start the Claude Code provider if not already running
     if (!provider) {
-      const activityFile = path.join(os.tmpdir(), "tycoonagents", "activity.jsonl");
+      // Resolve activity file: prefer CLAUDE_PROJECT_DIR env var, else the first
+      // VS Code workspace folder. Must match the path resolution in the hook script.
+      const projectRoot =
+        process.env["CLAUDE_PROJECT_DIR"] ??
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
+        "";
+      const activityFile = path.join(projectRoot, ".claude", "tycoon", "activity.jsonl");
       provider = new ClaudeCodeProvider({ activityFile });
       provider.start((e) => runtime.ingest(e));
 

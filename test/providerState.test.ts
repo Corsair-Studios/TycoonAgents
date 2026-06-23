@@ -218,7 +218,8 @@ test("TaskCompleted increments taskCount", () => {
   assert.equal(metric!.taskCount, 2);
 });
 
-test("tokens is always 0 (stubbed pending live capture)", () => {
+test("WorkerStopped with no tokens leaves agentMetrics.tokens at 0", () => {
+  // SubagentStop record without a tokens field -> tokens defaults to 0
   const state = fold([
     { event: "UserPromptSubmit", at: T },
     { event: "PreToolUse", tool: "Task", workerId: "w-tok", at: T + 100 },
@@ -228,4 +229,16 @@ test("tokens is always 0 (stubbed pending live capture)", () => {
   const metric = state.agentMetrics.find((m) => m.id === "w-tok");
   assert.ok(metric);
   assert.equal(metric!.tokens, 0);
+});
+
+test("WorkerStopped with tokens is reflected in agentMetrics.tokens", () => {
+  // SubagentStop record carrying tokens -> tokens accumulate in metric
+  const state = fold([
+    { event: "UserPromptSubmit", at: T },
+    { event: "PreToolUse", tool: "Task", workerId: "w-tok2", at: T + 100 },
+    { event: "SubagentStop", workerId: "w-tok2", tokens: 4200, at: T + 500 },
+  ]);
+  const metric = state.agentMetrics.find((m) => m.id === "w-tok2");
+  assert.ok(metric);
+  assert.equal(metric!.tokens, 4200);
 });

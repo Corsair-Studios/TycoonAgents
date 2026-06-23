@@ -11,5 +11,6 @@ export interface HookRecord {
   event: ClaudeHookEventName;
   tool?: string;     // PreToolUse only, e.g. "Task", "Read", "mcp__server__tool"
   workerId?: string; // session/agent id from the hook payload when available
+  tokens?: number;   // SubagentStop only: total tokens consumed by the subagent session
   at: number;        // epoch ms
 }

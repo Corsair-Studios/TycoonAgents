@@ -38,7 +38,7 @@ export interface AgentMetric {
   mcpCount: number;
   /** Cumulative active wall-clock milliseconds (finalized on WorkerStopped). */
   activeMs: number;
-  /** Reserved for live token capture; always 0 until that feature is added. */
+  /** Cumulative tokens consumed by this agent, summed from SubagentStop events. */
   tokens: number;
 }
 
@@ -229,6 +229,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
         [event.workerId]: { ...worker, state: "leave" as WorkerState },
       };
       // Finalize activeMs: add elapsed since workStartAt, then clear the timer.
+      // Accumulate tokens when the event carries a count.
       const nextInternals = upsertMetric(
         state._agentMetricsInternal,
         event.workerId,
@@ -236,6 +237,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           ...m,
           status: "idle" as const,
           activeMs: m.activeMs + elapsedSince(m.workStartAt, event.at),
+          tokens: m.tokens + (event.tokens ?? 0),
           workStartAt: null,
         }),
       );

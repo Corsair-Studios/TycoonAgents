@@ -24,7 +24,7 @@ export type NormalizedEvent =
   | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string }
   | { type: "WorkerActivity"; at: number; workerId: WorkerId; kind: ActivityKind; detail?: string }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string }
-  | { type: "WorkerStopped"; at: number; workerId: WorkerId }
+  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number }
   | { type: "ProviderError"; at: number; workerId?: WorkerId; message: string };
 
 export type EventSink = (event: NormalizedEvent) => void;

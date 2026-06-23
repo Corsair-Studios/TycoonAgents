@@ -47,6 +47,26 @@ test("SubagentStop with no workerId falls back to 'orchestrator'", () => {
   }
 });
 
+test("SubagentStop with tokens propagates tokens to WorkerStopped", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "agent-2", tokens: 3500, at: T };
+  const event = mapHookRecord(record);
+  assert.ok(event !== null);
+  assert.equal(event!.type, "WorkerStopped");
+  if (event!.type === "WorkerStopped") {
+    assert.equal(event.tokens, 3500);
+  }
+});
+
+test("SubagentStop without tokens emits WorkerStopped with no tokens field", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "agent-3", at: T };
+  const event = mapHookRecord(record);
+  assert.ok(event !== null);
+  assert.equal(event!.type, "WorkerStopped");
+  if (event!.type === "WorkerStopped") {
+    assert.equal(event.tokens, undefined);
+  }
+});
+
 test("PreToolUse Task -> WorkerSpawned with role 'Task'", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-1", at: T };
   const event = mapHookRecord(record);
