@@ -69,5 +69,20 @@
     "network": false,
     "dataNote": "Runs locally; a reasoning scratchpad with no external calls.",
     "config": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"] }
+  },
+  {
+    "id": "roblox-studio",
+    "name": "Roblox Studio",
+    "description": "Connect an AI client to a live Roblox Studio session — explore the data model, write Luau, and run/test in play mode.",
+    "requiresEnv": [],
+    "note": "Official Roblox Studio MCP is a local bridge (Studio plugin + a standalone Rust server, or Studio's built-in server) and needs separate setup. Installing here adds a template entry to .mcp.json — replace the command with your built server path per Roblox's docs.",
+    "homepage": "https://github.com/Roblox/studio-rust-mcp-server",
+    "docsUrl": "https://create.roblox.com/docs/studio/mcp",
+    "thirdParty": true,
+    "vendor": "Roblox",
+    "package": "Roblox/studio-rust-mcp-server (standalone Rust server) or Roblox Studio's built-in MCP server",
+    "network": true,
+    "dataNote": "Bridges an AI client to your local Roblox Studio session; the AI can read your place's data model and write/run Luau code in it.",
+    "config": { "command": "<path-to-roblox-studio-mcp-server>", "args": [] }
   }
 ]

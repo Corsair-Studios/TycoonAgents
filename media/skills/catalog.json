@@ -1,9 +1,10 @@
 [
   { "id": "git", "name": "Git", "description": "Branch, commit, PR, and history workflows with safe defaults." },
-  { "id": "uefn", "name": "UEFN", "description": "Unreal Editor for Fortnite + Verse device scripting and live-edit workflows." },
+  { "id": "uefn", "name": "UEFN", "description": "Unreal Editor for Fortnite + Verse device scripting and live-edit workflows.", "mcpNote": "Needs the UEFN bridge MCP for live-editor control (uefn_* tools); without it this skill only covers Verse/device authoring." },
+  { "id": "playwright", "name": "Playwright", "description": "Browser automation, UI QA, screenshots, and accessibility checks.", "mcpNote": "Pairs with the Playwright MCP server (MCP tab) to actually drive a browser." },
+  { "id": "godot", "name": "Godot", "description": "Godot 4 GDScript nodes, scenes, signals, and game systems.", "mcpNote": "More effective with a Godot editor MCP for live scene/node inspection." },
+  { "id": "unity", "name": "Unity", "description": "Unity C# MonoBehaviour components, prefabs, and scene workflows.", "mcpNote": "More effective with a Unity editor MCP for live scene/asset control." },
+  { "id": "roblox", "name": "Roblox", "description": "Roblox Studio + Luau scripting — instances, services, and experience workflows.", "mcpNote": "Needs the Roblox Studio MCP (MCP tab) to read your data model and run Luau in a live Studio session." },
   { "id": "unreal-engine", "name": "Unreal Engine", "description": "Unreal Engine C++/Blueprint gameplay, actors, and editor workflows." },
-  { "id": "godot", "name": "Godot", "description": "Godot 4 GDScript nodes, scenes, signals, and game systems." },
-  { "id": "unity", "name": "Unity", "description": "Unity C# MonoBehaviour components, prefabs, and scene workflows." },
-  { "id": "threejs", "name": "Three.js", "description": "Three.js scenes, meshes, lighting, and render-loop lifecycle." },
-  { "id": "playwright", "name": "Playwright", "description": "Browser automation, UI QA, screenshots, and accessibility checks." }
+  { "id": "threejs", "name": "Three.js", "description": "Three.js scenes, meshes, lighting, and render-loop lifecycle." }
 ]

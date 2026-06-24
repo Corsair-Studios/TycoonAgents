@@ -151,6 +151,7 @@ export class TycoonPanel {
         id: string;
         name: string;
         description: string;
+        mcpNote?: string;
       }>;
       const skills = catalog.map((entry) => ({
         ...entry,
@@ -882,9 +883,7 @@ export class TycoonPanel {
       <!-- Hamburger menu: scaffold for future panel controls -->
       <button id="menu-btn" aria-label="Open menu" aria-expanded="false" aria-haspopup="true">&#9776;</button>
       <div id="menu-popover" role="menu" hidden>
-        <button class="menu-item" role="menuitem" id="menu-skills">Skills</button>
-        <button class="menu-item" role="menuitem" id="menu-mcp">MCP servers</button>
-        <button class="menu-item" role="menuitem" id="menu-packs">Capability packs</button>
+        <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
         <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
         <button class="menu-item" role="menuitem" id="menu-theme-builder">Theme builder</button>
         <button class="menu-item" role="menuitem" id="menu-about">About</button>

@@ -62,6 +62,8 @@ html, body {
 #setup-card {
   width: 100%;
   max-width: 360px;
+  max-height: 100%;
+  min-height: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -76,6 +78,7 @@ html, body {
 
 #setup-card h1,
 #setup-card .setup-title {
+  flex: 0 0 auto;
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -84,12 +87,14 @@ html, body {
 }
 
 #setup-status {
+  flex: 0 0 auto;
   font-size: 13px;
   line-height: 1.5;
   color: var(--text);
 }
 
 #setup-error {
+  flex: 0 0 auto;
   width: 100%;
   font-size: 12px;
   line-height: 1.45;
@@ -101,7 +106,12 @@ html, body {
 }
 #setup-error[hidden] { display: none; }
 
+/* The settings sections are the internal scroll region so the card never
+   exceeds the viewport and the Back button (last child) stays pinned. */
 #setup-config {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -109,6 +119,9 @@ html, body {
   text-align: left;
 }
 #setup-config[hidden] { display: none; }
+#setup-config::-webkit-scrollbar { width: 6px; }
+#setup-config::-webkit-scrollbar-track { background: var(--bg); }
+#setup-config::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 /* Setup buttons reuse the .skill-btn visual language */
 #install-hooks-btn,
@@ -139,8 +152,16 @@ html, body {
 #setup-back-btn[hidden] { display: none; }
 
 #setup-back-btn {
+  flex: 0 0 auto;
+  align-self: stretch;
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
   background: none;
-  border-color: var(--border);
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
   color: var(--muted);
 }
 #setup-back-btn:hover:not(:disabled) {
@@ -273,11 +294,26 @@ html, body {
 
 /* Keyword routing */
 .routing-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 11px;
   border-radius: 5px;
   padding: 6px 8px;
   line-height: 1.4;
 }
+
+/* Traffic-light status dot for routing health */
+.routing-light {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.routing-light--green  { background: #3fb950; box-shadow: 0 0 5px rgba(63, 185, 80, 0.7); }
+.routing-light--yellow { background: #d29922; box-shadow: 0 0 5px rgba(210, 153, 34, 0.7); }
+.routing-light--red    { background: #f85149; box-shadow: 0 0 5px rgba(248, 81, 73, 0.7); }
 .keyword-row { gap: 4px; }
 .keyword-label { font-size: 11px; font-weight: 600; color: var(--text); }
 .keyword-input-wrap { display: flex; gap: 6px; align-items: center; }
@@ -611,6 +647,16 @@ html, body {
   font-size: 11px;
   color: var(--muted);
   line-height: 1.4;
+}
+
+.skill-mcpnote {
+  display: block;
+  margin-top: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--accent);
+  opacity: 0.95;
 }
 
 .skill-btn {

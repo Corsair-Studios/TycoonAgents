@@ -149,7 +149,7 @@
   const skillsModalEl   = /** @type {HTMLElement} */ (document.getElementById("skills-modal"));
   const skillsBackdrop  = /** @type {HTMLElement} */ (document.getElementById("skills-backdrop"));
   const skillsCloseBtn  = /** @type {HTMLElement} */ (document.getElementById("skills-modal-close"));
-  const menuSkillsBtn   = /** @type {HTMLElement} */ (document.getElementById("menu-skills"));
+  const menuCatalogBtn  = /** @type {HTMLElement} */ (document.getElementById("menu-catalog"));
   const skillsListEl    = /** @type {HTMLElement} */ (document.getElementById("skills-list"));
 
   // ── Catalog tabs (Skills / MCP / Packs) ───────────────────────────
@@ -158,8 +158,6 @@
   const tabPacksBtn  = /** @type {HTMLElement} */ (document.getElementById("tab-packs"));
   const mcpListEl    = /** @type {HTMLElement} */ (document.getElementById("mcp-list"));
   const packsListEl  = /** @type {HTMLElement} */ (document.getElementById("packs-list"));
-  const menuMcpBtn   = /** @type {HTMLElement} */ (document.getElementById("menu-mcp"));
-  const menuPacksBtn = /** @type {HTMLElement} */ (document.getElementById("menu-packs"));
 
   // Tracks whether each catalog has been fetched yet (lazy-load on first view).
   let mcpLoaded = false;
@@ -208,28 +206,12 @@
     tabPacksBtn.addEventListener("click", () => showCatalogTab("packs"));
   }
 
-  menuSkillsBtn.addEventListener("click", () => {
-    closeMenu();
-    openModal(skillsModalEl, skillsCloseBtn);
-    showCatalogTab("skills");
-    vscode.postMessage({ type: "getSkills" });
-  });
-
-  if (menuMcpBtn) {
-    menuMcpBtn.addEventListener("click", () => {
+  if (menuCatalogBtn) {
+    menuCatalogBtn.addEventListener("click", () => {
       closeMenu();
       openModal(skillsModalEl, skillsCloseBtn);
-      showCatalogTab("mcp");
-      vscode.postMessage({ type: "getMcp" });
-    });
-  }
-
-  if (menuPacksBtn) {
-    menuPacksBtn.addEventListener("click", () => {
-      closeMenu();
-      openModal(skillsModalEl, skillsCloseBtn);
-      showCatalogTab("packs");
-      vscode.postMessage({ type: "getPacks" });
+      showCatalogTab("skills");
+      vscode.postMessage({ type: "getSkills" });
     });
   }
 
@@ -640,7 +622,7 @@
 
   /**
    * Rebuild #skills-list from the catalog payload.
-   * @param {Array<{id:string,name:string,description:string,installed:boolean}>} skills
+   * @param {Array<{id:string,name:string,description:string,installed:boolean,mcpNote?:string}>} skills
    * @param {string|undefined} error
    */
   function renderSkillsList(skills, error) {
@@ -678,6 +660,13 @@
 
       textBlock.appendChild(nameEl);
       textBlock.appendChild(descEl);
+
+      if (skill.mcpNote) {
+        const noteEl = document.createElement("span");
+        noteEl.className = "skill-mcpnote";
+        noteEl.textContent = `⚙ ${skill.mcpNote}`;
+        textBlock.appendChild(noteEl);
+      }
 
       const btn = document.createElement("button");
       btn.className = "skill-btn" + (skill.installed ? " skill-btn--installed" : "");
@@ -1230,6 +1219,19 @@
   /** Cost weight by model (relative price); used for savings estimates. */
   const COST_WEIGHT = { opus: 15, sonnet: 3, haiku: 0.8 };
 
+  /** Relative capability/cost rank of each model (lower = cheaper/lighter). */
+  const MODEL_RANK = { haiku: 0, sonnet: 1, opus: 2 };
+
+  /**
+   * Highest model an agent should normally need. When an agent is set above
+   * its floor we proactively suggest stepping down to the cheaper model.
+   */
+  const SUGGESTED_MAX = {
+    "search-retrieval": "haiku",
+    "testing-specialist": "haiku",
+    "workspace-monitor": "haiku",
+  };
+
   /**
    * Format a timestamp as a short relative time ("3m ago", "—" if null).
    * @param {number|null|undefined} ts
@@ -1278,13 +1280,21 @@
   function recommendationFor(agent, m) {
     const model = agent.model;
     const taskCount = (m && m.taskCount) || 0;
-    if (agent.id === "search-retrieval" && model !== "haiku" && model) {
+
+    // Proactive down-size: agent is set above its suggested floor. This
+    // supersedes (and replaces) the old search-retrieval-only rule, and when
+    // it fires we skip the generic opus→sonnet suggestion below to avoid
+    // double-recommending.
+    const floor = !agent.isOrchestrator ? SUGGESTED_MAX[agent.id] : undefined;
+    if (floor && model && MODEL_RANK[model] > MODEL_RANK[floor]) {
+      const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
       return {
-        text: `Lookups suit Haiku (~${savingsPct(model, "haiku")}% cheaper)`,
-        suggest: "haiku",
+        text: `Could run on ${cap(floor)} — ${agent.name || agent.id} handles routine work that rarely needs ${cap(model)} (~${savingsPct(model, floor)}% cheaper)`,
+        suggest: floor,
         kind: "amber",
       };
     }
+
     if (model === "opus" && !agent.isOrchestrator && taskCount >= 1) {
       return {
         text: `Opus is heavy for routine work; Sonnet ~${savingsPct("opus", "sonnet")}% cheaper`,
@@ -1304,11 +1314,13 @@
 
   /**
    * Compute the routing fallback note for the keyword-routing section.
-   * @returns {{text:string, kind:"amber"|"info"}}
+   * `light` drives the traffic-light dot: green = healthy, red = high
+   * fallback rate, yellow = not enough data yet.
+   * @returns {{text:string, kind:"amber"|"info", light:"green"|"yellow"|"red"}}
    */
   function fallbackNote() {
     const total = lastMetrics.reduce((sum, m) => sum + ((m && m.taskCount) || 0), 0);
-    if (total < 5) return { text: "Routing health: not enough data", kind: "info" };
+    if (total < 5) return { text: "Routing health: not enough data", kind: "info", light: "yellow" };
     const primary = metricsFor("primary-agent");
     const primaryTasks = (primary && primary.taskCount) || 0;
     const ratio = primaryTasks / total;
@@ -1317,9 +1329,10 @@
       return {
         text: `High fallback rate (${pct}%): tune keywords so work routes to specialists.`,
         kind: "amber",
+        light: "red",
       };
     }
-    return { text: "Routing healthy", kind: "info" };
+    return { text: "Routing healthy", kind: "info", light: "green" };
   }
 
   /** Build a section wrapper with a heading. */
@@ -1530,7 +1543,13 @@
     const note = fallbackNote();
     const noteEl = document.createElement("div");
     noteEl.className = `routing-note rec-${note.kind}`;
-    noteEl.textContent = note.text;
+    const light = document.createElement("span");
+    light.className = `routing-light routing-light--${note.light}`;
+    const noteText = document.createElement("span");
+    noteText.className = "routing-note-text";
+    noteText.textContent = note.text;
+    noteEl.appendChild(light);
+    noteEl.appendChild(noteText);
     routingSection.appendChild(noteEl);
 
     for (const agent of agents) {
