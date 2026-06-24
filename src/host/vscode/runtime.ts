@@ -21,6 +21,14 @@ export class Runtime {
     }
   }
 
+  /** Reset to a fresh initial world state and notify all listeners. */
+  reset(): void {
+    this.state = initialWorldState();
+    for (const cb of this.listeners) {
+      cb(this.state);
+    }
+  }
+
   /** Return the current world state snapshot. */
   getState(): WorldState {
     return this.state;

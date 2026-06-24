@@ -1,0 +1,73 @@
+[
+  {
+    "id": "github",
+    "name": "GitHub",
+    "description": "Read and manage repos, issues, and PRs from GitHub.",
+    "requiresEnv": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+    "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+    "thirdParty": true,
+    "vendor": "GitHub / Model Context Protocol",
+    "package": "@modelcontextprotocol/server-github (run via npx)",
+    "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+    "network": true,
+    "dataNote": "Contacts the GitHub API (api.github.com); sends your repo data, issues/PRs, and access token.",
+    "config": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "" } }
+  },
+  {
+    "id": "filesystem",
+    "name": "Filesystem",
+    "description": "Give Claude scoped read/write access to a local directory.",
+    "requiresEnv": [],
+    "note": "Edit the path arg in .mcp.json to the directory you want to expose.",
+    "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+    "thirdParty": true,
+    "vendor": "Model Context Protocol (Anthropic)",
+    "package": "@modelcontextprotocol/server-filesystem (run via npx)",
+    "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+    "network": false,
+    "dataNote": "Runs locally with no network calls, but exposes the configured directory's files to the AI model.",
+    "config": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
+  },
+  {
+    "id": "playwright",
+    "name": "Playwright",
+    "description": "Drive a real browser for UI QA, screenshots, and accessibility checks.",
+    "requiresEnv": [],
+    "docsUrl": "https://github.com/microsoft/playwright-mcp",
+    "thirdParty": true,
+    "vendor": "Microsoft",
+    "package": "@playwright/mcp (run via npx; downloads browser binaries)",
+    "homepage": "https://github.com/microsoft/playwright-mcp",
+    "network": true,
+    "dataNote": "Downloads browser binaries on first run and navigates to URLs you or the model open.",
+    "config": { "command": "npx", "args": ["-y", "@playwright/mcp@latest"] }
+  },
+  {
+    "id": "context7",
+    "name": "Context7",
+    "description": "Pull up-to-date, version-specific docs for libraries and frameworks.",
+    "requiresEnv": [],
+    "docsUrl": "https://github.com/upstash/context7",
+    "thirdParty": true,
+    "vendor": "Upstash",
+    "package": "@upstash/context7-mcp (run via npx)",
+    "homepage": "https://github.com/upstash/context7",
+    "network": true,
+    "dataNote": "Sends the library names/queries you look up to Context7's hosted service.",
+    "config": { "command": "npx", "args": ["-y", "@upstash/context7-mcp"] }
+  },
+  {
+    "id": "sequential-thinking",
+    "name": "Sequential Thinking",
+    "description": "Structured step-by-step reasoning scratchpad for hard problems.",
+    "requiresEnv": [],
+    "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+    "thirdParty": true,
+    "vendor": "Model Context Protocol (Anthropic)",
+    "package": "@modelcontextprotocol/server-sequential-thinking (run via npx)",
+    "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+    "network": false,
+    "dataNote": "Runs locally; a reasoning scratchpad with no external calls.",
+    "config": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"] }
+  }
+]

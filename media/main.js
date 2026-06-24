@@ -152,11 +152,86 @@
   const menuSkillsBtn   = /** @type {HTMLElement} */ (document.getElementById("menu-skills"));
   const skillsListEl    = /** @type {HTMLElement} */ (document.getElementById("skills-list"));
 
+  // ── Catalog tabs (Skills / MCP / Packs) ───────────────────────────
+  const tabSkillsBtn = /** @type {HTMLElement} */ (document.getElementById("tab-skills"));
+  const tabMcpBtn    = /** @type {HTMLElement} */ (document.getElementById("tab-mcp"));
+  const tabPacksBtn  = /** @type {HTMLElement} */ (document.getElementById("tab-packs"));
+  const mcpListEl    = /** @type {HTMLElement} */ (document.getElementById("mcp-list"));
+  const packsListEl  = /** @type {HTMLElement} */ (document.getElementById("packs-list"));
+  const menuMcpBtn   = /** @type {HTMLElement} */ (document.getElementById("menu-mcp"));
+  const menuPacksBtn = /** @type {HTMLElement} */ (document.getElementById("menu-packs"));
+
+  // Tracks whether each catalog has been fetched yet (lazy-load on first view).
+  let mcpLoaded = false;
+  let packsLoaded = false;
+
+  /**
+   * Switch the active catalog tab. The three tabs (skills/mcp/packs) are
+   * mutually exclusive — exactly one list is visible at a time.
+   * @param {"skills"|"mcp"|"packs"} tab
+   */
+  function showCatalogTab(tab) {
+    /** @type {Array<[HTMLElement|null, HTMLElement|null, string]>} */
+    const tabs = [
+      [tabSkillsBtn, skillsListEl, "skills"],
+      [tabMcpBtn, mcpListEl, "mcp"],
+      [tabPacksBtn, packsListEl, "packs"],
+    ];
+    for (const [btn, list, key] of tabs) {
+      const isActive = key === tab;
+      if (list) {
+        if (isActive) list.removeAttribute("hidden");
+        else list.setAttribute("hidden", "");
+      }
+      if (btn) {
+        btn.classList.toggle("catalog-tab--active", isActive);
+        btn.setAttribute("aria-selected", String(isActive));
+      }
+    }
+    if (tab === "mcp" && !mcpLoaded) {
+      mcpLoaded = true;
+      vscode.postMessage({ type: "getMcp" });
+    }
+    if (tab === "packs" && !packsLoaded) {
+      packsLoaded = true;
+      vscode.postMessage({ type: "getPacks" });
+    }
+  }
+
+  if (tabSkillsBtn) {
+    tabSkillsBtn.addEventListener("click", () => showCatalogTab("skills"));
+  }
+  if (tabMcpBtn) {
+    tabMcpBtn.addEventListener("click", () => showCatalogTab("mcp"));
+  }
+  if (tabPacksBtn) {
+    tabPacksBtn.addEventListener("click", () => showCatalogTab("packs"));
+  }
+
   menuSkillsBtn.addEventListener("click", () => {
     closeMenu();
     openModal(skillsModalEl, skillsCloseBtn);
+    showCatalogTab("skills");
     vscode.postMessage({ type: "getSkills" });
   });
+
+  if (menuMcpBtn) {
+    menuMcpBtn.addEventListener("click", () => {
+      closeMenu();
+      openModal(skillsModalEl, skillsCloseBtn);
+      showCatalogTab("mcp");
+      vscode.postMessage({ type: "getMcp" });
+    });
+  }
+
+  if (menuPacksBtn) {
+    menuPacksBtn.addEventListener("click", () => {
+      closeMenu();
+      openModal(skillsModalEl, skillsCloseBtn);
+      showCatalogTab("packs");
+      vscode.postMessage({ type: "getPacks" });
+    });
+  }
 
   skillsCloseBtn.addEventListener("click", () => {
     closeModal(skillsModalEl);
@@ -194,6 +269,180 @@
     vscode.postMessage({ type: "installSkill", id });
   });
 
+  // ── MCP list install-button handler (event delegation) ───────────
+
+  if (mcpListEl) {
+    mcpListEl.addEventListener("click", (e) => {
+      const btn = /** @type {HTMLElement|null} */ (
+        /** @type {HTMLElement} */ (e.target).closest("[data-mcp-id]")
+      );
+      if (!btn || btn.hasAttribute("disabled")) return;
+      const id = btn.getAttribute("data-mcp-id");
+
+      // Confirm before running third-party code. Networked servers get a full
+      // data-use confirm; local-only third-party still mentions what runs.
+      const server = lastMcpServers.find((s) => s && s.id === id);
+      if (server && server.thirdParty) {
+        const confirmed = window.confirm(buildInstallConfirm({
+          name: server.name,
+          vendor: server.vendor,
+          package: server.package,
+          network: server.network,
+          dataNote: server.dataNote,
+          homepage: server.homepage,
+        }));
+        if (!confirmed) return; // button untouched — nothing to revert
+      }
+
+      btn.textContent = "Installing…";
+      btn.setAttribute("disabled", "");
+      vscode.postMessage({ type: "installMcp", id });
+    });
+  }
+
+  // ── Packs list install-button handler (event delegation) ─────────
+
+  if (packsListEl) {
+    packsListEl.addEventListener("click", (e) => {
+      const btn = /** @type {HTMLElement|null} */ (
+        /** @type {HTMLElement} */ (e.target).closest("[data-pack-id]")
+      );
+      if (!btn || btn.hasAttribute("disabled")) return;
+      const id = btn.getAttribute("data-pack-id");
+
+      // Confirm before running third-party code bundled in the pack.
+      const pack = lastPacks.find((p) => p && p.id === id);
+      const disclosures = (pack && Array.isArray(pack.disclosures)) ? pack.disclosures : [];
+      if (pack && pack.thirdParty && disclosures.length) {
+        const networked = disclosures.filter((d) => d && d.network);
+        const lines = [];
+        lines.push(`Install ${pack.name || "this pack"}?`);
+        lines.push("");
+        lines.push("This installs third-party software that runs on your machine:");
+        for (const d of disclosures) {
+          const who = [d.label, d.vendor].filter(Boolean).join(" · ");
+          lines.push(`• ${who}${d.package ? ` — runs ${d.package}` : ""}`);
+          if (d.network) {
+            lines.push(`    Sends data externally: ${d.dataNote || "contacts an external service."}`);
+          } else if (d.dataNote) {
+            lines.push(`    Local only: ${d.dataNote}`);
+          }
+          if (d.homepage) lines.push(`    Source: ${d.homepage}`);
+        }
+        lines.push("");
+        lines.push(networked.length
+          ? "One or more components send data to external services. Check your organization's policy before continuing. Proceed?"
+          : "Check your organization's policy before continuing. Proceed?");
+        if (!window.confirm(lines.join("\n"))) return; // button untouched
+      }
+
+      btn.textContent = "Installing…";
+      btn.setAttribute("disabled", "");
+      vscode.postMessage({ type: "installPack", id });
+    });
+  }
+
+  // ── Setup / install overlay ──────────────────────────────────────
+
+  const setupViewEl    = /** @type {HTMLElement} */ (document.getElementById("setup-view"));
+  const appEl          = /** @type {HTMLElement} */ (document.getElementById("app"));
+  const setupStatusEl  = /** @type {HTMLElement} */ (document.getElementById("setup-status"));
+  const installHooksBtn = /** @type {HTMLElement} */ (document.getElementById("install-hooks-btn"));
+  const setupErrorEl   = /** @type {HTMLElement} */ (document.getElementById("setup-error"));
+  const setupConfigEl  = /** @type {HTMLElement} */ (document.getElementById("setup-config"));
+  const setupBackBtn   = /** @type {HTMLElement} */ (document.getElementById("setup-back-btn"));
+  const menuSettingsBtn = /** @type {HTMLElement} */ (document.getElementById("menu-settings"));
+
+  // Tracks whether the setup screen was reached via Settings (vs. first-run
+  // install). When opened from Settings we stay on the screen even once the
+  // hooks are installed, to show the (Phase 2) config + a Back button.
+  let openedFromSettings = false;
+
+  /** Show the full-bleed setup overlay; hide the live app view. */
+  function showSetup() {
+    setupViewEl.removeAttribute("hidden");
+    appEl.setAttribute("hidden", "");
+  }
+
+  /** Show the live app view; hide the setup overlay. */
+  function showMain() {
+    setupViewEl.setAttribute("hidden", "");
+    appEl.removeAttribute("hidden");
+  }
+
+  /**
+   * React to an install-state push from the host.
+   * @param {{installed:boolean, busy?:boolean, error?:string}} info
+   */
+  function handleInstallState(info) {
+    if (info && info.busy) {
+      showSetup();
+      setupStatusEl.textContent = "Installing…";
+      installHooksBtn.removeAttribute("hidden");
+      installHooksBtn.setAttribute("disabled", "");
+      installHooksBtn.textContent = "Installing…";
+      setupErrorEl.setAttribute("hidden", "");
+      setupConfigEl.setAttribute("hidden", "");
+      setupBackBtn.setAttribute("hidden", "");
+      return;
+    }
+
+    if (info && info.installed === false) {
+      showSetup();
+      setupStatusEl.textContent =
+        "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
+      installHooksBtn.removeAttribute("hidden");
+      installHooksBtn.removeAttribute("disabled");
+      installHooksBtn.textContent = "Install hooks";
+      setupConfigEl.setAttribute("hidden", "");
+      setupBackBtn.setAttribute("hidden", "");
+      if (info.error) {
+        setupErrorEl.textContent = info.error;
+        setupErrorEl.removeAttribute("hidden");
+      } else {
+        setupErrorEl.setAttribute("hidden", "");
+      }
+      return;
+    }
+
+    // installed === true
+    if (openedFromSettings) {
+      showSetup();
+      setupStatusEl.textContent = "Hooks installed ✓";
+      installHooksBtn.setAttribute("hidden", "");
+      setupConfigEl.removeAttribute("hidden");
+      setupBackBtn.removeAttribute("hidden");
+      if (info && info.error) {
+        setupErrorEl.textContent = info.error;
+        setupErrorEl.removeAttribute("hidden");
+        installHooksBtn.removeAttribute("hidden");
+        installHooksBtn.removeAttribute("disabled");
+        installHooksBtn.textContent = "Install hooks";
+      } else {
+        setupErrorEl.setAttribute("hidden", "");
+      }
+    } else {
+      showMain();
+    }
+  }
+
+  installHooksBtn.addEventListener("click", () => {
+    vscode.postMessage({ type: "installHooks" });
+  });
+
+  menuSettingsBtn.addEventListener("click", () => {
+    closeMenu();
+    openedFromSettings = true;
+    showSetup();
+    vscode.postMessage({ type: "checkInstall" });
+    vscode.postMessage({ type: "getSettings" });
+  });
+
+  setupBackBtn.addEventListener("click", () => {
+    openedFromSettings = false;
+    showMain();
+  });
+
   const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("stage"));
   const ctx = canvas.getContext("2d");
 
@@ -229,6 +478,16 @@
   // Tell the extension we're ready; it will push the current state back
   vscode.postMessage({ type: "ready" });
 
+  // Initial state: keep the setup overlay up until we hear back about install
+  // status, so we never flash the live view before knowing the hook exists.
+  showSetup();
+  setupStatusEl.textContent = "Checking installation…";
+  installHooksBtn.setAttribute("hidden", "");
+  setupErrorEl.setAttribute("hidden", "");
+  setupConfigEl.setAttribute("hidden", "");
+  setupBackBtn.setAttribute("hidden", "");
+  vscode.postMessage({ type: "checkInstall" });
+
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
     if (msg && msg.type === "state") {
@@ -251,8 +510,133 @@
       renderSkillsList(msg.skills, msg.error);
     } else if (msg && msg.type === "skillInstalled") {
       handleSkillInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error);
+    } else if (msg && msg.type === "mcp") {
+      renderMcpList(msg.servers, msg.error);
+    } else if (msg && msg.type === "mcpInstalled") {
+      handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error);
+    } else if (msg && msg.type === "packs") {
+      renderPacksList(msg.packs, msg.error);
+    } else if (msg && msg.type === "packInstalled") {
+      handlePackInstalled(msg.id, msg.ok, msg.results, msg.error);
+    } else if (msg && msg.type === "installState") {
+      handleInstallState(msg);
+    } else if (msg && msg.type === "settings") {
+      lastSettings = msg.payload || null;
+      renderSettings();
+    } else if (msg && msg.type === "settingsUpdated") {
+      handleSettingsUpdated(msg);
+    } else if (msg && msg.type === "metricsReset") {
+      handleMetricsReset(msg);
     }
   });
+
+  // ── Transparency / third-party disclosure ────────────────────────
+  //
+  // Installing an MCP server (or a Pack that bundles one) runs third-party
+  // code on the user's machine and may call external services. We surface a
+  // standing banner per list, a per-row disclosure block, and a confirm gate
+  // before any networked install proceeds.
+
+  /** Last MCP server array received, for disclosure lookup in the click handler. */
+  let lastMcpServers = [];
+  /** Last packs array received, for disclosure lookup in the click handler. */
+  let lastPacks = [];
+
+  /**
+   * Build the standing notice for a catalog list.
+   * @param {"third-party"|"local"} kind
+   * @returns {HTMLElement}
+   */
+  function buildCatalogNotice(kind) {
+    const el = document.createElement("p");
+    if (kind === "local") {
+      el.className = "catalog-notice catalog-notice--local";
+      el.textContent =
+        "Skills are local prompt files bundled with the extension — no third-party code or network calls.";
+    } else {
+      el.className = "catalog-notice";
+      el.textContent =
+        "⚠ These install third-party software that runs on your machine and may contact external services. " +
+        "Review each item's source and data use, and check your organization's policy before installing.";
+    }
+    return el;
+  }
+
+  /**
+   * Build a per-item disclosure block (used by MCP rows and Pack disclosures).
+   * @param {{vendor?:string,package?:string,homepage?:string,network?:boolean,dataNote?:string,label?:string}} d
+   * @returns {HTMLElement}
+   */
+  function buildDisclosureBlock(d) {
+    const block = document.createElement("div");
+    block.className = "disclosure";
+
+    const tagLine = document.createElement("div");
+    tagLine.className = "disclosure-tagline";
+    const tag = document.createElement("span");
+    tag.className = "disclosure-tag";
+    tag.textContent = "Third-party";
+    tagLine.appendChild(tag);
+    if (d.vendor) {
+      const vendor = document.createElement("span");
+      vendor.className = "disclosure-vendor";
+      vendor.textContent = d.label ? `${d.label} · ${d.vendor}` : d.vendor;
+      tagLine.appendChild(vendor);
+    }
+    block.appendChild(tagLine);
+
+    if (d.package) {
+      const pkg = document.createElement("div");
+      pkg.className = "disclosure-pkg";
+      pkg.textContent = `Runs: ${d.package}`;
+      block.appendChild(pkg);
+    }
+
+    const net = document.createElement("div");
+    if (d.network) {
+      net.className = "disclosure-net";
+      net.textContent = `Sends data externally: ${d.dataNote || "contacts an external service."}`;
+    } else {
+      net.className = "disclosure-local";
+      net.textContent = `Local only: ${d.dataNote || "runs locally with no network calls."}`;
+    }
+    block.appendChild(net);
+
+    if (d.homepage) {
+      const src = document.createElement("a");
+      src.className = "disclosure-src";
+      src.href = d.homepage;
+      src.target = "_blank";
+      src.rel = "noopener noreferrer";
+      src.textContent = "source ↗";
+      block.appendChild(src);
+    }
+
+    return block;
+  }
+
+  /**
+   * Build a confirm message for a third-party install.
+   * @param {{name?:string,vendor?:string,package?:string,network?:boolean,dataNote?:string,homepage?:string}} item
+   * @returns {string}
+   */
+  function buildInstallConfirm(item) {
+    const lines = [];
+    lines.push(`Install ${item.name || "this item"}?`);
+    lines.push("");
+    lines.push("This installs third-party software that runs on your machine.");
+    if (item.vendor) lines.push(`Vendor: ${item.vendor}`);
+    if (item.package) lines.push(`Runs: ${item.package}`);
+    if (item.network) {
+      lines.push(`Sends data externally: ${item.dataNote || "contacts an external service."}`);
+    } else if (item.dataNote) {
+      lines.push(`Local only: ${item.dataNote}`);
+    }
+    if (item.homepage) lines.push(`Source: ${item.homepage}`);
+    lines.push("");
+    lines.push("Check your organization's policy before continuing. Proceed?");
+    return lines.join("\n");
+  }
 
   /**
    * Rebuild #skills-list from the catalog payload.
@@ -261,6 +645,7 @@
    */
   function renderSkillsList(skills, error) {
     skillsListEl.innerHTML = "";
+    skillsListEl.appendChild(buildCatalogNotice("local"));
     if (error) {
       const errEl = document.createElement("p");
       errEl.className = "skills-error";
@@ -331,6 +716,300 @@
       btn.textContent = "Install";
       btn.removeAttribute("disabled");
       // Show error near the row
+      const row = btn.closest(".skill-row");
+      if (row) {
+        let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
+        if (!errSpan) {
+          errSpan = document.createElement("span");
+          errSpan.className = "skill-install-error";
+          row.appendChild(errSpan);
+        }
+        errSpan.textContent = error || "Install failed";
+      }
+    }
+  }
+
+  // ── MCP servers list ─────────────────────────────────────────────
+
+  /**
+   * Rebuild #mcp-list from the catalog payload. Mirrors renderSkillsList.
+   * @param {Array<{id:string,name:string,description:string,installed:boolean,requiresEnv?:string[],note?:string,docsUrl?:string}>} servers
+   * @param {string|undefined} error
+   */
+  function renderMcpList(servers, error) {
+    if (!mcpListEl) return;
+    lastMcpServers = Array.isArray(servers) ? servers : [];
+    mcpListEl.innerHTML = "";
+    mcpListEl.appendChild(buildCatalogNotice("third-party"));
+    if (error) {
+      const errEl = document.createElement("p");
+      errEl.className = "skills-error";
+      errEl.textContent = error;
+      mcpListEl.appendChild(errEl);
+      return;
+    }
+    if (!servers || servers.length === 0) {
+      const emptyEl = document.createElement("p");
+      emptyEl.className = "skills-empty";
+      emptyEl.textContent = "No MCP servers available.";
+      mcpListEl.appendChild(emptyEl);
+      return;
+    }
+    for (const server of servers) {
+      const row = document.createElement("div");
+      row.className = "skill-row";
+      row.dataset.mcpRowId = server.id;
+
+      const textBlock = document.createElement("div");
+      textBlock.className = "skill-text";
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "skill-name";
+      nameEl.textContent = server.name;
+
+      const descEl = document.createElement("span");
+      descEl.className = "skill-desc";
+      descEl.textContent = server.description;
+
+      textBlock.appendChild(nameEl);
+      textBlock.appendChild(descEl);
+
+      if (server.requiresEnv && server.requiresEnv.length) {
+        const reqEl = document.createElement("span");
+        reqEl.className = "mcp-req";
+        reqEl.textContent = `Requires: ${server.requiresEnv.join(", ")}`;
+        textBlock.appendChild(reqEl);
+      }
+
+      if (server.note) {
+        const noteEl = document.createElement("span");
+        noteEl.className = "mcp-req";
+        noteEl.textContent = server.note;
+        textBlock.appendChild(noteEl);
+      }
+
+      if (server.docsUrl) {
+        const docsEl = document.createElement("a");
+        docsEl.className = "mcp-docs";
+        docsEl.href = server.docsUrl;
+        docsEl.target = "_blank";
+        docsEl.rel = "noopener noreferrer";
+        docsEl.textContent = "docs";
+        textBlock.appendChild(docsEl);
+      }
+
+      if (server.thirdParty) {
+        textBlock.appendChild(buildDisclosureBlock({
+          vendor: server.vendor,
+          package: server.package,
+          homepage: server.homepage,
+          network: server.network,
+          dataNote: server.dataNote,
+        }));
+      }
+
+      const btn = document.createElement("button");
+      btn.className = "skill-btn" + (server.installed ? " skill-btn--installed" : "");
+      if (server.installed) {
+        btn.textContent = "Installed";
+        btn.setAttribute("disabled", "");
+      } else {
+        btn.textContent = "Install";
+        btn.setAttribute("data-mcp-id", server.id);
+      }
+
+      row.appendChild(textBlock);
+      row.appendChild(btn);
+      mcpListEl.appendChild(row);
+    }
+  }
+
+  /**
+   * Update an MCP row after an install attempt. Mirrors handleSkillInstalled.
+   * @param {string} id
+   * @param {boolean} ok
+   * @param {boolean|undefined} alreadyExisted
+   * @param {string|undefined} error
+   */
+  function handleMcpInstalled(id, ok, alreadyExisted, error) {
+    if (!mcpListEl) return;
+    const btn = /** @type {HTMLElement|null} */ (
+      mcpListEl.querySelector(`[data-mcp-id="${CSS.escape(id)}"]`)
+    );
+    if (!btn) return;
+    if (ok) {
+      btn.textContent = "Installed";
+      btn.classList.add("skill-btn--installed");
+      btn.setAttribute("disabled", "");
+      btn.removeAttribute("data-mcp-id");
+    } else {
+      btn.textContent = "Install";
+      btn.removeAttribute("disabled");
+      const row = btn.closest(".skill-row");
+      if (row) {
+        let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
+        if (!errSpan) {
+          errSpan = document.createElement("span");
+          errSpan.className = "skill-install-error";
+          row.appendChild(errSpan);
+        }
+        errSpan.textContent = error || "Install failed";
+      }
+    }
+  }
+
+  // ── Packs list (capability bundles: skill + MCP + agent) ─────────
+
+  /** Part keys in display order, with their chip labels. */
+  const PACK_PARTS = [
+    ["skill", "Skill"],
+    ["mcp", "MCP"],
+    ["agent", "Agent"],
+  ];
+
+  /**
+   * True when every part the pack `has` is also `installed`.
+   * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
+   * @returns {boolean}
+   */
+  function packFullyInstalled(pack) {
+    const has = pack.has || {};
+    const installed = pack.installed || {};
+    return PACK_PARTS.every(([key]) => !has[key] || installed[key]);
+  }
+
+  /**
+   * Build the "includes" chip row for a pack into a container element.
+   * @param {HTMLElement} container
+   * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
+   */
+  function renderPackChips(container, pack) {
+    container.innerHTML = "";
+    const has = pack.has || {};
+    const installed = pack.installed || {};
+    for (const [key, label] of PACK_PARTS) {
+      if (!has[key]) continue;
+      const done = !!installed[key];
+      const chip = document.createElement("span");
+      chip.className = "pack-chip" + (done ? " pack-chip--done" : "");
+      chip.textContent = done ? `${label} ✓` : label;
+      container.appendChild(chip);
+    }
+  }
+
+  /**
+   * Rebuild #packs-list from the catalog payload. Mirrors renderMcpList.
+   * @param {Array<{id:string,name:string,description:string,has:Record<string,boolean>,installed:Record<string,boolean>}>} packs
+   * @param {string|undefined} error
+   */
+  function renderPacksList(packs, error) {
+    if (!packsListEl) return;
+    lastPacks = Array.isArray(packs) ? packs : [];
+    packsListEl.innerHTML = "";
+    packsListEl.appendChild(buildCatalogNotice("third-party"));
+    if (error) {
+      const errEl = document.createElement("p");
+      errEl.className = "skills-error";
+      errEl.textContent = error;
+      packsListEl.appendChild(errEl);
+      return;
+    }
+    if (!packs || packs.length === 0) {
+      const emptyEl = document.createElement("p");
+      emptyEl.className = "skills-empty";
+      emptyEl.textContent = "No packs available.";
+      packsListEl.appendChild(emptyEl);
+      return;
+    }
+    for (const pack of packs) {
+      const row = document.createElement("div");
+      row.className = "skill-row";
+      row.dataset.packRowId = pack.id;
+
+      const textBlock = document.createElement("div");
+      textBlock.className = "skill-text";
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "skill-name";
+      nameEl.textContent = pack.name;
+
+      const descEl = document.createElement("span");
+      descEl.className = "skill-desc";
+      descEl.textContent = pack.description;
+
+      textBlock.appendChild(nameEl);
+      textBlock.appendChild(descEl);
+
+      const parts = document.createElement("div");
+      parts.className = "pack-parts";
+      renderPackChips(parts, pack);
+      textBlock.appendChild(parts);
+
+      if (pack.thirdParty && Array.isArray(pack.disclosures) && pack.disclosures.length) {
+        for (const d of pack.disclosures) {
+          textBlock.appendChild(buildDisclosureBlock(d));
+        }
+      } else {
+        const local = document.createElement("div");
+        local.className = "disclosure-local";
+        local.textContent =
+          "Local only — installs a bundled skill + a local agent; no third-party servers.";
+        textBlock.appendChild(local);
+      }
+
+      const btn = document.createElement("button");
+      const fully = packFullyInstalled(pack);
+      btn.className = "skill-btn" + (fully ? " skill-btn--installed" : "");
+      if (fully) {
+        btn.textContent = "Installed";
+        btn.setAttribute("disabled", "");
+      } else {
+        btn.textContent = "Install";
+        btn.setAttribute("data-pack-id", pack.id);
+      }
+
+      row.appendChild(textBlock);
+      row.appendChild(btn);
+      packsListEl.appendChild(row);
+    }
+  }
+
+  /**
+   * Update a pack row after an install attempt. Mirrors handleMcpInstalled.
+   * On success marks the row installed and re-fetches the catalog so chips
+   * reflect authoritative per-part state.
+   * @param {string} id
+   * @param {boolean} ok
+   * @param {{skill?:string,mcp?:string,agent?:string}|undefined} _results
+   * @param {string|undefined} error
+   */
+  function handlePackInstalled(id, ok, _results, error) {
+    if (!packsListEl) return;
+    const btn = /** @type {HTMLElement|null} */ (
+      packsListEl.querySelector(`[data-pack-id="${CSS.escape(id)}"]`)
+    );
+    if (ok) {
+      if (btn) {
+        btn.textContent = "Installed";
+        btn.classList.add("skill-btn--installed");
+        btn.setAttribute("disabled", "");
+        btn.removeAttribute("data-pack-id");
+        const row = btn.closest(".skill-row");
+        const parts = row && row.querySelector(".pack-parts");
+        if (parts) {
+          // Optimistically mark every present chip done; the getPacks
+          // refresh below reconciles to authoritative state.
+          for (const chip of parts.querySelectorAll(".pack-chip")) {
+            chip.classList.add("pack-chip--done");
+            if (!chip.textContent.includes("✓")) chip.textContent += " ✓";
+          }
+        }
+      }
+      // Re-fetch so chips/buttons reflect real per-part install results.
+      vscode.postMessage({ type: "getPacks" });
+    } else if (btn) {
+      btn.textContent = "Install";
+      btn.removeAttribute("disabled");
       const row = btn.closest(".skill-row");
       if (row) {
         let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
@@ -539,6 +1218,373 @@
       renderMetrics(lastMetrics);
     }
   }, 1000);
+
+  // ── Settings (Phase 2) ──────────────────────────────────────────
+
+  /**
+   * Most recent settings payload from the host.
+   * @type {{hook:{installed:boolean,lastActivityAt:number|null}, agents:Array<{id:string,name:string,model:("opus"|"sonnet"|"haiku"|null),isOrchestrator:boolean,keywords:string}>}|null}
+   */
+  let lastSettings = null;
+
+  /** Cost weight by model (relative price); used for savings estimates. */
+  const COST_WEIGHT = { opus: 15, sonnet: 3, haiku: 0.8 };
+
+  /**
+   * Format a timestamp as a short relative time ("3m ago", "—" if null).
+   * @param {number|null|undefined} ts
+   * @returns {string}
+   */
+  function relativeTime(ts) {
+    if (!ts) return "—";
+    const diff = Date.now() - ts;
+    if (diff < 0) return "just now";
+    const sec = Math.floor(diff / 1000);
+    if (sec < 5) return "just now";
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const day = Math.floor(hr / 24);
+    return `${day}d ago`;
+  }
+
+  /**
+   * Compute savings percent moving from a (more expensive) current model to a
+   * cheaper one. Returns a non-negative integer.
+   * @param {string} current
+   * @param {string} cheaper
+   * @returns {number}
+   */
+  function savingsPct(current, cheaper) {
+    const c = COST_WEIGHT[current];
+    const ch = COST_WEIGHT[cheaper];
+    if (!c || !ch) return 0;
+    return Math.max(0, Math.round((1 - ch / c) * 100));
+  }
+
+  /** Find the metrics entry matching an agent id (or null). */
+  function metricsFor(id) {
+    return lastMetrics.find((m) => m && m.id === id) || null;
+  }
+
+  /**
+   * Compute a recommendation for an agent given its settings + metrics.
+   * @param {{id:string,model:string|null,isOrchestrator:boolean}} agent
+   * @param {{taskCount?:number}|null} m
+   * @returns {{text:string, suggest:(string|null), kind:"amber"|"info"}|null}
+   */
+  function recommendationFor(agent, m) {
+    const model = agent.model;
+    const taskCount = (m && m.taskCount) || 0;
+    if (agent.id === "search-retrieval" && model !== "haiku" && model) {
+      return {
+        text: `Lookups suit Haiku (~${savingsPct(model, "haiku")}% cheaper)`,
+        suggest: "haiku",
+        kind: "amber",
+      };
+    }
+    if (model === "opus" && !agent.isOrchestrator && taskCount >= 1) {
+      return {
+        text: `Opus is heavy for routine work; Sonnet ~${savingsPct("opus", "sonnet")}% cheaper`,
+        suggest: "sonnet",
+        kind: "amber",
+      };
+    }
+    if (taskCount === 0 && !agent.isOrchestrator && agent.id !== "primary-agent") {
+      return {
+        text: "No tasks yet — check routing keywords",
+        suggest: null,
+        kind: "info",
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Compute the routing fallback note for the keyword-routing section.
+   * @returns {{text:string, kind:"amber"|"info"}}
+   */
+  function fallbackNote() {
+    const total = lastMetrics.reduce((sum, m) => sum + ((m && m.taskCount) || 0), 0);
+    if (total < 5) return { text: "Routing health: not enough data", kind: "info" };
+    const primary = metricsFor("primary-agent");
+    const primaryTasks = (primary && primary.taskCount) || 0;
+    const ratio = primaryTasks / total;
+    if (ratio > 0.2) {
+      const pct = Math.round(ratio * 100);
+      return {
+        text: `High fallback rate (${pct}%): tune keywords so work routes to specialists.`,
+        kind: "amber",
+      };
+    }
+    return { text: "Routing healthy", kind: "info" };
+  }
+
+  /** Build a section wrapper with a heading. */
+  function buildSection(title) {
+    const section = document.createElement("section");
+    section.className = "settings-section";
+    const h = document.createElement("h2");
+    h.className = "settings-heading";
+    h.textContent = title;
+    section.appendChild(h);
+    return section;
+  }
+
+  /** Flash a small "saved ✓" note inside a row element. */
+  function flashSaved(rowEl) {
+    if (!rowEl) return;
+    let note = rowEl.querySelector(".settings-saved");
+    if (!note) {
+      note = document.createElement("span");
+      note.className = "settings-saved";
+      rowEl.appendChild(note);
+    }
+    note.classList.remove("settings-error-note");
+    note.textContent = "saved ✓";
+  }
+
+  /** Show an inline error inside a row element. */
+  function flashError(rowEl, message) {
+    if (!rowEl) return;
+    let note = rowEl.querySelector(".settings-saved");
+    if (!note) {
+      note = document.createElement("span");
+      note.className = "settings-saved";
+      rowEl.appendChild(note);
+    }
+    note.classList.add("settings-error-note");
+    note.textContent = message || "Failed";
+  }
+
+  /**
+   * Handle a settingsUpdated ack from the host.
+   * @param {{ok:boolean, id?:string, field?:string, error?:string}} msg
+   */
+  function handleSettingsUpdated(msg) {
+    const row = msg.id
+      ? setupConfigEl.querySelector(`[data-agent-row="${CSS.escape(msg.id)}"]`)
+      : null;
+    if (msg.ok) {
+      flashSaved(row);
+      // Refresh authoritative state from the host.
+      vscode.postMessage({ type: "getSettings" });
+    } else {
+      flashError(row, msg.error || "Update failed");
+    }
+  }
+
+  /**
+   * Handle a metricsReset ack from the host.
+   * @param {{ok:boolean, error?:string}} msg
+   */
+  function handleMetricsReset(msg) {
+    if (msg.ok) {
+      lastMetrics = [];
+      renderMetrics([]);
+      renderSettings();
+    } else if (dangerStatusEl) {
+      dangerStatusEl.textContent = msg.error || "Reset failed";
+      dangerStatusEl.classList.add("settings-error-note");
+    }
+  }
+
+  /** Reference to the danger-zone status line (set during render). */
+  let dangerStatusEl = null;
+
+  /** Render all settings sections into #setup-config from lastSettings. */
+  function renderSettings() {
+    if (!setupConfigEl) return;
+    setupConfigEl.innerHTML = "";
+    dangerStatusEl = null;
+
+    if (!lastSettings) {
+      const p = document.createElement("p");
+      p.className = "settings-empty";
+      p.textContent = "Loading settings…";
+      setupConfigEl.appendChild(p);
+      return;
+    }
+
+    const agents = lastSettings.agents || [];
+    const hook = lastSettings.hook || { installed: false, lastActivityAt: null };
+
+    // ── 1. Hook health ──
+    const hookSection = buildSection("Hook health");
+    const hookRow = document.createElement("div");
+    hookRow.className = "settings-row hook-row";
+    const hookStatus = document.createElement("div");
+    hookStatus.className = "hook-status";
+    const installedLine = document.createElement("div");
+    installedLine.className = hook.installed ? "hook-ok" : "hook-bad";
+    installedLine.textContent = hook.installed ? "Hook installed ✓" : "Hook installed ✗";
+    const activityLine = document.createElement("div");
+    activityLine.className = "hook-activity";
+    activityLine.textContent = `Last activity: ${relativeTime(hook.lastActivityAt)}`;
+    hookStatus.appendChild(installedLine);
+    hookStatus.appendChild(activityLine);
+    const repairBtn = document.createElement("button");
+    repairBtn.className = "skill-btn settings-btn";
+    repairBtn.textContent = "Repair";
+    repairBtn.addEventListener("click", () => {
+      vscode.postMessage({ type: "repairHook" });
+    });
+    hookRow.appendChild(hookStatus);
+    hookRow.appendChild(repairBtn);
+    hookSection.appendChild(hookRow);
+    setupConfigEl.appendChild(hookSection);
+
+    // ── 2. Agents ──
+    const agentsSection = buildSection("Agents");
+    for (const agent of agents) {
+      const m = metricsFor(agent.id);
+      const row = document.createElement("div");
+      row.className = "settings-row agent-row";
+      row.dataset.agentRow = agent.id;
+
+      const head = document.createElement("div");
+      head.className = "agent-row-head";
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "agent-name";
+      nameEl.textContent = agent.name || agent.id;
+      head.appendChild(nameEl);
+
+      if (agent.isOrchestrator) {
+        const ro = document.createElement("span");
+        ro.className = "agent-model-readonly";
+        ro.textContent = "session model (set by Claude Code)";
+        head.appendChild(ro);
+      } else {
+        const group = document.createElement("div");
+        group.className = "model-radio-group";
+        const groupName = `model-${agent.id}`;
+        for (const model of ["opus", "sonnet", "haiku"]) {
+          const lbl = document.createElement("label");
+          lbl.className = "model-radio";
+          const input = document.createElement("input");
+          input.type = "radio";
+          input.name = groupName;
+          input.value = model;
+          if (agent.model === model) input.checked = true;
+          input.addEventListener("change", () => {
+            if (input.checked) {
+              vscode.postMessage({ type: "setAgentModel", id: agent.id, model });
+            }
+          });
+          const span = document.createElement("span");
+          span.textContent = model.charAt(0).toUpperCase() + model.slice(1);
+          lbl.appendChild(input);
+          lbl.appendChild(span);
+          group.appendChild(lbl);
+        }
+        head.appendChild(group);
+      }
+      row.appendChild(head);
+
+      // Stats from matched metrics
+      const stats = document.createElement("div");
+      stats.className = "agent-stats";
+      const mins = m && m.activeMs ? m.activeMs / 60000 : 0;
+      const tpm = mins > 0 ? Math.round((m.tokens || 0) / mins) : 0;
+      const chip = (label, value) => {
+        const c = document.createElement("span");
+        c.className = "stat-chip";
+        c.textContent = `${label} ${value}`;
+        return c;
+      };
+      stats.appendChild(chip("tok/min", fmtTokens(tpm)));
+      stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
+      stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));
+      row.appendChild(stats);
+
+      // Recommendation badge
+      const rec = recommendationFor(agent, m);
+      if (rec) {
+        const badge = document.createElement("div");
+        badge.className = `rec-badge rec-${rec.kind}`;
+        const txt = document.createElement("span");
+        txt.className = "rec-text";
+        txt.textContent = rec.text;
+        badge.appendChild(txt);
+        if (rec.suggest) {
+          const apply = document.createElement("button");
+          apply.className = "skill-btn settings-btn rec-apply";
+          apply.textContent = "Apply";
+          apply.addEventListener("click", () => {
+            vscode.postMessage({ type: "setAgentModel", id: agent.id, model: rec.suggest });
+          });
+          badge.appendChild(apply);
+        }
+        row.appendChild(badge);
+      }
+
+      agentsSection.appendChild(row);
+    }
+    setupConfigEl.appendChild(agentsSection);
+
+    // ── 3. Keyword routing ──
+    const routingSection = buildSection("Keyword routing");
+    const note = fallbackNote();
+    const noteEl = document.createElement("div");
+    noteEl.className = `routing-note rec-${note.kind}`;
+    noteEl.textContent = note.text;
+    routingSection.appendChild(noteEl);
+
+    for (const agent of agents) {
+      if (agent.isOrchestrator) continue;
+      const row = document.createElement("div");
+      row.className = "settings-row keyword-row";
+      row.dataset.agentRow = agent.id;
+
+      const lbl = document.createElement("label");
+      lbl.className = "keyword-label";
+      lbl.textContent = agent.name || agent.id;
+      row.appendChild(lbl);
+
+      const inputWrap = document.createElement("div");
+      inputWrap.className = "keyword-input-wrap";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "keyword-input";
+      input.value = agent.keywords || "";
+      input.placeholder = "kw1|kw2|kw3";
+      const saveBtn = document.createElement("button");
+      saveBtn.className = "skill-btn settings-btn";
+      saveBtn.textContent = "Save";
+      saveBtn.addEventListener("click", () => {
+        vscode.postMessage({ type: "setAgentKeywords", id: agent.id, pattern: input.value });
+      });
+      inputWrap.appendChild(input);
+      inputWrap.appendChild(saveBtn);
+      row.appendChild(inputWrap);
+
+      routingSection.appendChild(row);
+    }
+    setupConfigEl.appendChild(routingSection);
+
+    // ── 4. Danger zone ──
+    const dangerSection = buildSection("Danger zone");
+    dangerSection.classList.add("danger-section");
+    const dangerRow = document.createElement("div");
+    dangerRow.className = "settings-row danger-row";
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "skill-btn settings-btn danger-btn";
+    resetBtn.textContent = "Reset session metrics";
+    resetBtn.addEventListener("click", () => {
+      if (window.confirm("Reset all session metrics? This cannot be undone.")) {
+        vscode.postMessage({ type: "resetMetrics" });
+      }
+    });
+    dangerStatusEl = document.createElement("span");
+    dangerStatusEl.className = "danger-status";
+    dangerRow.appendChild(resetBtn);
+    dangerRow.appendChild(dangerStatusEl);
+    dangerSection.appendChild(dangerRow);
+    setupConfigEl.appendChild(dangerSection);
+  }
 
   function drawWorker(x, groundY, worker, idx) {
     const color = STATE_COLOR[worker.state] || "#9a9a9a";

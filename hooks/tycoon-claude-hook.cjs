@@ -123,6 +123,24 @@ function readAgentDescription(agentsDir, agentId) {
 }
 
 // ---------------------------------------------------------------------------
+// Agent model from frontmatter (source of truth edited by the Settings GUI)
+// ---------------------------------------------------------------------------
+function readAgentModel(agentsDir, agentId) {
+  try {
+    const mdPath = path.join(agentsDir, agentId + ".md");
+    if (!fs.existsSync(mdPath)) return undefined;
+    const content = fs.readFileSync(mdPath, "utf8");
+    // Extract model from YAML frontmatter between --- markers
+    const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (!fmMatch) return undefined;
+    const modelMatch = fmMatch[1].match(/^model:\s*(.+)$/m);
+    return modelMatch ? modelMatch[1].trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Keyword-based agent matching
 // ---------------------------------------------------------------------------
 function matchAgentFromKeywords(searchText, keywordsConfig) {
@@ -490,7 +508,10 @@ function main(raw) {
       }
 
       const rawModel = toolInput.model;
-      const model = resolveModel(rawModel, agentId);
+      // Priority: explicit Task model -> agent .md frontmatter model -> MODEL_DEFAULTS.
+      // resolveModel applies SHORTHAND to any provided value and falls back to
+      // MODEL_DEFAULTS[agentId] when the value is falsy.
+      const model = resolveModel(rawModel || readAgentModel(agentsDir, agentId), agentId);
       const agentDescription = readAgentDescription(agentsDir, agentId);
 
       const stackEntry = { agentId, model, timestamp: at, subagentType };

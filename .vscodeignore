@@ -7,7 +7,6 @@ out/test/**
 out/**/*.test.js
 out/**/*.test.js.map
 docs/**
-hooks/**
 .claude/**
 CLAUDE.md
 **/*.ts
