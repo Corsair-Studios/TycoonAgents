@@ -622,7 +622,7 @@
 
   /**
    * Rebuild #skills-list from the catalog payload.
-   * @param {Array<{id:string,name:string,description:string,installed:boolean,mcpNote?:string}>} skills
+   * @param {Array<{id:string,name:string,description:string,installed:boolean,mcpNote?:string,thirdParty?:boolean,source?:string}>} skills
    * @param {string|undefined} error
    */
   function renderSkillsList(skills, error) {
@@ -666,6 +666,25 @@
         noteEl.className = "skill-mcpnote";
         noteEl.textContent = `⚙ ${skill.mcpNote}`;
         textBlock.appendChild(noteEl);
+      }
+
+      if (skill.thirdParty) {
+        const attrLine = document.createElement("div");
+        attrLine.className = "skill-attribution disclosure-tagline";
+        const tag = document.createElement("span");
+        tag.className = "disclosure-tag";
+        tag.textContent = "Third-party";
+        attrLine.appendChild(tag);
+        if (skill.source) {
+          const src = document.createElement("a");
+          src.className = "disclosure-src";
+          src.href = skill.source;
+          src.target = "_blank";
+          src.rel = "noopener noreferrer";
+          src.textContent = "source ↗";
+          attrLine.appendChild(src);
+        }
+        textBlock.appendChild(attrLine);
       }
 
       const btn = document.createElement("button");

@@ -152,9 +152,16 @@ export class TycoonPanel {
         name: string;
         description: string;
         mcpNote?: string;
+        thirdParty?: boolean;
+        source?: string;
       }>;
       const skills = catalog.map((entry) => ({
-        ...entry,
+        id: entry.id,
+        name: entry.name,
+        description: entry.description,
+        mcpNote: entry.mcpNote,
+        thirdParty: entry.thirdParty,
+        source: entry.source,
         installed:
           projectRoot !== "" &&
           fs.existsSync(path.join(projectRoot, ".claude", "skills", entry.id)),
