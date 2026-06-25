@@ -453,6 +453,59 @@
   setupBackBtn.setAttribute("hidden", "");
   vscode.postMessage({ type: "checkInstall" });
 
+  // Ask the host for current engine connection status immediately.
+  vscode.postMessage({ type: "getEngineStatus" });
+
+  // ── Engine connection chips (upper-left overlay) ─────────────────
+
+  const engineChipsEl = document.createElement("div");
+  engineChipsEl.id = "engine-chips";
+  engineChipsEl.setAttribute("hidden", "");
+  // Append into #stage-area so it shares the same positioning context.
+  const stageAreaEl = document.getElementById("stage-area");
+  if (stageAreaEl) {
+    stageAreaEl.appendChild(engineChipsEl);
+  }
+
+  /**
+   * Rebuild the engine chip row from a chips array.
+   * @param {Array<{id:string, label:string, state:"connected"|"offline", detail:string}>} chips
+   */
+  function renderEngineChips(chips) {
+    // Remove all existing chips
+    while (engineChipsEl.firstChild) {
+      engineChipsEl.removeChild(engineChipsEl.firstChild);
+    }
+
+    if (!chips || chips.length === 0) {
+      engineChipsEl.setAttribute("hidden", "");
+      return;
+    }
+
+    engineChipsEl.removeAttribute("hidden");
+
+    for (const chip of chips) {
+      const pill = document.createElement("div");
+      pill.className = "engine-chip";
+      if (chip.detail) {
+        pill.title = chip.detail;
+      }
+
+      const dot = document.createElement("span");
+      dot.className = chip.state === "connected"
+        ? "engine-chip-dot engine-chip-dot--connected"
+        : "engine-chip-dot engine-chip-dot--offline";
+
+      const label = document.createElement("span");
+      label.className = "engine-chip-label";
+      label.textContent = chip.label;
+
+      pill.appendChild(dot);
+      pill.appendChild(label);
+      engineChipsEl.appendChild(pill);
+    }
+  }
+
   /**
    * Render the UEFN project detected card inside #setup-card.
    * Called when checkInstall response carries uefnDetected:true.
@@ -657,6 +710,8 @@
         cautionDiv.appendChild(removeBtn);
         el.appendChild(cautionDiv);
       }
+    } else if (msg && msg.type === "engineStatus") {
+      renderEngineChips(Array.isArray(msg.chips) ? msg.chips : []);
     } else if (msg && msg.type === "doctorFixDone") {
       const el = document.getElementById("doctor-results");
       if (!el) return;

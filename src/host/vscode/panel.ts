@@ -6,6 +6,7 @@
 
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import type { Runtime } from "./runtime";
 import {
@@ -42,6 +43,7 @@ export class TycoonPanel {
   private readonly _runtime: Runtime;
   private _disposables: vscode.Disposable[] = [];
   private _runtimeDisposable: { dispose(): void } | undefined;
+  private _enginePollInterval: NodeJS.Timeout | undefined;
 
   public static createOrShow(extensionUri: vscode.Uri, runtime: Runtime): TycoonPanel {
     // Dock beside the editor (ViewColumn.Two) so we never cover the active
@@ -84,6 +86,10 @@ export class TycoonPanel {
     this._runtimeDisposable = runtime.onChange((state) => {
       void this._panel.webview.postMessage({ type: "state", state: this._applyTimeAdjustments(state) });
     });
+
+    // Start the engine-status poller (fires immediately, then every 10 s).
+    this._pollEngineStatus();
+    this._enginePollInterval = setInterval(() => this._pollEngineStatus(), 10000);
 
     // Handle messages from the webview
     this._panel.webview.onDidReceiveMessage(
@@ -147,6 +153,8 @@ export class TycoonPanel {
             await vscode.env.clipboard.writeText(text);
             vscode.window.showInformationMessage("Delegation tip copied to clipboard.");
           }
+        } else if (message.type === "getEngineStatus") {
+          this._pollEngineStatus();
         } else if (message.type === "setupUefnProject") {
           this._handleSetupUefnProject();
         } else if (message.type === "runDoctor") {
@@ -1164,8 +1172,75 @@ export class TycoonPanel {
     }
   }
 
+  /**
+   * Compute status chips for connected engine bridges (e.g. UEFN).
+   * Returns [] if no engines are configured, so the webview shows nothing.
+   * Designed to be extended: add more engine descriptors to the returned array.
+   */
+  private _computeEngineStatus(): Array<{ id: string; label: string; state: "connected" | "offline"; detail: string }> {
+    const root = this._projectRoot();
+    if (root === "") {
+      return [];
+    }
+    const mcpPath = path.join(root, ".mcp.json");
+    let mcpConfig: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
+      if (parsed !== null && typeof parsed === "object") {
+        mcpConfig = parsed as Record<string, unknown>;
+      }
+    } catch {
+      return [];
+    }
+
+    const servers = (mcpConfig["mcpServers"] ?? mcpConfig) as Record<string, unknown>;
+    const bridgeEntry = servers["uefn-bridge"] as Record<string, unknown> | undefined;
+    if (!bridgeEntry) {
+      return [];
+    }
+
+    // Resolve the bridge directory from env config or default temp location.
+    let bridgeDir: string;
+    try {
+      const envBlock = bridgeEntry["env"] as Record<string, unknown> | undefined;
+      const configured = envBlock?.["UEFN_BRIDGE_DIR"];
+      bridgeDir =
+        typeof configured === "string" && configured !== ""
+          ? configured
+          : path.join(os.tmpdir(), "uefn_bridge");
+    } catch {
+      bridgeDir = path.join(os.tmpdir(), "uefn_bridge");
+    }
+
+    let chipState: "connected" | "offline" = "offline";
+    let detail =
+      "UEFN bridge installed but not responding — open your UEFN project and start the Python bridge (Content/Python).";
+    try {
+      const heartbeatPath = path.join(bridgeDir, "heartbeat.json");
+      const stat = fs.statSync(heartbeatPath);
+      if (Date.now() - stat.mtimeMs < 15000) {
+        chipState = "connected";
+        detail = "UEFN bridge connected — agents can use the uefn_* MCP tools.";
+      }
+    } catch {
+      /* file missing or unreadable => offline */
+    }
+
+    return [{ id: "uefn", label: "UEFN", state: chipState, detail }];
+  }
+
+  /** Poll engine status and push a `engineStatus` message to the webview. */
+  private _pollEngineStatus(): void {
+    const chips = this._computeEngineStatus();
+    void this._panel.webview.postMessage({ type: "engineStatus", chips });
+  }
+
   public dispose(): void {
     TycoonPanel.currentPanel = undefined;
+    if (this._enginePollInterval !== undefined) {
+      clearInterval(this._enginePollInterval);
+      this._enginePollInterval = undefined;
+    }
     this._runtimeDisposable?.dispose();
     this._panel.dispose();
     for (const d of this._disposables) {

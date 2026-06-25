@@ -542,6 +542,57 @@ body {
   background: rgba(255, 176, 32, 0.22);
 }
 
+/* Engine connection chips — upper-left overlay, mirrors #menu-btn placement */
+#engine-chips {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+  z-index: 10;
+}
+
+#engine-chips[hidden] {
+  display: none;
+}
+
+.engine-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(10, 10, 11, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+
+.engine-chip-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.engine-chip-dot--connected {
+  background: var(--status-active);
+  box-shadow: 0 0 5px rgba(163, 230, 53, 0.7);
+}
+
+.engine-chip-dot--offline {
+  background: var(--status-done);
+}
+
+.engine-chip-label {
+  line-height: 1;
+}
+
 /* Menu popover dropdown */
 #menu-popover {
   position: absolute;
