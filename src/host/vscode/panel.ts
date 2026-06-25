@@ -85,7 +85,7 @@ export class TycoonPanel {
 
     // Handle messages from the webview
     this._panel.webview.onDidReceiveMessage(
-      (message: {
+      async (message: {
         type: string;
         id?: string;
         model?: string;
@@ -129,6 +129,12 @@ export class TycoonPanel {
         } else if (message.type === "installPack") {
           if (message.id !== undefined) {
             this._handleInstallPack(message.id);
+          }
+        } else if (message.type === "copyNudge") {
+          const text = String((message as any).text ?? "");
+          if (text !== "") {
+            await vscode.env.clipboard.writeText(text);
+            vscode.window.showInformationMessage("Delegation tip copied to clipboard.");
           }
         }
       },
@@ -759,11 +765,23 @@ export class TycoonPanel {
       lastActivityAt = null;
     }
 
+    // Build delegationHealth from orchestrator metric
+    const state = this._runtime.getState();
+    const orchMetric = Array.isArray(state.agentMetrics)
+      ? state.agentMetrics.find((m: any) => m.id === "orchestrator")
+      : undefined;
+    const directSurveys: number = orchMetric?.directSurveys ?? 0;
+    const directEdits: number = orchMetric?.directEdits ?? 0;
+    const delegations: number = orchMetric?.delegations ?? 0;
+    const warnThreshold: number =
+      vscode.workspace.getConfiguration("tycoonagents").get<number>("delegationWarnThreshold", 5);
+
     void this._panel.webview.postMessage({
       type: "settings",
       payload: {
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         agents,
+        delegationHealth: { directSurveys, directEdits, delegations, warnThreshold },
       },
     });
   }

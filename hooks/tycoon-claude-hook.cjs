@@ -426,7 +426,7 @@ function main(raw) {
     const transcriptPath = payload.agent_transcript_path || payload.transcript_path;
 
     const popped = popMatchedAgent(activeAgentFile, { subagentType, transcriptPath, keywordsConfig });
-    const workerId = (popped && popped.agentId) || payload.session_id || "orchestrator";
+    const workerId = (popped && popped.agentId) || "orchestrator";
 
     /** @type {Record<string, unknown>} */
     const record = {
@@ -617,7 +617,7 @@ function main(raw) {
     at,
   };
   if (toolName) record.tool = toolName;
-  if (payload.session_id) record.workerId = payload.session_id;
+  if (payload.session_id) record.sessionId = payload.session_id;
 
   try {
     fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");

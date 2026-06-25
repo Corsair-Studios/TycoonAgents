@@ -8,6 +8,7 @@ import type { NormalizedEvent, ActivityKind } from "../../core/events";
 import type { HookRecord } from "./hookRecord";
 
 const SPAWN_TOOLS = new Set<string>(["Task", "Agent", "Skill"]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function toolToActivityKind(tool: string): ActivityKind {
   if (tool.startsWith("mcp__")) return "wire";
@@ -37,7 +38,8 @@ export function toolToActivityKind(tool: string): ActivityKind {
  * precise parent<->sub-agent correlation is a later refinement.
  */
 export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
-  const workerId = record.workerId ?? "orchestrator";
+  const raw = record.workerId ?? "orchestrator";
+  const workerId = UUID_RE.test(raw) ? "orchestrator" : raw;
   switch (record.event) {
     case "UserPromptSubmit":
       return [{ type: "SessionStart", at: record.at }];

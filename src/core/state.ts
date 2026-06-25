@@ -56,6 +56,12 @@ export interface AgentMetric {
    * the live timer after the idle-freeze grace period.
    */
   lastActivityAt: number | null;
+  /** WorkerActivity kind "survey" (Read/Grep/Glob) performed directly by this agent. */
+  directSurveys: number;
+  /** WorkerActivity kind "build" or "haul" (Edit/Write) performed directly by this agent. */
+  directEdits: number;
+  /** Task/Agent spawns credited to the orchestrator. */
+  delegations: number;
 }
 
 /** Internal tracking record (kept as an alias now that workStartAt is public). */
@@ -149,6 +155,9 @@ function upsertMetric(
     tokens: 0,
     workStartAt: null,
     lastActivityAt: null,
+    directSurveys: 0,
+    directEdits: 0,
+    delegations: 0,
   };
   return [...internals, updater(fresh)];
 }
@@ -279,7 +288,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
         [event.workerId]: { id: event.workerId, role: event.role, state: "arrive" as WorkerState },
       };
       // Ensure a metric entry exists for this agent and mark it active.
-      const nextInternals = upsertMetric(
+      const afterChild = upsertMetric(
         state._agentMetricsInternal,
         event.workerId,
         (m) => ({
@@ -293,6 +302,13 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           lastActivityAt: event.at,
         }),
       );
+      const isRealDelegation = event.role === "Task" || event.role === "Agent";
+      const nextInternals = isRealDelegation
+        ? upsertMetric(afterChild, ORCHESTRATOR_ID, (m) => ({
+            ...m,
+            delegations: m.delegations + 1,
+          }))
+        : afterChild;
       return {
         ...state,
         workers: nextWorkers,
@@ -320,6 +336,8 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           ...m,
           status: "active" as const,
           mcpCount: isMcp ? m.mcpCount + 1 : m.mcpCount,
+          directSurveys: event.kind === "survey" ? m.directSurveys + 1 : m.directSurveys,
+          directEdits: (event.kind === "build" || event.kind === "haul") ? m.directEdits + 1 : m.directEdits,
           // Start timer if not already running.
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,

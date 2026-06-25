@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.28",
+  "version": "0.0.29",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
@@ -43,6 +43,11 @@
           "type": "number",
           "default": 15,
           "description": "Hard cap on any single active stretch (minutes)."
+        },
+        "tycoonagents.delegationWarnThreshold": {
+          "type": "number",
+          "default": 5,
+          "description": "Warn in Delegation Health when the orchestrator's direct search count exceeds this in a session."
         }
       }
     }

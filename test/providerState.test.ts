@@ -4,7 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
-import { test } from "node:test";
+import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { mapHookRecord } from "../src/providers/claude-code/mapHookRecord";
 import type { HookRecord } from "../src/providers/claude-code/hookRecord";
@@ -553,4 +553,134 @@ test("SANITY CAP: very long run with recent activity is capped at sanityCapMs", 
     900_000,
     "activeMs must be capped at sanityCapMs (900s) when elapsed exceeds the cap",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Delegation Health counters
+// ---------------------------------------------------------------------------
+
+/** Locate a metric by id from the public agentMetrics list. */
+function findMetricById(state: WorldState, id: string) {
+  return state.agentMetrics.find((m) => m.id === id);
+}
+
+describe("Delegation Health counters", () => {
+  test("fresh metric starts with directSurveys, directEdits, delegations all at 0", () => {
+    // A just-spawned worker should have all three counters initialised to zero.
+    const state = applyEvent(initialWorldState(), {
+      type: "WorkerSpawned",
+      at: T,
+      workerId: "fresh-agent",
+    });
+    const m = findMetricById(state, "fresh-agent");
+    assert.ok(m, "metric must exist after WorkerSpawned");
+    assert.equal(m!.directSurveys, 0, "directSurveys starts at 0");
+    assert.equal(m!.directEdits, 0, "directEdits starts at 0");
+    assert.equal(m!.delegations, 0, "delegations starts at 0");
+  });
+
+  test("WorkerActivity kind 'survey' increments directSurveys on that workerId", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-worker" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-worker", kind: "survey" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-worker", kind: "survey" });
+    const m = findMetricById(state, "dh-worker");
+    assert.ok(m);
+    assert.equal(m!.directSurveys, 2, "two survey activities should yield directSurveys===2");
+    assert.equal(m!.directEdits, 0, "directEdits must remain 0 for survey events");
+  });
+
+  test("WorkerActivity kind 'build' increments directEdits on that workerId", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-builder" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-builder", kind: "build" });
+    const m = findMetricById(state, "dh-builder");
+    assert.ok(m);
+    assert.equal(m!.directEdits, 1, "one build activity should yield directEdits===1");
+    assert.equal(m!.directSurveys, 0, "directSurveys must remain 0 for build events");
+  });
+
+  test("WorkerActivity kind 'haul' increments directEdits on that workerId", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-hauler" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-hauler", kind: "haul" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-hauler", kind: "haul" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 300, workerId: "dh-hauler", kind: "build" });
+    const m = findMetricById(state, "dh-hauler");
+    assert.ok(m);
+    assert.equal(m!.directEdits, 3, "two haul + one build should yield directEdits===3");
+    assert.equal(m!.directSurveys, 0, "directSurveys must remain 0 for haul/build events");
+  });
+
+  test("WorkerActivity kind 'wire' increments NEITHER directSurveys NOR directEdits", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-wire" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-wire", kind: "wire" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-wire", kind: "wire" });
+    const m = findMetricById(state, "dh-wire");
+    assert.ok(m);
+    assert.equal(m!.directSurveys, 0, "wire must not increment directSurveys");
+    assert.equal(m!.directEdits, 0, "wire must not increment directEdits");
+  });
+
+  test("WorkerActivity kind 'shell' increments NEITHER directSurveys NOR directEdits", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-shell" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-shell", kind: "shell" });
+    const m = findMetricById(state, "dh-shell");
+    assert.ok(m);
+    assert.equal(m!.directSurveys, 0, "shell must not increment directSurveys");
+    assert.equal(m!.directEdits, 0, "shell must not increment directEdits");
+  });
+
+  test("WorkerSpawned with role 'Task' increments delegations on orchestrator, NOT on the child", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 100, workerId: "child-task", role: "Task" });
+    const orch = findMetricById(state, "orchestrator");
+    assert.ok(orch, "orchestrator metric must exist");
+    assert.equal(orch!.delegations, 1, "orchestrator.delegations must be 1 after a Task spawn");
+    const child = findMetricById(state, "child-task");
+    assert.ok(child, "child metric must exist");
+    assert.equal(child!.delegations, 0, "child.delegations must remain 0");
+  });
+
+  test("WorkerSpawned with role 'Agent' increments delegations on orchestrator, NOT on the child", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 100, workerId: "child-agent", role: "Agent" });
+    const orch = findMetricById(state, "orchestrator");
+    assert.ok(orch, "orchestrator metric must exist");
+    assert.equal(orch!.delegations, 1, "orchestrator.delegations must be 1 after an Agent spawn");
+    const child = findMetricById(state, "child-agent");
+    assert.ok(child, "child metric must exist");
+    assert.equal(child!.delegations, 0, "child.delegations must remain 0");
+  });
+
+  test("WorkerSpawned with role 'Skill' does NOT increment delegations", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 100, workerId: "skill-worker", role: "Skill" });
+    const orch = findMetricById(state, "orchestrator");
+    assert.ok(orch, "orchestrator metric must exist");
+    assert.equal(orch!.delegations, 0, "Skill spawn must NOT increment orchestrator.delegations");
+  });
+
+  test("multiple Task/Agent spawns accumulate delegations on orchestrator", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 100, workerId: "child-1", role: "Task" });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 200, workerId: "child-2", role: "Agent" });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 300, workerId: "skill-1", role: "Skill" });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 400, workerId: "child-3", role: "Task" });
+    const orch = findMetricById(state, "orchestrator");
+    assert.ok(orch, "orchestrator metric must exist");
+    // Task + Agent + Task = 3 delegations; Skill does not count
+    assert.equal(orch!.delegations, 3, "three Task/Agent spawns should yield delegations===3");
+  });
 });

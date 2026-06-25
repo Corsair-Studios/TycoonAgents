@@ -276,6 +276,26 @@ test("PreToolUse Task without model or agentDescription -> WorkerSpawned has no 
 // toolToActivityKind direct tests (unchanged)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// UUID workerId scrubbing → remapped to "orchestrator"
+// ---------------------------------------------------------------------------
+
+test("UUID workerId is remapped to 'orchestrator'", () => {
+  const record: HookRecord = {
+    event: "SubagentStop",
+    workerId: "80cc5964-b3dd-48eb-af81-08506c2e1ea2",
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 2);
+  if (events[0].type === "TaskCompleted") {
+    assert.equal(events[0].workerId, "orchestrator");
+  }
+  if (events[1].type === "WorkerStopped") {
+    assert.equal(events[1].workerId, "orchestrator");
+  }
+});
+
 test("toolToActivityKind: Grep -> survey", () => {
   assert.equal(toolToActivityKind("Grep"), "survey");
 });

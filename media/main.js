@@ -1631,6 +1631,72 @@
     }
     setupConfigEl.appendChild(routingSection);
 
+  // ── 3b. Delegation Health ──
+  const dhSection = buildSection("Delegation Health");
+  const dh = (lastSettings && lastSettings.delegationHealth) || {};
+  const directSurveys = (typeof dh.directSurveys === "number") ? dh.directSurveys : 0;
+  const directEdits   = (typeof dh.directEdits   === "number") ? dh.directEdits   : 0;
+  const delegations   = (typeof dh.delegations   === "number") ? dh.delegations   : 0;
+  const warnThreshold = (typeof dh.warnThreshold === "number") ? dh.warnThreshold : 5;
+  const dhTotal = directSurveys + directEdits + delegations;
+  if (dhTotal === 0) {
+    const emptyP = document.createElement("p");
+    emptyP.className = "settings-empty";
+    emptyP.textContent = "No delegatable activity yet this session.";
+    dhSection.appendChild(emptyP);
+  } else {
+    const ratio = delegations / dhTotal;
+    const grade = ratio >= 0.8 ? "Excellent" : ratio >= 0.6 ? "Good" : ratio >= 0.4 ? "Fair" : "Needs work";
+    const badge = document.createElement("div");
+    badge.className = "rec-badge rec-info";
+    const badgeSpan = document.createElement("span");
+    badgeSpan.className = "rec-text";
+    badgeSpan.textContent = `${grade} — ${Math.round(ratio * 100)}%`;
+    badge.appendChild(badgeSpan);
+    dhSection.appendChild(badge);
+
+    const summaryRow = document.createElement("div");
+    summaryRow.className = "settings-row";
+    const summarySpan = document.createElement("span");
+    summarySpan.textContent = `Orchestrator ran ${directSurveys} searches and ${directEdits} edits directly, and delegated ${delegations} tasks.`;
+    summaryRow.appendChild(summarySpan);
+    dhSection.appendChild(summaryRow);
+
+    const searchRow = document.createElement("div");
+    searchRow.className = "settings-row";
+    const searchSpan = document.createElement("span");
+    searchSpan.textContent = `Direct searches: ${directSurveys} — delegate to search-retrieval (Haiku, ~40x cheaper)`;
+    if (directSurveys > warnThreshold) { searchSpan.style.color = "#e0a000"; }
+    searchRow.appendChild(searchSpan);
+    dhSection.appendChild(searchRow);
+
+    const editRow = document.createElement("div");
+    editRow.className = "settings-row";
+    const editSpan = document.createElement("span");
+    editSpan.textContent = `Direct edits: ${directEdits} — delegate to coding-specialist (Sonnet)`;
+    editRow.appendChild(editSpan);
+    dhSection.appendChild(editRow);
+
+    const delegRow = document.createElement("div");
+    delegRow.className = "settings-row";
+    const delegSpan = document.createElement("span");
+    delegSpan.textContent = `Delegations: ${delegations}`;
+    delegRow.appendChild(delegSpan);
+    dhSection.appendChild(delegRow);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "settings-row";
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "skill-btn settings-btn";
+    copyBtn.textContent = "Copy delegation tip";
+    copyBtn.addEventListener("click", function () {
+      vscode.postMessage({ type: "copyNudge", text: "Delegate all searches and file reads to sub-agents per CLAUDE.md - search-retrieval for lookups, coding-specialist for edits." });
+    });
+    btnRow.appendChild(copyBtn);
+    dhSection.appendChild(btnRow);
+  }
+  setupConfigEl.appendChild(dhSection);
+
     // ── 4. Danger zone ──
     const dangerSection = buildSection("Danger zone");
     dangerSection.classList.add("danger-section");
