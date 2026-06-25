@@ -601,8 +601,9 @@ html, body {
   flex-direction: column;
 }
 
-/* Honor the [hidden] attribute used for tab switching. */
-#mcp-list[hidden] { display: none; }
+/* Honor the [hidden] attribute used for tab switching (overrides display:flex). */
+#skills-list[hidden],
+#mcp-list[hidden],
 #packs-list[hidden] { display: none; }
 
 #skills-list::-webkit-scrollbar,
