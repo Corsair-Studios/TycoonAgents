@@ -207,7 +207,8 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
         (m) => ({
           ...m,
           status: "active" as const,
-          workStartAt: m.workStartAt ?? event.at,
+          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+          workStartAt: event.at,
           lastActivityAt: event.at,
         }),
       );

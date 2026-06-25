@@ -1257,12 +1257,15 @@
     tbodyEl.innerHTML = "";
     for (const agent of metrics) {
       const status = (agent.status || "idle").toLowerCase();
+      const isActive = status === "active";
+      const frozen = isActive && (agent.lastActivityAt != null) && (Date.now() - agent.lastActivityAt > idleFreezeMs);
+      const showActive = isActive && !frozen;
       const row = document.createElement("tr");
 
       const displayName = agent.name || agent.id;
 
       const nameTd = document.createElement("td");
-      nameTd.className = `col-name${status === "active" ? " name--active" : ""}`;
+      nameTd.className = `col-name${showActive ? " name--active" : ""}`;
       nameTd.textContent = displayName;
       // Per-column tooltip: agent name + model + third-person role description.
       const role = describeRole(agent.description);
@@ -1283,22 +1286,21 @@
       // a visible green sliver so "working" is never invisible.
       const mins = (agent.activeMs || 0) / 60000;
       const tokensPerMin = mins > 0 ? (agent.tokens || 0) / mins : null;
-      const isActive = status === "active";
       const rawPct = tokensPerMin !== null
         ? Math.round(Math.min(tokensPerMin / maxTokensPerMin, 1) * 100)
         : 0;
-      const fillPct = isActive ? Math.max(rawPct, 15) : rawPct;
+      const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
       const statusTd = document.createElement("td");
       statusTd.className = "col-status";
       statusTd.title = "Tokens/min — average tokens generated per minute of active time. The bar is scaled to the busiest agent.";
       const track = document.createElement("div");
       track.className = "status-bar-track";
       const fill = document.createElement("div");
-      fill.className = `status-bar-fill ${isActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
+      fill.className = `status-bar-fill ${showActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
       fill.style.width = `${fillPct}%`;
       const label = document.createElement("span");
       label.className = "status-bar-label";
-      label.textContent = isActive ? "active" : (tokensPerMin !== null ? fmtTokens(Math.round(tokensPerMin)) : "—");
+      label.textContent = showActive ? "active" : (tokensPerMin !== null ? fmtTokens(Math.round(tokensPerMin)) : "—");
       track.appendChild(fill);
       track.appendChild(label);
       statusTd.appendChild(track);

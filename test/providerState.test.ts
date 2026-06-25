@@ -556,6 +556,105 @@ test("SANITY CAP: very long run with recent activity is capped at sanityCapMs", 
 });
 
 // ---------------------------------------------------------------------------
+// SessionStart credit-and-reset behavior (interrupted turn recovery)
+// ---------------------------------------------------------------------------
+
+test("SessionStart credits and resets a stale active stretch (interrupted turn)", () => {
+  // Simulate an interrupted prior turn: orchestrator started at T0 with a
+  // WorkerActivity at T0 (so workStartAt=T0, lastActivityAt=T0, activeMs=1000 from
+  // an even earlier stop that we fold in manually).
+  //
+  // Then a second SessionStart arrives at T1 = T0 + 60min.
+  // Expected behavior (new contract):
+  //   - activeMs gains creditedElapsed(T0, T0, T1, 180000, 900000) = 180000
+  //     (because lastActivityAt+idleFreezeMs = T0+180000 < T1, so cap binds at 180000)
+  //   - workStartAt is RESET to T1 (not preserved as T0)
+  //   - status = "active", lastActivityAt = T1
+
+  const T0 = T;
+  const T1 = T0 + 60 * 60 * 1000; // 60 minutes later
+
+  let state = initialWorldState();
+
+  // First SessionStart: orchestrator created, workStartAt=T0, lastActivityAt=T0
+  state = applyEvent(state, { type: "SessionStart", at: T0 });
+
+  // WorkerActivity for orchestrator at T0: keeps workStartAt=T0, lastActivityAt=T0
+  state = applyEvent(state, { type: "WorkerActivity", at: T0, workerId: "orchestrator", kind: "survey" });
+
+  // Simulate prior accumulated activeMs by folding the credited elapsed directly
+  // (we DON'T send a Stop — this is an interrupted turn). The orchestrator is still
+  // "active" with workStartAt=T0. We manually add 1000ms by going via applyEvent
+  // with a faked WorkerActivity that doesn't change workStartAt/lastActivityAt.
+  // Actually, the cleanest approach: set a baseline via a second SessionStart scenario.
+  // Instead: record current orchestrator activeMs, then send the second SessionStart.
+  const orchBefore = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orchBefore, "orchestrator must exist before second SessionStart");
+  assert.equal(orchBefore!.workStartAt, T0, "workStartAt should be T0 before second SessionStart");
+
+  // Second SessionStart at T1 (60 min later, no stop in between)
+  state = applyEvent(state, { type: "SessionStart", at: T1 });
+
+  const orchAfter = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orchAfter, "orchestrator must exist after second SessionStart");
+
+  // creditedElapsed(T0, T0, T1, 180000, 900000):
+  //   cappedNow = min(T1, T0+180000) = T0+180000 (since T1 = T0+3600000 >> T0+180000)
+  //   elapsed = (T0+180000) - T0 = 180000, capped at min(180000, 900000) = 180000
+  const expectedGain = 180_000;
+  const expectedActiveMs = orchBefore!.activeMs + expectedGain;
+
+  assert.equal(
+    orchAfter!.activeMs,
+    expectedActiveMs,
+    `activeMs must gain exactly ${expectedGain}ms (idle-freeze credit) from interrupted turn`,
+  );
+  assert.equal(
+    orchAfter!.workStartAt,
+    T1,
+    "workStartAt must be RESET to T1 (not stale T0) after second SessionStart",
+  );
+  assert.equal(orchAfter!.lastActivityAt, T1, "lastActivityAt must be T1 after second SessionStart");
+  assert.equal(orchAfter!.status, "active", "orchestrator must be active after SessionStart");
+});
+
+test("SessionStart after clean stop credits nothing and resets workStartAt", () => {
+  // SessionStart → SessionStop (workStartAt cleared to null) → SessionStart again.
+  // The second SessionStart must credit 0 (no active stretch) and set workStartAt = event.at.
+  const T0 = T;
+  const stopAt = T0 + 5000;
+  const T2 = T0 + 10_000;
+
+  let state = initialWorldState();
+
+  // First turn
+  state = applyEvent(state, { type: "SessionStart", at: T0 });
+  state = applyEvent(state, { type: "SessionStop", at: stopAt });
+
+  const orchAfterStop = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orchAfterStop, "orchestrator must exist after SessionStop");
+  assert.equal(orchAfterStop!.workStartAt, null, "workStartAt must be null after SessionStop");
+  const activeMsAfterStop = orchAfterStop!.activeMs; // e.g. 5000
+
+  // Second turn — clean start, no interrupted active stretch
+  state = applyEvent(state, { type: "SessionStart", at: T2 });
+
+  const orchAfterSecond = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(orchAfterSecond, "orchestrator must exist after second SessionStart");
+  assert.equal(
+    orchAfterSecond!.activeMs,
+    activeMsAfterStop,
+    "activeMs must NOT increase on SessionStart when workStartAt was null (clean stop)",
+  );
+  assert.equal(
+    orchAfterSecond!.workStartAt,
+    T2,
+    "workStartAt must be set to the new session timestamp",
+  );
+  assert.equal(orchAfterSecond!.status, "active", "orchestrator must be active after second SessionStart");
+});
+
+// ---------------------------------------------------------------------------
 // Delegation Health counters
 // ---------------------------------------------------------------------------
 
