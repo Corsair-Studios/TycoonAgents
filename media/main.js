@@ -1718,12 +1718,13 @@
     activityLine.textContent = `Last activity: ${relativeTime(hook.lastActivityAt)}`;
     hookStatus.appendChild(installedLine);
     hookStatus.appendChild(activityLine);
-    const repairBtn = document.createElement("button");
-    repairBtn.className = "skill-btn settings-btn";
-    repairBtn.textContent = "Repair";
-    repairBtn.addEventListener("click", () => {
-      vscode.postMessage({ type: "repairHook" });
-    });
+    const hookHealth = (lastSettings.hookHealth) || { healthy: true, issueCount: 0 };
+    const healthLine = document.createElement("div");
+    healthLine.className = hookHealth.healthy ? "hook-ok" : "hook-warn";
+    healthLine.textContent = hookHealth.healthy
+      ? "✓ Hooks healthy — no issues detected"
+      : `⚠ ${hookHealth.issueCount} issue(s) detected`;
+    hookStatus.appendChild(healthLine);
     const troubleshootBtn = document.createElement("button");
     troubleshootBtn.className = "skill-btn settings-btn";
     troubleshootBtn.textContent = "Troubleshoot & Fix";
@@ -1732,8 +1733,11 @@
       troubleshootBtn.textContent = "Checking…";
       vscode.postMessage({ type: "runDoctor" });
     });
+    if (hookHealth.healthy) {
+      troubleshootBtn.disabled = true;
+      troubleshootBtn.classList.add("btn-disabled");
+    }
     hookRow.appendChild(hookStatus);
-    hookRow.appendChild(repairBtn);
     hookRow.appendChild(troubleshootBtn);
     hookSection.appendChild(hookRow);
     const doctorResultsEl = document.createElement("div");

@@ -30,7 +30,7 @@ function getNonce(): string {
 
 import { mergeTycoonHooks } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
-import { diagnose, findForeignHooks, repairSettings } from "./hookDoctor";
+import { diagnose, DoctorFinding, findForeignHooks, repairSettings } from "./hookDoctor";
 
 /** Singleton webview panel that renders the TycoonAgents visualization. */
 export class TycoonPanel {
@@ -963,12 +963,18 @@ export class TycoonPanel {
     const warnThreshold: number =
       vscode.workspace.getConfiguration("tycoonagents").get<number>("delegationWarnThreshold", 5);
 
+    // Run hook diagnostic to compute hookHealth for the settings panel
+    const { findings } = this._diagnoseHooks();
+    const issueCount = findings.filter((f) => f.severity !== "ok").length;
+    const hookHealth = { healthy: issueCount === 0, issueCount };
+
     void this._panel.webview.postMessage({
       type: "settings",
       payload: {
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         agents,
         delegationHealth: { directSurveys, directEdits, delegations, warnThreshold },
+        hookHealth,
       },
     });
   }
@@ -1101,11 +1107,10 @@ export class TycoonPanel {
     return null;
   }
 
-  private _handleRunDoctor(): void {
+  private _diagnoseHooks(): { findings: DoctorFinding[]; foreign: string[] } {
     const root = this._projectRoot();
     if (root === "") {
-      void this._panel.webview.postMessage({ type: "doctorReport", findings: [], foreign: [], error: "No workspace folder open" });
-      return;
+      return { findings: [], foreign: [] };
     }
     const localSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.local.json"));
     const sharedSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.json"));
@@ -1114,6 +1119,16 @@ export class TycoonPanel {
     const hookScriptExists = fs.existsSync(hookScriptPath);
     const findings = diagnose({ localSettings, sharedSettings, currentHookCommand, hookScriptExists });
     const foreign = findForeignHooks(localSettings, sharedSettings);
+    return { findings, foreign };
+  }
+
+  private _handleRunDoctor(): void {
+    const root = this._projectRoot();
+    if (root === "") {
+      void this._panel.webview.postMessage({ type: "doctorReport", findings: [], foreign: [], error: "No workspace folder open" });
+      return;
+    }
+    const { findings, foreign } = this._diagnoseHooks();
     void this._panel.webview.postMessage({ type: "doctorReport", findings, foreign });
   }
 

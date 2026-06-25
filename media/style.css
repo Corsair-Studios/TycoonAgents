@@ -246,6 +246,12 @@ body {
   padding: 4px 12px;
 }
 
+.btn-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 /* Inline "saved ✓" / error note */
 .settings-saved {
   font-size: 11px;
@@ -275,6 +281,12 @@ body {
 .hook-ok {
   font-size: 12px;
   color: var(--status-active);
+  font-weight: 600;
+}
+
+.hook-warn {
+  font-size: 12px;
+  color: var(--accent);
   font-weight: 600;
 }
 
