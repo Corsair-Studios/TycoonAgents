@@ -50,6 +50,12 @@ export interface AgentMetric {
    * an agent is still working (activeMs only finalizes on WorkerStopped).
    */
   workStartAt: number | null;
+  /**
+   * Epoch-ms timestamp of the most recent activity event for this agent, or
+   * null if the agent has never been active. Used by creditedElapsed to freeze
+   * the live timer after the idle-freeze grace period.
+   */
+  lastActivityAt: number | null;
 }
 
 /** Internal tracking record (kept as an alias now that workStartAt is public). */
@@ -64,6 +70,10 @@ export interface WorldState {
   agentMetrics: AgentMetric[];
   /** Internal: extended metric records that include workStartAt for activeMs computation. */
   _agentMetricsInternal: AgentMetricInternal[];
+  /** Freeze live timer after this many ms with no activity (default 180000 = 3 min). */
+  idleFreezeMs: number;
+  /** Hard cap on any single active stretch in ms (default 900000 = 15 min). */
+  sanityCapMs: number;
 }
 
 /** Override map: workerId values that should not use the default title-case formatter. */
@@ -81,13 +91,15 @@ function toDisplayName(id: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function initialWorldState(): WorldState {
+export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?: number }): WorldState {
   return {
     sessionActive: false,
     workers: {},
     completedTasks: 0,
     agentMetrics: [],
     _agentMetricsInternal: [],
+    idleFreezeMs: limits?.idleFreezeMs ?? 180000,
+    sanityCapMs: limits?.sanityCapMs ?? 900000,
   };
 }
 
@@ -136,6 +148,7 @@ function upsertMetric(
     activeMs: 0,
     tokens: 0,
     workStartAt: null,
+    lastActivityAt: null,
   };
   return [...internals, updater(fresh)];
 }
@@ -148,6 +161,27 @@ function toPublicMetrics(internals: AgentMetricInternal[]): AgentMetric[] {
 /** Compute how many ms have elapsed since workStartAt (0 if not active). */
 function elapsedSince(workStartAt: number | null, now: number): number {
   return workStartAt !== null ? Math.max(0, now - workStartAt) : 0;
+}
+
+/**
+ * Compute credited elapsed time for an active stretch, capped by idle-freeze
+ * and a hard sanity cap.
+ *
+ * - If lastActivityAt is known, freeze "now" at lastActivityAt + idleFreezeMs
+ *   so idle gaps don't inflate the total.
+ * - Clamp the result to [0, sanityCapMs] to prevent runaway values from
+ *   sessions that were cut off without a proper stop event.
+ */
+export function creditedElapsed(
+  workStartAt: number | null,
+  lastActivityAt: number | null,
+  now: number,
+  idleFreezeMs: number,
+  sanityCapMs: number,
+): number {
+  if (workStartAt === null) return 0;
+  const cappedNow = lastActivityAt !== null ? Math.min(now, lastActivityAt + idleFreezeMs) : now;
+  return Math.min(Math.max(0, cappedNow - workStartAt), sanityCapMs);
 }
 
 // Pure reducer: fold a normalized event into the world state.
@@ -165,6 +199,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           ...m,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
+          lastActivityAt: event.at,
         }),
       );
       // Sweep: clear any non-orchestrator agents that were left active by a prior
@@ -192,7 +227,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
         (m) => ({
           ...m,
           status: "idle" as const,
-          activeMs: m.activeMs + elapsedSince(m.workStartAt, event.at),
+          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
           tokens: m.tokens + (event.tokens ?? 0),
           model: event.model ?? m.model,
           workStartAt: null,
@@ -205,7 +240,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           ? {
               ...m,
               status: "idle" as const,
-              activeMs: m.activeMs + elapsedSince(m.workStartAt, event.at),
+              activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
               workStartAt: null,
             }
           : m,
@@ -255,6 +290,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           description: event.description ?? m.description,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
+          lastActivityAt: event.at,
         }),
       );
       return {
@@ -286,6 +322,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           mcpCount: isMcp ? m.mcpCount + 1 : m.mcpCount,
           // Start timer if not already running.
           workStartAt: m.workStartAt ?? event.at,
+          lastActivityAt: event.at,
         }),
       );
       return {
@@ -311,6 +348,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           taskCount: m.taskCount + 1,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
+          lastActivityAt: event.at,
         }),
       );
       return {
@@ -336,7 +374,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
         (m) => ({
           ...m,
           status: "idle" as const,
-          activeMs: m.activeMs + elapsedSince(m.workStartAt, event.at),
+          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
           tokens: m.tokens + (event.tokens ?? 0),
           workStartAt: null,
         }),
@@ -360,7 +398,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           ...m,
           status: "error" as const,
           // Finalize any active time before entering error state.
-          activeMs: m.activeMs + elapsedSince(m.workStartAt, event.at),
+          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
           workStartAt: null,
         }),
       );

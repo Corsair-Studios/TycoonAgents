@@ -10,8 +10,12 @@ import type { NormalizedEvent } from "../../core/events";
 
 /** Holds the live WorldState and notifies listeners on each change. */
 export class Runtime {
-  private state: WorldState = initialWorldState();
+  private state: WorldState;
   private listeners: Array<(s: WorldState) => void> = [];
+
+  constructor(private limits?: { idleFreezeMs: number; sanityCapMs: number }) {
+    this.state = initialWorldState(limits);
+  }
 
   /** Fold a normalized event into the world state and notify all listeners. */
   ingest(event: NormalizedEvent): void {
@@ -23,7 +27,7 @@ export class Runtime {
 
   /** Reset to a fresh initial world state and notify all listeners. */
   reset(): void {
-    this.state = initialWorldState();
+    this.state = initialWorldState(this.limits);
     for (const cb of this.listeners) {
       cb(this.state);
     }

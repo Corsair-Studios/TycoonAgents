@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
@@ -33,6 +33,16 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically open the live agent panel when a workspace opens."
+        },
+        "tycoonagents.idleFreezeMinutes": {
+          "type": "number",
+          "default": 3,
+          "description": "Freeze an agent's live time after this many minutes with no activity."
+        },
+        "tycoonagents.sanityCapMinutes": {
+          "type": "number",
+          "default": 15,
+          "description": "Hard cap on any single active stretch (minutes)."
         }
       }
     }

@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mapHookRecord } from "../src/providers/claude-code/mapHookRecord";
 import type { HookRecord } from "../src/providers/claude-code/hookRecord";
-import { applyEvent, initialWorldState } from "../src/core/state";
+import { applyEvent, initialWorldState, creditedElapsed } from "../src/core/state";
 import type { WorldState } from "../src/core/state";
 
 const T = 1700000000000;
@@ -463,4 +463,94 @@ test("SessionStart clears stale active subagents WITHOUT crediting activeMs", ()
   assert.equal(sub!.status, "idle", "stale active agent must be reset to idle by SessionStart");
   assert.equal(sub!.workStartAt, null, "workStartAt must be cleared by SessionStart sweep");
   assert.equal(sub!.activeMs, activeMsBefore, "activeMs must NOT increase — stale time must not be credited");
+});
+
+// ---------------------------------------------------------------------------
+// creditedElapsed unit tests
+// ---------------------------------------------------------------------------
+
+test("creditedElapsed: null workStartAt returns 0", () => {
+  // When the agent has never started, elapsed is 0 regardless of other params.
+  assert.equal(creditedElapsed(null, null, T + 5000, 180_000, 900_000), 0);
+  assert.equal(creditedElapsed(null, T + 1000, T + 5000, 180_000, 900_000), 0);
+});
+
+test("creditedElapsed: idle freeze binds when gap exceeds freezeMs", () => {
+  // workStart=0, lastActivity=0, now=200_000 (200s > 180s freeze).
+  // cappedNow = min(200_000, 0+180_000) = 180_000; result = min(180_000, 900_000) = 180_000.
+  const result = creditedElapsed(0, 0, 200_000, 180_000, 900_000);
+  assert.equal(result, 180_000);
+});
+
+test("creditedElapsed: sanity cap binds when elapsed exceeds capMs", () => {
+  // workStart=0, lastActivity=1_000_000, now=1_000_000 (no freeze gap).
+  // cappedNow = min(1_000_000, 1_000_000+180_000) = 1_000_000; elapsed=1_000_000 > 900_000.
+  const result = creditedElapsed(0, 1_000_000, 1_000_000, 180_000, 900_000);
+  assert.equal(result, 900_000);
+});
+
+test("creditedElapsed: normal contiguous run returns now-workStart", () => {
+  // workStart=1000, lastActivity=1200, now=1300. Gap=100 < freeze=180_000.
+  // cappedNow = min(1300, 1200+180_000) = 1300; elapsed=300 < 900_000.
+  const result = creditedElapsed(1000, 1200, 1300, 180_000, 900_000);
+  assert.equal(result, 300);
+});
+
+// ---------------------------------------------------------------------------
+// Idle-freeze + sanity-cap integration tests (via applyEvent)
+// ---------------------------------------------------------------------------
+
+test("REGRESSION: contiguous events with small gaps credit full elapsed (freeze unaffected)", () => {
+  // Spawn at t=0, WorkerActivity at t=100, WorkerStopped at t=300 on the same worker.
+  // Gap since last activity at stop = 300-100 = 200ms, well under 180s freeze.
+  // Expected activeMs = 300 (stop - spawn, no freeze).
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "SessionStart", at: 0 });
+  state = applyEvent(state, { type: "WorkerSpawned", at: 0, workerId: "w-regress" });
+  state = applyEvent(state, { type: "WorkerActivity", at: 100, workerId: "w-regress", kind: "build" });
+  state = applyEvent(state, { type: "WorkerStopped", at: 300, workerId: "w-regress" });
+  const metric = state.agentMetrics.find((m) => m.id === "w-regress");
+  assert.ok(metric, "metric for w-regress must exist");
+  assert.equal(metric!.activeMs, 300, "small gaps must not trigger freeze; full 300ms credited");
+});
+
+test("IDLE FREEZE: no activity after spawn; stop after freeze window caps activeMs at idleFreezeMs", () => {
+  // Spawn at t=0 (lastActivityAt=0 from spawn event), stop at t=200_000 (> 180_000 freeze).
+  // Expected activeMs = lastActivityAt + idleFreezeMs - workStartAt = 0+180_000-0 = 180_000.
+  const spawnAt = 0;
+  const stopAt = 200_000; // 200s, exceeds 180s freeze
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "SessionStart", at: spawnAt });
+  state = applyEvent(state, { type: "WorkerSpawned", at: spawnAt, workerId: "w-freeze" });
+  // No WorkerActivity event — lastActivityAt stays at spawnAt (set by WorkerSpawned).
+  state = applyEvent(state, { type: "WorkerStopped", at: stopAt, workerId: "w-freeze" });
+  const metric = state.agentMetrics.find((m) => m.id === "w-freeze");
+  assert.ok(metric, "metric for w-freeze must exist");
+  assert.equal(
+    metric!.activeMs,
+    180_000,
+    "activeMs must be capped at idleFreezeMs (180s) when no activity follows spawn",
+  );
+});
+
+test("SANITY CAP: very long run with recent activity is capped at sanityCapMs", () => {
+  // Spawn at t=0, WorkerActivity at t=1_000_000 (lastActivityAt=1_000_000),
+  // WorkerStopped at t=1_000_000 (now==lastActivity => freeze doesn't bind).
+  // elapsed = 1_000_000 - 0 = 1_000_000 > 900_000 sanity cap.
+  // Expected activeMs = 900_000.
+  const spawnAt = 0;
+  const activityAt = 1_000_000;
+  const stopAt = 1_000_000;
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "SessionStart", at: spawnAt });
+  state = applyEvent(state, { type: "WorkerSpawned", at: spawnAt, workerId: "w-cap" });
+  state = applyEvent(state, { type: "WorkerActivity", at: activityAt, workerId: "w-cap", kind: "build" });
+  state = applyEvent(state, { type: "WorkerStopped", at: stopAt, workerId: "w-cap" });
+  const metric = state.agentMetrics.find((m) => m.id === "w-cap");
+  assert.ok(metric, "metric for w-cap must exist");
+  assert.equal(
+    metric!.activeMs,
+    900_000,
+    "activeMs must be capped at sanityCapMs (900s) when elapsed exceeds the cap",
+  );
 });

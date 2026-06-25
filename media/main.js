@@ -442,6 +442,7 @@
 
   /** @type {{ sessionActive: boolean; workers: Record<string, { id: string; role?: string; state: string }>; completedTasks: number }} */
   let state = { sessionActive: false, workers: {}, completedTasks: 0 };
+  let idleFreezeMs = 180000, sanityCapMs = 900000;
 
   // Stable insertion-order tracking so x positions don't jump
   /** @type {string[]} */
@@ -474,6 +475,8 @@
     const msg = event.data;
     if (msg && msg.type === "state") {
       state = msg.state;
+      idleFreezeMs = state.idleFreezeMs ?? 180000;
+      sanityCapMs = state.sanityCapMs ?? 900000;
       // Maintain insertion order for stable x positions
       for (const id of Object.keys(state.workers)) {
         if (!workerOrder.includes(id)) {
@@ -1223,10 +1226,11 @@
       mcpTd.textContent = String(agent.mcpCount ?? 0);
       row.appendChild(mcpTd);
 
-      // Show live elapsed time while active (activeMs only finalizes on stop).
-      const liveMs = isActive && agent.workStartAt
-        ? agent.activeMs + Math.max(0, Date.now() - agent.workStartAt)
-        : agent.activeMs;
+      // Show live elapsed time while active, capped by idle-freeze and sanity cap.
+      const seg = agent.workStartAt
+        ? Math.min(Math.max(0, Math.min(Date.now(), (agent.lastActivityAt ?? Date.now()) + idleFreezeMs) - agent.workStartAt), sanityCapMs)
+        : 0;
+      const liveMs = (agent.activeMs || 0) + (isActive ? seg : 0);
       const timeTd = document.createElement("td");
       timeTd.className = "col-time";
       timeTd.title = "Active time this agent has spent working.";

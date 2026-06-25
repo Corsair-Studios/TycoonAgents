@@ -16,7 +16,10 @@ let provider: ClaudeCodeProvider | undefined;
 let demoDisposable: { dispose(): void } | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const runtime = new Runtime();
+  const cfg = vscode.workspace.getConfiguration("tycoonagents");
+  const idleFreezeMs = cfg.get<number>("idleFreezeMinutes", 3) * 60000;
+  const sanityCapMs = cfg.get<number>("sanityCapMinutes", 15) * 60000;
+  const runtime = new Runtime({ idleFreezeMs, sanityCapMs });
 
   // Command: open (or reveal) the TycoonAgents panel
   const openCmd = vscode.commands.registerCommand("tycoonagents.open", () => {
