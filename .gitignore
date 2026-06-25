@@ -32,3 +32,6 @@ Thumbs.db
 .claude/
 CLAUDE.md
 nul
+
+# Local project MCP config (machine-specific paths)
+.mcp.json
