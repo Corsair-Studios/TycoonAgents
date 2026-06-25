@@ -84,5 +84,17 @@
     "network": true,
     "dataNote": "Bridges an AI client to your local Roblox Studio session; the AI can read your place's data model and write/run Luau code in it.",
     "config": { "command": "<path-to-roblox-studio-mcp-server>", "args": [] }
+  },
+  {
+    "id": "uefn-bridge",
+    "name": "UEFN Bridge (Trashbyrd's Power Tools)",
+    "description": "Live UEFN editor control from Claude — read/set actor properties, run audits, and browse materials, textures, and the level via Trashbyrd's Power Tools.",
+    "requiresEnv": [],
+    "note": "Local bridge — runs on your machine and only talks to your open UEFN session via temp-file IPC (no external calls). Requires Trashbyrd's Power Tools set up (the Python bridge running inside UEFN + uefn-server.ts); point the args path to your uefn-server.ts. Leave the dir at the default %TEMP%/uefn_bridge unless you've patched the Python to honor UEFN_BRIDGE_DIR.",
+    "thirdParty": false,
+    "vendor": "Trashbyrd's Power Tools",
+    "network": false,
+    "dataNote": "Runs locally; bridges Claude to your open UEFN session over temp-file IPC. No external/network calls.",
+    "config": { "command": "npx", "args": ["tsx", "<path-to>/Trashbyrds Power Tools/uefn-server.ts"] }
   }
 ]
