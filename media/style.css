@@ -890,7 +890,10 @@ html, body {
 /* ── Metrics panel ──────────────────────────────────────────────── */
 #metrics-panel {
   flex-shrink: 0;
-  height: var(--metrics-height, 55%);
+  /* No explicit height: content-hug by default so the block sits flush at
+     the bottom of the viewport with slack absorbed above (in #stage-area).
+     The JS drag handler writes an inline height in px which takes precedence
+     when the user manually resizes. */
   min-height: 44px;
   max-height: 100%;
   display: flex;
@@ -928,8 +931,12 @@ html, body {
 
 /* Scrollable table region */
 #metrics-body {
-  flex: 1;
+  flex: 0 0 auto;           /* hug content height; do not stretch to fill panel */
   overflow-y: auto;
+  /* Safety cap: if agent list grows taller than the viewport the body scrolls
+     rather than overflowing or pushing content off-screen. Subtract the
+     metrics header (~44px) and the resize handle (8px) from available height. */
+  max-height: calc(100vh - 52px);
   padding: 16px 16px 12px;
 }
 
