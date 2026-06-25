@@ -387,24 +387,42 @@ export class TycoonPanel {
       const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
       let mcpCatalog: any[] = [];
       try { mcpCatalog = this._loadMcpCatalog(); } catch { mcpCatalog = []; }
+      // Load the skills catalog once to resolve display names for bundled skills.
+      let skillNames: Record<string, string> = {};
+      try {
+        const skillsCatalogPath = path.join(this._extensionUri.fsPath, "media", "skills", "catalog.json");
+        const skillsCatalog: any[] = JSON.parse(fs.readFileSync(skillsCatalogPath, "utf8"));
+        for (const s of skillsCatalog) {
+          if (s && typeof s.id === "string") { skillNames[s.id] = typeof s.name === "string" ? s.name : s.id; }
+        }
+      } catch { skillNames = {}; }
       const root = this._projectRoot();
       const mcpConfig = root === "" ? {} : this._readMcpConfig(path.join(root, ".mcp.json"));
+      const skillInstalled = (id: string): boolean =>
+        root !== "" && fs.existsSync(path.join(root, ".claude", "skills", id));
       const result = packs.map((pack: any) => {
         const disclosures: any[] = [];
         if (pack.mcp) {
           const m = mcpCatalog.find((x) => x.id === pack.mcp);
           if (m) { disclosures.push({ label: m.name, vendor: m.vendor, package: m.package, homepage: m.homepage, network: m.network, dataNote: m.dataNote }); }
         }
+        const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
+        const skills = packSkills.map((id: string) => ({
+          id,
+          name: skillNames[id] ?? id,
+          installed: skillInstalled(id),
+        }));
         return {
           id: pack.id,
           name: pack.name,
           description: pack.description,
-          has: { skill: !!pack.skill, mcp: !!pack.mcp, agent: true },
+          has: { skill: packSkills.length > 0, mcp: !!pack.mcp, agent: true },
           installed: {
-            skill: pack.skill ? (root !== "" && fs.existsSync(path.join(root, ".claude", "skills", pack.skill))) : false,
+            skill: packSkills.length > 0 && packSkills.every((id: string) => skillInstalled(id)),
             mcp: pack.mcp ? hasMcpServer(mcpConfig, pack.mcp) : false,
             agent: root !== "" && fs.existsSync(path.join(root, ".claude", "agents", `${pack.agent.id}.md`)),
           },
+          skills,
           thirdParty: disclosures.length > 0,
           disclosures,
         };
@@ -429,17 +447,22 @@ export class TycoonPanel {
         this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, error: "No workspace folder open" });
         return;
       }
-      const results: Record<string, string> = {};
-      if (pack.skill) {
-        const target = path.join(root, ".claude", "skills", pack.skill);
-        if (fs.existsSync(target)) {
-          results.skill = "exists";
-        } else {
-          const src = path.join(this._extensionUri.fsPath, "media", "skills", pack.skill);
-          fs.mkdirSync(path.join(root, ".claude", "skills"), { recursive: true });
-          fs.cpSync(src, target, { recursive: true });
-          results.skill = "installed";
+      const results: Record<string, any> = {};
+      const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
+      if (packSkills.length > 0) {
+        const skillResults: Array<{ id: string; status: "installed" | "exists" }> = [];
+        for (const skillId of packSkills) {
+          const target = path.join(root, ".claude", "skills", skillId);
+          if (fs.existsSync(target)) {
+            skillResults.push({ id: skillId, status: "exists" });
+          } else {
+            const src = path.join(this._extensionUri.fsPath, "media", "skills", skillId);
+            fs.mkdirSync(path.join(root, ".claude", "skills"), { recursive: true });
+            fs.cpSync(src, target, { recursive: true });
+            skillResults.push({ id: skillId, status: "installed" });
+          }
         }
+        results.skills = skillResults;
       }
       if (pack.mcp) {
         const mcpCatalog = this._loadMcpCatalog();

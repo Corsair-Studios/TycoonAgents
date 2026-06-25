@@ -738,6 +738,22 @@ html, body {
   border-color: rgba(163, 230, 53, 0.35);
 }
 
+/* ── Pack "includes" skills line (muted) ─────────────────────────── */
+.pack-skills {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.pack-skills-lead {
+  font-weight: 600;
+}
+
+.pack-skills-item--done {
+  color: var(--status-active);
+}
+
 /* ── Transparency: standing notice + per-row disclosure ──────────── */
 .catalog-notice {
   font-size: 11px;

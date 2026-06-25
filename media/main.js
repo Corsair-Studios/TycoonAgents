@@ -953,6 +953,30 @@
       renderPackChips(parts, pack);
       textBlock.appendChild(parts);
 
+      // Muted line listing each bundled skill with a per-skill done marker.
+      if (Array.isArray(pack.skills) && pack.skills.length) {
+        const includes = document.createElement("div");
+        includes.className = "pack-skills";
+        const lead = document.createElement("span");
+        lead.className = "pack-skills-lead";
+        lead.textContent = "Includes: ";
+        includes.appendChild(lead);
+        pack.skills.forEach((s, i) => {
+          const item = document.createElement("span");
+          item.className = "pack-skills-item" + (s && s.installed ? " pack-skills-item--done" : "");
+          const label = (s && (s.name || s.id)) || "";
+          item.textContent = (s && s.installed) ? `${label} ✓` : label;
+          includes.appendChild(item);
+          if (i < pack.skills.length - 1) {
+            const sep = document.createElement("span");
+            sep.className = "pack-skills-sep";
+            sep.textContent = ", ";
+            includes.appendChild(sep);
+          }
+        });
+        textBlock.appendChild(includes);
+      }
+
       if (pack.thirdParty && Array.isArray(pack.disclosures) && pack.disclosures.length) {
         for (const d of pack.disclosures) {
           textBlock.appendChild(buildDisclosureBlock(d));
