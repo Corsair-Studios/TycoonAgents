@@ -17,6 +17,7 @@ import {
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer } from "./mcpCatalog";
 import { buildAgentMarkdown } from "./packCatalog";
+import { detectUefnProject } from "./uefnDetect";
 
 function getNonce(): string {
   let text = "";
@@ -136,6 +137,8 @@ export class TycoonPanel {
             await vscode.env.clipboard.writeText(text);
             vscode.window.showInformationMessage("Delegation tip copied to clipboard.");
           }
+        } else if (message.type === "setupUefnProject") {
+          this._handleSetupUefnProject();
         }
       },
       null,
@@ -511,6 +514,51 @@ export class TycoonPanel {
     }
   }
 
+  private _handleSetupUefnProject(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") {
+        void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: "No workspace folder open" });
+        return;
+      }
+      // Install the uefn pack (reuses _handleInstallPack logic via _installPackById).
+      // We call _handleInstallPack directly; it posts packInstalled — but we also need
+      // to handle the bridge staging and post uefnSetupDone. So we factor pack install
+      // inline here to capture the result synchronously.
+      const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
+      const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
+      const pack = packs.find((p: any) => p.id === "uefn");
+      if (!pack) {
+        void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: "UEFN pack not found in catalog" });
+        return;
+      }
+      // Reuse the existing pack-install logic by calling _handleInstallPack("uefn").
+      // That method posts its own packInstalled message; we additionally stage the bridge
+      // and post uefnSetupDone separately.
+      this._handleInstallPack("uefn");
+
+      // Stage the Python bridge.
+      const bridgeSrc = path.join(this._extensionUri.fsPath, "media", "uefn-bridge", "uefn_bridge.py");
+      const bridgeDest = path.join(root, "Content", "Python", "uefn_bridge.py");
+      let bridgeStatus: "staged" | "exists";
+      if (fs.existsSync(bridgeDest)) {
+        bridgeStatus = "exists";
+      } else {
+        fs.mkdirSync(path.dirname(bridgeDest), { recursive: true });
+        fs.copyFileSync(bridgeSrc, bridgeDest);
+        bridgeStatus = "staged";
+      }
+
+      void this._panel.webview.postMessage({
+        type: "uefnSetupDone",
+        ok: true,
+        results: { pack: "uefn", bridge: bridgeStatus },
+      });
+    } catch (e) {
+      void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: String(e) });
+    }
+  }
+
   /**
    * Deep-clone `config` and replace every occurrence of the literal token
    * `${EXTENSION_DIR}` in any string value (recursively through objects/arrays)
@@ -649,7 +697,8 @@ export class TycoonPanel {
         this._settingsReferencesHook(
           path.join(root, ".claude", "settings.json")
         ));
-    void this._panel.webview.postMessage({ type: "installState", installed });
+    const uefn = root !== "" ? detectUefnProject(root) : { detected: false, signals: [], uefnInstalled: false };
+    void this._panel.webview.postMessage({ type: "installState", installed, uefnDetected: uefn.detected, uefnSignals: uefn.signals });
   }
 
   private _handleInstallHooks(): void {

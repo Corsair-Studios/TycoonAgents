@@ -9,8 +9,9 @@ build/
 # Packaged artifacts
 *.vsix
 
-# Bundled UEFN bridge (built artifact; source is uefn-bridge/uefn-server.ts)
-media/uefn-bridge/
+# Bundled UEFN MCP server (built artifact; source is uefn-bridge/uefn-server.ts).
+# Only the built .mjs is ignored — vendored files like uefn_bridge.py are tracked.
+media/uefn-bridge/uefn-server.mjs
 
 # Environment / secrets
 .env

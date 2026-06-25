@@ -340,6 +340,9 @@
   // hooks are installed, to show the (Phase 2) config + a Back button.
   let openedFromSettings = false;
 
+  /** Tracks last uefnDetected state from checkInstall. */
+  let lastUefnDetected = false;
+
   /** Show the full-bleed setup overlay; hide the live app view. */
   function showSetup() {
     setupViewEl.removeAttribute("hidden");
@@ -471,6 +474,87 @@
   setupBackBtn.setAttribute("hidden", "");
   vscode.postMessage({ type: "checkInstall" });
 
+  /**
+   * Render the UEFN project detected card inside #setup-card.
+   * Called when checkInstall response carries uefnDetected:true.
+   * @param {string[]} signals
+   */
+  function renderUefnPrompt(signals) {
+    // Remove any existing card first (idempotent)
+    const existing = document.getElementById("uefn-prompt-card");
+    if (existing) existing.remove();
+
+    const setupCard = document.getElementById("setup-card");
+    if (!setupCard) return;
+
+    const card = document.createElement("div");
+    card.id = "uefn-prompt-card";
+    card.className = "uefn-prompt-card";
+
+    const heading = document.createElement("h2");
+    heading.className = "uefn-prompt-heading";
+    heading.textContent = "UEFN project detected";
+    card.appendChild(heading);
+
+    const body = document.createElement("p");
+    body.className = "uefn-prompt-body";
+    body.id = "uefn-prompt-body";
+    body.textContent = "This looks like a UEFN project. Set up the Verse Expert and Auditor agents and stage the UEFN bridge (uefn_bridge.py into Content/Python)?";
+    card.appendChild(body);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "uefn-prompt-btns";
+
+    const yesBtn = document.createElement("button");
+    yesBtn.className = "skill-btn";
+    yesBtn.id = "uefn-yes-btn";
+    yesBtn.textContent = "Yes, set up UEFN";
+    yesBtn.addEventListener("click", function () {
+      yesBtn.setAttribute("disabled", "");
+      notNowBtn.setAttribute("disabled", "");
+      body.textContent = "Setting up…";
+      vscode.postMessage({ type: "setupUefnProject" });
+    });
+
+    const notNowBtn = document.createElement("button");
+    notNowBtn.className = "skill-btn";
+    notNowBtn.id = "uefn-notnow-btn";
+    notNowBtn.textContent = "Not now";
+    notNowBtn.addEventListener("click", function () {
+      card.remove();
+    });
+
+    btnRow.appendChild(yesBtn);
+    btnRow.appendChild(notNowBtn);
+    card.appendChild(btnRow);
+
+    setupCard.appendChild(card);
+  }
+
+  /**
+   * Handle the uefnSetupDone message from the host.
+   * @param {{ok:boolean, results?:{pack:string, bridge:"staged"|"exists"}, error?:string}} msg
+   */
+  function handleUefnSetupDone(msg) {
+    const card = document.getElementById("uefn-prompt-card");
+    if (!card) return;
+    const body = document.getElementById("uefn-prompt-body");
+    const btns = card.querySelector(".uefn-prompt-btns");
+    if (btns) btns.remove();
+    if (msg.ok && msg.results) {
+      const r = msg.results;
+      const lines = [];
+      lines.push("UEFN setup complete:");
+      lines.push("Agents: Verse Expert + Auditor installed");
+      lines.push("Skill: uefn");
+      lines.push("MCP: uefn-bridge");
+      lines.push("Content/Python/uefn_bridge.py: " + r.bridge);
+      if (body) body.textContent = lines.join("\n");
+    } else {
+      if (body) body.textContent = "Setup failed: " + (msg.error || "unknown error");
+    }
+  }
+
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
     if (msg && msg.type === "state") {
@@ -505,6 +589,12 @@
       handlePackInstalled(msg.id, msg.ok, msg.results, msg.error);
     } else if (msg && msg.type === "installState") {
       handleInstallState(msg);
+      if (msg.uefnDetected) {
+        lastUefnDetected = true;
+        renderUefnPrompt(msg.uefnSignals || []);
+      }
+    } else if (msg && msg.type === "uefnSetupDone") {
+      handleUefnSetupDone(msg);
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();
