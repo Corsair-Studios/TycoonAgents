@@ -486,20 +486,25 @@ export class TycoonPanel {
           results.mcp = "installed";
         }
       }
-      const agentPath = path.join(root, ".claude", "agents", `${pack.agent.id}.md`);
-      if (fs.existsSync(agentPath)) {
-        results.agent = "exists";
-      } else {
-        fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
-        fs.writeFileSync(agentPath, buildAgentMarkdown(pack.agent));
-        results.agent = "created";
+      const agents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
+      const agentResults: Array<{ id: string; status: "installed" | "exists" }> = [];
+      let cfg = this._readKeywordsConfig(root);
+      for (const a of agents) {
+        const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
+        if (fs.existsSync(agentPath)) {
+          agentResults.push({ id: a.id, status: "exists" });
+        } else {
+          fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
+          fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+          agentResults.push({ id: a.id, status: "installed" });
+        }
+        cfg = setKeywordPattern(cfg, a.id, a.keywords);
+        this._runtime.ingest({ type: "WorkerRegistered", at: Date.now(), workerId: a.id, name: a.name, model: a.model, description: a.role });
       }
+      results.agents = agentResults;
       const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
-      const cfg = this._readKeywordsConfig(root);
-      const updated = setKeywordPattern(cfg, pack.agent.id, pack.agent.keywords);
       fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
-      fs.writeFileSync(keywordsPath, JSON.stringify(updated, null, 2));
-      this._runtime.ingest({ type: "WorkerRegistered", at: Date.now(), workerId: pack.agent.id, name: pack.agent.name, model: pack.agent.model, description: pack.agent.role });
+      fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
       this._panel.webview.postMessage({ type: "packInstalled", id, ok: true, results });
     } catch (e) {
       this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, error: String(e) });

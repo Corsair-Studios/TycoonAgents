@@ -29,4 +29,23 @@ still covers Verse/device authoring.
    resolves locally — no path configuration. For a custom directory, set
    `UEFN_BRIDGE_DIR` for **both** the UEFN process and the MCP server.
 
+## Agents & digest auto-detection
+
+Installing the UEFN pack creates two agents:
+
+- **Verse Expert** — authors and refactors Verse device scripts and island
+  gameplay.
+- **Auditor** — reviews and validates Verse for correctness, deprecations, and
+  API compliance (it does not author features).
+
+Both agents **auto-detect the current API**. Before writing or auditing, they
+recursively search the UEFN data root (`%LOCALAPPDATA%\UnrealEditorFortnite`)
+and the open project for the digest files `Verse.digest.verse`,
+`Fortnite.digest.verse`, and `UnrealEngine.digest.verse`. When multiple copies
+exist, the **most recently modified** one wins — that reflects the latest
+installed Verse/Fortnite/Unreal API — and the agents treat those digests as the
+authoritative surface for available classes, devices, and APIs. UEFN project
+presence is confirmed via `.verse` files, a `.uproject`, or a `Content/Verse/`
+directory.
+
 Source: Trashbyrd's Power Tools (the Python bridge + `uefn-server.ts` wrapper).
