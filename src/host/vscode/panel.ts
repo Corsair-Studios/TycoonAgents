@@ -434,7 +434,10 @@ export class TycoonPanel {
           installed: {
             skill: packSkills.length > 0 && packSkills.every((id: string) => skillInstalled(id)),
             mcp: pack.mcp ? hasMcpServer(mcpConfig, pack.mcp) : false,
-            agent: root !== "" && fs.existsSync(path.join(root, ".claude", "agents", `${pack.agent.id}.md`)),
+            agent: (() => {
+              const packAgents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
+              return root !== "" && packAgents.length > 0 && packAgents.every((a: any) => fs.existsSync(path.join(root, ".claude", "agents", `${a.id}.md`)));
+            })(),
           },
           skills,
           thirdParty: disclosures.length > 0,
