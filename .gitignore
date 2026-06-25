@@ -9,6 +9,9 @@ build/
 # Packaged artifacts
 *.vsix
 
+# Bundled UEFN bridge (built artifact; source is uefn-bridge/uefn-server.ts)
+media/uefn-bridge/
+
 # Environment / secrets
 .env
 .env.*

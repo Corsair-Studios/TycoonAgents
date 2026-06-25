@@ -10,5 +10,5 @@
     "declaration": true
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["media/**/*"]
+  "exclude": ["media/**/*", "uefn-bridge/**/*"]
 }

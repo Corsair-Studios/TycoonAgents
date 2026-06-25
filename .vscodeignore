@@ -3,6 +3,7 @@
 .git/**
 src/**
 test/**
+uefn-bridge/**
 out/test/**
 out/**/*.test.js
 out/**/*.test.js.map

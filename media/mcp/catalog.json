@@ -90,11 +90,11 @@
     "name": "UEFN Bridge (Trashbyrd's Power Tools)",
     "description": "Live UEFN editor control from Claude — read/set actor properties, run audits, and browse materials, textures, and the level via Trashbyrd's Power Tools.",
     "requiresEnv": [],
-    "note": "Local bridge — runs on your machine and only talks to your open UEFN session via temp-file IPC (no external calls). Requires Trashbyrd's Power Tools set up (the Python bridge running inside UEFN + uefn-server.ts); point the args path to your uefn-server.ts. Leave the dir at the default %TEMP%/uefn_bridge unless you've patched the Python to honor UEFN_BRIDGE_DIR.",
+    "note": "Local bridge — runs on your machine and only talks to your open UEFN session via temp-file IPC (no external calls). The MCP server is bundled with this extension, so there's nothing to install or path to set here — just install Trashbyrd's Power Tools' Python bridge into your UEFN project and start it. Both sides default to %TEMP%/uefn_bridge (machine-agnostic); for a custom dir set UEFN_BRIDGE_DIR for both UEFN and this server.",
     "thirdParty": false,
     "vendor": "Trashbyrd's Power Tools",
     "network": false,
     "dataNote": "Runs locally; bridges Claude to your open UEFN session over temp-file IPC. No external/network calls.",
-    "config": { "command": "npx", "args": ["tsx", "<path-to>/Trashbyrds Power Tools/uefn-server.ts"] }
+    "config": { "command": "node", "args": ["${EXTENSION_DIR}/media/uefn-bridge/uefn-server.mjs"] }
   }
 ]

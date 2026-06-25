@@ -363,7 +363,7 @@ export class TycoonPanel {
         return;
       }
 
-      const merged = mergeMcpServer(existing, id, entry.config);
+      const merged = mergeMcpServer(existing, id, this._resolveConfigTokens(entry.config));
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
       void this._panel.webview.postMessage({
         type: "mcpInstalled",
@@ -475,7 +475,7 @@ export class TycoonPanel {
         if (hasMcpServer(existing, pack.mcp)) {
           results.mcp = "exists";
         } else {
-          const merged = mergeMcpServer(existing, pack.mcp, entry.config);
+          const merged = mergeMcpServer(existing, pack.mcp, this._resolveConfigTokens(entry.config));
           fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
           results.mcp = "installed";
         }
@@ -498,6 +498,34 @@ export class TycoonPanel {
     } catch (e) {
       this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, error: String(e) });
     }
+  }
+
+  /**
+   * Deep-clone `config` and replace every occurrence of the literal token
+   * `${EXTENSION_DIR}` in any string value (recursively through objects/arrays)
+   * with the extension's real install path (`this._extensionUri.fsPath`).
+   * Called at install time so catalog entries with bundled servers resolve correctly.
+   */
+  private _resolveConfigTokens(config: unknown): unknown {
+    const token = "${EXTENSION_DIR}";
+    const replacement = this._extensionUri.fsPath;
+    const resolve = (value: unknown): unknown => {
+      if (typeof value === "string") {
+        return value.split(token).join(replacement);
+      }
+      if (Array.isArray(value)) {
+        return value.map(resolve);
+      }
+      if (value !== null && typeof value === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+          out[k] = resolve(v);
+        }
+        return out;
+      }
+      return value;
+    };
+    return resolve(config);
   }
 
   /**
