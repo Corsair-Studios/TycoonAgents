@@ -261,24 +261,18 @@
       if (!btn || btn.hasAttribute("disabled")) return;
       const id = btn.getAttribute("data-mcp-id");
 
-      // Confirm before running third-party code. Networked servers get a full
-      // data-use confirm; local-only third-party still mentions what runs.
+      // Confirmation for third-party MCP servers happens HOST-side via a native
+      // modal (window.confirm is unreliable in VS Code webviews — it can
+      // silently return false). We pass thirdParty so the host can prompt.
       const server = lastMcpServers.find((s) => s && s.id === id);
-      if (server && server.thirdParty) {
-        const confirmed = window.confirm(buildInstallConfirm({
-          name: server.name,
-          vendor: server.vendor,
-          package: server.package,
-          network: server.network,
-          dataNote: server.dataNote,
-          homepage: server.homepage,
-        }));
-        if (!confirmed) return; // button untouched — nothing to revert
-      }
 
       btn.textContent = "Installing…";
       btn.setAttribute("disabled", "");
-      vscode.postMessage({ type: "installMcp", id });
+      vscode.postMessage({
+        type: "installMcp",
+        id,
+        thirdParty: !!(server && server.thirdParty),
+      });
     });
   }
 
@@ -292,35 +286,20 @@
       if (!btn || btn.hasAttribute("disabled")) return;
       const id = btn.getAttribute("data-pack-id");
 
-      // Confirm before running third-party code bundled in the pack.
+      // Confirmation for third-party packs happens HOST-side via a native modal
+      // (window.confirm is unreliable in VS Code webviews — it can silently
+      // return false). We pass thirdParty + disclosures so the host can prompt.
       const pack = lastPacks.find((p) => p && p.id === id);
       const disclosures = (pack && Array.isArray(pack.disclosures)) ? pack.disclosures : [];
-      if (pack && pack.thirdParty && disclosures.length) {
-        const networked = disclosures.filter((d) => d && d.network);
-        const lines = [];
-        lines.push(`Install ${pack.name || "this pack"}?`);
-        lines.push("");
-        lines.push("This installs third-party software that runs on your machine:");
-        for (const d of disclosures) {
-          const who = [d.label, d.vendor].filter(Boolean).join(" · ");
-          lines.push(`• ${who}${d.package ? ` — runs ${d.package}` : ""}`);
-          if (d.network) {
-            lines.push(`    Sends data externally: ${d.dataNote || "contacts an external service."}`);
-          } else if (d.dataNote) {
-            lines.push(`    Local only: ${d.dataNote}`);
-          }
-          if (d.homepage) lines.push(`    Source: ${d.homepage}`);
-        }
-        lines.push("");
-        lines.push(networked.length
-          ? "One or more components send data to external services. Check your organization's policy before continuing. Proceed?"
-          : "Check your organization's policy before continuing. Proceed?");
-        if (!window.confirm(lines.join("\n"))) return; // button untouched
-      }
 
       btn.textContent = "Installing…";
       btn.setAttribute("disabled", "");
-      vscode.postMessage({ type: "installPack", id });
+      vscode.postMessage({
+        type: "installPack",
+        id,
+        thirdParty: !!(pack && pack.thirdParty),
+        disclosures,
+      });
     });
   }
 
@@ -582,11 +561,11 @@
     } else if (msg && msg.type === "mcp") {
       renderMcpList(msg.servers, msg.error);
     } else if (msg && msg.type === "mcpInstalled") {
-      handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error);
+      handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packs") {
       renderPacksList(msg.packs, msg.error);
     } else if (msg && msg.type === "packInstalled") {
-      handlePackInstalled(msg.id, msg.ok, msg.results, msg.error);
+      handlePackInstalled(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
     } else if (msg && msg.type === "installState") {
       handleInstallState(msg);
       if (msg.uefnDetected) {
@@ -1077,13 +1056,20 @@
    * @param {boolean} ok
    * @param {boolean|undefined} alreadyExisted
    * @param {string|undefined} error
+   * @param {boolean|undefined} cancelled
    */
-  function handleMcpInstalled(id, ok, alreadyExisted, error) {
+  function handleMcpInstalled(id, ok, alreadyExisted, error, cancelled) {
     if (!mcpListEl) return;
     const btn = /** @type {HTMLElement|null} */ (
       mcpListEl.querySelector(`[data-mcp-id="${CSS.escape(id)}"]`)
     );
     if (!btn) return;
+    // User dismissed the host confirmation modal — silently restore the button.
+    if (cancelled) {
+      btn.textContent = "Install";
+      btn.removeAttribute("disabled");
+      return;
+    }
     if (ok) {
       btn.textContent = "Installed";
       btn.classList.add("skill-btn--installed");
@@ -1253,12 +1239,21 @@
    * @param {boolean} ok
    * @param {{skill?:string,mcp?:string,agent?:string}|undefined} _results
    * @param {string|undefined} error
+   * @param {boolean|undefined} cancelled
    */
-  function handlePackInstalled(id, ok, _results, error) {
+  function handlePackInstalled(id, ok, _results, error, cancelled) {
     if (!packsListEl) return;
     const btn = /** @type {HTMLElement|null} */ (
       packsListEl.querySelector(`[data-pack-id="${CSS.escape(id)}"]`)
     );
+    // User dismissed the host confirmation modal — silently restore the button.
+    if (cancelled) {
+      if (btn) {
+        btn.textContent = "Install";
+        btn.removeAttribute("disabled");
+      }
+      return;
+    }
     if (ok) {
       if (btn) {
         btn.textContent = "Installed";

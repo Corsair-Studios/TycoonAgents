@@ -92,6 +92,15 @@ export class TycoonPanel {
         id?: string;
         model?: string;
         pattern?: string;
+        thirdParty?: boolean;
+        disclosures?: Array<{
+          label?: string;
+          vendor?: string;
+          package?: string;
+          homepage?: string;
+          network?: boolean;
+          dataNote?: string;
+        }>;
       }) => {
         if (message.type === "ready") {
           void this._panel.webview.postMessage({ type: "state", state: this._applyTimeAdjustments(runtime.getState()) });
@@ -105,7 +114,7 @@ export class TycoonPanel {
           this._handleGetMcp();
         } else if (message.type === "installMcp") {
           if (message.id !== undefined) {
-            this._handleInstallMcp(message.id);
+            await this._handleInstallMcp(message.id, message.thirdParty === true);
           }
         } else if (message.type === "checkInstall") {
           this._handleCheckInstall();
@@ -130,7 +139,7 @@ export class TycoonPanel {
           this._handleGetPacks();
         } else if (message.type === "installPack") {
           if (message.id !== undefined) {
-            this._handleInstallPack(message.id);
+            await this._handleInstallPack(message.id, message.thirdParty === true, message.disclosures);
           }
         } else if (message.type === "copyNudge") {
           const text = String((message as any).text ?? "");
@@ -326,8 +335,34 @@ export class TycoonPanel {
     void this._panel.webview.postMessage({ type: "mcp", servers });
   }
 
+  /** Build the modal-confirm body for a third-party MCP server install. */
+  private _buildMcpConfirmMessage(entry: {
+    name: string;
+    vendor?: string;
+    package?: string;
+    network?: string;
+    dataNote?: string;
+    homepage?: string;
+  }): string {
+    const lines: string[] = [];
+    lines.push(`Install ${entry.name || "this server"}?`);
+    lines.push("");
+    lines.push("This installs third-party software that runs on your machine.");
+    if (entry.vendor) lines.push(`Vendor: ${entry.vendor}`);
+    if (entry.package) lines.push(`Runs: ${entry.package}`);
+    if (entry.network) {
+      lines.push(`Sends data externally: ${entry.dataNote || "contacts an external service."}`);
+    } else if (entry.dataNote) {
+      lines.push(`Local only: ${entry.dataNote}`);
+    }
+    if (entry.homepage) lines.push(`Source: ${entry.homepage}`);
+    lines.push("");
+    lines.push("Check your organization's policy before continuing.");
+    return lines.join("\n");
+  }
+
   /** Merge a catalog MCP server's config into the project's .mcp.json. */
-  private _handleInstallMcp(id: string): void {
+  private async _handleInstallMcp(id: string, _thirdParty = false): Promise<void> {
     try {
       let catalog;
       try {
@@ -364,6 +399,27 @@ export class TycoonPanel {
         return;
       }
 
+      // Host-side confirmation gate for genuinely third-party servers. The
+      // authoritative source is the catalog entry's thirdParty flag (not the
+      // webview payload). window.confirm is unreliable in VS Code webviews, so
+      // we prompt here with a native modal — same pattern as pack install.
+      if (entry.thirdParty) {
+        const answer = await vscode.window.showWarningMessage(
+          this._buildMcpConfirmMessage(entry),
+          { modal: true },
+          "Install"
+        );
+        if (answer !== "Install") {
+          void this._panel.webview.postMessage({
+            type: "mcpInstalled",
+            id,
+            ok: false,
+            cancelled: true,
+          });
+          return;
+        }
+      }
+
       const mcpPath = path.join(root, ".mcp.json");
       const existing = this._readMcpConfig(mcpPath);
 
@@ -395,6 +451,23 @@ export class TycoonPanel {
     }
   }
 
+  /**
+   * Build the third-party disclosure list for a pack from the MCP catalog.
+   * Only genuinely third-party MCP servers (thirdParty: true) are disclosed —
+   * bundled/local servers (e.g. uefn-bridge) must NOT trigger the confirm gate.
+   * Shared by _handleGetPacks (display) and _handleInstallPack (host confirm).
+   */
+  private _buildPackDisclosures(pack: any, mcpCatalog: any[]): any[] {
+    const disclosures: any[] = [];
+    if (pack && pack.mcp) {
+      const m = mcpCatalog.find((x) => x.id === pack.mcp);
+      if (m && m.thirdParty) {
+        disclosures.push({ label: m.name, vendor: m.vendor, package: m.package, homepage: m.homepage, network: m.network, dataNote: m.dataNote });
+      }
+    }
+    return disclosures;
+  }
+
   private _handleGetPacks(): void {
     try {
       const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
@@ -415,11 +488,7 @@ export class TycoonPanel {
       const skillInstalled = (id: string): boolean =>
         root !== "" && fs.existsSync(path.join(root, ".claude", "skills", id));
       const result = packs.map((pack: any) => {
-        const disclosures: any[] = [];
-        if (pack.mcp) {
-          const m = mcpCatalog.find((x) => x.id === pack.mcp);
-          if (m) { disclosures.push({ label: m.name, vendor: m.vendor, package: m.package, homepage: m.homepage, network: m.network, dataNote: m.dataNote }); }
-        }
+        const disclosures = this._buildPackDisclosures(pack, mcpCatalog);
         const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
         const skills = packSkills.map((id: string) => ({
           id,
@@ -450,7 +519,35 @@ export class TycoonPanel {
     }
   }
 
-  private _handleInstallPack(id: string): void {
+  /** Build the modal-confirm body listing a pack's third-party sources. */
+  private _buildPackConfirmMessage(packName: string, disclosures: any[]): string {
+    const networked = disclosures.filter((d) => d && d.network);
+    const lines: string[] = [];
+    lines.push(`Install ${packName || "this pack"}?`);
+    lines.push("");
+    lines.push("This installs third-party software that runs on your machine:");
+    for (const d of disclosures) {
+      const who = [d.label, d.vendor].filter(Boolean).join(" · ");
+      lines.push(`• ${who}${d.package ? ` — runs ${d.package}` : ""}`);
+      if (d.network) {
+        lines.push(`    Sends data externally: ${d.dataNote || "contacts an external service."}`);
+      } else if (d.dataNote) {
+        lines.push(`    Local only: ${d.dataNote}`);
+      }
+      if (d.homepage) lines.push(`    Source: ${d.homepage}`);
+    }
+    lines.push("");
+    lines.push(networked.length
+      ? "One or more components send data to external services. Check your organization's policy before continuing."
+      : "Check your organization's policy before continuing.");
+    return lines.join("\n");
+  }
+
+  private async _handleInstallPack(
+    id: string,
+    thirdParty = false,
+    passedDisclosures?: any[]
+  ): Promise<void> {
     try {
       const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
       const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
@@ -464,6 +561,32 @@ export class TycoonPanel {
         this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, error: "No workspace folder open" });
         return;
       }
+
+      // Host-side confirmation gate for third-party packs. window.confirm is
+      // unreliable inside VS Code webviews (can silently return false), so we
+      // confirm here with a native modal — same pattern as the Hook Doctor's
+      // foreign-hook removal. Recompute disclosures authoritatively rather than
+      // trusting the webview payload (defense-in-depth); fall back to passed
+      // values if the catalog can't be loaded.
+      let mcpCatalog: any[] = [];
+      try { mcpCatalog = this._loadMcpCatalog(); } catch { mcpCatalog = []; }
+      const disclosures = mcpCatalog.length > 0
+        ? this._buildPackDisclosures(pack, mcpCatalog)
+        : (Array.isArray(passedDisclosures) ? passedDisclosures : []);
+      const needsConfirm = (thirdParty || disclosures.length > 0) && disclosures.length > 0;
+      if (needsConfirm) {
+        const answer = await vscode.window.showWarningMessage(
+          this._buildPackConfirmMessage(pack.name, disclosures),
+          { modal: true },
+          "Install"
+        );
+        if (answer !== "Install") {
+          // User dismissed the modal — clear the webview's "installing…" state.
+          this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, cancelled: true });
+          return;
+        }
+      }
+
       const results: Record<string, any> = {};
       const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
       if (packSkills.length > 0) {
@@ -482,8 +605,9 @@ export class TycoonPanel {
         results.skills = skillResults;
       }
       if (pack.mcp) {
-        const mcpCatalog = this._loadMcpCatalog();
-        const entry = mcpCatalog.find((x: any) => x.id === pack.mcp);
+        // Reuse the catalog loaded above; reload if the earlier (tolerant) load failed.
+        const catalog = mcpCatalog.length > 0 ? mcpCatalog : this._loadMcpCatalog();
+        const entry = catalog.find((x: any) => x.id === pack.mcp);
         if (entry === undefined) {
           throw new Error(`MCP catalog entry not found for id: ${pack.mcp}`);
         }
@@ -542,8 +666,9 @@ export class TycoonPanel {
       }
       // Reuse the existing pack-install logic by calling _handleInstallPack("uefn").
       // That method posts its own packInstalled message; we additionally stage the bridge
-      // and post uefnSetupDone separately.
-      this._handleInstallPack("uefn");
+      // and post uefnSetupDone separately. UEFN is not third-party, so no confirm modal
+      // is shown and the install body runs synchronously; we don't await it here.
+      void this._handleInstallPack("uefn");
 
       // Stage the Python bridge.
       const bridgeSrc = path.join(this._extensionUri.fsPath, "media", "uefn-bridge", "uefn_bridge.py");

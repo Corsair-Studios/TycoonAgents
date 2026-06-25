@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "uefn-bridge": {
+      "command": "node",
+      "args": [
+        "c:\\Users\\majes\\.antigravity-ide\\extensions\\tycoonagents.tycoonagents-0.0.37/media/uefn-bridge/uefn-server.mjs"
+      ]
+    }
+  }
+}
