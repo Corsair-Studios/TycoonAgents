@@ -1047,17 +1047,17 @@ td.col-tokens { color: var(--col-tokens); font-variant-numeric: tabular-nums; }
 
 /* Status progress bar */
 td.col-status {
-  width: 120px;
-  min-width: 120px;
-  max-width: 120px;
+  width: 90px;
+  min-width: 90px;
+  max-width: 90px;
 }
 
 .status-bar-track {
   background: #27272A;
   border-radius: 3px;
   height: 16px;
-  width: 120px;
-  flex: 0 0 120px;  /* prevent grow/shrink in any flex context */
+  width: 90px;
+  flex: 0 0 90px;  /* prevent grow/shrink in any flex context */
   overflow: hidden;
   position: relative;
 }
