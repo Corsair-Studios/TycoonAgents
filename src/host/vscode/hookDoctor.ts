@@ -1,0 +1,332 @@
+import { TYCOON_HOOK_SLOTS } from "./hookInstall";
+
+export type DoctorSeverity = "ok" | "warn" | "error";
+
+export interface DoctorFinding {
+  id: string;
+  severity: DoctorSeverity;
+  title: string;
+  detail: string;
+  fixable: boolean;
+  destructive: boolean;
+}
+
+export interface DoctorInput {
+  localSettings: any | null;
+  sharedSettings: any | null;
+  currentHookCommand: string;
+  hookScriptExists: boolean;
+}
+
+const TYCOON_MARKER = "tycoon-claude-hook.cjs";
+
+const TYCOON_EVENTS = Array.from(new Set(TYCOON_HOOK_SLOTS.map((s) => s.event)));
+
+function getHooksSection(settings: any | null): Record<string, any[]> {
+  if (!settings || typeof settings !== "object") {
+    return {};
+  }
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== "object") {
+    return {};
+  }
+  return hooks as Record<string, any[]>;
+}
+
+function getCommandsFromEntry(entry: any): string[] {
+  if (!entry || !Array.isArray(entry.hooks)) {
+    return [];
+  }
+  return entry.hooks
+    .filter((h: any) => h && typeof h.command === "string")
+    .map((h: any) => h.command as string);
+}
+
+function getEntriesForEvent(hooks: Record<string, any[]>, event: string): any[] {
+  const entries = hooks[event];
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries;
+}
+
+export function findForeignHooks(
+  localSettings: any | null,
+  sharedSettings: any | null
+): string[] {
+  const foreign = new Set<string>();
+  for (const settings of [localSettings, sharedSettings]) {
+    const hooks = getHooksSection(settings);
+    for (const event of TYCOON_EVENTS) {
+      for (const entry of getEntriesForEvent(hooks, event)) {
+        for (const cmd of getCommandsFromEntry(entry)) {
+          if (!cmd.includes(TYCOON_MARKER)) {
+            foreign.add(cmd);
+          }
+        }
+      }
+    }
+  }
+  return Array.from(foreign);
+}
+
+function isTycoonCommand(cmd: string): boolean {
+  return cmd.includes(TYCOON_MARKER);
+}
+
+function slotIsWiredIn(settings: any | null, slot: { event: string; matcher: string }, currentHookCommand: string): boolean {
+  const hooks = getHooksSection(settings);
+  for (const entry of getEntriesForEvent(hooks, slot.event)) {
+    if (entry.matcher === slot.matcher) {
+      for (const cmd of getCommandsFromEntry(entry)) {
+        if (isTycoonCommand(cmd)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function countStaleInSettings(settings: any | null, currentHookCommand: string): number {
+  let count = 0;
+  const hooks = getHooksSection(settings);
+  for (const event of TYCOON_EVENTS) {
+    for (const entry of getEntriesForEvent(hooks, event)) {
+      for (const cmd of getCommandsFromEntry(entry)) {
+        if (isTycoonCommand(cmd) && cmd !== currentHookCommand) {
+          count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+function hasDuplicateTycoonInSlot(settings: any | null, slot: { event: string; matcher: string }): boolean {
+  const hooks = getHooksSection(settings);
+  for (const entry of getEntriesForEvent(hooks, slot.event)) {
+    if (entry.matcher === slot.matcher) {
+      const cmds = getCommandsFromEntry(entry).filter(isTycoonCommand);
+      if (cmds.length > 1) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasTycoonCommandsInSettings(settings: any | null): boolean {
+  const hooks = getHooksSection(settings);
+  for (const event of TYCOON_EVENTS) {
+    for (const entry of getEntriesForEvent(hooks, event)) {
+      for (const cmd of getCommandsFromEntry(entry)) {
+        if (isTycoonCommand(cmd)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+export function diagnose(input: DoctorInput): DoctorFinding[] {
+  const findings: DoctorFinding[] = [];
+
+  if (!input.hookScriptExists) {
+    findings.push({
+      id: "hook-script-missing",
+      severity: "error",
+      title: "Hook script missing",
+      detail:
+        "The tycoon-claude-hook.cjs script file was not found in .claude/tycoon/. Re-install hooks to restore it.",
+      fixable: false,
+      destructive: false,
+    });
+  }
+
+  const missingSlots = TYCOON_HOOK_SLOTS.filter(
+    (slot) =>
+      !slotIsWiredIn(input.localSettings, slot, input.currentHookCommand) &&
+      !slotIsWiredIn(input.sharedSettings, slot, input.currentHookCommand)
+  );
+  if (missingSlots.length > 0) {
+    findings.push({
+      id: "hooks-missing",
+      severity: "error",
+      title: "Hook slots not wired",
+      detail: `${missingSlots.length} of 7 hook slots are not wired.`,
+      fixable: true,
+      destructive: false,
+    });
+  }
+
+  const staleCount =
+    countStaleInSettings(input.localSettings, input.currentHookCommand) +
+    countStaleInSettings(input.sharedSettings, input.currentHookCommand);
+  if (staleCount > 0) {
+    findings.push({
+      id: "hooks-stale",
+      severity: "warn",
+      title: "Stale hook paths",
+      detail: `${staleCount} hook command(s) point to an outdated path.`,
+      fixable: true,
+      destructive: false,
+    });
+  }
+
+  const hasDuplicate = TYCOON_HOOK_SLOTS.some(
+    (slot) =>
+      hasDuplicateTycoonInSlot(input.localSettings, slot) ||
+      hasDuplicateTycoonInSlot(input.sharedSettings, slot)
+  );
+  if (hasDuplicate) {
+    findings.push({
+      id: "hooks-duplicate",
+      severity: "warn",
+      title: "Duplicate hook entries",
+      detail: "One or more hook slots contain duplicate Tycoon commands.",
+      fixable: true,
+      destructive: false,
+    });
+  }
+
+  const inLocal = hasTycoonCommandsInSettings(input.localSettings);
+  const inShared = hasTycoonCommandsInSettings(input.sharedSettings);
+  if (inLocal && inShared) {
+    findings.push({
+      id: "hooks-split",
+      severity: "warn",
+      title: "Hooks split across settings files",
+      detail:
+        "Tycoon hook commands were found in both settings.local.json and settings.json, which causes double execution. Keep hooks only in settings.local.json.",
+      fixable: false,
+      destructive: false,
+    });
+  }
+
+  const foreignCmds = findForeignHooks(input.localSettings, input.sharedSettings);
+  if (foreignCmds.length > 0) {
+    const list = foreignCmds.map((c) => `  ${c}`).join("\n");
+    findings.push({
+      id: "hooks-foreign",
+      severity: "warn",
+      title: "Foreign hook commands detected",
+      detail: `The following hook commands in Tycoon event-slots are not from this extension:\n${list}`,
+      fixable: true,
+      destructive: true,
+    });
+  }
+
+  if (findings.length === 0) {
+    findings.push({
+      id: "hooks-healthy",
+      severity: "ok",
+      title: "Hooks are healthy",
+      detail: "All 7 hook slots are correctly wired.",
+      fixable: false,
+      destructive: false,
+    });
+  }
+
+  return findings;
+}
+
+export function repairSettings(
+  localSettings: any | null,
+  currentHookCommand: string,
+  opts: { removeForeign: boolean; foreignCommands?: string[] }
+): { settings: any; changes: string[] } {
+  const settings: any = JSON.parse(JSON.stringify(localSettings ?? {}));
+  const changes: string[] = [];
+
+  if (!settings.hooks || typeof settings.hooks !== "object") {
+    settings.hooks = {};
+  }
+
+  for (const slot of TYCOON_HOOK_SLOTS) {
+    const { event, matcher } = slot;
+
+    if (!Array.isArray(settings.hooks[event])) {
+      settings.hooks[event] = [];
+    }
+
+    const entries: any[] = settings.hooks[event];
+    let entry = entries.find((e: any) => e.matcher === matcher);
+
+    if (!entry) {
+      entry = { matcher, hooks: [] };
+      entries.push(entry);
+    }
+
+    if (!Array.isArray(entry.hooks)) {
+      entry.hooks = [];
+    }
+
+    const hasTycoon = entry.hooks.some(
+      (h: any) => h && typeof h.command === "string" && isTycoonCommand(h.command)
+    );
+
+    if (!hasTycoon) {
+      entry.hooks.push({ type: "command", command: currentHookCommand });
+      changes.push(`Wired ${event} (${matcher || "any"}) hook`);
+    } else {
+      let fixedStale = false;
+      for (const h of entry.hooks) {
+        if (h && typeof h.command === "string" && isTycoonCommand(h.command) && h.command !== currentHookCommand) {
+          h.command = currentHookCommand;
+          fixedStale = true;
+        }
+      }
+      if (fixedStale) {
+        changes.push(`Fixed stale hook path in ${event}`);
+      }
+
+      const before = entry.hooks.length;
+      let foundFirst = false;
+      entry.hooks = entry.hooks.filter((h: any) => {
+        if (h && typeof h.command === "string" && h.command === currentHookCommand) {
+          if (!foundFirst) {
+            foundFirst = true;
+            return true;
+          }
+          return false;
+        }
+        return true;
+      });
+      if (entry.hooks.length < before) {
+        changes.push(`Removed duplicate Tycoon hook in ${event}`);
+      }
+    }
+  }
+
+  if (opts.removeForeign && Array.isArray(opts.foreignCommands) && opts.foreignCommands.length > 0) {
+    const foreignSet = new Set(opts.foreignCommands);
+    let removedCount = 0;
+
+    for (const event of Object.keys(settings.hooks)) {
+      if (!Array.isArray(settings.hooks[event])) {
+        continue;
+      }
+      settings.hooks[event] = settings.hooks[event]
+        .map((entry: any) => {
+          if (!entry || !Array.isArray(entry.hooks)) {
+            return entry;
+          }
+          const before = entry.hooks.length;
+          entry.hooks = entry.hooks.filter(
+            (h: any) => !(h && typeof h.command === "string" && foreignSet.has(h.command))
+          );
+          removedCount += before - entry.hooks.length;
+          return entry;
+        })
+        .filter((entry: any) => entry && Array.isArray(entry.hooks) && entry.hooks.length > 0);
+    }
+
+    if (removedCount > 0) {
+      changes.push(`Removed ${removedCount} foreign hook(s)`);
+    }
+  }
+
+  return { settings, changes };
+}

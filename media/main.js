@@ -602,6 +602,152 @@
       handleSettingsUpdated(msg);
     } else if (msg && msg.type === "metricsReset") {
       handleMetricsReset(msg);
+    } else if (msg && msg.type === "doctorReport") {
+      const el = document.getElementById("doctor-results");
+      if (!el) return;
+      el.innerHTML = "";
+
+      // Re-enable the troubleshoot button
+      document.querySelectorAll("button").forEach(b => {
+        if (b.textContent === "Checking…") {
+          b.disabled = false;
+          b.textContent = "Troubleshoot & Fix";
+        }
+      });
+
+      const findings = Array.isArray(msg.findings) ? msg.findings : [];
+      const foreign = Array.isArray(msg.foreign) ? msg.foreign : [];
+
+      for (const f of findings) {
+        const row = document.createElement("div");
+        row.className = "doctor-finding";
+        const icon = document.createElement("span");
+        icon.className = f.severity === "ok" ? "doctor-icon-ok" : f.severity === "warn" ? "doctor-icon-warn" : "doctor-icon-error";
+        icon.textContent = f.severity === "ok" ? "✓" : f.severity === "warn" ? "⚠" : "✗";
+        const text = document.createElement("span");
+        text.className = "doctor-finding-text";
+        const title = document.createElement("strong");
+        title.textContent = f.title;
+        const detail = document.createElement("span");
+        detail.className = "doctor-detail";
+        detail.textContent = " — " + f.detail;
+        text.appendChild(title);
+        text.appendChild(detail);
+        row.appendChild(icon);
+        row.appendChild(text);
+        el.appendChild(row);
+      }
+
+      const hasFixable = findings.some(f => f.fixable && !f.destructive);
+      if (hasFixable) {
+        const fixRow = document.createElement("div");
+        fixRow.className = "doctor-action-row";
+        const fixBtn = document.createElement("button");
+        fixBtn.className = "skill-btn settings-btn";
+        fixBtn.textContent = "Fix issues";
+        fixBtn.addEventListener("click", () => {
+          fixBtn.disabled = true;
+          fixBtn.textContent = "Fixing…";
+          vscode.postMessage({ type: "applyDoctorFix", removeForeign: false });
+        });
+        fixRow.appendChild(fixBtn);
+        el.appendChild(fixRow);
+      }
+
+      if (foreign.length > 0) {
+        const cautionDiv = document.createElement("div");
+        cautionDiv.className = "doctor-caution";
+        const cautionTitle = document.createElement("div");
+        cautionTitle.className = "doctor-caution-title";
+        cautionTitle.textContent = "Foreign hook commands in Tycoon event-slots:";
+        cautionDiv.appendChild(cautionTitle);
+        for (const cmd of foreign) {
+          const cmdEl = document.createElement("div");
+          cmdEl.className = "doctor-foreign-cmd";
+          cmdEl.textContent = cmd;
+          cautionDiv.appendChild(cmdEl);
+        }
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "skill-btn settings-btn danger-btn";
+        removeBtn.textContent = `Remove foreign hooks (${foreign.length})`;
+        removeBtn.addEventListener("click", () => {
+          removeBtn.disabled = true;
+          removeBtn.textContent = "Removing…";
+          vscode.postMessage({ type: "applyDoctorFix", removeForeign: true });
+        });
+        cautionDiv.appendChild(removeBtn);
+        el.appendChild(cautionDiv);
+      }
+    } else if (msg && msg.type === "doctorFixDone") {
+      const el = document.getElementById("doctor-results");
+      if (!el) return;
+      el.innerHTML = "";
+
+      if (!msg.ok) {
+        const errEl = document.createElement("div");
+        errEl.className = "doctor-finding";
+        const icon = document.createElement("span");
+        icon.className = "doctor-icon-error";
+        icon.textContent = "✗";
+        const text = document.createElement("span");
+        text.className = "doctor-finding-text";
+        text.textContent = "Fix failed: " + (msg.error || "Unknown error");
+        errEl.appendChild(icon);
+        errEl.appendChild(text);
+        el.appendChild(errEl);
+        return;
+      }
+
+      const changes = Array.isArray(msg.changes) ? msg.changes : [];
+      if (changes.length === 0) {
+        const noChange = document.createElement("div");
+        noChange.className = "doctor-finding";
+        noChange.textContent = "No changes needed.";
+        el.appendChild(noChange);
+      } else {
+        for (const change of changes) {
+          const row = document.createElement("div");
+          row.className = "doctor-finding";
+          const icon = document.createElement("span");
+          icon.className = "doctor-icon-ok";
+          icon.textContent = "✓";
+          const text = document.createElement("span");
+          text.className = "doctor-finding-text";
+          text.textContent = change;
+          row.appendChild(icon);
+          row.appendChild(text);
+          el.appendChild(row);
+        }
+      }
+
+      const findings = Array.isArray(msg.findings) ? msg.findings : [];
+      const foreign = Array.isArray(msg.foreign) ? msg.foreign : [];
+      const refreshEl = document.createElement("div");
+      refreshEl.className = "doctor-refresh";
+      for (const f of findings) {
+        const row = document.createElement("div");
+        row.className = "doctor-finding";
+        const icon = document.createElement("span");
+        icon.className = f.severity === "ok" ? "doctor-icon-ok" : f.severity === "warn" ? "doctor-icon-warn" : "doctor-icon-error";
+        icon.textContent = f.severity === "ok" ? "✓" : f.severity === "warn" ? "⚠" : "✗";
+        const text = document.createElement("span");
+        text.textContent = " " + f.title + (f.detail ? ": " + f.detail : "");
+        row.appendChild(icon);
+        row.appendChild(text);
+        refreshEl.appendChild(row);
+      }
+      if (foreign.length > 0) {
+        const cautionDiv = document.createElement("div");
+        cautionDiv.className = "doctor-caution";
+        for (const cmd of foreign) {
+          const cmdEl = document.createElement("div");
+          cmdEl.className = "doctor-foreign-cmd";
+          cmdEl.textContent = cmd;
+          cautionDiv.appendChild(cmdEl);
+        }
+        refreshEl.appendChild(cautionDiv);
+      }
+      el.appendChild(refreshEl);
     }
   });
 
@@ -1583,9 +1729,21 @@
     repairBtn.addEventListener("click", () => {
       vscode.postMessage({ type: "repairHook" });
     });
+    const troubleshootBtn = document.createElement("button");
+    troubleshootBtn.className = "skill-btn settings-btn";
+    troubleshootBtn.textContent = "Troubleshoot & Fix";
+    troubleshootBtn.addEventListener("click", () => {
+      troubleshootBtn.disabled = true;
+      troubleshootBtn.textContent = "Checking…";
+      vscode.postMessage({ type: "runDoctor" });
+    });
     hookRow.appendChild(hookStatus);
     hookRow.appendChild(repairBtn);
+    hookRow.appendChild(troubleshootBtn);
     hookSection.appendChild(hookRow);
+    const doctorResultsEl = document.createElement("div");
+    doctorResultsEl.id = "doctor-results";
+    hookSection.appendChild(doctorResultsEl);
     setupConfigEl.appendChild(hookSection);
 
     // ── 2. Agents ──

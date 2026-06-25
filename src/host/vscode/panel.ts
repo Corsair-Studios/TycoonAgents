@@ -30,6 +30,7 @@ function getNonce(): string {
 
 import { mergeTycoonHooks } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
+import { diagnose, findForeignHooks, repairSettings } from "./hookDoctor";
 
 /** Singleton webview panel that renders the TycoonAgents visualization. */
 export class TycoonPanel {
@@ -139,6 +140,10 @@ export class TycoonPanel {
           }
         } else if (message.type === "setupUefnProject") {
           this._handleSetupUefnProject();
+        } else if (message.type === "runDoctor") {
+          this._handleRunDoctor();
+        } else if (message.type === "applyDoctorFix") {
+          void this._handleApplyDoctorFix((message as any).removeForeign === true);
         }
       },
       null,
@@ -723,7 +728,7 @@ export class TycoonPanel {
       fs.copyFileSync(src, dest);
 
       // 3. Relative hook command (Claude Code runs hooks with cwd = project root).
-      const hookCommand = `node ".claude/tycoon/tycoon-claude-hook.cjs"`;
+      const hookCommand = this._buildHookCommand();
 
       // 4. Read existing settings.local.json (default {} if missing/empty/invalid).
       const settingsPath = path.join(root, ".claude", "settings.local.json");
@@ -946,6 +951,73 @@ export class TycoonPanel {
         ok: false,
         error: String(err),
       });
+    }
+  }
+
+  private _buildHookCommand(): string {
+    return `node ".claude/tycoon/tycoon-claude-hook.cjs"`;
+  }
+
+  private _readSettingsTolerant(settingsPath: string): any | null {
+    try {
+      const raw = fs.readFileSync(settingsPath, "utf8").trim();
+      if (raw !== "") {
+        const parsed = JSON.parse(raw);
+        if (parsed !== null && typeof parsed === "object") {
+          return parsed;
+        }
+      }
+    } catch {
+      /* missing/invalid => null */
+    }
+    return null;
+  }
+
+  private _handleRunDoctor(): void {
+    const root = this._projectRoot();
+    if (root === "") {
+      void this._panel.webview.postMessage({ type: "doctorReport", findings: [], foreign: [], error: "No workspace folder open" });
+      return;
+    }
+    const localSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.local.json"));
+    const sharedSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.json"));
+    const currentHookCommand = this._buildHookCommand();
+    const hookScriptPath = path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs");
+    const hookScriptExists = fs.existsSync(hookScriptPath);
+    const findings = diagnose({ localSettings, sharedSettings, currentHookCommand, hookScriptExists });
+    const foreign = findForeignHooks(localSettings, sharedSettings);
+    void this._panel.webview.postMessage({ type: "doctorReport", findings, foreign });
+  }
+
+  private async _handleApplyDoctorFix(removeForeign: boolean): Promise<void> {
+    try {
+      const root = this._projectRoot();
+      if (root === "") {
+        void this._panel.webview.postMessage({ type: "doctorFixDone", ok: false, error: "No workspace folder open" });
+        return;
+      }
+      const currentHookCommand = this._buildHookCommand();
+      const localSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.local.json"));
+      const sharedSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.json"));
+      const foreignCommands = findForeignHooks(localSettings, sharedSettings);
+      if (removeForeign) {
+        const answer = await vscode.window.showWarningMessage(
+          "The following hook commands will be permanently removed:\n\n" + foreignCommands.join("\n"),
+          { modal: true },
+          "Remove"
+        );
+        if (answer !== "Remove") {
+          return;
+        }
+      }
+      const { settings, changes } = repairSettings(localSettings, currentHookCommand, { removeForeign, foreignCommands: removeForeign ? foreignCommands : undefined });
+      fs.writeFileSync(path.join(root, ".claude", "settings.local.json"), JSON.stringify(settings, null, 2));
+      const hookScriptExists = fs.existsSync(path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs"));
+      const findings = diagnose({ localSettings: settings, sharedSettings, currentHookCommand, hookScriptExists });
+      const foreign = findForeignHooks(settings, sharedSettings);
+      void this._panel.webview.postMessage({ type: "doctorFixDone", ok: true, changes, findings, foreign });
+    } catch (err) {
+      void this._panel.webview.postMessage({ type: "doctorFixDone", ok: false, error: String(err) });
     }
   }
 
