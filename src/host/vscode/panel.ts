@@ -20,6 +20,7 @@ import { mergeMcpServer, hasMcpServer } from "./mcpCatalog";
 import { buildAgentMarkdown } from "./packCatalog";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
+import { detectEngineSetups } from "./engineDetect";
 
 function getNonce(): string {
   let text = "";
@@ -1251,7 +1252,7 @@ export class TycoonPanel {
    * Returns [] if no engines are configured, so the webview shows nothing.
    * Designed to be extended: add more engine descriptors to the returned array.
    */
-  private _computeEngineStatus(): Array<{ id: string; label: string; state: "connected" | "offline"; detail: string }> {
+  private _computeEngineStatus(): Array<{ id: string; label: string; state: "connected" | "offline" | "ready" | "setup"; detail: string }> {
     const root = this._projectRoot();
     if (root === "") {
       return [];
@@ -1264,13 +1265,13 @@ export class TycoonPanel {
         mcpConfig = parsed as Record<string, unknown>;
       }
     } catch {
-      return [];
+      return detectEngineSetups(root);
     }
 
     const servers = (mcpConfig["mcpServers"] ?? mcpConfig) as Record<string, unknown>;
     const bridgeEntry = servers["uefn-bridge"] as Record<string, unknown> | undefined;
     if (!bridgeEntry) {
-      return [];
+      return detectEngineSetups(root);
     }
 
     // Resolve the bridge directory from env config or default temp location.
@@ -1300,7 +1301,7 @@ export class TycoonPanel {
       /* file missing or unreadable => offline */
     }
 
-    return [{ id: "uefn", label: "UEFN", state: chipState, detail }];
+    return [{ id: "uefn", label: "UEFN", state: chipState, detail }, ...detectEngineSetups(root)];
   }
 
   /** Poll engine status and push a `engineStatus` message to the webview. */

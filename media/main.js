@@ -492,7 +492,10 @@
       }
 
       const dot = document.createElement("span");
-      dot.className = chip.state === "connected"
+      // Green for a live/ready engine (UEFN connected, or another engine whose
+      // pack is installed); amber for offline/needs-setup.
+      var dotGreen = chip.state === "connected" || chip.state === "ready";
+      dot.className = dotGreen
         ? "engine-chip-dot engine-chip-dot--connected"
         : "engine-chip-dot engine-chip-dot--offline";
 
