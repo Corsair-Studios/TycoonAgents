@@ -4,6 +4,7 @@
 src/**
 test/**
 uefn-bridge/**
+out/src/**
 out/test/**
 out/**/*.test.js
 out/**/*.test.js.map
