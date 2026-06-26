@@ -965,7 +965,8 @@ export class TycoonPanel {
     const orchMetric = Array.isArray(state.agentMetrics)
       ? state.agentMetrics.find((m: any) => m.id === "orchestrator")
       : undefined;
-    const directSurveys: number = orchMetric?.directSurveys ?? 0;
+    const directSearches: number = orchMetric?.directSearches ?? 0;
+    const directReads: number = orchMetric?.directReads ?? 0;
     const directEdits: number = orchMetric?.directEdits ?? 0;
     const delegations: number = orchMetric?.delegations ?? 0;
     const warnThreshold: number =
@@ -981,7 +982,7 @@ export class TycoonPanel {
       payload: {
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         agents,
-        delegationHealth: { directSurveys, directEdits, delegations, warnThreshold },
+        delegationHealth: { directSearches, directReads, directEdits, delegations, warnThreshold },
         hookHealth,
       },
     });

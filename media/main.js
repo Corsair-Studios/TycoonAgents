@@ -1938,11 +1938,15 @@
   // ── 3b. Delegation Health ──
   const dhSection = buildSection("Delegation Health");
   const dh = (lastSettings && lastSettings.delegationHealth) || {};
-  const directSurveys = (typeof dh.directSurveys === "number") ? dh.directSurveys : 0;
-  const directEdits   = (typeof dh.directEdits   === "number") ? dh.directEdits   : 0;
-  const delegations   = (typeof dh.delegations   === "number") ? dh.delegations   : 0;
-  const warnThreshold = (typeof dh.warnThreshold === "number") ? dh.warnThreshold : 5;
-  const dhTotal = directSurveys + directEdits + delegations;
+  const directSearches = (typeof dh.directSearches === "number") ? dh.directSearches : 0;
+  const directReads    = (typeof dh.directReads    === "number") ? dh.directReads    : 0;
+  const directEdits    = (typeof dh.directEdits    === "number") ? dh.directEdits    : 0;
+  const delegations    = (typeof dh.delegations    === "number") ? dh.delegations    : 0;
+  const warnThreshold  = (typeof dh.warnThreshold  === "number") ? dh.warnThreshold  : 5;
+  // Reads are allowed for known files (per CLAUDE.md) — they are NOT a leak, so
+  // they are excluded from the ratio. Only direct Grep/Glob and edits count.
+  const dhLeak = directSearches + directEdits;
+  const dhTotal = delegations + dhLeak;
   if (dhTotal === 0) {
     const emptyP = document.createElement("p");
     emptyP.className = "settings-empty";
@@ -1950,27 +1954,50 @@
     dhSection.appendChild(emptyP);
   } else {
     const ratio = delegations / dhTotal;
-    const grade = ratio >= 0.8 ? "Excellent" : ratio >= 0.6 ? "Good" : ratio >= 0.4 ? "Fair" : "Needs work";
+    // Green / yellow / red traffic light, consistent with the rest of the UI.
+    const light = ratio >= 0.6
+      ? { color: "var(--status-active)", label: "Delegating well", glow: true }
+      : ratio >= 0.35
+        ? { color: "var(--status-done)", label: "Some direct work", glow: false }
+        : { color: "var(--status-error)", label: "Low delegation", glow: false };
     const badge = document.createElement("div");
-    badge.className = "rec-badge rec-info";
+    badge.className = "settings-row";
+    badge.style.flexDirection = "row";
+    badge.style.alignItems = "center";
+    badge.style.gap = "6px";
+    const dot = document.createElement("span");
+    dot.style.display = "inline-block";
+    dot.style.width = "9px";
+    dot.style.height = "9px";
+    dot.style.borderRadius = "50%";
+    dot.style.background = light.color;
+    if (light.glow) { dot.style.boxShadow = "0 0 5px " + light.color; }
     const badgeSpan = document.createElement("span");
-    badgeSpan.className = "rec-text";
-    badgeSpan.textContent = `${grade} — ${Math.round(ratio * 100)}%`;
+    badgeSpan.style.fontWeight = "600";
+    badgeSpan.textContent = `${light.label} · ${Math.round(ratio * 100)}%`;
+    badge.appendChild(dot);
     badge.appendChild(badgeSpan);
     dhSection.appendChild(badge);
 
     const summaryRow = document.createElement("div");
     summaryRow.className = "settings-row";
     const summarySpan = document.createElement("span");
-    summarySpan.textContent = `Orchestrator ran ${directSurveys} searches and ${directEdits} edits directly, and delegated ${delegations} tasks.`;
+    summarySpan.textContent = `Orchestrator delegated ${delegations} tasks; did ${directSearches} searches and ${directEdits} edits directly.`;
     summaryRow.appendChild(summarySpan);
     dhSection.appendChild(summaryRow);
+
+    const delegRow = document.createElement("div");
+    delegRow.className = "settings-row";
+    const delegSpan = document.createElement("span");
+    delegSpan.textContent = `Delegations: ${delegations}`;
+    delegRow.appendChild(delegSpan);
+    dhSection.appendChild(delegRow);
 
     const searchRow = document.createElement("div");
     searchRow.className = "settings-row";
     const searchSpan = document.createElement("span");
-    searchSpan.textContent = `Direct searches: ${directSurveys} — delegate to search-retrieval (Haiku, ~40x cheaper)`;
-    if (directSurveys > warnThreshold) { searchSpan.style.color = "#e0a000"; }
+    searchSpan.textContent = `Direct searches (Grep/Glob): ${directSearches} — delegate to search-retrieval (Haiku, ~40x cheaper)`;
+    if (directSearches > warnThreshold) { searchSpan.style.color = "var(--status-error)"; }
     searchRow.appendChild(searchSpan);
     dhSection.appendChild(searchRow);
 
@@ -1981,12 +2008,22 @@
     editRow.appendChild(editSpan);
     dhSection.appendChild(editRow);
 
-    const delegRow = document.createElement("div");
-    delegRow.className = "settings-row";
-    const delegSpan = document.createElement("span");
-    delegSpan.textContent = `Delegations: ${delegations}`;
-    delegRow.appendChild(delegSpan);
-    dhSection.appendChild(delegRow);
+    const readRow = document.createElement("div");
+    readRow.className = "settings-row";
+    const readSpan = document.createElement("span");
+    readSpan.style.color = "var(--muted)";
+    readSpan.textContent = `Direct file reads: ${directReads} — allowed for known files`;
+    readRow.appendChild(readSpan);
+    dhSection.appendChild(readRow);
+
+    const noteRow = document.createElement("div");
+    noteRow.className = "settings-row";
+    const noteSpan = document.createElement("span");
+    noteSpan.style.color = "var(--muted)";
+    noteSpan.style.fontSize = "11px";
+    noteSpan.textContent = "Session totals — reflects the whole session so far.";
+    noteRow.appendChild(noteSpan);
+    dhSection.appendChild(noteRow);
 
     const btnRow = document.createElement("div");
     btnRow.className = "settings-row";

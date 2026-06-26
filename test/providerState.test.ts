@@ -664,8 +664,8 @@ function findMetricById(state: WorldState, id: string) {
 }
 
 describe("Delegation Health counters", () => {
-  test("fresh metric starts with directSurveys, directEdits, delegations all at 0", () => {
-    // A just-spawned worker should have all three counters initialised to zero.
+  test("fresh metric starts with directSearches, directReads, directEdits, delegations all at 0", () => {
+    // A just-spawned worker should have all counters initialised to zero.
     const state = applyEvent(initialWorldState(), {
       type: "WorkerSpawned",
       at: T,
@@ -673,67 +673,83 @@ describe("Delegation Health counters", () => {
     });
     const m = findMetricById(state, "fresh-agent");
     assert.ok(m, "metric must exist after WorkerSpawned");
-    assert.equal(m!.directSurveys, 0, "directSurveys starts at 0");
+    assert.equal(m!.directSearches, 0, "directSearches starts at 0");
+    assert.equal(m!.directReads, 0, "directReads starts at 0");
     assert.equal(m!.directEdits, 0, "directEdits starts at 0");
     assert.equal(m!.delegations, 0, "delegations starts at 0");
   });
 
-  test("WorkerActivity kind 'survey' increments directSurveys on that workerId", () => {
+  test("survey + detail 'Grep' or 'Glob' increments directSearches (the leak), not directReads", () => {
     let state = initialWorldState();
     state = applyEvent(state, { type: "SessionStart", at: T });
-    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-worker" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-worker", kind: "survey" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-worker", kind: "survey" });
-    const m = findMetricById(state, "dh-worker");
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-search" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-search", kind: "survey", detail: "Grep" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-search", kind: "survey", detail: "Glob" });
+    const m = findMetricById(state, "dh-search");
     assert.ok(m);
-    assert.equal(m!.directSurveys, 2, "two survey activities should yield directSurveys===2");
+    assert.equal(m!.directSearches, 2, "Grep + Glob should yield directSearches===2");
+    assert.equal(m!.directReads, 0, "Grep/Glob must NOT increment directReads");
     assert.equal(m!.directEdits, 0, "directEdits must remain 0 for survey events");
   });
 
-  test("WorkerActivity kind 'build' increments directEdits on that workerId", () => {
+  test("survey + detail 'Read' increments directReads (allowed), not directSearches", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-read" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-read", kind: "survey", detail: "Read" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-read", kind: "survey", detail: "Read" });
+    const m = findMetricById(state, "dh-read");
+    assert.ok(m);
+    assert.equal(m!.directReads, 2, "two Reads should yield directReads===2");
+    assert.equal(m!.directSearches, 0, "Read must NOT increment directSearches");
+  });
+
+  test("WorkerActivity kind 'build' increments directEdits, not searches/reads", () => {
     let state = initialWorldState();
     state = applyEvent(state, { type: "SessionStart", at: T });
     state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-builder" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-builder", kind: "build" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-builder", kind: "build", detail: "Edit" });
     const m = findMetricById(state, "dh-builder");
     assert.ok(m);
     assert.equal(m!.directEdits, 1, "one build activity should yield directEdits===1");
-    assert.equal(m!.directSurveys, 0, "directSurveys must remain 0 for build events");
+    assert.equal(m!.directSearches, 0, "directSearches must remain 0 for build events");
+    assert.equal(m!.directReads, 0, "directReads must remain 0 for build events");
   });
 
   test("WorkerActivity kind 'haul' increments directEdits on that workerId", () => {
     let state = initialWorldState();
     state = applyEvent(state, { type: "SessionStart", at: T });
     state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-hauler" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-hauler", kind: "haul" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-hauler", kind: "haul" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 300, workerId: "dh-hauler", kind: "build" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-hauler", kind: "haul", detail: "Write" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-hauler", kind: "haul", detail: "Write" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 300, workerId: "dh-hauler", kind: "build", detail: "Edit" });
     const m = findMetricById(state, "dh-hauler");
     assert.ok(m);
     assert.equal(m!.directEdits, 3, "two haul + one build should yield directEdits===3");
-    assert.equal(m!.directSurveys, 0, "directSurveys must remain 0 for haul/build events");
+    assert.equal(m!.directSearches, 0, "directSearches must remain 0 for haul/build events");
   });
 
-  test("WorkerActivity kind 'wire' increments NEITHER directSurveys NOR directEdits", () => {
+  test("WorkerActivity kind 'wire' increments NEITHER searches/reads NOR directEdits", () => {
     let state = initialWorldState();
     state = applyEvent(state, { type: "SessionStart", at: T });
     state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-wire" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-wire", kind: "wire" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 200, workerId: "dh-wire", kind: "wire" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-wire", kind: "wire", detail: "mcp__x__y" });
     const m = findMetricById(state, "dh-wire");
     assert.ok(m);
-    assert.equal(m!.directSurveys, 0, "wire must not increment directSurveys");
+    assert.equal(m!.directSearches, 0, "wire must not increment directSearches");
+    assert.equal(m!.directReads, 0, "wire must not increment directReads");
     assert.equal(m!.directEdits, 0, "wire must not increment directEdits");
   });
 
-  test("WorkerActivity kind 'shell' increments NEITHER directSurveys NOR directEdits", () => {
+  test("WorkerActivity kind 'shell' increments NEITHER searches/reads NOR directEdits", () => {
     let state = initialWorldState();
     state = applyEvent(state, { type: "SessionStart", at: T });
     state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "dh-shell" });
-    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-shell", kind: "shell" });
+    state = applyEvent(state, { type: "WorkerActivity", at: T + 100, workerId: "dh-shell", kind: "shell", detail: "Bash" });
     const m = findMetricById(state, "dh-shell");
     assert.ok(m);
-    assert.equal(m!.directSurveys, 0, "shell must not increment directSurveys");
+    assert.equal(m!.directSearches, 0, "shell must not increment directSearches");
+    assert.equal(m!.directReads, 0, "shell must not increment directReads");
     assert.equal(m!.directEdits, 0, "shell must not increment directEdits");
   });
 

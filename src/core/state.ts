@@ -56,8 +56,10 @@ export interface AgentMetric {
    * the live timer after the idle-freeze grace period.
    */
   lastActivityAt: number | null;
-  /** WorkerActivity kind "survey" (Read/Grep/Glob) performed directly by this agent. */
-  directSurveys: number;
+  /** Direct Grep/Glob calls by this agent — the delegation leak (must be delegated per CLAUDE.md). */
+  directSearches: number;
+  /** Direct Read calls by this agent — allowed for known files; informational, not a leak. */
+  directReads: number;
   /** WorkerActivity kind "build" or "haul" (Edit/Write) performed directly by this agent. */
   directEdits: number;
   /** Task/Agent spawns credited to the orchestrator. */
@@ -155,7 +157,8 @@ function upsertMetric(
     tokens: 0,
     workStartAt: null,
     lastActivityAt: null,
-    directSurveys: 0,
+    directSearches: 0,
+    directReads: 0,
     directEdits: 0,
     delegations: 0,
   };
@@ -330,6 +333,11 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
         : state.workers;
       // Update metrics: increment mcpCount for wire activity; keep/start active timer.
       const isMcp = event.kind === "wire";
+      // For survey activity, split the genuinely-forbidden Grep/Glob (the delegation
+      // leak) from a plain Read, which CLAUDE.md allows directly for known files.
+      const isSurvey = event.kind === "survey";
+      const isForbiddenSearch = isSurvey && (event.detail === "Grep" || event.detail === "Glob");
+      const isRead = isSurvey && !isForbiddenSearch;
       const nextInternals = upsertMetric(
         state._agentMetricsInternal,
         event.workerId,
@@ -337,7 +345,8 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           ...m,
           status: "active" as const,
           mcpCount: isMcp ? m.mcpCount + 1 : m.mcpCount,
-          directSurveys: event.kind === "survey" ? m.directSurveys + 1 : m.directSurveys,
+          directSearches: isForbiddenSearch ? m.directSearches + 1 : m.directSearches,
+          directReads: isRead ? m.directReads + 1 : m.directReads,
           directEdits: (event.kind === "build" || event.kind === "haul") ? m.directEdits + 1 : m.directEdits,
           // Start timer if not already running.
           workStartAt: m.workStartAt ?? event.at,
