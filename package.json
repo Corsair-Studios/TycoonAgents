@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.41",
+  "version": "0.0.42",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
@@ -61,18 +61,22 @@
     "Other"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run build && npm run bundle:uefn",
+    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc",
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
     "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
     "bundle:uefn": "esbuild uefn-bridge/uefn-server.ts --bundle --platform=node --format=esm --target=node18 --outfile=media/uefn-bridge/uefn-server.mjs",
+    "bundle:designdoc": "esbuild design-doc/design-doc-cli.ts --bundle --platform=node --format=esm --target=node18 --outfile=media/skills/design-doc/design-doc-cli.mjs",
     "package": "vsce package"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@types/node": "^20",
     "@types/vscode": "^1.85.0",
+    "docx": "^8.5.0",
     "esbuild": "^0.21.0",
+    "fflate": "^0.8.3",
+    "mammoth": "^1.8.0",
     "typescript": "^5.4.0",
     "zod": "^3.23.0"
   }

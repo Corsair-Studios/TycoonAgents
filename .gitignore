@@ -13,6 +13,10 @@ build/
 # Only the built .mjs is ignored — vendored files like uefn_bridge.py are tracked.
 media/uefn-bridge/uefn-server.mjs
 
+# Bundled design-doc CLI (built artifact; source is design-doc/design-doc-cli.ts).
+# Only the built .mjs is ignored — SKILL.md in media/skills/design-doc/ is tracked.
+media/skills/design-doc/design-doc-cli.mjs
+
 # Environment / secrets
 .env
 .env.*
