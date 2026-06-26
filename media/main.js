@@ -782,6 +782,8 @@
         refreshEl.appendChild(cautionDiv);
       }
       el.appendChild(refreshEl);
+    } else if (msg && msg.type === "designDocDone") {
+      /* handled by host info message */
     }
   });
 
@@ -2038,7 +2040,29 @@
   }
   setupConfigEl.appendChild(dhSection);
 
-    // ── 4. Danger zone ──
+    // ── 4. Design docs ──
+    const docsSection = buildSection("Design docs");
+    const docsDesc = document.createElement("p");
+    docsDesc.className = "settings-empty";
+    docsDesc.textContent = "Generate a design doc (GDD/PRD) from what's built, or review one you've edited. Installs the design-doc skill and copies a prompt to paste into Claude Code.";
+    docsSection.appendChild(docsDesc);
+    const generateBtn = document.createElement("button");
+    generateBtn.className = "skill-btn settings-btn";
+    generateBtn.textContent = "Generate design doc";
+    generateBtn.addEventListener("click", () => {
+      vscode.postMessage({ type: "designDocAction", mode: "generate" });
+    });
+    docsSection.appendChild(generateBtn);
+    const reviewBtn = document.createElement("button");
+    reviewBtn.className = "skill-btn settings-btn";
+    reviewBtn.textContent = "Review design docs";
+    reviewBtn.addEventListener("click", () => {
+      vscode.postMessage({ type: "designDocAction", mode: "review" });
+    });
+    docsSection.appendChild(reviewBtn);
+    setupConfigEl.appendChild(docsSection);
+
+    // ── 5. Danger zone ──
     const dangerSection = buildSection("Danger zone");
     dangerSection.classList.add("danger-section");
     const dangerRow = document.createElement("div");

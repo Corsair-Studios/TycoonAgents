@@ -1,4 +1,4 @@
-/*
+﻿/*
  * TycoonAgents - https://x.com/thetrashbyrd
  * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
  * Attribution header - optional; end users may remove it.
@@ -140,7 +140,7 @@ export class TycoonPanel {
           this._handleInstallHooks();
           this._handleGetSettings();
         } else if (message.type === "resetMetrics") {
-          this._handleResetMetrics();
+          void this._handleResetMetrics();
         } else if (message.type === "getPacks") {
           this._handleGetPacks();
         } else if (message.type === "installPack") {
@@ -161,6 +161,8 @@ export class TycoonPanel {
           this._handleRunDoctor();
         } else if (message.type === "applyDoctorFix") {
           void this._handleApplyDoctorFix((message as any).removeForeign === true);
+        } else if (message.type === "designDocAction") {
+          await this._handleDesignDocAction((message as any).mode);
         }
       },
       null,
@@ -410,7 +412,7 @@ export class TycoonPanel {
       // Host-side confirmation gate for genuinely third-party servers. The
       // authoritative source is the catalog entry's thirdParty flag (not the
       // webview payload). window.confirm is unreliable in VS Code webviews, so
-      // we prompt here with a native modal — same pattern as pack install.
+      // we prompt here with a native modal â€” same pattern as pack install.
       if (entry.thirdParty) {
         const answer = await vscode.window.showWarningMessage(
           this._buildMcpConfirmMessage(entry),
@@ -461,7 +463,7 @@ export class TycoonPanel {
 
   /**
    * Build the third-party disclosure list for a pack from the MCP catalog.
-   * Only genuinely third-party MCP servers (thirdParty: true) are disclosed —
+   * Only genuinely third-party MCP servers (thirdParty: true) are disclosed â€”
    * bundled/local servers (e.g. uefn-bridge) must NOT trigger the confirm gate.
    * Shared by _handleGetPacks (display) and _handleInstallPack (host confirm).
    */
@@ -535,8 +537,8 @@ export class TycoonPanel {
     lines.push("");
     lines.push("This installs third-party software that runs on your machine:");
     for (const d of disclosures) {
-      const who = [d.label, d.vendor].filter(Boolean).join(" · ");
-      lines.push(`• ${who}${d.package ? ` — runs ${d.package}` : ""}`);
+      const who = [d.label, d.vendor].filter(Boolean).join(" Â· ");
+      lines.push(`â€¢ ${who}${d.package ? ` â€” runs ${d.package}` : ""}`);
       if (d.network) {
         lines.push(`    Sends data externally: ${d.dataNote || "contacts an external service."}`);
       } else if (d.dataNote) {
@@ -572,7 +574,7 @@ export class TycoonPanel {
 
       // Host-side confirmation gate for third-party packs. window.confirm is
       // unreliable inside VS Code webviews (can silently return false), so we
-      // confirm here with a native modal — same pattern as the Hook Doctor's
+      // confirm here with a native modal â€” same pattern as the Hook Doctor's
       // foreign-hook removal. Recompute disclosures authoritatively rather than
       // trusting the webview payload (defense-in-depth); fall back to passed
       // values if the catalog can't be loaded.
@@ -589,7 +591,7 @@ export class TycoonPanel {
           "Install"
         );
         if (answer !== "Install") {
-          // User dismissed the modal — clear the webview's "installing…" state.
+          // User dismissed the modal â€” clear the webview's "installingâ€¦" state.
           this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, cancelled: true });
           return;
         }
@@ -662,7 +664,7 @@ export class TycoonPanel {
         return;
       }
       // Install the uefn pack (reuses _handleInstallPack logic via _installPackById).
-      // We call _handleInstallPack directly; it posts packInstalled — but we also need
+      // We call _handleInstallPack directly; it posts packInstalled â€” but we also need
       // to handle the bridge staging and post uefnSetupDone. So we factor pack install
       // inline here to capture the result synchronously.
       const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
@@ -698,6 +700,32 @@ export class TycoonPanel {
     } catch (e) {
       void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: String(e) });
     }
+  }
+
+  private async _handleDesignDocAction(mode: string): Promise<void> {
+    const root = this._projectRoot();
+    if (!root) {
+      vscode.window.showWarningMessage("No project root — open a folder first.");
+      return;
+    }
+    const src = path.join(this._extensionUri.fsPath, "media", "skills", "design-doc");
+    const dest = path.join(root, ".claude", "skills", "design-doc");
+    try {
+      fs.mkdirSync(path.join(root, ".claude", "skills"), { recursive: true });
+      fs.cpSync(src, dest, { recursive: true });
+    } catch (e) {
+      vscode.window.showErrorMessage("Failed to install design-doc skill: " + String(e));
+      void this._panel.webview.postMessage({ type: "designDocDone", mode, ok: false, error: String(e) });
+      return;
+    }
+    const prompt = mode === "review"
+      ? "Use the design-doc skill (.claude/skills/design-doc) to review the design document(s) in ./design-docs/. Convert each .docx to text with the skill's converter (design-doc-cli.mjs docx2md), read them, summarize what the project is meant to be, flag mismatches with what's currently built, and recommend which TycoonAgents packs/agents to install."
+      : "Use the design-doc skill (.claude/skills/design-doc) to analyze this project and generate a design document — a Game Design Document (GDD) if this is a game, otherwise a Product Requirements Document (PRD). Save it as a .docx in ./design-docs/ using the skill's bundled converter (design-doc-cli.mjs md2docx). Base it on what's actually built so I can review and correct it.";
+    await vscode.env.clipboard.writeText(prompt);
+    vscode.window.showInformationMessage(
+      "Design-doc skill installed and the " + (mode === "review" ? "review" : "generate") + " prompt was copied to your clipboard — paste it into Claude Code to run it."
+    );
+    void this._panel.webview.postMessage({ type: "designDocDone", mode, ok: true });
   }
 
   /**
@@ -1055,7 +1083,16 @@ export class TycoonPanel {
   }
 
   /** Truncate the activity log, reset runtime state, and re-seed the roster. */
-  private _handleResetMetrics(): void {
+  private async _handleResetMetrics(): Promise<void> {
+    const answer = await vscode.window.showWarningMessage(
+      "Reset all session metrics? This cannot be undone.",
+      { modal: true },
+      "Reset"
+    );
+    if (answer !== "Reset") {
+      void this._panel.webview.postMessage({ type: "metricsReset", ok: false, cancelled: true });
+      return;
+    }
     try {
       const root = this._projectRoot();
       const activityPath = path.join(
@@ -1215,13 +1252,13 @@ export class TycoonPanel {
 
     let chipState: "connected" | "offline" = "offline";
     let detail =
-      "UEFN bridge installed but not responding — open your UEFN project and start the Python bridge (Content/Python).";
+      "UEFN bridge installed but not responding â€” open your UEFN project and start the Python bridge (Content/Python).";
     try {
       const heartbeatPath = path.join(bridgeDir, "heartbeat.json");
       const stat = fs.statSync(heartbeatPath);
       if (Date.now() - stat.mtimeMs < 15000) {
         chipState = "connected";
-        detail = "UEFN bridge connected — agents can use the uefn_* MCP tools.";
+        detail = "UEFN bridge connected â€” agents can use the uefn_* MCP tools.";
       }
     } catch {
       /* file missing or unreadable => offline */
