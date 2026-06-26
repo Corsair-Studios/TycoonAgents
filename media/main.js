@@ -322,6 +322,10 @@
   const tabThemeBuilder     = /** @type {HTMLElement} */ (document.getElementById("tab-theme-builder"));
   const themePickerList     = /** @type {HTMLElement} */ (document.getElementById("theme-picker-list"));
   const themeBuilderPanel   = /** @type {HTMLElement} */ (document.getElementById("theme-builder-panel"));
+  const themePickerGrid     = /** @type {HTMLElement} */ (document.getElementById("theme-picker-grid"));
+  const themePromptInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-prompt-input"));
+  const themeGenerateBtn    = /** @type {HTMLElement} */ (document.getElementById("theme-generate-btn"));
+  const themeBuildStatus    = /** @type {HTMLElement} */ (document.getElementById("theme-build-status"));
 
   // Tracks whether the setup screen was reached via Settings (vs. first-run
   // install). When opened from Settings we stay on the screen even once the
@@ -415,6 +419,7 @@
     menuThemesBtn.addEventListener("click", () => {
       closeMenu();
       openModal(themesModalEl, themesModalCloseBtn);
+      vscode.postMessage({ type: 'LIST_THEMES' });
     });
   }
 
@@ -424,19 +429,12 @@
 
   if (tabThemePicker && tabThemeBuilder) {
     tabThemePicker.addEventListener("click", () => {
-      tabThemePicker.setAttribute("aria-selected", "true");
-      tabThemePicker.classList.add("catalog-tab--active");
-      tabThemeBuilder.setAttribute("aria-selected", "false");
-      tabThemeBuilder.classList.remove("catalog-tab--active");
       themePickerList.removeAttribute("hidden");
       themeBuilderPanel.setAttribute("hidden", "");
+      vscode.postMessage({ type: 'LIST_THEMES' });
     });
 
     tabThemeBuilder.addEventListener("click", () => {
-      tabThemeBuilder.setAttribute("aria-selected", "true");
-      tabThemeBuilder.classList.add("catalog-tab--active");
-      tabThemePicker.setAttribute("aria-selected", "false");
-      tabThemePicker.classList.remove("catalog-tab--active");
       themeBuilderPanel.removeAttribute("hidden");
       themePickerList.setAttribute("hidden", "");
 
@@ -446,6 +444,49 @@
         window.initThemeBuilder(root);
       }
     });
+  }
+
+  if (themeGenerateBtn && themePromptInput) {
+    themeGenerateBtn.addEventListener("click", () => {
+      const prompt = themePromptInput.value.trim();
+      if (!prompt) return;
+      
+      themeGenerateBtn.setAttribute("disabled", "");
+      themeGenerateBtn.textContent = "Generating...";
+      if (themeBuildStatus) {
+        themeBuildStatus.textContent = "Starting generation...";
+        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      }
+      
+      vscode.postMessage({ type: 'GENERATE_THEME', payload: { prompt } });
+    });
+  }
+
+  function renderThemesList(themes) {
+    if (!themePickerGrid) return;
+    themePickerGrid.innerHTML = "";
+    
+    if (!themes || themes.length === 0) {
+      const emptyMsg = document.createElement("div");
+      emptyMsg.style.color = "var(--vscode-descriptionForeground)";
+      emptyMsg.textContent = "No saved themes yet.";
+      themePickerGrid.appendChild(emptyMsg);
+      return;
+    }
+    
+    for (const theme of themes) {
+      const btn = document.createElement("button");
+      btn.className = "skill-btn";
+      btn.style.textAlign = "left";
+      btn.style.padding = "8px 12px";
+      btn.style.backgroundColor = "var(--vscode-button-secondaryBackground, #3a3d41)";
+      btn.style.color = "var(--vscode-button-secondaryForeground, #ffffff)";
+      btn.textContent = theme.display_name || theme.theme_id;
+      btn.addEventListener("click", () => {
+        vscode.postMessage({ type: 'SELECT_THEME', payload: { theme_id: theme.theme_id } });
+      });
+      themePickerGrid.appendChild(btn);
+    }
   }
 
   setupBackBtn.addEventListener("click", () => {
@@ -638,7 +679,32 @@
 
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
-    if (msg && msg.type === "state") {
+    if (msg && msg.type === "THEMES_LIST") {
+      renderThemesList(msg.payload?.themes || msg.themes);
+    } else if (msg && msg.type === "THEME_GENERATION_PROGRESS") {
+      if (themeBuildStatus) {
+        themeBuildStatus.textContent = msg.payload?.message || msg.message || "Working...";
+        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      }
+    } else if (msg && msg.type === "THEME_GENERATION_ERROR") {
+      if (themeBuildStatus) {
+        themeBuildStatus.textContent = "Error: " + (msg.payload?.message || msg.message || "Unknown error");
+        themeBuildStatus.style.color = "var(--vscode-errorForeground)";
+      }
+      if (themeGenerateBtn) {
+        themeGenerateBtn.removeAttribute("disabled");
+        themeGenerateBtn.textContent = "Generate";
+      }
+    } else if (msg && msg.type === "THEME_INITIALIZED") {
+      if (themeGenerateBtn && themeGenerateBtn.hasAttribute("disabled")) {
+        themeGenerateBtn.removeAttribute("disabled");
+        themeGenerateBtn.textContent = "Generate";
+      }
+      if (themeBuildStatus && themeBuildStatus.textContent.indexOf("Error") !== 0) {
+        themeBuildStatus.textContent = "Theme generated successfully.";
+        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      }
+    } else if (msg && msg.type === "state") {
       state = msg.state;
       idleFreezeMs = state.idleFreezeMs ?? 180000;
       sanityCapMs = state.sanityCapMs ?? 900000;

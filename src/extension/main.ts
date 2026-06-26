@@ -1,8 +1,6 @@
 import * as vscode from 'vscode';
-import { expandThemePrompt, buildCharacterAtlasPrompt, buildEnvironmentPrompt } from './translator';
-import { generateThemeImage } from './imageClient';
-import { sliceAndNormalizeAtlas } from './slicer';
-import type { WorldState, ThemeManifest, AgentConfig, RivalConfig } from '../shared/types';
+import type { WorldState, ThemeManifest } from '../shared/types';
+import { generateTheme as generateThemeService } from './themeService';
 
 let activeWebview: vscode.Webview | undefined;
 let heartbeat: NodeJS.Timeout | undefined;
@@ -215,136 +213,27 @@ export function activate(context: vscode.ExtensionContext): void {
             cancellable: true,
           },
           async (progress, token) => {
-            // Gate 1: expand theme
-            progress.report({ message: 'Expanding theme concept...' });
-            const { systemPrompt, suggestedManifest } = await expandThemePrompt(input);
-
-            const displayName = suggestedManifest.display_name ?? input;
-            // Slugify display_name → theme_id
-            const theme_id = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-            const sidecarFilename = `${theme_id}_frames.json`;
-
-            // Build the work list: 16 agents + 2 rivals = 18 characters
-            const agentEntries = (suggestedManifest.roster_agents ?? []).map((a) => ({
-              key: `agent_${a.slot_id}`,
-              name: a.name,
-              kind: 'agent' as const,
-              original: a,
-            }));
-            const rivalEntries = (suggestedManifest.roster_rivals ?? []).map((r) => ({
-              key: r.rival_id,
-              name: r.name,
-              kind: 'rival' as const,
-              original: r,
-            }));
-            const workList = [...agentEntries, ...rivalEntries];
-
-            const frames: Record<string, string[]> = {};
-            const updatedAgents: AgentConfig[] = [];
-            const updatedRivals: RivalConfig[] = [];
-
-            // Generate one atlas per character
-            for (let i = 0; i < workList.length; i++) {
-              if (token.isCancellationRequested) {
-                vscode.window.showInformationMessage('TycoonAgents: Theme generation cancelled.');
-                return;
-              }
-
-              const entry = workList[i];
-              progress.report({ message: `${entry.name} (${i + 1}/${workList.length})` });
-
-              const charPrompt = buildCharacterAtlasPrompt(systemPrompt, entry.name, displayName);
-              const buf = await generateThemeImage(charPrompt);
-              const pkg = await sliceAndNormalizeAtlas(buf, suggestedManifest);
-
-              frames[entry.key] = pkg.slots.map((s) => s.data);
-
-              const atlasRef = `${sidecarFilename}#${entry.key}`;
-              if (entry.kind === 'agent') {
-                updatedAgents.push({ ...entry.original, atlas_asset: atlasRef });
-              } else {
-                updatedRivals.push({ ...entry.original, atlas_asset: atlasRef });
-              }
-
-              // Rate-limit: 1500ms between calls except after the last character
-              if (i < workList.length - 1) {
-                await new Promise<void>((r) => setTimeout(r, 1500));
-              }
-            }
-
-            // Environment background (after all characters)
-            if (!token.isCancellationRequested) {
-              progress.report({ message: 'Environment background (18/18)' });
-              try {
-                const envBuf = await generateThemeImage(
-                  buildEnvironmentPrompt(systemPrompt, displayName),
-                );
-                const envDataUri = 'data:image/png;base64,' + envBuf.toString('base64');
-                frames['environment_background'] = [envDataUri];
-                if (suggestedManifest.viewport) {
-                  suggestedManifest.viewport.background_asset =
-                    `${sidecarFilename}#environment_background`;
-                }
-              } catch (envErr) {
-                console.warn(
-                  'TycoonAgents: Environment background generation failed (non-fatal):',
-                  envErr,
-                );
-              }
-            }
-
-            // Assemble full ThemeManifest
-            const manifest: ThemeManifest = {
-              manifest_version: '1.0.0',
-              theme_id,
-              display_name: displayName,
-              author: 'TycoonAgents Factory',
-              viewport: suggestedManifest.viewport ?? {
-                native_width: 1280,
-                native_height: 720,
-                background_asset: 'background.png',
-                walkable_nav_polygon: [
-                  [0.50, 0.15], [0.88, 0.38], [0.88, 0.82],
-                  [0.50, 0.95], [0.12, 0.82], [0.12, 0.38],
-                ],
-              },
-              roster_agents: updatedAgents,
-              roster_rivals: updatedRivals,
-              // TODO: props/badges/emotes not yet emitted by Gate 1; pending schema coordination (docs/IPC-CONTRACT.md)
-              buildable_objects: [],
-              badges: [],
-            };
-
-            // Persist to global storage
-            await vscode.workspace.fs.createDirectory(context.globalStorageUri);
-
-            const manifestUri = vscode.Uri.joinPath(
+            const result = await generateThemeService(
               context.globalStorageUri,
-              `${theme_id}_manifest.json`,
+              input,
+              (msg) => progress.report({ message: msg }),
+              () => token.isCancellationRequested,
             );
-            await vscode.workspace.fs.writeFile(
-              manifestUri,
-              Buffer.from(JSON.stringify(manifest, null, 2)),
-            );
-
-            const framesUri = vscode.Uri.joinPath(context.globalStorageUri, sidecarFilename);
-            await vscode.workspace.fs.writeFile(
-              framesUri,
-              Buffer.from(JSON.stringify(frames, null, 2)),
-            );
-
-            lastTheme = { manifest, frames };
-            broadcastTheme(manifest, frames, true);
-
+            lastTheme = result;
+            broadcastTheme(result.manifest, result.frames, true);
             vscode.window.showInformationMessage(
-              `TycoonAgents: Theme manifest saved → ${manifestUri.fsPath}`,
+              `TycoonAgents: Theme "${result.manifest.display_name}" saved.`,
             );
           },
         );
       } catch (err) {
-        vscode.window.showErrorMessage(
-          `TycoonAgents: Theme generation failed — ${String(err)}`,
-        );
+        if (String(err).includes('cancelled')) {
+          vscode.window.showInformationMessage('TycoonAgents: Theme generation cancelled.');
+        } else {
+          vscode.window.showErrorMessage(
+            `TycoonAgents: Theme generation failed — ${String(err)}`,
+          );
+        }
       }
     }),
   );

@@ -24,7 +24,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Command: open (or reveal) the TycoonAgents panel
   const openCmd = vscode.commands.registerCommand("tycoonagents.open", () => {
-    TycoonPanel.createOrShow(context.extensionUri, runtime);
+    TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri);
 
     // Start the Claude Code provider if not already running
     if (!provider) {
@@ -72,7 +72,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Command: run demo sequence
   const demoCmd = vscode.commands.registerCommand("tycoonagents.demo", () => {
-    TycoonPanel.createOrShow(context.extensionUri, runtime);
+    TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri);
     // Cancel any previous demo
     demoDisposable?.dispose();
     demoDisposable = runDemo(runtime);

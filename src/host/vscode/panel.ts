@@ -21,6 +21,7 @@ import { buildAgentMarkdown } from "./packCatalog";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
 import { detectEngineSetups } from "./engineDetect";
+import { listThemes, loadTheme, generateTheme as generateThemeService } from "../../extension/themeService";
 
 function getNonce(): string {
   let text = "";
@@ -43,11 +44,12 @@ export class TycoonPanel {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
   private readonly _runtime: Runtime;
+  private readonly _globalStorageUri: vscode.Uri;
   private _disposables: vscode.Disposable[] = [];
   private _runtimeDisposable: { dispose(): void } | undefined;
   private _enginePollInterval: NodeJS.Timeout | undefined;
 
-  public static createOrShow(extensionUri: vscode.Uri, runtime: Runtime): TycoonPanel {
+  public static createOrShow(extensionUri: vscode.Uri, runtime: Runtime, globalStorageUri: vscode.Uri): TycoonPanel {
     // Dock beside the editor (ViewColumn.Two) so we never cover the active
     // Claude Code session in column One.
     const column = vscode.ViewColumn.Two;
@@ -69,18 +71,20 @@ export class TycoonPanel {
       }
     );
 
-    TycoonPanel.currentPanel = new TycoonPanel(panel, extensionUri, runtime);
+    TycoonPanel.currentPanel = new TycoonPanel(panel, extensionUri, runtime, globalStorageUri);
     return TycoonPanel.currentPanel;
   }
 
   private constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
-    runtime: Runtime
+    runtime: Runtime,
+    globalStorageUri: vscode.Uri
   ) {
     this._panel = panel;
     this._extensionUri = extensionUri;
     this._runtime = runtime;
+    this._globalStorageUri = globalStorageUri;
 
     this._update();
 
@@ -171,6 +175,29 @@ export class TycoonPanel {
           void this._handleApplyDoctorFix((message as any).removeForeign === true);
         } else if (message.type === "designDocAction") {
           await this._handleDesignDocAction((message as any).mode);
+        } else if (message.type === "LIST_THEMES") {
+          const themes = await listThemes(this._globalStorageUri);
+          void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
+        } else if (message.type === "SELECT_THEME") {
+          const payload = (message as any).payload as { theme_id?: string } | undefined;
+          const t = await loadTheme(this._globalStorageUri, payload?.theme_id ?? "");
+          if (t) {
+            void this._panel.webview.postMessage({ type: "THEME_INITIALIZED", payload: { manifest: t.manifest, frames: t.frames, is_editor_mode: false } });
+          } else {
+            void this._panel.webview.postMessage({ type: "THEME_GENERATION_ERROR", payload: { message: "Theme not found." } });
+          }
+        } else if (message.type === "GENERATE_THEME") {
+          const payload = (message as any).payload as { prompt?: string } | undefined;
+          try {
+            const r = await generateThemeService(
+              this._globalStorageUri,
+              payload?.prompt ?? "",
+              (msg) => void this._panel.webview.postMessage({ type: "THEME_GENERATION_PROGRESS", payload: { message: msg } }),
+            );
+            void this._panel.webview.postMessage({ type: "THEME_INITIALIZED", payload: { manifest: r.manifest, frames: r.frames, is_editor_mode: true } });
+          } catch (err) {
+            void this._panel.webview.postMessage({ type: "THEME_GENERATION_ERROR", payload: { message: String(err) } });
+          }
         }
       },
       null,
@@ -1466,14 +1493,20 @@ export class TycoonPanel {
     <div id="themes-backdrop"></div>
     <div id="themes-dialog">
       <button id="themes-modal-close" aria-label="Close dialog">&times;</button>
-      <div class="themes-tabs" role="tablist">
-        <button id="tab-theme-picker" class="catalog-tab catalog-tab--active" role="tab" aria-selected="true">Theme Picker</button>
-        <button id="tab-theme-builder" class="catalog-tab" role="tab" aria-selected="false">Theme Builder</button>
-      </div>
       <div id="theme-picker-list" role="tabpanel">
-        <div style="padding: 20px; color: #ccc;">Theme picker coming soon...</div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+          <h2 style="margin: 0;">Themes</h2>
+          <button id="tab-theme-builder" class="skill-btn">Theme Builder</button>
+        </div>
+        <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
       </div>
       <div id="theme-builder-panel" role="tabpanel" hidden>
+        <button id="tab-theme-picker" class="skill-btn" style="margin-bottom: 16px;">&larr; Back to themes</button>
+        <div id="theme-prompt-container" style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <input type="text" id="theme-prompt-input" placeholder="e.g. GI Joe Cobra" style="flex: 1; padding: 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border);" />
+          <button id="theme-generate-btn" class="skill-btn">Generate</button>
+        </div>
+        <div id="theme-build-status" style="margin-bottom: 12px; font-style: italic; min-height: 20px; color: var(--vscode-descriptionForeground);"></div>
         <div id="theme-builder-root"></div>
       </div>
     </div>

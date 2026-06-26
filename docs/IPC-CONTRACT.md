@@ -62,3 +62,24 @@ Already implemented host-side in `src/extension/main.ts` via `sendTelemetryUpdat
 - **Host broadcast is LIVE.** `THEME_INITIALIZED` is now emitted on generation completion (`is_editor_mode: true`) and on view-resolve re-hydration (`is_editor_mode: false`).
 - **Rival key fixed.** Rival frames map keys are now `<rival_id>` (e.g. `rival_0`) — no double-prefix. The `atlas_asset` ref suffix and the frames key are identical.
 - **Follow-up for webview team:** The boot `THEME_REQUEST` is sent via `window.parent.postMessage`, which does NOT reach the VS Code extension host. Switching to `acquireVsCodeApi().postMessage` would make reload re-hydration deterministic rather than best-effort.
+
+---
+
+## Themes Menu IPC (added 2026-06-26)
+
+### Inbound Messages (Webview → Host)
+
+| type | payload | description |
+|------|---------|-------------|
+| `LIST_THEMES` | _(none)_ | Request the list of saved themes from global storage. |
+| `GENERATE_THEME` | `{ prompt: string }` | Start AI generation of a new theme from a text prompt. |
+| `SELECT_THEME` | `{ theme_id: string }` | Load and activate a previously generated theme by ID. |
+
+### Outbound Messages (Host → Webview)
+
+| type | payload | description |
+|------|---------|-------------|
+| `THEMES_LIST` | `{ themes: Array<{ theme_id: string; display_name: string }> }` | Response to `LIST_THEMES`. |
+| `THEME_GENERATION_PROGRESS` | `{ message: string }` | Streamed progress updates during `GENERATE_THEME`. |
+| `THEME_GENERATION_ERROR` | `{ message: string }` | Error from `GENERATE_THEME` or `SELECT_THEME` (theme not found). |
+| `THEME_INITIALIZED` | `{ manifest: ThemeManifest; frames: Record<string, string[]>; is_editor_mode: boolean }` | Sent to both `TycoonPanel` webview (via panel.ts handlers) and `TheaterView` webview (via main.ts `broadcastTheme`). `is_editor_mode: true` = freshly generated; `false` = loaded/restored. |
