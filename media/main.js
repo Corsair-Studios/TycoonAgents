@@ -2077,8 +2077,11 @@
       const headlineRow = document.createElement("div");
       headlineRow.className = "settings-row";
       headlineRow.style.display = "flex";
+      headlineRow.style.flexDirection = "row";
       headlineRow.style.alignItems = "center";
-      headlineRow.style.gap = "4px";
+      headlineRow.style.justifyContent = "flex-start";
+      headlineRow.style.textAlign = "left";
+      headlineRow.style.gap = "6px";
       headlineRow.appendChild(budgetDot(cb.overall));
       const headlineText = document.createElement("span");
       headlineText.textContent = "Per prompt: ~" + formatK(cb.perPromptTokens) + " tokens (CLAUDE.md)";
@@ -2089,8 +2092,11 @@
       const claudeRow = document.createElement("div");
       claudeRow.className = "settings-row";
       claudeRow.style.display = "flex";
+      claudeRow.style.flexDirection = "row";
       claudeRow.style.alignItems = "center";
-      claudeRow.style.gap = "4px";
+      claudeRow.style.justifyContent = "flex-start";
+      claudeRow.style.textAlign = "left";
+      claudeRow.style.gap = "6px";
       if (cb.claudeMd) {
         claudeRow.appendChild(budgetDot(cb.claudeMd.grade));
         const claudeText = document.createElement("span");
@@ -2113,8 +2119,11 @@
         const agentRow = document.createElement("div");
         agentRow.className = "settings-row";
         agentRow.style.display = "flex";
+        agentRow.style.flexDirection = "row";
         agentRow.style.alignItems = "center";
-        agentRow.style.gap = "4px";
+        agentRow.style.justifyContent = "flex-start";
+        agentRow.style.textAlign = "left";
+        agentRow.style.gap = "6px";
         agentRow.appendChild(budgetDot(af.grade));
         const agentText = document.createElement("span");
         agentText.textContent = af.name + ": ~" + formatK(af.tokens) + " tokens";
