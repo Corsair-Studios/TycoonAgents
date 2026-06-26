@@ -2040,6 +2040,105 @@
   }
   setupConfigEl.appendChild(dhSection);
 
+    // ── 3c. Context budget ──
+    const budgetSection = buildSection("Context budget");
+    const cb = (lastSettings && lastSettings.contextBudget) || null;
+    if (!cb) {
+      const emptyNote = document.createElement("p");
+      emptyNote.className = "settings-empty";
+      emptyNote.textContent = "No context data.";
+      budgetSection.appendChild(emptyNote);
+    } else {
+      /** @param {"ok"|"warn"|"high"} grade */
+      function budgetDot(grade) {
+        const dot = document.createElement("span");
+        dot.style.display = "inline-block";
+        dot.style.width = "8px";
+        dot.style.height = "8px";
+        dot.style.borderRadius = "50%";
+        dot.style.marginRight = "6px";
+        dot.style.flexShrink = "0";
+        if (grade === "high") {
+          dot.style.backgroundColor = "var(--status-error)";
+        } else if (grade === "warn") {
+          dot.style.backgroundColor = "var(--status-done)";
+        } else {
+          dot.style.backgroundColor = "var(--status-active)";
+        }
+        return dot;
+      }
+      /** @param {number} n */
+      function formatK(n) {
+        if (n >= 1000) return (Math.round(n / 100) / 10).toFixed(1) + "k";
+        return String(n);
+      }
+
+      // Headline row
+      const headlineRow = document.createElement("div");
+      headlineRow.className = "settings-row";
+      headlineRow.style.display = "flex";
+      headlineRow.style.alignItems = "center";
+      headlineRow.style.gap = "4px";
+      headlineRow.appendChild(budgetDot(cb.overall));
+      const headlineText = document.createElement("span");
+      headlineText.textContent = "Per prompt: ~" + formatK(cb.perPromptTokens) + " tokens (CLAUDE.md)";
+      headlineRow.appendChild(headlineText);
+      budgetSection.appendChild(headlineRow);
+
+      // CLAUDE.md row
+      const claudeRow = document.createElement("div");
+      claudeRow.className = "settings-row";
+      claudeRow.style.display = "flex";
+      claudeRow.style.alignItems = "center";
+      claudeRow.style.gap = "4px";
+      if (cb.claudeMd) {
+        claudeRow.appendChild(budgetDot(cb.claudeMd.grade));
+        const claudeText = document.createElement("span");
+        claudeText.textContent = "CLAUDE.md: ~" + formatK(cb.claudeMd.tokens) + " tokens";
+        claudeRow.appendChild(claudeText);
+      } else {
+        const noDot = document.createElement("span");
+        noDot.style.width = "14px";
+        noDot.style.display = "inline-block";
+        claudeRow.appendChild(noDot);
+        const missingText = document.createElement("span");
+        missingText.textContent = "CLAUDE.md: not found";
+        claudeRow.appendChild(missingText);
+      }
+      budgetSection.appendChild(claudeRow);
+
+      // Agent file rows
+      const agentFiles = Array.isArray(cb.agents) ? cb.agents : [];
+      for (const af of agentFiles) {
+        const agentRow = document.createElement("div");
+        agentRow.className = "settings-row";
+        agentRow.style.display = "flex";
+        agentRow.style.alignItems = "center";
+        agentRow.style.gap = "4px";
+        agentRow.appendChild(budgetDot(af.grade));
+        const agentText = document.createElement("span");
+        agentText.textContent = af.name + ": ~" + formatK(af.tokens) + " tokens";
+        agentRow.appendChild(agentText);
+        budgetSection.appendChild(agentRow);
+      }
+
+      // Muted note
+      const agentNote = document.createElement("p");
+      agentNote.className = "settings-empty";
+      agentNote.textContent = "Agent files load per sub-agent spawn, not every prompt.";
+      budgetSection.appendChild(agentNote);
+
+      // Review for trimming button
+      const trimBtn = document.createElement("button");
+      trimBtn.className = "skill-btn settings-btn";
+      trimBtn.textContent = "Review for trimming";
+      trimBtn.addEventListener("click", () => {
+        vscode.postMessage({ type: "copyPrompt", text: "Review CLAUDE.md and the agent definition files in .claude/agents/ for context bloat. CLAUDE.md is loaded into every prompt, so prioritize it: flag verbose, duplicated, or non-essential lines and propose a tighter rewrite that preserves every behavioral rule and the delegation routing. Then do the same for each .claude/agents/*.md (loaded per spawn). For each file give a before/after token estimate and the specific cuts." });
+      });
+      budgetSection.appendChild(trimBtn);
+    }
+    setupConfigEl.appendChild(budgetSection);
+
     // ── 4. Design docs ──
     const docsSection = buildSection("Design docs");
     const docsDesc = document.createElement("p");

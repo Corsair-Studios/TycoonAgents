@@ -19,6 +19,7 @@ import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer } from "./mcpCatalog";
 import { buildAgentMarkdown } from "./packCatalog";
 import { detectUefnProject } from "./uefnDetect";
+import { buildContextBudget } from "./contextBudget";
 
 function getNonce(): string {
   let text = "";
@@ -152,6 +153,12 @@ export class TycoonPanel {
           if (text !== "") {
             await vscode.env.clipboard.writeText(text);
             vscode.window.showInformationMessage("Delegation tip copied to clipboard.");
+          }
+        } else if (message.type === "copyPrompt") {
+          const t = String((message as any).text ?? "");
+          if (t) {
+            await vscode.env.clipboard.writeText(t);
+            vscode.window.showInformationMessage("Prompt copied — paste it into Claude Code to run it.");
           }
         } else if (message.type === "getEngineStatus") {
           this._pollEngineStatus();
@@ -1005,6 +1012,34 @@ export class TycoonPanel {
     const issueCount = findings.filter((f) => f.severity !== "ok").length;
     const hookHealth = { healthy: issueCount === 0, issueCount };
 
+    // Build context budget (CLAUDE.md + agent .md files)
+    let contextBudget;
+    try {
+      let claudeMdContent: string | null = null;
+      try {
+        claudeMdContent = fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8");
+      } catch {
+        claudeMdContent = null;
+      }
+      const agentEntries: Array<{ name: string; content: string }> = [];
+      try {
+        const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+        for (const fname of agentFiles) {
+          try {
+            const content = fs.readFileSync(path.join(agentsDir, fname), "utf8");
+            agentEntries.push({ name: fname, content });
+          } catch {
+            /* skip unreadable */
+          }
+        }
+      } catch {
+        /* agentsDir missing => empty */
+      }
+      contextBudget = buildContextBudget(claudeMdContent, agentEntries);
+    } catch {
+      contextBudget = buildContextBudget(null, []);
+    }
+
     void this._panel.webview.postMessage({
       type: "settings",
       payload: {
@@ -1012,6 +1047,7 @@ export class TycoonPanel {
         agents,
         delegationHealth: { directSearches, directReads, directEdits, delegations, warnThreshold },
         hookHealth,
+        contextBudget,
       },
     });
   }
