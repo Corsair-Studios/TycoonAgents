@@ -313,6 +313,15 @@
   const setupConfigEl  = /** @type {HTMLElement} */ (document.getElementById("setup-config"));
   const setupBackBtn   = /** @type {HTMLElement} */ (document.getElementById("setup-back-btn"));
   const menuSettingsBtn = /** @type {HTMLElement} */ (document.getElementById("menu-settings"));
+  const menuThemesBtn   = /** @type {HTMLElement} */ (document.getElementById("menu-themes"));
+  
+  // Themes Modal Elements
+  const themesModalEl       = /** @type {HTMLElement} */ (document.getElementById("themes-modal"));
+  const themesModalCloseBtn = /** @type {HTMLElement} */ (document.getElementById("themes-modal-close"));
+  const tabThemePicker      = /** @type {HTMLElement} */ (document.getElementById("tab-theme-picker"));
+  const tabThemeBuilder     = /** @type {HTMLElement} */ (document.getElementById("tab-theme-builder"));
+  const themePickerList     = /** @type {HTMLElement} */ (document.getElementById("theme-picker-list"));
+  const themeBuilderPanel   = /** @type {HTMLElement} */ (document.getElementById("theme-builder-panel"));
 
   // Tracks whether the setup screen was reached via Settings (vs. first-run
   // install). When opened from Settings we stay on the screen even once the
@@ -401,6 +410,43 @@
     vscode.postMessage({ type: "checkInstall" });
     vscode.postMessage({ type: "getSettings" });
   });
+
+  if (menuThemesBtn) {
+    menuThemesBtn.addEventListener("click", () => {
+      closeMenu();
+      openModal(themesModalEl, themesModalCloseBtn);
+    });
+  }
+
+  if (themesModalCloseBtn) {
+    themesModalCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
+  }
+
+  if (tabThemePicker && tabThemeBuilder) {
+    tabThemePicker.addEventListener("click", () => {
+      tabThemePicker.setAttribute("aria-selected", "true");
+      tabThemePicker.classList.add("catalog-tab--active");
+      tabThemeBuilder.setAttribute("aria-selected", "false");
+      tabThemeBuilder.classList.remove("catalog-tab--active");
+      themePickerList.removeAttribute("hidden");
+      themeBuilderPanel.setAttribute("hidden", "");
+    });
+
+    tabThemeBuilder.addEventListener("click", () => {
+      tabThemeBuilder.setAttribute("aria-selected", "true");
+      tabThemeBuilder.classList.add("catalog-tab--active");
+      tabThemePicker.setAttribute("aria-selected", "false");
+      tabThemePicker.classList.remove("catalog-tab--active");
+      themeBuilderPanel.removeAttribute("hidden");
+      themePickerList.setAttribute("hidden", "");
+
+      // Boot up the theme builder canvas when the tab is first visited
+      const root = document.getElementById("theme-builder-root");
+      if (root && typeof window.initThemeBuilder === "function") {
+        window.initThemeBuilder(root);
+      }
+    });
+  }
 
   setupBackBtn.addEventListener("click", () => {
     openedFromSettings = false;

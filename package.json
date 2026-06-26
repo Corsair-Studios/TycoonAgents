@@ -24,8 +24,21 @@
       {
         "command": "tycoonagents.demo",
         "title": "TycoonAgents: Run Demo"
+      },
+      {
+        "command": "tycoon.generateTheme",
+        "title": "TycoonAgents: Generate Theme"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "tycoon.theaterView",
+          "name": "Theater"
+        }
+      ]
+    },
     "configuration": {
       "title": "TycoonAgents",
       "properties": {
@@ -61,12 +74,13 @@
     "Other"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc",
+    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder",
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
     "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
     "bundle:uefn": "esbuild uefn-bridge/uefn-server.ts --bundle --platform=node --format=esm --target=node18 --outfile=media/uefn-bridge/uefn-server.mjs",
     "bundle:designdoc": "esbuild design-doc/design-doc-cli.ts --bundle --platform=node --format=esm --target=node18 --outfile=media/skills/design-doc/design-doc-cli.mjs",
+    "bundle:themebuilder": "esbuild src/webview/themeBuilder.ts --bundle --outfile=media/theme-builder.js",
     "package": "vsce package"
   },
   "devDependencies": {
@@ -79,5 +93,8 @@
     "mammoth": "^1.8.0",
     "typescript": "^5.4.0",
     "zod": "^3.23.0"
+  },
+  "dependencies": {
+    "jimp": "^0.22.12"
   }
 }

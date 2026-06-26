@@ -11,6 +11,7 @@ import { TycoonPanel } from "./panel";
 import { runDemo } from "./demo";
 import { ClaudeCodeProvider } from "../../providers/claude-code/claudeCodeProvider";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
+import { activate as activateTheater, deactivate as deactivateTheater } from "../../extension/main";
 
 let provider: ClaudeCodeProvider | undefined;
 let demoDisposable: { dispose(): void } | undefined;
@@ -89,6 +90,9 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.executeCommand("tycoonagents.open");
     }, 500);
   }
+
+  // Boot the Theme Factory / Theater lifecycle controller (webview view, generateTheme command, telemetry heartbeat).
+  activateTheater(context);
 }
 
 export function deactivate(): void {
@@ -96,4 +100,5 @@ export function deactivate(): void {
   provider = undefined;
   demoDisposable?.dispose();
   demoDisposable = undefined;
+  deactivateTheater();
 }

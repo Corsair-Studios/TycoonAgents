@@ -1,4 +1,4 @@
-﻿/*
+/*
  * TycoonAgents - https://x.com/thetrashbyrd
  * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
  * Attribution header - optional; end users may remove it.
@@ -1380,7 +1380,7 @@ export class TycoonPanel {
       <div id="menu-popover" role="menu" hidden>
         <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
         <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
-        <button class="menu-item" role="menuitem" id="menu-theme-builder">Theme builder</button>
+        <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
         <button class="menu-item" role="menuitem" id="menu-about">About</button>
         ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ""}
       </div>
@@ -1461,7 +1461,26 @@ export class TycoonPanel {
     </div>
   </div>
 
+  <!-- Themes modal overlay -->
+  <div id="themes-modal" role="dialog" aria-modal="true" aria-label="Themes" hidden>
+    <div id="themes-backdrop"></div>
+    <div id="themes-dialog">
+      <button id="themes-modal-close" aria-label="Close dialog">&times;</button>
+      <div class="themes-tabs" role="tablist">
+        <button id="tab-theme-picker" class="catalog-tab catalog-tab--active" role="tab" aria-selected="true">Theme Picker</button>
+        <button id="tab-theme-builder" class="catalog-tab" role="tab" aria-selected="false">Theme Builder</button>
+      </div>
+      <div id="theme-picker-list" role="tabpanel">
+        <div style="padding: 20px; color: #ccc;">Theme picker coming soon...</div>
+      </div>
+      <div id="theme-builder-panel" role="tabpanel" hidden>
+        <div id="theme-builder-root"></div>
+      </div>
+    </div>
+  </div>
+
   <script nonce="${nonce}" src="${scriptUri}"></script>
+  <script nonce="${nonce}" src="${webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'theme-builder.js'))}"></script>
 </body>
 </html>`;
   }
