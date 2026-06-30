@@ -1368,6 +1368,26 @@
   /** @type {Record<string, {action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}>} */
   let workerAnimStates = {};
 
+  // ── Facing direction tracking (Feature 1) ───────────────────────────────
+  /** Previous canvas x position per worker id, for movement-based facing. */
+  /** @type {Record<string, number>} */
+  const workerPrevX = {};
+  /** Per-worker facing flag: true = facing left (mirrored). Default false (right). */
+  /** @type {Record<string, boolean>} */
+  const workerFacingLeft = {};
+  /** Deadzone in pixels — movements smaller than this are ignored to avoid flicker. */
+  const FACING_EPS = 0.1;
+
+  // ── Roster order (Feature 2) ─────────────────────────────────────────────
+  /**
+   * Ordered array of character IDs reflecting the current roster order.
+   * Populated/restored when a theme is loaded.
+   * @type {string[]}
+   */
+  let rosterOrder = [];
+  /** Whether the roster strip is collapsed. */
+  let rosterCollapsed = false;
+
   /**
    * Create a fresh animation state object.
    * @param {string} action
@@ -1861,8 +1881,23 @@
         themeFramesRaw = msg.payload.frames;
         preloadThemeImages(themeFramesRaw);
         themeLoaded = true;
-        // Reset per-worker animation states so they start fresh
+        // Reset per-worker animation/facing states so they start fresh
         workerAnimStates = {};
+        // Build rosterOrder from manifest character order (excluding background)
+        const manifestChars = Object.keys(themeFramesRaw).filter(
+          (id) => id !== "environment_background"
+        );
+        // Restore saved order if present and covers same characters
+        const saved = vscode.getState() || {};
+        const savedOrder = Array.isArray(saved.rosterOrder) ? saved.rosterOrder : [];
+        const savedValid =
+          savedOrder.length === manifestChars.length &&
+          savedOrder.every((id) => manifestChars.includes(id));
+        rosterOrder = savedValid ? savedOrder : manifestChars.slice();
+        if (typeof saved.rosterCollapsed === "boolean") {
+          rosterCollapsed = saved.rosterCollapsed;
+        }
+        buildRosterStrip();
       }
     } else if (msg && msg.type === "state") {
       state = msg.state;
@@ -3555,6 +3590,149 @@
     ctx.restore();
   }
 
+  // ── Roster strip (Feature 2) ─────────────────────────────────────────────
+
+  /** @type {HTMLElement|null} */
+  let rosterStripEl = null;
+  /** @type {HTMLElement|null} */
+  let rosterBodyEl = null;
+  /** @type {string|null} dragged character id */
+  let rosterDragId = null;
+
+  /**
+   * Build or rebuild the collapsible roster thumbnail strip in #stage-area.
+   * Uses rosterOrder to determine character sequence and reads themeImages for
+   * sprite thumbnails (atlas slot 16 = idle neutral, fallback to slot 0).
+   */
+  function buildRosterStrip() {
+    // Remove existing strip if any
+    if (rosterStripEl && rosterStripEl.parentNode) {
+      rosterStripEl.parentNode.removeChild(rosterStripEl);
+    }
+    if (!stageAreaEl) return;
+
+    rosterStripEl = document.createElement("div");
+    rosterStripEl.id = "roster-strip";
+    rosterStripEl.className = "roster-strip";
+
+    // Header row: label + toggle button
+    const headerEl = document.createElement("div");
+    headerEl.className = "roster-strip-header";
+
+    const labelEl = document.createElement("span");
+    labelEl.className = "roster-strip-label";
+    labelEl.textContent = "Roster";
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.className = "roster-strip-toggle";
+    toggleBtn.setAttribute("aria-label", rosterCollapsed ? "Expand roster" : "Collapse roster");
+    toggleBtn.textContent = rosterCollapsed ? "▶" : "▼";
+    toggleBtn.addEventListener("click", function () {
+      rosterCollapsed = !rosterCollapsed;
+      toggleBtn.textContent = rosterCollapsed ? "▶" : "▼";
+      toggleBtn.setAttribute("aria-label", rosterCollapsed ? "Expand roster" : "Collapse roster");
+      if (rosterBodyEl) {
+        rosterBodyEl.style.display = rosterCollapsed ? "none" : "flex";
+      }
+      const prev = vscode.getState() || {};
+      vscode.setState({ ...prev, rosterCollapsed });
+    });
+
+    headerEl.appendChild(labelEl);
+    headerEl.appendChild(toggleBtn);
+    rosterStripEl.appendChild(headerEl);
+
+    // Thumbnail body row
+    rosterBodyEl = document.createElement("div");
+    rosterBodyEl.className = "roster-strip-body";
+    rosterBodyEl.style.display = rosterCollapsed ? "none" : "flex";
+
+    for (const charId of rosterOrder) {
+      const slots = themeImages[charId];
+      if (!slots) continue;
+
+      // Atlas slot 16 = idle neutral; fall back to slot 0 if unavailable
+      const thumbImg = slots[16] || slots[0];
+
+      const thumb = document.createElement("div");
+      thumb.className = "roster-thumb";
+      thumb.dataset.charId = charId;
+      thumb.draggable = true;
+      thumb.title = charId;
+
+      if (thumbImg) {
+        const imgEl = document.createElement("img");
+        imgEl.src = thumbImg.src;
+        imgEl.width = 44;
+        imgEl.height = 44;
+        imgEl.draggable = false;
+        imgEl.style.pointerEvents = "none";
+        thumb.appendChild(imgEl);
+      } else {
+        // No image yet: placeholder
+        thumb.textContent = charId.slice(0, 2).toUpperCase();
+      }
+
+      thumb.addEventListener("dragstart", function (e) {
+        rosterDragId = charId;
+        thumb.classList.add("roster-thumb--dragging");
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", charId);
+        }
+      });
+
+      thumb.addEventListener("dragend", function () {
+        thumb.classList.remove("roster-thumb--dragging");
+        rosterDragId = null;
+        // Remove hover highlights
+        if (rosterBodyEl) {
+          rosterBodyEl.querySelectorAll(".roster-thumb--over").forEach(function (el) {
+            el.classList.remove("roster-thumb--over");
+          });
+        }
+      });
+
+      thumb.addEventListener("dragover", function (e) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        if (rosterDragId && rosterDragId !== charId) {
+          thumb.classList.add("roster-thumb--over");
+        }
+      });
+
+      thumb.addEventListener("dragleave", function () {
+        thumb.classList.remove("roster-thumb--over");
+      });
+
+      thumb.addEventListener("drop", function (e) {
+        e.preventDefault();
+        thumb.classList.remove("roster-thumb--over");
+        if (!rosterDragId || rosterDragId === charId) return;
+
+        // Reorder rosterOrder: move rosterDragId before charId
+        const fromIdx = rosterOrder.indexOf(rosterDragId);
+        const toIdx = rosterOrder.indexOf(charId);
+        if (fromIdx === -1 || toIdx === -1) return;
+        rosterOrder.splice(fromIdx, 1);
+        rosterOrder.splice(toIdx, 0, rosterDragId);
+
+        // Persist
+        const prev = vscode.getState() || {};
+        vscode.setState({ ...prev, rosterOrder: rosterOrder.slice() });
+
+        // Rebuild strip to reflect new order
+        buildRosterStrip();
+      });
+
+      rosterBodyEl.appendChild(thumb);
+    }
+
+    rosterStripEl.appendChild(rosterBodyEl);
+    // Insert at top of #stage-area (below the canvas z-wise but visually over it via z-index)
+    stageAreaEl.appendChild(rosterStripEl);
+  }
+
   function render(timestamp) {
     // Delta time for animation advancement (capped at 100ms to avoid jumps on tab focus)
     const delta = lastFrameTime === 0 ? 0 : Math.min((timestamp - lastFrameTime) / 1000, 0.1);
@@ -3604,14 +3782,30 @@
     const spacing = Math.min(80, (w - 40) / Math.max(workers.length, 1));
     const startX = Math.max(40, (w - spacing * workers.length) / 2);
 
-    // Get ordered character IDs from theme images (stable order matches worker roster)
-    const charIds = Object.keys(themeImages);
+    // Resolve character roster: prefer rosterOrder (set when theme loads), fallback to themeImages keys
+    const charIds = rosterOrder.length > 0 ? rosterOrder : Object.keys(themeImages);
 
     workers.forEach((worker, idx) => {
       const x = startX + idx * spacing;
 
+      // ── Feature 1: movement-based facing ──────────────────────────
+      const prevX = workerPrevX[worker.id];
+      if (typeof prevX === "number") {
+        const dx = x - prevX;
+        if (dx < -FACING_EPS) {
+          workerFacingLeft[worker.id] = true;
+        } else if (dx > FACING_EPS) {
+          workerFacingLeft[worker.id] = false;
+        }
+        // |dx| <= EPS: keep previous facing (no-op)
+      } else {
+        // First frame for this worker — default face right
+        workerFacingLeft[worker.id] = false;
+      }
+      workerPrevX[worker.id] = x;
+
       if (themeLoaded && charIds.length > 0) {
-        // Pick a character sprite by cycling through the available roster
+        // Pick a character sprite using rosterOrder (cycles if more workers than characters)
         const charId = charIds[idx % charIds.length];
         const slots = themeImages[charId];
 
@@ -3643,13 +3837,14 @@
           const drawX = x - spriteSize / 2;
           const drawY = groundY - spriteSize;
 
-          // Mirror horizontally when agent is leaving (moving left) — flippable clips only
+          // ── Feature 1: mirror based on movement-derived facing ─────
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
-          const shouldFlip = clip.flippable && worker.state === "leave";
+          const shouldFlip = clip.flippable && workerFacingLeft[worker.id] === true;
 
           ctx.save();
           if (worker.state === "leave") ctx.globalAlpha = 0.55;
           if (shouldFlip) {
+            // Flip around the sprite centre: translate to right edge, scale -1 on x
             ctx.translate(x + spriteSize / 2, 0);
             ctx.scale(-1, 1);
             ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);

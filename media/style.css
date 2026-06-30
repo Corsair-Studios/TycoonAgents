@@ -2286,3 +2286,117 @@ button.theme-review-preview:focus-visible::after {
 #export-manifest-btn:hover {
   background: #00a8cc;
 }
+
+/* ── Roster strip (Feature 2: collapsible drag-and-drop thumbnail strip) ── */
+#roster-strip {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  background: rgba(10, 10, 11, 0.80);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: calc(100% - 24px);
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.roster-strip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 60px;
+}
+
+.roster-strip-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.roster-strip-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  transition: color 0.12s, background 0.12s;
+}
+
+.roster-strip-toggle:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.roster-strip-body {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 5px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.roster-strip-body::-webkit-scrollbar {
+  height: 4px;
+}
+
+.roster-strip-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.roster-thumb {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  overflow: hidden;
+  transition: border-color 0.12s, background 0.12s, opacity 0.12s;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.roster-thumb img {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  display: block;
+  image-rendering: pixelated;
+}
+
+.roster-thumb:hover {
+  border-color: var(--accent);
+  background: rgba(255, 176, 32, 0.08);
+}
+
+.roster-thumb--dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.roster-thumb--over {
+  border-color: var(--accent);
+  background: rgba(255, 176, 32, 0.20);
+  box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.35);
+}
