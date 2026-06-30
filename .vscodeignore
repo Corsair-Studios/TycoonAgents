@@ -13,6 +13,7 @@ docs/**
 scale-references/**
 .claude/**
 CLAUDE.md
+HANDOFF.md
 **/*.ts
 tsconfig.json
 .gitignore
