@@ -363,6 +363,8 @@
   const themeBuilderRoot = /** @type {HTMLElement} */ (document.getElementById("theme-builder-root"));
   const themesDialog = /** @type {HTMLElement} */ (document.getElementById("themes-dialog"));
   let reviewThemeId = "";
+  /** @type {Array<any>} Last received THEMES_LIST payload, for re-render on selection change. */
+  let lastThemesList = [];
   let currentThemePlan = null;
   let themeGenerationRunning = false;
   let themeGenerationStopping = false;
@@ -1238,13 +1240,14 @@
     }
     
     for (const theme of themes) {
+      const isSelected = selectedThemeId && theme.theme_id === selectedThemeId;
       const row = document.createElement("div");
-      row.className = "theme-picker-row";
+      row.className = "theme-picker-row" + (isSelected ? " theme-picker-row--selected" : "");
 
       const themeName = theme.display_name || theme.theme_id;
 
       const btn = document.createElement("button");
-      btn.className = "skill-btn theme-picker-select";
+      btn.className = "skill-btn theme-picker-select" + (isSelected ? " theme-picker-select--active" : "");
       const nameLabel = document.createElement("span");
       nameLabel.textContent = themeName;
       const approvalLabel = document.createElement("span");
@@ -1255,9 +1258,19 @@
           ? `${theme.accepted}/${theme.total} approved`
           : "Review required";
       btn.appendChild(nameLabel);
+      // Selected badge
+      if (isSelected) {
+        const badge = document.createElement("span");
+        badge.className = "theme-selected-badge";
+        badge.textContent = "Selected";
+        btn.appendChild(badge);
+      }
       btn.appendChild(approvalLabel);
       btn.addEventListener("click", () => {
+        selectedThemeId = theme.theme_id;
         vscode.postMessage({ type: 'SELECT_THEME', payload: { theme_id: theme.theme_id } });
+        // Refresh the list so the selected highlight updates immediately
+        renderThemesList(lastThemesList);
       });
 
       const reviewBtn = document.createElement("button");
@@ -1312,6 +1325,111 @@
       row.appendChild(sizeLabel);
       row.appendChild(deleteBtn);
       themePickerGrid.appendChild(row);
+    }
+
+    // ── Roster section inside Themes modal ──────────────────────────────────
+    // Show the current theme's character roster (drag-reorderable) below the list.
+    if (rosterOrder.length > 0) {
+      const rosterSection = document.createElement("div");
+      rosterSection.className = "modal-roster-section";
+
+      const rosterHeading = document.createElement("div");
+      rosterHeading.className = "modal-roster-heading";
+      rosterHeading.textContent = "Character roster order";
+      rosterSection.appendChild(rosterHeading);
+
+      const rosterNote = document.createElement("div");
+      rosterNote.className = "modal-roster-note";
+      rosterNote.textContent = "Drag to reorder. The sequence maps agent slots to characters on stage.";
+      rosterSection.appendChild(rosterNote);
+
+      const rosterBody = document.createElement("div");
+      rosterBody.className = "modal-roster-body";
+
+      let modalDragId = null;
+
+      for (const charId of rosterOrder) {
+        const slots = themeImages[charId];
+        const thumbImg = slots && (slots[16] || slots[0]);
+
+        const thumb = document.createElement("div");
+        thumb.className = "roster-thumb";
+        thumb.dataset.charId = charId;
+        thumb.draggable = true;
+        thumb.title = charId;
+
+        if (thumbImg) {
+          const imgEl = document.createElement("img");
+          imgEl.src = thumbImg.src;
+          imgEl.width = 44;
+          imgEl.height = 44;
+          imgEl.draggable = false;
+          imgEl.style.pointerEvents = "none";
+          thumb.appendChild(imgEl);
+        } else {
+          thumb.textContent = charId.slice(0, 2).toUpperCase();
+        }
+
+        // Label below thumbnail
+        const charLabel = document.createElement("div");
+        charLabel.className = "modal-roster-char-label";
+        charLabel.textContent = charId.slice(0, 8);
+        thumb.appendChild(charLabel);
+
+        thumb.addEventListener("dragstart", function (e) {
+          modalDragId = charId;
+          thumb.classList.add("roster-thumb--dragging");
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", charId);
+          }
+        });
+
+        thumb.addEventListener("dragend", function () {
+          thumb.classList.remove("roster-thumb--dragging");
+          modalDragId = null;
+          rosterBody.querySelectorAll(".roster-thumb--over").forEach(function (el) {
+            el.classList.remove("roster-thumb--over");
+          });
+        });
+
+        thumb.addEventListener("dragover", function (e) {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          if (modalDragId && modalDragId !== charId) {
+            thumb.classList.add("roster-thumb--over");
+          }
+        });
+
+        thumb.addEventListener("dragleave", function () {
+          thumb.classList.remove("roster-thumb--over");
+        });
+
+        thumb.addEventListener("drop", function (e) {
+          e.preventDefault();
+          thumb.classList.remove("roster-thumb--over");
+          if (!modalDragId || modalDragId === charId) return;
+
+          const fromIdx = rosterOrder.indexOf(modalDragId);
+          const toIdx = rosterOrder.indexOf(charId);
+          if (fromIdx === -1 || toIdx === -1) return;
+          rosterOrder.splice(fromIdx, 1);
+          rosterOrder.splice(toIdx, 0, modalDragId);
+
+          const prev = vscode.getState() || {};
+          vscode.setState({ ...prev, rosterOrder: rosterOrder.slice() });
+
+          // Also rebuild the stage strip (now a no-op since it's removed from stage)
+          buildRosterStrip();
+          // Re-render the modal roster
+          renderThemesList(lastThemesList);
+        });
+
+        rosterBody.appendChild(thumb);
+      }
+
+      rosterSection.appendChild(rosterBody);
+      themePickerGrid.appendChild(rosterSection);
     }
   }
 
@@ -1387,6 +1505,18 @@
   let rosterOrder = [];
   /** Whether the roster strip is collapsed. */
   let rosterCollapsed = false;
+
+  // ── Per-agent character map (Change 1: 1:1 agentMetrics visualization) ──
+  /**
+   * Webview-side character state keyed by agent.id.
+   * Each entry tracks position, animation state, and facing direction
+   * so agents without a live worker still animate independently.
+   * @type {Record<string, {x: number, y: number, animState: {action:string,frameIndex:number,direction:number,elapsed:number,completed:boolean}, facingLeft: boolean, prevX: number}>}
+   */
+  let agentCharMap = {};
+
+  /** Selected theme id, updated on SELECT_THEME post and THEME_INITIALIZED message. */
+  let selectedThemeId = "";
 
   /**
    * Create a fresh animation state object.
@@ -1689,7 +1819,8 @@
         updateThemeApiKeyUi(payload.saved ? "API key settings saved securely." : "", false);
       }
     } else if (msg && msg.type === "THEMES_LIST") {
-      renderThemesList(msg.payload?.themes || msg.themes);
+      lastThemesList = msg.payload?.themes || msg.themes || [];
+      renderThemesList(lastThemesList);
       if (themePickerStatus) {
         const deleteError = msg.payload?.delete_error;
         themePickerStatus.textContent = deleteError
@@ -1874,6 +2005,8 @@
       const initializedThemeId = msg.payload?.manifest?.theme_id;
       if (initializedThemeId) {
         reviewThemeId = initializedThemeId;
+        // Track which theme is currently loaded on stage (auto-loaded = selected)
+        selectedThemeId = initializedThemeId;
         if (themeBuildActions) themeBuildActions.removeAttribute("hidden");
       }
       // Load theme character sprites for the stage canvas
@@ -1883,6 +2016,7 @@
         themeLoaded = true;
         // Reset per-worker animation/facing states so they start fresh
         workerAnimStates = {};
+        agentCharMap = {};
         // Build rosterOrder from manifest character order (excluding background)
         const manifestChars = Object.keys(themeFramesRaw).filter(
           (id) => id !== "environment_background"
@@ -3574,7 +3708,8 @@
 
   function drawHUD(w) {
     const sessionText = state.sessionActive ? "active" : "idle";
-    const workerCount = Object.keys(state.workers).length;
+    // Show on-stage agent count (matches metrics table rows) instead of raw worker count.
+    const agentCount = Array.isArray(state.agentMetrics) ? state.agentMetrics.length : Object.keys(state.workers).length;
     const tasks = state.completedTasks;
 
     ctx.save();
@@ -3585,152 +3720,17 @@
     ctx.font = "bold 13px monospace";
     ctx.textAlign = "left";
     ctx.fillText(`Session: ${sessionText}`, 16, 28);
-    ctx.fillText(`Workers: ${workerCount}`, 16, 46);
+    ctx.fillText(`Agents: ${agentCount}`, 16, 46);
     ctx.fillText(`Built: ${tasks}`, 16, 64);
     ctx.restore();
   }
 
-  // ── Roster strip (Feature 2) ─────────────────────────────────────────────
-
-  /** @type {HTMLElement|null} */
-  let rosterStripEl = null;
-  /** @type {HTMLElement|null} */
-  let rosterBodyEl = null;
-  /** @type {string|null} dragged character id */
-  let rosterDragId = null;
-
-  /**
-   * Build or rebuild the collapsible roster thumbnail strip in #stage-area.
-   * Uses rosterOrder to determine character sequence and reads themeImages for
-   * sprite thumbnails (atlas slot 16 = idle neutral, fallback to slot 0).
-   */
+  // ── Roster strip (Feature 2 / Change 3) ─────────────────────────────────
+  // The roster is now hosted inside the Themes modal (renderThemesList injects it).
+  // buildRosterStrip() is kept as a no-op so existing call sites remain valid.
   function buildRosterStrip() {
-    // Remove existing strip if any
-    if (rosterStripEl && rosterStripEl.parentNode) {
-      rosterStripEl.parentNode.removeChild(rosterStripEl);
-    }
-    if (!stageAreaEl) return;
-
-    rosterStripEl = document.createElement("div");
-    rosterStripEl.id = "roster-strip";
-    rosterStripEl.className = "roster-strip";
-
-    // Header row: label + toggle button
-    const headerEl = document.createElement("div");
-    headerEl.className = "roster-strip-header";
-
-    const labelEl = document.createElement("span");
-    labelEl.className = "roster-strip-label";
-    labelEl.textContent = "Roster";
-
-    const toggleBtn = document.createElement("button");
-    toggleBtn.className = "roster-strip-toggle";
-    toggleBtn.setAttribute("aria-label", rosterCollapsed ? "Expand roster" : "Collapse roster");
-    toggleBtn.textContent = rosterCollapsed ? "▶" : "▼";
-    toggleBtn.addEventListener("click", function () {
-      rosterCollapsed = !rosterCollapsed;
-      toggleBtn.textContent = rosterCollapsed ? "▶" : "▼";
-      toggleBtn.setAttribute("aria-label", rosterCollapsed ? "Expand roster" : "Collapse roster");
-      if (rosterBodyEl) {
-        rosterBodyEl.style.display = rosterCollapsed ? "none" : "flex";
-      }
-      const prev = vscode.getState() || {};
-      vscode.setState({ ...prev, rosterCollapsed });
-    });
-
-    headerEl.appendChild(labelEl);
-    headerEl.appendChild(toggleBtn);
-    rosterStripEl.appendChild(headerEl);
-
-    // Thumbnail body row
-    rosterBodyEl = document.createElement("div");
-    rosterBodyEl.className = "roster-strip-body";
-    rosterBodyEl.style.display = rosterCollapsed ? "none" : "flex";
-
-    for (const charId of rosterOrder) {
-      const slots = themeImages[charId];
-      if (!slots) continue;
-
-      // Atlas slot 16 = idle neutral; fall back to slot 0 if unavailable
-      const thumbImg = slots[16] || slots[0];
-
-      const thumb = document.createElement("div");
-      thumb.className = "roster-thumb";
-      thumb.dataset.charId = charId;
-      thumb.draggable = true;
-      thumb.title = charId;
-
-      if (thumbImg) {
-        const imgEl = document.createElement("img");
-        imgEl.src = thumbImg.src;
-        imgEl.width = 44;
-        imgEl.height = 44;
-        imgEl.draggable = false;
-        imgEl.style.pointerEvents = "none";
-        thumb.appendChild(imgEl);
-      } else {
-        // No image yet: placeholder
-        thumb.textContent = charId.slice(0, 2).toUpperCase();
-      }
-
-      thumb.addEventListener("dragstart", function (e) {
-        rosterDragId = charId;
-        thumb.classList.add("roster-thumb--dragging");
-        if (e.dataTransfer) {
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", charId);
-        }
-      });
-
-      thumb.addEventListener("dragend", function () {
-        thumb.classList.remove("roster-thumb--dragging");
-        rosterDragId = null;
-        // Remove hover highlights
-        if (rosterBodyEl) {
-          rosterBodyEl.querySelectorAll(".roster-thumb--over").forEach(function (el) {
-            el.classList.remove("roster-thumb--over");
-          });
-        }
-      });
-
-      thumb.addEventListener("dragover", function (e) {
-        e.preventDefault();
-        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-        if (rosterDragId && rosterDragId !== charId) {
-          thumb.classList.add("roster-thumb--over");
-        }
-      });
-
-      thumb.addEventListener("dragleave", function () {
-        thumb.classList.remove("roster-thumb--over");
-      });
-
-      thumb.addEventListener("drop", function (e) {
-        e.preventDefault();
-        thumb.classList.remove("roster-thumb--over");
-        if (!rosterDragId || rosterDragId === charId) return;
-
-        // Reorder rosterOrder: move rosterDragId before charId
-        const fromIdx = rosterOrder.indexOf(rosterDragId);
-        const toIdx = rosterOrder.indexOf(charId);
-        if (fromIdx === -1 || toIdx === -1) return;
-        rosterOrder.splice(fromIdx, 1);
-        rosterOrder.splice(toIdx, 0, rosterDragId);
-
-        // Persist
-        const prev = vscode.getState() || {};
-        vscode.setState({ ...prev, rosterOrder: rosterOrder.slice() });
-
-        // Rebuild strip to reflect new order
-        buildRosterStrip();
-      });
-
-      rosterBodyEl.appendChild(thumb);
-    }
-
-    rosterStripEl.appendChild(rosterBodyEl);
-    // Insert at top of #stage-area (below the canvas z-wise but visually over it via z-index)
-    stageAreaEl.appendChild(rosterStripEl);
+    // Roster is rendered inside the Themes modal via renderThemesList.
+    // This function intentionally does nothing to the stage DOM.
   }
 
   function render(timestamp) {
@@ -3742,9 +3742,18 @@
     const w = canvas.width;
     const h = canvas.height;
 
+    // ── Change 2: Fixed-size background (does NOT stretch on resize) ──────────
     if (themeLoaded && themeBackgroundImg && themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0) {
-      // Draw theme background scaled to fill canvas
-      ctx.drawImage(themeBackgroundImg, 0, 0, w, h);
+      // Letterbox fill: solid backdrop so edges outside the fixed BG are clean.
+      ctx.fillStyle = "#0a0a12";
+      ctx.fillRect(0, 0, w, h);
+
+      // Draw at the image's natural size, centered horizontally, bottom-anchored.
+      const bgW = themeBackgroundImg.naturalWidth;
+      const bgH = themeBackgroundImg.naturalHeight;
+      const bgX = Math.floor((w - bgW) / 2);
+      const bgY = h - bgH; // bottom-align so the ground line stays at canvas bottom
+      ctx.drawImage(themeBackgroundImg, bgX, bgY, bgW, bgH);
     } else {
       // Fallback placeholder background
       ctx.fillStyle = "#1a1a2e";
@@ -3774,77 +3783,100 @@
     // Buildings (left side)
     drawBuildings(groundY, state.completedTasks);
 
-    // Workers / characters
-    const workers = workerOrder
-      .map((id) => state.workers[id])
-      .filter(Boolean);
+    // ── Change 1: Render one character per agentMetrics entry (1:1) ──────────
+    // Derive the agent list from the metrics table (same source as renderMetrics).
+    const agentList = Array.isArray(state.agentMetrics) ? state.agentMetrics : [];
 
-    const spacing = Math.min(80, (w - 40) / Math.max(workers.length, 1));
-    const startX = Math.max(40, (w - spacing * workers.length) / 2);
+    // Prune stale entries from agentCharMap (agents no longer in metrics).
+    const agentIds = new Set(agentList.map((a) => a.id));
+    for (const id of Object.keys(agentCharMap)) {
+      if (!agentIds.has(id)) delete agentCharMap[id];
+    }
 
-    // Resolve character roster: prefer rosterOrder (set when theme loads), fallback to themeImages keys
+    // Resolve character sprite roster.
     const charIds = rosterOrder.length > 0 ? rosterOrder : Object.keys(themeImages);
 
-    workers.forEach((worker, idx) => {
-      const x = startX + idx * spacing;
+    const agentCount = agentList.length;
+    const agentSpacing = Math.min(80, (w - 40) / Math.max(agentCount, 1));
+    const agentStartX = Math.max(40, (w - agentSpacing * agentCount) / 2);
 
-      // ── Feature 1: movement-based facing ──────────────────────────
-      const prevX = workerPrevX[worker.id];
+    agentList.forEach((agent, idx) => {
+      // Target x position for this agent slot.
+      const targetX = agentStartX + idx * agentSpacing;
+
+      // Look up a live worker (if one exists) for this agent.
+      const worker = state.workers[agent.id] || null;
+
+      // Initialise per-agent character map entry on first sight.
+      if (!agentCharMap[agent.id]) {
+        agentCharMap[agent.id] = {
+          x: targetX,
+          y: 0,
+          animState: createAnimState(worker ? workerStateToClip(worker.state) : "idle"),
+          facingLeft: false,
+          prevX: targetX,
+        };
+      }
+      const charEntry = agentCharMap[agent.id];
+
+      // Determine x: live worker positions are implicit (agents share the slot grid),
+      // so always use targetX for all agents.  Movement-based facing still works.
+      const x = targetX;
+
+      // ── Movement-based facing (same logic as before) ───────────────
+      const prevX = charEntry.prevX;
       if (typeof prevX === "number") {
         const dx = x - prevX;
         if (dx < -FACING_EPS) {
-          workerFacingLeft[worker.id] = true;
+          charEntry.facingLeft = true;
         } else if (dx > FACING_EPS) {
-          workerFacingLeft[worker.id] = false;
+          charEntry.facingLeft = false;
         }
-        // |dx| <= EPS: keep previous facing (no-op)
-      } else {
-        // First frame for this worker — default face right
-        workerFacingLeft[worker.id] = false;
       }
-      workerPrevX[worker.id] = x;
+      charEntry.prevX = x;
+
+      // ── Clip selection ─────────────────────────────────────────────
+      let desiredClip;
+      if (worker) {
+        desiredClip = workerStateToClip(worker.state);
+      } else {
+        // Agent without a live worker: use agent.status to pick clip.
+        const st = (agent.status || "idle").toLowerCase();
+        desiredClip = (st === "active" || st === "working") ? "walk" : "idle";
+      }
+
+      const anim = charEntry.animState;
+      if (anim.action !== desiredClip) {
+        anim.action = desiredClip;
+        anim.frameIndex = 0;
+        anim.direction = 1;
+        anim.elapsed = 0;
+        anim.completed = false;
+      }
+      advanceAnim(anim, delta);
+
+      // ── Draw ───────────────────────────────────────────────────────
+      const isLeaveState = worker && worker.state === "leave";
 
       if (themeLoaded && charIds.length > 0) {
-        // Pick a character sprite using rosterOrder (cycles if more workers than characters)
+        // Pick character sprite by agent index in roster order.
         const charId = charIds[idx % charIds.length];
         const slots = themeImages[charId];
-
-        // Ensure animation state exists for this worker
-        if (!workerAnimStates[worker.id]) {
-          workerAnimStates[worker.id] = createAnimState(workerStateToClip(worker.state));
-        }
-        const anim = workerAnimStates[worker.id];
-
-        // Switch clip if the worker's state changed
-        const desiredClip = workerStateToClip(worker.state);
-        if (anim.action !== desiredClip) {
-          // Reset to new clip
-          anim.action = desiredClip;
-          anim.frameIndex = 0;
-          anim.direction = 1;
-          anim.elapsed = 0;
-          anim.completed = false;
-        }
-
-        // Advance animation
-        advanceAnim(anim, delta);
 
         const slot = currentSlot(anim);
         const img = slots && slots[slot];
 
         if (img && img.complete && img.naturalWidth > 0) {
-          const spriteSize = 64; // Display size in canvas px (128px frames scaled down)
+          const spriteSize = 64;
           const drawX = x - spriteSize / 2;
           const drawY = groundY - spriteSize;
 
-          // ── Feature 1: mirror based on movement-derived facing ─────
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
-          const shouldFlip = clip.flippable && workerFacingLeft[worker.id] === true;
+          const shouldFlip = clip.flippable && charEntry.facingLeft === true;
 
           ctx.save();
-          if (worker.state === "leave") ctx.globalAlpha = 0.55;
+          if (isLeaveState) ctx.globalAlpha = 0.55;
           if (shouldFlip) {
-            // Flip around the sprite centre: translate to right edge, scale -1 on x
             ctx.translate(x + spriteSize / 2, 0);
             ctx.scale(-1, 1);
             ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);
@@ -3856,16 +3888,16 @@
           ctx.fillStyle = "#e0e0e0";
           ctx.font = "10px monospace";
           ctx.textAlign = "center";
-          const label = (worker.role || worker.id).slice(0, 12);
+          const label = (agent.name || agent.id).slice(0, 12);
           ctx.fillText(label, x, groundY + 14);
           ctx.restore();
         } else {
-          // Sprite not yet loaded — fallback stick figure
-          drawWorker(x, groundY, worker, idx);
+          // Sprite not yet loaded — fallback stick figure using agent as mock worker
+          drawWorker(x, groundY, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
         }
       } else {
         // No theme loaded — placeholder stick figure
-        drawWorker(x, groundY, worker, idx);
+        drawWorker(x, groundY, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
       }
     });
 
