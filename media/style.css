@@ -50,9 +50,13 @@ body {
   font-size: 13px;
 }
 
-/* ── Canvas (hidden – kept in DOM so existing render code won't crash) ── */
+/* ── Canvas: fills the #stage-area top section ── */
 #stage {
-  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 /* ── Setup / install overlay (full-bleed onboarding screen) ──────── */

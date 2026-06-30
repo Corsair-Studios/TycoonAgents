@@ -1332,6 +1332,135 @@
   const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("stage"));
   const ctx = canvas.getContext("2d");
 
+  // Move canvas into #stage-area so CSS position:absolute;inset:0 fills it correctly
+  (function repositionCanvas() {
+    const sa = document.getElementById("stage-area");
+    if (sa && canvas.parentElement !== sa) {
+      sa.insertBefore(canvas, sa.firstChild);
+    }
+  })();
+
+  // ── Theme character rendering ────────────────────────────────────────────
+  // ATLAS_CLIPS mirrors src/extension/themePlan.ts exactly — keep in sync.
+  const ATLAS_CLIPS = {
+    walk:      { frames: [0, 1, 2, 3, 4],  fps: 10, loop: true,  flippable: true },
+    idle:      { frames: [16],              fps: 0,  loop: true,  flippable: false, hold: true },
+    sit:       { frames: [15],              fps: 0,  loop: true,  flippable: false, hold: true },
+    melee:     { frames: [5, 6, 7, 8],     fps: 12, loop: false, flippable: true },
+    build:     { frames: [5, 6, 7, 8],     fps: 6,  loop: true,  flippable: true },
+    tool_idle: { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
+    shoot:     { frames: [10, 11],         fps: 8,  loop: false, flippable: true,  pingpong: true },
+    dance:     { frames: [17, 18],         fps: 6,  loop: true,  flippable: false, pingpong: true },
+    cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
+    point:     { frames: [12],             fps: 0,  loop: true,  flippable: true,  hold: true },
+    signal:    { frames: [13],             fps: 0,  loop: true,  flippable: false, hold: true },
+    dodge:     { frames: [14],             fps: 0,  loop: false, flippable: true,  hold: true },
+  };
+
+  /** Theme data set by THEME_INITIALIZED */
+  let themeLoaded = false;
+  /** @type {Record<string, string[]>} raw frames per character (slot → data-URI) */
+  let themeFramesRaw = {};
+  /** @type {Record<string, HTMLImageElement[]>} preloaded Image objects per character */
+  let themeImages = {};
+  /** @type {HTMLImageElement|null} background environment image */
+  let themeBackgroundImg = null;
+  /** @type {Record<string, {action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}>} */
+  let workerAnimStates = {};
+
+  /**
+   * Create a fresh animation state object.
+   * @param {string} action
+   */
+  function createAnimState(action) {
+    return { action, frameIndex: 0, direction: 1, elapsed: 0, completed: false };
+  }
+
+  /**
+   * Advance an animation state by deltaSeconds; mirrors animationPlayback.ts logic.
+   * @param {{action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}} s
+   * @param {number} delta
+   */
+  function advanceAnim(s, delta) {
+    const clip = ATLAS_CLIPS[s.action] || ATLAS_CLIPS.idle;
+    if (clip.hold || clip.frames.length <= 1 || clip.fps <= 0) {
+      s.frameIndex = 0;
+      return;
+    }
+    if (s.completed || !Number.isFinite(delta) || delta <= 0) return;
+    s.elapsed += delta;
+    const dur = 1 / clip.fps;
+    while (s.elapsed >= dur && !s.completed) {
+      s.elapsed -= dur;
+      const n = clip.frames.length;
+      if (clip.pingpong) {
+        s.frameIndex += s.direction;
+        if (s.frameIndex >= n - 1) {
+          s.frameIndex = n - 1;
+          if (clip.loop) s.direction = -1; else s.completed = true;
+        } else if (s.frameIndex <= 0) {
+          s.frameIndex = 0;
+          s.direction = 1;
+        }
+      } else {
+        s.frameIndex += 1;
+        if (s.frameIndex >= n) {
+          if (clip.loop) s.frameIndex = 0;
+          else { s.frameIndex = n - 1; s.completed = true; }
+        }
+      }
+    }
+  }
+
+  /**
+   * Return the atlas slot index for the current frame of an animation state.
+   * @param {{action:string, frameIndex:number}} s
+   */
+  function currentSlot(s) {
+    const clip = ATLAS_CLIPS[s.action] || ATLAS_CLIPS.idle;
+    return clip.frames[Math.min(s.frameIndex, clip.frames.length - 1)];
+  }
+
+  /**
+   * Map a worker state string to an ATLAS_CLIPS action name.
+   * @param {string} workerState
+   */
+  function workerStateToClip(workerState) {
+    switch (workerState) {
+      case "walk":
+      case "arrive":   return "walk";
+      case "build":
+      case "haul":     return "build";
+      case "survey":   return "tool_idle";
+      case "celebrate":return "cheer";
+      case "leave":    return "walk";
+      default:         return "idle";
+    }
+  }
+
+  /**
+   * Preload all character sprite images from raw frames data.
+   * @param {Record<string, string[]>} rawFrames
+   */
+  function preloadThemeImages(rawFrames) {
+    themeImages = {};
+    themeBackgroundImg = null;
+    const bgFrames = rawFrames["environment_background"];
+    if (bgFrames && bgFrames[0]) {
+      const bgImg = new Image();
+      bgImg.src = bgFrames[0];
+      themeBackgroundImg = bgImg;
+    }
+    for (const [charId, slots] of Object.entries(rawFrames)) {
+      if (charId === "environment_background") continue;
+      themeImages[charId] = slots.map((src) => {
+        const img = new Image();
+        img.src = src;
+        return img;
+      });
+    }
+  }
+
   // Worker color by state
   const STATE_COLOR = {
     arrive:    "#7fb3ff",
@@ -1353,6 +1482,7 @@
   const workerOrder = [];
 
   let frame = 0;
+  let lastFrameTime = 0;
 
   function resize() {
     canvas.width = canvas.clientWidth;
@@ -1725,6 +1855,14 @@
       if (initializedThemeId) {
         reviewThemeId = initializedThemeId;
         if (themeBuildActions) themeBuildActions.removeAttribute("hidden");
+      }
+      // Load theme character sprites for the stage canvas
+      if (msg.payload?.frames && typeof msg.payload.frames === "object") {
+        themeFramesRaw = msg.payload.frames;
+        preloadThemeImages(themeFramesRaw);
+        themeLoaded = true;
+        // Reset per-worker animation states so they start fresh
+        workerAnimStates = {};
       }
     } else if (msg && msg.type === "state") {
       state = msg.state;
@@ -3417,39 +3555,48 @@
     ctx.restore();
   }
 
-  function render() {
+  function render(timestamp) {
+    // Delta time for animation advancement (capped at 100ms to avoid jumps on tab focus)
+    const delta = lastFrameTime === 0 ? 0 : Math.min((timestamp - lastFrameTime) / 1000, 0.1);
+    lastFrameTime = timestamp;
+
     frame++;
     const w = canvas.width;
     const h = canvas.height;
 
-    // Background
-    ctx.fillStyle = "#1a1a2e";
-    ctx.fillRect(0, 0, w, h);
+    if (themeLoaded && themeBackgroundImg && themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0) {
+      // Draw theme background scaled to fill canvas
+      ctx.drawImage(themeBackgroundImg, 0, 0, w, h);
+    } else {
+      // Fallback placeholder background
+      ctx.fillStyle = "#1a1a2e";
+      ctx.fillRect(0, 0, w, h);
 
-    // Sky gradient strip
-    const grad = ctx.createLinearGradient(0, 0, 0, h * 0.7);
-    grad.addColorStop(0, "#0d1b3e");
-    grad.addColorStop(1, "#1a2a50");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h * 0.7);
+      // Sky gradient strip
+      const grad = ctx.createLinearGradient(0, 0, 0, h * 0.7);
+      grad.addColorStop(0, "#0d1b3e");
+      grad.addColorStop(1, "#1a2a50");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h * 0.7);
+    }
 
-    // Ground band
+    // Ground band (always drawn for worker footing reference)
     const groundY = Math.floor(h * 0.78);
-    ctx.fillStyle = "#2a3a2a";
-    ctx.fillRect(0, groundY, w, h - groundY);
-
-    // Ground line
-    ctx.strokeStyle = "#4a6a4a";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(0, groundY);
-    ctx.lineTo(w, groundY);
-    ctx.stroke();
+    if (!themeLoaded || !themeBackgroundImg || !themeBackgroundImg.complete) {
+      ctx.fillStyle = "#2a3a2a";
+      ctx.fillRect(0, groundY, w, h - groundY);
+      ctx.strokeStyle = "#4a6a4a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, groundY);
+      ctx.lineTo(w, groundY);
+      ctx.stroke();
+    }
 
     // Buildings (left side)
     drawBuildings(groundY, state.completedTasks);
 
-    // Workers
+    // Workers / characters
     const workers = workerOrder
       .map((id) => state.workers[id])
       .filter(Boolean);
@@ -3457,9 +3604,74 @@
     const spacing = Math.min(80, (w - 40) / Math.max(workers.length, 1));
     const startX = Math.max(40, (w - spacing * workers.length) / 2);
 
+    // Get ordered character IDs from theme images (stable order matches worker roster)
+    const charIds = Object.keys(themeImages);
+
     workers.forEach((worker, idx) => {
       const x = startX + idx * spacing;
-      drawWorker(x, groundY, worker, idx);
+
+      if (themeLoaded && charIds.length > 0) {
+        // Pick a character sprite by cycling through the available roster
+        const charId = charIds[idx % charIds.length];
+        const slots = themeImages[charId];
+
+        // Ensure animation state exists for this worker
+        if (!workerAnimStates[worker.id]) {
+          workerAnimStates[worker.id] = createAnimState(workerStateToClip(worker.state));
+        }
+        const anim = workerAnimStates[worker.id];
+
+        // Switch clip if the worker's state changed
+        const desiredClip = workerStateToClip(worker.state);
+        if (anim.action !== desiredClip) {
+          // Reset to new clip
+          anim.action = desiredClip;
+          anim.frameIndex = 0;
+          anim.direction = 1;
+          anim.elapsed = 0;
+          anim.completed = false;
+        }
+
+        // Advance animation
+        advanceAnim(anim, delta);
+
+        const slot = currentSlot(anim);
+        const img = slots && slots[slot];
+
+        if (img && img.complete && img.naturalWidth > 0) {
+          const spriteSize = 64; // Display size in canvas px (128px frames scaled down)
+          const drawX = x - spriteSize / 2;
+          const drawY = groundY - spriteSize;
+
+          // Mirror horizontally when agent is leaving (moving left) — flippable clips only
+          const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
+          const shouldFlip = clip.flippable && worker.state === "leave";
+
+          ctx.save();
+          if (worker.state === "leave") ctx.globalAlpha = 0.55;
+          if (shouldFlip) {
+            ctx.translate(x + spriteSize / 2, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);
+          } else {
+            ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
+          }
+          // Label below feet
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = "#e0e0e0";
+          ctx.font = "10px monospace";
+          ctx.textAlign = "center";
+          const label = (worker.role || worker.id).slice(0, 12);
+          ctx.fillText(label, x, groundY + 14);
+          ctx.restore();
+        } else {
+          // Sprite not yet loaded — fallback stick figure
+          drawWorker(x, groundY, worker, idx);
+        }
+      } else {
+        // No theme loaded — placeholder stick figure
+        drawWorker(x, groundY, worker, idx);
+      }
     });
 
     // HUD overlay
