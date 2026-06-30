@@ -1556,6 +1556,270 @@
     return (typeof o === "number" && o > 0) ? o : themeCharacterScale;
   }
 
+  // ── Stage editor (live polygon + scale tuning) ───────────────────────────
+  /** True while the "Edit Stage" overlay is active. */
+  let editStageMode = false;
+  /** Index of the polygon vertex currently being dragged, or -1. */
+  let dragVertexIndex = -1;
+  /** Index of the polygon vertex under the cursor (for hover highlight), or -1. */
+  let hoverVertexIndex = -1;
+  /** Last drawn background rect (canvas px) — lets mouse handlers map canvas<->native. */
+  let lastBgX = 0, lastBgY = 0, lastBgW = 1, lastBgH = 1;
+  /** Character id selected in the per-character override control. */
+  let editSelectedCharId = "";
+
+  // ── Stage loading progress (a bar replaces placeholders while loading) ────
+  const LOADING_TIMEOUT_MS = 6000;
+  /** performance.now() when we began waiting for the stage to load. */
+  let themeLoadStartTs = 0;
+  function nowMs() { return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now(); }
+  /** Progress over the theme background + character frames: { ready, frac }. */
+  function themeLoadProgress() {
+    if (!themeLoaded) return { ready: false, frac: 0 };
+    let total = 0, done = 0;
+    const bgOk = !themeBackgroundImg || (themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0);
+    if (themeBackgroundImg) { total++; if (themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0) done++; }
+    for (const id in themeImages) {
+      const arr = themeImages[id];
+      if (!Array.isArray(arr)) continue;
+      for (let i = 0; i < arr.length; i++) {
+        const im = arr[i];
+        if (!im) continue;
+        total++;
+        if (im.complete && im.naturalWidth > 0) done++;
+      }
+    }
+    const frac = total > 0 ? done / total : 0;
+    return { ready: total > 0 && bgOk && frac >= 0.95, frac };
+  }
+
+  /** Convert a mouse event to canvas-pixel coords (accounts for CSS scaling). */
+  function canvasMouse(e) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = rect.width > 0 ? canvas.width / rect.width : 1;
+    const sy = rect.height > 0 ? canvas.height / rect.height : 1;
+    return [(e.clientX - rect.left) * sx, (e.clientY - rect.top) * sy];
+  }
+  /** Inverse of nativeToCanvas using the last drawn background rect. */
+  function canvasToNative(mx, my) {
+    return [
+      (mx - lastBgX) * (walkableNativeW / lastBgW),
+      (my - lastBgY) * (walkableNativeH / lastBgH),
+    ];
+  }
+  /** Index of the polygon vertex within rPx canvas px of (mx,my), else -1. */
+  function vertexAt(mx, my, rPx) {
+    for (let i = 0; i < walkablePolygon.length; i++) {
+      const [vx, vy] = nativeToCanvas(walkablePolygon[i][0], walkablePolygon[i][1], lastBgX, lastBgY, lastBgW, lastBgH);
+      const dx = vx - mx, dy = vy - my;
+      if (dx * dx + dy * dy <= rPx * rPx) return i;
+    }
+    return -1;
+  }
+  /** Index of the edge whose midpoint is within rPx of (mx,my), else -1. */
+  function edgeMidAt(mx, my, rPx) {
+    for (let i = 0; i < walkablePolygon.length; i++) {
+      const a = walkablePolygon[i];
+      const b = walkablePolygon[(i + 1) % walkablePolygon.length];
+      const [cxm, cym] = nativeToCanvas((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, lastBgX, lastBgY, lastBgW, lastBgH);
+      const dx = cxm - mx, dy = cym - my;
+      if (dx * dx + dy * dy <= rPx * rPx) return i;
+    }
+    return -1;
+  }
+
+  canvas.addEventListener("mousedown", (e) => {
+    if (!editStageMode) return;
+    const [mx, my] = canvasMouse(e);
+    const vi = vertexAt(mx, my, 11);
+    if (vi >= 0) { dragVertexIndex = vi; e.preventDefault(); }
+  });
+  canvas.addEventListener("mousemove", (e) => {
+    if (!editStageMode) return;
+    const [mx, my] = canvasMouse(e);
+    if (dragVertexIndex >= 0) {
+      const [nx, ny] = canvasToNative(mx, my);
+      walkablePolygon[dragVertexIndex] = [
+        Math.max(0, Math.min(walkableNativeW, nx)),
+        Math.max(0, Math.min(walkableNativeH, ny)),
+      ];
+    } else {
+      hoverVertexIndex = vertexAt(mx, my, 11);
+      canvas.style.cursor = hoverVertexIndex >= 0 ? "grab" : "default";
+    }
+  });
+  window.addEventListener("mouseup", () => {
+    if (dragVertexIndex >= 0) dragVertexIndex = -1;
+  });
+  canvas.addEventListener("dblclick", (e) => {
+    if (!editStageMode) return;
+    const [mx, my] = canvasMouse(e);
+    const ei = edgeMidAt(mx, my, 14);
+    if (ei >= 0) {
+      const a = walkablePolygon[ei];
+      const b = walkablePolygon[(ei + 1) % walkablePolygon.length];
+      walkablePolygon.splice(ei + 1, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+      e.preventDefault();
+    }
+  });
+  canvas.addEventListener("contextmenu", (e) => {
+    if (!editStageMode) return;
+    e.preventDefault();
+    const [mx, my] = canvasMouse(e);
+    const vi = vertexAt(mx, my, 11);
+    if (vi >= 0 && walkablePolygon.length > 3) {
+      walkablePolygon.splice(vi, 1);
+      hoverVertexIndex = -1;
+    }
+  });
+
+  // ── Stage editor control panel (built lazily, toggled with edit mode) ─────
+  let stageEditPanel = null;
+  const stageEditEls = {};
+  function buildStageEditPanel() {
+    if (stageEditPanel) return;
+    const stageAreaEl = document.getElementById("stage-area") || document.body;
+    const wrap = document.createElement("div");
+    wrap.id = "stage-edit-panel";
+    wrap.setAttribute("hidden", "");
+    wrap.style.cssText = "position:absolute;top:8px;left:8px;z-index:30;width:228px;padding:10px 12px;border-radius:8px;background:rgba(18,20,28,0.94);border:1px solid #ffc107;color:#eaeaea;font-family:monospace;font-size:11px;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,0.55);";
+    wrap.innerHTML =
+      '<div id="se-h">⚙ Edit Stage</div>' +
+      '<div>Character scale: <span id="se-cs-val">1.00</span></div>' +
+      '<input id="se-cs" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<div style="margin-top:6px">Per-character override</div>' +
+      '<select id="se-char"></select>' +
+      '<input id="se-co" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<button id="se-co-clear" type="button">clear override</button>' +
+      '<div style="margin-top:6px">Object scale: <span id="se-os-val">1.00</span></div>' +
+      '<input id="se-os" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<div id="se-hint">Drag points · dbl-click edge to add · right-click to remove</div>' +
+      '<div id="se-btns"><button id="se-save" type="button">Save</button><button id="se-done" type="button">Done</button></div>' +
+      '<div id="se-status"></div>';
+    stageAreaEl.appendChild(wrap);
+    stageEditPanel = wrap;
+    stageEditEls.cs = wrap.querySelector("#se-cs");
+    stageEditEls.csVal = wrap.querySelector("#se-cs-val");
+    stageEditEls.char = wrap.querySelector("#se-char");
+    stageEditEls.co = wrap.querySelector("#se-co");
+    stageEditEls.coClear = wrap.querySelector("#se-co-clear");
+    stageEditEls.os = wrap.querySelector("#se-os");
+    stageEditEls.osVal = wrap.querySelector("#se-os-val");
+    stageEditEls.save = wrap.querySelector("#se-save");
+    stageEditEls.done = wrap.querySelector("#se-done");
+    stageEditEls.status = wrap.querySelector("#se-status");
+    // Cosmetic styling via CSSOM (CSP-safe).
+    wrap.querySelector("#se-h").style.cssText = "font-weight:bold;color:#ffc107;margin-bottom:6px;";
+    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.char]) el.style.width = "100%";
+    wrap.querySelector("#se-hint").style.cssText = "opacity:0.7;margin:8px 0;";
+    wrap.querySelector("#se-btns").style.cssText = "display:flex;gap:6px;margin-top:4px;";
+    stageEditEls.save.style.flex = "1";
+    stageEditEls.done.style.flex = "1";
+    stageEditEls.coClear.style.cssText = "margin-top:3px;font-size:10px;";
+    stageEditEls.status.style.cssText = "margin-top:6px;min-height:14px;color:#9fffa0;";
+
+    // Wire controls.
+    stageEditEls.cs.addEventListener("input", () => {
+      themeCharacterScale = parseFloat(stageEditEls.cs.value) || 1;
+      stageEditEls.csVal.textContent = themeCharacterScale.toFixed(2);
+    });
+    stageEditEls.os.addEventListener("input", () => {
+      themeObjectScale = parseFloat(stageEditEls.os.value) || 1;
+      stageEditEls.osVal.textContent = themeObjectScale.toFixed(2);
+    });
+    stageEditEls.char.addEventListener("change", () => {
+      editSelectedCharId = stageEditEls.char.value;
+      syncOverrideSlider();
+    });
+    stageEditEls.co.addEventListener("input", () => {
+      if (!editSelectedCharId) return;
+      themeCharScaleOverrides[editSelectedCharId] = parseFloat(stageEditEls.co.value) || 1;
+    });
+    stageEditEls.coClear.addEventListener("click", () => {
+      if (editSelectedCharId) delete themeCharScaleOverrides[editSelectedCharId];
+      syncOverrideSlider();
+    });
+    stageEditEls.save.addEventListener("click", saveStageTuning);
+    stageEditEls.done.addEventListener("click", exitEditStage);
+  }
+  function syncOverrideSlider() {
+    const ov = themeCharScaleOverrides[editSelectedCharId];
+    stageEditEls.co.value = String(typeof ov === "number" && ov > 0 ? ov : themeCharacterScale);
+  }
+  function enterEditStage() {
+    if (!themeLoaded) return;
+    buildStageEditPanel();
+    editStageMode = true;
+    showNavPolygon = false;
+    const ids = rosterOrder.length ? rosterOrder : Object.keys(themeImages).filter((id) => id !== "environment_background");
+    stageEditEls.char.innerHTML = "";
+    for (const id of ids) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = id;
+      stageEditEls.char.appendChild(opt);
+    }
+    editSelectedCharId = ids[0] || "";
+    stageEditEls.cs.value = String(themeCharacterScale);
+    stageEditEls.csVal.textContent = themeCharacterScale.toFixed(2);
+    stageEditEls.os.value = String(themeObjectScale);
+    stageEditEls.osVal.textContent = themeObjectScale.toFixed(2);
+    syncOverrideSlider();
+    stageEditEls.status.textContent = "";
+    stageEditPanel.removeAttribute("hidden");
+  }
+  function exitEditStage() {
+    editStageMode = false;
+    dragVertexIndex = -1;
+    hoverVertexIndex = -1;
+    canvas.style.cursor = "default";
+    if (stageEditPanel) stageEditPanel.setAttribute("hidden", "");
+  }
+  function saveStageTuning() {
+    if (!selectedThemeId) {
+      if (stageEditEls.status) stageEditEls.status.textContent = "No theme selected.";
+      return;
+    }
+    const normPoly = walkablePolygon.map((p) => [
+      +(p[0] / walkableNativeW).toFixed(5),
+      +(p[1] / walkableNativeH).toFixed(5),
+    ]);
+    vscode.postMessage({
+      type: "SAVE_STAGE_TUNING",
+      payload: {
+        theme_id: selectedThemeId,
+        walkable_nav_polygon: normPoly,
+        character_scale: themeCharacterScale,
+        object_scale: themeObjectScale,
+        character_scale_overrides: themeCharScaleOverrides,
+        object_scale_overrides: themeObjScaleOverrides,
+      },
+    });
+    if (stageEditEls.status) stageEditEls.status.textContent = "Saving…";
+  }
+
+  // Inject an "Edit Stage" item into the hamburger menu.
+  (function injectEditStageMenuItem() {
+    if (typeof menuPopoverEl === "undefined" || !menuPopoverEl) return;
+    const btn = document.createElement("button");
+    btn.className = "menu-item";
+    btn.id = "menu-edit-stage";
+    btn.type = "button";
+    btn.textContent = "Edit Stage";
+    const about = document.getElementById("menu-about");
+    if (about && about.parentElement === menuPopoverEl) menuPopoverEl.insertBefore(btn, about);
+    else menuPopoverEl.appendChild(btn);
+    btn.addEventListener("click", () => {
+      if (typeof closeMenu === "function") closeMenu();
+      enterEditStage();
+    });
+  })();
+
+  // Escape exits the stage editor.
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && editStageMode) exitEditStage();
+  });
+
   /**
    * Ray-cast point-in-polygon test (native coord space).
    * @param {number} x @param {number} y @param {number[][]} poly
@@ -1822,6 +2086,7 @@
   resize();
 
   // Tell the extension we're ready; it will push the current state back
+  themeLoadStartTs = nowMs(); // begin the stage-loading window
   vscode.postMessage({ type: "ready" });
 
   // Initial state: keep the setup overlay up until we hear back about install
@@ -2191,6 +2456,7 @@
       // Load theme character sprites for the stage canvas
       if (msg.payload?.frames && typeof msg.payload.frames === "object") {
         themeFramesRaw = msg.payload.frames;
+        themeLoadStartTs = nowMs(); // restart the loading window for this theme's frames
         preloadThemeImages(themeFramesRaw);
         themeLoaded = true;
         // Reset per-worker animation/facing states so they start fresh
@@ -2257,6 +2523,12 @@
           rosterCollapsed = saved.rosterCollapsed;
         }
         buildRosterStrip();
+      }
+    } else if (msg && msg.type === "STAGE_TUNING_SAVED") {
+      if (stageEditEls && stageEditEls.status) {
+        const ok = msg.payload && msg.payload.ok;
+        stageEditEls.status.textContent = ok ? "Saved to theme ✓" : "Save failed";
+        stageEditEls.status.style.color = ok ? "#9fffa0" : "#ff9f9f";
       }
     } else if (msg && msg.type === "state") {
       state = msg.state;
@@ -3967,6 +4239,12 @@
     const w = canvas.width;
     const h = canvas.height;
 
+    // While the stage is still loading its theme art, suppress placeholder
+    // buildings/stick-figures and show a single loading bar instead.
+    const _load = themeLoadProgress();
+    const _loadElapsed = themeLoadStartTs > 0 ? (nowMs() - themeLoadStartTs) : Infinity;
+    const loadingActive = !_load.ready && themeLoadStartTs > 0 && _loadElapsed < LOADING_TIMEOUT_MS;
+
     // ── Change 2: Fixed-size background (does NOT stretch on resize) ──────────
     if (themeLoaded && themeBackgroundImg && themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0) {
       // Letterbox fill: solid backdrop so edges outside the fixed BG are clean.
@@ -4005,14 +4283,15 @@
       ctx.stroke();
     }
 
-    // Buildings (left side) — only shown when no theme is active
-    if (!themeLoaded || !themeBackgroundImg || !themeBackgroundImg.complete || themeBackgroundImg.naturalWidth === 0) {
+    // Buildings (left side) — only shown when no theme is active (and not loading)
+    if (!loadingActive && (!themeLoaded || !themeBackgroundImg || !themeBackgroundImg.complete || themeBackgroundImg.naturalWidth === 0)) {
       drawBuildings(groundY, state.completedTasks);
     }
 
     // ── Isometric character placement + wander on themed floor ───────────────
     // Derive the agent list from the metrics table (same source as renderMetrics).
-    const agentList = Array.isArray(state.agentMetrics) ? state.agentMetrics : [];
+    // While loading, use an empty list so no placeholder/half-loaded sprites show.
+    const agentList = loadingActive ? [] : (Array.isArray(state.agentMetrics) ? state.agentMetrics : []);
 
     // Prune stale entries from agentCharMap (agents no longer in metrics).
     const agentIds = new Set(agentList.map((a) => a.id));
@@ -4029,6 +4308,8 @@
     const bgH = bgImgReady ? themeBackgroundImg.naturalHeight : h;
     const bgX = bgImgReady ? Math.floor((w - bgW) / 2) : 0;
     const bgY = bgImgReady ? (h - bgH)                 : 0;
+    // Cache for the stage-editor mouse handlers (canvas<->native mapping).
+    lastBgX = bgX; lastBgY = bgY; lastBgW = bgW; lastBgH = bgH;
 
     // Polygon bbox for depth scale computation.
     let polyMinY = Infinity, polyMaxY = -Infinity;
@@ -4291,6 +4572,85 @@
       ctx.font = "9px monospace";
       ctx.textAlign = "left";
       ctx.fillText("N: nav poly", 6, h - 6);
+      ctx.restore();
+    }
+
+    // ── Stage editor overlay (draggable polygon handles) ───────────────
+    if (editStageMode && themeLoaded && walkablePolygon && walkablePolygon.length > 2) {
+      ctx.save();
+      // Filled + stroked outline (amber to distinguish from the green nav view)
+      ctx.beginPath();
+      const [e0x, e0y] = nativeToCanvas(walkablePolygon[0][0], walkablePolygon[0][1], bgX, bgY, bgW, bgH);
+      ctx.moveTo(e0x, e0y);
+      for (let i = 1; i < walkablePolygon.length; i++) {
+        const [px, py] = nativeToCanvas(walkablePolygon[i][0], walkablePolygon[i][1], bgX, bgY, bgW, bgH);
+        ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = "rgba(255,193,7,0.10)";
+      ctx.fill();
+      ctx.strokeStyle = "#ffc107";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // Edge midpoint "+" hints (double-click an edge to insert a vertex)
+      ctx.fillStyle = "rgba(255,193,7,0.55)";
+      for (let i = 0; i < walkablePolygon.length; i++) {
+        const a = walkablePolygon[i];
+        const b = walkablePolygon[(i + 1) % walkablePolygon.length];
+        const [mx, my] = nativeToCanvas((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, bgX, bgY, bgW, bgH);
+        ctx.beginPath();
+        ctx.arc(mx, my, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Draggable vertex handles
+      for (let i = 0; i < walkablePolygon.length; i++) {
+        const [vx, vy] = nativeToCanvas(walkablePolygon[i][0], walkablePolygon[i][1], bgX, bgY, bgW, bgH);
+        const active = (i === dragVertexIndex) || (i === hoverVertexIndex);
+        ctx.beginPath();
+        ctx.arc(vx, vy, active ? 8 : 6, 0, Math.PI * 2);
+        ctx.fillStyle = active ? "#fff3cd" : "#ffc107";
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#7a5b00";
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // ── Stage loading bar (replaces placeholders while the theme loads) ──
+    if (loadingActive) {
+      ctx.save();
+      const barW = Math.min(280, w * 0.6);
+      const barH = 8;
+      const bx = Math.round((w - barW) / 2);
+      const by = Math.round(h * 0.47);
+      // Title + subtitle
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#eef0f6";
+      ctx.font = "600 14px system-ui, -apple-system, sans-serif";
+      ctx.fillText("TycoonAgents", w / 2, by - 26);
+      ctx.fillStyle = "rgba(186,196,214,0.85)";
+      ctx.font = "11px system-ui, -apple-system, sans-serif";
+      ctx.fillText(themeLoaded ? "Loading characters…" : "Loading…", w / 2, by - 10);
+      // Track
+      ctx.fillStyle = "rgba(255,255,255,0.14)";
+      ctx.fillRect(bx, by, barW, barH);
+      // Fill
+      if (themeLoaded) {
+        const frac = Math.max(0, Math.min(1, _load.frac));
+        ctx.fillStyle = "#39ff14";
+        ctx.fillRect(bx, by, Math.max(barH, barW * frac), barH);
+        ctx.fillStyle = "rgba(186,196,214,0.85)";
+        ctx.font = "10px system-ui, -apple-system, sans-serif";
+        ctx.fillText(Math.round(frac * 100) + "%", w / 2, by + barH + 15);
+      } else {
+        // Indeterminate ping-pong segment while waiting for the theme payload.
+        const segW = barW * 0.34;
+        const t = 0.5 - 0.5 * Math.cos((nowMs() / 700) % (Math.PI * 2));
+        const segX = bx + (barW - segW) * t;
+        ctx.fillStyle = "#39ff14";
+        ctx.fillRect(segX, by, segW, barH);
+      }
       ctx.restore();
     }
 
