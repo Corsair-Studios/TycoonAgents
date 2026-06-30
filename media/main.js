@@ -2187,9 +2187,36 @@
           ? vp.walkable_nav_polygon
           : null;
         if (rawPoly) {
-          walkablePolygon = rawPoly.map((p) => [p[0], p[1]]);
-          walkableNativeW = (vp.native_width && vp.native_width > 0) ? vp.native_width : DEFAULT_NATIVE_W;
-          walkableNativeH = (vp.native_height && vp.native_height > 0) ? vp.native_height : DEFAULT_NATIVE_H;
+          // The generator stores walkable_nav_polygon as NORMALIZED 0..1
+          // fractions of the background, while native_width/height describe the
+          // source image (e.g. 1280x720). If we scaled normalized coords by
+          // native_width they'd collapse to a ~1px cluster at the image origin
+          // (every agent + the nav overlay stacked in the top-left corner).
+          // Detect that case and convert the polygon into the SAME canonical
+          // native pixel space (533x751) used by the default polygon and the
+          // pixel-tuned wander constants, so mapping AND movement both work.
+          const cleaned = rawPoly
+            .filter((p) => Array.isArray(p) && p.length >= 2 && isFinite(p[0]) && isFinite(p[1]))
+            .map((p) => [p[0], p[1]]);
+          if (cleaned.length < 3) {
+            // Degenerate after cleaning — fall back to the default floor.
+            walkablePolygon = DEFAULT_WALKABLE_POLY.map((p) => p.slice());
+            walkableNativeW = DEFAULT_NATIVE_W;
+            walkableNativeH = DEFAULT_NATIVE_H;
+          } else {
+            const isNormalized = cleaned.every(
+              (p) => Math.abs(p[0]) <= 1.5 && Math.abs(p[1]) <= 1.5
+            );
+            if (isNormalized) {
+              walkablePolygon = cleaned.map((p) => [p[0] * DEFAULT_NATIVE_W, p[1] * DEFAULT_NATIVE_H]);
+              walkableNativeW = DEFAULT_NATIVE_W;
+              walkableNativeH = DEFAULT_NATIVE_H;
+            } else {
+              walkablePolygon = cleaned;
+              walkableNativeW = (vp.native_width && vp.native_width > 0) ? vp.native_width : DEFAULT_NATIVE_W;
+              walkableNativeH = (vp.native_height && vp.native_height > 0) ? vp.native_height : DEFAULT_NATIVE_H;
+            }
+          }
         } else {
           walkablePolygon = DEFAULT_WALKABLE_POLY.map((p) => p.slice());
           walkableNativeW = DEFAULT_NATIVE_W;
