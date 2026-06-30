@@ -136,6 +136,58 @@ export async function listThemes(
   }));
 }
 
+/**
+ * Seed bundled starter themes into global storage on first run, so a freshly
+ * installed plugin has at least one theme available out-of-box. Never
+ * overwrites existing user themes. Best-effort: failures are swallowed.
+ */
+export async function seedBundledThemes(
+  extensionUri: vscode.Uri,
+  globalStorageUri: vscode.Uri,
+): Promise<void> {
+  try {
+    const existing = await listThemes(globalStorageUri);
+    if (existing.length > 0) return;
+
+    await vscode.workspace.fs.createDirectory(globalStorageUri);
+
+    const bundledThemesUri = vscode.Uri.joinPath(extensionUri, 'media', 'themes');
+    let entries: Array<[string, vscode.FileType]>;
+    try {
+      entries = await vscode.workspace.fs.readDirectory(bundledThemesUri);
+    } catch {
+      return;
+    }
+
+    for (const [name, kind] of entries) {
+      if (kind !== vscode.FileType.Directory) continue;
+      const themeDirUri = vscode.Uri.joinPath(bundledThemesUri, name);
+      const manifest = await readJson<Partial<ThemeManifest>>(
+        vscode.Uri.joinPath(themeDirUri, 'manifest.json'),
+      );
+      if (!manifest?.theme_id) continue;
+
+      try {
+        const framesBytes = await vscode.workspace.fs.readFile(
+          vscode.Uri.joinPath(themeDirUri, 'frames.json'),
+        );
+        await vscode.workspace.fs.writeFile(
+          vscode.Uri.joinPath(globalStorageUri, `${manifest.theme_id}_manifest.json`),
+          jsonBuffer(manifest),
+        );
+        await vscode.workspace.fs.writeFile(
+          vscode.Uri.joinPath(globalStorageUri, `${manifest.theme_id}_frames.json`),
+          framesBytes,
+        );
+      } catch (error) {
+        console.warn(`TycoonAgents: Could not seed bundled theme "${name}":`, error);
+      }
+    }
+  } catch (error) {
+    console.warn('TycoonAgents: Could not seed bundled themes:', error);
+  }
+}
+
 export async function getThemeApprovalSummary(
   globalStorageUri: vscode.Uri,
   themeId: string,
@@ -305,6 +357,23 @@ export async function saveThemeTuning(
     return true;
   } catch {
     return false;
+  }
+}
+
+export async function replaceThemeBackground(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  imageBytes: Uint8Array,
+): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
+  try {
+    const loaded = await loadTheme(globalStorageUri, themeId);
+    if (!loaded) return undefined;
+    const { manifest, frames } = loaded;
+    frames["environment_background"] = [dataUri(Buffer.from(imageBytes))];
+    await writeThemeFiles(globalStorageUri, manifest, frames);
+    return { manifest, frames };
+  } catch {
+    return undefined;
   }
 }
 

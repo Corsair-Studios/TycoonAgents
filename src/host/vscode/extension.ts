@@ -12,6 +12,7 @@ import { runDemo } from "./demo";
 import { ClaudeCodeProvider } from "../../providers/claude-code/claudeCodeProvider";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { activate as activateTheater, deactivate as deactivateTheater } from "../../extension/main";
+import { seedBundledThemes } from "../../extension/themeService";
 
 let provider: ClaudeCodeProvider | undefined;
 let demoDisposable: { dispose(): void } | undefined;
@@ -21,6 +22,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const idleFreezeMs = cfg.get<number>("idleFreezeMinutes", 3) * 60000;
   const sanityCapMs = cfg.get<number>("sanityCapMinutes", 15) * 60000;
   const runtime = new Runtime({ idleFreezeMs, sanityCapMs });
+
+  // Best-effort: seed bundled starter themes into global storage on first
+  // run so a freshly installed plugin has a default theme available.
+  void seedBundledThemes(context.extensionUri, context.globalStorageUri);
 
   // Command: open (or reveal) the TycoonAgents panel
   const openCmd = vscode.commands.registerCommand("tycoonagents.open", () => {

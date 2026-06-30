@@ -36,6 +36,7 @@ import {
   planTheme,
   readThemeArchive,
   renameThemeCharacter,
+  replaceThemeBackground,
   retryThemeImage,
   resumeThemeGeneration,
   saveThemeTuning,
@@ -181,6 +182,32 @@ export class TycoonPanel {
           const p = (message as any).payload;
           const ok = await saveThemeTuning(this._globalStorageUri, p);
           void this._panel.webview.postMessage({ type: "STAGE_TUNING_SAVED", payload: { ok, theme_id: p?.theme_id } });
+        } else if (message.type === "REPLACE_BACKGROUND") {
+          const themeId = (message as any).payload?.theme_id;
+          if (!themeId) {
+            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false } });
+            return;
+          }
+          const picked = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            openLabel: "Use as background",
+            filters: { Images: ["png", "jpg", "jpeg", "webp"] },
+          });
+          if (!picked || picked.length === 0) {
+            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false, cancelled: true } });
+            return;
+          }
+          const bytes = await vscode.workspace.fs.readFile(picked[0]);
+          const updated = await replaceThemeBackground(this._globalStorageUri, themeId, bytes);
+          if (updated) {
+            void this._panel.webview.postMessage({
+              type: "THEME_INITIALIZED",
+              payload: { manifest: updated.manifest, frames: updated.frames, is_editor_mode: false },
+            });
+            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: true } });
+          } else {
+            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false } });
+          }
         } else if (message.type === "getSkills") {
           this._handleGetSkills();
         } else if (message.type === "installSkill") {

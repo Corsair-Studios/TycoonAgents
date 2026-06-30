@@ -1681,6 +1681,7 @@
       '<button id="se-co-clear" type="button">clear override</button>' +
       '<div style="margin-top:6px">Object scale: <span id="se-os-val">1.00</span></div>' +
       '<input id="se-os" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<button id="se-bg" type="button">Replace background…</button>' +
       '<div id="se-hint">Drag points · dbl-click edge to add · right-click to remove</div>' +
       '<div id="se-btns"><button id="se-save" type="button">Save</button><button id="se-done" type="button">Done</button></div>' +
       '<div id="se-status"></div>';
@@ -1696,9 +1697,11 @@
     stageEditEls.save = wrap.querySelector("#se-save");
     stageEditEls.done = wrap.querySelector("#se-done");
     stageEditEls.status = wrap.querySelector("#se-status");
+    stageEditEls.bg = wrap.querySelector("#se-bg");
     // Cosmetic styling via CSSOM (CSP-safe).
     wrap.querySelector("#se-h").style.cssText = "font-weight:bold;color:#ffc107;margin-bottom:6px;";
     for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.char]) el.style.width = "100%";
+    stageEditEls.bg.style.cssText = "width:100%;margin-top:8px;";
     wrap.querySelector("#se-hint").style.cssText = "opacity:0.7;margin:8px 0;";
     wrap.querySelector("#se-btns").style.cssText = "display:flex;gap:6px;margin-top:4px;";
     stageEditEls.save.style.flex = "1";
@@ -1729,6 +1732,15 @@
     });
     stageEditEls.save.addEventListener("click", saveStageTuning);
     stageEditEls.done.addEventListener("click", exitEditStage);
+    stageEditEls.bg.addEventListener("click", () => {
+      if (!selectedThemeId) {
+        stageEditEls.status.textContent = "No theme selected.";
+        return;
+      }
+      stageEditEls.status.style.color = "#9fffa0";
+      stageEditEls.status.textContent = "Opening image picker…";
+      vscode.postMessage({ type: "REPLACE_BACKGROUND", payload: { theme_id: selectedThemeId } });
+    });
   }
   function syncOverrideSlider() {
     const ov = themeCharScaleOverrides[editSelectedCharId];
@@ -2515,6 +2527,13 @@
       if (stageEditEls && stageEditEls.status) {
         const ok = msg.payload && msg.payload.ok;
         stageEditEls.status.textContent = ok ? "Saved to theme ✓" : "Save failed";
+        stageEditEls.status.style.color = ok ? "#9fffa0" : "#ff9f9f";
+      }
+    } else if (msg && msg.type === "BACKGROUND_REPLACE_RESULT") {
+      if (stageEditEls && stageEditEls.status) {
+        const ok = msg.payload && msg.payload.ok;
+        const cancelled = msg.payload && msg.payload.cancelled;
+        stageEditEls.status.textContent = cancelled ? "" : (ok ? "Background replaced ✓" : "Replace failed");
         stageEditEls.status.style.color = ok ? "#9fffa0" : "#ff9f9f";
       }
     } else if (msg && msg.type === "state") {
@@ -4474,29 +4493,33 @@
           }
           ctx.restore();
 
-          // Active indicator: a small glowing green light up-and-left of the
-          // sprite's head, marking agents that are currently working.
+          // Label below feet — drawn in un-flipped canvas coords so it stays
+          // centered directly under the agent regardless of facing direction.
+          const labelFont = Math.round(9 * depthScale);
+          ctx.fillStyle = "#e0e0e0";
+          ctx.font = `${labelFont}px monospace`;
+          ctx.textAlign = "center";
+          const label = (agent.name || agent.id).slice(0, 12);
+          const labelY = cy + Math.round(14 * depthScale);
+          ctx.fillText(label, cx, labelY);
+
+          // Active indicator: a small glowing green light immediately to the
+          // LEFT of the name text (reads as "this agent, working") instead of
+          // floating by the head.
           if (charEntry.isActive) {
-            const lightR = Math.max(2.5, 3 * depthScale);
-            const lightX = cx - spriteSize * 0.34;
-            const lightY = drawY + spriteSize * 0.12;
+            const labelW = ctx.measureText(label).width;
+            const lightR = Math.max(2, 2.6 * depthScale);
+            const lightX = cx - labelW / 2 - lightR - 3;
+            const lightY = labelY - labelFont * 0.32; // vertical-center on the text
             ctx.save();
             ctx.shadowColor = "#39ff14";
-            ctx.shadowBlur = 6;
+            ctx.shadowBlur = 5;
             ctx.fillStyle = "#39ff14";
             ctx.beginPath();
             ctx.arc(lightX, lightY, lightR, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
           }
-
-          // Label below feet — drawn in un-flipped canvas coords so it stays
-          // centered directly under the agent regardless of facing direction.
-          ctx.fillStyle = "#e0e0e0";
-          ctx.font = `${Math.round(9 * depthScale)}px monospace`;
-          ctx.textAlign = "center";
-          const label = (agent.name || agent.id).slice(0, 12);
-          ctx.fillText(label, cx, cy + Math.round(14 * depthScale));
         } else {
           // Sprite not yet loaded — fallback stick figure
           drawWorker(cx, cy, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
