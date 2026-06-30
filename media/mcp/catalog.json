@@ -96,5 +96,34 @@
     "network": false,
     "dataNote": "Runs locally; bridges Claude to your open UEFN session over temp-file IPC. No external/network calls.",
     "config": { "command": "node", "args": ["${EXTENSION_DIR}/media/uefn-bridge/uefn-server.mjs"] }
+  },
+  {
+    "id": "unreal-engine-mcp",
+    "name": "Unreal Engine MCP (Official · UE 5.8+)",
+    "description": "Epic's official in-editor MCP server, built into Unreal Editor 5.8+. Enable the \"Unreal MCP\" plugin and toggle Auto Start Server in Editor Preferences, then connect over HTTP/SSE. For general Unreal Engine projects — distinct from the UEFN Bridge above, which targets UEFN/Fortnite.",
+    "requiresEnv": [],
+    "note": "Built into the Unreal Editor — no external bridge process. Enable via Edit > Plugins > \"Unreal MCP\", then Edit > Editor Preferences > General > Model Context Protocol > toggle \"Auto Start Server\". The editor can also auto-generate a client config via the console command: ModelContextProtocol.GenerateClientConfig ClaudeCode. Endpoint, port, and path are configurable in Editor Preferences.",
+    "docsUrl": "https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor",
+    "thirdParty": false,
+    "vendor": "Epic Games",
+    "homepage": "https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor",
+    "network": false,
+    "dataNote": "Local HTTP/SSE connection to your own running Unreal Editor (127.0.0.1, no auth by default). No external/network calls beyond your machine.",
+    "config": { "type": "http", "url": "http://127.0.0.1:8000/mcp" }
+  },
+  {
+    "id": "blender",
+    "name": "Blender",
+    "description": "Live Blender viewport/scene control from Claude — read and modify objects, materials, and run Python (bpy) in your open Blender session.",
+    "requiresEnv": [],
+    "note": "Local stdio MCP server launched via `uvx blender-mcp`. Prereqs: Blender 4.x with the official Blender MCP add-on installed (drag-and-drop the add-on from https://www.blender.org/lab/mcp-server/ into Blender, enable it, and start the MCP panel inside Blender), plus the `uv` package manager (provides `uvx`) and Python 3.10+. The server connects to the Blender add-on over a local socket (env vars BLENDER_HOST, default localhost; BLENDER_PORT, default 9876).",
+    "homepage": "https://www.blender.org/lab/mcp-server/",
+    "docsUrl": "https://projects.blender.org/lab/blender_mcp/wiki/Setup",
+    "thirdParty": true,
+    "vendor": "Blender Foundation",
+    "package": "blender-mcp (run via uvx)",
+    "network": false,
+    "dataNote": "Runs locally; bridges Claude to your open Blender session over a local socket (default port 9876). No external/network calls.",
+    "config": { "command": "uvx", "args": ["blender-mcp"] }
   }
 ]
