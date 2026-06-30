@@ -11,31 +11,38 @@ animation; (2) while an object is being built it shows as a **crate**; (3) on co
 puff plays and reveals the finished object.
 
 ## Format (reuses the 512×512 / magenta / configurable-grid pipeline)
-- Canvas **512×512**, **5 columns × 4 rows** of **128×128** cells, flat **#FF00FF** magenta background
-  (same chroma-key + cell-padding rules as characters — reuse `boardContract(5, 4)`).
-- **Object boards:** each **ROW = one object** → **4 objects per board**, each row = **5 frames** of a
-  smooth looping idle/active animation. `ceil(objectCount / 4)` object boards (≈3 for 12 objects).
-- **Build-system board (1 per theme):** row 0 = **crate** under-construction loop (5 frames);
-  row 1 = **poof** reveal (5 frames, one-shot); rows 2–3 unused (flat magenta).
-- Render scale stays 128px/cell; the shipped **`object_scale`** tuning knob (manifest.viewport,
-  Stage Editor) up-scales objects at draw time, so big objects don't need bigger cells.
+- Canvas **512×512**, **4 columns × 5 rows** = 20 cells, flat **#FF00FF** magenta background
+  (same chroma-key + cell-padding rules as characters — reuse `boardContract(4, 5)`).
+- **Each ROW = one object → up to 4 animation frames** (objects needing only 3 frames repeat/hold the
+  4th cell). **5 objects per board** (5 rows). `ceil(rowsNeeded / 5)` boards.
+- **Build system (shared, 1 per theme):** **crate = 1 frame** (static, 1 row, 3 cells magenta) +
+  **poof = 4 frames** (1 row, one-shot). These ride in spare rows — no dedicated board needed.
+- **Board count for the target (12 objects + crate + poof):** 12 object rows + 1 poof row + 1 crate row
+  = **14 rows → 3 boards** (15 rows; 1 spare). Suggested packing:
+  - Board 1: objects 1–5
+  - Board 2: objects 6–10
+  - Board 3: objects 11–12, then **poof** row, **crate** row, 1 spare (flat magenta) row
+- Cells are 128 wide × ~102 tall; the slicer normalizes content per row, and the shipped
+  **`object_scale`** knob (manifest.viewport / Stage Editor) up-scales objects at draw time.
 
 ## Animation clip contract (add to themePlan.ts, parallel to ATLAS_CLIPS)
 ```ts
 export type ObjectClipName = 'object_idle' | 'crate' | 'poof';
-export interface ObjectClip { frames: number[]; fps: number; loop: boolean; pingpong?: boolean; }
+export interface ObjectClip { frames: number[]; fps: number; loop: boolean; hold?: boolean; }
 export const OBJECT_CLIPS: Record<ObjectClipName, ObjectClip> = {
-  object_idle: { frames: [0, 1, 2, 3, 4], fps: 6,  loop: true },   // built object, loops
-  crate:       { frames: [0, 1, 2, 3, 4], fps: 6,  loop: true },   // under construction, loops
-  poof:        { frames: [0, 1, 2, 3, 4], fps: 14, loop: false },  // one-shot reveal
+  object_idle: { frames: [0, 1, 2, 3], fps: 5,  loop: true },              // built object, loops (3-frame objects hold cell 3)
+  crate:       { frames: [0],          fps: 0,  loop: true, hold: true },  // single static crate frame
+  poof:        { frames: [0, 1, 2, 3], fps: 12, loop: false },             // one-shot reveal, 4 frames
 };
 ```
 
-## Slicing (reuse `sliceAndNormalizeAtlas`, grid 5×4)
-Slice each board into 20 cells, then **group by row**:
-- Object board, row r (0..3) → object's 5 frames = cells `[r*5 .. r*5+4]` → `frames["object_<object_id>"]`.
-- Build-system board → `frames["crate"] = cells[0..4]`, `frames["poof"] = cells[5..9]`.
-(`scaleReferenceSlots`/`targetContentHeight` can normalize per-row like characters do.)
+## Slicing (reuse `sliceAndNormalizeAtlas`, grid 4×5)
+Slice each board into 20 cells, then **group by row** (4 cells per row):
+- Object row r → object's frames = cells `[r*4 .. r*4+3]` → `frames["object_<object_id>"]`
+  (trim trailing duplicate/empty cells to the object's real 3–4 frame count).
+- Build-system rows → `frames["crate"] = [first cell of the crate row]`,
+  `frames["poof"] = [the 4 cells of the poof row]`.
+(`scaleReferenceSlots`/`targetContentHeight` normalize per-row like characters do.)
 
 ## Manifest / contract additions (types.ts)
 - `BuildableObject.sprite_asset` → point at the animated key, e.g. `"frames.json#object_<object_id>"`
@@ -55,70 +62,59 @@ POOF one-shot → OBJECT_IDLE loop`. Uses `object_scale` + per-object override. 
 Provider-agnostic (the existing prompts have no provider-specific text). Tuned for GPT Image
 consistency (preferred). Fill the `<…>` template fields the same way `buildObjectAtlasPrompt` does.
 
-## A) Animated object board (4 objects / board)
+One unified template per board. The board has **5 rows of 4 cells**; fill each row with an object,
+the poof, the crate, or leave it magenta. Object boards use object rows only; the final board mixes the
+last objects + poof + crate (e.g. for 12 objects: Board 1 = objects 1–5, Board 2 = objects 6–10,
+Board 3 = objects 11–12 + poof + crate + 1 empty row).
+
 ```
-Create one ANIMATED object sprite sheet for the "<themeName>" theme.
+Create one sprite sheet for the "<themeName>" theme.
 The outer image canvas is exactly 512 x 512 pixels (1:1). Do not crop to the grid bounds.
-Inside is an exact 5-column by 4-row grid of 20 equal 128x128 cells.
+Inside is an exact 4-column by 5-row grid of 20 equal cells.
 Every unused pixel must be perfectly flat solid #FF00FF magenta — no gradients, lighting, shadow,
 texture, fog, reflections, scenery, or environmental effects. Nothing may cross cell boundaries;
-keep generous empty padding around every object.
+keep generous empty padding around all content.
 
-This board contains EXACTLY 4 objects. Each object occupies ONE ROW of 5 cells, left to right, and
-those 5 cells are 5 sequential frames of a short, smoothly LOOPING idle/active animation of that object:
-Row 1 (cells 1-5):  <Object A display_name> — <short motion hint, e.g. "radar dish slowly rotating, red status light pulsing">
-Row 2 (cells 6-10): <Object B display_name> — <short motion hint>
-Row 3 (cells 11-15): <Object C display_name> — <short motion hint>
-Row 4 (cells 16-20): <Object D display_name> — <short motion hint>
+Each ROW is 4 cells, left to right, holding the sequential animation frames of ONE item:
+Row 1: <OBJECT: display_name> — <short motion hint, e.g. "radar dish slowly rotating, red status light pulsing">
+Row 2: <OBJECT: display_name> — <short motion hint>
+Row 3: <OBJECT: display_name> — <short motion hint>
+Row 4: <POOF row — see POOF rules below>
+Row 5: <CRATE row — see CRATE rules below>   (any remaining cells in this row: flat #FF00FF magenta)
 
-Animation rules: within a row, all 5 frames are the SAME object from the SAME fixed three-quarter /
-isometric camera, with identical position, identical scale, identical colors, identical lighting.
-ONLY the moving or glowing parts change between frames so the row loops seamlessly (frame 5 flows back
-into frame 1). Do NOT translate, rotate, or resize the object body between frames. Keep motion subtle.
-Center each object in its cell with its lowest contact point near the cell's bottom edge. Use identical
-relative scale for all 4 objects. Crisp retro pixel art, consistent isometric viewpoint and lighting.
+OBJECT rows: all 4 cells are the SAME object from the SAME fixed three-quarter / isometric camera,
+identical position, scale, colors and lighting; ONLY moving or glowing parts change between cells so
+the row loops seamlessly (cell 4 flows back into cell 1). Do NOT translate, rotate, or resize the
+object body between frames. Keep motion subtle. Center each object with its lowest contact point near
+the cell bottom; identical relative scale for all objects across all boards.
 
+POOF row (one-shot reveal, does NOT loop), 4 cells, sized to cover a full object and centered:
+  Cell 1: a small smoke puff beginning to form low/center.
+  Cell 2: the puff growing outward.
+  Cell 3: a full, OPAQUE puff that completely hides whatever is behind it.
+  Cell 4: the puff dissipating to faint wisps.
+Use neutral light-grey / white smoke with a subtle <themeName> color tint.
+
+CRATE row: a single closed shipping CRATE in cell 1 (the remaining 3 cells flat magenta), themed to
+<themeName> (materials, colors, markings match the theme). It is a static "ready to build" crate.
+
+Crisp retro pixel art, consistent three-quarter / isometric viewpoint and lighting across every cell.
 Creative direction: <creativeDirection>
 ```
 
-## B) Build-system board (crate + poof, 1 per theme)
-```
-Create one BUILD-SYSTEM sprite sheet for the "<themeName>" theme.
-Canvas exactly 512 x 512 px (1:1); exact 5-column by 4-row grid of 20 equal 128x128 cells.
-Every unused pixel must be perfectly flat solid #FF00FF magenta (no gradients/lighting/scenery).
-Nothing crosses cell boundaries; generous padding.
-
-Row 1 (cells 1-5): a closed shipping CRATE that is "under construction", themed to <themeName>
-(its materials, colors, and markings should match the theme). The 5 cells are 5 frames of a SUBTLE,
-seamlessly LOOPING "being worked on" animation — e.g. the crate bobs slightly, faint tool sparks /
-glints, a small lid rattle — SAME crate, identical position and scale, frame 5 loops back to frame 1.
-
-Row 2 (cells 6-10): a POOF smoke-burst REVEAL animation, 5 frames, ONE-SHOT (it does NOT loop), sized
-to cover a full 128x128 object and centered in each cell:
-  Frame 1: a small puff beginning to form low/center.
-  Frame 2: the puff growing outward.
-  Frame 3: a full, OPAQUE puff that completely hides whatever is behind it.
-  Frame 4: the puff dissipating, becoming semi-transparent.
-  Frame 5: nearly cleared — only faint wisps remain.
-Use a neutral light-grey / white smoke with a subtle <themeName> color tint.
-
-Rows 3 and 4 (cells 11-20): leave every pixel flat solid #FF00FF magenta (unused).
-
-Center content in each used cell. Crisp retro pixel art, consistent three-quarter / isometric
-viewpoint and lighting matching the object boards.
-
-Creative direction: <creativeDirection>
-```
+> Note: this replaces the legacy single-state `buildObjectAtlasPrompt` (4×3, one static object per cell).
 
 ---
 
 # Codex integration checklist (generation pipeline)
-1. **themeAssetPrompts.ts** — replace the single-state 4×3 `buildObjectAtlasPrompt` with the animated
-   4-objects-per-board prompt (A), batching objects into boards of 4; add `buildBuildSystemBoardPrompt`
-   (B). Keep using `boardContract(5, 4)` for the shared magenta/grid rules.
+1. **themeAssetPrompts.ts** — replace the single-state 4×3 `buildObjectAtlasPrompt` with the unified
+   animated **4×5** board prompt above (one row per item, 5 rows/board). Batch 5 objects per board; on
+   the final board, append the **poof** row and **crate** row after the remaining object rows. Use
+   `boardContract(4, 5)` for the shared magenta/grid rules.
 2. **themePlan.ts** — add `OBJECT_CLIPS` (above).
-3. **Slicing/orchestration** — slice each object board 5×4 and group rows → `object_<id>` keys; slice the
-   build-system board → `crate` / `poof` keys (see Slicing section).
+3. **Slicing/orchestration** — slice each board **4×5** and group rows → `object_<id>` (4 cells/row,
+   trim to the object's real 3–4 frames), `crate` (first cell of the crate row), `poof` (4 cells of the
+   poof row). See Slicing section.
 4. **types.ts** — point `BuildableObject.sprite_asset` at `frames.json#object_<id>`; add
    `ViewportConfig.crate_asset` / `poof_asset`.
 5. **Review UI** — surface object boards + the build-system board as review cards (they already get
