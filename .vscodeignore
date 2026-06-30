@@ -22,3 +22,6 @@ tsconfig.json
 **/.DS_Store
 **/*.map
 node_modules/**
+.mcp.json
+*.log
+**/*.vsix
