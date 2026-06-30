@@ -765,10 +765,12 @@ body {
 }
 
 #skills-modal-close {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  background: none;
+  /* Sticky so the close button stays pinned while the catalog list scrolls. */
+  position: sticky;
+  top: 0;
+  align-self: flex-end;
+  z-index: 6;
+  background: var(--surface);
   border: none;
   color: var(--muted);
   font-size: 20px;
@@ -1421,10 +1423,14 @@ td.col-status {
 }
 
 #themes-modal-close {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  background: none;
+  /* Sticky (not absolute) so the close button stays pinned at the top-right
+     while the dialog body scrolls. Surface background keeps the × readable as
+     content slides underneath. */
+  position: sticky;
+  top: 0;
+  align-self: flex-end;
+  z-index: 6;
+  background: var(--surface);
   border: none;
   color: var(--muted);
   font-size: 20px;

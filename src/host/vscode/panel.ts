@@ -41,6 +41,7 @@ import {
   resumeThemeGeneration,
   saveThemeTuning,
   updateThemeImageReviewStatus,
+  uploadThemeImage,
   generateTheme as generateThemeService,
 } from "../../extension/themeService";
 import type { ThemePlan } from "../../extension/themePlan";
@@ -203,6 +204,32 @@ export class TycoonPanel {
             void this._panel.webview.postMessage({
               type: "THEME_INITIALIZED",
               payload: { manifest: updated.manifest, frames: updated.frames, is_editor_mode: false },
+            });
+            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: true } });
+          } else {
+            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false } });
+          }
+        } else if (message.type === "UPLOAD_THEME_IMAGE") {
+          const { theme_id, item_id } = (message as any).payload ?? {};
+          if (!theme_id || !item_id) {
+            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false } });
+            return;
+          }
+          const picked = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            filters: { Images: ["png", "jpg", "jpeg", "webp"] },
+          });
+          if (!picked || picked.length === 0) {
+            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false, cancelled: true } });
+            return;
+          }
+          const bytes = await vscode.workspace.fs.readFile(picked[0]);
+          const result = await uploadThemeImage(this._globalStorageUri, theme_id, item_id, bytes);
+          if (result) {
+            await this._postThemeImageReview(theme_id);
+            void this._panel.webview.postMessage({
+              type: "THEME_INITIALIZED",
+              payload: { manifest: result.manifest, frames: result.frames, is_editor_mode: true },
             });
             void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: true } });
           } else {

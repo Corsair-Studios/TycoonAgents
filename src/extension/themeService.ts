@@ -378,6 +378,45 @@ export async function replaceThemeBackground(
 }
 
 /**
+ * Uploads a user-supplied image to replace a theme's review/manifest asset.
+ *
+ * Reuses the same item resolver as `retryThemeImage`/`normalizeThemeCharacterAtlas`:
+ * the saved `ThemeImageReviewDocument` is loaded and the item's `kind` decides
+ * whether the image is sliced as a multi-frame character/rival atlas or stored
+ * as a single image (background/object/badge/etc.).
+ */
+export async function uploadThemeImage(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  itemId: string,
+  imageBytes: Uint8Array,
+): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
+  try {
+    const loaded = await loadTheme(globalStorageUri, themeId);
+    if (!loaded) return undefined;
+    const { manifest, frames } = loaded;
+
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    const item = document?.items.find((candidate) => candidate.id === itemId);
+    const buffer = Buffer.from(imageBytes);
+
+    if (item?.kind === 'character_atlas') {
+      const spritePackage = await sliceAndNormalizeAtlas(buffer, manifest, characterAtlasGrid());
+      const frameKey = item.frame_keys[0] || item.id;
+      frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
+    } else {
+      const frameKey = item?.frame_keys[0] || itemId;
+      frames[frameKey] = [dataUri(buffer)];
+    }
+
+    await writeThemeFiles(globalStorageUri, manifest, frames);
+    return { manifest, frames };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Load the most recently modified theme (by manifest mtime), if any exist.
  * Used to auto-populate a freshly opened surface with the latest theme.
  */

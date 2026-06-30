@@ -372,6 +372,8 @@
   let themeProviderConfigured = { gemini: false, openai: false };
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
+  /** The review-card "Upload" button awaiting a host result (for busy reset). */
+  let pendingUploadBtn = null;
 
   // Tracks whether the setup screen was reached via Settings (vs. first-run
   // install). When opened from Settings we stay on the screen even once the
@@ -1116,6 +1118,31 @@
         });
         decisionRow.appendChild(normalizeBtn);
       }
+
+      // Manual replacement: upload an image from disk for this specific asset.
+      const uploadBtn = document.createElement("button");
+      uploadBtn.className = "skill-btn theme-review-upload";
+      uploadBtn.type = "button";
+      uploadBtn.dataset.idleText = "Upload";
+      uploadBtn.textContent = "Upload";
+      uploadBtn.title = item.kind === "character_atlas"
+        ? "Replace this character with a 512×512 atlas image from your computer (it will be re-sliced)."
+        : "Replace this image with one from your computer.";
+      uploadBtn.disabled = Boolean(payload.generation_active && !isCurrentReviewGate);
+      uploadBtn.addEventListener("click", () => {
+        uploadBtn.disabled = true;
+        uploadBtn.textContent = "Uploading…";
+        pendingUploadBtn = uploadBtn;
+        vscode.postMessage({
+          type: 'UPLOAD_THEME_IMAGE',
+          payload: {
+            theme_id: reviewThemeId,
+            item_id: item.id,
+            image_provider: selectedThemeImageProvider(),
+          },
+        });
+      });
+      decisionRow.appendChild(uploadBtn);
 
       const feedback = document.createElement("textarea");
       feedback.className = "theme-review-feedback";
@@ -2530,11 +2557,21 @@
         stageEditEls.status.style.color = ok ? "#9fffa0" : "#ff9f9f";
       }
     } else if (msg && msg.type === "BACKGROUND_REPLACE_RESULT") {
+      const ok = msg.payload && msg.payload.ok;
+      const cancelled = msg.payload && msg.payload.cancelled;
       if (stageEditEls && stageEditEls.status) {
-        const ok = msg.payload && msg.payload.ok;
-        const cancelled = msg.payload && msg.payload.cancelled;
         stageEditEls.status.textContent = cancelled ? "" : (ok ? "Background replaced ✓" : "Replace failed");
         stageEditEls.status.style.color = ok ? "#9fffa0" : "#ff9f9f";
+      }
+      // Reset a pending review-card Upload button. On success the host re-posts
+      // THEME_IMAGE_REVIEW which rebuilds the card, so only the cancel/failure
+      // path needs an explicit reset of the (still-attached) button.
+      if (pendingUploadBtn) {
+        if (!ok) {
+          pendingUploadBtn.disabled = false;
+          pendingUploadBtn.textContent = "Upload";
+        }
+        pendingUploadBtn = null;
       }
     } else if (msg && msg.type === "state") {
       state = msg.state;
