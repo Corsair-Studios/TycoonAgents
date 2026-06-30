@@ -32,6 +32,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Local generated-image references used for scale calibration
+scale-references/
+
 # Local development tool artifacts
 .claude/
 CLAUDE.md

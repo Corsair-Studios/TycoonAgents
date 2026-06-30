@@ -21,7 +21,33 @@ import { buildAgentMarkdown } from "./packCatalog";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
 import { detectEngineSetups } from "./engineDetect";
-import { listThemes, loadTheme, generateTheme as generateThemeService } from "../../extension/themeService";
+import { nativeWindowsUserDataPath } from "./revealUri";
+import {
+  approveAllThemeImages,
+  deleteTheme,
+  ensureThemeReviewImages,
+  exportThemeArchive,
+  getThemeImageReview,
+  importThemeArchive,
+  listThemes,
+  loadTheme,
+  normalizeThemeCharacterAtlas,
+  planTheme,
+  readThemeArchive,
+  renameThemeCharacter,
+  retryThemeImage,
+  resumeThemeGeneration,
+  updateThemeImageReviewStatus,
+  generateTheme as generateThemeService,
+} from "../../extension/themeService";
+import type { ThemePlan } from "../../extension/themePlan";
+import type { ThemeImageReviewWaitOptions } from "../../extension/themeService";
+import {
+  getConfiguredThemeImageProvider,
+  getThemeImageConfigurationStatus,
+  resolveThemeImageSettings,
+  saveThemeImageSettings,
+} from "../../extension/themeImageSettings";
 
 function getNonce(): string {
   let text = "";
@@ -30,6 +56,10 @@ function getNonce(): string {
     text += possible.charAt(Math.floor(Math.random() * possible.length));
   }
   return text;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 import { mergeTycoonHooks } from "./hookInstall";
@@ -45,11 +75,30 @@ export class TycoonPanel {
   private readonly _extensionUri: vscode.Uri;
   private readonly _runtime: Runtime;
   private readonly _globalStorageUri: vscode.Uri;
+  private readonly _secrets: vscode.SecretStorage;
   private _disposables: vscode.Disposable[] = [];
   private _runtimeDisposable: { dispose(): void } | undefined;
   private _enginePollInterval: NodeJS.Timeout | undefined;
+  private _themeGenerationActive = false;
+  private _themeGenerationAbortController: AbortController | undefined;
+  private _themeGenerationGateRetryActive = false;
+  private _themePauseForReview = true;
+  private _themeGenerationReviewGate: {
+    themeId: string;
+    itemId: string;
+    requiresReplacement: boolean;
+    generatedReplacementReady: boolean;
+    replacement?: Awaited<ReturnType<typeof retryThemeImage>>;
+    accept(): void;
+    cancel(): void;
+  } | undefined;
 
-  public static createOrShow(extensionUri: vscode.Uri, runtime: Runtime, globalStorageUri: vscode.Uri): TycoonPanel {
+  public static createOrShow(
+    extensionUri: vscode.Uri,
+    runtime: Runtime,
+    globalStorageUri: vscode.Uri,
+    secrets: vscode.SecretStorage,
+  ): TycoonPanel {
     // Dock beside the editor (ViewColumn.Two) so we never cover the active
     // Claude Code session in column One.
     const column = vscode.ViewColumn.Two;
@@ -67,11 +116,11 @@ export class TycoonPanel {
         enableScripts: true,
         // Keep the webview alive when hidden so state/animation don't reset.
         retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(extensionUri, "media")],
+        localResourceRoots: [vscode.Uri.joinPath(extensionUri, "media"), globalStorageUri],
       }
     );
 
-    TycoonPanel.currentPanel = new TycoonPanel(panel, extensionUri, runtime, globalStorageUri);
+    TycoonPanel.currentPanel = new TycoonPanel(panel, extensionUri, runtime, globalStorageUri, secrets);
     return TycoonPanel.currentPanel;
   }
 
@@ -79,12 +128,14 @@ export class TycoonPanel {
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     runtime: Runtime,
-    globalStorageUri: vscode.Uri
+    globalStorageUri: vscode.Uri,
+    secrets: vscode.SecretStorage,
   ) {
     this._panel = panel;
     this._extensionUri = extensionUri;
     this._runtime = runtime;
     this._globalStorageUri = globalStorageUri;
+    this._secrets = secrets;
 
     this._update();
 
@@ -175,9 +226,168 @@ export class TycoonPanel {
           void this._handleApplyDoctorFix((message as any).removeForeign === true);
         } else if (message.type === "designDocAction") {
           await this._handleDesignDocAction((message as any).mode);
+        } else if (message.type === "GET_THEME_IMAGE_SETTINGS") {
+          const providers = await getThemeImageConfigurationStatus(this._secrets);
+          void this._panel.webview.postMessage({
+            type: "THEME_IMAGE_SETTINGS",
+            payload: { provider: await getConfiguredThemeImageProvider(this._secrets), providers },
+          });
+        } else if (message.type === "SAVE_THEME_IMAGE_SETTINGS") {
+          const payload = (message as any).payload as { provider?: string; api_key?: string } | undefined;
+          try {
+            const provider = await saveThemeImageSettings(
+              this._secrets,
+              payload?.provider,
+              payload?.api_key,
+            );
+            const providers = await getThemeImageConfigurationStatus(this._secrets);
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_SETTINGS",
+              payload: { provider, providers, saved: true },
+            });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_SETTINGS",
+              payload: { error: String(err) },
+            });
+          }
         } else if (message.type === "LIST_THEMES") {
           const themes = await listThemes(this._globalStorageUri);
           void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
+        } else if (message.type === "EXPORT_THEME") {
+          const payload = (message as any).payload as { theme_id?: string } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          try {
+            if (this._themeGenerationActive) {
+              throw new Error("Stop the active theme generation before exporting a theme.");
+            }
+            const theme = (await listThemes(this._globalStorageUri))
+              .find((candidate) => candidate.theme_id === themeId);
+            if (!theme) throw new Error("Theme not found.");
+            if (!theme.export_ready) {
+              throw new Error(`Approve all theme images before exporting (${theme.accepted}/${theme.total} approved).`);
+            }
+
+            const destination = await vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file(path.join(os.homedir(), `${themeId}.zip`)),
+              filters: { "Theme archives": ["zip"] },
+              saveLabel: "Export theme",
+              title: `Export ${theme.display_name}`,
+            });
+            if (!destination) {
+              void this._panel.webview.postMessage({
+                type: "THEME_EXPORT_RESULT",
+                payload: { theme_id: themeId, cancelled: true },
+              });
+              return;
+            }
+
+            await vscode.workspace.fs.writeFile(destination, await exportThemeArchive(this._globalStorageUri, themeId));
+            void this._panel.webview.postMessage({
+              type: "THEME_EXPORT_RESULT",
+              payload: { theme_id: themeId, display_name: theme.display_name },
+            });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: "THEME_EXPORT_RESULT",
+              payload: { theme_id: themeId, error: errorMessage(err) },
+            });
+          }
+        } else if (message.type === "IMPORT_THEME") {
+          try {
+            if (this._themeGenerationActive) {
+              throw new Error("Stop the active theme generation before importing a theme.");
+            }
+            const picked = await vscode.window.showOpenDialog({
+              canSelectFiles: true,
+              canSelectFolders: false,
+              canSelectMany: false,
+              filters: { "Theme archives": ["zip"] },
+              openLabel: "Import theme",
+              title: "Import a TycoonAgents theme",
+            });
+            if (!picked?.[0]) {
+              void this._panel.webview.postMessage({ type: "THEME_IMPORT_RESULT", payload: { cancelled: true } });
+              return;
+            }
+
+            const archive = readThemeArchive(await vscode.workspace.fs.readFile(picked[0]));
+            const existing = (await listThemes(this._globalStorageUri))
+              .find((candidate) => candidate.theme_id === archive.themeId);
+            let replace = false;
+            if (existing) {
+              const answer = await vscode.window.showWarningMessage(
+                `A theme named "${existing.display_name}" already uses ID "${archive.themeId}". Replace it?`,
+                {
+                  modal: true,
+                  detail: "The imported theme will replace the existing theme and its saved images.",
+                },
+                "Replace",
+              );
+              if (answer !== "Replace") {
+                void this._panel.webview.postMessage({ type: "THEME_IMPORT_RESULT", payload: { cancelled: true } });
+                return;
+              }
+              replace = true;
+            }
+
+            const imported = await importThemeArchive(this._globalStorageUri, archive, replace);
+            const themes = await listThemes(this._globalStorageUri);
+            void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
+            void this._panel.webview.postMessage({ type: "THEME_IMPORT_RESULT", payload: imported });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: "THEME_IMPORT_RESULT",
+              payload: { error: errorMessage(err) },
+            });
+          }
+        } else if (message.type === "DELETE_THEME") {
+          const payload = (message as any).payload as { theme_id?: string } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          let deletedThemeId: string | undefined;
+          let deleteError: string | undefined;
+          try {
+            if (this._themeGenerationActive) {
+              throw new Error("Stop the active theme generation before deleting a theme.");
+            }
+
+            const savedThemes = await listThemes(this._globalStorageUri);
+            const theme = savedThemes.find((candidate) => candidate.theme_id === themeId);
+            if (!theme) throw new Error("Theme not found.");
+
+            // VS Code webviews cannot reliably display window.confirm. Keep
+            // the destructive gate in the extension host so the user always
+            // gets a native modal before anything is removed from disk.
+            const answer = await vscode.window.showWarningMessage(
+              `Are you sure you want to delete "${theme.display_name}"?`,
+              {
+                modal: true,
+                detail: "This permanently removes the theme and all of its saved images from this computer. This cannot be undone.",
+              },
+              "Delete",
+            );
+            if (answer !== "Delete") {
+              void this._panel.webview.postMessage({
+                type: "THEMES_LIST",
+                payload: { themes: savedThemes },
+              });
+              return;
+            }
+
+            await deleteTheme(this._globalStorageUri, themeId);
+            deletedThemeId = themeId;
+          } catch (err) {
+            deleteError = String(err);
+          }
+          const themes = await listThemes(this._globalStorageUri);
+          void this._panel.webview.postMessage({
+            type: "THEMES_LIST",
+            payload: {
+              themes,
+              deleted_theme_id: deletedThemeId,
+              delete_error: deleteError,
+            },
+          });
         } else if (message.type === "SELECT_THEME") {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const t = await loadTheme(this._globalStorageUri, payload?.theme_id ?? "");
@@ -186,17 +396,456 @@ export class TycoonPanel {
           } else {
             void this._panel.webview.postMessage({ type: "THEME_GENERATION_ERROR", payload: { message: "Theme not found." } });
           }
-        } else if (message.type === "GENERATE_THEME") {
-          const payload = (message as any).payload as { prompt?: string } | undefined;
+        } else if (message.type === "OPEN_THEME_IMAGES") {
+          const payload = (message as any).payload as { theme_id?: string } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          if (!/^[a-z0-9_]+$/.test(themeId)) {
+            void vscode.window.showErrorMessage("TycoonAgents: Invalid theme ID.");
+          } else {
+            let reviewImages;
+            try {
+              reviewImages = await ensureThemeReviewImages(this._globalStorageUri, themeId);
+            } catch (err) {
+              console.error("TycoonAgents: Could not prepare generated images:", err);
+              void vscode.window.showErrorMessage("TycoonAgents could not prepare the generated images folder.");
+              return;
+            }
+
+            if (reviewImages.imageUris.length === 0) {
+              void vscode.window.showInformationMessage(
+                "No review images are available yet. If generation is still running, try again after its first image completes.",
+              );
+              return;
+            }
+
+            try {
+              // Reveal a real image so Explorer opens its containing folder.
+              // On desktop Windows, normalize vscode-userdata explicitly to
+              // avoid handing the custom URI scheme to the OS protocol picker.
+              const imageUri = reviewImages.imageUris[0];
+              const nativePath = nativeWindowsUserDataPath(imageUri.scheme, imageUri.path);
+              const revealUri = nativePath ? vscode.Uri.file(nativePath) : imageUri;
+              await vscode.commands.executeCommand("revealFileInOS", revealUri);
+            } catch (err) {
+              console.error("TycoonAgents: Could not reveal generated images:", err);
+              const displayPath = reviewImages.directoryUri.scheme === "file"
+                ? reviewImages.directoryUri.fsPath
+                : reviewImages.directoryUri.toString(true);
+              void vscode.window.showErrorMessage(
+                `TycoonAgents could not open the folder. Images are saved at: ${displayPath}`,
+              );
+            }
+          }
+        } else if (message.type === "GET_THEME_IMAGE_REVIEW") {
+          const payload = (message as any).payload as { theme_id?: string } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          if (/^[a-z0-9_]+$/.test(themeId)) {
+            await this._postThemeImageReview(themeId);
+          }
+        } else if (message.type === "SET_THEME_IMAGE_REVIEW_STATUS") {
+          const payload = (message as any).payload as {
+            theme_id?: string;
+            item_id?: string;
+            status?: string;
+          } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          const itemId = payload?.item_id ?? "";
+          const status = payload?.status;
+          if (/^[a-z0-9_]+$/.test(themeId)
+              && /^[a-z0-9_-]+$/.test(itemId)
+              && (status === "accepted" || status === "rejected" || status === "pending")) {
+            const gate = this._themeGenerationReviewGate;
+            const isCurrentGate = gate?.themeId === themeId && gate.itemId === itemId;
+            if (isCurrentGate && this._themeGenerationGateRetryActive) {
+              void this._panel.webview.postMessage({
+                type: "THEME_IMAGE_RETRY_STATE",
+                payload: { item_id: itemId, busy: true, message: "Wait for the replacement to finish before keeping it." },
+              });
+              return;
+            }
+            const document = await updateThemeImageReviewStatus(this._globalStorageUri, themeId, itemId, status);
+            if (document && status === "accepted" && isCurrentGate) gate.accept();
+            await this._postThemeImageReview(themeId);
+          }
+        } else if (message.type === "APPROVE_ALL_THEME_IMAGES") {
+          const payload = (message as any).payload as { theme_id?: string } | undefined;
+          const themeId = payload?.theme_id ?? "";
           try {
-            const r = await generateThemeService(
+            if (this._themeGenerationActive) {
+              throw new Error("Wait for theme generation to finish before approving all images.");
+            }
+            await approveAllThemeImages(this._globalStorageUri, themeId);
+            await this._postThemeImageReview(themeId);
+            const themes = await listThemes(this._globalStorageUri);
+            void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: "THEME_APPROVE_ALL_RESULT",
+              payload: { theme_id: themeId, error: errorMessage(err) },
+            });
+          }
+        } else if (message.type === "RENAME_THEME_CHARACTER") {
+          const payload = (message as any).payload as {
+            theme_id?: string;
+            item_id?: string;
+            name?: string;
+          } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          const itemId = payload?.item_id ?? "";
+          if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
+          const activeGate = this._themeGenerationReviewGate;
+          const renamingActiveGate = this._themeGenerationActive
+            && activeGate?.themeId === themeId
+            && activeGate.itemId === itemId;
+          if (this._themeGenerationActive && !renamingActiveGate) {
+            void this._panel.webview.postMessage({
+              type: "THEME_CHARACTER_RENAME_STATE",
+              payload: { item_id: itemId, error: "Only the character currently waiting for review can be renamed." },
+            });
+            return;
+          }
+          if (renamingActiveGate && this._themeGenerationGateRetryActive) return;
+          if (renamingActiveGate) this._themeGenerationGateRetryActive = true;
+          try {
+            void this._panel.webview.postMessage({
+              type: "THEME_CHARACTER_RENAME_STATE",
+              payload: { item_id: itemId, busy: true, message: "Saving character name..." },
+            });
+            const result = await renameThemeCharacter(
               this._globalStorageUri,
-              payload?.prompt ?? "",
-              (msg) => void this._panel.webview.postMessage({ type: "THEME_GENERATION_PROGRESS", payload: { message: msg } }),
+              themeId,
+              itemId,
+              payload?.name ?? "",
             );
+            if (renamingActiveGate
+                && this._themeGenerationReviewGate?.themeId === themeId
+                && this._themeGenerationReviewGate.itemId === itemId) {
+              this._themeGenerationReviewGate.replacement = result;
+            }
+            await this._postThemeImageReview(themeId);
+            void this._panel.webview.postMessage({
+              type: "THEME_CHARACTER_RENAME_STATE",
+              payload: { item_id: itemId, busy: false, message: "Character name saved." },
+            });
+            if (!renamingActiveGate) {
+              void this._panel.webview.postMessage({
+                type: "THEME_INITIALIZED",
+                payload: { manifest: result.manifest, frames: result.frames, is_editor_mode: true },
+              });
+            }
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: "THEME_CHARACTER_RENAME_STATE",
+              payload: { item_id: itemId, busy: false, error: errorMessage(err) },
+            });
+          } finally {
+            if (renamingActiveGate) this._themeGenerationGateRetryActive = false;
+          }
+        } else if (message.type === "NORMALIZE_THEME_CHARACTER") {
+          const payload = (message as any).payload as {
+            theme_id?: string;
+            item_id?: string;
+            image_provider?: string;
+          } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          const itemId = payload?.item_id ?? "";
+          if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
+          const activeGate = this._themeGenerationReviewGate;
+          const normalizingDuringActiveGeneration = this._themeGenerationActive
+            && activeGate?.themeId === themeId
+            && activeGate.itemId === itemId;
+          if (this._themeGenerationActive && !normalizingDuringActiveGeneration) {
+            void this._panel.webview.postMessage({
+              type: "THEME_CHARACTER_NORMALIZE_STATE",
+              payload: {
+                item_id: itemId,
+                error: "Only the character currently waiting for review can be normalized.",
+              },
+            });
+            return;
+          }
+          if (normalizingDuringActiveGeneration && this._themeGenerationGateRetryActive) return;
+          if (normalizingDuringActiveGeneration) this._themeGenerationGateRetryActive = true;
+          try {
+            const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
+            if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
+            void this._panel.webview.postMessage({
+              type: "THEME_CHARACTER_NORMALIZE_STATE",
+              payload: { item_id: itemId, busy: true, message: "Regenerating at the standard character scale..." },
+            });
+            const result = await normalizeThemeCharacterAtlas(
+              this._globalStorageUri,
+              themeId,
+              itemId,
+              {
+                provider: imageSettings.provider,
+                apiKey: imageSettings.apiKey,
+                signal: normalizingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
+              },
+              (message) => void this._panel.webview.postMessage({
+                type: "THEME_CHARACTER_NORMALIZE_STATE",
+                payload: { item_id: itemId, busy: true, message },
+              }),
+            );
+            if (normalizingDuringActiveGeneration
+                && this._themeGenerationReviewGate?.themeId === themeId
+                && this._themeGenerationReviewGate.itemId === itemId) {
+              this._themeGenerationReviewGate.replacement = result;
+              this._themeGenerationReviewGate.generatedReplacementReady = true;
+            }
+            await this._postThemeImageReview(themeId);
+            void this._panel.webview.postMessage({
+              type: "THEME_CHARACTER_NORMALIZE_STATE",
+              payload: { item_id: itemId, busy: false, message: "Regenerated and normalized character ready for review." },
+            });
+            if (!normalizingDuringActiveGeneration) {
+              void this._panel.webview.postMessage({
+                type: "THEME_INITIALIZED",
+                payload: { manifest: result.manifest, frames: result.frames, is_editor_mode: true },
+              });
+            }
+          } catch (err) {
+            await this._postThemeImageReview(themeId);
+            void this._panel.webview.postMessage({
+              type: "THEME_CHARACTER_NORMALIZE_STATE",
+              payload: { item_id: itemId, busy: false, error: errorMessage(err) },
+            });
+          } finally {
+            if (normalizingDuringActiveGeneration) this._themeGenerationGateRetryActive = false;
+          }
+        } else if (message.type === "RETRY_THEME_IMAGE") {
+          const payload = (message as any).payload as {
+            theme_id?: string;
+            item_id?: string;
+            feedback?: string;
+            mode?: string;
+            image_provider?: string;
+            character_name?: string;
+          } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          const itemId = payload?.item_id ?? "";
+          if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
+          const activeGate = this._themeGenerationReviewGate;
+          const retryingDuringActiveGeneration = this._themeGenerationActive
+            && activeGate?.themeId === themeId
+            && activeGate.itemId === itemId;
+          if (this._themeGenerationActive && !retryingDuringActiveGeneration) {
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_RETRY_STATE",
+              payload: {
+                item_id: itemId,
+                error: "Wait until this image reaches the review step before generating a replacement.",
+              },
+            });
+            return;
+          }
+          if (retryingDuringActiveGeneration && this._themeGenerationGateRetryActive) return;
+          if (retryingDuringActiveGeneration) this._themeGenerationGateRetryActive = true;
+          try {
+            const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
+            if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_RETRY_STATE",
+              payload: { item_id: itemId, busy: true, message: "Generating replacement..." },
+            });
+            if (payload?.character_name?.trim()) {
+              const renamed = await renameThemeCharacter(
+                this._globalStorageUri,
+                themeId,
+                itemId,
+                payload.character_name,
+              );
+              if (retryingDuringActiveGeneration
+                  && this._themeGenerationReviewGate?.themeId === themeId) {
+                this._themeGenerationReviewGate.replacement = renamed;
+              }
+            }
+            const result = await retryThemeImage(
+              this._globalStorageUri,
+              themeId,
+              itemId,
+              payload?.feedback ?? "",
+              payload?.mode === "replace"
+                ? "replace"
+                : payload?.mode === "retry"
+                  ? "retry"
+                  : "augment",
+              {
+                provider: imageSettings.provider,
+                apiKey: imageSettings.apiKey,
+                signal: retryingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
+              },
+              (message) => void this._panel.webview.postMessage({
+                type: "THEME_IMAGE_RETRY_STATE",
+                payload: { item_id: itemId, busy: true, message },
+              }),
+            );
+            if (retryingDuringActiveGeneration
+                && this._themeGenerationReviewGate?.themeId === themeId) {
+              this._themeGenerationReviewGate.replacement = result;
+              if (this._themeGenerationReviewGate.itemId === itemId) {
+                this._themeGenerationReviewGate.generatedReplacementReady = true;
+              }
+            }
+            await this._postThemeImageReview(themeId);
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_RETRY_STATE",
+              payload: { item_id: itemId, busy: false, message: "Replacement ready for review." },
+            });
+            if (!retryingDuringActiveGeneration) {
+              void this._panel.webview.postMessage({
+                type: "THEME_INITIALIZED",
+                payload: { manifest: result.manifest, frames: result.frames, is_editor_mode: true },
+              });
+            }
+          } catch (err) {
+            await this._postThemeImageReview(themeId);
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_RETRY_STATE",
+              payload: { item_id: itemId, busy: false, error: errorMessage(err) },
+            });
+          } finally {
+            if (retryingDuringActiveGeneration) {
+              this._themeGenerationGateRetryActive = false;
+              if (!this._themePauseForReview
+                  && this._themeGenerationReviewGate?.themeId === themeId) {
+                this._themeGenerationReviewGate.accept();
+              }
+            }
+          }
+        } else if (message.type === "PLAN_THEME") {
+          const payload = (message as any).payload as { prompt?: string; image_provider?: string } | undefined;
+          try {
+            if (this._themeGenerationActive) throw new Error("Wait for the current theme generation to finish before planning another theme.");
+            const prompt = payload?.prompt?.trim() ?? "";
+            if (!prompt) throw new Error("Enter a theme name or description first.");
+            const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
+            if (!imageSettings.apiKey) {
+              const label = imageSettings.provider === "openai" ? "OpenAI" : "Google Gemini";
+              throw new Error(`No ${label} API key found. Add and save one above the theme prompt.`);
+            }
+            const plan = await planTheme(prompt, {
+              provider: imageSettings.provider,
+              apiKey: imageSettings.apiKey,
+            });
+            void this._panel.webview.postMessage({ type: "THEME_PLAN_READY", payload: { plan } });
+          } catch (err) {
+            void this._panel.webview.postMessage({ type: "THEME_PLAN_ERROR", payload: { message: String(err) } });
+          }
+        } else if (message.type === "SET_THEME_PAUSE_FOR_REVIEW") {
+          const payload = (message as any).payload as { pause_for_review?: boolean } | undefined;
+          if (typeof payload?.pause_for_review !== "boolean") return;
+          this._themePauseForReview = payload.pause_for_review;
+          if (!this._themePauseForReview
+              && this._themeGenerationReviewGate
+              && !this._themeGenerationGateRetryActive) {
+            this._themeGenerationReviewGate.accept();
+          }
+        } else if (message.type === "CANCEL_THEME_GENERATION") {
+          const controller = this._themeGenerationAbortController;
+          if (this._themeGenerationActive && controller && !controller.signal.aborted) {
+            controller.abort();
+            void this._panel.webview.postMessage({
+              type: "THEME_GENERATION_PROGRESS",
+              payload: { message: "Stopping generation..." },
+            });
+          }
+        } else if (message.type === "GENERATE_THEME") {
+          const payload = (message as any).payload as {
+            plan?: ThemePlan;
+            resume_theme_id?: string;
+            image_provider?: string;
+            pause_for_review?: boolean;
+          } | undefined;
+          if (this._themeGenerationActive) {
+            void this._panel.webview.postMessage({
+              type: "THEME_GENERATION_ERROR",
+              payload: { message: "A theme generation is already running." },
+            });
+            return;
+          }
+          let generatedThemeId = "";
+          const abortController = new AbortController();
+          this._themeGenerationAbortController = abortController;
+          this._themeGenerationActive = true;
+          try {
+            const resumeThemeId = payload?.resume_theme_id ?? "";
+            const plan = payload?.plan;
+            if (!plan && !resumeThemeId) {
+              throw new Error("Create and review the theme plan before generating images.");
+            }
+            if (resumeThemeId) generatedThemeId = resumeThemeId;
+            this._themePauseForReview = payload?.pause_for_review !== false;
+            const imageSettings = await resolveThemeImageSettings(
+              this._secrets,
+              payload?.image_provider,
+            );
+            if (!imageSettings.apiKey) {
+              const label = imageSettings.provider === "openai" ? "OpenAI" : "Google Gemini";
+              throw new Error(`No ${label} API key found. Add and save one above the theme prompt.`);
+            }
+            const onProgress = (msg: string) => void this._panel.webview.postMessage({
+              type: "THEME_GENERATION_PROGRESS",
+              payload: { message: msg },
+            });
+            const onReviewReady = (themeId: string) => {
+              generatedThemeId = themeId;
+              void this._panel.webview.postMessage({ type: "THEME_REVIEW_READY", payload: { theme_id: themeId } });
+            };
+            const imageOptions = {
+              provider: imageSettings.provider,
+              apiKey: imageSettings.apiKey,
+              signal: abortController.signal,
+            };
+            const waitForReview = async (themeId: string, itemId: string, reviewOptions?: ThemeImageReviewWaitOptions) => (
+              this._themePauseForReview || reviewOptions?.requiresReplacement
+                ? this._waitForThemeImageAcceptance(
+                    themeId,
+                    itemId,
+                    abortController.signal,
+                    reviewOptions,
+                  )
+                : undefined
+            );
+            const r = resumeThemeId
+              ? await resumeThemeGeneration(
+                  this._globalStorageUri,
+                  resumeThemeId,
+                  onProgress,
+                  () => abortController.signal.aborted,
+                  onReviewReady,
+                  imageOptions,
+                  waitForReview,
+                )
+              : await generateThemeService(
+                  this._globalStorageUri,
+                  plan!,
+                  onProgress,
+                  () => abortController.signal.aborted,
+                  onReviewReady,
+                  imageOptions,
+                  waitForReview,
+                );
             void this._panel.webview.postMessage({ type: "THEME_INITIALIZED", payload: { manifest: r.manifest, frames: r.frames, is_editor_mode: true } });
           } catch (err) {
-            void this._panel.webview.postMessage({ type: "THEME_GENERATION_ERROR", payload: { message: String(err) } });
+            if (abortController.signal.aborted) {
+              void this._panel.webview.postMessage({
+                type: "THEME_GENERATION_CANCELLED",
+                payload: {
+                  theme_id: generatedThemeId,
+                  message: "Generation stopped. Completed images were retained; resume whenever you're ready.",
+                },
+              });
+            } else {
+              void this._panel.webview.postMessage({ type: "THEME_GENERATION_ERROR", payload: { message: String(err) } });
+            }
+          } finally {
+            this._themeGenerationActive = false;
+            this._themeGenerationGateRetryActive = false;
+            if (this._themeGenerationAbortController === abortController) {
+              this._themeGenerationAbortController = undefined;
+            }
+            if (generatedThemeId) await this._postThemeImageReview(generatedThemeId);
           }
         }
       },
@@ -206,6 +855,85 @@ export class TycoonPanel {
 
     // Clean up on panel dispose
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+  }
+
+  private async _postThemeImageReview(themeId: string): Promise<void> {
+    try {
+      const review = await getThemeImageReview(this._globalStorageUri, themeId);
+      const items = review.entries.map(({ item, imageUri, generated }) => ({
+        ...item,
+        generated,
+        image_src: imageUri
+          ? this._panel.webview.asWebviewUri(
+              imageUri.with({ query: `revision=${item.revision}&updated=${encodeURIComponent(item.updated_at)}` }),
+            ).toString()
+          : "",
+      }));
+      void this._panel.webview.postMessage({
+        type: "THEME_IMAGE_REVIEW",
+        payload: {
+          theme_id: review.theme_id,
+          display_name: review.display_name,
+          generation_active: this._themeGenerationActive,
+          pause_for_review: this._themePauseForReview,
+          waiting_for_review_item_id: this._themeGenerationReviewGate?.themeId === themeId
+            ? this._themeGenerationReviewGate.itemId
+            : undefined,
+          items,
+        },
+      });
+    } catch (err) {
+      void this._panel.webview.postMessage({
+        type: "THEME_IMAGE_REVIEW",
+        payload: { theme_id: themeId, items: [], error: String(err) },
+      });
+    }
+  }
+
+  private _waitForThemeImageAcceptance(
+    themeId: string,
+    itemId: string,
+    signal: AbortSignal,
+    options?: ThemeImageReviewWaitOptions,
+  ): Promise<Awaited<ReturnType<typeof retryThemeImage>> | undefined> {
+    this._themeGenerationReviewGate?.cancel();
+    if (signal.aborted) return Promise.reject(new Error("Generation cancelled by user"));
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        if (settled) return false;
+        settled = true;
+        signal.removeEventListener("abort", cancel);
+        if (this._themeGenerationReviewGate === gate) this._themeGenerationReviewGate = undefined;
+        return true;
+      };
+      const accept = () => {
+        if (gate.requiresReplacement && !gate.generatedReplacementReady) return;
+        if (cleanup()) resolve(gate.replacement);
+      };
+      const cancel = () => {
+        if (cleanup()) reject(new Error("Generation cancelled by user"));
+      };
+      const gate = {
+        themeId,
+        itemId,
+        requiresReplacement: Boolean(options?.requiresReplacement),
+        generatedReplacementReady: false,
+        accept,
+        cancel,
+      } as {
+        themeId: string;
+        itemId: string;
+        requiresReplacement: boolean;
+        generatedReplacementReady: boolean;
+        replacement?: Awaited<ReturnType<typeof retryThemeImage>>;
+        accept(): void;
+        cancel(): void;
+      };
+      this._themeGenerationReviewGate = gate;
+      signal.addEventListener("abort", cancel, { once: true });
+    });
   }
 
   private _handleGetSkills(): void {
@@ -1339,6 +2067,8 @@ export class TycoonPanel {
 
   public dispose(): void {
     TycoonPanel.currentPanel = undefined;
+    this._themeGenerationAbortController?.abort();
+    this._themeGenerationAbortController = undefined;
     if (this._enginePollInterval !== undefined) {
       clearInterval(this._enginePollInterval);
       this._enginePollInterval = undefined;
@@ -1380,6 +2110,7 @@ export class TycoonPanel {
 
     const csp = [
       `default-src 'none'`,
+      `img-src ${webview.cspSource} data:`,
       `style-src ${webview.cspSource} 'nonce-${nonce}'`,
       `script-src 'nonce-${nonce}'`,
     ].join("; ");
@@ -1494,20 +2225,126 @@ export class TycoonPanel {
     <div id="themes-dialog">
       <button id="themes-modal-close" aria-label="Close dialog">&times;</button>
       <div id="theme-picker-list" role="tabpanel">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-          <h2 style="margin: 0;">Themes</h2>
-          <button id="tab-theme-builder" class="skill-btn">Theme Builder</button>
-        </div>
+        <h2 style="margin: 0 0 16px;">Themes</h2>
         <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
+        <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
+        <div class="theme-picker-actions">
+          <button id="theme-import-btn" class="skill-btn">Import .zip</button>
+          <button id="tab-theme-builder" class="skill-btn theme-builder-launch">Theme Builder</button>
+        </div>
       </div>
       <div id="theme-builder-panel" role="tabpanel" hidden>
         <button id="tab-theme-picker" class="skill-btn" style="margin-bottom: 16px;">&larr; Back to themes</button>
-        <div id="theme-prompt-container" style="display: flex; gap: 8px; margin-bottom: 12px;">
-          <input type="text" id="theme-prompt-input" placeholder="e.g. GI Joe Cobra" style="flex: 1; padding: 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border);" />
-          <button id="theme-generate-btn" class="skill-btn">Generate</button>
+        <div id="theme-image-settings" class="theme-image-settings">
+          <div class="theme-image-settings-row">
+            <label for="theme-image-provider">Image provider</label>
+            <select id="theme-image-provider">
+              <option value="gemini">Google Gemini</option>
+              <option value="openai">OpenAI (GPT Image 2)</option>
+            </select>
+          </div>
+          <div class="theme-image-settings-row theme-api-key-row">
+            <label for="theme-api-key-input" id="theme-api-key-label">Google Gemini API key</label>
+            <input
+              type="password"
+              id="theme-api-key-input"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Paste a key to save securely"
+            />
+            <button id="theme-api-key-save" class="skill-btn">Save</button>
+          </div>
+          <div id="theme-api-key-status" class="theme-api-key-status" role="status"></div>
         </div>
+        <label class="theme-generation-approval-toggle theme-generation-approval-toggle--top" for="theme-pause-for-review">
+          <input id="theme-pause-for-review" type="checkbox" checked />
+          <span>
+            Pause after each image for approval
+            <small>Change this any time. Turning it off resumes a paused generation.</small>
+          </span>
+        </label>
+        <div id="theme-prompt-container" class="theme-prompt-container">
+          <input type="text" id="theme-prompt-input" placeholder="Name or describe a new theme" />
+          <button id="theme-generate-btn" class="skill-btn">Plan theme</button>
+        </div>
+        <section id="theme-plan-editor" class="theme-plan-editor" hidden>
+          <div class="theme-plan-header">
+            <div>
+              <h3>Review the theme plan</h3>
+              <p>AI filled every slot. Edit anything you want before image generation begins.</p>
+            </div>
+            <span class="theme-plan-count">23 reviewable images</span>
+          </div>
+          <label class="theme-plan-field theme-plan-field--primary">
+            <span>Theme name</span>
+            <input id="theme-plan-name" type="text" />
+          </label>
+          <label class="theme-plan-field">
+            <span>Creative direction</span>
+            <textarea id="theme-plan-direction" rows="3"></textarea>
+          </label>
+          <fieldset class="theme-plan-group">
+            <legend>Characters <span>16 individual sprite boards</span></legend>
+            <div id="theme-plan-characters" class="theme-plan-slot-grid theme-plan-slot-grid--characters"></div>
+          </fieldset>
+          <label class="theme-plan-field">
+            <span>Environment <small>1 image</small></span>
+            <textarea id="theme-plan-environment" rows="3"></textarea>
+          </label>
+          <fieldset class="theme-plan-group">
+            <legend>Enemies <span>3 individual sprite boards</span></legend>
+            <div id="theme-plan-enemies" class="theme-plan-slot-grid"></div>
+          </fieldset>
+          <label class="theme-plan-field">
+            <span>Objects <small>12 objects, comma separated · 1 sprite sheet</small></span>
+            <textarea id="theme-plan-objects" rows="3"></textarea>
+          </label>
+          <label class="theme-plan-field">
+            <span>Expressions <small>16 expressions, comma separated · 1 sprite sheet</small></span>
+            <textarea id="theme-plan-expressions" rows="3"></textarea>
+          </label>
+          <label class="theme-plan-field">
+            <span>Achievement badges <small>20 designs, comma separated · 1 sprite sheet</small></span>
+            <textarea id="theme-plan-achievements" rows="3"></textarea>
+          </label>
+          <div class="theme-plan-footer">
+            <div id="theme-plan-validation" class="theme-plan-validation" role="status"></div>
+            <button id="theme-start-generation-btn" class="skill-btn">Generate images</button>
+          </div>
+        </section>
         <div id="theme-build-status" style="margin-bottom: 12px; font-style: italic; min-height: 20px; color: var(--vscode-descriptionForeground);"></div>
+        <div id="theme-build-actions" hidden style="margin-bottom: 12px;">
+          <button id="theme-review-images-btn" class="skill-btn">Review generated images</button>
+        </div>
+        <section id="theme-image-review" class="theme-image-review" hidden>
+          <div class="theme-image-review-header">
+            <div>
+              <h3 id="theme-image-review-title">Generated images</h3>
+              <div id="theme-image-review-summary" class="theme-image-review-summary"></div>
+            </div>
+            <div class="theme-image-review-header-actions">
+              <button id="theme-review-resume-generation" class="skill-btn" hidden>Resume generation</button>
+              <button id="theme-review-stop-generation" class="skill-btn" hidden>Stop generation</button>
+              <button id="theme-approve-all" class="skill-btn">Approve all</button>
+              <button id="theme-open-images-folder" class="skill-btn">Open folder</button>
+            </div>
+          </div>
+          <div id="theme-image-review-list" class="theme-image-review-list"></div>
+        </section>
         <div id="theme-builder-root"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="theme-image-lightbox" role="dialog" aria-modal="true" aria-labelledby="theme-image-lightbox-title" hidden>
+    <div id="theme-image-lightbox-backdrop"></div>
+    <div id="theme-image-lightbox-dialog">
+      <div class="theme-image-lightbox-header">
+        <h3 id="theme-image-lightbox-title">Full-size image</h3>
+        <button id="theme-image-lightbox-close" aria-label="Close full-size image">&times;</button>
+      </div>
+      <div class="theme-image-lightbox-viewport">
+        <img id="theme-image-lightbox-image" alt="" />
       </div>
     </div>
   </div>

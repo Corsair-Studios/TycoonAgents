@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.47",
+  "version": "0.0.64",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
@@ -61,6 +61,29 @@
           "type": "number",
           "default": 5,
           "description": "Warn in Delegation Health when the orchestrator's direct search count exceeds this in a session."
+        },
+        "tycoonagents.themeImageProvider": {
+          "type": "string",
+          "enum": [
+            "gemini",
+            "openai"
+          ],
+          "enumDescriptions": [
+            "Google Gemini image generation",
+            "OpenAI GPT Image 2"
+          ],
+          "default": "gemini",
+          "description": "AI provider used to plan and generate Theme Builder assets."
+        },
+        "tycoonagents.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Fallback Google Gemini API key. Prefer the secure field in Themes > Theme Builder."
+        },
+        "tycoonagents.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Fallback OpenAI API key. Prefer the secure field in Themes > Theme Builder."
         }
       }
     }
@@ -76,6 +99,7 @@
   "scripts": {
     "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host",
     "build": "tsc -p .",
+    "build-ext": "tsc -p . && npm run bundle:host",
     "typecheck": "tsc -p . --noEmit",
     "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
     "bundle:uefn": "esbuild uefn-bridge/uefn-server.ts --bundle --platform=node --format=esm --target=node18 --outfile=media/uefn-bridge/uefn-server.mjs",

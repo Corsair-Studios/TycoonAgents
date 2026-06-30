@@ -139,7 +139,13 @@
     if (frameCache.has("environment_background")) {
       const bgFrames = frameCache.get("environment_background");
       if (bgFrames.length > 0) {
-        ctx.drawImage(bgFrames[0], 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        const background = bgFrames[0];
+        const scale = Math.min(CANVAS_WIDTH / background.width, CANVAS_HEIGHT / background.height);
+        const width = background.width * scale;
+        const height = background.height * scale;
+        ctx.drawImage(background, (CANVAS_WIDTH - width) / 2, (CANVAS_HEIGHT - height) / 2, width, height);
       } else {
         ctx.fillStyle = "#111";
         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -186,7 +192,7 @@
         const key = obj.atlas_asset.split("#")[1];
         const frames = frameCache.get(key);
         if (frames && frames.length > 0) {
-          const frameIndex = Math.floor(frameCount / 5) % frames.length;
+          const frameIndex = obj.type === "object" ? frames.length - 1 : Math.floor(frameCount / 5) % frames.length;
           ctx.drawImage(frames[frameIndex], obj.x, obj.y, obj.width, obj.height);
           drawnFromAtlas = true;
         }
@@ -206,16 +212,17 @@
         ctx.fill();
         ctx.strokeStyle = "#333";
         ctx.stroke();
-        ctx.fillStyle = "black";
-        ctx.font = "12px sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        let symbol = "?";
-        if (obj.current_emote === "emote_smile") symbol = ":)";
-        else if (obj.current_emote === "emote_sleep") symbol = "Zz";
-        else if (obj.current_emote === "emote_idea") symbol = "!";
-        else if (obj.current_emote === "emote_team") symbol = "\u2694";
-        ctx.fillText(symbol, bubbleX, bubbleY);
+        const emoteFrames = frameCache.get(obj.current_emote);
+        if (emoteFrames && emoteFrames.length > 0) {
+          const emoteFrame = emoteFrames[Math.floor(frameCount / 5) % emoteFrames.length];
+          ctx.drawImage(emoteFrame, bubbleX - 14, bubbleY - 14, 28, 28);
+        } else {
+          ctx.fillStyle = "black";
+          ctx.font = "12px sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("?", bubbleX, bubbleY);
+        }
         obj.emote_timer--;
         if (obj.emote_timer <= 0) {
           obj.current_emote = null;
@@ -242,6 +249,7 @@
   var unsubscribe = null;
   function rebuildRenderQueue() {
     renderQueue = [];
+    const generatedTarget = activeManifest?.buildable_objects?.[0];
     renderQueue.push({
       id: "hiss_tank",
       type: "object",
@@ -250,6 +258,7 @@
       width: 96,
       height: 96,
       color: "#333333",
+      atlas_asset: generatedTarget?.sprite_asset,
       current_emote: null,
       emote_timer: 0
     });
@@ -311,6 +320,19 @@
           emote_timer: 0
         });
       }
+    }
+  }
+  function refreshPropPalette() {
+    const palette = document.querySelector("#prop-palette");
+    if (!palette || !activeManifest?.buildable_objects?.length) return;
+    palette.innerHTML = "";
+    for (const object of activeManifest.buildable_objects) {
+      const item = document.createElement("li");
+      item.setAttribute("data-id", object.object_id);
+      item.setAttribute("data-name", object.display_name);
+      item.setAttribute("draggable", "true");
+      item.textContent = object.display_name;
+      palette.appendChild(item);
     }
   }
   function initThemeBuilder(containerElement) {
@@ -392,15 +414,16 @@
         y: (evt.clientY - rect.top) * scaleY
       };
     }
-    const paletteItems = containerElement.querySelectorAll("#prop-palette li");
-    paletteItems.forEach((item) => {
-      item.addEventListener("dragstart", (e) => {
-        draggedPropId = e.target.getAttribute("data-id");
-        e.dataTransfer?.setData("text/plain", draggedPropId || "");
-      });
-      item.addEventListener("dragend", () => {
-        draggedPropId = null;
-      });
+    refreshPropPalette();
+    const propPalette = containerElement.querySelector("#prop-palette");
+    propPalette?.addEventListener("dragstart", (event) => {
+      const e = event;
+      const target = e.target.closest("[data-id]");
+      draggedPropId = target?.getAttribute("data-id") ?? null;
+      e.dataTransfer?.setData("text/plain", draggedPropId || "");
+    });
+    propPalette?.addEventListener("dragend", () => {
+      draggedPropId = null;
     });
     canvasElement.addEventListener("dragover", (e) => {
       e.preventDefault();
@@ -415,7 +438,14 @@
       if (isValidPlacement && draggedPropId && is_editor_mode) {
         const normX = mouseX / CANVAS_WIDTH;
         const normY = mouseY / CANVAS_HEIGHT;
-        const newProp = {
+        const generatedDefinition = activeManifest?.buildable_objects?.find(
+          (object) => object.object_id === draggedPropId
+        );
+        const newProp = generatedDefinition ? {
+          ...generatedDefinition,
+          build_order: placed_props.length,
+          anchor_coord: [normX, normY]
+        } : {
           build_order: placed_props.length,
           object_id: draggedPropId,
           display_name: draggedPropId.replace("_", " "),
@@ -433,6 +463,7 @@
           width: 64,
           height: 64,
           color: "#888",
+          atlas_asset: newProp.sprite_asset,
           current_emote: null,
           emote_timer: 0
         });
@@ -510,6 +541,7 @@
         frameCache.set(key, images);
       }
       rebuildRenderQueue();
+      refreshPropPalette();
     }
   });
 })();

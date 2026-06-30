@@ -206,7 +206,13 @@ function renderLoop() {
   if (frameCache.has('environment_background')) {
     const bgFrames = frameCache.get('environment_background')!;
     if (bgFrames.length > 0) {
-      ctx.drawImage(bgFrames[0], 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      const background = bgFrames[0];
+      const scale = Math.min(CANVAS_WIDTH / background.width, CANVAS_HEIGHT / background.height);
+      const width = background.width * scale;
+      const height = background.height * scale;
+      ctx.drawImage(background, (CANVAS_WIDTH - width) / 2, (CANVAS_HEIGHT - height) / 2, width, height);
     } else {
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -261,7 +267,9 @@ function renderLoop() {
       const frames = frameCache.get(key);
       if (frames && frames.length > 0) {
         // Cycle through frames. Use floor(frameCount / 5) for speed throttling
-        const frameIndex = Math.floor(frameCount / 5) % frames.length;
+        const frameIndex = obj.type === 'object'
+          ? frames.length - 1
+          : Math.floor(frameCount / 5) % frames.length;
         ctx.drawImage(frames[frameIndex], obj.x, obj.y, obj.width, obj.height);
         drawnFromAtlas = true;
       }
@@ -288,19 +296,17 @@ function renderLoop() {
       ctx.strokeStyle = '#333';
       ctx.stroke();
 
-      // Placeholder icon/text inside bubble
-      ctx.fillStyle = 'black';
-      ctx.font = '12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      
-      let symbol = '?';
-      if (obj.current_emote === 'emote_smile') symbol = ':)';
-      else if (obj.current_emote === 'emote_sleep') symbol = 'Zz';
-      else if (obj.current_emote === 'emote_idea') symbol = '!';
-      else if (obj.current_emote === 'emote_team') symbol = '⚔';
-      
-      ctx.fillText(symbol, bubbleX, bubbleY);
+      const emoteFrames = frameCache.get(obj.current_emote);
+      if (emoteFrames && emoteFrames.length > 0) {
+        const emoteFrame = emoteFrames[Math.floor(frameCount / 5) % emoteFrames.length];
+        ctx.drawImage(emoteFrame, bubbleX - 14, bubbleY - 14, 28, 28);
+      } else {
+        ctx.fillStyle = 'black';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('?', bubbleX, bubbleY);
+      }
 
       obj.emote_timer--;
       if (obj.emote_timer <= 0) {
@@ -336,7 +342,8 @@ let unsubscribe: (() => void) | null = null;
 export function rebuildRenderQueue() {
   renderQueue = [];
   
-  // 1. Mock H.I.S.S. Tank
+  // 1. Central build target (use the first generated object when available).
+  const generatedTarget = activeManifest?.buildable_objects?.[0];
   renderQueue.push({
     id: 'hiss_tank',
     type: 'object',
@@ -345,6 +352,7 @@ export function rebuildRenderQueue() {
     width: 96,
     height: 96,
     color: '#333333',
+    atlas_asset: generatedTarget?.sprite_asset,
     current_emote: null,
     emote_timer: 0
   });
@@ -408,6 +416,20 @@ export function rebuildRenderQueue() {
         emote_timer: 0
       });
     }
+  }
+}
+
+function refreshPropPalette() {
+  const palette = document.querySelector('#prop-palette');
+  if (!palette || !activeManifest?.buildable_objects?.length) return;
+  palette.innerHTML = '';
+  for (const object of activeManifest.buildable_objects) {
+    const item = document.createElement('li');
+    item.setAttribute('data-id', object.object_id);
+    item.setAttribute('data-name', object.display_name);
+    item.setAttribute('draggable', 'true');
+    item.textContent = object.display_name;
+    palette.appendChild(item);
   }
 }
 
@@ -509,15 +531,16 @@ export function initThemeBuilder(containerElement: HTMLElement) {
     };
   }
 
-  const paletteItems = containerElement.querySelectorAll('#prop-palette li');
-  paletteItems.forEach(item => {
-    item.addEventListener('dragstart', (e: any) => {
-      draggedPropId = (e.target as HTMLElement).getAttribute('data-id');
-      e.dataTransfer?.setData('text/plain', draggedPropId || '');
-    });
-    item.addEventListener('dragend', () => {
-      draggedPropId = null;
-    });
+  refreshPropPalette();
+  const propPalette = containerElement.querySelector('#prop-palette');
+  propPalette?.addEventListener('dragstart', (event: Event) => {
+    const e = event as DragEvent;
+    const target = (e.target as HTMLElement).closest('[data-id]') as HTMLElement | null;
+    draggedPropId = target?.getAttribute('data-id') ?? null;
+    e.dataTransfer?.setData('text/plain', draggedPropId || '');
+  });
+  propPalette?.addEventListener('dragend', () => {
+    draggedPropId = null;
   });
 
   canvasElement.addEventListener('dragover', (e) => {
@@ -535,7 +558,14 @@ export function initThemeBuilder(containerElement: HTMLElement) {
       const normX = mouseX / CANVAS_WIDTH;
       const normY = mouseY / CANVAS_HEIGHT;
       
-      const newProp: BuildableObject = {
+      const generatedDefinition = activeManifest?.buildable_objects?.find(
+        (object) => object.object_id === draggedPropId,
+      );
+      const newProp: BuildableObject = generatedDefinition ? {
+        ...generatedDefinition,
+        build_order: placed_props.length,
+        anchor_coord: [normX, normY],
+      } : {
         build_order: placed_props.length,
         object_id: draggedPropId,
         display_name: draggedPropId.replace('_', ' '),
@@ -554,6 +584,7 @@ export function initThemeBuilder(containerElement: HTMLElement) {
         width: 64,
         height: 64,
         color: '#888',
+        atlas_asset: newProp.sprite_asset,
         current_emote: null,
         emote_timer: 0
       });
@@ -648,5 +679,6 @@ window.addEventListener('message', (event) => {
     
     // Rebuild render queue
     rebuildRenderQueue();
+    refreshPropPalette();
   }
 });

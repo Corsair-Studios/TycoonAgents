@@ -323,9 +323,53 @@
   const themePickerList     = /** @type {HTMLElement} */ (document.getElementById("theme-picker-list"));
   const themeBuilderPanel   = /** @type {HTMLElement} */ (document.getElementById("theme-builder-panel"));
   const themePickerGrid     = /** @type {HTMLElement} */ (document.getElementById("theme-picker-grid"));
+  const themePickerStatus   = /** @type {HTMLElement} */ (document.getElementById("theme-picker-status"));
+  const themeImportBtn      = /** @type {HTMLButtonElement} */ (document.getElementById("theme-import-btn"));
   const themePromptInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-prompt-input"));
   const themeGenerateBtn    = /** @type {HTMLElement} */ (document.getElementById("theme-generate-btn"));
+  const themePlanEditor     = /** @type {HTMLElement} */ (document.getElementById("theme-plan-editor"));
+  const themePlanName       = /** @type {HTMLInputElement} */ (document.getElementById("theme-plan-name"));
+  const themePlanDirection  = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-direction"));
+  const themePlanCharacters = /** @type {HTMLElement} */ (document.getElementById("theme-plan-characters"));
+  const themePlanEnvironment = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-environment"));
+  const themePlanEnemies    = /** @type {HTMLElement} */ (document.getElementById("theme-plan-enemies"));
+  const themePlanObjects    = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-objects"));
+  const themePlanExpressions = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-expressions"));
+  const themePlanAchievements = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-achievements"));
+  const themePlanValidation = /** @type {HTMLElement} */ (document.getElementById("theme-plan-validation"));
+  const themePauseForReview = /** @type {HTMLInputElement} */ (document.getElementById("theme-pause-for-review"));
+  const themeStartGenerationBtn = /** @type {HTMLButtonElement} */ (document.getElementById("theme-start-generation-btn"));
   const themeBuildStatus    = /** @type {HTMLElement} */ (document.getElementById("theme-build-status"));
+  const themeBuildActions   = /** @type {HTMLElement} */ (document.getElementById("theme-build-actions"));
+  const themeReviewImagesBtn = /** @type {HTMLElement} */ (document.getElementById("theme-review-images-btn"));
+  const themeImageProvider  = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-provider"));
+  const themeApiKeyInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-api-key-input"));
+  const themeApiKeyLabel    = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-label"));
+  const themeApiKeySave     = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-save"));
+  const themeApiKeyStatus   = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-status"));
+  const themeImageReview    = /** @type {HTMLElement} */ (document.getElementById("theme-image-review"));
+  const themeImageReviewTitle = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-title"));
+  const themeImageReviewSummary = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-summary"));
+  const themeImageReviewList = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-list"));
+  const themeReviewResumeGeneration = /** @type {HTMLButtonElement} */ (document.getElementById("theme-review-resume-generation"));
+  const themeReviewStopGeneration = /** @type {HTMLButtonElement} */ (document.getElementById("theme-review-stop-generation"));
+  const themeApproveAll = /** @type {HTMLButtonElement} */ (document.getElementById("theme-approve-all"));
+  const themeOpenImagesFolder = /** @type {HTMLElement} */ (document.getElementById("theme-open-images-folder"));
+  const themeImageLightbox = /** @type {HTMLElement} */ (document.getElementById("theme-image-lightbox"));
+  const themeImageLightboxBackdrop = /** @type {HTMLElement} */ (document.getElementById("theme-image-lightbox-backdrop"));
+  const themeImageLightboxClose = /** @type {HTMLButtonElement} */ (document.getElementById("theme-image-lightbox-close"));
+  const themeImageLightboxTitle = /** @type {HTMLElement} */ (document.getElementById("theme-image-lightbox-title"));
+  const themeImageLightboxImage = /** @type {HTMLImageElement} */ (document.getElementById("theme-image-lightbox-image"));
+  const themeBuilderRoot = /** @type {HTMLElement} */ (document.getElementById("theme-builder-root"));
+  const themesDialog = /** @type {HTMLElement} */ (document.getElementById("themes-dialog"));
+  let reviewThemeId = "";
+  let currentThemePlan = null;
+  let themeGenerationRunning = false;
+  let themeGenerationStopping = false;
+  let themeImageSettingsLoaded = false;
+  let themeProviderConfigured = { gemini: false, openai: false };
+  let themeImageLightboxTrigger = null;
+  const themeReviewBusyItems = new Map();
 
   // Tracks whether the setup screen was reached via Settings (vs. first-run
   // install). When opened from Settings we stay on the screen even once the
@@ -418,6 +462,8 @@
   if (menuThemesBtn) {
     menuThemesBtn.addEventListener("click", () => {
       closeMenu();
+      themePickerList.removeAttribute("hidden");
+      themeBuilderPanel.setAttribute("hidden", "");
       openModal(themesModalEl, themesModalCloseBtn);
       vscode.postMessage({ type: 'LIST_THEMES' });
     });
@@ -427,22 +473,85 @@
     themesModalCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
   }
 
+  if (themeImportBtn) {
+    themeImportBtn.addEventListener("click", () => {
+      themeImportBtn.disabled = true;
+      if (themePickerStatus) {
+        themePickerStatus.textContent = "Choose a theme .zip file...";
+        themePickerStatus.classList.remove("theme-picker-status--error");
+      }
+      vscode.postMessage({ type: "IMPORT_THEME" });
+    });
+  }
+
   if (tabThemePicker && tabThemeBuilder) {
     tabThemePicker.addEventListener("click", () => {
       themePickerList.removeAttribute("hidden");
       themeBuilderPanel.setAttribute("hidden", "");
+      tabThemeBuilder.focus();
       vscode.postMessage({ type: 'LIST_THEMES' });
     });
 
     tabThemeBuilder.addEventListener("click", () => {
       themeBuilderPanel.removeAttribute("hidden");
       themePickerList.setAttribute("hidden", "");
+      tabThemePicker.focus();
+      if (themeImageReview) themeImageReview.setAttribute("hidden", "");
+      if (themeBuilderRoot) {
+        if (themePlanEditor && !themePlanEditor.hasAttribute("hidden")) themeBuilderRoot.setAttribute("hidden", "");
+        else themeBuilderRoot.removeAttribute("hidden");
+      }
 
       // Boot up the theme builder canvas when the tab is first visited
       const root = document.getElementById("theme-builder-root");
       if (root && typeof window.initThemeBuilder === "function") {
         window.initThemeBuilder(root);
       }
+      vscode.postMessage({ type: 'GET_THEME_IMAGE_SETTINGS' });
+    });
+  }
+
+  function selectedThemeImageProvider() {
+    return themeImageProvider && themeImageProvider.value === "openai" ? "openai" : "gemini";
+  }
+
+  function updateThemeApiKeyUi(message, isError) {
+    const provider = selectedThemeImageProvider();
+    const providerLabel = provider === "openai" ? "OpenAI" : "Google Gemini";
+    if (themeApiKeyLabel) themeApiKeyLabel.textContent = providerLabel + " API key";
+    if (themeApiKeyInput) {
+      themeApiKeyInput.placeholder = themeProviderConfigured[provider]
+        ? "Key stored - paste to replace"
+        : "Paste a key to save securely";
+    }
+    if (themeApiKeyStatus) {
+      themeApiKeyStatus.textContent = message || (themeProviderConfigured[provider]
+        ? providerLabel + " key is configured."
+        : providerLabel + " key is not configured.");
+      themeApiKeyStatus.style.color = isError
+        ? "var(--vscode-errorForeground)"
+        : "var(--vscode-descriptionForeground)";
+    }
+  }
+
+  if (themeImageProvider) {
+    themeImageProvider.addEventListener("change", () => updateThemeApiKeyUi("", false));
+  }
+
+  if (themeApiKeySave) {
+    themeApiKeySave.addEventListener("click", () => {
+      const provider = selectedThemeImageProvider();
+      const apiKey = themeApiKeyInput ? themeApiKeyInput.value.trim() : "";
+      if (!apiKey && !themeProviderConfigured[provider]) {
+        updateThemeApiKeyUi("Paste an API key before saving.", true);
+        return;
+      }
+      themeApiKeySave.setAttribute("disabled", "");
+      themeApiKeySave.textContent = "Saving...";
+      vscode.postMessage({
+        type: 'SAVE_THEME_IMAGE_SETTINGS',
+        payload: { provider, api_key: apiKey },
+      });
     });
   }
 
@@ -450,16 +559,670 @@
     themeGenerateBtn.addEventListener("click", () => {
       const prompt = themePromptInput.value.trim();
       if (!prompt) return;
+      const imageProvider = selectedThemeImageProvider();
+      if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
+        updateThemeApiKeyUi("Add and save an API key before generating.", true);
+        return;
+      }
       
       themeGenerateBtn.setAttribute("disabled", "");
-      themeGenerateBtn.textContent = "Generating...";
+      themeGenerateBtn.textContent = "Planning...";
       if (themeBuildStatus) {
-        themeBuildStatus.textContent = "Starting generation...";
+        themeBuildStatus.textContent = "AI is filling the theme slots...";
         themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
       }
       
-      vscode.postMessage({ type: 'GENERATE_THEME', payload: { prompt } });
+      vscode.postMessage({
+        type: 'PLAN_THEME',
+        payload: { prompt, image_provider: imageProvider },
+      });
     });
+  }
+
+  function renderPlanSlots(container, values, groupName) {
+    if (!container) return;
+    container.innerHTML = "";
+    values.forEach((value, index) => {
+      const label = document.createElement("label");
+      label.className = "theme-plan-slot";
+      const number = document.createElement("span");
+      number.textContent = String(index + 1).padStart(2, "0");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = value;
+      input.dataset.planGroup = groupName;
+      input.dataset.planIndex = String(index);
+      label.appendChild(number);
+      label.appendChild(input);
+      container.appendChild(label);
+    });
+  }
+
+  function renderThemePlan(plan) {
+    currentThemePlan = plan;
+    if (themePlanName) themePlanName.value = plan.display_name || "";
+    if (themePlanDirection) themePlanDirection.value = plan.creative_direction || "";
+    if (themePlanEnvironment) themePlanEnvironment.value = plan.environment || "";
+    if (themePlanObjects) themePlanObjects.value = (plan.objects || []).join(", ");
+    if (themePlanExpressions) themePlanExpressions.value = (plan.expressions || []).join(", ");
+    if (themePlanAchievements) themePlanAchievements.value = (plan.achievements || []).join(", ");
+    renderPlanSlots(themePlanCharacters, plan.characters || [], "characters");
+    renderPlanSlots(themePlanEnemies, plan.enemies || [], "enemies");
+    if (themePlanValidation) themePlanValidation.textContent = "";
+    if (themePlanEditor) themePlanEditor.removeAttribute("hidden");
+    if (themeImageReview) themeImageReview.setAttribute("hidden", "");
+    if (themeBuilderRoot) themeBuilderRoot.setAttribute("hidden", "");
+  }
+
+  function collectPlanSlots(container) {
+    return container
+      ? Array.from(container.querySelectorAll("input")).map((input) => input.value.trim()).filter(Boolean)
+      : [];
+  }
+
+  function collectCommaList(input, expected, label) {
+    const values = input ? input.value.split(",").map((value) => value.trim()).filter(Boolean) : [];
+    if (values.length !== expected) throw new Error(`${label} needs exactly ${expected} comma-separated entries (currently ${values.length}).`);
+    return values;
+  }
+
+  function collectEditedThemePlan() {
+    const characters = collectPlanSlots(themePlanCharacters);
+    const enemies = collectPlanSlots(themePlanEnemies);
+    if (characters.length !== 16) throw new Error(`Characters needs all 16 filled slots (currently ${characters.length}).`);
+    if (enemies.length !== 3) throw new Error(`Enemies needs all 3 filled slots (currently ${enemies.length}).`);
+    const displayName = themePlanName ? themePlanName.value.trim() : "";
+    const creativeDirection = themePlanDirection ? themePlanDirection.value.trim() : "";
+    const environment = themePlanEnvironment ? themePlanEnvironment.value.trim() : "";
+    if (!displayName || !creativeDirection || !environment) throw new Error("Theme name, creative direction, and environment are required.");
+    return {
+      ...currentThemePlan,
+      theme_id: "",
+      display_name: displayName,
+      creative_direction: creativeDirection,
+      characters,
+      environment,
+      enemies,
+      objects: collectCommaList(themePlanObjects, 12, "Objects"),
+      expressions: collectCommaList(themePlanExpressions, 16, "Expressions"),
+      achievements: collectCommaList(themePlanAchievements, 20, "Achievement badges"),
+    };
+  }
+
+  function requestThemeGenerationStop() {
+    if (!themeGenerationRunning || themeGenerationStopping) return;
+    themeGenerationStopping = true;
+    if (themeStartGenerationBtn) {
+      themeStartGenerationBtn.disabled = true;
+      themeStartGenerationBtn.textContent = "Stopping...";
+    }
+    if (themeReviewStopGeneration) {
+      themeReviewStopGeneration.disabled = true;
+      themeReviewStopGeneration.textContent = "Stopping...";
+    }
+    vscode.postMessage({ type: 'CANCEL_THEME_GENERATION' });
+  }
+
+  function disableThemeRetryButtons() {
+    if (!themeImageReviewList) return;
+    for (const button of themeImageReviewList.querySelectorAll(".theme-review-retry")) {
+      button.disabled = true;
+    }
+  }
+
+  if (themePauseForReview) {
+    themePauseForReview.addEventListener("change", () => {
+      vscode.postMessage({
+        type: 'SET_THEME_PAUSE_FOR_REVIEW',
+        payload: { pause_for_review: themePauseForReview.checked },
+      });
+      if (themeGenerationRunning && themeBuildStatus) {
+        if (!themePauseForReview.checked) disableThemeRetryButtons();
+        themeBuildStatus.textContent = themePauseForReview.checked
+          ? "Approval pauses are on. The next completed image will wait for review."
+          : "Approval pauses are off. Generation will continue automatically.";
+        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      }
+    });
+  }
+
+  if (themeStartGenerationBtn) {
+    themeStartGenerationBtn.addEventListener("click", () => {
+      if (themeGenerationRunning) {
+        requestThemeGenerationStop();
+        return;
+      }
+      try {
+        const imageProvider = selectedThemeImageProvider();
+        if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
+          updateThemeApiKeyUi("Add and save an API key before generating.", true);
+          return;
+        }
+        const plan = collectEditedThemePlan();
+        currentThemePlan = plan;
+        themeGenerationRunning = true;
+        themeGenerationStopping = false;
+        reviewThemeId = "";
+        themeStartGenerationBtn.disabled = false;
+        themeStartGenerationBtn.textContent = "Stop generation";
+        if (themeGenerateBtn) themeGenerateBtn.setAttribute("disabled", "");
+        if (themePlanValidation) themePlanValidation.textContent = "";
+        if (themeBuildActions) themeBuildActions.setAttribute("hidden", "");
+        if (themeBuildStatus) {
+          themeBuildStatus.textContent = themePauseForReview?.checked === false
+            ? "Preparing 23 image generations..."
+            : "Preparing the first image. Generation will pause for approval after each one.";
+          themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+        }
+        vscode.postMessage({
+          type: 'GENERATE_THEME',
+          payload: {
+            plan,
+            image_provider: imageProvider,
+            pause_for_review: themePauseForReview?.checked !== false,
+          },
+        });
+      } catch (error) {
+        if (themePlanValidation) themePlanValidation.textContent = error instanceof Error ? error.message : String(error);
+      }
+    });
+  }
+
+  if (themeReviewStopGeneration) {
+    themeReviewStopGeneration.addEventListener("click", requestThemeGenerationStop);
+  }
+
+  if (themeReviewResumeGeneration) {
+    themeReviewResumeGeneration.addEventListener("click", () => {
+      if (!reviewThemeId || themeGenerationRunning) return;
+      const imageProvider = selectedThemeImageProvider();
+      if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
+        updateThemeApiKeyUi("Add and save an API key before resuming.", true);
+        return;
+      }
+      themeGenerationRunning = true;
+      themeGenerationStopping = false;
+      themeReviewResumeGeneration.hidden = true;
+      themeReviewResumeGeneration.disabled = true;
+      if (themeReviewStopGeneration) {
+        themeReviewStopGeneration.hidden = false;
+        themeReviewStopGeneration.disabled = false;
+        themeReviewStopGeneration.textContent = "Stop generation";
+      }
+      if (themeBuildStatus) {
+        themeBuildStatus.textContent = "Resuming unfinished image generations...";
+        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      }
+      vscode.postMessage({
+        type: 'GENERATE_THEME',
+        payload: {
+          resume_theme_id: reviewThemeId,
+          image_provider: imageProvider,
+          pause_for_review: themePauseForReview?.checked !== false,
+        },
+      });
+    });
+  }
+
+  if (themeApproveAll) {
+    themeApproveAll.addEventListener("click", () => {
+      if (!reviewThemeId) return;
+      themeApproveAll.disabled = true;
+      themeApproveAll.textContent = "Approving...";
+      vscode.postMessage({
+        type: 'APPROVE_ALL_THEME_IMAGES',
+        payload: { theme_id: reviewThemeId },
+      });
+    });
+  }
+
+  if (themeReviewImagesBtn) {
+    themeReviewImagesBtn.addEventListener("click", () => {
+      showThemeImageReview(reviewThemeId);
+    });
+  }
+
+  if (themeOpenImagesFolder) {
+    themeOpenImagesFolder.addEventListener("click", () => openThemeImages(reviewThemeId));
+  }
+
+  function openThemeImages(themeId) {
+    if (!themeId) return;
+    vscode.postMessage({ type: 'OPEN_THEME_IMAGES', payload: { theme_id: themeId } });
+  }
+
+  function openThemeImageLightbox(imageSrc, label, trigger) {
+    if (!themeImageLightbox || !themeImageLightboxImage) return;
+    themeImageLightboxTrigger = trigger;
+    themeImageLightboxImage.src = imageSrc;
+    themeImageLightboxImage.alt = label;
+    if (themeImageLightboxTitle) themeImageLightboxTitle.textContent = label;
+    themeImageLightbox.removeAttribute("hidden");
+    themeImageLightboxClose?.focus();
+  }
+
+  function closeThemeImageLightbox() {
+    if (!themeImageLightbox || themeImageLightbox.hasAttribute("hidden")) return;
+    themeImageLightbox.setAttribute("hidden", "");
+    if (themeImageLightboxImage) {
+      themeImageLightboxImage.removeAttribute("src");
+      themeImageLightboxImage.alt = "";
+    }
+    themeImageLightboxTrigger?.focus();
+    themeImageLightboxTrigger = null;
+  }
+
+  themeImageLightboxClose?.addEventListener("click", closeThemeImageLightbox);
+  themeImageLightboxBackdrop?.addEventListener("click", closeThemeImageLightbox);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && themeImageLightbox && !themeImageLightbox.hasAttribute("hidden")) {
+      event.stopImmediatePropagation();
+      closeThemeImageLightbox();
+    }
+  });
+
+  function showThemeImageReview(themeId) {
+    if (!themeId) return;
+    reviewThemeId = themeId;
+    themePickerList.setAttribute("hidden", "");
+    themeBuilderPanel.removeAttribute("hidden");
+    if (themePlanEditor) themePlanEditor.setAttribute("hidden", "");
+    if (themeBuilderRoot) themeBuilderRoot.setAttribute("hidden", "");
+    if (themeImageReview) themeImageReview.removeAttribute("hidden");
+    if (themeImageReviewList) themeImageReviewList.textContent = "Loading generated images...";
+    if (themeApproveAll) {
+      themeApproveAll.disabled = true;
+      themeApproveAll.textContent = "Approve all";
+    }
+    vscode.postMessage({ type: 'GET_THEME_IMAGE_SETTINGS' });
+    vscode.postMessage({ type: 'GET_THEME_IMAGE_REVIEW', payload: { theme_id: themeId } });
+  }
+
+  function captureThemeReviewUiState() {
+    const drafts = new Map();
+    if (themeImageReviewList) {
+      for (const card of themeImageReviewList.querySelectorAll("[data-item-id]")) {
+        const itemId = card.getAttribute("data-item-id");
+        if (!itemId) continue;
+        drafts.set(itemId, {
+          feedback: card.querySelector(".theme-review-feedback")?.value || "",
+          mode: card.querySelector(".theme-review-mode")?.value || "",
+          characterName: card.querySelector(".theme-review-name-input")?.value || "",
+          promptOpen: Boolean(card.querySelector(".theme-review-prompt")?.open),
+        });
+      }
+    }
+    return {
+      drafts,
+      scrollTop: themesDialog?.scrollTop || 0,
+    };
+  }
+
+  function renderThemeImageReview(payload) {
+    if (!themeImageReview || !themeImageReviewList) return;
+    // Host updates can arrive while the user is editing a different card. Keep
+    // those local drafts and the review position instead of treating every
+    // update as a brand-new panel.
+    const reviewUiState = captureThemeReviewUiState();
+    themeImageReview.removeAttribute("hidden");
+    if (themePlanEditor) themePlanEditor.setAttribute("hidden", "");
+    if (themeBuilderRoot) themeBuilderRoot.setAttribute("hidden", "");
+    themeImageReviewList.innerHTML = "";
+    if (payload.error) {
+      if (themeApproveAll) themeApproveAll.disabled = true;
+      const error = document.createElement("div");
+      error.className = "theme-review-empty theme-review-error";
+      error.textContent = "Could not load generated images: " + payload.error;
+      themeImageReviewList.appendChild(error);
+      return;
+    }
+
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const waitingForReviewItemId = payload.waiting_for_review_item_id || "";
+    const accepted = items.filter((item) => item.status === "accepted").length;
+    const rejected = items.filter((item) => item.status === "rejected").length;
+    const blocked = items.filter((item) => Boolean(item.generation_error)).length;
+    const unfinished = items.filter((item) => item.generated !== true).length;
+    const allGenerated = items.length > 0 && items.every((item) => Boolean(item.image_src));
+    const allApproved = items.length > 0 && accepted === items.length;
+    const activeGenerationItemId = payload.generation_active && !waitingForReviewItemId
+      ? items.find((item) => item.generated !== true)?.id || ""
+      : "";
+    themeGenerationRunning = Boolean(payload.generation_active);
+    if (themePauseForReview && typeof payload.pause_for_review === "boolean") {
+      themePauseForReview.checked = payload.pause_for_review;
+    }
+    if (themeImageReviewTitle) {
+      themeImageReviewTitle.textContent = (payload.display_name || "Theme") + " images";
+    }
+    if (themeImageReviewSummary) {
+      themeImageReviewSummary.classList.remove("theme-review-error");
+      themeImageReviewSummary.textContent = items.length
+        ? `${accepted} accepted · ${rejected} rejected · ${blocked} blocked · ${items.length - accepted - rejected - blocked} pending`
+        : (payload.generation_active ? "Waiting for the first image..." : "No generated images found.");
+    }
+    if (themeReviewStopGeneration) {
+      themeReviewStopGeneration.hidden = !payload.generation_active;
+      themeReviewStopGeneration.disabled = themeGenerationStopping;
+      themeReviewStopGeneration.textContent = themeGenerationStopping ? "Stopping..." : "Stop generation";
+    }
+    if (themeReviewResumeGeneration) {
+      themeReviewResumeGeneration.hidden = Boolean(payload.generation_active) || unfinished === 0;
+      themeReviewResumeGeneration.disabled = Boolean(payload.generation_active);
+      themeReviewResumeGeneration.textContent = unfinished === 1
+        ? "Resume 1 generation"
+        : `Resume ${unfinished} generations`;
+      themeReviewResumeGeneration.title = unfinished > 0
+        ? "Continue from the first unfinished image without regenerating completed work."
+        : "Every image generation is complete.";
+    }
+    if (themeApproveAll) {
+      themeApproveAll.disabled = Boolean(payload.generation_active) || !allGenerated || allApproved;
+      themeApproveAll.textContent = allApproved ? "All approved" : "Approve all";
+      themeApproveAll.title = allApproved
+        ? "Every theme image is approved."
+        : payload.generation_active || !allGenerated
+          ? "Available after every theme image has finished generating."
+          : `Approve all ${items.length} theme images.`;
+    }
+
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "theme-review-empty";
+      empty.textContent = payload.generation_active
+        ? "Generation is running. Images will appear here as they finish."
+        : "No generated images are available for this theme.";
+      themeImageReviewList.appendChild(empty);
+      return;
+    }
+
+    for (const item of items) {
+      const isCurrentReviewGate = waitingForReviewItemId === item.id;
+      const card = document.createElement("article");
+      card.className = "theme-review-card theme-review-card--" + item.status
+        + (isCurrentReviewGate ? " theme-review-card--current" : "")
+        + (item.generation_error ? " theme-review-card--blocked" : "");
+      card.dataset.itemId = item.id;
+
+      const preview = item.image_src ? document.createElement("button") : document.createElement("div");
+      preview.className = "theme-review-preview" + (item.image_src ? "" : " theme-review-preview--missing");
+      if (item.kind === "character_atlas") preview.classList.add("theme-review-preview--character");
+      if (item.image_src) {
+        preview.type = "button";
+        preview.setAttribute("aria-label", `View full-size image of ${item.label}`);
+        const previewImage = document.createElement("img");
+        previewImage.src = item.image_src;
+        previewImage.alt = item.label;
+        preview.appendChild(previewImage);
+        preview.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openThemeImageLightbox(item.image_src, item.label, preview);
+        });
+      } else {
+        preview.textContent = item.generation_error ? "Generation blocked" : "Not generated yet";
+      }
+
+      const body = document.createElement("div");
+      body.className = "theme-review-card-body";
+      const heading = document.createElement("div");
+      heading.className = "theme-review-card-heading";
+      const title = document.createElement("h4");
+      title.textContent = item.label;
+      const status = document.createElement("span");
+      status.className = "theme-review-status theme-review-status--"
+        + (item.generation_error ? "blocked" : item.status);
+      status.textContent = item.generation_error ? "blocked" : item.status;
+      heading.appendChild(title);
+      heading.appendChild(status);
+
+      const meta = document.createElement("div");
+      meta.className = "theme-review-meta";
+      meta.textContent = `${item.kind.replace(/_/g, " ")} · revision ${item.revision}`;
+
+      let generationError = null;
+      if (item.generation_error) {
+        generationError = document.createElement("div");
+        generationError.className = "theme-review-generation-error";
+        const errorMessage = document.createElement("strong");
+        errorMessage.textContent = item.generation_error.message
+          || "This image request was blocked. Revise its instructions and retry.";
+        generationError.appendChild(errorMessage);
+        const errorHelp = document.createElement("span");
+        errorHelp.textContent = item.generation_error.request_id
+          ? `Revise the creative direction below and retry. Request ID: ${item.generation_error.request_id}`
+          : "Revise the creative direction below and retry.";
+        generationError.appendChild(errorHelp);
+      }
+
+      let characterNameInput = null;
+      let renameBtn = null;
+      let nameRow = null;
+      if (item.kind === "character_atlas") {
+        nameRow = document.createElement("label");
+        nameRow.className = "theme-review-name-row";
+        const nameLabel = document.createElement("span");
+        nameLabel.textContent = "Character name";
+        characterNameInput = document.createElement("input");
+        characterNameInput.className = "theme-review-name-input";
+        characterNameInput.type = "text";
+        characterNameInput.maxLength = 80;
+        const savedDraft = reviewUiState.drafts.get(item.id);
+        characterNameInput.value = savedDraft?.characterName || item.subject || item.label || "";
+        characterNameInput.disabled = Boolean(payload.generation_active && !isCurrentReviewGate);
+        renameBtn = document.createElement("button");
+        renameBtn.className = "skill-btn theme-review-rename";
+        renameBtn.type = "button";
+        renameBtn.textContent = "Save name";
+        renameBtn.disabled = true;
+        const updateRenameState = () => {
+          const nextName = characterNameInput.value.trim().replace(/\s+/g, " ");
+          renameBtn.disabled = characterNameInput.disabled || !nextName || nextName === item.subject;
+        };
+        characterNameInput.addEventListener("input", updateRenameState);
+        characterNameInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && !renameBtn.disabled) {
+            event.preventDefault();
+            renameBtn.click();
+          }
+        });
+        renameBtn.addEventListener("click", () => {
+          const nextName = characterNameInput.value.trim().replace(/\s+/g, " ");
+          if (!nextName) {
+            characterNameInput.focus();
+            characterNameInput.setAttribute("aria-invalid", "true");
+            return;
+          }
+          characterNameInput.removeAttribute("aria-invalid");
+          characterNameInput.disabled = true;
+          renameBtn.disabled = true;
+          renameBtn.textContent = "Saving...";
+          themeReviewBusyItems.set(item.id, "rename");
+          vscode.postMessage({
+            type: 'RENAME_THEME_CHARACTER',
+            payload: { theme_id: reviewThemeId, item_id: item.id, name: nextName },
+          });
+        });
+        if (themeReviewBusyItems.get(item.id) === "rename") {
+          characterNameInput.disabled = true;
+          renameBtn.disabled = true;
+          renameBtn.textContent = "Saving...";
+        }
+        nameRow.appendChild(nameLabel);
+        nameRow.appendChild(characterNameInput);
+        nameRow.appendChild(renameBtn);
+      }
+
+      const decisionRow = document.createElement("div");
+      decisionRow.className = "theme-review-actions";
+      const acceptBtn = document.createElement("button");
+      acceptBtn.className = "skill-btn theme-review-accept";
+      acceptBtn.textContent = "Keep";
+      acceptBtn.disabled = !item.image_src
+        || themeReviewBusyItems.has(item.id)
+        || (payload.generation_active && !isCurrentReviewGate);
+      acceptBtn.addEventListener("click", () => {
+        acceptBtn.disabled = true;
+        rejectBtn.disabled = true;
+        if (isCurrentReviewGate) disableThemeRetryButtons();
+        acceptBtn.textContent = "Keeping...";
+        vscode.postMessage({
+          type: 'SET_THEME_IMAGE_REVIEW_STATUS',
+          payload: { theme_id: reviewThemeId, item_id: item.id, status: 'accepted' },
+        });
+      });
+      const rejectBtn = document.createElement("button");
+      rejectBtn.className = "skill-btn theme-review-reject";
+      rejectBtn.textContent = "Needs changes";
+      rejectBtn.disabled = !item.image_src
+        || themeReviewBusyItems.has(item.id)
+        || (payload.generation_active && !isCurrentReviewGate);
+      rejectBtn.addEventListener("click", () => {
+        vscode.postMessage({
+          type: 'SET_THEME_IMAGE_REVIEW_STATUS',
+          payload: { theme_id: reviewThemeId, item_id: item.id, status: 'rejected' },
+        });
+      });
+      decisionRow.appendChild(acceptBtn);
+      decisionRow.appendChild(rejectBtn);
+      if (item.kind === "character_atlas") {
+        const normalizeBtn = document.createElement("button");
+        normalizeBtn.className = "skill-btn theme-review-normalize";
+        normalizeBtn.type = "button";
+        normalizeBtn.dataset.idleText = "Normalize size";
+        normalizeBtn.textContent = "Normalize size";
+        normalizeBtn.disabled = !item.image_src || Boolean(payload.generation_active && !isCurrentReviewGate);
+        normalizeBtn.title = "Regenerate this character, then fit every frame to the shared production scale.";
+        if (themeReviewBusyItems.get(item.id) === "normalize") {
+          normalizeBtn.disabled = true;
+          normalizeBtn.textContent = "Regenerating...";
+        }
+        normalizeBtn.addEventListener("click", () => {
+          normalizeBtn.disabled = true;
+          normalizeBtn.textContent = "Regenerating...";
+          acceptBtn.disabled = true;
+          rejectBtn.disabled = true;
+          themeReviewBusyItems.set(item.id, "normalize");
+          vscode.postMessage({
+            type: 'NORMALIZE_THEME_CHARACTER',
+            payload: {
+              theme_id: reviewThemeId,
+              item_id: item.id,
+              image_provider: selectedThemeImageProvider(),
+            },
+          });
+        });
+        decisionRow.appendChild(normalizeBtn);
+      }
+
+      const feedback = document.createElement("textarea");
+      feedback.className = "theme-review-feedback";
+      feedback.rows = 3;
+      feedback.placeholder = item.generation_error
+        ? "Replace the blocked creative direction with neutral, non-graphic visual instructions."
+        : "Write a revised prompt or describe exactly what should change for this item.";
+      const savedDraft = reviewUiState.drafts.get(item.id);
+      if (savedDraft) feedback.value = savedDraft.feedback;
+      const retryRow = document.createElement("div");
+      retryRow.className = "theme-review-retry-row";
+      const mode = document.createElement("select");
+      mode.className = "theme-review-mode";
+      const augmentOption = document.createElement("option");
+      augmentOption.value = "augment";
+      augmentOption.textContent = "Add notes to original prompt";
+      const replaceOption = document.createElement("option");
+      replaceOption.value = "replace";
+      replaceOption.textContent = "Replace creative direction";
+      const retryOption = document.createElement("option");
+      retryOption.value = "retry";
+      retryOption.textContent = "No notes, just retry";
+      retryOption.disabled = !item.prompt;
+      mode.appendChild(augmentOption);
+      mode.appendChild(replaceOption);
+      mode.appendChild(retryOption);
+      if (item.generation_error) mode.value = "replace";
+      if (savedDraft?.mode
+          && Array.from(mode.options).some((option) => option.value === savedDraft.mode && !option.disabled)) {
+        mode.value = savedDraft.mode;
+      }
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "skill-btn theme-review-retry";
+      const retryIdleText = item.image_src || item.generation_error ? "Retry image" : "Generate image";
+      retryBtn.dataset.idleText = retryIdleText;
+      const retryBusy = themeReviewBusyItems.get(item.id) === "retry";
+      retryBtn.textContent = retryBusy || item.id === activeGenerationItemId
+        ? "Generating..."
+        : payload.generation_active && !item.image_src && !isCurrentReviewGate
+          ? "Queued"
+          : retryIdleText;
+      // An inactive run may leave a valid review item without an image. Let the
+      // user recover that checkpoint directly; during an active run, only the
+      // exact item paused at the review gate may issue a replacement request.
+      retryBtn.disabled = retryBusy || Boolean(payload.generation_active && !isCurrentReviewGate);
+      retryBtn.title = !item.image_src && !payload.generation_active
+        ? "Generate this unfinished image using the notes above."
+        : payload.generation_active && !isCurrentReviewGate
+          ? "This image is generating or queued in the active run."
+          : "Generate a replacement using the notes above.";
+      retryBtn.addEventListener("click", () => {
+        const notes = feedback.value.trim();
+        if (mode.value !== "retry" && !notes) {
+          feedback.focus();
+          feedback.setAttribute("aria-invalid", "true");
+          return;
+        }
+        feedback.removeAttribute("aria-invalid");
+        retryBtn.disabled = true;
+        retryBtn.textContent = "Generating...";
+        themeReviewBusyItems.set(item.id, "retry");
+        vscode.postMessage({
+          type: 'RETRY_THEME_IMAGE',
+          payload: {
+            theme_id: reviewThemeId,
+            item_id: item.id,
+            feedback: notes,
+            mode: mode.value,
+            image_provider: selectedThemeImageProvider(),
+            character_name: characterNameInput ? characterNameInput.value.trim() : undefined,
+          },
+        });
+      });
+      const updateRetryMode = () => {
+        const retriesSavedPrompt = mode.value === "retry";
+        feedback.disabled = retriesSavedPrompt;
+        if (retriesSavedPrompt) feedback.removeAttribute("aria-invalid");
+      };
+      mode.addEventListener("change", updateRetryMode);
+      updateRetryMode();
+      const retryStatus = document.createElement("div");
+      retryStatus.className = "theme-review-retry-status";
+      retryRow.appendChild(mode);
+      retryRow.appendChild(retryBtn);
+
+      const promptDetails = document.createElement("details");
+      promptDetails.className = "theme-review-prompt";
+      promptDetails.open = Boolean(savedDraft?.promptOpen);
+      const promptSummary = document.createElement("summary");
+      promptSummary.textContent = "View generation prompt";
+      const promptText = document.createElement("pre");
+      promptText.textContent = item.prompt || "Legacy image — no original prompt was saved.";
+      promptDetails.appendChild(promptSummary);
+      promptDetails.appendChild(promptText);
+
+      body.appendChild(heading);
+      body.appendChild(meta);
+      if (generationError) body.appendChild(generationError);
+      if (nameRow) body.appendChild(nameRow);
+      body.appendChild(decisionRow);
+      body.appendChild(feedback);
+      body.appendChild(retryRow);
+      body.appendChild(retryStatus);
+      body.appendChild(promptDetails);
+      card.appendChild(preview);
+      card.appendChild(body);
+      themeImageReviewList.appendChild(card);
+    }
+    if (themesDialog) themesDialog.scrollTop = reviewUiState.scrollTop;
   }
 
   function renderThemesList(themes) {
@@ -475,18 +1238,90 @@
     }
     
     for (const theme of themes) {
+      const row = document.createElement("div");
+      row.className = "theme-picker-row";
+
+      const themeName = theme.display_name || theme.theme_id;
+
       const btn = document.createElement("button");
-      btn.className = "skill-btn";
-      btn.style.textAlign = "left";
-      btn.style.padding = "8px 12px";
-      btn.style.backgroundColor = "var(--vscode-button-secondaryBackground, #3a3d41)";
-      btn.style.color = "var(--vscode-button-secondaryForeground, #ffffff)";
-      btn.textContent = theme.display_name || theme.theme_id;
+      btn.className = "skill-btn theme-picker-select";
+      const nameLabel = document.createElement("span");
+      nameLabel.textContent = themeName;
+      const approvalLabel = document.createElement("span");
+      approvalLabel.className = "theme-picker-approval" + (theme.export_ready ? " theme-picker-approval--ready" : "");
+      approvalLabel.textContent = theme.export_ready
+        ? "Ready to export"
+        : theme.total
+          ? `${theme.accepted}/${theme.total} approved`
+          : "Review required";
+      btn.appendChild(nameLabel);
+      btn.appendChild(approvalLabel);
       btn.addEventListener("click", () => {
         vscode.postMessage({ type: 'SELECT_THEME', payload: { theme_id: theme.theme_id } });
       });
-      themePickerGrid.appendChild(btn);
+
+      const reviewBtn = document.createElement("button");
+      reviewBtn.className = "skill-btn";
+      reviewBtn.textContent = "Review images";
+      reviewBtn.addEventListener("click", () => {
+        showThemeImageReview(theme.theme_id);
+      });
+
+      const exportBtn = document.createElement("button");
+      exportBtn.className = "skill-btn";
+      exportBtn.type = "button";
+      exportBtn.textContent = "Export .zip";
+      exportBtn.disabled = !theme.export_ready;
+      exportBtn.dataset.exportReady = String(Boolean(theme.export_ready));
+      exportBtn.title = theme.export_ready
+        ? `Export ${themeName} as a .zip file`
+        : `Approve every theme image before exporting (${theme.accepted || 0}/${theme.total || 0} approved)`;
+      exportBtn.dataset.themeExportId = theme.theme_id;
+      exportBtn.addEventListener("click", () => {
+        exportBtn.disabled = true;
+        if (themePickerStatus) {
+          themePickerStatus.textContent = `Exporting ${themeName}...`;
+          themePickerStatus.classList.remove("theme-picker-status--error");
+        }
+        vscode.postMessage({ type: "EXPORT_THEME", payload: { theme_id: theme.theme_id } });
+      });
+
+      const sizeLabel = document.createElement("span");
+      sizeLabel.className = "theme-picker-size";
+      sizeLabel.textContent = formatThemeDiskSize(theme.size_bytes);
+      sizeLabel.title = `${Number(theme.size_bytes || 0).toLocaleString()} bytes on disk`;
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "skill-btn theme-delete-btn";
+      deleteBtn.type = "button";
+      deleteBtn.title = `Delete ${themeName}`;
+      deleteBtn.setAttribute("aria-label", `Delete ${themeName}`);
+      deleteBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-1 12H8L7 9Zm3 2v8h2v-8h-2Zm4 0v8h2v-8h-2Z"/></svg>';
+      deleteBtn.addEventListener("click", () => {
+        deleteBtn.setAttribute("disabled", "");
+        if (themePickerStatus) {
+          themePickerStatus.textContent = `Waiting to delete ${themeName}…`;
+          themePickerStatus.classList.remove("theme-picker-status--error");
+        }
+        vscode.postMessage({ type: 'DELETE_THEME', payload: { theme_id: theme.theme_id } });
+      });
+
+      row.appendChild(btn);
+      row.appendChild(reviewBtn);
+      row.appendChild(exportBtn);
+      row.appendChild(sizeLabel);
+      row.appendChild(deleteBtn);
+      themePickerGrid.appendChild(row);
     }
+  }
+
+  function formatThemeDiskSize(bytes) {
+    const value = Number.isFinite(Number(bytes)) ? Math.max(0, Number(bytes)) : 0;
+    if (value < 1024) return `${Math.round(value)} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length);
+    const scaled = value / Math.pow(1024, exponent);
+    return `${scaled.toFixed(scaled < 10 ? 1 : 0)} ${units[exponent - 1]}`;
   }
 
   setupBackBtn.addEventListener("click", () => {
@@ -679,30 +1514,217 @@
 
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
-    if (msg && msg.type === "THEMES_LIST") {
+    if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
+      const payload = msg.payload || {};
+      if (payload.error) {
+        if (themeApiKeySave) {
+          themeApiKeySave.removeAttribute("disabled");
+          themeApiKeySave.textContent = "Save";
+        }
+        updateThemeApiKeyUi("Could not save the API key: " + payload.error, true);
+      } else {
+        themeImageSettingsLoaded = true;
+        themeProviderConfigured = {
+          gemini: Boolean(payload.providers?.gemini?.configured),
+          openai: Boolean(payload.providers?.openai?.configured),
+        };
+        if (themeImageProvider && (payload.provider === "gemini" || payload.provider === "openai")) {
+          themeImageProvider.value = payload.provider;
+        }
+        if (themeApiKeyInput) themeApiKeyInput.value = "";
+        if (themeApiKeySave) {
+          themeApiKeySave.removeAttribute("disabled");
+          themeApiKeySave.textContent = "Save";
+        }
+        updateThemeApiKeyUi(payload.saved ? "API key settings saved securely." : "", false);
+      }
+    } else if (msg && msg.type === "THEMES_LIST") {
       renderThemesList(msg.payload?.themes || msg.themes);
+      if (themePickerStatus) {
+        const deleteError = msg.payload?.delete_error;
+        themePickerStatus.textContent = deleteError
+          ? "Could not delete theme: " + deleteError
+          : msg.payload?.deleted_theme_id
+            ? "Theme deleted."
+            : "";
+        themePickerStatus.classList.toggle("theme-picker-status--error", Boolean(deleteError));
+      }
+    } else if (msg && msg.type === "THEME_EXPORT_RESULT") {
+      const payload = msg.payload || {};
+      const exportButton = themePickerGrid?.querySelector(`[data-theme-export-id="${payload.theme_id || ""}"]`);
+      if (exportButton) exportButton.disabled = exportButton.dataset.exportReady !== "true";
+      if (themePickerStatus) {
+        themePickerStatus.textContent = payload.error
+          ? "Could not export theme: " + payload.error
+          : payload.cancelled
+            ? ""
+            : `${payload.display_name || "Theme"} exported.`;
+        themePickerStatus.classList.toggle("theme-picker-status--error", Boolean(payload.error));
+      }
+    } else if (msg && msg.type === "THEME_IMPORT_RESULT") {
+      const payload = msg.payload || {};
+      if (themeImportBtn) themeImportBtn.disabled = false;
+      if (themePickerStatus) {
+        themePickerStatus.textContent = payload.error
+          ? "Could not import theme: " + payload.error
+          : payload.cancelled
+            ? ""
+            : `${payload.display_name || "Theme"} ${payload.replaced ? "replaced" : "imported"}.`;
+        themePickerStatus.classList.toggle("theme-picker-status--error", Boolean(payload.error));
+      }
+    } else if (msg && msg.type === "THEME_APPROVE_ALL_RESULT") {
+      const payload = msg.payload || {};
+      if (themeApproveAll) {
+        themeApproveAll.disabled = false;
+        themeApproveAll.textContent = "Approve all";
+      }
+      if (themeImageReviewSummary && payload.error) {
+        themeImageReviewSummary.textContent = "Could not approve all: " + payload.error;
+        themeImageReviewSummary.classList.add("theme-review-error");
+      }
+    } else if (msg && msg.type === "THEME_PLAN_READY") {
+      if (themeGenerateBtn) {
+        themeGenerateBtn.removeAttribute("disabled");
+        themeGenerateBtn.textContent = "Plan theme";
+      }
+      renderThemePlan(msg.payload?.plan || {});
+      if (themeBuildStatus) {
+        themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
+        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      }
+    } else if (msg && msg.type === "THEME_PLAN_ERROR") {
+      if (themeGenerateBtn) {
+        themeGenerateBtn.removeAttribute("disabled");
+        themeGenerateBtn.textContent = "Plan theme";
+      }
+      if (themeBuildStatus) {
+        themeBuildStatus.textContent = "Error: " + (msg.payload?.message || "Theme planning failed.");
+        themeBuildStatus.style.color = "var(--vscode-errorForeground)";
+      }
     } else if (msg && msg.type === "THEME_GENERATION_PROGRESS") {
       if (themeBuildStatus) {
         themeBuildStatus.textContent = msg.payload?.message || msg.message || "Working...";
         themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
       }
+    } else if (msg && msg.type === "THEME_REVIEW_READY") {
+      const readyThemeId = msg.payload?.theme_id;
+      if (readyThemeId) {
+        reviewThemeId = readyThemeId;
+        if (themeBuildActions) themeBuildActions.removeAttribute("hidden");
+        showThemeImageReview(readyThemeId);
+      }
+    } else if (msg && msg.type === "THEME_IMAGE_REVIEW") {
+      if (msg.payload?.theme_id) reviewThemeId = msg.payload.theme_id;
+      renderThemeImageReview(msg.payload || {});
+    } else if (msg && (msg.type === "THEME_IMAGE_RETRY_STATE"
+        || msg.type === "THEME_CHARACTER_RENAME_STATE"
+        || msg.type === "THEME_CHARACTER_NORMALIZE_STATE")) {
+      const itemId = msg.payload?.item_id;
+      if (itemId) {
+        if (msg.payload?.busy) {
+          themeReviewBusyItems.set(itemId, msg.type === "THEME_IMAGE_RETRY_STATE"
+            ? "retry"
+            : msg.type === "THEME_CHARACTER_RENAME_STATE"
+              ? "rename"
+              : "normalize");
+        } else {
+          themeReviewBusyItems.delete(itemId);
+        }
+      }
+      const cards = themeImageReviewList ? themeImageReviewList.querySelectorAll("[data-item-id]") : [];
+      for (const card of cards) {
+        if (card.getAttribute("data-item-id") !== itemId) continue;
+        const retryBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-retry"));
+        const renameBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-rename"));
+        const normalizeBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-normalize"));
+        const nameInput = /** @type {HTMLInputElement|null} */ (card.querySelector(".theme-review-name-input"));
+        const acceptBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-accept"));
+        const rejectBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-reject"));
+        const statusEl = /** @type {HTMLElement|null} */ (card.querySelector(".theme-review-retry-status"));
+        if (acceptBtn) acceptBtn.disabled = Boolean(msg.payload?.busy);
+        if (rejectBtn) rejectBtn.disabled = Boolean(msg.payload?.busy);
+        if (retryBtn && msg.type === "THEME_IMAGE_RETRY_STATE") {
+          retryBtn.disabled = Boolean(msg.payload?.busy);
+          retryBtn.textContent = msg.payload?.busy
+            ? "Generating..."
+            : retryBtn.dataset.idleText || "Retry image";
+        }
+        if (normalizeBtn && msg.type === "THEME_CHARACTER_NORMALIZE_STATE") {
+          normalizeBtn.disabled = Boolean(msg.payload?.busy);
+          normalizeBtn.textContent = msg.payload?.busy
+            ? "Regenerating..."
+            : normalizeBtn.dataset.idleText || "Normalize size";
+        }
+        if (renameBtn && msg.type === "THEME_CHARACTER_RENAME_STATE") {
+          renameBtn.disabled = Boolean(msg.payload?.busy) || !msg.payload?.error;
+          renameBtn.textContent = msg.payload?.busy ? "Saving..." : "Save name";
+        }
+        if (nameInput && msg.type === "THEME_CHARACTER_RENAME_STATE") {
+          nameInput.disabled = Boolean(msg.payload?.busy);
+        }
+        if (statusEl) {
+          statusEl.textContent = msg.payload?.error || msg.payload?.message || "";
+          statusEl.classList.toggle("theme-review-error", Boolean(msg.payload?.error));
+        }
+      }
     } else if (msg && msg.type === "THEME_GENERATION_ERROR") {
+      themeGenerationRunning = false;
+      themeGenerationStopping = false;
       if (themeBuildStatus) {
         themeBuildStatus.textContent = "Error: " + (msg.payload?.message || msg.message || "Unknown error");
         themeBuildStatus.style.color = "var(--vscode-errorForeground)";
       }
       if (themeGenerateBtn) {
         themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Generate";
+        themeGenerateBtn.textContent = "Plan theme";
       }
-    } else if (msg && msg.type === "THEME_INITIALIZED") {
-      if (themeGenerateBtn && themeGenerateBtn.hasAttribute("disabled")) {
+      if (themeStartGenerationBtn) {
+        themeStartGenerationBtn.disabled = false;
+        themeStartGenerationBtn.textContent = "Generate images";
+      }
+      if (themeReviewStopGeneration) themeReviewStopGeneration.hidden = true;
+    } else if (msg && msg.type === "THEME_GENERATION_CANCELLED") {
+      themeGenerationRunning = false;
+      themeGenerationStopping = false;
+      const cancelledThemeId = msg.payload?.theme_id;
+      if (cancelledThemeId) {
+        reviewThemeId = cancelledThemeId;
+        if (themeBuildActions) themeBuildActions.removeAttribute("hidden");
+      }
+      if (themeBuildStatus) {
+        themeBuildStatus.textContent = msg.payload?.message || "Generation stopped.";
+        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      }
+      if (themeGenerateBtn) {
         themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Generate";
+        themeGenerateBtn.textContent = "Plan theme";
       }
-      if (themeBuildStatus && themeBuildStatus.textContent.indexOf("Error") !== 0) {
+      if (themeStartGenerationBtn) {
+        themeStartGenerationBtn.disabled = false;
+        themeStartGenerationBtn.textContent = "Generate images";
+      }
+      if (themeReviewStopGeneration) themeReviewStopGeneration.hidden = true;
+    } else if (msg && msg.type === "THEME_INITIALIZED") {
+      const completedGeneration = themeGenerationRunning;
+      themeGenerationRunning = false;
+      themeGenerationStopping = false;
+      if (themeStartGenerationBtn) {
+        themeStartGenerationBtn.disabled = false;
+        themeStartGenerationBtn.textContent = "Generate images";
+      }
+      if (themeGenerateBtn) {
+        themeGenerateBtn.removeAttribute("disabled");
+        themeGenerateBtn.textContent = "Plan theme";
+      }
+      if (themeReviewStopGeneration) themeReviewStopGeneration.hidden = true;
+      if (completedGeneration && themeBuildStatus && themeBuildStatus.textContent.indexOf("Error") !== 0) {
         themeBuildStatus.textContent = "Theme generated successfully.";
         themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      }
+      const initializedThemeId = msg.payload?.manifest?.theme_id;
+      if (initializedThemeId) {
+        reviewThemeId = initializedThemeId;
+        if (themeBuildActions) themeBuildActions.removeAttribute("hidden");
       }
     } else if (msg && msg.type === "state") {
       state = msg.state;

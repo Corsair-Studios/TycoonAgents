@@ -1,32 +1,80 @@
 /**
  * imageClient.ts — Zero-dependency image generation client.
- * Selects provider based on environment variables at call time.
+ * Selects the Theme Builder provider at call time.
  * Uses the global fetch available in Node 18+ (same pattern as translator.ts).
  */
 
-/**
- * Generate a theme image using the configured AI image provider.
- * Checks GEMINI_API_KEY first, then OPENAI_API_KEY.
- * Throws if neither key is set or if the API call fails.
- */
-export async function generateThemeImage(prompt: string): Promise<Buffer> {
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
+import * as vscode from 'vscode';
+import { findGeminiInlineImage, summarizeGeminiImageResponse } from './geminiImageResponse';
+import { parseOpenAIImageError } from './imageGenerationError';
+import type { ThemeImageProvider } from './themeImageSettings';
 
-  if (geminiKey) {
-    return generateWithImagen3(prompt, geminiKey);
-  } else if (openaiKey) {
-    return generateWithDallE3(prompt, openaiKey);
-  } else {
-    throw new Error('No image API key found. Set GEMINI_API_KEY or OPENAI_API_KEY.');
-  }
+export interface ThemeImageGenerationOptions {
+  provider?: ThemeImageProvider;
+  apiKey?: string;
+  aspectRatio?: '1:1' | '3:4';
+  /** Cancels the in-flight provider request when a theme generation is stopped. */
+  signal?: AbortSignal;
+  referenceImages?: Array<{
+    data: Buffer;
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+    filename: string;
+  }>;
 }
 
-async function generateWithImagen3(prompt: string, apiKey: string): Promise<Buffer> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
+/**
+ * Generate a theme image using the configured AI image provider.
+ * Uses the explicitly selected provider and falls back to extension settings
+ * or environment variables for backwards compatibility.
+ */
+export async function generateThemeImage(
+  prompt: string,
+  options: ThemeImageGenerationOptions = {},
+): Promise<Buffer> {
+  const config = vscode.workspace.getConfiguration('tycoonagents');
+  const provider = options.provider
+    ?? (config.get<string>('themeImageProvider', 'gemini') === 'openai' ? 'openai' : 'gemini');
+  const apiKey = options.apiKey || (provider === 'openai'
+    ? config.get<string>('openaiApiKey') || process.env.OPENAI_API_KEY
+    : config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+
+  if (!apiKey) {
+    const label = provider === 'openai' ? 'OpenAI' : 'Google Gemini';
+    throw new Error(`No ${label} API key found. Add one in Themes > Theme Builder.`);
+  }
+
+  return provider === 'openai'
+    ? generateWithOpenAI(prompt, apiKey, options)
+    : generateWithImagen3(prompt, apiKey, options);
+}
+
+async function generateWithImagen3(
+  prompt: string,
+  apiKey: string,
+  options: ThemeImageGenerationOptions,
+): Promise<Buffer> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${apiKey}`;
   const body = {
-    instances: [{ prompt }],
-    parameters: { sampleCount: 1, aspectRatio: '1:1' },
+    contents: [
+      {
+        parts: [
+          { text: prompt },
+          ...(options.referenceImages ?? []).map((image) => ({
+            inline_data: {
+              mime_type: image.mimeType,
+              data: image.data.toString('base64'),
+            },
+          })),
+        ],
+      },
+    ],
+    generationConfig: {
+      responseModalities: ['IMAGE'],
+      imageConfig: {
+        aspectRatio: options.aspectRatio ?? '1:1',
+        imageSize: '1K',
+      },
+    },
   };
 
   let response: Response;
@@ -35,9 +83,11 @@ async function generateWithImagen3(prompt: string, apiKey: string): Promise<Buff
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: options.signal,
     });
   } catch (err) {
-    throw new Error(`Imagen 3 network error: ${String(err)}`);
+    if (options.signal?.aborted) throw new Error('Generation cancelled by user');
+    throw new Error(`Gemini Image network error: ${String(err)}`);
   }
 
   if (!response.ok) {
@@ -48,7 +98,7 @@ async function generateWithImagen3(prompt: string, apiKey: string): Promise<Buff
       // ignore
     }
     throw new Error(
-      `Imagen 3 API error ${response.status}: ${errBody.slice(0, 300)}`,
+      `Gemini Image API error ${response.status}: ${errBody.slice(0, 300)}`,
     );
   }
 
@@ -59,51 +109,76 @@ async function generateWithImagen3(prompt: string, apiKey: string): Promise<Buff
     json = JSON.parse(rawText);
   } catch {
     throw new Error(
-      `Imagen 3: failed to parse JSON response. Body: ${rawText.slice(0, 300)}`,
+      `Gemini Image: failed to parse JSON response. Body: ${rawText.slice(0, 300)}`,
     );
   }
 
-  const predictions = (json as { predictions?: unknown[] }).predictions;
-  if (!Array.isArray(predictions) || predictions.length === 0) {
-    throw new Error('Imagen 3: no predictions in response.');
+  const image = findGeminiInlineImage(json);
+  if (!image) {
+    throw new Error(
+      `Gemini Image: response contained no image data (${summarizeGeminiImageResponse(json)}).`,
+    );
   }
 
-  const pred = predictions[0] as Record<string, unknown>;
-  // Defensive: try multiple field paths
-  const b64 =
-    (pred.bytesBase64Encoded as string | undefined) ??
-    ((pred.image as Record<string, string> | undefined)?.imageBytes) ??
-    (pred.bytesBase64Encoded as string | undefined);
-
-  if (!b64) {
-    throw new Error('Imagen 3: could not locate base64 image data in response.');
-  }
-
-  return Buffer.from(b64, 'base64');
+  return Buffer.from(image.data, 'base64');
 }
 
-async function generateWithDallE3(prompt: string, apiKey: string): Promise<Buffer> {
-  const url = 'https://api.openai.com/v1/images/generations';
+async function generateWithOpenAI(
+  prompt: string,
+  apiKey: string,
+  options: ThemeImageGenerationOptions,
+): Promise<Buffer> {
+  const hasReferences = (options.referenceImages?.length ?? 0) > 0;
+  const url = hasReferences
+    ? 'https://api.openai.com/v1/images/edits'
+    : 'https://api.openai.com/v1/images/generations';
+  const size = options.aspectRatio === '3:4' ? '1024x1440' : '1024x1024';
   const body = {
-    model: 'dall-e-3',
+    model: 'gpt-image-2',
     prompt,
     n: 1,
-    size: '1024x1024',
-    response_format: 'b64_json',
+    size,
+    quality: 'medium',
+    background: 'opaque',
   };
 
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    if (hasReferences) {
+      const form = new FormData();
+      form.append('model', body.model);
+      form.append('prompt', body.prompt);
+      form.append('n', String(body.n));
+      form.append('size', body.size);
+      form.append('quality', body.quality);
+      form.append('background', body.background);
+      for (const image of options.referenceImages ?? []) {
+        form.append(
+          'image[]',
+          new Blob([new Uint8Array(image.data)], { type: image.mimeType }),
+          image.filename,
+        );
+      }
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
+        signal: options.signal,
+      });
+    } else {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      });
+    }
   } catch (err) {
-    throw new Error(`DALL·E 3 network error: ${String(err)}`);
+    if (options.signal?.aborted) throw new Error('Generation cancelled by user');
+    throw new Error(`OpenAI GPT Image network error: ${String(err)}`);
   }
 
   if (!response.ok) {
@@ -113,8 +188,10 @@ async function generateWithDallE3(prompt: string, apiKey: string): Promise<Buffe
     } catch {
       // ignore
     }
-    throw new Error(
-      `DALL·E 3 API error ${response.status}: ${errBody.slice(0, 300)}`,
+    throw parseOpenAIImageError(
+      response.status,
+      errBody,
+      response.headers.get('x-request-id'),
     );
   }
 
@@ -125,13 +202,13 @@ async function generateWithDallE3(prompt: string, apiKey: string): Promise<Buffe
     json = JSON.parse(rawText);
   } catch {
     throw new Error(
-      `DALL·E 3: failed to parse JSON response. Body: ${rawText.slice(0, 300)}`,
+      `OpenAI GPT Image: failed to parse JSON response. Body: ${rawText.slice(0, 300)}`,
     );
   }
 
   const data = (json as { data?: Array<{ b64_json?: string }> }).data;
   if (!Array.isArray(data) || data.length === 0 || !data[0].b64_json) {
-    throw new Error('DALL·E 3: no b64_json in response data.');
+    throw new Error('OpenAI GPT Image: no b64_json in response data.');
   }
 
   return Buffer.from(data[0].b64_json, 'base64');

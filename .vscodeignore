@@ -9,6 +9,7 @@ out/test/**
 out/**/*.test.js
 out/**/*.test.js.map
 docs/**
+scale-references/**
 .claude/**
 CLAUDE.md
 **/*.ts

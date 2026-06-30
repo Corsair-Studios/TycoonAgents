@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 import type { WorldState, ThemeManifest } from '../shared/types';
-import { generateTheme as generateThemeService } from './themeService';
+import {
+  listThemes,
+  loadTheme,
+} from './themeService';
+import { themeManifestUri } from './themeStorage';
 
 let activeWebview: vscode.Webview | undefined;
 let heartbeat: NodeJS.Timeout | undefined;
@@ -104,21 +108,25 @@ class TheaterViewProvider implements vscode.WebviewViewProvider {
 
 async function loadLatestTheme(globalStorageUri: vscode.Uri): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
   try {
-    const entries = await vscode.workspace.fs.readDirectory(globalStorageUri);
-    const manifests = entries.filter(([name, kind]) => kind === vscode.FileType.File && name.endsWith('_manifest.json'));
-    if (manifests.length === 0) return undefined;
-    let newest: { name: string; mtime: number } | undefined;
-    for (const [name] of manifests) {
-      const stat = await vscode.workspace.fs.stat(vscode.Uri.joinPath(globalStorageUri, name));
-      if (newest === undefined || stat.mtime > newest.mtime) newest = { name, mtime: stat.mtime };
+    const themes = await listThemes(globalStorageUri);
+    let newest: { themeId: string; mtime: number } | undefined;
+    for (const theme of themes) {
+      let mtime = 0;
+      try {
+        mtime = (await vscode.workspace.fs.stat(themeManifestUri(globalStorageUri, theme.theme_id))).mtime;
+      } catch {
+        try {
+          mtime = (await vscode.workspace.fs.stat(
+            vscode.Uri.joinPath(globalStorageUri, `${theme.theme_id}_manifest.json`),
+          )).mtime;
+        } catch {
+          continue;
+        }
+      }
+      if (newest === undefined || mtime > newest.mtime) newest = { themeId: theme.theme_id, mtime };
     }
     if (!newest) return undefined;
-    const themeId = newest.name.replace(/_manifest\.json$/, '');
-    const manifestBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(globalStorageUri, newest.name));
-    const framesBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(globalStorageUri, `${themeId}_frames.json`));
-    const manifest = JSON.parse(Buffer.from(manifestBytes).toString('utf8')) as ThemeManifest;
-    const frames = JSON.parse(Buffer.from(framesBytes).toString('utf8')) as Record<string, string[]>;
-    return { manifest, frames };
+    return loadTheme(globalStorageUri, newest.themeId);
   } catch {
     return undefined;
   }
@@ -198,43 +206,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // 3. Register tycoon.generateTheme command
   context.subscriptions.push(
     vscode.commands.registerCommand('tycoon.generateTheme', async () => {
-      const input = await vscode.window.showInputBox({
-        prompt: 'Describe your theme (e.g. "GI Joe Cobra")',
-      });
-      if (input === undefined || input.trim() === '') {
-        return;
-      }
-
-      try {
-        await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: 'Generating Theme Tycoon Assets',
-            cancellable: true,
-          },
-          async (progress, token) => {
-            const result = await generateThemeService(
-              context.globalStorageUri,
-              input,
-              (msg) => progress.report({ message: msg }),
-              () => token.isCancellationRequested,
-            );
-            lastTheme = result;
-            broadcastTheme(result.manifest, result.frames, true);
-            vscode.window.showInformationMessage(
-              `TycoonAgents: Theme "${result.manifest.display_name}" saved.`,
-            );
-          },
-        );
-      } catch (err) {
-        if (String(err).includes('cancelled')) {
-          vscode.window.showInformationMessage('TycoonAgents: Theme generation cancelled.');
-        } else {
-          vscode.window.showErrorMessage(
-            `TycoonAgents: Theme generation failed — ${String(err)}`,
-          );
-        }
-      }
+      await vscode.commands.executeCommand('tycoonagents.open');
+      void vscode.window.showInformationMessage(
+        'Open Themes > Theme Builder to AI-fill and review every slot before generation.',
+      );
     }),
   );
 }
