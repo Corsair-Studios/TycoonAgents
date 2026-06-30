@@ -45,7 +45,7 @@ Slice each board into 20 cells, then **group by row** (4 cells per row):
 
 ## Manifest / contract additions (types.ts)
 - `BuildableObject.sprite_asset` → point at the animated key, e.g. `"frames.json#object_<object_id>"`
-  (an array of 5 data-URIs). Optionally add `anim_fps?: number`, `anim_loop?: boolean` per object.
+  (an array of 4 data-URIs). Optionally add `anim_fps?: number`, `anim_loop?: boolean` per object.
 - Add a shared build-system reference, e.g. on `ViewportConfig`:
   `crate_asset?: string` (`"frames.json#crate"`), `poof_asset?: string` (`"frames.json#poof"`).
 
@@ -112,12 +112,12 @@ Creative direction: <creativeDirection>
    `boardContract(4, 5)` for the shared magenta/grid rules.
 2. **themePlan.ts** — add `OBJECT_CLIPS` (above).
 3. **Slicing/orchestration** — slice each board **4×5** and group rows → `object_<id>` (4 cells/row,
-   trim to the object's real 3–4 frames), `crate` (first cell of the crate row), `poof` (4 cells of the
+   4 frames per object row), `crate` (first cell of the crate row), `poof` (4 cells of the
    poof row). See Slicing section.
 4. **types.ts** — point `BuildableObject.sprite_asset` at `frames.json#object_<id>`; add
    `ViewportConfig.crate_asset` / `poof_asset`.
-5. **Review UI** — surface object boards + the build-system board as review cards (they already get
-   Keep / Needs changes / Retry / **Upload**), so the user can regenerate or hand-upload any of them.
+5. **Review UI** — surface all 3 object boards (the crate + poof share Board 3) as review cards (they
+   already get Keep / Needs changes / Retry / **Upload**), so the user can regenerate or hand-upload any.
 
 # Claude (webview) follow-up — after PNGs/frames exist
 Render objects at `anchor_coord` with the crate→poof→object_idle state machine + progress bar, honoring
