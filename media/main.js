@@ -238,16 +238,6 @@
     }
   });
 
-  // ── Nav polygon debug overlay toggle (N key) ────────────────────
-  window.addEventListener("keydown", (e) => {
-    if (e.key !== "n" && e.key !== "N") return;
-    const tag = document.activeElement && document.activeElement.tagName;
-    const isEditable = tag === "INPUT" || tag === "TEXTAREA" ||
-      (document.activeElement && document.activeElement.isContentEditable);
-    if (isEditable) return;
-    showNavPolygon = !showNavPolygon;
-  });
-
   // ── Skills list install-button handler (event delegation) ────────
 
   skillsListEl.addEventListener("click", (e) => {
@@ -1538,8 +1528,6 @@
   let walkablePolygon = DEFAULT_WALKABLE_POLY.map((p) => p.slice());
   let walkableNativeW = DEFAULT_NATIVE_W;
   let walkableNativeH = DEFAULT_NATIVE_H;
-  /** Debug: draw nav polygon overlay when true. Toggle with the N key. */
-  let showNavPolygon = false;
 
   // ── Per-theme stage tuning (read from manifest.viewport, persisted by host) ──
   /** Overall character sprite scale multiplier (1 = default 64px sprite). */
@@ -1750,7 +1738,6 @@
     if (!themeLoaded) return;
     buildStageEditPanel();
     editStageMode = true;
-    showNavPolygon = false;
     const ids = rosterOrder.length ? rosterOrder : Object.keys(themeImages).filter((id) => id !== "environment_background");
     stageEditEls.char.innerHTML = "";
     for (const id of ids) {
@@ -4251,11 +4238,14 @@
       ctx.fillStyle = "#0a0a12";
       ctx.fillRect(0, 0, w, h);
 
-      // Draw at the image's natural size, centered horizontally, bottom-anchored.
+      // Draw at the image's natural size, centered horizontally, TOP-anchored.
+      // Top-anchoring keeps the background (and everything mapped to it) at a
+      // fixed screen position: the metrics handlebar resizes the stage from its
+      // bottom edge, so a top-anchored image never shifts when h changes.
       const bgW = themeBackgroundImg.naturalWidth;
       const bgH = themeBackgroundImg.naturalHeight;
       const bgX = Math.floor((w - bgW) / 2);
-      const bgY = h - bgH; // bottom-align so the ground line stays at canvas bottom
+      const bgY = 0; // top-anchor → static regardless of handlebar / canvas height
       ctx.drawImage(themeBackgroundImg, bgX, bgY, bgW, bgH);
     } else {
       // Fallback placeholder background
@@ -4307,7 +4297,7 @@
     const bgW = bgImgReady ? themeBackgroundImg.naturalWidth  : w;
     const bgH = bgImgReady ? themeBackgroundImg.naturalHeight : h;
     const bgX = bgImgReady ? Math.floor((w - bgW) / 2) : 0;
-    const bgY = bgImgReady ? (h - bgH)                 : 0;
+    const bgY = 0; // top-anchor (matches the background draw) → static on resize
     // Cache for the stage-editor mouse handlers (canvas<->native mapping).
     lastBgX = bgX; lastBgY = bgY; lastBgW = bgW; lastBgH = bgH;
 
@@ -4518,62 +4508,8 @@
       }
     });
 
-    // ── Nav polygon debug overlay ──────────────────────────────────
-    if (showNavPolygon && themeLoaded && walkablePolygon && walkablePolygon.length > 2) {
-      ctx.save();
-
-      // Draw filled + stroked polygon outline
-      ctx.beginPath();
-      const [p0x, p0y] = nativeToCanvas(walkablePolygon[0][0], walkablePolygon[0][1], bgX, bgY, bgW, bgH);
-      ctx.moveTo(p0x, p0y);
-      for (let i = 1; i < walkablePolygon.length; i++) {
-        const [px, py] = nativeToCanvas(walkablePolygon[i][0], walkablePolygon[i][1], bgX, bgY, bgW, bgH);
-        ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      ctx.fillStyle = "rgba(57,255,20,0.08)";
-      ctx.fill();
-      ctx.strokeStyle = "#39ff14";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      // Vertex dots
-      ctx.fillStyle = "#39ff14";
-      for (const p of walkablePolygon) {
-        const [vx, vy] = nativeToCanvas(p[0], p[1], bgX, bgY, bgW, bgH);
-        ctx.beginPath();
-        ctx.arc(vx, vy, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Agent position dots (cyan)
-      ctx.fillStyle = "#00e5ff";
-      for (const id of Object.keys(agentCharMap)) {
-        const entry = agentCharMap[id];
-        if (entry && entry.nx != null && entry.ny != null) {
-          const [ax, ay] = nativeToCanvas(entry.nx, entry.ny, bgX, bgY, bgW, bgH);
-          ctx.beginPath();
-          ctx.arc(ax, ay, 4, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      // Label
-      ctx.fillStyle = "#39ff14";
-      ctx.font = "11px monospace";
-      ctx.textAlign = "left";
-      ctx.fillText("nav polygon — press N to hide", bgX + 8, bgY + 18);
-
-      ctx.restore();
-    } else if (themeLoaded && !showNavPolygon) {
-      // Subtle always-visible hint
-      ctx.save();
-      ctx.fillStyle = "rgba(57,255,20,0.35)";
-      ctx.font = "9px monospace";
-      ctx.textAlign = "left";
-      ctx.fillText("N: nav poly", 6, h - 6);
-      ctx.restore();
-    }
+    // (Nav-polygon debug overlay removed — the Stage Editor now shows/edits
+    //  the walkable polygon, so the standalone N-key view is no longer needed.)
 
     // ── Stage editor overlay (draggable polygon handles) ───────────────
     if (editStageMode && themeLoaded && walkablePolygon && walkablePolygon.length > 2) {
