@@ -31,6 +31,7 @@ import {
   importThemeArchive,
   listThemes,
   loadTheme,
+  loadLatestTheme,
   normalizeThemeCharacterAtlas,
   planTheme,
   readThemeArchive,
@@ -167,6 +168,14 @@ export class TycoonPanel {
       }) => {
         if (message.type === "ready") {
           void this._panel.webview.postMessage({ type: "state", state: this._applyTimeAdjustments(runtime.getState()) });
+          // Auto-load the latest theme so the main panel shows the real
+          // characters + environment on open (mirrors the Theater view).
+          void (async () => {
+            const t = await loadLatestTheme(this._globalStorageUri);
+            if (t) {
+              void this._panel.webview.postMessage({ type: "THEME_INITIALIZED", payload: { manifest: t.manifest, frames: t.frames, is_editor_mode: false } });
+            }
+          })();
         } else if (message.type === "getSkills") {
           this._handleGetSkills();
         } else if (message.type === "installSkill") {

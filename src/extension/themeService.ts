@@ -281,6 +281,37 @@ export async function loadTheme(
   return legacyManifest && legacyFrames ? { manifest: legacyManifest, frames: legacyFrames } : undefined;
 }
 
+/**
+ * Load the most recently modified theme (by manifest mtime), if any exist.
+ * Used to auto-populate a freshly opened surface with the latest theme.
+ */
+export async function loadLatestTheme(
+  globalStorageUri: vscode.Uri,
+): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
+  const themes = await listThemes(globalStorageUri);
+  let newestId: string | undefined;
+  let newestMtime = -1;
+  for (const theme of themes) {
+    let mtime = 0;
+    try {
+      mtime = (await vscode.workspace.fs.stat(themeManifestUri(globalStorageUri, theme.theme_id))).mtime;
+    } catch {
+      try {
+        mtime = (await vscode.workspace.fs.stat(
+          vscode.Uri.joinPath(globalStorageUri, `${theme.theme_id}_manifest.json`),
+        )).mtime;
+      } catch {
+        continue;
+      }
+    }
+    if (mtime > newestMtime) {
+      newestMtime = mtime;
+      newestId = theme.theme_id;
+    }
+  }
+  return newestId ? loadTheme(globalStorageUri, newestId) : undefined;
+}
+
 async function loadThemeManifest(
   globalStorageUri: vscode.Uri,
   themeId: string,
