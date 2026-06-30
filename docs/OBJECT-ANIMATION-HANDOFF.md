@@ -13,15 +13,15 @@ puff plays and reveals the finished object.
 ## Format (reuses the 512×512 / magenta / configurable-grid pipeline)
 - Canvas **512×512**, **4 columns × 5 rows** = 20 cells, flat **#FF00FF** magenta background
   (same chroma-key + cell-padding rules as characters — reuse `boardContract(4, 5)`).
-- **Each ROW = one object → up to 4 animation frames** (objects needing only 3 frames repeat/hold the
-  4th cell). **5 objects per board** (5 rows). `ceil(rowsNeeded / 5)` boards.
+- **Each ROW = one object → exactly 4 distinct animation frames** (AI-generated, so every cell is a real
+  frame — no held/duplicate frames). **5 objects per board** (5 rows). `ceil(rowsNeeded / 5)` boards.
 - **Build system (shared, 1 per theme):** **crate = 1 frame** (static, 1 row, 3 cells magenta) +
-  **poof = 4 frames** (1 row, one-shot). These ride in spare rows — no dedicated board needed.
-- **Board count for the target (12 objects + crate + poof):** 12 object rows + 1 poof row + 1 crate row
-  = **14 rows → 3 boards** (15 rows; 1 spare). Suggested packing:
+  **poof = 4 frames** (1 row, one-shot). These ride alongside objects on the final board.
+- **Board count for the target (13 objects + crate + poof):** 13 object rows + 1 poof row + 1 crate row
+  = **15 rows → exactly 3 boards, no spare**. Packing:
   - Board 1: objects 1–5
   - Board 2: objects 6–10
-  - Board 3: objects 11–12, then **poof** row, **crate** row, 1 spare (flat magenta) row
+  - Board 3: objects 11–13, then **poof** row, **crate** row
 - Cells are 128 wide × ~102 tall; the slicer normalizes content per row, and the shipped
   **`object_scale`** knob (manifest.viewport / Stage Editor) up-scales objects at draw time.
 
@@ -30,7 +30,7 @@ puff plays and reveals the finished object.
 export type ObjectClipName = 'object_idle' | 'crate' | 'poof';
 export interface ObjectClip { frames: number[]; fps: number; loop: boolean; hold?: boolean; }
 export const OBJECT_CLIPS: Record<ObjectClipName, ObjectClip> = {
-  object_idle: { frames: [0, 1, 2, 3], fps: 5,  loop: true },              // built object, loops (3-frame objects hold cell 3)
+  object_idle: { frames: [0, 1, 2, 3], fps: 5,  loop: true },              // built object, loops (all 4 frames)
   crate:       { frames: [0],          fps: 0,  loop: true, hold: true },  // single static crate frame
   poof:        { frames: [0, 1, 2, 3], fps: 12, loop: false },             // one-shot reveal, 4 frames
 };
@@ -38,8 +38,7 @@ export const OBJECT_CLIPS: Record<ObjectClipName, ObjectClip> = {
 
 ## Slicing (reuse `sliceAndNormalizeAtlas`, grid 4×5)
 Slice each board into 20 cells, then **group by row** (4 cells per row):
-- Object row r → object's frames = cells `[r*4 .. r*4+3]` → `frames["object_<object_id>"]`
-  (trim trailing duplicate/empty cells to the object's real 3–4 frame count).
+- Object row r → object's 4 frames = cells `[r*4 .. r*4+3]` → `frames["object_<object_id>"]`.
 - Build-system rows → `frames["crate"] = [first cell of the crate row]`,
   `frames["poof"] = [the 4 cells of the poof row]`.
 (`scaleReferenceSlots`/`targetContentHeight` normalize per-row like characters do.)
@@ -64,8 +63,8 @@ consistency (preferred). Fill the `<…>` template fields the same way `buildObj
 
 One unified template per board. The board has **5 rows of 4 cells**; fill each row with an object,
 the poof, the crate, or leave it magenta. Object boards use object rows only; the final board mixes the
-last objects + poof + crate (e.g. for 12 objects: Board 1 = objects 1–5, Board 2 = objects 6–10,
-Board 3 = objects 11–12 + poof + crate + 1 empty row).
+last objects + poof + crate (for 13 objects: Board 1 = objects 1–5, Board 2 = objects 6–10,
+Board 3 = objects 11–13 + poof + crate — a full board, no empty rows).
 
 ```
 Create one sprite sheet for the "<themeName>" theme.
