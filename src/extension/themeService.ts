@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { AgentConfig, BuildableObject, RivalConfig, ThemeManifest } from '../shared/types';
+import type { AgentConfig, BuildableObject, EnemyConfig, RivalConfig, ThemeManifest } from '../shared/types';
 import { expandThemePlan } from './translator';
 import {
   buildAchievementAtlasPrompt,
@@ -346,6 +346,7 @@ export async function saveThemeTuning(
     object_scale: number;
     character_scale_overrides: Record<string, number>;
     object_scale_overrides: Record<string, number>;
+    enemy_config?: EnemyConfig;
   },
 ): Promise<boolean> {
   try {
@@ -357,6 +358,17 @@ export async function saveThemeTuning(
     manifest.viewport.object_scale = tuning.object_scale;
     manifest.viewport.character_scale_overrides = tuning.character_scale_overrides;
     manifest.viewport.object_scale_overrides = tuning.object_scale_overrides;
+    if (tuning.enemy_config && typeof tuning.enemy_config === 'object') {
+      const sanitized: EnemyConfig = { ...manifest.viewport.enemy_config };
+      const interval = Number(tuning.enemy_config.spawn_interval_seconds);
+      if (Number.isFinite(interval) && interval > 0) {
+        sanitized.spawn_interval_seconds = interval;
+      }
+      if (tuning.enemy_config.count_mode === 'all' || tuning.enemy_config.count_mode === 'random') {
+        sanitized.count_mode = tuning.enemy_config.count_mode;
+      }
+      manifest.viewport.enemy_config = sanitized;
+    }
     await writeThemeFiles(globalStorageUri, manifest, frames);
     return true;
   } catch {

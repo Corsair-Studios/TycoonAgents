@@ -135,6 +135,7 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     crate_asset: 'frames.json#crate',
     poof_asset: 'frames.json#poof',
     walkable_nav_polygon: WALKABLE_NAV_POLYGON,
+    enemy_config: { spawn_interval_seconds: 45, count_mode: 'random' },
   };
   return {
     display_name: plan.display_name,

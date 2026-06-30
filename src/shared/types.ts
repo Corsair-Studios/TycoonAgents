@@ -14,6 +14,11 @@ export type AnimationState =
   | 'pose_up' 
   | 'dance';
 
+export interface EnemyConfig {
+  spawn_interval_seconds?: number; // default 45
+  count_mode?: 'all' | 'random';   // default 'random'
+}
+
 export interface ViewportConfig {
   native_width: number;
   native_height: number;
@@ -25,6 +30,7 @@ export interface ViewportConfig {
   object_scale?: number;
   character_scale_overrides?: Record<string, number>;
   object_scale_overrides?: Record<string, number>;
+  enemy_config?: EnemyConfig;
 }
 
 export interface AgentConfig {

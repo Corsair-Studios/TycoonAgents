@@ -1600,6 +1600,32 @@
   /** Native build-progress units one completed coding task contributes. Tunable. */
   const UNITS_PER_TASK = 34;
 
+  // ── Phase 2b: enemy / EVICT mode state ───────────────────────────────────
+  /** Seconds between enemy spawn waves (manifest.viewport.enemy_config.spawn_interval_seconds). */
+  let enemySpawnIntervalSec = 45;
+  /** 'all' = every rival spawns each wave; 'random' = a random 1..N subset. */
+  let enemyCountMode = "random";
+  /** Rival roster from manifest.roster_rivals: [{rival_id, name, atlas_asset}]. */
+  let themeRivals = [];
+  /** Seconds elapsed since the last wave was cleared/started. */
+  let enemySpawnElapsed = 0;
+  /**
+   * Currently alive enemies. Each: {instance_id, rival_id, nx, ny, hp, maxHp,
+   * facingLeft, animState, targetAgentId}.
+   * @type {Array<object>}
+   */
+  let activeEnemies = [];
+  /** Monotonic counter for enemy instance ids. */
+  let enemyInstanceCounter = 0;
+  /** Per-enemy max HP (native combat tuning — no host telemetry involved). */
+  const ENEMY_MAX_HP = 100;
+  /** Damage per second an engaged agent deals to its target enemy. */
+  const AGENT_DPS = 40;
+  /** Native px distance at which an agent switches from walk to melee/shoot. */
+  const ENEMY_ENGAGE_RANGE = 36;
+  /** Native px/second enemy walk-in speed. */
+  const ENEMY_WALK_SPEED = 40;
+
   // ── Stage editor (live polygon + scale tuning) ───────────────────────────
   /** True while the "Edit Stage" overlay is active. */
   let editStageMode = false;
@@ -1738,6 +1764,10 @@
       '<div style="margin-top:6px">Object scale: <span id="se-os-val">1.00</span></div>' +
       '<input id="se-os" type="range" min="0.3" max="2" step="0.05" value="1">' +
       '<button id="se-bg" type="button">Replace background…</button>' +
+      '<div style="margin-top:8px;border-top:1px solid rgba(255,193,7,0.3);padding-top:6px">Enemy spawn interval (s): <span id="se-ei-val">45</span></div>' +
+      '<input id="se-ei" type="range" min="10" max="180" step="5" value="45">' +
+      '<div style="margin-top:6px">Enemy count mode</div>' +
+      '<select id="se-ecm"><option value="random">random</option><option value="all">all</option></select>' +
       '<div id="se-hint">Drag points · dbl-click edge to add · right-click to remove</div>' +
       '<div id="se-btns"><button id="se-save" type="button">Save</button><button id="se-done" type="button">Done</button></div>' +
       '<div id="se-status"></div>';
@@ -1750,13 +1780,16 @@
     stageEditEls.coClear = wrap.querySelector("#se-co-clear");
     stageEditEls.os = wrap.querySelector("#se-os");
     stageEditEls.osVal = wrap.querySelector("#se-os-val");
+    stageEditEls.ei = wrap.querySelector("#se-ei");
+    stageEditEls.eiVal = wrap.querySelector("#se-ei-val");
+    stageEditEls.ecm = wrap.querySelector("#se-ecm");
     stageEditEls.save = wrap.querySelector("#se-save");
     stageEditEls.done = wrap.querySelector("#se-done");
     stageEditEls.status = wrap.querySelector("#se-status");
     stageEditEls.bg = wrap.querySelector("#se-bg");
     // Cosmetic styling via CSSOM (CSP-safe).
     wrap.querySelector("#se-h").style.cssText = "font-weight:bold;color:#ffc107;margin-bottom:6px;";
-    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.char]) el.style.width = "100%";
+    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.char, stageEditEls.ei, stageEditEls.ecm]) el.style.width = "100%";
     stageEditEls.bg.style.cssText = "width:100%;margin-top:8px;";
     wrap.querySelector("#se-hint").style.cssText = "opacity:0.7;margin:8px 0;";
     wrap.querySelector("#se-btns").style.cssText = "display:flex;gap:6px;margin-top:4px;";
@@ -1785,6 +1818,13 @@
     stageEditEls.coClear.addEventListener("click", () => {
       if (editSelectedCharId) delete themeCharScaleOverrides[editSelectedCharId];
       syncOverrideSlider();
+    });
+    stageEditEls.ei.addEventListener("input", () => {
+      enemySpawnIntervalSec = parseFloat(stageEditEls.ei.value) || 45;
+      stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
+    });
+    stageEditEls.ecm.addEventListener("change", () => {
+      enemyCountMode = stageEditEls.ecm.value === "all" ? "all" : "random";
     });
     stageEditEls.save.addEventListener("click", saveStageTuning);
     stageEditEls.done.addEventListener("click", exitEditStage);
@@ -1819,6 +1859,9 @@
     stageEditEls.csVal.textContent = themeCharacterScale.toFixed(2);
     stageEditEls.os.value = String(themeObjectScale);
     stageEditEls.osVal.textContent = themeObjectScale.toFixed(2);
+    stageEditEls.ei.value = String(enemySpawnIntervalSec);
+    stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
+    stageEditEls.ecm.value = enemyCountMode;
     syncOverrideSlider();
     stageEditEls.status.textContent = "";
     stageEditPanel.removeAttribute("hidden");
@@ -1848,6 +1891,10 @@
         object_scale: themeObjectScale,
         character_scale_overrides: themeCharScaleOverrides,
         object_scale_overrides: themeObjScaleOverrides,
+        enemy_config: {
+          spawn_interval_seconds: enemySpawnIntervalSec,
+          count_mode: enemyCountMode,
+        },
       },
     });
     if (stageEditEls.status) stageEditEls.status.textContent = "Saving…";
@@ -2764,6 +2811,21 @@
             objectPlacement[obj.object_id] = { nx: placed[0], ny: placed[1] };
           });
         }
+
+        // ── Phase 2b: capture enemy/EVICT config + rival roster ──────────
+        const enemyCfg = vp && vp.enemy_config && typeof vp.enemy_config === "object" ? vp.enemy_config : {};
+        enemySpawnIntervalSec = (typeof enemyCfg.spawn_interval_seconds === "number" && enemyCfg.spawn_interval_seconds > 0)
+          ? enemyCfg.spawn_interval_seconds
+          : 45;
+        enemyCountMode = enemyCfg.count_mode === "all" ? "all" : "random";
+        themeRivals = Array.isArray(manifest?.roster_rivals) ? manifest.roster_rivals.slice() : [];
+        // Reset runtime enemy state for the new theme (no enemies carry over).
+        activeEnemies = [];
+        enemySpawnElapsed = 0;
+        // Rival frames arrive in the same `frames` payload as characters/objects,
+        // keyed like "rival_<rival_id>" (mirrors "object_<object_id>"); preloadThemeImages
+        // already loads every key in rawFrames generically, so no extra preload step
+        // is needed here as long as the host includes rival_* keys in payload.frames.
 
         // Build rosterOrder from manifest character order (excluding background)
         const manifestChars = Object.keys(themeFramesRaw).filter(
@@ -4545,6 +4607,115 @@
     return { builtIds, activeId, activeProgress };
   }
 
+  // ── Phase 2b: enemy / EVICT mode helpers ─────────────────────────────────
+  /**
+   * Pick a random point on a walkable-polygon edge (native coords) — used as
+   * an enemy spawn point so waves visibly walk in from the map boundary.
+   * @param {number[][]} poly
+   * @returns {number[]} [nx, ny]
+   */
+  function randomPolygonEdgePoint(poly) {
+    if (!poly || poly.length < 2) return [0, 0];
+    const ei = Math.floor(Math.random() * poly.length);
+    const a = poly[ei];
+    const b = poly[(ei + 1) % poly.length];
+    const t = Math.random();
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  }
+
+  /**
+   * Spawn one enemy wave from themeRivals per enemyCountMode, entering from a
+   * random polygon edge point. No-op (never throws) if themeRivals is empty
+   * or rival frames aren't available yet.
+   */
+  function spawnEnemyWave() {
+    if (!themeRivals || themeRivals.length === 0) return;
+    let toSpawn;
+    if (enemyCountMode === "all") {
+      toSpawn = themeRivals.slice();
+    } else {
+      const n = 1 + Math.floor(Math.random() * themeRivals.length);
+      const shuffled = themeRivals.slice().sort(() => Math.random() - 0.5);
+      toSpawn = shuffled.slice(0, n);
+    }
+    const interior = randomInsidePoly(walkablePolygon);
+    for (const rival of toSpawn) {
+      const rivalId = rival.rival_id;
+      if (!rivalId) continue;
+      const spawnPt = randomPolygonEdgePoint(walkablePolygon);
+      activeEnemies.push({
+        instance_id: "enemy_" + (++enemyInstanceCounter),
+        rival_id: rivalId,
+        nx: spawnPt[0],
+        ny: spawnPt[1],
+        // Initial walk-in destination: toward the map interior so enemies
+        // visibly enter rather than appearing in place.
+        destNx: interior[0],
+        destNy: interior[1],
+        hp: ENEMY_MAX_HP,
+        maxHp: ENEMY_MAX_HP,
+        facingLeft: false,
+        animState: createAnimState("walk"),
+        targetAgentId: null,
+      });
+    }
+  }
+
+  /**
+   * Advance the enemy spawn timer. Spawns a new wave when no enemies are
+   * alive, the interval has elapsed, and at least one agent is active.
+   * Resets the timer after spawning (and whenever enemies are present, so a
+   * fresh interval starts counting only once the floor is clear again).
+   * @param {number} delta seconds
+   * @param {Array<object>} agentList current agentMetrics list
+   */
+  function updateEnemySpawning(delta, agentList) {
+    if (activeEnemies.length > 0) {
+      enemySpawnElapsed = 0; // hold the timer while a wave is still active
+      return;
+    }
+    enemySpawnElapsed += delta;
+    const hasActiveAgent = agentList.some((a) => {
+      const w = state.workers[a.id];
+      return w ? (w.state !== "idle" && w.state !== "leave")
+               : ((a.status || "idle").toLowerCase() === "active" || (a.status || "").toLowerCase() === "working");
+    });
+    if (enemySpawnElapsed >= enemySpawnIntervalSec && hasActiveAgent) {
+      spawnEnemyWave();
+      enemySpawnElapsed = 0;
+    }
+  }
+
+  /**
+   * Step alive enemies toward their current destination (used only while an
+   * enemy has no engaging agent yet, so it keeps drifting toward the
+   * interior instead of sitting frozen at the spawn edge).
+   * @param {number} delta seconds
+   */
+  function advanceEnemies(delta) {
+    for (const en of activeEnemies) {
+      if (en.targetAgentId) continue; // engaged — position driven by combat below
+      const dx = en.destNx - en.nx;
+      const dy = en.destNy - en.ny;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > WANDER_ARRIVED_EPS) {
+        const step = Math.min(ENEMY_WALK_SPEED * delta, dist);
+        en.nx += (dx / dist) * step;
+        en.ny += (dy / dist) * step;
+        const clamped = clampToPolygon(en.nx, en.ny, walkablePolygon);
+        en.nx = clamped[0];
+        en.ny = clamped[1];
+      }
+      if (en.animState.action !== "walk") {
+        en.animState.action = "walk";
+        en.animState.frameIndex = 0;
+        en.animState.elapsed = 0;
+        en.animState.completed = false;
+      }
+      advanceAnim(en.animState, delta);
+    }
+  }
+
   function render(timestamp) {
     // Delta time for animation advancement (capped at 100ms to avoid jumps on tab focus)
     const delta = lastFrameTime === 0 ? 0 : Math.min((timestamp - lastFrameTime) / 1000, 0.1);
@@ -4691,6 +4862,17 @@
       : 48;
     let builderSideCounter = 0;
 
+    // ── Phase 2b: enemy wave spawn/advance (client-side only, no host telemetry) ──
+    if (!loadingActive && themeLoaded) {
+      updateEnemySpawning(delta, agentList);
+      advanceEnemies(delta);
+    }
+    const enemiesAlive = activeEnemies.length > 0;
+    // Reset engagement claims each frame; agents re-claim the nearest enemy below.
+    if (enemiesAlive) {
+      for (const en of activeEnemies) en.targetAgentId = null;
+    }
+
     agentList.forEach((agent, idx) => {
       // Look up a live worker (if one exists) for this agent.
       const worker = state.workers[agent.id] || null;
@@ -4727,13 +4909,49 @@
         : ((agent.status || "idle").toLowerCase() === "active" || (agent.status || "").toLowerCase() === "working");
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
+      // ── EVICT combat targeting (Phase 2b) ────────────────────────────
+      // While any enemy is alive, active agents STOP building/wandering and
+      // instead engage the nearest alive enemy: walk to melee range, then
+      // tick its hp down. This fully preempts the Phase 2a build block below
+      // (isBuilding stays false so build standoff logic never runs).
+      let isEngaging = false;
+      let engageInRange = false;
+      if (isActive && enemiesAlive) {
+        let nearest = null, nearestDist = Infinity;
+        for (const en of activeEnemies) {
+          const ddx = en.nx - charEntry.nx, ddy = en.ny - charEntry.ny;
+          const d = Math.sqrt(ddx * ddx + ddy * ddy);
+          if (d < nearestDist) { nearestDist = d; nearest = en; }
+        }
+        if (nearest) {
+          isEngaging = true;
+          nearest.targetAgentId = agent.id;
+          charEntry.combatTargetInstanceId = nearest.instance_id;
+          if (nearestDist > ENEMY_ENGAGE_RANGE) {
+            // Walk toward the enemy.
+            charEntry.destNx = nearest.nx;
+            charEntry.destNy = nearest.ny;
+          } else {
+            // In range — hold position, face and damage the enemy.
+            engageInRange = true;
+            charEntry.destNx = charEntry.nx;
+            charEntry.destNy = charEntry.ny;
+            nearest.hp -= AGENT_DPS * delta;
+            // Enemy faces its attacker; agent facing is set below from relative x.
+            nearest.facingLeft = (charEntry.nx > nearest.nx);
+          }
+        }
+      }
+      if (!isEngaging) charEntry.combatTargetInstanceId = null;
+
       // ── BUILD targeting (Phase 2a) ──────────────────────────────────
       // Active agents head for the current ACTIVE build target's standoff
       // spot instead of free-roaming, once one exists. Idle agents and
       // active agents with no build target (nothing active yet, or all
       // built) are untouched — they keep the wander path exactly as before.
+      // Suppressed entirely while engaging an enemy (Phase 2b preemption).
       let isBuilding = false;
-      if (isActive && activeBuildPlacement) {
+      if (!isEngaging && isActive && activeBuildPlacement) {
         // Alternate standoff side among builders assigned this frame.
         const side = (builderSideCounter++ % 2 === 0) ? -1 : 1;
         const ax = activeBuildPlacement.nx;
@@ -4747,13 +4965,13 @@
         charEntry.destNy = standoff[1];
         charEntry.buildTargetId = activeBuildObj.object_id;
         isBuilding = true;
-      } else {
+      } else if (!isEngaging) {
         charEntry.buildTargetId = null;
       }
 
       // ── Wander logic (native polygon space) ───────────────────────
       charEntry.wanderTimer -= delta;
-      if (!isBuilding && charEntry.wanderTimer <= 0) {
+      if (!isBuilding && !isEngaging && charEntry.wanderTimer <= 0) {
         // Pick new destination: active agents roam freely; idle agents stay near home.
         let dest;
         if (isActive) {
@@ -4793,10 +5011,17 @@
       const cy = canvasPt[1];
 
       // ── Facing ────────────────────────────────────────────────────
-      // While actively walking to/standing at a build target, face the
-      // object directly instead of relying on movement-inferred facing
-      // (which would flicker once arrived and isMoving goes false).
-      if (isBuilding && activeBuildPlacement) {
+      // While engaging an enemy (Phase 2b), face the enemy directly — takes
+      // priority over build-facing and movement-facing.
+      const engagedEnemy = isEngaging ? activeEnemies.find((e) => e.instance_id === charEntry.combatTargetInstanceId) : null;
+      if (isEngaging && engagedEnemy) {
+        const enCanvasPt = nativeToCanvas(engagedEnemy.nx, engagedEnemy.ny, bgX, bgY, bgW, bgH);
+        if (cx > enCanvasPt[0] + FACING_EPS) charEntry.facingLeft = true;
+        else if (cx < enCanvasPt[0] - FACING_EPS) charEntry.facingLeft = false;
+      } else if (isBuilding && activeBuildPlacement) {
+        // While actively walking to/standing at a build target, face the
+        // object directly instead of relying on movement-inferred facing
+        // (which would flicker once arrived and isMoving goes false).
         const objCanvasPt = nativeToCanvas(activeBuildPlacement.nx, activeBuildPlacement.ny, bgX, bgY, bgW, bgH);
         if (cx > objCanvasPt[0] + FACING_EPS) charEntry.facingLeft = true;
         else if (cx < objCanvasPt[0] - FACING_EPS) charEntry.facingLeft = false;
@@ -4828,6 +5053,13 @@
       if (isBuilding && !isMoving) {
         desiredClip = "build";
       }
+      // EVICT override (Phase 2b): walking toward an enemy uses "walk"
+      // (already covered by isMoving above); once in melee range, force the
+      // melee clip — takes priority over the build override since isBuilding
+      // is never true while isEngaging is true.
+      if (isEngaging) {
+        desiredClip = engageInRange ? "melee" : "walk";
+      }
 
       const anim = charEntry.animState;
       if (anim.action !== desiredClip) {
@@ -4840,10 +5072,19 @@
       advanceAnim(anim, delta);
     });
 
+    // ── Phase 2b: prune dead enemies (hp <= 0). Clearing the floor lets
+    // updateEnemySpawning start counting toward the next wave and lets
+    // agents fall back to Phase 2a build behavior next frame.
+    if (activeEnemies.length > 0) {
+      activeEnemies = activeEnemies.filter((en) => en.hp > 0);
+    }
+
     // ── Phase 2a: merge buildable objects into the same Y-sorted depth list
     // as agents, so agents and objects occlude each other correctly. Objects
     // with phase "unbuilt" are skipped (hidden / not yet placed on stage).
-    /** @type {Array<{kind:'agent', agent:object, ny:number}|{kind:'object', obj:object, entry:object, ny:number}>} */
+    // Phase 2b: alive enemies are merged into the same list so they occlude
+    // agents/objects correctly too.
+    /** @type {Array<{kind:'agent', agent:object, ny:number}|{kind:'object', obj:object, entry:object, ny:number}|{kind:'enemy', enemy:object, ny:number}>} */
     const depthList = [];
     for (const agent of agentList) {
       const entA = agentCharMap[agent.id];
@@ -4856,6 +5097,9 @@
       if (!placement) continue;
       depthList.push({ kind: "object", obj, entry, ny: placement.ny });
     }
+    for (const enemy of activeEnemies) {
+      depthList.push({ kind: "enemy", enemy, ny: enemy.ny });
+    }
     depthList.sort((a, b) => a.ny - b.ny);
 
     depthList.forEach((item) => {
@@ -4864,6 +5108,58 @@
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
         const depthScale = 0.8 + tDepth * 0.3;
         drawBuildableObject(item.obj, item.entry, canvasPt[0], canvasPt[1], depthScale);
+        return;
+      }
+
+      if (item.kind === "enemy") {
+        const en = item.enemy;
+        const canvasPt = nativeToCanvas(en.nx, en.ny, bgX, bgY, bgW, bgH);
+        const ecx = canvasPt[0], ecy = canvasPt[1];
+        const tDepth = Math.max(0, Math.min(1, (en.ny - polyMinY) / polyRangeY));
+        const depthScale = 0.8 + tDepth * 0.3;
+        const slots = themeImages["rival_" + en.rival_id];
+        const slot = currentSlot(en.animState);
+        const img = slots && slots[slot];
+        const spriteSize = Math.round(64 * depthScale * themeCharacterScale);
+        if (img && img.complete && img.naturalWidth > 0) {
+          const drawX = ecx - spriteSize / 2;
+          const drawY = ecy - spriteSize;
+          const clip = ATLAS_CLIPS[en.animState.action] || ATLAS_CLIPS.idle;
+          const shouldFlip = clip.flippable && en.facingLeft === true;
+          ctx.save();
+          if (shouldFlip) {
+            ctx.translate(ecx + spriteSize / 2, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);
+          } else {
+            ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
+          }
+          ctx.restore();
+        } else {
+          // No rival art loaded — simple red marker so EVICT mode is still visible.
+          ctx.save();
+          ctx.fillStyle = "rgba(200,40,40,0.85)";
+          ctx.strokeStyle = "#5a0a0a";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(ecx, ecy - spriteSize / 2, spriteSize / 2.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+        // HP bar above the enemy.
+        const hpFrac = Math.max(0, Math.min(1, en.hp / en.maxHp));
+        const barW = Math.max(24, spriteSize * 0.8);
+        const barH = 4;
+        const barX = ecx - barW / 2;
+        const barY = ecy - spriteSize - 10;
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(barX, barY, barW, barH);
+        ctx.fillStyle = hpFrac > 0.4 ? "#ff4040" : "#ff9a3c";
+        ctx.fillRect(barX, barY, barW * hpFrac, barH);
+        ctx.strokeStyle = "rgba(255,255,255,0.4)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(barX, barY, barW, barH);
         return;
       }
 
