@@ -98,6 +98,14 @@ export function detectEngineSetups(root: string): EngineChip[] {
         existsSafe(path.join(claude, "skills", "roblox"));
       push("roblox", "Roblox", installed);
     }
+
+    // Blender
+    if (hasExt(".blend")) {
+      const installed =
+        existsSafe(path.join(claude, "agents", "blender.md")) ||
+        existsSafe(path.join(claude, "skills", "blender"));
+      push("blender", "Blender", installed);
+    }
   } catch {
     return [];
   }
