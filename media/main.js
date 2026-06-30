@@ -1518,6 +1518,144 @@
   /** Selected theme id, updated on SELECT_THEME post and THEME_INITIALIZED message. */
   let selectedThemeId = "";
 
+  // ── Isometric floor / walkable polygon state ─────────────────────────────
+  /** Default walkable nav polygon in native 533x751 coordinate space (trapezoid). */
+  const DEFAULT_WALKABLE_POLY = [[267,4],[529,135],[529,611],[267,747],[4,612],[4,137]];
+  /** Native canvas dimensions matching the walkable polygon coords. */
+  const DEFAULT_NATIVE_W = 533;
+  const DEFAULT_NATIVE_H = 751;
+  /** Current walkable polygon (native coords). Reset on each THEME_INITIALIZED. */
+  let walkablePolygon = DEFAULT_WALKABLE_POLY.map((p) => p.slice());
+  let walkableNativeW = DEFAULT_NATIVE_W;
+  let walkableNativeH = DEFAULT_NATIVE_H;
+
+  /**
+   * Ray-cast point-in-polygon test (native coord space).
+   * @param {number} x @param {number} y @param {number[][]} poly
+   * @returns {boolean}
+   */
+  function isPointInPolygon(x, y, poly) {
+    let inside = false;
+    const n = poly.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = poly[i][0], yi = poly[i][1];
+      const xj = poly[j][0], yj = poly[j][1];
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /**
+   * If (x,y) is outside poly, pull it toward the centroid until inside.
+   * Works in native polygon coordinate space.
+   * @param {number} x @param {number} y @param {number[][]} poly
+   * @returns {number[]} [cx, cy] guaranteed inside poly
+   */
+  function clampToPolygon(x, y, poly) {
+    if (isPointInPolygon(x, y, poly)) return [x, y];
+    // Compute centroid
+    let cx = 0, cy = 0;
+    for (const p of poly) { cx += p[0]; cy += p[1]; }
+    cx /= poly.length; cy /= poly.length;
+    // Step from (x,y) toward centroid in increments
+    const steps = 40;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const tx = x + (cx - x) * t;
+      const ty = y + (cy - y) * t;
+      if (isPointInPolygon(tx, ty, poly)) return [tx, ty];
+    }
+    return [cx, cy];
+  }
+
+  /**
+   * Map a native-coord point to canvas pixel coords.
+   * @param {number} nx @param {number} ny
+   * @param {number} bgX @param {number} bgY @param {number} bgW @param {number} bgH
+   * @returns {number[]} [canvasX, canvasY]
+   */
+  function nativeToCanvas(nx, ny, bgX, bgY, bgW, bgH) {
+    return [
+      bgX + nx * (bgW / walkableNativeW),
+      bgY + ny * (bgH / walkableNativeH),
+    ];
+  }
+
+  /**
+   * Pick a random point inside the walkable polygon (rejection sample).
+   * @param {number[][]} poly
+   * @returns {number[]} [x, y] in native coords
+   */
+  function randomInsidePoly(poly) {
+    // Compute bbox
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of poly) {
+      if (p[0] < minX) minX = p[0];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[1] > maxY) maxY = p[1];
+    }
+    for (let attempts = 0; attempts < 60; attempts++) {
+      const x = minX + Math.random() * (maxX - minX);
+      const y = minY + Math.random() * (maxY - minY);
+      if (isPointInPolygon(x, y, poly)) return [x, y];
+    }
+    // Fallback: centroid
+    let cx = 0, cy = 0;
+    for (const p of poly) { cx += p[0]; cy += p[1]; }
+    return [cx / poly.length, cy / poly.length];
+  }
+
+  /**
+   * 12 preset home slots spread across the floor polygon bounding box
+   * in a 3-row diagonal grid layout (like OfficeAgents).
+   * Returned as [u,v] fractions (0..1) within the polygon bbox.
+   * @type {number[][]}
+   */
+  const ISO_SLOT_UVS = [
+    // Row 0 (back)
+    [0.25, 0.15], [0.50, 0.15], [0.75, 0.15],
+    // Row 1 (mid)
+    [0.15, 0.45], [0.40, 0.45], [0.60, 0.45], [0.85, 0.45],
+    // Row 2 (front)
+    [0.25, 0.72], [0.50, 0.72], [0.75, 0.72],
+    // Extra front
+    [0.38, 0.88], [0.62, 0.88],
+  ];
+
+  /**
+   * Compute a stable native home position for slot index i.
+   * Maps ISO_SLOT_UVS fraction into polygon bbox then clamps inside polygon.
+   * @param {number} i
+   * @param {number[][]} poly
+   * @returns {number[]} [nx, ny]
+   */
+  function isoSlotHome(i, poly) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of poly) {
+      if (p[0] < minX) minX = p[0];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[1] > maxY) maxY = p[1];
+    }
+    const uv = ISO_SLOT_UVS[i % ISO_SLOT_UVS.length];
+    const nx = minX + uv[0] * (maxX - minX);
+    const ny = minY + uv[1] * (maxY - minY);
+    return clampToPolygon(nx, ny, poly);
+  }
+
+  /** Wander speed in native px / second. */
+  const WANDER_SPEED = 45;
+  /** How long (seconds) an agent waits before picking a new wander destination. */
+  const WANDER_INTERVAL_MIN = 3;
+  const WANDER_INTERVAL_MAX = 8;
+  /** Radius (native px) around home for wander destination jitter (active agents). */
+  const WANDER_RADIUS = 80;
+  /** How close (native px) to destination before agent is considered arrived. */
+  const WANDER_ARRIVED_EPS = 3;
+
   /**
    * Create a fresh animation state object.
    * @param {string} action
@@ -2017,6 +2155,20 @@
         // Reset per-worker animation/facing states so they start fresh
         workerAnimStates = {};
         agentCharMap = {};
+        // Capture walkable floor polygon from manifest (native coord space)
+        const vp = msg.payload?.manifest?.viewport;
+        const rawPoly = vp && Array.isArray(vp.walkable_nav_polygon) && vp.walkable_nav_polygon.length >= 3
+          ? vp.walkable_nav_polygon
+          : null;
+        if (rawPoly) {
+          walkablePolygon = rawPoly.map((p) => [p[0], p[1]]);
+          walkableNativeW = (vp.native_width && vp.native_width > 0) ? vp.native_width : DEFAULT_NATIVE_W;
+          walkableNativeH = (vp.native_height && vp.native_height > 0) ? vp.native_height : DEFAULT_NATIVE_H;
+        } else {
+          walkablePolygon = DEFAULT_WALKABLE_POLY.map((p) => p.slice());
+          walkableNativeW = DEFAULT_NATIVE_W;
+          walkableNativeH = DEFAULT_NATIVE_H;
+        }
         // Build rosterOrder from manifest character order (excluding background)
         const manifestChars = Object.keys(themeFramesRaw).filter(
           (id) => id !== "environment_background"
@@ -3780,10 +3932,12 @@
       ctx.stroke();
     }
 
-    // Buildings (left side)
-    drawBuildings(groundY, state.completedTasks);
+    // Buildings (left side) — only shown when no theme is active
+    if (!themeLoaded || !themeBackgroundImg || !themeBackgroundImg.complete || themeBackgroundImg.naturalWidth === 0) {
+      drawBuildings(groundY, state.completedTasks);
+    }
 
-    // ── Change 1: Render one character per agentMetrics entry (1:1) ──────────
+    // ── Isometric character placement + wander on themed floor ───────────────
     // Derive the agent list from the metrics table (same source as renderMetrics).
     const agentList = Array.isArray(state.agentMetrics) ? state.agentMetrics : [];
 
@@ -3796,54 +3950,118 @@
     // Resolve character sprite roster.
     const charIds = rosterOrder.length > 0 ? rosterOrder : Object.keys(themeImages);
 
-    const agentCount = agentList.length;
-    const agentSpacing = Math.min(80, (w - 40) / Math.max(agentCount, 1));
-    const agentStartX = Math.max(40, (w - agentSpacing * agentCount) / 2);
+    // Compute bg rect for native->canvas mapping (matches the draw above).
+    const bgImgReady = themeLoaded && themeBackgroundImg && themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0;
+    const bgW = bgImgReady ? themeBackgroundImg.naturalWidth  : w;
+    const bgH = bgImgReady ? themeBackgroundImg.naturalHeight : h;
+    const bgX = bgImgReady ? Math.floor((w - bgW) / 2) : 0;
+    const bgY = bgImgReady ? (h - bgH)                 : 0;
+
+    // Polygon bbox for depth scale computation.
+    let polyMinY = Infinity, polyMaxY = -Infinity;
+    for (const p of walkablePolygon) {
+      if (p[1] < polyMinY) polyMinY = p[1];
+      if (p[1] > polyMaxY) polyMaxY = p[1];
+    }
+    const polyRangeY = Math.max(polyMaxY - polyMinY, 1);
 
     agentList.forEach((agent, idx) => {
-      // Target x position for this agent slot.
-      const targetX = agentStartX + idx * agentSpacing;
-
       // Look up a live worker (if one exists) for this agent.
       const worker = state.workers[agent.id] || null;
 
-      // Initialise per-agent character map entry on first sight.
+      // ── Initialise per-agent entry ─────────────────────────────────
       if (!agentCharMap[agent.id]) {
+        const home = isoSlotHome(idx, walkablePolygon);
+        const wanderDelay = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
         agentCharMap[agent.id] = {
-          x: targetX,
+          // Native-coord position (polygon space)
+          nx: home[0],
+          ny: home[1],
+          // Native home
+          homeNx: home[0],
+          homeNy: home[1],
+          // Native wander destination
+          destNx: home[0],
+          destNy: home[1],
+          // Timer until next wander pick
+          wanderTimer: wanderDelay,
+          // Legacy canvas x/y (kept for facing, not for positioning)
+          x: 0,
           y: 0,
+          prevX: 0,
           animState: createAnimState(worker ? workerStateToClip(worker.state) : "idle"),
           facingLeft: false,
-          prevX: targetX,
         };
       }
       const charEntry = agentCharMap[agent.id];
 
-      // Determine x: live worker positions are implicit (agents share the slot grid),
-      // so always use targetX for all agents.  Movement-based facing still works.
-      const x = targetX;
+      // ── Active check ───────────────────────────────────────────────
+      const isActive = worker
+        ? (worker.state !== "idle" && worker.state !== "leave")
+        : ((agent.status || "idle").toLowerCase() === "active" || (agent.status || "").toLowerCase() === "working");
 
-      // ── Movement-based facing (same logic as before) ───────────────
+      // ── Wander logic (native polygon space) ───────────────────────
+      charEntry.wanderTimer -= delta;
+      if (charEntry.wanderTimer <= 0) {
+        // Pick new destination: active agents roam freely; idle agents stay near home.
+        let dest;
+        if (isActive) {
+          dest = randomInsidePoly(walkablePolygon);
+        } else {
+          // Jitter around home within WANDER_RADIUS; clamp inside polygon.
+          const angle = Math.random() * Math.PI * 2;
+          const r = Math.random() * WANDER_RADIUS * 0.5;
+          const tx = charEntry.homeNx + Math.cos(angle) * r;
+          const ty = charEntry.homeNy + Math.sin(angle) * r;
+          dest = clampToPolygon(tx, ty, walkablePolygon);
+        }
+        charEntry.destNx = dest[0];
+        charEntry.destNy = dest[1];
+        charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
+      }
+
+      // ── Step toward destination ────────────────────────────────────
+      const dxNative = charEntry.destNx - charEntry.nx;
+      const dyNative = charEntry.destNy - charEntry.ny;
+      const distNative = Math.sqrt(dxNative * dxNative + dyNative * dyNative);
+      let isMoving = false;
+      if (distNative > WANDER_ARRIVED_EPS) {
+        const step = Math.min(WANDER_SPEED * delta, distNative);
+        charEntry.nx += (dxNative / distNative) * step;
+        charEntry.ny += (dyNative / distNative) * step;
+        // Clamp inside polygon after movement
+        const clamped = clampToPolygon(charEntry.nx, charEntry.ny, walkablePolygon);
+        charEntry.nx = clamped[0];
+        charEntry.ny = clamped[1];
+        isMoving = true;
+      }
+
+      // ── Map native pos to canvas ───────────────────────────────────
+      const canvasPt = nativeToCanvas(charEntry.nx, charEntry.ny, bgX, bgY, bgW, bgH);
+      const cx = canvasPt[0];
+      const cy = canvasPt[1];
+
+      // ── Movement-based facing ──────────────────────────────────────
       const prevX = charEntry.prevX;
       if (typeof prevX === "number") {
-        const dx = x - prevX;
-        if (dx < -FACING_EPS) {
-          charEntry.facingLeft = true;
-        } else if (dx > FACING_EPS) {
-          charEntry.facingLeft = false;
-        }
+        const dxCanvas = cx - prevX;
+        if (dxCanvas < -FACING_EPS) charEntry.facingLeft = true;
+        else if (dxCanvas > FACING_EPS) charEntry.facingLeft = false;
       }
-      charEntry.prevX = x;
+      charEntry.prevX = cx;
+      charEntry.x = cx;
+      charEntry.y = cy;
 
       // ── Clip selection ─────────────────────────────────────────────
       let desiredClip;
       if (worker) {
         desiredClip = workerStateToClip(worker.state);
       } else {
-        // Agent without a live worker: use agent.status to pick clip.
-        const st = (agent.status || "idle").toLowerCase();
-        desiredClip = (st === "active" || st === "working") ? "walk" : "idle";
+        desiredClip = isActive ? "walk" : "idle";
       }
+      // Override with walk while physically moving, else use status clip.
+      if (isMoving && desiredClip !== "build" && desiredClip !== "cheer") desiredClip = "walk";
+      else if (!isMoving && (desiredClip === "walk")) desiredClip = "idle";
 
       const anim = charEntry.animState;
       if (anim.action !== desiredClip) {
@@ -3854,11 +4072,35 @@
         anim.completed = false;
       }
       advanceAnim(anim, delta);
+    });
 
-      // ── Draw ───────────────────────────────────────────────────────
+    // ── Sort agents back-to-front by native Y (isometric depth order) ─────────
+    const sortedAgentList = agentList.slice().sort((a, b) => {
+      const entA = agentCharMap[a.id];
+      const entB = agentCharMap[b.id];
+      const nyA = entA ? entA.ny : 0;
+      const nyB = entB ? entB.ny : 0;
+      return nyA - nyB;
+    });
+
+    sortedAgentList.forEach((agent, _sortIdx) => {
+      const idx = agentList.indexOf(agent);
+      const charEntry = agentCharMap[agent.id];
+      if (!charEntry) return;
+
+      const worker = state.workers[agent.id] || null;
+      const desiredClip = charEntry.animState ? charEntry.animState.action : "idle";
+      const anim = charEntry.animState;
       const isLeaveState = worker && worker.state === "leave";
 
-      if (themeLoaded && charIds.length > 0) {
+      const cx = charEntry.x;
+      const cy = charEntry.y;
+
+      // Depth scale: agents further back (small native Y) draw slightly smaller.
+      const tDepth = Math.max(0, Math.min(1, (charEntry.ny - polyMinY) / polyRangeY));
+      const depthScale = 0.8 + tDepth * 0.3; // 0.8 (back) → 1.1 (front)
+
+      if (bgImgReady && charIds.length > 0) {
         // Pick character sprite by agent index in roster order.
         const charId = charIds[idx % charIds.length];
         const slots = themeImages[charId];
@@ -3867,9 +4109,10 @@
         const img = slots && slots[slot];
 
         if (img && img.complete && img.naturalWidth > 0) {
-          const spriteSize = 64;
-          const drawX = x - spriteSize / 2;
-          const drawY = groundY - spriteSize;
+          const spriteSize = Math.round(64 * depthScale);
+          // Foot-anchor: bottom of sprite sits at canvas floor point
+          const drawX = cx - spriteSize / 2;
+          const drawY = cy - spriteSize; // feet at cy
 
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
           const shouldFlip = clip.flippable && charEntry.facingLeft === true;
@@ -3877,7 +4120,7 @@
           ctx.save();
           if (isLeaveState) ctx.globalAlpha = 0.55;
           if (shouldFlip) {
-            ctx.translate(x + spriteSize / 2, 0);
+            ctx.translate(cx + spriteSize / 2, 0);
             ctx.scale(-1, 1);
             ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);
           } else {
@@ -3886,18 +4129,19 @@
           // Label below feet
           ctx.globalAlpha = 1;
           ctx.fillStyle = "#e0e0e0";
-          ctx.font = "10px monospace";
+          ctx.font = `${Math.round(9 * depthScale)}px monospace`;
           ctx.textAlign = "center";
           const label = (agent.name || agent.id).slice(0, 12);
-          ctx.fillText(label, x, groundY + 14);
+          ctx.fillText(label, cx, cy + Math.round(14 * depthScale));
           ctx.restore();
         } else {
-          // Sprite not yet loaded — fallback stick figure using agent as mock worker
-          drawWorker(x, groundY, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
+          // Sprite not yet loaded — fallback stick figure
+          drawWorker(cx, cy, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
         }
       } else {
-        // No theme loaded — placeholder stick figure
-        drawWorker(x, groundY, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
+        // No theme loaded — placeholder stick figure on groundY
+        const fallbackX = Math.max(40, (w - Math.min(80, (w - 40) / Math.max(agentList.length, 1)) * agentList.length) / 2) + idx * Math.min(80, (w - 40) / Math.max(agentList.length, 1));
+        drawWorker(fallbackX, groundY, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
       }
     });
 
