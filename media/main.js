@@ -4540,22 +4540,8 @@
   }
 
   function drawHUD(w) {
-    const sessionText = state.sessionActive ? "active" : "idle";
-    // Show on-stage agent count (matches metrics table rows) instead of raw worker count.
-    const agentCount = Array.isArray(state.agentMetrics) ? state.agentMetrics.length : Object.keys(state.workers).length;
-    const tasks = state.completedTasks;
-
-    ctx.save();
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.fillRect(8, 8, 220, 68);
-
-    ctx.fillStyle = "#c8d8f0";
-    ctx.font = "bold 13px monospace";
-    ctx.textAlign = "left";
-    ctx.fillText(`Session: ${sessionText}`, 16, 28);
-    ctx.fillText(`Agents: ${agentCount}`, 16, 46);
-    ctx.fillText(`Built: ${tasks}`, 16, 64);
-    ctx.restore();
+    // Upper-left session/agents/built overlay removed — redundant + overlapped the UEFN chips.
+    // Kept as a no-op so existing call sites stay valid.
   }
 
   // ── Roster strip (Feature 2 / Change 3) ─────────────────────────────────
