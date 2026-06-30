@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Animation Lab</title>
+<script src="clips.js"></script>
+<style>
+  :root {
+    --bg: #1b1d22;
+    --panel: #25282f;
+    --panel-border: #3a3e47;
+    --text: #e6e8ec;
+    --text-dim: #9aa0ab;
+    --accent: #5b9cf6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Cascadia Code", "Consolas", "SFMono-Regular", Menlo, monospace;
+    font-size: 13px;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--panel-border);
+  }
+  header h1 {
+    font-size: 14px;
+    margin: 0 16px 0 0;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  header .group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  button, select, input[type="file"] {
+    font-family: inherit;
+    font-size: 12px;
+    background: #2f333c;
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 5px 9px;
+    cursor: pointer;
+  }
+  button:hover, select:hover { background: #383d48; }
+  button:active { background: #444a57; }
+  label.checkbox {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    color: var(--text-dim);
+  }
+  #status {
+    margin-left: auto;
+    color: var(--text-dim);
+    white-space: nowrap;
+    font-size: 12px;
+  }
+  main {
+    padding: 16px;
+  }
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .card h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .card .oneshot {
+    font-size: 9px;
+    color: #e8b34a;
+    border: 1px solid #5a4a26;
+    background: #3a2f17;
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-weight: normal;
+  }
+  .card canvas {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    image-rendering: pixelated;
+  }
+  .params {
+    color: var(--text-dim);
+    font-size: 10.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+  footer {
+    padding: 10px 16px 30px;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Animation Lab</h1>
+  <div class="group">
+    <button id="btnPlayPause">Pause</button>
+    <button id="btnStep">Step</button>
+  </div>
+  <div class="group">
+    <label for="speedSelect">Speed</label>
+    <select id="speedSelect">
+      <option value="0.25">0.25x</option>
+      <option value="0.5">0.5x</option>
+      <option value="1" selected>1x</option>
+      <option value="2">2x</option>
+    </select>
+  </div>
+  <div class="group">
+    <label class="checkbox"><input type="checkbox" id="faceLeft" /> Face left</label>
+  </div>
+  <div class="group">
+    <label for="bgSelect">Background</label>
+    <select id="bgSelect">
+      <option value="dark" selected>Dark</option>
+      <option value="light">Light</option>
+      <option value="checker">Checkerboard</option>
+    </select>
+  </div>
+  <div class="group">
+    <label for="fileInput">Load frames.json</label>
+    <input type="file" id="fileInput" accept=".json" />
+  </div>
+  <div id="status">Synthetic (no file loaded)</div>
+</header>
+
+<main>
+  <div id="grid"></div>
+</main>
+
+<footer>
+  Internal dev tool. Synthetic figures are procedurally drawn placeholders — see README.md.
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var CANVAS_SIZE = 160;
+  var SLOT_SIZE = 128;
+  var BASELINE_Y = 116; // foot line within the 128x128 synthetic frame space
+
+  var clipNames = Object.keys(ATLAS_CLIPS);
+
+  // ---------- Toolbar state ----------
+  var playing = true;
+  var speed = 1;
+  var faceLeft = false;
+  var background = 'dark';
+
+  // ---------- Frame source state ----------
+  // mode: 'synthetic' | 'real'
+  var frameMode = 'synthetic';
+  // realImages[slot] = HTMLImageElement
+  var realImages = {};
+  // realMeta[slot] = {centroidX, footY, topY, left, right, opaqueCount} | undefined
+  var realMeta = {};
+
+  // ---------- Per-clip playback state ----------
+  // state[name] = { frameIdx, elapsed, dir (1|-1 for pingpong), paused (one-shot pause), pauseRemaining }
+  var state = {};
+  clipNames.forEach(function (name) {
+    state[name] = { frameIdx: 0, elapsed: 0, dir: 1, pausing: false, pauseRemaining: 0 };
+  });
+
+  // ---------- Synthetic figure renderer ----------
+  // Draws a simple humanoid into ctx, centered horizontally at cx, feet at
+  // baselineY, scaled to roughly fit a 128x128 box. `pose` controls limb
+  // angles per slot so different slots visibly read as different poses.
+  function drawSyntheticFigure(ctx, cx, baselineY, slot) {
+    ctx.save();
+    ctx.translate(cx, baselineY);
+    ctx.strokeStyle = '#dfe3ea';
+    ctx.fillStyle = '#dfe3ea';
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    var legSpread = 0;     // outward angle (radians) for legs
+    var armSwing = 0;      // arm angle offset
+    var armRaise = 0;      // 0 = down, 1 = up
+    var torsoLean = 0;     // lean radians
+    var crouch = 0;        // 0..1 vertical crouch amount
+    var toolArm = false;
+    var headBob = 0;
+
+    if (slot >= 0 && slot <= 4) {
+      // walk cycle: alternating stride
+      var phase = (slot / 5) * Math.PI * 2;
+      legSpread = Math.sin(phase) * 0.5;
+      armSwing = -Math.sin(phase) * 0.6;
+    } else if (slot >= 5 && slot <= 8) {
+      // melee/build wind-up + swing arc
+      var t = (slot - 5) / 3; // 0..1
+      armRaise = 1 - t * 0.6;
+      armSwing = -1.2 + t * 2.2;
+      torsoLean = (t - 0.5) * 0.25;
+    } else if (slot === 9) {
+      // tool idle
+      toolArm = true;
+    } else if (slot === 10 || slot === 11) {
+      // shoot: aim + slight recoil
+      armRaise = 0.85;
+      armSwing = slot === 11 ? -0.15 : 0;
+      torsoLean = slot === 11 ? -0.06 : 0;
+    } else if (slot === 12) {
+      // point
+      armRaise = 0.5;
+      armSwing = 0.9;
+    } else if (slot === 13) {
+      // signal (other arm raised high)
+      armRaise = 1;
+      armSwing = -0.9;
+    } else if (slot === 14) {
+      // dodge: crouch/lean
+      crouch = 0.35;
+      torsoLean = 0.3;
+    } else if (slot === 15) {
+      // sit
+      crouch = 0.5;
+    } else if (slot === 16) {
+      // idle relaxed standing
+      armSwing = 0.05;
+    } else if (slot === 17 || slot === 18) {
+      // dance: lean/arm bob
+      torsoLean = slot === 17 ? 0.15 : -0.15;
+      armRaise = 0.6;
+      headBob = slot === 17 ? -4 : 4;
+    } else if (slot === 19) {
+      // cheer: arms up
+      armRaise = 1.2;
+    }
+
+    var scale = 1 - crouch * 0.25;
+    var hipY = -34 * scale;
+    var shoulderY = -78 * scale;
+    var headY = shoulderY - 16 * scale + headBob;
+    var headR = 11 * scale;
+
+    ctx.rotate(torsoLean * 0.15);
+
+    // legs
+    ctx.beginPath();
+    ctx.moveTo(0, hipY);
+    ctx.lineTo(-12 - legSpread * 14, 0);
+    ctx.moveTo(0, hipY);
+    ctx.lineTo(12 + legSpread * 14, 0);
+    ctx.stroke();
+
+    // torso
+    ctx.beginPath();
+    ctx.moveTo(0, hipY);
+    ctx.lineTo(torsoLean * 10, shoulderY);
+    ctx.stroke();
+
+    // arms
+    var armLen = 30 * scale;
+    var shoulderX = torsoLean * 10;
+    ctx.beginPath();
+    ctx.moveTo(shoulderX, shoulderY);
+    var a1 = Math.PI / 2 - armRaise * 1.6 + armSwing;
+    ctx.lineTo(shoulderX + Math.cos(a1) * armLen, shoulderY + Math.sin(a1) * armLen * -1 + armLen);
+    ctx.moveTo(shoulderX, shoulderY);
+    var a2 = Math.PI / 2 - (toolArm ? 1.0 : armRaise * 0.4) - armSwing * 0.5;
+    ctx.lineTo(shoulderX - Math.cos(a2) * armLen, shoulderY + Math.sin(a2) * armLen * -1 + armLen);
+    ctx.stroke();
+
+    if (toolArm) {
+      ctx.save();
+      ctx.translate(shoulderX - Math.cos(a2) * armLen, shoulderY + Math.sin(a2) * armLen * -1 + armLen);
+      ctx.fillRect(-2, -10, 4, 18);
+      ctx.restore();
+    }
+
+    // head
+    ctx.beginPath();
+    ctx.arc(shoulderX, headY, headR, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // ---------- Frame drawing dispatch ----------
+  // Draws slot `slot` into ctx at canvas size `size`, bottom-center anchored
+  // to the card's baseline. Returns true if a real image was used.
+  function drawFrame(ctx, size, slot, mirror) {
+    var img = frameMode === 'real' ? realImages[slot] : null;
+
+    ctx.save();
+    if (mirror) {
+      ctx.translate(size, 0);
+      ctx.scale(-1, 1);
+    }
+
+    if (img) {
+      var meta = realMeta[slot];
+      var destSize = size; // image already normalized to its own square cell
+      var x = (size - destSize) / 2;
+      var footY;
+      if (meta && meta.footY !== undefined && meta.footY !== -1) {
+        // meta.footY is in the source image's own coordinate space (0..cellHeight).
+        // Scale destination so the foot line lands on the card baseline.
+        var srcH = img.naturalHeight || img.height || destSize;
+        var scaleFactor = destSize / srcH;
+        footY = meta.footY * scaleFactor;
+      } else {
+        footY = destSize;
+      }
+      var y = (size * (BASELINE_Y / SLOT_SIZE)) - footY;
+      ctx.drawImage(img, x, y, destSize, destSize);
+    } else {
+      var cx = size / 2;
+      var baselineY = size * (BASELINE_Y / SLOT_SIZE);
+      var scaleToCanvas = size / SLOT_SIZE;
+      ctx.save();
+      ctx.translate(0, 0);
+      ctx.scale(scaleToCanvas, scaleToCanvas);
+      drawSyntheticFigure(ctx, cx / scaleToCanvas, baselineY / scaleToCanvas, slot);
+      ctx.restore();
+    }
+
+    ctx.restore();
+
+    // slot index label (low contrast, top-left)
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.font = '9px monospace';
+    ctx.fillText('#' + slot, 4, 11);
+    ctx.restore();
+  }
+
+  function drawBaseline(ctx, size) {
+    var y = size * (BASELINE_Y / SLOT_SIZE);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(size, y + 0.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function paintBackground(ctx, size) {
+    if (background === 'dark') {
+      ctx.fillStyle = '#15171b';
+      ctx.fillRect(0, 0, size, size);
+    } else if (background === 'light') {
+      ctx.fillStyle = '#e9ebef';
+      ctx.fillRect(0, 0, size, size);
+    } else {
+      var cell = 8;
+      for (var yy = 0; yy < size; yy += cell) {
+        for (var xx = 0; xx < size; xx += cell) {
+          var even = ((xx / cell) + (yy / cell)) % 2 === 0;
+          ctx.fillStyle = even ? '#3a3d44' : '#2b2e34';
+          ctx.fillRect(xx, yy, cell, cell);
+        }
+      }
+    }
+  }
+
+  // ---------- Card construction ----------
+  var grid = document.getElementById('grid');
+  var canvases = {}; // name -> canvas
+  var ctxs = {};      // name -> ctx
+
+  clipNames.forEach(function (name) {
+    var clip = ATLAS_CLIPS[name];
+    var card = document.createElement('div');
+    card.className = 'card';
+
+    var h2 = document.createElement('h2');
+    h2.textContent = name;
+    if (clip.loop === false) {
+      var badge = document.createElement('span');
+      badge.className = 'oneshot';
+      badge.textContent = 'ONE-SHOT (loop:false in production)';
+      h2.appendChild(badge);
+    }
+    card.appendChild(h2);
+
+    var params = document.createElement('div');
+    params.className = 'params';
+    params.textContent =
+      'frames: [' + clip.frames.join(', ') + ']\n' +
+      'fps: ' + clip.fps + '   loop: ' + clip.loop + '\n' +
+      'flippable: ' + clip.flippable +
+      (clip.pingpong ? '   pingpong: true' : '') +
+      (clip.hold ? '   hold: true' : '');
+    card.appendChild(params);
+
+    var canvas = document.createElement('canvas');
+    canvas.width = CANVAS_SIZE;
+    canvas.height = CANVAS_SIZE;
+    card.appendChild(canvas);
+
+    grid.appendChild(card);
+    canvases[name] = canvas;
+    ctxs[name] = canvas.getContext('2d');
+  });
+
+  // ---------- Animation tick ----------
+  function advanceClip(name, deltaSeconds) {
+    var clip = ATLAS_CLIPS[name];
+    var st = state[name];
+
+    if (clip.hold) {
+      st.frameIdx = 0;
+      return;
+    }
+
+    if (st.pausing) {
+      st.pauseRemaining -= deltaSeconds * 1000;
+      if (st.pauseRemaining <= 0) {
+        st.pausing = false;
+        st.frameIdx = 0;
+        st.dir = 1;
+        st.elapsed = 0;
+      }
+      return;
+    }
+
+    var fps = clip.fps > 0 ? clip.fps : 1;
+    st.elapsed += deltaSeconds;
+    var frameDuration = 1 / fps;
+
+    while (st.elapsed >= frameDuration) {
+      st.elapsed -= frameDuration;
+      stepClipFrame(name);
+      if (st.pausing) { break; }
+    }
+  }
+
+  function stepClipFrame(name) {
+    var clip = ATLAS_CLIPS[name];
+    var st = state[name];
+    var n = clip.frames.length;
+
+    if (clip.hold || n <= 1) {
+      st.frameIdx = 0;
+      return;
+    }
+
+    if (clip.pingpong) {
+      st.frameIdx += st.dir;
+      if (st.frameIdx >= n - 1) {
+        st.frameIdx = n - 1;
+        st.dir = -1;
+        if (clip.loop === false) {
+          beginOneShotPause(name);
+        }
+      } else if (st.frameIdx <= 0) {
+        st.frameIdx = 0;
+        st.dir = 1;
+      }
+      return;
+    }
+
+    st.frameIdx += 1;
+    if (st.frameIdx >= n) {
+      if (clip.loop === false) {
+        st.frameIdx = n - 1;
+        beginOneShotPause(name);
+      } else {
+        st.frameIdx = 0;
+      }
+    }
+  }
+
+  function beginOneShotPause(name) {
+    var st = state[name];
+    st.pausing = true;
+    st.pauseRemaining = 400; // ms
+  }
+
+  function renderCard(name) {
+    var clip = ATLAS_CLIPS[name];
+    var st = state[name];
+    var ctx = ctxs[name];
+    var size = CANVAS_SIZE;
+
+    paintBackground(ctx, size);
+    drawBaseline(ctx, size);
+
+    var slot = clip.frames[Math.min(st.frameIdx, clip.frames.length - 1)];
+    var mirror = faceLeft && clip.flippable === true;
+    drawFrame(ctx, size, slot, mirror);
+  }
+
+  function renderAll() {
+    clipNames.forEach(renderCard);
+  }
+
+  var lastTime = null;
+  function tick(now) {
+    if (lastTime === null) { lastTime = now; }
+    var deltaSeconds = (now - lastTime) / 1000;
+    lastTime = now;
+
+    if (playing) {
+      var scaledDelta = deltaSeconds * speed;
+      clipNames.forEach(function (name) {
+        advanceClip(name, scaledDelta);
+      });
+    }
+
+    renderAll();
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // ---------- Toolbar wiring ----------
+  var btnPlayPause = document.getElementById('btnPlayPause');
+  var btnStep = document.getElementById('btnStep');
+  var speedSelect = document.getElementById('speedSelect');
+  var faceLeftCheckbox = document.getElementById('faceLeft');
+  var bgSelect = document.getElementById('bgSelect');
+  var fileInput = document.getElementById('fileInput');
+  var statusEl = document.getElementById('status');
+
+  btnPlayPause.addEventListener('click', function () {
+    playing = !playing;
+    btnPlayPause.textContent = playing ? 'Pause' : 'Play';
+  });
+
+  btnStep.addEventListener('click', function () {
+    if (playing) {
+      playing = false;
+      btnPlayPause.textContent = 'Play';
+    }
+    clipNames.forEach(function (name) {
+      var clip = ATLAS_CLIPS[name];
+      if (clip.hold) { return; }
+      if (state[name].pausing) { return; }
+      stepClipFrame(name);
+    });
+    renderAll();
+  });
+
+  speedSelect.addEventListener('change', function () {
+    speed = parseFloat(speedSelect.value) || 1;
+  });
+
+  faceLeftCheckbox.addEventListener('change', function () {
+    faceLeft = faceLeftCheckbox.checked;
+  });
+
+  bgSelect.addEventListener('change', function () {
+    background = bgSelect.value;
+  });
+
+  // ---------- frames.json loading ----------
+  function loadImageFromDataUri(dataUri) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { reject(new Error('failed to decode image')); };
+      img.src = dataUri;
+    });
+  }
+
+  function resetRealFrames() {
+    realImages = {};
+    realMeta = {};
+  }
+
+  fileInput.addEventListener('change', function () {
+    var file = fileInput.files && fileInput.files[0];
+    if (!file) { return; }
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed;
+      try {
+        parsed = JSON.parse(String(reader.result));
+      } catch (err) {
+        statusEl.textContent = 'Load failed: invalid JSON';
+        return;
+      }
+      handleLoadedJson(parsed, file.name);
+    };
+    reader.onerror = function () {
+      statusEl.textContent = 'Load failed: could not read file';
+    };
+    reader.readAsText(file);
+  });
+
+  function handleLoadedJson(parsed, filename) {
+    resetRealFrames();
+
+    var entries = []; // [{slot, data, meta}]
+
+    if (Array.isArray(parsed)) {
+      // shape (ii): plain array of data-URI strings indexed by slot
+      parsed.forEach(function (dataUri, idx) {
+        if (typeof dataUri === 'string' && dataUri.length > 0) {
+          entries.push({ slot: idx, data: dataUri, meta: undefined });
+        }
+      });
+    } else if (parsed && Array.isArray(parsed.slots)) {
+      // shape (i): NormalizedAtlasPackage-like
+      parsed.slots.forEach(function (s) {
+        if (s && typeof s.data === 'string' && typeof s.slot_id === 'number') {
+          entries.push({ slot: s.slot_id, data: s.data, meta: s.meta });
+        }
+      });
+    } else {
+      statusEl.textContent = 'Load failed: unrecognized JSON shape';
+      return;
+    }
+
+    if (entries.length === 0) {
+      statusEl.textContent = 'Load failed: no frames found in file';
+      return;
+    }
+
+    statusEl.textContent = 'Loading: ' + filename + ' …';
+
+    var promises = entries.map(function (entry) {
+      return loadImageFromDataUri(entry.data).then(function (img) {
+        realImages[entry.slot] = img;
+        if (entry.meta) { realMeta[entry.slot] = entry.meta; }
+      }).catch(function () {
+        // skip slots that fail to decode; synthetic fallback covers them
+      });
+    });
+
+    Promise.all(promises).then(function () {
+      frameMode = 'real';
+      statusEl.textContent = 'Loaded: ' + filename + ' — ' + Object.keys(realImages).length + ' frames';
+    });
+  }
+
+  renderAll();
+})();
+</script>
+</body>
+</html>

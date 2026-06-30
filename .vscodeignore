@@ -4,6 +4,7 @@
 src/**
 test/**
 uefn-bridge/**
+tools/**
 out/src/**
 out/test/**
 out/**/*.test.js
