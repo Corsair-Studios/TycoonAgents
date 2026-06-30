@@ -647,7 +647,7 @@
       characters,
       environment,
       enemies,
-      objects: collectCommaList(themePlanObjects, 12, "Objects"),
+      objects: collectCommaList(themePlanObjects, 13, "Objects"),
       expressions: collectCommaList(themePlanExpressions, 16, "Expressions"),
       achievements: collectCommaList(themePlanAchievements, 20, "Achievement badges"),
     };
@@ -1502,6 +1502,13 @@
     dodge:     { frames: [14],             fps: 0,  loop: false, flippable: true,  hold: true },
   };
 
+  // OBJECT_CLIPS mirrors src/extension/themePlan.ts buildable-object clips — keep in sync.
+  const OBJECT_CLIPS = {
+    object_idle: { frames: [0, 1, 2, 3], fps: 5,  loop: true },
+    crate:       { frames: [0],          fps: 0,  loop: true, hold: true },
+    poof:        { frames: [0, 1, 2, 3], fps: 12, loop: false },
+  };
+
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
   /** @type {Record<string, string[]>} raw frames per character (slot → data-URI) */
@@ -1570,6 +1577,28 @@
     const o = themeCharScaleOverrides[charId];
     return (typeof o === "number" && o > 0) ? o : themeCharacterScale;
   }
+
+  // ── Phase 2a: build loop state ───────────────────────────────────────────
+  /** Buildable objects from manifest, sorted by build_order. @type {Array<object>} */
+  let themeBuildables = [];
+  /** Whether the theme's viewport declares crate/poof asset keys. */
+  let themeHasCrateAsset = false;
+  let themeHasPoofAsset = false;
+  /**
+   * Per-object runtime animation/phase state, keyed by object_id.
+   * phase: 'unbuilt' | 'active' | 'poof' | 'idle'
+   * @type {Record<string, {phase: string, animState: object, progress: number}>}
+   */
+  let objectAnimMap = {};
+  /** Stable per-object native placement, keyed by object_id: {nx, ny}. Computed once at THEME_INITIALIZED. */
+  let objectPlacement = {};
+  /** Effective object scale for a given buildable object id. */
+  function effectiveObjScale(objId) {
+    const o = themeObjScaleOverrides[objId];
+    return (typeof o === "number" && o > 0) ? o : themeObjectScale;
+  }
+  /** Native build-progress units one completed coding task contributes. Tunable. */
+  const UNITS_PER_TASK = 34;
 
   // ── Stage editor (live polygon + scale tuning) ───────────────────────────
   /** True while the "Edit Stage" overlay is active. */
@@ -1963,6 +1992,42 @@
     return clampToPolygon(nx, ny, poly);
   }
 
+  /**
+   * Deterministic auto-distribute slots for buildable objects, used when a
+   * theme's anchor_coord values are all equal/missing (currently always the
+   * case — generated anchors are [0.5,0.5]). Offset from ISO_SLOT_UVS's
+   * pattern so objects don't visually stack on agent home slots. Up to 13
+   * objects fit without wrapping; beyond that the pattern repeats.
+   * Returned as [u,v] fractions (0..1) within the polygon bbox.
+   * @type {number[][]}
+   */
+  const OBJECT_SLOT_UVS = [
+    [0.12, 0.20], [0.34, 0.10], [0.58, 0.12], [0.82, 0.22],
+    [0.10, 0.42], [0.30, 0.55], [0.50, 0.40], [0.70, 0.55], [0.90, 0.42],
+    [0.18, 0.78], [0.42, 0.85], [0.62, 0.78], [0.86, 0.85],
+  ];
+
+  /**
+   * Compute a stable native placement for buildable-object slot index i.
+   * Maps OBJECT_SLOT_UVS fraction into polygon bbox then clamps inside polygon.
+   * @param {number} i
+   * @param {number[][]} poly
+   * @returns {number[]} [nx, ny]
+   */
+  function objectSlotHome(i, poly) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of poly) {
+      if (p[0] < minX) minX = p[0];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[1] > maxY) maxY = p[1];
+    }
+    const uv = OBJECT_SLOT_UVS[i % OBJECT_SLOT_UVS.length];
+    const nx = minX + uv[0] * (maxX - minX);
+    const ny = minY + uv[1] * (maxY - minY);
+    return clampToPolygon(nx, ny, poly);
+  }
+
   /** Wander speed in native px / second. */
   const WANDER_SPEED = 45;
   /** How long (seconds) an agent waits before picking a new wander destination. */
@@ -2024,6 +2089,133 @@
   function currentSlot(s) {
     const clip = ATLAS_CLIPS[s.action] || ATLAS_CLIPS.idle;
     return clip.frames[Math.min(s.frameIndex, clip.frames.length - 1)];
+  }
+
+  /**
+   * Advance an object animation state by deltaSeconds, using OBJECT_CLIPS
+   * instead of ATLAS_CLIPS. Mirrors advanceAnim's logic exactly so behavior
+   * stays consistent (loop/hold/pingpong/completed semantics).
+   * @param {{action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}} s
+   * @param {number} delta
+   */
+  function advanceObjectAnim(s, delta) {
+    const clip = OBJECT_CLIPS[s.action] || OBJECT_CLIPS.object_idle;
+    if (clip.hold || clip.frames.length <= 1 || clip.fps <= 0) {
+      s.frameIndex = 0;
+      return;
+    }
+    if (s.completed || !Number.isFinite(delta) || delta <= 0) return;
+    s.elapsed += delta;
+    const dur = 1 / clip.fps;
+    while (s.elapsed >= dur && !s.completed) {
+      s.elapsed -= dur;
+      const n = clip.frames.length;
+      if (clip.pingpong) {
+        s.frameIndex += s.direction;
+        if (s.frameIndex >= n - 1) {
+          s.frameIndex = n - 1;
+          if (clip.loop) s.direction = -1; else s.completed = true;
+        } else if (s.frameIndex <= 0) {
+          s.frameIndex = 0;
+          s.direction = 1;
+        }
+      } else {
+        s.frameIndex += 1;
+        if (s.frameIndex >= n) {
+          if (clip.loop) s.frameIndex = 0;
+          else { s.frameIndex = n - 1; s.completed = true; }
+        }
+      }
+    }
+  }
+
+  /**
+   * Return the OBJECT_CLIPS slot index for the current frame of an object
+   * animation state.
+   * @param {{action:string, frameIndex:number}} s
+   */
+  function currentObjectSlot(s) {
+    const clip = OBJECT_CLIPS[s.action] || OBJECT_CLIPS.object_idle;
+    return clip.frames[Math.min(s.frameIndex, clip.frames.length - 1)];
+  }
+
+  /**
+   * Draw one buildable object at canvas point (cx, cy) using its current
+   * objectAnimMap phase. Mirrors the agent draw pattern (foot-anchored,
+   * depth-scaled). Falls back to a simple "under construction" marker when
+   * the theme has no crate/poof frames, and never throws on missing art.
+   * @param {object} obj buildable object manifest entry (object_id, ...)
+   * @param {{phase:string, animState:object|null, progress:number}} entry per-object runtime state
+   * @param {number} cx @param {number} cy canvas coords (object anchor, ground point)
+   * @param {number} depthScale
+   */
+  function drawBuildableObject(obj, entry, cx, cy, depthScale) {
+    if (entry.phase === "unbuilt") return; // hidden until it becomes the active target
+
+    const objId = obj.object_id;
+    const baseSize = Math.round(64 * depthScale * effectiveObjScale(objId));
+
+    if (entry.phase === "active") {
+      const crateSlots = themeImages.crate;
+      const crateImg = entry.animState && crateSlots ? crateSlots[currentObjectSlot(entry.animState)] : null;
+      if (crateImg && crateImg.complete && crateImg.naturalWidth > 0) {
+        ctx.drawImage(crateImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+      } else {
+        // Fallback "under construction" marker — simple drawn shape, no crash.
+        ctx.save();
+        ctx.fillStyle = "rgba(200,160,60,0.85)";
+        ctx.strokeStyle = "#7a5b00";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.rect(cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+      // Progress bar above the object.
+      const barW = Math.max(24, baseSize * 0.9);
+      const barH = 5;
+      const barX = cx - barW / 2;
+      const barY = cy - baseSize - 12;
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(barX, barY, barW, barH);
+      ctx.fillStyle = "#ffc107";
+      ctx.fillRect(barX, barY, barW * Math.max(0, Math.min(1, entry.progress)), barH);
+      ctx.strokeStyle = "rgba(255,255,255,0.5)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(barX, barY, barW, barH);
+      return;
+    }
+
+    if (entry.phase === "poof") {
+      const poofSlots = themeImages.poof;
+      const poofImg = entry.animState && poofSlots ? poofSlots[currentObjectSlot(entry.animState)] : null;
+      if (poofImg && poofImg.complete && poofImg.naturalWidth > 0) {
+        ctx.drawImage(poofImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+        return;
+      }
+      // No poof art — fall through to drawing the finished object immediately.
+    }
+
+    if (entry.phase === "poof" || entry.phase === "idle") {
+      const objSlots = themeImages["object_" + objId];
+      const slotIdx = entry.animState ? currentObjectSlot(entry.animState) : 0;
+      const objImg = objSlots ? objSlots[slotIdx] : null;
+      if (objImg && objImg.complete && objImg.naturalWidth > 0) {
+        ctx.drawImage(objImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+      } else {
+        // No object art at all — simple placeholder block so the slot isn't blank.
+        ctx.save();
+        ctx.fillStyle = "rgba(120,140,160,0.85)";
+        ctx.strokeStyle = "#2a3a4a";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.rect(cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
   }
 
   /**
@@ -2534,6 +2726,45 @@
         themeObjectScale = (vp && typeof vp.object_scale === "number" && vp.object_scale > 0) ? vp.object_scale : 1;
         themeCharScaleOverrides = (vp && vp.character_scale_overrides && typeof vp.character_scale_overrides === "object") ? vp.character_scale_overrides : {};
         themeObjScaleOverrides = (vp && vp.object_scale_overrides && typeof vp.object_scale_overrides === "object") ? vp.object_scale_overrides : {};
+
+        // ── Phase 2a: capture buildable objects + resolve stable placement ──
+        const manifest = msg.payload?.manifest;
+        themeBuildables = Array.isArray(manifest?.buildable_objects)
+          ? manifest.buildable_objects.slice().sort((a, b) => (a.build_order || 0) - (b.build_order || 0))
+          : [];
+        themeHasCrateAsset = !!(vp && vp.crate_asset);
+        themeHasPoofAsset = !!(vp && vp.poof_asset);
+        // Reset per-object runtime phase/anim state for the new theme.
+        objectAnimMap = {};
+        // Resolve a stable native placement per object. Generated anchor_coord
+        // values are currently always [0.5,0.5] (degenerate/equal), so detect
+        // that and fall back to the deterministic OBJECT_SLOT_UVS distribution.
+        // If a theme ever ships distinct anchors, honor them directly instead.
+        objectPlacement = {};
+        if (themeBuildables.length > 0) {
+          const anchors = themeBuildables.map((o) =>
+            Array.isArray(o.anchor_coord) && o.anchor_coord.length >= 2
+              ? [o.anchor_coord[0], o.anchor_coord[1]]
+              : [0.5, 0.5]
+          );
+          const firstAnchor = anchors[0];
+          const allEqual = anchors.every(
+            (a) => Math.abs(a[0] - firstAnchor[0]) < 1e-6 && Math.abs(a[1] - firstAnchor[1]) < 1e-6
+          );
+          themeBuildables.forEach((obj, i) => {
+            let placed;
+            if (allEqual) {
+              placed = objectSlotHome(i, walkablePolygon);
+            } else {
+              const a = anchors[i];
+              const nx = a[0] * walkableNativeW;
+              const ny = a[1] * walkableNativeH;
+              placed = clampToPolygon(nx, ny, walkablePolygon);
+            }
+            objectPlacement[obj.object_id] = { nx: placed[0], ny: placed[1] };
+          });
+        }
+
         // Build rosterOrder from manifest character order (excluding background)
         const manifestChars = Object.keys(themeFramesRaw).filter(
           (id) => id !== "environment_background"
@@ -4273,6 +4504,47 @@
     // This function intentionally does nothing to the stage DOM.
   }
 
+  // ── Phase 2a: build-state derivation ─────────────────────────────────────
+  /**
+   * Derive the current build status from state.completedTasks, filling
+   * themeBuildables in build_order order. Fully-covered objects are BUILT,
+   * the first partially-covered object is ACTIVE, the rest are UNBUILT.
+   * Pure function of (state.completedTasks, themeBuildables) — cheap to call
+   * once per render() frame.
+   * @returns {{builtIds: Set<string>, activeId: string|null, activeProgress: number}}
+   */
+  function computeBuildState() {
+    const builtIds = new Set();
+    let activeId = null;
+    let activeProgress = 0;
+    let remaining = (state.completedTasks || 0) * UNITS_PER_TASK;
+    for (const obj of themeBuildables) {
+      const need = Math.max(0, obj.work_units_required || 0);
+      if (need <= 0) {
+        // Degenerate (no cost) — treat as instantly built so it never blocks the queue.
+        builtIds.add(obj.object_id);
+        continue;
+      }
+      if (remaining >= need) {
+        builtIds.add(obj.object_id);
+        remaining -= need;
+      } else if (remaining > 0 && activeId === null) {
+        activeId = obj.object_id;
+        activeProgress = remaining / need;
+        remaining = 0;
+      } else if (activeId === null) {
+        // First object with zero progress yet — still the ACTIVE target
+        // (crate appears immediately at 0% rather than staying hidden).
+        activeId = obj.object_id;
+        activeProgress = 0;
+        break;
+      } else {
+        break;
+      }
+    }
+    return { builtIds, activeId, activeProgress };
+  }
+
   function render(timestamp) {
     // Delta time for animation advancement (capped at 100ms to avoid jumps on tab focus)
     const delta = lastFrameTime === 0 ? 0 : Math.min((timestamp - lastFrameTime) / 1000, 0.1);
@@ -4365,6 +4637,60 @@
     }
     const polyRangeY = Math.max(polyMaxY - polyMinY, 1);
 
+    // ── Phase 2a: derive build state + advance per-object state machines ────
+    const buildState = themeBuildables.length > 0 ? computeBuildState() : { builtIds: new Set(), activeId: null, activeProgress: 0 };
+    const activeBuildId = buildState.activeId;
+    let activeBuildObj = null;
+    for (const obj of themeBuildables) {
+      const objId = obj.object_id;
+      const status = buildState.builtIds.has(objId) ? "built" : (objId === activeBuildId ? "active" : "unbuilt");
+      if (objId === activeBuildId) activeBuildObj = obj;
+      let entry = objectAnimMap[objId];
+      if (!entry) {
+        entry = objectAnimMap[objId] = { phase: "unbuilt", animState: null, progress: 0 };
+      }
+      if (status === "unbuilt") {
+        entry.phase = "unbuilt";
+      } else if (status === "active") {
+        if (entry.phase === "unbuilt") {
+          entry.phase = "active";
+          entry.animState = (themeHasCrateAsset && themeImages.crate && themeImages.crate.length > 0)
+            ? createAnimState("crate")
+            : null; // null animState → fallback "under construction" marker
+        }
+        entry.progress = buildState.activeProgress;
+      } else if (status === "built") {
+        if (entry.phase === "active" || entry.phase === "unbuilt") {
+          if (themeHasPoofAsset && themeImages.poof && themeImages.poof.length > 0) {
+            entry.phase = "poof";
+            entry.animState = createAnimState("poof");
+          } else {
+            entry.phase = "idle";
+            entry.animState = createAnimState("object_idle");
+          }
+        }
+        entry.progress = 1;
+      }
+      // Advance whichever per-object animation is currently active.
+      if (entry.phase === "active" && entry.animState) {
+        advanceObjectAnim(entry.animState, delta);
+      } else if (entry.phase === "poof" && entry.animState) {
+        advanceObjectAnim(entry.animState, delta);
+        if (entry.animState.completed) {
+          entry.phase = "idle";
+          entry.animState = createAnimState("object_idle");
+        }
+      } else if (entry.phase === "idle" && entry.animState) {
+        advanceObjectAnim(entry.animState, delta);
+      }
+    }
+    // Resolve standoff target (native space) for active-build agents.
+    const activeBuildPlacement = activeBuildObj ? objectPlacement[activeBuildObj.object_id] : null;
+    const activeBuildExclusionR = activeBuildObj && typeof activeBuildObj.exclusion_radius === "number" && activeBuildObj.exclusion_radius > 0
+      ? activeBuildObj.exclusion_radius
+      : 48;
+    let builderSideCounter = 0;
+
     agentList.forEach((agent, idx) => {
       // Look up a live worker (if one exists) for this agent.
       const worker = state.workers[agent.id] || null;
@@ -4401,9 +4727,33 @@
         : ((agent.status || "idle").toLowerCase() === "active" || (agent.status || "").toLowerCase() === "working");
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
+      // ── BUILD targeting (Phase 2a) ──────────────────────────────────
+      // Active agents head for the current ACTIVE build target's standoff
+      // spot instead of free-roaming, once one exists. Idle agents and
+      // active agents with no build target (nothing active yet, or all
+      // built) are untouched — they keep the wander path exactly as before.
+      let isBuilding = false;
+      if (isActive && activeBuildPlacement) {
+        // Alternate standoff side among builders assigned this frame.
+        const side = (builderSideCounter++ % 2 === 0) ? -1 : 1;
+        const ax = activeBuildPlacement.nx;
+        const ay = activeBuildPlacement.ny;
+        // Perpendicular-ish left/right offset along native X, small native Y
+        // nudge so multiple builders on the same side don't fully overlap.
+        const standoffX = ax + side * activeBuildExclusionR;
+        const standoffY = ay + (side * 0.15) * activeBuildExclusionR;
+        const standoff = clampToPolygon(standoffX, standoffY, walkablePolygon);
+        charEntry.destNx = standoff[0];
+        charEntry.destNy = standoff[1];
+        charEntry.buildTargetId = activeBuildObj.object_id;
+        isBuilding = true;
+      } else {
+        charEntry.buildTargetId = null;
+      }
+
       // ── Wander logic (native polygon space) ───────────────────────
       charEntry.wanderTimer -= delta;
-      if (charEntry.wanderTimer <= 0) {
+      if (!isBuilding && charEntry.wanderTimer <= 0) {
         // Pick new destination: active agents roam freely; idle agents stay near home.
         let dest;
         if (isActive) {
@@ -4442,12 +4792,22 @@
       const cx = canvasPt[0];
       const cy = canvasPt[1];
 
-      // ── Movement-based facing ──────────────────────────────────────
-      const prevX = charEntry.prevX;
-      if (typeof prevX === "number") {
-        const dxCanvas = cx - prevX;
-        if (dxCanvas < -FACING_EPS) charEntry.facingLeft = true;
-        else if (dxCanvas > FACING_EPS) charEntry.facingLeft = false;
+      // ── Facing ────────────────────────────────────────────────────
+      // While actively walking to/standing at a build target, face the
+      // object directly instead of relying on movement-inferred facing
+      // (which would flicker once arrived and isMoving goes false).
+      if (isBuilding && activeBuildPlacement) {
+        const objCanvasPt = nativeToCanvas(activeBuildPlacement.nx, activeBuildPlacement.ny, bgX, bgY, bgW, bgH);
+        if (cx > objCanvasPt[0] + FACING_EPS) charEntry.facingLeft = true;
+        else if (cx < objCanvasPt[0] - FACING_EPS) charEntry.facingLeft = false;
+      } else {
+        // ── Movement-based facing ──────────────────────────────────────
+        const prevX = charEntry.prevX;
+        if (typeof prevX === "number") {
+          const dxCanvas = cx - prevX;
+          if (dxCanvas < -FACING_EPS) charEntry.facingLeft = true;
+          else if (dxCanvas > FACING_EPS) charEntry.facingLeft = false;
+        }
       }
       charEntry.prevX = cx;
       charEntry.x = cx;
@@ -4463,6 +4823,11 @@
       // Override with walk while physically moving, else use status clip.
       if (isMoving && desiredClip !== "build" && desiredClip !== "cheer") desiredClip = "walk";
       else if (!isMoving && (desiredClip === "walk")) desiredClip = "idle";
+      // BUILD override: once arrived at the standoff spot for an active
+      // build target, force the build clip — never while still walking.
+      if (isBuilding && !isMoving) {
+        desiredClip = "build";
+      }
 
       const anim = charEntry.animState;
       if (anim.action !== desiredClip) {
@@ -4475,16 +4840,34 @@
       advanceAnim(anim, delta);
     });
 
-    // ── Sort agents back-to-front by native Y (isometric depth order) ─────────
-    const sortedAgentList = agentList.slice().sort((a, b) => {
-      const entA = agentCharMap[a.id];
-      const entB = agentCharMap[b.id];
-      const nyA = entA ? entA.ny : 0;
-      const nyB = entB ? entB.ny : 0;
-      return nyA - nyB;
-    });
+    // ── Phase 2a: merge buildable objects into the same Y-sorted depth list
+    // as agents, so agents and objects occlude each other correctly. Objects
+    // with phase "unbuilt" are skipped (hidden / not yet placed on stage).
+    /** @type {Array<{kind:'agent', agent:object, ny:number}|{kind:'object', obj:object, entry:object, ny:number}>} */
+    const depthList = [];
+    for (const agent of agentList) {
+      const entA = agentCharMap[agent.id];
+      depthList.push({ kind: "agent", agent, ny: entA ? entA.ny : 0 });
+    }
+    for (const obj of themeBuildables) {
+      const entry = objectAnimMap[obj.object_id];
+      if (!entry || entry.phase === "unbuilt") continue;
+      const placement = objectPlacement[obj.object_id];
+      if (!placement) continue;
+      depthList.push({ kind: "object", obj, entry, ny: placement.ny });
+    }
+    depthList.sort((a, b) => a.ny - b.ny);
 
-    sortedAgentList.forEach((agent, _sortIdx) => {
+    depthList.forEach((item) => {
+      if (item.kind === "object") {
+        const canvasPt = nativeToCanvas(objectPlacement[item.obj.object_id].nx, objectPlacement[item.obj.object_id].ny, bgX, bgY, bgW, bgH);
+        const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
+        const depthScale = 0.8 + tDepth * 0.3;
+        drawBuildableObject(item.obj, item.entry, canvasPt[0], canvasPt[1], depthScale);
+        return;
+      }
+
+      const agent = item.agent;
       const idx = agentList.indexOf(agent);
       const charEntry = agentCharMap[agent.id];
       if (!charEntry) return;

@@ -49,7 +49,7 @@ export async function expandThemePlan(
     '  "creative_direction": "art style, palette, materials, lighting, camera, and unifying visual language",',
     '  "characters": ["16 named character or worker designs"],',
     '  "environment": "one detailed isometric environment description",',
-    '  "objects": ["12 named props or buildable objects"],',
+    '  "objects": ["13 named props or buildable objects"],',
     '  "enemies": ["3 named enemy designs"],',
     '  "expressions": ["16 short, visually distinct expression names"],',
     '  "achievements": ["20 short achievement badge design names"]',

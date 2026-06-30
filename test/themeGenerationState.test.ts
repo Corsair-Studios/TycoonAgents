@@ -19,6 +19,16 @@ test('keeps the buildable objects item in a genuinely legacy review document', (
   assert.deepEqual(items.map((item) => item.id), ['buildable_objects']);
 });
 
+test('removes the redundant legacy item when animated object boards are present', () => {
+  const items = withoutRedundantBuildableObjectsItem([
+    { id: 'objects_01' },
+    { id: 'objects_02' },
+    { id: 'objects_03' },
+    { id: 'buildable_objects' },
+  ]);
+  assert.deepEqual(items.map((item) => item.id), ['objects_01', 'objects_02', 'objects_03']);
+});
+
 test('resume completion requires the retained image and every generated frame', () => {
   const item = { id: 'objects', frame_keys: ['object_a', 'object_b'] };
   assert.equal(isThemeGenerationItemComplete(item, false, {

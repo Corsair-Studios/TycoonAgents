@@ -31,7 +31,9 @@ Sent once after a full theme generation run completes.
 - `rival_<rival_id>` — 20-frame animation atlas for a rival (e.g. `rival_rival_0`).
 - `environment_background` — single background image (array with 1 entry).
 
-- `object_<object_id>` — one completed sprite sliced from the 12-object board.
+- `object_<object_id>` — four idle-animation frames sliced from one of the three animated-object boards.
+- `crate` — one static themed build-crate frame shared by the theme.
+- `poof` — four one-shot reveal frames shared by the theme.
 - `expression_<0..15>` — one icon sliced from the 16-expression board. The first four are also aliased to the legacy `emote_smile`, `emote_sleep`, `emote_idea`, and `emote_team` renderer keys.
 - `achievement_<0..19>` — one icon sliced from the 20-badge board; achievement rules are intentionally deferred.
 
@@ -81,8 +83,8 @@ Already implemented host-side in `src/extension/main.ts` via `sendTelemetryUpdat
 | `DELETE_THEME` | `{ theme_id: string }` | Permanently remove a saved theme and its retained source images. |
 | `GET_THEME_IMAGE_SETTINGS` | _(none)_ | Request the selected image provider and per-provider configured status. Secrets are never returned. |
 | `SAVE_THEME_IMAGE_SETTINGS` | `{ provider: "gemini" | "openai", api_key?: string }` | Select the provider and optionally save its key in VS Code Secret Storage. |
-| `PLAN_THEME` | `{ prompt: string, image_provider: "gemini" | "openai" }` | Ask AI to prefill the editable theme plan: name, creative direction, 16 characters, environment, 12 objects, 3 enemies, 16 expressions, and 20 achievement badges. |
-| `GENERATE_THEME` | `{ plan?: ThemePlan, resume_theme_id?: string, image_provider: "gemini" | "openai", pause_for_review: boolean }` | Generate 23 reviewable images from a new `plan`, or resume an interrupted `resume_theme_id`. Resume checkpoints retained images plus saved frames and generates only unfinished items. When `pause_for_review` is true (the UI default), newly generated images pause for approval; otherwise generation continues automatically. |
+| `PLAN_THEME` | `{ prompt: string, image_provider: "gemini" | "openai" }` | Ask AI to prefill the editable theme plan: name, creative direction, 16 characters, environment, 13 objects, 3 enemies, 16 expressions, and 20 achievement badges. |
+| `GENERATE_THEME` | `{ plan?: ThemePlan, resume_theme_id?: string, image_provider: "gemini" | "openai", pause_for_review: boolean }` | Generate 25 reviewable images from a new `plan`, or resume an interrupted `resume_theme_id`. Resume checkpoints retained images plus saved frames and generates only unfinished items. When `pause_for_review` is true (the UI default), newly generated images pause for approval; otherwise generation continues automatically. |
 | `SET_THEME_PAUSE_FOR_REVIEW` | `{ pause_for_review: boolean }` | Change approval-pausing behavior during generation. Turning it off releases the current review gate after any in-flight retry completes; turning it on pauses after the next completed image. |
 | `CANCEL_THEME_GENERATION` | _(none)_ | Abort the active provider request and stop generating additional theme images. Completed images are retained. |
 | `SELECT_THEME` | `{ theme_id: string }` | Load and activate a previously generated theme by ID. |
@@ -130,7 +132,7 @@ themes/
       agent_01_<name>.png ... agent_16_<name>.png
       enemy_01_<name>.png ... enemy_03_<name>.png
       environment.png
-      objects.png
+      objects_01.png ... objects_03.png
       expressions.png
       achievements.png
 ```

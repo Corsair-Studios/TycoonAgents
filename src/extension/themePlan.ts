@@ -8,7 +8,7 @@ import type {
 
 export const THEME_CHARACTER_COUNT = 16;
 export const THEME_ENEMY_COUNT = 3;
-export const THEME_OBJECT_COUNT = 12;
+export const THEME_OBJECT_COUNT = 13;
 export const THEME_EXPRESSION_COUNT = 16;
 export const THEME_ACHIEVEMENT_COUNT = 20;
 
@@ -36,6 +36,21 @@ export const ATLAS_CLIPS: Record<ClipName, AtlasClip> = {
   point: { frames: [12], fps: 0, loop: true, flippable: true, hold: true },
   signal: { frames: [13], fps: 0, loop: true, flippable: false, hold: true },
   dodge: { frames: [14], fps: 0, loop: false, flippable: true, hold: true },
+};
+
+export type ObjectClipName = 'object_idle' | 'crate' | 'poof';
+
+export interface ObjectClip {
+  frames: number[];
+  fps: number;
+  loop: boolean;
+  hold?: boolean;
+}
+
+export const OBJECT_CLIPS: Record<ObjectClipName, ObjectClip> = {
+  object_idle: { frames: [0, 1, 2, 3], fps: 5, loop: true },
+  crate: { frames: [0], fps: 0, loop: true, hold: true },
+  poof: { frames: [0, 1, 2, 3], fps: 12, loop: false },
 };
 
 export interface ThemePlan {
@@ -117,6 +132,8 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     native_width: 1280,
     native_height: 720,
     background_asset: 'frames.json#environment_background',
+    crate_asset: 'frames.json#crate',
+    poof_asset: 'frames.json#poof',
     walkable_nav_polygon: WALKABLE_NAV_POLYGON,
   };
   return {

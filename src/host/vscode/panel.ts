@@ -2341,7 +2341,7 @@ export class TycoonPanel {
               <h3>Review the theme plan</h3>
               <p>AI filled every slot. Edit anything you want before image generation begins.</p>
             </div>
-            <span class="theme-plan-count">23 reviewable images</span>
+            <span class="theme-plan-count">25 reviewable images</span>
           </div>
           <label class="theme-plan-field theme-plan-field--primary">
             <span>Theme name</span>
@@ -2364,7 +2364,7 @@ export class TycoonPanel {
             <div id="theme-plan-enemies" class="theme-plan-slot-grid"></div>
           </fieldset>
           <label class="theme-plan-field">
-            <span>Objects <small>12 objects, comma separated · 1 sprite sheet</small></span>
+            <span>Objects <small>13 animated objects, comma separated · 3 sprite sheets</small></span>
             <textarea id="theme-plan-objects" rows="3"></textarea>
           </label>
           <label class="theme-plan-field">

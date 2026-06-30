@@ -7,9 +7,12 @@ import {
   buildEmoteAtlasPrompt,
   buildEnvironmentPrompt,
   buildExpressionAtlasPrompt,
+  buildLegacyObjectAtlasPrompt,
   buildObjectAtlasPrompt,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
+  createObjectBoardRows,
+  objectBoardFrameKeys,
 } from './themeAssetPrompts';
 import { generateThemeImage } from './imageClient';
 import type { ThemeImageGenerationOptions } from './imageClient';
@@ -38,6 +41,7 @@ import type {
   ThemeImageReviewDocument,
   ThemeImageReviewItem,
   ThemeImageReviewStatus,
+  ThemeObjectBoardRow,
 } from './themeImageReviewState';
 import { isThemeGenerationItemComplete } from './themeGenerationState';
 import { createThemeArchive, parseThemeArchive } from './themeArchive';
@@ -399,14 +403,43 @@ export async function uploadThemeImage(
     const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
     const item = document?.items.find((candidate) => candidate.id === itemId);
     const buffer = Buffer.from(imageBytes);
+    let output: Buffer = buffer;
+    let frameKeys = item?.frame_keys ?? [];
 
     if (item?.kind === 'character_atlas') {
-      const spritePackage = await sliceAndNormalizeAtlas(buffer, manifest, characterAtlasGrid());
+      const characterAtlas = await processCharacterAtlas(buffer, manifest);
+      output = characterAtlas.output;
+      const spritePackage = characterAtlas.spritePackage;
       const frameKey = item.frame_keys[0] || item.id;
       frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
+      frameKeys = [frameKey];
+    } else if (item?.kind === 'object_atlas' && item.object_rows?.length) {
+      const objectAtlas = await processObjectAtlas(buffer, manifest, item.object_rows);
+      output = objectAtlas.output;
+      frameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, item.object_rows);
+    } else if (item?.kind === 'object_atlas') {
+      output = await optimizeSpriteBoardCanvas(buffer, 4, 3);
+      const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 3 });
+      const specs = item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest).slice(0, 12);
+      frameKeys = applyLegacyObjectFrames(frames, spritePackage.slots, specs);
     } else {
       const frameKey = item?.frame_keys[0] || itemId;
       frames[frameKey] = [dataUri(buffer)];
+      frameKeys = [frameKey];
+    }
+
+    if (item && document) {
+      const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
+      await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(reviewDirectoryUri, item.filename), output);
+      await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
+        ...item,
+        status: 'pending',
+        generation_error: undefined,
+        revision: item.revision + 1,
+        frame_keys: frameKeys,
+        updated_at: new Date().toISOString(),
+      });
     }
 
     await writeThemeFiles(globalStorageUri, manifest, frames);
@@ -509,8 +542,8 @@ export async function getThemeImageReview(
   }
 
   // Add the old emote board entry when reviewing a pre-plan theme. The old
-  // buildable-objects entry is intentionally not synthesized: current themes
-  // already contain the complete 12-object board as `objects`.
+  // buildable-objects entry is intentionally not synthesized: generated themes
+  // already retain their static `objects` board or animated `objects_XX` boards.
   if (manifest && document) {
     if (!document.items.some((item) => item.id === 'emote_icons')
         && !document.items.some((item) => item.kind === 'expression_atlas')) {
@@ -851,15 +884,19 @@ async function continueThemeGeneration(
   );
 
   throwIfCancelled(isCancelled);
-  const objectsItem = reviewItems.find((item) => item.id === 'objects')!;
-  await generateOrResumeThemeItem(
-    globalStorageUri, themeId, plan.display_name, objectsItem, manifest, frames,
-    onProgress, isCancelled, onReviewReady, waitForReview,
-    () => generateObjectAsset(
-      globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
-      objectsItem, imageGenerationOptions, onProgress,
-    ),
-  );
+  const objectItems = reviewItems.filter((item) => item.kind === 'object_atlas');
+  for (let index = 0; index < objectItems.length; index++) {
+    throwIfCancelled(isCancelled);
+    const objectsItem = objectItems[index];
+    await generateOrResumeThemeItem(
+      globalStorageUri, themeId, plan.display_name, objectsItem, manifest, frames,
+      onProgress, isCancelled, onReviewReady, waitForReview,
+      () => generateObjectAsset(
+        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+        objectsItem, imageGenerationOptions, onProgress, 21 + index,
+      ),
+    );
+  }
 
   throwIfCancelled(isCancelled);
   const expressionsItem = reviewItems.find((item) => item.id === 'expressions')!;
@@ -936,11 +973,18 @@ export async function retryThemeImage(
     manifest.viewport.background_asset = 'frames.json#environment_background';
     frameKeys = ['environment_background'];
   } else if (item.kind === 'object_atlas') {
-    output = await optimizeSpriteBoardCanvas(generated, 4, 3);
-    const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 3 });
-    const specs = item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest);
-    frameKeys = applyObjectFrames(frames, spritePackage.slots, specs);
-    item.object_specs = specs;
+    if (item.object_rows?.length) {
+      const objectAtlas = await processObjectAtlas(generated, manifest, item.object_rows);
+      output = objectAtlas.output;
+      frameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, item.object_rows);
+    } else {
+      // Preserve retry support for installed themes that predate animated boards.
+      output = await optimizeSpriteBoardCanvas(generated, 4, 3);
+      const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 3 });
+      const specs = item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest).slice(0, 12);
+      frameKeys = applyLegacyObjectFrames(frames, spritePackage.slots, specs);
+      item.object_specs = specs;
+    }
   } else if (item.kind === 'expression_atlas') {
     output = await optimizeSpriteBoardCanvas(generated, 4, 4);
     const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 4 });
@@ -1150,6 +1194,31 @@ async function processCharacterAtlas(
   return { output, spritePackage: normalized };
 }
 
+async function processObjectAtlas(
+  generated: Buffer,
+  manifest: ThemeManifest,
+  rows: ThemeObjectBoardRow[],
+): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
+  if (rows.length !== 5) throw new Error('Animated object boards require exactly five rows.');
+  const rowSlots = rows.map((_row, rowIndex) =>
+    Array.from({ length: 4 }, (_unused, columnIndex) => rowIndex * 4 + columnIndex),
+  );
+  const objectSlots = rows.flatMap((row, rowIndex) => row.kind === 'object' ? rowSlots[rowIndex] : []);
+  // Slice the provider output before optimizing the retained review image. This
+  // avoids re-slicing a 512px square whose five logical rows cannot all have an
+  // identical integer height. Each animation row shares one crop and anchor.
+  const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
+    columns: 4,
+    rows: 5,
+    scaleReferenceSlots: objectSlots,
+    targetContentHeight: 104,
+    maxContentExtent: 120,
+    normalizationGroups: rowSlots,
+  });
+  const output = await optimizeSpriteBoardCanvas(generated, 4, 5);
+  return { output, spritePackage };
+}
+
 function createReviewItems(
   plan: ThemePlan,
   manifest: ThemeManifest,
@@ -1179,6 +1248,25 @@ function createReviewItems(
     subject: enemy.name,
   }));
   const objectSpecs = themeObjectSpecs(manifest);
+  const objectItems = createObjectBoardRows(objectSpecs).map((rows, index) => {
+    const objectRows = rows.filter((row): row is Extract<ThemeObjectBoardRow, { kind: 'object' }> => row.kind === 'object');
+    const firstObject = index * 5 + 1;
+    const lastObject = firstObject + objectRows.length - 1;
+    return {
+      id: `objects_${String(index + 1).padStart(2, '0')}`,
+      filename: `objects_${String(index + 1).padStart(2, '0')}.png`,
+      label: index === 2
+        ? `Animated objects ${firstObject}–${lastObject} + build effects`
+        : `Animated objects ${firstObject}–${lastObject}`,
+      kind: 'object_atlas' as const,
+      status: 'pending' as const,
+      prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, rows),
+      revision: 0,
+      frame_keys: objectBoardFrameKeys(rows),
+      object_specs: objectRows.map(({ object_id, display_name }) => ({ object_id, display_name })),
+      object_rows: rows,
+    };
+  });
   return [
     ...characterItems,
     ...enemyItems,
@@ -1192,17 +1280,7 @@ function createReviewItems(
       revision: 0,
       frame_keys: ['environment_background'],
     },
-    {
-      id: 'objects',
-      filename: 'objects.png',
-      label: '12 objects',
-      kind: 'object_atlas',
-      status: 'pending',
-      prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, objectSpecs),
-      revision: 0,
-      frame_keys: objectSpecs.map((object) => `object_${object.object_id}`),
-      object_specs: objectSpecs,
-    },
+    ...objectItems,
     {
       id: 'expressions',
       filename: 'expressions.png',
@@ -1238,7 +1316,7 @@ async function generateEnvironmentAsset(
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
 ): Promise<void> {
-  onProgress('Environment (20/23)');
+  onProgress('Environment (20/25)');
   const generated = await generateEnvironmentImage(item.prompt, options);
   throwIfCancelled(undefined, options?.signal);
   const output = await normalizeEnvironmentImage(generated);
@@ -1259,16 +1337,17 @@ async function generateObjectAsset(
   item: Omit<ThemeImageReviewItem, 'updated_at'>,
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
+  progressIndex: number,
 ): Promise<void> {
-  onProgress('12-object sprite sheet (21/23)');
+  onProgress(`${item.label} (${progressIndex}/25)`);
   const generated = await generateThemeImage(item.prompt, options);
   throwIfCancelled(undefined, options?.signal);
-  const output = await optimizeSpriteBoardCanvas(generated, 4, 3);
+  if (!item.object_rows?.length) throw new Error(`${item.label} is missing object-board row metadata.`);
+  const objectAtlas = await processObjectAtlas(generated, manifest, item.object_rows);
   throwIfCancelled(undefined, options?.signal);
-  await saveReviewImage(reviewDirectoryUri, item.filename, output);
-  const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 3 });
+  await saveReviewImage(reviewDirectoryUri, item.filename, objectAtlas.output);
   throwIfCancelled(undefined, options?.signal);
-  applyObjectFrames(frames, spritePackage.slots, item.object_specs ?? []);
+  applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, item.object_rows);
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
@@ -1283,7 +1362,7 @@ async function generateExpressionAsset(
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
 ): Promise<void> {
-  onProgress('16-expression sprite sheet (22/23)');
+  onProgress('16-expression sprite sheet (24/25)');
   const generated = await generateThemeImage(item.prompt, options);
   throwIfCancelled(undefined, options?.signal);
   const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
@@ -1306,7 +1385,7 @@ async function generateAchievementAsset(
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
 ): Promise<void> {
-  onProgress('20 achievement badges (23/23)');
+  onProgress('20 achievement badges (25/25)');
   const generated = await generateThemeImage(item.prompt, options);
   throwIfCancelled(undefined, options?.signal);
   const output = await optimizeSpriteBoardCanvas(generated, 5, 4);
@@ -1342,10 +1421,17 @@ function buildReplacementPrompt(
 ): string {
   if (item.kind === 'environment') return buildEnvironmentPrompt(creativeDirection, manifest.display_name);
   if (item.kind === 'object_atlas') {
+    if (!item.object_rows?.length) {
+      return buildLegacyObjectAtlasPrompt(
+        creativeDirection,
+        manifest.display_name,
+        item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest).slice(0, 12),
+      );
+    }
     return buildObjectAtlasPrompt(
       creativeDirection,
       manifest.display_name,
-      item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest),
+      item.object_rows,
     );
   }
   if (item.kind === 'expression_atlas') {
@@ -1367,13 +1453,28 @@ function renameCharacterInPrompt(prompt: string, previousName: string, character
 }
 
 function themeObjectSpecs(manifest: ThemeManifest): Array<{ object_id: string; display_name: string }> {
-  return manifest.buildable_objects.slice(0, 12).map((object) => ({
+  return manifest.buildable_objects.slice(0, 13).map((object) => ({
     object_id: object.object_id,
     display_name: object.display_name,
   }));
 }
 
-function applyObjectFrames(
+function applyObjectBoardFrames(
+  frames: Record<string, string[]>,
+  slots: Array<{ slot_id: number; data: string }>,
+  rows: ThemeObjectBoardRow[],
+): string[] {
+  const keys: string[] = [];
+  rows.forEach((row, rowIndex) => {
+    const rowFrames = slots.slice(rowIndex * 4, rowIndex * 4 + 4).map((slot) => slot.data);
+    const key = row.kind === 'object' ? `object_${row.object_id}` : row.kind;
+    frames[key] = row.kind === 'crate' ? rowFrames.slice(0, 1) : rowFrames;
+    keys.push(key);
+  });
+  return keys;
+}
+
+function applyLegacyObjectFrames(
   frames: Record<string, string[]>,
   slots: Array<{ slot_id: number; data: string }>,
   objects: Array<{ object_id: string; display_name: string }>,

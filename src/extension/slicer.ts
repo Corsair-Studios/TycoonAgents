@@ -61,6 +61,8 @@ export interface AtlasGrid {
   targetContentHeight?: number;
   /** Per-slot safety cap that prevents unusually wide poses from being clipped. */
   maxContentExtent?: number;
+  /** Slots that must share one crop, scale, and anchor (for example one animation row). */
+  normalizationGroups?: number[][];
   /** Reassemble normalized slots into a reviewable magenta-backed sprite board. */
   rebuildBoard?: boolean;
   /** Keep the rebuilt review canvas square while preserving the requested grid. */
@@ -107,8 +109,13 @@ export async function sliceAndNormalizeAtlas(
   for (let row = 0; row < grid.rows; row++) {
     for (let col = 0; col < grid.columns; col++) {
       const slot_id = row * grid.columns + col;
-
-      const cell = atlas.clone().crop(col * cellW, row * cellH, cellW, cellH);
+      // Proportional boundaries cover the entire source even when a 512px
+      // canvas cannot divide evenly by the requested row/column count.
+      const left = Math.floor(col * atlas.bitmap.width / grid.columns);
+      const right = Math.floor((col + 1) * atlas.bitmap.width / grid.columns);
+      const top = Math.floor(row * atlas.bitmap.height / grid.rows);
+      const bottom = Math.floor((row + 1) * atlas.bitmap.height / grid.rows);
+      const cell = atlas.clone().crop(left, top, right - left, bottom - top);
       keyBorderConnectedMagenta(cell);
       if (row > 0) {
         removeRowBoundarySpill(cell, cells[slot_id - grid.columns].cell);
@@ -149,6 +156,20 @@ export async function sliceAndNormalizeAtlas(
     ? grid.targetContentHeight / medianReferenceHeight
     : 1;
   const maxContentExtent = grid.maxContentExtent ?? Number.POSITIVE_INFINITY;
+  const groupedBounds = new Map<number, { minX: number; maxX: number; minY: number; maxY: number }>();
+  for (const group of grid.normalizationGroups ?? []) {
+    const members = group
+      .map((slotId) => cells[slotId])
+      .filter((cell): cell is typeof cells[number] => Boolean(cell?.count));
+    if (!members.length) continue;
+    const bounds = {
+      minX: Math.min(...members.map((cell) => cell.minX)),
+      maxX: Math.max(...members.map((cell) => cell.maxX)),
+      minY: Math.min(...members.map((cell) => cell.minY)),
+      maxY: Math.max(...members.map((cell) => cell.maxY)),
+    };
+    for (const slotId of group) groupedBounds.set(slotId, bounds);
+  }
   const slots: Array<{ slot_id: number; data: string; meta: FrameContentMeta }> = [];
   const rebuiltBoardWidth = grid.columns * 128;
   const rebuiltBoardHeight = grid.squareReviewBoard
@@ -165,17 +186,24 @@ export async function sliceAndNormalizeAtlas(
   for (const cellInfo of cells) {
     const out = new Jimp(128, 128, 0x00000000);
     if (cellInfo.count > 0) {
-      const bw = cellInfo.maxX - cellInfo.minX + 1;
-      const bh = cellInfo.maxY - cellInfo.minY + 1;
+      const groupBounds = groupedBounds.get(cellInfo.slot_id);
+      const minX = groupBounds?.minX ?? cellInfo.minX;
+      const maxX = groupBounds?.maxX ?? cellInfo.maxX;
+      const minY = groupBounds?.minY ?? cellInfo.minY;
+      const maxY = groupBounds?.maxY ?? cellInfo.maxY;
+      const bw = maxX - minX + 1;
+      const bh = maxY - minY + 1;
       const scale = Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh);
       const resizedWidth = Math.max(1, Math.round(bw * scale));
       const resizedHeight = Math.max(1, Math.round(bh * scale));
-      const content = cellInfo.cell.clone().crop(cellInfo.minX, cellInfo.minY, bw, bh);
+      const content = cellInfo.cell.clone().crop(minX, minY, bw, bh);
       if (resizedWidth !== bw || resizedHeight !== bh) {
         content.resize(resizedWidth, resizedHeight, Jimp.RESIZE_NEAREST_NEIGHBOR);
       }
       const centerOfMassOffset = (cellInfo.sumX / cellInfo.count - cellInfo.minX) * scale;
-      const destX = Math.round(64 - centerOfMassOffset);
+      const destX = groupBounds
+        ? Math.round(64 - resizedWidth / 2)
+        : Math.round(64 - centerOfMassOffset);
       const destY = 128 - resizedHeight;
       out.composite(content, destX, destY);
     }
@@ -267,7 +295,7 @@ function isChromaMagenta(r: number, g: number, b: number): boolean {
 function removeRowBoundarySpill(cell: Jimp, cellAbove: Jimp): void {
   const width = cell.bitmap.width;
   const height = cell.bitmap.height;
-  if (width !== cellAbove.bitmap.width || height !== cellAbove.bitmap.height) return;
+  if (width !== cellAbove.bitmap.width) return;
 
   const visited = new Uint8Array(width * height);
   const queue: number[] = [];
@@ -278,7 +306,7 @@ function removeRowBoundarySpill(cell: Jimp, cellAbove: Jimp): void {
   });
   if (opaqueCount === 0) return;
 
-  const aboveBottomY = height - 1;
+  const aboveBottomY = cellAbove.bitmap.height - 1;
   for (let x = 0; x < width; x++) {
     if (cell.bitmap.data[x * 4 + 3] === 0) continue;
 

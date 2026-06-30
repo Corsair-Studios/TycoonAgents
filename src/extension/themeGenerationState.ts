@@ -4,12 +4,12 @@ export interface ThemeGenerationReviewItem {
 }
 
 /**
- * Current themes use the `objects` item for their 12-object sprite sheet.
+ * Static-board themes use `objects`; animated themes use `objects_01` etc.
  * Some releases also appended a second, empty legacy item to the same review
  * document. Keep genuinely legacy themes intact while removing that duplicate.
  */
 export function withoutRedundantBuildableObjectsItem<T extends { id: string }>(items: T[]): T[] {
-  if (!items.some((item) => item.id === 'objects')) return items;
+  if (!items.some((item) => item.id === 'objects' || /^objects_\d+$/.test(item.id))) return items;
   return items.filter((item) => item.id !== 'buildable_objects');
 }
 

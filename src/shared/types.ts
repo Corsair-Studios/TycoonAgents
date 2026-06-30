@@ -18,6 +18,8 @@ export interface ViewportConfig {
   native_width: number;
   native_height: number;
   background_asset: string;
+  crate_asset?: string;
+  poof_asset?: string;
   walkable_nav_polygon: [number, number][]; // Array of 6 coordinate pairs
   character_scale?: number;
   object_scale?: number;
@@ -46,6 +48,8 @@ export interface BuildableObject {
   anchor_coord: [number, number]; // [X, Y] pixel coordinates
   exclusion_radius: number;       // Pixels for pathfinding offset
   work_units_required: number;
+  anim_fps?: number;
+  anim_loop?: boolean;
 }
 
 export interface ThemeBadge {

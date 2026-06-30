@@ -20,6 +20,11 @@ export interface ThemeImageGenerationError {
   categories?: string[];
 }
 
+export type ThemeObjectBoardRow =
+  | { kind: 'object'; object_id: string; display_name: string; motion_hint?: string }
+  | { kind: 'poof' }
+  | { kind: 'crate' };
+
 export interface ThemeImageReviewItem {
   id: string;
   filename: string;
@@ -31,6 +36,7 @@ export interface ThemeImageReviewItem {
   frame_keys: string[];
   subject?: string;
   object_specs?: Array<{ object_id: string; display_name: string }>;
+  object_rows?: ThemeObjectBoardRow[];
   expression_names?: string[];
   achievement_names?: string[];
   generation_error?: ThemeImageGenerationError;

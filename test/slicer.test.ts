@@ -52,6 +52,48 @@ test('slicer supports the 4x3 object board contract', async () => {
   assert.equal(result.slots[11].slot_id, 11);
 });
 
+test('slicer covers all pixels in a 512px-tall 4x5 logical grid', async () => {
+  const atlas = new Jimp(512, 512, 0xff00ffff);
+  atlas.setPixelColor(0x1950a0ff, 500, 511);
+  const result = await sliceAndNormalizeAtlas(
+    await atlas.getBufferAsync(Jimp.MIME_PNG),
+    {},
+    { columns: 4, rows: 5 },
+  );
+  assert.equal(result.slots.length, 20);
+  assert.ok(result.slots[19].meta.opaqueCount > 0);
+});
+
+test('grouped normalization keeps a stationary object body anchored across moving parts', async () => {
+  const cellSize = 100;
+  const atlas = new Jimp(cellSize * 4, cellSize * 5, 0xff00ffff);
+  for (let column = 0; column < 4; column++) {
+    const cellX = column * cellSize;
+    atlas.scan(cellX + 40, 55, 20, 35, function (_x, _y, idx) {
+      this.bitmap.data.writeUInt32BE(0x1950a0ff, idx);
+    });
+    const appendageX = [20, 30, 60, 70][column];
+    atlas.scan(cellX + appendageX, 45, 10, 8, function (_x, _y, idx) {
+      this.bitmap.data.writeUInt32BE(0xc82828ff, idx);
+    });
+  }
+  const result = await sliceAndNormalizeAtlas(
+    await atlas.getBufferAsync(Jimp.MIME_PNG),
+    {},
+    { columns: 4, rows: 5, normalizationGroups: [[0, 1, 2, 3]] },
+  );
+  const bodyLeftEdges: number[] = [];
+  for (const slot of result.slots.slice(0, 4)) {
+    const frame = await Jimp.read(Buffer.from(slot.data.split(',')[1], 'base64'));
+    let minBlueX = Infinity;
+    frame.scan(0, 0, 128, 128, function (x, _y, idx) {
+      if (this.bitmap.data.readUInt32BE(idx) === 0x1950a0ff) minBlueX = Math.min(minBlueX, x);
+    });
+    bodyLeftEdges.push(minBlueX);
+  }
+  assert.deepEqual(bodyLeftEdges, [54, 54, 54, 54]);
+});
+
 test('slicer removes minor sprite fragments that spill across a row boundary', async () => {
   const cellSize = 20;
   const atlas = new Jimp(cellSize * 5, cellSize * 4, 0xff00ffff);

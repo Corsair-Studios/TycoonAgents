@@ -1,6 +1,26 @@
+import type { ThemeObjectBoardRow } from './themeImageReviewState';
+
 export interface ThemeObjectPromptSpec {
   object_id: string;
   display_name: string;
+}
+
+export function createObjectBoardRows(objects: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[][] {
+  if (objects.length !== 13) throw new Error('Animated object generation requires exactly 13 objects.');
+  const asRows = (items: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[] => items.map((object) => ({
+    kind: 'object',
+    object_id: object.object_id,
+    display_name: object.display_name,
+  }));
+  return [
+    asRows(objects.slice(0, 5)),
+    asRows(objects.slice(5, 10)),
+    [...asRows(objects.slice(10, 13)), { kind: 'poof' }, { kind: 'crate' }],
+  ];
+}
+
+export function objectBoardFrameKeys(rows: ThemeObjectBoardRow[]): string[] {
+  return rows.map((row) => row.kind === 'object' ? `object_${row.object_id}` : row.kind);
 }
 
 /**
@@ -14,7 +34,7 @@ export const CHARACTER_TARGET_CONTENT_PERCENT = 81.25;
 function boardContract(columns: number, rows: number): string {
   return [
     'The outer image canvas is exactly **512 x 512 pixels (1:1)**. Do not crop or change the canvas aspect ratio.',
-    `Inside that square canvas is an exact ${columns}-column by ${rows}-row grid with ${columns * rows} equal cells.`,
+    `Inside that square canvas is an exact ${columns}-column by ${rows}-row logical grid with ${columns * rows} visually equal cells.`,
     'Keep every subject fully inside its own cell with generous empty padding; nothing may cross a cell boundary.',
     'Do not draw grid lines, labels, numbers, captions, borders, scenery, shadows, or extra subjects.',
     'Paint every unused pixel solid #FF00FF magenta with no texture or gradient.',
@@ -338,8 +358,56 @@ export function buildEnvironmentPrompt(
   ].join('\n');
 }
 
-/** One completed object per cell on a 4x3 board. */
+/** Five item rows on a 4x5 animated-object board. */
 export function buildObjectAtlasPrompt(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeObjectBoardRow[],
+): string {
+  if (rows.length !== 5) throw new Error('Animated object boards require exactly five rows.');
+  const rowLines = rows.map((row, index) => {
+    if (row.kind === 'object') {
+      const motion = row.motion_hint
+        ?? 'invent one subtle functional motion or light cycle that reads clearly across four loopable phases';
+      return `Row ${index + 1}: OBJECT — ${row.display_name} — ${motion}`;
+    }
+    if (row.kind === 'poof') return `Row ${index + 1}: POOF — use the one-shot reveal rules below`;
+    return `Row ${index + 1}: CRATE — use the static crate rules below`;
+  });
+  const hasPoof = rows.some((row) => row.kind === 'poof');
+  const hasCrate = rows.some((row) => row.kind === 'crate');
+  return [
+    `Create one animated object sprite sheet for the "${themeName}" theme.`,
+    boardContract(4, 5),
+    'Treat the five rows as five visually equal logical bands; the production slicer distributes remainder pixels across row boundaries.',
+    'Each row contains the four sequential animation frames of exactly one listed item:',
+    ...rowLines,
+    '',
+    'OBJECT ROWS: all four cells show the same finished object from one fixed three-quarter/isometric camera.',
+    'Keep the object body, contact point, scale, colors, and lighting identical. Change only moving or glowing parts.',
+    'Every cell must be a distinct real generated frame; do not hold or duplicate frames.',
+    'Make cell 4 flow seamlessly back to cell 1. Keep motion subtle and the body stationary.',
+    'Center each object with its lowest contact point near the cell bottom. Preserve relative scale across every board.',
+    ...(hasPoof ? [
+      '',
+      'POOF ROW: a four-frame one-shot reveal, centered and large enough to cover a full object.',
+      'Cell 1 begins as a small low smoke puff; cell 2 grows outward; cell 3 is full and opaque;',
+      'cell 4 dissipates into faint wisps. Use neutral light-grey/white smoke with a subtle theme-color tint.',
+    ] : []),
+    ...(hasCrate ? [
+      '',
+      'CRATE ROW: draw one closed themed shipping crate in cell 1. Cells 2–4 must remain entirely flat magenta.',
+      'The crate is one static ready-to-build frame.',
+    ] : []),
+    '',
+    'Use crisp retro pixel art with consistent viewpoint, lighting, rendering style, and camera distance.',
+    '',
+    `Creative direction: ${creativeDirection}`,
+  ].join('\n');
+}
+
+/** Compatibility prompt for retrying themes authored with the legacy 4x3 static board. */
+export function buildLegacyObjectAtlasPrompt(
   creativeDirection: string,
   themeName: string,
   objects: ThemeObjectPromptSpec[],

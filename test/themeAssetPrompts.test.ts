@@ -8,6 +8,8 @@ import {
   buildObjectAtlasPrompt,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
+  createObjectBoardRows,
+  objectBoardFrameKeys,
 } from '../src/extension/themeAssetPrompts';
 
 test('character prompt enforces the production sprite-board mime contracts', () => {
@@ -42,18 +44,34 @@ test('environment prompt treats the reference as an opaque geometry guide', () =
   assert.match(prompt, /No characters/i);
 });
 
-test('aggregate prompts define the 12 object, 16 expression, and 20 badge contracts', () => {
+test('aggregate prompts define animated object rows, 16 expressions, and 20 badges', () => {
   const objects = buildObjectAtlasPrompt(
     'industrial',
     'Factory',
-    Array.from({ length: 12 }, (_unused, index) => ({
+    Array.from({ length: 5 }, (_unused, index) => ({
+      kind: 'object' as const,
       object_id: `object_${index + 1}`,
       display_name: `Object ${index + 1}`,
     })),
   );
   assert.match(objects, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
-  assert.match(objects, /exact 4-column by 3-row grid with 12 equal cells/i);
-  assert.match(objects, /Cell 12: Object 12/);
+  assert.match(objects, /exact 4-column by 5-row logical grid with 20 visually equal cells/i);
+  assert.match(objects, /Row 5: OBJECT — Object 5/i);
+  assert.match(objects, /four sequential animation frames/i);
+  assert.match(objects, /do not hold or duplicate frames/i);
+
+  const finalObjects = buildObjectAtlasPrompt('industrial', 'Factory', [
+    ...Array.from({ length: 3 }, (_unused, index) => ({
+      kind: 'object' as const,
+      object_id: `object_${index + 11}`,
+      display_name: `Object ${index + 11}`,
+    })),
+    { kind: 'poof' as const },
+    { kind: 'crate' as const },
+  ]);
+  assert.match(finalObjects, /Row 4: POOF/i);
+  assert.match(finalObjects, /Row 5: CRATE/i);
+  assert.match(finalObjects, /Cells 2–4 must remain entirely flat magenta/i);
 
   const expressions = buildExpressionAtlasPrompt(
     'industrial',
@@ -61,7 +79,7 @@ test('aggregate prompts define the 12 object, 16 expression, and 20 badge contra
     Array.from({ length: 16 }, (_unused, index) => `Expression ${index + 1}`),
   );
   assert.match(expressions, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
-  assert.match(expressions, /exact 4-column by 4-row grid with 16 equal cells/i);
+  assert.match(expressions, /exact 4-column by 4-row logical grid with 16 visually equal cells/i);
   assert.match(expressions, /Cell 16: Expression 16/);
 
   const achievements = buildAchievementAtlasPrompt(
@@ -70,7 +88,23 @@ test('aggregate prompts define the 12 object, 16 expression, and 20 badge contra
     Array.from({ length: 20 }, (_unused, index) => `Badge ${index + 1}`),
   );
   assert.match(achievements, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
-  assert.match(achievements, /exact 5-column by 4-row grid with 20 equal cells/i);
+  assert.match(achievements, /exact 5-column by 4-row logical grid with 20 visually equal cells/i);
   assert.match(achievements, /Cell 20: Badge 20/);
   assert.match(achievements, /do not include unlock requirements/i);
+});
+
+test('13 objects pack into three full boards with build effects in the final two rows', () => {
+  const rows = createObjectBoardRows(Array.from({ length: 13 }, (_unused, index) => ({
+    object_id: `object_${index + 1}`,
+    display_name: `Object ${index + 1}`,
+  })));
+  assert.deepEqual(rows.map((board) => board.length), [5, 5, 5]);
+  assert.deepEqual(rows.map((board) => board.map((row) => row.kind)), [
+    ['object', 'object', 'object', 'object', 'object'],
+    ['object', 'object', 'object', 'object', 'object'],
+    ['object', 'object', 'object', 'poof', 'crate'],
+  ]);
+  assert.deepEqual(objectBoardFrameKeys(rows[2]), [
+    'object_object_11', 'object_object_12', 'object_object_13', 'poof', 'crate',
+  ]);
 });
