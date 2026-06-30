@@ -12,6 +12,32 @@ export const THEME_OBJECT_COUNT = 12;
 export const THEME_EXPRESSION_COUNT = 16;
 export const THEME_ACHIEVEMENT_COUNT = 20;
 
+export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal'|'dodge';
+
+export interface AtlasClip {
+  frames: number[];    // 1+ slot indices into the 20-cell character atlas
+  fps: number;         // >0 for animated clips; 0 for a held single-frame pose
+  loop: boolean;
+  flippable: boolean;  // may be horizontally mirrored to face the other way
+  pingpong?: boolean;  // optional: play forward then reverse
+  hold?: boolean;       // optional: single static frame (frames.length===1)
+}
+
+export const ATLAS_CLIPS: Record<ClipName, AtlasClip> = {
+  walk: { frames: [0, 1, 2, 3, 4], fps: 10, loop: true, flippable: true },
+  idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
+  sit: { frames: [15], fps: 0, loop: true, flippable: false, hold: true },
+  melee: { frames: [5, 6, 7, 8], fps: 12, loop: false, flippable: true },
+  build: { frames: [5, 6, 7, 8], fps: 6, loop: true, flippable: true },
+  tool_idle: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
+  shoot: { frames: [10, 11], fps: 8, loop: false, flippable: true, pingpong: true },
+  dance: { frames: [17, 18], fps: 6, loop: true, flippable: false, pingpong: true },
+  cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
+  point: { frames: [12], fps: 0, loop: true, flippable: true, hold: true },
+  signal: { frames: [13], fps: 0, loop: true, flippable: false, hold: true },
+  dodge: { frames: [14], fps: 0, loop: false, flippable: true, hold: true },
+};
+
 export interface ThemePlan {
   version: 1;
   theme_id: string;
