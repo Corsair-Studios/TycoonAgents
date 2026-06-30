@@ -19,6 +19,10 @@ export interface ViewportConfig {
   native_height: number;
   background_asset: string;
   walkable_nav_polygon: [number, number][]; // Array of 6 coordinate pairs
+  character_scale?: number;
+  object_scale?: number;
+  character_scale_overrides?: Record<string, number>;
+  object_scale_overrides?: Record<string, number>;
 }
 
 export interface AgentConfig {

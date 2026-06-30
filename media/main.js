@@ -1541,6 +1541,21 @@
   /** Debug: draw nav polygon overlay when true. Toggle with the N key. */
   let showNavPolygon = false;
 
+  // ── Per-theme stage tuning (read from manifest.viewport, persisted by host) ──
+  /** Overall character sprite scale multiplier (1 = default 64px sprite). */
+  let themeCharacterScale = 1;
+  /** Overall build-prop/object scale multiplier. */
+  let themeObjectScale = 1;
+  /** Per-character scale overrides, keyed by character/frame id. */
+  let themeCharScaleOverrides = {};
+  /** Per-object scale overrides, keyed by buildable object id. */
+  let themeObjScaleOverrides = {};
+  /** Effective character scale for a given character/frame id. */
+  function effectiveCharScale(charId) {
+    const o = themeCharScaleOverrides[charId];
+    return (typeof o === "number" && o > 0) ? o : themeCharacterScale;
+  }
+
   /**
    * Ray-cast point-in-polygon test (native coord space).
    * @param {number} x @param {number} y @param {number[][]} poly
@@ -2222,6 +2237,11 @@
           walkableNativeW = DEFAULT_NATIVE_W;
           walkableNativeH = DEFAULT_NATIVE_H;
         }
+        // Per-theme scale tuning (optional manifest fields; default 1 / empty).
+        themeCharacterScale = (vp && typeof vp.character_scale === "number" && vp.character_scale > 0) ? vp.character_scale : 1;
+        themeObjectScale = (vp && typeof vp.object_scale === "number" && vp.object_scale > 0) ? vp.object_scale : 1;
+        themeCharScaleOverrides = (vp && vp.character_scale_overrides && typeof vp.character_scale_overrides === "object") ? vp.character_scale_overrides : {};
+        themeObjScaleOverrides = (vp && vp.object_scale_overrides && typeof vp.object_scale_overrides === "object") ? vp.object_scale_overrides : {};
         // Build rosterOrder from manifest character order (excluding background)
         const manifestChars = Object.keys(themeFramesRaw).filter(
           (id) => id !== "environment_background"
@@ -4052,6 +4072,7 @@
       const isActive = worker
         ? (worker.state !== "idle" && worker.state !== "leave")
         : ((agent.status || "idle").toLowerCase() === "active" || (agent.status || "").toLowerCase() === "working");
+      charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
       // ── Wander logic (native polygon space) ───────────────────────
       charEntry.wanderTimer -= delta;
@@ -4161,7 +4182,7 @@
         const img = slots && slots[slot];
 
         if (img && img.complete && img.naturalWidth > 0) {
-          const spriteSize = Math.round(64 * depthScale);
+          const spriteSize = Math.round(64 * depthScale * effectiveCharScale(charId));
           // Foot-anchor: bottom of sprite sits at canvas floor point
           const drawX = cx - spriteSize / 2;
           const drawY = cy - spriteSize; // feet at cy
@@ -4181,6 +4202,22 @@
             ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
           }
           ctx.restore();
+
+          // Active indicator: a small glowing green light up-and-left of the
+          // sprite's head, marking agents that are currently working.
+          if (charEntry.isActive) {
+            const lightR = Math.max(2.5, 3 * depthScale);
+            const lightX = cx - spriteSize * 0.34;
+            const lightY = drawY + spriteSize * 0.12;
+            ctx.save();
+            ctx.shadowColor = "#39ff14";
+            ctx.shadowBlur = 6;
+            ctx.fillStyle = "#39ff14";
+            ctx.beginPath();
+            ctx.arc(lightX, lightY, lightR, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
 
           // Label below feet — drawn in un-flipped canvas coords so it stays
           // centered directly under the agent regardless of facing direction.

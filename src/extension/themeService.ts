@@ -281,6 +281,33 @@ export async function loadTheme(
   return legacyManifest && legacyFrames ? { manifest: legacyManifest, frames: legacyFrames } : undefined;
 }
 
+export async function saveThemeTuning(
+  globalStorageUri: vscode.Uri,
+  tuning: {
+    theme_id: string;
+    walkable_nav_polygon: [number, number][];
+    character_scale: number;
+    object_scale: number;
+    character_scale_overrides: Record<string, number>;
+    object_scale_overrides: Record<string, number>;
+  },
+): Promise<boolean> {
+  try {
+    const loaded = await loadTheme(globalStorageUri, tuning.theme_id);
+    if (!loaded) return false;
+    const { manifest, frames } = loaded;
+    manifest.viewport.walkable_nav_polygon = tuning.walkable_nav_polygon;
+    manifest.viewport.character_scale = tuning.character_scale;
+    manifest.viewport.object_scale = tuning.object_scale;
+    manifest.viewport.character_scale_overrides = tuning.character_scale_overrides;
+    manifest.viewport.object_scale_overrides = tuning.object_scale_overrides;
+    await writeThemeFiles(globalStorageUri, manifest, frames);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Load the most recently modified theme (by manifest mtime), if any exist.
  * Used to auto-populate a freshly opened surface with the latest theme.

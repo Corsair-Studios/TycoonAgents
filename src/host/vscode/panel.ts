@@ -38,6 +38,7 @@ import {
   renameThemeCharacter,
   retryThemeImage,
   resumeThemeGeneration,
+  saveThemeTuning,
   updateThemeImageReviewStatus,
   generateTheme as generateThemeService,
 } from "../../extension/themeService";
@@ -176,6 +177,10 @@ export class TycoonPanel {
               void this._panel.webview.postMessage({ type: "THEME_INITIALIZED", payload: { manifest: t.manifest, frames: t.frames, is_editor_mode: false } });
             }
           })();
+        } else if (message.type === "SAVE_STAGE_TUNING") {
+          const p = (message as any).payload;
+          const ok = await saveThemeTuning(this._globalStorageUri, p);
+          void this._panel.webview.postMessage({ type: "STAGE_TUNING_SAVED", payload: { ok, theme_id: p?.theme_id } });
         } else if (message.type === "getSkills") {
           this._handleGetSkills();
         } else if (message.type === "installSkill") {
