@@ -1785,11 +1785,25 @@
   let lastFrameTime = 0;
 
   function resize() {
-    canvas.width = canvas.clientWidth;
-    canvas.height = canvas.clientHeight;
+    // Keep the canvas backing-store resolution in lockstep with its CSS
+    // display size. If they drift, the browser stretches the rendered bitmap
+    // (distorting the fixed-size background) and the layout math (bgX/bgY,
+    // nativeToCanvas, nav-poly) computes against the wrong w/h.
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
+    if (cw <= 0 || ch <= 0) return; // not laid out yet; skip until it is
+    if (canvas.width !== cw) canvas.width = cw;
+    if (canvas.height !== ch) canvas.height = ch;
   }
 
   window.addEventListener("resize", resize);
+  // The metrics handlebar resizes the #stage container WITHOUT firing a window
+  // 'resize' event, so observe the canvas element directly to catch those drags
+  // (and the initial layout settling) and re-sync the backing store.
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(() => resize());
+    ro.observe(canvas);
+  }
   resize();
 
   // Tell the extension we're ready; it will push the current state back
