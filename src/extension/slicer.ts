@@ -5,8 +5,51 @@ export interface NormalizedAtlasPackage {
   manifest: Partial<ThemeManifest>;
   cell_width: number;
   cell_height: number;
-  slots: Array<{ slot_id: number; data: string }>;
+  slots: Array<{ slot_id: number; data: string; meta: FrameContentMeta }>;
   board?: Buffer;
+}
+
+export interface FrameContentMeta {
+  centroidX: number;   // center-of-mass x (alpha>0 pixels) within the 128x128 frame; -1 if frame empty
+  footY: number;       // largest y containing any opaque pixel (the foot line); -1 if empty
+  topY: number;        // smallest y containing any opaque pixel; -1 if empty
+  left: number;        // smallest x with an opaque pixel; -1 if empty
+  right: number;       // largest x with an opaque pixel; -1 if empty
+  opaqueCount: number; // count of pixels with alpha>0; 0 if empty
+}
+
+/**
+ * Measures the opaque (alpha>0) content of a normalized frame.
+ *
+ * Used to verify that emitted frames share a consistent horizontal center
+ * (centroidX) and foot line (footY) after normalization.
+ *
+ * @param image - A Jimp image (typically the normalized 128×128 frame).
+ * @returns FrameContentMeta describing the opaque-pixel bounds and centroid.
+ */
+export function measureFrameContent(image: Jimp): FrameContentMeta {
+  let minX = Infinity;
+  let maxX = -1;
+  let minY = Infinity;
+  let maxY = -1;
+  let sumX = 0;
+  let count = 0;
+
+  image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (x: number, y: number, idx: number) {
+    if (image.bitmap.data[idx + 3] > 0) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      sumX += x;
+      count += 1;
+    }
+  });
+
+  if (count === 0) {
+    return { centroidX: -1, footY: -1, topY: -1, left: -1, right: -1, opaqueCount: 0 };
+  }
+  return { centroidX: sumX / count, footY: maxY, topY: minY, left: minX, right: maxX, opaqueCount: count };
 }
 
 export interface AtlasGrid {
@@ -106,7 +149,7 @@ export async function sliceAndNormalizeAtlas(
     ? grid.targetContentHeight / medianReferenceHeight
     : 1;
   const maxContentExtent = grid.maxContentExtent ?? Number.POSITIVE_INFINITY;
-  const slots: Array<{ slot_id: number; data: string }> = [];
+  const slots: Array<{ slot_id: number; data: string; meta: FrameContentMeta }> = [];
   const rebuiltBoardWidth = grid.columns * 128;
   const rebuiltBoardHeight = grid.squareReviewBoard
     ? rebuiltBoardWidth
@@ -137,8 +180,9 @@ export async function sliceAndNormalizeAtlas(
       out.composite(content, destX, destY);
     }
 
+    const meta = measureFrameContent(out);
     const pngBuf = await out.getBufferAsync(Jimp.MIME_PNG);
-    slots.push({ slot_id: cellInfo.slot_id, data: 'data:image/png;base64,' + pngBuf.toString('base64') });
+    slots.push({ slot_id: cellInfo.slot_id, data: 'data:image/png;base64,' + pngBuf.toString('base64'), meta });
     if (rebuiltBoard) {
       rebuiltBoard.composite(
         out,
