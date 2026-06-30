@@ -97,7 +97,8 @@
     "Other"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host",
+    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths",
+    "check:paths": "node scripts/check-no-absolute-paths.mjs",
     "build": "tsc -p .",
     "build-ext": "tsc -p . && npm run bundle:host",
     "typecheck": "tsc -p . --noEmit",
