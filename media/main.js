@@ -514,7 +514,7 @@
   }
 
   function selectedThemeImageProvider() {
-    return themeImageProvider && themeImageProvider.value === "openai" ? "openai" : "gemini";
+    return themeImageProvider && themeImageProvider.value === "gemini" ? "gemini" : "openai";
   }
 
   function updateThemeApiKeyUi(message, isError) {

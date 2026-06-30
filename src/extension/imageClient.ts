@@ -33,7 +33,7 @@ export async function generateThemeImage(
 ): Promise<Buffer> {
   const config = vscode.workspace.getConfiguration('tycoonagents');
   const provider = options.provider
-    ?? (config.get<string>('themeImageProvider', 'gemini') === 'openai' ? 'openai' : 'gemini');
+    ?? (config.get<string>('themeImageProvider', 'openai') === 'gemini' ? 'gemini' : 'openai');
   const apiKey = options.apiKey || (provider === 'openai'
     ? config.get<string>('openaiApiKey') || process.env.OPENAI_API_KEY
     : config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);

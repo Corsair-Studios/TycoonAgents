@@ -65,15 +65,15 @@
         "tycoonagents.themeImageProvider": {
           "type": "string",
           "enum": [
-            "gemini",
-            "openai"
+            "openai",
+            "gemini"
           ],
           "enumDescriptions": [
-            "Google Gemini image generation",
-            "OpenAI GPT Image 2"
+            "OpenAI GPT Image 2",
+            "Google Gemini image generation"
           ],
-          "default": "gemini",
-          "description": "AI provider used to plan and generate Theme Builder assets."
+          "default": "openai",
+          "description": "AI provider used to plan and generate Theme Builder assets. OpenAI GPT Image 2 is the default."
         },
         "tycoonagents.geminiApiKey": {
           "type": "string",

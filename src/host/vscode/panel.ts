@@ -2248,8 +2248,8 @@ export class TycoonPanel {
           <div class="theme-image-settings-row">
             <label for="theme-image-provider">Image provider</label>
             <select id="theme-image-provider">
-              <option value="gemini">Google Gemini</option>
               <option value="openai">OpenAI (GPT Image 2)</option>
+              <option value="gemini">Google Gemini</option>
             </select>
           </div>
           <div class="theme-image-settings-row theme-api-key-row">

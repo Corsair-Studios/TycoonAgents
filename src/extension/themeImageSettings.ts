@@ -15,7 +15,7 @@ const SECRET_KEYS: Record<ThemeImageProvider, string> = {
 const PROVIDER_STORAGE_KEY = 'tycoonagents.themeImage.provider';
 
 export function normalizeThemeImageProvider(value: unknown): ThemeImageProvider {
-  return value === 'openai' ? 'openai' : 'gemini';
+  return value === 'gemini' ? 'gemini' : 'openai';
 }
 
 export async function getConfiguredThemeImageProvider(
@@ -26,7 +26,7 @@ export async function getConfiguredThemeImageProvider(
 
   const configured = vscode.workspace
     .getConfiguration('tycoonagents')
-    .get<string>('themeImageProvider', 'gemini');
+    .get<string>('themeImageProvider', 'openai');
   return normalizeThemeImageProvider(configured);
 }
 
