@@ -1607,6 +1607,8 @@
   let enemyCountMode = "random";
   /** Rival roster from manifest.roster_rivals: [{rival_id, name, atlas_asset}]. */
   let themeRivals = [];
+  /** Playable roster from manifest.roster_agents: [{slot_id, name, ...}]. Retained for the per-character scale override list. */
+  let themeRosterAgents = [];
   /** Seconds elapsed since the last wave was cleared/started. */
   let enemySpawnElapsed = 0;
   /**
@@ -1637,6 +1639,8 @@
   let lastBgX = 0, lastBgY = 0, lastBgW = 1, lastBgH = 1;
   /** Character id selected in the per-character override control. */
   let editSelectedCharId = "";
+  /** Buildable object_id selected in the per-object override control. */
+  let editSelectedObjId = "";
 
   // ── Stage loading progress (a bar replaces placeholders while loading) ────
   const LOADING_TIMEOUT_MS = 6000;
@@ -1763,6 +1767,10 @@
       '<button id="se-co-clear" type="button">clear override</button>' +
       '<div style="margin-top:6px">Object scale: <span id="se-os-val">1.00</span></div>' +
       '<input id="se-os" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<div style="margin-top:6px">Per-object override</div>' +
+      '<select id="se-obj"></select>' +
+      '<input id="se-oo" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<button id="se-oo-clear" type="button">clear override</button>' +
       '<button id="se-bg" type="button">Replace background…</button>' +
       '<div style="margin-top:8px;border-top:1px solid rgba(255,193,7,0.3);padding-top:6px">Enemy spawn interval (s): <span id="se-ei-val">45</span></div>' +
       '<input id="se-ei" type="range" min="10" max="180" step="5" value="45">' +
@@ -1780,6 +1788,9 @@
     stageEditEls.coClear = wrap.querySelector("#se-co-clear");
     stageEditEls.os = wrap.querySelector("#se-os");
     stageEditEls.osVal = wrap.querySelector("#se-os-val");
+    stageEditEls.obj = wrap.querySelector("#se-obj");
+    stageEditEls.oo = wrap.querySelector("#se-oo");
+    stageEditEls.ooClear = wrap.querySelector("#se-oo-clear");
     stageEditEls.ei = wrap.querySelector("#se-ei");
     stageEditEls.eiVal = wrap.querySelector("#se-ei-val");
     stageEditEls.ecm = wrap.querySelector("#se-ecm");
@@ -1789,13 +1800,14 @@
     stageEditEls.bg = wrap.querySelector("#se-bg");
     // Cosmetic styling via CSSOM (CSP-safe).
     wrap.querySelector("#se-h").style.cssText = "font-weight:bold;color:#ffc107;margin-bottom:6px;";
-    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.char, stageEditEls.ei, stageEditEls.ecm]) el.style.width = "100%";
+    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.char, stageEditEls.obj, stageEditEls.oo, stageEditEls.ei, stageEditEls.ecm]) el.style.width = "100%";
     stageEditEls.bg.style.cssText = "width:100%;margin-top:8px;";
     wrap.querySelector("#se-hint").style.cssText = "opacity:0.7;margin:8px 0;";
     wrap.querySelector("#se-btns").style.cssText = "display:flex;gap:6px;margin-top:4px;";
     stageEditEls.save.style.flex = "1";
     stageEditEls.done.style.flex = "1";
     stageEditEls.coClear.style.cssText = "margin-top:3px;font-size:10px;";
+    stageEditEls.ooClear.style.cssText = "margin-top:3px;font-size:10px;";
     stageEditEls.status.style.cssText = "margin-top:6px;min-height:14px;color:#9fffa0;";
 
     // Wire controls.
@@ -1818,6 +1830,18 @@
     stageEditEls.coClear.addEventListener("click", () => {
       if (editSelectedCharId) delete themeCharScaleOverrides[editSelectedCharId];
       syncOverrideSlider();
+    });
+    stageEditEls.obj.addEventListener("change", () => {
+      editSelectedObjId = stageEditEls.obj.value;
+      syncObjOverrideSlider();
+    });
+    stageEditEls.oo.addEventListener("input", () => {
+      if (!editSelectedObjId) return;
+      themeObjScaleOverrides[editSelectedObjId] = parseFloat(stageEditEls.oo.value) || 1;
+    });
+    stageEditEls.ooClear.addEventListener("click", () => {
+      if (editSelectedObjId) delete themeObjScaleOverrides[editSelectedObjId];
+      syncObjOverrideSlider();
     });
     stageEditEls.ei.addEventListener("input", () => {
       enemySpawnIntervalSec = parseFloat(stageEditEls.ei.value) || 45;
@@ -1842,19 +1866,36 @@
     const ov = themeCharScaleOverrides[editSelectedCharId];
     stageEditEls.co.value = String(typeof ov === "number" && ov > 0 ? ov : themeCharacterScale);
   }
+  function syncObjOverrideSlider() {
+    const ov = themeObjScaleOverrides[editSelectedObjId];
+    stageEditEls.oo.value = String(typeof ov === "number" && ov > 0 ? ov : themeObjectScale);
+  }
   function enterEditStage() {
     if (!themeLoaded) return;
     buildStageEditPanel();
     editStageMode = true;
-    const ids = rosterOrder.length ? rosterOrder : Object.keys(themeImages).filter((id) => id !== "environment_background");
-    stageEditEls.char.innerHTML = "";
-    for (const id of ids) {
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.textContent = id;
-      stageEditEls.char.appendChild(opt);
+    // Build the per-character override list strictly from the playable roster
+    // (manifest.roster_agents), keyed "agent_"+slot_id to match effectiveCharScale/
+    // themeImages. Never fall back to Object.keys(themeImages) — that set also
+    // contains object_/rival_/crate/poof/badge_/expression_ keys.
+    let charOptions;
+    if (themeRosterAgents.length) {
+      charOptions = themeRosterAgents
+        .filter((a) => a && a.slot_id)
+        .map((a) => ({ id: "agent_" + a.slot_id, label: a.name || a.slot_id }));
+    } else {
+      charOptions = rosterOrder
+        .filter((id) => typeof id === "string" && id.startsWith("agent_"))
+        .map((id) => ({ id, label: id }));
     }
-    editSelectedCharId = ids[0] || "";
+    stageEditEls.char.innerHTML = "";
+    for (const opt of charOptions) {
+      const optEl = document.createElement("option");
+      optEl.value = opt.id;
+      optEl.textContent = opt.label;
+      stageEditEls.char.appendChild(optEl);
+    }
+    editSelectedCharId = (charOptions[0] && charOptions[0].id) || "";
     stageEditEls.cs.value = String(themeCharacterScale);
     stageEditEls.csVal.textContent = themeCharacterScale.toFixed(2);
     stageEditEls.os.value = String(themeObjectScale);
@@ -1863,6 +1904,20 @@
     stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
     stageEditEls.ecm.value = enemyCountMode;
     syncOverrideSlider();
+    // Per-object override list: every buildable object from the loaded theme.
+    const objOptions = themeBuildables.map((o) => ({
+      id: o.object_id,
+      label: o.display_name || o.object_id,
+    }));
+    stageEditEls.obj.innerHTML = "";
+    for (const opt of objOptions) {
+      const optEl = document.createElement("option");
+      optEl.value = opt.id;
+      optEl.textContent = opt.label;
+      stageEditEls.obj.appendChild(optEl);
+    }
+    editSelectedObjId = (objOptions[0] && objOptions[0].id) || "";
+    syncObjOverrideSlider();
     stageEditEls.status.textContent = "";
     stageEditPanel.removeAttribute("hidden");
   }
@@ -2320,6 +2375,18 @@
   /** @type {{ sessionActive: boolean; workers: Record<string, { id: string; role?: string; state: string }>; completedTasks: number }} */
   let state = { sessionActive: false, workers: {}, completedTasks: 0 };
   let idleFreezeMs = 180000, sanityCapMs = 900000;
+
+  // ── Single source of truth for "is this agent active?" ───────────────
+  // Both the agent-metrics panel and the canvas character scene MUST use
+  // this exact helper so the two views can never diverge. It mirrors
+  // idleFreezeMs (sourced from state.idleFreezeMs, default 180000ms/180s)
+  // so a freshly-reassigned threshold is honored everywhere immediately.
+  function isMetricsAgentActive(agent) {
+    const status = ((agent && agent.status) || "idle").toLowerCase();
+    if (status !== "active") return false;
+    const frozen = (agent.lastActivityAt != null) && (Date.now() - agent.lastActivityAt > idleFreezeMs);
+    return !frozen;
+  }
 
   // Stable insertion-order tracking so x positions don't jump
   /** @type {string[]} */
@@ -2819,6 +2886,7 @@
           : 45;
         enemyCountMode = enemyCfg.count_mode === "all" ? "all" : "random";
         themeRivals = Array.isArray(manifest?.roster_rivals) ? manifest.roster_rivals.slice() : [];
+        themeRosterAgents = Array.isArray(manifest?.roster_agents) ? manifest.roster_agents.slice() : [];
         // Reset runtime enemy state for the new theme (no enemies carry over).
         activeEnemies = [];
         enemySpawnElapsed = 0;
@@ -3734,7 +3802,7 @@
       const status = (agent.status || "idle").toLowerCase();
       const isActive = status === "active";
       const frozen = isActive && (agent.lastActivityAt != null) && (Date.now() - agent.lastActivityAt > idleFreezeMs);
-      const showActive = isActive && !frozen;
+      const showActive = isMetricsAgentActive(agent);
       const row = document.createElement("tr");
 
       const displayName = agent.name || agent.id;
@@ -4890,9 +4958,11 @@
       const charEntry = agentCharMap[agent.id];
 
       // ── Active check ───────────────────────────────────────────────
-      const isActive = worker
-        ? (worker.state !== "idle" && worker.state !== "leave")
-        : ((agent.status || "idle").toLowerCase() === "active" || (agent.status || "").toLowerCase() === "working");
+      // Pure function of the agentMetrics entry — must stay identical to the
+      // agent-metrics panel's showActive (the single source of truth) so the
+      // canvas and panel can never diverge. worker.state intentionally does
+      // NOT influence this; it's still used elsewhere below for animation.
+      const isActive = isMetricsAgentActive(agent);
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
       // ── EVICT combat targeting (Phase 2b) ────────────────────────────
@@ -5103,7 +5173,10 @@
         const ecx = canvasPt[0], ecy = canvasPt[1];
         const tDepth = Math.max(0, Math.min(1, (en.ny - polyMinY) / polyRangeY));
         const depthScale = 0.8 + tDepth * 0.3;
-        const slots = themeImages["rival_" + en.rival_id];
+        const rivalKey = typeof en.rival_id === "string" && en.rival_id.startsWith("rival_")
+          ? en.rival_id
+          : ("rival_" + en.rival_id);
+        const slots = themeImages[rivalKey];
         const slot = currentSlot(en.animState);
         const img = slots && slots[slot];
         const spriteSize = Math.round(64 * depthScale * themeCharacterScale);
@@ -5122,13 +5195,15 @@
           }
           ctx.restore();
         } else {
-          // No rival art loaded — simple red marker so EVICT mode is still visible.
+          // No rival art loaded — small red marker (character-footprint sized)
+          // so EVICT mode is still visible without dominating the stage.
           ctx.save();
           ctx.fillStyle = "rgba(200,40,40,0.85)";
           ctx.strokeStyle = "#5a0a0a";
           ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(ecx, ecy - spriteSize / 2, spriteSize / 2.5, 0, Math.PI * 2);
+          const fallbackRadius = Math.min(10, spriteSize / 4);
+          ctx.arc(ecx, ecy - fallbackRadius, fallbackRadius, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
           ctx.restore();
