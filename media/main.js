@@ -4144,7 +4144,6 @@
       const worker = state.workers[agent.id] || null;
       const desiredClip = charEntry.animState ? charEntry.animState.action : "idle";
       const anim = charEntry.animState;
-      const isLeaveState = worker && worker.state === "leave";
 
       const cx = charEntry.x;
       const cy = charEntry.y;
@@ -4170,8 +4169,10 @@
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
           const shouldFlip = clip.flippable && charEntry.facingLeft === true;
 
+          // Draw the sprite inside its own save/restore so the horizontal-flip
+          // transform NEVER leaks into the label below (a flipped+scaled context
+          // would mirror-map the label to ~spriteSize/2 and fling it offscreen).
           ctx.save();
-          if (isLeaveState) ctx.globalAlpha = 0.55;
           if (shouldFlip) {
             ctx.translate(cx + spriteSize / 2, 0);
             ctx.scale(-1, 1);
@@ -4179,14 +4180,15 @@
           } else {
             ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
           }
-          // Label below feet
-          ctx.globalAlpha = 1;
+          ctx.restore();
+
+          // Label below feet — drawn in un-flipped canvas coords so it stays
+          // centered directly under the agent regardless of facing direction.
           ctx.fillStyle = "#e0e0e0";
           ctx.font = `${Math.round(9 * depthScale)}px monospace`;
           ctx.textAlign = "center";
           const label = (agent.name || agent.id).slice(0, 12);
           ctx.fillText(label, cx, cy + Math.round(14 * depthScale));
-          ctx.restore();
         } else {
           // Sprite not yet loaded — fallback stick figure
           drawWorker(cx, cy, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
