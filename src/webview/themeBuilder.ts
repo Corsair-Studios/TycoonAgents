@@ -1,4 +1,12 @@
 import { WorldState, BuildableObject, ThemeManifest } from '../shared/types';
+import { ATLAS_CLIPS, type ClipName } from '../extension/themePlan';
+import {
+  advanceCharacterAnimation,
+  createCharacterAnimation,
+  currentCharacterSlot,
+  setCharacterAction,
+  type CharacterAnimationState,
+} from './animationPlayback';
 
 // ============================================================================
 // STATE MANAGEMENT
@@ -12,7 +20,22 @@ export let worldState: WorldState = {
 };
 
 export let activeManifest: ThemeManifest | null = null;
-export const frameCache: Map<string, HTMLImageElement[]> = new Map();
+
+interface FrameContentMeta {
+  centroidX: number;
+  footY: number;
+  topY: number;
+  left: number;
+  right: number;
+  opaqueCount: number;
+}
+
+interface CachedFrame {
+  image: HTMLImageElement;
+  meta?: FrameContentMeta;
+}
+
+export const frameCache: Map<string, CachedFrame[]> = new Map();
 
 declare const acquireVsCodeApi: any;
 const vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
@@ -69,25 +92,49 @@ const NAV_POLYGON: [number, number][] = [
 const TANK_POS = { x: 510, y: 440 };
 const TANK_EXCLUSION_RADIUS = 52;
 
-interface Renderable {
+interface BaseRenderable {
   id: string;
-  type: 'agent' | 'object';
   x: number;
   y: number;
   width: number;
   height: number;
   color: string;
   atlas_asset?: string;
-  targetX?: number;
-  targetY?: number;
   current_emote: string | null;
   emote_timer: number;
 }
+
+interface ActionOverride {
+  action: ClipName;
+  until: number;
+}
+
+interface CharacterRenderable extends BaseRenderable {
+  type: 'agent';
+  role: 'agent' | 'rival';
+  targetX?: number;
+  targetY?: number;
+  action: ClipName;
+  facingLeft: boolean;
+  animation: CharacterAnimationState;
+  idleUntil: number;
+  buildArrivalSignaled: boolean;
+  buildPhaseOffset: number;
+  actionOverride?: ActionOverride;
+}
+
+interface ObjectRenderable extends BaseRenderable {
+  type: 'object';
+}
+
+type Renderable = CharacterRenderable | ObjectRenderable;
 
 let renderQueue: Renderable[] = [];
 let ctx: CanvasRenderingContext2D | null = null;
 let animationFrameId: number;
 let frameCount = 0;
+let lastRenderTimestamp: number | undefined;
+let assignedBuildTargetId: string | null | undefined;
 
 function distance(x1: number, y1: number, x2: number, y2: number) {
   return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
@@ -133,8 +180,87 @@ function getPointOnTankRing(): { x: number; y: number } {
   };
 }
 
-function renderLoop() {
+function stableOffset(id: string): number {
+  let hash = 0;
+  for (let index = 0; index < id.length; index++) hash = (hash * 31 + id.charCodeAt(index)) | 0;
+  return Math.abs(hash % 1000) / 1000;
+}
+
+function setRenderableAction(character: CharacterRenderable, action: ClipName): void {
+  character.action = action;
+  setCharacterAction(character.animation, action);
+}
+
+function selectCharacterAction(
+  character: CharacterRenderable,
+  moved: boolean,
+  timestamp: number,
+): ClipName {
+  if (character.actionOverride) {
+    if (timestamp < character.actionOverride.until) return character.actionOverride.action;
+    character.actionOverride = undefined;
+  }
+  if (moved) return 'walk';
+
+  if (worldState.active_rivals.length > 0 || worldState.current_mode === 'MODE_EVICT') {
+    return character.role === 'rival' ? 'melee' : 'shoot';
+  }
+
+  if (worldState.active_build_target_id !== null) {
+    if (character.current_emote === 'emote_idea' && character.emote_timer > 0) return 'point';
+    const buildClip = ATLAS_CLIPS.build;
+    const swingDuration = buildClip.frames.length / buildClip.fps;
+    const pauseDuration = 0.35;
+    const phase = (timestamp / 1000 + character.buildPhaseOffset)
+      % (swingDuration + pauseDuration);
+    return phase < swingDuration ? 'build' : 'tool_idle';
+  }
+
+  if (character.current_emote === 'emote_sleep') return 'sit';
+  if (character.current_emote === 'emote_smile') return 'dance';
+  if (character.current_emote === 'emote_team') return 'signal';
+  return 'idle';
+}
+
+function drawCharacterFrame(
+  context: CanvasRenderingContext2D,
+  character: CharacterRenderable,
+  frame: CachedFrame,
+): boolean {
+  const image = frame.image;
+  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return false;
+
+  const clip = ATLAS_CLIPS[character.action];
+  const shouldFlip = clip.flippable && character.facingLeft;
+  const sourceHeight = image.naturalHeight || image.height;
+  const sourceFootY = frame.meta && frame.meta.footY >= 0
+    ? frame.meta.footY
+    : sourceHeight;
+  const footX = character.x + character.width / 2;
+  const footY = character.y + character.height;
+  const drawY = -sourceFootY * (character.height / sourceHeight);
+
+  context.save();
+  context.translate(footX, footY);
+  if (shouldFlip) context.scale(-1, 1);
+  context.drawImage(
+    image,
+    -character.width / 2,
+    drawY,
+    character.width,
+    character.height,
+  );
+  context.restore();
+  return true;
+}
+
+function renderLoop(timestamp: number) {
   if (!ctx) return;
+
+  const deltaSeconds = lastRenderTimestamp === undefined
+    ? 0
+    : Math.min(Math.max((timestamp - lastRenderTimestamp) / 1000, 0), 0.1);
+  lastRenderTimestamp = timestamp;
   
   frameCount++;
   
@@ -163,7 +289,18 @@ function renderLoop() {
 
   // 1. Update Pathfinding (LERP / Step towards target)
   for (const obj of renderQueue) {
-    if (obj.type === 'agent' && obj.targetX !== undefined && obj.targetY !== undefined) {
+    if (obj.type === 'agent') {
+      let moved = false;
+
+      if (obj.targetX === undefined || obj.targetY === undefined) {
+        if (worldState.active_build_target_id === null && timestamp >= obj.idleUntil) {
+          const point = getRandomNavPoint();
+          obj.targetX = point.x;
+          obj.targetY = point.y;
+        }
+      }
+
+      if (obj.targetX !== undefined && obj.targetY !== undefined) {
       // Aim the center of the agent at the target
       const cx = obj.x + obj.width / 2;
       const cy = obj.y + obj.height / 2;
@@ -178,21 +315,28 @@ function renderLoop() {
         
         obj.x += nx * SPEED;
         obj.y += ny * SPEED;
+        moved = true;
+        if (Math.abs(nx) > 0.01) obj.facingLeft = nx < 0;
       } else {
         // Reached target
-        if (worldState.active_build_target_id !== 'hiss_tank') {
-          // Pick a new idle point
-          const pt = getRandomNavPoint();
-          obj.targetX = pt.x;
-          obj.targetY = pt.y;
+        if (worldState.active_build_target_id === null) {
+          // Rest briefly so stationary idle/sit poses are visible between walks.
+          obj.targetX = undefined;
+          obj.targetY = undefined;
+          obj.idleUntil = timestamp + 1000 + stableOffset(obj.id) * 2500;
         } else {
           // Construct Override: trigger emote_idea upon arrival at perimeter
-          if (obj.current_emote !== 'emote_idea') {
-             obj.current_emote = 'emote_idea';
-             obj.emote_timer = 120;
+          if (!obj.buildArrivalSignaled) {
+            obj.current_emote = 'emote_idea';
+            obj.emote_timer = 120;
+            obj.buildArrivalSignaled = true;
           }
         }
       }
+      }
+
+      setRenderableAction(obj, selectCharacterAction(obj, moved, timestamp));
+      advanceCharacterAnimation(obj.animation, deltaSeconds);
     }
   }
   
@@ -208,11 +352,13 @@ function renderLoop() {
     if (bgFrames.length > 0) {
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-      const background = bgFrames[0];
-      const scale = Math.min(CANVAS_WIDTH / background.width, CANVAS_HEIGHT / background.height);
-      const width = background.width * scale;
-      const height = background.height * scale;
-      ctx.drawImage(background, (CANVAS_WIDTH - width) / 2, (CANVAS_HEIGHT - height) / 2, width, height);
+      const background = bgFrames[0].image;
+      if (background.complete && background.naturalWidth > 0) {
+        const scale = Math.min(CANVAS_WIDTH / background.width, CANVAS_HEIGHT / background.height);
+        const width = background.width * scale;
+        const height = background.height * scale;
+        ctx.drawImage(background, (CANVAS_WIDTH - width) / 2, (CANVAS_HEIGHT - height) / 2, width, height);
+      }
     } else {
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -266,12 +412,16 @@ function renderLoop() {
       const key = obj.atlas_asset.split('#')[1];
       const frames = frameCache.get(key);
       if (frames && frames.length > 0) {
-        // Cycle through frames. Use floor(frameCount / 5) for speed throttling
-        const frameIndex = obj.type === 'object'
-          ? frames.length - 1
-          : Math.floor(frameCount / 5) % frames.length;
-        ctx.drawImage(frames[frameIndex], obj.x, obj.y, obj.width, obj.height);
-        drawnFromAtlas = true;
+        if (obj.type === 'agent') {
+          const frame = frames[currentCharacterSlot(obj.animation)];
+          if (frame) drawnFromAtlas = drawCharacterFrame(ctx, obj, frame);
+        } else {
+          const frame = frames[frames.length - 1];
+          if (frame?.image.complete && frame.image.naturalWidth > 0) {
+            ctx.drawImage(frame.image, obj.x, obj.y, obj.width, obj.height);
+            drawnFromAtlas = true;
+          }
+        }
       }
     }
     
@@ -299,7 +449,9 @@ function renderLoop() {
       const emoteFrames = frameCache.get(obj.current_emote);
       if (emoteFrames && emoteFrames.length > 0) {
         const emoteFrame = emoteFrames[Math.floor(frameCount / 5) % emoteFrames.length];
-        ctx.drawImage(emoteFrame, bubbleX - 14, bubbleY - 14, 28, 28);
+        if (emoteFrame.image.complete && emoteFrame.image.naturalWidth > 0) {
+          ctx.drawImage(emoteFrame.image, bubbleX - 14, bubbleY - 14, 28, 28);
+        }
       } else {
         ctx.fillStyle = 'black';
         ctx.font = '12px sans-serif';
@@ -364,6 +516,7 @@ export function rebuildRenderQueue() {
         renderQueue.push({
           id: `agent_${agent.slot_id}`,
           type: 'agent',
+          role: 'agent',
           x: pt.x - 32,
           y: pt.y - 32,
           width: 64,
@@ -373,7 +526,13 @@ export function rebuildRenderQueue() {
           targetX: pt.x,
           targetY: pt.y,
           current_emote: null,
-          emote_timer: 0
+          emote_timer: 0,
+          action: 'idle',
+          facingLeft: false,
+          animation: createCharacterAnimation(),
+          idleUntil: 0,
+          buildArrivalSignaled: false,
+          buildPhaseOffset: stableOffset(`agent_${agent.slot_id}`),
         });
       });
     }
@@ -384,6 +543,7 @@ export function rebuildRenderQueue() {
         renderQueue.push({
           id: key,
           type: 'agent',
+          role: 'rival',
           x: pt.x - 32,
           y: pt.y - 32,
           width: 64,
@@ -393,7 +553,13 @@ export function rebuildRenderQueue() {
           targetX: pt.x,
           targetY: pt.y,
           current_emote: null,
-          emote_timer: 0
+          emote_timer: 0,
+          action: 'idle',
+          facingLeft: false,
+          animation: createCharacterAnimation(),
+          idleUntil: 0,
+          buildArrivalSignaled: false,
+          buildPhaseOffset: stableOffset(key),
         });
       });
     }
@@ -405,6 +571,7 @@ export function rebuildRenderQueue() {
       renderQueue.push({
         id: `agent_${i}`,
         type: 'agent',
+        role: 'agent',
         x: pt.x - 32,
         y: pt.y - 32,
         width: 64,
@@ -413,7 +580,13 @@ export function rebuildRenderQueue() {
         targetX: pt.x,
         targetY: pt.y,
         current_emote: null,
-        emote_timer: 0
+        emote_timer: 0,
+        action: 'idle',
+        facingLeft: false,
+        animation: createCharacterAnimation(),
+        idleUntil: 0,
+        buildArrivalSignaled: false,
+        buildPhaseOffset: stableOffset(`agent_${i}`),
       });
     }
   }
@@ -481,18 +654,17 @@ export function initThemeBuilder(containerElement: HTMLElement) {
   // Handle world state changes for pathfinding targets and UI
   unsubscribe = subscribeToState(state => {
     const isSwarming = state.active_build_target_id === 'hiss_tank';
-    
-    for (const obj of renderQueue) {
-      if (obj.type === 'agent') {
-        if (isSwarming) {
-          const pt = getPointOnTankRing();
+    const targetChanged = assignedBuildTargetId !== state.active_build_target_id;
+    assignedBuildTargetId = state.active_build_target_id;
+
+    if (targetChanged) {
+      for (const obj of renderQueue) {
+        if (obj.type === 'agent') {
+          const pt = isSwarming ? getPointOnTankRing() : getRandomNavPoint();
           obj.targetX = pt.x;
           obj.targetY = pt.y;
-        } else {
-          // Returning to idle, give new random target
-          const pt = getRandomNavPoint();
-          obj.targetX = pt.x;
-          obj.targetY = pt.y;
+          obj.idleUntil = 0;
+          obj.buildArrivalSignaled = false;
         }
       }
     }
@@ -641,12 +813,120 @@ export function cleanupThemeBuilder() {
     cancelAnimationFrame(animationFrameId);
   }
   if (unsubscribe) unsubscribe();
+  lastRenderTimestamp = undefined;
+  assignedBuildTargetId = undefined;
   isInitialized = false;
 }
 
 // Bind to window so main.js can access it
 (window as any).initThemeBuilder = initThemeBuilder;
 (window as any).cleanupThemeBuilder = cleanupThemeBuilder;
+
+function isFrameContentMeta(value: unknown): value is FrameContentMeta {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<FrameContentMeta>;
+  return ['centroidX', 'footY', 'topY', 'left', 'right', 'opaqueCount']
+    .every((key) => typeof candidate[key as keyof FrameContentMeta] === 'number');
+}
+
+function measureLoadedFrame(image: HTMLImageElement): FrameContentMeta | undefined {
+  try {
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    if (width <= 0 || height <= 0) return undefined;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return undefined;
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, width, height).data;
+    let left = width;
+    let right = -1;
+    let topY = height;
+    let footY = -1;
+    let sumX = 0;
+    let opaqueCount = 0;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (pixels[(y * width + x) * 4 + 3] === 0) continue;
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        topY = Math.min(topY, y);
+        footY = Math.max(footY, y);
+        sumX += x;
+        opaqueCount++;
+      }
+    }
+
+    if (opaqueCount === 0) {
+      return { centroidX: -1, footY: -1, topY: -1, left: -1, right: -1, opaqueCount: 0 };
+    }
+    return { centroidX: sumX / opaqueCount, footY, topY, left, right, opaqueCount };
+  } catch {
+    return undefined;
+  }
+}
+
+function cacheIncomingFrames(framesMap: Record<string, unknown>): void {
+  frameCache.clear();
+  for (const [key, rawFrames] of Object.entries(framesMap)) {
+    if (!Array.isArray(rawFrames)) continue;
+    const frames: CachedFrame[] = [];
+    rawFrames.forEach((rawFrame, index) => {
+      const objectFrame = rawFrame && typeof rawFrame === 'object'
+        ? rawFrame as { data?: unknown; meta?: unknown; slot_id?: unknown }
+        : undefined;
+      const data = typeof rawFrame === 'string'
+        ? rawFrame
+        : typeof objectFrame?.data === 'string' ? objectFrame.data : undefined;
+      if (!data) return;
+
+      const frame: CachedFrame = {
+        image: new Image(),
+        meta: isFrameContentMeta(objectFrame?.meta) ? objectFrame.meta : undefined,
+      };
+      frame.image.addEventListener('load', () => {
+        // Legacy frames.json stores URI strings only. Measure once in the
+        // webview so those themes gain the same foot anchor without migration.
+        if (!frame.meta) frame.meta = measureLoadedFrame(frame.image);
+      }, { once: true });
+      frame.image.src = data;
+      const slot = typeof objectFrame?.slot_id === 'number' ? objectFrame.slot_id : index;
+      frames[slot] = frame;
+    });
+    frameCache.set(key, frames);
+  }
+}
+
+function triggerCharacterAction(payload: unknown): void {
+  if (!payload || typeof payload !== 'object') return;
+  const event = payload as {
+    character_id?: unknown;
+    action?: unknown;
+    facingLeft?: unknown;
+    duration_ms?: unknown;
+  };
+  if (typeof event.action !== 'string' || !(event.action in ATLAS_CLIPS)) return;
+  const action = event.action as ClipName;
+  const clip = ATLAS_CLIPS[action];
+  const defaultDuration = clip.hold
+    ? 800
+    : Math.max(clip.frames.length / Math.max(clip.fps, 1) * 1000, 250);
+  const duration = typeof event.duration_ms === 'number' && event.duration_ms > 0
+    ? event.duration_ms
+    : defaultDuration;
+  const now = performance.now();
+
+  for (const character of renderQueue) {
+    if (character.type !== 'agent') continue;
+    if (typeof event.character_id === 'string' && character.id !== event.character_id) continue;
+    if (typeof event.facingLeft === 'boolean') character.facingLeft = event.facingLeft;
+    character.actionOverride = { action, until: now + duration };
+    setRenderableAction(character, action);
+  }
+}
 
 window.addEventListener('message', (event) => {
   const message = event.data;
@@ -663,22 +943,19 @@ window.addEventListener('message', (event) => {
       }
     }
     
-    // Clear and rebuild frame cache
-    frameCache.clear();
-    const framesMap = payload.frames || {};
-    for (const key of Object.keys(framesMap)) {
-      const dataUris = framesMap[key];
-      const images: HTMLImageElement[] = [];
-      for (const uri of dataUris) {
-        const img = new Image();
-        img.src = uri;
-        images.push(img);
-      }
-      frameCache.set(key, images);
-    }
+    // Accept today's URI arrays and the proposed metadata-bearing slot shape.
+    cacheIncomingFrames(payload.frames || {});
     
     // Rebuild render queue
     rebuildRenderQueue();
     refreshPropPalette();
+  }
+  if (message.type === 'WORLD_TELEMETRY_UPDATE' && message.payload) {
+    updateState(() => message.payload as WorldState);
+  }
+  if (message.type === 'CHARACTER_ACTION') {
+    // Event hook for melee/shoot/dance/cheer/point/signal/dodge. The normal
+    // state selector handles walk/build/tool_idle/idle/sit automatically.
+    triggerCharacterAction(message.payload);
   }
 });

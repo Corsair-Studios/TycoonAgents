@@ -78,6 +78,7 @@ class TheaterViewProvider implements vscode.WebviewViewProvider {
     );
     const csp = [
       `default-src 'none'`,
+      `img-src ${webview.cspSource} data:`,
       `style-src ${webview.cspSource} 'nonce-${nonce}'`,
       `script-src 'nonce-${nonce}'`,
     ].join('; ');

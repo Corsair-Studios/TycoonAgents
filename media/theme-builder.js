@@ -1,5 +1,81 @@
 "use strict";
 (() => {
+  // src/extension/themePlan.ts
+  var ATLAS_CLIPS = {
+    walk: { frames: [0, 1, 2, 3, 4], fps: 10, loop: true, flippable: true },
+    idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
+    sit: { frames: [15], fps: 0, loop: true, flippable: false, hold: true },
+    melee: { frames: [5, 6, 7, 8], fps: 12, loop: false, flippable: true },
+    build: { frames: [5, 6, 7, 8], fps: 6, loop: true, flippable: true },
+    tool_idle: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
+    shoot: { frames: [10, 11], fps: 8, loop: false, flippable: true, pingpong: true },
+    dance: { frames: [17, 18], fps: 6, loop: true, flippable: false, pingpong: true },
+    cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
+    point: { frames: [12], fps: 0, loop: true, flippable: true, hold: true },
+    signal: { frames: [13], fps: 0, loop: true, flippable: false, hold: true },
+    dodge: { frames: [14], fps: 0, loop: false, flippable: true, hold: true }
+  };
+
+  // src/webview/animationPlayback.ts
+  function createCharacterAnimation(action = "idle") {
+    return {
+      action,
+      frameIndex: 0,
+      direction: 1,
+      elapsedSeconds: 0,
+      completed: false
+    };
+  }
+  function setCharacterAction(state, action) {
+    if (state.action === action) return;
+    state.action = action;
+    state.frameIndex = 0;
+    state.direction = 1;
+    state.elapsedSeconds = 0;
+    state.completed = false;
+  }
+  function advanceCharacterAnimation(state, deltaSeconds) {
+    const clip = ATLAS_CLIPS[state.action];
+    if (clip.hold || clip.frames.length <= 1 || clip.fps <= 0) {
+      state.frameIndex = 0;
+      return;
+    }
+    if (state.completed || !Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return;
+    state.elapsedSeconds += deltaSeconds;
+    const frameDuration = 1 / clip.fps;
+    while (state.elapsedSeconds >= frameDuration && !state.completed) {
+      state.elapsedSeconds -= frameDuration;
+      stepCharacterAnimation(state);
+    }
+  }
+  function currentCharacterSlot(state) {
+    const frames = ATLAS_CLIPS[state.action].frames;
+    return frames[Math.min(state.frameIndex, frames.length - 1)];
+  }
+  function stepCharacterAnimation(state) {
+    const clip = ATLAS_CLIPS[state.action];
+    const frameCount2 = clip.frames.length;
+    if (clip.pingpong) {
+      state.frameIndex += state.direction;
+      if (state.frameIndex >= frameCount2 - 1) {
+        state.frameIndex = frameCount2 - 1;
+        if (clip.loop) state.direction = -1;
+        else state.completed = true;
+      } else if (state.frameIndex <= 0) {
+        state.frameIndex = 0;
+        state.direction = 1;
+      }
+      return;
+    }
+    state.frameIndex += 1;
+    if (state.frameIndex < frameCount2) return;
+    if (clip.loop) state.frameIndex = 0;
+    else {
+      state.frameIndex = frameCount2 - 1;
+      state.completed = true;
+    }
+  }
+
   // src/webview/themeBuilder.ts
   var worldState = {
     current_mode: "MODE_IDLE",
@@ -52,6 +128,8 @@
   var ctx = null;
   var animationFrameId;
   var frameCount = 0;
+  var lastRenderTimestamp;
+  var assignedBuildTargetId;
   function distance(x1, y1, x2, y2) {
     return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
   }
@@ -86,8 +164,64 @@
       y: TANK_POS.y + Math.sin(angle) * radius
     };
   }
-  function renderLoop() {
+  function stableOffset(id) {
+    let hash = 0;
+    for (let index = 0; index < id.length; index++) hash = hash * 31 + id.charCodeAt(index) | 0;
+    return Math.abs(hash % 1e3) / 1e3;
+  }
+  function setRenderableAction(character, action) {
+    character.action = action;
+    setCharacterAction(character.animation, action);
+  }
+  function selectCharacterAction(character, moved, timestamp) {
+    if (character.actionOverride) {
+      if (timestamp < character.actionOverride.until) return character.actionOverride.action;
+      character.actionOverride = void 0;
+    }
+    if (moved) return "walk";
+    if (worldState.active_rivals.length > 0 || worldState.current_mode === "MODE_EVICT") {
+      return character.role === "rival" ? "melee" : "shoot";
+    }
+    if (worldState.active_build_target_id !== null) {
+      if (character.current_emote === "emote_idea" && character.emote_timer > 0) return "point";
+      const buildClip = ATLAS_CLIPS.build;
+      const swingDuration = buildClip.frames.length / buildClip.fps;
+      const pauseDuration = 0.35;
+      const phase = (timestamp / 1e3 + character.buildPhaseOffset) % (swingDuration + pauseDuration);
+      return phase < swingDuration ? "build" : "tool_idle";
+    }
+    if (character.current_emote === "emote_sleep") return "sit";
+    if (character.current_emote === "emote_smile") return "dance";
+    if (character.current_emote === "emote_team") return "signal";
+    return "idle";
+  }
+  function drawCharacterFrame(context, character, frame) {
+    const image = frame.image;
+    if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return false;
+    const clip = ATLAS_CLIPS[character.action];
+    const shouldFlip = clip.flippable && character.facingLeft;
+    const sourceHeight = image.naturalHeight || image.height;
+    const sourceFootY = frame.meta && frame.meta.footY >= 0 ? frame.meta.footY : sourceHeight;
+    const footX = character.x + character.width / 2;
+    const footY = character.y + character.height;
+    const drawY = -sourceFootY * (character.height / sourceHeight);
+    context.save();
+    context.translate(footX, footY);
+    if (shouldFlip) context.scale(-1, 1);
+    context.drawImage(
+      image,
+      -character.width / 2,
+      drawY,
+      character.width,
+      character.height
+    );
+    context.restore();
+    return true;
+  }
+  function renderLoop(timestamp) {
     if (!ctx) return;
+    const deltaSeconds = lastRenderTimestamp === void 0 ? 0 : Math.min(Math.max((timestamp - lastRenderTimestamp) / 1e3, 0), 0.1);
+    lastRenderTimestamp = timestamp;
     frameCount++;
     if (frameCount % 60 === 0) {
       const isIdle = worldState.active_build_target_id === null && worldState.active_rivals.length === 0;
@@ -109,29 +243,44 @@
       }
     }
     for (const obj of renderQueue) {
-      if (obj.type === "agent" && obj.targetX !== void 0 && obj.targetY !== void 0) {
-        const cx = obj.x + obj.width / 2;
-        const cy = obj.y + obj.height / 2;
-        const dist = distance(cx, cy, obj.targetX, obj.targetY);
-        if (dist > SPEED) {
-          const dx = obj.targetX - cx;
-          const dy = obj.targetY - cy;
-          const nx = dx / dist;
-          const ny = dy / dist;
-          obj.x += nx * SPEED;
-          obj.y += ny * SPEED;
-        } else {
-          if (worldState.active_build_target_id !== "hiss_tank") {
-            const pt = getRandomNavPoint();
-            obj.targetX = pt.x;
-            obj.targetY = pt.y;
+      if (obj.type === "agent") {
+        let moved = false;
+        if (obj.targetX === void 0 || obj.targetY === void 0) {
+          if (worldState.active_build_target_id === null && timestamp >= obj.idleUntil) {
+            const point = getRandomNavPoint();
+            obj.targetX = point.x;
+            obj.targetY = point.y;
+          }
+        }
+        if (obj.targetX !== void 0 && obj.targetY !== void 0) {
+          const cx = obj.x + obj.width / 2;
+          const cy = obj.y + obj.height / 2;
+          const dist = distance(cx, cy, obj.targetX, obj.targetY);
+          if (dist > SPEED) {
+            const dx = obj.targetX - cx;
+            const dy = obj.targetY - cy;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            obj.x += nx * SPEED;
+            obj.y += ny * SPEED;
+            moved = true;
+            if (Math.abs(nx) > 0.01) obj.facingLeft = nx < 0;
           } else {
-            if (obj.current_emote !== "emote_idea") {
-              obj.current_emote = "emote_idea";
-              obj.emote_timer = 120;
+            if (worldState.active_build_target_id === null) {
+              obj.targetX = void 0;
+              obj.targetY = void 0;
+              obj.idleUntil = timestamp + 1e3 + stableOffset(obj.id) * 2500;
+            } else {
+              if (!obj.buildArrivalSignaled) {
+                obj.current_emote = "emote_idea";
+                obj.emote_timer = 120;
+                obj.buildArrivalSignaled = true;
+              }
             }
           }
         }
+        setRenderableAction(obj, selectCharacterAction(obj, moved, timestamp));
+        advanceCharacterAnimation(obj.animation, deltaSeconds);
       }
     }
     renderQueue.sort((a, b) => a.y + a.height - (b.y + b.height));
@@ -141,11 +290,13 @@
       if (bgFrames.length > 0) {
         ctx.fillStyle = "#111";
         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-        const background = bgFrames[0];
-        const scale = Math.min(CANVAS_WIDTH / background.width, CANVAS_HEIGHT / background.height);
-        const width = background.width * scale;
-        const height = background.height * scale;
-        ctx.drawImage(background, (CANVAS_WIDTH - width) / 2, (CANVAS_HEIGHT - height) / 2, width, height);
+        const background = bgFrames[0].image;
+        if (background.complete && background.naturalWidth > 0) {
+          const scale = Math.min(CANVAS_WIDTH / background.width, CANVAS_HEIGHT / background.height);
+          const width = background.width * scale;
+          const height = background.height * scale;
+          ctx.drawImage(background, (CANVAS_WIDTH - width) / 2, (CANVAS_HEIGHT - height) / 2, width, height);
+        }
       } else {
         ctx.fillStyle = "#111";
         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -192,9 +343,16 @@
         const key = obj.atlas_asset.split("#")[1];
         const frames = frameCache.get(key);
         if (frames && frames.length > 0) {
-          const frameIndex = obj.type === "object" ? frames.length - 1 : Math.floor(frameCount / 5) % frames.length;
-          ctx.drawImage(frames[frameIndex], obj.x, obj.y, obj.width, obj.height);
-          drawnFromAtlas = true;
+          if (obj.type === "agent") {
+            const frame = frames[currentCharacterSlot(obj.animation)];
+            if (frame) drawnFromAtlas = drawCharacterFrame(ctx, obj, frame);
+          } else {
+            const frame = frames[frames.length - 1];
+            if (frame?.image.complete && frame.image.naturalWidth > 0) {
+              ctx.drawImage(frame.image, obj.x, obj.y, obj.width, obj.height);
+              drawnFromAtlas = true;
+            }
+          }
         }
       }
       if (!drawnFromAtlas) {
@@ -215,7 +373,9 @@
         const emoteFrames = frameCache.get(obj.current_emote);
         if (emoteFrames && emoteFrames.length > 0) {
           const emoteFrame = emoteFrames[Math.floor(frameCount / 5) % emoteFrames.length];
-          ctx.drawImage(emoteFrame, bubbleX - 14, bubbleY - 14, 28, 28);
+          if (emoteFrame.image.complete && emoteFrame.image.naturalWidth > 0) {
+            ctx.drawImage(emoteFrame.image, bubbleX - 14, bubbleY - 14, 28, 28);
+          }
         } else {
           ctx.fillStyle = "black";
           ctx.font = "12px sans-serif";
@@ -269,6 +429,7 @@
           renderQueue.push({
             id: `agent_${agent.slot_id}`,
             type: "agent",
+            role: "agent",
             x: pt.x - 32,
             y: pt.y - 32,
             width: 64,
@@ -278,7 +439,13 @@
             targetX: pt.x,
             targetY: pt.y,
             current_emote: null,
-            emote_timer: 0
+            emote_timer: 0,
+            action: "idle",
+            facingLeft: false,
+            animation: createCharacterAnimation(),
+            idleUntil: 0,
+            buildArrivalSignaled: false,
+            buildPhaseOffset: stableOffset(`agent_${agent.slot_id}`)
           });
         });
       }
@@ -289,6 +456,7 @@
           renderQueue.push({
             id: key,
             type: "agent",
+            role: "rival",
             x: pt.x - 32,
             y: pt.y - 32,
             width: 64,
@@ -298,7 +466,13 @@
             targetX: pt.x,
             targetY: pt.y,
             current_emote: null,
-            emote_timer: 0
+            emote_timer: 0,
+            action: "idle",
+            facingLeft: false,
+            animation: createCharacterAnimation(),
+            idleUntil: 0,
+            buildArrivalSignaled: false,
+            buildPhaseOffset: stableOffset(key)
           });
         });
       }
@@ -309,6 +483,7 @@
         renderQueue.push({
           id: `agent_${i}`,
           type: "agent",
+          role: "agent",
           x: pt.x - 32,
           y: pt.y - 32,
           width: 64,
@@ -317,7 +492,13 @@
           targetX: pt.x,
           targetY: pt.y,
           current_emote: null,
-          emote_timer: 0
+          emote_timer: 0,
+          action: "idle",
+          facingLeft: false,
+          animation: createCharacterAnimation(),
+          idleUntil: 0,
+          buildArrivalSignaled: false,
+          buildPhaseOffset: stableOffset(`agent_${i}`)
         });
       }
     }
@@ -375,16 +556,16 @@
     const statsEl = containerElement.querySelector("#tb-stats");
     unsubscribe = subscribeToState((state) => {
       const isSwarming = state.active_build_target_id === "hiss_tank";
-      for (const obj of renderQueue) {
-        if (obj.type === "agent") {
-          if (isSwarming) {
-            const pt = getPointOnTankRing();
+      const targetChanged = assignedBuildTargetId !== state.active_build_target_id;
+      assignedBuildTargetId = state.active_build_target_id;
+      if (targetChanged) {
+        for (const obj of renderQueue) {
+          if (obj.type === "agent") {
+            const pt = isSwarming ? getPointOnTankRing() : getRandomNavPoint();
             obj.targetX = pt.x;
             obj.targetY = pt.y;
-          } else {
-            const pt = getRandomNavPoint();
-            obj.targetX = pt.x;
-            obj.targetY = pt.y;
+            obj.idleUntil = 0;
+            obj.buildArrivalSignaled = false;
           }
         }
       }
@@ -511,10 +692,94 @@
       cancelAnimationFrame(animationFrameId);
     }
     if (unsubscribe) unsubscribe();
+    lastRenderTimestamp = void 0;
+    assignedBuildTargetId = void 0;
     isInitialized = false;
   }
   window.initThemeBuilder = initThemeBuilder;
   window.cleanupThemeBuilder = cleanupThemeBuilder;
+  function isFrameContentMeta(value) {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value;
+    return ["centroidX", "footY", "topY", "left", "right", "opaqueCount"].every((key) => typeof candidate[key] === "number");
+  }
+  function measureLoadedFrame(image) {
+    try {
+      const width = image.naturalWidth || image.width;
+      const height = image.naturalHeight || image.height;
+      if (width <= 0 || height <= 0) return void 0;
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return void 0;
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, width, height).data;
+      let left = width;
+      let right = -1;
+      let topY = height;
+      let footY = -1;
+      let sumX = 0;
+      let opaqueCount = 0;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (pixels[(y * width + x) * 4 + 3] === 0) continue;
+          left = Math.min(left, x);
+          right = Math.max(right, x);
+          topY = Math.min(topY, y);
+          footY = Math.max(footY, y);
+          sumX += x;
+          opaqueCount++;
+        }
+      }
+      if (opaqueCount === 0) {
+        return { centroidX: -1, footY: -1, topY: -1, left: -1, right: -1, opaqueCount: 0 };
+      }
+      return { centroidX: sumX / opaqueCount, footY, topY, left, right, opaqueCount };
+    } catch {
+      return void 0;
+    }
+  }
+  function cacheIncomingFrames(framesMap) {
+    frameCache.clear();
+    for (const [key, rawFrames] of Object.entries(framesMap)) {
+      if (!Array.isArray(rawFrames)) continue;
+      const frames = [];
+      rawFrames.forEach((rawFrame, index) => {
+        const objectFrame = rawFrame && typeof rawFrame === "object" ? rawFrame : void 0;
+        const data = typeof rawFrame === "string" ? rawFrame : typeof objectFrame?.data === "string" ? objectFrame.data : void 0;
+        if (!data) return;
+        const frame = {
+          image: new Image(),
+          meta: isFrameContentMeta(objectFrame?.meta) ? objectFrame.meta : void 0
+        };
+        frame.image.addEventListener("load", () => {
+          if (!frame.meta) frame.meta = measureLoadedFrame(frame.image);
+        }, { once: true });
+        frame.image.src = data;
+        const slot = typeof objectFrame?.slot_id === "number" ? objectFrame.slot_id : index;
+        frames[slot] = frame;
+      });
+      frameCache.set(key, frames);
+    }
+  }
+  function triggerCharacterAction(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const event = payload;
+    if (typeof event.action !== "string" || !(event.action in ATLAS_CLIPS)) return;
+    const action = event.action;
+    const clip = ATLAS_CLIPS[action];
+    const defaultDuration = clip.hold ? 800 : Math.max(clip.frames.length / Math.max(clip.fps, 1) * 1e3, 250);
+    const duration = typeof event.duration_ms === "number" && event.duration_ms > 0 ? event.duration_ms : defaultDuration;
+    const now = performance.now();
+    for (const character of renderQueue) {
+      if (character.type !== "agent") continue;
+      if (typeof event.character_id === "string" && character.id !== event.character_id) continue;
+      if (typeof event.facingLeft === "boolean") character.facingLeft = event.facingLeft;
+      character.actionOverride = { action, until: now + duration };
+      setRenderableAction(character, action);
+    }
+  }
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (message.type === "THEME_INITIALIZED") {
@@ -528,20 +793,15 @@
           else editorOverlay.setAttribute("hidden", "true");
         }
       }
-      frameCache.clear();
-      const framesMap = payload.frames || {};
-      for (const key of Object.keys(framesMap)) {
-        const dataUris = framesMap[key];
-        const images = [];
-        for (const uri of dataUris) {
-          const img = new Image();
-          img.src = uri;
-          images.push(img);
-        }
-        frameCache.set(key, images);
-      }
+      cacheIncomingFrames(payload.frames || {});
       rebuildRenderQueue();
       refreshPropPalette();
+    }
+    if (message.type === "WORLD_TELEMETRY_UPDATE" && message.payload) {
+      updateState(() => message.payload);
+    }
+    if (message.type === "CHARACTER_ACTION") {
+      triggerCharacterAction(message.payload);
     }
   });
 })();
