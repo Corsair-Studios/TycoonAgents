@@ -238,6 +238,16 @@
     }
   });
 
+  // ── Nav polygon debug overlay toggle (N key) ────────────────────
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "n" && e.key !== "N") return;
+    const tag = document.activeElement && document.activeElement.tagName;
+    const isEditable = tag === "INPUT" || tag === "TEXTAREA" ||
+      (document.activeElement && document.activeElement.isContentEditable);
+    if (isEditable) return;
+    showNavPolygon = !showNavPolygon;
+  });
+
   // ── Skills list install-button handler (event delegation) ────────
 
   skillsListEl.addEventListener("click", (e) => {
@@ -1528,6 +1538,8 @@
   let walkablePolygon = DEFAULT_WALKABLE_POLY.map((p) => p.slice());
   let walkableNativeW = DEFAULT_NATIVE_W;
   let walkableNativeH = DEFAULT_NATIVE_H;
+  /** Debug: draw nav polygon overlay when true. Toggle with the N key. */
+  let showNavPolygon = false;
 
   /**
    * Ray-cast point-in-polygon test (native coord space).
@@ -4144,6 +4156,63 @@
         drawWorker(fallbackX, groundY, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
       }
     });
+
+    // ── Nav polygon debug overlay ──────────────────────────────────
+    if (showNavPolygon && themeLoaded && walkablePolygon && walkablePolygon.length > 2) {
+      ctx.save();
+
+      // Draw filled + stroked polygon outline
+      ctx.beginPath();
+      const [p0x, p0y] = nativeToCanvas(walkablePolygon[0][0], walkablePolygon[0][1], bgX, bgY, bgW, bgH);
+      ctx.moveTo(p0x, p0y);
+      for (let i = 1; i < walkablePolygon.length; i++) {
+        const [px, py] = nativeToCanvas(walkablePolygon[i][0], walkablePolygon[i][1], bgX, bgY, bgW, bgH);
+        ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = "rgba(57,255,20,0.08)";
+      ctx.fill();
+      ctx.strokeStyle = "#39ff14";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Vertex dots
+      ctx.fillStyle = "#39ff14";
+      for (const p of walkablePolygon) {
+        const [vx, vy] = nativeToCanvas(p[0], p[1], bgX, bgY, bgW, bgH);
+        ctx.beginPath();
+        ctx.arc(vx, vy, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Agent position dots (cyan)
+      ctx.fillStyle = "#00e5ff";
+      for (const id of Object.keys(agentCharMap)) {
+        const entry = agentCharMap[id];
+        if (entry && entry.nx != null && entry.ny != null) {
+          const [ax, ay] = nativeToCanvas(entry.nx, entry.ny, bgX, bgY, bgW, bgH);
+          ctx.beginPath();
+          ctx.arc(ax, ay, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // Label
+      ctx.fillStyle = "#39ff14";
+      ctx.font = "11px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText("nav polygon — press N to hide", bgX + 8, bgY + 18);
+
+      ctx.restore();
+    } else if (themeLoaded && !showNavPolygon) {
+      // Subtle always-visible hint
+      ctx.save();
+      ctx.fillStyle = "rgba(57,255,20,0.35)";
+      ctx.font = "9px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText("N: nav poly", 6, h - 6);
+      ctx.restore();
+    }
 
     // HUD overlay
     drawHUD(w);
