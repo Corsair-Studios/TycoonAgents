@@ -9,10 +9,14 @@ import {
   buildObjectAtlasPrompt,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
+  buildRivalAtlasPrompt,
   createDecorBoardRows,
   createObjectBoardRows,
+  createRivalBoardRows,
   decorBoardFrameKeys,
   objectBoardFrameKeys,
+  rivalBoardFrameKeys,
+  RIVALS_PER_BOARD,
 } from '../src/extension/themeAssetPrompts';
 
 function decorSpecs() {
@@ -21,6 +25,48 @@ function decorSpecs() {
     display_name: `Decor ${index + 1}`,
   }));
 }
+
+function rivalSpecs() {
+  return Array.from({ length: 12 }, (_unused, index) => ({
+    rival_id: `r_${index + 1}`,
+    display_name: `Rival ${index + 1}`,
+  }));
+}
+
+test('rivals pack 4-per-board across 3 boards (12 enemies)', () => {
+  assert.equal(RIVALS_PER_BOARD, 4);
+  const boards = createRivalBoardRows(rivalSpecs());
+  assert.equal(boards.length, 3);
+  for (const board of boards) {
+    assert.equal(board.length, 4);
+    for (const row of board) assert.equal(row.kind, 'rival');
+  }
+  // Every rival id appears exactly once, board-order.
+  const ids = boards.flat().map((row) => row.rival_id);
+  assert.deepEqual(ids, rivalSpecs().map((r) => r.rival_id));
+  assert.equal(new Set(ids).size, 12);
+});
+
+test('createRivalBoardRows rejects a roster that is not exactly 12', () => {
+  assert.throws(() => createRivalBoardRows(rivalSpecs().slice(0, 11)));
+});
+
+test('rivalBoardFrameKeys yields one rival_<id> key per enemy row', () => {
+  const boards = createRivalBoardRows(rivalSpecs());
+  assert.deepEqual(rivalBoardFrameKeys(boards[0]), ['rival_r_1', 'rival_r_2', 'rival_r_3', 'rival_r_4']);
+});
+
+test('rival prompt is a 5x4 compact board with 3-frame walk + 2-frame attack per enemy row', () => {
+  const boards = createRivalBoardRows(rivalSpecs());
+  const prompt = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', boards[0]);
+  assert.match(prompt, /512 x 512 pixels \(1:1\)/i);
+  assert.match(prompt, /5-column by 4-row logical grid with 20 visually equal cells/i);
+  assert.match(prompt, /3-frame side-view WALK cycle/i);
+  assert.match(prompt, /2-frame ATTACK/i);
+  assert.match(prompt, /Row 1 \(Cells 1-5\): the enemy \*\*"Rival 1"\*\*/i);
+  assert.match(prompt, /Row 4 \(Cells 16-20\): the enemy \*\*"Rival 4"\*\*/i);
+  assert.match(prompt, /flips? cleanly/i);
+});
 
 test('character prompt enforces the production sprite-board mime contracts', () => {
   const prompt = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid');

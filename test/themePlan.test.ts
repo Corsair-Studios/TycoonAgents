@@ -16,7 +16,7 @@ test('theme plan normalizes every editable slot to the required count', () => {
   });
   assert.equal(plan.theme_id, 'neon_harbor');
   assert.equal(plan.characters.length, 16);
-  assert.equal(plan.enemies.length, 3);
+  assert.equal(plan.enemies.length, 12);
   assert.equal(plan.objects.length, 13);
   assert.equal(plan.decor.length, 9);
   assert.equal(plan.expressions.length, 16);
@@ -113,10 +113,10 @@ test('theme plan emits 9 decor objects: 4 sittable seats, 4 static, 1 animated',
   assert.equal(manifest.viewport?.projectile_asset, 'frames.json#projectile');
 });
 
-test('theme plan creates 16 agents, 3 enemies, and 13 buildable objects', () => {
+test('theme plan creates 16 agents, 12 enemies, and 13 buildable objects', () => {
   const manifest = themePlanToManifest(normalizeThemePlan({ display_name: 'Clockwork' }));
   assert.equal(manifest.roster_agents?.length, 16);
-  assert.equal(manifest.roster_rivals?.length, 3);
+  assert.equal(manifest.roster_rivals?.length, 12);
   assert.equal(manifest.buildable_objects?.length, 13);
   assert.match(manifest.roster_agents?.[0].atlas_asset ?? '', /^frames\.json#agent_0$/);
   assert.equal(manifest.viewport?.crate_asset, 'frames.json#crate');

@@ -11,12 +11,15 @@ import {
   buildObjectAtlasPrompt,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
+  buildRivalAtlasPrompt,
   createDecorBoardRows,
   createObjectBoardRows,
+  createRivalBoardRows,
   decorBoardFrameKeys,
   objectBoardFrameKeys,
+  rivalBoardFrameKeys,
 } from './themeAssetPrompts';
-import type { ThemeObjectPromptSpec } from './themeAssetPrompts';
+import type { ThemeObjectPromptSpec, ThemeRivalPromptSpec } from './themeAssetPrompts';
 import { generateThemeImage } from './imageClient';
 import type { ThemeImageGenerationOptions } from './imageClient';
 import {
@@ -46,6 +49,7 @@ import type {
   ThemeImageReviewItem,
   ThemeImageReviewStatus,
   ThemeObjectBoardRow,
+  ThemeRivalBoardRow,
 } from './themeImageReviewState';
 import { isThemeGenerationItemComplete } from './themeGenerationState';
 import { createThemeArchive, parseThemeArchive } from './themeArchive';
@@ -436,6 +440,11 @@ export async function uploadThemeImage(
       const frameKey = item.frame_keys[0] || item.id;
       frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
       frameKeys = [frameKey];
+    } else if (item?.kind === 'rival_atlas') {
+      const rows = rivalRowsForItem(item, manifest);
+      const rivalAtlas = await processRivalAtlas(buffer, manifest);
+      output = rivalAtlas.output;
+      frameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
     } else if (item?.kind === 'object_atlas' && item.object_rows?.length) {
       const objectAtlas = await processObjectAtlas(buffer, manifest, item.object_rows);
       output = objectAtlas.output;
@@ -860,17 +869,11 @@ async function continueThemeGeneration(
   const themeId = plan.theme_id;
   const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
 
-  const characterEntries = manifest.roster_agents.map((agent) => ({
+  const people = manifest.roster_agents.map((agent) => ({
     itemId: `agent_${agent.slot_id}`,
     frameKey: `agent_${agent.slot_id}`,
     name: agent.name,
   }));
-  const enemyEntries = manifest.roster_rivals.map((enemy) => ({
-    itemId: enemy.rival_id,
-    frameKey: enemy.rival_id,
-    name: enemy.name,
-  }));
-  const people = [...characterEntries, ...enemyEntries];
 
   for (let index = 0; index < people.length; index++) {
     throwIfCancelled(isCancelled);
@@ -899,6 +902,21 @@ async function continueThemeGeneration(
         await markGenerated(globalStorageUri, themeId, plan.display_name, item);
         await writeThemeFiles(globalStorageUri, manifest, frames);
       },
+    );
+  }
+
+  throwIfCancelled(isCancelled);
+  const rivalItems = reviewItems.filter((item) => item.kind === 'rival_atlas');
+  for (let index = 0; index < rivalItems.length; index++) {
+    throwIfCancelled(isCancelled);
+    const rivalsItem = rivalItems[index];
+    await generateOrResumeThemeItem(
+      globalStorageUri, themeId, plan.display_name, rivalsItem, manifest, frames,
+      onProgress, isCancelled, onReviewReady, waitForReview,
+      () => generateRivalAsset(
+        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+        rivalsItem, imageGenerationOptions, onProgress,
+      ),
     );
   }
 
@@ -1017,6 +1035,12 @@ export async function retryThemeImage(
     const frameKey = item.frame_keys[0] || item.id;
     frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
     frameKeys = [frameKey];
+  } else if (item.kind === 'rival_atlas') {
+    const rows = rivalRowsForItem(item, manifest);
+    item.rival_rows = rows;
+    const rivalAtlas = await processRivalAtlas(generated, manifest);
+    output = rivalAtlas.output;
+    frameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
   } else if (item.kind === 'environment') {
     output = await normalizeEnvironmentImage(generated);
     frames.environment_background = [dataUri(output)];
@@ -1271,6 +1295,30 @@ async function processObjectAtlas(
   return { output, spritePackage };
 }
 
+/**
+ * Slice a compact 5x4 rival board: each of the four ROWS is one enemy's 5-frame
+ * mini-atlas ([walk0, walk1, walk2, attack0, attack1]). Group each row's five cells
+ * so its frames share a common crop/anchor, mirroring the object-board approach.
+ */
+async function processRivalAtlas(
+  generated: Buffer,
+  manifest: ThemeManifest,
+): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
+  const rowGroups = Array.from({ length: 4 }, (_row, rowIndex) =>
+    Array.from({ length: 5 }, (_col, colIndex) => rowIndex * 5 + colIndex),
+  );
+  const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
+    columns: 5,
+    rows: 4,
+    scaleReferenceSlots: Array.from({ length: 20 }, (_unused, cell) => cell),
+    targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
+    maxContentExtent: 120,
+    normalizationGroups: rowGroups,
+  });
+  const output = await optimizeSpriteBoardCanvas(generated, 5, 4);
+  return { output, spritePackage };
+}
+
 async function processDecorAtlas(
   generated: Buffer,
   manifest: ThemeManifest,
@@ -1367,17 +1415,22 @@ function createReviewItems(
     frame_keys: [`agent_${agent.slot_id}`],
     subject: agent.name,
   }));
-  const enemyItems = manifest.roster_rivals.map((enemy, index) => ({
-    id: enemy.rival_id,
-    filename: `enemy_${String(index + 1).padStart(2, '0')}_${toSafeFileStem(enemy.name)}.png`,
-    label: enemy.name,
-    kind: 'character_atlas' as const,
-    status: 'pending' as const,
-    prompt: buildCharacterAtlasPrompt(characterCreativeDirection, enemy.name, plan.display_name),
-    revision: 0,
-    frame_keys: [enemy.rival_id],
-    subject: enemy.name,
-  }));
+  const rivalBoards = createRivalBoardRows(themeRivalSpecs(manifest));
+  const enemyItems = rivalBoards.map((rows, index) => {
+    const firstEnemy = index * rows.length + 1;
+    const lastEnemy = firstEnemy + rows.length - 1;
+    return {
+      id: `rivals_${String(index + 1).padStart(2, '0')}`,
+      filename: `rivals_${String(index + 1).padStart(2, '0')}.png`,
+      label: `Rivals ${firstEnemy}–${lastEnemy}`,
+      kind: 'rival_atlas' as const,
+      status: 'pending' as const,
+      prompt: buildRivalAtlasPrompt(creativeDirection, plan.display_name, rows),
+      revision: 0,
+      frame_keys: rivalBoardFrameKeys(rows),
+      rival_rows: rows,
+    };
+  });
   const objectSpecs = themeObjectSpecs(manifest, plan.object_motion_hints);
   const objectItems = createObjectBoardRows(objectSpecs).map((rows, index) => {
     const objectRows = rows.filter((row): row is Extract<ThemeObjectBoardRow, { kind: 'object' }> => row.kind === 'object');
@@ -1502,6 +1555,44 @@ async function generateDecorAsset(
   manifest.viewport.projectile_asset = 'frames.json#projectile';
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
   await writeThemeFiles(globalStorageUri, manifest, frames);
+}
+
+async function generateRivalAsset(
+  globalStorageUri: vscode.Uri,
+  reviewDirectoryUri: vscode.Uri,
+  plan: ThemePlan,
+  manifest: ThemeManifest,
+  frames: Record<string, string[]>,
+  item: Omit<ThemeImageReviewItem, 'updated_at'>,
+  options: ThemeImageGenerationOptions | undefined,
+  onProgress: (message: string) => void,
+): Promise<void> {
+  onProgress(item.label);
+  const generated = await generateThemeImage(item.prompt, options);
+  throwIfCancelled(undefined, options?.signal);
+  const rows = rivalRowsForItem(item, manifest);
+  const rivalAtlas = await processRivalAtlas(generated, manifest);
+  throwIfCancelled(undefined, options?.signal);
+  await saveReviewImage(reviewDirectoryUri, item.filename, rivalAtlas.output);
+  throwIfCancelled(undefined, options?.signal);
+  applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await writeThemeFiles(globalStorageUri, manifest, frames);
+}
+
+/**
+ * Rival rows for a rival-board item. Uses the item's stored `rival_rows` when present,
+ * otherwise reconstructs them from the manifest roster by the board's index (parsed
+ * from `rivals_NN`), so retries/uploads of older items still resolve four enemies.
+ */
+function rivalRowsForItem(
+  item: Pick<ThemeImageReviewItem, 'id' | 'rival_rows'>,
+  manifest: ThemeManifest,
+): ThemeRivalBoardRow[] {
+  if (item.rival_rows?.length) return item.rival_rows;
+  const boards = createRivalBoardRows(themeRivalSpecs(manifest));
+  const boardIndex = Math.max(0, (Number(/rivals_(\d+)/.exec(item.id)?.[1] ?? '1') || 1) - 1);
+  return boards[boardIndex] ?? boards[0];
 }
 
 async function generateObjectAsset(
@@ -1667,6 +1758,33 @@ function themeObjectSpecs(
       ...(hint ? { motion_hint: hint } : {}),
     };
   });
+}
+
+function themeRivalSpecs(manifest: ThemeManifest): ThemeRivalPromptSpec[] {
+  return manifest.roster_rivals.map((rival) => ({
+    // rival_id already carries the `rival_` prefix (see themePlan.ts); strip it so
+    // frame keys built as `rival_<id>` don't double-prefix.
+    rival_id: rival.rival_id.replace(/^rival_/, ''),
+    display_name: rival.name,
+  }));
+}
+
+/**
+ * Map one 5x4 rival board's sliced cells to frame keys. Each row r → `rival_<id>`
+ * holds that row's five cells (indices r*5 .. r*5+4) = [walk0, walk1, walk2, attack0, attack1].
+ */
+function applyRivalBoardFrames(
+  frames: Record<string, string[]>,
+  slots: Array<{ slot_id: number; data: string }>,
+  rows: ThemeRivalBoardRow[],
+): string[] {
+  const keys: string[] = [];
+  rows.forEach((row, rowIndex) => {
+    const key = `rival_${row.rival_id}`;
+    frames[key] = slots.slice(rowIndex * 5, rowIndex * 5 + 5).map((slot) => slot.data);
+    keys.push(key);
+  });
+  return keys;
 }
 
 function applyObjectBoardFrames(

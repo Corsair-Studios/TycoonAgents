@@ -4,6 +4,7 @@ import { withoutRedundantBuildableObjectsItem } from './themeGenerationState';
 
 export type ThemeImageKind =
   | 'character_atlas'
+  | 'rival_atlas'
   | 'environment'
   | 'object_atlas'
   | 'background_decor_atlas'
@@ -25,6 +26,14 @@ export type ThemeObjectBoardRow =
   | { kind: 'object'; object_id: string; display_name: string; motion_hint?: string; is_ranged_rack?: boolean }
   | { kind: 'poof' }
   | { kind: 'crate' };
+
+/**
+ * One row of a 5x4 (20-cell) rival board. Each row is ONE enemy: cols 0-2 are a
+ * 3-frame WALK cycle, cols 3-4 are a 2-frame ATTACK. A board carries up to four
+ * such rows → four enemies; three boards cover all 12 rivals. Rival frames are
+ * keyed `rival_<id>` (five frames each): [walk0, walk1, walk2, attack0, attack1].
+ */
+export type ThemeRivalBoardRow = { kind: 'rival'; rival_id: string; display_name: string };
 
 /**
  * One row of the 4x4 background-decor board. Rows 1-2 carry four single-frame
@@ -50,6 +59,7 @@ export interface ThemeImageReviewItem {
   object_specs?: Array<{ object_id: string; display_name: string }>;
   object_rows?: ThemeObjectBoardRow[];
   decor_rows?: ThemeDecorBoardRow[];
+  rival_rows?: ThemeRivalBoardRow[];
   expression_names?: string[];
   achievement_names?: string[];
   generation_error?: ThemeImageGenerationError;

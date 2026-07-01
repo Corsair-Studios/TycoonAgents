@@ -1,4 +1,9 @@
-import type { ThemeDecorBoardRow, ThemeObjectBoardRow } from './themeImageReviewState';
+import type { ThemeDecorBoardRow, ThemeObjectBoardRow, ThemeRivalBoardRow } from './themeImageReviewState';
+
+export interface ThemeRivalPromptSpec {
+  rival_id: string;
+  display_name: string;
+}
 
 export interface ThemeObjectPromptSpec {
   object_id: string;
@@ -66,6 +71,66 @@ export function createDecorBoardRows(decor: ThemeDecorPromptSpec[]): ThemeDecorB
  */
 export function decorBoardFrameKeys(rows: ThemeDecorBoardRow[][]): string[] {
   return rows.flat().map((row) => row.kind === 'projectile' ? 'projectile' : `decor_${row.decor_id}`);
+}
+
+/** Number of enemy rows packed onto one 5x4 rival board (one enemy per row). */
+export const RIVALS_PER_BOARD = 4;
+
+/**
+ * Pack the 12 rivals onto three 5x4 boards, four rivals per board (each ROW is one
+ * enemy: cols 0-2 = 3-frame walk, cols 3-4 = 2-frame attack). Returns one array of
+ * up to four rival rows per board.
+ */
+export function createRivalBoardRows(rivals: ThemeRivalPromptSpec[]): ThemeRivalBoardRow[][] {
+  if (rivals.length !== 12) throw new Error('Rival generation requires exactly 12 rivals.');
+  const boards: ThemeRivalBoardRow[][] = [];
+  for (let start = 0; start < rivals.length; start += RIVALS_PER_BOARD) {
+    boards.push(rivals.slice(start, start + RIVALS_PER_BOARD).map((rival): ThemeRivalBoardRow => ({
+      kind: 'rival',
+      rival_id: rival.rival_id,
+      display_name: rival.display_name,
+    })));
+  }
+  return boards;
+}
+
+/** Frame keys for one rival board's rows: each enemy row → `rival_<id>` (five frames). */
+export function rivalBoardFrameKeys(rows: ThemeRivalBoardRow[]): string[] {
+  return rows.map((row) => `rival_${row.rival_id}`);
+}
+
+/**
+ * Compact rival board: a 5-column x 4-row grid (20 cells) packing up to FOUR enemies,
+ * one per ROW. Cols 1-3 are a 3-frame side-view WALK cycle; cols 4-5 are a 2-frame ATTACK.
+ * Enemies only need WALK + ATTACK, so a full 20-cell character atlas would be wasteful.
+ */
+export function buildRivalAtlasPrompt(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeRivalBoardRow[],
+): string {
+  if (rows.length < 1 || rows.length > RIVALS_PER_BOARD) {
+    throw new Error('Rival boards carry one to four enemy rows.');
+  }
+  const rowLines = rows.map((row, index) =>
+    `Row ${index + 1} (Cells ${index * 5 + 1}-${index * 5 + 5}): the enemy **"${row.display_name}"** from the "${themeName}" theme.`,
+  );
+  return [
+    `Create one compact rival (enemy) sprite board for the "${themeName}" theme.`,
+    boardContract(5, 4),
+    'Each of the (up to) four ROWS is ONE distinct named enemy, shown as a 5-frame mini-atlas:',
+    '  Cells 1-3 of the row: a 3-frame side-view WALK cycle (contact, passing, opposite contact) that loops seamlessly cell 3 back to cell 1 — same enemy, only the limbs move.',
+    '  Cells 4-5 of the row: a 2-frame ATTACK — cell 4 is the wind-up, cell 5 is the strike/lunge.',
+    ...rowLines,
+    '',
+    'Keep each enemy identical across its own five cells: identical face, body, costume, colors, equipment, rendering style, and pixel scale — change only the pose.',
+    'Use one consistent side / three-quarter camera for every enemy so the walk and attack read clearly and the sprite flips cleanly left-to-right.',
+    'The attack is a playful, non-graphic, non-contact motion suitable for a general-audience video game: the enemy swings/lunges through empty magenta space and never touches another subject.',
+    'Center each enemy in its cell with its feet near the cell bottom and generous magenta padding; nothing crosses a cell boundary.',
+    'Use crisp retro pixel art. Every unused pixel must be flat solid #FF00FF magenta.',
+    '',
+    `Creative direction: ${creativeDirection}`,
+  ].join('\n');
 }
 
 /**

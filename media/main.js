@@ -1502,6 +1502,14 @@
     dodge:     { frames: [14],             fps: 0,  loop: false, flippable: true,  hold: true },
   };
 
+  // RIVAL_CLIPS mirrors the src copy exactly (a test enforces byte parity).
+  // Enemies (rivals) use a COMPACT 5-frame sprite: [walk0, walk1, walk2,
+  // attack0, attack1]. Enemies only WALK or ATTACK.
+  const RIVAL_CLIPS = {
+    walk:   { frames: [0, 1, 2], fps: 8, loop: true,  flippable: true },
+    attack: { frames: [3, 4],    fps: 8, loop: false, flippable: true, pingpong: true },
+  };
+
   // OBJECT_CLIPS mirrors src/extension/themePlan.ts buildable-object clips — keep in sync.
   const OBJECT_CLIPS = {
     object_idle: { frames: [0, 1, 2, 3], fps: 5,  loop: true },
@@ -2466,6 +2474,55 @@
    */
   function currentObjectSlot(s) {
     const clip = OBJECT_CLIPS[s.action] || OBJECT_CLIPS.object_idle;
+    return clip.frames[Math.min(s.frameIndex, clip.frames.length - 1)];
+  }
+
+  /**
+   * Advance an ENEMY (rival) animation state by deltaSeconds, using RIVAL_CLIPS
+   * instead of ATLAS_CLIPS. Mirrors advanceAnim's logic exactly (loop/hold/
+   * pingpong/completed semantics) but over the compact 5-frame rival clip set.
+   * Enemy action is only ever "walk" or "attack".
+   * @param {{action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}} s
+   * @param {number} delta
+   */
+  function advanceRivalAnim(s, delta) {
+    const clip = RIVAL_CLIPS[s.action] || RIVAL_CLIPS.walk;
+    if (clip.hold || clip.frames.length <= 1 || clip.fps <= 0) {
+      s.frameIndex = 0;
+      return;
+    }
+    if (s.completed || !Number.isFinite(delta) || delta <= 0) return;
+    s.elapsed += delta;
+    const dur = 1 / clip.fps;
+    while (s.elapsed >= dur && !s.completed) {
+      s.elapsed -= dur;
+      const n = clip.frames.length;
+      if (clip.pingpong) {
+        s.frameIndex += s.direction;
+        if (s.frameIndex >= n - 1) {
+          s.frameIndex = n - 1;
+          if (clip.loop) s.direction = -1; else s.completed = true;
+        } else if (s.frameIndex <= 0) {
+          s.frameIndex = 0;
+          s.direction = 1;
+        }
+      } else {
+        s.frameIndex += 1;
+        if (s.frameIndex >= n) {
+          if (clip.loop) s.frameIndex = 0;
+          else { s.frameIndex = n - 1; s.completed = true; }
+        }
+      }
+    }
+  }
+
+  /**
+   * Return the RIVAL_CLIPS frame index (0-4) for the current frame of an enemy
+   * animation state. Clamps to the clip's own length.
+   * @param {{action:string, frameIndex:number}} s
+   */
+  function currentRivalSlot(s) {
+    const clip = RIVAL_CLIPS[s.action] || RIVAL_CLIPS.walk;
     return clip.frames[Math.min(s.frameIndex, clip.frames.length - 1)];
   }
 
@@ -5491,7 +5548,7 @@
           en.animState.elapsed = 0;
           en.animState.completed = false;
         }
-        advanceAnim(en.animState, delta);
+        advanceRivalAnim(en.animState, delta);
         continue;
       }
       // ── Change B: attack the NEAREST agent ──────────────────────────
@@ -5535,22 +5592,25 @@
           en.animState.elapsed = 0;
           en.animState.completed = false;
         }
-        advanceAnim(en.animState, delta);
+        advanceRivalAnim(en.animState, delta);
         continue;
       }
 
       // Face the target.
       en.facingLeft = targetEnt.nx < en.nx;
 
+      // Enemies have only two clips: "walk" and "attack". Both melee (up-close)
+      // and ranged (at distance) engagement use the same 2-frame attack clip;
+      // ranged additionally spawns a projectile on its throttled cadence.
       let desiredAction = "walk";
       if (targetDist <= ENEMY_ENGAGE_RANGE) {
         // Melee range — hold position and swing on the attack cadence.
-        desiredAction = "melee";
+        desiredAction = "attack";
         if (en.attackCooldown <= 0) en.attackCooldown = ENEMY_ATTACK_INTERVAL;
       } else if (targetDist <= ENEMY_RANGED_RANGE) {
-        // Ranged distance — hold position, play shoot, fire a projectile on
+        // Ranged distance — hold position, play attack, fire a projectile on
         // the throttled cadence (target position snapshotted at fire time).
-        desiredAction = "shoot";
+        desiredAction = "attack";
         if (en.shotCooldown <= 0) {
           en.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
           spawnProjectile(en.nx, en.ny, targetEnt.nx, targetEnt.ny);
@@ -5570,8 +5630,8 @@
         en.ny = clamped[1];
       }
 
-      // Apply the desired clip. melee/shoot are loop:false one-shots in
-      // ATLAS_CLIPS; while in range and actively attacking, replay them on
+      // Apply the desired clip. "attack" is a loop:false pingpong one-shot in
+      // RIVAL_CLIPS; while in range and actively attacking, replay it on
       // completion so the attack keeps animating (mirrors the agent side).
       if (en.animState.action !== desiredAction) {
         en.animState.action = desiredAction;
@@ -5579,16 +5639,13 @@
         en.animState.direction = 1;
         en.animState.elapsed = 0;
         en.animState.completed = false;
-      } else if (
-        (desiredAction === "melee" || desiredAction === "shoot") &&
-        en.animState.completed
-      ) {
+      } else if (desiredAction === "attack" && en.animState.completed) {
         en.animState.frameIndex = 0;
         en.animState.direction = 1;
         en.animState.elapsed = 0;
         en.animState.completed = false;
       }
-      advanceAnim(en.animState, delta);
+      advanceRivalAnim(en.animState, delta);
     }
   }
 
@@ -6376,13 +6433,20 @@
           ? en.rival_id
           : ("rival_" + en.rival_id);
         const slots = themeImages[rivalKey];
-        const slot = currentSlot(en.animState);
+        // Enemies index rival frames via RIVAL_CLIPS (0-4). Graceful fallback
+        // for OLD themes whose rival frames are the legacy 20-cell atlas:
+        // indexing 0-4 still works. Never crash on a rival with < 5 frames —
+        // clamp the frame index to the available length.
+        let slot = currentRivalSlot(en.animState);
+        if (slots && slots.length > 0 && slot >= slots.length) {
+          slot = slots.length - 1;
+        }
         const img = slots && slots[slot];
         const spriteSize = Math.round(64 * depthScale * themeCharacterScale);
         if (img && img.complete && img.naturalWidth > 0) {
           const drawX = ecx - spriteSize / 2;
           const drawY = ecy - spriteSize;
-          const clip = ATLAS_CLIPS[en.animState.action] || ATLAS_CLIPS.idle;
+          const clip = RIVAL_CLIPS[en.animState.action] || RIVAL_CLIPS.walk;
           // Enemies ALWAYS mirror to face their target/movement direction — not
           // gated on clip.flippable (mirrors the agent override so a non-flippable
           // idle/hold clip still faces the right way). facingLeft true = mirror.
