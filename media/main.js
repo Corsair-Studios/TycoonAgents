@@ -1511,10 +1511,28 @@
     return `${scaled.toFixed(scaled < 10 ? 1 : 0)} ${units[exponent - 1]}`;
   }
 
-  setupBackBtn.addEventListener("click", () => {
+  /** Close/return from the settings (setup) screen — mirrors the Back button. */
+  function closeSettingsScreen() {
     openedFromSettings = false;
     showMain();
-  });
+  }
+
+  setupBackBtn.addEventListener("click", closeSettingsScreen);
+
+  // Inject a sticky white-X close button into the setup card header, matching
+  // the other modals (#skills-modal-close / #themes-modal-close). Wired to the
+  // same close action as the Back button. Created once at startup.
+  (function injectSettingsCloseBtn() {
+    const card = document.getElementById("setup-card");
+    if (!card || document.getElementById("settings-modal-close")) return;
+    const closeBtn = document.createElement("button");
+    closeBtn.id = "settings-modal-close";
+    closeBtn.type = "button";
+    closeBtn.setAttribute("aria-label", "Close settings");
+    closeBtn.textContent = "✕"; // ✕
+    closeBtn.addEventListener("click", closeSettingsScreen);
+    card.insertBefore(closeBtn, card.firstChild);
+  })();
 
   const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("stage"));
   const ctx = canvas.getContext("2d");
@@ -3574,6 +3592,8 @@
       handlePackInstalled(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packRemoved") {
       handlePackRemoved(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
+    } else if (msg && msg.type === "agentRemoved") {
+      handleAgentRemoved(msg.id, msg.ok, msg.cancelled, msg.error);
     } else if (msg && msg.type === "installState") {
       handleInstallState(msg);
       if (msg.uefnDetected) {
@@ -4000,6 +4020,47 @@
       btn.textContent = "Remove";
       btn.removeAttribute("disabled");
       const row = btn.closest(".skill-row");
+      if (row) {
+        let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
+        if (!errSpan) {
+          errSpan = document.createElement("span");
+          errSpan.className = "skill-install-error";
+          row.appendChild(errSpan);
+        }
+        errSpan.textContent = error || "Remove failed";
+      }
+    }
+  }
+
+  /**
+   * Update an agent row after a remove attempt. Mirrors handleSkillRemoved.
+   * The host runs the native confirm + actual removal, then re-posts the
+   * roster/settings on success (which re-renders the settings list). So on ok
+   * we simply let that re-render happen (and re-request settings as a fallback);
+   * on cancelled/error we restore the button.
+   * @param {string} id
+   * @param {boolean} ok
+   * @param {boolean} [cancelled]
+   * @param {string} [error]
+   */
+  function handleAgentRemoved(id, ok, cancelled, error) {
+    const btn = /** @type {HTMLElement|null} */ (
+      setupConfigEl
+        ? setupConfigEl.querySelector(`[data-remove-agent-id="${CSS.escape(id)}"]`)
+        : null
+    );
+    if (ok) {
+      // Host re-posts the settings payload which re-renders this list. As a
+      // fallback (in case that message is missed) request settings again.
+      vscode.postMessage({ type: "getSettings" });
+      return;
+    }
+    if (!btn) return;
+    // cancelled or error → restore the button to its clickable state.
+    btn.removeAttribute("disabled");
+    btn.textContent = "Remove";
+    if (!cancelled && error) {
+      const row = btn.closest(".agent-row");
       if (row) {
         let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
         if (!errSpan) {
@@ -4935,7 +4996,7 @@
         const group = document.createElement("div");
         group.className = "model-radio-group";
         const groupName = `model-${agent.id}`;
-        for (const model of ["opus", "sonnet", "haiku"]) {
+        for (const model of ["opus", "sonnet", "haiku", "fable"]) {
           const lbl = document.createElement("label");
           lbl.className = "model-radio";
           const input = document.createElement("input");
@@ -4955,6 +5016,23 @@
           group.appendChild(lbl);
         }
         head.appendChild(group);
+
+        // Per-agent RED Remove button. Non-orchestrator agents only (the
+        // orchestrator is core and has no model radios / no remove). The host
+        // shows the native "are you sure?" confirm and re-posts the roster on
+        // success, so the webview only requests the removal + shows a pending
+        // state; handleAgentRemoved() restores/reflects the outcome.
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "skill-btn skill-btn--remove agent-remove-btn";
+        removeBtn.textContent = "Remove";
+        removeBtn.dataset.removeAgentId = agent.id;
+        removeBtn.addEventListener("click", () => {
+          removeBtn.disabled = true;
+          removeBtn.textContent = "Removing…";
+          vscode.postMessage({ type: "removeAgent", id: agent.id });
+        });
+        head.appendChild(removeBtn);
       }
       row.appendChild(head);
 

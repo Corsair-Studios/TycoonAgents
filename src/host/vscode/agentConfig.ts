@@ -5,7 +5,7 @@
  */
 
 /** Short model labels TycoonAgents exposes in the Settings GUI. */
-export type ModelShort = "opus" | "sonnet" | "haiku";
+export type ModelShort = "opus" | "sonnet" | "haiku" | "fable";
 
 /**
  * Map of short model label -> full model id. These values MUST match the
@@ -15,6 +15,7 @@ const SHORT_TO_ID: Record<ModelShort, string> = {
   opus: "claude-opus-4-6",
   sonnet: "claude-sonnet-4-6",
   haiku: "claude-haiku-4-5-20251001",
+  fable: "claude-fable-5",
 };
 
 /**
@@ -37,6 +38,9 @@ export function shortFromModelId(
   }
   if (lower.includes("haiku")) {
     return "haiku";
+  }
+  if (lower.includes("fable")) {
+    return "fable";
   }
   return undefined;
 }

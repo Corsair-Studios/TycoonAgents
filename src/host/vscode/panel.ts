@@ -269,6 +269,10 @@ export class TycoonPanel {
           if (message.id !== undefined && message.pattern !== undefined) {
             this._handleSetAgentKeywords(message.id, message.pattern);
           }
+        } else if (message.type === "removeAgent") {
+          if (message.id !== undefined) {
+            await this._handleRemoveAgent(message.id);
+          }
         } else if (message.type === "repairHook") {
           this._handleInstallHooks();
           this._handleGetSettings();
@@ -2160,6 +2164,95 @@ export class TycoonPanel {
         id,
         field: "model",
         error: String(err),
+      });
+    }
+  }
+
+  /**
+   * Remove a single agent: delete its `.claude/agents/<id>.md` file and its
+   * `agent-keywords.json` routing entry, gated behind a native modal confirm.
+   * The orchestrator/coordinator is the core session-model agent and cannot be
+   * removed. Refreshes the settings/roster on success so the webview re-renders
+   * without the removed agent. Mirrors the agent-removal + confirm pattern in
+   * `_handleRemovePack`.
+   */
+  private async _handleRemoveAgent(id: string): Promise<void> {
+    // The orchestrator is the core session-model agent — never removable.
+    if (id === "orchestrator") {
+      void this._panel.webview.postMessage({
+        type: "agentRemoved",
+        id,
+        ok: false,
+        error: "core agent cannot be removed",
+      });
+      return;
+    }
+    try {
+      const root = this._projectRoot();
+      if (root === "") {
+        void this._panel.webview.postMessage({
+          type: "agentRemoved",
+          id,
+          ok: false,
+          error: "No workspace folder open",
+        });
+        return;
+      }
+
+      // Resolve a friendly display name for the confirmation dialog.
+      const agentsDir = path.join(root, ".claude", "agents");
+      const rosterEntry = loadAgentRoster(agentsDir).find((a) => a.id === id);
+      const displayName = rosterEntry?.name ?? id;
+
+      const answer = await vscode.window.showWarningMessage(
+        `Remove the '${displayName}' agent?`,
+        {
+          modal: true,
+          detail: `This deletes .claude/agents/${id}.md and its keyword routing.`,
+        },
+        "Remove"
+      );
+      if (answer !== "Remove") {
+        void this._panel.webview.postMessage({
+          type: "agentRemoved",
+          id,
+          ok: false,
+          cancelled: true,
+        });
+        return;
+      }
+
+      // Delete the agent markdown file (guard existence).
+      const agentPath = path.join(agentsDir, `${id}.md`);
+      if (fs.existsSync(agentPath)) {
+        fs.unlinkSync(agentPath);
+      }
+
+      // Remove the agent's routing entry from agent-keywords.json — reuse the
+      // exact keyword-removal logic from _handleRemovePack.
+      let cfg = this._readKeywordsConfig(root);
+      if (cfg && typeof cfg.agents === "object" && cfg.agents !== null && id in cfg.agents) {
+        const nextAgents = { ...cfg.agents };
+        delete nextAgents[id];
+        cfg = { ...cfg, agents: nextAgents };
+      }
+      const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+      try {
+        fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+        fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+      } catch {
+        /* best-effort: keywords file is non-critical for removal */
+      }
+
+      this._panel.webview.postMessage({ type: "agentRemoved", id, ok: true });
+      // Refresh the settings/roster the same way setAgentModel-driven changes do.
+      this._handleGetSettings();
+    } catch (e) {
+      void this._panel.webview.postMessage({
+        type: "agentRemoved",
+        id,
+        ok: false,
+        error: String(e),
       });
     }
   }

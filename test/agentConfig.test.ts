@@ -17,6 +17,7 @@ test("shortFromModelId maps known ids and rejects others", () => {
   assert.equal(shortFromModelId("claude-opus-4-6"), "opus");
   assert.equal(shortFromModelId("claude-sonnet-4-6"), "sonnet");
   assert.equal(shortFromModelId("claude-haiku-4-5-20251001"), "haiku");
+  assert.equal(shortFromModelId("claude-fable-5"), "fable");
   assert.equal(shortFromModelId("CLAUDE-OPUS-4-6"), "opus"); // case-insensitive
   assert.equal(shortFromModelId("gpt"), undefined);
   assert.equal(shortFromModelId(undefined), undefined);
@@ -26,10 +27,11 @@ test("modelIdFromShort round-trips and rejects unknown", () => {
   assert.equal(modelIdFromShort("opus"), "claude-opus-4-6");
   assert.equal(modelIdFromShort("sonnet"), "claude-sonnet-4-6");
   assert.equal(modelIdFromShort("haiku"), "claude-haiku-4-5-20251001");
+  assert.equal(modelIdFromShort("fable"), "claude-fable-5");
   assert.equal(modelIdFromShort("gpt"), undefined);
 
   // round-trip: short -> id -> short
-  for (const s of ["opus", "sonnet", "haiku"] as const) {
+  for (const s of ["opus", "sonnet", "haiku", "fable"] as const) {
     assert.equal(shortFromModelId(modelIdFromShort(s)), s);
   }
 });

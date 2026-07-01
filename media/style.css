@@ -786,6 +786,29 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Settings (setup card) close-X — mirrors #skills-modal-close so it looks
+   identical. Sticky top-right, pinned while the settings list scrolls. */
+#settings-modal-close {
+  position: sticky;
+  top: 0;
+  align-self: flex-end;
+  z-index: 6;
+  background: var(--surface);
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+#settings-modal-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* ── Catalog tabs (Skills / MCP) ─────────────────────────────────── */
 .catalog-tabs {
   display: flex;
