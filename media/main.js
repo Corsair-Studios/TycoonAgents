@@ -1759,8 +1759,14 @@
   let lastAgentList = [];
   /** Trailing distance (native px) each follower keeps behind the one ahead. */
   const CONGA_TRAIL = 36;
-  /** Per-second chance a conga member flashes a celebratory cheer frame. */
-  const CONGA_CHEER_CHANCE_PER_SEC = 0.05;
+  /** Seconds between synchronized conga stop-and-cheer celebrations. */
+  const CONGA_CHEER_INTERVAL = 3;
+  /** Seconds the whole conga line holds the cheer pose (≈2 frames). */
+  const CONGA_CHEER_HOLD = 0.25;
+  /** Countdown to the next synchronized conga cheer (reset each celebration). */
+  let congaCheerTimer = 0;
+  /** Remaining hold time for the current synchronized conga cheer (>0 = holding). */
+  let congaCheerHold = 0;
   /**
    * Currently alive enemies. Each: {instance_id, rival_id, nx, ny, hp, maxHp,
    * facingLeft, animState, targetAgentId}.
@@ -5081,15 +5087,26 @@
 
     if (congaActive) {
       congaTimeLeft -= delta;
+      // Synchronized stop-and-cheer: every CONGA_CHEER_INTERVAL seconds the whole
+      // line pauses together and holds the cheer pose for CONGA_CHEER_HOLD seconds.
+      congaCheerTimer -= delta;
+      if (congaCheerTimer <= 0) {
+        congaCheerHold = CONGA_CHEER_HOLD;
+        congaCheerTimer = CONGA_CHEER_INTERVAL;
+      }
+      if (congaCheerHold > 0) {
+        congaCheerHold = Math.max(0, congaCheerHold - delta);
+      }
       if (congaTimeLeft <= 0) {
         // End the conga: cooldown + clear per-agent assignments.
         congaActive = false;
         congaTimeLeft = 0;
+        congaCheerTimer = 0;
+        congaCheerHold = 0;
         congaCooldown = CONGA_COOLDOWN_SECONDS;
         for (const id of Object.keys(agentCharMap)) {
           const e = agentCharMap[id];
           e.congaIndex = -1;
-          e.congaCheerLeft = 0;
           e.dancing = false;
           e.danceTimeLeft = 0;
         }
@@ -5126,13 +5143,14 @@
       const e = agentCharMap[id];
       if (!e) continue;
       e.congaIndex = order++;
-      e.congaCheerLeft = 0;
       e.dancing = false;
       e.danceTimeLeft = 0;
       freeAgentSeat(e);
     }
     congaActive = true;
     congaTimeLeft = CONGA_SECONDS;
+    congaCheerTimer = CONGA_CHEER_INTERVAL;
+    congaCheerHold = 0;
     return true;
   }
 
@@ -5169,7 +5187,7 @@
     charEntry.sitTimeLeft = 0;
   }
 
-  // debug hotkeys: c=conga, d=dance (bypass rarity/cooldown gates for testing)
+  // debug hotkey: c=conga (bypass rarity/cooldown gates for testing)
   document.addEventListener("keydown", (e) => {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -5179,13 +5197,6 @@
       if (congaActive) return;
       if (lastAgentList.length < 1) return;
       startConga(lastAgentList);
-    } else if (key === "d") {
-      // Force a random agent to dance for DANCE_SECONDS.
-      if (congaActive) return;
-      const ids = Object.keys(agentCharMap);
-      if (ids.length === 0) return;
-      const id = ids[Math.floor(Math.random() * ids.length)];
-      startAgentDance(agentCharMap[id]);
     }
   });
 
@@ -5436,7 +5447,6 @@
           lastDanceIdx: -1,
           // Conga-line state (assigned/cleared by updateConga).
           congaIndex: -1,
-          congaCheerLeft: 0,
           // Sitting state (idle festivity, mirrors solo-dance system).
           sitting: false,
           sitSeatId: null,
@@ -5485,12 +5495,6 @@
             charEntry.destNx = ahead.nx - (adx / ad) * CONGA_TRAIL;
             charEntry.destNy = ahead.ny - (ady / ad) * CONGA_TRAIL;
           }
-        }
-        // Cheer flash: per-second chance (scaled by delta) to briefly celebrate.
-        if (charEntry.congaCheerLeft > 0) {
-          charEntry.congaCheerLeft = Math.max(0, charEntry.congaCheerLeft - delta);
-        } else if (Math.random() < CONGA_CHEER_CHANCE_PER_SEC * delta) {
-          charEntry.congaCheerLeft = 0.5;
         }
       }
 
@@ -5708,7 +5712,10 @@
       const distNative = Math.sqrt(dxNative * dxNative + dyNative * dyNative);
       const moveSpeed = (inConga && charEntry.congaIndex === 0) ? WANDER_SPEED * 1.2 : WANDER_SPEED;
       let isMoving = false;
-      if (!charEntry.dancing && !charEntry.sitting && distNative > WANDER_ARRIVED_EPS) {
+      // Synchronized conga cheer: the whole line freezes in place while holding
+      // the cheer pose (congaCheerHold shared across all members).
+      const congaFrozen = inConga && congaCheerHold > 0;
+      if (!congaFrozen && !charEntry.dancing && !charEntry.sitting && distNative > WANDER_ARRIVED_EPS) {
         const step = Math.min(moveSpeed * delta, distNative);
         charEntry.nx += (dxNative / distNative) * step;
         charEntry.ny += (dyNative / distNative) * step;
@@ -5782,7 +5789,7 @@
       // CONGA override: line members walk (or briefly cheer) — takes priority
       // over build/idle since inConga preempted those blocks above.
       if (inConga) {
-        desiredClip = charEntry.congaCheerLeft > 0 ? "cheer" : "walk";
+        desiredClip = congaCheerHold > 0 ? "cheer" : "walk";
       }
       // DANCE override (highest priority for an idle festivity): a dancing
       // agent's clip is "dance". Its frameIndex is driven by the manual mixer
