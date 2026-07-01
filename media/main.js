@@ -1599,6 +1599,72 @@
   }
   /** Native build-progress units one completed coding task contributes. Tunable. */
   const UNITS_PER_TASK = 34;
+  /**
+   * One-at-a-time paced build queue (replaces proportional-fill from
+   * completedTasks). A stable random permutation of themeBuildables'
+   * object_ids, seeded per-theme so it doesn't reshuffle every frame.
+   * @type {string[]}
+   */
+  let buildQueue = [];
+  /** Count of queue entries fully built so far (index into buildQueue). */
+  let buildBuiltCount = 0;
+  /** Progress (0..1) of the current active (buildQueue[buildBuiltCount]) object. */
+  let buildCurrentProgress = 0;
+  /** Seconds to fully build one object while a builder is actively present. */
+  const BUILD_SECONDS = 8;
+  /**
+   * Per-frame flag: true when at least one ACTIVE agent is currently AT the
+   * active build target's standoff spot actually building it (clip "build",
+   * i.e. isBuilding && !isMoving). Reset each frame before the agent loop,
+   * set during the agent loop, read by updateBuildProgress() next frame.
+   */
+  let buildProgressBuilderPresent = false;
+
+  /**
+   * Deterministic string hash → 32-bit int (for seeding the build queue
+   * shuffle so it's stable across frames but varies per theme).
+   * @param {string} str
+   */
+  function seededHash(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+      h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+    }
+    return h >>> 0;
+  }
+
+  /**
+   * Small deterministic PRNG (mulberry32) for the seeded build-queue shuffle.
+   * @param {number} seed
+   */
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /**
+   * Build a stable random permutation of themeBuildables' object_ids, seeded
+   * by theme_id so the same theme always yields the same build order (no
+   * reshuffling every frame/reload).
+   * @param {Array<object>} buildables
+   * @param {string} themeId
+   * @returns {string[]}
+   */
+  function buildSeededQueue(buildables, themeId) {
+    const ids = buildables.map((o) => o.object_id);
+    const rand = mulberry32(seededHash(String(themeId || "")));
+    // Fisher-Yates shuffle using the seeded PRNG.
+    for (let i = ids.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      const tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
+    }
+    return ids;
+  }
 
   // ── Phase 2b: enemy / EVICT mode state ───────────────────────────────────
   /** Seconds between enemy spawn waves (manifest.viewport.enemy_config.spawn_interval_seconds). */
@@ -2274,18 +2340,25 @@
         ctx.stroke();
         ctx.restore();
       }
-      // Progress bar above the object.
+      // Change 2: progress/health bar for the ACTIVE crate — since the build
+      // queue guarantees exactly one active object at a time, this bar is
+      // always visible while building. Clamp barY so it never clips off the
+      // top of the canvas (e.g. tall objects near the top of the stage).
       const barW = Math.max(24, baseSize * 0.9);
-      const barH = 5;
+      const barH = 6;
       const barX = cx - barW / 2;
-      const barY = cy - baseSize - 12;
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      const barY = Math.max(2, cy - baseSize - 14);
+      ctx.save();
+      // Background track.
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
       ctx.fillRect(barX, barY, barW, barH);
+      // Filled portion (entry.progress, 0..1).
       ctx.fillStyle = "#ffc107";
       ctx.fillRect(barX, barY, barW * Math.max(0, Math.min(1, entry.progress)), barH);
-      ctx.strokeStyle = "rgba(255,255,255,0.5)";
+      ctx.strokeStyle = "rgba(255,255,255,0.65)";
       ctx.lineWidth = 1;
-      ctx.strokeRect(barX, barY, barW, barH);
+      ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
+      ctx.restore();
       return;
     }
 
@@ -2850,6 +2923,12 @@
         themeHasPoofAsset = !!(vp && vp.poof_asset);
         // Reset per-object runtime phase/anim state for the new theme.
         objectAnimMap = {};
+        // ── Phase: one-at-a-time paced build queue (Change 1) ──────────
+        // Stable random permutation seeded by theme_id — deterministic per
+        // theme, doesn't reshuffle on re-render.
+        buildQueue = buildSeededQueue(themeBuildables, initializedThemeId);
+        buildBuiltCount = 0;
+        buildCurrentProgress = 0;
         // Resolve a stable native placement per object. Generated anchor_coord
         // values are currently always [0.5,0.5] (degenerate/equal), so detect
         // that and fall back to the deterministic OBJECT_SLOT_UVS distribution.
@@ -4622,43 +4701,59 @@
 
   // ── Phase 2a: build-state derivation ─────────────────────────────────────
   /**
-   * Derive the current build status from state.completedTasks, filling
-   * themeBuildables in build_order order. Fully-covered objects are BUILT,
-   * the first partially-covered object is ACTIVE, the rest are UNBUILT.
-   * Pure function of (state.completedTasks, themeBuildables) — cheap to call
-   * once per render() frame.
+   * Derive the current build status FROM THE BUILD QUEUE (Change 1) — one
+   * object at a time, time-paced, rather than proportionally filling from
+   * state.completedTasks. For queue index i → object_id:
+   *   i < buildBuiltCount  → BUILT
+   *   i === buildBuiltCount → ACTIVE (activeProgress = buildCurrentProgress)
+   *   i > buildBuiltCount  → UNBUILT (hidden)
+   * Pure function of (buildQueue, buildBuiltCount, buildCurrentProgress) —
+   * cheap to call once per render() frame.
    * @returns {{builtIds: Set<string>, activeId: string|null, activeProgress: number}}
    */
   function computeBuildState() {
     const builtIds = new Set();
-    let activeId = null;
-    let activeProgress = 0;
-    let remaining = (state.completedTasks || 0) * UNITS_PER_TASK;
-    for (const obj of themeBuildables) {
-      const need = Math.max(0, obj.work_units_required || 0);
-      if (need <= 0) {
-        // Degenerate (no cost) — treat as instantly built so it never blocks the queue.
-        builtIds.add(obj.object_id);
-        continue;
-      }
-      if (remaining >= need) {
-        builtIds.add(obj.object_id);
-        remaining -= need;
-      } else if (remaining > 0 && activeId === null) {
-        activeId = obj.object_id;
-        activeProgress = remaining / need;
-        remaining = 0;
-      } else if (activeId === null) {
-        // First object with zero progress yet — still the ACTIVE target
-        // (crate appears immediately at 0% rather than staying hidden).
-        activeId = obj.object_id;
-        activeProgress = 0;
-        break;
+    for (let i = 0; i < buildBuiltCount && i < buildQueue.length; i++) {
+      builtIds.add(buildQueue[i]);
+    }
+    const activeId = buildBuiltCount < buildQueue.length ? buildQueue[buildBuiltCount] : null;
+    const activeProgress = activeId !== null ? buildCurrentProgress : 0;
+    return { builtIds, activeId, activeProgress };
+  }
+
+  /**
+   * Advance the paced build queue by one frame (Change 1). Progress on the
+   * current active object only moves while at least one ACTIVE agent is
+   * actually AT the standoff spot building it (clip === "build", i.e.
+   * isBuilding && !isMoving) — set via markBuilderPresent() during the
+   * per-agent loop below, read here once per frame. Enemy presence preempts
+   * building entirely (EVICT mode pauses the queue).
+   * @param {number} delta seconds
+   */
+  function updateBuildProgress(delta) {
+    if (buildQueue.length === 0) return;
+    const activeObjId = buildBuiltCount < buildQueue.length ? buildQueue[buildBuiltCount] : null;
+    if (!activeObjId) return; // all built
+    if (enemiesAlive) return; // enemy preemption pauses building
+    if (!buildProgressBuilderPresent) return; // no one actively building right now
+    buildCurrentProgress += delta / BUILD_SECONDS;
+    if (buildCurrentProgress >= 1) {
+      buildCurrentProgress = 1;
+      const entry = objectAnimMap[activeObjId];
+      const canPoof = themeHasPoofAsset && themeImages.poof && themeImages.poof.length > 0;
+      if (entry && canPoof) {
+        // Transition to POOF; buildBuiltCount advances once the poof
+        // one-shot completes (handled in the per-object anim-advance pass).
+        if (entry.phase !== "poof") {
+          entry.phase = "poof";
+          entry.animState = createAnimState("poof");
+        }
       } else {
-        break;
+        // No poof art (or no entry yet) — skip straight to built, no crash.
+        buildBuiltCount++;
+        buildCurrentProgress = 0;
       }
     }
-    return { builtIds, activeId, activeProgress };
   }
 
   // ── Phase 2b: enemy / EVICT mode helpers ─────────────────────────────────
@@ -4862,6 +4957,27 @@
     }
     const polyRangeY = Math.max(polyMaxY - polyMinY, 1);
 
+    // ── Phase 2b: enemy wave spawn/advance (client-side only, no host telemetry) ──
+    // Computed BEFORE the build-state block so updateBuildProgress() can gate
+    // on enemiesAlive (enemy presence preempts/pauses building — Change 1).
+    if (!loadingActive && themeLoaded) {
+      updateEnemySpawning(delta, agentList);
+      advanceEnemies(delta);
+    }
+    const enemiesAlive = activeEnemies.length > 0;
+    // Reset engagement claims each frame; agents re-claim the nearest enemy below.
+    if (enemiesAlive) {
+      for (const en of activeEnemies) en.targetAgentId = null;
+    }
+
+    // ── Phase 2a (Change 1): advance the paced one-at-a-time build queue ────
+    // Gated on last frame's builder-presence flag (set at the bottom of the
+    // agent loop below) and on enemiesAlive (enemy preemption pauses it).
+    if (themeBuildables.length > 0) {
+      updateBuildProgress(delta);
+    }
+    buildProgressBuilderPresent = false; // reset; re-armed by the agent loop below
+
     // ── Phase 2a: derive build state + advance per-object state machines ────
     const buildState = themeBuildables.length > 0 ? computeBuildState() : { builtIds: new Set(), activeId: null, activeProgress: 0 };
     const activeBuildId = buildState.activeId;
@@ -4902,8 +5018,15 @@
       } else if (entry.phase === "poof" && entry.animState) {
         advanceObjectAnim(entry.animState, delta);
         if (entry.animState.completed) {
+          // Poof one-shot finished — this queue slot is now fully built.
+          // Advance the queue pointer here (Change 1) so the NEXT object
+          // becomes the active crate starting next frame.
           entry.phase = "idle";
           entry.animState = createAnimState("object_idle");
+          if (objId === activeBuildId && buildBuiltCount < buildQueue.length && buildQueue[buildBuiltCount] === objId) {
+            buildBuiltCount++;
+            buildCurrentProgress = 0;
+          }
         }
       } else if (entry.phase === "idle" && entry.animState) {
         advanceObjectAnim(entry.animState, delta);
@@ -4915,17 +5038,6 @@
       ? activeBuildObj.exclusion_radius
       : 48;
     let builderSideCounter = 0;
-
-    // ── Phase 2b: enemy wave spawn/advance (client-side only, no host telemetry) ──
-    if (!loadingActive && themeLoaded) {
-      updateEnemySpawning(delta, agentList);
-      advanceEnemies(delta);
-    }
-    const enemiesAlive = activeEnemies.length > 0;
-    // Reset engagement claims each frame; agents re-claim the nearest enemy below.
-    if (enemiesAlive) {
-      for (const en of activeEnemies) en.targetAgentId = null;
-    }
 
     agentList.forEach((agent, idx) => {
       // Look up a live worker (if one exists) for this agent.
@@ -5124,6 +5236,30 @@
         anim.direction = 1;
         anim.elapsed = 0;
         anim.completed = false;
+      } else if (
+        (desiredClip === "melee" || desiredClip === "shoot") &&
+        anim.completed &&
+        isEngaging &&
+        engageInRange
+      ) {
+        // Change 3: melee/shoot clips are loop:false one-shots in
+        // ATLAS_CLIPS (kept that way for non-looping uses elsewhere), but
+        // while an agent is actively engaging an in-range enemy the attack
+        // must keep replaying instead of freezing on the last frame. Reset
+        // here (loop-at-the-engage-site) rather than change ATLAS_CLIPS
+        // globally. Stops automatically once out of range/enemy defeated,
+        // because desiredClip then changes to "walk"/"idle" and the branch
+        // above handles the reset instead.
+        anim.frameIndex = 0;
+        anim.direction = 1;
+        anim.elapsed = 0;
+        anim.completed = false;
+      }
+      // Change 1: mark that a builder is actively present at the build
+      // target this frame (arrived, not moving, build clip in effect) so
+      // updateBuildProgress() knows to advance progress next frame.
+      if (isBuilding && !isMoving && desiredClip === "build") {
+        buildProgressBuilderPresent = true;
       }
       advanceAnim(anim, delta);
     });
