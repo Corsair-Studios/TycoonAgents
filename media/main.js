@@ -1894,6 +1894,20 @@
   const RANGED_ENGAGE_RANGE = 110;
   /** Native px/second enemy walk-in speed. */
   const ENEMY_WALK_SPEED = 40;
+  /**
+   * Hysteresis margin (native px) added to the range boundaries so a moving
+   * target hovering right at ENEMY_RANGED_RANGE / ENEMY_ENGAGE_RANGE doesn't
+   * flip the enemy between walk<->attack every frame (which reset the walk
+   * clip and produced a "walking-in-place" jitter). Once attacking, the enemy
+   * keeps attacking until the target drifts beyond range + this margin.
+   */
+  const ENEMY_RANGE_HYSTERESIS = 30;
+  /**
+   * Native px an enemy must actually move in a frame for its "walk" clip to
+   * keep advancing. Below this the enemy is effectively stationary (arrived /
+   * boundary micro-steps), so we freeze the walk frame instead of blurring it.
+   */
+  const ENEMY_WALK_MOVE_EPS = 0.35;
 
   // ── Stage editor (live polygon + scale tuning) ───────────────────────────
   /** True while the "Edit Stage" overlay is active. */
@@ -5803,32 +5817,52 @@
       // Enemies have only two clips: "walk" and "attack". Both melee (up-close)
       // and ranged (at distance) engagement use the same 2-frame attack clip;
       // ranged additionally spawns a projectile on its throttled cadence.
+      // ── Combat mode with HYSTERESIS ────────────────────────────────────
+      // The target agent MOVES, so its distance oscillates around the range
+      // boundaries. Without a deadband the enemy flips walk<->attack every
+      // frame (each flip reset the walk clip → walking-in-place jitter).
+      // Track a sticky mode on the enemy: enter "attack" when the target is
+      // within range, but stay in "attack" until it drifts beyond
+      // range + ENEMY_RANGE_HYSTERESIS before returning to "walk".
+      if (en.combatMode !== "attack") en.combatMode = "walk";
+      const attackEnter = ENEMY_RANGED_RANGE;                       // start attacking within this
+      const attackExit = ENEMY_RANGED_RANGE + ENEMY_RANGE_HYSTERESIS; // stop only beyond this
+      if (en.combatMode === "attack") {
+        // Keep attacking until the target escapes the outer (exit) band.
+        if (targetDist > attackExit) en.combatMode = "walk";
+      } else {
+        // Currently walking — only switch to attack once inside the inner band.
+        if (targetDist <= attackEnter) en.combatMode = "attack";
+      }
+
       let desiredAction = "walk";
-      if (targetDist <= ENEMY_ENGAGE_RANGE) {
-        // Melee range — hold position and swing on the attack cadence.
+      let movedThisFrame = 0; // native px actually moved this frame (walk-anim gate)
+      if (en.combatMode === "attack") {
+        // In range (with hysteresis) — hold position and attack. Fire a ranged
+        // projectile on the throttled cadence when outside pure melee range.
         desiredAction = "attack";
-        if (en.attackCooldown <= 0) en.attackCooldown = ENEMY_ATTACK_INTERVAL;
-      } else if (targetDist <= ENEMY_RANGED_RANGE) {
-        // Ranged distance — hold position, play attack, fire a projectile on
-        // the throttled cadence (target position snapshotted at fire time).
-        desiredAction = "attack";
-        if (en.shotCooldown <= 0) {
+        if (targetDist > ENEMY_ENGAGE_RANGE && en.shotCooldown <= 0) {
           en.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
           spawnProjectile(en.nx, en.ny, targetEnt.nx, targetEnt.ny);
         }
         if (en.attackCooldown <= 0) en.attackCooldown = ENEMY_ATTACK_INTERVAL;
       } else {
-        // Out of range — walk toward the target.
+        // Out of range — walk toward the target. Clamp the step so it never
+        // overshoots the target (stepping past then back = net-zero jitter).
         desiredAction = "walk";
         const dx = targetEnt.nx - en.nx;
         const dy = targetEnt.ny - en.ny;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const step = Math.min(ENEMY_WALK_SPEED * delta, dist);
+        const step = Math.min(ENEMY_WALK_SPEED * delta, dist); // no-overshoot clamp
+        const px = en.nx, py = en.ny;
         en.nx += (dx / dist) * step;
         en.ny += (dy / dist) * step;
         const clamped = clampToPolygon(en.nx, en.ny, walkablePolygon);
         en.nx = clamped[0];
         en.ny = clamped[1];
+        // Measure real displacement AFTER the polygon clamp (a blocked enemy
+        // moves ~0 even though a step was requested).
+        movedThisFrame = Math.hypot(en.nx - px, en.ny - py);
       }
 
       // Apply the desired clip. "attack" is a loop:false pingpong one-shot in
@@ -5846,7 +5880,14 @@
         en.animState.elapsed = 0;
         en.animState.completed = false;
       }
-      advanceRivalAnim(en.animState, delta);
+      // Only advance the WALK cycle when the enemy actually moved a meaningful
+      // amount this frame; if it's stalled (arrived / blocked / boundary micro-
+      // step) hold the current walk frame so it doesn't vibrate in place.
+      if (desiredAction === "walk" && movedThisFrame < ENEMY_WALK_MOVE_EPS) {
+        // Freeze: skip advanceRivalAnim so frameIndex stays put this frame.
+      } else {
+        advanceRivalAnim(en.animState, delta);
+      }
     }
   }
 
