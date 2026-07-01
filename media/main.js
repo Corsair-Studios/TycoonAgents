@@ -5055,27 +5055,42 @@
     if (buildQueue.length === 0) return;
     const activeObjId = buildBuiltCount < buildQueue.length ? buildQueue[buildBuiltCount] : null;
     if (!activeObjId) return; // all built
+    // Incremental RATE stays gated: enemies, conga, and "no builder" pause the
+    // per-frame advance. The >=1 completion check is NOT gated here — it runs
+    // unconditionally in completeBuildIfReady() (called every frame), so a
+    // fast-forward (F hotkey) that pushes progress past 1 always poofs/advances.
     if (enemiesAlive) return; // enemy preemption pauses building
     if (congaActive) return; // conga easter-egg pauses building (like enemies)
     if (buildProgressBuilderCount <= 0) return; // no one actively building right now
     // N builders on the SAME active object build it N× faster.
     buildCurrentProgress += (buildProgressBuilderCount * delta) / BUILD_SECONDS_PER_AGENT;
-    if (buildCurrentProgress >= 1) {
-      buildCurrentProgress = 1;
-      const entry = objectAnimMap[activeObjId];
-      const canPoof = themeHasPoofAsset && themeImages.poof && themeImages.poof.length > 0;
-      if (entry && canPoof) {
-        // Transition to POOF; buildBuiltCount advances once the poof
-        // one-shot completes (handled in the per-object anim-advance pass).
-        if (entry.phase !== "poof") {
-          entry.phase = "poof";
-          entry.animState = createAnimState("poof");
-        }
-      } else {
-        // No poof art (or no entry yet) — skip straight to built, no crash.
-        buildBuiltCount++;
-        buildCurrentProgress = 0;
+  }
+
+  /**
+   * Ungated completion check: whenever buildCurrentProgress has reached 1 (via
+   * normal building OR the F fast-forward hotkey), transition the active object
+   * to POOF (or advance directly if no poof art). Runs every frame regardless
+   * of enemy/conga/builder gating so F reliably completes an object.
+   */
+  function completeBuildIfReady() {
+    if (buildQueue.length === 0) return;
+    const activeObjId = buildBuiltCount < buildQueue.length ? buildQueue[buildBuiltCount] : null;
+    if (!activeObjId) return; // all built
+    if (buildCurrentProgress < 1) return;
+    buildCurrentProgress = 1;
+    const entry = objectAnimMap[activeObjId];
+    const canPoof = themeHasPoofAsset && themeImages.poof && themeImages.poof.length > 0;
+    if (entry && canPoof) {
+      // Transition to POOF; buildBuiltCount advances once the poof
+      // one-shot completes (handled in the per-object anim-advance pass).
+      if (entry.phase !== "poof") {
+        entry.phase = "poof";
+        entry.animState = createAnimState("poof");
       }
+    } else {
+      // No poof art (or no entry yet) — skip straight to built, no crash.
+      buildBuiltCount++;
+      buildCurrentProgress = 0;
     }
   }
 
@@ -5298,7 +5313,7 @@
     charEntry.sitTimeLeft = 0;
   }
 
-  // debug hotkey: c=conga (bypass rarity/cooldown gates for testing)
+  // debug hotkeys: c=conga, f=fast-forward build
   document.addEventListener("keydown", (e) => {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -5308,6 +5323,15 @@
       if (congaActive) return;
       if (lastAgentList.length < 1) return;
       startConga(lastAgentList);
+    } else if (key === "f") {
+      // Fast-forward the CURRENT active object's build by one full object
+      // (a build normally takes 20 real minutes). +1.0 progress per press;
+      // completeBuildIfReady() (called every frame) does the poof/advance,
+      // so completion fires regardless of builder/enemy/conga gating.
+      if (congaActive) return;
+      if (buildBuiltCount >= buildQueue.length) return; // nothing left to build
+      const BUILD_FF_SECONDS = 20 * 60; // 1200s = one full object at rate 1
+      buildCurrentProgress += BUILD_FF_SECONDS / BUILD_SECONDS_PER_AGENT;
     }
   });
 
@@ -5477,6 +5501,9 @@
     // agent loop below) and on enemiesAlive (enemy preemption pauses it).
     if (themeBuildables.length > 0) {
       updateBuildProgress(delta, enemiesAlive);
+      // Ungated: completes the object once progress hits 1 (normal build OR the
+      // F fast-forward hotkey), even if enemies/conga/no-builder paused the rate.
+      completeBuildIfReady();
     }
     buildProgressBuilderCount = 0; // reset; re-armed by the agent loop below
 
