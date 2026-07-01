@@ -5,11 +5,10 @@ Browse all project materials, inspect their texture dependencies, and find
 unused materials in the current level.  Runs inside UEFN's embedded
 Python 3.11 (requires the ``unreal`` module).
 
-Provides four interfaces:
-  1. **_get_project_prefix()**     — detect the content prefix for this project
-  2. **browse_materials()**        — Asset Registry scan; returns structured dict
-  3. **find_unused_materials()**   — compare registry materials vs level actors
-  4. **show_material_browser()**   — Tkinter UI with treeview and live filter
+Provides three interfaces:
+  1. **browse_materials()**        — Asset Registry scan; returns structured dict
+  2. **find_unused_materials()**   — compare registry materials vs level actors
+  3. **show_material_browser()**   — Tkinter UI with treeview and live filter
 
 Usage:
     from material_browser import browse_materials, find_unused_materials
@@ -48,50 +47,6 @@ _tick_handle = [None]
 # Cached scan results reused by the live filter (avoids re-scanning on keystrokes)
 _last_browse_result   = [None]
 _last_unused_result   = [None]
-
-
-# ---------------------------------------------------------------------------
-# Project prefix detection (used for labeling only — see _SKIP_PREFIXES below
-# for the actual project_only filtering logic)
-# ---------------------------------------------------------------------------
-
-def _get_project_prefix():
-    """
-    Detect the current UEFN project's asset prefix (e.g. ``/MyProject/``).
-
-    Strategy 1 — derive the prefix from the first level actor's full path.
-    Strategy 2 — fall back to the world's own path.
-    Strategy 3 — last-resort default ``/Game/``.
-    """
-    try:
-        subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-        actors = subsystem.get_all_level_actors()
-        if actors:
-            path = actors[0].get_path_name()
-            parts = path.split("/")
-            if len(parts) >= 2 and parts[1]:
-                prefix = "/" + parts[1] + "/"
-                unreal.log(f"material_browser: Detected project prefix from actor path: {prefix}")
-                return prefix
-    except Exception as e:
-        unreal.log_warning(f"material_browser: Actor path detection failed — {e}")
-
-    try:
-        subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-        world = subsystem.get_world()
-        if world:
-            world_path = world.get_path_name()
-            unreal.log(f"material_browser: World path = {world_path}")
-            parts = world_path.split("/")
-            if len(parts) >= 2 and parts[1]:
-                prefix = "/" + parts[1] + "/"
-                unreal.log(f"material_browser: Detected project prefix from world: {prefix}")
-                return prefix
-    except Exception as e:
-        unreal.log_warning(f"material_browser: World path detection failed — {e}")
-
-    unreal.log_warning("material_browser: Could not detect project prefix, defaulting to /Game/")
-    return "/Game/"
 
 
 # ---------------------------------------------------------------------------
