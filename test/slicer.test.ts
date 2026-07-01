@@ -4,7 +4,7 @@ import Jimp from 'jimp';
 import { sliceAndNormalizeAtlas } from '../src/extension/slicer';
 import { CHARACTER_TARGET_CONTENT_HEIGHT } from '../src/extension/themeAssetPrompts';
 
-test('slicer removes border-connected imperfect magenta but preserves enclosed magenta details', async () => {
+test('slicer removes all chroma magenta including enclosed regions surrounded by the sprite', async () => {
   const cellWidth = 20;
   const cellHeight = 20;
   const atlas = new Jimp(cellWidth * 5, cellHeight * 4, 0xea10e8ff);
@@ -38,7 +38,9 @@ test('slicer removes border-connected imperfect magenta but preserves enclosed m
     if (a === 255 && r === 0xea && g === 0x10 && b === 0xe8) opaqueMagenta++;
   });
   assert.ok(transparent > 0);
-  assert.equal(opaqueMagenta, 1);
+  // 0xea10e8 passes the strict isChromaMagenta test (r=234, g=16, b=232), so the
+  // global removal pass clears even the pixel fully enclosed by the dark sprite.
+  assert.equal(opaqueMagenta, 0);
 });
 
 test('slicer supports the 4x3 object board contract', async () => {

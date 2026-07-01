@@ -1663,6 +1663,21 @@
    * updateBuildProgress() next frame.
    */
   let buildProgressBuilderCount = 0;
+  /**
+   * Ids of the ACTIVE agents that were actually building the current active
+   * object this frame (mirrors buildProgressBuilderCount's membership). Rebuilt
+   * each frame in the agent loop and reset (emptied) where
+   * buildProgressBuilderCount is reset to 0. Read by completeBuildIfReady() to
+   * make the contributing builders celebrate when the object completes.
+   * @type {string[]}
+   */
+  let currentBuildContributors = [];
+  /**
+   * Minimum horizontal movement (native px) required to update an agent's or
+   * enemy's movement-derived facing. Below this, facing is held so a
+   * near-vertical mover doesn't rapid-flip left/right every frame.
+   */
+  const FACING_DEADZONE = 0.5;
 
   /**
    * object_id of the "ranged weapon rack" — the buildable with build_order 0
@@ -2647,6 +2662,19 @@
       const imgData = octx.getImageData(0, 0, w, h);
       const data = imgData.data;
       let changedAny = false;
+      // GLOBAL strong-chroma pass FIRST: kill EVERY pixel matching the slicer's
+      // strong isChromaMagenta test — including ENCLOSED background gaps (between
+      // legs/arms) that never touch a transparent edge, so the edge-adjacency
+      // flood below could never reach them. The strong test spares legit
+      // pink/purple/skin art (only near-pure keyed magenta qualifies).
+      for (let gi = 0; gi < data.length; gi += 4) {
+        if (data[gi + 3] === 0) continue; // already transparent
+        const r = data[gi], g = data[gi + 1], b = data[gi + 2];
+        if (r >= 180 && b >= 180 && g <= 90 && (r - g) >= 120 && (b - g) >= 120 && Math.abs(r - b) <= 80) {
+          data[gi + 3] = 0;
+          changedAny = true;
+        }
+      }
       for (let iter = 0; iter < DEFRINGE_ITERATIONS; iter++) {
         // Collect pixels to clear this pass, then apply — so newly-cleared
         // pixels only expand the boundary on the NEXT iteration (stable flood).
@@ -5140,11 +5168,29 @@
       if (entry.phase !== "poof") {
         entry.phase = "poof";
         entry.animState = createAnimState("poof");
+        // Celebration: the agents that were building this object dance for 5s.
+        // The phase!="poof" guard makes this a one-shot per completed object.
+        celebrateBuildContributors();
       }
     } else {
       // No poof art (or no entry yet) — skip straight to built, no crash.
       buildBuiltCount++;
       buildCurrentProgress = 0;
+      // Celebration (no-poof fast path): builders dance on completion. This
+      // branch runs exactly once per object (progress reset to 0 right after).
+      celebrateBuildContributors();
+    }
+  }
+
+  /**
+   * Trigger the 5s celebration dance on every agent that contributed to the
+   * just-completed active object (see currentBuildContributors). Guarded for
+   * existence. F-key completions with no contributors simply do nothing.
+   */
+  function celebrateBuildContributors() {
+    for (const id of currentBuildContributors) {
+      const ce = agentCharMap[id];
+      if (ce) startAgentDance(ce);
     }
   }
 
@@ -5437,7 +5483,8 @@
         const step = ENEMY_WALK_SPEED * 1.6 * delta;
         en.nx += (dx / dist) * step;
         en.ny += (dy / dist) * step;
-        en.facingLeft = dx < 0;
+        // Facing DEADZONE: hold facing on near-vertical flight (no rapid flip).
+        if (Math.abs(dx) > FACING_DEADZONE) en.facingLeft = dx < 0;
         if (en.animState.action !== "walk") {
           en.animState.action = "walk";
           en.animState.frameIndex = 0;
@@ -5476,6 +5523,8 @@
           const step = Math.min(ENEMY_WALK_SPEED * delta, dist);
           en.nx += (dx / dist) * step;
           en.ny += (dy / dist) * step;
+          // Facing DEADZONE: hold facing on near-vertical drift (no rapid flip).
+          if (Math.abs(dx) > FACING_DEADZONE) en.facingLeft = dx < 0; // face drift direction so mirroring isn't stale
           const clamped = clampToPolygon(en.nx, en.ny, walkablePolygon);
           en.nx = clamped[0];
           en.ny = clamped[1];
@@ -5675,6 +5724,7 @@
       completeBuildIfReady();
     }
     buildProgressBuilderCount = 0; // reset; re-armed by the agent loop below
+    currentBuildContributors = []; // reset; re-populated by the agent loop below
 
     // ── Phase 2a: derive build state + advance per-object state machines ────
     const buildState = themeBuildables.length > 0 ? computeBuildState() : { builtIds: new Set(), activeId: null, activeProgress: 0 };
@@ -5836,7 +5886,8 @@
       // (isBuilding stays false so build standoff logic never runs).
       let isEngaging = false;
       let engageInRange = false;
-      if (!inConga && isActive && enemiesAlive) {
+      // A celebrating (dancing) agent pauses combat for the dance's duration.
+      if (!inConga && !charEntry.dancing && isActive && enemiesAlive) {
         let nearest = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
           if (en.fleeing) continue; // Change 2: fleeing enemies are not threats
@@ -5882,6 +5933,8 @@
               nearest.hp = 0;
               nearest.fleeing = true;
               nearest.targetAgentId = null;
+              // Celebration: the agent that landed the killing blow dances 5s.
+              startAgentDance(charEntry);
               // Distances to each native edge; run out the nearest one.
               const dLeft = nearest.nx;
               const dRight = walkableNativeW - nearest.nx;
@@ -5915,7 +5968,7 @@
       // built) are untouched — they keep the wander path exactly as before.
       // Suppressed entirely while engaging an enemy (Phase 2b preemption).
       let isBuilding = false;
-      if (!inConga && !isEngaging && isActive && activeBuildPlacement) {
+      if (!inConga && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement) {
         // Alternate standoff side among builders assigned this frame.
         const side = (builderSideCounter++ % 2 === 0) ? -1 : 1;
         const ax = activeBuildPlacement.nx;
@@ -5939,8 +5992,11 @@
       // position and a manual frame mixer swaps the three dance frames.
       const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga;
       if (charEntry.dancing) {
-        if (!idleAndStill) {
-          // Something took priority (went active / conga / enemy) — stop.
+        if (inConga) {
+          // Conga fully preempts any dance (idle solo-dance OR celebration).
+          // Build/engage no longer force a cancel: they are gated on !dancing
+          // above, so a celebrating ACTIVE agent keeps dancing for its 5s and
+          // resumes build/fight once danceTimeLeft elapses below.
           charEntry.dancing = false;
           charEntry.danceTimeLeft = 0;
         } else {
@@ -6124,11 +6180,13 @@
         else if (cx < objCanvasPt[0] - FACING_EPS) charEntry.facingLeft = false;
       } else {
         // ── Movement-based facing ──────────────────────────────────────
+        // Facing DEADZONE: only update from horizontal movement when the
+        // horizontal component clears FACING_DEADZONE; otherwise KEEP the
+        // current facing so a near-vertical mover doesn't rapid-flip.
         const prevX = charEntry.prevX;
         if (typeof prevX === "number") {
-          const dxCanvas = cx - prevX;
-          if (dxCanvas < -FACING_EPS) charEntry.facingLeft = true;
-          else if (dxCanvas > FACING_EPS) charEntry.facingLeft = false;
+          const dx = cx - prevX;
+          if (Math.abs(dx) > FACING_DEADZONE) charEntry.facingLeft = dx < 0;
         }
       }
       charEntry.prevX = cx;
@@ -6226,6 +6284,8 @@
       // updateBuildProgress() knows to advance progress next frame.
       if (isBuilding && !isMoving && desiredClip === "build") {
         buildProgressBuilderCount++;
+        // Record this builder so it celebrates when the object completes.
+        currentBuildContributors.push(charEntry.__id);
       }
       // Skip advanceAnim for a dancing agent — the manual frame mixer above
       // sets frameIndex directly (17/18/19), never the same frame twice.
@@ -6323,7 +6383,10 @@
           const drawX = ecx - spriteSize / 2;
           const drawY = ecy - spriteSize;
           const clip = ATLAS_CLIPS[en.animState.action] || ATLAS_CLIPS.idle;
-          const shouldFlip = clip.flippable && en.facingLeft === true;
+          // Enemies ALWAYS mirror to face their target/movement direction — not
+          // gated on clip.flippable (mirrors the agent override so a non-flippable
+          // idle/hold clip still faces the right way). facingLeft true = mirror.
+          const shouldFlip = en.facingLeft === true;
           ctx.save();
           if (shouldFlip) {
             ctx.translate(ecx + spriteSize / 2, 0);

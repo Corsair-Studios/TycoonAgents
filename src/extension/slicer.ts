@@ -75,8 +75,11 @@ export interface AtlasGrid {
  * For each cell:
  * - A border-connected flood fill keys away the magenta background through a
  *   tolerant range (isChromaMagenta: r≥180, b≥180, g≤90, r−g≥120, b−g≥120,
- *   |r−b|≤80), so imperfect pink backgrounds are removed while disconnected
- *   interior magenta details survive.
+ *   |r−b|≤80), so imperfect pink backgrounds are removed from the outside in.
+ * - A global strong-chroma pass (removeAllChromaMagenta) then clears EVERY pixel
+ *   passing that same strict isChromaMagenta test, regardless of connectivity, so
+ *   magenta fully enclosed by the sprite (gaps between legs/arms) is also removed.
+ *   No true near-#FF00FF chroma survives anywhere in the cell.
  * - A follow-up de-fringe pass (defringeMagentaEdges) clears the anti-aliased
  *   magenta halo: still-opaque, magenta-dominant pixels that touch an
  *   already-transparent pixel are erased over a few iterations, so multi-pixel
@@ -124,6 +127,7 @@ export async function sliceAndNormalizeAtlas(
       const bottom = Math.floor((row + 1) * atlas.bitmap.height / grid.rows);
       const cell = atlas.clone().crop(left, top, right - left, bottom - top);
       keyBorderConnectedMagenta(cell);
+      removeAllChromaMagenta(cell);
       defringeMagentaEdges(cell);
       if (row > 0) {
         removeRowBoundarySpill(cell, cells[slot_id - grid.columns].cell);
@@ -278,6 +282,26 @@ function keyBorderConnectedMagenta(cell: Jimp): void {
     enqueue(x, y - 1);
     enqueue(x, y + 1);
   }
+}
+
+/**
+ * Global strong-chroma removal. keyBorderConnectedMagenta only reaches magenta
+ * that flood-connects to the cell border, so a magenta region fully enclosed by
+ * the sprite (gaps between legs/arms) survives. This pass makes EVERY pixel that
+ * passes the strict isChromaMagenta test transparent — regardless of connectivity
+ * or adjacency — so no true near-#FF00FF chroma remains anywhere in the cell.
+ *
+ * The strict test is used (not the looser isMagentaDominant) so legitimate pink,
+ * purple, or skin art is never touched — only genuine chroma-key background.
+ */
+function removeAllChromaMagenta(cell: Jimp): void {
+  const data = cell.bitmap.data;
+  cell.scan(0, 0, cell.bitmap.width, cell.bitmap.height, function (_x: number, _y: number, idx: number) {
+    if (data[idx + 3] === 0) return;
+    if (isChromaMagenta(data[idx], data[idx + 1], data[idx + 2])) {
+      data[idx + 3] = 0;
+    }
+  });
 }
 
 function isChromaMagenta(r: number, g: number, b: number): boolean {
