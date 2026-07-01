@@ -350,6 +350,7 @@ export async function saveThemeTuning(
     object_scale: number;
     character_scale_overrides: Record<string, number>;
     object_scale_overrides: Record<string, number>;
+    overall_scale?: number;
     enemy_config?: EnemyConfig;
   },
 ): Promise<boolean> {
@@ -362,6 +363,12 @@ export async function saveThemeTuning(
     manifest.viewport.object_scale = tuning.object_scale;
     manifest.viewport.character_scale_overrides = tuning.character_scale_overrides;
     manifest.viewport.object_scale_overrides = tuning.object_scale_overrides;
+    if (tuning.overall_scale !== undefined) {
+      const overall = Number(tuning.overall_scale);
+      if (Number.isFinite(overall) && overall > 0) {
+        manifest.viewport.overall_scale = overall;
+      }
+    }
     if (tuning.enemy_config && typeof tuning.enemy_config === 'object') {
       const sanitized: EnemyConfig = { ...manifest.viewport.enemy_config };
       const interval = Number(tuning.enemy_config.spawn_interval_seconds);

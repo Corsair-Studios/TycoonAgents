@@ -30,6 +30,8 @@ export interface ViewportConfig {
   object_scale?: number;
   character_scale_overrides?: Record<string, number>;
   object_scale_overrides?: Record<string, number>;
+  overall_scale?: number;
+  projectile_asset?: string;
   enemy_config?: EnemyConfig;
 }
 

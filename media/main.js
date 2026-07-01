@@ -1568,6 +1568,12 @@
   let themeCharacterScale = 1;
   /** Overall build-prop/object scale multiplier. */
   let themeObjectScale = 1;
+  /**
+   * Master "overall scale": scales the background rect AND every asset
+   * (objects, characters, decor, enemies, polygon) together. Per-asset
+   * scales (effectiveCharScale/effectiveObjScale) stack on top of this.
+   */
+  let themeOverallScale = 1;
   /** Per-character scale overrides, keyed by character/frame id. */
   let themeCharScaleOverrides = {};
   /** Per-object scale overrides, keyed by buildable object id. */
@@ -1936,6 +1942,8 @@
       '<button id="se-co-clear" type="button">clear override</button>' +
       '<div style="margin-top:6px">Object scale: <span id="se-os-val">1.00</span></div>' +
       '<input id="se-os" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<div style="margin-top:6px">Overall scale: <span id="se-ov-val">1.00</span></div>' +
+      '<input id="se-ov" type="range" min="0.5" max="2" step="0.05" value="1">' +
       '<div style="margin-top:6px">Per-object override</div>' +
       '<select id="se-obj"></select>' +
       '<input id="se-oo" type="range" min="0.3" max="2" step="0.05" value="1">' +
@@ -1957,6 +1965,8 @@
     stageEditEls.coClear = wrap.querySelector("#se-co-clear");
     stageEditEls.os = wrap.querySelector("#se-os");
     stageEditEls.osVal = wrap.querySelector("#se-os-val");
+    stageEditEls.ov = wrap.querySelector("#se-ov");
+    stageEditEls.ovVal = wrap.querySelector("#se-ov-val");
     stageEditEls.obj = wrap.querySelector("#se-obj");
     stageEditEls.oo = wrap.querySelector("#se-oo");
     stageEditEls.ooClear = wrap.querySelector("#se-oo-clear");
@@ -1969,7 +1979,7 @@
     stageEditEls.bg = wrap.querySelector("#se-bg");
     // Cosmetic styling via CSSOM (CSP-safe).
     wrap.querySelector("#se-h").style.cssText = "font-weight:bold;color:#ffc107;margin-bottom:6px;";
-    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.char, stageEditEls.obj, stageEditEls.oo, stageEditEls.ei, stageEditEls.ecm]) el.style.width = "100%";
+    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.ov, stageEditEls.char, stageEditEls.obj, stageEditEls.oo, stageEditEls.ei, stageEditEls.ecm]) el.style.width = "100%";
     stageEditEls.bg.style.cssText = "width:100%;margin-top:8px;";
     wrap.querySelector("#se-hint").style.cssText = "opacity:0.7;margin:8px 0;";
     wrap.querySelector("#se-btns").style.cssText = "display:flex;gap:6px;margin-top:4px;";
@@ -1983,6 +1993,10 @@
     stageEditEls.cs.addEventListener("input", () => {
       themeCharacterScale = parseFloat(stageEditEls.cs.value) || 1;
       stageEditEls.csVal.textContent = themeCharacterScale.toFixed(2);
+    });
+    stageEditEls.ov.addEventListener("input", () => {
+      themeOverallScale = parseFloat(stageEditEls.ov.value) || 1;
+      stageEditEls.ovVal.textContent = themeOverallScale.toFixed(2);
     });
     stageEditEls.os.addEventListener("input", () => {
       themeObjectScale = parseFloat(stageEditEls.os.value) || 1;
@@ -2069,6 +2083,8 @@
     stageEditEls.csVal.textContent = themeCharacterScale.toFixed(2);
     stageEditEls.os.value = String(themeObjectScale);
     stageEditEls.osVal.textContent = themeObjectScale.toFixed(2);
+    stageEditEls.ov.value = String(themeOverallScale);
+    stageEditEls.ovVal.textContent = themeOverallScale.toFixed(2);
     stageEditEls.ei.value = String(enemySpawnIntervalSec);
     stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
     stageEditEls.ecm.value = enemyCountMode;
@@ -2113,6 +2129,7 @@
         walkable_nav_polygon: normPoly,
         character_scale: themeCharacterScale,
         object_scale: themeObjectScale,
+        overall_scale: themeOverallScale,
         character_scale_overrides: themeCharScaleOverrides,
         object_scale_overrides: themeObjScaleOverrides,
         enemy_config: {
@@ -3160,6 +3177,7 @@
         // Per-theme scale tuning (optional manifest fields; default 1 / empty).
         themeCharacterScale = (vp && typeof vp.character_scale === "number" && vp.character_scale > 0) ? vp.character_scale : 1;
         themeObjectScale = (vp && typeof vp.object_scale === "number" && vp.object_scale > 0) ? vp.object_scale : 1;
+        themeOverallScale = (vp && typeof vp.overall_scale === "number" && vp.overall_scale > 0) ? vp.overall_scale : 1;
         themeCharScaleOverrides = (vp && vp.character_scale_overrides && typeof vp.character_scale_overrides === "object") ? vp.character_scale_overrides : {};
         themeObjScaleOverrides = (vp && vp.object_scale_overrides && typeof vp.object_scale_overrides === "object") ? vp.object_scale_overrides : {};
 
@@ -5411,8 +5429,8 @@
       // Top-anchoring keeps the background (and everything mapped to it) at a
       // fixed screen position: the metrics handlebar resizes the stage from its
       // bottom edge, so a top-anchored image never shifts when h changes.
-      const bgW = themeBackgroundImg.naturalWidth;
-      const bgH = themeBackgroundImg.naturalHeight;
+      const bgW = themeBackgroundImg.naturalWidth * themeOverallScale;
+      const bgH = themeBackgroundImg.naturalHeight * themeOverallScale;
       const bgX = Math.floor((w - bgW) / 2);
       const bgY = 0; // top-anchor → static regardless of handlebar / canvas height
       ctx.drawImage(themeBackgroundImg, bgX, bgY, bgW, bgH);
@@ -5464,8 +5482,8 @@
 
     // Compute bg rect for native->canvas mapping (matches the draw above).
     const bgImgReady = themeLoaded && themeBackgroundImg && themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0;
-    const bgW = bgImgReady ? themeBackgroundImg.naturalWidth  : w;
-    const bgH = bgImgReady ? themeBackgroundImg.naturalHeight : h;
+    const bgW = bgImgReady ? themeBackgroundImg.naturalWidth  * themeOverallScale : w;
+    const bgH = bgImgReady ? themeBackgroundImg.naturalHeight * themeOverallScale : h;
     const bgX = bgImgReady ? Math.floor((w - bgW) / 2) : 0;
     const bgY = 0; // top-anchor (matches the background draw) → static on resize
     // Cache for the stage-editor mouse handlers (canvas<->native mapping).
@@ -6113,7 +6131,7 @@
         if (!placement) return;
         const canvasPt = nativeToCanvas(placement.nx, placement.ny, bgX, bgY, bgW, bgH);
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
-        const depthScale = 0.8 + tDepth * 0.3;
+        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale;
         drawDecor(item.decor, canvasPt[0], canvasPt[1], depthScale);
         return;
       }
@@ -6121,7 +6139,7 @@
       if (item.kind === "object") {
         const canvasPt = nativeToCanvas(objectPlacement[item.obj.object_id].nx, objectPlacement[item.obj.object_id].ny, bgX, bgY, bgW, bgH);
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
-        const depthScale = 0.8 + tDepth * 0.3;
+        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale;
         drawBuildableObject(item.obj, item.entry, canvasPt[0], canvasPt[1], depthScale);
         return;
       }
@@ -6131,7 +6149,7 @@
         const canvasPt = nativeToCanvas(en.nx, en.ny, bgX, bgY, bgW, bgH);
         const ecx = canvasPt[0], ecy = canvasPt[1];
         const tDepth = Math.max(0, Math.min(1, (en.ny - polyMinY) / polyRangeY));
-        const depthScale = 0.8 + tDepth * 0.3;
+        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale;
         const rivalKey = typeof en.rival_id === "string" && en.rival_id.startsWith("rival_")
           ? en.rival_id
           : ("rival_" + en.rival_id);
@@ -6197,7 +6215,7 @@
 
       // Depth scale: agents further back (small native Y) draw slightly smaller.
       const tDepth = Math.max(0, Math.min(1, (charEntry.ny - polyMinY) / polyRangeY));
-      const depthScale = 0.8 + tDepth * 0.3; // 0.8 (back) → 1.1 (front)
+      const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale; // 0.8 (back) → 1.1 (front), ×overall
 
       if (bgImgReady && charIds.length > 0) {
         // Pick character sprite by agent index in roster order.

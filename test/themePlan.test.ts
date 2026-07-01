@@ -120,4 +120,5 @@ test('theme plan creates 16 agents, 3 enemies, and 13 buildable objects', () => 
   assert.match(manifest.roster_agents?.[0].atlas_asset ?? '', /^frames\.json#agent_0$/);
   assert.equal(manifest.viewport?.crate_asset, 'frames.json#crate');
   assert.equal(manifest.viewport?.poof_asset, 'frames.json#poof');
+  assert.equal(manifest.viewport?.overall_scale, 1);
 });

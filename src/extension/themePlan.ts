@@ -173,6 +173,7 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     crate_asset: 'frames.json#crate',
     poof_asset: 'frames.json#poof',
     walkable_nav_polygon: WALKABLE_NAV_POLYGON,
+    overall_scale: 1,
     enemy_config: { spawn_interval_seconds: 45, count_mode: 'random' },
   };
   return {
