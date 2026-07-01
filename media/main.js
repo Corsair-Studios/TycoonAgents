@@ -1936,6 +1936,17 @@
    * boundary micro-steps), so we freeze the walk frame instead of blurring it.
    */
   const ENEMY_WALK_MOVE_EPS = 0.35;
+  /**
+   * Target STICKINESS margin (native px). A combatant (enemy chasing an agent,
+   * or agent engaging an enemy) keeps its CURRENT target until some other
+   * candidate is closer than the current target by MORE than this margin.
+   * Without this, an enemy roughly between two near-equidistant agents re-picks
+   * a different target every frame → its facing flips and, in walk mode, it
+   * steps toward one then the other → visible in-place jitter/blur. The range
+   * hysteresis and ATTACK_FACING_DEADZONE don't help because each agent sits
+   * far to one side.
+   */
+  const TARGET_SWITCH_MARGIN = 30;
 
   // ── Stage editor (live polygon + scale tuning) ───────────────────────────
   /** True while the "Edit Stage" overlay is active. */
@@ -5864,13 +5875,39 @@
       // Find the nearest on-stage agent by native distance. agentCharMap is
       // pruned to the current agentList each frame, so its entries are exactly
       // the agents currently on the floor.
-      let targetEnt = null, targetDist = Infinity;
+      let nearestEnt = null, nearestDist = Infinity;
+      let nearestId = null;
       for (const id of Object.keys(agentCharMap)) {
         const ent = agentCharMap[id];
         if (!ent) continue;
         const adx = ent.nx - en.nx, ady = ent.ny - en.ny;
         const d = Math.sqrt(adx * adx + ady * ady);
-        if (d < targetDist) { targetDist = d; targetEnt = ent; }
+        if (d < nearestDist) { nearestDist = d; nearestEnt = ent; nearestId = id; }
+      }
+
+      // ── Target STICKINESS ───────────────────────────────────────────────
+      // Keep chasing the SAME agent (en.chaseTargetId — distinct from
+      // en.targetAgentId, which is the agent currently attacking THIS enemy)
+      // until another agent is closer by more than TARGET_SWITCH_MARGIN. This
+      // stops the target (and thus facing + walk direction) from flip-flopping
+      // between two near-equidistant agents each frame.
+      let targetEnt = null, targetDist = Infinity;
+      const stickyEnt = en.chaseTargetId ? agentCharMap[en.chaseTargetId] : null;
+      if (stickyEnt) {
+        const sdx = stickyEnt.nx - en.nx, sdy = stickyEnt.ny - en.ny;
+        const currentDist = Math.sqrt(sdx * sdx + sdy * sdy);
+        if (nearestEnt && nearestDist < currentDist - TARGET_SWITCH_MARGIN) {
+          // A meaningfully-closer agent appeared — switch.
+          targetEnt = nearestEnt; targetDist = nearestDist;
+          en.chaseTargetId = nearestId;
+        } else {
+          // Keep the current target.
+          targetEnt = stickyEnt; targetDist = currentDist;
+        }
+      } else if (nearestEnt) {
+        // No (valid) current target — adopt the nearest agent.
+        targetEnt = nearestEnt; targetDist = nearestDist;
+        en.chaseTargetId = nearestId;
       }
 
       if (!targetEnt) {
@@ -6280,13 +6317,34 @@
       let engageInRange = false;
       // A celebrating (dancing) agent pauses combat for the dance's duration.
       if (!inConga && !charEntry.dancing && isActive && enemiesAlive) {
-        let nearest = null, nearestDist = Infinity;
+        let nearestEnemy = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
           if (en.fleeing) continue; // Change 2: fleeing enemies are not threats
           const ddx = en.nx - charEntry.nx, ddy = en.ny - charEntry.ny;
           const d = Math.sqrt(ddx * ddx + ddy * ddy);
-          if (d < nearestDist) { nearestDist = d; nearest = en; }
+          if (d < nearestDist) { nearestDist = d; nearestEnemy = en; }
         }
+        // ── Target STICKINESS ──────────────────────────────────────────────
+        // Keep engaging the SAME enemy (charEntry.combatTargetInstanceId) until
+        // another enemy is closer by more than TARGET_SWITCH_MARGIN, so the
+        // agent's target (and its facing) doesn't flip between two equidistant
+        // enemies each frame. Drop the sticky target if it's gone or now fleeing.
+        let nearest = null, nearestPickDist = nearestDist;
+        const stickyEnemy = charEntry.combatTargetInstanceId
+          ? activeEnemies.find((e) => e.instance_id === charEntry.combatTargetInstanceId && !e.fleeing)
+          : null;
+        if (stickyEnemy) {
+          const cdx = stickyEnemy.nx - charEntry.nx, cdy = stickyEnemy.ny - charEntry.ny;
+          const currentDist = Math.sqrt(cdx * cdx + cdy * cdy);
+          if (nearestEnemy && nearestDist < currentDist - TARGET_SWITCH_MARGIN) {
+            nearest = nearestEnemy; nearestPickDist = nearestDist;
+          } else {
+            nearest = stickyEnemy; nearestPickDist = currentDist;
+          }
+        } else if (nearestEnemy) {
+          nearest = nearestEnemy; nearestPickDist = nearestDist;
+        }
+        nearestDist = nearestPickDist;
         if (nearest) {
           isEngaging = true;
           nearest.targetAgentId = agent.id;
