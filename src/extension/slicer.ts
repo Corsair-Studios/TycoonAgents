@@ -73,7 +73,14 @@ export interface AtlasGrid {
  * Slices a 5×4 sprite atlas into 20 normalized 128×128 PNG cells.
  *
  * For each cell:
- * - Magenta pixels (r≥250, g≤10, b≥250) are chroma-keyed to transparent.
+ * - A border-connected flood fill keys away the magenta background through a
+ *   tolerant range (isChromaMagenta: r≥180, b≥180, g≤90, r−g≥120, b−g≥120,
+ *   |r−b|≤80), so imperfect pink backgrounds are removed while disconnected
+ *   interior magenta details survive.
+ * - A follow-up de-fringe pass (defringeMagentaEdges) clears the anti-aliased
+ *   magenta halo: still-opaque, magenta-dominant pixels that touch an
+ *   already-transparent pixel are erased over a few iterations, so multi-pixel
+ *   fringe is eaten without thresholding the whole cell.
  * - Content is horizontally centered using center-of-mass of opaque pixels.
  * - Content is bottom-justified within the 128×128 output canvas.
  * - Empty cells (all magenta/transparent) produce a blank transparent 128×128 image.
@@ -117,6 +124,7 @@ export async function sliceAndNormalizeAtlas(
       const bottom = Math.floor((row + 1) * atlas.bitmap.height / grid.rows);
       const cell = atlas.clone().crop(left, top, right - left, bottom - top);
       keyBorderConnectedMagenta(cell);
+      defringeMagentaEdges(cell);
       if (row > 0) {
         removeRowBoundarySpill(cell, cells[slot_id - grid.columns].cell);
       }
@@ -279,6 +287,68 @@ function isChromaMagenta(r: number, g: number, b: number): boolean {
     && r - g >= 120
     && b - g >= 120
     && Math.abs(r - b) <= 80;
+}
+
+/**
+ * Looser than isChromaMagenta so anti-aliased boundary pixels — the pink/magenta
+ * halo blended between sprite and background (e.g. rgb(150,40,200)) — are caught.
+ * Green must sit well below both red and blue with roughly balanced red/blue,
+ * which excludes normal skin, red, orange, and purple sprite colors.
+ */
+function isMagentaDominant(r: number, g: number, b: number): boolean {
+  return g < r - 40
+    && g < b - 40
+    && r > 110
+    && b > 110
+    && Math.abs(r - b) < 110;
+}
+
+/**
+ * De-fringe pass. After keyBorderConnectedMagenta has already made the solid
+ * background transparent, a thin anti-aliased magenta halo can survive around
+ * the sprite because its blended pixels fail the strict isChromaMagenta test.
+ *
+ * For a few bounded iterations, clear every still-opaque, magenta-dominant pixel
+ * that is 8-neighbour adjacent to an already-transparent pixel. Re-evaluating
+ * adjacency each iteration lets a multi-pixel-thick halo be eaten inward.
+ *
+ * Only pixels touching transparency are considered, so interior disconnected
+ * magenta details (which are surrounded by opaque pixels) are never touched.
+ */
+function defringeMagentaEdges(cell: Jimp): void {
+  const width = cell.bitmap.width;
+  const height = cell.bitmap.height;
+  const data = cell.bitmap.data;
+  const ITERATIONS = 3;
+
+  for (let pass = 0; pass < ITERATIONS; pass++) {
+    const toClear: number[] = [];
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const offset = y * width + x;
+        const idx = offset * 4;
+        if (data[idx + 3] === 0) continue; // already transparent
+        if (!isMagentaDominant(data[idx], data[idx + 1], data[idx + 2])) continue;
+
+        let touchesTransparent = false;
+        for (let dy = -1; dy <= 1 && !touchesTransparent; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+            if (data[(ny * width + nx) * 4 + 3] === 0) {
+              touchesTransparent = true;
+              break;
+            }
+          }
+        }
+        if (touchesTransparent) toClear.push(idx);
+      }
+    }
+    if (toClear.length === 0) break;
+    for (const idx of toClear) data[idx + 3] = 0;
+  }
 }
 
 /**

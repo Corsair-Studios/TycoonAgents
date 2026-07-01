@@ -1642,15 +1642,21 @@
   let buildBuiltCount = 0;
   /** Progress (0..1) of the current active (buildQueue[buildBuiltCount]) object. */
   let buildCurrentProgress = 0;
-  /** Seconds to fully build one object while a builder is actively present. */
-  const BUILD_SECONDS = 8;
   /**
-   * Per-frame flag: true when at least one ACTIVE agent is currently AT the
-   * active build target's standoff spot actually building it (clip "build",
-   * i.e. isBuilding && !isMoving). Reset each frame before the agent loop,
-   * set during the agent loop, read by updateBuildProgress() next frame.
+   * Seconds for ONE agent to fully build one object (20 min real-time). N
+   * agents building the SAME active object make it N× faster, so effective
+   * time = BUILD_SECONDS_PER_AGENT / builderCount. Intentionally slow — do
+   * NOT add a debug shortcut.
    */
-  let buildProgressBuilderPresent = false;
+  const BUILD_SECONDS_PER_AGENT = 1200;
+  /**
+   * Per-frame count: number of ACTIVE agents currently AT the active build
+   * target's standoff spot actually building it (clip "build", i.e.
+   * isBuilding && !isMoving). Reset each frame before the agent loop,
+   * incremented once per builder during the agent loop, read by
+   * updateBuildProgress() next frame.
+   */
+  let buildProgressBuilderCount = 0;
 
   /**
    * object_id of the "ranged weapon rack" — the buildable with build_order 0
@@ -2554,6 +2560,105 @@
     }
   }
 
+  // ── Magenta de-fringe (load-time cleanup for EXISTING themes) ─────────
+  // Frames ship as transparent PNGs (background keyed out at slice time), but a
+  // residual MAGENTA/PINK HALO can remain on anti-aliased sprite edges the
+  // slicer's threshold missed. We strip only the boundary halo: opaque pixels
+  // that are magenta-dominant AND touch an already-transparent pixel. This is
+  // an edge-flood, so interior legit magenta/purple/skin colors are untouched.
+  // Runs ONCE per frame at theme load (not per-frame in render), on an
+  // offscreen canvas, and always yields a normal fully-loaded HTMLImageElement
+  // (so existing .complete/.naturalWidth/drawImage usage stays valid).
+
+  // Cap to avoid pathological getImageData cost on oversized frames.
+  const DEFRINGE_MAX_DIM = 1024;
+  const DEFRINGE_ITERATIONS = 3;
+
+  /** @param {number} r @param {number} g @param {number} b */
+  function isMagentaDominant(r, g, b) {
+    // Catch the pink/magenta halo (high R & B, suppressed G) while sparing
+    // normal skin/red/purple: require green clearly below both R and B, and
+    // R/B reasonably balanced (a true magenta, not a pure red or pure blue).
+    return g < r - 40 && g < b - 40 && r > 110 && b > 110 && Math.abs(r - b) < 110;
+  }
+
+  /**
+   * Given a fully-loaded raw Image, return a cleaned data-URL with the magenta
+   * edge-fringe removed. Returns null on any failure (caller keeps the raw img).
+   * @param {HTMLImageElement} rawImg
+   * @returns {string | null}
+   */
+  function defringeImageToDataURL(rawImg) {
+    try {
+      const w = rawImg.naturalWidth;
+      const h = rawImg.naturalHeight;
+      if (!w || !h || w > DEFRINGE_MAX_DIM || h > DEFRINGE_MAX_DIM) return null;
+      const cvs = document.createElement("canvas");
+      cvs.width = w;
+      cvs.height = h;
+      const octx = cvs.getContext("2d");
+      if (!octx) return null;
+      octx.drawImage(rawImg, 0, 0, w, h);
+      // getImageData on a same-origin data-URI won't taint the canvas.
+      const imgData = octx.getImageData(0, 0, w, h);
+      const data = imgData.data;
+      let changedAny = false;
+      for (let iter = 0; iter < DEFRINGE_ITERATIONS; iter++) {
+        // Collect pixels to clear this pass, then apply — so newly-cleared
+        // pixels only expand the boundary on the NEXT iteration (stable flood).
+        const toClear = [];
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            if (data[i + 3] === 0) continue; // already transparent
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            if (!isMagentaDominant(r, g, b)) continue;
+            // Adjacent (8-neighbour) to any already-transparent pixel?
+            let touchesTransparent = false;
+            for (let dy = -1; dy <= 1 && !touchesTransparent; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const nx = x + dx, ny = y + dy;
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                if (data[(ny * w + nx) * 4 + 3] === 0) { touchesTransparent = true; break; }
+              }
+            }
+            if (touchesTransparent) toClear.push(i);
+          }
+        }
+        if (toClear.length === 0) break;
+        for (let k = 0; k < toClear.length; k++) data[toClear[k] + 3] = 0;
+        changedAny = true;
+      }
+      if (!changedAny) return null; // nothing to clean; keep the raw image
+      octx.putImageData(imgData, 0, 0);
+      return cvs.toDataURL("image/png");
+    } catch (_err) {
+      return null; // never crash the load path; caller falls back to raw
+    }
+  }
+
+  /**
+   * Load a single sprite frame, de-fringing it once loaded. Returns an Image
+   * placeholder immediately (kept in themeImages); if cleanup succeeds we swap
+   * its src to the cleaned data-URL so the STORED drawable stays a normal,
+   * fully-loaded HTMLImageElement. On any failure we keep the raw frame.
+   * @param {string} src
+   * @returns {HTMLImageElement}
+   */
+  function loadDefringedFrame(src) {
+    const stored = new Image();
+    const raw = new Image();
+    raw.onload = () => {
+      const cleanedUrl = defringeImageToDataURL(raw);
+      // Assigning src (raw or cleaned) fires stored.onload → stays "complete".
+      stored.src = cleanedUrl || src;
+    };
+    raw.onerror = () => { stored.src = src; }; // fall back to the raw frame
+    raw.src = src;
+    return stored;
+  }
+
   /**
    * Preload all character sprite images from raw frames data.
    * @param {Record<string, string[]>} rawFrames
@@ -2561,6 +2666,8 @@
   function preloadThemeImages(rawFrames) {
     themeImages = {};
     themeBackgroundImg = null;
+    // NOTE: environment_background is a full scene (not a chroma sprite), so it
+    // is NEVER de-fringed — load it verbatim.
     const bgFrames = rawFrames["environment_background"];
     if (bgFrames && bgFrames[0]) {
       const bgImg = new Image();
@@ -2569,11 +2676,9 @@
     }
     for (const [charId, slots] of Object.entries(rawFrames)) {
       if (charId === "environment_background") continue;
-      themeImages[charId] = slots.map((src) => {
-        const img = new Image();
-        img.src = src;
-        return img;
-      });
+      // All sprite frame keys (agents, rivals, objects, decor, crate, poof)
+      // get the magenta edge-defringe.
+      themeImages[charId] = slots.map((src) => loadDefringedFrame(src));
     }
   }
 
@@ -4952,8 +5057,9 @@
     if (!activeObjId) return; // all built
     if (enemiesAlive) return; // enemy preemption pauses building
     if (congaActive) return; // conga easter-egg pauses building (like enemies)
-    if (!buildProgressBuilderPresent) return; // no one actively building right now
-    buildCurrentProgress += delta / BUILD_SECONDS;
+    if (buildProgressBuilderCount <= 0) return; // no one actively building right now
+    // N builders on the SAME active object build it N× faster.
+    buildCurrentProgress += (buildProgressBuilderCount * delta) / BUILD_SECONDS_PER_AGENT;
     if (buildCurrentProgress >= 1) {
       buildCurrentProgress = 1;
       const entry = objectAnimMap[activeObjId];
@@ -5021,6 +5127,11 @@
         hp: ENEMY_MAX_HP,
         maxHp: ENEMY_MAX_HP,
         facingLeft: false,
+        // Change 2: defeated enemies flee off-screen instead of vanishing.
+        // fleeDestNx/Ny are set once, on the hp<=0 flee transition.
+        fleeing: false,
+        fleeDestNx: 0,
+        fleeDestNy: 0,
         animState: createAnimState("walk"),
         targetAgentId: null,
       });
@@ -5208,6 +5319,27 @@
    */
   function advanceEnemies(delta) {
     for (const en of activeEnemies) {
+      if (en.fleeing) {
+        // Change 2: defeated enemy runs off the nearest edge (a bit faster
+        // than walk-in), using the walk clip, facing its travel direction.
+        // NO polygon clamp — it must leave the play area. Removal happens in
+        // the render loop once it is beyond the visible bounds by a margin.
+        const dx = en.fleeDestNx - en.nx;
+        const dy = en.fleeDestNy - en.ny;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const step = ENEMY_WALK_SPEED * 1.6 * delta;
+        en.nx += (dx / dist) * step;
+        en.ny += (dy / dist) * step;
+        en.facingLeft = dx < 0;
+        if (en.animState.action !== "walk") {
+          en.animState.action = "walk";
+          en.animState.frameIndex = 0;
+          en.animState.elapsed = 0;
+          en.animState.completed = false;
+        }
+        advanceAnim(en.animState, delta);
+        continue;
+      }
       if (en.targetAgentId) continue; // engaged — position driven by combat below
       const dx = en.destNx - en.nx;
       const dy = en.destNy - en.ny;
@@ -5331,10 +5463,13 @@
       advanceEnemies(delta);
       updateConga(delta, agentList);
     }
-    const enemiesAlive = activeEnemies.length > 0;
+    // Change 2: a FLEEING enemy is defeated — no longer a threat. enemiesAlive
+    // (build preemption + agent engage decision) counts only non-fleeing enemies,
+    // so building resumes and no agent chases a fleeing enemy.
+    const enemiesAlive = activeEnemies.some((e) => !e.fleeing);
     // Reset engagement claims each frame; agents re-claim the nearest enemy below.
     if (enemiesAlive) {
-      for (const en of activeEnemies) en.targetAgentId = null;
+      for (const en of activeEnemies) if (!en.fleeing) en.targetAgentId = null;
     }
 
     // ── Phase 2a (Change 1): advance the paced one-at-a-time build queue ────
@@ -5343,7 +5478,7 @@
     if (themeBuildables.length > 0) {
       updateBuildProgress(delta, enemiesAlive);
     }
-    buildProgressBuilderPresent = false; // reset; re-armed by the agent loop below
+    buildProgressBuilderCount = 0; // reset; re-armed by the agent loop below
 
     // ── Phase 2a: derive build state + advance per-object state machines ────
     const buildState = themeBuildables.length > 0 ? computeBuildState() : { builtIds: new Set(), activeId: null, activeProgress: 0 };
@@ -5508,6 +5643,7 @@
       if (!inConga && isActive && enemiesAlive) {
         let nearest = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
+          if (en.fleeing) continue; // Change 2: fleeing enemies are not threats
           const ddx = en.nx - charEntry.nx, ddy = en.ny - charEntry.ny;
           const d = Math.sqrt(ddx * ddx + ddy * ddy);
           if (d < nearestDist) { nearestDist = d; nearest = en; }
@@ -5532,6 +5668,34 @@
             nearest.hp -= AGENT_DPS * delta;
             // Enemy faces its attacker; agent facing is set below from relative x.
             nearest.facingLeft = (charEntry.nx > nearest.nx);
+            // Change 2: on defeat, transition to FLEEING (run off nearest edge)
+            // rather than vanishing. A fleeing enemy is no longer a threat, so
+            // agents drop it immediately (enemiesAlive / nearest search skip it).
+            if (nearest.hp <= 0 && !nearest.fleeing) {
+              nearest.hp = 0;
+              nearest.fleeing = true;
+              nearest.targetAgentId = null;
+              // Distances to each native edge; run out the nearest one.
+              const dLeft = nearest.nx;
+              const dRight = walkableNativeW - nearest.nx;
+              const dTop = nearest.ny;
+              const dBottom = walkableNativeH - nearest.ny;
+              const minEdge = Math.min(dLeft, dRight, dTop, dBottom);
+              const FLEE_MARGIN = 120;
+              if (minEdge === dLeft) {
+                nearest.fleeDestNx = -FLEE_MARGIN;
+                nearest.fleeDestNy = nearest.ny;
+              } else if (minEdge === dRight) {
+                nearest.fleeDestNx = walkableNativeW + FLEE_MARGIN;
+                nearest.fleeDestNy = nearest.ny;
+              } else if (minEdge === dTop) {
+                nearest.fleeDestNx = nearest.nx;
+                nearest.fleeDestNy = -FLEE_MARGIN;
+              } else {
+                nearest.fleeDestNx = nearest.nx;
+                nearest.fleeDestNy = walkableNativeH + FLEE_MARGIN;
+              }
+            }
           }
         }
       }
@@ -5591,6 +5755,11 @@
               a.elapsed = 0;
               a.completed = false;
               charEntry.danceFrameTimer = DANCE_FRAME_SWAP;
+              // Change 3: alternate facing on each dance frame swap so the
+              // dancer turns side to side — doubles the apparent animation
+              // from the same 3 frames. Draw applies this flip specially for
+              // dancing agents (dance clip stays flippable:false in ATLAS_CLIPS).
+              charEntry.facingLeft = !charEntry.facingLeft;
             }
           }
         }
@@ -5766,6 +5935,17 @@
       } else {
         desiredClip = isActive ? "walk" : "idle";
       }
+      // STRICT RULE: a NON-active agent may only ever play walk / idle / sit /
+      // dance. workerStateToClip can yield "build" (build/haul), "tool_idle"
+      // (survey) or "cheer" (celebrate) from a worker record, but build & combat
+      // are ACTIVE-ONLY. Clamp any active-only clip down to walk/idle here so no
+      // downstream branch can surface it for an inactive agent. (isBuilding /
+      // isEngaging are already gated on isActive, so the build/melee/shoot
+      // overrides below can never fire when !isActive; sit/dance overrides come
+      // after and remain valid for inactive agents.)
+      if (!isActive && desiredClip !== "walk" && desiredClip !== "idle") {
+        desiredClip = "idle";
+      }
       // Override with walk while physically moving, else use status clip.
       // "dance"/"sit" (like build/cheer) are excluded so those clips are never
       // clobbered back to walk/idle.
@@ -5838,18 +6018,29 @@
       // target this frame (arrived, not moving, build clip in effect) so
       // updateBuildProgress() knows to advance progress next frame.
       if (isBuilding && !isMoving && desiredClip === "build") {
-        buildProgressBuilderPresent = true;
+        buildProgressBuilderCount++;
       }
       // Skip advanceAnim for a dancing agent — the manual frame mixer above
       // sets frameIndex directly (17/18/19), never the same frame twice.
       if (!charEntry.dancing) advanceAnim(anim, delta);
     });
 
-    // ── Phase 2b: prune dead enemies (hp <= 0). Clearing the floor lets
-    // updateEnemySpawning start counting toward the next wave and lets
-    // agents fall back to Phase 2a build behavior next frame.
+    // ── Phase 2b (Change 2): prune enemies. Defeated enemies FLEE off-screen
+    // instead of vanishing; they are removed only once they run beyond the
+    // visible native bounds by a margin. (Non-fleeing enemies keep hp>0 while
+    // engaged; enemiesAlive already excludes fleeing ones, so the floor reads
+    // "clear" for build/engage purposes the instant an enemy starts fleeing.)
     if (activeEnemies.length > 0) {
-      activeEnemies = activeEnemies.filter((en) => en.hp > 0);
+      const OFFSCREEN_MARGIN = 80;
+      activeEnemies = activeEnemies.filter((en) => {
+        if (!en.fleeing) return true;
+        return (
+          en.nx > -OFFSCREEN_MARGIN &&
+          en.nx < walkableNativeW + OFFSCREEN_MARGIN &&
+          en.ny > -OFFSCREEN_MARGIN &&
+          en.ny < walkableNativeH + OFFSCREEN_MARGIN
+        );
+      });
     }
 
     // ── Phase 2a: merge buildable objects into the same Y-sorted depth list
@@ -5996,7 +6187,12 @@
           const drawY = cy - spriteSize; // feet at cy
 
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
-          const shouldFlip = clip.flippable && charEntry.facingLeft === true;
+          // Change 3: dancing agents flip regardless of the dance clip's
+          // flippable:false flag (kept false for the ATLAS_CLIPS test) — the
+          // manual dance mixer toggles facingLeft each frame swap, and this
+          // draw-time special case honors it so the dancer turns side to side.
+          // Non-dancing flip behavior is unchanged (still gated on clip.flippable).
+          const shouldFlip = (clip.flippable || charEntry.dancing === true) && charEntry.facingLeft === true;
 
           // Draw the sprite inside its own save/restore so the horizontal-flip
           // transform NEVER leaks into the label below (a flipped+scaled context
