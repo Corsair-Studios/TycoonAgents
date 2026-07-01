@@ -44,9 +44,10 @@ from health_scanner import scan_health
 try:
     from asset_sweep import sweep_dead_assets
 except ImportError:
-    # asset_sweep is an optional tool that is not bundled in this build.
-    # Degrade the uefn_asset_sweep MCP tool to an explicit "unavailable"
-    # response rather than crashing the whole bridge on import.
+    # Defensive: asset_sweep ships with this bridge, but if it (or its
+    # asset_usage dependency) ever fails to import, degrade the
+    # uefn_asset_sweep MCP tool to an explicit "unavailable" response
+    # rather than crashing the whole bridge on import.
     sweep_dead_assets = None
 
 
