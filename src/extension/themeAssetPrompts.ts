@@ -38,30 +38,34 @@ export function objectBoardFrameKeys(rows: ThemeObjectBoardRow[]): string[] {
 }
 
 /**
- * Map the 10 decor specs onto the 4x4 background-decor board's four row-groups:
+ * Map the 9 decor specs onto the 4x4 background-decor board's four row-groups:
  *   row 1 → four single-frame seats,
  *   row 2 → four single-frame static decor,
  *   row 3 → one four-frame animated decor,
- *   row 4 → one four-frame animated decor.
+ *   row 4 → the ranged-weapon-fire projectile FX (four one-shot frames; not decor).
  * Returns one array per row so the slicer knows each row's kind/ids.
  */
 export function createDecorBoardRows(decor: ThemeDecorPromptSpec[]): ThemeDecorBoardRow[][] {
-  if (decor.length !== 10) throw new Error('Background decor generation requires exactly 10 decor items.');
+  if (decor.length !== 9) throw new Error('Background decor generation requires exactly 9 decor items.');
   const seats = decor.slice(0, 4).map((item): ThemeDecorBoardRow => ({
     kind: 'seat', decor_id: item.decor_id, display_name: item.display_name,
   }));
   const statics = decor.slice(4, 8).map((item): ThemeDecorBoardRow => ({
     kind: 'decor', decor_id: item.decor_id, display_name: item.display_name,
   }));
-  const anim = decor.slice(8, 10).map((item): ThemeDecorBoardRow => ({
-    kind: 'decor_anim', decor_id: item.decor_id, display_name: item.display_name,
-  }));
-  return [seats, statics, [anim[0]], [anim[1]]];
+  const anim: ThemeDecorBoardRow = {
+    kind: 'decor_anim', decor_id: decor[8].decor_id, display_name: decor[8].display_name,
+  };
+  const projectile: ThemeDecorBoardRow = { kind: 'projectile' };
+  return [seats, statics, [anim], [projectile]];
 }
 
-/** Frame keys for a single decor board row (all decor rows use `decor_<id>`). */
+/**
+ * Frame keys for the decor board rows: decor cells use `decor_<id>`; the row-4
+ * projectile FX uses the fixed `projectile` key.
+ */
 export function decorBoardFrameKeys(rows: ThemeDecorBoardRow[][]): string[] {
-  return rows.flat().map((row) => `decor_${row.decor_id}`);
+  return rows.flat().map((row) => row.kind === 'projectile' ? 'projectile' : `decor_${row.decor_id}`);
 }
 
 /**
@@ -453,7 +457,8 @@ export function buildObjectAtlasPrompt(
 /**
  * Background-decor board: a 4x4 grid.
  * Row 1 = four distinct SITTABLE seats. Row 2 = four static scenery items.
- * Rows 3 and 4 = one animated decor item each across four loopable frames.
+ * Row 3 = one animated decor item across four loopable frames.
+ * Row 4 = the themed ranged-weapon-fire projectile FX across four one-shot frames.
  */
 export function buildBackgroundDecorPrompt(
   creativeDirection: string,
@@ -461,12 +466,15 @@ export function buildBackgroundDecorPrompt(
   rows: ThemeDecorBoardRow[][],
 ): string {
   if (rows.length !== 4) throw new Error('Background decor boards require exactly four rows.');
-  const [seatRow, staticRow, animRow3, animRow4] = rows;
-  if (seatRow.length !== 4 || staticRow.length !== 4 || animRow3.length !== 1 || animRow4.length !== 1) {
-    throw new Error('Background decor board layout must be 4 seats, 4 static decor, and 2 animated items.');
+  const [seatRow, staticRow, animRow3, projectileRow] = rows;
+  if (seatRow.length !== 4 || staticRow.length !== 4 || animRow3.length !== 1
+    || projectileRow.length !== 1 || projectileRow[0].kind !== 'projectile') {
+    throw new Error('Background decor board layout must be 4 seats, 4 static decor, 1 animated decor, and 1 projectile FX row.');
   }
+  const animDecor = animRow3[0];
+  const animName = animDecor.kind === 'projectile' ? '' : animDecor.display_name;
   const cellList = (items: ThemeDecorBoardRow[], startCell: number): string[] =>
-    items.map((item, index) => `  Cell ${startCell + index}: ${item.display_name}`);
+    items.map((item, index) => `  Cell ${startCell + index}: ${item.kind === 'projectile' ? 'projectile FX' : item.display_name}`);
   return [
     `Create one background-decor sprite board for the "${themeName}" theme.`,
     boardContract(4, 4),
@@ -482,14 +490,18 @@ export function buildBackgroundDecorPrompt(
     ...cellList(staticRow, 5),
     '',
     'Row 3 (Cells 9-12): ONE animated decor item shown as FOUR sequential loopable frames left to right.',
-    `  Item: ${animRow3[0].display_name}`,
+    `  Item: ${animName}`,
     'All four cells show the SAME item from one fixed camera; change only subtly moving or glowing parts.',
     'Cell 12 must flow seamlessly back to cell 9. Keep the body stationary and the motion subtle.',
     '',
-    'Row 4 (Cells 13-16): ONE animated decor item shown as FOUR sequential loopable frames left to right.',
-    `  Item: ${animRow4[0].display_name}`,
-    'All four cells show the SAME item from one fixed camera; change only subtly moving or glowing parts.',
-    'Cell 16 must flow seamlessly back to cell 13. Keep the body stationary and the motion subtle.',
+    'Row 4 (Cells 13-16): the themed RANGED-WEAPON-FIRE projectile shown as FOUR sequential ONE-SHOT frames left to right (a launch-to-impact sequence, NOT a loop).',
+    `  Match this theme's ranged weapon: a bullet/tracer, an energy laser bolt, a plasma blast, an arrow/bolt, a rocket, or whatever fits "${themeName}".`,
+    '  Cell 13: the SHOT / MUZZLE FIRE at launch — a bright muzzle flash or launch burst with the projectile just emerging.',
+    '  Cell 14: the projectile IN FLIGHT — the bolt/bullet/arrow travelling through empty magenta space with a motion trail.',
+    '  Cell 15: the projectile HITTING THE TARGET — the moment of contact/impact (sparks or a flash at the strike point).',
+    '  Cell 16: the BLAST / IMPACT effect — an expanding burst, explosion, or scatter as the hit resolves.',
+    '  Keep a consistent projectile identity, color, and camera across all four frames; this is a one-shot FX, not a decor item.',
+    '  Do NOT draw the weapon, the shooter, or the target object — only the fire, the flying projectile, and its impact burst in empty magenta space.',
     '',
     'Every cell holds exactly one subject fully inside its own cell with generous magenta padding; nothing crosses a cell boundary.',
     'Center each item with its lowest contact point near the cell bottom. Keep a consistent isometric camera, lighting, and scale.',

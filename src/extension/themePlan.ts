@@ -12,7 +12,7 @@ export const THEME_ENEMY_COUNT = 3;
 export const THEME_OBJECT_COUNT = 13;
 export const THEME_EXPRESSION_COUNT = 16;
 export const THEME_ACHIEVEMENT_COUNT = 20;
-export const THEME_DECOR_COUNT = 10;
+export const THEME_DECOR_COUNT = 9;
 
 export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal'|'dodge';
 
@@ -81,15 +81,16 @@ export interface ThemePlan {
  * - Row 1 (cells 0-3): four static sittable seats (single frame each).
  * - Row 2 (cells 4-7): four static scenery/decor items (single frame each).
  * - Row 3 (cells 8-11): one animated decor item across four loopable frames.
- * - Row 4 (cells 12-15): one animated decor item across four loopable frames.
- * Total = 10 decor items (4 seats + 4 static + 2 animated).
+ * - Row 4 (cells 12-15): the ranged-weapon-fire projectile FX (four one-shot frames),
+ *   sliced into frames['projectile'] — NOT a decor object.
+ * Total = 9 decor items (4 seats + 4 static + 1 animated); row 4 is FX, not decor.
  */
 export const DECOR_BOARD_LAYOUT = {
   columns: 4,
   rows: 4,
   seatCount: 4,
   staticDecorCount: 4,
-  animatedItemCount: 2,
+  animatedItemCount: 1,
   animFps: 5,
 } as const;
 
@@ -172,6 +173,7 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     background_asset: 'frames.json#environment_background',
     crate_asset: 'frames.json#crate',
     poof_asset: 'frames.json#poof',
+    projectile_asset: 'frames.json#projectile',
     walkable_nav_polygon: WALKABLE_NAV_POLYGON,
     overall_scale: 1,
     enemy_config: { spawn_interval_seconds: 45, count_mode: 'random' },
@@ -187,10 +189,11 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
 }
 
 /**
- * Emit the fixed 10-entry decor roster in board order:
+ * Emit the fixed 9-entry decor roster in board order:
  *   indices 0-3  → sittable seats (row 1, single-frame static)
  *   indices 4-7  → static decor    (row 2, single-frame static)
- *   indices 8-9  → animated decor  (rows 3 & 4, four loopable frames each)
+ *   index 8      → animated decor  (row 3, four loopable frames)
+ * Row 4 of the board is the ranged-weapon-fire projectile FX (not a decor object).
  * decor_ids are deterministic: seats prefixed "seat", the rest "decor",
  * de-duplicated together so no two frame keys collide.
  */

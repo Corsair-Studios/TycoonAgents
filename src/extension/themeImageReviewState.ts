@@ -28,12 +28,14 @@ export type ThemeObjectBoardRow =
 
 /**
  * One row of the 4x4 background-decor board. Rows 1-2 carry four single-frame
- * decor cells; rows 3-4 each carry one four-frame animated item.
+ * decor cells; row 3 carries one four-frame animated decor item; row 4 is the
+ * ranged-weapon-fire projectile FX (four one-shot frames → frames['projectile']).
  */
 export type ThemeDecorBoardRow =
   | { kind: 'seat'; decor_id: string; display_name: string }        // row 1 cell (single frame)
   | { kind: 'decor'; decor_id: string; display_name: string }       // row 2 cell (single frame)
-  | { kind: 'decor_anim'; decor_id: string; display_name: string }; // row 3/4 item (four frames)
+  | { kind: 'decor_anim'; decor_id: string; display_name: string }  // row 3 item (four frames)
+  | { kind: 'projectile' };                                         // row 4 ranged-fire FX (four frames)
 
 export interface ThemeImageReviewItem {
   id: string;

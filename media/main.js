@@ -1787,6 +1787,33 @@
   let activeEnemies = [];
   /** Monotonic counter for enemy instance ids. */
   let enemyInstanceCounter = 0;
+  /**
+   * Change C: whether the current theme provides a projectile FX asset. Set in
+   * THEME_INITIALIZED from manifest.viewport.projectile_asset presence AND the
+   * loaded themeImages['projectile'] frames. When false, ranged attackers play
+   * their shoot clip but NO projectile is spawned/drawn (graceful fallback for
+   * older themes without the 4-frame projectile sprite).
+   */
+  let themeHasProjectile = false;
+  /**
+   * Change C: live ranged-fire projectiles. Each:
+   * {fromNx, fromNy, toNx, toNy, t, ny}. Spawned by ranged agent shots and by
+   * enemy ranged attacks; advanced + drawn per frame; removed when the blast
+   * finishes. Purely visual (no damage — combat damage is applied at fire
+   * time in the existing agent/enemy engage code).
+   * @type {Array<{fromNx:number,fromNy:number,toNx:number,toNy:number,t:number,ny:number}>}
+   */
+  let activeProjectiles = [];
+  /** Native px/sec effective speed of a projectile (flight time ~= dist/this). */
+  const PROJECTILE_FLIGHT_SEC = 0.25;
+  /** Extra "hold" time (seconds) the blast frame lingers after t reaches 1. */
+  const PROJECTILE_BLAST_HOLD = 0.12;
+  /** Native px distance at which a non-fleeing enemy fires a ranged shot. */
+  const ENEMY_RANGED_RANGE = 120;
+  /** Seconds between an enemy's ranged/melee attack "hits" (cadence, not per-frame). */
+  const ENEMY_ATTACK_INTERVAL = 1.0;
+  /** Seconds between projectile spawns per ranged shooter (throttle). */
+  const PROJECTILE_SPAWN_INTERVAL = 0.5;
   /** Per-enemy max HP (native combat tuning — no host telemetry involved). */
   const ENEMY_MAX_HP = 100;
   /** Damage per second an engaged agent deals to its target enemy. */
@@ -3307,6 +3334,15 @@
         // Reset runtime enemy state for the new theme (no enemies carry over).
         activeEnemies = [];
         enemySpawnElapsed = 0;
+        // Change C: capture projectile FX availability. A theme has projectiles
+        // only when BOTH the manifest declares the asset AND the frames loaded
+        // (themeImages['projectile'] is populated generically by preloadThemeImages
+        // from any 'projectile' key in payload.frames). Older themes lacking it
+        // fall back to no-projectile ranged fire. Reset live projectiles too.
+        themeHasProjectile = !!(vp && vp.projectile_asset)
+          && Array.isArray(themeImages["projectile"])
+          && themeImages["projectile"].length > 0;
+        activeProjectiles = [];
         // Rival frames arrive in the same `frames` payload as characters/objects,
         // keyed like "rival_<rival_id>" (mirrors "object_<object_id>"); preloadThemeImages
         // already loads every key in rawFrames generically, so no extra preload step
@@ -5354,9 +5390,38 @@
   });
 
   /**
+   * Change C: spawn a ranged-fire projectile from (fromNx,fromNy) toward a
+   * snapshotted target (toNx,toNy). No-op unless the theme provides the
+   * projectile asset (graceful fallback). Purely visual — no damage here.
+   * @param {number} fromNx native x of the shooter
+   * @param {number} fromNy native y of the shooter
+   * @param {number} toNx snapshotted native x of the target
+   * @param {number} toNy snapshotted native y of the target
+   */
+  function spawnProjectile(fromNx, fromNy, toNx, toNy) {
+    if (!themeHasProjectile) return;
+    activeProjectiles.push({
+      fromNx: fromNx,
+      fromNy: fromNy,
+      toNx: toNx,
+      toNy: toNy,
+      t: 0,
+      // Depth-sort key: sort near the mid-flight point so it reads with the
+      // combatants rather than always on top of / behind everything.
+      ny: (fromNy + toNy) / 2,
+    });
+  }
+
+  /**
    * Step alive enemies toward their current destination (used only while an
    * enemy has no engaging agent yet, so it keeps drifting toward the
    * interior instead of sitting frozen at the spawn edge).
+   *
+   * Change B: a NON-fleeing enemy now targets the NEAREST on-stage agent and
+   * attacks it (walk in → melee up close, or shoot + fire a projectile from a
+   * longer "ranged" distance). This is a VISUAL attack: agents have NO hp and
+   * never die (they represent real coding agents). Fleeing enemies are
+   * unchanged and never attack.
    * @param {number} delta seconds
    */
   function advanceEnemies(delta) {
@@ -5382,11 +5447,72 @@
         advanceAnim(en.animState, delta);
         continue;
       }
-      if (en.targetAgentId) continue; // engaged — position driven by combat below
-      const dx = en.destNx - en.nx;
-      const dy = en.destNy - en.ny;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > WANDER_ARRIVED_EPS) {
+      // ── Change B: attack the NEAREST agent ──────────────────────────
+      // Per-enemy attack/fire cadence timers (lazy-init; not per-frame spawn).
+      if (typeof en.attackCooldown !== "number") en.attackCooldown = 0;
+      if (typeof en.shotCooldown !== "number") en.shotCooldown = 0;
+      en.attackCooldown -= delta;
+      en.shotCooldown -= delta;
+
+      // Find the nearest on-stage agent by native distance. agentCharMap is
+      // pruned to the current agentList each frame, so its entries are exactly
+      // the agents currently on the floor.
+      let targetEnt = null, targetDist = Infinity;
+      for (const id of Object.keys(agentCharMap)) {
+        const ent = agentCharMap[id];
+        if (!ent) continue;
+        const adx = ent.nx - en.nx, ady = ent.ny - en.ny;
+        const d = Math.sqrt(adx * adx + ady * ady);
+        if (d < targetDist) { targetDist = d; targetEnt = ent; }
+      }
+
+      if (!targetEnt) {
+        // No agents on stage — drift toward the original interior destination
+        // (walk clip) exactly as before so enemies don't freeze at the edge.
+        const dx = en.destNx - en.nx;
+        const dy = en.destNy - en.ny;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > WANDER_ARRIVED_EPS) {
+          const step = Math.min(ENEMY_WALK_SPEED * delta, dist);
+          en.nx += (dx / dist) * step;
+          en.ny += (dy / dist) * step;
+          const clamped = clampToPolygon(en.nx, en.ny, walkablePolygon);
+          en.nx = clamped[0];
+          en.ny = clamped[1];
+        }
+        if (en.animState.action !== "walk") {
+          en.animState.action = "walk";
+          en.animState.frameIndex = 0;
+          en.animState.elapsed = 0;
+          en.animState.completed = false;
+        }
+        advanceAnim(en.animState, delta);
+        continue;
+      }
+
+      // Face the target.
+      en.facingLeft = targetEnt.nx < en.nx;
+
+      let desiredAction = "walk";
+      if (targetDist <= ENEMY_ENGAGE_RANGE) {
+        // Melee range — hold position and swing on the attack cadence.
+        desiredAction = "melee";
+        if (en.attackCooldown <= 0) en.attackCooldown = ENEMY_ATTACK_INTERVAL;
+      } else if (targetDist <= ENEMY_RANGED_RANGE) {
+        // Ranged distance — hold position, play shoot, fire a projectile on
+        // the throttled cadence (target position snapshotted at fire time).
+        desiredAction = "shoot";
+        if (en.shotCooldown <= 0) {
+          en.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
+          spawnProjectile(en.nx, en.ny, targetEnt.nx, targetEnt.ny);
+        }
+        if (en.attackCooldown <= 0) en.attackCooldown = ENEMY_ATTACK_INTERVAL;
+      } else {
+        // Out of range — walk toward the target.
+        desiredAction = "walk";
+        const dx = targetEnt.nx - en.nx;
+        const dy = targetEnt.ny - en.ny;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const step = Math.min(ENEMY_WALK_SPEED * delta, dist);
         en.nx += (dx / dist) * step;
         en.ny += (dy / dist) * step;
@@ -5394,9 +5520,22 @@
         en.nx = clamped[0];
         en.ny = clamped[1];
       }
-      if (en.animState.action !== "walk") {
-        en.animState.action = "walk";
+
+      // Apply the desired clip. melee/shoot are loop:false one-shots in
+      // ATLAS_CLIPS; while in range and actively attacking, replay them on
+      // completion so the attack keeps animating (mirrors the agent side).
+      if (en.animState.action !== desiredAction) {
+        en.animState.action = desiredAction;
         en.animState.frameIndex = 0;
+        en.animState.direction = 1;
+        en.animState.elapsed = 0;
+        en.animState.completed = false;
+      } else if (
+        (desiredAction === "melee" || desiredAction === "shoot") &&
+        en.animState.completed
+      ) {
+        en.animState.frameIndex = 0;
+        en.animState.direction = 1;
         en.animState.elapsed = 0;
         en.animState.completed = false;
       }
@@ -5504,6 +5643,18 @@
       updateEnemySpawning(delta, agentList);
       advanceEnemies(delta);
       updateConga(delta, agentList);
+    }
+    // Change C: advance live projectiles. t runs 0→1 over PROJECTILE_FLIGHT_SEC,
+    // then lingers on the blast for PROJECTILE_BLAST_HOLD before removal. Drawn
+    // after the depth list below. Skipped entirely when the theme has no
+    // projectile asset (activeProjectiles stays empty — nothing spawns).
+    if (activeProjectiles.length > 0) {
+      for (const p of activeProjectiles) {
+        p.t += delta / PROJECTILE_FLIGHT_SEC;
+      }
+      // Remove once the blast has finished (t past 1 by the hold fraction).
+      const removeAt = 1 + PROJECTILE_BLAST_HOLD / PROJECTILE_FLIGHT_SEC;
+      activeProjectiles = activeProjectiles.filter((p) => p.t < removeAt);
     }
     // Change 2: a FLEEING enemy is defeated — no longer a threat. enemiesAlive
     // (build preemption + agent engage decision) counts only non-fleeing enemies,
@@ -5713,6 +5864,17 @@
             nearest.hp -= AGENT_DPS * delta;
             // Enemy faces its attacker; agent facing is set below from relative x.
             nearest.facingLeft = (charEntry.nx > nearest.nx);
+            // Change C: ranged agents fire a projectile at the enemy on a
+            // throttled cadence (target position snapshotted at fire time).
+            // No-op when the theme lacks the projectile asset (fallback).
+            if (rangedUnlocked) {
+              if (typeof charEntry.shotCooldown !== "number") charEntry.shotCooldown = 0;
+              charEntry.shotCooldown -= delta;
+              if (charEntry.shotCooldown <= 0) {
+                charEntry.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
+                spawnProjectile(charEntry.nx, charEntry.ny, nearest.nx, nearest.ny);
+              }
+            }
             // Change 2: on defeat, transition to FLEEING (run off nearest edge)
             // rather than vanishing. A fleeing enemy is no longer a threat, so
             // agents drop it immediately (enemiesAlive / nearest search skip it).
@@ -6289,6 +6451,44 @@
         drawWorker(fallbackX, groundY, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
       }
     });
+
+    // ── Change C: draw ranged-fire projectiles ─────────────────────────
+    // Drawn on top of the depth-sorted scene so shots read clearly. The
+    // 4-frame projectile FX: frame0 = muzzle at origin, frame1 = in-flight,
+    // frame2 = hit, frame3 = blast. Frame + position are chosen from t.
+    // No-op when the theme lacks the asset (activeProjectiles stays empty).
+    if (bgImgReady && themeHasProjectile && activeProjectiles.length > 0) {
+      const projFrames = themeImages["projectile"];
+      for (const p of activeProjectiles) {
+        const t = p.t;
+        // Frame + world position by phase.
+        let frameIdx, posNx, posNy;
+        if (t < 0.2) {
+          frameIdx = 0;             // muzzle at the shooter
+          posNx = p.fromNx; posNy = p.fromNy;
+        } else if (t < 0.8) {
+          frameIdx = 1;             // in-flight, lerp shooter→target
+          const lt = Math.max(0, Math.min(1, (t - 0.2) / 0.6));
+          posNx = p.fromNx + (p.toNx - p.fromNx) * lt;
+          posNy = p.fromNy + (p.toNy - p.fromNy) * lt;
+        } else if (t < 0.9) {
+          frameIdx = 2;             // hit at the target
+          posNx = p.toNx; posNy = p.toNy;
+        } else {
+          frameIdx = 3;             // blast at the target
+          posNx = p.toNx; posNy = p.toNy;
+        }
+        const img = projFrames[Math.min(frameIdx, projFrames.length - 1)];
+        if (!img || !img.complete || img.naturalWidth === 0) continue;
+        const canvasPt = nativeToCanvas(posNx, posNy, bgX, bgY, bgW, bgH);
+        // Size honors overall scale for consistency with the rest of the scene,
+        // plus a light depth cue from the projectile's native Y.
+        const tDepth = Math.max(0, Math.min(1, (posNy - polyMinY) / polyRangeY));
+        const projScale = (0.8 + tDepth * 0.3) * themeOverallScale;
+        const size = Math.round(40 * projScale);
+        ctx.drawImage(img, canvasPt[0] - size / 2, canvasPt[1] - size / 2, size, size);
+      }
+    }
 
     // (Nav-polygon debug overlay removed — the Stage Editor now shows/edits
     //  the walkable polygon, so the standalone N-key view is no longer needed.)

@@ -450,6 +450,7 @@ export async function uploadThemeImage(
       const decorAtlas = await processDecorAtlas(buffer, manifest);
       output = decorAtlas.output;
       frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
+      manifest.viewport.projectile_asset = 'frames.json#projectile';
     } else {
       const frameKey = item?.frame_keys[0] || itemId;
       frames[frameKey] = [dataUri(buffer)];
@@ -1034,6 +1035,7 @@ export async function retryThemeImage(
     const decorAtlas = await processDecorAtlas(generated, manifest);
     output = decorAtlas.output;
     frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
+    manifest.viewport.projectile_asset = 'frames.json#projectile';
     item.decor_rows = rows;
   } else if (item.kind === 'expression_atlas') {
     output = await optimizeSpriteBoardCanvas(generated, 4, 4);
@@ -1291,11 +1293,11 @@ async function processDecorAtlas(
 }
 
 /**
- * Map the 16 sliced cells to `decor_<decor_id>` frame keys:
- *   row 1 cells 0-3   → four single-frame seats,
- *   row 2 cells 4-7   → four single-frame decor,
- *   row 3 cells 8-11  → one four-frame animated decor,
- *   row 4 cells 12-15 → one four-frame animated decor.
+ * Map the 16 sliced cells to their frame keys:
+ *   row 1 cells 0-3   → four single-frame seats (`decor_<id>`),
+ *   row 2 cells 4-7   → four single-frame decor (`decor_<id>`),
+ *   row 3 cells 8-11  → one four-frame animated decor (`decor_<id>`),
+ *   row 4 cells 12-15 → the ranged-weapon-fire projectile FX (`projectile`, four frames).
  */
 function applyDecorBoardFrames(
   frames: Record<string, string[]>,
@@ -1306,6 +1308,7 @@ function applyDecorBoardFrames(
   const seat = rows.filter((row) => row.kind === 'seat');
   const staticDecor = rows.filter((row) => row.kind === 'decor');
   const animated = rows.filter((row) => row.kind === 'decor_anim');
+  const hasProjectile = rows.some((row) => row.kind === 'projectile');
 
   seat.forEach((row, index) => {
     const key = `decor_${row.decor_id}`;
@@ -1323,19 +1326,25 @@ function applyDecorBoardFrames(
     frames[key] = slots.slice(start, start + 4).map((slot) => slot.data);
     keys.push(key);
   });
+  if (hasProjectile) {
+    // Row 4 (cells 12-15) is the one-shot projectile FX; keyed `projectile`.
+    frames.projectile = slots.slice(12, 16).map((slot) => slot.data);
+    keys.push('projectile');
+  }
   return keys;
 }
 
-/** Regroup a flat decor-row list back into the 4x4 board's [seats, statics, [anim1], [anim2]] shape. */
+/** Regroup a flat decor-row list back into the 4x4 board's [seats, statics, [anim], [projectile]] shape. */
 function decorRowsToBoard(rows: ThemeDecorBoardRow[]): ThemeDecorBoardRow[][] {
   const seats = rows.filter((row) => row.kind === 'seat');
   const statics = rows.filter((row) => row.kind === 'decor');
   const animated = rows.filter((row) => row.kind === 'decor_anim');
-  return [seats, statics, [animated[0]], [animated[1]]];
+  const projectile = rows.find((row) => row.kind === 'projectile') ?? { kind: 'projectile' as const };
+  return [seats, statics, [animated[0]], [projectile]];
 }
 
 function themeDecorSpecs(manifest: ThemeManifest): Array<{ decor_id: string; display_name: string }> {
-  return (manifest.decor_objects ?? []).slice(0, 10).map((decor) => ({
+  return (manifest.decor_objects ?? []).slice(0, 9).map((decor) => ({
     decor_id: decor.decor_id,
     display_name: decor.display_name,
   }));
@@ -1490,6 +1499,7 @@ async function generateDecorAsset(
   await saveReviewImage(reviewDirectoryUri, item.filename, decorAtlas.output);
   throwIfCancelled(undefined, options?.signal);
   applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
+  manifest.viewport.projectile_asset = 'frames.json#projectile';
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }

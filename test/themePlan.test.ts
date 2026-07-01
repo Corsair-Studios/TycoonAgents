@@ -18,7 +18,7 @@ test('theme plan normalizes every editable slot to the required count', () => {
   assert.equal(plan.characters.length, 16);
   assert.equal(plan.enemies.length, 3);
   assert.equal(plan.objects.length, 13);
-  assert.equal(plan.decor.length, 10);
+  assert.equal(plan.decor.length, 9);
   assert.equal(plan.expressions.length, 16);
   assert.equal(plan.achievements.length, 20);
 });
@@ -81,13 +81,13 @@ test('object motion hints stay aligned to objects across rack coercion', () => {
   assert.equal(noHints.object_motion_hints, undefined);
 });
 
-test('theme plan emits 10 decor objects: 4 sittable seats, 4 static, 2 animated', () => {
+test('theme plan emits 9 decor objects: 4 sittable seats, 4 static, 1 animated', () => {
   const manifest = themePlanToManifest(normalizeThemePlan({
     display_name: 'Cozy Tavern',
-    decor: ['Oak Stool', 'Bench', 'High Chair', 'Bar Seat', 'Barrel', 'Keg', 'Sign', 'Lantern', 'Fireplace', 'Fountain'],
+    decor: ['Oak Stool', 'Bench', 'High Chair', 'Bar Seat', 'Barrel', 'Keg', 'Sign', 'Lantern', 'Fireplace'],
   }));
   const decor = manifest.decor_objects ?? [];
-  assert.equal(decor.length, 10);
+  assert.equal(decor.length, 9);
 
   // Seats (0-3) are sittable with a default sit anchor and a single-frame sprite key.
   for (let i = 0; i < 4; i++) {
@@ -102,14 +102,15 @@ test('theme plan emits 10 decor objects: 4 sittable seats, 4 static, 2 animated'
     assert.equal(decor[i].anim_fps, undefined);
     assert.match(decor[i].sprite_asset, /^frames\.json#decor_decor_/);
   }
-  // Animated decor (8-9): looping animation metadata present.
-  for (let i = 8; i < 10; i++) {
-    assert.equal(decor[i].anim_fps, 5);
-    assert.equal(decor[i].anim_loop, true);
-    assert.equal(decor[i].is_sittable, undefined);
-  }
+  // Animated decor (index 8, the single row-3 item): looping animation metadata present.
+  assert.equal(decor[8].anim_fps, 5);
+  assert.equal(decor[8].anim_loop, true);
+  assert.equal(decor[8].is_sittable, undefined);
   // decor_ids are unique, so frame keys never collide.
-  assert.equal(new Set(decor.map((d) => d.decor_id)).size, 10);
+  assert.equal(new Set(decor.map((d) => d.decor_id)).size, 9);
+
+  // Row 4 of the decor board is the ranged-fire projectile FX, wired into the viewport.
+  assert.equal(manifest.viewport?.projectile_asset, 'frames.json#projectile');
 });
 
 test('theme plan creates 16 agents, 3 enemies, and 13 buildable objects', () => {
