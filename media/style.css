@@ -921,6 +921,19 @@ body {
   cursor: default;
 }
 
+/* Remove/uninstall buttons are destructive → red. Applies to Skills, MCP
+   servers, and Packs (all share .skill-btn--remove). */
+.skill-btn--remove:not(:disabled) {
+  background: rgba(220, 38, 38, 0.16);
+  border-color: #dc2626;
+  color: #f87171;
+}
+
+.skill-btn--remove:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.34);
+  color: #fecaca;
+}
+
 .skill-install-error {
   width: 100%;
   font-size: 11px;
