@@ -1708,6 +1708,8 @@
   const CONGA_SECONDS = 25;
   /** Cooldown (seconds) after a conga ends before another may start. */
   const CONGA_COOLDOWN_SECONDS = 3600;
+  /** Latest per-frame agent list, exposed so debug hotkeys can act off-loop. */
+  let lastAgentList = [];
   /** Trailing distance (native px) each follower keeps behind the one ahead. */
   const CONGA_TRAIL = 36;
   /** Per-second chance a conga member flashes a celebratory cheer frame. */
@@ -4931,9 +4933,19 @@
     if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0) return;
     if (Math.random() >= CONGA_CHANCE) return;
 
-    // Start a conga.
+    startConga(agentList);
+  }
+
+  /**
+   * Start a conga line for the given agents: build the perimeter waypoints,
+   * fix the leader→tail order, assign each agent's conga index, and flip the
+   * active flags. Shared by updateConga's random trigger and the debug hotkey.
+   * @param {Array<object>} agentList current agentMetrics list
+   * @returns {boolean} true if a conga actually started
+   */
+  function startConga(agentList) {
     congaWaypoints = buildCongaWaypoints();
-    if (congaWaypoints.length < 3) return;
+    if (congaWaypoints.length < 3) return false;
     congaOrder = agentList.map((a) => a.id);
     congaWaypointIdx = 0;
     let order = 0;
@@ -4947,7 +4959,41 @@
     }
     congaActive = true;
     congaTimeLeft = CONGA_SECONDS;
+    return true;
   }
+
+  /**
+   * Start a solo dance on a single agent's charMap entry (mirrors the normal
+   * idle-dance start). Shared by the idle festivity roll and the debug hotkey.
+   * @param {object} charEntry an agentCharMap entry
+   */
+  function startAgentDance(charEntry) {
+    if (!charEntry) return;
+    charEntry.dancing = true;
+    charEntry.danceTimeLeft = DANCE_SECONDS;
+    charEntry.danceFrameTimer = 0;
+    charEntry.lastDanceIdx = -1;
+  }
+
+  // debug hotkeys: c=conga, d=dance (bypass rarity/cooldown gates for testing)
+  document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+    const key = (e.key || "").toLowerCase();
+    if (key === "c") {
+      // Force-start a conga now (ignore eligibility/cooldown/probability).
+      if (congaActive) return;
+      if (lastAgentList.length < 1) return;
+      startConga(lastAgentList);
+    } else if (key === "d") {
+      // Force a random agent to dance for DANCE_SECONDS.
+      if (congaActive) return;
+      const ids = Object.keys(agentCharMap);
+      if (ids.length === 0) return;
+      const id = ids[Math.floor(Math.random() * ids.length)];
+      startAgentDance(agentCharMap[id]);
+    }
+  });
 
   /**
    * Step alive enemies toward their current destination (used only while an
@@ -5044,6 +5090,7 @@
     // Derive the agent list from the metrics table (same source as renderMetrics).
     // While loading, use an empty list so no placeholder/half-loaded sprites show.
     const agentList = loadingActive ? [] : (Array.isArray(state.agentMetrics) ? state.agentMetrics : []);
+    lastAgentList = agentList; // expose to off-loop debug hotkeys
 
     // Prune stale entries from agentCharMap (agents no longer in metrics).
     const agentIds = new Set(agentList.map((a) => a.id));
