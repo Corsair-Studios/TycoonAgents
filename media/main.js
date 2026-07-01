@@ -4766,8 +4766,9 @@
    * per-agent loop below, read here once per frame. Enemy presence preempts
    * building entirely (EVICT mode pauses the queue).
    * @param {number} delta seconds
+   * @param {boolean} enemiesAlive whether any enemy is currently active
    */
-  function updateBuildProgress(delta) {
+  function updateBuildProgress(delta, enemiesAlive) {
     if (buildQueue.length === 0) return;
     const activeObjId = buildBuiltCount < buildQueue.length ? buildQueue[buildBuiltCount] : null;
     if (!activeObjId) return; // all built
@@ -5136,7 +5137,7 @@
     // Gated on last frame's builder-presence flag (set at the bottom of the
     // agent loop below) and on enemiesAlive (enemy preemption pauses it).
     if (themeBuildables.length > 0) {
-      updateBuildProgress(delta);
+      updateBuildProgress(delta, enemiesAlive);
     }
     buildProgressBuilderPresent = false; // reset; re-armed by the agent loop below
 
