@@ -3,6 +3,7 @@ import type { AgentConfig, BuildableObject, EnemyConfig, RivalConfig, ThemeManif
 import { expandThemePlan } from './translator';
 import {
   buildAchievementAtlasPrompt,
+  buildBackgroundDecorPrompt,
   buildCharacterAtlasPrompt,
   buildEmoteAtlasPrompt,
   buildEnvironmentPrompt,
@@ -11,7 +12,9 @@ import {
   buildObjectAtlasPrompt,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
+  createDecorBoardRows,
   createObjectBoardRows,
+  decorBoardFrameKeys,
   objectBoardFrameKeys,
 } from './themeAssetPrompts';
 import { generateThemeImage } from './imageClient';
@@ -38,6 +41,7 @@ import {
   upsertThemeImageReviewItem,
 } from './themeImageReviewState';
 import type {
+  ThemeDecorBoardRow,
   ThemeImageReviewDocument,
   ThemeImageReviewItem,
   ThemeImageReviewStatus,
@@ -434,6 +438,11 @@ export async function uploadThemeImage(
       const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 3 });
       const specs = item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest).slice(0, 12);
       frameKeys = applyLegacyObjectFrames(frames, spritePackage.slots, specs);
+    } else if (item?.kind === 'background_decor_atlas') {
+      const rows = item.decor_rows?.length ? item.decor_rows : createDecorBoardRows(themeDecorSpecs(manifest)).flat();
+      const decorAtlas = await processDecorAtlas(buffer, manifest);
+      output = decorAtlas.output;
+      frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
     } else {
       const frameKey = item?.frame_keys[0] || itemId;
       frames[frameKey] = [dataUri(buffer)];
@@ -741,6 +750,7 @@ export async function generateTheme(
     roster_agents: suggestedManifest.roster_agents!,
     roster_rivals: suggestedManifest.roster_rivals!,
     buildable_objects: suggestedManifest.buildable_objects!,
+    decor_objects: suggestedManifest.decor_objects!,
     badges: [],
   };
   const frames: Record<string, string[]> = {};
@@ -896,6 +906,19 @@ async function continueThemeGeneration(
   );
 
   throwIfCancelled(isCancelled);
+  const decorItem = reviewItems.find((item) => item.id === 'background_decor');
+  if (decorItem) {
+    await generateOrResumeThemeItem(
+      globalStorageUri, themeId, plan.display_name, decorItem, manifest, frames,
+      onProgress, isCancelled, onReviewReady, waitForReview,
+      () => generateDecorAsset(
+        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+        decorItem, imageGenerationOptions, onProgress,
+      ),
+    );
+  }
+
+  throwIfCancelled(isCancelled);
   const objectItems = reviewItems.filter((item) => item.kind === 'object_atlas');
   for (let index = 0; index < objectItems.length; index++) {
     throwIfCancelled(isCancelled);
@@ -997,6 +1020,12 @@ export async function retryThemeImage(
       frameKeys = applyLegacyObjectFrames(frames, spritePackage.slots, specs);
       item.object_specs = specs;
     }
+  } else if (item.kind === 'background_decor_atlas') {
+    const rows = item.decor_rows?.length ? item.decor_rows : createDecorBoardRows(themeDecorSpecs(manifest)).flat();
+    const decorAtlas = await processDecorAtlas(generated, manifest);
+    output = decorAtlas.output;
+    frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
+    item.decor_rows = rows;
   } else if (item.kind === 'expression_atlas') {
     output = await optimizeSpriteBoardCanvas(generated, 4, 4);
     const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 4 });
@@ -1231,6 +1260,78 @@ async function processObjectAtlas(
   return { output, spritePackage };
 }
 
+async function processDecorAtlas(
+  generated: Buffer,
+  manifest: ThemeManifest,
+): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
+  // 4x4 board: rows 1-2 are four single-frame cells each; rows 3-4 are each one
+  // four-frame animation. Group the two animation rows so their frames share a
+  // common crop/anchor, while every static cell is normalized on its own.
+  const staticGroups = Array.from({ length: 8 }, (_unused, cell) => [cell]);
+  const animGroups = [[8, 9, 10, 11], [12, 13, 14, 15]];
+  const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
+    columns: 4,
+    rows: 4,
+    scaleReferenceSlots: Array.from({ length: 16 }, (_unused, cell) => cell),
+    targetContentHeight: 104,
+    maxContentExtent: 120,
+    normalizationGroups: [...staticGroups, ...animGroups],
+  });
+  const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
+  return { output, spritePackage };
+}
+
+/**
+ * Map the 16 sliced cells to `decor_<decor_id>` frame keys:
+ *   row 1 cells 0-3   → four single-frame seats,
+ *   row 2 cells 4-7   → four single-frame decor,
+ *   row 3 cells 8-11  → one four-frame animated decor,
+ *   row 4 cells 12-15 → one four-frame animated decor.
+ */
+function applyDecorBoardFrames(
+  frames: Record<string, string[]>,
+  slots: Array<{ slot_id: number; data: string }>,
+  rows: ThemeDecorBoardRow[],
+): string[] {
+  const keys: string[] = [];
+  const seat = rows.filter((row) => row.kind === 'seat');
+  const staticDecor = rows.filter((row) => row.kind === 'decor');
+  const animated = rows.filter((row) => row.kind === 'decor_anim');
+
+  seat.forEach((row, index) => {
+    const key = `decor_${row.decor_id}`;
+    frames[key] = slots[index] ? [slots[index].data] : [];
+    keys.push(key);
+  });
+  staticDecor.forEach((row, index) => {
+    const key = `decor_${row.decor_id}`;
+    frames[key] = slots[4 + index] ? [slots[4 + index].data] : [];
+    keys.push(key);
+  });
+  animated.forEach((row, index) => {
+    const key = `decor_${row.decor_id}`;
+    const start = 8 + index * 4;
+    frames[key] = slots.slice(start, start + 4).map((slot) => slot.data);
+    keys.push(key);
+  });
+  return keys;
+}
+
+/** Regroup a flat decor-row list back into the 4x4 board's [seats, statics, [anim1], [anim2]] shape. */
+function decorRowsToBoard(rows: ThemeDecorBoardRow[]): ThemeDecorBoardRow[][] {
+  const seats = rows.filter((row) => row.kind === 'seat');
+  const statics = rows.filter((row) => row.kind === 'decor');
+  const animated = rows.filter((row) => row.kind === 'decor_anim');
+  return [seats, statics, [animated[0]], [animated[1]]];
+}
+
+function themeDecorSpecs(manifest: ThemeManifest): Array<{ decor_id: string; display_name: string }> {
+  return (manifest.decor_objects ?? []).slice(0, 10).map((decor) => ({
+    decor_id: decor.decor_id,
+    display_name: decor.display_name,
+  }));
+}
+
 function createReviewItems(
   plan: ThemePlan,
   manifest: ThemeManifest,
@@ -1292,6 +1393,7 @@ function createReviewItems(
       revision: 0,
       frame_keys: ['environment_background'],
     },
+    createDecorReviewItem(plan, manifest, creativeDirection),
     ...objectItems,
     {
       id: 'expressions',
@@ -1318,6 +1420,26 @@ function createReviewItems(
   ];
 }
 
+function createDecorReviewItem(
+  plan: ThemePlan,
+  manifest: ThemeManifest,
+  creativeDirection: string,
+): Omit<ThemeImageReviewItem, 'updated_at'> {
+  const specs = themeDecorSpecs(manifest);
+  const rows = createDecorBoardRows(specs);
+  return {
+    id: 'background_decor',
+    filename: 'background_decor.png',
+    label: 'Background decor',
+    kind: 'background_decor_atlas',
+    status: 'pending',
+    prompt: buildBackgroundDecorPrompt(creativeDirection, plan.display_name, rows),
+    revision: 0,
+    frame_keys: decorBoardFrameKeys(rows),
+    decor_rows: rows.flat(),
+  };
+}
+
 async function generateEnvironmentAsset(
   globalStorageUri: vscode.Uri,
   reviewDirectoryUri: vscode.Uri,
@@ -1336,6 +1458,29 @@ async function generateEnvironmentAsset(
   await saveReviewImage(reviewDirectoryUri, item.filename, output);
   frames.environment_background = [dataUri(output)];
   manifest.viewport.background_asset = 'frames.json#environment_background';
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await writeThemeFiles(globalStorageUri, manifest, frames);
+}
+
+async function generateDecorAsset(
+  globalStorageUri: vscode.Uri,
+  reviewDirectoryUri: vscode.Uri,
+  plan: ThemePlan,
+  manifest: ThemeManifest,
+  frames: Record<string, string[]>,
+  item: Omit<ThemeImageReviewItem, 'updated_at'>,
+  options: ThemeImageGenerationOptions | undefined,
+  onProgress: (message: string) => void,
+): Promise<void> {
+  onProgress('Background decor');
+  const generated = await generateThemeImage(item.prompt, options);
+  throwIfCancelled(undefined, options?.signal);
+  const rows = item.decor_rows?.length ? item.decor_rows : createDecorBoardRows(themeDecorSpecs(manifest)).flat();
+  const decorAtlas = await processDecorAtlas(generated, manifest);
+  throwIfCancelled(undefined, options?.signal);
+  await saveReviewImage(reviewDirectoryUri, item.filename, decorAtlas.output);
+  throwIfCancelled(undefined, options?.signal);
+  applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
@@ -1445,6 +1590,12 @@ function buildReplacementPrompt(
       manifest.display_name,
       item.object_rows,
     );
+  }
+  if (item.kind === 'background_decor_atlas') {
+    const rows = item.decor_rows?.length
+      ? decorRowsToBoard(item.decor_rows)
+      : createDecorBoardRows(themeDecorSpecs(manifest));
+    return buildBackgroundDecorPrompt(creativeDirection, manifest.display_name, rows);
   }
   if (item.kind === 'expression_atlas') {
     return buildExpressionAtlasPrompt(creativeDirection, manifest.display_name, item.expression_names ?? defaultNames('Expression', 16));

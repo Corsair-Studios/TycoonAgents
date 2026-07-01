@@ -58,6 +58,17 @@ export interface BuildableObject {
   anim_loop?: boolean;
 }
 
+export interface DecorObject {
+  decor_id: string;
+  display_name: string;
+  sprite_asset: string;            // "frames.json#decor_<decor_id>" — array of 1 (static) or 4 (animated) data-URIs
+  anchor_coord: [number, number];  // normalized 0..1 placement in the scene
+  is_sittable?: boolean;           // true for the row-1 seats
+  sit_anchor?: [number, number];   // normalized SCENE-SPACE offset from anchor_coord where a seated character's base sits (default ~[0,-0.03])
+  anim_fps?: number;               // present for animated decor (rows 3-4)
+  anim_loop?: boolean;
+}
+
 export interface ThemeBadge {
   badge_id: string;
   display_name: string;
@@ -77,6 +88,7 @@ export interface ThemeManifest {
   roster_agents: AgentConfig[];
   roster_rivals: RivalConfig[];
   buildable_objects: BuildableObject[];
+  decor_objects: DecorObject[];
   badges: ThemeBadge[];
 }
 

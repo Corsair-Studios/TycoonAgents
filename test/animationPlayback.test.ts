@@ -27,6 +27,10 @@ test('looping pingpong clips bounce at both ends', () => {
   advanceCharacterAnimation(state, 1 / 6);
   assert.equal(currentCharacterSlot(state), 18);
   advanceCharacterAnimation(state, 1 / 6);
+  assert.equal(currentCharacterSlot(state), 19);
+  advanceCharacterAnimation(state, 1 / 6);
+  assert.equal(currentCharacterSlot(state), 18);
+  advanceCharacterAnimation(state, 1 / 6);
   assert.equal(currentCharacterSlot(state), 17);
 });
 

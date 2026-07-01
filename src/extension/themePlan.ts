@@ -1,6 +1,7 @@
 import type {
   AgentConfig,
   BuildableObject,
+  DecorObject,
   RivalConfig,
   ThemeManifest,
   ViewportConfig,
@@ -11,6 +12,7 @@ export const THEME_ENEMY_COUNT = 3;
 export const THEME_OBJECT_COUNT = 13;
 export const THEME_EXPRESSION_COUNT = 16;
 export const THEME_ACHIEVEMENT_COUNT = 20;
+export const THEME_DECOR_COUNT = 10;
 
 export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal'|'dodge';
 
@@ -31,7 +33,7 @@ export const ATLAS_CLIPS: Record<ClipName, AtlasClip> = {
   build: { frames: [5, 6, 7, 8], fps: 6, loop: true, flippable: true },
   tool_idle: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
   shoot: { frames: [10, 11], fps: 8, loop: false, flippable: true, pingpong: true },
-  dance: { frames: [17, 18], fps: 6, loop: true, flippable: false, pingpong: true },
+  dance: { frames: [17, 18, 19], fps: 6, loop: true, flippable: false, pingpong: true },
   cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
   point: { frames: [12], fps: 0, loop: true, flippable: true, hold: true },
   signal: { frames: [13], fps: 0, loop: true, flippable: false, hold: true },
@@ -61,10 +63,31 @@ export interface ThemePlan {
   characters: string[];
   environment: string;
   objects: string[];
+  decor: string[];
   enemies: string[];
   expressions: string[];
   achievements: string[];
 }
+
+/**
+ * Background Decor board layout: a 4x4 (16-cell) sprite board.
+ * - Row 1 (cells 0-3): four static sittable seats (single frame each).
+ * - Row 2 (cells 4-7): four static scenery/decor items (single frame each).
+ * - Row 3 (cells 8-11): one animated decor item across four loopable frames.
+ * - Row 4 (cells 12-15): one animated decor item across four loopable frames.
+ * Total = 10 decor items (4 seats + 4 static + 2 animated).
+ */
+export const DECOR_BOARD_LAYOUT = {
+  columns: 4,
+  rows: 4,
+  seatCount: 4,
+  staticDecorCount: 4,
+  animatedItemCount: 2,
+  animFps: 5,
+} as const;
+
+/** Normalized scene-space offset from a seat's anchor where a seated character's base sits. */
+export const DECOR_SEAT_SIT_ANCHOR: [number, number] = [0, -0.03];
 
 const WALKABLE_NAV_POLYGON: [number, number][] = [
   [0.50, 0.15],
@@ -88,6 +111,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     environment: cleanValue(input.environment)
       || `A playable isometric environment inspired by ${displayName}.`,
     objects: normalizeNames(input.objects, THEME_OBJECT_COUNT, 'Object'),
+    decor: normalizeNames(input.decor, THEME_DECOR_COUNT, 'Decor'),
     enemies: normalizeNames(input.enemies, THEME_ENEMY_COUNT, 'Enemy'),
     expressions: normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
     achievements: normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge'),
@@ -128,6 +152,7 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     exclusion_radius: 32,
     work_units_required: 100,
   }));
+  const decorObjects = buildDecorObjects(plan.decor);
   const viewport: ViewportConfig = {
     native_width: 1280,
     native_height: 720,
@@ -142,8 +167,45 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     roster_agents: rosterAgents,
     roster_rivals: rosterRivals,
     buildable_objects: buildableObjects,
+    decor_objects: decorObjects,
     viewport,
   };
+}
+
+/**
+ * Emit the fixed 10-entry decor roster in board order:
+ *   indices 0-3  → sittable seats (row 1, single-frame static)
+ *   indices 4-7  → static decor    (row 2, single-frame static)
+ *   indices 8-9  → animated decor  (rows 3 & 4, four loopable frames each)
+ * decor_ids are deterministic: seats prefixed "seat", the rest "decor",
+ * de-duplicated together so no two frame keys collide.
+ */
+export function buildDecorObjects(names: string[]): DecorObject[] {
+  const { seatCount, staticDecorCount, animFps } = DECOR_BOARD_LAYOUT;
+  const decorIds = uniqueIds(
+    names.map((name, index) => index < seatCount ? `seat_${toSafeAssetId(name)}` : `decor_${toSafeAssetId(name)}`),
+    'decor',
+  );
+  return names.map((displayName, index) => {
+    const decorId = decorIds[index];
+    const isSeat = index < seatCount;
+    const isAnimated = index >= seatCount + staticDecorCount;
+    const decor: DecorObject = {
+      decor_id: decorId,
+      display_name: displayName,
+      sprite_asset: `frames.json#decor_${decorId}`,
+      anchor_coord: [0.5, 0.5],
+    };
+    if (isSeat) {
+      decor.is_sittable = true;
+      decor.sit_anchor = [DECOR_SEAT_SIT_ANCHOR[0], DECOR_SEAT_SIT_ANCHOR[1]];
+    }
+    if (isAnimated) {
+      decor.anim_fps = animFps;
+      decor.anim_loop = true;
+    }
+    return decor;
+  });
 }
 
 export function toSafeThemeId(value: string): string {

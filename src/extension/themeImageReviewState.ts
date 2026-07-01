@@ -6,6 +6,7 @@ export type ThemeImageKind =
   | 'character_atlas'
   | 'environment'
   | 'object_atlas'
+  | 'background_decor_atlas'
   | 'expression_atlas'
   | 'achievement_atlas'
   | 'emote_atlas';
@@ -25,6 +26,15 @@ export type ThemeObjectBoardRow =
   | { kind: 'poof' }
   | { kind: 'crate' };
 
+/**
+ * One row of the 4x4 background-decor board. Rows 1-2 carry four single-frame
+ * decor cells; rows 3-4 each carry one four-frame animated item.
+ */
+export type ThemeDecorBoardRow =
+  | { kind: 'seat'; decor_id: string; display_name: string }        // row 1 cell (single frame)
+  | { kind: 'decor'; decor_id: string; display_name: string }       // row 2 cell (single frame)
+  | { kind: 'decor_anim'; decor_id: string; display_name: string }; // row 3/4 item (four frames)
+
 export interface ThemeImageReviewItem {
   id: string;
   filename: string;
@@ -37,6 +47,7 @@ export interface ThemeImageReviewItem {
   subject?: string;
   object_specs?: Array<{ object_id: string; display_name: string }>;
   object_rows?: ThemeObjectBoardRow[];
+  decor_rows?: ThemeDecorBoardRow[];
   expression_names?: string[];
   achievement_names?: string[];
   generation_error?: ThemeImageGenerationError;

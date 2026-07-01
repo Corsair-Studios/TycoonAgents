@@ -1592,6 +1592,38 @@
   let objectAnimMap = {};
   /** Stable per-object native placement, keyed by object_id: {nx, ny}. Computed once at THEME_INITIALIZED. */
   let objectPlacement = {};
+
+  // ── Background Decor + Sitting ──────────────────────────────────────────
+  /** Decor objects from manifest.decor_objects (read-only). @type {Array<object>} */
+  let themeDecor = [];
+  /**
+   * Stable per-decor native placement + sit-point, keyed by decor_id:
+   * { nx, ny, sitNx, sitNy, sittable }. Computed once at THEME_INITIALIZED.
+   * @type {Record<string, {nx:number, ny:number, sitNx:number, sitNy:number, sittable:boolean}>}
+   */
+  let decorPlacement = {};
+  /**
+   * Per-decor animation state (for animated decor with anim_fps), keyed by
+   * decor_id: { frameIndex, elapsed, direction, completed, fps, loop }.
+   * @type {Record<string, {frameIndex:number, elapsed:number, direction:number, completed:boolean, fps:number, loop:boolean}>}
+   */
+  let decorAnimMap = {};
+  /**
+   * Seat occupancy, keyed by decor_id → occupying agent id (or null/absent when
+   * free). Ensures at most one seated character per sittable decor.
+   * @type {Record<string, string|null>}
+   */
+  let seatOccupancy = {};
+  /** Constant fallback scale for decor sprites (reuses object-scale approach). */
+  const DECOR_SCALE = 1;
+  /** Default sit-anchor offset (normalized scene-space) when a seat omits sit_anchor. */
+  const DEFAULT_SIT_ANCHOR = [0, -0.03];
+  /** Chance, per idle wander-decision, that an idle agent goes to sit on a free seat. */
+  const SIT_CHANCE = 0.05;
+  /** How long (seconds) a character stays seated before standing up. */
+  const SIT_SECONDS = 12;
+  /** How close (native px) to a seat's sit-point before the agent is "seated". */
+  const SIT_ARRIVED_EPS = 4;
   /** Effective object scale for a given buildable object id. */
   function effectiveObjScale(objId) {
     const o = themeObjScaleOverrides[objId];
@@ -2345,6 +2377,30 @@
   }
 
   /**
+   * Advance an animated-decor state by deltaSeconds. Decor uses its own fps/loop
+   * (captured per-decor from the manifest) over a fixed 4-frame cycle. Static
+   * decor (no anim_fps) never enters here. Never throws on bad input.
+   * @param {{frameIndex:number, elapsed:number, direction:number, completed:boolean, fps:number, loop:boolean}} s
+   * @param {number} delta
+   * @param {number} frameCount number of available frames for this decor
+   */
+  function advanceDecorAnim(s, delta, frameCount) {
+    const n = Math.max(1, frameCount);
+    if (n <= 1 || !s || s.fps <= 0) { if (s) s.frameIndex = 0; return; }
+    if (s.completed || !Number.isFinite(delta) || delta <= 0) return;
+    s.elapsed += delta;
+    const dur = 1 / s.fps;
+    while (s.elapsed >= dur && !s.completed) {
+      s.elapsed -= dur;
+      s.frameIndex += 1;
+      if (s.frameIndex >= n) {
+        if (s.loop) s.frameIndex = 0;
+        else { s.frameIndex = n - 1; s.completed = true; }
+      }
+    }
+  }
+
+  /**
    * Draw one buildable object at canvas point (cx, cy) using its current
    * objectAnimMap phase. Mirrors the agent draw pattern (foot-anchored,
    * depth-scaled). Falls back to a simple "under construction" marker when
@@ -2428,6 +2484,29 @@
         ctx.restore();
       }
     }
+  }
+
+  /**
+   * Draw one background-decor sprite, foot-anchored at canvas point (cx, cy)
+   * and depth-scaled like buildable objects. Static decor uses frame 0;
+   * animated decor uses its per-decor anim frame. Skips gracefully (no draw,
+   * no throw) when the decor's frames are missing.
+   * @param {object} decor decor manifest entry (decor_id, ...)
+   * @param {number} cx @param {number} cy canvas coords (decor anchor, ground point)
+   * @param {number} depthScale
+   */
+  function drawDecor(decor, cx, cy, depthScale) {
+    const decorId = decor.decor_id;
+    if (decorId == null) return;
+    const slots = themeImages["decor_" + decorId];
+    if (!slots || slots.length === 0) return; // missing art — skip, no crash
+    const anim = decorAnimMap[decorId];
+    let slotIdx = 0;
+    if (anim) slotIdx = Math.min(anim.frameIndex, slots.length - 1);
+    const img = slots[slotIdx] || slots[0];
+    if (!img || !img.complete || img.naturalWidth === 0) return;
+    const baseSize = Math.round(64 * depthScale * DECOR_SCALE);
+    ctx.drawImage(img, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
   }
 
   /**
@@ -2992,6 +3071,69 @@
               placed = clampToPolygon(nx, ny, walkablePolygon);
             }
             objectPlacement[obj.object_id] = { nx: placed[0], ny: placed[1] };
+          });
+        }
+
+        // ── Background Decor: capture + resolve stable placement + sit-points ──
+        // Read manifest.decor_objects (read-only contract). Reset all per-theme
+        // decor/seat runtime state so nothing carries over between themes.
+        themeDecor = Array.isArray(manifest?.decor_objects) ? manifest.decor_objects.slice() : [];
+        decorPlacement = {};
+        decorAnimMap = {};
+        seatOccupancy = {};
+        if (themeDecor.length > 0) {
+          const dAnchors = themeDecor.map((d) =>
+            Array.isArray(d.anchor_coord) && d.anchor_coord.length >= 2
+              ? [d.anchor_coord[0], d.anchor_coord[1]]
+              : [0.5, 0.5]
+          );
+          const firstD = dAnchors[0];
+          const dAllEqual = dAnchors.every(
+            (a) => Math.abs(a[0] - firstD[0]) < 1e-6 && Math.abs(a[1] - firstD[1]) < 1e-6
+          );
+          themeDecor.forEach((d, i) => {
+            const decorId = d.decor_id;
+            if (decorId == null) return;
+            // Resolve anchor placement: auto-distribute when all anchors are
+            // equal/degenerate (reuse the stable object-slot approach), else
+            // honor the declared normalized anchor_coord.
+            let placed;
+            if (dAllEqual) {
+              // Offset the slot index so decor doesn't stack on buildable objects.
+              placed = objectSlotHome(i + 3, walkablePolygon);
+            } else {
+              const a = dAnchors[i];
+              placed = clampToPolygon(a[0] * walkableNativeW, a[1] * walkableNativeH, walkablePolygon);
+            }
+            // Sit-point = anchor placement + sit_anchor offset (normalized
+            // scene-space → native px via the same walkableNative scale).
+            const sitAnchor = (Array.isArray(d.sit_anchor) && d.sit_anchor.length >= 2)
+              ? d.sit_anchor
+              : DEFAULT_SIT_ANCHOR;
+            const sitNative = clampToPolygon(
+              placed[0] + sitAnchor[0] * walkableNativeW,
+              placed[1] + sitAnchor[1] * walkableNativeH,
+              walkablePolygon
+            );
+            decorPlacement[decorId] = {
+              nx: placed[0],
+              ny: placed[1],
+              sitNx: sitNative[0],
+              sitNy: sitNative[1],
+              sittable: !!d.is_sittable,
+            };
+            // Prime an anim state for animated decor (anim_fps present).
+            if (typeof d.anim_fps === "number" && d.anim_fps > 0) {
+              decorAnimMap[decorId] = {
+                frameIndex: 0,
+                elapsed: 0,
+                direction: 1,
+                completed: false,
+                fps: d.anim_fps,
+                loop: d.anim_loop !== false,
+              };
+            }
+            if (d.is_sittable) seatOccupancy[decorId] = null;
           });
         }
 
@@ -4957,6 +5099,7 @@
       e.congaCheerLeft = 0;
       e.dancing = false;
       e.danceTimeLeft = 0;
+      freeAgentSeat(e);
     }
     congaActive = true;
     congaTimeLeft = CONGA_SECONDS;
@@ -4970,10 +5113,30 @@
    */
   function startAgentDance(charEntry) {
     if (!charEntry) return;
+    freeAgentSeat(charEntry);
     charEntry.dancing = true;
     charEntry.danceTimeLeft = DANCE_SECONDS;
     charEntry.danceFrameTimer = 0;
     charEntry.lastDanceIdx = -1;
+  }
+
+  /**
+   * Stand a seated (or seat-bound) agent up and release its seat. Safe to call
+   * on any charEntry (no-op if it isn't sitting). Clears the per-agent sit
+   * fields and marks the seat free in seatOccupancy.
+   * @param {object} charEntry an agentCharMap entry
+   */
+  function freeAgentSeat(charEntry) {
+    if (!charEntry) return;
+    const seatId = charEntry.sitSeatId;
+    // Release the seat only if this entry currently owns it (seatOccupancy
+    // stores the owning agent id; charEntry.__id is stamped at claim time).
+    if (seatId != null && seatOccupancy[seatId] === charEntry.__id) {
+      seatOccupancy[seatId] = null;
+    }
+    charEntry.sitting = false;
+    charEntry.sitSeatId = null;
+    charEntry.sitTimeLeft = 0;
   }
 
   // debug hotkeys: c=conga, d=dance (bypass rarity/cooldown gates for testing)
@@ -5211,6 +5374,8 @@
         const home = isoSlotHome(idx, walkablePolygon);
         const wanderDelay = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
         agentCharMap[agent.id] = {
+          // Owning agent id (used by seat-occupancy bookkeeping).
+          __id: agent.id,
           // Native-coord position (polygon space)
           nx: home[0],
           ny: home[1],
@@ -5236,6 +5401,10 @@
           // Conga-line state (assigned/cleared by updateConga).
           congaIndex: -1,
           congaCheerLeft: 0,
+          // Sitting state (idle festivity, mirrors solo-dance system).
+          sitting: false,
+          sitSeatId: null,
+          sitTimeLeft: 0,
         };
       }
       const charEntry = agentCharMap[agent.id];
@@ -5255,9 +5424,10 @@
       // toward destination" block below actually moves it.
       const inConga = congaActive && charEntry.congaIndex >= 0 && congaWaypoints.length >= 3;
       if (inConga) {
-        // A conga member never dances.
+        // A conga member never dances or sits.
         charEntry.dancing = false;
         charEntry.danceTimeLeft = 0;
+        if (charEntry.sitting || charEntry.sitSeatId != null) freeAgentSeat(charEntry);
         if (charEntry.congaIndex === 0) {
           // Leader: chase the current waypoint; advance on arrival (wrap).
           const wp = congaWaypoints[congaWaypointIdx % congaWaypoints.length];
@@ -5382,13 +5552,57 @@
         }
       }
 
+      // ── Sitting (idle festivity, mirrors solo-dance) ──────────────
+      // A seated (or walking-to-seat) agent holds its seat until it either
+      // finishes SIT_SECONDS or is preempted by going active / building /
+      // engaging / conga. sitSeatId being set means "committed to a seat"
+      // (either en route or already seated). When preempted, free the seat.
+      if (charEntry.sitSeatId != null) {
+        if (!idleAndStill) {
+          // Went active / conga / enemy / build took priority — stand up.
+          freeAgentSeat(charEntry);
+        } else {
+          const seat = decorPlacement[charEntry.sitSeatId];
+          if (!seat) {
+            freeAgentSeat(charEntry);
+          } else if (!charEntry.sitting) {
+            // Walking to the seat; arrive when close enough to the sit-point.
+            const sdx = seat.sitNx - charEntry.nx;
+            const sdy = seat.sitNy - charEntry.ny;
+            if (Math.sqrt(sdx * sdx + sdy * sdy) <= SIT_ARRIVED_EPS) {
+              charEntry.sitting = true;
+              charEntry.sitTimeLeft = SIT_SECONDS;
+              // Snap exactly onto the sit-point and hold.
+              charEntry.nx = seat.sitNx;
+              charEntry.ny = seat.sitNy;
+              charEntry.destNx = seat.sitNx;
+              charEntry.destNy = seat.sitNy;
+            } else {
+              // Keep walking toward the seat's sit-point.
+              charEntry.destNx = seat.sitNx;
+              charEntry.destNy = seat.sitNy;
+            }
+          } else {
+            // Seated: hold position, tick the timer, then stand + free seat.
+            charEntry.destNx = charEntry.nx;
+            charEntry.destNy = charEntry.ny;
+            charEntry.sitTimeLeft -= delta;
+            if (charEntry.sitTimeLeft <= 0) {
+              freeAgentSeat(charEntry);
+              charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
+            }
+          }
+        }
+      }
+
       // ── Wander logic (native polygon space) ───────────────────────
       // Dancing agents hold position (no wander). Conga members are driven
       // by updateConga's destination assignment above.
       if (!inConga) charEntry.wanderTimer -= delta;
-      if (!inConga && !charEntry.dancing && !isBuilding && !isEngaging && charEntry.wanderTimer <= 0) {
+      if (!inConga && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && charEntry.wanderTimer <= 0) {
         // At this idle wander-decision point, an eligible idle agent may
-        // instead start dancing (rare). Otherwise pick a new destination.
+        // instead start dancing (rare) or go sit on a free seat (rare).
+        // Otherwise pick a new destination.
         if (idleAndStill && !congaActive && Math.random() < DANCE_CHANCE) {
           charEntry.dancing = true;
           charEntry.danceTimeLeft = DANCE_SECONDS;
@@ -5397,6 +5611,35 @@
           // Hold position while dancing.
           charEntry.destNx = charEntry.nx;
           charEntry.destNy = charEntry.ny;
+          charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
+        } else if (idleAndStill && !congaActive && themeDecor.length > 0 && Math.random() < SIT_CHANCE) {
+          // Claim a free seat (if any) and start walking to it. The sitting
+          // maintenance block above then drives arrival + seated hold. Never
+          // triggers while conga is active or the agent is a build/enemy target
+          // (both excluded by idleAndStill / !congaActive here).
+          let freeSeatId = null;
+          for (const d of themeDecor) {
+            const sid = d.decor_id;
+            const p = sid != null ? decorPlacement[sid] : null;
+            if (p && p.sittable && seatOccupancy[sid] == null) { freeSeatId = sid; break; }
+          }
+          if (freeSeatId != null) {
+            seatOccupancy[freeSeatId] = charEntry.__id;
+            charEntry.sitSeatId = freeSeatId;
+            charEntry.sitting = false; // en route until arrival
+            const seat = decorPlacement[freeSeatId];
+            charEntry.destNx = seat.sitNx;
+            charEntry.destNy = seat.sitNy;
+          } else {
+            // No free seat — fall back to a normal idle wander destination.
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.random() * WANDER_RADIUS * 0.5;
+            const tx = charEntry.homeNx + Math.cos(angle) * r;
+            const ty = charEntry.homeNy + Math.sin(angle) * r;
+            const dest = clampToPolygon(tx, ty, walkablePolygon);
+            charEntry.destNx = dest[0];
+            charEntry.destNy = dest[1];
+          }
           charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
         } else {
           // Pick new destination: active agents roam freely; idle agents stay near home.
@@ -5425,7 +5668,7 @@
       const distNative = Math.sqrt(dxNative * dxNative + dyNative * dyNative);
       const moveSpeed = (inConga && charEntry.congaIndex === 0) ? WANDER_SPEED * 1.2 : WANDER_SPEED;
       let isMoving = false;
-      if (!charEntry.dancing && distNative > WANDER_ARRIVED_EPS) {
+      if (!charEntry.dancing && !charEntry.sitting && distNative > WANDER_ARRIVED_EPS) {
         const step = Math.min(moveSpeed * delta, distNative);
         charEntry.nx += (dxNative / distNative) * step;
         charEntry.ny += (dyNative / distNative) * step;
@@ -5477,9 +5720,9 @@
         desiredClip = isActive ? "walk" : "idle";
       }
       // Override with walk while physically moving, else use status clip.
-      // "dance" (like build/cheer) is excluded so a dancing agent's clip is
-      // never clobbered back to walk/idle.
-      if (isMoving && desiredClip !== "build" && desiredClip !== "cheer" && desiredClip !== "dance") desiredClip = "walk";
+      // "dance"/"sit" (like build/cheer) are excluded so those clips are never
+      // clobbered back to walk/idle.
+      if (isMoving && desiredClip !== "build" && desiredClip !== "cheer" && desiredClip !== "dance" && desiredClip !== "sit") desiredClip = "walk";
       else if (!isMoving && (desiredClip === "walk")) desiredClip = "idle";
       // BUILD override: once arrived at the standoff spot for an active
       // build target, force the build clip — never while still walking.
@@ -5503,6 +5746,13 @@
       // above, so DO NOT reset the anim or call advanceAnim below for it.
       if (charEntry.dancing) {
         desiredClip = "dance";
+      }
+      // SIT override (idle festivity): a SEATED agent's clip is "sit"
+      // (frame 15, hold). Only applies once actually seated — while walking to
+      // the seat the normal walk clip is used. Takes priority over idle/walk;
+      // sitting never coexists with dance/conga/engage/build (all preempt it).
+      if (charEntry.sitting) {
+        desiredClip = "sit";
       }
 
       const anim = charEntry.animState;
@@ -5573,9 +5823,33 @@
     for (const enemy of activeEnemies) {
       depthList.push({ kind: "enemy", enemy, ny: enemy.ny });
     }
+    // Background decor: advance any animated decor and merge into the same
+    // Y-sorted depth list so agents/objects/enemies occlude it correctly.
+    for (const decor of themeDecor) {
+      const decorId = decor.decor_id;
+      if (decorId == null) continue;
+      const placement = decorPlacement[decorId];
+      if (!placement) continue;
+      const dAnim = decorAnimMap[decorId];
+      if (dAnim) {
+        const dSlots = themeImages["decor_" + decorId];
+        advanceDecorAnim(dAnim, delta, dSlots ? dSlots.length : 1);
+      }
+      depthList.push({ kind: "decor", decor, ny: placement.ny });
+    }
     depthList.sort((a, b) => a.ny - b.ny);
 
     depthList.forEach((item) => {
+      if (item.kind === "decor") {
+        const placement = decorPlacement[item.decor.decor_id];
+        if (!placement) return;
+        const canvasPt = nativeToCanvas(placement.nx, placement.ny, bgX, bgY, bgW, bgH);
+        const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
+        const depthScale = 0.8 + tDepth * 0.3;
+        drawDecor(item.decor, canvasPt[0], canvasPt[1], depthScale);
+        return;
+      }
+
       if (item.kind === "object") {
         const canvasPt = nativeToCanvas(objectPlacement[item.obj.object_id].nx, objectPlacement[item.obj.object_id].ny, bgX, bgY, bgW, bgH);
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));

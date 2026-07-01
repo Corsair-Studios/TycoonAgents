@@ -2,15 +2,25 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAchievementAtlasPrompt,
+  buildBackgroundDecorPrompt,
   buildCharacterAtlasPrompt,
   buildEnvironmentPrompt,
   buildExpressionAtlasPrompt,
   buildObjectAtlasPrompt,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
+  createDecorBoardRows,
   createObjectBoardRows,
+  decorBoardFrameKeys,
   objectBoardFrameKeys,
 } from '../src/extension/themeAssetPrompts';
+
+function decorSpecs() {
+  return Array.from({ length: 10 }, (_unused, index) => ({
+    decor_id: `d_${index + 1}`,
+    display_name: `Decor ${index + 1}`,
+  }));
+}
 
 test('character prompt enforces the production sprite-board mime contracts', () => {
   const prompt = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid');
@@ -107,4 +117,35 @@ test('13 objects pack into three full boards with build effects in the final two
   assert.deepEqual(objectBoardFrameKeys(rows[2]), [
     'object_object_11', 'object_object_12', 'object_object_13', 'poof', 'crate',
   ]);
+});
+
+test('createDecorBoardRows maps 10 decor items onto the 4x4 seat/decor/animation layout', () => {
+  const rows = createDecorBoardRows(decorSpecs());
+  assert.deepEqual(rows.map((row) => row.length), [4, 4, 1, 1]);
+  assert.deepEqual(rows.map((row) => row.map((cell) => cell.kind)), [
+    ['seat', 'seat', 'seat', 'seat'],
+    ['decor', 'decor', 'decor', 'decor'],
+    ['decor_anim'],
+    ['decor_anim'],
+  ]);
+  assert.deepEqual(decorBoardFrameKeys(rows), [
+    'decor_d_1', 'decor_d_2', 'decor_d_3', 'decor_d_4',
+    'decor_d_5', 'decor_d_6', 'decor_d_7', 'decor_d_8',
+    'decor_d_9', 'decor_d_10',
+  ]);
+  assert.throws(() => createDecorBoardRows(decorSpecs().slice(0, 9)), /exactly 10 decor items/);
+});
+
+test('background decor prompt describes sittable seats, static decor, and two animated rows', () => {
+  const prompt = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', createDecorBoardRows(decorSpecs()));
+  assert.match(prompt, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
+  assert.match(prompt, /exact 4-column by 4-row logical grid with 16 visually equal cells/i);
+  assert.match(prompt, /Row 1 \(Cells 1-4\): FOUR distinct STATIC SITTABLE SEATS/i);
+  assert.match(prompt, /character will visibly sit ON/i);
+  assert.match(prompt, /Row 2 \(Cells 5-8\): FOUR distinct STATIC decor/i);
+  assert.match(prompt, /Row 3 \(Cells 9-12\): ONE animated decor item shown as FOUR sequential loopable frames/i);
+  assert.match(prompt, /Row 4 \(Cells 13-16\): ONE animated decor item shown as FOUR sequential loopable frames/i);
+  assert.match(prompt, /Cell 1: Decor 1[\s\S]*Cell 8: Decor 8/i);
+  assert.match(prompt, /solid #FF00FF magenta/i);
+  assert.match(prompt, /Creative direction: cozy tavern/i);
 });

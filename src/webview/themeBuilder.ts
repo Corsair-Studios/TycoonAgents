@@ -781,6 +781,7 @@ export function initThemeBuilder(containerElement: HTMLElement) {
       roster_agents: [],
       roster_rivals: [],
       buildable_objects: placed_props,
+      decor_objects: [],
       badges: []
     };
     if (vscode) {

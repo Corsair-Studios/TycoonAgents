@@ -17,6 +17,7 @@ interface PlannerModelOutput {
   characters?: unknown;
   environment?: string;
   objects?: unknown;
+  decor?: unknown;
   enemies?: unknown;
   expressions?: unknown;
   achievements?: unknown;
@@ -50,6 +51,7 @@ export async function expandThemePlan(
     '  "characters": ["16 named character or worker designs"],',
     '  "environment": "one detailed isometric environment description",',
     '  "objects": ["13 named props or buildable objects"],',
+    '  "decor": ["10 background decor names: first 4 are sittable seats, next 4 are static scenery props, last 2 are subtly animated scenery items"],',
     '  "enemies": ["3 named enemy designs"],',
     '  "expressions": ["16 short, visually distinct expression names"],',
     '  "achievements": ["20 short achievement badge design names"]',
@@ -104,6 +106,7 @@ export async function expandThemePlan(
     characters: Array.isArray(model.characters) ? model.characters as string[] : [],
     environment: model.environment,
     objects: Array.isArray(model.objects) ? model.objects as string[] : [],
+    decor: Array.isArray(model.decor) ? model.decor as string[] : [],
     enemies: Array.isArray(model.enemies) ? model.enemies as string[] : [],
     expressions: Array.isArray(model.expressions) ? model.expressions as string[] : [],
     achievements: Array.isArray(model.achievements) ? model.achievements as string[] : [],

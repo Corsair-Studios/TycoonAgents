@@ -2331,6 +2331,9 @@ export class TycoonPanel {
             <small>Change this any time. Turning it off resumes a paused generation.</small>
           </span>
         </label>
+        <p class="theme-generation-approval-warning" style="margin: 6px 0 0; padding: 8px 10px; border-left: 3px solid #d9a441; background: rgba(217, 164, 65, 0.12); border-radius: 4px; font-size: 12px; line-height: 1.4;">
+          &#9888; AI image generation isn't perfect &mdash; expect to regenerate some images and do a little manual cleanup (use Retry, Upload, or edit the prompt).
+        </p>
         <div id="theme-prompt-container" class="theme-prompt-container">
           <input type="text" id="theme-prompt-input" placeholder="Name or describe a new theme" />
           <button id="theme-generate-btn" class="skill-btn">Plan theme</button>

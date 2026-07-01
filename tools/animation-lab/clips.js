@@ -15,7 +15,7 @@ const ATLAS_CLIPS = {
   build: { frames: [5, 6, 7, 8], fps: 6, loop: true, flippable: true },
   tool_idle: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
   shoot: { frames: [10, 11], fps: 8, loop: false, flippable: true, pingpong: true },
-  dance: { frames: [17, 18], fps: 6, loop: true, flippable: false, pingpong: true },
+  dance: { frames: [17, 18, 19], fps: 6, loop: true, flippable: false, pingpong: true },
   cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
   point: { frames: [12], fps: 0, loop: true, flippable: true, hold: true },
   signal: { frames: [13], fps: 0, loop: true, flippable: false, hold: true },

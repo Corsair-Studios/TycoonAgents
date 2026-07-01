@@ -1,7 +1,12 @@
-import type { ThemeObjectBoardRow } from './themeImageReviewState';
+import type { ThemeDecorBoardRow, ThemeObjectBoardRow } from './themeImageReviewState';
 
 export interface ThemeObjectPromptSpec {
   object_id: string;
+  display_name: string;
+}
+
+export interface ThemeDecorPromptSpec {
+  decor_id: string;
   display_name: string;
 }
 
@@ -21,6 +26,33 @@ export function createObjectBoardRows(objects: ThemeObjectPromptSpec[]): ThemeOb
 
 export function objectBoardFrameKeys(rows: ThemeObjectBoardRow[]): string[] {
   return rows.map((row) => row.kind === 'object' ? `object_${row.object_id}` : row.kind);
+}
+
+/**
+ * Map the 10 decor specs onto the 4x4 background-decor board's four row-groups:
+ *   row 1 → four single-frame seats,
+ *   row 2 → four single-frame static decor,
+ *   row 3 → one four-frame animated decor,
+ *   row 4 → one four-frame animated decor.
+ * Returns one array per row so the slicer knows each row's kind/ids.
+ */
+export function createDecorBoardRows(decor: ThemeDecorPromptSpec[]): ThemeDecorBoardRow[][] {
+  if (decor.length !== 10) throw new Error('Background decor generation requires exactly 10 decor items.');
+  const seats = decor.slice(0, 4).map((item): ThemeDecorBoardRow => ({
+    kind: 'seat', decor_id: item.decor_id, display_name: item.display_name,
+  }));
+  const statics = decor.slice(4, 8).map((item): ThemeDecorBoardRow => ({
+    kind: 'decor', decor_id: item.decor_id, display_name: item.display_name,
+  }));
+  const anim = decor.slice(8, 10).map((item): ThemeDecorBoardRow => ({
+    kind: 'decor_anim', decor_id: item.decor_id, display_name: item.display_name,
+  }));
+  return [seats, statics, [anim[0]], [anim[1]]];
+}
+
+/** Frame keys for a single decor board row (all decor rows use `decor_<id>`). */
+export function decorBoardFrameKeys(rows: ThemeDecorBoardRow[][]): string[] {
+  return rows.flat().map((row) => `decor_${row.decor_id}`);
 }
 
 /**
@@ -401,6 +433,56 @@ export function buildObjectAtlasPrompt(
     ] : []),
     '',
     'Use crisp retro pixel art with consistent viewpoint, lighting, rendering style, and camera distance.',
+    '',
+    `Creative direction: ${creativeDirection}`,
+  ].join('\n');
+}
+
+/**
+ * Background-decor board: a 4x4 grid.
+ * Row 1 = four distinct SITTABLE seats. Row 2 = four static scenery items.
+ * Rows 3 and 4 = one animated decor item each across four loopable frames.
+ */
+export function buildBackgroundDecorPrompt(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeDecorBoardRow[][],
+): string {
+  if (rows.length !== 4) throw new Error('Background decor boards require exactly four rows.');
+  const [seatRow, staticRow, animRow3, animRow4] = rows;
+  if (seatRow.length !== 4 || staticRow.length !== 4 || animRow3.length !== 1 || animRow4.length !== 1) {
+    throw new Error('Background decor board layout must be 4 seats, 4 static decor, and 2 animated items.');
+  }
+  const cellList = (items: ThemeDecorBoardRow[], startCell: number): string[] =>
+    items.map((item, index) => `  Cell ${startCell + index}: ${item.display_name}`);
+  return [
+    `Create one background-decor sprite board for the "${themeName}" theme.`,
+    boardContract(4, 4),
+    'The 16 cells form four rows. Each row has a distinct role described below.',
+    '',
+    'Row 1 (Cells 1-4): FOUR distinct STATIC SITTABLE SEATS.',
+    'Each cell holds one themed piece of seating that a game character will visibly sit ON later.',
+    'Draw a clear, readable seat surface (the seating furniture only) with an obvious place to sit.',
+    'These are single static frames — no animation, one distinct seat per cell:',
+    ...cellList(seatRow, 1),
+    '',
+    'Row 2 (Cells 5-8): FOUR distinct STATIC decor / scenery props, one per cell, single static frame each:',
+    ...cellList(staticRow, 5),
+    '',
+    'Row 3 (Cells 9-12): ONE animated decor item shown as FOUR sequential loopable frames left to right.',
+    `  Item: ${animRow3[0].display_name}`,
+    'All four cells show the SAME item from one fixed camera; change only subtly moving or glowing parts.',
+    'Cell 12 must flow seamlessly back to cell 9. Keep the body stationary and the motion subtle.',
+    '',
+    'Row 4 (Cells 13-16): ONE animated decor item shown as FOUR sequential loopable frames left to right.',
+    `  Item: ${animRow4[0].display_name}`,
+    'All four cells show the SAME item from one fixed camera; change only subtly moving or glowing parts.',
+    'Cell 16 must flow seamlessly back to cell 13. Keep the body stationary and the motion subtle.',
+    '',
+    'Every cell holds exactly one subject fully inside its own cell with generous magenta padding; nothing crosses a cell boundary.',
+    'Center each item with its lowest contact point near the cell bottom. Keep a consistent isometric camera, lighting, and scale.',
+    'Do not draw characters, people, UI, captions, letters, numbers, or grid lines. No object may straddle two cells.',
+    'Use crisp retro pixel art. Every unused pixel must be flat solid #FF00FF magenta.',
     '',
     `Creative direction: ${creativeDirection}`,
   ].join('\n');
