@@ -91,10 +91,16 @@ const MODEL_DEFAULTS = {
   "workspace-monitor": "claude-sonnet-4-6",
 };
 
+// SHORTHAND_MODEL is telemetry-only: resolveModel() applies it to the value
+// read from an agent .md's `model:` frontmatter (or an explicit Task model),
+// and the result is only ever written to activity.jsonl / the active-agent
+// stack. There is NO live API call, so the bare aliases opus/sonnet/haiku are
+// safe here and stay consistent with what the Settings GUI now writes. Fable
+// keeps its canonical id (no auto-latest alias exists).
 const SHORTHAND_MODEL = {
-  "opus":   "claude-opus-4-6",
-  "sonnet": "claude-sonnet-4-6",
-  "haiku":  "claude-haiku-4-5-20251001",
+  "opus":   "opus",
+  "sonnet": "sonnet",
+  "haiku":  "haiku",
   "fable":  "claude-fable-5",
 };
 

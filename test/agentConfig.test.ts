@@ -23,17 +23,26 @@ test("shortFromModelId maps known ids and rejects others", () => {
   assert.equal(shortFromModelId(undefined), undefined);
 });
 
-test("modelIdFromShort round-trips and rejects unknown", () => {
-  assert.equal(modelIdFromShort("opus"), "claude-opus-4-6");
-  assert.equal(modelIdFromShort("sonnet"), "claude-sonnet-4-6");
-  assert.equal(modelIdFromShort("haiku"), "claude-haiku-4-5-20251001");
+test("modelIdFromShort writes auto-latest aliases (opus/sonnet/haiku) and canonical fable id", () => {
+  // opus/sonnet/haiku write the BARE ALIAS so Claude Code resolves the latest
+  // model of each family automatically (never goes stale). Fable has no alias.
+  assert.equal(modelIdFromShort("opus"), "opus");
+  assert.equal(modelIdFromShort("sonnet"), "sonnet");
+  assert.equal(modelIdFromShort("haiku"), "haiku");
   assert.equal(modelIdFromShort("fable"), "claude-fable-5");
   assert.equal(modelIdFromShort("gpt"), undefined);
 
-  // round-trip: short -> id -> short
+  // round-trip: short -> written value -> short. Bare aliases must map back.
   for (const s of ["opus", "sonnet", "haiku", "fable"] as const) {
     assert.equal(shortFromModelId(modelIdFromShort(s)), s);
   }
+});
+
+test("shortFromModelId maps bare aliases back to their short label", () => {
+  assert.equal(shortFromModelId("opus"), "opus");
+  assert.equal(shortFromModelId("sonnet"), "sonnet");
+  assert.equal(shortFromModelId("haiku"), "haiku");
+  assert.equal(shortFromModelId("fable"), "fable");
 });
 
 test("setFrontmatterModel replaces an existing model line", () => {

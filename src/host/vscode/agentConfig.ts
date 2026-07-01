@@ -8,13 +8,17 @@
 export type ModelShort = "opus" | "sonnet" | "haiku" | "fable";
 
 /**
- * Map of short model label -> full model id. These values MUST match the
- * Claude Code hook's expectations exactly (see tycoon-claude-hook.cjs).
+ * Map of short model label -> the value written to an agent .md's `model:`
+ * frontmatter. For opus/sonnet/haiku we intentionally write the BARE ALIAS,
+ * which Claude Code resolves to the LATEST model of that family automatically
+ * (so the mapping never goes stale). Fable has no auto-latest alias, so it uses
+ * its canonical id `claude-fable-5`. These values MUST match the Claude Code
+ * hook's expectations exactly (see tycoon-claude-hook.cjs).
  */
 const SHORT_TO_ID: Record<ModelShort, string> = {
-  opus: "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
-  haiku: "claude-haiku-4-5-20251001",
+  opus: "opus",
+  sonnet: "sonnet",
+  haiku: "haiku",
   fable: "claude-fable-5",
 };
 
