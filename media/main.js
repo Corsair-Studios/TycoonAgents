@@ -241,8 +241,22 @@
   // ── Skills list install-button handler (event delegation) ────────
 
   skillsListEl.addEventListener("click", (e) => {
+    const target = /** @type {HTMLElement} */ (e.target);
+
+    const removeBtn = /** @type {HTMLElement|null} */ (
+      target.closest("[data-remove-skill-id]")
+    );
+    if (removeBtn && !removeBtn.hasAttribute("disabled")) {
+      const id = removeBtn.getAttribute("data-remove-skill-id");
+      // Host shows its own native confirmation before removing.
+      removeBtn.textContent = "Removing…";
+      removeBtn.setAttribute("disabled", "");
+      vscode.postMessage({ type: "removeSkill", id });
+      return;
+    }
+
     const btn = /** @type {HTMLElement|null} */ (
-      /** @type {HTMLElement} */ (e.target).closest("[data-skill-id]")
+      target.closest("[data-skill-id]")
     );
     if (!btn || btn.hasAttribute("disabled")) return;
     const id = btn.getAttribute("data-skill-id");
@@ -255,8 +269,22 @@
 
   if (mcpListEl) {
     mcpListEl.addEventListener("click", (e) => {
+      const target = /** @type {HTMLElement} */ (e.target);
+
+      const removeBtn = /** @type {HTMLElement|null} */ (
+        target.closest("[data-remove-mcp-id]")
+      );
+      if (removeBtn && !removeBtn.hasAttribute("disabled")) {
+        const rid = removeBtn.getAttribute("data-remove-mcp-id");
+        // Host shows its own native confirmation before removing.
+        removeBtn.textContent = "Removing…";
+        removeBtn.setAttribute("disabled", "");
+        vscode.postMessage({ type: "removeMcp", id: rid });
+        return;
+      }
+
       const btn = /** @type {HTMLElement|null} */ (
-        /** @type {HTMLElement} */ (e.target).closest("[data-mcp-id]")
+        target.closest("[data-mcp-id]")
       );
       if (!btn || btn.hasAttribute("disabled")) return;
       const id = btn.getAttribute("data-mcp-id");
@@ -280,8 +308,22 @@
 
   if (packsListEl) {
     packsListEl.addEventListener("click", (e) => {
+      const target = /** @type {HTMLElement} */ (e.target);
+
+      const removeBtn = /** @type {HTMLElement|null} */ (
+        target.closest("[data-remove-pack-id]")
+      );
+      if (removeBtn && !removeBtn.hasAttribute("disabled")) {
+        const rid = removeBtn.getAttribute("data-remove-pack-id");
+        // Host shows its own native confirmation before removing.
+        removeBtn.textContent = "Removing…";
+        removeBtn.setAttribute("disabled", "");
+        vscode.postMessage({ type: "removePack", id: rid });
+        return;
+      }
+
       const btn = /** @type {HTMLElement|null} */ (
-        /** @type {HTMLElement} */ (e.target).closest("[data-pack-id]")
+        target.closest("[data-pack-id]")
       );
       if (!btn || btn.hasAttribute("disabled")) return;
       const id = btn.getAttribute("data-pack-id");
@@ -3494,14 +3536,20 @@
       renderSkillsList(msg.skills, msg.error);
     } else if (msg && msg.type === "skillInstalled") {
       handleSkillInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error);
+    } else if (msg && msg.type === "skillRemoved") {
+      handleSkillRemoved(msg.id, msg.ok, msg.error, msg.cancelled);
     } else if (msg && msg.type === "mcp") {
       renderMcpList(msg.servers, msg.error);
     } else if (msg && msg.type === "mcpInstalled") {
       handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled);
+    } else if (msg && msg.type === "mcpRemoved") {
+      handleMcpRemoved(msg.id, msg.ok, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packs") {
       renderPacksList(msg.packs, msg.error);
     } else if (msg && msg.type === "packInstalled") {
       handlePackInstalled(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
+    } else if (msg && msg.type === "packRemoved") {
+      handlePackRemoved(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
     } else if (msg && msg.type === "installState") {
       handleInstallState(msg);
       if (msg.uefnDetected) {
@@ -3846,11 +3894,12 @@
       }
 
       const btn = document.createElement("button");
-      btn.className = "skill-btn" + (skill.installed ? " skill-btn--installed" : "");
       if (skill.installed) {
-        btn.textContent = "Installed";
-        btn.setAttribute("disabled", "");
+        btn.className = "skill-btn skill-btn--remove";
+        btn.textContent = "Remove";
+        btn.setAttribute("data-remove-skill-id", skill.id);
       } else {
+        btn.className = "skill-btn";
         btn.textContent = "Install";
         btn.setAttribute("data-skill-id", skill.id);
       }
@@ -3891,6 +3940,50 @@
           row.appendChild(errSpan);
         }
         errSpan.textContent = error || "Install failed";
+      }
+    }
+  }
+
+  /**
+   * Update a skill row after a remove attempt. On success the host re-posts
+   * the skills list, so we mainly reconcile the in-flight button; on cancel we
+   * silently restore, and on error we restore + surface the message.
+   * @param {string} id
+   * @param {boolean} ok
+   * @param {string|undefined} error
+   * @param {boolean|undefined} cancelled
+   */
+  function handleSkillRemoved(id, ok, error, cancelled) {
+    const btn = /** @type {HTMLElement|null} */ (
+      skillsListEl.querySelector(`[data-remove-skill-id="${CSS.escape(id)}"]`)
+    );
+    if (!btn) return;
+    if (cancelled) {
+      btn.textContent = "Remove";
+      btn.removeAttribute("disabled");
+      return;
+    }
+    if (ok) {
+      // Host re-posts the skills list which re-renders this row as
+      // not-installed. As a fallback (in case that message is missed) flip the
+      // button back to Install here too.
+      btn.textContent = "Install";
+      btn.classList.remove("skill-btn--remove");
+      btn.removeAttribute("disabled");
+      btn.removeAttribute("data-remove-skill-id");
+      btn.setAttribute("data-skill-id", id);
+    } else {
+      btn.textContent = "Remove";
+      btn.removeAttribute("disabled");
+      const row = btn.closest(".skill-row");
+      if (row) {
+        let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
+        if (!errSpan) {
+          errSpan = document.createElement("span");
+          errSpan.className = "skill-install-error";
+          row.appendChild(errSpan);
+        }
+        errSpan.textContent = error || "Remove failed";
       }
     }
   }
@@ -3975,11 +4068,12 @@
       }
 
       const btn = document.createElement("button");
-      btn.className = "skill-btn" + (server.installed ? " skill-btn--installed" : "");
       if (server.installed) {
-        btn.textContent = "Installed";
-        btn.setAttribute("disabled", "");
+        btn.className = "skill-btn skill-btn--remove";
+        btn.textContent = "Remove";
+        btn.setAttribute("data-remove-mcp-id", server.id);
       } else {
+        btn.className = "skill-btn";
         btn.textContent = "Install";
         btn.setAttribute("data-mcp-id", server.id);
       }
@@ -4031,6 +4125,47 @@
     }
   }
 
+  /**
+   * Update an MCP row after a remove attempt. Mirrors handleSkillRemoved.
+   * @param {string} id
+   * @param {boolean} ok
+   * @param {string|undefined} error
+   * @param {boolean|undefined} cancelled
+   */
+  function handleMcpRemoved(id, ok, error, cancelled) {
+    if (!mcpListEl) return;
+    const btn = /** @type {HTMLElement|null} */ (
+      mcpListEl.querySelector(`[data-remove-mcp-id="${CSS.escape(id)}"]`)
+    );
+    if (!btn) return;
+    if (cancelled) {
+      btn.textContent = "Remove";
+      btn.removeAttribute("disabled");
+      return;
+    }
+    if (ok) {
+      // Host re-posts the MCP list; flip button as a fallback.
+      btn.textContent = "Install";
+      btn.classList.remove("skill-btn--remove");
+      btn.removeAttribute("disabled");
+      btn.removeAttribute("data-remove-mcp-id");
+      btn.setAttribute("data-mcp-id", id);
+    } else {
+      btn.textContent = "Remove";
+      btn.removeAttribute("disabled");
+      const row = btn.closest(".skill-row");
+      if (row) {
+        let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
+        if (!errSpan) {
+          errSpan = document.createElement("span");
+          errSpan.className = "skill-install-error";
+          row.appendChild(errSpan);
+        }
+        errSpan.textContent = error || "Remove failed";
+      }
+    }
+  }
+
   // ── Packs list (capability bundles: skill + MCP + agent) ─────────
 
   /** Part keys in display order, with their chip labels. */
@@ -4049,6 +4184,17 @@
     const has = pack.has || {};
     const installed = pack.installed || {};
     return PACK_PARTS.every(([key]) => !has[key] || installed[key]);
+  }
+
+  /**
+   * True when at least one part the pack `has` is `installed`.
+   * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
+   * @returns {boolean}
+   */
+  function packAnyInstalled(pack) {
+    const has = pack.has || {};
+    const installed = pack.installed || {};
+    return PACK_PARTS.some(([key]) => has[key] && installed[key]);
   }
 
   /**
@@ -4154,19 +4300,33 @@
         textBlock.appendChild(local);
       }
 
-      const btn = document.createElement("button");
       const fully = packFullyInstalled(pack);
-      btn.className = "skill-btn" + (fully ? " skill-btn--installed" : "");
+      const anyInstalled = packAnyInstalled(pack);
+
+      const btn = document.createElement("button");
       if (fully) {
+        btn.className = "skill-btn skill-btn--installed";
         btn.textContent = "Installed";
         btn.setAttribute("disabled", "");
       } else {
+        btn.className = "skill-btn";
         btn.textContent = "Install";
         btn.setAttribute("data-pack-id", pack.id);
       }
 
       row.appendChild(textBlock);
       row.appendChild(btn);
+
+      // Show a Remove button whenever any component is installed (fully or
+      // partially). It sits alongside the Install/Installed button.
+      if (anyInstalled) {
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "skill-btn skill-btn--remove";
+        removeBtn.textContent = "Remove";
+        removeBtn.setAttribute("data-remove-pack-id", pack.id);
+        row.appendChild(removeBtn);
+      }
+
       packsListEl.appendChild(row);
     }
   }
@@ -4225,6 +4385,47 @@
           row.appendChild(errSpan);
         }
         errSpan.textContent = error || "Install failed";
+      }
+    }
+  }
+
+  /**
+   * Update a pack row after a remove attempt. On success the host re-posts the
+   * packs list (authoritative chip/button state); we also re-fetch as a
+   * fallback. On cancel we silently restore; on error we restore + surface it.
+   * @param {string} id
+   * @param {boolean} ok
+   * @param {{skill?:string,mcp?:string,agent?:string}|undefined} _results
+   * @param {string|undefined} error
+   * @param {boolean|undefined} cancelled
+   */
+  function handlePackRemoved(id, ok, _results, error, cancelled) {
+    if (!packsListEl) return;
+    const btn = /** @type {HTMLElement|null} */ (
+      packsListEl.querySelector(`[data-remove-pack-id="${CSS.escape(id)}"]`)
+    );
+    if (cancelled) {
+      if (btn) {
+        btn.textContent = "Remove";
+        btn.removeAttribute("disabled");
+      }
+      return;
+    }
+    if (ok) {
+      // Re-fetch so chips/buttons reflect real per-part removal results.
+      vscode.postMessage({ type: "getPacks" });
+    } else if (btn) {
+      btn.textContent = "Remove";
+      btn.removeAttribute("disabled");
+      const row = btn.closest(".skill-row");
+      if (row) {
+        let errSpan = /** @type {HTMLElement|null} */ (row.querySelector(".skill-install-error"));
+        if (!errSpan) {
+          errSpan = document.createElement("span");
+          errSpan.className = "skill-install-error";
+          row.appendChild(errSpan);
+        }
+        errSpan.textContent = error || "Remove failed";
       }
     }
   }

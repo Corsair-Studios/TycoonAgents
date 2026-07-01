@@ -16,7 +16,7 @@ import {
   setKeywordPattern,
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
-import { mergeMcpServer, hasMcpServer } from "./mcpCatalog";
+import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
 import { buildAgentMarkdown } from "./packCatalog";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
@@ -241,11 +241,19 @@ export class TycoonPanel {
           if (message.id !== undefined) {
             this._handleInstallSkill(message.id);
           }
+        } else if (message.type === "removeSkill") {
+          if (message.id !== undefined) {
+            await this._handleRemoveSkill(message.id);
+          }
         } else if (message.type === "getMcp") {
           this._handleGetMcp();
         } else if (message.type === "installMcp") {
           if (message.id !== undefined) {
             await this._handleInstallMcp(message.id, message.thirdParty === true);
+          }
+        } else if (message.type === "removeMcp") {
+          if (message.id !== undefined) {
+            await this._handleRemoveMcp(message.id);
           }
         } else if (message.type === "checkInstall") {
           this._handleCheckInstall();
@@ -271,6 +279,10 @@ export class TycoonPanel {
         } else if (message.type === "installPack") {
           if (message.id !== undefined) {
             await this._handleInstallPack(message.id, message.thirdParty === true, message.disclosures);
+          }
+        } else if (message.type === "removePack") {
+          if (message.id !== undefined) {
+            await this._handleRemovePack(message.id);
           }
         } else if (message.type === "copyNudge") {
           const text = String((message as any).text ?? "");
@@ -1102,6 +1114,62 @@ export class TycoonPanel {
     }
   }
 
+  /**
+   * Remove an installed skill from the project's `.claude/skills/<id>`.
+   * Mirrors `_handleInstallSkill`: validates the id against the bundled
+   * catalog, then gates the destructive delete behind a native modal (VS Code
+   * webviews cannot reliably show window.confirm). Refreshes the webview's
+   * skills list on success. Responds with `{ type:"skillRemoved", id, ok }`.
+   */
+  private async _handleRemoveSkill(id: string): Promise<void> {
+    const catalogPath = path.join(this._extensionUri.fsPath, "media", "skills", "catalog.json");
+    const root = this._projectRoot();
+
+    let catalog: Array<{ id: string; name: string; description: string }>;
+    try {
+      catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8")) as Array<{
+        id: string;
+        name: string;
+        description: string;
+      }>;
+    } catch (e) {
+      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, error: String(e) });
+      return;
+    }
+
+    const entry = catalog.find((c) => c.id === id);
+    if (entry === undefined) {
+      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, error: "Unknown skill" });
+      return;
+    }
+
+    if (root === "") {
+      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, error: "No workspace folder open" });
+      return;
+    }
+
+    const answer = await vscode.window.showWarningMessage(
+      `Remove the '${entry.name}' skill?`,
+      { modal: true, detail: `This deletes .claude/skills/${id} from your project.` },
+      "Remove"
+    );
+    if (answer !== "Remove") {
+      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, cancelled: true });
+      return;
+    }
+
+    try {
+      const target = path.join(root, ".claude", "skills", id);
+      if (fs.existsSync(target)) {
+        fs.rmSync(target, { recursive: true, force: true });
+      }
+      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: true });
+      this._handleGetSkills();
+    } catch (e) {
+      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, error: String(e) });
+    }
+  }
+
   /** Load and parse the bundled MCP catalog. Throws on read/parse failure. */
   private _loadMcpCatalog(): Array<{
     id: string;
@@ -1289,6 +1357,57 @@ export class TycoonPanel {
         ok: false,
         error: String(e),
       });
+    }
+  }
+
+  /**
+   * Remove an MCP server from the project's `.mcp.json`. Mirrors
+   * `_handleInstallMcp`: validates the id against the bundled catalog, gates
+   * the change behind a native modal, then reads `.mcp.json` tolerantly,
+   * deletes `mcpServers[id]` via the pure `removeMcpServer` helper, and writes
+   * the file back (retaining the `{ mcpServers: {} }` shape when empty).
+   * Responds with `{ type:"mcpRemoved", id, ok }`.
+   */
+  private async _handleRemoveMcp(id: string): Promise<void> {
+    try {
+      let catalog;
+      try {
+        catalog = this._loadMcpCatalog();
+      } catch (e) {
+        void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, error: String(e) });
+        return;
+      }
+
+      const entry = catalog.find((e) => e.id === id);
+      if (entry === undefined) {
+        void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, error: "Unknown server" });
+        return;
+      }
+
+      const root = this._projectRoot();
+      if (root === "") {
+        void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, error: "No workspace folder open" });
+        return;
+      }
+
+      const answer = await vscode.window.showWarningMessage(
+        `Remove the '${entry.name}' MCP server?`,
+        { modal: true, detail: `This removes "${id}" from .mcp.json in your project.` },
+        "Remove"
+      );
+      if (answer !== "Remove") {
+        void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, cancelled: true });
+        return;
+      }
+
+      const mcpPath = path.join(root, ".mcp.json");
+      const existing = this._readMcpConfig(mcpPath);
+      const updated = removeMcpServer(existing, id);
+      fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
+      void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: true });
+      this._handleGetMcp();
+    } catch (e) {
+      void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, error: String(e) });
     }
   }
 
@@ -1484,6 +1603,140 @@ export class TycoonPanel {
       this._panel.webview.postMessage({ type: "packInstalled", id, ok: true, results });
     } catch (e) {
       this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, error: String(e) });
+    }
+  }
+
+  /**
+   * Remove an installed pack: its skills, MCP server, and agent files.
+   * Mirrors `_handleInstallPack` but in reverse. Skills and the MCP server are
+   * SHARED components — before deleting one, we check whether ANOTHER pack in
+   * the catalog also lists that same id and still has any of its components
+   * installed; if so we SKIP the delete so we don't break that pack. Agents are
+   * pack-specific and are always removed (file + agent-keywords.json entry).
+   * Gated behind a native modal. Responds with
+   * `{ type:"packRemoved", id, ok, results:{skills, mcp, agents} }`.
+   */
+  private async _handleRemovePack(id: string): Promise<void> {
+    try {
+      const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
+      const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
+      const pack = packs.find((p: any) => p.id === id);
+      if (!pack) {
+        this._panel.webview.postMessage({ type: "packRemoved", id, ok: false, error: "Unknown pack" });
+        return;
+      }
+      const root = this._projectRoot();
+      if (root === "") {
+        this._panel.webview.postMessage({ type: "packRemoved", id, ok: false, error: "No workspace folder open" });
+        return;
+      }
+
+      const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
+      const packAgents: any[] = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
+      const packMcp: string | undefined = pack.mcp || undefined;
+
+      // Build the confirmation summary.
+      const parts: string[] = [];
+      parts.push(`${packSkills.length} ${packSkills.length === 1 ? "skill" : "skills"}`);
+      if (packMcp) parts.push("1 MCP server");
+      parts.push(`${packAgents.length} ${packAgents.length === 1 ? "agent" : "agents"}`);
+      const answer = await vscode.window.showWarningMessage(
+        `Remove '${pack.name}'?`,
+        { modal: true, detail: `This removes ${parts.join(", ")} from your project.` },
+        "Remove"
+      );
+      if (answer !== "Remove") {
+        this._panel.webview.postMessage({ type: "packRemoved", id, ok: false, cancelled: true });
+        return;
+      }
+
+      // Shared-component guard: is `componentId` (a skill or MCP id) still
+      // claimed by ANOTHER pack that is at least partially installed? Such a
+      // pack "still installed" if any of its skills/mcp/agents exist on disk.
+      const skillOnDisk = (sid: string): boolean =>
+        fs.existsSync(path.join(root, ".claude", "skills", sid));
+      const agentOnDisk = (aid: string): boolean =>
+        fs.existsSync(path.join(root, ".claude", "agents", `${aid}.md`));
+      const mcpConfigNow = (): Record<string, unknown> => this._readMcpConfig(path.join(root, ".mcp.json"));
+      const packStillInstalled = (p: any): boolean => {
+        const sk: string[] = Array.isArray(p.skills) ? p.skills : [];
+        const ag: any[] = Array.isArray(p.agents) ? p.agents : (p.agent ? [p.agent] : []);
+        if (sk.some((s) => skillOnDisk(s))) return true;
+        if (p.mcp && hasMcpServer(mcpConfigNow(), p.mcp)) return true;
+        if (ag.some((a) => agentOnDisk(a.id))) return true;
+        return false;
+      };
+      const sharedByOtherPack = (predicate: (p: any) => boolean): boolean =>
+        packs.some((p: any) => p.id !== id && predicate(p) && packStillInstalled(p));
+
+      const results: Record<string, any> = {};
+
+      // Skills.
+      const skillResults: Array<{ id: string; status: "removed" | "kept-shared" | "absent" }> = [];
+      for (const skillId of packSkills) {
+        const target = path.join(root, ".claude", "skills", skillId);
+        if (!fs.existsSync(target)) {
+          skillResults.push({ id: skillId, status: "absent" });
+          continue;
+        }
+        const shared = sharedByOtherPack((p) => Array.isArray(p.skills) && p.skills.includes(skillId));
+        if (shared) {
+          skillResults.push({ id: skillId, status: "kept-shared" });
+        } else {
+          fs.rmSync(target, { recursive: true, force: true });
+          skillResults.push({ id: skillId, status: "removed" });
+        }
+      }
+      results.skills = skillResults;
+
+      // MCP server.
+      if (packMcp) {
+        const mcpPath = path.join(root, ".mcp.json");
+        const existing = this._readMcpConfig(mcpPath);
+        if (!hasMcpServer(existing, packMcp)) {
+          results.mcp = "absent";
+        } else if (sharedByOtherPack((p) => p.mcp === packMcp)) {
+          results.mcp = "kept-shared";
+        } else {
+          const updated = removeMcpServer(existing, packMcp);
+          fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
+          results.mcp = "removed";
+        }
+      }
+
+      // Agents (pack-specific — always removed).
+      const agentResults: Array<{ id: string; status: "removed" | "absent" }> = [];
+      let cfg = this._readKeywordsConfig(root);
+      for (const a of packAgents) {
+        const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
+        if (fs.existsSync(agentPath)) {
+          fs.unlinkSync(agentPath);
+          agentResults.push({ id: a.id, status: "removed" });
+        } else {
+          agentResults.push({ id: a.id, status: "absent" });
+        }
+        if (cfg && typeof cfg.agents === "object" && cfg.agents !== null && a.id in cfg.agents) {
+          const nextAgents = { ...cfg.agents };
+          delete nextAgents[a.id];
+          cfg = { ...cfg, agents: nextAgents };
+        }
+      }
+      results.agents = agentResults;
+      const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+      try {
+        fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+        fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+      } catch {
+        /* best-effort: keywords file is non-critical for removal */
+      }
+
+      this._panel.webview.postMessage({ type: "packRemoved", id, ok: true, results });
+      // Refresh installed state the same way install paths do.
+      this._handleGetPacks();
+      this._handleGetSkills();
+      this._handleGetMcp();
+    } catch (e) {
+      this._panel.webview.postMessage({ type: "packRemoved", id, ok: false, error: String(e) });
     }
   }
 
