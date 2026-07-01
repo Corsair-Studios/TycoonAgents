@@ -1495,7 +1495,7 @@
     build:     { frames: [5, 6, 7, 8],     fps: 6,  loop: true,  flippable: true },
     tool_idle: { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
     shoot:     { frames: [10, 11],         fps: 8,  loop: false, flippable: true,  pingpong: true },
-    dance:     { frames: [17, 18],         fps: 6,  loop: true,  flippable: false, pingpong: true },
+    dance:     { frames: [17, 18, 19],     fps: 6,  loop: true,  flippable: false, pingpong: true },
     cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
     point:     { frames: [12],             fps: 0,  loop: true,  flippable: true,  hold: true },
     signal:    { frames: [13],             fps: 0,  loop: true,  flippable: false, hold: true },
@@ -1677,6 +1677,41 @@
   let themeRosterAgents = [];
   /** Seconds elapsed since the last wave was cleared/started. */
   let enemySpawnElapsed = 0;
+
+  // ── Idle festivity: solo dance + rare conga line (native-space, no host telemetry) ──
+  /** Chance, per idle wander-decision, that an idle agent breaks into a solo dance. */
+  const DANCE_CHANCE = 0.06;
+  /** How long (seconds) a solo dance lasts. */
+  const DANCE_SECONDS = 5;
+  /** Seconds between dance-frame swaps (manual frame mixer). */
+  const DANCE_FRAME_SWAP = 0.35;
+
+  /** True while a conga line is snaking around the perimeter. */
+  let congaActive = false;
+  /** Seconds remaining in the current conga run. */
+  let congaTimeLeft = 0;
+  /** Accumulator (seconds) toward the next conga eligibility check. */
+  let congaCheckTimer = 0;
+  /** Cooldown (seconds) remaining before another conga may start. */
+  let congaCooldown = 0;
+  /** Perimeter waypoints (native coords) the leader follows. */
+  let congaWaypoints = [];
+  /** Stable agent-id order forming the line (index 0 = leader). */
+  let congaOrder = [];
+  /** Leader's current target waypoint index into congaWaypoints. */
+  let congaWaypointIdx = 0;
+  /** Seconds between conga eligibility rolls. */
+  const CONGA_CHECK_SECONDS = 60;
+  /** Chance per eligibility check that a conga starts (~once per ~10h). */
+  const CONGA_CHANCE = 0.0015;
+  /** How long (seconds) a conga run lasts. */
+  const CONGA_SECONDS = 25;
+  /** Cooldown (seconds) after a conga ends before another may start. */
+  const CONGA_COOLDOWN_SECONDS = 3600;
+  /** Trailing distance (native px) each follower keeps behind the one ahead. */
+  const CONGA_TRAIL = 36;
+  /** Per-second chance a conga member flashes a celebratory cheer frame. */
+  const CONGA_CHEER_CHANCE_PER_SEC = 0.05;
   /**
    * Currently alive enemies. Each: {instance_id, rival_id, nx, ny, hp, maxHp,
    * facingLeft, animState, targetAgentId}.
@@ -2124,7 +2159,7 @@
 
   /**
    * 12 preset home slots spread across the floor polygon bounding box
-   * in a 3-row diagonal grid layout (like OfficeAgents).
+   * in a 3-row diagonal grid layout.
    * Returned as [u,v] fractions (0..1) within the polygon bbox.
    * @type {number[][]}
    */
@@ -4735,6 +4770,7 @@
     const activeObjId = buildBuiltCount < buildQueue.length ? buildQueue[buildBuiltCount] : null;
     if (!activeObjId) return; // all built
     if (enemiesAlive) return; // enemy preemption pauses building
+    if (congaActive) return; // conga easter-egg pauses building (like enemies)
     if (!buildProgressBuilderPresent) return; // no one actively building right now
     buildCurrentProgress += delta / BUILD_SECONDS;
     if (buildCurrentProgress >= 1) {
@@ -4833,6 +4869,84 @@
       spawnEnemyWave();
       enemySpawnElapsed = 0;
     }
+  }
+
+  /**
+   * Build the perimeter waypoint loop (native coords) from the walkable
+   * polygon vertices, inserting a midpoint on any edge longer than ~150px so
+   * the leader tracks the boundary smoothly on long straight runs.
+   * @returns {number[][]}
+   */
+  function buildCongaWaypoints() {
+    const pts = [];
+    const n = walkablePolygon.length;
+    if (n < 3) return pts;
+    for (let i = 0; i < n; i++) {
+      const a = walkablePolygon[i];
+      const b = walkablePolygon[(i + 1) % n];
+      pts.push([a[0], a[1]]);
+      const ex = b[0] - a[0], ey = b[1] - a[1];
+      if (Math.sqrt(ex * ex + ey * ey) > 150) {
+        pts.push([a[0] + ex * 0.5, a[1] + ey * 0.5]);
+      }
+    }
+    return pts;
+  }
+
+  /**
+   * Advance the ultra-rare conga-line easter egg. Called once per frame.
+   * When idle, rolls a tiny chance each CONGA_CHECK_SECONDS to start a line;
+   * while active, snakes agents around the perimeter and ends after
+   * CONGA_SECONDS, then enters a long cooldown. No host telemetry involved.
+   * @param {number} delta seconds
+   * @param {Array<object>} agentList current agentMetrics list
+   */
+  function updateConga(delta, agentList) {
+    if (congaCooldown > 0) congaCooldown = Math.max(0, congaCooldown - delta);
+
+    if (congaActive) {
+      congaTimeLeft -= delta;
+      if (congaTimeLeft <= 0) {
+        // End the conga: cooldown + clear per-agent assignments.
+        congaActive = false;
+        congaTimeLeft = 0;
+        congaCooldown = CONGA_COOLDOWN_SECONDS;
+        for (const id of Object.keys(agentCharMap)) {
+          const e = agentCharMap[id];
+          e.congaIndex = -1;
+          e.congaCheerLeft = 0;
+          e.dancing = false;
+          e.danceTimeLeft = 0;
+        }
+        congaOrder = [];
+        congaWaypoints = [];
+        congaWaypointIdx = 0;
+      }
+      return;
+    }
+
+    congaCheckTimer += delta;
+    if (congaCheckTimer < CONGA_CHECK_SECONDS) return;
+    congaCheckTimer = 0;
+    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0) return;
+    if (Math.random() >= CONGA_CHANCE) return;
+
+    // Start a conga.
+    congaWaypoints = buildCongaWaypoints();
+    if (congaWaypoints.length < 3) return;
+    congaOrder = agentList.map((a) => a.id);
+    congaWaypointIdx = 0;
+    let order = 0;
+    for (const id of congaOrder) {
+      const e = agentCharMap[id];
+      if (!e) continue;
+      e.congaIndex = order++;
+      e.congaCheerLeft = 0;
+      e.dancing = false;
+      e.danceTimeLeft = 0;
+    }
+    congaActive = true;
+    congaTimeLeft = CONGA_SECONDS;
   }
 
   /**
@@ -4963,6 +5077,7 @@
     if (!loadingActive && themeLoaded) {
       updateEnemySpawning(delta, agentList);
       advanceEnemies(delta);
+      updateConga(delta, agentList);
     }
     const enemiesAlive = activeEnemies.length > 0;
     // Reset engagement claims each frame; agents re-claim the nearest enemy below.
@@ -5065,6 +5180,14 @@
           prevX: 0,
           animState: createAnimState(worker ? workerStateToClip(worker.state) : "idle"),
           facingLeft: false,
+          // Solo-dance state (manual frame mixer).
+          dancing: false,
+          danceTimeLeft: 0,
+          danceFrameTimer: 0,
+          lastDanceIdx: -1,
+          // Conga-line state (assigned/cleared by updateConga).
+          congaIndex: -1,
+          congaCheerLeft: 0,
         };
       }
       const charEntry = agentCharMap[agent.id];
@@ -5077,6 +5200,46 @@
       const isActive = isMetricsAgentActive(agent);
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
+      // ── Conga line (ultra-rare easter egg) ───────────────────────────
+      // While a conga is active and this agent is enrolled, it fully preempts
+      // engage/build/wander/dance: the agent snakes around the perimeter as
+      // part of the line. Movement target is resolved here; the shared "step
+      // toward destination" block below actually moves it.
+      const inConga = congaActive && charEntry.congaIndex >= 0 && congaWaypoints.length >= 3;
+      if (inConga) {
+        // A conga member never dances.
+        charEntry.dancing = false;
+        charEntry.danceTimeLeft = 0;
+        if (charEntry.congaIndex === 0) {
+          // Leader: chase the current waypoint; advance on arrival (wrap).
+          const wp = congaWaypoints[congaWaypointIdx % congaWaypoints.length];
+          const wdx = wp[0] - charEntry.nx, wdy = wp[1] - charEntry.ny;
+          if (Math.sqrt(wdx * wdx + wdy * wdy) <= WANDER_ARRIVED_EPS + 2) {
+            congaWaypointIdx = (congaWaypointIdx + 1) % congaWaypoints.length;
+          }
+          const nwp = congaWaypoints[congaWaypointIdx % congaWaypoints.length];
+          charEntry.destNx = nwp[0];
+          charEntry.destNy = nwp[1];
+        } else {
+          // Follower: trail the agent ahead (already updated this frame) by
+          // CONGA_TRAIL native px along the line toward it.
+          const aheadId = congaOrder[charEntry.congaIndex - 1];
+          const ahead = aheadId ? agentCharMap[aheadId] : null;
+          if (ahead) {
+            const adx = ahead.nx - charEntry.nx, ady = ahead.ny - charEntry.ny;
+            const ad = Math.sqrt(adx * adx + ady * ady) || 1;
+            charEntry.destNx = ahead.nx - (adx / ad) * CONGA_TRAIL;
+            charEntry.destNy = ahead.ny - (ady / ad) * CONGA_TRAIL;
+          }
+        }
+        // Cheer flash: per-second chance (scaled by delta) to briefly celebrate.
+        if (charEntry.congaCheerLeft > 0) {
+          charEntry.congaCheerLeft = Math.max(0, charEntry.congaCheerLeft - delta);
+        } else if (Math.random() < CONGA_CHEER_CHANCE_PER_SEC * delta) {
+          charEntry.congaCheerLeft = 0.5;
+        }
+      }
+
       // ── EVICT combat targeting (Phase 2b) ────────────────────────────
       // While any enemy is alive, active agents STOP building/wandering and
       // instead engage the nearest alive enemy: walk to melee range, then
@@ -5084,7 +5247,7 @@
       // (isBuilding stays false so build standoff logic never runs).
       let isEngaging = false;
       let engageInRange = false;
-      if (isActive && enemiesAlive) {
+      if (!inConga && isActive && enemiesAlive) {
         let nearest = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
           const ddx = en.nx - charEntry.nx, ddy = en.ny - charEntry.ny;
@@ -5119,7 +5282,7 @@
       // built) are untouched — they keep the wander path exactly as before.
       // Suppressed entirely while engaging an enemy (Phase 2b preemption).
       let isBuilding = false;
-      if (!isEngaging && isActive && activeBuildPlacement) {
+      if (!inConga && !isEngaging && isActive && activeBuildPlacement) {
         // Alternate standoff side among builders assigned this frame.
         const side = (builderSideCounter++ % 2 === 0) ? -1 : 1;
         const ax = activeBuildPlacement.nx;
@@ -5133,37 +5296,89 @@
         charEntry.destNy = standoff[1];
         charEntry.buildTargetId = activeBuildObj.object_id;
         isBuilding = true;
-      } else if (!isEngaging) {
+      } else if (!isEngaging && !inConga) {
         charEntry.buildTargetId = null;
       }
 
-      // ── Wander logic (native polygon space) ───────────────────────
-      charEntry.wanderTimer -= delta;
-      if (!isBuilding && !isEngaging && charEntry.wanderTimer <= 0) {
-        // Pick new destination: active agents roam freely; idle agents stay near home.
-        let dest;
-        if (isActive) {
-          dest = randomInsidePoly(walkablePolygon);
+      // ── Solo dance (rare idle festivity) ──────────────────────────
+      // An idle, stationary agent may randomly break into a short dance. It
+      // is fully preempted by conga/engage/build. While dancing it holds
+      // position and a manual frame mixer swaps the three dance frames.
+      const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga;
+      if (charEntry.dancing) {
+        if (!idleAndStill) {
+          // Something took priority (went active / conga / enemy) — stop.
+          charEntry.dancing = false;
+          charEntry.danceTimeLeft = 0;
         } else {
-          // Jitter around home within WANDER_RADIUS; clamp inside polygon.
-          const angle = Math.random() * Math.PI * 2;
-          const r = Math.random() * WANDER_RADIUS * 0.5;
-          const tx = charEntry.homeNx + Math.cos(angle) * r;
-          const ty = charEntry.homeNy + Math.sin(angle) * r;
-          dest = clampToPolygon(tx, ty, walkablePolygon);
+          charEntry.danceTimeLeft -= delta;
+          if (charEntry.danceTimeLeft <= 0) {
+            charEntry.dancing = false;
+            charEntry.danceTimeLeft = 0;
+          } else {
+            // Frame mixer: swap dance frame, never the same one twice in a row.
+            charEntry.danceFrameTimer -= delta;
+            if (charEntry.danceFrameTimer <= 0) {
+              let idx = Math.floor(Math.random() * 3); // 0,1,2 -> slots 17,18,19
+              if (idx === charEntry.lastDanceIdx) idx = (idx + 1) % 3;
+              charEntry.lastDanceIdx = idx;
+              const a = charEntry.animState;
+              a.action = "dance";
+              a.frameIndex = idx;
+              a.direction = 1;
+              a.elapsed = 0;
+              a.completed = false;
+              charEntry.danceFrameTimer = DANCE_FRAME_SWAP;
+            }
+          }
         }
-        charEntry.destNx = dest[0];
-        charEntry.destNy = dest[1];
-        charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
+      }
+
+      // ── Wander logic (native polygon space) ───────────────────────
+      // Dancing agents hold position (no wander). Conga members are driven
+      // by updateConga's destination assignment above.
+      if (!inConga) charEntry.wanderTimer -= delta;
+      if (!inConga && !charEntry.dancing && !isBuilding && !isEngaging && charEntry.wanderTimer <= 0) {
+        // At this idle wander-decision point, an eligible idle agent may
+        // instead start dancing (rare). Otherwise pick a new destination.
+        if (idleAndStill && !congaActive && Math.random() < DANCE_CHANCE) {
+          charEntry.dancing = true;
+          charEntry.danceTimeLeft = DANCE_SECONDS;
+          charEntry.danceFrameTimer = 0;
+          charEntry.lastDanceIdx = -1;
+          // Hold position while dancing.
+          charEntry.destNx = charEntry.nx;
+          charEntry.destNy = charEntry.ny;
+          charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
+        } else {
+          // Pick new destination: active agents roam freely; idle agents stay near home.
+          let dest;
+          if (isActive) {
+            dest = randomInsidePoly(walkablePolygon);
+          } else {
+            // Jitter around home within WANDER_RADIUS; clamp inside polygon.
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.random() * WANDER_RADIUS * 0.5;
+            const tx = charEntry.homeNx + Math.cos(angle) * r;
+            const ty = charEntry.homeNy + Math.sin(angle) * r;
+            dest = clampToPolygon(tx, ty, walkablePolygon);
+          }
+          charEntry.destNx = dest[0];
+          charEntry.destNy = dest[1];
+          charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
+        }
       }
 
       // ── Step toward destination ────────────────────────────────────
+      // Dancing agents hold position (dest == current pos). Conga leader
+      // moves a touch faster so the line snakes; followers use walk speed.
       const dxNative = charEntry.destNx - charEntry.nx;
       const dyNative = charEntry.destNy - charEntry.ny;
       const distNative = Math.sqrt(dxNative * dxNative + dyNative * dyNative);
+      const moveSpeed = (inConga && charEntry.congaIndex === 0) ? WANDER_SPEED * 1.2 : WANDER_SPEED;
       let isMoving = false;
-      if (distNative > WANDER_ARRIVED_EPS) {
-        const step = Math.min(WANDER_SPEED * delta, distNative);
+      if (!charEntry.dancing && distNative > WANDER_ARRIVED_EPS) {
+        const step = Math.min(moveSpeed * delta, distNative);
         charEntry.nx += (dxNative / distNative) * step;
         charEntry.ny += (dyNative / distNative) * step;
         // Clamp inside polygon after movement
@@ -5214,7 +5429,9 @@
         desiredClip = isActive ? "walk" : "idle";
       }
       // Override with walk while physically moving, else use status clip.
-      if (isMoving && desiredClip !== "build" && desiredClip !== "cheer") desiredClip = "walk";
+      // "dance" (like build/cheer) is excluded so a dancing agent's clip is
+      // never clobbered back to walk/idle.
+      if (isMoving && desiredClip !== "build" && desiredClip !== "cheer" && desiredClip !== "dance") desiredClip = "walk";
       else if (!isMoving && (desiredClip === "walk")) desiredClip = "idle";
       // BUILD override: once arrived at the standoff spot for an active
       // build target, force the build clip — never while still walking.
@@ -5228,9 +5445,23 @@
       if (isEngaging) {
         desiredClip = engageInRange ? "melee" : "walk";
       }
+      // CONGA override: line members walk (or briefly cheer) — takes priority
+      // over build/idle since inConga preempted those blocks above.
+      if (inConga) {
+        desiredClip = charEntry.congaCheerLeft > 0 ? "cheer" : "walk";
+      }
+      // DANCE override (highest priority for an idle festivity): a dancing
+      // agent's clip is "dance". Its frameIndex is driven by the manual mixer
+      // above, so DO NOT reset the anim or call advanceAnim below for it.
+      if (charEntry.dancing) {
+        desiredClip = "dance";
+      }
 
       const anim = charEntry.animState;
-      if (anim.action !== desiredClip) {
+      if (charEntry.dancing) {
+        // Manual frame mixer owns anim.action/frameIndex; skip normal advance.
+        anim.action = "dance";
+      } else if (anim.action !== desiredClip) {
         anim.action = desiredClip;
         anim.frameIndex = 0;
         anim.direction = 1;
@@ -5261,7 +5492,9 @@
       if (isBuilding && !isMoving && desiredClip === "build") {
         buildProgressBuilderPresent = true;
       }
-      advanceAnim(anim, delta);
+      // Skip advanceAnim for a dancing agent — the manual frame mixer above
+      // sets frameIndex directly (17/18/19), never the same frame twice.
+      if (!charEntry.dancing) advanceAnim(anim, delta);
     });
 
     // ── Phase 2b: prune dead enemies (hp <= 0). Clearing the floor lets
