@@ -1768,22 +1768,39 @@ export class TycoonPanel {
       // is shown and the install body runs synchronously; we don't await it here.
       void this._handleInstallPack("uefn");
 
-      // Stage the Python bridge.
-      const bridgeSrc = path.join(this._extensionUri.fsPath, "media", "uefn-bridge", "uefn_bridge.py");
-      const bridgeDest = path.join(root, "Content", "Python", "uefn_bridge.py");
-      let bridgeStatus: "staged" | "exists";
-      if (fs.existsSync(bridgeDest)) {
-        bridgeStatus = "exists";
-      } else {
-        fs.mkdirSync(path.dirname(bridgeDest), { recursive: true });
-        fs.copyFileSync(bridgeSrc, bridgeDest);
-        bridgeStatus = "staged";
+      // Stage the Python bridge + Power Tools suite into Content/Python.
+      // Copy every file in media/uefn-bridge EXCEPT the Node MCP server
+      // (uefn-server.mjs lives with the MCP config, not inside UEFN's
+      // Content/Python). A file is copied when it is absent or when its
+      // content differs from the shipped version, so tool updates land
+      // without needlessly rewriting unchanged files.
+      const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+      const pyDest = path.join(root, "Content", "Python");
+      fs.mkdirSync(pyDest, { recursive: true });
+      let staged = 0;
+      let updated = 0;
+      let unchanged = 0;
+      for (const name of fs.readdirSync(bridgeDir)) {
+        if (name === "uefn-server.mjs") continue;
+        const srcPath = path.join(bridgeDir, name);
+        if (!fs.statSync(srcPath).isFile()) continue;
+        const destPath = path.join(pyDest, name);
+        if (!fs.existsSync(destPath)) {
+          fs.copyFileSync(srcPath, destPath);
+          staged++;
+        } else if (!fs.readFileSync(srcPath).equals(fs.readFileSync(destPath))) {
+          fs.copyFileSync(srcPath, destPath);
+          updated++;
+        } else {
+          unchanged++;
+        }
       }
+      const bridgeStatus: "staged" | "exists" = staged + updated > 0 ? "staged" : "exists";
 
       void this._panel.webview.postMessage({
         type: "uefnSetupDone",
         ok: true,
-        results: { pack: "uefn", bridge: bridgeStatus },
+        results: { pack: "uefn", bridge: bridgeStatus, files: { staged, updated, unchanged } },
       });
     } catch (e) {
       void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: String(e) });

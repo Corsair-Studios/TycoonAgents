@@ -1,0 +1,674 @@
+"""
+UEFN Launcher Hub
+==================
+Tkinter-based launcher for all Trashbyrd's Power Tools UEFN Python tools.
+Runs inside UEFN's embedded Python 3.11 (requires ``unreal`` module).
+
+Usage:
+    from uefn_launcher import show_launcher
+    show_launcher()
+"""
+
+import unreal
+import json
+import os
+import datetime
+import webbrowser
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+    _HAS_TKINTER = True
+except ImportError:
+    _HAS_TKINTER = False
+
+
+# ---------------------------------------------------------------------------
+# Theme constants (matching project palette)
+# ---------------------------------------------------------------------------
+
+_BG = "#1e1e2e"
+_SECTION_BG = "#2a2a3e"
+_HEADER_FG = "#e0e0ff"
+_ACCENT_GREEN = "#4caf50"
+_ACCENT_BLUE = "#7ec8e3"
+_TEXT_FG = "#c0c0d0"
+_TEXT_DIM = "#808090"
+_CARD_HOVER = "#353550"
+
+
+# ---------------------------------------------------------------------------
+# Bridge status helpers
+# ---------------------------------------------------------------------------
+
+def _get_bridge_dir():
+    """Return the bridge IPC directory path."""
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "uefn_bridge")
+
+
+def _read_heartbeat():
+    """
+    Read the bridge heartbeat file and return a status dict.
+
+    Returns:
+        dict with keys: connected (bool), status (str), timestamp (str),
+        level_name (str), actor_count (int)
+    """
+    heartbeat_path = os.path.join(_get_bridge_dir(), "heartbeat.json")
+    try:
+        with open(heartbeat_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {
+            "connected": False,
+            "status": "no heartbeat",
+            "timestamp": "",
+            "level_name": "",
+            "actor_count": 0,
+        }
+
+    # Check if heartbeat is recent (within 15 seconds)
+    ts_str = data.get("timestamp", "")
+    connected = False
+    if ts_str and data.get("status") == "running":
+        try:
+            ts = datetime.datetime.fromisoformat(ts_str)
+            age = (datetime.datetime.now() - ts).total_seconds()
+            connected = age < 15.0
+        except Exception:
+            pass
+
+    return {
+        "connected": connected,
+        "status": data.get("status", "unknown"),
+        "timestamp": ts_str,
+        "level_name": data.get("level_name", ""),
+        "actor_count": data.get("actor_count", 0),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions
+# ---------------------------------------------------------------------------
+
+_TOOLS = [
+    {
+        "icon": "\U0001f50d",  # magnifying glass
+        "name": "Device Audit",
+        "description": "Scan devices, inspect connections, view properties",
+        "action": "device_audit",
+    },
+    {
+        "icon": "\U0001f3a8",  # palette
+        "name": "Material Browser",
+        "description": "Browse materials, view textures, find unused",
+        "action": "material_browser",
+    },
+    {
+        "icon": "\u2728",  # sparkles
+        "name": "Niagara Inspector",
+        "description": "Browse VFX systems, find dependencies and usage",
+        "action": "niagara_inspector",
+    },
+    {
+        "icon": "\U0001f5bc",  # framed picture
+        "name": "Texture Explorer",
+        "description": "Browse textures, find references and orphans",
+        "action": "texture_finder",
+    },
+    {
+        "icon": "\U0001f517",  # link
+        "name": "Dependency Viewer",
+        "description": "Visualize asset dependencies, find orphans",
+        "action": "dependency_viewer",
+    },
+    {
+        "icon": "\U0001f3e5",  # hospital
+        "name": "Project Health",
+        "description": "Scan for problematic files on disk",
+        "action": "health_scanner",
+    },
+    {
+        "icon": "\u2328",  # keyboard
+        "name": "Shortcuts",
+        "description": "Common UEFN keyboard shortcuts and hotkeys",
+        "action": "keyboard_shortcuts",
+    },
+    {
+        "icon": "\U0001f4ca",  # bar chart
+        "name": "Level Stats",
+        "description": "Actor counts, class breakdown, device summary",
+        "action": "level_stats",
+    },
+    {
+        "icon": "\U0001f916",  # robot
+        "name": "MCP Bridge",
+        "description": "AI integration commands and compatibility",
+        "action": "mcp_info",
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# MCP Bridge info window
+# ---------------------------------------------------------------------------
+
+def _show_mcp_info():
+    """Open a window showing MCP bridge commands and AI compatibility."""
+    if not _HAS_TKINTER:
+        return
+
+    win = tk.Tk()
+    win.title("Trashbyrd's MCP Bridge")
+    win.geometry("620x780")
+    win.configure(bg=_BG)
+
+    # Style
+    style = ttk.Style(win)
+    style.theme_use("clam")
+    style.configure(".", background=_BG, foreground=_TEXT_FG)
+    style.configure("TFrame", background=_BG)
+    style.configure("TScrollbar", background=_SECTION_BG, troughcolor=_BG, borderwidth=0)
+    style.configure(
+        "MCP.Treeview",
+        background=_SECTION_BG, foreground=_TEXT_FG,
+        fieldbackground=_SECTION_BG, rowheight=20,
+        font=("Consolas", 9),
+    )
+    style.configure(
+        "MCP.Treeview.Heading",
+        background=_BG, foreground=_HEADER_FG,
+        font=("Segoe UI", 9, "bold"), relief="flat",
+    )
+    style.map("MCP.Treeview", background=[("selected", "#3a3a5e")])
+
+    tk.Label(
+        win, text="MCP Bridge Commands",
+        font=("Segoe UI", 14, "bold"), fg=_HEADER_FG, bg=_BG,
+    ).pack(padx=16, pady=(12, 4), anchor=tk.W)
+
+    tk.Label(
+        win,
+        text="These tools are accessible to AI agents via the MCP server.\n"
+             "The bridge runs inside UEFN and communicates via file-based IPC.",
+        font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
+    ).pack(padx=16, pady=(0, 8), anchor=tk.W)
+
+    commands = [
+        ("uefn_status", "Check bridge connectivity"),
+        ("uefn_list_devices", "List all Creative devices with properties"),
+        ("uefn_get_property", "Read a property from an actor"),
+        ("uefn_set_property", "Set a property on an actor"),
+        ("uefn_select_actor", "Select an actor in the UEFN viewport"),
+        ("uefn_run_audit", "Run full device audit"),
+        ("uefn_get_level_info", "Get level metadata"),
+        ("uefn_batch_get", "Read a property from filtered actors"),
+        ("uefn_batch_set", "Set a property on filtered actors"),
+        ("uefn_texture_find", "Find texture references"),
+        ("uefn_texture_summary", "Grouped texture usage summary"),
+        ("uefn_texture_on_actor", "List all textures on an actor"),
+        ("uefn_material_browse", "Browse project materials"),
+        ("uefn_material_unused", "Find unused materials"),
+        ("uefn_niagara_browse", "Browse Niagara VFX systems"),
+        ("uefn_niagara_usage", "Find Niagara usage on actors"),
+        ("uefn_dependency_scan", "Scan asset dependency chains"),
+        ("uefn_health_scan", "Scan for problematic project files"),
+    ]
+
+    cmd_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
+    cmd_frame.pack(fill=tk.X, padx=12, pady=4)
+
+    cmd_tree = ttk.Treeview(
+        cmd_frame, columns=("cmd", "desc"), show="headings",
+        style="MCP.Treeview", height=len(commands),
+    )
+    cmd_tree.heading("cmd", text="Command")
+    cmd_tree.heading("desc", text="Description")
+    cmd_tree.column("cmd", width=200)
+    cmd_tree.column("desc", width=360)
+
+    for cmd_name, desc in commands:
+        cmd_tree.insert("", tk.END, values=(cmd_name, desc))
+
+    cmd_tree.pack(fill=tk.X)
+
+    # Compatible AI section
+    ai_frame = tk.Frame(win, bg=_BG, padx=16, pady=8)
+    ai_frame.pack(fill=tk.X)
+
+    tk.Label(
+        ai_frame, text="Compatible AI Assistants:",
+        font=("Segoe UI", 10, "bold"), fg=_HEADER_FG, bg=_BG,
+    ).pack(anchor=tk.W)
+
+    clients = [
+        ("Claude Code", "Anthropic", "Auto-configured (.mcp.json)"),
+        ("OpenAI Codex CLI", "OpenAI", "MCP via stdio (manual config)"),
+        ("Gemini CLI", "Google", "MCP via stdio (manual config)"),
+        ("Cursor IDE", "Cursor", "Built-in MCP (manual config)"),
+        ("Windsurf", "Codeium", "MCP via config (manual)"),
+        ("VS Code Copilot", "GitHub/Microsoft", "MCP via extension (manual)"),
+    ]
+
+    ai_list_frame = tk.Frame(ai_frame, bg=_SECTION_BG, padx=4, pady=4)
+    ai_list_frame.pack(fill=tk.X, pady=(4, 0))
+
+    ai_tree = ttk.Treeview(
+        ai_list_frame, columns=("client", "provider", "notes"), show="headings",
+        style="MCP.Treeview", height=min(len(clients), 6),
+    )
+    ai_tree.heading("client", text="Client")
+    ai_tree.heading("provider", text="Provider")
+    ai_tree.heading("notes", text="Integration")
+    ai_tree.column("client", width=160)
+    ai_tree.column("provider", width=140)
+    ai_tree.column("notes", width=260)
+
+    for client, provider, notes in clients:
+        ai_tree.insert("", tk.END, values=(client, provider, notes))
+
+    ai_tree.pack(fill=tk.X)
+
+    tk.Label(
+        ai_frame,
+        text="Any MCP-compatible client using stdio transport should work.",
+        font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
+    ).pack(anchor=tk.W, pady=(4, 0))
+
+    # Footer
+    footer = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=2)
+    footer.pack(fill=tk.X, side=tk.BOTTOM)
+    social = tk.Label(footer, text="@thetrashbyrd", font=("Segoe UI", 8),
+                      fg=_ACCENT_BLUE, bg=_SECTION_BG, cursor="hand2")
+    social.pack(side=tk.RIGHT, padx=(0, 4))
+    social.bind("<Button-1>", lambda _e: webbrowser.open("https://x.com/thetrashbyrd"))
+
+    # Tick pump
+    _mcp_tick = [None]
+
+    def _tick(_dt):
+        try:
+            if win.winfo_exists():
+                win.update()
+            else:
+                if _mcp_tick[0]:
+                    unreal.unregister_slate_post_tick_callback(_mcp_tick[0])
+                    _mcp_tick[0] = None
+        except tk.TclError:
+            if _mcp_tick[0]:
+                unreal.unregister_slate_post_tick_callback(_mcp_tick[0])
+                _mcp_tick[0] = None
+        except Exception:
+            pass
+
+    def _on_close():
+        if _mcp_tick[0]:
+            unreal.unregister_slate_post_tick_callback(_mcp_tick[0])
+            _mcp_tick[0] = None
+        win.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", _on_close)
+    _mcp_tick[0] = unreal.register_slate_post_tick_callback(_tick)
+
+
+# ---------------------------------------------------------------------------
+# Tool actions
+# ---------------------------------------------------------------------------
+
+def _launch_tool(action):
+    """Launch the tool identified by *action*."""
+    if action == "device_audit":
+        try:
+            import importlib
+            import device_audit
+            importlib.reload(device_audit)
+            device_audit.run_audit()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch device_audit: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Device Audit:\n" + str(e))
+
+    elif action == "material_browser":
+        try:
+            import importlib
+            import material_browser
+            importlib.reload(material_browser)
+            material_browser.show_material_browser()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch material_browser: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Material Browser:\n" + str(e))
+
+    elif action == "texture_finder":
+        try:
+            import importlib
+            import texture_finder
+            importlib.reload(texture_finder)
+            texture_finder.show_texture_finder()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch texture_finder: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Texture Finder:\n" + str(e))
+
+    elif action == "niagara_inspector":
+        try:
+            import importlib
+            import niagara_inspector
+            importlib.reload(niagara_inspector)
+            niagara_inspector.show_niagara_inspector()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch niagara_inspector: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Niagara Inspector:\n" + str(e))
+
+    elif action == "dependency_viewer":
+        try:
+            import importlib
+            import dependency_viewer
+            importlib.reload(dependency_viewer)
+            dependency_viewer.show_dependency_viewer()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch dependency_viewer: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Dependency Viewer:\n" + str(e))
+
+    elif action == "health_scanner":
+        try:
+            import importlib
+            import health_scanner
+            importlib.reload(health_scanner)
+            health_scanner.show_health_scanner()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch health_scanner: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Project Health:\n" + str(e))
+
+    elif action == "keyboard_shortcuts":
+        try:
+            import importlib
+            import keyboard_shortcuts
+            importlib.reload(keyboard_shortcuts)
+            keyboard_shortcuts.show_keyboard_shortcuts()
+        except ModuleNotFoundError:
+            msg = (
+                "keyboard_shortcuts.py is missing from your project's Content/Python/ folder.\n\n"
+                "Re-run the /uefn-bridge install to sync all tool files."
+            )
+            unreal.log_warning("uefn_launcher: keyboard_shortcuts module not found — " + msg)
+            if _HAS_TKINTER:
+                messagebox.showerror("Missing Module", msg)
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch keyboard_shortcuts: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Shortcuts:\n" + str(e))
+
+    elif action == "level_stats":
+        try:
+            import importlib
+            import level_stats
+            importlib.reload(level_stats)
+            level_stats.show_level_stats()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch level_stats: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Level Stats:\n" + str(e))
+
+    elif action == "mcp_info":
+        _show_mcp_info()
+
+    else:
+        unreal.log_warning("uefn_launcher: Unknown action: " + str(action))
+
+
+# ---------------------------------------------------------------------------
+# Launcher UI
+# ---------------------------------------------------------------------------
+
+def show_launcher():
+    """Create and display the launcher hub window."""
+    if not _HAS_TKINTER:
+        unreal.log_error("uefn_launcher: tkinter is not available.")
+        return
+
+    root = tk.Tk()
+    root.title("Trashbyrd's Power Tools")
+    root.geometry("720x580")
+    root.configure(bg=_BG)
+    root.resizable(True, True)
+
+    # ==================================================================
+    # Load branding image (trashbyrd_40x40.png next to this script)
+    # ==================================================================
+    _logo_img = None
+    try:
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _logo_path = os.path.join(_script_dir, "trashbyrd_40x40.png")
+        if os.path.isfile(_logo_path):
+            _logo_img = tk.PhotoImage(file=_logo_path, master=root)
+    except Exception:
+        pass  # image not available — skip silently
+
+    # ==================================================================
+    # Title bar area
+    # ==================================================================
+    title_frame = tk.Frame(root, bg=_BG, padx=16, pady=12)
+    title_frame.pack(fill=tk.X)
+
+    # Logo in title (keep reference on widget to prevent GC)
+    if _logo_img:
+        title_logo = tk.Label(title_frame, image=_logo_img, bg=_BG, cursor="hand2")
+        title_logo._img_ref = _logo_img
+        title_logo.pack(side=tk.LEFT, padx=(0, 10))
+        title_logo.bind("<Button-1>", lambda _e: webbrowser.open("https://x.com/thetrashbyrd"))
+
+    title_label = tk.Label(
+        title_frame,
+        text="Trashbyrd's Power Tools",
+        font=("Segoe UI", 16, "bold"),
+        fg=_HEADER_FG,
+        bg=_BG,
+    )
+    title_label.pack(side=tk.LEFT)
+
+    # Bridge status indicator (dot + text)
+    status_frame = tk.Frame(title_frame, bg=_BG)
+    status_frame.pack(side=tk.RIGHT)
+
+    status_dot = tk.Canvas(status_frame, width=14, height=14, bg=_BG, highlightthickness=0)
+    status_dot.pack(side=tk.LEFT, padx=(0, 6))
+    _dot_id = status_dot.create_oval(2, 2, 12, 12, fill="gray", outline="")
+
+    status_text = tk.Label(
+        status_frame,
+        text="Checking...",
+        font=("Segoe UI", 9),
+        fg=_TEXT_DIM,
+        bg=_BG,
+    )
+    status_text.pack(side=tk.LEFT)
+
+    # ==================================================================
+    # Tool cards area
+    # ==================================================================
+    cards_frame = tk.Frame(root, bg=_BG, padx=16, pady=4)
+    cards_frame.pack(fill=tk.BOTH, expand=True)
+
+    # Configure grid for 3-column layout
+    cards_frame.columnconfigure(0, weight=1)
+    cards_frame.columnconfigure(1, weight=1)
+    cards_frame.columnconfigure(2, weight=1)
+
+    for idx, tool in enumerate(_TOOLS):
+        row = idx // 3
+        col = idx % 3
+
+        card = tk.Frame(
+            cards_frame,
+            bg=_SECTION_BG,
+            padx=12,
+            pady=10,
+            cursor="hand2",
+            highlightbackground="#3a3a50",
+            highlightthickness=1,
+        )
+        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+        cards_frame.rowconfigure(row, weight=1)
+
+        icon_label = tk.Label(
+            card,
+            text=tool["icon"],
+            font=("Segoe UI", 22),
+            bg=_SECTION_BG,
+            fg=_HEADER_FG,
+        )
+        icon_label.pack(anchor=tk.W, pady=(0, 4))
+
+        name_label = tk.Label(
+            card,
+            text=tool["name"],
+            font=("Segoe UI", 11, "bold"),
+            fg=_HEADER_FG,
+            bg=_SECTION_BG,
+            anchor=tk.W,
+        )
+        name_label.pack(fill=tk.X)
+
+        desc_label = tk.Label(
+            card,
+            text=tool["description"],
+            font=("Segoe UI", 9),
+            fg=_TEXT_DIM,
+            bg=_SECTION_BG,
+            anchor=tk.W,
+            wraplength=140,
+        )
+        desc_label.pack(fill=tk.X, pady=(2, 0))
+
+        # Bind click to all widgets in the card
+        action = tool["action"]
+
+        def _make_click_handler(a):
+            return lambda _event: _launch_tool(a)
+
+        handler = _make_click_handler(action)
+        card.bind("<Button-1>", handler)
+        icon_label.bind("<Button-1>", handler)
+        name_label.bind("<Button-1>", handler)
+        desc_label.bind("<Button-1>", handler)
+
+        # Hover effects
+        def _make_enter_handler(c, i, n, d):
+            def _enter(_event):
+                for w in (c, i, n, d):
+                    w.configure(bg=_CARD_HOVER)
+            return _enter
+
+        def _make_leave_handler(c, i, n, d):
+            def _leave(_event):
+                for w in (c, i, n, d):
+                    w.configure(bg=_SECTION_BG)
+            return _leave
+
+        enter_handler = _make_enter_handler(card, icon_label, name_label, desc_label)
+        leave_handler = _make_leave_handler(card, icon_label, name_label, desc_label)
+
+        card.bind("<Enter>", enter_handler)
+        card.bind("<Leave>", leave_handler)
+
+    # ==================================================================
+    # Footer with social link (bottom right)
+    # ==================================================================
+    footer_frame = tk.Frame(root, bg=_SECTION_BG, padx=8, pady=2)
+    footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+    # @thetrashbyrd on the right (no logo — already in title bar)
+    footer_social = tk.Label(
+        footer_frame,
+        text="@thetrashbyrd",
+        font=("Segoe UI", 8),
+        fg=_ACCENT_BLUE,
+        bg=_SECTION_BG,
+        cursor="hand2",
+    )
+    footer_social.pack(side=tk.RIGHT, padx=(0, 4))
+    footer_social.bind("<Button-1>", lambda _e: webbrowser.open("https://x.com/thetrashbyrd"))
+
+    # ==================================================================
+    # Status bar at bottom (above footer)
+    # ==================================================================
+    statusbar_frame = tk.Frame(root, bg=_SECTION_BG, padx=12, pady=6)
+    statusbar_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+    statusbar_label = tk.Label(
+        statusbar_frame,
+        text="Bridge: checking...",
+        font=("Segoe UI", 8),
+        fg=_TEXT_DIM,
+        bg=_SECTION_BG,
+        anchor=tk.W,
+    )
+    statusbar_label.pack(fill=tk.X)
+
+    # ==================================================================
+    # Periodic bridge status update
+    # ==================================================================
+    def _update_status():
+        hb = _read_heartbeat()
+        if hb["connected"]:
+            status_dot.itemconfig(_dot_id, fill=_ACCENT_GREEN)
+            status_text.config(text="Bridge connected", fg=_ACCENT_GREEN)
+            bar_text = (
+                "Bridge: connected | Level: {level} | Actors: {actors} | "
+                "Last heartbeat: {ts}"
+            ).format(
+                level=hb["level_name"] or "?",
+                actors=hb["actor_count"],
+                ts=hb["timestamp"][:19] if hb["timestamp"] else "?",
+            )
+        else:
+            status_dot.itemconfig(_dot_id, fill="#e74c3c")
+            status_text.config(text="Bridge disconnected", fg="#e74c3c")
+            bar_text = "Bridge: disconnected"
+            if hb["status"] == "stopped":
+                bar_text += " (stopped)"
+            elif hb["status"] == "no heartbeat":
+                bar_text += " (no heartbeat file)"
+
+        statusbar_label.config(text=bar_text)
+
+        # Schedule next check in 5 seconds
+        try:
+            root.after(5000, _update_status)
+        except tk.TclError:
+            pass  # window was closed
+
+    # Run initial status check
+    _update_status()
+
+    # ==================================================================
+    # Tick callback -- pump tkinter from the Unreal event loop
+    # ==================================================================
+    _tick_handle = [None]
+
+    def _tick_pump(delta_time):
+        try:
+            root.update()
+        except tk.TclError:
+            # Window was closed -- unregister the tick callback
+            if _tick_handle[0] is not None:
+                unreal.unregister_slate_post_tick_callback(_tick_handle[0])
+                _tick_handle[0] = None
+
+    _tick_handle[0] = unreal.register_slate_post_tick_callback(_tick_pump)
+
+    # Clean close via the X button
+    def _on_close():
+        if _tick_handle[0] is not None:
+            unreal.unregister_slate_post_tick_callback(_tick_handle[0])
+            _tick_handle[0] = None
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
+
+    unreal.log("uefn_launcher: Launcher window opened.")

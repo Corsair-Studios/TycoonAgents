@@ -3092,7 +3092,7 @@
 
   /**
    * Handle the uefnSetupDone message from the host.
-   * @param {{ok:boolean, results?:{pack:string, bridge:"staged"|"exists"}, error?:string}} msg
+   * @param {{ok:boolean, results?:{pack:string, bridge:"staged"|"exists", files?:{staged:number,updated:number,unchanged:number}}, error?:string}} msg
    */
   function handleUefnSetupDone(msg) {
     const card = document.getElementById("uefn-prompt-card");
@@ -3107,7 +3107,12 @@
       lines.push("Agents: Verse Expert + Auditor installed");
       lines.push("Skill: uefn");
       lines.push("MCP: uefn-bridge");
-      lines.push("Content/Python/uefn_bridge.py: " + r.bridge);
+      lines.push("Content/Python (bridge + tools): " + r.bridge);
+      if (r.files) {
+        lines.push(
+          "  " + r.files.staged + " new, " + r.files.updated + " updated, " + r.files.unchanged + " unchanged"
+        );
+      }
       if (body) body.textContent = lines.join("\n");
     } else {
       if (body) body.textContent = "Setup failed: " + (msg.error || "unknown error");
