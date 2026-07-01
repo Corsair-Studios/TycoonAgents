@@ -147,6 +147,12 @@ _TOOLS = [
         "description": "AI integration commands and compatibility",
         "action": "mcp_info",
     },
+    {
+        "icon": "\U0001f9f9",  # broom
+        "name": "Dead Asset Sweep",
+        "description": "Find unreferenced assets across all types, estimate reclaimable size",
+        "action": "asset_sweep",
+    },
 ]
 
 
@@ -214,6 +220,7 @@ def _show_mcp_info():
         ("uefn_niagara_usage", "Find Niagara usage on actors"),
         ("uefn_dependency_scan", "Scan asset dependency chains"),
         ("uefn_health_scan", "Scan for problematic project files"),
+        ("uefn_asset_sweep", "Find unreferenced assets across all types"),
     ]
 
     cmd_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
@@ -417,6 +424,17 @@ def _launch_tool(action):
     elif action == "mcp_info":
         _show_mcp_info()
 
+    elif action == "asset_sweep":
+        try:
+            import importlib
+            import asset_sweep
+            importlib.reload(asset_sweep)
+            asset_sweep.show_asset_sweep()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch asset_sweep: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Dead Asset Sweep:\n" + str(e))
+
     else:
         unreal.log_warning("uefn_launcher: Unknown action: " + str(action))
 
@@ -431,9 +449,13 @@ def show_launcher():
         unreal.log_error("uefn_launcher: tkinter is not available.")
         return
 
+    import math
+    _rows = math.ceil(len(_TOOLS) / 3)
+    _win_height = 150 + _rows * 150
+
     root = tk.Tk()
     root.title("Trashbyrd's Power Tools")
-    root.geometry("720x580")
+    root.geometry("720x{}".format(_win_height))
     root.configure(bg=_BG)
     root.resizable(True, True)
 
