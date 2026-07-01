@@ -1730,6 +1730,16 @@
   const FACING_DEADZONE = 0.5;
 
   /**
+   * Larger horizontal deadzone (native px) used for TARGET-facing during
+   * combat: when an enemy holds position and attacks an agent (or an agent
+   * engages an enemy) that is nearly directly above/below it, the tiny
+   * frame-to-frame horizontal jitter would flip the sprite left/right every
+   * frame (an in-place mirror-blur). Only re-face the target once the
+   * horizontal offset clears this band; otherwise keep the current facing.
+   */
+  const ATTACK_FACING_DEADZONE = 4;
+
+  /**
    * object_id of the "ranged weapon rack" — the buildable with build_order 0
    * (themeBuildables[0] after the ascending build_order sort). Captured at
    * THEME_INITIALIZED; null if the theme has no buildables. Building THIS
@@ -5811,8 +5821,13 @@
         continue;
       }
 
-      // Face the target.
-      en.facingLeft = targetEnt.nx < en.nx;
+      // Face the target — but only re-face when the horizontal offset clears
+      // ATTACK_FACING_DEADZONE. When the target is nearly directly above/below
+      // (near-vertical), keep the current facing so the sprite doesn't rapid-
+      // flip/mirror-blur in place every frame.
+      if (Math.abs(targetEnt.nx - en.nx) > ATTACK_FACING_DEADZONE) {
+        en.facingLeft = targetEnt.nx < en.nx;
+      }
 
       // Enemies have only two clips: "walk" and "attack". Both melee (up-close)
       // and ranged (at distance) engagement use the same 2-frame attack clip;
@@ -6467,9 +6482,13 @@
       // priority over build-facing and movement-facing.
       const engagedEnemy = isEngaging ? activeEnemies.find((e) => e.instance_id === charEntry.combatTargetInstanceId) : null;
       if (isEngaging && engagedEnemy) {
-        const enCanvasPt = nativeToCanvas(engagedEnemy.nx, engagedEnemy.ny, bgX, bgY, bgW, bgH);
-        if (cx > enCanvasPt[0] + FACING_EPS) charEntry.facingLeft = true;
-        else if (cx < enCanvasPt[0] - FACING_EPS) charEntry.facingLeft = false;
+        // Face the enemy — but only re-face when the horizontal offset clears
+        // ATTACK_FACING_DEADZONE (native px). When the enemy is nearly directly
+        // above/below, keep the current facing so the agent doesn't rapid-flip
+        // in place every frame (mirror-blur).
+        if (Math.abs(engagedEnemy.nx - charEntry.nx) > ATTACK_FACING_DEADZONE) {
+          charEntry.facingLeft = engagedEnemy.nx < charEntry.nx;
+        }
       } else if (isBuilding && activeBuildPlacement) {
         // While actively walking to/standing at a build target, face the
         // object directly instead of relying on movement-inferred facing
@@ -6789,18 +6808,48 @@
           ctx.fillStyle = "#e0e0e0";
           ctx.font = `${labelFont}px monospace`;
           ctx.textAlign = "center";
-          const label = (agent.name || agent.id).slice(0, 12);
+          const label = (agent.name || agent.id).slice(0, 24);
+          // Word-wrap: greedily pack whitespace-separated words into lines that
+          // fit maxLabelW so long names ("VS Code Integration", "Search &
+          // Retrieval") stack onto 2-3 centered lines instead of clipping.
+          const maxLabelW = Math.max(72, spriteSize * 1.6);
+          const labelWords = label.split(/\s+/).filter(function (wd) { return wd.length > 0; });
+          const labelLines = [];
+          if (labelWords.length === 0) {
+            labelLines.push(label);
+          } else {
+            let curLine = labelWords[0];
+            for (let li = 1; li < labelWords.length; li++) {
+              const candidate = curLine + " " + labelWords[li];
+              if (ctx.measureText(candidate).width <= maxLabelW) {
+                curLine = candidate;
+              } else {
+                labelLines.push(curLine);
+                curLine = labelWords[li];
+              }
+            }
+            labelLines.push(curLine);
+          }
+          const labelLineH = labelFont + 1;
           const labelY = cy + Math.round(14 * depthScale);
-          ctx.fillText(label, cx, labelY);
+          // Widest line drives the active-light offset.
+          let widestLineW = 0;
+          for (let li = 0; li < labelLines.length; li++) {
+            const lw = ctx.measureText(labelLines[li]).width;
+            if (lw > widestLineW) widestLineW = lw;
+          }
+          for (let li = 0; li < labelLines.length; li++) {
+            ctx.fillText(labelLines[li], cx, labelY + li * labelLineH);
+          }
 
           // Active indicator: a small glowing green light immediately to the
-          // LEFT of the name text (reads as "this agent, working") instead of
-          // floating by the head.
+          // LEFT of the (widest) name line so it still reads as "left of the
+          // name" (reads as "this agent, working") instead of floating by the
+          // head. Vertically centered on the first line.
           if (charEntry.isActive) {
-            const labelW = ctx.measureText(label).width;
             const lightR = Math.max(2, 2.6 * depthScale);
-            const lightX = cx - labelW / 2 - lightR - 3;
-            const lightY = labelY - labelFont * 0.32; // vertical-center on the text
+            const lightX = cx - widestLineW / 2 - lightR - 3;
+            const lightY = labelY - labelFont * 0.32; // vertical-center on first line
             ctx.save();
             ctx.shadowColor = "#39ff14";
             ctx.shadowBlur = 5;
