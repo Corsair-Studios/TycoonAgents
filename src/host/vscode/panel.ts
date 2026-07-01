@@ -1768,43 +1768,135 @@ export class TycoonPanel {
       // is shown and the install body runs synchronously; we don't await it here.
       void this._handleInstallPack("uefn");
 
-      // Stage the Python bridge + Power Tools suite into Content/Python.
-      // Copy every file in media/uefn-bridge EXCEPT the Node MCP server
-      // (uefn-server.mjs lives with the MCP config, not inside UEFN's
-      // Content/Python). A file is copied when it is absent or when its
-      // content differs from the shipped version, so tool updates land
-      // without needlessly rewriting unchanged files.
+      // Stage the Python bridge + Power Tools suite into every location UEFN
+      // may load Python from. CRUCIAL: UEFN loads the bridge from the Fortnite
+      // ENGINE install's FortniteGame/Content/Python — that copy wins on
+      // sys.path over the project's own Content/Python — so staging only the
+      // project folder has NO effect on the running tools. Stage into BOTH the
+      // project (harmless / future-proof) and every discovered Fortnite engine
+      // Python dir. Engine writes may fail without admin; that is non-fatal and
+      // reported per-location.
       const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
-      const pyDest = path.join(root, "Content", "Python");
-      fs.mkdirSync(pyDest, { recursive: true });
-      let staged = 0;
-      let updated = 0;
-      let unchanged = 0;
-      for (const name of fs.readdirSync(bridgeDir)) {
-        if (name === "uefn-server.mjs") continue;
-        const srcPath = path.join(bridgeDir, name);
-        if (!fs.statSync(srcPath).isFile()) continue;
-        const destPath = path.join(pyDest, name);
-        if (!fs.existsSync(destPath)) {
-          fs.copyFileSync(srcPath, destPath);
-          staged++;
-        } else if (!fs.readFileSync(srcPath).equals(fs.readFileSync(destPath))) {
-          fs.copyFileSync(srcPath, destPath);
-          updated++;
-        } else {
-          unchanged++;
+
+      const targets: Array<{ label: string; dir: string }> = [
+        { label: "project", dir: path.join(root, "Content", "Python") },
+      ];
+      for (const engineDir of this._findFortnitePythonDirs()) {
+        targets.push({ label: "engine", dir: engineDir });
+      }
+
+      const locations: Array<{
+        label: string; dir: string;
+        staged: number; updated: number; unchanged: number; error?: string;
+      }> = [];
+      let totalWritten = 0;
+      let engineFound = false;
+      for (const t of targets) {
+        if (t.label === "engine") engineFound = true;
+        try {
+          const r = this._stageBridgeTo(bridgeDir, t.dir);
+          locations.push({ label: t.label, dir: t.dir, ...r });
+          totalWritten += r.staged + r.updated;
+        } catch (e) {
+          locations.push({ label: t.label, dir: t.dir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
         }
       }
-      const bridgeStatus: "staged" | "exists" = staged + updated > 0 ? "staged" : "exists";
+      const bridgeStatus: "staged" | "exists" = totalWritten > 0 ? "staged" : "exists";
 
       void this._panel.webview.postMessage({
         type: "uefnSetupDone",
         ok: true,
-        results: { pack: "uefn", bridge: bridgeStatus, files: { staged, updated, unchanged } },
+        results: { pack: "uefn", bridge: bridgeStatus, engineFound, locations },
       });
     } catch (e) {
       void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: String(e) });
     }
+  }
+
+  /**
+   * Copy every bridge file from `bridgeDir` into `pyDest`, except the Node MCP
+   * server (`uefn-server.mjs`), which does not belong in UEFN's Content/Python.
+   * A file is written only when absent or when its content differs, so tool
+   * updates land without needlessly rewriting unchanged files. Creates pyDest.
+   */
+  private _stageBridgeTo(
+    bridgeDir: string,
+    pyDest: string
+  ): { staged: number; updated: number; unchanged: number } {
+    fs.mkdirSync(pyDest, { recursive: true });
+    let staged = 0;
+    let updated = 0;
+    let unchanged = 0;
+    for (const name of fs.readdirSync(bridgeDir)) {
+      if (name === "uefn-server.mjs") continue;
+      const srcPath = path.join(bridgeDir, name);
+      if (!fs.statSync(srcPath).isFile()) continue;
+      const destPath = path.join(pyDest, name);
+      if (!fs.existsSync(destPath)) {
+        fs.copyFileSync(srcPath, destPath);
+        staged++;
+      } else if (!fs.readFileSync(srcPath).equals(fs.readFileSync(destPath))) {
+        fs.copyFileSync(srcPath, destPath);
+        updated++;
+      } else {
+        unchanged++;
+      }
+    }
+    return { staged, updated, unchanged };
+  }
+
+  /**
+   * Discover the Fortnite engine `FortniteGame/Content/Python` director(ies)
+   * that UEFN actually loads bridge modules from. Resolves the install via the
+   * Epic Games Launcher manifests (authoritative), falling back to common
+   * default install locations across drives. Returns only paths whose parent
+   * `FortniteGame/Content` exists (the Python subdir is created on stage).
+   */
+  private _findFortnitePythonDirs(): string[] {
+    const found = new Set<string>();
+    const addFromInstall = (installLoc: string): void => {
+      if (!installLoc) return;
+      const contentBase = path.join(installLoc, "FortniteGame", "Content");
+      try {
+        if (fs.existsSync(contentBase)) {
+          found.add(path.join(contentBase, "Python"));
+        }
+      } catch {
+        /* ignore inaccessible path */
+      }
+    };
+
+    // 1) Epic Games Launcher manifests list every installed app's location.
+    try {
+      const programData = process.env.ProgramData || "C:\\ProgramData";
+      const manifestsDir = path.join(programData, "Epic", "EpicGamesLauncher", "Data", "Manifests");
+      if (fs.existsSync(manifestsDir)) {
+        for (const f of fs.readdirSync(manifestsDir)) {
+          if (!f.toLowerCase().endsWith(".item")) continue;
+          try {
+            const m = JSON.parse(fs.readFileSync(path.join(manifestsDir, f), "utf8"));
+            const label = String(m.DisplayName || m.AppName || m.MandatoryAppFolderName || "");
+            const loc = String(m.InstallLocation || "");
+            if (loc && /fortnite/i.test(`${label} ${loc}`)) {
+              addFromInstall(loc);
+            }
+          } catch {
+            /* skip malformed manifest */
+          }
+        }
+      }
+    } catch {
+      /* manifests unavailable — fall through to defaults */
+    }
+
+    // 2) Fallback: common default install locations.
+    if (found.size === 0) {
+      for (const drive of ["C:", "D:", "E:", "F:"]) {
+        addFromInstall(path.join(`${drive}\\`, "Program Files", "Epic Games", "Fortnite"));
+      }
+    }
+
+    return [...found];
   }
 
   private async _handleDesignDocAction(mode: string): Promise<void> {

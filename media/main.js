@@ -3092,7 +3092,7 @@
 
   /**
    * Handle the uefnSetupDone message from the host.
-   * @param {{ok:boolean, results?:{pack:string, bridge:"staged"|"exists", files?:{staged:number,updated:number,unchanged:number}}, error?:string}} msg
+   * @param {{ok:boolean, results?:{pack:string, bridge:"staged"|"exists", engineFound?:boolean, locations?:Array<{label:string,dir:string,staged:number,updated:number,unchanged:number,error?:string}>}, error?:string}} msg
    */
   function handleUefnSetupDone(msg) {
     const card = document.getElementById("uefn-prompt-card");
@@ -3107,11 +3107,22 @@
       lines.push("Agents: Verse Expert + Auditor installed");
       lines.push("Skill: uefn");
       lines.push("MCP: uefn-bridge");
-      lines.push("Content/Python (bridge + tools): " + r.bridge);
-      if (r.files) {
-        lines.push(
-          "  " + r.files.staged + " new, " + r.files.updated + " updated, " + r.files.unchanged + " unchanged"
-        );
+      if (r.locations && r.locations.length) {
+        lines.push("Bridge staged to:");
+        r.locations.forEach(function (loc) {
+          if (loc.error) {
+            lines.push("  " + loc.label + " (write failed): " + loc.error);
+          } else {
+            lines.push(
+              "  " + loc.label + ": " + loc.staged + " new, " + loc.updated + " updated, " + loc.unchanged + " unchanged"
+            );
+          }
+        });
+        if (r.engineFound === false) {
+          lines.push("  ⚠ Fortnite engine Python dir not found — tools may not load until copied there.");
+        }
+      } else {
+        lines.push("Content/Python (bridge + tools): " + r.bridge);
       }
       if (body) body.textContent = lines.join("\n");
     } else {
