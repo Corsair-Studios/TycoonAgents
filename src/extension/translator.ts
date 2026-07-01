@@ -50,7 +50,7 @@ export async function expandThemePlan(
     '  "creative_direction": "art style, palette, materials, lighting, camera, and unifying visual language",',
     '  "characters": ["16 named character or worker designs"],',
     '  "environment": "one detailed isometric environment description",',
-    '  "objects": ["13 named props or buildable objects"],',
+    '  "objects": ["13 named props or buildable objects; the FIRST entry MUST be a themed rack of RANGED weapons (e.g. a laser-rifle rack, a missile rack, a crossbow rack) — pick a ranged weapon type that fits the setting and name it as a rack/stand of those weapons"],',
     '  "decor": ["10 background decor names: first 4 are sittable seats, next 4 are static scenery props, last 2 are subtly animated scenery items"],',
     '  "enemies": ["3 named enemy designs"],',
     '  "expressions": ["16 short, visually distinct expression names"],',

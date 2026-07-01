@@ -23,6 +23,34 @@ test('theme plan normalizes every editable slot to the required count', () => {
   assert.equal(plan.achievements.length, 20);
 });
 
+test('object slot 0 is always a themed ranged weapon rack (build_order 0 convention)', () => {
+  // Planner returned no suitable rack: slot 0 is coerced to a themed default,
+  // and the planner's own first object is preserved (shifted into the free slots).
+  const coerced = normalizeThemePlan({
+    display_name: 'Neon Harbor',
+    objects: ['Console', 'Crane', 'Generator'],
+  });
+  assert.equal(coerced.objects.length, 13);
+  assert.equal(coerced.objects[0], 'Neon Harbor Ranged Weapon Rack');
+  assert.equal(coerced.objects[1], 'Console');
+  assert.equal(coerced.objects[2], 'Crane');
+
+  // Planner already supplied a themed ranged weapon rack: keep its name verbatim.
+  const kept = normalizeThemePlan({
+    display_name: 'Cobra Command',
+    objects: ['Laser Rifle Rack', 'Control Tower', 'Radar Dish'],
+  });
+  assert.equal(kept.objects[0], 'Laser Rifle Rack');
+  assert.equal(kept.objects[1], 'Control Tower');
+  assert.equal(kept.objects.length, 13);
+
+  // The rack becomes build_order 0 in the manifest, so runtime treats it as the ranged rack.
+  const manifest = themePlanToManifest(kept);
+  assert.equal(manifest.buildable_objects?.[0].build_order, 0);
+  assert.equal(manifest.buildable_objects?.[0].display_name, 'Laser Rifle Rack');
+  assert.equal(manifest.buildable_objects?.length, 13);
+});
+
 test('theme plan emits 10 decor objects: 4 sittable seats, 4 static, 2 animated', () => {
   const manifest = themePlanToManifest(normalizeThemePlan({
     display_name: 'Cozy Tavern',

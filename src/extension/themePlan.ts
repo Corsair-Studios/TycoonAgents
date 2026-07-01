@@ -110,7 +110,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     characters: normalizeNames(input.characters, THEME_CHARACTER_COUNT, 'Character'),
     environment: cleanValue(input.environment)
       || `A playable isometric environment inspired by ${displayName}.`,
-    objects: normalizeNames(input.objects, THEME_OBJECT_COUNT, 'Object'),
+    objects: reserveRangedWeaponRackSlot(input.objects, displayName),
     decor: normalizeNames(input.decor, THEME_DECOR_COUNT, 'Decor'),
     enemies: normalizeNames(input.enemies, THEME_ENEMY_COUNT, 'Enemy'),
     expressions: normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
@@ -217,6 +217,38 @@ export function toSafeThemeId(value: string): string {
 
 export function toSafeAssetId(value: string): string {
   return toSafeThemeId(value) || 'asset';
+}
+
+/**
+ * Slot 0 of the objects list is a load-bearing convention: the buildable object
+ * with build_order === 0 is treated at runtime as the "ranged weapon rack" — once
+ * built, every character upgrades from melee to ranged combat. Therefore the FIRST
+ * object of every theme MUST be a themed rack of ranged weapons (laser rifles, missiles,
+ * crossbows, etc.), regardless of theme. This reserves slot 0 for that rack while the
+ * remaining 12 slots come from the plan, keeping the total at THEME_OBJECT_COUNT (13).
+ */
+function reserveRangedWeaponRackSlot(values: unknown, displayName: string): string[] {
+  const source = (Array.isArray(values) ? values : [])
+    .map((value) => cleanValue(value))
+    .filter((value) => value.length > 0);
+  const first = source[0] ?? '';
+  // Keep the planner's first name if it already reads as a ranged weapon rack and
+  // consume it as slot 0; otherwise coerce slot 0 to a themed default and keep the
+  // planner's own objects (including its first) among the 12 remaining free slots.
+  const hasRack = looksLikeRangedWeaponRack(first);
+  const rack = hasRack ? first : `${displayName} Ranged Weapon Rack`;
+  const rest = hasRack ? source.slice(1) : source;
+  const objects = [rack, ...normalizeNames(rest, THEME_OBJECT_COUNT - 1, 'Object')];
+  return objects.slice(0, THEME_OBJECT_COUNT);
+}
+
+/** Heuristic: does a name describe a rack/rack-like store of RANGED weapons? */
+function looksLikeRangedWeaponRack(name: string): boolean {
+  const text = name.toLowerCase();
+  const isRack = /\b(rack|stand|armory|armoury|locker|cache|arsenal|shelf|rangefinder)\b/.test(text)
+    || /\bweapon(s)?\s+(rack|stand|shelf|locker)\b/.test(text);
+  const isRanged = /\b(ranged|rifle|blaster|laser|plasma|gun|guns|missile|rocket|bow|crossbow|cannon|dart|slingshot|shooter|firearm|musket|bolt|arrow)\b/.test(text);
+  return isRack && isRanged;
 }
 
 function normalizeNames(values: unknown, count: number, fallbackLabel: string): string[] {

@@ -1653,6 +1653,21 @@
   let buildProgressBuilderPresent = false;
 
   /**
+   * object_id of the "ranged weapon rack" — the buildable with build_order 0
+   * (themeBuildables[0] after the ascending build_order sort). Captured at
+   * THEME_INITIALIZED; null if the theme has no buildables. Building THIS
+   * object is what unlocks ranged combat.
+   * @type {string|null}
+   */
+  let rackObjectId = null;
+  /**
+   * Session-scoped latch: once the rack object is fully built, ALL characters
+   * permanently switch from melee to ranged (shoot) combat for the rest of
+   * the session. Reset to false on every THEME_INITIALIZED (new theme load).
+   */
+  let rangedUnlocked = false;
+
+  /**
    * Deterministic string hash → 32-bit int (for seeding the build queue
    * shuffle so it's stable across frames but varies per theme).
    * @param {string} str
@@ -1760,6 +1775,13 @@
   const AGENT_DPS = 40;
   /** Native px distance at which an agent switches from walk to melee/shoot. */
   const ENEMY_ENGAGE_RANGE = 36;
+  /**
+   * Native px engage distance once RANGED combat is unlocked (the ranged
+   * weapon rack — build_order 0 — has been fully built). Larger than the
+   * melee range so ranged fighters stand back and shoot instead of closing
+   * to melee distance.
+   */
+  const RANGED_ENGAGE_RANGE = 110;
   /** Native px/second enemy walk-in speed. */
   const ENEMY_WALK_SPEED = 40;
 
@@ -3045,6 +3067,14 @@
         buildQueue = buildSeededQueue(themeBuildables, initializedThemeId);
         buildBuiltCount = 0;
         buildCurrentProgress = 0;
+        // ── Ranged combat upgrade (reset per theme) ─────────────────────
+        // Characters START in melee. Building the ranged weapon rack (the
+        // buildable with build_order 0 → themeBuildables[0] after the sort)
+        // permanently unlocks ranged combat for the rest of the session.
+        // Because buildQueue is randomized, the rack may be built early,
+        // late, or never — that's intended.
+        rangedUnlocked = false;
+        rackObjectId = themeBuildables.length > 0 ? themeBuildables[0].object_id : null;
         // Resolve a stable native placement per object. Generated anchor_coord
         // values are currently always [0.5,0.5] (degenerate/equal), so detect
         // that and fall back to the deterministic OBJECT_SLOT_UVS distribution.
@@ -5306,6 +5336,12 @@
 
     // ── Phase 2a: derive build state + advance per-object state machines ────
     const buildState = themeBuildables.length > 0 ? computeBuildState() : { builtIds: new Set(), activeId: null, activeProgress: 0 };
+    // ── Ranged combat upgrade: unlock detection ──────────────────────────
+    // Idempotent latch — once the rack object (build_order 0) is BUILT, all
+    // characters permanently switch to ranged combat for the session.
+    if (!rangedUnlocked && rackObjectId && buildState.builtIds.has(rackObjectId)) {
+      rangedUnlocked = true;
+    }
     const activeBuildId = buildState.activeId;
     let activeBuildObj = null;
     for (const obj of themeBuildables) {
@@ -5476,7 +5512,11 @@
           isEngaging = true;
           nearest.targetAgentId = agent.id;
           charEntry.combatTargetInstanceId = nearest.instance_id;
-          if (nearestDist > ENEMY_ENGAGE_RANGE) {
+          // Ranged combat upgrade: once the rack is built, agents engage from
+          // a longer standoff distance and shoot; otherwise they close to
+          // melee range. Damage applies at whichever range is in effect.
+          const effectiveEngageRange = rangedUnlocked ? RANGED_ENGAGE_RANGE : ENEMY_ENGAGE_RANGE;
+          if (nearestDist > effectiveEngageRange) {
             // Walk toward the enemy.
             charEntry.destNx = nearest.nx;
             charEntry.destNy = nearest.ny;
@@ -5734,7 +5774,10 @@
       // melee clip — takes priority over the build override since isBuilding
       // is never true while isEngaging is true.
       if (isEngaging) {
-        desiredClip = engageInRange ? "melee" : "walk";
+        // Ranged upgrade: shoot instead of melee once the rack is built. The
+        // shoot/melee one-shots both re-loop during sustained in-range combat
+        // via the reset-on-completion branch below.
+        desiredClip = engageInRange ? (rangedUnlocked ? "shoot" : "melee") : "walk";
       }
       // CONGA override: line members walk (or briefly cheer) — takes priority
       // over build/idle since inConga preempted those blocks above.
