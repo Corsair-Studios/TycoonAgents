@@ -3,6 +3,13 @@ import type { ThemeDecorBoardRow, ThemeObjectBoardRow } from './themeImageReview
 export interface ThemeObjectPromptSpec {
   object_id: string;
   display_name: string;
+  /** Short per-object idle-motion phrase supplied by the planner (e.g. "radar dish slowly rotates"). */
+  motion_hint?: string;
+  /**
+   * Build_order 0 is the themed ranged-weapon rack (see themePlan.ts). When true,
+   * the object row emits explicit rack visual guidance instead of the generic template.
+   */
+  is_ranged_rack?: boolean;
 }
 
 export interface ThemeDecorPromptSpec {
@@ -16,6 +23,8 @@ export function createObjectBoardRows(objects: ThemeObjectPromptSpec[]): ThemeOb
     kind: 'object',
     object_id: object.object_id,
     display_name: object.display_name,
+    ...(object.motion_hint ? { motion_hint: object.motion_hint } : {}),
+    ...(object.is_ranged_rack ? { is_ranged_rack: true } : {}),
   }));
   return [
     asRows(objects.slice(0, 5)),
@@ -56,9 +65,9 @@ export function decorBoardFrameKeys(rows: ThemeDecorBoardRow[][]): string[] {
 }
 
 /**
- * Production character scale calibrated from the approved Cobra Commander,
- * Destro, and Baroness boards (101px, 104px, and 107px median reference
- * heights respectively). Their combined median is 104px in a 128px frame.
+ * Production character scale calibrated from the approved reference character
+ * boards (101px, 104px, and 107px median reference heights respectively).
+ * Their combined median is 104px in a 128px frame.
  */
 export const CHARACTER_TARGET_CONTENT_HEIGHT = 104;
 export const CHARACTER_TARGET_CONTENT_PERCENT = 81.25;
@@ -399,6 +408,9 @@ export function buildObjectAtlasPrompt(
   if (rows.length !== 5) throw new Error('Animated object boards require exactly five rows.');
   const rowLines = rows.map((row, index) => {
     if (row.kind === 'object') {
+      if (row.is_ranged_rack) {
+        return `Row ${index + 1}: OBJECT — ${row.display_name} — a wall- or floor-mounted rack/stand displaying several themed RANGED weapons (rifles, launchers, or bows appropriate to the setting), clearly readable as ranged weapons — NOT a crate, shelf, or melee weapons; subtle idle motion (a status light pulse or faint weapon gleam)`;
+      }
       const motion = row.motion_hint
         ?? 'invent one subtle functional motion or light cycle that reads clearly across four loopable phases';
       return `Row ${index + 1}: OBJECT — ${row.display_name} — ${motion}`;
@@ -483,27 +495,6 @@ export function buildBackgroundDecorPrompt(
     'Center each item with its lowest contact point near the cell bottom. Keep a consistent isometric camera, lighting, and scale.',
     'Do not draw characters, people, UI, captions, letters, numbers, or grid lines. No object may straddle two cells.',
     'Use crisp retro pixel art. Every unused pixel must be flat solid #FF00FF magenta.',
-    '',
-    `Creative direction: ${creativeDirection}`,
-  ].join('\n');
-}
-
-/** Compatibility prompt for retrying themes authored with the legacy 4x3 static board. */
-export function buildLegacyObjectAtlasPrompt(
-  creativeDirection: string,
-  themeName: string,
-  objects: ThemeObjectPromptSpec[],
-): string {
-  const cells = objects.slice(0, 12).map((object, index) =>
-    `Cell ${index + 1}: ${object.display_name}`,
-  );
-  return [
-    `Create one object sprite sheet for the "${themeName}" theme.`,
-    boardContract(4, 3),
-    'Place exactly one finished, recognizable object in each cell, in row-major order:',
-    ...cells,
-    'Use the same isometric camera, lighting direction, rendering style, and relative scale across all 12 objects.',
-    'Center each object in its cell and place its lowest contact point on the cell bottom edge.',
     '',
     `Creative direction: ${creativeDirection}`,
   ].join('\n');

@@ -37,7 +37,7 @@ test('object slot 0 is always a themed ranged weapon rack (build_order 0 convent
 
   // Planner already supplied a themed ranged weapon rack: keep its name verbatim.
   const kept = normalizeThemePlan({
-    display_name: 'Cobra Command',
+    display_name: 'Neon Command',
     objects: ['Laser Rifle Rack', 'Control Tower', 'Radar Dish'],
   });
   assert.equal(kept.objects[0], 'Laser Rifle Rack');
@@ -49,6 +49,36 @@ test('object slot 0 is always a themed ranged weapon rack (build_order 0 convent
   assert.equal(manifest.buildable_objects?.[0].build_order, 0);
   assert.equal(manifest.buildable_objects?.[0].display_name, 'Laser Rifle Rack');
   assert.equal(manifest.buildable_objects?.length, 13);
+});
+
+test('object motion hints stay aligned to objects across rack coercion', () => {
+  // Planner had no rack: slot 0 is coerced, its own objects shift down, and hints
+  // shift with them (rack gets an empty hint, planner objects keep their hints).
+  const coerced = normalizeThemePlan({
+    display_name: 'Neon Harbor',
+    objects: ['Console', 'Crane', 'Generator'],
+    object_motion_hints: ['screen flickers', 'arm swings', 'core pulses'],
+  });
+  assert.equal(coerced.objects[0], 'Neon Harbor Ranged Weapon Rack');
+  assert.equal(coerced.objects[1], 'Console');
+  assert.equal(coerced.object_motion_hints?.length, coerced.objects.length);
+  assert.equal(coerced.object_motion_hints?.[0], ''); // rack has no planner hint
+  assert.equal(coerced.object_motion_hints?.[1], 'screen flickers'); // aligned to Console
+  assert.equal(coerced.object_motion_hints?.[2], 'arm swings'); // aligned to Crane
+
+  // Planner supplied a rack: its hint stays on slot 0.
+  const kept = normalizeThemePlan({
+    display_name: 'Neon Harbor',
+    objects: ['Laser Rifle Rack', 'Console'],
+    object_motion_hints: ['status light pulses', 'screen flickers'],
+  });
+  assert.equal(kept.objects[0], 'Laser Rifle Rack');
+  assert.equal(kept.object_motion_hints?.[0], 'status light pulses');
+  assert.equal(kept.object_motion_hints?.[1], 'screen flickers');
+
+  // No hints supplied → field is omitted.
+  const noHints = normalizeThemePlan({ display_name: 'Neon Harbor', objects: ['Console'] });
+  assert.equal(noHints.object_motion_hints, undefined);
 });
 
 test('theme plan emits 10 decor objects: 4 sittable seats, 4 static, 2 animated', () => {

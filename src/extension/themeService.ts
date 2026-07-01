@@ -8,7 +8,6 @@ import {
   buildEmoteAtlasPrompt,
   buildEnvironmentPrompt,
   buildExpressionAtlasPrompt,
-  buildLegacyObjectAtlasPrompt,
   buildObjectAtlasPrompt,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
@@ -17,6 +16,7 @@ import {
   decorBoardFrameKeys,
   objectBoardFrameKeys,
 } from './themeAssetPrompts';
+import type { ThemeObjectPromptSpec } from './themeAssetPrompts';
 import { generateThemeImage } from './imageClient';
 import type { ThemeImageGenerationOptions } from './imageClient';
 import {
@@ -977,6 +977,13 @@ export async function retryThemeImage(
   if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be retried yet.');
   const notes = feedback.trim();
 
+  // Legacy themes (pre-animated boards) stored object-atlas items without
+  // object_rows. Reconstruct a 5-row animated board so every object-atlas retry
+  // takes the animated buildObjectAtlasPrompt / processObjectAtlas path.
+  if (item.kind === 'object_atlas' && !item.object_rows?.length) {
+    item.object_rows = reconstructObjectRows(item, loadedTheme.manifest);
+  }
+
   const replacementPrompt = buildReplacementPrompt(item, notes, loadedTheme.manifest);
   const prompt = selectThemeImageRetryPrompt(item.prompt, replacementPrompt, feedback, mode);
   onProgress?.(`Regenerating ${item.label}...`);
@@ -1008,18 +1015,13 @@ export async function retryThemeImage(
     manifest.viewport.background_asset = 'frames.json#environment_background';
     frameKeys = ['environment_background'];
   } else if (item.kind === 'object_atlas') {
-    if (item.object_rows?.length) {
-      const objectAtlas = await processObjectAtlas(generated, manifest, item.object_rows);
-      output = objectAtlas.output;
-      frameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, item.object_rows);
-    } else {
-      // Preserve retry support for installed themes that predate animated boards.
-      output = await optimizeSpriteBoardCanvas(generated, 4, 3);
-      const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 3 });
-      const specs = item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest).slice(0, 12);
-      frameKeys = applyLegacyObjectFrames(frames, spritePackage.slots, specs);
-      item.object_specs = specs;
-    }
+    // retryThemeImage reconstructs object_rows for legacy items, so retries
+    // always use the animated object-board path.
+    const rows = item.object_rows?.length ? item.object_rows : reconstructObjectRows(item, manifest);
+    item.object_rows = rows;
+    const objectAtlas = await processObjectAtlas(generated, manifest, rows);
+    output = objectAtlas.output;
+    frameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, rows);
   } else if (item.kind === 'background_decor_atlas') {
     const rows = item.decor_rows?.length ? item.decor_rows : createDecorBoardRows(themeDecorSpecs(manifest)).flat();
     const decorAtlas = await processDecorAtlas(generated, manifest);
@@ -1360,7 +1362,7 @@ function createReviewItems(
     frame_keys: [enemy.rival_id],
     subject: enemy.name,
   }));
-  const objectSpecs = themeObjectSpecs(manifest);
+  const objectSpecs = themeObjectSpecs(manifest, plan.object_motion_hints);
   const objectItems = createObjectBoardRows(objectSpecs).map((rows, index) => {
     const objectRows = rows.filter((row): row is Extract<ThemeObjectBoardRow, { kind: 'object' }> => row.kind === 'object');
     const firstObject = index * 5 + 1;
@@ -1578,18 +1580,12 @@ function buildReplacementPrompt(
 ): string {
   if (item.kind === 'environment') return buildEnvironmentPrompt(creativeDirection, manifest.display_name);
   if (item.kind === 'object_atlas') {
-    if (!item.object_rows?.length) {
-      return buildLegacyObjectAtlasPrompt(
-        creativeDirection,
-        manifest.display_name,
-        item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest).slice(0, 12),
-      );
-    }
-    return buildObjectAtlasPrompt(
-      creativeDirection,
-      manifest.display_name,
-      item.object_rows,
-    );
+    // retryThemeImage guarantees object_rows is populated (reconstructed for
+    // legacy items), so object-atlas retries always use the animated board path.
+    const rows = item.object_rows?.length
+      ? item.object_rows
+      : reconstructObjectRows(item, manifest);
+    return buildObjectAtlasPrompt(creativeDirection, manifest.display_name, rows);
   }
   if (item.kind === 'background_decor_atlas') {
     const rows = item.decor_rows?.length
@@ -1615,11 +1611,45 @@ function renameCharacterInPrompt(prompt: string, previousName: string, character
   return `${prompt.slice(0, index)}"${characterName}"${prompt.slice(index + quotedName.length)}`;
 }
 
-function themeObjectSpecs(manifest: ThemeManifest): Array<{ object_id: string; display_name: string }> {
-  return manifest.buildable_objects.slice(0, 13).map((object) => ({
-    object_id: object.object_id,
-    display_name: object.display_name,
+/**
+ * Reconstruct a 5-row animated object board for a legacy object-atlas review item
+ * that predates animated boards (no object_rows). Uses the item's stored object
+ * specs (falling back to the manifest) so retries always take the animated path.
+ * Layout: up to 3 object rows, then a poof row and a crate row, padded to 5 rows.
+ */
+function reconstructObjectRows(
+  item: Pick<ThemeImageReviewItem, 'object_specs'>,
+  manifest: ThemeManifest,
+): ThemeObjectBoardRow[] {
+  const specs = item.object_specs?.length
+    ? item.object_specs
+    : themeObjectSpecs(manifest).slice(0, 3);
+  const objectRows: ThemeObjectBoardRow[] = specs.slice(0, 3).map((spec) => ({
+    kind: 'object' as const,
+    object_id: spec.object_id,
+    display_name: spec.display_name,
   }));
+  const rows: ThemeObjectBoardRow[] = [...objectRows, { kind: 'poof' }, { kind: 'crate' }];
+  while (rows.length < 5) rows.push({ kind: 'crate' });
+  return rows.slice(0, 5);
+}
+
+function themeObjectSpecs(
+  manifest: ThemeManifest,
+  motionHints?: string[],
+): ThemeObjectPromptSpec[] {
+  return manifest.buildable_objects.slice(0, 13).map((object, index) => {
+    // build_order 0 is the themed ranged-weapon rack (see themePlan.ts); it gets
+    // dedicated rack visual guidance and ignores any planner motion hint.
+    const isRangedRack = index === 0;
+    const hint = !isRangedRack ? (motionHints?.[index] ?? '').trim() : '';
+    return {
+      object_id: object.object_id,
+      display_name: object.display_name,
+      ...(isRangedRack ? { is_ranged_rack: true } : {}),
+      ...(hint ? { motion_hint: hint } : {}),
+    };
+  });
 }
 
 function applyObjectBoardFrames(

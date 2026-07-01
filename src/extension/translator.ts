@@ -17,6 +17,7 @@ interface PlannerModelOutput {
   characters?: unknown;
   environment?: string;
   objects?: unknown;
+  object_motion_hints?: unknown;
   decor?: unknown;
   enemies?: unknown;
   expressions?: unknown;
@@ -51,6 +52,7 @@ export async function expandThemePlan(
     '  "characters": ["16 named character or worker designs"],',
     '  "environment": "one detailed isometric environment description",',
     '  "objects": ["13 named props or buildable objects; the FIRST entry MUST be a themed rack of RANGED weapons (e.g. a laser-rifle rack, a missile rack, a crossbow rack) — pick a ranged weapon type that fits the setting and name it as a rack/stand of those weapons"],',
+    '  "object_motion_hints": ["13 SHORT idle-motion phrases, one per object in the same order (e.g. \\"radar dish slowly rotates\\", \\"reactor core pulses\\"); describe one subtle looping motion or light cycle per object"],',
     '  "decor": ["10 background decor names: first 4 are sittable seats, next 4 are static scenery props, last 2 are subtly animated scenery items"],',
     '  "enemies": ["3 named enemy designs"],',
     '  "expressions": ["16 short, visually distinct expression names"],',
@@ -106,6 +108,7 @@ export async function expandThemePlan(
     characters: Array.isArray(model.characters) ? model.characters as string[] : [],
     environment: model.environment,
     objects: Array.isArray(model.objects) ? model.objects as string[] : [],
+    object_motion_hints: Array.isArray(model.object_motion_hints) ? model.object_motion_hints as string[] : [],
     decor: Array.isArray(model.decor) ? model.decor as string[] : [],
     enemies: Array.isArray(model.enemies) ? model.enemies as string[] : [],
     expressions: Array.isArray(model.expressions) ? model.expressions as string[] : [],

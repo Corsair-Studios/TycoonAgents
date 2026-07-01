@@ -103,6 +103,37 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
   assert.match(achievements, /do not include unlock requirements/i);
 });
 
+test('object prompt emits explicit ranged-rack guidance and per-object motion hints', () => {
+  const prompt = buildObjectAtlasPrompt('sci-fi', 'Orbital', [
+    { kind: 'object' as const, object_id: 'rack', display_name: 'Laser Rifle Rack', is_ranged_rack: true },
+    { kind: 'object' as const, object_id: 'radar', display_name: 'Radar Dish', motion_hint: 'radar dish slowly rotates' },
+    { kind: 'object' as const, object_id: 'core', display_name: 'Reactor Core' },
+    { kind: 'poof' as const },
+    { kind: 'crate' as const },
+  ]);
+  // Rack row (row 1) gets the dedicated ranged-weapon guidance, not the generic default.
+  assert.match(prompt, /Row 1: OBJECT — Laser Rifle Rack — a wall- or floor-mounted rack\/stand displaying several themed RANGED weapons/i);
+  assert.match(prompt, /clearly readable as ranged weapons — NOT a crate, shelf, or melee weapons/i);
+  // Per-object motion hint is threaded verbatim for a non-rack row.
+  assert.match(prompt, /Row 2: OBJECT — Radar Dish — radar dish slowly rotates/i);
+  // Missing hint falls back to the generic default.
+  assert.match(prompt, /Row 3: OBJECT — Reactor Core — invent one subtle functional motion/i);
+});
+
+test('createObjectBoardRows carries is_ranged_rack and motion_hint onto the object rows', () => {
+  const rows = createObjectBoardRows(Array.from({ length: 13 }, (_unused, index) => ({
+    object_id: `object_${index + 1}`,
+    display_name: `Object ${index + 1}`,
+    ...(index === 0 ? { is_ranged_rack: true } : {}),
+    ...(index === 1 ? { motion_hint: 'gently hums' } : {}),
+  })));
+  const rackRow = rows[0][0];
+  assert.equal(rackRow.kind, 'object');
+  assert.equal(rackRow.kind === 'object' ? rackRow.is_ranged_rack : undefined, true);
+  const hintRow = rows[0][1];
+  assert.equal(hintRow.kind === 'object' ? hintRow.motion_hint : undefined, 'gently hums');
+});
+
 test('13 objects pack into three full boards with build effects in the final two rows', () => {
   const rows = createObjectBoardRows(Array.from({ length: 13 }, (_unused, index) => ({
     object_id: `object_${index + 1}`,

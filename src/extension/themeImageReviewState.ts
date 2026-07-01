@@ -22,7 +22,7 @@ export interface ThemeImageGenerationError {
 }
 
 export type ThemeObjectBoardRow =
-  | { kind: 'object'; object_id: string; display_name: string; motion_hint?: string }
+  | { kind: 'object'; object_id: string; display_name: string; motion_hint?: string; is_ranged_rack?: boolean }
   | { kind: 'poof' }
   | { kind: 'crate' };
 

@@ -387,7 +387,7 @@ function renderLoop(timestamp: number) {
     for (const obj of renderQueue) {
       if (obj.type === 'object') {
          ctx.beginPath();
-         const radius = obj.id === 'hiss_tank' ? TANK_EXCLUSION_RADIUS : 32;
+         const radius = obj.id === 'battle_tank' ? TANK_EXCLUSION_RADIUS : 32;
          ctx.arc(obj.x + obj.width / 2, obj.y + obj.height / 2, radius, 0, Math.PI * 2);
          ctx.stroke();
       }
@@ -479,7 +479,7 @@ function renderLoop(timestamp: number) {
 function handleKeyDown(e: KeyboardEvent) {
   if (e.code === 'Space') {
     e.preventDefault(); 
-    const newTarget = worldState.active_build_target_id === 'hiss_tank' ? null : 'hiss_tank';
+    const newTarget = worldState.active_build_target_id === 'battle_tank' ? null : 'battle_tank';
     
     updateState(s => ({
       ...s,
@@ -497,7 +497,7 @@ export function rebuildRenderQueue() {
   // 1. Central build target (use the first generated object when available).
   const generatedTarget = activeManifest?.buildable_objects?.[0];
   renderQueue.push({
-    id: 'hiss_tank',
+    id: 'battle_tank',
     type: 'object',
     x: TANK_POS.x - 48,
     y: TANK_POS.y - 48,
@@ -624,7 +624,7 @@ export function initThemeBuilder(containerElement: HTMLElement) {
       <div id="editor-overlay" class="editor-panel" hidden>
         <h3>Prop Palette</h3>
         <ul id="prop-palette">
-          <li data-id="hiss_tank" data-name="H.I.S.S. Tank" draggable="true">H.I.S.S. Tank</li>
+          <li data-id="battle_tank" data-name="Battle Tank" draggable="true">Battle Tank</li>
           <li data-id="command_desk" data-name="Command Desk" draggable="true">Command Desk</li>
           <li data-id="server_col" data-name="Server Column" draggable="true">Server Column</li>
         </ul>
@@ -653,7 +653,7 @@ export function initThemeBuilder(containerElement: HTMLElement) {
 
   // Handle world state changes for pathfinding targets and UI
   unsubscribe = subscribeToState(state => {
-    const isSwarming = state.active_build_target_id === 'hiss_tank';
+    const isSwarming = state.active_build_target_id === 'battle_tank';
     const targetChanged = assignedBuildTargetId !== state.active_build_target_id;
     assignedBuildTargetId = state.active_build_target_id;
 

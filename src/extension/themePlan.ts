@@ -63,6 +63,13 @@ export interface ThemePlan {
   characters: string[];
   environment: string;
   objects: string[];
+  /**
+   * Optional per-object idle-motion phrases (same length/order as `objects`).
+   * Threaded into each object row's motion_hint at prompt time; the ranged-weapon
+   * rack (index 0) uses its own special rack guidance regardless of this value.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  object_motion_hints?: string[];
   decor: string[];
   enemies: string[];
   expressions: string[];
@@ -101,6 +108,11 @@ const WALKABLE_NAV_POLYGON: [number, number][] = [
 export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Custom Theme'): ThemePlan {
   const displayName = cleanValue(input.display_name) || cleanValue(fallbackName) || 'Custom Theme';
   const themeId = toSafeThemeId(input.theme_id || displayName);
+  const { objects, objectMotionHints } = reserveRangedWeaponRackSlot(
+    input.objects,
+    displayName,
+    input.object_motion_hints,
+  );
   return {
     version: 1,
     theme_id: themeId,
@@ -110,7 +122,8 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     characters: normalizeNames(input.characters, THEME_CHARACTER_COUNT, 'Character'),
     environment: cleanValue(input.environment)
       || `A playable isometric environment inspired by ${displayName}.`,
-    objects: reserveRangedWeaponRackSlot(input.objects, displayName),
+    objects,
+    object_motion_hints: objectMotionHints,
     decor: normalizeNames(input.decor, THEME_DECOR_COUNT, 'Decor'),
     enemies: normalizeNames(input.enemies, THEME_ENEMY_COUNT, 'Enemy'),
     expressions: normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
@@ -227,19 +240,36 @@ export function toSafeAssetId(value: string): string {
  * crossbows, etc.), regardless of theme. This reserves slot 0 for that rack while the
  * remaining 12 slots come from the plan, keeping the total at THEME_OBJECT_COUNT (13).
  */
-function reserveRangedWeaponRackSlot(values: unknown, displayName: string): string[] {
-  const source = (Array.isArray(values) ? values : [])
-    .map((value) => cleanValue(value))
-    .filter((value) => value.length > 0);
-  const first = source[0] ?? '';
+function reserveRangedWeaponRackSlot(
+  values: unknown,
+  displayName: string,
+  motionHints?: unknown,
+): { objects: string[]; objectMotionHints?: string[] } {
+  const rawSource = (Array.isArray(values) ? values : []).map((value) => cleanValue(value));
+  const rawHints = Array.isArray(motionHints) ? motionHints.map((value) => cleanValue(value)) : [];
+  // Pair each name with its planner-supplied motion hint before filtering blanks,
+  // so hints stay aligned to their object even after empty names are dropped.
+  const paired = rawSource
+    .map((name, index) => ({ name, hint: rawHints[index] ?? '' }))
+    .filter((entry) => entry.name.length > 0);
+
+  const first = paired[0]?.name ?? '';
   // Keep the planner's first name if it already reads as a ranged weapon rack and
   // consume it as slot 0; otherwise coerce slot 0 to a themed default and keep the
   // planner's own objects (including its first) among the 12 remaining free slots.
   const hasRack = looksLikeRangedWeaponRack(first);
   const rack = hasRack ? first : `${displayName} Ranged Weapon Rack`;
-  const rest = hasRack ? source.slice(1) : source;
-  const objects = [rack, ...normalizeNames(rest, THEME_OBJECT_COUNT - 1, 'Object')];
-  return objects.slice(0, THEME_OBJECT_COUNT);
+  const rackHint = hasRack ? paired[0]?.hint ?? '' : '';
+  const rest = hasRack ? paired.slice(1) : paired;
+
+  const restNames = normalizeNames(rest.map((entry) => entry.name), THEME_OBJECT_COUNT - 1, 'Object');
+  const objects = [rack, ...restNames].slice(0, THEME_OBJECT_COUNT);
+  // Align hints to the final object list: rack hint first, then the rest's hints
+  // in order, padded with empty strings so index i maps to objects[i].
+  const hints = [rackHint, ...rest.map((entry) => entry.hint)].slice(0, THEME_OBJECT_COUNT);
+  while (hints.length < objects.length) hints.push('');
+  const hasAnyHint = hints.some((hint) => hint.length > 0);
+  return { objects, objectMotionHints: hasAnyHint ? hints : undefined };
 }
 
 /** Heuristic: does a name describe a rack/rack-like store of RANGED weapons? */
