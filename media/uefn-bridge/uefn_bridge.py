@@ -41,7 +41,13 @@ from material_browser import browse_materials, find_unused_materials
 from niagara_inspector import browse_niagara, find_niagara_usage
 from dependency_viewer import scan_dependencies
 from health_scanner import scan_health
-from asset_sweep import sweep_dead_assets
+try:
+    from asset_sweep import sweep_dead_assets
+except ImportError:
+    # asset_sweep is an optional tool that is not bundled in this build.
+    # Degrade the uefn_asset_sweep MCP tool to an explicit "unavailable"
+    # response rather than crashing the whole bridge on import.
+    sweep_dead_assets = None
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +499,8 @@ def _handle_health_scan(params):
 
 
 def _handle_asset_sweep(params):
+    if sweep_dead_assets is None:
+        return {"error": "asset_sweep is not available in this build of the UEFN bridge"}
     project_only = params.get("project_only", True)
     return sweep_dead_assets(project_only=project_only)
 
