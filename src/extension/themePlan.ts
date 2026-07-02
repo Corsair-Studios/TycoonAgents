@@ -180,6 +180,8 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     anchor_coord: [0.5, 0.5],
     exclusion_radius: 32,
     work_units_required: 100,
+    anim_fps: 5,
+    anim_loop: true,
   }));
   const decorObjects = buildDecorObjects(plan.decor);
   const viewport: ViewportConfig = {

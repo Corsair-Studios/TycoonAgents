@@ -108,5 +108,19 @@ export function upgradeThemeManifest(manifest: ThemeManifest): { manifest: Theme
     changed.push('Added 9 default decor_objects (4 seats, 4 static, 1 animated)');
   }
 
+  if (Array.isArray(upgraded.buildable_objects)) {
+    let touchedAnyBuildableObject = false;
+    for (const obj of upgraded.buildable_objects) {
+      if (typeof obj.anim_fps !== 'number') {
+        obj.anim_fps = 5;
+        obj.anim_loop = true;
+        touchedAnyBuildableObject = true;
+      }
+    }
+    if (touchedAnyBuildableObject) {
+      changed.push('buildable object anim params');
+    }
+  }
+
   return { manifest: upgraded, changed };
 }

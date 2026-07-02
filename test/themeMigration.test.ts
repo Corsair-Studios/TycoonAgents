@@ -76,6 +76,8 @@ test('preserves existing fields: buildable_objects, roster_rivals, character_sca
       anchor_coord: [100, 200],
       exclusion_radius: 40,
       work_units_required: 10,
+      anim_fps: 8,
+      anim_loop: false,
     }],
     roster_rivals: [{ rival_id: 'rival_0', name: 'Rival One', atlas_asset: 'frames.json#rival_0' }],
     decor_objects: existingDecor,
@@ -101,4 +103,44 @@ test('preserves existing fields: buildable_objects, roster_rivals, character_sca
 
   // The original manifest object passed in is untouched (deep copy, not mutation).
   assert.equal(source.viewport.crate_asset, undefined);
+});
+
+test('backfills anim_fps/anim_loop on buildable_objects missing them, leaves already-set objects untouched, and stays idempotent', () => {
+  const source = minimalManifest({
+    buildable_objects: [
+      {
+        build_order: 0,
+        object_id: 'lathe',
+        display_name: 'Lathe',
+        sprite_asset: 'frames.json#object_lathe',
+        anchor_coord: [0.3, 0.4],
+        exclusion_radius: 32,
+        work_units_required: 100,
+      },
+      {
+        build_order: 1,
+        object_id: 'forge',
+        display_name: 'Forge',
+        sprite_asset: 'frames.json#object_forge',
+        anchor_coord: [0.6, 0.5],
+        exclusion_radius: 32,
+        work_units_required: 100,
+        anim_fps: 12,
+        anim_loop: false,
+      },
+    ],
+  });
+
+  const first = upgradeThemeManifest(source);
+
+  assert.equal(first.manifest.buildable_objects[0].anim_fps, 5);
+  assert.equal(first.manifest.buildable_objects[0].anim_loop, true);
+  // Already-declared anim params are preserved exactly, not overwritten.
+  assert.equal(first.manifest.buildable_objects[1].anim_fps, 12);
+  assert.equal(first.manifest.buildable_objects[1].anim_loop, false);
+  assert.ok(first.changed.some((c) => c.includes('buildable object anim params')));
+
+  const second = upgradeThemeManifest(first.manifest);
+  assert.deepEqual(second.manifest, first.manifest);
+  assert.deepEqual(second.changed, []);
 });

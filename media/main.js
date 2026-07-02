@@ -1745,6 +1745,15 @@
    * @type {Record<string, {phase: string, animState: object, progress: number}>}
    */
   let objectAnimMap = {};
+  /**
+   * Per-object idle-animation fps/loop overrides declared in the manifest
+   * (buildable_objects[].anim_fps / anim_loop), keyed by object_id. Mirrors
+   * decorAnimMap's per-decor fps/loop capture below. Only the object_idle
+   * clip is overridable — crate/poof timings always come from OBJECT_CLIPS.
+   * Reset/populated at THEME_INITIALIZED alongside themeBuildables.
+   * @type {Record<string, {fps:number, loop:boolean}>}
+   */
+  let objectAnimParams = {};
   /** Stable per-object native placement, keyed by object_id: {nx, ny}. Computed once at THEME_INITIALIZED. */
   let objectPlacement = {};
   /** Generated (non-override) placement per object_id: {nx, ny} — used to revert a Stage-Editor move. */
@@ -2673,6 +2682,25 @@
   }
 
   /**
+   * Create an "object_idle" animation state, optionally carrying a per-object
+   * fps/loop override captured from the manifest (objectAnimParams — see
+   * decorAnimMap for the equivalent decor pattern). When the object declares
+   * no anim_fps, the state carries no fps/loop and advanceObjectAnim falls
+   * back to the OBJECT_CLIPS.object_idle defaults. Crate/poof states are
+   * never created via this helper, so their timing is always OBJECT_CLIPS-driven.
+   * @param {string} objId
+   */
+  function createObjectIdleAnimState(objId) {
+    const s = createAnimState("object_idle");
+    const p = objectAnimParams[objId];
+    if (p) {
+      s.fps = p.fps;
+      s.loop = p.loop;
+    }
+    return s;
+  }
+
+  /**
    * Advance an animation state by deltaSeconds; mirrors animationPlayback.ts logic.
    * @param {{action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}} s
    * @param {number} delta
@@ -2726,13 +2754,20 @@
    */
   function advanceObjectAnim(s, delta) {
     const clip = OBJECT_CLIPS[s.action] || OBJECT_CLIPS.object_idle;
-    if (clip.hold || clip.frames.length <= 1 || clip.fps <= 0) {
+    // Only the object_idle clip is per-object overridable (crate/poof always
+    // use their fixed OBJECT_CLIPS timing). createObjectIdleAnimState stashes
+    // fps/loop onto idle states when the manifest declares anim_fps for that
+    // object — mirrors decorAnimMap/advanceDecorAnim's per-decor override.
+    const hasOverride = s.action === "object_idle" && typeof s.fps === "number";
+    const fps = hasOverride ? s.fps : clip.fps;
+    const loop = hasOverride ? s.loop !== false : clip.loop;
+    if (clip.hold || clip.frames.length <= 1 || fps <= 0) {
       s.frameIndex = 0;
       return;
     }
     if (s.completed || !Number.isFinite(delta) || delta <= 0) return;
     s.elapsed += delta;
-    const dur = 1 / clip.fps;
+    const dur = 1 / fps;
     while (s.elapsed >= dur && !s.completed) {
       s.elapsed -= dur;
       const n = clip.frames.length;
@@ -2740,7 +2775,7 @@
         s.frameIndex += s.direction;
         if (s.frameIndex >= n - 1) {
           s.frameIndex = n - 1;
-          if (clip.loop) s.direction = -1; else s.completed = true;
+          if (loop) s.direction = -1; else s.completed = true;
         } else if (s.frameIndex <= 0) {
           s.frameIndex = 0;
           s.direction = 1;
@@ -2748,7 +2783,7 @@
       } else {
         s.frameIndex += 1;
         if (s.frameIndex >= n) {
-          if (clip.loop) s.frameIndex = 0;
+          if (loop) s.frameIndex = 0;
           else { s.frameIndex = n - 1; s.completed = true; }
         }
       }
@@ -3674,6 +3709,14 @@
           : [];
         themeHasCrateAsset = !!(vp && vp.crate_asset);
         themeHasPoofAsset = !!(vp && vp.poof_asset);
+        // Per-object idle fps/loop overrides (mirrors decorAnimMap below) —
+        // reset every theme load so a previous theme's overrides don't leak.
+        objectAnimParams = {};
+        themeBuildables.forEach((obj) => {
+          if (typeof obj.anim_fps === "number" && obj.anim_fps > 0) {
+            objectAnimParams[obj.object_id] = { fps: obj.anim_fps, loop: obj.anim_loop !== false };
+          }
+        });
         // Reset per-object runtime phase/anim state for the new theme.
         objectAnimMap = {};
         // ── Phase: one-at-a-time paced build queue (Change 1) ──────────
@@ -6508,7 +6551,7 @@
             entry.animState = createAnimState("poof");
           } else {
             entry.phase = "idle";
-            entry.animState = createAnimState("object_idle");
+            entry.animState = createObjectIdleAnimState(objId);
           }
         }
         entry.progress = 1;
@@ -6523,7 +6566,7 @@
           // Advance the queue pointer here (Change 1) so the NEXT object
           // becomes the active crate starting next frame.
           entry.phase = "idle";
-          entry.animState = createAnimState("object_idle");
+          entry.animState = createObjectIdleAnimState(objId);
           if (objId === activeBuildId && buildBuiltCount < buildQueue.length && buildQueue[buildBuiltCount] === objId) {
             buildBuiltCount++;
             buildCurrentProgress = 0;
