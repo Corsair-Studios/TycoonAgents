@@ -1931,11 +1931,17 @@
    */
   const ENEMY_RANGE_HYSTERESIS = 30;
   /**
-   * Native px an enemy must actually move in a frame for its "walk" clip to
-   * keep advancing. Below this the enemy is effectively stationary (arrived /
-   * boundary micro-steps), so we freeze the walk frame instead of blurring it.
+   * Walk-cycle hysteresis, expressed as fractions of a FULL-SPEED step this
+   * frame (ENEMY_WALK_SPEED * delta) so it is frame-rate independent, unlike a
+   * raw-px threshold. An enemy begins playing its walk cycle only once it moves
+   * at least _HI of a full step (clearly progressing) and stops the cycle only
+   * once it drops below _LO of a full step (arrived / blocked / boundary
+   * slide). Between the two it keeps its current walking state, so a stopped
+   * enemy never flip-flops advance/freeze frame-to-frame — which previously
+   * stuttered its legs between walk poses in place.
    */
-  const ENEMY_WALK_MOVE_EPS = 0.35;
+  const ENEMY_WALK_MOVE_RATIO_HI = 0.55;
+  const ENEMY_WALK_MOVE_RATIO_LO = 0.25;
   /**
    * Target STICKINESS margin (native px). A combatant (enemy chasing an agent,
    * or agent engaging an enemy) keeps its CURRENT target until some other
@@ -6026,12 +6032,30 @@
         en.animState.elapsed = 0;
         en.animState.completed = false;
       }
-      // Only advance the WALK cycle when the enemy actually moved a meaningful
-      // amount this frame; if it's stalled (arrived / blocked / boundary micro-
-      // step) hold the current walk frame so it doesn't vibrate in place.
-      if (desiredAction === "walk" && movedThisFrame < ENEMY_WALK_MOVE_EPS) {
-        // Freeze: skip advanceRivalAnim so frameIndex stays put this frame.
+      // Decide whether the enemy is ACTUALLY walking, with hysteresis, so a
+      // near-stationary enemy doesn't flip between advancing and freezing its
+      // walk clip every frame (which stuttered its legs between poses in place).
+      // Compare real displacement to a full-speed step (frame-rate independent).
+      const fullStep = ENEMY_WALK_SPEED * delta;
+      const moveRatio = fullStep > 0 ? movedThisFrame / fullStep : 0;
+      if (moveRatio >= ENEMY_WALK_MOVE_RATIO_HI) {
+        en.isWalking = true;
+      } else if (moveRatio < ENEMY_WALK_MOVE_RATIO_LO) {
+        en.isWalking = false;
+      } // between LO and HI: keep the previous en.isWalking (deadband)
+      if (desiredAction === "walk") {
+        if (en.isWalking) {
+          advanceRivalAnim(en.animState, delta);
+        } else {
+          // Stopped: settle on a stable standing pose (the first walk frame)
+          // with the timer reset, so the enemy never vibrates or cycles in
+          // place while it holds position.
+          en.animState.frameIndex = 0;
+          en.animState.direction = 1;
+          en.animState.elapsed = 0;
+        }
       } else {
+        // Attack (or any non-walk) clip advances normally.
         advanceRivalAnim(en.animState, delta);
       }
     }
