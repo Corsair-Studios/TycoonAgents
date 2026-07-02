@@ -934,28 +934,30 @@ async function continueThemeGeneration(
     const entry = people[index];
     onProgress(`${entry.name} (${index + 1}/${people.length})`);
     const item = reviewItems.find((candidate) => candidate.id === entry.itemId)!;
-    await generateOrResumeThemeItem(
-      globalStorageUri,
-      themeId,
-      plan.display_name,
-      item,
-      manifest,
-      frames,
-      onProgress,
-      isCancelled,
-      onReviewReady,
-      waitForReview,
-      async () => {
-        const generated = await generateThemeImage(item.prompt, imageGenerationOptions);
-        throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
-        const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
-        throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
-        await saveReviewImage(reviewDirectoryUri, item.filename, output);
-        throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
-        frames[entry.frameKey] = spritePackage.slots.map((slot) => slot.data);
-        await markGenerated(globalStorageUri, themeId, plan.display_name, item);
-        await writeThemeFiles(globalStorageUri, manifest, frames);
-      },
+    await runNonFatalBoardStep(entry.name, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+      generateOrResumeThemeItem(
+        globalStorageUri,
+        themeId,
+        plan.display_name,
+        item,
+        manifest,
+        frames,
+        onProgress,
+        isCancelled,
+        onReviewReady,
+        waitForReview,
+        async () => {
+          const generated = await generateThemeImage(item.prompt, imageGenerationOptions);
+          throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
+          const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
+          throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
+          await saveReviewImage(reviewDirectoryUri, item.filename, output);
+          throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
+          frames[entry.frameKey] = spritePackage.slots.map((slot) => slot.data);
+          await markGenerated(globalStorageUri, themeId, plan.display_name, item);
+          await writeThemeFiles(globalStorageUri, manifest, frames);
+        },
+      ),
     );
   }
 
@@ -964,36 +966,42 @@ async function continueThemeGeneration(
   for (let index = 0; index < rivalItems.length; index++) {
     throwIfCancelled(isCancelled);
     const rivalsItem = rivalItems[index];
-    await generateOrResumeThemeItem(
-      globalStorageUri, themeId, plan.display_name, rivalsItem, manifest, frames,
-      onProgress, isCancelled, onReviewReady, waitForReview,
-      () => generateRivalAsset(
-        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
-        rivalsItem, imageGenerationOptions, onProgress,
+    await runNonFatalBoardStep(rivalsItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+      generateOrResumeThemeItem(
+        globalStorageUri, themeId, plan.display_name, rivalsItem, manifest, frames,
+        onProgress, isCancelled, onReviewReady, waitForReview,
+        () => generateRivalAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+          rivalsItem, imageGenerationOptions, onProgress,
+        ),
       ),
     );
   }
 
   throwIfCancelled(isCancelled);
   const environmentItem = reviewItems.find((item) => item.id === 'environment')!;
-  await generateOrResumeThemeItem(
-    globalStorageUri, themeId, plan.display_name, environmentItem, manifest, frames,
-    onProgress, isCancelled, onReviewReady, waitForReview,
-    () => generateEnvironmentAsset(
-      globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
-      environmentItem, imageGenerationOptions, onProgress,
+  await runNonFatalBoardStep(environmentItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+    generateOrResumeThemeItem(
+      globalStorageUri, themeId, plan.display_name, environmentItem, manifest, frames,
+      onProgress, isCancelled, onReviewReady, waitForReview,
+      () => generateEnvironmentAsset(
+        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+        environmentItem, imageGenerationOptions, onProgress,
+      ),
     ),
   );
 
   throwIfCancelled(isCancelled);
   const decorItem = reviewItems.find((item) => item.id === 'background_decor');
   if (decorItem) {
-    await generateOrResumeThemeItem(
-      globalStorageUri, themeId, plan.display_name, decorItem, manifest, frames,
-      onProgress, isCancelled, onReviewReady, waitForReview,
-      () => generateDecorAsset(
-        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
-        decorItem, imageGenerationOptions, onProgress,
+    await runNonFatalBoardStep(decorItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+      generateOrResumeThemeItem(
+        globalStorageUri, themeId, plan.display_name, decorItem, manifest, frames,
+        onProgress, isCancelled, onReviewReady, waitForReview,
+        () => generateDecorAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+          decorItem, imageGenerationOptions, onProgress,
+        ),
       ),
     );
   }
@@ -1003,35 +1011,41 @@ async function continueThemeGeneration(
   for (let index = 0; index < objectItems.length; index++) {
     throwIfCancelled(isCancelled);
     const objectsItem = objectItems[index];
-    await generateOrResumeThemeItem(
-      globalStorageUri, themeId, plan.display_name, objectsItem, manifest, frames,
-      onProgress, isCancelled, onReviewReady, waitForReview,
-      () => generateObjectAsset(
-        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
-        objectsItem, imageGenerationOptions, onProgress, 21 + index,
+    await runNonFatalBoardStep(objectsItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+      generateOrResumeThemeItem(
+        globalStorageUri, themeId, plan.display_name, objectsItem, manifest, frames,
+        onProgress, isCancelled, onReviewReady, waitForReview,
+        () => generateObjectAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+          objectsItem, imageGenerationOptions, onProgress, 21 + index,
+        ),
       ),
     );
   }
 
   throwIfCancelled(isCancelled);
   const expressionsItem = reviewItems.find((item) => item.id === 'expressions')!;
-  await generateOrResumeThemeItem(
-    globalStorageUri, themeId, plan.display_name, expressionsItem, manifest, frames,
-    onProgress, isCancelled, onReviewReady, waitForReview,
-    () => generateExpressionAsset(
-      globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
-      expressionsItem, imageGenerationOptions, onProgress,
+  await runNonFatalBoardStep(expressionsItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+    generateOrResumeThemeItem(
+      globalStorageUri, themeId, plan.display_name, expressionsItem, manifest, frames,
+      onProgress, isCancelled, onReviewReady, waitForReview,
+      () => generateExpressionAsset(
+        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+        expressionsItem, imageGenerationOptions, onProgress,
+      ),
     ),
   );
 
   throwIfCancelled(isCancelled);
   const achievementsItem = reviewItems.find((item) => item.id === 'achievements')!;
-  await generateOrResumeThemeItem(
-    globalStorageUri, themeId, plan.display_name, achievementsItem, manifest, frames,
-    onProgress, isCancelled, onReviewReady, waitForReview,
-    () => generateAchievementAsset(
-      globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
-      achievementsItem, imageGenerationOptions, onProgress,
+  await runNonFatalBoardStep(achievementsItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+    generateOrResumeThemeItem(
+      globalStorageUri, themeId, plan.display_name, achievementsItem, manifest, frames,
+      onProgress, isCancelled, onReviewReady, waitForReview,
+      () => generateAchievementAsset(
+        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+        achievementsItem, imageGenerationOptions, onProgress,
+      ),
     ),
   );
 
@@ -1039,6 +1053,29 @@ async function continueThemeGeneration(
   await writeThemeFiles(globalStorageUri, manifest, frames);
   throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
   return { manifest, frames };
+}
+
+/**
+ * Runs a single board-generation step without letting its failure abort the
+ * rest of the pipeline. User cancellation (isCancelled() true or the abort
+ * signal firing) is rethrown untouched so it still propagates. Any other
+ * failure is logged via onProgress and swallowed, leaving that board's
+ * manifest/frame entries absent so the webview falls back to a placeholder.
+ */
+async function runNonFatalBoardStep(
+  label: string,
+  onProgress: (message: string) => void,
+  isCancelled: (() => boolean) | undefined,
+  signal: AbortSignal | undefined,
+  step: () => Promise<void>,
+): Promise<void> {
+  try {
+    await step();
+  } catch (error) {
+    if (isCancelled?.() || signal?.aborted) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    onProgress(`${label} failed and was skipped: ${message}`);
+  }
 }
 
 export async function retryThemeImage(

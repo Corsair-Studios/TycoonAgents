@@ -2737,6 +2737,40 @@
   }
 
   /**
+   * Draws a labeled magenta placeholder tile centered at canvas point (cx,cy).
+   * Used wherever a sprite is referenced by the manifest but its frames are
+   * missing from the loaded theme images — a clearly-visible "generate me"
+   * guide cell so the user can see exactly which art still needs generating.
+   * @param {CanvasRenderingContext2D} c
+   * @param {number} cx @param {number} cy center point in canvas px
+   * @param {number} w @param {number} h tile size in canvas px
+   * @param {Array<string>} lines short label lines, e.g. ["DECOR", "Neon Sign"]
+   */
+  function drawPlaceholderTile(c, cx, cy, w, h, lines) {
+    c.save();
+    const x = cx - w / 2, y = cy - h / 2;
+    c.globalAlpha = 0.9;
+    c.fillStyle = "#ff00ff";
+    c.fillRect(x, y, w, h);
+    c.globalAlpha = 1;
+    c.strokeStyle = "#000";
+    c.lineWidth = 2;
+    c.setLineDash([6, 4]);
+    c.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    c.setLineDash([]);
+    c.fillStyle = "#000";
+    c.textAlign = "center";
+    c.textBaseline = "middle";
+    const fs = Math.max(9, Math.min(16, Math.floor(h / 6)));
+    c.font = `bold ${fs}px sans-serif`;
+    const total = lines.length;
+    lines.forEach((ln, i) => {
+      c.fillText(String(ln), cx, cy + (i - (total - 1) / 2) * (fs + 2), w - 6);
+    });
+    c.restore();
+  }
+
+  /**
    * Draw one buildable object at canvas point (cx, cy) using its current
    * objectAnimMap phase. Mirrors the agent draw pattern (foot-anchored,
    * depth-scaled). Falls back to a simple "under construction" marker when
@@ -2758,16 +2792,9 @@
       if (crateImg && crateImg.complete && crateImg.naturalWidth > 0) {
         ctx.drawImage(crateImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
       } else {
-        // Fallback "under construction" marker — simple drawn shape, no crash.
-        ctx.save();
-        ctx.fillStyle = "rgba(200,160,60,0.85)";
-        ctx.strokeStyle = "#7a5b00";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.rect(cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
+        // Missing crate art for the active build — labeled placeholder so the
+        // user can see which object still needs build/crate art generated.
+        drawPlaceholderTile(ctx, cx, cy - baseSize / 2, baseSize, baseSize, ["BUILD", obj.display_name || objId]);
       }
       // Change 2: progress/health bar for the ACTIVE crate — since the build
       // queue guarantees exactly one active object at a time, this bar is
@@ -2835,13 +2862,20 @@
     const decorId = decor.decor_id;
     if (decorId == null) return;
     const slots = themeImages["decor_" + decorId];
-    if (!slots || slots.length === 0) return; // missing art — skip, no crash
+    const baseSize = Math.round(64 * depthScale * DECOR_SCALE);
+    if (!slots || slots.length === 0) {
+      // Missing art entirely. drawDecor is only ever called for decor that
+      // already has a resolved placement — hidden decor (anchor override
+      // sentinel [-1,-1]) never gets a placement and never reaches here — so
+      // this placeholder only ever marks decor that genuinely needs art.
+      drawPlaceholderTile(ctx, cx, cy - baseSize / 2, baseSize, baseSize, ["DECOR", decor.display_name || decorId]);
+      return;
+    }
     const anim = decorAnimMap[decorId];
     let slotIdx = 0;
     if (anim) slotIdx = Math.min(anim.frameIndex, slots.length - 1);
     const img = slots[slotIdx] || slots[0];
     if (!img || !img.complete || img.naturalWidth === 0) return;
-    const baseSize = Math.round(64 * depthScale * DECOR_SCALE);
     ctx.drawImage(img, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
   }
 
@@ -7000,9 +7034,16 @@
             ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
           }
           ctx.restore();
+        } else if (!slots || slots.length === 0) {
+          // No rival frames at all for this theme — labeled placeholder so the
+          // user can see which enemy still needs art generated.
+          const rivalMeta = themeRivals.find((r) => r && r.rival_id === en.rival_id);
+          const rivalLabel = (rivalMeta && rivalMeta.name) || en.rival_id;
+          drawPlaceholderTile(ctx, ecx, ecy - spriteSize / 2, spriteSize, spriteSize, ["ENEMY", rivalLabel]);
         } else {
-          // No rival art loaded — small red marker (character-footprint sized)
-          // so EVICT mode is still visible without dominating the stage.
+          // Frames exist but the image isn't ready yet (transient load state)
+          // — small red marker (character-footprint sized) so EVICT mode is
+          // still visible without dominating the stage.
           ctx.save();
           ctx.fillStyle = "rgba(200,40,40,0.85)";
           ctx.strokeStyle = "#5a0a0a";
