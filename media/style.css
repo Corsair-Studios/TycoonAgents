@@ -546,6 +546,48 @@ body {
   background: rgba(255, 176, 32, 0.22);
 }
 
+/* Badge HUD: lower-right silhouette medallion showing unlocked-badge count.
+   Shown/hidden and updated by media/main.js (only visible when the current
+   theme declares >=1 badge). */
+.badge-hud {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1b1b22;
+  border: 2px solid rgba(255, 176, 32, 0.55);
+  /* Shield-ish medallion: rounded on top, slight point-in on the bottom
+     corners so it reads as a badge silhouette rather than a plain circle. */
+  border-radius: 50% 50% 45% 45% / 55% 55% 45% 45%;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  z-index: 10;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.badge-hud:hover {
+  background: #26262f;
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.badge-hud[hidden] {
+  display: none;
+}
+
+.badge-hud-count {
+  font-size: 15px;
+  font-weight: 700;
+  color: #eef0f6;
+  line-height: 1;
+  pointer-events: none;
+}
+
 /* Engine connection chips — upper-left overlay, mirrors #menu-btn placement */
 #engine-chips {
   position: absolute;
@@ -719,6 +761,163 @@ body {
 #modal-close:hover {
   color: var(--text);
   background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Badge modal overlay ──────────────────────────────────────────── */
+/* Mirrors #about-modal structure/classes so it matches the other popups. */
+#badge-modal[hidden] {
+  display: none;
+}
+
+#badge-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#badge-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+#badge-dialog {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px 24px;
+  min-width: 320px;
+  max-width: 480px;
+  width: 90%;
+  max-height: 70vh;
+  overflow-y: auto;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#badge-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+#badge-modal-close {
+  position: sticky;
+  top: 0;
+  align-self: flex-end;
+  z-index: 6;
+  background: var(--surface);
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+#badge-modal-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+#badge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.badge-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 0;
+}
+
+.badge-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.badge-card--unlocked {
+  border-color: rgba(255, 176, 32, 0.35);
+  background: rgba(255, 176, 32, 0.06);
+}
+
+.badge-card-icon {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 50% 50% 45% 45% / 55% 55% 45% 45%;
+  background: #1b1b22;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.badge-card--unlocked .badge-card-icon {
+  border-color: rgba(255, 176, 32, 0.55);
+}
+
+.badge-card-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Locked badges: silhouette the art (or the generic fallback shape) so it
+   reads as "not yet earned" without revealing the actual icon art. */
+.badge-card-icon-silhouette {
+  filter: brightness(0) saturate(0) opacity(0.55);
+}
+
+.badge-card-icon--generic {
+  /* Generic filled medallion used when the icon frame isn't loaded yet. */
+  background: radial-gradient(circle at 50% 40%, #3a3a46 0%, #1b1b22 70%);
+}
+
+.badge-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.badge-card-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.badge-card--locked .badge-card-name {
+  color: var(--muted);
+}
+
+.badge-card-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.badge-card-progress {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  opacity: 0.85;
 }
 
 /* ── Skills modal overlay ────────────────────────────────────────── */

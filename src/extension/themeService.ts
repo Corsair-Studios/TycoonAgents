@@ -8,7 +8,7 @@ import type {
   ViewportConfig,
 } from '../shared/types';
 import { expandThemePlan } from './translator';
-import { upgradeThemeManifest } from './themeMigration';
+import { buildDefaultBadges, upgradeThemeManifest } from './themeMigration';
 import {
   buildAchievementAtlasPrompt,
   buildBackgroundDecorPrompt,
@@ -914,7 +914,7 @@ export async function generateTheme(
     roster_rivals: suggestedManifest.roster_rivals!,
     buildable_objects: suggestedManifest.buildable_objects!,
     decor_objects: suggestedManifest.decor_objects!,
-    badges: [],
+    badges: buildDefaultBadges(),
   };
   const frames: Record<string, string[]> = {};
   const directoryUri = themeDirectoryUri(globalStorageUri, themeId);

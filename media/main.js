@@ -227,7 +227,9 @@
   // it was opened more recently, then about modal, then menu.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (!skillsModalEl.hasAttribute("hidden")) {
+      if (badgeModalEl && !badgeModalEl.hasAttribute("hidden")) {
+        closeModal(badgeModalEl);
+      } else if (!skillsModalEl.hasAttribute("hidden")) {
         closeModal(skillsModalEl);
       } else if (!aboutModalEl.hasAttribute("hidden")) {
         closeModal(aboutModalEl);
@@ -237,6 +239,143 @@
       }
     }
   });
+
+  // ── Badge HUD + modal (lower-right silhouette badge icon) ────────────
+  // Badges unlock from gameplay counters (buildBuiltCount / rivalsEvictedCount,
+  // see updateBadgeUnlocks() below, called every render frame). The HUD button
+  // shows how many are unlocked; clicking it opens a panel listing all badges
+  // for the current theme (locked = silhouette + progress, unlocked = icon).
+
+  const badgeHudBtn       = /** @type {HTMLElement|null} */ (document.getElementById("badge-hud-btn"));
+  const badgeHudCountEl   = badgeHudBtn ? /** @type {HTMLElement|null} */ (badgeHudBtn.querySelector(".badge-hud-count")) : null;
+  const badgeModalEl      = /** @type {HTMLElement|null} */ (document.getElementById("badge-modal"));
+  const badgeBackdropEl   = /** @type {HTMLElement|null} */ (document.getElementById("badge-backdrop"));
+  const badgeModalCloseEl = /** @type {HTMLElement|null} */ (document.getElementById("badge-modal-close"));
+  const badgeListEl       = /** @type {HTMLElement|null} */ (document.getElementById("badge-list"));
+
+  if (badgeHudBtn) {
+    badgeHudBtn.addEventListener("click", () => {
+      renderBadgePanel();
+      if (badgeModalEl) openModal(badgeModalEl, badgeModalCloseEl || badgeHudBtn);
+    });
+  }
+  if (badgeModalCloseEl) {
+    badgeModalCloseEl.addEventListener("click", () => {
+      if (badgeModalEl) closeModal(badgeModalEl);
+    });
+  }
+  if (badgeBackdropEl) {
+    badgeBackdropEl.addEventListener("click", () => {
+      if (badgeModalEl) closeModal(badgeModalEl);
+    });
+  }
+
+  /**
+   * Refresh the lower-right badge HUD button: visible only when the current
+   * theme declares >=1 badge; count text = number unlocked so far.
+   */
+  function updateBadgeHud() {
+    if (!badgeHudBtn) return;
+    if (!themeBadges || themeBadges.length === 0) {
+      badgeHudBtn.setAttribute("hidden", "");
+      return;
+    }
+    badgeHudBtn.removeAttribute("hidden");
+    if (badgeHudCountEl) badgeHudCountEl.textContent = String(unlockedBadgeIds.size);
+  }
+
+  /**
+   * Check current counters (buildBuiltCount, rivalsEvictedCount) against each
+   * theme badge's threshold and unlock any newly-earned ones. themeBadges is
+   * a small array (a handful of entries) so this is cheap enough to call every
+   * render frame. unlockedBadgeIds only ever grows within a theme session.
+   */
+  function updateBadgeUnlocks() {
+    if (!themeBadges || themeBadges.length === 0) return;
+    let changed = false;
+    for (const b of themeBadges) {
+      if (!b || !b.badge_id || unlockedBadgeIds.has(b.badge_id)) continue;
+      const met =
+        (b.trigger_type === "OBJECTS_BUILT" && buildBuiltCount >= b.threshold) ||
+        (b.trigger_type === "RIVALS_EVICTED" && rivalsEvictedCount >= b.threshold);
+      if (met) {
+        unlockedBadgeIds.add(b.badge_id);
+        changed = true;
+      }
+    }
+    if (changed) updateBadgeHud();
+  }
+
+  /**
+   * Rebuild #badge-list from themeBadges + unlockedBadgeIds. Unlocked badges
+   * show their icon (themeImages[frameKey][0]) at full color plus description;
+   * locked badges show a silhouette (CSS grayscale/dark filter, or a generic
+   * badge shape if art isn't loaded) plus a "n / threshold" progress line.
+   */
+  function renderBadgePanel() {
+    if (!badgeListEl) return;
+    while (badgeListEl.firstChild) badgeListEl.removeChild(badgeListEl.firstChild);
+    if (!themeBadges || themeBadges.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "badge-empty";
+      empty.textContent = "This theme has no badges yet.";
+      badgeListEl.appendChild(empty);
+      return;
+    }
+    for (const b of themeBadges) {
+      if (!b || !b.badge_id) continue;
+      const unlocked = unlockedBadgeIds.has(b.badge_id);
+      const card = document.createElement("div");
+      card.className = "badge-card" + (unlocked ? " badge-card--unlocked" : " badge-card--locked");
+
+      const iconWrap = document.createElement("div");
+      iconWrap.className = "badge-card-icon";
+      // icon_asset looks like "frames.json#achievement_3" — the frame key is
+      // the part after '#'; the image is themeImages[frameKey][0] if loaded.
+      const frameKey = (typeof b.icon_asset === "string" && b.icon_asset.indexOf("#") >= 0)
+        ? b.icon_asset.split("#")[1]
+        : null;
+      const frames = frameKey ? themeImages[frameKey] : null;
+      if (frames && frames[0] && frames[0].src) {
+        const img = document.createElement("img");
+        img.src = frames[0].src;
+        img.alt = "";
+        if (!unlocked) img.className = "badge-card-icon-silhouette";
+        iconWrap.appendChild(img);
+      } else {
+        iconWrap.classList.add("badge-card-icon--generic");
+        if (!unlocked) iconWrap.classList.add("badge-card-icon-silhouette");
+      }
+      card.appendChild(iconWrap);
+
+      const info = document.createElement("div");
+      info.className = "badge-card-info";
+      const name = document.createElement("div");
+      name.className = "badge-card-name";
+      name.textContent = b.display_name || b.badge_id;
+      info.appendChild(name);
+
+      if (unlocked) {
+        const desc = document.createElement("div");
+        desc.className = "badge-card-desc";
+        desc.textContent = b.description || "";
+        info.appendChild(desc);
+      } else {
+        const progress = document.createElement("div");
+        progress.className = "badge-card-progress";
+        const threshold = b.threshold || 0;
+        if (b.trigger_type === "RIVALS_EVICTED") {
+          progress.textContent = Math.min(rivalsEvictedCount, threshold) + " / " + threshold + " evicted";
+        } else {
+          progress.textContent = Math.min(buildBuiltCount, threshold) + " / " + threshold + " built";
+        }
+        info.appendChild(progress);
+      }
+      card.appendChild(info);
+
+      badgeListEl.appendChild(card);
+    }
+  }
 
   // ── Skills list install-button handler (event delegation) ────────
 
@@ -1736,6 +1875,8 @@
   // ── Phase 2a: build loop state ───────────────────────────────────────────
   /** Buildable objects from manifest, sorted by build_order. @type {Array<object>} */
   let themeBuildables = [];
+  /** Badges declared by the current theme's manifest. @type {Array<{badge_id:string,display_name:string,description:string,trigger_type:'OBJECTS_BUILT'|'RIVALS_EVICTED',threshold:number,icon_asset:string}>} */
+  let themeBadges = [];
   /** Whether the theme's viewport declares crate/poof asset keys. */
   let themeHasCrateAsset = false;
   let themeHasPoofAsset = false;
@@ -1810,6 +1951,10 @@
   let buildQueue = [];
   /** Count of queue entries fully built so far (index into buildQueue). */
   let buildBuiltCount = 0;
+  /** Count of rival agents successfully evicted (fled offscreen and pruned) this theme session. */
+  let rivalsEvictedCount = 0;
+  /** Set of badge_id strings unlocked so far this theme session. Only ever grows. @type {Set<string>} */
+  let unlockedBadgeIds = new Set();
   /** Progress (0..1) of the current active (buildQueue[buildBuiltCount]) object. */
   let buildCurrentProgress = 0;
   /**
@@ -3725,6 +3870,11 @@
         buildQueue = buildSeededQueue(themeBuildables, initializedThemeId);
         buildBuiltCount = 0;
         buildCurrentProgress = 0;
+        // ── Badges (reset per theme) ─────────────────────────────────────
+        themeBadges = Array.isArray(manifest?.badges) ? manifest.badges : [];
+        rivalsEvictedCount = 0;
+        unlockedBadgeIds = new Set();
+        updateBadgeHud();
         // ── Ranged combat upgrade (reset per theme) ─────────────────────
         // Characters START in melee. Building the ranged weapon rack (the
         // buildable with build_order 0 → themeBuildables[0] after the sort)
@@ -7116,12 +7266,16 @@
       const OFFSCREEN_MARGIN = 80;
       activeEnemies = activeEnemies.filter((en) => {
         if (!en.fleeing) return true;
-        return (
+        const stillOnscreen = (
           en.nx > -OFFSCREEN_MARGIN &&
           en.nx < walkableNativeW + OFFSCREEN_MARGIN &&
           en.ny > -OFFSCREEN_MARGIN &&
           en.ny < walkableNativeH + OFFSCREEN_MARGIN
         );
+        // A fleeing enemy that just crossed the offscreen margin is a
+        // successful eviction — count it toward RIVALS_EVICTED badges.
+        if (!stillOnscreen) rivalsEvictedCount++;
+        return stillOnscreen;
       });
     }
 
@@ -7493,6 +7647,10 @@
       }
       ctx.restore();
     }
+
+    // Badges: cheap per-frame check (small array) so unlocks + the HUD count
+    // reflect this frame's build/eviction counters immediately.
+    updateBadgeUnlocks();
 
     // HUD overlay
     drawHUD(w);

@@ -43,10 +43,48 @@ test('upgrades a legacy manifest missing all fields: crate/poof/projectile asset
   const anchorKeys = manifest.decor_objects.map((d) => `${d.anchor_coord[0]},${d.anchor_coord[1]}`);
   assert.equal(new Set(anchorKeys).size, 9);
 
+  assert.equal(manifest.badges.length, 8);
+
   assert.ok(changed.length >= 5, `expected at least 5 change entries, got ${changed.length}`);
   assert.ok(changed.some((c) => c.includes('crate_asset')));
   assert.ok(changed.some((c) => c.includes('enemy_config')));
   assert.ok(changed.some((c) => c.includes('decor_objects')));
+});
+
+test('upgrades a manifest with empty badges to the 8 default badges', () => {
+  const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: [] }));
+
+  assert.equal(manifest.badges.length, 8);
+  assert.ok(manifest.badges.some((b) => b.trigger_type === 'OBJECTS_BUILT'));
+  assert.ok(manifest.badges.some((b) => b.trigger_type === 'RIVALS_EVICTED'));
+  for (const badge of manifest.badges) {
+    assert.match(badge.icon_asset, /^frames\.json#achievement_/);
+  }
+  assert.ok(changed.includes('badges'));
+});
+
+test('leaves a pre-existing non-empty badges array untouched', () => {
+  const existingBadges = [{
+    badge_id: 'custom_badge',
+    display_name: 'Custom Badge',
+    description: 'A custom badge.',
+    trigger_type: 'OBJECTS_BUILT' as const,
+    threshold: 2,
+    icon_asset: 'frames.json#achievement_9',
+  }];
+
+  const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: existingBadges }));
+
+  assert.deepEqual(manifest.badges, existingBadges);
+  assert.ok(!changed.some((c) => c.includes('badges')));
+});
+
+test('badge upgrade is idempotent: a second pass makes no further changes', () => {
+  const first = upgradeThemeManifest(minimalManifest({ badges: [] }));
+  const second = upgradeThemeManifest(first.manifest);
+
+  assert.deepEqual(second.manifest.badges, first.manifest.badges);
+  assert.ok(!second.changed.some((c) => c.includes('badges')));
 });
 
 test('upgrade is idempotent: a second pass makes no further changes', () => {

@@ -1,4 +1,4 @@
-import type { DecorObject, EnemyConfig, ThemeManifest } from '../shared/types';
+import type { DecorObject, EnemyConfig, ThemeBadge, ThemeManifest } from '../shared/types';
 
 const DEFAULT_ENEMY_CONFIG: EnemyConfig = { spawn_interval_seconds: 45, count_mode: 'random' };
 
@@ -75,6 +75,81 @@ function buildDefaultDecorObjects(): DecorObject[] {
 }
 
 /**
+ * Builds the fixed 8-entry default badge roster (4 OBJECTS_BUILT, 4
+ * RIVALS_EVICTED), reusing the achievement art board's frames
+ * (achievement_0..achievement_7) as icons. Applied whenever a manifest has
+ * no badges, so the badge UI always has content to render.
+ */
+export function buildDefaultBadges(): ThemeBadge[] {
+  return [
+    {
+      badge_id: 'build_1',
+      display_name: 'First Build',
+      description: 'Complete your first build.',
+      trigger_type: 'OBJECTS_BUILT',
+      threshold: 1,
+      icon_asset: 'frames.json#achievement_0',
+    },
+    {
+      badge_id: 'build_3',
+      display_name: 'Builder',
+      description: 'Build 3 objects.',
+      trigger_type: 'OBJECTS_BUILT',
+      threshold: 3,
+      icon_asset: 'frames.json#achievement_1',
+    },
+    {
+      badge_id: 'build_6',
+      display_name: 'Developer',
+      description: 'Build 6 objects.',
+      trigger_type: 'OBJECTS_BUILT',
+      threshold: 6,
+      icon_asset: 'frames.json#achievement_2',
+    },
+    {
+      badge_id: 'build_10',
+      display_name: 'Master Builder',
+      description: 'Build 10 objects.',
+      trigger_type: 'OBJECTS_BUILT',
+      threshold: 10,
+      icon_asset: 'frames.json#achievement_3',
+    },
+    {
+      badge_id: 'evict_1',
+      display_name: 'First Eviction',
+      description: 'Evict your first rival.',
+      trigger_type: 'RIVALS_EVICTED',
+      threshold: 1,
+      icon_asset: 'frames.json#achievement_4',
+    },
+    {
+      badge_id: 'evict_5',
+      display_name: 'Defender',
+      description: 'Evict 5 rivals.',
+      trigger_type: 'RIVALS_EVICTED',
+      threshold: 5,
+      icon_asset: 'frames.json#achievement_5',
+    },
+    {
+      badge_id: 'evict_10',
+      display_name: 'Enforcer',
+      description: 'Evict 10 rivals.',
+      trigger_type: 'RIVALS_EVICTED',
+      threshold: 10,
+      icon_asset: 'frames.json#achievement_6',
+    },
+    {
+      badge_id: 'evict_20',
+      display_name: 'Warlord',
+      description: 'Evict 20 rivals.',
+      trigger_type: 'RIVALS_EVICTED',
+      threshold: 20,
+      icon_asset: 'frames.json#achievement_7',
+    },
+  ];
+}
+
+/**
  * Upgrades a (possibly legacy) ThemeManifest to the current data contract in
  * place on a deep copy. Only fills fields that are missing; never touches
  * fields that already exist (buildable_objects, rosters, scales, anchor
@@ -106,6 +181,11 @@ export function upgradeThemeManifest(manifest: ThemeManifest): { manifest: Theme
   if (!upgraded.decor_objects || upgraded.decor_objects.length === 0) {
     upgraded.decor_objects = buildDefaultDecorObjects();
     changed.push('Added 9 default decor_objects (4 seats, 4 static, 1 animated)');
+  }
+
+  if (!upgraded.badges || upgraded.badges.length === 0) {
+    upgraded.badges = buildDefaultBadges();
+    changed.push('badges');
   }
 
   if (Array.isArray(upgraded.buildable_objects)) {

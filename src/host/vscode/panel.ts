@@ -2747,6 +2747,8 @@ export class TycoonPanel {
         <button class="menu-item" role="menuitem" id="menu-about">About</button>
         ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ""}
       </div>
+      <!-- Badge HUD: lower-right silhouette medallion, shown/updated by media/main.js -->
+      <button id="badge-hud-btn" class="badge-hud" hidden aria-label="Badges"><span class="badge-hud-count">0</span></button>
     </div>
 
     <!-- Resize handle: drag to split stage vs metrics panel -->
@@ -2821,6 +2823,16 @@ export class TycoonPanel {
       <p>
         <a href="https://github.com/Corsair-Studios/TycoonAgents" target="_blank" rel="noopener noreferrer">GitHub repository</a>
       </p>
+    </div>
+  </div>
+
+  <!-- Badge modal overlay: lists all of the current theme's badges -->
+  <div id="badge-modal" role="dialog" aria-modal="true" aria-labelledby="badge-modal-title" hidden>
+    <div id="badge-backdrop"></div>
+    <div id="badge-dialog">
+      <button id="badge-modal-close" aria-label="Close dialog">&times;</button>
+      <h2 id="badge-modal-title">Badges</h2>
+      <div id="badge-list"></div>
     </div>
   </div>
 
