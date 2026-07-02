@@ -414,10 +414,22 @@
   let themeProviderConfigured = { gemini: false, openai: false };
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
-  /** Per-theme in-flight board regeneration state: theme_id -> board string being regenerated. */
-  const themeBoardRegenBusy = new Map();
   /** The review-card "Upload" button awaiting a host result (for busy reset). */
   let pendingUploadBtn = null;
+  /** Maps a theme-review item's `kind` to the REGENERATE_BOARD board string.
+   * Kinds absent from this map (e.g. emote_atlas) don't get a per-card
+   * Regenerate button — that board isn't independently regenerable. */
+  const THEME_REVIEW_BOARD_BY_KIND = {
+    character_atlas: "agents",
+    rival_atlas: "enemy",
+    object_atlas: "objects",
+    environment: "environment",
+    background_decor_atlas: "decor",
+    expression_atlas: "expressions",
+    achievement_atlas: "achievements",
+  };
+  /** item_id values with an in-flight REGENERATE_BOARD request from a review card. */
+  const themeBoardRegenBusyItems = new Set();
 
   // Tracks whether the setup screen was reached via Settings (vs. first-run
   // install). When opened from Settings we stay on the screen even once the
@@ -1007,8 +1019,27 @@
           event.stopPropagation();
           openThemeImageLightbox(item.image_src, item.label, preview);
         });
+      } else if (item.generation_error) {
+        preview.textContent = "Generation blocked";
       } else {
-        preview.textContent = item.generation_error ? "Generation blocked" : "Not generated yet";
+        // Not-yet-generated board: render a clearly-labeled placeholder so it
+        // reads as "this board hasn't been generated" rather than a broken image.
+        preview.classList.add("theme-review-preview--placeholder-board");
+        const placeholderBoard = THEME_REVIEW_BOARD_BY_KIND[item.kind]
+          || item.kind.replace(/_/g, " ");
+        const placeholderBox = document.createElement("div");
+        placeholderBox.style.cssText = "display:flex;flex-direction:column;align-items:center;"
+          + "justify-content:center;gap:4px;width:100%;height:100%;min-height:96px;box-sizing:border-box;"
+          + "padding:8px;text-align:center;background:rgba(255,0,255,0.14);border:2px dashed #ff33ff;color:#ff33ff;";
+        const placeholderKind = document.createElement("div");
+        placeholderKind.style.cssText = "font-weight:700;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;";
+        placeholderKind.textContent = `${placeholderBoard} board — not generated`;
+        const placeholderLabel = document.createElement("div");
+        placeholderLabel.style.cssText = "font-size:11px;opacity:0.85;";
+        placeholderLabel.textContent = item.label;
+        placeholderBox.appendChild(placeholderKind);
+        placeholderBox.appendChild(placeholderLabel);
+        preview.appendChild(placeholderBox);
       }
 
       const body = document.createElement("div");
@@ -1187,6 +1218,41 @@
         });
       });
       decisionRow.appendChild(uploadBtn);
+
+      // Per-card regeneration: regenerate just this item's board in place
+      // (see THEME_REVIEW_BOARD_BY_KIND). Kinds outside that map (e.g.
+      // emote_atlas) don't get this control.
+      const regenerateBoardKind = THEME_REVIEW_BOARD_BY_KIND[item.kind];
+      let regenerateStatus = null;
+      if (regenerateBoardKind) {
+        const regenerateBtn = document.createElement("button");
+        regenerateBtn.className = "skill-btn theme-review-regenerate";
+        regenerateBtn.type = "button";
+        regenerateBtn.dataset.idleText = "Regenerate";
+        const regenerateBusy = themeBoardRegenBusyItems.has(item.id);
+        regenerateBtn.textContent = regenerateBusy ? "Regenerating…" : "Regenerate";
+        regenerateBtn.disabled = regenerateBusy || Boolean(payload.generation_active && !isCurrentReviewGate);
+        regenerateBtn.title = `Regenerate just the ${regenerateBoardKind} board for this theme.`;
+        regenerateBtn.addEventListener("click", () => {
+          regenerateBtn.disabled = true;
+          regenerateBtn.textContent = "Regenerating…";
+          if (regenerateStatus) regenerateStatus.textContent = "";
+          themeBoardRegenBusyItems.add(item.id);
+          vscode.postMessage({
+            type: 'REGENERATE_BOARD',
+            payload: {
+              theme_id: reviewThemeId,
+              board: regenerateBoardKind,
+              item_id: item.id,
+              image_provider: selectedThemeImageProvider(),
+            },
+          });
+        });
+        decisionRow.appendChild(regenerateBtn);
+        regenerateStatus = document.createElement("span");
+        regenerateStatus.className = "theme-review-regen-status";
+        decisionRow.appendChild(regenerateStatus);
+      }
 
       const feedback = document.createElement("textarea");
       feedback.className = "theme-review-feedback";
@@ -1396,75 +1462,6 @@
       row.appendChild(sizeLabel);
       row.appendChild(deleteBtn);
       themePickerGrid.appendChild(row);
-
-      // ── Per-board regeneration control ──────────────────────────────────
-      // Lets the user regenerate a single board (e.g. enemy) of an existing
-      // theme, in place, without a full theme regen.
-      const regenRow = document.createElement("div");
-      regenRow.className = "theme-regen-row";
-      regenRow.dataset.themeRegenId = theme.theme_id;
-      regenRow.style.display = "flex";
-      regenRow.style.alignItems = "center";
-      regenRow.style.gap = "6px";
-      regenRow.style.marginTop = "-4px";
-      regenRow.style.marginBottom = "4px";
-
-      const boardSelect = document.createElement("select");
-      boardSelect.className = "theme-review-mode";
-      const boardOptions = [
-        ["enemy", "Enemy board"],
-        ["decor", "Decor board"],
-        ["objects", "Object boards"],
-        ["environment", "Environment"],
-        ["agents", "Agents"],
-        ["expressions", "Expressions"],
-        ["achievements", "Achievements"],
-      ];
-      for (const [value, label] of boardOptions) {
-        const opt = document.createElement("option");
-        opt.value = value;
-        opt.textContent = label;
-        boardSelect.appendChild(opt);
-      }
-      boardSelect.value = "enemy";
-
-      const regenBtn = document.createElement("button");
-      regenBtn.className = "skill-btn";
-      regenBtn.type = "button";
-      regenBtn.textContent = "Regenerate board";
-
-      const regenStatus = document.createElement("span");
-      regenStatus.className = "theme-picker-approval";
-      regenStatus.textContent = "";
-
-      const isRegenBusy = themeBoardRegenBusy.has(theme.theme_id);
-      if (isRegenBusy) {
-        regenBtn.disabled = true;
-        boardSelect.disabled = true;
-        regenStatus.textContent = `Regenerating ${themeBoardRegenBusy.get(theme.theme_id)} board…`;
-      }
-
-      regenBtn.addEventListener("click", () => {
-        const board = boardSelect.value;
-        themeBoardRegenBusy.set(theme.theme_id, board);
-        regenBtn.disabled = true;
-        boardSelect.disabled = true;
-        regenStatus.textContent = `Regenerating ${board} board…`;
-        regenStatus.classList.remove("theme-picker-status--error");
-        vscode.postMessage({
-          type: "REGENERATE_BOARD",
-          payload: {
-            theme_id: theme.theme_id,
-            board,
-            image_provider: selectedThemeImageProvider(),
-          },
-        });
-      });
-
-      regenRow.appendChild(boardSelect);
-      regenRow.appendChild(regenBtn);
-      regenRow.appendChild(regenStatus);
-      themePickerGrid.appendChild(regenRow);
     }
 
     // ── Roster section inside Themes modal ──────────────────────────────────
@@ -3377,31 +3374,31 @@
         themePickerStatus.classList.toggle("theme-picker-status--error", Boolean(payload.error));
       }
     } else if (msg && msg.type === "BOARD_REGENERATED") {
+      // Fired from a theme-review card's Regenerate button. The review isn't
+      // guaranteed to still be open/rendered when this arrives, so every DOM
+      // lookup below is optional and this no-ops gracefully if the card is gone.
       const payload = msg.payload || {};
-      const regenThemeId = payload.theme_id;
-      if (regenThemeId) themeBoardRegenBusy.delete(regenThemeId);
-      const regenRow = themePickerGrid
-        ? themePickerGrid.querySelector(`[data-theme-regen-id="${regenThemeId || ""}"]`)
+      const regenItemId = payload.item_id;
+      if (regenItemId) themeBoardRegenBusyItems.delete(regenItemId);
+      const regenCard = regenItemId && themeImageReviewList
+        ? themeImageReviewList.querySelector(`[data-item-id="${regenItemId}"]`)
         : null;
-      if (regenRow) {
-        const regenBtn = /** @type {HTMLButtonElement|null} */ (regenRow.querySelector(".skill-btn"));
-        const boardSelect = /** @type {HTMLSelectElement|null} */ (regenRow.querySelector(".theme-review-mode"));
-        const regenStatus = /** @type {HTMLElement|null} */ (regenRow.querySelector(".theme-picker-approval"));
-        if (regenBtn) regenBtn.disabled = false;
-        if (boardSelect) boardSelect.disabled = false;
+      if (regenCard) {
+        const regenBtn = /** @type {HTMLButtonElement|null} */ (regenCard.querySelector(".theme-review-regenerate"));
+        const regenStatus = /** @type {HTMLElement|null} */ (regenCard.querySelector(".theme-review-regen-status"));
+        if (regenBtn) {
+          regenBtn.disabled = false;
+          regenBtn.textContent = "Regenerate";
+        }
         if (regenStatus) {
           regenStatus.textContent = payload.ok
             ? `✓ ${payload.board || "Board"} board regenerated`
             : `⚠ Regen failed: ${payload.error || "Unknown error"}`;
-          regenStatus.classList.toggle("theme-picker-status--error", !payload.ok);
+          regenStatus.classList.toggle("theme-review-regen-status--error", !payload.ok);
         }
       }
-      // If the regenerated theme is the one currently loaded on stage, refresh
-      // its art the same way SELECT_THEME does (host responds with a fresh
-      // THEME_INITIALIZED carrying updated frames).
-      if (payload.ok && regenThemeId && regenThemeId === selectedThemeId) {
-        vscode.postMessage({ type: 'SELECT_THEME', payload: { theme_id: regenThemeId } });
-      }
+      // On success the host re-posts THEME_IMAGE_REVIEW, which re-renders this
+      // card with the fresh art — no SELECT_THEME re-post needed here.
     } else if (msg && msg.type === "THEME_IMPORT_RESULT") {
       const payload = msg.payload || {};
       if (themeImportBtn) themeImportBtn.disabled = false;

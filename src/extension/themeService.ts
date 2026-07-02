@@ -714,12 +714,42 @@ export async function getThemeImageReview(
     }
   }
 
+  // Augment the saved review items with the FULL expected item set for this
+  // theme's plan, so boards that were never generated still show up as
+  // pending "placeholder" cards instead of being silently absent. This is
+  // display-time only: saved items are kept verbatim (never downgraded to
+  // pending) and the on-disk review document is left untouched.
+  let items = document?.items ?? [];
+  if (manifest) {
+    try {
+      const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
+        ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+      if (savedPlan) {
+        const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+        if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
+        const creativeDirection = themePlanCreativeDirection(plan);
+        const expectedItems = createReviewItems(plan, manifest, creativeDirection);
+        const savedItems = document?.items ?? [];
+        const expectedIds = new Set(expectedItems.map((expected) => expected.id));
+        const mergedExpected: ThemeImageReviewItem[] = expectedItems.map((expected) => {
+          const saved = savedItems.find((candidate) => candidate.id === expected.id);
+          return saved ?? { ...expected, updated_at: new Date(0).toISOString() };
+        });
+        const extraSaved = savedItems.filter((candidate) => !expectedIds.has(candidate.id));
+        items = [...mergedExpected, ...extraSaved];
+      }
+    } catch {
+      // No usable saved plan for this theme (e.g. a very old theme, or a
+      // mismatched/renamed plan) — fall back to saved items only.
+    }
+  }
+
   const imagesByFilename = new Map(reviewImages.imageUris.map((imageUri) => [basename(imageUri), imageUri]));
   const loadedTheme = await loadTheme(globalStorageUri, themeId);
   return {
     theme_id: themeId,
     display_name: document?.display_name ?? displayName,
-    entries: (document?.items ?? []).map((item) => {
+    entries: items.map((item) => {
       const imageUri = imagesByFilename.get(item.filename);
       return {
         item,
@@ -1139,6 +1169,7 @@ export async function regenerateThemeBoard(
   board: BoardKind,
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
+  itemId?: string,
 ): Promise<void> {
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
 
@@ -1153,7 +1184,11 @@ export async function regenerateThemeBoard(
   const { manifest, frames } = loadedTheme;
   const plan = normalizeThemePlan(savedPlan, manifest.display_name);
 
-  const items = buildBoardItems(plan, manifest, board);
+  let items = buildBoardItems(plan, manifest, board);
+  if (itemId) {
+    items = items.filter((candidate) => candidate.id === itemId);
+    if (!items.length) throw new Error(`No regenerable image with id "${itemId}" was found on board "${board}".`);
+  }
   if (!items.length) throw new Error(`No regenerable images were found for board "${board}".`);
 
   await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
@@ -1642,7 +1677,7 @@ function themeDecorSpecs(manifest: ThemeManifest): Array<{ decor_id: string; dis
   }));
 }
 
-function createReviewItems(
+export function createReviewItems(
   plan: ThemePlan,
   manifest: ThemeManifest,
   creativeDirection: string,

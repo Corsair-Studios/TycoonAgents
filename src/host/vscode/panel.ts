@@ -938,9 +938,11 @@ export class TycoonPanel {
             theme_id?: string;
             board?: BoardKind;
             image_provider?: string;
+            item_id?: string;
           } | undefined;
           const themeId = payload?.theme_id ?? "";
           const board = payload?.board;
+          const itemId = payload?.item_id;
           try {
             if (this._themeGenerationActive) {
               throw new Error("Wait for the current theme generation to finish before regenerating a board.");
@@ -967,16 +969,17 @@ export class TycoonPanel {
               board,
               imageOptions,
               onProgress,
+              itemId,
             );
             void this._panel.webview.postMessage({
               type: "BOARD_REGENERATED",
-              payload: { theme_id: themeId, board, ok: true },
+              payload: { theme_id: themeId, board, item_id: itemId, ok: true },
             });
           } catch (err) {
             console.error("TycoonAgents: Board regeneration failed:", err);
             void this._panel.webview.postMessage({
               type: "BOARD_REGENERATED",
-              payload: { theme_id: themeId, board, ok: false, error: String(err) },
+              payload: { theme_id: themeId, board, item_id: itemId, ok: false, error: String(err) },
             });
           } finally {
             if (themeId) await this._postThemeImageReview(themeId);
