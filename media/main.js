@@ -1666,6 +1666,12 @@
   let objectAnimMap = {};
   /** Stable per-object native placement, keyed by object_id: {nx, ny}. Computed once at THEME_INITIALIZED. */
   let objectPlacement = {};
+  /** Generated (non-override) placement per object_id: {nx, ny} — used to revert a Stage-Editor move. */
+  let objectHomePlacement = {};
+  /** Stage-Editor position overrides, object_id -> normalized [x,y] (0..1). Loaded from manifest.viewport. */
+  let themeObjAnchorOverrides = {};
+  /** Stage-Editor position overrides, decor_id -> normalized [x,y] (0..1); [-1,-1] = hidden. */
+  let themeDecorAnchorOverrides = {};
 
   // ── Background Decor + Sitting ──────────────────────────────────────────
   /** Decor objects from manifest.decor_objects (read-only). @type {Array<object>} */
@@ -1961,6 +1967,10 @@
   let dragVertexIndex = -1;
   /** Index of the polygon vertex under the cursor (for hover highlight), or -1. */
   let hoverVertexIndex = -1;
+  /** Id of the scene object (buildable/decor) currently being dragged, or null. */
+  let dragObjectId = null;
+  /** Type of the dragged scene object: "buildable" | "decor" | null. */
+  let dragObjectType = null;
   /** Last drawn background rect (canvas px) — lets mouse handlers map canvas<->native. */
   let lastBgX = 0, lastBgY = 0, lastBgW = 1, lastBgH = 1;
   /** Character id selected in the per-character override control. */
@@ -2028,11 +2038,41 @@
     return -1;
   }
 
+  /**
+   * Nearest draggable scene object (buildable or decor) whose drawn center is
+   * within rPx canvas px of (mx,my), else null. Uses the same native->canvas
+   * transform the objects are drawn with so hit-testing matches the sprite.
+   */
+  function sceneObjectAt(mx, my, rPx) {
+    let best = null;
+    let bestD = rPx * rPx;
+    for (let i = 0; i < themeBuildables.length; i++) {
+      const p = objectPlacement[themeBuildables[i].object_id];
+      if (!p) continue;
+      const [cx, cy] = nativeToCanvas(p.nx, p.ny, lastBgX, lastBgY, lastBgW, lastBgH);
+      const dx = cx - mx, dy = cy - my, d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = { type: "buildable", id: themeBuildables[i].object_id }; }
+    }
+    for (let i = 0; i < themeDecor.length; i++) {
+      const id = themeDecor[i].decor_id;
+      if (id == null) continue;
+      const p = decorPlacement[id];
+      if (!p) continue;
+      const [cx, cy] = nativeToCanvas(p.nx, p.ny, lastBgX, lastBgY, lastBgW, lastBgH);
+      const dx = cx - mx, dy = cy - my, d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = { type: "decor", id: id }; }
+    }
+    return best;
+  }
+
   canvas.addEventListener("mousedown", (e) => {
     if (!editStageMode) return;
     const [mx, my] = canvasMouse(e);
     const vi = vertexAt(mx, my, 11);
-    if (vi >= 0) { dragVertexIndex = vi; e.preventDefault(); }
+    if (vi >= 0) { dragVertexIndex = vi; e.preventDefault(); return; }
+    // Otherwise start dragging a buildable/decor object under the cursor.
+    const hit = sceneObjectAt(mx, my, 20);
+    if (hit) { dragObjectType = hit.type; dragObjectId = hit.id; e.preventDefault(); }
   });
   canvas.addEventListener("mousemove", (e) => {
     if (!editStageMode) return;
@@ -2043,13 +2083,39 @@
         Math.max(0, Math.min(walkableNativeW, nx)),
         Math.max(0, Math.min(walkableNativeH, ny)),
       ];
+    } else if (dragObjectId) {
+      // Drag a buildable/decor object: cursor -> native -> clamp to polygon ->
+      // store as a normalized override; also move the live placement so the
+      // sprite tracks the cursor this frame.
+      const [nx, ny] = canvasToNative(mx, my);
+      const cl = clampToPolygon(nx, ny, walkablePolygon);
+      const normX = Math.max(0, Math.min(1, cl[0] / walkableNativeW));
+      const normY = Math.max(0, Math.min(1, cl[1] / walkableNativeH));
+      if (dragObjectType === "buildable") {
+        themeObjAnchorOverrides[dragObjectId] = [normX, normY];
+        const p = objectPlacement[dragObjectId];
+        if (p) { p.nx = cl[0]; p.ny = cl[1]; }
+      } else {
+        themeDecorAnchorOverrides[dragObjectId] = [normX, normY];
+        const p = decorPlacement[dragObjectId];
+        if (p) {
+          p.nx = cl[0]; p.ny = cl[1];
+          // Keep a seat's sit-point under the moved seat.
+          const d = themeDecor.find((x) => x.decor_id === dragObjectId);
+          const sit = d && Array.isArray(d.sit_anchor) && d.sit_anchor.length >= 2 ? d.sit_anchor : DEFAULT_SIT_ANCHOR;
+          const sn = clampToPolygon(cl[0] + sit[0] * walkableNativeW, cl[1] + sit[1] * walkableNativeH, walkablePolygon);
+          p.sitNx = sn[0]; p.sitNy = sn[1];
+        }
+      }
     } else {
       hoverVertexIndex = vertexAt(mx, my, 11);
-      canvas.style.cursor = hoverVertexIndex >= 0 ? "grab" : "default";
+      const overObj = hoverVertexIndex < 0 && sceneObjectAt(mx, my, 20);
+      canvas.style.cursor = hoverVertexIndex >= 0 ? "grab" : (overObj ? "move" : "default");
     }
   });
   window.addEventListener("mouseup", () => {
     if (dragVertexIndex >= 0) dragVertexIndex = -1;
+    if (dragObjectId) { dragObjectId = null; dragObjectType = null; }
   });
   canvas.addEventListener("dblclick", (e) => {
     if (!editStageMode) return;
@@ -2070,6 +2136,21 @@
     if (vi >= 0 && walkablePolygon.length > 3) {
       walkablePolygon.splice(vi, 1);
       hoverVertexIndex = -1;
+      return;
+    }
+    // Right-click an object: buildables revert to their generated spot; decor
+    // is hidden (persisted via the [-1,-1] sentinel).
+    const hit = sceneObjectAt(mx, my, 20);
+    if (hit) {
+      if (hit.type === "buildable") {
+        delete themeObjAnchorOverrides[hit.id];
+        const home = objectHomePlacement[hit.id];
+        if (home && objectPlacement[hit.id]) { objectPlacement[hit.id].nx = home.nx; objectPlacement[hit.id].ny = home.ny; }
+      } else {
+        themeDecorAnchorOverrides[hit.id] = [-1, -1];
+        delete decorPlacement[hit.id];
+        if (Object.prototype.hasOwnProperty.call(seatOccupancy, hit.id)) delete seatOccupancy[hit.id];
+      }
     }
   });
 
@@ -2104,7 +2185,7 @@
       '<input id="se-ei" type="range" min="10" max="180" step="5" value="45">' +
       '<div style="margin-top:6px">Enemy count mode</div>' +
       '<select id="se-ecm"><option value="random">random</option><option value="all">all</option></select>' +
-      '<div id="se-hint">Drag points · dbl-click edge to add · right-click to remove</div>' +
+      '<div id="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide)</div>' +
       '<div id="se-btns"><button id="se-save" type="button">Save</button><button id="se-done" type="button">Done</button></div>' +
       '<div id="se-status"></div>';
     stageAreaEl.appendChild(wrap);
@@ -2261,6 +2342,8 @@
     editStageMode = false;
     dragVertexIndex = -1;
     hoverVertexIndex = -1;
+    dragObjectId = null;
+    dragObjectType = null;
     canvas.style.cursor = "default";
     if (stageEditPanel) stageEditPanel.setAttribute("hidden", "");
   }
@@ -2283,6 +2366,8 @@
         overall_scale: themeOverallScale,
         character_scale_overrides: themeCharScaleOverrides,
         object_scale_overrides: themeObjScaleOverrides,
+        object_anchor_overrides: themeObjAnchorOverrides,
+        decor_anchor_overrides: themeDecorAnchorOverrides,
         enemy_config: {
           spawn_interval_seconds: enemySpawnIntervalSec,
           count_mode: enemyCountMode,
@@ -3437,7 +3522,14 @@
         // values are currently always [0.5,0.5] (degenerate/equal), so detect
         // that and fall back to the deterministic OBJECT_SLOT_UVS distribution.
         // If a theme ever ships distinct anchors, honor them directly instead.
+        // Stage-Editor position overrides (normalized 0..1), loaded from the
+        // manifest. Shallow-copied so editor edits don't mutate the manifest.
+        themeObjAnchorOverrides = (vp && typeof vp.object_anchor_overrides === "object" && vp.object_anchor_overrides)
+          ? Object.assign({}, vp.object_anchor_overrides) : {};
+        themeDecorAnchorOverrides = (vp && typeof vp.decor_anchor_overrides === "object" && vp.decor_anchor_overrides)
+          ? Object.assign({}, vp.decor_anchor_overrides) : {};
         objectPlacement = {};
+        objectHomePlacement = {};
         if (themeBuildables.length > 0) {
           const anchors = themeBuildables.map((o) =>
             Array.isArray(o.anchor_coord) && o.anchor_coord.length >= 2
@@ -3449,15 +3541,20 @@
             (a) => Math.abs(a[0] - firstAnchor[0]) < 1e-6 && Math.abs(a[1] - firstAnchor[1]) < 1e-6
           );
           themeBuildables.forEach((obj, i) => {
-            let placed;
+            // Generated ("home") placement — used when no override exists and to
+            // revert a Stage-Editor move (right-click).
+            let home;
             if (allEqual) {
-              placed = objectSlotHome(i, walkablePolygon);
+              home = objectSlotHome(i, walkablePolygon);
             } else {
               const a = anchors[i];
-              const nx = a[0] * walkableNativeW;
-              const ny = a[1] * walkableNativeH;
-              placed = clampToPolygon(nx, ny, walkablePolygon);
+              home = clampToPolygon(a[0] * walkableNativeW, a[1] * walkableNativeH, walkablePolygon);
             }
+            objectHomePlacement[obj.object_id] = { nx: home[0], ny: home[1] };
+            const ov = themeObjAnchorOverrides[obj.object_id];
+            const placed = (Array.isArray(ov) && ov.length >= 2)
+              ? clampToPolygon(ov[0] * walkableNativeW, ov[1] * walkableNativeH, walkablePolygon)
+              : home;
             objectPlacement[obj.object_id] = { nx: placed[0], ny: placed[1] };
           });
         }
@@ -3482,11 +3579,17 @@
           themeDecor.forEach((d, i) => {
             const decorId = d.decor_id;
             if (decorId == null) return;
-            // Resolve anchor placement: auto-distribute when all anchors are
-            // equal/degenerate (reuse the stable object-slot approach), else
-            // honor the declared normalized anchor_coord.
+            // A Stage-Editor position override wins over the declared anchor.
+            // The [-1,-1] sentinel means the decor was hidden — skip it entirely
+            // (no placement, no render, no seat).
+            const dOv = themeDecorAnchorOverrides[decorId];
+            if (Array.isArray(dOv) && dOv.length >= 2 && dOv[0] < 0 && dOv[1] < 0) return;
+            // Resolve anchor placement: override, else auto-distribute when all
+            // anchors are equal/degenerate, else the declared normalized anchor.
             let placed;
-            if (dAllEqual) {
+            if (Array.isArray(dOv) && dOv.length >= 2) {
+              placed = clampToPolygon(dOv[0] * walkableNativeW, dOv[1] * walkableNativeH, walkablePolygon);
+            } else if (dAllEqual) {
               // Offset the slot index so decor doesn't stack on buildable objects.
               placed = objectSlotHome(i + 3, walkablePolygon);
             } else {

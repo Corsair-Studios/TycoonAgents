@@ -30,6 +30,14 @@ export interface ViewportConfig {
   object_scale?: number;
   character_scale_overrides?: Record<string, number>;
   object_scale_overrides?: Record<string, number>;
+  // Per-buildable position overrides set in the Stage Editor. Keyed by
+  // BuildableObject.object_id -> normalized [x,y] in 0..1 scene space (same
+  // space as walkable_nav_polygon). Survives art regeneration.
+  object_anchor_overrides?: Record<string, [number, number]>;
+  // Per-decor position overrides set in the Stage Editor. Keyed by
+  // DecorObject.decor_id -> normalized [x,y] in 0..1. The sentinel [-1,-1]
+  // marks that decor as hidden/removed.
+  decor_anchor_overrides?: Record<string, [number, number]>;
   overall_scale?: number;
   projectile_asset?: string;
   enemy_config?: EnemyConfig;

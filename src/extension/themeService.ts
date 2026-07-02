@@ -354,6 +354,8 @@ export async function saveThemeTuning(
     object_scale: number;
     character_scale_overrides: Record<string, number>;
     object_scale_overrides: Record<string, number>;
+    object_anchor_overrides?: Record<string, [number, number]>;
+    decor_anchor_overrides?: Record<string, [number, number]>;
     overall_scale?: number;
     enemy_config?: EnemyConfig;
   },
@@ -367,6 +369,22 @@ export async function saveThemeTuning(
     manifest.viewport.object_scale = tuning.object_scale;
     manifest.viewport.character_scale_overrides = tuning.character_scale_overrides;
     manifest.viewport.object_scale_overrides = tuning.object_scale_overrides;
+    // Position overrides set by the Stage Editor. Keep only well-formed
+    // id -> [x, y] entries; the [-1,-1] sentinel (hidden decor) is preserved.
+    const sanitizeAnchors = (raw: unknown): Record<string, [number, number]> | undefined => {
+      if (!raw || typeof raw !== 'object') return undefined;
+      const out: Record<string, [number, number]> = {};
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (Array.isArray(v) && v.length >= 2 && Number.isFinite(Number(v[0])) && Number.isFinite(Number(v[1]))) {
+          out[k] = [Number(v[0]), Number(v[1])];
+        }
+      }
+      return out;
+    };
+    const objAnchors = sanitizeAnchors(tuning.object_anchor_overrides);
+    if (objAnchors) manifest.viewport.object_anchor_overrides = objAnchors;
+    const decorAnchors = sanitizeAnchors(tuning.decor_anchor_overrides);
+    if (decorAnchors) manifest.viewport.decor_anchor_overrides = decorAnchors;
     if (tuning.overall_scale !== undefined) {
       const overall = Number(tuning.overall_scale);
       if (Number.isFinite(overall) && overall > 0) {
