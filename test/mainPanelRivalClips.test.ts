@@ -52,12 +52,12 @@ test('media/main.js RIVAL_CLIPS matches canonical RIVAL_CLIPS in themePlan.ts', 
     'media/main.js RIVAL_CLIPS has drifted from src/extension/themePlan.ts RIVAL_CLIPS');
 });
 
-test('RIVAL_CLIPS is the compact 5-frame contract (3 walk + 2 attack)', () => {
-  assert.deepEqual(RIVAL_CLIPS.walk.frames, [0, 1, 2]);
-  assert.deepEqual(RIVAL_CLIPS.attack.frames, [3, 4]);
+test('RIVAL_CLIPS is the compact 5-frame contract (2 walk + 3 attack)', () => {
+  assert.deepEqual(RIVAL_CLIPS.walk.frames, [0, 1]);
+  assert.deepEqual(RIVAL_CLIPS.attack.frames, [2, 3, 4]);
   assert.equal(RIVAL_CLIPS.walk.loop, true);
   assert.equal(RIVAL_CLIPS.attack.loop, false);
-  assert.equal(RIVAL_CLIPS.attack.pingpong, true);
+  assert.equal(RIVAL_CLIPS.attack.pingpong, undefined);
   assert.equal(RIVAL_CLIPS.walk.flippable, true);
   assert.equal(RIVAL_CLIPS.attack.flippable, true);
 });

@@ -28,10 +28,10 @@ export type ThemeObjectBoardRow =
   | { kind: 'crate' };
 
 /**
- * One row of a 5x4 (20-cell) rival board. Each row is ONE enemy: cols 0-2 are a
- * 3-frame WALK cycle, cols 3-4 are a 2-frame ATTACK. A board carries up to four
+ * One row of a 5x4 (20-cell) rival board. Each row is ONE enemy: cols 0-1 are a
+ * 2-frame WALK cycle, cols 2-4 are a 3-frame ATTACK. A board carries up to four
  * such rows → four enemies; three boards cover all 12 rivals. Rival frames are
- * keyed `rival_<id>` (five frames each): [walk0, walk1, walk2, attack0, attack1].
+ * keyed `rival_<id>` (five frames each): [walk0, walk1, attack0, attack1, attack2].
  */
 export type ThemeRivalBoardRow = { kind: 'rival'; rival_id: string; display_name: string };
 

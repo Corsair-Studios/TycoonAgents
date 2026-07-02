@@ -101,7 +101,7 @@ export function rivalBoardFrameKeys(rows: ThemeRivalBoardRow[]): string[] {
 
 /**
  * Compact rival board: a 5-column x 4-row grid (20 cells) packing up to FOUR enemies,
- * one per ROW. Cols 1-3 are a 3-frame side-view WALK cycle; cols 4-5 are a 2-frame ATTACK.
+ * one per ROW. Cols 1-2 are a 2-frame side-view WALK cycle; cols 3-5 are a 3-frame ATTACK.
  * Enemies only need WALK + ATTACK, so a full 20-cell character atlas would be wasteful.
  */
 export function buildRivalAtlasPrompt(
@@ -119,8 +119,8 @@ export function buildRivalAtlasPrompt(
     `Create one compact rival (enemy) sprite board for the "${themeName}" theme.`,
     boardContract(5, 4),
     'Each of the (up to) four ROWS is ONE distinct named enemy, shown as a 5-frame mini-atlas:',
-    '  Cells 1-3 of the row: a 3-frame side-view WALK cycle (contact, passing, opposite contact) that loops seamlessly cell 3 back to cell 1 — same enemy, only the limbs move.',
-    '  Cells 4-5 of the row: a 2-frame ATTACK — cell 4 is the wind-up, cell 5 is the strike/lunge.',
+    '  Cells 1-2 of the row: a 2-frame side-view WALK cycle (cell 1 = contact pose, cell 2 = passing/opposite pose) that loops seamlessly cell 2 back to cell 1 — same enemy, only the limbs move.',
+    '  Cells 3-5 of the row: a 3-frame ATTACK — cell 3 is the wind-up/anticipation, cell 4 is the strike/lunge (peak), cell 5 is the recovery/settle.',
     ...rowLines,
     '',
     'Keep each enemy identical across its own five cells: identical face, body, costume, colors, equipment, rendering style, and pixel scale — change only the pose.',

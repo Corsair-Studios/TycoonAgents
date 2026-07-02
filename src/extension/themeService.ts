@@ -1,5 +1,12 @@
 import * as vscode from 'vscode';
-import type { AgentConfig, BuildableObject, EnemyConfig, RivalConfig, ThemeManifest } from '../shared/types';
+import type {
+  AgentConfig,
+  BuildableObject,
+  EnemyConfig,
+  RivalConfig,
+  ThemeManifest,
+  ViewportConfig,
+} from '../shared/types';
 import { expandThemePlan } from './translator';
 import {
   buildAchievementAtlasPrompt,
@@ -544,6 +551,24 @@ async function loadThemeManifest(
     ?? (await readJson<ThemeManifest>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_manifest.json`)));
 }
 
+/**
+ * Regenerating an existing theme must not clobber Stage Editor viewport tuning
+ * the user has already dialed in. Carry forward each of these fields from the
+ * OLD manifest's viewport onto the freshly generated one, but only when the old
+ * value is present and the new manifest doesn't already carry an explicit value.
+ * Mutates `newViewport` in place.
+ */
+function preserveViewportTuning(newViewport: ViewportConfig, oldViewport: ViewportConfig | undefined): void {
+  if (!oldViewport) return;
+  newViewport.character_scale = oldViewport.character_scale ?? newViewport.character_scale;
+  newViewport.object_scale = oldViewport.object_scale ?? newViewport.object_scale;
+  newViewport.character_scale_overrides = oldViewport.character_scale_overrides ?? newViewport.character_scale_overrides;
+  newViewport.object_scale_overrides = oldViewport.object_scale_overrides ?? newViewport.object_scale_overrides;
+  newViewport.object_anchor_overrides = oldViewport.object_anchor_overrides ?? newViewport.object_anchor_overrides;
+  newViewport.decor_anchor_overrides = oldViewport.decor_anchor_overrides ?? newViewport.decor_anchor_overrides;
+  newViewport.enemy_config = oldViewport.enemy_config ?? newViewport.enemy_config;
+}
+
 /** Return retained originals, reconstructing legacy review boards if needed. */
 export async function ensureThemeReviewImages(
   globalStorageUri: vscode.Uri,
@@ -794,6 +819,17 @@ export async function generateTheme(
   await vscode.workspace.fs.createDirectory(directoryUri);
   await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
   await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+
+  // Regenerating an existing theme must not wipe out Stage Editor viewport
+  // tuning the user already dialed in. A missing old manifest (brand-new
+  // theme) is expected and must not fail generation.
+  try {
+    const oldManifest = await loadThemeManifest(globalStorageUri, themeId);
+    if (oldManifest) preserveViewportTuning(manifest.viewport, oldManifest.viewport);
+  } catch {
+    // No existing manifest to preserve tuning from — proceed with the fresh one.
+  }
+
   await writeThemeFiles(globalStorageUri, manifest, frames);
 
   const reviewItems = createReviewItems(plan, manifest, creativeDirection);

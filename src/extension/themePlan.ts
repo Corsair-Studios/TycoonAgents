@@ -59,15 +59,15 @@ export type RivalClipName = 'walk' | 'attack';
 
 /**
  * Compact rival (enemy) clips. Enemies only need WALK + ATTACK, so each rival is
- * a 5-frame atlas — 3 walk frames (indices 0-2) + 2 attack frames (indices 3-4) —
- * packed 4 rivals per 5x4 board (each ROW = one enemy, cols 0-2 walk, cols 3-4 attack).
+ * a 5-frame atlas — 2 walk frames (indices 0-1) + 3 attack frames (indices 2-4) —
+ * packed 4 rivals per 5x4 board (each ROW = one enemy, cols 0-1 walk, cols 2-4 attack).
  *
  * IMPORTANT: this object is duplicated byte-for-byte in media/main.js (const RIVAL_CLIPS).
  * A parity test (test/mainPanelRivalClips.test.ts) fails if the two copies drift.
  */
 export const RIVAL_CLIPS: Record<RivalClipName, AtlasClip> = {
-  walk: { frames: [0, 1, 2], fps: 8, loop: true, flippable: true },
-  attack: { frames: [3, 4], fps: 8, loop: false, flippable: true, pingpong: true },
+  walk: { frames: [0, 1], fps: 8, loop: true, flippable: true },
+  attack: { frames: [2, 3, 4], fps: 8, loop: false, flippable: true },
 };
 
 export interface ThemePlan {

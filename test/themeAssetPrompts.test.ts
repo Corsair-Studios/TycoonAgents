@@ -56,13 +56,13 @@ test('rivalBoardFrameKeys yields one rival_<id> key per enemy row', () => {
   assert.deepEqual(rivalBoardFrameKeys(boards[0]), ['rival_r_1', 'rival_r_2', 'rival_r_3', 'rival_r_4']);
 });
 
-test('rival prompt is a 5x4 compact board with 3-frame walk + 2-frame attack per enemy row', () => {
+test('rival prompt is a 5x4 compact board with 2-frame walk + 3-frame attack per enemy row', () => {
   const boards = createRivalBoardRows(rivalSpecs());
   const prompt = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', boards[0]);
   assert.match(prompt, /512 x 512 pixels \(1:1\)/i);
   assert.match(prompt, /5-column by 4-row logical grid with 20 visually equal cells/i);
-  assert.match(prompt, /3-frame side-view WALK cycle/i);
-  assert.match(prompt, /2-frame ATTACK/i);
+  assert.match(prompt, /2-frame side-view WALK cycle/i);
+  assert.match(prompt, /3-frame ATTACK/i);
   assert.match(prompt, /Row 1 \(Cells 1-5\): the enemy \*\*"Rival 1"\*\*/i);
   assert.match(prompt, /Row 4 \(Cells 16-20\): the enemy \*\*"Rival 4"\*\*/i);
   assert.match(prompt, /flips? cleanly/i);

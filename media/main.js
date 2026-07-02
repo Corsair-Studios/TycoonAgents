@@ -1563,11 +1563,11 @@
   };
 
   // RIVAL_CLIPS mirrors the src copy exactly (a test enforces byte parity).
-  // Enemies (rivals) use a COMPACT 5-frame sprite: [walk0, walk1, walk2,
-  // attack0, attack1]. Enemies only WALK or ATTACK.
+  // Enemies (rivals) use a COMPACT 5-frame sprite: [walk0, walk1,
+  // attack0, attack1, attack2]. Enemies only WALK or ATTACK.
   const RIVAL_CLIPS = {
-    walk:   { frames: [0, 1, 2], fps: 8, loop: true,  flippable: true },
-    attack: { frames: [3, 4],    fps: 8, loop: false, flippable: true, pingpong: true },
+    walk:   { frames: [0, 1],    fps: 8, loop: true,  flippable: true },
+    attack: { frames: [2, 3, 4], fps: 8, loop: false, flippable: true },
   };
 
   // OBJECT_CLIPS mirrors src/extension/themePlan.ts buildable-object clips — keep in sync.
