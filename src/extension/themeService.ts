@@ -8,6 +8,7 @@ import type {
   ViewportConfig,
 } from '../shared/types';
 import { expandThemePlan } from './translator';
+import { upgradeThemeManifest } from './themeMigration';
 import {
   buildAchievementAtlasPrompt,
   buildBackgroundDecorPrompt,
@@ -153,6 +154,68 @@ export async function listThemes(
     ]);
     return { ...theme, ...approval, size_bytes: sizeBytes };
   }));
+}
+
+export interface ThemeUpgradeResult {
+  theme_id: string;
+  changed: string[];
+}
+
+/**
+ * Scans every installed theme (modern per-directory storage under
+ * `themes/<theme_id>/manifest.json`) and applies `upgradeThemeManifest` to
+ * bring legacy manifests up to the current data contract. Missing art is
+ * intentionally left alone here — the migration only fills in structural
+ * fields (decor_objects, crate/poof/projectile assets, enemy_config); the
+ * webview renders labeled placeholders for any asset that isn't generated.
+ *
+ * For each theme whose manifest actually changes, the original file is
+ * backed up (non-destructively) alongside it before the upgraded manifest is
+ * written back. A theme whose manifest is already current is still included
+ * in the returned results with an empty `changed` list. A single bad
+ * manifest never aborts the scan of the remaining themes.
+ */
+export async function upgradeInstalledThemes(
+  globalStorageUri: vscode.Uri,
+): Promise<ThemeUpgradeResult[]> {
+  const results: ThemeUpgradeResult[] = [];
+
+  let entries: [string, vscode.FileType][] = [];
+  try {
+    entries = await vscode.workspace.fs.readDirectory(themesDirectoryUri(globalStorageUri));
+  } catch {
+    // The themes directory is created on first generation; nothing to upgrade.
+    return results;
+  }
+
+  for (const [themeId, kind] of entries) {
+    if (kind !== vscode.FileType.Directory || !isThemeId(themeId)) continue;
+    try {
+      const manifestUri = themeManifestUri(globalStorageUri, themeId);
+      const raw = await vscode.workspace.fs.readFile(manifestUri);
+      const manifest = JSON.parse(Buffer.from(raw).toString('utf8')) as ThemeManifest;
+      const { manifest: upgraded, changed } = upgradeThemeManifest(manifest);
+      results.push({ theme_id: themeId, changed });
+
+      if (changed.length > 0) {
+        const backupUri = vscode.Uri.joinPath(
+          themeDirectoryUri(globalStorageUri, themeId),
+          `manifest.json.${Date.now()}.bak`,
+        );
+        try {
+          // Never clobber an existing backup with the same name.
+          await vscode.workspace.fs.stat(backupUri);
+        } catch {
+          await vscode.workspace.fs.writeFile(backupUri, Buffer.from(raw));
+        }
+        await vscode.workspace.fs.writeFile(manifestUri, jsonBuffer(upgraded));
+      }
+    } catch (error) {
+      console.error(`[TycoonAgents] Failed to upgrade theme "${themeId}":`, error);
+    }
+  }
+
+  return results;
 }
 
 /**

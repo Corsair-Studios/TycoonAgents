@@ -12,7 +12,7 @@ import { runDemo } from "./demo";
 import { ClaudeCodeProvider } from "../../providers/claude-code/claudeCodeProvider";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { activate as activateTheater, deactivate as deactivateTheater } from "../../extension/main";
-import { seedBundledThemes } from "../../extension/themeService";
+import { seedBundledThemes, upgradeInstalledThemes } from "../../extension/themeService";
 
 let provider: ClaudeCodeProvider | undefined;
 let demoDisposable: { dispose(): void } | undefined;
@@ -84,7 +84,50 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push({ dispose: () => demoDisposable?.dispose() });
   });
 
-  context.subscriptions.push(openCmd, demoCmd);
+  // Command: upgrade every installed theme manifest to the current data
+  // contract (adds decor_objects, crate/poof/projectile assets, enemy_config)
+  // without regenerating art. Missing art shows as labeled placeholders.
+  const upgradeThemesCmd = vscode.commands.registerCommand(
+    "tycoonagents.upgradeInstalledThemes",
+    async () => {
+      try {
+        const results = await upgradeInstalledThemes(context.globalStorageUri);
+        if (results.length === 0) {
+          void vscode.window.showInformationMessage("No installed themes found.");
+          return;
+        }
+
+        const upgraded = results.filter((r) => r.changed.length > 0);
+        const upToDateCount = results.length - upgraded.length;
+
+        for (const r of upgraded) {
+          console.log(`[TycoonAgents] Upgraded theme "${r.theme_id}": ${r.changed.join("; ")}`);
+        }
+
+        if (upgraded.length === 0) {
+          void vscode.window.showInformationMessage(
+            `All ${results.length} installed theme(s) are already up to date.`,
+          );
+          return;
+        }
+
+        const detail = upgraded
+          .map((r) => `${r.theme_id} (${r.changed.length} update${r.changed.length === 1 ? "" : "s"})`)
+          .join(", ");
+        const upToDateSuffix = upToDateCount > 0 ? ` ${upToDateCount} already current.` : "";
+        void vscode.window.showInformationMessage(
+          `Upgraded ${upgraded.length} of ${results.length} theme(s): ${detail}.${upToDateSuffix}`,
+        );
+      } catch (error) {
+        console.error("[TycoonAgents] Theme upgrade failed:", error);
+        void vscode.window.showErrorMessage(
+          `TycoonAgents: Theme upgrade failed — ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    },
+  );
+
+  context.subscriptions.push(openCmd, demoCmd, upgradeThemesCmd);
 
   // Auto-open the live panel on startup if the setting is enabled
   const autoShow = vscode.workspace

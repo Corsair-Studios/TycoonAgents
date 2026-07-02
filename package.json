@@ -28,6 +28,10 @@
       {
         "command": "tycoon.generateTheme",
         "title": "TycoonAgents: Generate Theme"
+      },
+      {
+        "command": "tycoonagents.upgradeInstalledThemes",
+        "title": "TycoonAgents: Upgrade Installed Themes"
       }
     ],
     "views": {
