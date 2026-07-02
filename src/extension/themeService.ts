@@ -111,6 +111,16 @@ type WaitForThemeImageReview = (
   options?: ThemeImageReviewWaitOptions,
 ) => Promise<ThemeGenerationResult | void>;
 
+/** Every independently-regenerable board of a theme. */
+export type BoardKind =
+  | 'environment'
+  | 'agents'
+  | 'enemy'
+  | 'decor'
+  | 'objects'
+  | 'expressions'
+  | 'achievements';
+
 export async function planTheme(
   prompt: string,
   imageGenerationOptions?: ThemeImageGenerationOptions,
@@ -986,18 +996,15 @@ async function continueThemeGeneration(
   const themeId = plan.theme_id;
   const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
 
-  const people = manifest.roster_agents.map((agent) => ({
-    itemId: `agent_${agent.slot_id}`,
-    frameKey: `agent_${agent.slot_id}`,
-    name: agent.name,
-  }));
+  const agentBoardIds = new Set(buildBoardItems(plan, manifest, 'agents').map((candidate) => candidate.id));
+  const agentItems = reviewItems.filter((item) => agentBoardIds.has(item.id));
 
-  for (let index = 0; index < people.length; index++) {
+  for (let index = 0; index < agentItems.length; index++) {
     throwIfCancelled(isCancelled);
-    const entry = people[index];
-    onProgress(`${entry.name} (${index + 1}/${people.length})`);
-    const item = reviewItems.find((candidate) => candidate.id === entry.itemId)!;
-    await runNonFatalBoardStep(entry.name, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+    const item = agentItems[index];
+    const name = item.subject ?? item.label;
+    onProgress(`${name} (${index + 1}/${agentItems.length})`);
+    await runNonFatalBoardStep(name, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
       generateOrResumeThemeItem(
         globalStorageUri,
         themeId,
@@ -1009,23 +1016,17 @@ async function continueThemeGeneration(
         isCancelled,
         onReviewReady,
         waitForReview,
-        async () => {
-          const generated = await generateThemeImage(item.prompt, imageGenerationOptions);
-          throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
-          const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
-          throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
-          await saveReviewImage(reviewDirectoryUri, item.filename, output);
-          throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
-          frames[entry.frameKey] = spritePackage.slots.map((slot) => slot.data);
-          await markGenerated(globalStorageUri, themeId, plan.display_name, item);
-          await writeThemeFiles(globalStorageUri, manifest, frames);
-        },
+        () => generateAgentAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+          item, imageGenerationOptions, onProgress,
+        ),
       ),
     );
   }
 
   throwIfCancelled(isCancelled);
-  const rivalItems = reviewItems.filter((item) => item.kind === 'rival_atlas');
+  const enemyBoardIds = new Set(buildBoardItems(plan, manifest, 'enemy').map((candidate) => candidate.id));
+  const rivalItems = reviewItems.filter((item) => enemyBoardIds.has(item.id));
   for (let index = 0; index < rivalItems.length; index++) {
     throwIfCancelled(isCancelled);
     const rivalsItem = rivalItems[index];
@@ -1042,7 +1043,8 @@ async function continueThemeGeneration(
   }
 
   throwIfCancelled(isCancelled);
-  const environmentItem = reviewItems.find((item) => item.id === 'environment')!;
+  const environmentBoardIds = new Set(buildBoardItems(plan, manifest, 'environment').map((candidate) => candidate.id));
+  const environmentItem = reviewItems.find((item) => environmentBoardIds.has(item.id))!;
   await runNonFatalBoardStep(environmentItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
     generateOrResumeThemeItem(
       globalStorageUri, themeId, plan.display_name, environmentItem, manifest, frames,
@@ -1055,7 +1057,8 @@ async function continueThemeGeneration(
   );
 
   throwIfCancelled(isCancelled);
-  const decorItem = reviewItems.find((item) => item.id === 'background_decor');
+  const decorBoardIds = new Set(buildBoardItems(plan, manifest, 'decor').map((candidate) => candidate.id));
+  const decorItem = reviewItems.find((item) => decorBoardIds.has(item.id));
   if (decorItem) {
     await runNonFatalBoardStep(decorItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
       generateOrResumeThemeItem(
@@ -1070,7 +1073,8 @@ async function continueThemeGeneration(
   }
 
   throwIfCancelled(isCancelled);
-  const objectItems = reviewItems.filter((item) => item.kind === 'object_atlas');
+  const objectBoardIds = new Set(buildBoardItems(plan, manifest, 'objects').map((candidate) => candidate.id));
+  const objectItems = reviewItems.filter((item) => objectBoardIds.has(item.id));
   for (let index = 0; index < objectItems.length; index++) {
     throwIfCancelled(isCancelled);
     const objectsItem = objectItems[index];
@@ -1087,7 +1091,8 @@ async function continueThemeGeneration(
   }
 
   throwIfCancelled(isCancelled);
-  const expressionsItem = reviewItems.find((item) => item.id === 'expressions')!;
+  const expressionsBoardIds = new Set(buildBoardItems(plan, manifest, 'expressions').map((candidate) => candidate.id));
+  const expressionsItem = reviewItems.find((item) => expressionsBoardIds.has(item.id))!;
   await runNonFatalBoardStep(expressionsItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
     generateOrResumeThemeItem(
       globalStorageUri, themeId, plan.display_name, expressionsItem, manifest, frames,
@@ -1100,7 +1105,8 @@ async function continueThemeGeneration(
   );
 
   throwIfCancelled(isCancelled);
-  const achievementsItem = reviewItems.find((item) => item.id === 'achievements')!;
+  const achievementsBoardIds = new Set(buildBoardItems(plan, manifest, 'achievements').map((candidate) => candidate.id));
+  const achievementsItem = reviewItems.find((item) => achievementsBoardIds.has(item.id))!;
   await runNonFatalBoardStep(achievementsItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
     generateOrResumeThemeItem(
       globalStorageUri, themeId, plan.display_name, achievementsItem, manifest, frames,
@@ -1116,6 +1122,90 @@ async function continueThemeGeneration(
   await writeThemeFiles(globalStorageUri, manifest, frames);
   throwIfCancelled(isCancelled, imageGenerationOptions?.signal);
   return { manifest, frames };
+}
+
+/**
+ * Regenerates a single board of an EXISTING theme (e.g. just the enemy
+ * board) and merges only that board's frames into the theme's persisted
+ * frames.json, leaving every other board untouched. Uses the same plan and
+ * the same buildBoardItems selection as full generation, so the regenerated
+ * board picks up current layout/prompt logic (e.g. a new enemy 2-walk/
+ * 3-attack row layout) without requiring a full theme regen.
+ */
+export async function regenerateThemeBoard(
+  globalStorageUri: vscode.Uri,
+  reviewDirectoryUri: vscode.Uri,
+  themeId: string,
+  board: BoardKind,
+  options: ThemeImageGenerationOptions | undefined,
+  onProgress: (message: string) => void,
+): Promise<void> {
+  if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
+
+  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
+    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  if (!savedPlan) {
+    throw new Error(`No saved plan was found for theme "${themeId}". Regenerate the full theme first.`);
+  }
+
+  const loadedTheme = await loadTheme(globalStorageUri, themeId);
+  if (!loadedTheme) throw new Error(`Theme "${themeId}" was not found.`);
+  const { manifest, frames } = loadedTheme;
+  const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+
+  const items = buildBoardItems(plan, manifest, board);
+  if (!items.length) throw new Error(`No regenerable images were found for board "${board}".`);
+
+  await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
+
+  for (let index = 0; index < items.length; index++) {
+    throwIfCancelled(undefined, options?.signal);
+    const item = items[index];
+    onProgress(`${item.label} (${index + 1}/${items.length})`);
+    switch (board) {
+      case 'agents':
+        await generateAgentAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames, item, options, onProgress,
+        );
+        break;
+      case 'enemy':
+        await generateRivalAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames, item, options, onProgress,
+        );
+        break;
+      case 'environment':
+        await generateEnvironmentAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames, item, options, onProgress,
+        );
+        break;
+      case 'decor':
+        await generateDecorAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames, item, options, onProgress,
+        );
+        break;
+      case 'objects':
+        await generateObjectAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames, item, options, onProgress, index + 1,
+        );
+        break;
+      case 'expressions':
+        await generateExpressionAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames, item, options, onProgress,
+        );
+        break;
+      case 'achievements':
+        await generateAchievementAsset(
+          globalStorageUri, reviewDirectoryUri, plan, manifest, frames, item, options, onProgress,
+        );
+        break;
+      default:
+        throw new Error(`Unsupported board type "${board}".`);
+    }
+  }
+
+  throwIfCancelled(undefined, options?.signal);
+  await writeThemeFiles(globalStorageUri, manifest, frames);
+  onProgress(`${board} board regenerated.`);
 }
 
 /**
@@ -1645,6 +1735,39 @@ function createReviewItems(
   ];
 }
 
+/**
+ * Builds the review items for exactly one board type. Delegates to
+ * createReviewItems — the single source of truth for prompts, filenames,
+ * and frame-key/row metadata — so full theme generation and per-board
+ * regeneration can never drift apart.
+ */
+export function buildBoardItems(
+  plan: ThemePlan,
+  manifest: ThemeManifest,
+  board: BoardKind,
+): Array<Omit<ThemeImageReviewItem, 'updated_at'>> {
+  const creativeDirection = themePlanCreativeDirection(plan);
+  const items = createReviewItems(plan, manifest, creativeDirection);
+  switch (board) {
+    case 'agents':
+      return items.filter((item) => item.kind === 'character_atlas');
+    case 'enemy':
+      return items.filter((item) => item.kind === 'rival_atlas');
+    case 'environment':
+      return items.filter((item) => item.id === 'environment');
+    case 'decor':
+      return items.filter((item) => item.id === 'background_decor');
+    case 'objects':
+      return items.filter((item) => item.kind === 'object_atlas');
+    case 'expressions':
+      return items.filter((item) => item.id === 'expressions');
+    case 'achievements':
+      return items.filter((item) => item.id === 'achievements');
+    default:
+      return [];
+  }
+}
+
 function createDecorReviewItem(
   plan: ThemePlan,
   manifest: ThemeManifest,
@@ -1663,6 +1786,29 @@ function createDecorReviewItem(
     frame_keys: decorBoardFrameKeys(rows),
     decor_rows: rows.flat(),
   };
+}
+
+/** Generates one character sprite board (an "agents" board item). */
+async function generateAgentAsset(
+  globalStorageUri: vscode.Uri,
+  reviewDirectoryUri: vscode.Uri,
+  plan: ThemePlan,
+  manifest: ThemeManifest,
+  frames: Record<string, string[]>,
+  item: Omit<ThemeImageReviewItem, 'updated_at'>,
+  options: ThemeImageGenerationOptions | undefined,
+  onProgress: (message: string) => void,
+): Promise<void> {
+  const generated = await generateThemeImage(item.prompt, options);
+  throwIfCancelled(undefined, options?.signal);
+  const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
+  throwIfCancelled(undefined, options?.signal);
+  await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  throwIfCancelled(undefined, options?.signal);
+  const frameKey = item.frame_keys[0] ?? item.id;
+  frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await writeThemeFiles(globalStorageUri, manifest, frames);
 }
 
 async function generateEnvironmentAsset(

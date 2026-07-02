@@ -414,6 +414,8 @@
   let themeProviderConfigured = { gemini: false, openai: false };
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
+  /** Per-theme in-flight board regeneration state: theme_id -> board string being regenerated. */
+  const themeBoardRegenBusy = new Map();
   /** The review-card "Upload" button awaiting a host result (for busy reset). */
   let pendingUploadBtn = null;
 
@@ -1394,6 +1396,75 @@
       row.appendChild(sizeLabel);
       row.appendChild(deleteBtn);
       themePickerGrid.appendChild(row);
+
+      // ── Per-board regeneration control ──────────────────────────────────
+      // Lets the user regenerate a single board (e.g. enemy) of an existing
+      // theme, in place, without a full theme regen.
+      const regenRow = document.createElement("div");
+      regenRow.className = "theme-regen-row";
+      regenRow.dataset.themeRegenId = theme.theme_id;
+      regenRow.style.display = "flex";
+      regenRow.style.alignItems = "center";
+      regenRow.style.gap = "6px";
+      regenRow.style.marginTop = "-4px";
+      regenRow.style.marginBottom = "4px";
+
+      const boardSelect = document.createElement("select");
+      boardSelect.className = "theme-review-mode";
+      const boardOptions = [
+        ["enemy", "Enemy board"],
+        ["decor", "Decor board"],
+        ["objects", "Object boards"],
+        ["environment", "Environment"],
+        ["agents", "Agents"],
+        ["expressions", "Expressions"],
+        ["achievements", "Achievements"],
+      ];
+      for (const [value, label] of boardOptions) {
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        boardSelect.appendChild(opt);
+      }
+      boardSelect.value = "enemy";
+
+      const regenBtn = document.createElement("button");
+      regenBtn.className = "skill-btn";
+      regenBtn.type = "button";
+      regenBtn.textContent = "Regenerate board";
+
+      const regenStatus = document.createElement("span");
+      regenStatus.className = "theme-picker-approval";
+      regenStatus.textContent = "";
+
+      const isRegenBusy = themeBoardRegenBusy.has(theme.theme_id);
+      if (isRegenBusy) {
+        regenBtn.disabled = true;
+        boardSelect.disabled = true;
+        regenStatus.textContent = `Regenerating ${themeBoardRegenBusy.get(theme.theme_id)} board…`;
+      }
+
+      regenBtn.addEventListener("click", () => {
+        const board = boardSelect.value;
+        themeBoardRegenBusy.set(theme.theme_id, board);
+        regenBtn.disabled = true;
+        boardSelect.disabled = true;
+        regenStatus.textContent = `Regenerating ${board} board…`;
+        regenStatus.classList.remove("theme-picker-status--error");
+        vscode.postMessage({
+          type: "REGENERATE_BOARD",
+          payload: {
+            theme_id: theme.theme_id,
+            board,
+            image_provider: selectedThemeImageProvider(),
+          },
+        });
+      });
+
+      regenRow.appendChild(boardSelect);
+      regenRow.appendChild(regenBtn);
+      regenRow.appendChild(regenStatus);
+      themePickerGrid.appendChild(regenRow);
     }
 
     // ── Roster section inside Themes modal ──────────────────────────────────
@@ -3304,6 +3375,32 @@
             ? ""
             : `${payload.display_name || "Theme"} exported.`;
         themePickerStatus.classList.toggle("theme-picker-status--error", Boolean(payload.error));
+      }
+    } else if (msg && msg.type === "BOARD_REGENERATED") {
+      const payload = msg.payload || {};
+      const regenThemeId = payload.theme_id;
+      if (regenThemeId) themeBoardRegenBusy.delete(regenThemeId);
+      const regenRow = themePickerGrid
+        ? themePickerGrid.querySelector(`[data-theme-regen-id="${regenThemeId || ""}"]`)
+        : null;
+      if (regenRow) {
+        const regenBtn = /** @type {HTMLButtonElement|null} */ (regenRow.querySelector(".skill-btn"));
+        const boardSelect = /** @type {HTMLSelectElement|null} */ (regenRow.querySelector(".theme-review-mode"));
+        const regenStatus = /** @type {HTMLElement|null} */ (regenRow.querySelector(".theme-picker-approval"));
+        if (regenBtn) regenBtn.disabled = false;
+        if (boardSelect) boardSelect.disabled = false;
+        if (regenStatus) {
+          regenStatus.textContent = payload.ok
+            ? `✓ ${payload.board || "Board"} board regenerated`
+            : `⚠ Regen failed: ${payload.error || "Unknown error"}`;
+          regenStatus.classList.toggle("theme-picker-status--error", !payload.ok);
+        }
+      }
+      // If the regenerated theme is the one currently loaded on stage, refresh
+      // its art the same way SELECT_THEME does (host responds with a fresh
+      // THEME_INITIALIZED carrying updated frames).
+      if (payload.ok && regenThemeId && regenThemeId === selectedThemeId) {
+        vscode.postMessage({ type: 'SELECT_THEME', payload: { theme_id: regenThemeId } });
       }
     } else if (msg && msg.type === "THEME_IMPORT_RESULT") {
       const payload = msg.payload || {};

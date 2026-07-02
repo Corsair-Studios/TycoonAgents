@@ -35,6 +35,7 @@ import {
   normalizeThemeCharacterAtlas,
   planTheme,
   readThemeArchive,
+  regenerateThemeBoard,
   renameThemeCharacter,
   replaceThemeBackground,
   retryThemeImage,
@@ -45,7 +46,8 @@ import {
   generateTheme as generateThemeService,
 } from "../../extension/themeService";
 import type { ThemePlan } from "../../extension/themePlan";
-import type { ThemeImageReviewWaitOptions } from "../../extension/themeService";
+import type { BoardKind, ThemeImageReviewWaitOptions } from "../../extension/themeService";
+import { themeImagesDirectoryUri } from "../../extension/themeStorage";
 import {
   getConfiguredThemeImageProvider,
   getThemeImageConfigurationStatus,
@@ -930,6 +932,54 @@ export class TycoonPanel {
               this._themeGenerationAbortController = undefined;
             }
             if (generatedThemeId) await this._postThemeImageReview(generatedThemeId);
+          }
+        } else if (message.type === "REGENERATE_BOARD") {
+          const payload = (message as any).payload as {
+            theme_id?: string;
+            board?: BoardKind;
+            image_provider?: string;
+          } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          const board = payload?.board;
+          try {
+            if (this._themeGenerationActive) {
+              throw new Error("Wait for the current theme generation to finish before regenerating a board.");
+            }
+            if (!themeId) throw new Error("No theme was specified for board regeneration.");
+            if (!board) throw new Error("No board was specified for regeneration.");
+            const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
+            if (!imageSettings.apiKey) {
+              const label = imageSettings.provider === "openai" ? "OpenAI" : "Google Gemini";
+              throw new Error(`No ${label} API key found. Add and save one above the theme prompt.`);
+            }
+            const onProgress = (msg: string) => void this._panel.webview.postMessage({
+              type: "THEME_GENERATION_PROGRESS",
+              payload: { message: msg },
+            });
+            const imageOptions = {
+              provider: imageSettings.provider,
+              apiKey: imageSettings.apiKey,
+            };
+            await regenerateThemeBoard(
+              this._globalStorageUri,
+              themeImagesDirectoryUri(this._globalStorageUri, themeId),
+              themeId,
+              board,
+              imageOptions,
+              onProgress,
+            );
+            void this._panel.webview.postMessage({
+              type: "BOARD_REGENERATED",
+              payload: { theme_id: themeId, board, ok: true },
+            });
+          } catch (err) {
+            console.error("TycoonAgents: Board regeneration failed:", err);
+            void this._panel.webview.postMessage({
+              type: "BOARD_REGENERATED",
+              payload: { theme_id: themeId, board, ok: false, error: String(err) },
+            });
+          } finally {
+            if (themeId) await this._postThemeImageReview(themeId);
           }
         }
       },
