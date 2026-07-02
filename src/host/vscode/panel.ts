@@ -42,6 +42,7 @@ import {
   resumeThemeGeneration,
   saveThemeTuning,
   updateThemeImageReviewStatus,
+  upgradeInstalledThemes,
   uploadThemeImage,
   generateTheme as generateThemeService,
 } from "../../extension/themeService";
@@ -378,6 +379,34 @@ export class TycoonPanel {
               type: "THEME_EXPORT_RESULT",
               payload: { theme_id: themeId, error: errorMessage(err) },
             });
+          }
+        } else if (message.type === "UPGRADE_THEMES") {
+          try {
+            const results = await upgradeInstalledThemes(this._globalStorageUri);
+            let summary: string;
+            if (results.length === 0) {
+              summary = "No installed themes found.";
+            } else {
+              const upgraded = results.filter((r) => r.changed.length > 0);
+              const upToDateCount = results.length - upgraded.length;
+              if (upgraded.length === 0) {
+                summary = `All ${results.length} installed theme(s) are already up to date.`;
+              } else {
+                const detail = upgraded
+                  .map((r) => `${r.theme_id} (${r.changed.length} update${r.changed.length === 1 ? "" : "s"})`)
+                  .join(", ");
+                const upToDateSuffix = upToDateCount > 0 ? ` ${upToDateCount} already current.` : "";
+                summary = `Upgraded ${upgraded.length} of ${results.length} theme(s): ${detail}.${upToDateSuffix}`;
+              }
+            }
+            void vscode.window.showInformationMessage(summary);
+            void this._panel.webview.postMessage({ type: "UPGRADE_THEMES_DONE", payload: { summary } });
+            const themes = await listThemes(this._globalStorageUri);
+            void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
+          } catch (err) {
+            const summary = `Theme upgrade failed: ${errorMessage(err)}`;
+            void vscode.window.showErrorMessage(`TycoonAgents: ${summary}`);
+            void this._panel.webview.postMessage({ type: "UPGRADE_THEMES_DONE", payload: { summary, error: errorMessage(err) } });
           }
         } else if (message.type === "IMPORT_THEME") {
           try {
@@ -2806,6 +2835,7 @@ export class TycoonPanel {
         <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
         <div class="theme-picker-actions">
           <button id="theme-import-btn" class="skill-btn">Import .zip</button>
+          <button id="theme-upgrade-btn" class="skill-btn">Upgrade installed themes</button>
           <button id="tab-theme-builder" class="skill-btn theme-builder-launch">Theme Builder</button>
         </div>
       </div>

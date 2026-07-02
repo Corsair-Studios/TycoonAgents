@@ -367,6 +367,7 @@
   const themePickerGrid     = /** @type {HTMLElement} */ (document.getElementById("theme-picker-grid"));
   const themePickerStatus   = /** @type {HTMLElement} */ (document.getElementById("theme-picker-status"));
   const themeImportBtn      = /** @type {HTMLButtonElement} */ (document.getElementById("theme-import-btn"));
+  const themeUpgradeBtn     = /** @type {HTMLButtonElement} */ (document.getElementById("theme-upgrade-btn"));
   const themePromptInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-prompt-input"));
   const themeGenerateBtn    = /** @type {HTMLElement} */ (document.getElementById("theme-generate-btn"));
   const themePlanEditor     = /** @type {HTMLElement} */ (document.getElementById("theme-plan-editor"));
@@ -541,6 +542,18 @@
         themePickerStatus.classList.remove("theme-picker-status--error");
       }
       vscode.postMessage({ type: "IMPORT_THEME" });
+    });
+  }
+
+  if (themeUpgradeBtn) {
+    themeUpgradeBtn.addEventListener("click", () => {
+      themeUpgradeBtn.disabled = true;
+      themeUpgradeBtn.textContent = "Upgrading…";
+      if (themePickerStatus) {
+        themePickerStatus.textContent = "Upgrading installed themes...";
+        themePickerStatus.classList.remove("theme-picker-status--error");
+      }
+      vscode.postMessage({ type: "UPGRADE_THEMES" });
     });
   }
 
@@ -3360,6 +3373,16 @@
             ? "Theme deleted."
             : "";
         themePickerStatus.classList.toggle("theme-picker-status--error", Boolean(deleteError));
+      }
+    } else if (msg && msg.type === "UPGRADE_THEMES_DONE") {
+      const payload = msg.payload || {};
+      if (themeUpgradeBtn) {
+        themeUpgradeBtn.disabled = false;
+        themeUpgradeBtn.textContent = "Upgrade installed themes";
+      }
+      if (themePickerStatus) {
+        themePickerStatus.textContent = payload.summary || (payload.error ? "Theme upgrade failed." : "");
+        themePickerStatus.classList.toggle("theme-picker-status--error", Boolean(payload.error));
       }
     } else if (msg && msg.type === "THEME_EXPORT_RESULT") {
       const payload = msg.payload || {};

@@ -13,7 +13,8 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:tycoonagents.open",
-    "onCommand:tycoonagents.demo"
+    "onCommand:tycoonagents.demo",
+    "onCommand:tycoonagents.upgradeInstalledThemes"
   ],
   "contributes": {
     "commands": [
