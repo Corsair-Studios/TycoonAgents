@@ -2165,11 +2165,16 @@
         Math.max(0, Math.min(walkableNativeH, ny)),
       ];
     } else if (dragObjectId) {
-      // Drag a buildable/decor object: cursor -> native -> clamp to polygon ->
-      // store as a normalized override; also move the live placement so the
-      // sprite tracks the cursor this frame.
+      // Drag a buildable/decor object: cursor -> native -> clamp -> store as a
+      // normalized override; also move the live placement so the sprite
+      // tracks the cursor this frame. Buildables must stay reachable, so
+      // they're clamped to the walkable nav polygon; decor is pure scenery
+      // and is free to go anywhere in the scene, only bounded by the
+      // background rectangle.
       const [nx, ny] = canvasToNative(mx, my);
-      const cl = clampToPolygon(nx, ny, walkablePolygon);
+      const cl = dragObjectType === "buildable"
+        ? clampToPolygon(nx, ny, walkablePolygon)
+        : clampToSceneBounds(nx, ny);
       const normX = Math.max(0, Math.min(1, cl[0] / walkableNativeW));
       const normY = Math.max(0, Math.min(1, cl[1] / walkableNativeH));
       if (dragObjectType === "buildable") {
@@ -2519,6 +2524,22 @@
       if (isPointInPolygon(tx, ty, poly)) return [tx, ty];
     }
     return [cx, cy];
+  }
+
+  /**
+   * Clamp (x,y) to the scene/background rectangle in native px — i.e. keep it
+   * on-canvas without requiring it to be inside the walkable nav polygon.
+   * Used for decor, which is pure scenery and may sit anywhere in the scene
+   * (against walls, up high, etc.), unlike buildables which must stay
+   * reachable and are clamped with clampToPolygon.
+   * @param {number} x @param {number} y
+   * @returns {number[]} [cx, cy] clamped to [0,walkableNativeW]x[0,walkableNativeH]
+   */
+  function clampToSceneBounds(x, y) {
+    return [
+      Math.max(0, Math.min(walkableNativeW, x)),
+      Math.max(0, Math.min(walkableNativeH, y)),
+    ];
   }
 
   /**
@@ -3737,15 +3758,18 @@
             if (Array.isArray(dOv) && dOv.length >= 2 && dOv[0] < 0 && dOv[1] < 0) return;
             // Resolve anchor placement: override, else auto-distribute when all
             // anchors are equal/degenerate, else the declared normalized anchor.
+            // Decor is pure scenery and isn't required to stay inside the
+            // walkable nav polygon (unlike buildables) — only bound it to the
+            // scene/background rectangle so it can't resolve off-canvas.
             let placed;
             if (Array.isArray(dOv) && dOv.length >= 2) {
-              placed = clampToPolygon(dOv[0] * walkableNativeW, dOv[1] * walkableNativeH, walkablePolygon);
+              placed = clampToSceneBounds(dOv[0] * walkableNativeW, dOv[1] * walkableNativeH);
             } else if (dAllEqual) {
               // Offset the slot index so decor doesn't stack on buildable objects.
               placed = objectSlotHome(i + 3, walkablePolygon);
             } else {
               const a = dAnchors[i];
-              placed = clampToPolygon(a[0] * walkableNativeW, a[1] * walkableNativeH, walkablePolygon);
+              placed = clampToSceneBounds(a[0] * walkableNativeW, a[1] * walkableNativeH);
             }
             // Sit-point = anchor placement + sit_anchor offset (normalized
             // scene-space → native px via the same walkableNative scale).
