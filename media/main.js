@@ -2182,6 +2182,13 @@
    * ±Math.PI/2 for art that points up/down, Math.PI for art that points left).
    */
   const PROJECTILE_ART_ANGLE_OFFSET = 0;
+  /**
+   * Fraction of walkableNativeH that a projectile's origin/impact points are
+   * raised above the shooter/target's BASE (feet) position, so shots read as
+   * coming from roughly gun / mid-character height instead of the ground.
+   * Both endpoints are raised equally so the shot angle is unaffected. Tunable.
+   */
+  const PROJECTILE_GUN_HEIGHT_FRAC = 0.06;
   /** Native px distance at which a non-fleeing enemy fires a ranged shot. */
   const ENEMY_RANGED_RANGE = 120;
   /** Seconds between an enemy's ranged/melee attack "hits" (cadence, not per-frame). */
@@ -2201,6 +2208,12 @@
    * to melee distance.
    */
   const RANGED_ENGAGE_RANGE = 110;
+  /**
+   * Max |dy|/|dx| grade (~15%) allowed for a ranged shot. Above this the
+   * shooter is considered too vertically misaligned with its target and
+   * walks to align (vertically) instead of firing this frame.
+   */
+  const MAX_SHOT_SLOPE = 0.15;
   /** Native px/second enemy walk-in speed. */
   const ENEMY_WALK_SPEED = 40;
   /**
@@ -6450,11 +6463,16 @@
    */
   function spawnProjectile(fromNx, fromNy, toNx, toNy) {
     if (!themeHasProjectile) return;
+    // Raise both endpoints equally by a fraction of the walkable height so
+    // the shot originates/lands at roughly gun (mid-character) height
+    // instead of the feet/base — canvas y increases downward, so "up" is
+    // a negative y offset. Raising both ends keeps the travel angle intact.
+    const gunLift = PROJECTILE_GUN_HEIGHT_FRAC * walkableNativeH;
     activeProjectiles.push({
       fromNx: fromNx,
-      fromNy: fromNy,
+      fromNy: fromNy - gunLift,
       toNx: toNx,
-      toNy: toNy,
+      toNy: toNy - gunLift,
       t: 0,
       // Depth-sort key: sort near the mid-flight point so it reads with the
       // combatants rather than always on top of / behind everything.
@@ -7009,10 +7027,12 @@
             charEntry.destNx = nearest.nx;
             charEntry.destNy = nearest.ny;
           } else {
-            // In range — hold position, face and damage the enemy.
+            // In range — hold horizontal position, face and damage the enemy.
+            // Ranged shooters also vertical-align (destNy) to the target's
+            // row so their shots stay near-horizontal; melee holds fully.
             engageInRange = true;
             charEntry.destNx = charEntry.nx;
-            charEntry.destNy = charEntry.ny;
+            charEntry.destNy = rangedUnlocked ? nearest.ny : charEntry.ny;
             nearest.hp -= AGENT_DPS * delta;
             // Enemy faces its attacker; agent facing is set below from relative x.
             nearest.facingLeft = (charEntry.nx > nearest.nx);
@@ -7022,7 +7042,15 @@
             if (rangedUnlocked) {
               if (typeof charEntry.shotCooldown !== "number") charEntry.shotCooldown = 0;
               charEntry.shotCooldown -= delta;
-              if (charEntry.shotCooldown <= 0) {
+              // Only fire once the shot is near-horizontal (within
+              // MAX_SHOT_SLOPE grade) — otherwise the shooter keeps walking
+              // vertically (via destNy above) to line up. A blocked shot
+              // does NOT reset the cooldown, so it fires promptly the first
+              // aligned frame once it's ready.
+              const sdx = Math.abs(nearest.nx - charEntry.nx);
+              const sdy = Math.abs(nearest.ny - charEntry.ny);
+              const shotAligned = sdy <= MAX_SHOT_SLOPE * Math.max(sdx, 1);
+              if (charEntry.shotCooldown <= 0 && shotAligned) {
                 charEntry.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
                 spawnProjectile(charEntry.nx, charEntry.ny, nearest.nx, nearest.ny);
               }
