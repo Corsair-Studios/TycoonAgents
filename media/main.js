@@ -5112,6 +5112,23 @@
     return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
   }
 
+  // Render a model id/alias as a clean "Family Version" label WITHOUT hardcoding
+  // any current version — the version is parsed from the resolved id the runtime
+  // reports (bare aliases have no version, so just the family is shown).
+  function prettyModel(model) {
+    if (!model) return "";
+    const s = String(model).toLowerCase();
+    let family = null;
+    if (s.includes("opus")) family = "Opus";
+    else if (s.includes("sonnet")) family = "Sonnet";
+    else if (s.includes("haiku")) family = "Haiku";
+    else if (s.includes("fable")) family = "Fable";
+    if (!family) return String(model); // unknown family → show raw
+    // Version = numeric segments, excluding 8-digit date stamps (e.g. 20250929).
+    const nums = (s.match(/\d+/g) || []).filter((n) => n.length < 8);
+    return nums.length ? `${family} ${nums.join(".")}` : family;
+  }
+
   /**
    * Render the agentMetrics array into the DOM table.
    * @param {Array<{id:string,name:string,status:string,taskCount:number,mcpCount:number,activeMs:number,tokens:number,model?:string,description?:string}>|undefined} metrics
@@ -5161,9 +5178,9 @@
       const role = describeRole(agent.description);
       let nameTitle = displayName;
       if (agent.model && role) {
-        nameTitle = `${displayName} — ${agent.model}\n${role}`;
+        nameTitle = `${displayName} — ${prettyModel(agent.model)}\n${role}`;
       } else if (agent.model) {
-        nameTitle = `${displayName} — ${agent.model}`;
+        nameTitle = `${displayName} — ${prettyModel(agent.model)}`;
       } else if (role) {
         nameTitle = `${displayName}\n${role}`;
       }
