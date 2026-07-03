@@ -1947,6 +1947,13 @@
    * Tune visually.
    */
   const SEAT_SIT_DROP = 0.02;
+  /**
+   * Horizontal canvas-px nudge applied to a seated character's draw position
+   * for better chair alignment: shifted RIGHT when its seat is not flipped,
+   * mirrored to the LEFT when the seat IS flipped horizontally. Cosmetic
+   * draw-time only — never affects logical position or depth sort.
+   */
+  const SEAT_SEATED_NUDGE_PX = 4;
   /** Chance, per idle wander-decision, that an idle agent goes to sit on a free seat. */
   const SIT_CHANCE = 0.05;
   /** How long (seconds) a character stays seated before standing up. */
@@ -7557,7 +7564,16 @@
         if (img && img.complete && img.naturalWidth > 0) {
           const spriteSize = Math.round(64 * depthScale * effectiveCharScale(charId));
           // Foot-anchor: bottom of sprite sits at canvas floor point
-          const drawX = cx - spriteSize / 2;
+          const isSeatedForDraw = charEntry.sitting === true && charEntry.sitSeatId != null;
+          const seatedFlipForDraw = isSeatedForDraw
+            ? !!(themeDecorFlipOverrides && themeDecorFlipOverrides[charEntry.sitSeatId])
+            : false;
+          // Seat-alignment nudge (screen-right when unflipped, mirrored
+          // screen-left when the seat is flipped) — see SEAT_SEATED_NUDGE_PX.
+          const seatNudge = isSeatedForDraw
+            ? (seatedFlipForDraw ? -SEAT_SEATED_NUDGE_PX : SEAT_SEATED_NUDGE_PX)
+            : 0;
+          const drawX = cx - spriteSize / 2 + seatNudge;
           const drawY = cy - spriteSize; // feet at cy
 
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
@@ -7580,7 +7596,12 @@
           // would mirror-map the label to ~spriteSize/2 and fling it offscreen).
           ctx.save();
           if (shouldFlip) {
-            ctx.translate(cx + spriteSize / 2, 0);
+            // Mirrored draw path: the sprite is drawn at local x=0 and
+            // reflected by scale(-1,1), so it never reads drawX. Baking
+            // seatNudge into the translate's x-origin shifts the resulting
+            // on-screen bounding box by the same +seatNudge as the
+            // non-flipped path below (translate right → screen shifts right).
+            ctx.translate(cx + spriteSize / 2 + seatNudge, 0);
             ctx.scale(-1, 1);
             ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);
           } else {
