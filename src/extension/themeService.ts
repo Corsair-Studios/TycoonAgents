@@ -436,6 +436,7 @@ export async function saveThemeTuning(
     object_scale_overrides: Record<string, number>;
     object_anchor_overrides?: Record<string, [number, number]>;
     decor_anchor_overrides?: Record<string, [number, number]>;
+    decor_flip_overrides?: Record<string, boolean>;
     overall_scale?: number;
     enemy_config?: EnemyConfig;
   },
@@ -465,6 +466,18 @@ export async function saveThemeTuning(
     if (objAnchors) manifest.viewport.object_anchor_overrides = objAnchors;
     const decorAnchors = sanitizeAnchors(tuning.decor_anchor_overrides);
     if (decorAnchors) manifest.viewport.decor_anchor_overrides = decorAnchors;
+    // Horizontal-flip overrides set by the Stage Editor. Keep only entries
+    // that are strictly `true`; drop `false`/non-boolean values.
+    const sanitizeFlips = (raw: unknown): Record<string, boolean> | undefined => {
+      if (!raw || typeof raw !== 'object') return undefined;
+      const out: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (v === true) out[k] = true;
+      }
+      return out;
+    };
+    const decorFlips = sanitizeFlips(tuning.decor_flip_overrides);
+    if (decorFlips) manifest.viewport.decor_flip_overrides = decorFlips;
     if (tuning.overall_scale !== undefined) {
       const overall = Number(tuning.overall_scale);
       if (Number.isFinite(overall) && overall > 0) {
@@ -639,6 +652,7 @@ function preserveViewportTuning(newViewport: ViewportConfig, oldViewport: Viewpo
   newViewport.object_scale_overrides = oldViewport.object_scale_overrides ?? newViewport.object_scale_overrides;
   newViewport.object_anchor_overrides = oldViewport.object_anchor_overrides ?? newViewport.object_anchor_overrides;
   newViewport.decor_anchor_overrides = oldViewport.decor_anchor_overrides ?? newViewport.decor_anchor_overrides;
+  newViewport.decor_flip_overrides = oldViewport.decor_flip_overrides ?? newViewport.decor_flip_overrides;
   newViewport.enemy_config = oldViewport.enemy_config ?? newViewport.enemy_config;
 }
 

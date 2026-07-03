@@ -1777,7 +1777,7 @@
   const ATLAS_CLIPS = {
     walk:      { frames: [0, 1, 2, 3, 4],  fps: 10, loop: true,  flippable: true },
     idle:      { frames: [16],              fps: 0,  loop: true,  flippable: false, hold: true },
-    sit:       { frames: [15],              fps: 0,  loop: true,  flippable: false, hold: true },
+    sit:       { frames: [15],              fps: 0,  loop: true,  flippable: true,  hold: true },
     melee:     { frames: [5, 6, 7, 8],     fps: 12, loop: false, flippable: true },
     build:     { frames: [5, 6, 7, 8],     fps: 6,  loop: true,  flippable: true },
     tool_idle: { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
@@ -1910,6 +1910,8 @@
   let themeObjAnchorOverrides = {};
   /** Stage-Editor position overrides, decor_id -> normalized [x,y] (0..1); [-1,-1] = hidden. */
   let themeDecorAnchorOverrides = {};
+  /** Stage-Editor horizontal-flip overrides, decor_id -> true when flipped. Loaded from manifest.viewport.decor_flip_overrides. */
+  let themeDecorFlipOverrides = {};
 
   // ── Background Decor + Sitting ──────────────────────────────────────────
   /** Decor objects from manifest.decor_objects (read-only). @type {Array<object>} */
@@ -2220,6 +2222,10 @@
   let dragObjectId = null;
   /** Type of the dragged scene object: "buildable" | "decor" | null. */
   let dragObjectType = null;
+  /** Type of the scene object currently under the cursor (hover, not drag): "buildable" | "decor" | null. Used by the F-to-flip decor shortcut. */
+  let hoverSceneObjType = null;
+  /** Id of the scene object currently under the cursor (hover, not drag), or null. */
+  let hoverSceneObjId = null;
   /** Last drawn background rect (canvas px) — lets mouse handlers map canvas<->native. */
   let lastBgX = 0, lastBgY = 0, lastBgW = 1, lastBgH = 1;
   /** Character id selected in the per-character override control. */
@@ -2365,7 +2371,15 @@
       hoverVertexIndex = vertexAt(mx, my, 11);
       const overObj = hoverVertexIndex < 0 && sceneObjectAt(mx, my, 20);
       canvas.style.cursor = hoverVertexIndex >= 0 ? "grab" : (overObj ? "move" : "default");
+      // Track the hovered scene object (independent of drag) so the F-to-flip
+      // decor shortcut knows what's under the cursor.
+      hoverSceneObjType = overObj ? overObj.type : null;
+      hoverSceneObjId = overObj ? overObj.id : null;
     }
+  });
+  canvas.addEventListener("mouseleave", () => {
+    hoverSceneObjType = null;
+    hoverSceneObjId = null;
   });
   window.addEventListener("mouseup", () => {
     if (dragVertexIndex >= 0) dragVertexIndex = -1;
@@ -2439,7 +2453,7 @@
       '<input id="se-ei" type="range" min="10" max="180" step="5" value="45">' +
       '<div style="margin-top:6px">Enemy count mode</div>' +
       '<select id="se-ecm"><option value="random">random</option><option value="all">all</option></select>' +
-      '<div id="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide)</div>' +
+      '<div id="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide) · hover decor + F to flip</div>' +
       '<div id="se-btns"><button id="se-save" type="button">Save</button><button id="se-done" type="button">Done</button></div>' +
       '<div id="se-status"></div>';
     stageAreaEl.appendChild(wrap);
@@ -2598,6 +2612,8 @@
     hoverVertexIndex = -1;
     dragObjectId = null;
     dragObjectType = null;
+    hoverSceneObjType = null;
+    hoverSceneObjId = null;
     canvas.style.cursor = "default";
     if (stageEditPanel) stageEditPanel.setAttribute("hidden", "");
   }
@@ -2622,6 +2638,7 @@
         object_scale_overrides: themeObjScaleOverrides,
         object_anchor_overrides: themeObjAnchorOverrides,
         decor_anchor_overrides: themeDecorAnchorOverrides,
+        decor_flip_overrides: themeDecorFlipOverrides,
         enemy_config: {
           spawn_interval_seconds: enemySpawnIntervalSec,
           count_mode: enemyCountMode,
@@ -2651,6 +2668,13 @@
   // Escape exits the stage editor.
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && editStageMode) exitEditStage();
+    // F toggles a horizontal-flip override on the hovered decor (Stage
+    // Editor only). Never hijacks F outside edit mode or off a decor hover.
+    if ((e.key === "f" || e.key === "F") && editStageMode && hoverSceneObjType === "decor" && hoverSceneObjId) {
+      if (themeDecorFlipOverrides[hoverSceneObjId]) delete themeDecorFlipOverrides[hoverSceneObjId];
+      else themeDecorFlipOverrides[hoverSceneObjId] = true;
+      e.preventDefault();
+    }
   });
 
   /**
@@ -3172,7 +3196,19 @@
     if (anim) slotIdx = Math.min(anim.frameIndex, slots.length - 1);
     const img = slots[slotIdx] || slots[0];
     if (!img || !img.complete || img.naturalWidth === 0) return;
-    ctx.drawImage(img, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+    const flipped = !!(themeDecorFlipOverrides && themeDecorFlipOverrides[decorId]);
+    if (flipped) {
+      // Same mirror pattern as the character draw: translate to the right
+      // edge of the target box, scale(-1,1), then draw with local x=0 so the
+      // mirrored sprite lands in the identical on-screen box.
+      ctx.save();
+      ctx.translate(cx + baseSize / 2, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(img, 0, cy - baseSize, baseSize, baseSize);
+      ctx.restore();
+    } else {
+      ctx.drawImage(img, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+    }
   }
 
   /**
@@ -3912,6 +3948,8 @@
           ? Object.assign({}, vp.object_anchor_overrides) : {};
         themeDecorAnchorOverrides = (vp && typeof vp.decor_anchor_overrides === "object" && vp.decor_anchor_overrides)
           ? Object.assign({}, vp.decor_anchor_overrides) : {};
+        themeDecorFlipOverrides = (vp && typeof vp.decor_flip_overrides === "object" && vp.decor_flip_overrides)
+          ? Object.assign({}, vp.decor_flip_overrides) : {};
         objectPlacement = {};
         objectHomePlacement = {};
         if (themeBuildables.length > 0) {
@@ -7519,7 +7557,14 @@
           // manual dance mixer toggles facingLeft each frame swap, and this
           // draw-time special case honors it so the dancer turns side to side.
           // Non-dancing flip behavior is unchanged (still gated on clip.flippable).
-          const shouldFlip = (clip.flippable || charEntry.dancing === true) && charEntry.facingLeft === true;
+          // A seated agent mirrors to match its SEAT's Stage-Editor flip state
+          // (not movement-derived facingLeft) so a flipped seat's occupant
+          // flips with it. Only applies once actually seated (sit clip) —
+          // walking to the seat still uses normal walk-facing.
+          const isSeated = charEntry.sitting === true && charEntry.sitSeatId != null;
+          const shouldFlip = isSeated
+            ? !!(themeDecorFlipOverrides && themeDecorFlipOverrides[charEntry.sitSeatId])
+            : (clip.flippable || charEntry.dancing === true) && charEntry.facingLeft === true;
 
           // Draw the sprite inside its own save/restore so the horizontal-flip
           // transform NEVER leaks into the label below (a flipped+scaled context

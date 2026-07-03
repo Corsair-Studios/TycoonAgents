@@ -38,6 +38,10 @@ export interface ViewportConfig {
   // DecorObject.decor_id -> normalized [x,y] in 0..1. The sentinel [-1,-1]
   // marks that decor as hidden/removed.
   decor_anchor_overrides?: Record<string, [number, number]>;
+  // Per-decor horizontal-flip overrides set in the Stage Editor. Keyed by
+  // DecorObject.decor_id -> true when that decor (and any character seated in it)
+  // is mirrored horizontally. Absent/false = not flipped. Survives regeneration.
+  decor_flip_overrides?: Record<string, boolean>;
   overall_scale?: number;
   projectile_asset?: string;
   enemy_config?: EnemyConfig;
