@@ -28,7 +28,7 @@ export interface AtlasClip {
 export const ATLAS_CLIPS: Record<ClipName, AtlasClip> = {
   walk: { frames: [0, 1, 2, 3, 4], fps: 10, loop: true, flippable: true },
   idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
-  sit: { frames: [15], fps: 0, loop: true, flippable: false, hold: true },
+  sit: { frames: [15], fps: 0, loop: true, flippable: true, hold: true },
   melee: { frames: [5, 6, 7, 8], fps: 12, loop: false, flippable: true },
   build: { frames: [5, 6, 7, 8], fps: 6, loop: true, flippable: true },
   tool_idle: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
