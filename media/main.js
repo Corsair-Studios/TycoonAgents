@@ -2174,6 +2174,14 @@
   const PROJECTILE_FLIGHT_SEC = 0.25;
   /** Extra "hold" time (seconds) the blast frame lingers after t reaches 1. */
   const PROJECTILE_BLAST_HOLD = 0.12;
+  /**
+   * Rotation (radians) added to the computed travel-direction angle before
+   * drawing a projectile. The projectile art's rest orientation points RIGHT
+   * (angle 0), so 0 is correct for that art. If a theme's projectile sprite
+   * is drawn pointing in a different rest direction, adjust here (e.g.
+   * ±Math.PI/2 for art that points up/down, Math.PI for art that points left).
+   */
+  const PROJECTILE_ART_ANGLE_OFFSET = 0;
   /** Native px distance at which a non-fleeing enemy fires a ranged shot. */
   const ENEMY_RANGED_RANGE = 120;
   /** Seconds between an enemy's ranged/melee attack "hits" (cadence, not per-frame). */
@@ -2871,6 +2879,10 @@
   const WANDER_RADIUS = 80;
   /** How close (native px) to destination before agent is considered arrived. */
   const WANDER_ARRIVED_EPS = 3;
+  /** Min center-to-center native distance kept between non-seated agents. */
+  const MIN_AGENT_SEP_NATIVE = 34;
+  /** How strongly overlapping agents are pushed apart per frame (0..1, gentle). */
+  const AGENT_SEP_STRENGTH = 0.5;
 
   /**
    * Create a fresh animation state object.
@@ -7182,14 +7194,31 @@
           // maintenance block above then drives arrival + seated hold. Never
           // triggers while conga is active or the agent is a build/enemy target
           // (both excluded by idleAndStill / !congaActive here).
+          // Defensive: an agent should never hold more than one seat. If
+          // charEntry somehow already owns a seat (shouldn't happen — the
+          // sitting-maintenance block above releases on stand-up — but guard
+          // anyway so the invariant "each seat has at most one owner, each
+          // agent owns at most one seat" can never be violated), free it
+          // before attempting to claim a new one.
+          if (charEntry.sitSeatId != null) {
+            freeAgentSeat(charEntry);
+          }
           let freeSeatId = null;
           for (const d of themeDecor) {
             const sid = d.decor_id;
             const p = sid != null ? decorPlacement[sid] : null;
-            if (p && p.sittable && seatOccupancy[sid] == null) { freeSeatId = sid; break; }
+            if (p && p.sittable && seatOccupancy[sid] == null) {
+              // Atomic test-and-set: claim the seat the instant it's found
+              // free, in this same synchronous iteration — JS's single-
+              // threaded execution means no other agent's forEach iteration
+              // can run between the seatOccupancy[sid]==null check above and
+              // this write, so two agents can never race onto the same seat.
+              seatOccupancy[sid] = charEntry.__id;
+              freeSeatId = sid;
+              break;
+            }
           }
           if (freeSeatId != null) {
-            seatOccupancy[freeSeatId] = charEntry.__id;
             charEntry.sitSeatId = freeSeatId;
             charEntry.sitting = false; // en route until arrival
             const seat = decorPlacement[freeSeatId];
@@ -7384,6 +7413,46 @@
       // sets frameIndex directly (17/18/19), never the same frame twice.
       if (!charEntry.dancing) advanceAnim(anim, delta);
     });
+
+    // ── Agent separation pass (second pass, after all base nx/ny updates
+    // above are settled for this frame) ────────────────────────────────
+    // Non-seated agents push apart when closer than MIN_AGENT_SEP_NATIVE so
+    // they never visually overlap while wandering/roaming. Seated agents
+    // (sitSeatId != null) are excluded on both sides: they never move (stay
+    // pinned to their seat) and never push a neighbor out of the way.
+    {
+      const sepList = [];
+      for (const agent of agentList) {
+        const ent = agentCharMap[agent.id];
+        if (ent && ent.sitSeatId == null) sepList.push(ent);
+      }
+      for (let i = 0; i < sepList.length; i++) {
+        for (let j = i + 1; j < sepList.length; j++) {
+          const a = sepList[i];
+          const b = sepList[j];
+          const dx = b.nx - a.nx;
+          const dy = b.ny - a.ny;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist >= MIN_AGENT_SEP_NATIVE) continue;
+          // Coincident centers: nudge along an arbitrary axis to avoid a
+          // divide-by-zero / NaN push direction.
+          let ux, uy;
+          if (dist < 0.0001) {
+            ux = 1; uy = 0; dist = 0;
+          } else {
+            ux = dx / dist; uy = dy / dist;
+          }
+          const overlap = (MIN_AGENT_SEP_NATIVE - dist) * AGENT_SEP_STRENGTH;
+          const push = overlap / 2;
+          a.nx -= ux * push; a.ny -= uy * push;
+          b.nx += ux * push; b.ny += uy * push;
+          const clampedA = clampToPolygon(a.nx, a.ny, walkablePolygon);
+          a.nx = clampedA[0]; a.ny = clampedA[1];
+          const clampedB = clampToPolygon(b.nx, b.ny, walkablePolygon);
+          b.nx = clampedB[0]; b.ny = clampedB[1];
+        }
+      }
+    }
 
     // ── Phase 2b (Change 2): prune enemies. Defeated enemies FLEE off-screen
     // instead of vanishing; they are removed only once they run beyond the
@@ -7711,7 +7780,18 @@
         const tDepth = Math.max(0, Math.min(1, (posNy - polyMinY) / polyRangeY));
         const projScale = (0.8 + tDepth * 0.3) * themeOverallScale;
         const size = Math.round(40 * projScale);
-        ctx.drawImage(img, canvasPt[0] - size / 2, canvasPt[1] - size / 2, size, size);
+        // Rotate the sprite to point along its travel direction. Computed in
+        // CANVAS space (not native space) so non-uniform x/y scaling from
+        // nativeToCanvas is accounted for — using the SAME nativeToCanvas
+        // call/args as canvasPt above.
+        const cFrom = nativeToCanvas(p.fromNx, p.fromNy, bgX, bgY, bgW, bgH);
+        const cTo = nativeToCanvas(p.toNx, p.toNy, bgX, bgY, bgW, bgH);
+        const angle = Math.atan2(cTo[1] - cFrom[1], cTo[0] - cFrom[0]) + PROJECTILE_ART_ANGLE_OFFSET;
+        ctx.save();
+        ctx.translate(canvasPt[0], canvasPt[1]);
+        ctx.rotate(angle);
+        ctx.drawImage(img, -size / 2, -size / 2, size, size);
+        ctx.restore();
       }
     }
 
