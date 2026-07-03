@@ -59,7 +59,7 @@ function legacyManifest(): ThemeManifest {
       name: `Rival ${index}`,
       atlas_asset: `frames.json#rival_${index}`,
     })),
-    // Legacy theme: only 12 objects (createObjectBoardRows requires exactly 13 and throws).
+    // Legacy theme: only 12 objects (createObjectBoardRows packs any positive count).
     buildable_objects: Array.from({ length: 12 }, (_unused, index) => ({
       build_order: index,
       object_id: `object_${index}`,
@@ -95,7 +95,7 @@ function minimalPlan(): ThemePlan {
   };
 }
 
-test('createReviewItems does not throw for a legacy manifest with off-count rivals/objects, and still includes the decor item', () => {
+test('createReviewItems does not throw for a legacy manifest with off-count rivals/objects; rival and object boards now synthesize', () => {
   const manifest = legacyManifest();
   const plan = minimalPlan();
 
@@ -106,9 +106,19 @@ test('createReviewItems does not throw for a legacy manifest with off-count riva
   assert.ok(decorItem, 'expected a background_decor item to be synthesized despite off-count rivals/objects');
   assert.equal(decorItem?.kind, 'background_decor_atlas');
 
-  // Off-count rival/object boards are skipped rather than crashing the whole synthesis.
-  assert.equal(result.some((item) => item.kind === 'rival_atlas'), false);
-  assert.equal(result.some((item) => item.kind === 'object_atlas'), false);
+  // Off-count rival/object boards are now synthesized (packers accept any positive
+  // roster count) rather than skipped: 3 rivals pack into 1 board (up to 4 rivals/board).
+  const rivalItems = result.filter((item) => item.kind === 'rival_atlas');
+  assert.equal(rivalItems.length, 1, 'expected exactly one rival_atlas board for 3 rivals');
+  assert.deepEqual(rivalItems.map((item) => item.id), ['rivals_01']);
+
+  // createObjectBoardRows packs any positive object count (12 objects + poof + crate =
+  // 14 rows -> boards of [5, 5, 4] rows), and buildObjectAtlasPrompt now accepts a
+  // partial trailing board (one to five rows), so all three boards synthesize instead
+  // of the whole set being discarded by the surrounding try/catch.
+  const objectItems = result.filter((item) => item.kind === 'object_atlas');
+  assert.equal(objectItems.length, 3, 'expected three object_atlas boards for 12 objects + poof + crate');
+  assert.deepEqual(objectItems.map((item) => item.id), ['objects_01', 'objects_02', 'objects_03']);
 
   // Everything else still gets synthesized.
   assert.ok(result.some((item) => item.kind === 'character_atlas'));

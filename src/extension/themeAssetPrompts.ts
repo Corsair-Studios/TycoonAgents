@@ -22,8 +22,11 @@ export interface ThemeDecorPromptSpec {
   display_name: string;
 }
 
+/** Number of rows packed onto one 4x5 animated-object board. */
+export const OBJECT_ROWS_PER_BOARD = 5;
+
 export function createObjectBoardRows(objects: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[][] {
-  if (objects.length !== 13) throw new Error('Animated object generation requires exactly 13 objects.');
+  if (objects.length < 1) throw new Error('Object generation requires at least one object.');
   const asRows = (items: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[] => items.map((object) => ({
     kind: 'object',
     object_id: object.object_id,
@@ -31,11 +34,12 @@ export function createObjectBoardRows(objects: ThemeObjectPromptSpec[]): ThemeOb
     ...(object.motion_hint ? { motion_hint: object.motion_hint } : {}),
     ...(object.is_ranged_rack ? { is_ranged_rack: true } : {}),
   }));
-  return [
-    asRows(objects.slice(0, 5)),
-    asRows(objects.slice(5, 10)),
-    [...asRows(objects.slice(10, 13)), { kind: 'poof' }, { kind: 'crate' }],
-  ];
+  const flatRows: ThemeObjectBoardRow[] = [...asRows(objects), { kind: 'poof' }, { kind: 'crate' }];
+  const boards: ThemeObjectBoardRow[][] = [];
+  for (let start = 0; start < flatRows.length; start += OBJECT_ROWS_PER_BOARD) {
+    boards.push(flatRows.slice(start, start + OBJECT_ROWS_PER_BOARD));
+  }
+  return boards;
 }
 
 export function objectBoardFrameKeys(rows: ThemeObjectBoardRow[]): string[] {
@@ -82,7 +86,7 @@ export const RIVALS_PER_BOARD = 4;
  * up to four rival rows per board.
  */
 export function createRivalBoardRows(rivals: ThemeRivalPromptSpec[]): ThemeRivalBoardRow[][] {
-  if (rivals.length !== 12) throw new Error('Rival generation requires exactly 12 rivals.');
+  if (rivals.length < 1) throw new Error('Rival generation requires at least one rival.');
   const boards: ThemeRivalBoardRow[][] = [];
   for (let start = 0; start < rivals.length; start += RIVALS_PER_BOARD) {
     boards.push(rivals.slice(start, start + RIVALS_PER_BOARD).map((rival): ThemeRivalBoardRow => ({
@@ -474,7 +478,7 @@ export function buildObjectAtlasPrompt(
   themeName: string,
   rows: ThemeObjectBoardRow[],
 ): string {
-  if (rows.length !== 5) throw new Error('Animated object boards require exactly five rows.');
+  if (rows.length < 1 || rows.length > 5) throw new Error('Object board carries one to five rows.');
   const rowLines = rows.map((row, index) => {
     if (row.kind === 'object') {
       if (row.is_ranged_rack) {
@@ -492,9 +496,12 @@ export function buildObjectAtlasPrompt(
   return [
     `Create one animated object sprite sheet for the "${themeName}" theme.`,
     boardContract(4, 5),
-    'Treat the five rows as five visually equal logical bands; the production slicer distributes remainder pixels across row boundaries.',
-    'Each row contains the four sequential animation frames of exactly one listed item:',
+    'Treat the grid as five visually equal logical row bands; the production slicer distributes remainder pixels across row boundaries.',
+    'Each of the (up to) five ROWS contains the four sequential animation frames of exactly one listed item:',
     ...rowLines,
+    ...(rows.length < 5 ? [
+      `Rows ${rows.length + 1}-5 are unused: leave their entire grid bands flat solid #FF00FF magenta with no content.`,
+    ] : []),
     '',
     'OBJECT ROWS: all four cells show the same finished object from one fixed three-quarter/isometric camera.',
     'Keep the object body, contact point, scale, colors, and lighting identical. Change only moving or glowing parts.',

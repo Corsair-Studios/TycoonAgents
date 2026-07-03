@@ -47,8 +47,23 @@ test('rivals pack 4-per-board across 3 boards (12 enemies)', () => {
   assert.equal(new Set(ids).size, 12);
 });
 
-test('createRivalBoardRows rejects a roster that is not exactly 12', () => {
-  assert.throws(() => createRivalBoardRows(rivalSpecs().slice(0, 11)));
+test('createRivalBoardRows supports any positive roster size, not just exactly 12', () => {
+  assert.throws(() => createRivalBoardRows([]), /at least one rival/);
+
+  // 3 rivals (e.g. cobra_command) -> a single board with exactly 3 rows.
+  const threeRivals = Array.from({ length: 3 }, (_unused, index) => ({
+    rival_id: `r_${index + 1}`,
+    display_name: `Rival ${index + 1}`,
+  }));
+  const threeBoards = createRivalBoardRows(threeRivals);
+  assert.equal(threeBoards.length, 1);
+  assert.equal(threeBoards[0].length, 3);
+  assert.deepEqual(threeBoards[0].map((row) => row.rival_id), ['r_1', 'r_2', 'r_3']);
+
+  // 12 rivals -> still 3 full boards of 4.
+  const twelveBoards = createRivalBoardRows(rivalSpecs());
+  assert.equal(twelveBoards.length, 3);
+  for (const board of twelveBoards) assert.equal(board.length, 4);
 });
 
 test('rivalBoardFrameKeys yields one rival_<id> key per enemy row', () => {
@@ -180,11 +195,15 @@ test('createObjectBoardRows carries is_ranged_rack and motion_hint onto the obje
   assert.equal(hintRow.kind === 'object' ? hintRow.motion_hint : undefined, 'gently hums');
 });
 
-test('13 objects pack into three full boards with build effects in the final two rows', () => {
-  const rows = createObjectBoardRows(Array.from({ length: 13 }, (_unused, index) => ({
+function objectSpecs(count: number) {
+  return Array.from({ length: count }, (_unused, index) => ({
     object_id: `object_${index + 1}`,
     display_name: `Object ${index + 1}`,
-  })));
+  }));
+}
+
+test('13 objects pack into three full boards with build effects in the final two rows', () => {
+  const rows = createObjectBoardRows(objectSpecs(13));
   assert.deepEqual(rows.map((board) => board.length), [5, 5, 5]);
   assert.deepEqual(rows.map((board) => board.map((row) => row.kind)), [
     ['object', 'object', 'object', 'object', 'object'],
@@ -194,6 +213,31 @@ test('13 objects pack into three full boards with build effects in the final two
   assert.deepEqual(objectBoardFrameKeys(rows[2]), [
     'object_object_11', 'object_object_12', 'object_object_13', 'poof', 'crate',
   ]);
+});
+
+test('createObjectBoardRows supports any positive object count, not just exactly 13', () => {
+  assert.throws(() => createObjectBoardRows([]), /at least one object/);
+
+  // 12 objects (e.g. cobra_command) -> boards of [5, 5, 4]; last board is [obj, obj, poof, crate].
+  const twelveRows = createObjectBoardRows(objectSpecs(12));
+  assert.deepEqual(twelveRows.map((board) => board.length), [5, 5, 4]);
+  assert.deepEqual(twelveRows[2].map((row) => row.kind), ['object', 'object', 'poof', 'crate']);
+
+  // 6 objects -> boards of [5, 3]; second board is [obj, poof, crate].
+  const sixRows = createObjectBoardRows(objectSpecs(6));
+  assert.deepEqual(sixRows.map((board) => board.length), [5, 3]);
+  assert.deepEqual(sixRows[1].map((row) => row.kind), ['object', 'poof', 'crate']);
+
+  // Across the whole set (any count), poof and crate are always the final two rows
+  // and each appears exactly once.
+  for (const count of [1, 3, 6, 12, 13, 17]) {
+    const rows = createObjectBoardRows(objectSpecs(count));
+    const flat = rows.flat();
+    assert.equal(flat.filter((row) => row.kind === 'poof').length, 1);
+    assert.equal(flat.filter((row) => row.kind === 'crate').length, 1);
+    assert.equal(flat[flat.length - 2].kind, 'poof');
+    assert.equal(flat[flat.length - 1].kind, 'crate');
+  }
 });
 
 test('createDecorBoardRows maps 9 decor items onto the 4x4 seat/decor/anim/projectile layout', () => {
