@@ -1938,6 +1938,15 @@
   const DECOR_SCALE = 1;
   /** Default sit-anchor offset (normalized scene-space) when a seat omits sit_anchor. */
   const DEFAULT_SIT_ANCHOR = [0, -0.03];
+  /**
+   * Normalized downward offset (of walkableNativeH) applied to a seat's sit
+   * point on top of its horizontal sit_anchor. Canvas Y increases downward,
+   * so a POSITIVE value seats the character onto the chair (rather than
+   * floating above it) AND makes the seated character's depth-sort ny
+   * exceed the seat's ny, so it draws in front of (not behind) the seat.
+   * Tune visually.
+   */
+  const SEAT_SIT_DROP = 0.02;
   /** Chance, per idle wander-decision, that an idle agent goes to sit on a free seat. */
   const SIT_CHANCE = 0.05;
   /** How long (seconds) a character stays seated before standing up. */
@@ -4028,7 +4037,7 @@
               : DEFAULT_SIT_ANCHOR;
             const sitNative = clampToPolygon(
               placed[0] + sitAnchor[0] * walkableNativeW,
-              placed[1] + sitAnchor[1] * walkableNativeH,
+              placed[1] + SEAT_SIT_DROP * walkableNativeH,
               walkablePolygon
             );
             decorPlacement[decorId] = {
