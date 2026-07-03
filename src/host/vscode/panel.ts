@@ -48,6 +48,7 @@ import {
 } from "../../extension/themeService";
 import type { ThemePlan } from "../../extension/themePlan";
 import type { BoardKind, ThemeImageReviewWaitOptions } from "../../extension/themeService";
+import type { ThemeManifest } from "../../shared/types";
 import { themeImagesDirectoryUri } from "../../extension/themeStorage";
 import {
   getConfiguredThemeImageProvider,
@@ -179,7 +180,10 @@ export class TycoonPanel {
           void (async () => {
             const t = await loadLatestTheme(this._globalStorageUri);
             if (t) {
-              void this._panel.webview.postMessage({ type: "THEME_INITIALIZED", payload: { manifest: t.manifest, frames: t.frames, is_editor_mode: false } });
+              void this._panel.webview.postMessage({
+                type: "THEME_INITIALIZED",
+                payload: await this._buildThemeInitPayload(t.manifest, t.frames, false),
+              });
             }
           })();
         } else if (message.type === "SAVE_STAGE_TUNING") {
@@ -206,7 +210,7 @@ export class TycoonPanel {
           if (updated) {
             void this._panel.webview.postMessage({
               type: "THEME_INITIALIZED",
-              payload: { manifest: updated.manifest, frames: updated.frames, is_editor_mode: false },
+              payload: await this._buildThemeInitPayload(updated.manifest, updated.frames, false),
             });
             void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: true } });
           } else {
@@ -232,7 +236,7 @@ export class TycoonPanel {
             await this._postThemeImageReview(theme_id);
             void this._panel.webview.postMessage({
               type: "THEME_INITIALIZED",
-              payload: { manifest: result.manifest, frames: result.frames, is_editor_mode: true },
+              payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
             });
             void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: true } });
           } else {
@@ -490,6 +494,7 @@ export class TycoonPanel {
             }
 
             await deleteTheme(this._globalStorageUri, themeId);
+            await this._removeThemeBadgeUnlocks(themeId);
             deletedThemeId = themeId;
           } catch (err) {
             deleteError = String(err);
@@ -503,11 +508,25 @@ export class TycoonPanel {
               delete_error: deleteError,
             },
           });
+        } else if (message.type === "BADGE_UNLOCKED") {
+          try {
+            const payload = (message as any).payload as { theme_id?: string; badge_id?: string } | undefined;
+            const themeId = payload?.theme_id;
+            const badgeId = payload?.badge_id;
+            if (typeof themeId === "string" && themeId && typeof badgeId === "string" && badgeId) {
+              await this.addUnlockedBadge(themeId, badgeId);
+            }
+          } catch (err) {
+            console.error("TycoonAgents: Could not persist badge unlock:", err);
+          }
         } else if (message.type === "SELECT_THEME") {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const t = await loadTheme(this._globalStorageUri, payload?.theme_id ?? "");
           if (t) {
-            void this._panel.webview.postMessage({ type: "THEME_INITIALIZED", payload: { manifest: t.manifest, frames: t.frames, is_editor_mode: false } });
+            void this._panel.webview.postMessage({
+              type: "THEME_INITIALIZED",
+              payload: await this._buildThemeInitPayload(t.manifest, t.frames, false),
+            });
           } else {
             void this._panel.webview.postMessage({ type: "THEME_GENERATION_ERROR", payload: { message: "Theme not found." } });
           }
@@ -645,7 +664,7 @@ export class TycoonPanel {
             if (!renamingActiveGate) {
               void this._panel.webview.postMessage({
                 type: "THEME_INITIALIZED",
-                payload: { manifest: result.manifest, frames: result.frames, is_editor_mode: true },
+                payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
               });
             }
           } catch (err) {
@@ -716,7 +735,7 @@ export class TycoonPanel {
             if (!normalizingDuringActiveGeneration) {
               void this._panel.webview.postMessage({
                 type: "THEME_INITIALIZED",
-                payload: { manifest: result.manifest, frames: result.frames, is_editor_mode: true },
+                payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
               });
             }
           } catch (err) {
@@ -810,7 +829,7 @@ export class TycoonPanel {
             if (!retryingDuringActiveGeneration) {
               void this._panel.webview.postMessage({
                 type: "THEME_INITIALIZED",
-                payload: { manifest: result.manifest, frames: result.frames, is_editor_mode: true },
+                payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
               });
             }
           } catch (err) {
@@ -941,7 +960,10 @@ export class TycoonPanel {
                   imageOptions,
                   waitForReview,
                 );
-            void this._panel.webview.postMessage({ type: "THEME_INITIALIZED", payload: { manifest: r.manifest, frames: r.frames, is_editor_mode: true } });
+            void this._panel.webview.postMessage({
+              type: "THEME_INITIALIZED",
+              payload: await this._buildThemeInitPayload(r.manifest, r.frames, true),
+            });
           } catch (err) {
             if (abortController.signal.aborted) {
               void this._panel.webview.postMessage({
@@ -1021,6 +1043,79 @@ export class TycoonPanel {
 
     // Clean up on panel dispose
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+  }
+
+  // --- Badge unlock persistence -------------------------------------
+  // Per-theme unlocked badge ids, persisted to a JSON file at the root of
+  // globalStorage (this panel only has access to globalStorageUri, not an
+  // ExtensionContext/Memento, so file-based persistence is used).
+  private _badgeUnlocksUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this._globalStorageUri, "badge-unlocks.json");
+  }
+
+  private async _readBadgeUnlocksStore(): Promise<Record<string, string[]>> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this._badgeUnlocksUri());
+      const parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private async _writeBadgeUnlocksStore(store: Record<string, string[]>): Promise<void> {
+    try {
+      await vscode.workspace.fs.writeFile(
+        this._badgeUnlocksUri(),
+        Buffer.from(JSON.stringify(store, null, 2), "utf8"),
+      );
+    } catch (err) {
+      console.error("TycoonAgents: Could not save badge unlocks:", err);
+    }
+  }
+
+  private async getUnlockedBadges(themeId: string | undefined): Promise<string[]> {
+    if (!themeId) return [];
+    const store = await this._readBadgeUnlocksStore();
+    return Array.isArray(store[themeId]) ? store[themeId] : [];
+  }
+
+  private async addUnlockedBadge(themeId: string, badgeId: string): Promise<void> {
+    if (!themeId || !badgeId) return;
+    const store = await this._readBadgeUnlocksStore();
+    const existing = Array.isArray(store[themeId]) ? store[themeId] : [];
+    if (!existing.includes(badgeId)) {
+      store[themeId] = [...existing, badgeId];
+      await this._writeBadgeUnlocksStore(store);
+    }
+  }
+
+  private async _removeThemeBadgeUnlocks(themeId: string): Promise<void> {
+    if (!themeId) return;
+    const store = await this._readBadgeUnlocksStore();
+    if (themeId in store) {
+      delete store[themeId];
+      await this._writeBadgeUnlocksStore(store);
+    }
+  }
+
+  /** Builds a THEME_INITIALIZED payload, seeding persisted badge unlocks. */
+  private async _buildThemeInitPayload(
+    manifest: ThemeManifest,
+    frames: Record<string, string[]>,
+    isEditorMode: boolean,
+  ): Promise<{
+    manifest: ThemeManifest;
+    frames: Record<string, string[]>;
+    is_editor_mode: boolean;
+    unlocked_badge_ids: string[];
+  }> {
+    return {
+      manifest,
+      frames,
+      is_editor_mode: isEditorMode,
+      unlocked_badge_ids: await this.getUnlockedBadges(manifest?.theme_id),
+    };
   }
 
   private async _postThemeImageReview(themeId: string): Promise<void> {

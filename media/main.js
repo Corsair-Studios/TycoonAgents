@@ -301,6 +301,13 @@
       if (met) {
         unlockedBadgeIds.add(b.badge_id);
         changed = true;
+        // Persist the newly-earned unlock on the host, scoped to this theme,
+        // so it survives across sessions. Badges seeded from a prior session
+        // are already in unlockedBadgeIds before this loop runs, so this only
+        // fires for genuinely new unlocks.
+        if (currentBadgeThemeId) {
+          vscode.postMessage({ type: "BADGE_UNLOCKED", payload: { theme_id: currentBadgeThemeId, badge_id: b.badge_id } });
+        }
       }
     }
     if (changed) updateBadgeHud();
@@ -1953,8 +1960,15 @@
   let buildBuiltCount = 0;
   /** Count of rival agents successfully evicted (fled offscreen and pruned) this theme session. */
   let rivalsEvictedCount = 0;
-  /** Set of badge_id strings unlocked so far this theme session. Only ever grows. @type {Set<string>} */
+  /**
+   * Set of badge_id strings unlocked for the current theme. Seeded from the
+   * host's persisted per-theme unlocks on THEME_INITIALIZED (payload.unlocked_badge_ids),
+   * then only ever grows within the session as new badges are earned.
+   * @type {Set<string>}
+   */
   let unlockedBadgeIds = new Set();
+  /** theme_id of the theme currently loaded on stage, captured at THEME_INITIALIZED — used to tag BADGE_UNLOCKED posts to the host. @type {string|null} */
+  let currentBadgeThemeId = null;
   /** Progress (0..1) of the current active (buildQueue[buildBuiltCount]) object. */
   let buildCurrentProgress = 0;
   /**
@@ -3873,7 +3887,12 @@
         // ── Badges (reset per theme) ─────────────────────────────────────
         themeBadges = Array.isArray(manifest?.badges) ? manifest.badges : [];
         rivalsEvictedCount = 0;
-        unlockedBadgeIds = new Set();
+        // Seed from the host's persisted per-theme unlocks so previously-earned
+        // badges stay unlocked across sessions; only the session counters
+        // (rivalsEvictedCount/buildBuiltCount) reset to 0 above/below.
+        currentBadgeThemeId = initializedThemeId || (manifest && manifest.theme_id) || null;
+        const seededUnlockIds = Array.isArray(msg.payload?.unlocked_badge_ids) ? msg.payload.unlocked_badge_ids : [];
+        unlockedBadgeIds = new Set(seededUnlockIds);
         updateBadgeHud();
         // ── Ranged combat upgrade (reset per theme) ─────────────────────
         // Characters START in melee. Building the ranged weapon rack (the
