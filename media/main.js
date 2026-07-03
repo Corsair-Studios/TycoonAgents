@@ -5112,9 +5112,11 @@
     return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
   }
 
-  // Render a model id/alias as a clean "Family Version" label WITHOUT hardcoding
-  // any current version — the version is parsed from the resolved id the runtime
-  // reports (bare aliases have no version, so just the family is shown).
+  // Latest known version per Claude model family. Update these when a newer model
+  // ships. The runtime-resolved id auto-wins if it ever reports a HIGHER version
+  // than this map (so a real upgrade is never masked), and bare auto-latest
+  // aliases (no version in the id) fall back to this map.
+  const LATEST_MODEL_VERSION = { Opus: "4.8", Sonnet: "5", Haiku: "4.5", Fable: "5" };
   function prettyModel(model) {
     if (!model) return "";
     const s = String(model).toLowerCase();
@@ -5124,9 +5126,14 @@
     else if (s.includes("haiku")) family = "Haiku";
     else if (s.includes("fable")) family = "Fable";
     if (!family) return String(model); // unknown family → show raw
-    // Version = numeric segments, excluding 8-digit date stamps (e.g. 20250929).
+    // Version parsed from the resolved id, excluding 8-digit date stamps (e.g. 20250929).
     const nums = (s.match(/\d+/g) || []).filter((n) => n.length < 8);
-    return nums.length ? `${family} ${nums.join(".")}` : family;
+    const idVer = nums.length ? nums.join(".") : null;
+    const knownVer = LATEST_MODEL_VERSION[family] || null;
+    // Prefer whichever numeric version is higher (future-proof if the runtime is ahead).
+    let ver = knownVer;
+    if (idVer && (!knownVer || parseFloat(idVer) > parseFloat(knownVer))) ver = idVer;
+    return ver ? `${family} ${ver}` : family;
   }
 
   /**
