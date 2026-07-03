@@ -1694,42 +1694,54 @@ export function createReviewItems(
     frame_keys: [`agent_${agent.slot_id}`],
     subject: agent.name,
   }));
-  const rivalBoards = createRivalBoardRows(themeRivalSpecs(manifest));
-  const enemyItems = rivalBoards.map((rows, index) => {
-    const firstEnemy = index * rows.length + 1;
-    const lastEnemy = firstEnemy + rows.length - 1;
-    return {
-      id: `rivals_${String(index + 1).padStart(2, '0')}`,
-      filename: `rivals_${String(index + 1).padStart(2, '0')}.png`,
-      label: `Rivals ${firstEnemy}–${lastEnemy}`,
-      kind: 'rival_atlas' as const,
-      status: 'pending' as const,
-      prompt: buildRivalAtlasPrompt(creativeDirection, plan.display_name, rows),
-      revision: 0,
-      frame_keys: rivalBoardFrameKeys(rows),
-      rival_rows: rows,
-    };
-  });
-  const objectSpecs = themeObjectSpecs(manifest, plan.object_motion_hints);
-  const objectItems = createObjectBoardRows(objectSpecs).map((rows, index) => {
-    const objectRows = rows.filter((row): row is Extract<ThemeObjectBoardRow, { kind: 'object' }> => row.kind === 'object');
-    const firstObject = index * 5 + 1;
-    const lastObject = firstObject + objectRows.length - 1;
-    return {
-      id: `objects_${String(index + 1).padStart(2, '0')}`,
-      filename: `objects_${String(index + 1).padStart(2, '0')}.png`,
-      label: index === 2
-        ? `Animated objects ${firstObject}–${lastObject} + build effects`
-        : `Animated objects ${firstObject}–${lastObject}`,
-      kind: 'object_atlas' as const,
-      status: 'pending' as const,
-      prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, rows),
-      revision: 0,
-      frame_keys: objectBoardFrameKeys(rows),
-      object_specs: objectRows.map(({ object_id, display_name }) => ({ object_id, display_name })),
-      object_rows: rows,
-    };
-  });
+  let enemyItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
+  try {
+    const rivalBoards = createRivalBoardRows(themeRivalSpecs(manifest));
+    enemyItems = rivalBoards.map((rows, index) => {
+      const firstEnemy = index * rows.length + 1;
+      const lastEnemy = firstEnemy + rows.length - 1;
+      return {
+        id: `rivals_${String(index + 1).padStart(2, '0')}`,
+        filename: `rivals_${String(index + 1).padStart(2, '0')}.png`,
+        label: `Rivals ${firstEnemy}–${lastEnemy}`,
+        kind: 'rival_atlas' as const,
+        status: 'pending' as const,
+        prompt: buildRivalAtlasPrompt(creativeDirection, plan.display_name, rows),
+        revision: 0,
+        frame_keys: rivalBoardFrameKeys(rows),
+        rival_rows: rows,
+      };
+    });
+  } catch (err) {
+    console.warn('TycoonAgents: skipping rival board items in review synthesis:', err);
+    enemyItems = [];
+  }
+  let objectItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
+  try {
+    const objectSpecs = themeObjectSpecs(manifest, plan.object_motion_hints);
+    objectItems = createObjectBoardRows(objectSpecs).map((rows, index) => {
+      const objectRows = rows.filter((row): row is Extract<ThemeObjectBoardRow, { kind: 'object' }> => row.kind === 'object');
+      const firstObject = index * 5 + 1;
+      const lastObject = firstObject + objectRows.length - 1;
+      return {
+        id: `objects_${String(index + 1).padStart(2, '0')}`,
+        filename: `objects_${String(index + 1).padStart(2, '0')}.png`,
+        label: index === 2
+          ? `Animated objects ${firstObject}–${lastObject} + build effects`
+          : `Animated objects ${firstObject}–${lastObject}`,
+        kind: 'object_atlas' as const,
+        status: 'pending' as const,
+        prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, rows),
+        revision: 0,
+        frame_keys: objectBoardFrameKeys(rows),
+        object_specs: objectRows.map(({ object_id, display_name }) => ({ object_id, display_name })),
+        object_rows: rows,
+      };
+    });
+  } catch (err) {
+    console.warn('TycoonAgents: skipping object board items in review synthesis:', err);
+    objectItems = [];
+  }
   return [
     ...characterItems,
     ...enemyItems,
@@ -1925,9 +1937,15 @@ function rivalRowsForItem(
   manifest: ThemeManifest,
 ): ThemeRivalBoardRow[] {
   if (item.rival_rows?.length) return item.rival_rows;
-  const boards = createRivalBoardRows(themeRivalSpecs(manifest));
+  let boards: ThemeRivalBoardRow[][];
+  try {
+    boards = createRivalBoardRows(themeRivalSpecs(manifest));
+  } catch (err) {
+    console.warn('TycoonAgents: unable to reconstruct rival board rows:', err);
+    return [];
+  }
   const boardIndex = Math.max(0, (Number(/rivals_(\d+)/.exec(item.id)?.[1] ?? '1') || 1) - 1);
-  return boards[boardIndex] ?? boards[0];
+  return boards[boardIndex] ?? boards[0] ?? [];
 }
 
 async function generateObjectAsset(

@@ -4040,17 +4040,48 @@
         // already loads every key in rawFrames generically, so no extra preload step
         // is needed here as long as the host includes rival_* keys in payload.frames.
 
-        // Build rosterOrder from manifest character order (excluding background)
-        const manifestChars = Object.keys(themeFramesRaw).filter(
-          (id) => id !== "environment_background"
-        );
-        // Restore saved order if present and covers same characters
+        // Build rosterOrder from the theme's playable roster (manifest.roster_agents),
+        // NOT from every frame key. Object.keys(themeFramesRaw) also contains
+        // rival_/object_/achievement_/crate/poof/projectile/decor_ keys, which used
+        // to leak into the roster-order UI. Derive canonical character keys the same
+        // way enterEditStage() does (see ~line 2547): "agent_" + slot_id, in roster
+        // order (roster_agents is already slot_id-ordered). Only keep keys that
+        // actually have loaded frames so an ungenerated agent doesn't render a
+        // broken row.
+        let charKeys = themeRosterAgents.length
+          ? themeRosterAgents
+              .filter((a) => a && a.slot_id !== undefined && a.slot_id !== null)
+              .map((a) => "agent_" + a.slot_id)
+              .filter((id) => Object.prototype.hasOwnProperty.call(themeFramesRaw, id))
+          : [];
+        if (!charKeys.length) {
+          // Fallback: old behavior, in case roster_agents is unavailable/empty.
+          charKeys = Object.keys(themeFramesRaw).filter(
+            (id) => id !== "environment_background"
+          );
+        }
+        const manifestChars = charKeys;
+        // Restore saved order if present, but only when it's still exactly the
+        // roster set — a stale saved order captured before this fix may contain
+        // non-roster keys (rival_/object_/etc.) and must be rejected/rebuilt.
         const saved = vscode.getState() || {};
         const savedOrder = Array.isArray(saved.rosterOrder) ? saved.rosterOrder : [];
         const savedValid =
-          savedOrder.length === manifestChars.length &&
-          savedOrder.every((id) => manifestChars.includes(id));
-        rosterOrder = savedValid ? savedOrder : manifestChars.slice();
+          savedOrder.length > 0 &&
+          savedOrder.every((id) => manifestChars.includes(id)) &&
+          manifestChars.every((id) => savedOrder.includes(id));
+        if (savedValid) {
+          rosterOrder = savedOrder.slice();
+        } else {
+          // Reconcile: keep any saved entries that are still valid roster keys (in
+          // their saved relative order), then append any roster keys missing from
+          // the saved order — so rosterOrder always ends up exactly the roster set.
+          const savedSet = new Set(savedOrder);
+          rosterOrder = savedOrder.filter((id) => manifestChars.includes(id));
+          manifestChars.forEach((id) => {
+            if (!savedSet.has(id)) rosterOrder.push(id);
+          });
+        }
         if (typeof saved.rosterCollapsed === "boolean") {
           rosterCollapsed = saved.rosterCollapsed;
         }
