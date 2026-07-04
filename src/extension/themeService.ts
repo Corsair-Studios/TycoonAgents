@@ -747,7 +747,9 @@ export async function getThemeImageReview(
         const expectedIds = new Set(expectedItems.map((expected) => expected.id));
         const mergedExpected: ThemeImageReviewItem[] = expectedItems.map((expected) => {
           const saved = savedItems.find((candidate) => candidate.id === expected.id);
-          return saved ?? { ...expected, updated_at: new Date(0).toISOString() };
+          return saved
+            ? { ...saved, label: expected.label }
+            : { ...expected, updated_at: new Date(0).toISOString() };
         });
         const extraSaved = savedItems.filter((candidate) => !expectedIds.has(candidate.id));
         items = [...mergedExpected, ...extraSaved];
