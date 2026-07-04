@@ -1839,10 +1839,19 @@
   let themeCharScaleOverrides = {};
   /** Per-object scale overrides, keyed by buildable object id. */
   let themeObjScaleOverrides = {};
+  /** Overall rival sprite scale multiplier (mirrors themeCharacterScale for enemies). */
+  let themeRivalScale = 1;
+  /** Per-rival scale overrides, keyed by rival_id (mirrors themeObjScaleOverrides). */
+  let themeRivalScaleOverrides = {};
   /** Effective character scale for a given character/frame id. */
   function effectiveCharScale(charId) {
     const o = themeCharScaleOverrides[charId];
     return (typeof o === "number" && o > 0) ? o : themeCharacterScale;
+  }
+  /** Effective rival scale for a given rival_id. */
+  function effectiveRivalScale(rivalId) {
+    const o = themeRivalScaleOverrides[rivalId];
+    return (typeof o === "number" && o > 0) ? o : themeRivalScale;
   }
 
   // ── Phase 2a: build loop state ───────────────────────────────────────────
@@ -2245,6 +2254,8 @@
   let editSelectedCharId = "";
   /** Buildable object_id selected in the per-object override control. */
   let editSelectedObjId = "";
+  /** Rival rival_id selected in the per-rival override control. */
+  let editSelectedRivalId = "";
 
   // ── Stage loading progress (a bar replaces placeholders while loading) ────
   const LOADING_TIMEOUT_MS = 6000;
@@ -2461,6 +2472,12 @@
       '<select id="se-obj"></select>' +
       '<input id="se-oo" type="range" min="0.3" max="2" step="0.05" value="1">' +
       '<button id="se-oo-clear" type="button">clear override</button>' +
+      '<div style="margin-top:6px">Rival scale: <span id="se-rs-val">1.00</span></div>' +
+      '<input id="se-rs" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<div style="margin-top:6px">Per-rival override</div>' +
+      '<select id="se-rival"></select>' +
+      '<input id="se-ro" type="range" min="0.3" max="2" step="0.05" value="1">' +
+      '<button id="se-ro-clear" type="button">clear override</button>' +
       '<button id="se-bg" type="button">Replace background…</button>' +
       '<div style="margin-top:8px;border-top:1px solid rgba(255,193,7,0.3);padding-top:6px">Enemy spawn interval (s): <span id="se-ei-val">45</span></div>' +
       '<input id="se-ei" type="range" min="10" max="180" step="5" value="45">' +
@@ -2483,6 +2500,11 @@
     stageEditEls.obj = wrap.querySelector("#se-obj");
     stageEditEls.oo = wrap.querySelector("#se-oo");
     stageEditEls.ooClear = wrap.querySelector("#se-oo-clear");
+    stageEditEls.rs = wrap.querySelector("#se-rs");
+    stageEditEls.rsVal = wrap.querySelector("#se-rs-val");
+    stageEditEls.rival = wrap.querySelector("#se-rival");
+    stageEditEls.ro = wrap.querySelector("#se-ro");
+    stageEditEls.roClear = wrap.querySelector("#se-ro-clear");
     stageEditEls.ei = wrap.querySelector("#se-ei");
     stageEditEls.eiVal = wrap.querySelector("#se-ei-val");
     stageEditEls.ecm = wrap.querySelector("#se-ecm");
@@ -2492,7 +2514,7 @@
     stageEditEls.bg = wrap.querySelector("#se-bg");
     // Cosmetic styling via CSSOM (CSP-safe).
     wrap.querySelector("#se-h").style.cssText = "font-weight:bold;color:#ffc107;margin-bottom:6px;";
-    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.ov, stageEditEls.char, stageEditEls.obj, stageEditEls.oo, stageEditEls.ei, stageEditEls.ecm]) el.style.width = "100%";
+    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.ov, stageEditEls.char, stageEditEls.obj, stageEditEls.oo, stageEditEls.rs, stageEditEls.rival, stageEditEls.ro, stageEditEls.ei, stageEditEls.ecm]) el.style.width = "100%";
     stageEditEls.bg.style.cssText = "width:100%;margin-top:8px;";
     wrap.querySelector("#se-hint").style.cssText = "opacity:0.7;margin:8px 0;";
     wrap.querySelector("#se-btns").style.cssText = "display:flex;gap:6px;margin-top:4px;";
@@ -2500,6 +2522,7 @@
     stageEditEls.done.style.flex = "1";
     stageEditEls.coClear.style.cssText = "margin-top:3px;font-size:10px;";
     stageEditEls.ooClear.style.cssText = "margin-top:3px;font-size:10px;";
+    stageEditEls.roClear.style.cssText = "margin-top:3px;font-size:10px;";
     stageEditEls.status.style.cssText = "margin-top:6px;min-height:14px;color:#9fffa0;";
 
     // Wire controls.
@@ -2539,6 +2562,22 @@
       if (editSelectedObjId) delete themeObjScaleOverrides[editSelectedObjId];
       syncObjOverrideSlider();
     });
+    stageEditEls.rs.addEventListener("input", () => {
+      themeRivalScale = parseFloat(stageEditEls.rs.value) || 1;
+      stageEditEls.rsVal.textContent = themeRivalScale.toFixed(2);
+    });
+    stageEditEls.rival.addEventListener("change", () => {
+      editSelectedRivalId = stageEditEls.rival.value;
+      syncRivalOverrideSlider();
+    });
+    stageEditEls.ro.addEventListener("input", () => {
+      if (!editSelectedRivalId) return;
+      themeRivalScaleOverrides[editSelectedRivalId] = parseFloat(stageEditEls.ro.value) || 1;
+    });
+    stageEditEls.roClear.addEventListener("click", () => {
+      if (editSelectedRivalId) delete themeRivalScaleOverrides[editSelectedRivalId];
+      syncRivalOverrideSlider();
+    });
     stageEditEls.ei.addEventListener("input", () => {
       enemySpawnIntervalSec = parseFloat(stageEditEls.ei.value) || 45;
       stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
@@ -2565,6 +2604,10 @@
   function syncObjOverrideSlider() {
     const ov = themeObjScaleOverrides[editSelectedObjId];
     stageEditEls.oo.value = String(typeof ov === "number" && ov > 0 ? ov : themeObjectScale);
+  }
+  function syncRivalOverrideSlider() {
+    const ov = themeRivalScaleOverrides[editSelectedRivalId];
+    stageEditEls.ro.value = String(typeof ov === "number" && ov > 0 ? ov : themeRivalScale);
   }
   function enterEditStage() {
     if (!themeLoaded) return;
@@ -2616,6 +2659,21 @@
     }
     editSelectedObjId = (objOptions[0] && objOptions[0].id) || "";
     syncObjOverrideSlider();
+    stageEditEls.rs.value = String(themeRivalScale);
+    stageEditEls.rsVal.textContent = themeRivalScale.toFixed(2);
+    // Per-rival override list: every rival from the loaded theme's roster_rivals.
+    const rivalOptions = themeRivals
+      .filter((r) => r && r.rival_id)
+      .map((r) => ({ id: r.rival_id, label: r.name || r.rival_id }));
+    stageEditEls.rival.innerHTML = "";
+    for (const opt of rivalOptions) {
+      const optEl = document.createElement("option");
+      optEl.value = opt.id;
+      optEl.textContent = opt.label;
+      stageEditEls.rival.appendChild(optEl);
+    }
+    editSelectedRivalId = (rivalOptions[0] && rivalOptions[0].id) || "";
+    syncRivalOverrideSlider();
     stageEditEls.status.textContent = "";
     stageEditPanel.removeAttribute("hidden");
   }
@@ -2639,6 +2697,20 @@
       +(p[0] / walkableNativeW).toFixed(5),
       +(p[1] / walkableNativeH).toFixed(5),
     ]);
+    // Prune stale per-object/per-rival overrides down to keys that still exist
+    // in the current theme, so removed objects/rivals don't leave defunct
+    // override values persisted forever. Pruned COPIES only — the live state
+    // maps (themeObjScaleOverrides/themeRivalScaleOverrides) are left as-is.
+    const validObjIds = new Set(themeBuildables.map((o) => o.object_id));
+    const prunedObjScaleOverrides = {};
+    for (const k of Object.keys(themeObjScaleOverrides)) {
+      if (validObjIds.has(k)) prunedObjScaleOverrides[k] = themeObjScaleOverrides[k];
+    }
+    const validRivalIds = new Set(themeRivals.map((r) => r.rival_id));
+    const prunedRivalScaleOverrides = {};
+    for (const k of Object.keys(themeRivalScaleOverrides)) {
+      if (validRivalIds.has(k)) prunedRivalScaleOverrides[k] = themeRivalScaleOverrides[k];
+    }
     vscode.postMessage({
       type: "SAVE_STAGE_TUNING",
       payload: {
@@ -2648,7 +2720,9 @@
         object_scale: themeObjectScale,
         overall_scale: themeOverallScale,
         character_scale_overrides: themeCharScaleOverrides,
-        object_scale_overrides: themeObjScaleOverrides,
+        object_scale_overrides: prunedObjScaleOverrides,
+        rival_scale: themeRivalScale,
+        rival_scale_overrides: prunedRivalScaleOverrides,
         object_anchor_overrides: themeObjAnchorOverrides,
         decor_anchor_overrides: themeDecorAnchorOverrides,
         decor_flip_overrides: themeDecorFlipOverrides,
@@ -3118,7 +3192,10 @@
    * @param {number} depthScale
    */
   function drawBuildableObject(obj, entry, cx, cy, depthScale) {
-    if (entry.phase === "unbuilt") return; // hidden until it becomes the active target
+    // Normally hidden until it becomes the active build target; in Edit Stage
+    // mode, unbuilt objects fall through and are drawn as idle final art below
+    // (no crate/progress-bar) so per-object scaling/position is visible.
+    if (entry.phase === "unbuilt" && !editStageMode) return;
 
     const objId = obj.object_id;
     const baseSize = Math.round(64 * depthScale * effectiveObjScale(objId));
@@ -3165,7 +3242,7 @@
       // No poof art — fall through to drawing the finished object immediately.
     }
 
-    if (entry.phase === "poof" || entry.phase === "idle") {
+    if (entry.phase === "poof" || entry.phase === "idle" || (entry.phase === "unbuilt" && editStageMode)) {
       const objSlots = themeImages["object_" + objId];
       const slotIdx = entry.animState ? currentObjectSlot(entry.animState) : 0;
       const objImg = objSlots ? objSlots[slotIdx] : null;
@@ -3913,6 +3990,8 @@
         themeOverallScale = (vp && typeof vp.overall_scale === "number" && vp.overall_scale > 0) ? vp.overall_scale : 1;
         themeCharScaleOverrides = (vp && vp.character_scale_overrides && typeof vp.character_scale_overrides === "object") ? vp.character_scale_overrides : {};
         themeObjScaleOverrides = (vp && vp.object_scale_overrides && typeof vp.object_scale_overrides === "object") ? vp.object_scale_overrides : {};
+        themeRivalScale = (vp && typeof vp.rival_scale === "number" && vp.rival_scale > 0) ? vp.rival_scale : 1;
+        themeRivalScaleOverrides = (vp && vp.rival_scale_overrides && typeof vp.rival_scale_overrides === "object") ? Object.assign({}, vp.rival_scale_overrides) : {};
 
         // ── Phase 2a: capture buildable objects + resolve stable placement ──
         const manifest = msg.payload?.manifest;
@@ -6632,7 +6711,7 @@
           // left), so the sign matches the visible flip exactly.
           const enTDepth = Math.max(0, Math.min(1, (en.ny - enPolyMinY) / enPolyRangeY));
           const enDepthScale = (0.8 + enTDepth * 0.3) * themeOverallScale;
-          const enHalfWidthPx = Math.round(64 * enDepthScale * themeCharacterScale) / 2;
+          const enHalfWidthPx = Math.round(64 * enDepthScale * themeCharacterScale * effectiveRivalScale(en.rival_id)) / 2;
           const enHalfWidthNative = enHalfWidthPx * (walkableNativeW / lastBgW);
           const enFacingSign = en.facingLeft ? -1 : 1;
           const enMuzzleForward = enHalfWidthNative * PROJECTILE_MUZZLE_FRAC;
@@ -7548,7 +7627,12 @@
     }
     for (const obj of themeBuildables) {
       const entry = objectAnimMap[obj.object_id];
-      if (!entry || entry.phase === "unbuilt") continue;
+      // In Edit Stage mode, include unbuilt objects too so every buildable is
+      // visible (drawn as idle final art) for per-object scale/position
+      // tuning. objectPlacement is populated for ALL objects (built or not)
+      // at THEME_INITIALIZED, so unbuilt entries already have a valid spot —
+      // no fallback to objectHomePlacement is needed here.
+      if (!entry || (entry.phase === "unbuilt" && !editStageMode)) continue;
       const placement = objectPlacement[obj.object_id];
       if (!placement) continue;
       depthList.push({ kind: "object", obj, entry, ny: placement.ny });
@@ -7610,7 +7694,7 @@
           slot = slots.length - 1;
         }
         const img = slots && slots[slot];
-        const spriteSize = Math.round(64 * depthScale * themeCharacterScale);
+        const spriteSize = Math.round(64 * depthScale * themeCharacterScale * effectiveRivalScale(en.rival_id));
         if (img && img.complete && img.naturalWidth > 0) {
           const drawX = ecx - spriteSize / 2;
           const drawY = ecy - spriteSize;

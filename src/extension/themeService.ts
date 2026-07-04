@@ -439,6 +439,8 @@ export async function saveThemeTuning(
     decor_flip_overrides?: Record<string, boolean>;
     overall_scale?: number;
     enemy_config?: EnemyConfig;
+    rival_scale?: number;
+    rival_scale_overrides?: Record<string, number>;
   },
 ): Promise<boolean> {
   try {
@@ -483,6 +485,15 @@ export async function saveThemeTuning(
       if (Number.isFinite(overall) && overall > 0) {
         manifest.viewport.overall_scale = overall;
       }
+    }
+    if (tuning.rival_scale !== undefined) {
+      const rival = Number(tuning.rival_scale);
+      if (Number.isFinite(rival) && rival > 0) {
+        manifest.viewport.rival_scale = rival;
+      }
+    }
+    if (tuning.rival_scale_overrides && typeof tuning.rival_scale_overrides === 'object') {
+      manifest.viewport.rival_scale_overrides = tuning.rival_scale_overrides;
     }
     if (tuning.enemy_config && typeof tuning.enemy_config === 'object') {
       const sanitized: EnemyConfig = { ...manifest.viewport.enemy_config };
