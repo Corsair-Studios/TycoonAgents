@@ -553,7 +553,7 @@ export async function uploadThemeImage(
       frameKeys = [frameKey];
     } else if (item?.kind === 'rival_atlas') {
       const rows = rivalRowsForItem(item, manifest);
-      const rivalAtlas = await processRivalAtlas(buffer, manifest);
+      const rivalAtlas = await processRivalAtlas(buffer, manifest, rows);
       output = rivalAtlas.output;
       frameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
     } else if (item?.kind === 'object_atlas' && item.object_rows?.length) {
@@ -1331,7 +1331,7 @@ export async function retryThemeImage(
   } else if (item.kind === 'rival_atlas') {
     const rows = rivalRowsForItem(item, manifest);
     item.rival_rows = rows;
-    const rivalAtlas = await processRivalAtlas(generated, manifest);
+    const rivalAtlas = await processRivalAtlas(generated, manifest, rows);
     output = rivalAtlas.output;
     frameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
   } else if (item.kind === 'environment') {
@@ -1568,7 +1568,7 @@ async function processObjectAtlas(
   manifest: ThemeManifest,
   rows: ThemeObjectBoardRow[],
 ): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
-  if (rows.length !== 5) throw new Error('Animated object boards require exactly five rows.');
+  if (rows.length < 1 || rows.length > 5) throw new Error('Object board carries one to five rows.');
   const rowSlots = rows.map((_row, rowIndex) =>
     Array.from({ length: 4 }, (_unused, columnIndex) => rowIndex * 4 + columnIndex),
   );
@@ -1596,8 +1596,10 @@ async function processObjectAtlas(
 async function processRivalAtlas(
   generated: Buffer,
   manifest: ThemeManifest,
+  rows: ThemeRivalBoardRow[],
 ): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
-  const rowGroups = Array.from({ length: 4 }, (_row, rowIndex) =>
+  if (rows.length < 1 || rows.length > 4) throw new Error('Rival board carries one to four rows.');
+  const rowGroups = Array.from({ length: rows.length }, (_row, rowIndex) =>
     Array.from({ length: 5 }, (_col, colIndex) => rowIndex * 5 + colIndex),
   );
   const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
@@ -1932,7 +1934,7 @@ async function generateRivalAsset(
   const generated = await generateThemeImage(item.prompt, options);
   throwIfCancelled(undefined, options?.signal);
   const rows = rivalRowsForItem(item, manifest);
-  const rivalAtlas = await processRivalAtlas(generated, manifest);
+  const rivalAtlas = await processRivalAtlas(generated, manifest, rows);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, rivalAtlas.output);
   throwIfCancelled(undefined, options?.signal);
