@@ -47,6 +47,8 @@ export interface ViewportConfig {
   enemy_config?: EnemyConfig;
   rival_scale?: number;
   rival_scale_overrides?: Record<string, number>;
+  decor_scale?: number;
+  decor_scale_overrides?: Record<string, number>;
 }
 
 export interface AgentConfig {

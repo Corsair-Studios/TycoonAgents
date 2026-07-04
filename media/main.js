@@ -1839,10 +1839,16 @@
   let themeCharScaleOverrides = {};
   /** Per-object scale overrides, keyed by buildable object id. */
   let themeObjScaleOverrides = {};
+  /** Constant fallback scale for decor sprites (reuses object-scale approach). Declared here (moved up from the decor section below) so it's available for themeDecorScale's initializer, which runs earlier in module-init order. */
+  const DECOR_SCALE = 1;
   /** Overall rival sprite scale multiplier (mirrors themeCharacterScale for enemies). */
   let themeRivalScale = 1;
   /** Per-rival scale overrides, keyed by rival_id (mirrors themeObjScaleOverrides). */
   let themeRivalScaleOverrides = {};
+  /** Overall decor sprite scale multiplier (mirrors themeRivalScale for decor; default DECOR_SCALE). */
+  let themeDecorScale = DECOR_SCALE;
+  /** Per-decor scale overrides, keyed by decor_id (mirrors themeRivalScaleOverrides). */
+  let themeDecorScaleOverrides = {};
   /** Effective character scale for a given character/frame id. */
   function effectiveCharScale(charId) {
     const o = themeCharScaleOverrides[charId];
@@ -1852,6 +1858,11 @@
   function effectiveRivalScale(rivalId) {
     const o = themeRivalScaleOverrides[rivalId];
     return (typeof o === "number" && o > 0) ? o : themeRivalScale;
+  }
+  /** Effective decor scale for a given decor_id. */
+  function effectiveDecorScale(decorId) {
+    const o = themeDecorScaleOverrides[decorId];
+    return (typeof o === "number" && o > 0) ? o : themeDecorScale;
   }
 
   // ── Phase 2a: build loop state ───────────────────────────────────────────
@@ -1909,8 +1920,6 @@
    * @type {Record<string, string|null>}
    */
   let seatOccupancy = {};
-  /** Constant fallback scale for decor sprites (reuses object-scale approach). */
-  const DECOR_SCALE = 1;
   /** Default sit-anchor offset (normalized scene-space) when a seat omits sit_anchor. */
   const DEFAULT_SIT_ANCHOR = [0, -0.03];
   /**
@@ -2256,6 +2265,8 @@
   let editSelectedObjId = "";
   /** Rival rival_id selected in the per-rival override control. */
   let editSelectedRivalId = "";
+  /** Decor decor_id selected in the per-decor override control. */
+  let editSelectedDecorId = "";
 
   // ── Stage loading progress (a bar replaces placeholders while loading) ────
   const LOADING_TIMEOUT_MS = 6000;
@@ -2351,7 +2362,22 @@
     if (vi >= 0) { dragVertexIndex = vi; e.preventDefault(); return; }
     // Otherwise start dragging a buildable/decor object under the cursor.
     const hit = sceneObjectAt(mx, my, 20);
-    if (hit) { dragObjectType = hit.type; dragObjectId = hit.id; e.preventDefault(); }
+    if (hit) {
+      dragObjectType = hit.type;
+      dragObjectId = hit.id;
+      // Auto-select the picked object/decor in its per-item override control
+      // so the scale slider you'd want next is already pointed at it.
+      if (hit.type === "buildable" && stageEditEls.obj) {
+        editSelectedObjId = hit.id;
+        stageEditEls.obj.value = hit.id;
+        syncObjOverrideSlider();
+      } else if (hit.type === "decor" && stageEditEls.decor) {
+        editSelectedDecorId = hit.id;
+        stageEditEls.decor.value = hit.id;
+        syncDecorOverrideSlider();
+      }
+      e.preventDefault();
+    }
   });
   canvas.addEventListener("mousemove", (e) => {
     if (!editStageMode) return;
@@ -2454,38 +2480,75 @@
     const stageAreaEl = document.getElementById("stage-area") || document.body;
     const wrap = document.createElement("div");
     wrap.id = "stage-edit-panel";
+    wrap.className = "se-panel";
     wrap.setAttribute("hidden", "");
-    wrap.style.cssText = "position:absolute;top:8px;left:8px;z-index:30;width:228px;padding:10px 12px;border-radius:8px;background:rgba(18,20,28,0.94);border:1px solid #ffc107;color:#eaeaea;font-family:monospace;font-size:11px;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,0.55);";
     wrap.innerHTML =
-      '<div id="se-h">⚙ Edit Stage</div>' +
-      '<div>Character scale: <span id="se-cs-val">1.00</span></div>' +
-      '<input id="se-cs" type="range" min="0.3" max="2" step="0.05" value="1">' +
-      '<div style="margin-top:6px">Per-character override</div>' +
-      '<select id="se-char"></select>' +
-      '<input id="se-co" type="range" min="0.3" max="2" step="0.05" value="1">' +
-      '<button id="se-co-clear" type="button">clear override</button>' +
-      '<div style="margin-top:6px">Object scale: <span id="se-os-val">1.00</span></div>' +
-      '<input id="se-os" type="range" min="0.3" max="2" step="0.05" value="1">' +
-      '<div style="margin-top:6px">Overall scale: <span id="se-ov-val">1.00</span></div>' +
-      '<input id="se-ov" type="range" min="0.5" max="2" step="0.05" value="1">' +
-      '<div style="margin-top:6px">Per-object override</div>' +
-      '<select id="se-obj"></select>' +
-      '<input id="se-oo" type="range" min="0.3" max="2" step="0.05" value="1">' +
-      '<button id="se-oo-clear" type="button">clear override</button>' +
-      '<div style="margin-top:6px">Rival scale: <span id="se-rs-val">1.00</span></div>' +
-      '<input id="se-rs" type="range" min="0.3" max="2" step="0.05" value="1">' +
-      '<div style="margin-top:6px">Per-rival override</div>' +
-      '<select id="se-rival"></select>' +
-      '<input id="se-ro" type="range" min="0.3" max="2" step="0.05" value="1">' +
-      '<button id="se-ro-clear" type="button">clear override</button>' +
-      '<button id="se-bg" type="button">Replace background…</button>' +
-      '<div style="margin-top:8px;border-top:1px solid rgba(255,193,7,0.3);padding-top:6px">Enemy spawn interval (s): <span id="se-ei-val">45</span></div>' +
-      '<input id="se-ei" type="range" min="10" max="180" step="5" value="45">' +
-      '<div style="margin-top:6px">Enemy count mode</div>' +
-      '<select id="se-ecm"><option value="random">random</option><option value="all">all</option></select>' +
-      '<div id="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide) · hover decor + F to flip</div>' +
-      '<div id="se-btns"><button id="se-save" type="button">Save</button><button id="se-done" type="button">Done</button></div>' +
-      '<div id="se-status"></div>';
+      '<div class="se-header"><span id="se-h" class="se-title">⚙ Edit Stage</span></div>' +
+      '<div class="se-body">' +
+        '<div class="se-section">' +
+          '<div class="se-section-title">Scene</div>' +
+          '<div class="se-row"><span class="se-label">Overall scale</span><span class="se-value"><span id="se-ov-val">1.00</span></span></div>' +
+          '<input id="se-ov" class="se-range" type="range" min="0.5" max="2" step="0.05" value="1">' +
+        '</div>' +
+        '<div class="se-section">' +
+          '<div class="se-section-title">Characters</div>' +
+          '<div class="se-row"><span class="se-label">Character scale</span><span class="se-value"><span id="se-cs-val">1.00</span></span></div>' +
+          '<input id="se-cs" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+          '<div class="se-override">' +
+            '<div class="se-override-label">Per-character override</div>' +
+            '<select id="se-char" class="se-select"></select>' +
+            '<input id="se-co" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+            '<button id="se-co-clear" class="se-clear" type="button">clear override</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="se-section">' +
+          '<div class="se-section-title">Objects</div>' +
+          '<div class="se-row"><span class="se-label">Object scale</span><span class="se-value"><span id="se-os-val">1.00</span></span></div>' +
+          '<input id="se-os" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+          '<div class="se-override">' +
+            '<div class="se-override-label">Per-object override</div>' +
+            '<select id="se-obj" class="se-select"></select>' +
+            '<input id="se-oo" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+            '<button id="se-oo-clear" class="se-clear" type="button">clear override</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="se-section">' +
+          '<div class="se-section-title">Rivals</div>' +
+          '<div class="se-row"><span class="se-label">Rival scale</span><span class="se-value"><span id="se-rs-val">1.00</span></span></div>' +
+          '<input id="se-rs" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+          '<div class="se-override">' +
+            '<div class="se-override-label">Per-rival override</div>' +
+            '<select id="se-rival" class="se-select"></select>' +
+            '<input id="se-ro" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+            '<button id="se-ro-clear" class="se-clear" type="button">clear override</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="se-section">' +
+          '<div class="se-section-title">Decor</div>' +
+          '<div class="se-row"><span class="se-label">Decor scale</span><span class="se-value"><span id="se-ds-val">1.00</span></span></div>' +
+          '<input id="se-ds" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+          '<div class="se-override">' +
+            '<div class="se-override-label">Per-decor override</div>' +
+            '<select id="se-decor" class="se-select"></select>' +
+            '<input id="se-do" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+            '<button id="se-do-clear" class="se-clear" type="button">clear override</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="se-section">' +
+          '<div class="se-section-title">Enemies</div>' +
+          '<div class="se-row"><span class="se-label">Spawn interval (s)</span><span class="se-value"><span id="se-ei-val">45</span></span></div>' +
+          '<input id="se-ei" class="se-range" type="range" min="10" max="180" step="5" value="45">' +
+          '<div class="se-sublabel">Enemy count mode</div>' +
+          '<select id="se-ecm" class="se-select"><option value="random">random</option><option value="all">all</option></select>' +
+          '<button id="se-bg" class="se-btn se-btn-ghost" type="button">Replace background…</button>' +
+        '</div>' +
+        '<div id="se-hint" class="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide) · hover decor + F to flip</div>' +
+      '</div>' +
+      '<div class="se-footer">' +
+        '<button id="se-save" class="se-btn se-btn-primary" type="button">Save</button>' +
+        '<button id="se-done" class="se-btn se-btn-secondary" type="button">Done</button>' +
+      '</div>' +
+      '<div id="se-status" class="se-status"></div>';
     stageAreaEl.appendChild(wrap);
     stageEditPanel = wrap;
     stageEditEls.cs = wrap.querySelector("#se-cs");
@@ -2505,6 +2568,11 @@
     stageEditEls.rival = wrap.querySelector("#se-rival");
     stageEditEls.ro = wrap.querySelector("#se-ro");
     stageEditEls.roClear = wrap.querySelector("#se-ro-clear");
+    stageEditEls.ds = wrap.querySelector("#se-ds");
+    stageEditEls.dsVal = wrap.querySelector("#se-ds-val");
+    stageEditEls.decor = wrap.querySelector("#se-decor");
+    stageEditEls.do_ = wrap.querySelector("#se-do");
+    stageEditEls.doClear = wrap.querySelector("#se-do-clear");
     stageEditEls.ei = wrap.querySelector("#se-ei");
     stageEditEls.eiVal = wrap.querySelector("#se-ei-val");
     stageEditEls.ecm = wrap.querySelector("#se-ecm");
@@ -2512,18 +2580,6 @@
     stageEditEls.done = wrap.querySelector("#se-done");
     stageEditEls.status = wrap.querySelector("#se-status");
     stageEditEls.bg = wrap.querySelector("#se-bg");
-    // Cosmetic styling via CSSOM (CSP-safe).
-    wrap.querySelector("#se-h").style.cssText = "font-weight:bold;color:#ffc107;margin-bottom:6px;";
-    for (const el of [stageEditEls.cs, stageEditEls.co, stageEditEls.os, stageEditEls.ov, stageEditEls.char, stageEditEls.obj, stageEditEls.oo, stageEditEls.rs, stageEditEls.rival, stageEditEls.ro, stageEditEls.ei, stageEditEls.ecm]) el.style.width = "100%";
-    stageEditEls.bg.style.cssText = "width:100%;margin-top:8px;";
-    wrap.querySelector("#se-hint").style.cssText = "opacity:0.7;margin:8px 0;";
-    wrap.querySelector("#se-btns").style.cssText = "display:flex;gap:6px;margin-top:4px;";
-    stageEditEls.save.style.flex = "1";
-    stageEditEls.done.style.flex = "1";
-    stageEditEls.coClear.style.cssText = "margin-top:3px;font-size:10px;";
-    stageEditEls.ooClear.style.cssText = "margin-top:3px;font-size:10px;";
-    stageEditEls.roClear.style.cssText = "margin-top:3px;font-size:10px;";
-    stageEditEls.status.style.cssText = "margin-top:6px;min-height:14px;color:#9fffa0;";
 
     // Wire controls.
     stageEditEls.cs.addEventListener("input", () => {
@@ -2578,6 +2634,22 @@
       if (editSelectedRivalId) delete themeRivalScaleOverrides[editSelectedRivalId];
       syncRivalOverrideSlider();
     });
+    stageEditEls.ds.addEventListener("input", () => {
+      themeDecorScale = parseFloat(stageEditEls.ds.value) || DECOR_SCALE;
+      stageEditEls.dsVal.textContent = themeDecorScale.toFixed(2);
+    });
+    stageEditEls.decor.addEventListener("change", () => {
+      editSelectedDecorId = stageEditEls.decor.value;
+      syncDecorOverrideSlider();
+    });
+    stageEditEls.do_.addEventListener("input", () => {
+      if (!editSelectedDecorId) return;
+      themeDecorScaleOverrides[editSelectedDecorId] = parseFloat(stageEditEls.do_.value) || 1;
+    });
+    stageEditEls.doClear.addEventListener("click", () => {
+      if (editSelectedDecorId) delete themeDecorScaleOverrides[editSelectedDecorId];
+      syncDecorOverrideSlider();
+    });
     stageEditEls.ei.addEventListener("input", () => {
       enemySpawnIntervalSec = parseFloat(stageEditEls.ei.value) || 45;
       stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
@@ -2608,6 +2680,10 @@
   function syncRivalOverrideSlider() {
     const ov = themeRivalScaleOverrides[editSelectedRivalId];
     stageEditEls.ro.value = String(typeof ov === "number" && ov > 0 ? ov : themeRivalScale);
+  }
+  function syncDecorOverrideSlider() {
+    const ov = themeDecorScaleOverrides[editSelectedDecorId];
+    stageEditEls.do_.value = String(typeof ov === "number" && ov > 0 ? ov : themeDecorScale);
   }
   function enterEditStage() {
     if (!themeLoaded) return;
@@ -2674,6 +2750,21 @@
     }
     editSelectedRivalId = (rivalOptions[0] && rivalOptions[0].id) || "";
     syncRivalOverrideSlider();
+    stageEditEls.ds.value = String(themeDecorScale);
+    stageEditEls.dsVal.textContent = themeDecorScale.toFixed(2);
+    // Per-decor override list: every decor object from the loaded theme.
+    const decorOptions = themeDecor
+      .filter((d) => d && d.decor_id != null)
+      .map((d) => ({ id: d.decor_id, label: d.display_name || d.decor_id }));
+    stageEditEls.decor.innerHTML = "";
+    for (const opt of decorOptions) {
+      const optEl = document.createElement("option");
+      optEl.value = opt.id;
+      optEl.textContent = opt.label;
+      stageEditEls.decor.appendChild(optEl);
+    }
+    editSelectedDecorId = (decorOptions[0] && decorOptions[0].id) || "";
+    syncDecorOverrideSlider();
     stageEditEls.status.textContent = "";
     stageEditPanel.removeAttribute("hidden");
   }
@@ -2711,6 +2802,11 @@
     for (const k of Object.keys(themeRivalScaleOverrides)) {
       if (validRivalIds.has(k)) prunedRivalScaleOverrides[k] = themeRivalScaleOverrides[k];
     }
+    const validDecorIds = new Set(themeDecor.map((d) => d.decor_id));
+    const prunedDecorScaleOverrides = {};
+    for (const k of Object.keys(themeDecorScaleOverrides)) {
+      if (validDecorIds.has(k)) prunedDecorScaleOverrides[k] = themeDecorScaleOverrides[k];
+    }
     vscode.postMessage({
       type: "SAVE_STAGE_TUNING",
       payload: {
@@ -2723,6 +2819,8 @@
         object_scale_overrides: prunedObjScaleOverrides,
         rival_scale: themeRivalScale,
         rival_scale_overrides: prunedRivalScaleOverrides,
+        decor_scale: themeDecorScale,
+        decor_scale_overrides: prunedDecorScaleOverrides,
         object_anchor_overrides: themeObjAnchorOverrides,
         decor_anchor_overrides: themeDecorAnchorOverrides,
         decor_flip_overrides: themeDecorFlipOverrides,
@@ -3276,7 +3374,7 @@
     const decorId = decor.decor_id;
     if (decorId == null) return;
     const slots = themeImages["decor_" + decorId];
-    const baseSize = Math.round(64 * depthScale * DECOR_SCALE);
+    const baseSize = Math.round(64 * depthScale * effectiveDecorScale(decorId));
     if (!slots || slots.length === 0) {
       // Missing art entirely. drawDecor is only ever called for decor that
       // already has a resolved placement — hidden decor (anchor override
@@ -3992,6 +4090,8 @@
         themeObjScaleOverrides = (vp && vp.object_scale_overrides && typeof vp.object_scale_overrides === "object") ? vp.object_scale_overrides : {};
         themeRivalScale = (vp && typeof vp.rival_scale === "number" && vp.rival_scale > 0) ? vp.rival_scale : 1;
         themeRivalScaleOverrides = (vp && vp.rival_scale_overrides && typeof vp.rival_scale_overrides === "object") ? Object.assign({}, vp.rival_scale_overrides) : {};
+        themeDecorScale = (vp && typeof vp.decor_scale === "number" && vp.decor_scale > 0) ? vp.decor_scale : DECOR_SCALE;
+        themeDecorScaleOverrides = (vp && typeof vp.decor_scale_overrides === "object" && vp.decor_scale_overrides) ? Object.assign({}, vp.decor_scale_overrides) : {};
 
         // ── Phase 2a: capture buildable objects + resolve stable placement ──
         const manifest = msg.payload?.manifest;

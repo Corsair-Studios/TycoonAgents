@@ -441,6 +441,8 @@ export async function saveThemeTuning(
     enemy_config?: EnemyConfig;
     rival_scale?: number;
     rival_scale_overrides?: Record<string, number>;
+    decor_scale?: number;
+    decor_scale_overrides?: Record<string, number>;
   },
 ): Promise<boolean> {
   try {
@@ -494,6 +496,15 @@ export async function saveThemeTuning(
     }
     if (tuning.rival_scale_overrides && typeof tuning.rival_scale_overrides === 'object') {
       manifest.viewport.rival_scale_overrides = tuning.rival_scale_overrides;
+    }
+    if (tuning.decor_scale !== undefined) {
+      const decor = Number(tuning.decor_scale);
+      if (Number.isFinite(decor) && decor > 0) {
+        manifest.viewport.decor_scale = decor;
+      }
+    }
+    if (tuning.decor_scale_overrides && typeof tuning.decor_scale_overrides === 'object') {
+      manifest.viewport.decor_scale_overrides = tuning.decor_scale_overrides;
     }
     if (tuning.enemy_config && typeof tuning.enemy_config === 'object') {
       const sanitized: EnemyConfig = { ...manifest.viewport.enemy_config };
@@ -1957,24 +1968,27 @@ async function generateRivalAsset(
 }
 
 /**
- * Rival rows for a rival-board item. Uses the item's stored `rival_rows` when present,
- * otherwise reconstructs them from the manifest roster by the board's index (parsed
- * from `rivals_NN`), so retries/uploads of older items still resolve four enemies.
+ * Rival rows for a rival-board item. Reconstructs them from the CURRENT manifest
+ * roster by the board's index (parsed from `rivals_NN`) as the primary source, so
+ * a roster that grew (e.g. 3->4 rivals) regenerates the correct count instead of
+ * reusing a stale saved `rival_rows` — which would slice the board at the wrong
+ * row count and drop the new rival's frames (placeholder + mis-sliced neighbors).
+ * Falls back to the item's stored `rival_rows` only if reconstruction fails/empty.
  */
 function rivalRowsForItem(
   item: Pick<ThemeImageReviewItem, 'id' | 'rival_rows'>,
   manifest: ThemeManifest,
 ): ThemeRivalBoardRow[] {
-  if (item.rival_rows?.length) return item.rival_rows;
   let boards: ThemeRivalBoardRow[][];
   try {
     boards = createRivalBoardRows(themeRivalSpecs(manifest));
   } catch (err) {
     console.warn('TycoonAgents: unable to reconstruct rival board rows:', err);
-    return [];
+    return item.rival_rows?.length ? item.rival_rows : [];
   }
   const boardIndex = Math.max(0, (Number(/rivals_(\d+)/.exec(item.id)?.[1] ?? '1') || 1) - 1);
-  return boards[boardIndex] ?? boards[0] ?? [];
+  const rows = boards[boardIndex] ?? boards[0] ?? [];
+  return rows.length ? rows : (item.rival_rows?.length ? item.rival_rows : []);
 }
 
 async function generateObjectAsset(
