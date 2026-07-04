@@ -58,6 +58,9 @@ export interface RivalConfig {
   rival_id: string;
   name: string;
   atlas_asset: string;
+  // Planner-classified combat style. Absent = legacy/unclassified theme,
+  // treated as 'melee' at render time (never spawns a ranged projectile).
+  attack_style?: 'melee' | 'ranged';
 }
 
 export interface BuildableObject {

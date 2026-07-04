@@ -4,6 +4,7 @@ import {
   normalizeThemePlan,
   themePlanToManifest,
 } from '../src/extension/themePlan';
+import type { ThemePlan } from '../src/extension/themePlan';
 
 test('theme plan normalizes every editable slot to the required count', () => {
   const plan = normalizeThemePlan({
@@ -122,4 +123,94 @@ test('theme plan creates 16 agents, 4 enemies, and 13 buildable objects', () => 
   assert.equal(manifest.viewport?.crate_asset, 'frames.json#crate');
   assert.equal(manifest.viewport?.poof_asset, 'frames.json#poof');
   assert.equal(manifest.viewport?.overall_scale, 1);
+});
+
+// --- Per-rival melee/ranged attack style -----------------------------------
+//
+// translator.ts's private `coerceAttackStyle` helper is not exported and
+// `expandThemePlan` requires a live vscode module + network fetch that this
+// node:test harness cannot provide, so its coercion contract (lowercase,
+// only 'melee'/'ranged' pass through, everything else incl. garbage/number/
+// null/missing -> undefined, NEVER 'ranged') is instead validated through
+// `normalizeThemePlan`'s equivalent internal `normalizeAttackStyle`, which
+// shares the exact same contract and is reachable via this public API.
+
+test('enemy_attack_styles values normalize case-insensitively; garbage/empty strings become undefined, never "ranged"', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Style Test',
+    enemies: ['Alpha', 'Beta', 'Gamma', 'Delta'],
+    enemy_attack_styles: ['MELEE', 'Ranged', 'bogus', ''] as unknown as ThemePlan['enemy_attack_styles'],
+  });
+  assert.equal(plan.enemy_attack_styles?.[0], 'melee');
+  assert.equal(plan.enemy_attack_styles?.[1], 'ranged');
+  assert.equal(plan.enemy_attack_styles?.[2], undefined);
+  assert.notEqual(plan.enemy_attack_styles?.[2], 'ranged');
+  assert.equal(plan.enemy_attack_styles?.[3], undefined);
+});
+
+test('non-string enemy_attack_styles entries (number, null) and an omitted styles array all normalize to undefined, never "ranged"', () => {
+  const withNonStrings = normalizeThemePlan({
+    display_name: 'Style Test 2',
+    enemies: ['Alpha', 'Beta', 'Gamma', 'Delta'],
+    enemy_attack_styles: [42, null, 'melee', undefined] as unknown as ThemePlan['enemy_attack_styles'],
+  });
+  assert.equal(withNonStrings.enemy_attack_styles?.[0], undefined);
+  assert.notEqual(withNonStrings.enemy_attack_styles?.[0], 'ranged');
+  assert.equal(withNonStrings.enemy_attack_styles?.[1], undefined);
+  assert.equal(withNonStrings.enemy_attack_styles?.[2], 'melee');
+  assert.equal(withNonStrings.enemy_attack_styles?.[3], undefined);
+
+  const withoutStylesField = normalizeThemePlan({
+    display_name: 'Style Test 3',
+    enemies: ['Alpha', 'Beta', 'Gamma', 'Delta'],
+  });
+  assert.equal(withoutStylesField.enemy_attack_styles, undefined);
+});
+
+test('themePlanToManifest threads enemy_attack_styles onto roster_rivals by index, omitting the field when unclassified', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Skirmish',
+    enemies: ['Grunt', 'Sniper', 'Brute', 'Marksman'],
+    enemy_attack_styles: ['melee', 'ranged', undefined, 'ranged'],
+  });
+  const manifest = themePlanToManifest(plan);
+  const rivals = manifest.roster_rivals ?? [];
+  assert.equal(rivals.length, 4);
+  assert.equal(rivals[0].attack_style, 'melee');
+  assert.equal(rivals[1].attack_style, 'ranged');
+  assert.equal(rivals[2].attack_style, undefined);
+  assert.equal('attack_style' in rivals[2], false);
+  assert.equal(rivals[3].attack_style, 'ranged');
+});
+
+test('roster_rivals omit attack_style entirely when the plan has no enemy_attack_styles (legacy default applies at render)', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Legacy Set',
+    enemies: ['Alpha', 'Beta', 'Gamma', 'Delta'],
+  });
+  const manifest = themePlanToManifest(plan);
+  const rivals = manifest.roster_rivals ?? [];
+  assert.equal(rivals.length, 4);
+  for (const rival of rivals) {
+    assert.equal(rival.attack_style, undefined);
+    assert.equal('attack_style' in rival, false);
+  }
+});
+
+test('enemy_attack_styles stays paired to its own enemy across blank-name filtering (index alignment survives)', () => {
+  // Blank entry at index 1 is dropped by normalizeEnemies; if pairing happened
+  // AFTER filtering (a reindexing bug) Brute would inherit the dropped blank's
+  // 'ranged' style instead of its own 'melee' (originally at index 2).
+  const plan = normalizeThemePlan({
+    display_name: 'Alignment Test',
+    enemies: ['Grunt', '', 'Brute'],
+    enemy_attack_styles: ['melee', 'ranged', 'melee'],
+  });
+  assert.equal(plan.enemies[0], 'Grunt');
+  assert.equal(plan.enemies[1], 'Brute'); // blank dropped, Brute shifts up to index 1
+  assert.equal(plan.enemies.length, 4);
+  assert.equal(plan.enemy_attack_styles?.[0], 'melee'); // Grunt keeps its own style
+  assert.equal(plan.enemy_attack_styles?.[1], 'melee'); // Brute keeps ITS OWN style, not the dropped blank's 'ranged'
+  assert.equal(plan.enemy_attack_styles?.[2], undefined); // padded fallback enemy, no style
+  assert.equal(plan.enemy_attack_styles?.[3], undefined);
 });

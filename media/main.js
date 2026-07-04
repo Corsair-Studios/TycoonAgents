@@ -6250,6 +6250,10 @@
       activeEnemies.push({
         instance_id: "enemy_" + (++enemyInstanceCounter),
         rival_id: rivalId,
+        // Planner-classified combat style (manifest roster_rivals[].attack_style).
+        // Legacy/unclassified rivals (no field, or unrecognized value) default to
+        // "melee" so they never spawn a ranged projectile.
+        attackStyle: rival.attack_style === "ranged" ? "ranged" : "melee",
         nx: spawnPt[0],
         ny: spawnPt[1],
         // Initial walk-in destination: toward the map interior so enemies
@@ -6622,7 +6626,10 @@
         // In range (with hysteresis) — hold position and attack. Fire a ranged
         // projectile on the throttled cadence when outside pure melee range.
         desiredAction = "attack";
-        if (targetDist > ENEMY_ENGAGE_RANGE && en.shotCooldown <= 0) {
+        // MELEE rivals never spawn a projectile — they still close in, enter
+        // "attack" combat mode, and play the same attack clip as ranged
+        // rivals; only the projectile visual is suppressed for them.
+        if (en.attackStyle === "ranged" && targetDist > ENEMY_ENGAGE_RANGE && en.shotCooldown <= 0) {
           en.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
           spawnProjectile(en.nx, en.ny, targetEnt.nx, targetEnt.ny);
         }

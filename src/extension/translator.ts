@@ -20,6 +20,7 @@ interface PlannerModelOutput {
   object_motion_hints?: unknown;
   decor?: unknown;
   enemies?: unknown;
+  enemy_attack_styles?: unknown;
   expressions?: unknown;
   achievements?: unknown;
 }
@@ -55,6 +56,7 @@ export async function expandThemePlan(
     '  "object_motion_hints": ["13 SHORT idle-motion phrases, one per object in the same order (e.g. \\"radar dish slowly rotates\\", \\"reactor core pulses\\"); describe one subtle looping motion or light cycle per object"],',
     '  "decor": ["10 background decor names: first 4 are sittable seats, next 4 are static scenery props, last 2 are subtly animated scenery items"],',
     '  "enemies": ["4 named enemy designs"],',
+    '  "enemy_attack_styles": [<one of "melee" or "ranged" for EACH enemy, SAME ORDER as "enemies"; "ranged" if that enemy fights primarily with a gun, bow, thrown weapon, or energy/projectile weapon at a distance; "melee" if it fights hand-to-hand or with a close-contact weapon (fists, claws, blade, club, spear)>],',
     '  "expressions": ["16 short, visually distinct expression names"],',
     '  "achievements": ["20 short achievement badge design names"]',
     '}',
@@ -111,9 +113,23 @@ export async function expandThemePlan(
     object_motion_hints: Array.isArray(model.object_motion_hints) ? model.object_motion_hints as string[] : [],
     decor: Array.isArray(model.decor) ? model.decor as string[] : [],
     enemies: Array.isArray(model.enemies) ? model.enemies as string[] : [],
+    enemy_attack_styles: Array.isArray(model.enemy_attack_styles)
+      ? (model.enemy_attack_styles as unknown[]).map(coerceAttackStyle)
+      : undefined,
     expressions: Array.isArray(model.expressions) ? model.expressions as string[] : [],
     achievements: Array.isArray(model.achievements) ? model.achievements as string[] : [],
   }, rawUserInput);
+}
+
+/**
+ * Coerce a single raw planner value into a strict 'melee' | 'ranged' attack
+ * style, or undefined for anything else (missing, wrong type, unrecognized
+ * string). Never defaults to 'ranged' — unclassified entries stay undefined
+ * so the render layer's legacy default (melee, no projectile) applies.
+ */
+function coerceAttackStyle(value: unknown): 'melee' | 'ranged' | undefined {
+  const lowered = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return lowered === 'melee' || lowered === 'ranged' ? lowered : undefined;
 }
 
 /** Backward-compatible adapter for callers that still request a manifest. */

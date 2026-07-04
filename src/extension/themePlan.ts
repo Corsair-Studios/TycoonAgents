@@ -87,6 +87,13 @@ export interface ThemePlan {
   object_motion_hints?: string[];
   decor: string[];
   enemies: string[];
+  /**
+   * Optional per-enemy combat classification (same length/order as `enemies`).
+   * Entries are 'melee' | 'ranged' | absent (unclassified — treated as melee
+   * at render time). Threaded into RivalConfig.attack_style in themePlanToManifest.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  enemy_attack_styles?: Array<'melee' | 'ranged' | undefined>;
   expressions: string[];
   achievements: string[];
 }
@@ -129,6 +136,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     displayName,
     input.object_motion_hints,
   );
+  const { enemies, enemyAttackStyles } = normalizeEnemies(input.enemies, input.enemy_attack_styles);
   return {
     version: 1,
     theme_id: themeId,
@@ -141,7 +149,8 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     objects,
     object_motion_hints: objectMotionHints,
     decor: normalizeNames(input.decor, THEME_DECOR_COUNT, 'Decor'),
-    enemies: normalizeNames(input.enemies, THEME_ENEMY_COUNT, 'Enemy'),
+    enemies,
+    enemy_attack_styles: enemyAttackStyles,
     expressions: normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
     achievements: normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge'),
   };
@@ -166,11 +175,17 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     plan.enemies.map((name) => toSafeAssetId(name).replace(/^(?:rival|enemy)_/, '')),
     'enemy',
   );
-  const rosterRivals: RivalConfig[] = plan.enemies.map((name, index) => ({
-    rival_id: `rival_${rivalIds[index]}`,
-    name,
-    atlas_asset: `frames.json#rival_${rivalIds[index]}`,
-  }));
+  const rosterRivals: RivalConfig[] = plan.enemies.map((name, index) => {
+    const style = plan.enemy_attack_styles?.[index];
+    return {
+      rival_id: `rival_${rivalIds[index]}`,
+      name,
+      atlas_asset: `frames.json#rival_${rivalIds[index]}`,
+      // Omit the field entirely when unknown so the render layer's legacy
+      // default (melee — no projectile) applies; never default to 'ranged'.
+      ...(style === 'melee' || style === 'ranged' ? { attack_style: style } : {}),
+    };
+  });
   const objectIds = uniqueIds(plan.objects, 'object');
   const buildableObjects: BuildableObject[] = plan.objects.map((displayName, index) => ({
     build_order: index,
@@ -300,6 +315,41 @@ function looksLikeRangedWeaponRack(name: string): boolean {
     || /\bweapon(s)?\s+(rack|stand|shelf|locker)\b/.test(text);
   const isRanged = /\b(ranged|rifle|blaster|laser|plasma|gun|guns|missile|rocket|bow|crossbow|cannon|dart|slingshot|shooter|firearm|musket|bolt|arrow)\b/.test(text);
   return isRack && isRanged;
+}
+
+/**
+ * Normalize the `enemies` list to THEME_ENEMY_COUNT entries while keeping an
+ * optional parallel `enemy_attack_styles` array aligned by index. Mirrors the
+ * pairing approach in reserveRangedWeaponRackSlot: pair name+style BEFORE
+ * filtering blank names, so a planner-supplied style stays attached to its
+ * enemy even if earlier blank entries are dropped. Padded fallback enemies
+ * (added when the planner supplied fewer than THEME_ENEMY_COUNT) get no style
+ * (undefined) — render-time default is melee.
+ */
+function normalizeEnemies(
+  values: unknown,
+  styles: unknown,
+): { enemies: string[]; enemyAttackStyles?: Array<'melee' | 'ranged' | undefined> } {
+  const rawNames = Array.isArray(values) ? values : [];
+  const rawStyles = Array.isArray(styles) ? styles : [];
+  const paired = rawNames
+    .map((value, index) => ({
+      name: cleanValue(value),
+      style: normalizeAttackStyle(rawStyles[index]),
+    }))
+    .filter((entry) => entry.name.length > 0);
+
+  const enemies = normalizeNames(paired.map((entry) => entry.name), THEME_ENEMY_COUNT, 'Enemy');
+  const stylesAligned = paired.map((entry) => entry.style).slice(0, THEME_ENEMY_COUNT);
+  while (stylesAligned.length < enemies.length) stylesAligned.push(undefined);
+  const hasAnyStyle = stylesAligned.some((style) => style !== undefined);
+  return { enemies, enemyAttackStyles: hasAnyStyle ? stylesAligned : undefined };
+}
+
+function normalizeAttackStyle(value: unknown): 'melee' | 'ranged' | undefined {
+  if (typeof value !== 'string') return undefined;
+  const lowered = value.trim().toLowerCase();
+  return lowered === 'melee' || lowered === 'ranged' ? lowered : undefined;
 }
 
 function normalizeNames(values: unknown, count: number, fallbackLabel: string): string[] {
