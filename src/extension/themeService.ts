@@ -1578,13 +1578,13 @@ async function processObjectAtlas(
   // identical integer height. Each animation row shares one crop and anchor.
   const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
     columns: 4,
-    rows: 5,
+    rows: rows.length,
     scaleReferenceSlots: objectSlots,
     targetContentHeight: 104,
     maxContentExtent: 120,
     normalizationGroups: rowSlots,
   });
-  const output = await optimizeSpriteBoardCanvas(generated, 4, 5);
+  const output = await optimizeSpriteBoardCanvas(generated, 4, rows.length);
   return { output, spritePackage };
 }
 

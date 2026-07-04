@@ -181,6 +181,17 @@ test('object prompt emits explicit ranged-rack guidance and per-object motion hi
   assert.match(prompt, /Row 3: OBJECT — Reactor Core — invent one subtle functional motion/i);
 });
 
+test('object prompt requests exactly rows.length rows and never mentions unused rows', () => {
+  const prompt = buildObjectAtlasPrompt('industrial', 'Factory', [
+    { kind: 'object' as const, object_id: 'a', display_name: 'Object A' },
+    { kind: 'object' as const, object_id: 'b', display_name: 'Object B' },
+    { kind: 'poof' as const },
+    { kind: 'crate' as const },
+  ]);
+  assert.match(prompt, /4-row/i);
+  assert.doesNotMatch(prompt, /rows? \d+-\d+ are unused/i);
+});
+
 test('createObjectBoardRows carries is_ranged_rack and motion_hint onto the object rows', () => {
   const rows = createObjectBoardRows(Array.from({ length: 13 }, (_unused, index) => ({
     object_id: `object_${index + 1}`,

@@ -495,13 +495,10 @@ export function buildObjectAtlasPrompt(
   const hasCrate = rows.some((row) => row.kind === 'crate');
   return [
     `Create one animated object sprite sheet for the "${themeName}" theme.`,
-    boardContract(4, 5),
-    'Treat the grid as five visually equal logical row bands; the production slicer distributes remainder pixels across row boundaries.',
-    'Each of the (up to) five ROWS contains the four sequential animation frames of exactly one listed item:',
+    boardContract(4, rows.length),
+    `Treat the grid as ${rows.length} visually equal logical row bands stacked to fill the entire 512px canvas height; the production slicer distributes remainder pixels across row boundaries.`,
+    `Each of the ${rows.length} ROWS contains the four sequential animation frames of exactly one listed item:`,
     ...rowLines,
-    ...(rows.length < 5 ? [
-      `Rows ${rows.length + 1}-5 are unused: leave their entire grid bands flat solid #FF00FF magenta with no content.`,
-    ] : []),
     '',
     'OBJECT ROWS: all four cells show the same finished object from one fixed three-quarter/isometric camera.',
     'Keep the object body, contact point, scale, colors, and lighting identical. Change only moving or glowing parts.',
