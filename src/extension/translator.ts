@@ -54,7 +54,7 @@ export async function expandThemePlan(
     '  "environment": "one detailed isometric environment description",',
     '  "objects": ["13 named props or buildable objects; the FIRST entry MUST be a themed rack of RANGED weapons (e.g. a laser-rifle rack, a missile rack, a crossbow rack) — pick a ranged weapon type that fits the setting and name it as a rack/stand of those weapons"],',
     '  "object_motion_hints": ["13 SHORT idle-motion phrases, one per object in the same order (e.g. \\"radar dish slowly rotates\\", \\"reactor core pulses\\"); describe one subtle looping motion or light cycle per object"],',
-    '  "decor": ["10 background decor names: first 4 are sittable seats, next 4 are static scenery props, last 2 are subtly animated scenery items"],',
+    '  "decor": ["9 background decor names: first 4 are sittable seats, next 4 are static scenery props, last 1 is a subtly animated scenery item"],',
     '  "enemies": ["4 named enemy designs"],',
     '  "enemy_attack_styles": [<one of "melee" or "ranged" for EACH enemy, SAME ORDER as "enemies"; "ranged" if that enemy fights primarily with a gun, bow, thrown weapon, or energy/projectile weapon at a distance; "melee" if it fights hand-to-hand or with a close-contact weapon (fists, claws, blade, club, spear)>],',
     '  "expressions": ["16 short, visually distinct expression names"],',

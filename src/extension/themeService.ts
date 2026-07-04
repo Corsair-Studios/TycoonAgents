@@ -2077,6 +2077,10 @@ function buildReplacementPrompt(
     return buildAchievementAtlasPrompt(creativeDirection, manifest.display_name, item.achievement_names ?? defaultNames('Achievement Badge', 20));
   }
   if (item.kind === 'emote_atlas') return buildEmoteAtlasPrompt(creativeDirection, manifest.display_name);
+  if (item.kind === 'rival_atlas') {
+    const rows = rivalRowsForItem(item, manifest);
+    return buildRivalAtlasPrompt(creativeDirection, manifest.display_name, rows);
+  }
   return buildCharacterAtlasPrompt(creativeDirection, item.subject ?? item.label, manifest.display_name);
 }
 

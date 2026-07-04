@@ -2189,6 +2189,16 @@
    * Both endpoints are raised equally so the shot angle is unaffected. Tunable.
    */
   const PROJECTILE_GUN_HEIGHT_FRAC = 0.06;
+  /**
+   * How far the projectile's spawn ORIGIN is pushed toward the shooter's
+   * leading edge (in the facing direction) as a fraction of the shooter's
+   * drawn half-width, converted to native space (0 = spawn at center X,
+   * unchanged from before; 1 = spawn exactly at the sprite's edge). Applied
+   * identically to agents and rivals so shots read as leaving the gun on the
+   * far side of the shooter rather than its horizontal middle. Aim/travel
+   * toward the target is unaffected — only the origin X moves.
+   */
+  const PROJECTILE_MUZZLE_FRAC = 0.9;
   /** Native px distance at which a non-fleeing enemy fires a ranged shot. */
   const ENEMY_RANGED_RANGE = 120;
   /** Seconds between an enemy's ranged/melee attack "hits" (cadence, not per-frame). */
@@ -6497,6 +6507,18 @@
    * @param {number} delta seconds
    */
   function advanceEnemies(delta) {
+    // Polygon bbox for depth-scale computation, needed to reproduce the
+    // rival's DRAWN half-width at the muzzle-offset call below (same formula
+    // the render loop uses at draw time — see the "kind === enemy" branch).
+    // Recomputed here (not shared with render()'s local polyMinY/polyRangeY,
+    // which are out of scope in this separate function) — walkablePolygon is
+    // tiny so this is cheap.
+    let enPolyMinY = Infinity, enPolyMaxY = -Infinity;
+    for (const p of walkablePolygon) {
+      if (p[1] < enPolyMinY) enPolyMinY = p[1];
+      if (p[1] > enPolyMaxY) enPolyMaxY = p[1];
+    }
+    const enPolyRangeY = Math.max(enPolyMaxY - enPolyMinY, 1);
     for (const en of activeEnemies) {
       if (en.fleeing) {
         // Change 2: defeated enemy runs off the nearest edge (a bit faster
@@ -6631,7 +6653,24 @@
         // rivals; only the projectile visual is suppressed for them.
         if (en.attackStyle === "ranged" && targetDist > ENEMY_ENGAGE_RANGE && en.shotCooldown <= 0) {
           en.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
-          spawnProjectile(en.nx, en.ny, targetEnt.nx, targetEnt.ny);
+          // Push the spawn origin toward the rival's leading (facing) edge so
+          // the shot reads as leaving the gun rather than the sprite's
+          // horizontal middle. Reproduce the SAME depth-scale/sprite-size
+          // formula the "kind === enemy" draw branch uses (spriteSize =
+          // 64 * depthScale * themeCharacterScale), then convert that
+          // canvas-px half-width into native space via the walkableNativeW/
+          // lastBgW ratio (the inverse of nativeToCanvas's scale factor;
+          // lastBgW is refreshed every frame before advanceEnemies() runs —
+          // see the render() call order). en.facingLeft is the same field
+          // the draw code mirrors on (facingLeft === true → sprite mirrored
+          // left), so the sign matches the visible flip exactly.
+          const enTDepth = Math.max(0, Math.min(1, (en.ny - enPolyMinY) / enPolyRangeY));
+          const enDepthScale = (0.8 + enTDepth * 0.3) * themeOverallScale;
+          const enHalfWidthPx = Math.round(64 * enDepthScale * themeCharacterScale) / 2;
+          const enHalfWidthNative = enHalfWidthPx * (walkableNativeW / lastBgW);
+          const enFacingSign = en.facingLeft ? -1 : 1;
+          const enMuzzleForward = enHalfWidthNative * PROJECTILE_MUZZLE_FRAC;
+          spawnProjectile(en.nx + enFacingSign * enMuzzleForward, en.ny, targetEnt.nx, targetEnt.ny);
         }
         if (en.attackCooldown <= 0) en.attackCooldown = ENEMY_ATTACK_INTERVAL;
       } else {
@@ -7059,7 +7098,26 @@
               const shotAligned = sdy <= MAX_SHOT_SLOPE * Math.max(sdx, 1);
               if (charEntry.shotCooldown <= 0 && shotAligned) {
                 charEntry.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
-                spawnProjectile(charEntry.nx, charEntry.ny, nearest.nx, nearest.ny);
+                // Push the spawn origin toward the shooter's leading (facing)
+                // edge so the shot reads as leaving the gun rather than the
+                // sprite's horizontal middle. Reproduce the SAME depth-scale/
+                // sprite-size formula the agent draw branch uses below
+                // (spriteSize = 64 * depthScale * effectiveCharScale(charId)),
+                // then convert that canvas-px half-width into native space via
+                // walkableNativeW/bgW (inverse of nativeToCanvas's scale
+                // factor; bgW is the local const computed earlier this frame
+                // in render()). charEntry.facingLeft is the same field the
+                // draw code mirrors on (facingLeft === true → sprite mirrored
+                // left), so the sign matches the visible flip exactly.
+                const shooterCharId = charIds.length > 0 ? charIds[idx % charIds.length] : null;
+                const shooterScale = shooterCharId ? effectiveCharScale(shooterCharId) : themeCharacterScale;
+                const shooterTDepth = Math.max(0, Math.min(1, (charEntry.ny - polyMinY) / polyRangeY));
+                const shooterDepthScale = (0.8 + shooterTDepth * 0.3) * themeOverallScale;
+                const shooterHalfWidthPx = Math.round(64 * shooterDepthScale * shooterScale) / 2;
+                const shooterHalfWidthNative = shooterHalfWidthPx * (walkableNativeW / bgW);
+                const shooterFacingSign = charEntry.facingLeft ? -1 : 1;
+                const shooterMuzzleForward = shooterHalfWidthNative * PROJECTILE_MUZZLE_FRAC;
+                spawnProjectile(charEntry.nx + shooterFacingSign * shooterMuzzleForward, charEntry.ny, nearest.nx, nearest.ny);
               }
             }
             // Change 2: on defeat, transition to FLEEING (run off nearest edge)
