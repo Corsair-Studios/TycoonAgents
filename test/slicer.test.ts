@@ -223,3 +223,38 @@ test('character review board can remain square around a 5x4 grid', async () => {
   assert.equal(rebuilt.getPixelColor(64, 0), 0xff00ffff);
   assert.equal(rebuilt.getPixelColor(64, 159), 0xff00ffff);
 });
+
+test('rival board (5 uneven columns) does not overflow the source buffer when grouped', async () => {
+  // 512 / 5 columns does not divide evenly, so proportional slicing produces
+  // column widths of 102, 102, 103, 102, 103. Row-wide normalizationGroups (as
+  // used by the rival board) union minX/maxX/minY/maxY across all five cells in
+  // a row. A pixel at the atlas's rightmost edge lands at local index 102 inside
+  // a 103-wide column, but a 102-wide column in the same group only has valid
+  // local indices 0-101 - applying the group's unioned bounds directly as a crop
+  // rectangle previously read one column (4 bytes) past that narrower cell's own
+  // bitmap and threw a Buffer offset-out-of-range error.
+  const atlas = new Jimp(512, 512, 0xff00ffff);
+  for (let row = 0; row < 4; row++) {
+    const y = row * 128 + 10;
+    atlas.setPixelColor(0x1950a0ff, 0, y);
+    atlas.setPixelColor(0xc82828ff, 511, y);
+  }
+  const rowGroups = Array.from({ length: 4 }, (_row, rowIndex) =>
+    Array.from({ length: 5 }, (_col, colIndex) => rowIndex * 5 + colIndex),
+  );
+
+  const result = await sliceAndNormalizeAtlas(
+    await atlas.getBufferAsync(Jimp.MIME_PNG),
+    {},
+    {
+      columns: 5,
+      rows: 4,
+      scaleReferenceSlots: Array.from({ length: 20 }, (_unused, cell) => cell),
+      maxContentExtent: 120,
+      normalizationGroups: rowGroups,
+    },
+  );
+  assert.equal(result.slots.length, 20);
+  assert.ok(result.slots[0].meta.opaqueCount > 0);
+  assert.ok(result.slots[4].meta.opaqueCount > 0);
+});

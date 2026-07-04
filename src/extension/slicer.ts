@@ -208,7 +208,19 @@ export async function sliceAndNormalizeAtlas(
       const scale = Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh);
       const resizedWidth = Math.max(1, Math.round(bw * scale));
       const resizedHeight = Math.max(1, Math.round(bh * scale));
-      const content = cellInfo.cell.clone().crop(minX, minY, bw, bh);
+      // Grouped bounds (normalizationGroups) union minX/maxX/minY/maxY across every
+      // member of the group so animation frames share one crop/scale. When the
+      // source board doesn't divide evenly by column count (e.g. 512 / 5 columns),
+      // sibling cells can be a pixel wider than this one, so the unioned bbox may
+      // extend past this cell's own bitmap edge. Clamp the crop rectangle to this
+      // cell's actual bounds so it never reads past its own pixel data, while
+      // leaving bw/bh (used for scale/resize/centering above) untouched so grouped
+      // frames keep a consistent size.
+      const cropX = Math.min(minX, cellInfo.cell.bitmap.width - 1);
+      const cropY = Math.min(minY, cellInfo.cell.bitmap.height - 1);
+      const cropW = Math.min(bw, cellInfo.cell.bitmap.width - cropX);
+      const cropH = Math.min(bh, cellInfo.cell.bitmap.height - cropY);
+      const content = cellInfo.cell.clone().crop(cropX, cropY, cropW, cropH);
       if (resizedWidth !== bw || resizedHeight !== bh) {
         content.resize(resizedWidth, resizedHeight, Jimp.RESIZE_NEAREST_NEIGHBOR);
       }
