@@ -1604,13 +1604,13 @@ async function processRivalAtlas(
   );
   const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
     columns: 5,
-    rows: 4,
-    scaleReferenceSlots: Array.from({ length: 20 }, (_unused, cell) => cell),
+    rows: rows.length,
+    scaleReferenceSlots: Array.from({ length: rows.length * 5 }, (_unused, cell) => cell),
     targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
     maxContentExtent: 120,
     normalizationGroups: rowGroups,
   });
-  const output = await optimizeSpriteBoardCanvas(generated, 5, 4);
+  const output = await optimizeSpriteBoardCanvas(generated, 5, rows.length);
   return { output, spritePackage };
 }
 

@@ -121,8 +121,8 @@ export function buildRivalAtlasPrompt(
   );
   return [
     `Create one compact rival (enemy) sprite board for the "${themeName}" theme.`,
-    boardContract(5, 4),
-    'Each of the (up to) four ROWS is ONE distinct named enemy, shown as a 5-frame mini-atlas:',
+    boardContract(5, rows.length),
+    `Each of the ${rows.length} ROWS is ONE distinct named enemy, shown as a 5-frame mini-atlas:`,
     '  Cells 1-2 of the row: a 2-frame side-view WALK cycle (cell 1 = contact pose, cell 2 = passing/opposite pose) that loops seamlessly cell 2 back to cell 1 — same enemy, only the limbs move.',
     '  Cells 3-5 of the row: a 3-frame ATTACK — cell 3 is the wind-up/anticipation, cell 4 is the strike/lunge (peak), cell 5 is the recovery/settle.',
     ...rowLines,
