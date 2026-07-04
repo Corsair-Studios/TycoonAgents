@@ -91,14 +91,6 @@ test('rival prompt scales its board contract and row count to a partial (3-row) 
   assert.match(prompt, /Each of the 3 ROWS is ONE distinct named enemy/i);
 });
 
-test('rival prompt for a 3-row board contains the literal "3-row" and "3 ROWS" substrings', () => {
-  const threeRivals = rivalSpecs().slice(0, 3);
-  const boards = createRivalBoardRows(threeRivals);
-  const prompt = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', boards[0]);
-  assert.match(prompt, /3-row/);
-  assert.match(prompt, /3 ROWS/);
-});
-
 test('character prompt enforces the production sprite-board mime contracts', () => {
   const prompt = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid');
   assert.match(prompt, /EXACT SAME character[\s\S]*\*\*"Nova"\*\* from the \*\*Night Grid\*\* theme/i);
