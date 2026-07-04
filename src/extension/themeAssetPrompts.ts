@@ -81,7 +81,7 @@ export function decorBoardFrameKeys(rows: ThemeDecorBoardRow[][]): string[] {
 export const RIVALS_PER_BOARD = 4;
 
 /**
- * Pack the 12 rivals onto three 5x4 boards, four rivals per board (each ROW is one
+ * Pack rivals onto 5x4 boards, up to four rivals per board (ceil(N/4) boards; each ROW is one
  * enemy: cols 0-2 = 3-frame walk, cols 3-4 = 2-frame attack). Returns one array of
  * up to four rival rows per board.
  */

@@ -8,7 +8,7 @@ import type {
 } from '../shared/types';
 
 export const THEME_CHARACTER_COUNT = 16;
-export const THEME_ENEMY_COUNT = 12;
+export const THEME_ENEMY_COUNT = 4; // one full enemy board of RIVALS_PER_BOARD (4)
 export const THEME_OBJECT_COUNT = 13;
 export const THEME_EXPRESSION_COUNT = 16;
 export const THEME_ACHIEVEMENT_COUNT = 20;
