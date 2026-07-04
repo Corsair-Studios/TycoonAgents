@@ -1378,41 +1378,6 @@
       });
       decisionRow.appendChild(uploadBtn);
 
-      // Per-card regeneration: regenerate just this item's board in place
-      // (see THEME_REVIEW_BOARD_BY_KIND). Kinds outside that map (e.g.
-      // emote_atlas) don't get this control.
-      const regenerateBoardKind = THEME_REVIEW_BOARD_BY_KIND[item.kind];
-      let regenerateStatus = null;
-      if (regenerateBoardKind) {
-        const regenerateBtn = document.createElement("button");
-        regenerateBtn.className = "skill-btn theme-review-regenerate";
-        regenerateBtn.type = "button";
-        regenerateBtn.dataset.idleText = "Regenerate";
-        const regenerateBusy = themeBoardRegenBusyItems.has(item.id);
-        regenerateBtn.textContent = regenerateBusy ? "Regenerating…" : "Regenerate";
-        regenerateBtn.disabled = regenerateBusy || Boolean(payload.generation_active && !isCurrentReviewGate);
-        regenerateBtn.title = `Regenerate just the ${regenerateBoardKind} board for this theme.`;
-        regenerateBtn.addEventListener("click", () => {
-          regenerateBtn.disabled = true;
-          regenerateBtn.textContent = "Regenerating…";
-          if (regenerateStatus) regenerateStatus.textContent = "";
-          themeBoardRegenBusyItems.add(item.id);
-          vscode.postMessage({
-            type: 'REGENERATE_BOARD',
-            payload: {
-              theme_id: reviewThemeId,
-              board: regenerateBoardKind,
-              item_id: item.id,
-              image_provider: selectedThemeImageProvider(),
-            },
-          });
-        });
-        decisionRow.appendChild(regenerateBtn);
-        regenerateStatus = document.createElement("span");
-        regenerateStatus.className = "theme-review-regen-status";
-        decisionRow.appendChild(regenerateStatus);
-      }
-
       const feedback = document.createElement("textarea");
       feedback.className = "theme-review-feedback";
       feedback.rows = 3;
@@ -1438,6 +1403,7 @@
       mode.appendChild(augmentOption);
       mode.appendChild(replaceOption);
       mode.appendChild(retryOption);
+      mode.value = "replace";
       if (item.generation_error) mode.value = "replace";
       if (savedDraft?.mode
           && Array.from(mode.options).some((option) => option.value === savedDraft.mode && !option.disabled)) {
