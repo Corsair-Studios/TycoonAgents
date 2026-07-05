@@ -2498,12 +2498,14 @@
   /**
    * Fraction of the chair sprite's height (base→seat surface) used to lift a
    * seated character when its chair is scaled up/down via the decor scale. The
-   * chair draws at 64 * depthScale * effectiveDecorScale, so a bigger chair's
-   * seat surface rises; the seated character (fixed native sit-point) would
-   * otherwise sit too low. Raise = (seatScale - 1) * SEAT_RAISE_FRAC * 64 *
-   * depthScale — zero at scale 1 (unchanged). Tune-friendly.
+   * chair draws at 64 * chairDepth * chairScale, so a bigger chair's seat
+   * surface rises; the seated character (fixed native sit-point) would otherwise
+   * sit too low. Raise = SEAT_RAISE_FRAC * (chairScale - 1) * 64 * chairDepth —
+   * zero at scale 1 (unchanged). Bumped 0.42 → 0.6: these throne seats sit
+   * higher up the sprite than 0.42 assumed, so scaled-up chairs left the
+   * occupant too low. Single tune-friendly constant.
    */
-  const SEAT_RAISE_FRAC = 0.42;
+  const SEAT_RAISE_FRAC = 0.6;
   /**
    * Horizontal canvas-px nudge applied to a seated character's draw position
    * for better chair alignment: shifted RIGHT when its seat is not flipped,
@@ -8740,14 +8742,28 @@
             : 0;
           // Seat-scale raise: a scaled-up chair's seat surface rises with its
           // sprite, so lift the seated character in proportion to the chair's
-          // EXTRA scale (0 at scale 1 = current correct behavior). Uses the
-          // SAME depthScale the character is drawn with. Guarded so a missing
-          // seatDecorId simply skips the raise (no effectiveDecorScale throw).
+          // EXTRA scale (0 at scale 1 = current correct behavior). Computed from
+          // the CHAIR'S OWN geometry (its ny → chairDepth, its effectiveDecorScale)
+          // so it tracks the chair's rendered seat surface exactly rather than
+          // approximating with the character's depth. drawDecor draws the chair
+          // foot-anchored at size 64 * chairDepth * chairScale, so its extra
+          // height vs scale 1 is (chairScale - 1) * 64 * chairDepth, and the seat
+          // surface sits SEAT_RAISE_FRAC up that height. Guarded: a missing chair
+          // placement or non-numeric scale falls back to the character-depth
+          // approximation so nothing throws.
           let seatRaise = 0;
           if (isSeatedForDraw && charEntry.seatDecorId != null) {
-            const seatScale = effectiveDecorScale(charEntry.seatDecorId);
-            if (typeof seatScale === "number") {
-              seatRaise = (seatScale - 1) * SEAT_RAISE_FRAC * 64 * depthScale;
+            const chair = decorPlacement[charEntry.seatDecorId];
+            const chairScale = effectiveDecorScale(charEntry.seatDecorId);
+            if (chair && typeof chairScale === "number") {
+              // Chair depth from ITS OWN ny — identical formula to drawDecor's
+              // caller (see the decor draw at the depthScale calc below).
+              const chairTDepth = Math.max(0, Math.min(1, (chair.ny - polyMinY) / polyRangeY));
+              const chairDepth = (0.8 + chairTDepth * 0.3) * themeOverallScale;
+              seatRaise = SEAT_RAISE_FRAC * (chairScale - 1) * 64 * chairDepth;
+            } else if (typeof chairScale === "number") {
+              // Fallback: approximate with the character's own depthScale.
+              seatRaise = SEAT_RAISE_FRAC * (chairScale - 1) * 64 * depthScale;
             }
           }
           const drawX = cx - spriteSize / 2 + seatNudge;
