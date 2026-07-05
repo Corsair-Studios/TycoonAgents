@@ -2801,6 +2801,14 @@
   // ── Stage editor (live polygon + scale tuning) ───────────────────────────
   /** True while the "Edit Stage" overlay is active. */
   let editStageMode = false;
+  /**
+   * Edit-Stage only: when true, show EVERY buildable + decor (including unbuilt
+   * buildables and hidden/unplaced decor) so they can be pre-positioned/scaled.
+   * When false, edit mode shows only the current playfield view (built
+   * buildables + currently-placed decor). Default true = prior edit behavior.
+   * Ignored outside edit mode (each render/hit gate ANDs with editStageMode).
+   */
+  let stageShowAllObjects = true;
   /** Index of the polygon vertex currently being dragged, or -1. */
   let dragVertexIndex = -1;
   /** Index of the polygon vertex under the cursor (for hover highlight), or -1. */
@@ -2885,25 +2893,67 @@
   }
 
   /**
+   * Display-only fallback native placement for a decor that has no real
+   * decorPlacement entry (hidden via the [-1,-1] sentinel, or unplaced). Used
+   * ONLY in Edit-Stage "show all objects" mode so hidden/unplaced decor can be
+   * seen, selected, moved and scaled. Never persisted — moving a decor writes a
+   * real anchor override which un-hides it. Places at the decor's declared
+   * normalized anchor when recoverable, else spreads it across a central band
+   * (by index) so multiple hidden decor don't all stack.
+   * @param {object} decor @param {number} index position in themeDecor
+   * @returns {{nx:number, ny:number, sitNx:number, sitNy:number, sittable:boolean, fallback:boolean}}
+   */
+  function decorFallbackPlacement(decor, index) {
+    const a = decor && decor.anchor_coord;
+    let nx, ny;
+    if (Array.isArray(a) && a.length >= 2 &&
+        typeof a[0] === "number" && typeof a[1] === "number" &&
+        !(a[0] < 0 && a[1] < 0)) {
+      const c = clampToSceneBounds(a[0] * walkableNativeW, a[1] * walkableNativeH);
+      nx = c[0]; ny = c[1];
+    } else {
+      const n = Math.max(1, themeDecor.length);
+      const t = (index + 0.5) / n;
+      nx = (0.2 + 0.6 * t) * walkableNativeW;
+      ny = 0.5 * walkableNativeH;
+    }
+    return { nx, ny, sitNx: nx, sitNy: ny, sittable: !!(decor && decor.is_sittable), fallback: true };
+  }
+
+  /** True when Edit-Stage show-all is active (unbuilt/hidden items are visible). */
+  function showAllActive() {
+    return editStageMode && stageShowAllObjects;
+  }
+
+  /**
    * Nearest draggable scene object (buildable or decor) whose drawn center is
    * within rPx canvas px of (mx,my), else null. Uses the same native->canvas
    * transform the objects are drawn with so hit-testing matches the sprite.
+   * Hit-testing is gated to match visibility: unbuilt buildables and
+   * hidden/unplaced decor are only selectable when show-all is active.
    */
   function sceneObjectAt(mx, my, rPx) {
     let best = null;
     let bestD = rPx * rPx;
+    const showAll = showAllActive();
     for (let i = 0; i < themeBuildables.length; i++) {
-      const p = objectPlacement[themeBuildables[i].object_id];
+      const objId = themeBuildables[i].object_id;
+      const p = objectPlacement[objId];
       if (!p) continue;
+      const oe = objectAnimMap[objId];
+      if (oe && oe.phase === "unbuilt" && !showAll) continue;
       const [cx, cy] = nativeToCanvas(p.nx, p.ny, lastBgX, lastBgY, lastBgW, lastBgH);
       const dx = cx - mx, dy = cy - my, d = dx * dx + dy * dy;
-      if (d <= bestD) { bestD = d; best = { type: "buildable", id: themeBuildables[i].object_id }; }
+      if (d <= bestD) { bestD = d; best = { type: "buildable", id: objId }; }
     }
     for (let i = 0; i < themeDecor.length; i++) {
       const id = themeDecor[i].decor_id;
       if (id == null) continue;
-      const p = decorPlacement[id];
-      if (!p) continue;
+      let p = decorPlacement[id];
+      if (!p) {
+        if (showAll) p = decorFallbackPlacement(themeDecor[i], i);
+        else continue;
+      }
       const [cx, cy] = nativeToCanvas(p.nx, p.ny, lastBgX, lastBgY, lastBgW, lastBgH);
       const dx = cx - mx, dy = cy - my, d = dx * dx + dy * dy;
       if (d <= bestD) { bestD = d; best = { type: "decor", id: id }; }
@@ -3058,6 +3108,10 @@
           '</div>' +
         '</div>' +
         '<div class="se-section">' +
+          '<button id="se-show-all" class="se-btn se-btn-ghost" type="button">Show current view only</button>' +
+          '<div class="se-sublabel">Toggle to reveal every buildable + decor (even unbuilt/hidden) for placing &amp; scaling.</div>' +
+        '</div>' +
+        '<div class="se-section">' +
           '<div class="se-section-title">Objects</div>' +
           '<div class="se-row"><span class="se-label">Object scale</span><span class="se-value"><span id="se-os-val">1.00</span></span></div>' +
           '<input id="se-os" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
@@ -3136,8 +3190,23 @@
     stageEditEls.done = wrap.querySelector("#se-done");
     stageEditEls.status = wrap.querySelector("#se-status");
     stageEditEls.bg = wrap.querySelector("#se-bg");
+    stageEditEls.showAll = wrap.querySelector("#se-show-all");
 
     // Wire controls.
+    if (stageEditEls.showAll) {
+      const syncShowAllLabel = () => {
+        stageEditEls.showAll.textContent = stageShowAllObjects
+          ? "Show current view only"
+          : "Show all objects (place & scale)";
+      };
+      syncShowAllLabel();
+      stageEditEls.showAll.addEventListener("click", () => {
+        // Flip the flag; the render loop + hit-test read it each frame, so a
+        // label refresh is all that's needed here (redraw is automatic).
+        stageShowAllObjects = !stageShowAllObjects;
+        syncShowAllLabel();
+      });
+    }
     stageEditEls.cs.addEventListener("input", () => {
       themeCharacterScale = parseFloat(stageEditEls.cs.value) || 1;
       stageEditEls.csVal.textContent = themeCharacterScale.toFixed(2);
@@ -8430,7 +8499,7 @@
       // tuning. objectPlacement is populated for ALL objects (built or not)
       // at THEME_INITIALIZED, so unbuilt entries already have a valid spot —
       // no fallback to objectHomePlacement is needed here.
-      if (!entry || (entry.phase === "unbuilt" && !editStageMode)) continue;
+      if (!entry || (entry.phase === "unbuilt" && !(editStageMode && stageShowAllObjects))) continue;
       const placement = objectPlacement[obj.object_id];
       if (!placement) continue;
       depthList.push({ kind: "object", obj, entry, ny: placement.ny });
@@ -8440,23 +8509,30 @@
     }
     // Background decor: advance any animated decor and merge into the same
     // Y-sorted depth list so agents/objects/enemies occlude it correctly.
-    for (const decor of themeDecor) {
+    for (let di = 0; di < themeDecor.length; di++) {
+      const decor = themeDecor[di];
       const decorId = decor.decor_id;
       if (decorId == null) continue;
-      const placement = decorPlacement[decorId];
-      if (!placement) continue;
+      let placement = decorPlacement[decorId];
+      if (!placement) {
+        // Edit-Stage show-all: synthesize a display-only fallback placement so
+        // hidden/unplaced decor is visible + selectable for placing/scaling.
+        // Not persisted (moving it writes a real anchor override → un-hides).
+        if (editStageMode && stageShowAllObjects) placement = decorFallbackPlacement(decor, di);
+        else continue;
+      }
       const dAnim = decorAnimMap[decorId];
       if (dAnim) {
         const dSlots = themeImages["decor_" + decorId];
         advanceDecorAnim(dAnim, delta, dSlots ? dSlots.length : 1);
       }
-      depthList.push({ kind: "decor", decor, ny: placement.ny });
+      depthList.push({ kind: "decor", decor, ny: placement.ny, placement });
     }
     depthList.sort((a, b) => a.ny - b.ny);
 
     depthList.forEach((item) => {
       if (item.kind === "decor") {
-        const placement = decorPlacement[item.decor.decor_id];
+        const placement = item.placement || decorPlacement[item.decor.decor_id];
         if (!placement) return;
         const canvasPt = nativeToCanvas(placement.nx, placement.ny, bgX, bgY, bgW, bgH);
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
