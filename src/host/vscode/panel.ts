@@ -51,6 +51,7 @@ import type { ThemePlan } from "../../extension/themePlan";
 import type { BoardKind, ThemeImageReviewWaitOptions } from "../../extension/themeService";
 import type { ThemeManifest } from "../../shared/types";
 import { themeImagesDirectoryUri, themeRawImagesDirectoryUri } from "../../extension/themeStorage";
+import { validateThemeIntegrity } from "../../extension/themeHealth";
 import {
   getConfiguredThemeImageProvider,
   getThemeImageConfigurationStatus,
@@ -1124,6 +1125,29 @@ export class TycoonPanel {
             });
           } finally {
             if (themeId) await this._postThemeImageReview(themeId);
+          }
+        } else if (message.type === "RUN_THEME_HEALTH_CHECK") {
+          const payload = (message as any).payload as { theme_id?: string } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          try {
+            if (!themeId) throw new Error("No theme was specified for the health check.");
+            const t = await loadTheme(this._globalStorageUri, themeId);
+            if (!t) throw new Error("Theme not found.");
+            const issues = validateThemeIntegrity(t.manifest, t.frames);
+            void this._panel.webview.postMessage({
+              type: "THEME_HEALTH_CHECK_RESULT",
+              payload: { theme_id: themeId, issues },
+            });
+          } catch (err) {
+            console.error("TycoonAgents: Theme health check failed:", err);
+            void this._panel.webview.postMessage({
+              type: "THEME_HEALTH_CHECK_RESULT",
+              payload: {
+                theme_id: themeId,
+                issues: [{ severity: "error", kind: "check_failed", entity: "", key: "", message: String(err) }],
+                error: String(err),
+              },
+            });
           }
         }
       },
@@ -3213,8 +3237,10 @@ export class TycoonPanel {
               <button id="theme-review-stop-generation" class="skill-btn" hidden>Stop generation</button>
               <button id="theme-approve-all" class="skill-btn">Approve all</button>
               <button id="theme-open-images-folder" class="skill-btn">Open folder</button>
+              <button id="theme-health-check-btn" class="skill-btn">Check theme health</button>
             </div>
           </div>
+          <div id="theme-health-results" class="theme-health-results" hidden></div>
           <div id="theme-image-review-list" class="theme-image-review-list"></div>
         </section>
         <div id="theme-builder-root"></div>

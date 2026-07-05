@@ -2703,6 +2703,54 @@ button.theme-review-preview:focus-visible::after {
   color: var(--vscode-testing-iconFailed, #f85149);
 }
 
+.theme-health-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
+  font-size: 12px;
+}
+
+.theme-health-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  line-height: 1.4;
+}
+
+.theme-health-severity {
+  flex: 0 0 auto;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.theme-health-message {
+  flex: 1 1 auto;
+  color: var(--vscode-foreground);
+  word-break: break-word;
+}
+
+.theme-health-ok {
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.theme-health-pending {
+  color: var(--vscode-descriptionForeground);
+}
+
+.theme-health-error .theme-health-severity {
+  color: var(--vscode-testing-iconFailed, #f85149);
+}
+
+.theme-health-warning .theme-health-severity {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
 .theme-review-generation-error {
   display: flex;
   flex-direction: column;

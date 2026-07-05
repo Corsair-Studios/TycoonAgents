@@ -1042,6 +1042,8 @@
   const themeReviewStopGeneration = /** @type {HTMLButtonElement} */ (document.getElementById("theme-review-stop-generation"));
   const themeApproveAll = /** @type {HTMLButtonElement} */ (document.getElementById("theme-approve-all"));
   const themeOpenImagesFolder = /** @type {HTMLElement} */ (document.getElementById("theme-open-images-folder"));
+  const themeHealthCheckBtn = /** @type {HTMLButtonElement} */ (document.getElementById("theme-health-check-btn"));
+  const themeHealthResults  = /** @type {HTMLElement} */ (document.getElementById("theme-health-results"));
   const themeImageLightbox = /** @type {HTMLElement} */ (document.getElementById("theme-image-lightbox"));
   const themeImageLightboxBackdrop = /** @type {HTMLElement} */ (document.getElementById("theme-image-lightbox-backdrop"));
   const themeImageLightboxClose = /** @type {HTMLButtonElement} */ (document.getElementById("theme-image-lightbox-close"));
@@ -1496,6 +1498,68 @@
     themeOpenImagesFolder.addEventListener("click", () => openThemeImages(reviewThemeId));
   }
 
+  if (themeHealthCheckBtn) {
+    themeHealthCheckBtn.addEventListener("click", () => {
+      if (!reviewThemeId) return;
+      themeHealthCheckBtn.disabled = true;
+      themeHealthCheckBtn.textContent = "Checking…";
+      if (themeHealthResults) {
+        themeHealthResults.hidden = false;
+        themeHealthResults.textContent = "";
+        const pending = document.createElement("div");
+        pending.className = "theme-health-row theme-health-pending";
+        pending.textContent = "Running theme health check…";
+        themeHealthResults.appendChild(pending);
+      }
+      vscode.postMessage({
+        type: 'RUN_THEME_HEALTH_CHECK',
+        payload: { theme_id: reviewThemeId },
+      });
+    });
+  }
+
+  function renderThemeHealthResult(payload) {
+    if (themeHealthCheckBtn) {
+      themeHealthCheckBtn.disabled = false;
+      themeHealthCheckBtn.textContent = "Check theme health";
+    }
+    if (!themeHealthResults) return;
+    themeHealthResults.hidden = false;
+    themeHealthResults.textContent = "";
+    const issues = Array.isArray(payload && payload.issues) ? payload.issues : [];
+    if (payload && payload.error && issues.length === 0) {
+      const row = document.createElement("div");
+      row.className = "theme-health-row theme-health-error";
+      row.textContent = "Health check failed: " + String(payload.error);
+      themeHealthResults.appendChild(row);
+      return;
+    }
+    if (issues.length === 0) {
+      const row = document.createElement("div");
+      row.className = "theme-health-row theme-health-ok";
+      row.textContent = "No issues found ✓";
+      themeHealthResults.appendChild(row);
+      return;
+    }
+    issues.forEach((issue) => {
+      const severity = issue && issue.severity === "warning" ? "warning" : "error";
+      const row = document.createElement("div");
+      row.className = "theme-health-row theme-health-" + severity;
+      const tag = document.createElement("span");
+      tag.className = "theme-health-severity";
+      tag.textContent = severity === "warning" ? "WARN" : "ERROR";
+      row.appendChild(tag);
+      const text = document.createElement("span");
+      text.className = "theme-health-message";
+      const entity = issue && (issue.entity || issue.key)
+        ? " (" + [issue.entity, issue.key].filter(Boolean).join(" · ") + ")"
+        : "";
+      text.textContent = (issue && issue.message ? String(issue.message) : "Unknown issue") + entity;
+      row.appendChild(text);
+      themeHealthResults.appendChild(row);
+    });
+  }
+
   function openThemeImages(themeId) {
     if (!themeId) return;
     vscode.postMessage({ type: 'OPEN_THEME_IMAGES', payload: { theme_id: themeId } });
@@ -1792,7 +1856,6 @@
         || (payload.generation_active && !isCurrentReviewGate);
       acceptBtn.addEventListener("click", () => {
         acceptBtn.disabled = true;
-        rejectBtn.disabled = true;
         if (isCurrentReviewGate) disableThemeRetryButtons();
         acceptBtn.textContent = "Keeping...";
         vscode.postMessage({
@@ -1800,20 +1863,7 @@
           payload: { theme_id: reviewThemeId, item_id: item.id, status: 'accepted' },
         });
       });
-      const rejectBtn = document.createElement("button");
-      rejectBtn.className = "skill-btn theme-review-reject";
-      rejectBtn.textContent = "Needs changes";
-      rejectBtn.disabled = !item.image_src
-        || themeReviewBusyItems.has(item.id)
-        || (payload.generation_active && !isCurrentReviewGate);
-      rejectBtn.addEventListener("click", () => {
-        vscode.postMessage({
-          type: 'SET_THEME_IMAGE_REVIEW_STATUS',
-          payload: { theme_id: reviewThemeId, item_id: item.id, status: 'rejected' },
-        });
-      });
       decisionRow.appendChild(acceptBtn);
-      decisionRow.appendChild(rejectBtn);
       if (item.kind === "character_atlas") {
         const normalizeBtn = document.createElement("button");
         normalizeBtn.className = "skill-btn theme-review-normalize";
@@ -1830,7 +1880,6 @@
           normalizeBtn.disabled = true;
           normalizeBtn.textContent = "Regenerating...";
           acceptBtn.disabled = true;
-          rejectBtn.disabled = true;
           themeReviewBusyItems.set(item.id, "normalize");
           vscode.postMessage({
             type: 'NORMALIZE_THEME_CHARACTER',
@@ -4594,6 +4643,8 @@
         themeImageReviewSummary.textContent = "Could not approve all: " + payload.error;
         themeImageReviewSummary.classList.add("theme-review-error");
       }
+    } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
+      renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {
       if (themeGenerateBtn) {
         themeGenerateBtn.removeAttribute("disabled");
@@ -4652,10 +4703,8 @@
         const normalizeBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-normalize"));
         const nameInput = /** @type {HTMLInputElement|null} */ (card.querySelector(".theme-review-name-input"));
         const acceptBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-accept"));
-        const rejectBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-reject"));
         const statusEl = /** @type {HTMLElement|null} */ (card.querySelector(".theme-review-retry-status"));
         if (acceptBtn) acceptBtn.disabled = Boolean(msg.payload?.busy);
-        if (rejectBtn) rejectBtn.disabled = Boolean(msg.payload?.busy);
         if (retryBtn && msg.type === "THEME_IMAGE_RETRY_STATE") {
           retryBtn.disabled = Boolean(msg.payload?.busy);
           retryBtn.textContent = msg.payload?.busy

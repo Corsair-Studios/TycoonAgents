@@ -1329,6 +1329,24 @@ export async function regenerateThemeBoard(
   }
 
   throwIfCancelled(undefined, options?.signal);
+  // Re-sync display names from the (normalized) plan so Edit Stage labels match
+  // the regenerated art. themePlanToManifest assigns names by array index
+  // (buildable_objects[i] <- plan.objects[i], decor_objects[i] <- plan.decor[i]);
+  // mirror that exact positional mapping here. Guard length mismatches by only
+  // syncing overlapping indices, and touch ONLY display_name so object_id /
+  // decor_id / build_order / all other fields are preserved. Idempotent: a
+  // no-op when names already match.
+  if (board === 'objects' && manifest.buildable_objects) {
+    const count = Math.min(manifest.buildable_objects.length, plan.objects.length);
+    for (let i = 0; i < count; i++) {
+      manifest.buildable_objects[i].display_name = plan.objects[i];
+    }
+  } else if (board === 'decor' && manifest.decor_objects) {
+    const count = Math.min(manifest.decor_objects.length, plan.decor.length);
+    for (let i = 0; i < count; i++) {
+      manifest.decor_objects[i].display_name = plan.decor[i];
+    }
+  }
   await writeThemeFiles(globalStorageUri, manifest, frames);
   onProgress(`${board} board regenerated.`);
 }
