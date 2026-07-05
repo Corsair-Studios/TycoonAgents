@@ -2936,13 +2936,13 @@ export class TycoonPanel {
     <div id="themes-backdrop"></div>
     <div id="themes-dialog">
       <button id="themes-modal-close" aria-label="Close dialog">&times;</button>
+      <div id="themes-scroll">
       <div id="theme-picker-list" role="tabpanel">
         <h2 style="margin: 0 0 16px;">Themes</h2>
         <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
         <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
         <div class="theme-picker-actions">
           <button id="theme-import-btn" class="skill-btn">Import .zip</button>
-          <button id="theme-upgrade-btn" class="skill-btn">Upgrade installed themes</button>
           <button id="tab-theme-builder" class="skill-btn theme-builder-launch">Theme Builder</button>
         </div>
       </div>
@@ -3049,6 +3049,7 @@ export class TycoonPanel {
           <div id="theme-image-review-list" class="theme-image-review-list"></div>
         </section>
         <div id="theme-builder-root"></div>
+      </div>
       </div>
       <div id="themes-footer">
         <button id="themes-footer-close" class="skill-btn theme-footer-close">Close</button>

@@ -1661,7 +1661,7 @@ td.col-status {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 28px 32px 24px;
+  padding: 28px 32px 0;
   min-width: 600px;
   min-height: 800px;
   width: 90%;
@@ -1671,26 +1671,32 @@ td.col-status {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  overflow: auto;
+  overflow: hidden;
   box-sizing: border-box;
+}
+
+#themes-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 176, 32, 0.4) transparent;
 }
 
-#themes-dialog::-webkit-scrollbar {
+#themes-scroll::-webkit-scrollbar {
   width: 10px;
 }
 
-#themes-dialog::-webkit-scrollbar-thumb {
+#themes-scroll::-webkit-scrollbar-thumb {
   background: rgba(255, 176, 32, 0.4);
   border-radius: 5px;
 }
 
-#themes-dialog::-webkit-scrollbar-thumb:hover {
+#themes-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 176, 32, 0.6);
 }
 
-#themes-dialog::-webkit-scrollbar-track {
+#themes-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
@@ -1727,8 +1733,6 @@ td.col-status {
 #theme-builder-panel {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 50vh;
 }
 
 #theme-picker-list[hidden],
@@ -1736,17 +1740,18 @@ td.col-status {
   display: none;
 }
 
-/* Sticky bottom close bar: stays pinned while #themes-dialog body scrolls.
-   Negative margins bleed the bar to the dialog's outer edges past its own
-   28px/32px/24px padding, so it reads as a full-width footer. */
+/* Non-scrolling bottom close bar: a normal flex child of #themes-dialog that
+   sits after #themes-scroll, so it always stays at the dialog's bottom edge
+   without needing to be sticky. Negative left/right margins bleed the bar to
+   the dialog's outer edges past its own 32px side padding; since the dialog's
+   bottom padding is 0, the bar's own padding provides the bottom inset and
+   #themes-dialog's overflow:hidden clips it to the rounded bottom corners. */
 #themes-footer {
-  position: sticky;
-  bottom: 0;
-  z-index: 6;
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
-  margin: 8px -32px -24px;
-  padding: 12px 32px;
+  margin: 0 -32px;
+  padding: 14px 32px;
   background: var(--surface);
   border-top: 1px solid var(--border);
   box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.35);
