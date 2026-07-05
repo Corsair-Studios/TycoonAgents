@@ -9,6 +9,7 @@ import type {
 } from '../shared/types';
 import { expandThemePlan } from './translator';
 import { buildDefaultBadges, upgradeThemeManifest } from './themeMigration';
+import { validateThemeIntegrity } from './themeHealth';
 import {
   buildAchievementAtlasPrompt,
   buildBackgroundDecorPrompt,
@@ -80,7 +81,26 @@ import {
   themeManifestUri,
   themePlanUri,
   themesDirectoryUri,
+  saveRawAtlas,
 } from './themeStorage';
+
+/**
+ * Best-effort persist of the RAW pre-slice atlas buffer alongside its normalized
+ * review image. Enables a future re-slice-without-regenerate path; a failure here
+ * must NEVER break generation, so we only log a `[raw-atlas]` warning.
+ */
+async function persistRawAtlas(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  filename: string,
+  generated: Buffer,
+): Promise<void> {
+  try {
+    await saveRawAtlas(globalStorageUri, themeId, filename, generated);
+  } catch (err) {
+    console.warn('TycoonAgents [raw-atlas]: failed to persist raw atlas', filename, err);
+  }
+}
 
 export interface ThemeReviewImages {
   directoryUri: vscode.Uri;
@@ -408,13 +428,28 @@ export async function importThemeArchive(
   };
 }
 
+function logThemeIntegrityIssues(themeId: string, manifest: ThemeManifest, frames: Record<string, string[]>): void {
+  try {
+    const issues = validateThemeIntegrity(manifest, frames);
+    for (const issue of issues) {
+      const logger = issue.severity === 'error' ? console.error : console.warn;
+      logger(`[theme-health] TycoonAgents: ${themeId}: ${issue.message}`);
+    }
+  } catch (error) {
+    console.warn(`[theme-health] TycoonAgents: failed to validate theme integrity for ${themeId}:`, error);
+  }
+}
+
 export async function loadTheme(
   globalStorageUri: vscode.Uri,
   themeId: string,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
   const modernManifest = await readJson<ThemeManifest>(themeManifestUri(globalStorageUri, themeId));
   const modernFrames = await readJson<Record<string, string[]>>(themeFramesUri(globalStorageUri, themeId));
-  if (modernManifest && modernFrames) return { manifest: modernManifest, frames: modernFrames };
+  if (modernManifest && modernFrames) {
+    logThemeIntegrityIssues(themeId, modernManifest, modernFrames);
+    return { manifest: modernManifest, frames: modernFrames };
+  }
 
   const legacyManifest = await readJson<ThemeManifest>(
     vscode.Uri.joinPath(globalStorageUri, `${themeId}_manifest.json`),
@@ -422,7 +457,11 @@ export async function loadTheme(
   const legacyFrames = await readJson<Record<string, string[]>>(
     vscode.Uri.joinPath(globalStorageUri, `${themeId}_frames.json`),
   );
-  return legacyManifest && legacyFrames ? { manifest: legacyManifest, frames: legacyFrames } : undefined;
+  if (legacyManifest && legacyFrames) {
+    logThemeIntegrityIssues(themeId, legacyManifest, legacyFrames);
+    return { manifest: legacyManifest, frames: legacyFrames };
+  }
+  return undefined;
 }
 
 export async function saveThemeTuning(
@@ -609,6 +648,8 @@ export async function uploadThemeImage(
       const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
       await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
       await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(reviewDirectoryUri, item.filename), output);
+      // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+      await persistRawAtlas(globalStorageUri, themeId, item.filename, buffer);
       await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
         ...item,
         status: 'pending',
@@ -1416,6 +1457,8 @@ export async function retryThemeImage(
   const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
   await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
   await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(reviewDirectoryUri, item.filename), output);
+  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+  await persistRawAtlas(globalStorageUri, themeId, item.filename, generated);
   await writeThemeFiles(globalStorageUri, manifest, frames);
   await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
     ...item,
@@ -1911,6 +1954,8 @@ async function generateAgentAsset(
   const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+  await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
   const frameKey = item.frame_keys[0] ?? item.id;
   frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
@@ -1934,6 +1979,8 @@ async function generateEnvironmentAsset(
   const output = await normalizeEnvironmentImage(generated);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  // Keep the raw pre-slice image so this board can be re-processed later without regenerating.
+  await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   frames.environment_background = [dataUri(output)];
   manifest.viewport.background_asset = 'frames.json#environment_background';
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
@@ -1957,6 +2004,8 @@ async function generateDecorAsset(
   const decorAtlas = await processDecorAtlas(generated, manifest);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, decorAtlas.output);
+  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+  await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
   applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
   manifest.viewport.projectile_asset = 'frames.json#projectile';
@@ -1981,6 +2030,8 @@ async function generateRivalAsset(
   const rivalAtlas = await processRivalAtlas(generated, manifest, rows);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, rivalAtlas.output);
+  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+  await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
   applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
@@ -2071,6 +2122,8 @@ async function generateObjectAsset(
   const objectAtlas = await processObjectAtlas(generated, manifest, item.object_rows);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, objectAtlas.output);
+  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+  await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
   applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, item.object_rows);
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
@@ -2093,6 +2146,8 @@ async function generateExpressionAsset(
   const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+  await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 4 });
   throwIfCancelled(undefined, options?.signal);
   applyExpressionFrames(frames, spritePackage.slots);
@@ -2116,6 +2171,8 @@ async function generateAchievementAsset(
   const output = await optimizeSpriteBoardCanvas(generated, 5, 4);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+  await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   const spritePackage = await sliceAndNormalizeAtlas(output, manifest);
   throwIfCancelled(undefined, options?.signal);
   applyAchievementFrames(frames, spritePackage.slots);
