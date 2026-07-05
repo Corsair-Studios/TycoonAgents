@@ -2261,10 +2261,10 @@
   /**
    * Seconds for ONE agent to fully build the FIRST object. Build time ramps
    * LINEARLY per object index: object i takes FIRST_BUILD_SECONDS * (i+1)
-   * per-agent seconds (object 0 = 30s, object 1 = 60s, …). N agents building
-   * the SAME active object make it N× faster (builderCount factor preserved).
+   * per-agent seconds (object 0 = 360s / 6 min, object 1 = 720s, …). N agents
+   * building the SAME active object make it N× faster (builderCount factor preserved).
    */
-  const FIRST_BUILD_SECONDS = 30;
+  const FIRST_BUILD_SECONDS = 360;
   /**
    * Per-frame count: number of ACTIVE agents currently AT the active build
    * target's standoff spot actually building it (clip "build", i.e.
