@@ -3012,16 +3012,32 @@
         const p = objectPlacement[dragObjectId];
         if (p) { p.nx = cl[0]; p.ny = cl[1]; }
       } else {
+        // Writing a real normalized anchor here also clears the hidden [-1,-1]
+        // sentinel (it's overwritten), so a hidden/animated decor un-hides the
+        // moment it's dragged.
         themeDecorAnchorOverrides[dragObjectId] = [normX, normY];
-        const p = decorPlacement[dragObjectId];
-        if (p) {
-          p.nx = cl[0]; p.ny = cl[1];
-          // Keep a seat's sit-point under the moved seat.
-          const d = themeDecor.find((x) => x.decor_id === dragObjectId);
-          const sit = d && Array.isArray(d.sit_anchor) && d.sit_anchor.length >= 2 ? d.sit_anchor : DEFAULT_SIT_ANCHOR;
-          const sn = clampToPolygon(cl[0] + sit[0] * walkableNativeW, cl[1] + sit[1] * walkableNativeH, walkablePolygon);
-          p.sitNx = sn[0]; p.sitNy = sn[1];
+        let p = decorPlacement[dragObjectId];
+        if (!p) {
+          // Materialize a fallback-shown decor (hidden [-1,-1] or unplaced,
+          // visible only via decorFallbackPlacement in show-all mode) into a
+          // real placement so the move is live AND persists. Seed from its
+          // current fallback position, then the update below moves it.
+          const idx = themeDecor.findIndex((x) => x && x.decor_id === dragObjectId);
+          const d0 = idx >= 0 ? themeDecor[idx] : null;
+          const fb = decorFallbackPlacement(d0, idx >= 0 ? idx : 0);
+          p = decorPlacement[dragObjectId] = {
+            nx: fb.nx, ny: fb.ny, sitNx: fb.sitNx, sitNy: fb.sitNy, sittable: fb.sittable,
+          };
+          if (d0 && d0.is_sittable && !Object.prototype.hasOwnProperty.call(seatOccupancy, dragObjectId)) {
+            seatOccupancy[dragObjectId] = null;
+          }
         }
+        p.nx = cl[0]; p.ny = cl[1];
+        // Keep a seat's sit-point under the moved seat.
+        const d = themeDecor.find((x) => x.decor_id === dragObjectId);
+        const sit = d && Array.isArray(d.sit_anchor) && d.sit_anchor.length >= 2 ? d.sit_anchor : DEFAULT_SIT_ANCHOR;
+        const sn = clampToPolygon(cl[0] + sit[0] * walkableNativeW, cl[1] + sit[1] * walkableNativeH, walkablePolygon);
+        p.sitNx = sn[0]; p.sitNy = sn[1];
       }
     } else {
       hoverVertexIndex = vertexAt(mx, my, 11);
@@ -3094,16 +3110,16 @@
         '<div class="se-section">' +
           '<div class="se-section-title">Scene</div>' +
           '<div class="se-row"><span class="se-label">Overall scale</span><span class="se-value"><span id="se-ov-val">1.00</span></span></div>' +
-          '<input id="se-ov" class="se-range" type="range" min="0.5" max="2" step="0.05" value="1">' +
+          '<input id="se-ov" class="se-range" type="range" min="0.5" max="3" step="0.05" value="1">' +
         '</div>' +
         '<div class="se-section">' +
           '<div class="se-section-title">Characters</div>' +
           '<div class="se-row"><span class="se-label">Character scale</span><span class="se-value"><span id="se-cs-val">1.00</span></span></div>' +
-          '<input id="se-cs" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+          '<input id="se-cs" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
           '<div class="se-override">' +
             '<div class="se-override-label">Per-character override</div>' +
             '<select id="se-char" class="se-select"></select>' +
-            '<input id="se-co" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+            '<input id="se-co" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-co-clear" class="se-clear" type="button">clear override</button>' +
           '</div>' +
         '</div>' +
@@ -3114,33 +3130,33 @@
         '<div class="se-section">' +
           '<div class="se-section-title">Objects</div>' +
           '<div class="se-row"><span class="se-label">Object scale</span><span class="se-value"><span id="se-os-val">1.00</span></span></div>' +
-          '<input id="se-os" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+          '<input id="se-os" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
           '<div class="se-override">' +
             '<div class="se-override-label">Per-object override</div>' +
             '<select id="se-obj" class="se-select"></select>' +
-            '<input id="se-oo" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+            '<input id="se-oo" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-oo-clear" class="se-clear" type="button">clear override</button>' +
           '</div>' +
         '</div>' +
         '<div class="se-section">' +
           '<div class="se-section-title">Rivals</div>' +
           '<div class="se-row"><span class="se-label">Rival scale</span><span class="se-value"><span id="se-rs-val">1.00</span></span></div>' +
-          '<input id="se-rs" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+          '<input id="se-rs" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
           '<div class="se-override">' +
             '<div class="se-override-label">Per-rival override</div>' +
             '<select id="se-rival" class="se-select"></select>' +
-            '<input id="se-ro" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+            '<input id="se-ro" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-ro-clear" class="se-clear" type="button">clear override</button>' +
           '</div>' +
         '</div>' +
         '<div class="se-section">' +
           '<div class="se-section-title">Decor</div>' +
           '<div class="se-row"><span class="se-label">Decor scale</span><span class="se-value"><span id="se-ds-val">1.00</span></span></div>' +
-          '<input id="se-ds" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+          '<input id="se-ds" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
           '<div class="se-override">' +
             '<div class="se-override-label">Per-decor override</div>' +
             '<select id="se-decor" class="se-select"></select>' +
-            '<input id="se-do" class="se-range" type="range" min="0.3" max="2" step="0.05" value="1">' +
+            '<input id="se-do" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-do-clear" class="se-clear" type="button">clear override</button>' +
           '</div>' +
         '</div>' +
