@@ -793,8 +793,8 @@ body {
   min-width: 320px;
   max-width: 480px;
   width: 90%;
-  max-height: 70vh;
-  overflow-y: auto;
+  max-height: 80vh;
+  overflow: hidden;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
@@ -833,6 +833,25 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 176, 32, 0.4) transparent;
+}
+
+#badge-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+#badge-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 176, 32, 0.4);
+  border-radius: 4px;
+}
+
+#badge-list::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .badge-empty {
@@ -844,39 +863,36 @@ body {
 .badge-card {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px;
-  border: 1px solid var(--border);
+  gap: 14px;
+  padding: 12px 14px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .badge-card--unlocked {
-  border-color: rgba(255, 176, 32, 0.35);
-  background: rgba(255, 176, 32, 0.06);
+  background: rgba(255, 176, 32, 0.09);
 }
 
 .badge-card-icon {
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border-radius: 50% 50% 45% 45% / 55% 55% 45% 45%;
-  background: #1b1b22;
-  border: 2px solid rgba(255, 255, 255, 0.12);
+  width: 60px;
+  height: 60px;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
 }
 
 .badge-card--unlocked .badge-card-icon {
-  border-color: rgba(255, 176, 32, 0.55);
+  filter: drop-shadow(0 0 6px rgba(255, 176, 32, 0.45));
 }
 
 .badge-card-icon img {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: -webkit-optimize-contrast;
 }
 
 /* Locked badges: silhouette the art (or the generic fallback shape) so it
@@ -886,7 +902,9 @@ body {
 }
 
 .badge-card-icon--generic {
-  /* Generic filled medallion used when the icon frame isn't loaded yet. */
+  /* Generic filled medallion used when there's no art to show yet. This is
+     the only icon state that still needs a shape, since there's no art. */
+  border-radius: 50%;
   background: radial-gradient(circle at 50% 40%, #3a3a46 0%, #1b1b22 70%);
 }
 
