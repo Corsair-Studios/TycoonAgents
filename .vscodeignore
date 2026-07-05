@@ -23,6 +23,8 @@ tsconfig.json
 **/*.map
 node_modules/**
 scripts/**
+media/jsconfig.json
+media/globals.d.ts
 .mcp.json
 *.log
 **/*.vsix
