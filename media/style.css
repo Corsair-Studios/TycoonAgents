@@ -1673,6 +1673,25 @@ td.col-status {
   gap: 14px;
   overflow: auto;
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 176, 32, 0.4) transparent;
+}
+
+#themes-dialog::-webkit-scrollbar {
+  width: 10px;
+}
+
+#themes-dialog::-webkit-scrollbar-thumb {
+  background: rgba(255, 176, 32, 0.4);
+  border-radius: 5px;
+}
+
+#themes-dialog::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 176, 32, 0.6);
+}
+
+#themes-dialog::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 #themes-modal-close {
@@ -1715,6 +1734,36 @@ td.col-status {
 #theme-picker-list[hidden],
 #theme-builder-panel[hidden] {
   display: none;
+}
+
+/* Sticky bottom close bar: stays pinned while #themes-dialog body scrolls.
+   Negative margins bleed the bar to the dialog's outer edges past its own
+   28px/32px/24px padding, so it reads as a full-width footer. */
+#themes-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  display: flex;
+  justify-content: flex-end;
+  margin: 8px -32px -24px;
+  padding: 12px 32px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.theme-footer-close {
+  min-width: 120px;
+  text-align: center;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #1a1200;
+  font-weight: 700;
+}
+
+.theme-footer-close:hover:not(:disabled) {
+  background: #ffc247;
+  border-color: #ffc247;
 }
 
 .theme-builder-launch {
@@ -1810,19 +1859,30 @@ td.col-status {
 .theme-image-settings {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 12px;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 16px 18px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 176, 32, 0.05), rgba(255, 255, 255, 0.02));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+}
+
+.theme-image-settings-heading {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.9;
 }
 
 .theme-image-settings-row {
   display: grid;
   grid-template-columns: minmax(130px, 170px) minmax(220px, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .theme-api-key-row {
@@ -1831,8 +1891,10 @@ td.col-status {
 
 .theme-image-settings label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .theme-image-settings select,
@@ -1842,7 +1904,28 @@ td.col-status {
   color: var(--vscode-input-foreground, var(--text));
   background: var(--vscode-input-background, #171a1f);
   border: 1px solid var(--vscode-input-border, var(--border));
-  border-radius: 4px;
+  border-radius: 5px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.theme-image-settings select:focus,
+.theme-image-settings input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.18);
+}
+
+.theme-api-key-save-btn {
+  flex-shrink: 0;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #1a1200;
+  font-weight: 700;
+}
+
+.theme-api-key-save-btn:hover:not(:disabled) {
+  background: #ffc247;
+  border-color: #ffc247;
 }
 
 .theme-api-key-status {

@@ -2949,6 +2949,7 @@ export class TycoonPanel {
       <div id="theme-builder-panel" role="tabpanel" hidden>
         <button id="tab-theme-picker" class="skill-btn" style="margin-bottom: 16px;">&larr; Back to themes</button>
         <div id="theme-image-settings" class="theme-image-settings">
+          <div class="theme-image-settings-heading">Image generation</div>
           <div class="theme-image-settings-row">
             <label for="theme-image-provider">Image provider</label>
             <select id="theme-image-provider">
@@ -2965,7 +2966,7 @@ export class TycoonPanel {
               spellcheck="false"
               placeholder="Paste a key to save securely"
             />
-            <button id="theme-api-key-save" class="skill-btn">Save</button>
+            <button id="theme-api-key-save" class="skill-btn theme-api-key-save-btn">Save</button>
           </div>
           <div id="theme-api-key-status" class="theme-api-key-status" role="status"></div>
         </div>
@@ -3008,7 +3009,7 @@ export class TycoonPanel {
             <textarea id="theme-plan-environment" rows="3"></textarea>
           </label>
           <fieldset class="theme-plan-group">
-            <legend>Enemies <span>3 individual sprite boards</span></legend>
+            <legend>Enemies <span>4 individual enemy rows &middot; 1 sprite board</span></legend>
             <div id="theme-plan-enemies" class="theme-plan-slot-grid"></div>
           </fieldset>
           <label class="theme-plan-field">
@@ -3048,6 +3049,9 @@ export class TycoonPanel {
           <div id="theme-image-review-list" class="theme-image-review-list"></div>
         </section>
         <div id="theme-builder-root"></div>
+      </div>
+      <div id="themes-footer">
+        <button id="themes-footer-close" class="skill-btn theme-footer-close">Close</button>
       </div>
     </div>
   </div>

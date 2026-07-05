@@ -506,6 +506,7 @@
   // Themes Modal Elements
   const themesModalEl       = /** @type {HTMLElement} */ (document.getElementById("themes-modal"));
   const themesModalCloseBtn = /** @type {HTMLElement} */ (document.getElementById("themes-modal-close"));
+  const themesFooterCloseBtn = /** @type {HTMLElement} */ (document.getElementById("themes-footer-close"));
   const tabThemePicker      = /** @type {HTMLElement} */ (document.getElementById("tab-theme-picker"));
   const tabThemeBuilder     = /** @type {HTMLElement} */ (document.getElementById("tab-theme-builder"));
   const themePickerList     = /** @type {HTMLElement} */ (document.getElementById("theme-picker-list"));
@@ -678,6 +679,10 @@
 
   if (themesModalCloseBtn) {
     themesModalCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
+  }
+
+  if (themesFooterCloseBtn) {
+    themesFooterCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
   }
 
   if (themeImportBtn) {
