@@ -3324,3 +3324,62 @@ button.theme-review-preview:focus-visible::after {
   font-size: 10.5px;
   color: #9fffa0;
 }
+
+/* ── Rebirth celebration announcement ──────────────────────────────────────
+   Centered, high z-index (above the badge modal at z-index:200) dark-glass
+   banner with an amber accent, matching the .rebirth-panel visual language.
+   pointer-events:none so it never blocks stage/UI clicks. */
+.rebirth-announce {
+  position: fixed;
+  top: 22%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 400;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 30px;
+  border-radius: 14px;
+  background: rgba(14, 14, 22, 0.88);
+  border: 1.5px solid #ffc107;
+  box-shadow: 0 0 24px rgba(255, 193, 7, 0.5), 0 8px 30px rgba(0, 0, 0, 0.55);
+  text-align: center;
+  opacity: 0;
+}
+
+.rebirth-announce[hidden] {
+  display: none;
+}
+
+.rebirth-announce-head {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: #ffc107;
+  text-shadow: 0 0 14px rgba(255, 193, 7, 0.65);
+}
+
+.rebirth-announce-sub {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #eef0f6);
+  opacity: 0.92;
+}
+
+.rebirth-announce.is-visible {
+  animation: rebirth-announce-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards,
+             rebirth-announce-out 0.45s ease-in 3.05s forwards;
+}
+
+@keyframes rebirth-announce-in {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+  70%  { opacity: 1; transform: translate(-50%, -50%) scale(1.04); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes rebirth-announce-out {
+  0%   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.94); }
+}

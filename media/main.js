@@ -484,6 +484,67 @@
     if (rangedUnlocked === false && rebirthCount >= 1) rangedUnlocked = true; // D1: permanent ranged weapons from here on
     updateBadgeHud();
     renderBadgePanel();
+    // Cosmetic celebration — must never break the rebirth itself.
+    celebrateRebirth();
+  }
+
+  /** Timer handle so rapid rebirths reset the announcement auto-hide. */
+  let _rebirthAnnounceTimer = 0;
+
+  /**
+   * Lazily build (once) and reveal the centered rebirth announcement banner,
+   * re-triggering its pop-in animation on every call. Auto-hides after ~3.5s.
+   * @param {number} count    the new rebirthCount
+   * @param {number} buildPct build-speed bonus percentage
+   */
+  function showRebirthAnnouncement(count, buildPct) {
+    try {
+      let el = /** @type {HTMLElement|null} */ (document.getElementById("rebirth-announce"));
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "rebirth-announce";
+        el.className = "rebirth-announce";
+        const head = document.createElement("div");
+        head.className = "rebirth-announce-head";
+        const sub = document.createElement("div");
+        sub.className = "rebirth-announce-sub";
+        el.appendChild(head);
+        el.appendChild(sub);
+        document.body.appendChild(el);
+      }
+      const head = el.querySelector(".rebirth-announce-head");
+      const sub = el.querySelector(".rebirth-announce-sub");
+      if (head) head.textContent = "REBIRTH ×" + count;
+      if (sub) sub.textContent = "Ranged weapons unlocked · Build speed +" + buildPct + "%";
+      el.removeAttribute("hidden");
+      // Reset + force reflow so the pop-in animation replays on repeat rebirths.
+      el.classList.remove("is-visible");
+      void el.offsetWidth;
+      el.classList.add("is-visible");
+      if (_rebirthAnnounceTimer) clearTimeout(_rebirthAnnounceTimer);
+      _rebirthAnnounceTimer = setTimeout(function () {
+        const cur = document.getElementById("rebirth-announce");
+        if (cur) {
+          cur.classList.remove("is-visible");
+          cur.setAttribute("hidden", "");
+        }
+        _rebirthAnnounceTimer = 0;
+      }, 3500);
+    } catch (_e) { /* cosmetic only */ }
+  }
+
+  /**
+   * Fire the full rebirth celebration: dismiss the badge modal so the player
+   * sees the stage, burst confetti, and show the announcement banner. Every
+   * step is guarded — the celebration must never break the rebirth.
+   */
+  function celebrateRebirth() {
+    try { if (badgeModalEl) closeModal(badgeModalEl); } catch (_e) { /* noop */ }
+    try { spawnConfetti(); } catch (_e) { /* noop */ }
+    try {
+      const pct = Math.round((Math.pow(1.2, rebirthCount) - 1) * 100);
+      showRebirthAnnouncement(rebirthCount, pct);
+    } catch (_e) { /* noop */ }
   }
 
   /**
@@ -3813,6 +3874,70 @@
 
   let frame = 0;
   let lastFrameTime = 0;
+
+  // ── Rebirth confetti particle system ──────────────────────────────────────
+  // Populated by spawnConfetti() (fired from the Rebirth celebration) and
+  // advanced/drawn each frame by updateAndDrawConfetti() near the END of the
+  // render loop so particles land on top of the scene. Empty array ⇒ no-op.
+  /** @type {Array<{x:number,y:number,vx:number,vy:number,g:number,rot:number,vrot:number,size:number,color:string,ttl:number,life:number}>} */
+  let confettiParticles = [];
+  const CONFETTI_PALETTE = ["#ffc107", "#ffd76a", "#ffffff", "#39ff14", "#ff5da2", "#4fc3ff"];
+
+  /**
+   * Burst a fresh set of confetti from the top of the canvas.
+   * @param {number} [count]
+   */
+  function spawnConfetti(count) {
+    const n = (typeof count === "number" && count > 0) ? count : 140;
+    const w = (canvas && canvas.width) || 533;
+    for (let i = 0; i < n; i++) {
+      const ttl = 150 + Math.floor(Math.random() * 60); // ~2.5–3.5s @ 60fps
+      confettiParticles.push({
+        x: Math.random() * w,
+        y: -10 - Math.random() * 40,
+        vx: (Math.random() - 0.5) * 3.2,
+        vy: 1.5 + Math.random() * 3.0,
+        g: 0.05 + Math.random() * 0.04,
+        rot: Math.random() * Math.PI * 2,
+        vrot: (Math.random() - 0.5) * 0.35,
+        size: 4 + Math.random() * 5,
+        color: CONFETTI_PALETTE[(Math.random() * CONFETTI_PALETTE.length) | 0],
+        ttl: ttl,
+        life: ttl,
+      });
+    }
+  }
+
+  /**
+   * Advance + draw confetti in canvas pixel space (same space the scene uses:
+   * 0..canvas.width, 0..canvas.height). Cheap no-op when the array is empty.
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} h  canvas height (for off-screen culling)
+   */
+  function updateAndDrawConfetti(ctx, h) {
+    if (!confettiParticles.length) return;
+    const bottom = (typeof h === "number" ? h : ((canvas && canvas.height) || 751)) + 20;
+    for (let i = confettiParticles.length - 1; i >= 0; i--) {
+      const p = confettiParticles[i];
+      p.vy += p.g;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rot += p.vrot;
+      p.ttl--;
+      if (p.ttl <= 0 || p.y > bottom) {
+        confettiParticles.splice(i, 1);
+        continue;
+      }
+      const fade = p.ttl < 40 ? Math.max(0, p.ttl / 40) : 1;
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+      ctx.restore();
+    }
+  }
 
   function resize() {
     // Keep the canvas backing-store resolution in lockstep with its CSS
@@ -8397,6 +8522,9 @@
 
     // HUD overlay
     drawHUD(w);
+
+    // Rebirth celebration confetti — drawn last so it sits on top of everything.
+    updateAndDrawConfetti(ctx, h);
 
     requestAnimationFrame(render);
   }
