@@ -132,6 +132,9 @@ export async function sliceAndNormalizeAtlas(
       if (row > 0) {
         removeRowBoundarySpill(cell, cells[slot_id - grid.columns].cell);
       }
+      if (col > 0) {
+        removeColumnBoundarySpill(cell, cells[slot_id - 1].cell);
+      }
 
       let minX = Infinity;
       let maxX = -1;
@@ -447,6 +450,73 @@ function removeRowBoundarySpill(cell: Jimp, cellAbove: Jimp): void {
   }
 
   // Never erase the primary subject if it happens to touch the cell's top.
+  if (queue.length * 2 >= opaqueCount) return;
+  for (const offset of queue) cell.bitmap.data[offset * 4 + 3] = 0;
+}
+
+/**
+ * Image models sometimes let an extended weapon, build tool, or equipment from
+ * one column cross sideways into the cell to its right. Once the atlas is sliced,
+ * that overflow looks like a small, disconnected object clinging to the left edge
+ * of the next cell and would otherwise be normalized along with the real sprite.
+ *
+ * The column-axis analog of removeRowBoundarySpill: remove only a minor
+ * left-connected component that continues opaque pixels from the preceding
+ * (left) cell's right edge. If the component is most of the current cell's
+ * content, keep it: that is more likely a badly framed but recoverable sprite
+ * than column-boundary debris.
+ */
+function removeColumnBoundarySpill(cell: Jimp, leftNeighbor: Jimp): void {
+  const width = cell.bitmap.width;
+  const height = cell.bitmap.height;
+  if (height !== leftNeighbor.bitmap.height) return;
+
+  const visited = new Uint8Array(width * height);
+  const queue: number[] = [];
+  let opaqueCount = 0;
+
+  cell.scan(0, 0, width, height, function (_x: number, _y: number, idx: number) {
+    if (cell.bitmap.data[idx + 3] !== 0) opaqueCount++;
+  });
+  if (opaqueCount === 0) return;
+
+  const leftWidth = leftNeighbor.bitmap.width;
+  const leftRightX = leftWidth - 1;
+  for (let y = 0; y < height; y++) {
+    const offset = y * width;
+    if (cell.bitmap.data[offset * 4 + 3] === 0) continue;
+
+    let continuesFromLeft = false;
+    for (let dy = -2; dy <= 2; dy++) {
+      const leftY = y + dy;
+      if (leftY < 0 || leftY >= height) continue;
+      const leftIdx = (leftY * leftWidth + leftRightX) * 4;
+      if (leftNeighbor.bitmap.data[leftIdx + 3] !== 0) {
+        continuesFromLeft = true;
+        break;
+      }
+    }
+    if (!continuesFromLeft) continue;
+
+    visited[offset] = 1;
+    queue.push(offset);
+  }
+  if (queue.length === 0) return;
+
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const offset = queue[cursor];
+    const x = offset % width;
+    for (const neighbor of [offset - 1, offset + 1, offset - width, offset + width]) {
+      if (neighbor < 0 || neighbor >= width * height || visited[neighbor]) continue;
+      const neighborX = neighbor % width;
+      if (Math.abs(neighborX - x) > 1) continue;
+      if (cell.bitmap.data[neighbor * 4 + 3] === 0) continue;
+      visited[neighbor] = 1;
+      queue.push(neighbor);
+    }
+  }
+
+  // Never erase the primary subject if it happens to touch the cell's left edge.
   if (queue.length * 2 >= opaqueCount) return;
   for (const offset of queue) cell.bitmap.data[offset * 4 + 3] = 0;
 }

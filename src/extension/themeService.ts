@@ -68,6 +68,7 @@ import type { ThemeApprovalSummary } from './themeApproval';
 import { selectThemeImageRetryPrompt } from './themeImageRetry';
 import type { ThemeImageRetryMode } from './themeImageRetry';
 import {
+  ATLAS_CLIPS,
   normalizeThemePlan,
   themePlanCreativeDirection,
   themePlanToManifest,
@@ -1634,6 +1635,11 @@ function characterAtlasGrid(rebuildBoard = false) {
     scaleReferenceSlots: [0, 1, 2, 3, 4, 16],
     targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
     maxContentExtent: 120,
+    // Group each animation CLIP's frames so they share one union bbox/crop/anchor,
+    // mirroring the rival/object row grouping. Prevents walk/build/melee/shoot/dance
+    // frames jumping horizontally as pose mass shifts. Single-frame clips (idle,
+    // point, etc.) become harmless 1-member groups.
+    normalizationGroups: Object.values(ATLAS_CLIPS).map((clip) => clip.frames),
     rebuildBoard,
     squareReviewBoard: rebuildBoard,
   };
