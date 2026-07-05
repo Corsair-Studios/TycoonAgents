@@ -938,8 +938,8 @@ body {
   opacity: 0.85;
 }
 
-/* Click-to-expand affordance: badge cards toggle .badge-card--expanded to
-   reveal a plain-language explanation of how the badge is earned. */
+/* Click-to-open affordance: badge cards are clickable and open a full-size
+   detail popup (see #badge-detail-modal) with the large icon + explanation. */
 .badge-card {
   cursor: pointer;
   transition: background 0.12s ease;
@@ -951,26 +951,6 @@ body {
 
 .badge-card--unlocked:hover {
   background: rgba(255, 176, 32, 0.14);
-}
-
-.badge-card--expanded {
-  background: rgba(255, 176, 32, 0.12);
-}
-
-.badge-card-detail {
-  display: none;
-  margin-top: 5px;
-  padding-top: 5px;
-  padding-left: 8px;
-  border-left: 2px solid rgba(255, 176, 32, 0.35);
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--muted);
-}
-
-.badge-card--expanded .badge-card-detail {
-  display: block;
-  color: var(--text);
 }
 
 /* Badges reserved in REBIRTH_BADGE_POOL: subtle amber accent so the reserved
@@ -992,6 +972,131 @@ body {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: #ffc107;
+}
+
+/* ── Badge detail popup (full-size icon + status + explanation) ─────────
+   Layers ABOVE #badge-modal (z 100). Built lazily in JS and appended to
+   <body>; same dark-glass + amber-accent language as the badge cards. */
+#badge-detail-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#badge-detail-modal[hidden] {
+  display: none;
+}
+
+.badge-detail-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.badge-detail-dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 90%;
+  max-width: 360px;
+  padding: 28px 28px 26px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid #ffc107;
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.75), inset 0 0 24px rgba(255, 193, 7, 0.07);
+  text-align: center;
+  animation: badge-detail-pop 0.16s ease-out;
+}
+
+@keyframes badge-detail-pop {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.badge-detail-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.badge-detail-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.badge-detail-icon {
+  flex: 0 0 auto;
+  width: 176px;
+  height: 176px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.badge-detail-icon--unlocked {
+  filter: drop-shadow(0 0 14px rgba(255, 176, 32, 0.5));
+}
+
+.badge-detail-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: -webkit-optimize-contrast;
+}
+
+.badge-detail-icon--generic {
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 40%, #3a3a46 0%, #1b1b22 70%);
+}
+
+.badge-detail-name {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.badge-detail-rebirth {
+  align-self: center;
+}
+
+.badge-detail-status {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.badge-detail-status--earned {
+  color: #ffc107;
+}
+
+.badge-detail-status--locked {
+  color: var(--accent);
+  opacity: 0.9;
+}
+
+.badge-detail-explain {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 300px;
 }
 
 /* ── Rebirth prestige panel (sits above #badge-list, same dark-glass +

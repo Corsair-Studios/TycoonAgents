@@ -227,7 +227,9 @@
   // it was opened more recently, then about modal, then menu.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (badgeModalEl && !badgeModalEl.hasAttribute("hidden")) {
+      if (badgeDetailModalEl && !badgeDetailModalEl.hasAttribute("hidden")) {
+        closeBadgeDetail();
+      } else if (badgeModalEl && !badgeModalEl.hasAttribute("hidden")) {
         closeModal(badgeModalEl);
       } else if (!skillsModalEl.hasAttribute("hidden")) {
         closeModal(skillsModalEl);
@@ -294,8 +296,8 @@
    */
   function updateBadgeUnlocks() {
     if (!themeBadges || themeBadges.length === 0) return;
-    const effBuilt = buildBuiltCount - rebirthBaseline.built;
-    const effEvicted = rivalsEvictedCount - rebirthBaseline.evicted;
+    const effBuilt = cycleObjectsBuilt;
+    const effEvicted = cycleRivalsEvicted;
     const effTasks = (state.completedTasks || 0) - rebirthBaseline.tasks;
     const effPeak = cyclePeakActive;
     const objectCount = themeBuildables.length;
@@ -359,6 +361,167 @@
     return parts.join(" ");
   }
 
+  /**
+   * Current per-cycle progress line for a locked badge, e.g. "3 / 10 built".
+   * Measured within the current rebirth cycle (baseline-adjusted) so both the
+   * grid card and the detail popup agree with updateBadgeUnlocks(). Guards
+   * missing fields so it never throws.
+   */
+  function badgeProgressText(b) {
+    if (!b) return "";
+    let eff = 0, unit = "";
+    let threshold = b.threshold || 0;
+    switch (b.trigger_type) {
+      case "RIVALS_EVICTED": eff = cycleRivalsEvicted; unit = "evicted"; break;
+      case "TASKS_COMPLETED": eff = (state.completedTasks || 0) - rebirthBaseline.tasks; unit = "tasks"; break;
+      case "AGENTS_ACTIVE": eff = cyclePeakActive; unit = "active"; break;
+      default:
+        eff = cycleObjectsBuilt;
+        threshold = Math.min(threshold, themeBuildables.length);
+        unit = "built";
+        break;
+    }
+    return Math.min(Math.max(eff, 0), threshold) + " / " + threshold + " " + unit;
+  }
+
+  /**
+   * Resolve a badge's icon frame src ("frames.json#<key>" → themeImages[key][0]).
+   * Returns null when no art is loaded, so callers can fall back to a shape.
+   */
+  function badgeFrameSrc(b) {
+    const frameKey = (b && typeof b.icon_asset === "string" && b.icon_asset.indexOf("#") >= 0)
+      ? b.icon_asset.split("#")[1]
+      : null;
+    const frames = frameKey ? themeImages[frameKey] : null;
+    return (frames && frames[0] && frames[0].src) ? frames[0].src : null;
+  }
+
+  // ── Badge detail popup (large icon + status + explanation) ───────────
+  // A single reusable modal, built lazily and appended to <body>, that layers
+  // ABOVE #badge-modal. Populated per-badge by openBadgeDetail(); closed via
+  // the × button, backdrop click, or Escape.
+  /** @type {HTMLElement|null} */ let badgeDetailModalEl = null;
+  /** @type {HTMLElement|null} */ let badgeDetailIconEl = null;
+  /** @type {HTMLElement|null} */ let badgeDetailNameEl = null;
+  /** @type {HTMLElement|null} */ let badgeDetailRebirthEl = null;
+  /** @type {HTMLElement|null} */ let badgeDetailStatusEl = null;
+  /** @type {HTMLElement|null} */ let badgeDetailExplainEl = null;
+
+  function closeBadgeDetail() {
+    if (badgeDetailModalEl) badgeDetailModalEl.setAttribute("hidden", "");
+    // Return focus to the badges dialog we layered over, if it's still open.
+    try {
+      if (badgeModalCloseEl && badgeModalEl && !badgeModalEl.hasAttribute("hidden")) {
+        badgeModalCloseEl.focus();
+      }
+    } catch (_e) { /* noop */ }
+  }
+
+  function buildBadgeDetailModal() {
+    if (badgeDetailModalEl) return;
+    const modal = document.createElement("div");
+    modal.id = "badge-detail-modal";
+    modal.setAttribute("hidden", "");
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "badge-detail-backdrop";
+    backdrop.addEventListener("click", closeBadgeDetail);
+    modal.appendChild(backdrop);
+
+    const dialog = document.createElement("div");
+    dialog.className = "badge-detail-dialog";
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "badge-detail-close";
+    closeBtn.type = "button";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", closeBadgeDetail);
+    dialog.appendChild(closeBtn);
+
+    badgeDetailIconEl = document.createElement("div");
+    badgeDetailIconEl.className = "badge-detail-icon";
+    dialog.appendChild(badgeDetailIconEl);
+
+    badgeDetailNameEl = document.createElement("div");
+    badgeDetailNameEl.className = "badge-detail-name";
+    dialog.appendChild(badgeDetailNameEl);
+
+    badgeDetailRebirthEl = document.createElement("div");
+    badgeDetailRebirthEl.className = "badge-rebirth-tag badge-detail-rebirth";
+    badgeDetailRebirthEl.textContent = "REBIRTH";
+    badgeDetailRebirthEl.title = "This badge is required for your next Rebirth. Earn the marked badges to unlock Rebirth.";
+    badgeDetailRebirthEl.setAttribute("hidden", "");
+    dialog.appendChild(badgeDetailRebirthEl);
+
+    badgeDetailStatusEl = document.createElement("div");
+    badgeDetailStatusEl.className = "badge-detail-status";
+    dialog.appendChild(badgeDetailStatusEl);
+
+    badgeDetailExplainEl = document.createElement("div");
+    badgeDetailExplainEl.className = "badge-detail-explain";
+    dialog.appendChild(badgeDetailExplainEl);
+
+    modal.appendChild(dialog);
+    document.body.appendChild(modal);
+    badgeDetailModalEl = modal;
+  }
+
+  /**
+   * Populate and show the badge detail popup for badge `b`. Works for both
+   * earned and locked badges: earned → "Earned" status + explanation; locked →
+   * per-cycle progress + how-to-earn explanation. Guards missing fields.
+   */
+  function openBadgeDetail(b) {
+    if (!b) return;
+    buildBadgeDetailModal();
+    if (!badgeDetailModalEl) return;
+    const unlocked = unlockedBadgeIds.has(b.badge_id);
+    const isRebirth = requiredRebirthBadgeIds.indexOf(b.badge_id) >= 0;
+
+    // Large icon (or generic shape); silhouette when locked.
+    if (badgeDetailIconEl) {
+      while (badgeDetailIconEl.firstChild) badgeDetailIconEl.removeChild(badgeDetailIconEl.firstChild);
+      badgeDetailIconEl.className = "badge-detail-icon";
+      const src = badgeFrameSrc(b);
+      if (src) {
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "";
+        if (!unlocked) img.className = "badge-card-icon-silhouette";
+        badgeDetailIconEl.appendChild(img);
+      } else {
+        badgeDetailIconEl.classList.add("badge-detail-icon--generic");
+        if (!unlocked) badgeDetailIconEl.classList.add("badge-card-icon-silhouette");
+      }
+      badgeDetailIconEl.classList.toggle("badge-detail-icon--unlocked", unlocked);
+    }
+
+    if (badgeDetailNameEl) badgeDetailNameEl.textContent = b.display_name || b.badge_id;
+
+    if (badgeDetailRebirthEl) {
+      if (isRebirth) badgeDetailRebirthEl.removeAttribute("hidden");
+      else badgeDetailRebirthEl.setAttribute("hidden", "");
+    }
+
+    if (badgeDetailStatusEl) {
+      badgeDetailStatusEl.classList.toggle("badge-detail-status--earned", unlocked);
+      badgeDetailStatusEl.classList.toggle("badge-detail-status--locked", !unlocked);
+      badgeDetailStatusEl.textContent = unlocked
+        ? "Earned ✓"
+        : badgeProgressText(b);
+    }
+
+    if (badgeDetailExplainEl) badgeDetailExplainEl.textContent = badgeExplanation(b);
+
+    badgeDetailModalEl.removeAttribute("hidden");
+    // Focus the close button so Escape/Enter behave predictably.
+    try {
+      const btn = badgeDetailModalEl.querySelector(".badge-detail-close");
+      if (btn) /** @type {HTMLElement} */ (btn).focus();
+    } catch (_e) { /* noop */ }
+  }
+
   function renderBadgePanel() {
     if (!badgeListEl) return;
     renderRebirthPanel();
@@ -413,7 +576,6 @@
         info.appendChild(rebirthTag);
       }
 
-      let progressText = "";
       if (unlocked) {
         const desc = document.createElement("div");
         desc.className = "badge-card-desc";
@@ -425,41 +587,16 @@
         // Progress is measured WITHIN the current rebirth cycle (baseline-adjusted),
         // matching updateBadgeUnlocks() so the displayed count never shows a
         // false lifetime total that's already past threshold post-rebirth.
-        let eff = 0, unit = "";
-        let threshold = b.threshold || 0;
-        switch (b.trigger_type) {
-          case "RIVALS_EVICTED": eff = rivalsEvictedCount - rebirthBaseline.evicted; unit = "evicted"; break;
-          case "TASKS_COMPLETED": eff = (state.completedTasks || 0) - rebirthBaseline.tasks; unit = "tasks"; break;
-          case "AGENTS_ACTIVE": eff = cyclePeakActive; unit = "active"; break;
-          default:
-            eff = buildBuiltCount - rebirthBaseline.built;
-            threshold = Math.min(threshold, themeBuildables.length);
-            unit = "built";
-            break;
-        }
-        progressText = Math.min(Math.max(eff, 0), threshold) + " / " + threshold + " " + unit;
-        progress.textContent = progressText;
+        progress.textContent = badgeProgressText(b);
         info.appendChild(progress);
       }
 
-      // Expandable detail: plain-language explanation of how the badge is
-      // earned. Completed badges show the full explanation; locked ones also
-      // show current progress so users know how to earn them. Hidden until the
-      // card is clicked (toggles .badge-card--expanded). Guarded against
-      // missing fields via badgeExplanation().
-      const detail = document.createElement("div");
-      detail.className = "badge-card-detail";
-      let detailText = badgeExplanation(b);
-      if (!unlocked && progressText) detailText += " Progress: " + progressText + ".";
-      detail.textContent = detailText;
-      info.appendChild(detail);
-
       card.appendChild(info);
 
+      // Clicking a card opens a full-size popup with the large icon, earned/
+      // locked status, and a plain-language explanation (see openBadgeDetail).
       card.style.cursor = "pointer";
-      card.addEventListener("click", () => {
-        card.classList.toggle("badge-card--expanded");
-      });
+      card.addEventListener("click", () => openBadgeDetail(b));
 
       badgeListEl.appendChild(card);
     }
@@ -480,6 +617,8 @@
         baseline: rebirthBaseline,
         required: requiredRebirthBadgeIds,
         unlocked: [...unlockedBadgeIds],
+        cycleBuilt: cycleObjectsBuilt,
+        cycleEvicted: cycleRivalsEvicted,
       },
     });
     // Also persist host-side (per theme) so the rebirth requirement survives
@@ -494,6 +633,8 @@
             count: rebirthCount,
             baseline: rebirthBaseline,
             required: requiredRebirthBadgeIds,
+            cycleBuilt: cycleObjectsBuilt,
+            cycleEvicted: cycleRivalsEvicted,
           },
         },
       });
@@ -537,6 +678,8 @@
   function doRebirth() {
     rebirthCount++;
     rebirthBaseline = { built: buildBuiltCount, evicted: rivalsEvictedCount, tasks: (state.completedTasks || 0) };
+    cycleObjectsBuilt = 0;
+    cycleRivalsEvicted = 0;
     cyclePeakActive = 0;
     unlockedBadgeIds.clear();
     rollRebirthRequirement();
@@ -2334,6 +2477,16 @@
   let buildBuiltCount = 0;
   /** Count of rival agents successfully evicted (fled offscreen and pruned) this theme session. */
   let rivalsEvictedCount = 0;
+  /**
+   * DURABLE per-rebirth-cycle badge counters. Unlike buildBuiltCount/
+   * rivalsEvictedCount (per-theme-session build-loop counters reset to 0 on
+   * every THEME_INITIALIZED), these persist host-side in the rebirth-state
+   * store and are RESTORED on reload — they only reset on rebirth / user reset.
+   * Badge progress (OBJECTS_BUILT / RIVALS_EVICTED) reads these so earned-badge
+   * progress bars don't snap back to 0 after a webview reload.
+   */
+  let cycleObjectsBuilt = 0;
+  let cycleRivalsEvicted = 0;
   /**
    * Set of badge_id strings unlocked for the current theme. Seeded from the
    * host's persisted per-theme unlocks on THEME_INITIALIZED (payload.unlocked_badge_ids),
@@ -4613,6 +4766,15 @@
           if (Array.isArray(savedRebirth.unlocked)) {
             for (const id of savedRebirth.unlocked) unlockedBadgeIds.add(id);
           }
+          // DURABLE per-cycle badge counters: RESTORE (don't reset) so earned-
+          // badge progress survives webview reload. Default 0 when absent (old
+          // saved state, or a theme with no prior cycle progress).
+          cycleObjectsBuilt = typeof savedRebirth.cycleBuilt === "number" ? savedRebirth.cycleBuilt : 0;
+          cycleRivalsEvicted = typeof savedRebirth.cycleEvicted === "number" ? savedRebirth.cycleEvicted : 0;
+        } else {
+          // No saved rebirth state for this theme — start the cycle counters fresh.
+          cycleObjectsBuilt = 0;
+          cycleRivalsEvicted = 0;
         }
         // buildBuiltCount/rivalsEvictedCount just restarted at 0 above for this
         // theme session (they're per-theme-session lifetime counters), so the
@@ -6868,6 +7030,8 @@
     } else {
       // No poof art (or no entry yet) — skip straight to built, no crash.
       buildBuiltCount++;
+      cycleObjectsBuilt++;
+      persistRebirth();
       buildCurrentProgress = 0;
       // Celebration (no-poof fast path): builders dance on completion. This
       // branch runs exactly once per object (progress reset to 0 right after).
@@ -7598,6 +7762,8 @@
           entry.animState = createObjectIdleAnimState(objId);
           if (objId === activeBuildId && buildBuiltCount < buildQueue.length && buildQueue[buildBuiltCount] === objId) {
             buildBuiltCount++;
+            cycleObjectsBuilt++;
+            persistRebirth();
             buildCurrentProgress = 0;
           }
         }
@@ -8237,7 +8403,11 @@
         );
         // A fleeing enemy that just crossed the offscreen margin is a
         // successful eviction — count it toward RIVALS_EVICTED badges.
-        if (!stillOnscreen) rivalsEvictedCount++;
+        if (!stillOnscreen) {
+          rivalsEvictedCount++;
+          cycleRivalsEvicted++;
+          persistRebirth();
+        }
         return stillOnscreen;
       });
     }

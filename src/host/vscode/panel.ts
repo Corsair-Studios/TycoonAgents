@@ -67,6 +67,9 @@ interface RebirthPersist {
   count: number;
   baseline: { built: number; evicted: number; tasks: number };
   required: string[];
+  /** DURABLE per-cycle badge counters (persist across reload; reset on rebirth). */
+  cycleBuilt?: number;
+  cycleEvicted?: number;
 }
 
 function getNonce(): string {
