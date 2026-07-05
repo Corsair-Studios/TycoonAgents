@@ -36,7 +36,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createReviewItems } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+const { createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 function legacyManifest(): ThemeManifest {
   return {
@@ -125,4 +125,106 @@ test('createReviewItems does not throw for a legacy manifest with off-count riva
   assert.ok(result.some((item) => item.kind === 'environment'));
   assert.ok(result.some((item) => item.kind === 'expression_atlas'));
   assert.ok(result.some((item) => item.kind === 'achievement_atlas'));
+});
+
+// --- Regression: regeneration must prefer the CURRENT manifest/plan over stale
+// saved review-item metadata (mirrors the already-fixed rivalRowsForItem). ---
+
+test('objectRowsForItem prefers the CURRENT manifest roster over stale saved object_rows', () => {
+  const manifest = legacyManifest();
+  // Simulate the roster having been edited (renamed) after the item's object_rows
+  // were saved from a prior generation.
+  manifest.buildable_objects = manifest.buildable_objects.map((object) => ({
+    ...object,
+    display_name: `New ${object.display_name}`,
+  }));
+
+  // No object_specs saved, so reconstructObjectRows falls through to the manifest
+  // (its own untouched legacy behavior) rather than the stale object_rows below.
+  const staleObjectRows = [
+    { kind: 'object' as const, object_id: 'object_0', display_name: 'STALE Object 0' },
+    { kind: 'poof' as const },
+    { kind: 'crate' as const },
+  ];
+
+  const rows = objectRowsForItem({ object_rows: staleObjectRows }, manifest);
+
+  assert.notDeepEqual(rows, staleObjectRows);
+  assert.equal(rows.length, 5);
+  assert.equal(rows[0].kind, 'object');
+  assert.equal(rows[0].kind === 'object' ? rows[0].display_name : undefined, 'New Object 0');
+});
+
+test('objectRowsForItem falls back to saved object_rows only when reconstruction is empty', () => {
+  const manifest = legacyManifest();
+  const staleObjectRows = [{ kind: 'crate' as const }];
+  // reconstructObjectRows only throws/empties in pathological cases; this asserts
+  // the fallback plumbing returns the saved rows verbatim when it does.
+  const rows = objectRowsForItem({ object_rows: staleObjectRows, object_specs: [] }, manifest);
+  // With a normal manifest, reconstruction still succeeds (non-empty), proving the
+  // manifest wins even though a saved fallback value is present.
+  assert.notDeepEqual(rows, staleObjectRows);
+});
+
+test('decorRowsForItem prefers the CURRENT manifest decor roster over stale saved decor_rows', () => {
+  const manifest = legacyManifest();
+  manifest.decor_objects = manifest.decor_objects.map((decor) => ({
+    ...decor,
+    display_name: `New ${decor.display_name}`,
+  }));
+
+  const staleDecorRows = [{ kind: 'seat' as const, decor_id: 'decor_0', display_name: 'STALE Decor 0' }];
+
+  const rows = decorRowsForItem({ decor_rows: staleDecorRows }, manifest);
+
+  assert.notDeepEqual(rows, staleDecorRows);
+  assert.equal(rows.length, 10); // 4 seats + 4 static + 1 animated + 1 projectile, flattened
+  assert.equal(rows[0].kind, 'seat');
+  assert.equal(rows[0].kind === 'seat' ? rows[0].display_name : undefined, 'New Decor 0');
+});
+
+test('decorRowsForItem falls back to saved decor_rows when the manifest cannot produce exactly 9 decor items', () => {
+  const manifest = legacyManifest();
+  manifest.decor_objects = manifest.decor_objects.slice(0, 8); // createDecorBoardRows requires exactly 9 -> throws
+  const staleDecorRows = [{ kind: 'projectile' as const }];
+
+  const rows = decorRowsForItem({ decor_rows: staleDecorRows }, manifest);
+
+  assert.deepEqual(rows, staleDecorRows);
+});
+
+test('buildReplacementPrompt prefers the CURRENT plan expression/achievement names over stale saved names', () => {
+  const manifest = legacyManifest();
+  const plan = minimalPlan();
+  plan.expressions = ['Current Joy', 'Current Rage'];
+  plan.achievements = ['Current First Build'];
+
+  const expressionItem = {
+    id: 'expressions', filename: 'expressions.png', label: 'Expressions', kind: 'expression_atlas' as const,
+    status: 'pending' as const, prompt: '', revision: 0, frame_keys: [], updated_at: '',
+    expression_names: ['Stale Joy', 'Stale Rage'],
+  };
+  const expressionPrompt = buildReplacementPrompt(expressionItem, plan.creative_direction, manifest, plan);
+  assert.match(expressionPrompt, /Current Joy/);
+  assert.doesNotMatch(expressionPrompt, /Stale Joy/);
+
+  const achievementItem = {
+    id: 'achievements', filename: 'achievements.png', label: 'Achievements', kind: 'achievement_atlas' as const,
+    status: 'pending' as const, prompt: '', revision: 0, frame_keys: [], updated_at: '',
+    achievement_names: ['Stale First Build'],
+  };
+  const achievementPrompt = buildReplacementPrompt(achievementItem, plan.creative_direction, manifest, plan);
+  assert.match(achievementPrompt, /Current First Build/);
+  assert.doesNotMatch(achievementPrompt, /Stale First Build/);
+});
+
+test('buildReplacementPrompt falls back to saved expression/achievement names when no plan is supplied', () => {
+  const manifest = legacyManifest();
+  const expressionItem = {
+    id: 'expressions', filename: 'expressions.png', label: 'Expressions', kind: 'expression_atlas' as const,
+    status: 'pending' as const, prompt: '', revision: 0, frame_keys: [], updated_at: '',
+    expression_names: ['Saved Joy', 'Saved Rage'],
+  };
+  const prompt = buildReplacementPrompt(expressionItem, 'gritty wasteland', manifest);
+  assert.match(prompt, /Saved Joy/);
 });

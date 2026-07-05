@@ -585,10 +585,16 @@ export async function uploadThemeImage(
     } else if (item?.kind === 'object_atlas') {
       output = await optimizeSpriteBoardCanvas(buffer, 4, 3);
       const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 3 });
-      const specs = item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest).slice(0, 12);
+      // Prefer the CURRENT manifest's object roster over the item's saved legacy
+      // specs, so an upload against a theme whose roster changed slices/labels
+      // frames against the current objects instead of a stale saved set.
+      const manifestObjectSpecs = themeObjectSpecs(manifest).slice(0, 12);
+      const specs = manifestObjectSpecs.length
+        ? manifestObjectSpecs
+        : (item.object_specs?.length ? item.object_specs : []);
       frameKeys = applyLegacyObjectFrames(frames, spritePackage.slots, specs);
     } else if (item?.kind === 'background_decor_atlas') {
-      const rows = item.decor_rows?.length ? item.decor_rows : createDecorBoardRows(themeDecorSpecs(manifest)).flat();
+      const rows = decorRowsForItem(item, manifest);
       const decorAtlas = await processDecorAtlas(buffer, manifest);
       output = decorAtlas.output;
       frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
@@ -1327,7 +1333,17 @@ export async function retryThemeImage(
     item.object_rows = reconstructObjectRows(item, loadedTheme.manifest);
   }
 
-  const replacementPrompt = buildReplacementPrompt(item, notes, loadedTheme.manifest);
+  // Prefer the CURRENT saved plan's expression/achievement names over the review
+  // item's saved names, so a retry after the plan's roster changed re-bakes the
+  // current set instead of the stale one. Missing/unparsable plan.json is
+  // non-fatal: buildReplacementPrompt falls back to the item's saved names, then
+  // generic defaults.
+  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
+    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const normalizedPlan = savedPlan ? normalizeThemePlan(savedPlan, loadedTheme.manifest.display_name) : undefined;
+  const currentPlan = normalizedPlan?.theme_id === themeId ? normalizedPlan : undefined;
+
+  const replacementPrompt = buildReplacementPrompt(item, notes, loadedTheme.manifest, currentPlan);
   const prompt = selectThemeImageRetryPrompt(item.prompt, replacementPrompt, feedback, mode);
   onProgress?.(`Regenerating ${item.label}...`);
 
@@ -1364,15 +1380,19 @@ export async function retryThemeImage(
     manifest.viewport.background_asset = 'frames.json#environment_background';
     frameKeys = ['environment_background'];
   } else if (item.kind === 'object_atlas') {
-    // retryThemeImage reconstructs object_rows for legacy items, so retries
-    // always use the animated object-board path.
-    const rows = item.object_rows?.length ? item.object_rows : reconstructObjectRows(item, manifest);
+    // Reconstruct object_rows from the CURRENT manifest as the primary source
+    // (see objectRowsForItem) so a roster change (e.g. objects added/renamed)
+    // regenerates the correct board instead of reusing stale saved object_rows.
+    const rows = objectRowsForItem(item, manifest);
     item.object_rows = rows;
     const objectAtlas = await processObjectAtlas(generated, manifest, rows);
     output = objectAtlas.output;
     frameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, rows);
   } else if (item.kind === 'background_decor_atlas') {
-    const rows = item.decor_rows?.length ? item.decor_rows : createDecorBoardRows(themeDecorSpecs(manifest)).flat();
+    // Reconstruct decor_rows from the CURRENT manifest as the primary source
+    // (see decorRowsForItem) so a decor roster change regenerates the correct
+    // board instead of reusing stale saved decor_rows.
+    const rows = decorRowsForItem(item, manifest);
     const decorAtlas = await processDecorAtlas(generated, manifest);
     output = decorAtlas.output;
     frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
@@ -1933,7 +1953,7 @@ async function generateDecorAsset(
   onProgress('Background decor');
   const generated = await generateThemeImage(item.prompt, options);
   throwIfCancelled(undefined, options?.signal);
-  const rows = item.decor_rows?.length ? item.decor_rows : createDecorBoardRows(themeDecorSpecs(manifest)).flat();
+  const rows = decorRowsForItem(item, manifest);
   const decorAtlas = await processDecorAtlas(generated, manifest);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, decorAtlas.output);
@@ -1989,6 +2009,48 @@ function rivalRowsForItem(
   const boardIndex = Math.max(0, (Number(/rivals_(\d+)/.exec(item.id)?.[1] ?? '1') || 1) - 1);
   const rows = boards[boardIndex] ?? boards[0] ?? [];
   return rows.length ? rows : (item.rival_rows?.length ? item.rival_rows : []);
+}
+
+/**
+ * Object rows for an object-atlas item. Reconstructs the 5-row animated board
+ * from the CURRENT manifest (via reconstructObjectRows) as the primary source, so
+ * a roster change (e.g. objects added/removed/renamed) regenerates the correct
+ * board instead of reusing a stale saved `object_rows` — which would slice the
+ * atlas against the wrong objects. Falls back to the item's stored `object_rows`
+ * only if reconstruction is empty or throws. Exported for unit testing.
+ */
+export function objectRowsForItem(
+  item: Pick<ThemeImageReviewItem, 'object_specs' | 'object_rows'>,
+  manifest: ThemeManifest,
+): ThemeObjectBoardRow[] {
+  try {
+    const rows = reconstructObjectRows(item, manifest);
+    return rows.length ? rows : (item.object_rows?.length ? item.object_rows : []);
+  } catch (err) {
+    console.warn('TycoonAgents: unable to reconstruct object board rows:', err);
+    return item.object_rows?.length ? item.object_rows : [];
+  }
+}
+
+/**
+ * Flattened decor rows for a background-decor-atlas item. Reconstructs from the
+ * CURRENT manifest's decor roster (via createDecorBoardRows) as the primary
+ * source, so a decor roster change regenerates the correct board instead of
+ * reusing stale saved `decor_rows`. Falls back to the item's stored `decor_rows`
+ * only if reconstruction is empty or throws (e.g. the manifest doesn't have
+ * exactly 9 decor entries). Exported for unit testing.
+ */
+export function decorRowsForItem(
+  item: Pick<ThemeImageReviewItem, 'decor_rows'>,
+  manifest: ThemeManifest,
+): ThemeDecorBoardRow[] {
+  try {
+    const rows = createDecorBoardRows(themeDecorSpecs(manifest)).flat();
+    return rows.length ? rows : (item.decor_rows?.length ? item.decor_rows : []);
+  } catch (err) {
+    console.warn('TycoonAgents: unable to reconstruct decor board rows:', err);
+    return item.decor_rows?.length ? item.decor_rows : [];
+  }
 }
 
 async function generateObjectAsset(
@@ -2077,31 +2139,42 @@ async function generateEnvironmentImage(
   });
 }
 
-function buildReplacementPrompt(
+export function buildReplacementPrompt(
   item: ThemeImageReviewItem,
   creativeDirection: string,
   manifest: ThemeManifest,
+  plan?: Pick<ThemePlan, 'expressions' | 'achievements'>,
 ): string {
   if (item.kind === 'environment') return buildEnvironmentPrompt(creativeDirection, manifest.display_name);
   if (item.kind === 'object_atlas') {
-    // retryThemeImage guarantees object_rows is populated (reconstructed for
-    // legacy items), so object-atlas retries always use the animated board path.
-    const rows = item.object_rows?.length
-      ? item.object_rows
-      : reconstructObjectRows(item, manifest);
+    // Reconstruct from the CURRENT manifest as the primary source (see
+    // objectRowsForItem) so a roster change regenerates the correct board
+    // instead of reusing stale saved object_rows.
+    const rows = objectRowsForItem(item, manifest);
     return buildObjectAtlasPrompt(creativeDirection, manifest.display_name, rows);
   }
   if (item.kind === 'background_decor_atlas') {
-    const rows = item.decor_rows?.length
-      ? decorRowsToBoard(item.decor_rows)
-      : createDecorBoardRows(themeDecorSpecs(manifest));
+    // Reconstruct from the CURRENT manifest as the primary source (see
+    // decorRowsForItem) so a decor roster change regenerates the correct board
+    // instead of reusing stale saved decor_rows.
+    const rows = decorRowsToBoard(decorRowsForItem(item, manifest));
     return buildBackgroundDecorPrompt(creativeDirection, manifest.display_name, rows);
   }
   if (item.kind === 'expression_atlas') {
-    return buildExpressionAtlasPrompt(creativeDirection, manifest.display_name, item.expression_names ?? defaultNames('Expression', 16));
+    // Prefer the CURRENT plan's expression names over the item's saved names,
+    // falling back to the saved names, then generic defaults.
+    const names = plan?.expressions?.length
+      ? plan.expressions
+      : (item.expression_names?.length ? item.expression_names : defaultNames('Expression', 16));
+    return buildExpressionAtlasPrompt(creativeDirection, manifest.display_name, names);
   }
   if (item.kind === 'achievement_atlas') {
-    return buildAchievementAtlasPrompt(creativeDirection, manifest.display_name, item.achievement_names ?? defaultNames('Achievement Badge', 20));
+    // Prefer the CURRENT plan's achievement names over the item's saved names,
+    // falling back to the saved names, then generic defaults.
+    const names = plan?.achievements?.length
+      ? plan.achievements
+      : (item.achievement_names?.length ? item.achievement_names : defaultNames('Achievement Badge', 20));
+    return buildAchievementAtlasPrompt(creativeDirection, manifest.display_name, names);
   }
   if (item.kind === 'emote_atlas') return buildEmoteAtlasPrompt(creativeDirection, manifest.display_name);
   if (item.kind === 'rival_atlas') {
