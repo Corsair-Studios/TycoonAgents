@@ -2447,6 +2447,15 @@
    */
   const SEAT_SIT_DROP = 0.02;
   /**
+   * Fraction of the chair sprite's height (base→seat surface) used to lift a
+   * seated character when its chair is scaled up/down via the decor scale. The
+   * chair draws at 64 * depthScale * effectiveDecorScale, so a bigger chair's
+   * seat surface rises; the seated character (fixed native sit-point) would
+   * otherwise sit too low. Raise = (seatScale - 1) * SEAT_RAISE_FRAC * 64 *
+   * depthScale — zero at scale 1 (unchanged). Tune-friendly.
+   */
+  const SEAT_RAISE_FRAC = 0.42;
+  /**
    * Horizontal canvas-px nudge applied to a seated character's draw position
    * for better chair alignment: shifted RIGHT when its seat is not flipped,
    * mirrored to the LEFT when the seat IS flipped horizontally. Cosmetic
@@ -7356,6 +7365,7 @@
     }
     charEntry.sitting = false;
     charEntry.sitSeatId = null;
+    charEntry.seatDecorId = null; // no seat raise once standing
     charEntry.sitTimeLeft = 0;
   }
 
@@ -8168,6 +8178,10 @@
             if (Math.sqrt(sdx * sdx + sdy * sdy) <= SIT_ARRIVED_EPS) {
               charEntry.sitting = true;
               charEntry.sitTimeLeft = SIT_SECONDS;
+              // Record the chair's decor id so the draw path can raise the
+              // seated character in proportion to the chair's decor scale
+              // (sitSeatId IS the decorPlacement/effectiveDecorScale key).
+              charEntry.seatDecorId = charEntry.sitSeatId;
               // Snap exactly onto the sit-point and hold.
               charEntry.nx = seat.sitNx;
               charEntry.ny = seat.sitNy;
@@ -8675,8 +8689,20 @@
           const seatNudge = isSeatedForDraw
             ? (seatedFlipForDraw ? -SEAT_SEATED_NUDGE_PX : SEAT_SEATED_NUDGE_PX)
             : 0;
+          // Seat-scale raise: a scaled-up chair's seat surface rises with its
+          // sprite, so lift the seated character in proportion to the chair's
+          // EXTRA scale (0 at scale 1 = current correct behavior). Uses the
+          // SAME depthScale the character is drawn with. Guarded so a missing
+          // seatDecorId simply skips the raise (no effectiveDecorScale throw).
+          let seatRaise = 0;
+          if (isSeatedForDraw && charEntry.seatDecorId != null) {
+            const seatScale = effectiveDecorScale(charEntry.seatDecorId);
+            if (typeof seatScale === "number") {
+              seatRaise = (seatScale - 1) * SEAT_RAISE_FRAC * 64 * depthScale;
+            }
+          }
           const drawX = cx - spriteSize / 2 + seatNudge;
-          const drawY = cy - spriteSize; // feet at cy
+          const drawY = cy - spriteSize - seatRaise; // feet at cy, raised for chair scale
 
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
           // Change 3: dancing agents flip regardless of the dance clip's
