@@ -2260,11 +2260,15 @@
   let buildCurrentProgress = 0;
   /**
    * Seconds for ONE agent to fully build the FIRST object. Build time ramps
-   * LINEARLY per object index: object i takes FIRST_BUILD_SECONDS * (i+1)
-   * per-agent seconds (object 0 = 360s / 6 min, object 1 = 720s, …). N agents
-   * building the SAME active object make it N× faster (builderCount factor preserved).
+   * ADDITIVELY (gentle linear slope) per object index: object i takes
+   * FIRST_BUILD_SECONDS + i * BUILD_SECONDS_PER_OBJECT per-agent seconds
+   * (object 0 = 360s / 6 min, object 1 = 420s / 7 min, … + rebirth speed
+   * bonus, ÷ number of builders). N agents building the SAME active object
+   * make it N× faster (builderCount factor preserved).
    */
   const FIRST_BUILD_SECONDS = 360;
+  /** Extra per-agent seconds added per object index — the gentle ramp slope. */
+  const BUILD_SECONDS_PER_OBJECT = 60;
   /**
    * Per-frame count: number of ACTIVE agents currently AT the active build
    * target's standoff spot actually building it (clip "build", i.e.
@@ -6706,7 +6710,7 @@
     // Linear per-object ramp: the object being built is buildQueue[buildBuiltCount].
     // Clamp the index so per-agent duration never grows past the last queued object.
     const buildIdx = Math.min(Math.max(buildBuiltCount, 0), Math.max(themeBuildables.length - 1, 0));
-    const perAgentSeconds = FIRST_BUILD_SECONDS * (buildIdx + 1);
+    const perAgentSeconds = FIRST_BUILD_SECONDS + buildIdx * BUILD_SECONDS_PER_OBJECT;
     buildCurrentProgress += (buildProgressBuilderCount * delta * buildSpeedMultiplier) / perAgentSeconds;
   }
 
