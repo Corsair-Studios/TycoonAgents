@@ -119,6 +119,54 @@ test('an orphan object_zzz frames key with no roster entry produces an orphan_fr
   assert.equal(issues[0].key, 'object_zzz');
 });
 
+test('regression: a rival whose id already carries the rival_ prefix is not double-prefixed', () => {
+  // rival_id "rival_scarlett" + atlas_asset "frames.json#rival_scarlett" with a
+  // matching frames key must yield ZERO issues. Previously the validator derived
+  // "rival_rival_scarlett" → a false missing_frames AND a false orphan_frames.
+  const manifest = minimalManifest({
+    roster_rivals: [
+      { rival_id: 'rival_scarlett', name: 'Scarlett', atlas_asset: 'frames.json#rival_scarlett' },
+    ],
+  });
+  const frames = {
+    ...baseFrames(),
+    rival_scarlett: ['data:img'],
+  };
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  assert.deepEqual(issues, []);
+});
+
+test('regression: an agent whose atlas_asset key matches a present frames key yields no issue', () => {
+  const manifest = minimalManifest({
+    roster_agents: [
+      { slot_id: 7, name: 'Nova', atlas_asset: 'frames.json#character_nova', preferred_idle_pose: 'pose_down' },
+    ],
+  });
+  const frames = {
+    ...baseFrames(),
+    character_nova: ['data:img'],
+  };
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  assert.deepEqual(issues, []);
+});
+
+test('a roster entry whose asset key is genuinely absent from frames still errors', () => {
+  const manifest = minimalManifest({
+    roster_rivals: [
+      { rival_id: 'rival_scarlett', name: 'Scarlett', atlas_asset: 'frames.json#rival_scarlett' },
+    ],
+  });
+  const frames = { ...baseFrames() }; // rival_scarlett absent
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  const missing = issues.filter((i) => i.kind === 'missing_frames');
+  assert.equal(missing.length, 1);
+  assert.equal(missing[0].key, 'rival_scarlett');
+  assert.match(missing[0].message, /Scarlett/);
+});
+
 test('achievement_ and expression_ frame keys are never flagged as orphans', () => {
   const manifest = minimalManifest();
   const frames = baseFrames();

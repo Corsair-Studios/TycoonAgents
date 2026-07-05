@@ -22,6 +22,17 @@ export interface ThemeIntegrityIssue {
 // and are intentionally excluded from orphan detection.
 const ROSTER_FRAME_PREFIXES = ['character_', 'rival_', 'object_', 'decor_'] as const;
 
+// The authoritative frames key for a roster entry lives in its asset field
+// ("frames.json#<key>") — the exact string the webview resolves to render.
+// Returns the substring after '#', or null when there is no usable key.
+function frameKeyFromAsset(asset?: string): string | null {
+  if (typeof asset !== 'string') return null;
+  const hash = asset.indexOf('#');
+  if (hash < 0) return null;
+  const key = asset.slice(hash + 1);
+  return key.length > 0 ? key : null;
+}
+
 function describeEntity(prefix: (typeof ROSTER_FRAME_PREFIXES)[number]): string {
   switch (prefix) {
     case 'character_':
@@ -48,11 +59,14 @@ export function validateThemeIntegrity(
 
   const checkRoster = (
     prefix: (typeof ROSTER_FRAME_PREFIXES)[number],
-    entries: Array<{ id: string; label: string }>,
+    entries: Array<{ id: string; label: string; asset?: string }>,
   ) => {
     const entity = describeEntity(prefix);
-    for (const { id, label } of entries) {
-      const key = `${prefix}${id}`;
+    for (const { id, label, asset } of entries) {
+      // Prefer the authoritative key from the asset field; fall back to a
+      // prefix-safe reconstruction so an already-prefixed id ("rival_scarlett")
+      // is never double-prefixed.
+      const key = frameKeyFromAsset(asset) ?? (id.startsWith(prefix) ? id : `${prefix}${id}`);
       claimedKeys.add(key);
       const value = framesRecord[key];
       if (value === undefined) {
@@ -77,19 +91,19 @@ export function validateThemeIntegrity(
 
   checkRoster(
     'character_',
-    (manifest.roster_agents ?? []).map((a) => ({ id: String(a.slot_id), label: a.name })),
+    (manifest.roster_agents ?? []).map((a) => ({ id: String(a.slot_id), label: a.name, asset: a.atlas_asset })),
   );
   checkRoster(
     'rival_',
-    (manifest.roster_rivals ?? []).map((r) => ({ id: r.rival_id, label: r.name })),
+    (manifest.roster_rivals ?? []).map((r) => ({ id: r.rival_id, label: r.name, asset: r.atlas_asset })),
   );
   checkRoster(
     'object_',
-    (manifest.buildable_objects ?? []).map((o) => ({ id: o.object_id, label: o.display_name })),
+    (manifest.buildable_objects ?? []).map((o) => ({ id: o.object_id, label: o.display_name, asset: o.sprite_asset })),
   );
   checkRoster(
     'decor_',
-    (manifest.decor_objects ?? []).map((d) => ({ id: d.decor_id, label: d.display_name })),
+    (manifest.decor_objects ?? []).map((d) => ({ id: d.decor_id, label: d.display_name, asset: d.sprite_asset })),
   );
 
   // Orphan pass: any character_/rival_/object_/decor_ frames key with no
