@@ -65,7 +65,7 @@ test('upgrades a manifest with empty badges to the 20 default badges', () => {
   assert.ok(changed.includes('badges'));
 });
 
-test('leaves a pre-existing non-empty badges array untouched', () => {
+test('merges missing default badges into a pre-existing custom badge array, preserving the custom entry', () => {
   const existingBadges = [{
     badge_id: 'custom_badge',
     display_name: 'Custom Badge',
@@ -77,8 +77,45 @@ test('leaves a pre-existing non-empty badges array untouched', () => {
 
   const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: existingBadges }));
 
-  assert.deepEqual(manifest.badges, existingBadges);
-  assert.ok(!changed.some((c) => c.includes('badges')));
+  // The custom badge is preserved at the front, all 20 defaults are appended.
+  assert.equal(manifest.badges.length, 21);
+  assert.deepEqual(manifest.badges[0], existingBadges[0]);
+  assert.ok(manifest.badges.some((b) => b.badge_id === 'task_500'));
+  assert.ok(changed.some((c) => c.includes('20 new default badges')));
+});
+
+const OLD_EIGHT_BADGES = [
+  { badge_id: 'build_1', display_name: 'First Build', description: 'Build 1 object.', trigger_type: 'OBJECTS_BUILT' as const, threshold: 1, icon_asset: 'frames.json#achievement_1' },
+  { badge_id: 'build_3', display_name: 'Builder', description: 'Build 3 objects.', trigger_type: 'OBJECTS_BUILT' as const, threshold: 3, icon_asset: 'frames.json#achievement_2' },
+  { badge_id: 'build_6', display_name: 'Developer', description: 'Build 6 objects.', trigger_type: 'OBJECTS_BUILT' as const, threshold: 6, icon_asset: 'frames.json#achievement_3' },
+  { badge_id: 'build_10', display_name: 'Master Builder', description: 'Build 10 objects.', trigger_type: 'OBJECTS_BUILT' as const, threshold: 10, icon_asset: 'frames.json#achievement_4' },
+  { badge_id: 'evict_1', display_name: 'First Eviction', description: 'Evict 1 rival.', trigger_type: 'RIVALS_EVICTED' as const, threshold: 1, icon_asset: 'frames.json#achievement_5' },
+  { badge_id: 'evict_5', display_name: 'Defender', description: 'Evict 5 rivals.', trigger_type: 'RIVALS_EVICTED' as const, threshold: 5, icon_asset: 'frames.json#achievement_6' },
+  { badge_id: 'evict_10', display_name: 'Enforcer', description: 'Evict 10 rivals.', trigger_type: 'RIVALS_EVICTED' as const, threshold: 10, icon_asset: 'frames.json#achievement_7' },
+  { badge_id: 'evict_20', display_name: 'Warlord', description: 'Evict 20 rivals.', trigger_type: 'RIVALS_EVICTED' as const, threshold: 20, icon_asset: 'frames.json#achievement_8' },
+];
+
+test('upgrades an existing 8-badge manifest (old default set) to the full 20, preserving all originals', () => {
+  const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: [...OLD_EIGHT_BADGES] }));
+
+  assert.equal(manifest.badges.length, 20);
+
+  // All 8 originals are preserved, in order, at the front.
+  for (let i = 0; i < OLD_EIGHT_BADGES.length; i++) {
+    assert.deepEqual(manifest.badges[i], OLD_EIGHT_BADGES[i]);
+  }
+
+  // A couple of the new defaults are now present.
+  assert.ok(manifest.badges.some((b) => b.badge_id === 'task_500'));
+  assert.ok(manifest.badges.some((b) => b.badge_id === 'crew_6'));
+
+  assert.ok(changed.some((c) => c.includes('12 new default badges')));
+});
+
+test('all 20 default badge display_names are unique (guards name collisions)', () => {
+  const { manifest } = upgradeThemeManifest(minimalManifest({ badges: [] }));
+  const names = manifest.badges.map((b) => b.display_name);
+  assert.equal(new Set(names).size, names.length, `duplicate display_name found among: ${names.join(', ')}`);
 });
 
 test('badge upgrade is idempotent: a second pass makes no further changes', () => {

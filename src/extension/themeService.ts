@@ -447,8 +447,9 @@ export async function loadTheme(
   const modernManifest = await readJson<ThemeManifest>(themeManifestUri(globalStorageUri, themeId));
   const modernFrames = await readJson<Record<string, string[]>>(themeFramesUri(globalStorageUri, themeId));
   if (modernManifest && modernFrames) {
-    logThemeIntegrityIssues(themeId, modernManifest, modernFrames);
-    return { manifest: modernManifest, frames: modernFrames };
+    const { manifest: upgradedModern } = upgradeThemeManifest(modernManifest);
+    logThemeIntegrityIssues(themeId, upgradedModern, modernFrames);
+    return { manifest: upgradedModern, frames: modernFrames };
   }
 
   const legacyManifest = await readJson<ThemeManifest>(
@@ -458,8 +459,9 @@ export async function loadTheme(
     vscode.Uri.joinPath(globalStorageUri, `${themeId}_frames.json`),
   );
   if (legacyManifest && legacyFrames) {
-    logThemeIntegrityIssues(themeId, legacyManifest, legacyFrames);
-    return { manifest: legacyManifest, frames: legacyFrames };
+    const { manifest: upgradedLegacy } = upgradeThemeManifest(legacyManifest);
+    logThemeIntegrityIssues(themeId, upgradedLegacy, legacyFrames);
+    return { manifest: upgradedLegacy, frames: legacyFrames };
   }
   return undefined;
 }

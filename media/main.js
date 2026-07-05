@@ -349,7 +349,7 @@
     for (const b of themeBadges) {
       if (!b || !b.badge_id) continue;
       const unlocked = unlockedBadgeIds.has(b.badge_id);
-      const isRebirth = isRebirthBadge(b.badge_id);
+      const isRebirth = requiredRebirthBadgeIds.indexOf(b.badge_id) >= 0;
       const card = document.createElement("div");
       card.className = "badge-card" + (unlocked ? " badge-card--unlocked" : " badge-card--locked") +
         (isRebirth ? " badge-card--rebirth" : "");

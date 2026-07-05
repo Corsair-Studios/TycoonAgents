@@ -197,7 +197,7 @@ export function buildDefaultBadges(): ThemeBadge[] {
     },
     {
       badge_id: 'evict_50',
-      display_name: 'Enforcer',
+      display_name: 'Overlord',
       description: 'Evict 50 rivals.',
       trigger_type: 'RIVALS_EVICTED',
       threshold: 50,
@@ -237,7 +237,7 @@ export function buildDefaultBadges(): ThemeBadge[] {
     },
     {
       badge_id: 'build_13',
-      display_name: 'Developer',
+      display_name: 'Property Tycoon',
       description: 'Build 13 objects.',
       trigger_type: 'OBJECTS_BUILT',
       threshold: 13,
@@ -283,6 +283,13 @@ export function upgradeThemeManifest(manifest: ThemeManifest): { manifest: Theme
   if (!upgraded.badges || upgraded.badges.length === 0) {
     upgraded.badges = buildDefaultBadges();
     changed.push('badges');
+  } else {
+    const existingIds = new Set(upgraded.badges.map((b) => b.badge_id));
+    const missing = buildDefaultBadges().filter((b) => !existingIds.has(b.badge_id));
+    if (missing.length > 0) {
+      upgraded.badges = [...upgraded.badges, ...missing];
+      changed.push(`Added ${missing.length} new default badges`);
+    }
   }
 
   if (Array.isArray(upgraded.buildable_objects)) {
