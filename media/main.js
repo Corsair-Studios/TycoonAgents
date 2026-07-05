@@ -2259,12 +2259,12 @@
   /** Progress (0..1) of the current active (buildQueue[buildBuiltCount]) object. */
   let buildCurrentProgress = 0;
   /**
-   * Seconds for ONE agent to fully build one object (20 min real-time). N
-   * agents building the SAME active object make it N× faster, so effective
-   * time = BUILD_SECONDS_PER_AGENT / builderCount. Intentionally slow — do
-   * NOT add a debug shortcut.
+   * Seconds for ONE agent to fully build the FIRST object. Build time ramps
+   * LINEARLY per object index: object i takes FIRST_BUILD_SECONDS * (i+1)
+   * per-agent seconds (object 0 = 30s, object 1 = 60s, …). N agents building
+   * the SAME active object make it N× faster (builderCount factor preserved).
    */
-  const BUILD_SECONDS_PER_AGENT = 1200;
+  const FIRST_BUILD_SECONDS = 30;
   /**
    * Per-frame count: number of ACTIVE agents currently AT the active build
    * target's standoff spot actually building it (clip "build", i.e.
@@ -2375,8 +2375,8 @@
   // ── Idle festivity: solo dance + rare conga line (native-space, no host telemetry) ──
   /** Chance, per idle wander-decision, that an idle agent breaks into a solo dance. */
   const DANCE_CHANCE = 0.06;
-  /** How long (seconds) a solo dance lasts. */
-  const DANCE_SECONDS = 5;
+  /** How long (seconds) a solo dance lasts — randomized 2–3s per dance. */
+  const DANCE_SECONDS_MIN = 2, DANCE_SECONDS_MAX = 3;
   /** Seconds between dance-frame swaps (manual frame mixer). */
   const DANCE_FRAME_SWAP = 0.35;
 
@@ -6703,7 +6703,11 @@
     // rebirth compounds a further +20% build speed (does NOT change
     // completeBuildIfReady()'s >=1 completion threshold, only the rate).
     const buildSpeedMultiplier = Math.pow(1.2, rebirthCount);
-    buildCurrentProgress += (buildProgressBuilderCount * delta * buildSpeedMultiplier) / BUILD_SECONDS_PER_AGENT;
+    // Linear per-object ramp: the object being built is buildQueue[buildBuiltCount].
+    // Clamp the index so per-agent duration never grows past the last queued object.
+    const buildIdx = Math.min(Math.max(buildBuiltCount, 0), Math.max(themeBuildables.length - 1, 0));
+    const perAgentSeconds = FIRST_BUILD_SECONDS * (buildIdx + 1);
+    buildCurrentProgress += (buildProgressBuilderCount * delta * buildSpeedMultiplier) / perAgentSeconds;
   }
 
   /**
@@ -6951,7 +6955,7 @@
     if (!charEntry) return;
     freeAgentSeat(charEntry);
     charEntry.dancing = true;
-    charEntry.danceTimeLeft = DANCE_SECONDS;
+    charEntry.danceTimeLeft = DANCE_SECONDS_MIN + Math.random() * (DANCE_SECONDS_MAX - DANCE_SECONDS_MIN);
     charEntry.danceFrameTimer = 0;
     charEntry.lastDanceIdx = -1;
   }
@@ -6992,8 +6996,7 @@
       // so completion fires regardless of builder/enemy/conga gating.
       if (congaActive) return;
       if (buildBuiltCount >= buildQueue.length) return; // nothing left to build
-      const BUILD_FF_SECONDS = 20 * 60; // 1200s = one full object at rate 1
-      buildCurrentProgress += BUILD_FF_SECONDS / BUILD_SECONDS_PER_AGENT;
+      buildCurrentProgress += 1; // +1.0 progress = one full object, regardless of ramp
     }
   });
 
@@ -7816,7 +7819,7 @@
         // Otherwise pick a new destination.
         if (idleAndStill && !congaActive && Math.random() < DANCE_CHANCE) {
           charEntry.dancing = true;
-          charEntry.danceTimeLeft = DANCE_SECONDS;
+          charEntry.danceTimeLeft = DANCE_SECONDS_MIN + Math.random() * (DANCE_SECONDS_MAX - DANCE_SECONDS_MIN);
           charEntry.danceFrameTimer = 0;
           charEntry.lastDanceIdx = -1;
           // Hold position while dancing.
@@ -7970,7 +7973,7 @@
       // Override with walk while physically moving, else use status clip.
       // "dance"/"sit" (like build/cheer) are excluded so those clips are never
       // clobbered back to walk/idle.
-      if (isMoving && desiredClip !== "build" && desiredClip !== "cheer" && desiredClip !== "dance" && desiredClip !== "sit") desiredClip = "walk";
+      if (isMoving) desiredClip = "walk";
       else if (!isMoving && (desiredClip === "walk")) desiredClip = "idle";
       // BUILD override: once arrived at the standoff spot for an active
       // build target, force the build clip — never while still walking.
