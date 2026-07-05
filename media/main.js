@@ -3419,6 +3419,10 @@
   const WANDER_RADIUS = 80;
   /** How close (native px) to destination before agent is considered arrived. */
   const WANDER_ARRIVED_EPS = 3;
+  /** Min real per-frame movement (native px) to count as actually moving (not boundary-stuck jitter). */
+  const WANDER_STUCK_EPS = 0.25;
+  /** Min intended horizontal component (native px) before movement updates facing (deadzone). */
+  const WANDER_FACING_NATIVE_EPS = 2;
   /** Min center-to-center native distance kept between non-seated agents. */
   const MIN_AGENT_SEP_NATIVE = 34;
   /** How strongly overlapping agents are pushed apart per frame (0..1, gentle). */
@@ -7999,6 +8003,7 @@
       // the cheer pose (congaCheerHold shared across all members).
       const congaFrozen = inConga && congaCheerHold > 0;
       if (!congaFrozen && !charEntry.dancing && !charEntry.sitting && distNative > WANDER_ARRIVED_EPS) {
+        const beforeNx = charEntry.nx, beforeNy = charEntry.ny;
         const step = Math.min(moveSpeed * delta, distNative);
         charEntry.nx += (dxNative / distNative) * step;
         charEntry.ny += (dyNative / distNative) * step;
@@ -8006,7 +8011,8 @@
         const clamped = clampToPolygon(charEntry.nx, charEntry.ny, walkablePolygon);
         charEntry.nx = clamped[0];
         charEntry.ny = clamped[1];
-        isMoving = true;
+        const movedNative = Math.hypot(charEntry.nx - beforeNx, charEntry.ny - beforeNy);
+        if (movedNative > WANDER_STUCK_EPS) isMoving = true;   // stuck-at-boundary jitter => NOT moving
       }
 
       // ── Map native pos to canvas ───────────────────────────────────
@@ -8034,14 +8040,10 @@
         if (cx > objCanvasPt[0] + FACING_EPS) charEntry.facingLeft = true;
         else if (cx < objCanvasPt[0] - FACING_EPS) charEntry.facingLeft = false;
       } else {
-        // ── Movement-based facing ──────────────────────────────────────
-        // Facing DEADZONE: only update from horizontal movement when the
-        // horizontal component clears FACING_DEADZONE; otherwise KEEP the
-        // current facing so a near-vertical mover doesn't rapid-flip.
-        const prevX = charEntry.prevX;
-        if (typeof prevX === "number") {
-          const dx = cx - prevX;
-          if (Math.abs(dx) > FACING_DEADZONE) charEntry.facingLeft = dx < 0;
+        // Movement-based facing from the INTENDED direction (stable), only while
+        // actually moving, with a native deadzone so a near-vertical mover doesn't flip.
+        if (isMoving && Math.abs(dxNative) > WANDER_FACING_NATIVE_EPS) {
+          charEntry.facingLeft = dxNative < 0;
         }
       }
       charEntry.prevX = cx;
@@ -8330,7 +8332,7 @@
         }
         // HP bar above the enemy.
         const hpFrac = Math.max(0, Math.min(1, en.hp / en.maxHp));
-        const barW = Math.max(24, spriteSize * 0.8);
+        const barW = Math.max(12, spriteSize * 0.4);
         const barH = 4;
         const barX = ecx - barW / 2;
         const barY = ecy - spriteSize - 10;
