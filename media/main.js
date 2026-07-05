@@ -349,8 +349,10 @@
     for (const b of themeBadges) {
       if (!b || !b.badge_id) continue;
       const unlocked = unlockedBadgeIds.has(b.badge_id);
+      const isRebirth = isRebirthBadge(b.badge_id);
       const card = document.createElement("div");
-      card.className = "badge-card" + (unlocked ? " badge-card--unlocked" : " badge-card--locked");
+      card.className = "badge-card" + (unlocked ? " badge-card--unlocked" : " badge-card--locked") +
+        (isRebirth ? " badge-card--rebirth" : "");
 
       const iconWrap = document.createElement("div");
       iconWrap.className = "badge-card-icon";
@@ -378,6 +380,13 @@
       name.className = "badge-card-name";
       name.textContent = b.display_name || b.badge_id;
       info.appendChild(name);
+
+      if (isRebirth) {
+        const rebirthTag = document.createElement("div");
+        rebirthTag.className = "badge-rebirth-tag";
+        rebirthTag.textContent = "REBIRTH";
+        info.appendChild(rebirthTag);
+      }
 
       if (unlocked) {
         const desc = document.createElement("div");
@@ -436,7 +445,11 @@
    */
   function rollRebirthRequirement() {
     const ids = (themeBadges || []).map((b) => b && b.badge_id).filter(Boolean);
-    const pool = ids.slice();
+    // Draw only from the curated REBIRTH_BADGE_POOL intersected with this
+    // theme's badges; if the theme has none of the pool badges, fall back to
+    // the full badge set so rebirth never becomes impossible.
+    const restricted = ids.filter(isRebirthBadge);
+    const pool = (restricted.length > 0 ? restricted : ids).slice();
     const picked = [];
     const n = Math.min(3, pool.length);
     for (let i = 0; i < n; i++) {
@@ -2171,6 +2184,10 @@
   let requiredRebirthBadgeIds = [];
   /** True while the two-step Rebirth button confirm prompt is showing. */
   let rebirthConfirmPending = false;
+  /** Dedicated pool of badge_ids eligible to be rebirth-gate badges; the requirement is drawn only from these. */
+  const REBIRTH_BADGE_POOL = ["build_6", "build_10", "evict_10", "evict_20", "task_50", "crew_3"];
+  /** True iff badge_id is in REBIRTH_BADGE_POOL (reserved as a rebirth-gate badge). */
+  function isRebirthBadge(id) { return REBIRTH_BADGE_POOL.indexOf(id) >= 0; }
   // NOTE: rebirthCount/rebirthBaseline/requiredRebirthBadgeIds are restored
   // from vscode.getState().rebirth inside the THEME_INITIALIZED handler
   // (~line 4349), not here — requiredRebirthBadgeIds must be validated

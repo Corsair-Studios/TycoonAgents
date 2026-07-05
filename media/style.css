@@ -938,6 +938,27 @@ body {
   opacity: 0.85;
 }
 
+/* Badges reserved in REBIRTH_BADGE_POOL: subtle amber accent so the reserved
+   rebirth-gate badges read as distinct from ordinary badges in the grid. */
+.badge-card--rebirth {
+  border-left: 3px solid #ffc107;
+  box-shadow: inset 0 0 12px rgba(255, 193, 7, 0.08);
+}
+
+.badge-rebirth-tag {
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 1px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid #ffc107;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffc107;
+}
+
 /* ── Rebirth prestige panel (sits above #badge-list, same dark-glass +
    amber-accent language as the badge cards above) ───────────────────── */
 .rebirth-panel {
