@@ -38,6 +38,7 @@ import {
   regenerateThemeBoard,
   renameThemeCharacter,
   replaceThemeBackground,
+  resliceThemeImageFromRaw,
   retryThemeImage,
   resumeThemeGeneration,
   saveThemeTuning,
@@ -49,7 +50,7 @@ import {
 import type { ThemePlan } from "../../extension/themePlan";
 import type { BoardKind, ThemeImageReviewWaitOptions } from "../../extension/themeService";
 import type { ThemeManifest } from "../../shared/types";
-import { themeImagesDirectoryUri } from "../../extension/themeStorage";
+import { themeImagesDirectoryUri, themeRawImagesDirectoryUri } from "../../extension/themeStorage";
 import {
   getConfiguredThemeImageProvider,
   getThemeImageConfigurationStatus,
@@ -885,6 +886,54 @@ export class TycoonPanel {
               }
             }
           }
+        } else if (message.type === "RESLICE_THEME_IMAGE") {
+          const payload = (message as any).payload as {
+            theme_id?: string;
+            item_id?: string;
+          } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          const itemId = payload?.item_id ?? "";
+          if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
+          if (this._themeGenerationActive) {
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_RETRY_STATE",
+              payload: {
+                item_id: itemId,
+                error: "Wait until theme generation finishes before re-slicing a board.",
+              },
+            });
+            return;
+          }
+          try {
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_RETRY_STATE",
+              payload: { item_id: itemId, busy: true, message: "Re-slicing from saved original..." },
+            });
+            const result = await resliceThemeImageFromRaw(this._globalStorageUri, themeId, itemId);
+            if (!result.ok) {
+              await this._postThemeImageReview(themeId);
+              void this._panel.webview.postMessage({
+                type: "THEME_IMAGE_RETRY_STATE",
+                payload: { item_id: itemId, busy: false, error: result.reason },
+              });
+            } else {
+              await this._postThemeImageReview(themeId);
+              void this._panel.webview.postMessage({
+                type: "THEME_IMAGE_RETRY_STATE",
+                payload: { item_id: itemId, busy: false, message: "Re-sliced and ready for review." },
+              });
+              void this._panel.webview.postMessage({
+                type: "THEME_INITIALIZED",
+                payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
+              });
+            }
+          } catch (err) {
+            await this._postThemeImageReview(themeId);
+            void this._panel.webview.postMessage({
+              type: "THEME_IMAGE_RETRY_STATE",
+              payload: { item_id: itemId, busy: false, error: errorMessage(err) },
+            });
+          }
         } else if (message.type === "PLAN_THEME") {
           const payload = (message as any).payload as { prompt?: string; image_provider?: string } | undefined;
           try {
@@ -1213,18 +1262,34 @@ export class TycoonPanel {
     };
   }
 
+  /** True iff a file/directory exists at `uri` (best-effort stat). */
+  private async _uriExists(uri: vscode.Uri): Promise<boolean> {
+    try {
+      await vscode.workspace.fs.stat(uri);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async _postThemeImageReview(themeId: string): Promise<void> {
     try {
       const review = await getThemeImageReview(this._globalStorageUri, themeId);
-      const items = review.entries.map(({ item, imageUri, generated }) => ({
+      const rawDirectoryUri = themeRawImagesDirectoryUri(this._globalStorageUri, themeId);
+      const items = await Promise.all(review.entries.map(async ({ item, imageUri, generated }) => ({
         ...item,
         generated,
+        // Only sliced atlas boards can be re-sliced; environment boards normalize a
+        // single image, so they never carry a re-sliceable raw atlas.
+        has_raw_atlas: item.kind === "environment"
+          ? false
+          : await this._uriExists(vscode.Uri.joinPath(rawDirectoryUri, item.filename)),
         image_src: imageUri
           ? this._panel.webview.asWebviewUri(
               imageUri.with({ query: `revision=${item.revision}&updated=${encodeURIComponent(item.updated_at)}` }),
             ).toString()
           : "",
-      }));
+      })));
       void this._panel.webview.postMessage({
         type: "THEME_IMAGE_REVIEW",
         payload: {

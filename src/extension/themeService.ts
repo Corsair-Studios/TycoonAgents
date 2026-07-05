@@ -54,6 +54,7 @@ import {
 } from './themeImageReviewState';
 import type {
   ThemeDecorBoardRow,
+  ThemeImageKind,
   ThemeImageReviewDocument,
   ThemeImageReviewItem,
   ThemeImageReviewStatus,
@@ -83,6 +84,7 @@ import {
   themePlanUri,
   themesDirectoryUri,
   saveRawAtlas,
+  themeRawImagesDirectoryUri,
 } from './themeStorage';
 
 /**
@@ -1354,6 +1356,149 @@ async function runNonFatalBoardStep(
   }
 }
 
+/**
+ * Slice a raw atlas `buffer` for `item` into `frames`/`manifest`, write the
+ * normalized review image, keep the raw pre-slice atlas, and persist the theme
+ * files. Shared by retryThemeImage (buffer from the image API) and
+ * resliceThemeImageFromRaw (buffer read back from disk, no API call) so both
+ * paths use IDENTICAL slicing + persist behavior. Row metadata is reconstructed
+ * from the CURRENT manifest via the *RowsForItem helpers. Returns the normalized
+ * output plus the frame keys the caller should record on the review item.
+ */
+async function applySlicedAtlasFromBuffer(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  manifest: ThemeManifest,
+  frames: Record<string, string[]>,
+  item: ThemeImageReviewItem,
+  buffer: Buffer,
+  signal?: AbortSignal,
+): Promise<{ output: Buffer; frameKeys: string[] }> {
+  let output = buffer;
+  let frameKeys = item.frame_keys;
+
+  if (item.kind === 'character_atlas') {
+    const characterAtlas = await processCharacterAtlas(buffer, manifest);
+    output = characterAtlas.output;
+    const spritePackage = characterAtlas.spritePackage;
+    const frameKey = item.frame_keys[0] || item.id;
+    frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
+    frameKeys = [frameKey];
+  } else if (item.kind === 'rival_atlas') {
+    const rows = rivalRowsForItem(item, manifest);
+    item.rival_rows = rows;
+    const rivalAtlas = await processRivalAtlas(buffer, manifest, rows);
+    output = rivalAtlas.output;
+    frameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
+  } else if (item.kind === 'environment') {
+    output = await normalizeEnvironmentImage(buffer);
+    frames.environment_background = [dataUri(output)];
+    manifest.viewport.background_asset = 'frames.json#environment_background';
+    frameKeys = ['environment_background'];
+  } else if (item.kind === 'object_atlas') {
+    // Reconstruct object_rows from the CURRENT manifest as the primary source
+    // (see objectRowsForItem) so a roster change (e.g. objects added/renamed)
+    // regenerates the correct board instead of reusing stale saved object_rows.
+    const rows = objectRowsForItem(item, manifest);
+    item.object_rows = rows;
+    const objectAtlas = await processObjectAtlas(buffer, manifest, rows);
+    output = objectAtlas.output;
+    frameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, rows);
+  } else if (item.kind === 'background_decor_atlas') {
+    // Reconstruct decor_rows from the CURRENT manifest as the primary source
+    // (see decorRowsForItem) so a decor roster change regenerates the correct
+    // board instead of reusing stale saved decor_rows.
+    const rows = decorRowsForItem(item, manifest);
+    const decorAtlas = await processDecorAtlas(buffer, manifest);
+    output = decorAtlas.output;
+    frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
+    manifest.viewport.projectile_asset = 'frames.json#projectile';
+    item.decor_rows = rows;
+  } else if (item.kind === 'expression_atlas') {
+    output = await optimizeSpriteBoardCanvas(buffer, 4, 4);
+    const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 4 });
+    frameKeys = applyExpressionFrames(frames, spritePackage.slots);
+  } else if (item.kind === 'achievement_atlas') {
+    output = await optimizeSpriteBoardCanvas(buffer, 5, 4);
+    const spritePackage = await sliceAndNormalizeAtlas(output, manifest);
+    frameKeys = applyAchievementFrames(frames, spritePackage.slots);
+  } else {
+    output = await optimizeSpriteBoard(buffer);
+    const spritePackage = await sliceAndNormalizeAtlas(output, manifest);
+    frameKeys = applyLegacyEmoteFrames(frames, spritePackage.slots);
+  }
+
+  throwIfCancelled(undefined, signal);
+  const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
+  await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
+  await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(reviewDirectoryUri, item.filename), output);
+  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
+  // (Harmless on the re-slice path: it re-saves the same bytes we just read.)
+  await persistRawAtlas(globalStorageUri, themeId, item.filename, buffer);
+  await writeThemeFiles(globalStorageUri, manifest, frames);
+  return { output, frameKeys };
+}
+
+/** Sliceable atlas kinds that can be re-sliced from a saved raw atlas. */
+const RESLICEABLE_ATLAS_KINDS: ReadonlySet<ThemeImageKind> = new Set([
+  'character_atlas',
+  'rival_atlas',
+  'object_atlas',
+  'background_decor_atlas',
+  'expression_atlas',
+  'achievement_atlas',
+] as ThemeImageKind[]);
+
+/**
+ * Re-run slicing for a board using the RAW atlas already saved to disk, WITHOUT
+ * calling the image API. This lets slicing fixes apply to existing themes for
+ * free. Environment boards are not sliced (they normalize a single image) and so
+ * cannot be re-sliced. Returns the updated manifest+frames on success, or a
+ * `reason` the caller can surface to the user on failure.
+ */
+export async function resliceThemeImageFromRaw(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  itemId: string,
+): Promise<{ ok: true; manifest: ThemeManifest; frames: Record<string, string[]> } | { ok: false; reason: string }> {
+  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+  const item = document?.items.find((candidate) => candidate.id === itemId);
+  if (!document || !item) return { ok: false, reason: 'Item not found' };
+  if (!RESLICEABLE_ATLAS_KINDS.has(item.kind)) {
+    return { ok: false, reason: 'This board type cannot be re-sliced' };
+  }
+  const loadedTheme = await loadTheme(globalStorageUri, themeId);
+  if (!loadedTheme) return { ok: false, reason: 'The saved theme is incomplete and cannot be re-sliced yet.' };
+
+  const rawUri = vscode.Uri.joinPath(themeRawImagesDirectoryUri(globalStorageUri, themeId), item.filename);
+  if (!(await uriExists(rawUri))) {
+    return {
+      ok: false,
+      reason: 'No saved original to re-slice — regenerate this board once to enable re-slicing',
+    };
+  }
+  const rawBuffer = Buffer.from(await vscode.workspace.fs.readFile(rawUri));
+
+  const { manifest, frames } = loadedTheme;
+  const { frameKeys } = await applySlicedAtlasFromBuffer(
+    globalStorageUri,
+    themeId,
+    manifest,
+    frames,
+    item,
+    rawBuffer,
+  );
+  await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
+    ...item,
+    status: 'pending',
+    generation_error: undefined,
+    revision: item.revision + 1,
+    frame_keys: frameKeys,
+    updated_at: new Date().toISOString(),
+  });
+  return { ok: true, manifest, frames };
+}
+
 export async function retryThemeImage(
   globalStorageUri: vscode.Uri,
   themeId: string,
@@ -1402,67 +1547,15 @@ export async function retryThemeImage(
   }
   throwIfCancelled(undefined, imageGenerationOptions.signal);
   const { manifest, frames } = loadedTheme;
-  let output = generated;
-  let frameKeys = item.frame_keys;
-
-  if (item.kind === 'character_atlas') {
-    const characterAtlas = await processCharacterAtlas(generated, manifest);
-    output = characterAtlas.output;
-    const spritePackage = characterAtlas.spritePackage;
-    const frameKey = item.frame_keys[0] || item.id;
-    frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
-    frameKeys = [frameKey];
-  } else if (item.kind === 'rival_atlas') {
-    const rows = rivalRowsForItem(item, manifest);
-    item.rival_rows = rows;
-    const rivalAtlas = await processRivalAtlas(generated, manifest, rows);
-    output = rivalAtlas.output;
-    frameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
-  } else if (item.kind === 'environment') {
-    output = await normalizeEnvironmentImage(generated);
-    frames.environment_background = [dataUri(output)];
-    manifest.viewport.background_asset = 'frames.json#environment_background';
-    frameKeys = ['environment_background'];
-  } else if (item.kind === 'object_atlas') {
-    // Reconstruct object_rows from the CURRENT manifest as the primary source
-    // (see objectRowsForItem) so a roster change (e.g. objects added/renamed)
-    // regenerates the correct board instead of reusing stale saved object_rows.
-    const rows = objectRowsForItem(item, manifest);
-    item.object_rows = rows;
-    const objectAtlas = await processObjectAtlas(generated, manifest, rows);
-    output = objectAtlas.output;
-    frameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, rows);
-  } else if (item.kind === 'background_decor_atlas') {
-    // Reconstruct decor_rows from the CURRENT manifest as the primary source
-    // (see decorRowsForItem) so a decor roster change regenerates the correct
-    // board instead of reusing stale saved decor_rows.
-    const rows = decorRowsForItem(item, manifest);
-    const decorAtlas = await processDecorAtlas(generated, manifest);
-    output = decorAtlas.output;
-    frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
-    manifest.viewport.projectile_asset = 'frames.json#projectile';
-    item.decor_rows = rows;
-  } else if (item.kind === 'expression_atlas') {
-    output = await optimizeSpriteBoardCanvas(generated, 4, 4);
-    const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 4 });
-    frameKeys = applyExpressionFrames(frames, spritePackage.slots);
-  } else if (item.kind === 'achievement_atlas') {
-    output = await optimizeSpriteBoardCanvas(generated, 5, 4);
-    const spritePackage = await sliceAndNormalizeAtlas(output, manifest);
-    frameKeys = applyAchievementFrames(frames, spritePackage.slots);
-  } else {
-    output = await optimizeSpriteBoard(generated);
-    const spritePackage = await sliceAndNormalizeAtlas(output, manifest);
-    frameKeys = applyLegacyEmoteFrames(frames, spritePackage.slots);
-  }
-
-  throwIfCancelled(undefined, imageGenerationOptions.signal);
-  const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
-  await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
-  await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(reviewDirectoryUri, item.filename), output);
-  // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
-  await persistRawAtlas(globalStorageUri, themeId, item.filename, generated);
-  await writeThemeFiles(globalStorageUri, manifest, frames);
+  const { frameKeys } = await applySlicedAtlasFromBuffer(
+    globalStorageUri,
+    themeId,
+    manifest,
+    frames,
+    item,
+    generated,
+    imageGenerationOptions.signal,
+  );
   await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
     ...item,
     status: 'pending',

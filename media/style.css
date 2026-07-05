@@ -2554,6 +2554,19 @@ button.theme-review-preview:focus-visible::after {
   flex-wrap: wrap;
 }
 
+/* Re-slice is a free, secondary action (no image-API cost) → dimmer dark-glass
+   look so it reads distinct from the primary amber Retry/Generate button. */
+.theme-review-reslice:not(:disabled) {
+  background: rgba(255, 176, 32, 0.06);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: color-mix(in srgb, var(--accent) 85%, #d4d4d8);
+}
+
+.theme-review-reslice:hover:not(:disabled) {
+  background: rgba(255, 176, 32, 0.18);
+  color: var(--accent);
+}
+
 .theme-review-card-heading {
   justify-content: space-between;
 }

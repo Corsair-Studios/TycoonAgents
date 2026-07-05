@@ -1806,10 +1806,34 @@
       };
       mode.addEventListener("change", updateRetryMode);
       updateRetryMode();
+      // Re-slice re-runs slicing on the saved raw atlas with no image-API cost.
+      // Only available when the theme saved its original atlas (older themes did not).
+      let resliceBtn = null;
+      if (item.has_raw_atlas) {
+        resliceBtn = document.createElement("button");
+        resliceBtn.className = "skill-btn theme-review-reslice";
+        resliceBtn.type = "button";
+        resliceBtn.dataset.idleText = "Re-slice";
+        const resliceBusy = themeReviewBusyItems.get(item.id) === "reslice";
+        resliceBtn.textContent = resliceBusy ? "Re-slicing…" : "Re-slice";
+        resliceBtn.disabled = themeReviewBusyItems.has(item.id)
+          || Boolean(payload.generation_active && !isCurrentReviewGate);
+        resliceBtn.title = "Re-slice this board from its saved original image — applies the latest slicing fixes without regenerating (no image-generation cost).";
+        resliceBtn.addEventListener("click", () => {
+          resliceBtn.disabled = true;
+          resliceBtn.textContent = "Re-slicing…";
+          themeReviewBusyItems.set(item.id, "reslice");
+          vscode.postMessage({
+            type: 'RESLICE_THEME_IMAGE',
+            payload: { theme_id: reviewThemeId, item_id: item.id },
+          });
+        });
+      }
       const retryStatus = document.createElement("div");
       retryStatus.className = "theme-review-retry-status";
       retryRow.appendChild(mode);
       retryRow.appendChild(retryBtn);
+      if (resliceBtn) retryRow.appendChild(resliceBtn);
 
       const promptDetails = document.createElement("details");
       promptDetails.className = "theme-review-prompt";
@@ -4376,6 +4400,7 @@
       for (const card of cards) {
         if (card.getAttribute("data-item-id") !== itemId) continue;
         const retryBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-retry"));
+        const resliceBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-reslice"));
         const renameBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-rename"));
         const normalizeBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-normalize"));
         const nameInput = /** @type {HTMLInputElement|null} */ (card.querySelector(".theme-review-name-input"));
@@ -4389,6 +4414,12 @@
           retryBtn.textContent = msg.payload?.busy
             ? "Generating..."
             : retryBtn.dataset.idleText || "Retry image";
+        }
+        if (resliceBtn && msg.type === "THEME_IMAGE_RETRY_STATE") {
+          resliceBtn.disabled = Boolean(msg.payload?.busy);
+          resliceBtn.textContent = msg.payload?.busy
+            ? "Re-slicing…"
+            : resliceBtn.dataset.idleText || "Re-slice";
         }
         if (normalizeBtn && msg.type === "THEME_CHARACTER_NORMALIZE_STATE") {
           normalizeBtn.disabled = Boolean(msg.payload?.busy);
