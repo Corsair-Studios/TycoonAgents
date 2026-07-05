@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.136",
+  "version": "0.0.137",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
