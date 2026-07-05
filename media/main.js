@@ -335,6 +335,30 @@
    * locked badges show a silhouette (CSS grayscale/dark filter, or a generic
    * badge shape if art isn't loaded) plus a "n / threshold" progress line.
    */
+  /**
+   * Plain-language explanation of how a badge is earned, derived from its
+   * trigger_type/threshold, plus its description and a note when it's part of
+   * the current rebirth requirement. Guards missing fields so it never throws.
+   */
+  function badgeExplanation(b) {
+    if (!b) return "";
+    const threshold = (b && typeof b.threshold === "number") ? b.threshold : 0;
+    let sentence;
+    switch (b && b.trigger_type) {
+      case "OBJECTS_BUILT": sentence = `Awarded for building ${threshold} object(s).`; break;
+      case "RIVALS_EVICTED": sentence = `Awarded for evicting ${threshold} rival(s).`; break;
+      case "TASKS_COMPLETED": sentence = `Awarded for completing ${threshold} task(s).`; break;
+      case "AGENTS_ACTIVE": sentence = `Awarded for having ${threshold} agents active at once.`; break;
+      default: sentence = `Awarded for building ${threshold} object(s).`; break;
+    }
+    const parts = [sentence];
+    if (b && b.description) parts.push(String(b.description));
+    if (b && b.badge_id && requiredRebirthBadgeIds.indexOf(b.badge_id) >= 0) {
+      parts.push("Required for your next Rebirth.");
+    }
+    return parts.join(" ");
+  }
+
   function renderBadgePanel() {
     if (!badgeListEl) return;
     renderRebirthPanel();
@@ -385,9 +409,11 @@
         const rebirthTag = document.createElement("div");
         rebirthTag.className = "badge-rebirth-tag";
         rebirthTag.textContent = "REBIRTH";
+        rebirthTag.title = "This badge is required for your next Rebirth. Earn the marked badges to unlock Rebirth.";
         info.appendChild(rebirthTag);
       }
 
+      let progressText = "";
       if (unlocked) {
         const desc = document.createElement("div");
         desc.className = "badge-card-desc";
@@ -411,10 +437,29 @@
             unit = "built";
             break;
         }
-        progress.textContent = Math.min(Math.max(eff, 0), threshold) + " / " + threshold + " " + unit;
+        progressText = Math.min(Math.max(eff, 0), threshold) + " / " + threshold + " " + unit;
+        progress.textContent = progressText;
         info.appendChild(progress);
       }
+
+      // Expandable detail: plain-language explanation of how the badge is
+      // earned. Completed badges show the full explanation; locked ones also
+      // show current progress so users know how to earn them. Hidden until the
+      // card is clicked (toggles .badge-card--expanded). Guarded against
+      // missing fields via badgeExplanation().
+      const detail = document.createElement("div");
+      detail.className = "badge-card-detail";
+      let detailText = badgeExplanation(b);
+      if (!unlocked && progressText) detailText += " Progress: " + progressText + ".";
+      detail.textContent = detailText;
+      info.appendChild(detail);
+
       card.appendChild(info);
+
+      card.style.cursor = "pointer";
+      card.addEventListener("click", () => {
+        card.classList.toggle("badge-card--expanded");
+      });
 
       badgeListEl.appendChild(card);
     }
@@ -437,6 +482,22 @@
         unlocked: [...unlockedBadgeIds],
       },
     });
+    // Also persist host-side (per theme) so the rebirth requirement survives
+    // webview disposal/reload — vscode.setState() alone is lost on teardown,
+    // which caused requiredRebirthBadgeIds to re-roll on every reload.
+    if (currentBadgeThemeId) {
+      vscode.postMessage({
+        type: "SAVE_REBIRTH_STATE",
+        payload: {
+          theme_id: currentBadgeThemeId,
+          state: {
+            count: rebirthCount,
+            baseline: rebirthBaseline,
+            required: requiredRebirthBadgeIds,
+          },
+        },
+      });
+    }
   }
 
   /**
@@ -481,6 +542,16 @@
     rollRebirthRequirement();
     rebirthConfirmPending = false;
     persistRebirth();
+    // Durably clear the host-side badge unlocks we just wiped locally, so the
+    // host doesn't re-send stale unlocks on the next theme init (which would
+    // un-reset this rebirth). persistRebirth() above already saved the fresh
+    // requirement/count host-side.
+    if (currentBadgeThemeId) {
+      vscode.postMessage({
+        type: "REBIRTH_RESET_BADGES",
+        payload: { theme_id: currentBadgeThemeId },
+      });
+    }
     if (rangedUnlocked === false && rebirthCount >= 1) rangedUnlocked = true; // D1: permanent ranged weapons from here on
     updateBadgeHud();
     renderBadgePanel();
@@ -572,13 +643,25 @@
     }
     panel.removeAttribute("hidden");
 
-    if (requiredRebirthBadgeIds.length === 0) rollRebirthRequirement();
+    // NOTE: rendering must NEVER roll the requirement. A render-time re-roll here
+    // was a key cause of the requirement changing on reload (it fired whenever a
+    // restore hadn't yet populated requiredRebirthBadgeIds). Rolling now happens
+    // ONLY on first-time/invalid restore (THEME_INITIALIZED requiredStillValid)
+    // and in doRebirth(). If requiredRebirthBadgeIds is empty here, we simply
+    // render an empty requirement list without mutating state.
 
     const head = document.createElement("div");
     head.className = "rebirth-head";
     const title = document.createElement("div");
     title.className = "rebirth-title";
     title.textContent = `Rebirth ×${rebirthCount}`;
+    const rebirthTip = "Rebirth resets your earned badges so you can earn them again — but you keep your agent metrics and gain permanent, stacking bonuses (ranged weapons, faster building). Earn the required badges below to unlock it.";
+    title.title = rebirthTip;
+    const info = document.createElement("span");
+    info.className = "rebirth-info";
+    info.textContent = "ⓘ";
+    info.title = rebirthTip;
+    title.appendChild(info);
     head.appendChild(title);
     if (rebirthCount > 0) {
       const pct = Math.round((Math.pow(1.2, rebirthCount) - 1) * 100);
@@ -592,6 +675,7 @@
     const reqLabel = document.createElement("div");
     reqLabel.className = "rebirth-req-label";
     reqLabel.textContent = "Rebirth Requirements";
+    reqLabel.title = "Earn all of these badges to unlock your next Rebirth. They change only when you Rebirth or reset.";
     panel.appendChild(reqLabel);
 
     const reqList = document.createElement("div");
@@ -608,6 +692,9 @@
       const label = document.createElement("span");
       label.className = "rebirth-req-name";
       label.textContent = (badge && (badge.display_name || badge.badge_id)) || id;
+      const bName = (badge && (badge.display_name || badge.badge_id)) || id;
+      const bDesc = (badge && badge.description) ? " — " + badge.description : "";
+      label.title = bName + bDesc + " (" + (earned ? "Earned" : "Not yet earned") + ")";
       row.appendChild(label);
       reqList.appendChild(row);
     }
@@ -640,6 +727,9 @@
       btn.textContent = "Rebirth";
       const enabled = canRebirth();
       if (!enabled) btn.setAttribute("disabled", "");
+      btn.title = enabled
+        ? "Rebirth now: resets your earned badges (agent metrics are kept) and grants permanent, stacking bonuses — ranged weapons and faster building each time you Rebirth."
+        : "Earn all required badges first.";
       btn.addEventListener("click", () => {
         if (!canRebirth()) return;
         rebirthConfirmPending = true;
@@ -4470,9 +4560,11 @@
         unlockedBadgeIds = new Set(seededUnlockIds);
         // ── Rebirth: restore persisted prestige state. Independent of the
         // per-theme badge unlocks above — rebirth (count/baseline/requirement)
-        // persists across theme switches and webview reloads via the same
-        // vscode getState() blob (see persistRebirth()).
-        const savedRebirth = (vscode.getState() || {}).rebirth;
+        // persists across theme switches and webview reloads. Source of truth is
+        // now the HOST payload (rebirth_state, keyed by theme_id, survives webview
+        // disposal); fall back to the local vscode getState() cache when absent.
+        const hostRebirth = msg.payload.rebirth_state;
+        const savedRebirth = hostRebirth || (vscode.getState() || {}).rebirth;
         if (savedRebirth && typeof savedRebirth === "object") {
           rebirthCount = typeof savedRebirth.count === "number" ? savedRebirth.count : 0;
           if (savedRebirth.baseline && typeof savedRebirth.baseline === "object") {

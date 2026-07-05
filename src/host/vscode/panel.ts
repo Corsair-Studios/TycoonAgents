@@ -57,6 +57,17 @@ import {
   saveThemeImageSettings,
 } from "../../extension/themeImageSettings";
 
+/**
+ * Persisted per-theme rebirth (prestige) state, stored host-side in
+ * rebirth-state.json keyed by theme_id. Mirrors the webview's rebirth blob so
+ * the requirement survives webview disposal/reload.
+ */
+interface RebirthPersist {
+  count: number;
+  baseline: { built: number; evicted: number; tasks: number };
+  required: string[];
+}
+
 function getNonce(): string {
   let text = "";
   const possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -495,6 +506,7 @@ export class TycoonPanel {
 
             await deleteTheme(this._globalStorageUri, themeId);
             await this._removeThemeBadgeUnlocks(themeId);
+            await this._removeThemeRebirthState(themeId);
             deletedThemeId = themeId;
           } catch (err) {
             deleteError = String(err);
@@ -518,6 +530,32 @@ export class TycoonPanel {
             }
           } catch (err) {
             console.error("TycoonAgents: Could not persist badge unlock:", err);
+          }
+        } else if (message.type === "SAVE_REBIRTH_STATE") {
+          try {
+            const payload = (message as any).payload as
+              | { theme_id?: string; state?: RebirthPersist }
+              | undefined;
+            const themeId = payload?.theme_id;
+            const state = payload?.state;
+            if (typeof themeId === "string" && themeId && state && typeof state === "object") {
+              await this.saveRebirthState(themeId, state);
+            }
+          } catch (err) {
+            console.error("TycoonAgents: Could not persist rebirth state:", err);
+          }
+        } else if (message.type === "REBIRTH_RESET_BADGES") {
+          try {
+            const payload = (message as any).payload as { theme_id?: string } | undefined;
+            const themeId = payload?.theme_id;
+            if (typeof themeId === "string" && themeId) {
+              // Durably clear the now-reset badge unlocks so the host doesn't
+              // re-send stale unlocks on the next theme init (un-resetting the
+              // rebirth). Mirrors doRebirth() clearing webview unlockedBadgeIds.
+              await this._removeThemeBadgeUnlocks(themeId);
+            }
+          } catch (err) {
+            console.error("TycoonAgents: Could not reset rebirth badges:", err);
           }
         } else if (message.type === "SELECT_THEME") {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
@@ -1099,6 +1137,61 @@ export class TycoonPanel {
     }
   }
 
+  // --- Rebirth (prestige) persistence -------------------------------
+  // Per-theme rebirth state, persisted host-side so the rebirth requirement
+  // (requiredRebirthBadgeIds) survives webview disposal/reload. Previously
+  // rebirth lived only in the webview's vscode.setState() blob, which is lost
+  // when the webview is torn down — causing the requirement to re-roll on every
+  // reload. Mirrors the badge-unlock persistence above (file-based, since this
+  // panel only has globalStorageUri, not an ExtensionContext/Memento).
+  private _rebirthStateUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this._globalStorageUri, "rebirth-state.json");
+  }
+
+  private async _readRebirthStore(): Promise<Record<string, RebirthPersist>> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this._rebirthStateUri());
+      const parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private async _writeRebirthStore(store: Record<string, RebirthPersist>): Promise<void> {
+    try {
+      await vscode.workspace.fs.writeFile(
+        this._rebirthStateUri(),
+        Buffer.from(JSON.stringify(store, null, 2), "utf8"),
+      );
+    } catch (err) {
+      console.error("TycoonAgents: Could not save rebirth state:", err);
+    }
+  }
+
+  private async getRebirthState(themeId: string | undefined): Promise<RebirthPersist | null> {
+    if (!themeId) return null;
+    const store = await this._readRebirthStore();
+    const entry = store[themeId];
+    return entry && typeof entry === "object" ? entry : null;
+  }
+
+  private async saveRebirthState(themeId: string, state: RebirthPersist): Promise<void> {
+    if (!themeId || !state || typeof state !== "object") return;
+    const store = await this._readRebirthStore();
+    store[themeId] = state;
+    await this._writeRebirthStore(store);
+  }
+
+  private async _removeThemeRebirthState(themeId: string): Promise<void> {
+    if (!themeId) return;
+    const store = await this._readRebirthStore();
+    if (themeId in store) {
+      delete store[themeId];
+      await this._writeRebirthStore(store);
+    }
+  }
+
   /** Builds a THEME_INITIALIZED payload, seeding persisted badge unlocks. */
   private async _buildThemeInitPayload(
     manifest: ThemeManifest,
@@ -1109,12 +1202,14 @@ export class TycoonPanel {
     frames: Record<string, string[]>;
     is_editor_mode: boolean;
     unlocked_badge_ids: string[];
+    rebirth_state: RebirthPersist | null;
   }> {
     return {
       manifest,
       frames,
       is_editor_mode: isEditorMode,
       unlocked_badge_ids: await this.getUnlockedBadges(manifest?.theme_id),
+      rebirth_state: await this.getRebirthState(manifest?.theme_id),
     };
   }
 
@@ -2596,6 +2691,12 @@ export class TycoonPanel {
       fs.writeFileSync(activityPath, "");
 
       this._runtime.reset();
+
+      // Fresh slate: wipe persisted rebirth state and badge unlocks for ALL
+      // themes. The user wants rebirth requirements to change ONLY on a user
+      // reset, so this is the one place both stores are cleared wholesale.
+      await this._writeRebirthStore({});
+      await this._writeBadgeUnlocksStore({});
 
       // Re-seed the full installed-agent roster (mirrors extension.ts).
       const agentsDir = path.join(root, ".claude", "agents");

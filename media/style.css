@@ -938,6 +938,41 @@ body {
   opacity: 0.85;
 }
 
+/* Click-to-expand affordance: badge cards toggle .badge-card--expanded to
+   reveal a plain-language explanation of how the badge is earned. */
+.badge-card {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.badge-card:hover {
+  background: rgba(255, 176, 32, 0.06);
+}
+
+.badge-card--unlocked:hover {
+  background: rgba(255, 176, 32, 0.14);
+}
+
+.badge-card--expanded {
+  background: rgba(255, 176, 32, 0.12);
+}
+
+.badge-card-detail {
+  display: none;
+  margin-top: 5px;
+  padding-top: 5px;
+  padding-left: 8px;
+  border-left: 2px solid rgba(255, 176, 32, 0.35);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.badge-card--expanded .badge-card-detail {
+  display: block;
+  color: var(--text);
+}
+
 /* Badges reserved in REBIRTH_BADGE_POOL: subtle amber accent so the reserved
    rebirth-gate badges read as distinct from ordinary badges in the grid. */
 .badge-card--rebirth {
@@ -986,6 +1021,16 @@ body {
   font-size: 14px;
   font-weight: 700;
   color: var(--accent);
+}
+
+/* Inline "ⓘ" hint after the rebirth title — signals hover-for-explanation. */
+.rebirth-info {
+  margin-left: 5px;
+  font-size: 11px;
+  vertical-align: super;
+  color: var(--accent);
+  opacity: 0.75;
+  cursor: help;
 }
 
 .rebirth-bonus {
