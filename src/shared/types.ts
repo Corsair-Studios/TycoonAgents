@@ -94,7 +94,7 @@ export interface ThemeBadge {
   badge_id: string;
   display_name: string;
   description: string;
-  trigger_type: 'OBJECTS_BUILT' | 'RIVALS_EVICTED';
+  trigger_type: 'OBJECTS_BUILT' | 'RIVALS_EVICTED' | 'TASKS_COMPLETED' | 'AGENTS_ACTIVE';
   threshold: number;
   icon_asset: string;
 }

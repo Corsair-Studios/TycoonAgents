@@ -43,7 +43,7 @@ test('upgrades a legacy manifest missing all fields: crate/poof/projectile asset
   const anchorKeys = manifest.decor_objects.map((d) => `${d.anchor_coord[0]},${d.anchor_coord[1]}`);
   assert.equal(new Set(anchorKeys).size, 9);
 
-  assert.equal(manifest.badges.length, 8);
+  assert.equal(manifest.badges.length, 20);
 
   assert.ok(changed.length >= 5, `expected at least 5 change entries, got ${changed.length}`);
   assert.ok(changed.some((c) => c.includes('crate_asset')));
@@ -51,12 +51,14 @@ test('upgrades a legacy manifest missing all fields: crate/poof/projectile asset
   assert.ok(changed.some((c) => c.includes('decor_objects')));
 });
 
-test('upgrades a manifest with empty badges to the 8 default badges', () => {
+test('upgrades a manifest with empty badges to the 20 default badges', () => {
   const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: [] }));
 
-  assert.equal(manifest.badges.length, 8);
+  assert.equal(manifest.badges.length, 20);
   assert.ok(manifest.badges.some((b) => b.trigger_type === 'OBJECTS_BUILT'));
   assert.ok(manifest.badges.some((b) => b.trigger_type === 'RIVALS_EVICTED'));
+  assert.ok(manifest.badges.some((b) => b.trigger_type === 'TASKS_COMPLETED'));
+  assert.ok(manifest.badges.some((b) => b.trigger_type === 'AGENTS_ACTIVE'));
   for (const badge of manifest.badges) {
     assert.match(badge.icon_asset, /^frames\.json#achievement_/);
   }

@@ -75,10 +75,11 @@ function buildDefaultDecorObjects(): DecorObject[] {
 }
 
 /**
- * Builds the fixed 8-entry default badge roster (4 OBJECTS_BUILT, 4
- * RIVALS_EVICTED), reusing the achievement art board's frames
- * (achievement_0..achievement_7) as icons. Applied whenever a manifest has
- * no badges, so the badge UI always has content to render.
+ * Builds the fixed 20-entry default badge roster (5 OBJECTS_BUILT, 8
+ * RIVALS_EVICTED, 5 TASKS_COMPLETED, 2 AGENTS_ACTIVE), reusing the
+ * achievement art board's frames (achievement_0..achievement_19) as icons.
+ * Applied whenever a manifest has no badges, so the badge UI always has
+ * content to render.
  */
 export function buildDefaultBadges(): ThemeBadge[] {
   return [
@@ -145,6 +146,102 @@ export function buildDefaultBadges(): ThemeBadge[] {
       trigger_type: 'RIVALS_EVICTED',
       threshold: 20,
       icon_asset: 'frames.json#achievement_7',
+    },
+    {
+      badge_id: 'task_1',
+      display_name: 'Getting Started',
+      description: 'Complete your first task.',
+      trigger_type: 'TASKS_COMPLETED',
+      threshold: 1,
+      icon_asset: 'frames.json#achievement_8',
+    },
+    {
+      badge_id: 'task_10',
+      display_name: 'Warmed Up',
+      description: 'Complete 10 tasks.',
+      trigger_type: 'TASKS_COMPLETED',
+      threshold: 10,
+      icon_asset: 'frames.json#achievement_9',
+    },
+    {
+      badge_id: 'task_50',
+      display_name: 'In the Zone',
+      description: 'Complete 50 tasks.',
+      trigger_type: 'TASKS_COMPLETED',
+      threshold: 50,
+      icon_asset: 'frames.json#achievement_10',
+    },
+    {
+      badge_id: 'task_150',
+      display_name: 'Grind Master',
+      description: 'Complete 150 tasks.',
+      trigger_type: 'TASKS_COMPLETED',
+      threshold: 150,
+      icon_asset: 'frames.json#achievement_11',
+    },
+    {
+      badge_id: 'task_500',
+      display_name: 'Unstoppable',
+      description: 'Complete 500 tasks.',
+      trigger_type: 'TASKS_COMPLETED',
+      threshold: 500,
+      icon_asset: 'frames.json#achievement_12',
+    },
+    {
+      badge_id: 'evict_35',
+      display_name: 'Turf War',
+      description: 'Evict 35 rivals.',
+      trigger_type: 'RIVALS_EVICTED',
+      threshold: 35,
+      icon_asset: 'frames.json#achievement_13',
+    },
+    {
+      badge_id: 'evict_50',
+      display_name: 'Enforcer',
+      description: 'Evict 50 rivals.',
+      trigger_type: 'RIVALS_EVICTED',
+      threshold: 50,
+      icon_asset: 'frames.json#achievement_14',
+    },
+    {
+      badge_id: 'evict_75',
+      display_name: 'Kingpin',
+      description: 'Evict 75 rivals.',
+      trigger_type: 'RIVALS_EVICTED',
+      threshold: 75,
+      icon_asset: 'frames.json#achievement_15',
+    },
+    {
+      badge_id: 'evict_100',
+      display_name: 'Undisputed',
+      description: 'Evict 100 rivals.',
+      trigger_type: 'RIVALS_EVICTED',
+      threshold: 100,
+      icon_asset: 'frames.json#achievement_16',
+    },
+    {
+      badge_id: 'crew_3',
+      display_name: 'Small Crew',
+      description: 'Have 3 agents active at once.',
+      trigger_type: 'AGENTS_ACTIVE',
+      threshold: 3,
+      icon_asset: 'frames.json#achievement_17',
+    },
+    {
+      badge_id: 'crew_6',
+      display_name: 'Full House',
+      description: 'Have 6 agents active at once.',
+      trigger_type: 'AGENTS_ACTIVE',
+      threshold: 6,
+      icon_asset: 'frames.json#achievement_18',
+    },
+    {
+      badge_id: 'build_13',
+      display_name: 'Developer',
+      description: 'Build 13 objects.',
+      trigger_type: 'OBJECTS_BUILT',
+      threshold: 13,
+      icon_asset: 'frames.json#achievement_19',
     },
   ];
 }

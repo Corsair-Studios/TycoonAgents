@@ -285,19 +285,35 @@
   }
 
   /**
-   * Check current counters (buildBuiltCount, rivalsEvictedCount) against each
+   * Check current PER-CYCLE progress (lifetime counters minus the baseline
+   * captured at the last rebirth, or 0/0/0 if never rebirthed) against each
    * theme badge's threshold and unlock any newly-earned ones. themeBadges is
    * a small array (a handful of entries) so this is cheap enough to call every
-   * render frame. unlockedBadgeIds only ever grows within a theme session.
+   * render frame. unlockedBadgeIds only ever grows within a rebirth cycle —
+   * it is cleared by doRebirth().
    */
   function updateBadgeUnlocks() {
     if (!themeBadges || themeBadges.length === 0) return;
+    const effBuilt = buildBuiltCount - rebirthBaseline.built;
+    const effEvicted = rivalsEvictedCount - rebirthBaseline.evicted;
+    const effTasks = (state.completedTasks || 0) - rebirthBaseline.tasks;
+    const effPeak = cyclePeakActive;
+    const objectCount = themeBuildables.length;
     let changed = false;
     for (const b of themeBadges) {
       if (!b || !b.badge_id || unlockedBadgeIds.has(b.badge_id)) continue;
-      const met =
-        (b.trigger_type === "OBJECTS_BUILT" && buildBuiltCount >= b.threshold) ||
-        (b.trigger_type === "RIVALS_EVICTED" && rivalsEvictedCount >= b.threshold);
+      let eff = 0;
+      switch (b.trigger_type) {
+        case "OBJECTS_BUILT": eff = effBuilt; break;
+        case "RIVALS_EVICTED": eff = effEvicted; break;
+        case "TASKS_COMPLETED": eff = effTasks; break;
+        case "AGENTS_ACTIVE": eff = effPeak; break;
+        default: continue;
+      }
+      // Clamp OBJECTS_BUILT thresholds to this theme's actual buildable count
+      // so a capstone badge tuned for a bigger theme still unlocks on smaller ones.
+      const t = b.trigger_type === "OBJECTS_BUILT" ? Math.min(b.threshold, objectCount) : b.threshold;
+      const met = eff >= t;
       if (met) {
         unlockedBadgeIds.add(b.badge_id);
         changed = true;
@@ -321,6 +337,7 @@
    */
   function renderBadgePanel() {
     if (!badgeListEl) return;
+    renderRebirthPanel();
     while (badgeListEl.firstChild) badgeListEl.removeChild(badgeListEl.firstChild);
     if (!themeBadges || themeBadges.length === 0) {
       const empty = document.createElement("div");
@@ -370,17 +387,191 @@
       } else {
         const progress = document.createElement("div");
         progress.className = "badge-card-progress";
-        const threshold = b.threshold || 0;
-        if (b.trigger_type === "RIVALS_EVICTED") {
-          progress.textContent = Math.min(rivalsEvictedCount, threshold) + " / " + threshold + " evicted";
-        } else {
-          progress.textContent = Math.min(buildBuiltCount, threshold) + " / " + threshold + " built";
+        // Progress is measured WITHIN the current rebirth cycle (baseline-adjusted),
+        // matching updateBadgeUnlocks() so the displayed count never shows a
+        // false lifetime total that's already past threshold post-rebirth.
+        let eff = 0, unit = "";
+        let threshold = b.threshold || 0;
+        switch (b.trigger_type) {
+          case "RIVALS_EVICTED": eff = rivalsEvictedCount - rebirthBaseline.evicted; unit = "evicted"; break;
+          case "TASKS_COMPLETED": eff = (state.completedTasks || 0) - rebirthBaseline.tasks; unit = "tasks"; break;
+          case "AGENTS_ACTIVE": eff = cyclePeakActive; unit = "active"; break;
+          default:
+            eff = buildBuiltCount - rebirthBaseline.built;
+            threshold = Math.min(threshold, themeBuildables.length);
+            unit = "built";
+            break;
         }
+        progress.textContent = Math.min(Math.max(eff, 0), threshold) + " / " + threshold + " " + unit;
         info.appendChild(progress);
       }
       card.appendChild(info);
 
       badgeListEl.appendChild(card);
+    }
+  }
+
+  /**
+   * Persist rebirth state into the SAME vscode getState()/setState() blob used
+   * for metricsHeight/rosterOrder/etc — merges in, never drops existing keys.
+   * cyclePeakActive is intentionally NOT persisted (brief C1: high-water mark
+   * for the CURRENT session only).
+   */
+  function persistRebirth() {
+    const prev = vscode.getState() || {};
+    vscode.setState({
+      ...prev,
+      rebirth: {
+        count: rebirthCount,
+        baseline: rebirthBaseline,
+        required: requiredRebirthBadgeIds,
+        unlocked: [...unlockedBadgeIds],
+      },
+    });
+  }
+
+  /**
+   * Pick 3 distinct random badge_ids from themeBadges as the next rebirth's
+   * requirement gate. Uses fewer than 3 if the theme doesn't have that many.
+   */
+  function rollRebirthRequirement() {
+    const ids = (themeBadges || []).map((b) => b && b.badge_id).filter(Boolean);
+    const pool = ids.slice();
+    const picked = [];
+    const n = Math.min(3, pool.length);
+    for (let i = 0; i < n; i++) {
+      const idx = Math.floor(Math.random() * pool.length);
+      picked.push(pool.splice(idx, 1)[0]);
+    }
+    requiredRebirthBadgeIds = picked;
+  }
+
+  /** True iff a rebirth requirement has been rolled and every required badge is unlocked. */
+  function canRebirth() {
+    return requiredRebirthBadgeIds.length > 0 &&
+      requiredRebirthBadgeIds.every((id) => unlockedBadgeIds.has(id));
+  }
+
+  /**
+   * Advance the prestige cycle: bump rebirthCount (drives the ranged-weapon +
+   * build-speed bonuses, see D1/D2), re-baseline the per-cycle badge counters
+   * to the CURRENT lifetime totals (so badges must be re-earned from here),
+   * wipe unlockedBadgeIds, roll a fresh 3-badge requirement, and persist.
+   * Deliberately does NOT touch buildBuiltCount/rivalsEvictedCount/agent
+   * metrics/HUD — those are lifetime and keep counting through rebirth.
+   */
+  function doRebirth() {
+    rebirthCount++;
+    rebirthBaseline = { built: buildBuiltCount, evicted: rivalsEvictedCount, tasks: (state.completedTasks || 0) };
+    cyclePeakActive = 0;
+    unlockedBadgeIds.clear();
+    rollRebirthRequirement();
+    rebirthConfirmPending = false;
+    persistRebirth();
+    if (rangedUnlocked === false && rebirthCount >= 1) rangedUnlocked = true; // D1: permanent ranged weapons from here on
+    updateBadgeHud();
+    renderBadgePanel();
+  }
+
+  /**
+   * Rebuild the Rebirth section that sits directly above #badge-list inside
+   * #badge-dialog. Built purely from JS (no src/ HTML changes) — the section
+   * root is created once (id="rebirth-panel") and inserted as badgeListEl's
+   * previous sibling, then its contents are cleared + rebuilt every call so
+   * it always reflects live rebirthCount/requiredRebirthBadgeIds/unlocks.
+   */
+  function renderRebirthPanel() {
+    if (!badgeListEl || !badgeListEl.parentElement) return;
+    let panel = /** @type {HTMLElement|null} */ (document.getElementById("rebirth-panel"));
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "rebirth-panel";
+      panel.className = "rebirth-panel";
+      badgeListEl.parentElement.insertBefore(panel, badgeListEl);
+    }
+    while (panel.firstChild) panel.removeChild(panel.firstChild);
+
+    // Only meaningful once the theme has badges to prestige against.
+    if (!themeBadges || themeBadges.length === 0) {
+      panel.setAttribute("hidden", "");
+      return;
+    }
+    panel.removeAttribute("hidden");
+
+    if (requiredRebirthBadgeIds.length === 0) rollRebirthRequirement();
+
+    const head = document.createElement("div");
+    head.className = "rebirth-head";
+    const title = document.createElement("div");
+    title.className = "rebirth-title";
+    title.textContent = `Rebirth ×${rebirthCount}`;
+    head.appendChild(title);
+    if (rebirthCount > 0) {
+      const pct = Math.round((Math.pow(1.2, rebirthCount) - 1) * 100);
+      const bonus = document.createElement("div");
+      bonus.className = "rebirth-bonus";
+      bonus.textContent = `Ranged weapons · Build speed +${pct}%`;
+      head.appendChild(bonus);
+    }
+    panel.appendChild(head);
+
+    const reqLabel = document.createElement("div");
+    reqLabel.className = "rebirth-req-label";
+    reqLabel.textContent = "Rebirth Requirements";
+    panel.appendChild(reqLabel);
+
+    const reqList = document.createElement("div");
+    reqList.className = "rebirth-req-list";
+    for (const id of requiredRebirthBadgeIds) {
+      const badge = themeBadges.find((b) => b && b.badge_id === id);
+      const earned = unlockedBadgeIds.has(id);
+      const row = document.createElement("div");
+      row.className = "rebirth-req" + (earned ? " earned" : "");
+      const mark = document.createElement("span");
+      mark.className = "rebirth-req-mark";
+      mark.textContent = earned ? "✓" : "○";
+      row.appendChild(mark);
+      const label = document.createElement("span");
+      label.className = "rebirth-req-name";
+      label.textContent = (badge && (badge.display_name || badge.badge_id)) || id;
+      row.appendChild(label);
+      reqList.appendChild(row);
+    }
+    panel.appendChild(reqList);
+
+    if (rebirthConfirmPending) {
+      const confirm = document.createElement("div");
+      confirm.className = "rebirth-confirm";
+      const msg = document.createElement("div");
+      msg.className = "rebirth-confirm-msg";
+      msg.textContent = "Rebirth resets all badges. Your agent metrics are kept. Continue?";
+      confirm.appendChild(msg);
+      const row = document.createElement("div");
+      row.className = "rebirth-confirm-actions";
+      const confirmBtn = document.createElement("button");
+      confirmBtn.className = "rebirth-btn";
+      confirmBtn.textContent = "Confirm";
+      confirmBtn.addEventListener("click", () => { doRebirth(); });
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "rebirth-btn rebirth-btn--secondary";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.addEventListener("click", () => { rebirthConfirmPending = false; renderBadgePanel(); });
+      row.appendChild(confirmBtn);
+      row.appendChild(cancelBtn);
+      confirm.appendChild(row);
+      panel.appendChild(confirm);
+    } else {
+      const btn = document.createElement("button");
+      btn.className = "rebirth-btn";
+      btn.textContent = "Rebirth";
+      const enabled = canRebirth();
+      if (!enabled) btn.setAttribute("disabled", "");
+      btn.addEventListener("click", () => {
+        if (!canRebirth()) return;
+        rebirthConfirmPending = true;
+        renderBadgePanel();
+      });
+      panel.appendChild(btn);
     }
   }
 
@@ -1964,6 +2155,29 @@
   let unlockedBadgeIds = new Set();
   /** theme_id of the theme currently loaded on stage, captured at THEME_INITIALIZED — used to tag BADGE_UNLOCKED posts to the host. @type {string|null} */
   let currentBadgeThemeId = null;
+
+  // ── Rebirth prestige mechanic (all webview-side; survives reload via
+  // vscode state, but NEVER touches buildBuiltCount/rivalsEvictedCount/agent
+  // metrics directly — see doRebirth()). Badges measure progress WITHIN the
+  // current rebirth cycle via the baselines below, since the underlying
+  // lifetime counters persist through rebirth. ──────────────────────────────
+  /** Number of times the player has rebirthed. Drives ranged-weapon + build-speed bonuses. */
+  let rebirthCount = 0;
+  /** Lifetime-counter snapshot captured at the moment of the last rebirth (or 0/0/0 if never). */
+  let rebirthBaseline = { built: 0, evicted: 0, tasks: 0 };
+  /** High-water mark of concurrently-active agents observed since the last rebirth (not persisted). */
+  let cyclePeakActive = 0;
+  /** 3 badge_ids (from themeBadges) that must ALL be unlocked before the next rebirth is allowed. @type {string[]} */
+  let requiredRebirthBadgeIds = [];
+  /** True while the two-step Rebirth button confirm prompt is showing. */
+  let rebirthConfirmPending = false;
+  // NOTE: rebirthCount/rebirthBaseline/requiredRebirthBadgeIds are restored
+  // from vscode.getState().rebirth inside the THEME_INITIALIZED handler
+  // (~line 4349), not here — requiredRebirthBadgeIds must be validated
+  // against the CURRENT theme's themeBadges (badge_ids aren't shared across
+  // themes), which isn't populated until a theme actually loads. cyclePeakActive
+  // is intentionally never restored (always starts at 0).
+
   /** Progress (0..1) of the current active (buildQueue[buildBuiltCount]) object. */
   let buildCurrentProgress = 0;
   /**
@@ -4108,14 +4322,58 @@
         currentBadgeThemeId = initializedThemeId || (manifest && manifest.theme_id) || null;
         const seededUnlockIds = Array.isArray(msg.payload?.unlocked_badge_ids) ? msg.payload.unlocked_badge_ids : [];
         unlockedBadgeIds = new Set(seededUnlockIds);
+        // ── Rebirth: restore persisted prestige state. Independent of the
+        // per-theme badge unlocks above — rebirth (count/baseline/requirement)
+        // persists across theme switches and webview reloads via the same
+        // vscode getState() blob (see persistRebirth()).
+        const savedRebirth = (vscode.getState() || {}).rebirth;
+        if (savedRebirth && typeof savedRebirth === "object") {
+          rebirthCount = typeof savedRebirth.count === "number" ? savedRebirth.count : 0;
+          if (savedRebirth.baseline && typeof savedRebirth.baseline === "object") {
+            rebirthBaseline = {
+              built: savedRebirth.baseline.built || 0,
+              evicted: savedRebirth.baseline.evicted || 0,
+              tasks: savedRebirth.baseline.tasks || 0,
+            };
+          }
+          requiredRebirthBadgeIds = Array.isArray(savedRebirth.required) ? savedRebirth.required.slice() : [];
+          if (Array.isArray(savedRebirth.unlocked)) {
+            for (const id of savedRebirth.unlocked) unlockedBadgeIds.add(id);
+          }
+        }
+        // buildBuiltCount/rivalsEvictedCount just restarted at 0 above for this
+        // theme session (they're per-theme-session lifetime counters), so the
+        // built/evicted baseline components must restart at 0 too — otherwise a
+        // positive baseline carried over from a previous theme/session would
+        // make updateBadgeUnlocks()'s effective (eff) value negative, leaving
+        // OBJECTS_BUILT/RIVALS_EVICTED badges practically unearnable until
+        // re-built past that stale baseline. rebirthBaseline.tasks is NOT reset:
+        // state.completedTasks is a global agent-metrics lifetime counter, not
+        // per-theme.
+        rebirthBaseline.built = 0;
+        rebirthBaseline.evicted = 0;
+        // requiredRebirthBadgeIds must reference badges that exist in the
+        // CURRENT theme's badge set (badge_ids aren't shared across themes),
+        // so re-roll whenever it's empty or a saved requirement doesn't
+        // resolve against themeBadges (e.g. after switching themes).
+        const requiredStillValid = requiredRebirthBadgeIds.length > 0 &&
+          requiredRebirthBadgeIds.every((id) => themeBadges.some((b) => b && b.badge_id === id));
+        if (!requiredStillValid) rollRebirthRequirement();
+        // Persist once here so the just-reset built/evicted baseline (and any
+        // re-rolled requirement above) are saved even if the user closes the
+        // webview before the next badge unlock or rebirth would otherwise
+        // trigger a persistRebirth() call.
+        persistRebirth();
         updateBadgeHud();
         // ── Ranged combat upgrade (reset per theme) ─────────────────────
         // Characters START in melee. Building the ranged weapon rack (the
         // buildable with build_order 0 → themeBuildables[0] after the sort)
         // permanently unlocks ranged combat for the rest of the session.
         // Because buildQueue is randomized, the rack may be built early,
-        // late, or never — that's intended.
-        rangedUnlocked = false;
+        // late, or never — that's intended. D1: once rebirthCount>=1, ranged
+        // combat is a permanent prestige bonus and applies from theme-load,
+        // regardless of whether the rack has been (re)built this cycle.
+        rangedUnlocked = rebirthCount >= 1;
         rackObjectId = themeBuildables.length > 0 ? themeBuildables[0].object_id : null;
         // Resolve a stable native placement per object. Generated anchor_coord
         // values are currently always [0.5,0.5] (degenerate/equal), so detect
@@ -6299,8 +6557,11 @@
     if (enemiesAlive) return; // enemy preemption pauses building
     if (congaActive) return; // conga easter-egg pauses building (like enemies)
     if (buildProgressBuilderCount <= 0) return; // no one actively building right now
-    // N builders on the SAME active object build it N× faster.
-    buildCurrentProgress += (buildProgressBuilderCount * delta) / BUILD_SECONDS_PER_AGENT;
+    // N builders on the SAME active object build it N× faster. D2: each
+    // rebirth compounds a further +20% build speed (does NOT change
+    // completeBuildIfReady()'s >=1 completion threshold, only the rate).
+    const buildSpeedMultiplier = Math.pow(1.2, rebirthCount);
+    buildCurrentProgress += (buildProgressBuilderCount * delta * buildSpeedMultiplier) / BUILD_SECONDS_PER_AGENT;
   }
 
   /**
@@ -6930,6 +7191,16 @@
     // While loading, use an empty list so no placeholder/half-loaded sprites show.
     const agentList = loadingActive ? [] : (Array.isArray(state.agentMetrics) ? state.agentMetrics : []);
     lastAgentList = agentList; // expose to off-loop debug hotkeys
+
+    // Rebirth (B2): track the high-water mark of concurrently-ACTIVE agents
+    // this cycle, using the same isMetricsAgentActive() source of truth as
+    // the metrics table/canvas (see its definition for why). Feeds the
+    // AGENTS_ACTIVE badge trigger in updateBadgeUnlocks().
+    let liveActiveAgentCount = 0;
+    for (const a of agentList) {
+      if (isMetricsAgentActive(a)) liveActiveAgentCount++;
+    }
+    cyclePeakActive = Math.max(cyclePeakActive, liveActiveAgentCount);
 
     // Prune stale entries from agentCharMap (agents no longer in metrics).
     const agentIds = new Set(agentList.map((a) => a.id));

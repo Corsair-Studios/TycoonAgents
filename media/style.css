@@ -938,6 +938,133 @@ body {
   opacity: 0.85;
 }
 
+/* ── Rebirth prestige panel (sits above #badge-list, same dark-glass +
+   amber-accent language as the badge cards above) ───────────────────── */
+.rebirth-panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(255, 176, 32, 0.05);
+  border: 1px solid var(--border);
+}
+
+.rebirth-panel[hidden] {
+  display: none;
+}
+
+.rebirth-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rebirth-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.rebirth-bonus {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rebirth-req-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.rebirth-req-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rebirth-req {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.rebirth-req.earned {
+  color: var(--text);
+}
+
+.rebirth-req-mark {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.rebirth-req.earned .rebirth-req-mark {
+  color: var(--accent);
+}
+
+.rebirth-btn {
+  align-self: flex-start;
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: rgba(255, 176, 32, 0.12);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.rebirth-btn:hover:not(:disabled) {
+  background: rgba(255, 176, 32, 0.22);
+}
+
+.rebirth-btn:disabled {
+  border-color: var(--border);
+  color: var(--muted);
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.rebirth-btn--secondary {
+  border-color: var(--border);
+  color: var(--muted);
+  background: transparent;
+}
+
+.rebirth-btn--secondary:hover {
+  color: var(--text);
+  border-color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.rebirth-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.rebirth-confirm-msg {
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.rebirth-confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* ── Skills modal overlay ────────────────────────────────────────── */
 #skills-modal[hidden] {
   display: none;
