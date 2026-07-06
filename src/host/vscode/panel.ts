@@ -557,10 +557,11 @@ export class TycoonPanel {
             const payload = (message as any).payload as { theme_id?: string } | undefined;
             const themeId = payload?.theme_id;
             if (typeof themeId === "string" && themeId) {
-              // Durably clear the now-reset badge unlocks so the host doesn't
-              // re-send stale unlocks on the next theme init (un-resetting the
+              // Durably clear the now-reset badge unlocks (except rebirth_*
+              // milestone badges, which persist) so the host doesn't re-send
+              // stale unlocks on the next theme init (un-resetting the
               // rebirth). Mirrors doRebirth() clearing webview unlockedBadgeIds.
-              await this._removeThemeBadgeUnlocks(themeId);
+              await this._resetThemeBadgeUnlocksForRebirth(themeId);
             }
           } catch (err) {
             console.error("TycoonAgents: Could not reset rebirth badges:", err);
@@ -1257,6 +1258,26 @@ export class TycoonPanel {
       delete store[themeId];
       await this._writeBadgeUnlocksStore(store);
     }
+  }
+
+  /**
+   * On Rebirth, wipe a theme's persisted badge unlocks EXCEPT badge_ids
+   * starting with "rebirth_" — those mark permanent prestige milestones
+   * (rebirth_1/2/3) and must survive every future Rebirth. Mirrors the
+   * webview's doRebirth() local unlockedBadgeIds filtering. A full wipe
+   * (including rebirth_* badges) still happens via resetMetrics().
+   */
+  private async _resetThemeBadgeUnlocksForRebirth(themeId: string): Promise<void> {
+    if (!themeId) return;
+    const store = await this._readBadgeUnlocksStore();
+    const existing = Array.isArray(store[themeId]) ? store[themeId] : [];
+    const kept = existing.filter((id) => typeof id === "string" && id.startsWith("rebirth_"));
+    if (kept.length > 0) {
+      store[themeId] = kept;
+    } else {
+      delete store[themeId];
+    }
+    await this._writeBadgeUnlocksStore(store);
   }
 
   // --- Rebirth (prestige) persistence -------------------------------

@@ -94,10 +94,38 @@ export interface ThemeBadge {
   badge_id: string;
   display_name: string;
   description: string;
-  trigger_type: 'OBJECTS_BUILT' | 'RIVALS_EVICTED' | 'TASKS_COMPLETED' | 'AGENTS_ACTIVE';
+  // REBIRTH_COUNT: threshold compares against lifetime rebirthCount (never wiped).
+  // OBJECTS_BUILT_POST_REBIRTH: like OBJECTS_BUILT, but only counts once rebirthCount >= 1
+  // (i.e. earnable only after at least one Rebirth); wipes on rebirth like a normal badge.
+  trigger_type: 'OBJECTS_BUILT' | 'RIVALS_EVICTED' | 'TASKS_COMPLETED' | 'AGENTS_ACTIVE'
+    | 'REBIRTH_COUNT' | 'OBJECTS_BUILT_POST_REBIRTH';
   threshold: number;
   icon_asset: string;
 }
+
+/**
+ * Runtime list of every valid ThemeBadge trigger_type, single-sourced for
+ * validation (e.g. themeArchive import checks). `satisfies` guarantees each
+ * array element is a member of the union; the exhaustiveness guard below
+ * guarantees no union member is missing from the array — so the union and
+ * this list can never drift in either direction.
+ */
+export const BADGE_TRIGGER_TYPES = [
+  'OBJECTS_BUILT',
+  'RIVALS_EVICTED',
+  'TASKS_COMPLETED',
+  'AGENTS_ACTIVE',
+  'REBIRTH_COUNT',
+  'OBJECTS_BUILT_POST_REBIRTH',
+] as const satisfies readonly ThemeBadge['trigger_type'][];
+
+// Compile-time exhaustiveness guard: resolves to `true` only when every
+// ThemeBadge['trigger_type'] union member appears in BADGE_TRIGGER_TYPES;
+// otherwise it resolves to `never` and the assignment fails to compile.
+type _BadgeTriggerTypesExhaustive =
+  ThemeBadge['trigger_type'] extends (typeof BADGE_TRIGGER_TYPES)[number] ? true : never;
+const _badgeTriggerTypesExhaustive: _BadgeTriggerTypesExhaustive = true;
+void _badgeTriggerTypesExhaustive;
 
 // Master Schema exported by the Factory and read by the Theater
 export interface ThemeManifest {

@@ -43,7 +43,7 @@ test('upgrades a legacy manifest missing all fields: crate/poof/projectile asset
   const anchorKeys = manifest.decor_objects.map((d) => `${d.anchor_coord[0]},${d.anchor_coord[1]}`);
   assert.equal(new Set(anchorKeys).size, 9);
 
-  assert.equal(manifest.badges.length, 20);
+  assert.equal(manifest.badges.length, 24);
 
   assert.ok(changed.length >= 5, `expected at least 5 change entries, got ${changed.length}`);
   assert.ok(changed.some((c) => c.includes('crate_asset')));
@@ -51,18 +51,39 @@ test('upgrades a legacy manifest missing all fields: crate/poof/projectile asset
   assert.ok(changed.some((c) => c.includes('decor_objects')));
 });
 
-test('upgrades a manifest with empty badges to the 20 default badges', () => {
+test('upgrades a manifest with empty badges to the 24 default badges', () => {
   const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: [] }));
 
-  assert.equal(manifest.badges.length, 20);
+  assert.equal(manifest.badges.length, 24);
   assert.ok(manifest.badges.some((b) => b.trigger_type === 'OBJECTS_BUILT'));
   assert.ok(manifest.badges.some((b) => b.trigger_type === 'RIVALS_EVICTED'));
   assert.ok(manifest.badges.some((b) => b.trigger_type === 'TASKS_COMPLETED'));
   assert.ok(manifest.badges.some((b) => b.trigger_type === 'AGENTS_ACTIVE'));
+  assert.ok(manifest.badges.some((b) => b.trigger_type === 'REBIRTH_COUNT'));
+  assert.ok(manifest.badges.some((b) => b.trigger_type === 'OBJECTS_BUILT_POST_REBIRTH'));
   for (const badge of manifest.badges) {
     assert.match(badge.icon_asset, /^frames\.json#achievement_/);
   }
   assert.ok(changed.includes('badges'));
+});
+
+test('the 3 rebirth_* milestone badges and the 1 rebirth-gated badge exist with unique ids/names', () => {
+  const { manifest } = upgradeThemeManifest(minimalManifest({ badges: [] }));
+
+  const rebirth1 = manifest.badges.find((b) => b.badge_id === 'rebirth_1');
+  const rebirth2 = manifest.badges.find((b) => b.badge_id === 'rebirth_2');
+  const rebirth3 = manifest.badges.find((b) => b.badge_id === 'rebirth_3');
+  const gated = manifest.badges.find((b) => b.badge_id === 'reborn_builder');
+
+  assert.ok(rebirth1 && rebirth1.trigger_type === 'REBIRTH_COUNT' && rebirth1.threshold === 1);
+  assert.ok(rebirth2 && rebirth2.trigger_type === 'REBIRTH_COUNT' && rebirth2.threshold === 2);
+  assert.ok(rebirth3 && rebirth3.trigger_type === 'REBIRTH_COUNT' && rebirth3.threshold === 3);
+  assert.ok(gated && gated.trigger_type === 'OBJECTS_BUILT_POST_REBIRTH');
+
+  const ids = manifest.badges.map((b) => b.badge_id);
+  assert.equal(new Set(ids).size, ids.length, 'all badge_ids must be unique');
+  const names = manifest.badges.map((b) => b.display_name);
+  assert.equal(new Set(names).size, names.length, 'all display_names must be unique');
 });
 
 test('merges missing default badges into a pre-existing custom badge array, preserving the custom entry', () => {
@@ -77,11 +98,11 @@ test('merges missing default badges into a pre-existing custom badge array, pres
 
   const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: existingBadges }));
 
-  // The custom badge is preserved at the front, all 20 defaults are appended.
-  assert.equal(manifest.badges.length, 21);
+  // The custom badge is preserved at the front, all 24 defaults are appended.
+  assert.equal(manifest.badges.length, 25);
   assert.deepEqual(manifest.badges[0], existingBadges[0]);
   assert.ok(manifest.badges.some((b) => b.badge_id === 'task_500'));
-  assert.ok(changed.some((c) => c.includes('20 new default badges')));
+  assert.ok(changed.some((c) => c.includes('24 new default badges')));
 });
 
 const OLD_EIGHT_BADGES = [
@@ -95,10 +116,10 @@ const OLD_EIGHT_BADGES = [
   { badge_id: 'evict_20', display_name: 'Warlord', description: 'Evict 20 rivals.', trigger_type: 'RIVALS_EVICTED' as const, threshold: 20, icon_asset: 'frames.json#achievement_8' },
 ];
 
-test('upgrades an existing 8-badge manifest (old default set) to the full 20, preserving all originals', () => {
+test('upgrades an existing 8-badge manifest (old default set) to the full 24, preserving all originals', () => {
   const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: [...OLD_EIGHT_BADGES] }));
 
-  assert.equal(manifest.badges.length, 20);
+  assert.equal(manifest.badges.length, 24);
 
   // All 8 originals are preserved, in order, at the front.
   for (let i = 0; i < OLD_EIGHT_BADGES.length; i++) {
@@ -108,11 +129,12 @@ test('upgrades an existing 8-badge manifest (old default set) to the full 20, pr
   // A couple of the new defaults are now present.
   assert.ok(manifest.badges.some((b) => b.badge_id === 'task_500'));
   assert.ok(manifest.badges.some((b) => b.badge_id === 'crew_6'));
+  assert.ok(manifest.badges.some((b) => b.badge_id === 'rebirth_2'));
 
-  assert.ok(changed.some((c) => c.includes('12 new default badges')));
+  assert.ok(changed.some((c) => c.includes('16 new default badges')));
 });
 
-test('all 20 default badge display_names are unique (guards name collisions)', () => {
+test('all 24 default badge display_names are unique (guards name collisions)', () => {
   const { manifest } = upgradeThemeManifest(minimalManifest({ badges: [] }));
   const names = manifest.badges.map((b) => b.display_name);
   assert.equal(new Set(names).size, names.length, `duplicate display_name found among: ${names.join(', ')}`);

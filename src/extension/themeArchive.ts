@@ -1,4 +1,5 @@
 import { unzipSync, zipSync } from 'fflate';
+import { BADGE_TRIGGER_TYPES } from '../shared/types';
 import type { ThemeManifest } from '../shared/types';
 
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
@@ -200,7 +201,7 @@ function isThemeManifest(value: unknown): value is ThemeManifest {
       && isNonEmptyString(badge.badge_id)
       && isNonEmptyString(badge.display_name)
       && typeof badge.description === 'string'
-      && ['OBJECTS_BUILT', 'RIVALS_EVICTED'].includes(String(badge.trigger_type))
+      && (BADGE_TRIGGER_TYPES as readonly string[]).includes(String(badge.trigger_type))
       && isPositiveNumber(badge.threshold, true)
       && isNonEmptyString(badge.icon_asset),
   );

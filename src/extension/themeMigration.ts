@@ -75,11 +75,15 @@ function buildDefaultDecorObjects(): DecorObject[] {
 }
 
 /**
- * Builds the fixed 20-entry default badge roster (5 OBJECTS_BUILT, 8
- * RIVALS_EVICTED, 5 TASKS_COMPLETED, 2 AGENTS_ACTIVE), reusing the
- * achievement art board's frames (achievement_0..achievement_19) as icons.
- * Applied whenever a manifest has no badges, so the badge UI always has
- * content to render.
+ * Builds the fixed 24-entry default badge roster (5 OBJECTS_BUILT, 8
+ * RIVALS_EVICTED, 5 TASKS_COMPLETED, 2 AGENTS_ACTIVE, 3 REBIRTH_COUNT, 1
+ * OBJECTS_BUILT_POST_REBIRTH), reusing the achievement art board's frames
+ * (achievement_0..achievement_19) as icons. The achievement atlas only has 20
+ * cells, so the last 4 badges reuse existing frame indices rather than
+ * referencing an out-of-range achievement_N (same "reuse over add" approach
+ * already implicit in this list running exactly 0..19 with no gaps). Applied
+ * whenever a manifest has no badges, so the badge UI always has content to
+ * render.
  */
 export function buildDefaultBadges(): ThemeBadge[] {
   return [
@@ -242,6 +246,38 @@ export function buildDefaultBadges(): ThemeBadge[] {
       trigger_type: 'OBJECTS_BUILT',
       threshold: 13,
       icon_asset: 'frames.json#achievement_19',
+    },
+    {
+      badge_id: 'rebirth_1',
+      display_name: 'Reborn',
+      description: 'Rebirth once. This badge is permanent — it survives every future Rebirth.',
+      trigger_type: 'REBIRTH_COUNT',
+      threshold: 1,
+      icon_asset: 'frames.json#achievement_17',
+    },
+    {
+      badge_id: 'rebirth_2',
+      display_name: 'Twice Reborn',
+      description: 'Rebirth twice. This badge is permanent — it survives every future Rebirth.',
+      trigger_type: 'REBIRTH_COUNT',
+      threshold: 2,
+      icon_asset: 'frames.json#achievement_18',
+    },
+    {
+      badge_id: 'rebirth_3',
+      display_name: 'Transcendent',
+      description: 'Rebirth three times. This badge is permanent — it survives every future Rebirth.',
+      trigger_type: 'REBIRTH_COUNT',
+      threshold: 3,
+      icon_asset: 'frames.json#achievement_19',
+    },
+    {
+      badge_id: 'reborn_builder',
+      display_name: 'New Game+',
+      description: 'After at least one Rebirth, build 10 objects in a single cycle.',
+      trigger_type: 'OBJECTS_BUILT_POST_REBIRTH',
+      threshold: 10,
+      icon_asset: 'frames.json#achievement_3',
     },
   ];
 }

@@ -300,6 +300,10 @@
     const effEvicted = cycleRivalsEvicted;
     const effTasks = (state.completedTasks || 0) - rebirthBaseline.tasks;
     const effPeak = cyclePeakActive;
+    // OBJECTS_BUILT_POST_REBIRTH (e.g. reborn_builder) only counts once the
+    // player has rebirthed at least once; before that it's pinned to 0 so the
+    // badge can never unlock on a first-ever cycle.
+    const effBuiltPostRebirth = rebirthCount >= 1 ? effBuilt : 0;
     const objectCount = themeBuildables.length;
     let changed = false;
     for (const b of themeBadges) {
@@ -310,11 +314,18 @@
         case "RIVALS_EVICTED": eff = effEvicted; break;
         case "TASKS_COMPLETED": eff = effTasks; break;
         case "AGENTS_ACTIVE": eff = effPeak; break;
+        // REBIRTH_COUNT (rebirth_1/2/3): lifetime rebirthCount, never baseline-
+        // adjusted and never wiped — these badges are permanent milestones.
+        case "REBIRTH_COUNT": eff = rebirthCount; break;
+        case "OBJECTS_BUILT_POST_REBIRTH": eff = effBuiltPostRebirth; break;
         default: continue;
       }
-      // Clamp OBJECTS_BUILT thresholds to this theme's actual buildable count
-      // so a capstone badge tuned for a bigger theme still unlocks on smaller ones.
-      const t = b.trigger_type === "OBJECTS_BUILT" ? Math.min(b.threshold, objectCount) : b.threshold;
+      // Clamp OBJECTS_BUILT-flavored thresholds to this theme's actual
+      // buildable count so a capstone badge tuned for a bigger theme still
+      // unlocks on smaller ones.
+      const t = (b.trigger_type === "OBJECTS_BUILT" || b.trigger_type === "OBJECTS_BUILT_POST_REBIRTH")
+        ? Math.min(b.threshold, objectCount)
+        : b.threshold;
       const met = eff >= t;
       if (met) {
         unlockedBadgeIds.add(b.badge_id);
@@ -351,12 +362,17 @@
       case "RIVALS_EVICTED": sentence = `Awarded for evicting ${threshold} rival(s).`; break;
       case "TASKS_COMPLETED": sentence = `Awarded for completing ${threshold} task(s).`; break;
       case "AGENTS_ACTIVE": sentence = `Awarded for having ${threshold} agents active at once.`; break;
+      case "REBIRTH_COUNT": sentence = `Awarded for reaching Rebirth ×${threshold}.`; break;
+      case "OBJECTS_BUILT_POST_REBIRTH": sentence = `Awarded for building ${threshold} object(s) in a single cycle, after at least one Rebirth.`; break;
       default: sentence = `Awarded for building ${threshold} object(s).`; break;
     }
     const parts = [sentence];
     if (b && b.description) parts.push(String(b.description));
     if (b && b.badge_id && requiredRebirthBadgeIds.indexOf(b.badge_id) >= 0) {
       parts.push("Required for your next Rebirth.");
+    }
+    if (b && b.trigger_type === "REBIRTH_COUNT") {
+      parts.push("This badge is permanent — it persists through every Rebirth.");
     }
     return parts.join(" ");
   }
@@ -375,6 +391,14 @@
       case "RIVALS_EVICTED": eff = cycleRivalsEvicted; unit = "evicted"; break;
       case "TASKS_COMPLETED": eff = (state.completedTasks || 0) - rebirthBaseline.tasks; unit = "tasks"; break;
       case "AGENTS_ACTIVE": eff = cyclePeakActive; unit = "active"; break;
+      // REBIRTH_COUNT (rebirth_1/2/3): progress is lifetime rebirthCount itself,
+      // e.g. "1 / 2 rebirths".
+      case "REBIRTH_COUNT": eff = rebirthCount; unit = "rebirths"; break;
+      case "OBJECTS_BUILT_POST_REBIRTH":
+        eff = rebirthCount >= 1 ? cycleObjectsBuilt : 0;
+        threshold = Math.min(threshold, themeBuildables.length);
+        unit = "built";
+        break;
       default:
         eff = cycleObjectsBuilt;
         threshold = Math.min(threshold, themeBuildables.length);
@@ -644,13 +668,16 @@
   /**
    * Pick 3 distinct random badge_ids from themeBadges as the next rebirth's
    * requirement gate. Uses fewer than 3 if the theme doesn't have that many.
+   * Draws from the tier pool matching the CURRENT rebirthCount (see
+   * rebirthTierPool()) so the requirement gets harder with each Rebirth.
    */
   function rollRebirthRequirement() {
     const ids = (themeBadges || []).map((b) => b && b.badge_id).filter(Boolean);
-    // Draw only from the curated REBIRTH_BADGE_POOL intersected with this
-    // theme's badges; if the theme has none of the pool badges, fall back to
+    // Draw only from the curated tier pool intersected with this theme's
+    // badges; if the theme has none of the tier's pool badges, fall back to
     // the full badge set so rebirth never becomes impossible.
-    const restricted = ids.filter(isRebirthBadge);
+    const tierPool = rebirthTierPool(rebirthCount);
+    const restricted = ids.filter((id) => tierPool.indexOf(id) >= 0);
     const pool = (restricted.length > 0 ? restricted : ids).slice();
     const picked = [];
     const n = Math.min(3, pool.length);
@@ -671,9 +698,11 @@
    * Advance the prestige cycle: bump rebirthCount (drives the ranged-weapon +
    * build-speed bonuses, see D1/D2), re-baseline the per-cycle badge counters
    * to the CURRENT lifetime totals (so badges must be re-earned from here),
-   * wipe unlockedBadgeIds, roll a fresh 3-badge requirement, and persist.
-   * Deliberately does NOT touch buildBuiltCount/rivalsEvictedCount/agent
-   * metrics/HUD — those are lifetime and keep counting through rebirth.
+   * wipe unlockedBadgeIds (EXCEPT rebirth_* milestone badges, which are
+   * permanent and survive every Rebirth), roll a fresh 3-badge requirement
+   * from the tier matching the new rebirthCount, and persist. Deliberately
+   * does NOT touch buildBuiltCount/rivalsEvictedCount/agent metrics/HUD —
+   * those are lifetime and keep counting through rebirth.
    */
   function doRebirth() {
     rebirthCount++;
@@ -681,7 +710,7 @@
     cycleObjectsBuilt = 0;
     cycleRivalsEvicted = 0;
     cyclePeakActive = 0;
-    unlockedBadgeIds.clear();
+    unlockedBadgeIds = new Set([...unlockedBadgeIds].filter((id) => id.indexOf("rebirth_") === 0));
     rollRebirthRequirement();
     rebirthConfirmPending = false;
     persistRebirth();
@@ -798,7 +827,7 @@
     const title = document.createElement("div");
     title.className = "rebirth-title";
     title.textContent = `Rebirth ×${rebirthCount}`;
-    const rebirthTip = "Rebirth resets your earned badges so you can earn them again — but you keep your agent metrics and gain permanent, stacking bonuses (ranged weapons, faster building). Earn the required badges below to unlock it.";
+    const rebirthTip = "Rebirth resets your earned badges so you can earn them again — but you keep your agent metrics and gain permanent, stacking bonuses (ranged weapons, faster building). Each Rebirth's required badges get harder than the last. Earn the required badges below to unlock it.";
     title.title = rebirthTip;
     const info = document.createElement("span");
     info.className = "rebirth-info";
@@ -848,7 +877,7 @@
       confirm.className = "rebirth-confirm";
       const msg = document.createElement("div");
       msg.className = "rebirth-confirm-msg";
-      msg.textContent = "Rebirth resets all badges. Your agent metrics are kept. Continue?";
+      msg.textContent = "Rebirth resets your earned badges (your agent metrics and any Rebirth badges are kept). Continue?";
       confirm.appendChild(msg);
       const row = document.createElement("div");
       row.className = "rebirth-confirm-actions";
@@ -2576,10 +2605,31 @@
   let requiredRebirthBadgeIds = [];
   /** True while the two-step Rebirth button confirm prompt is showing. */
   let rebirthConfirmPending = false;
-  /** Dedicated pool of badge_ids eligible to be rebirth-gate badges; the requirement is drawn only from these. */
-  const REBIRTH_BADGE_POOL = ["build_6", "build_10", "evict_10", "evict_20", "task_50", "crew_3"];
-  /** True iff badge_id is in REBIRTH_BADGE_POOL (reserved as a rebirth-gate badge). */
-  function isRebirthBadge(id) { return REBIRTH_BADGE_POOL.indexOf(id) >= 0; }
+  /**
+   * Tiered rebirth-gate pools, selected by rebirthCount at roll time (see
+   * rollRebirthRequirement()) so each successive Rebirth demands a harder set
+   * of badges. Thresholds are checked against buildDefaultBadges() (themeMigration.ts):
+   *   Tier 0 (rebirthCount === 0, i.e. rolling the FIRST rebirth's requirement):
+   *     the easiest badges — build_3/6 (3/6 objects), evict_5/10 (5/10 evictions),
+   *     task_10 (10 tasks), crew_3 (3 agents active).
+   *   Tier 1 (rebirthCount === 1): mid-range — build_10/13, evict_20/35,
+   *     task_50, crew_6.
+   *   Tier 2+ (rebirthCount >= 2): the hardest per-cycle badges — evict_50/75/100,
+   *     task_150/500. (No harder AGENTS_ACTIVE badge exists beyond crew_6, which
+   *     is already used at tier 1, so tier 2 draws only from evict_/task_.)
+   * rebirth_* badges are NEVER included in any tier: they're permanent
+   * (rebirthCount-gated, never wiped) so putting one in a requirement pool
+   * would make it trivially/permanently satisfied after the first Rebirth.
+   */
+  const REBIRTH_TIER0_EASY = ["build_3", "build_6", "evict_5", "evict_10", "task_10", "crew_3"];
+  const REBIRTH_TIER1_MEDIUM = ["build_10", "build_13", "evict_20", "evict_35", "task_50", "crew_6"];
+  const REBIRTH_TIER2_HARD = ["evict_50", "evict_75", "evict_100", "task_150", "task_500"];
+  /** Pick the tier pool to draw the next requirement from, based on rebirthCount. */
+  function rebirthTierPool(count) {
+    if (count <= 0) return REBIRTH_TIER0_EASY;
+    if (count === 1) return REBIRTH_TIER1_MEDIUM;
+    return REBIRTH_TIER2_HARD;
+  }
   // NOTE: rebirthCount/rebirthBaseline/requiredRebirthBadgeIds are restored
   // from vscode.getState().rebirth inside the THEME_INITIALIZED handler
   // (~line 4349), not here — requiredRebirthBadgeIds must be validated
