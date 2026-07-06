@@ -145,7 +145,7 @@ export function buildRivalAtlasPrompt(
  * Their combined median is 104px in a 128px frame.
  */
 export const CHARACTER_TARGET_CONTENT_HEIGHT = 104;
-export const CHARACTER_TARGET_CONTENT_PERCENT = 81.25;
+export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
 
 function boardContract(columns: number, rows: number): string {
   return [
@@ -209,8 +209,8 @@ export function buildCharacterAtlasPrompt(
     'Use the same camera distance and character scale used for every other character board in this theme.',
     `In walking and neutral-standing cells, the complete character from head to feet occupies exactly ${CHARACTER_TARGET_CONTENT_PERCENT}% of the cell height.`,
     `Measure that ${CHARACTER_TARGET_CONTENT_PERCENT}% against each individual cell, never against the full canvas.`,
-    'A standing character below 78% or above 85% of its cell height is an incorrect result.',
-    'Reserve the remaining approximately 19% as solid-magenta safety padding split above the head and below the feet.',
+    'A standing character below 68% or above 76% of its cell height is an incorrect result.',
+    'Reserve the remaining approximately 28% as solid-magenta safety padding split above the head and below the feet.',
     'Keep a visible magenta gutter at every horizontal row boundary and below the entire fourth row.',
     'Do not leave oversized magenta margins around a small character.',
     'Do not zoom in or out based on the character costume, body type, equipment, or pose.',
@@ -307,6 +307,8 @@ export function buildCharacterAtlasPrompt(
     'The seated pose is a MIME pose.',
     '',
     'The character must appear to be sitting on an invisible chair.',
+    '',
+    'The seated character faces to the right (screen-right), body and head oriented toward the right edge of the cell.',
     '',
     'The invisible chair is NOT drawn.',
     '',

@@ -101,10 +101,10 @@ test('character prompt enforces the production sprite-board mime contracts', () 
   assert.match(prompt, /EMPTY TARGET CONTRACT \(HIGHEST PRIORITY\)[\s\S]*No construction result/i);
   assert.match(prompt, /playful, non-graphic, non-contact actions/i);
   assert.equal(CHARACTER_TARGET_CONTENT_HEIGHT, 104);
-  assert.equal(CHARACTER_TARGET_CONTENT_PERCENT, 81.25);
-  assert.match(prompt, /complete character from head to feet occupies exactly 81\.25% of the cell height/i);
-  assert.match(prompt, /81\.25% against each individual cell/i);
-  assert.match(prompt, /below 78% or above 85%.*incorrect result/i);
+  assert.equal(CHARACTER_TARGET_CONTENT_PERCENT, 72);
+  assert.match(prompt, /complete character from head to feet occupies exactly 72% of the cell height/i);
+  assert.match(prompt, /72% against each individual cell/i);
+  assert.match(prompt, /below 68% or above 76%.*incorrect result/i);
   assert.match(prompt, /Do not leave oversized magenta margins/i);
   assert.match(prompt, /visible magenta gutter at every horizontal row boundary/i);
   assert.match(prompt, /safety padding below both feet/i);
