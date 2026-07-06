@@ -1,10 +1,14 @@
 import type { ThemeManifest } from '../shared/types';
+import { THEME_EXPRESSION_COUNT } from './themePlan';
 
 // ============================================================================
 // THEME INTEGRITY HEALTH CHECK
 // Pure data validation — no API calls. Flags roster<->frames mismatches, the
 // bug class that caused the "Roadblock" placeholder (manifest listed 4 rivals
-// but frames.json had only 3 rival_* keys).
+// but frames.json had only 3 rival_* keys). Also covers the fixed-key FX/UI
+// families (projectile/poof/crate/expression/achievement) that are not
+// roster-driven but can still silently lose their frames when a board
+// partially fails to generate.
 // ============================================================================
 
 export type ThemeIntegrityIssueKind = 'missing_frames' | 'orphan_frames' | 'empty_frames';
@@ -17,10 +21,23 @@ export interface ThemeIntegrityIssue {
   message: string;
 }
 
-// Roster arrays that are keyed 1:1 into frames.json via a fixed prefix. The
-// achievement_/expression_ frame families are fixed sets (not roster-driven)
-// and are intentionally excluded from orphan detection.
+// Roster arrays that are keyed 1:1 into frames.json via a fixed prefix.
 const ROSTER_FRAME_PREFIXES = ['character_', 'rival_', 'object_', 'decor_'] as const;
+
+// Every prefixed frame-key family whose expected membership can be derived
+// reliably, used both to label issues and to drive orphan detection below.
+// expression_/achievement_ are fixed sets (not roster arrays) but their
+// expected keys ARE derivable — expression_ from the hardcoded
+// THEME_EXPRESSION_COUNT pipeline constant, achievement_ from manifest.badges
+// — so, unlike before, they are no longer excluded from orphan detection.
+const FRAME_ENTITY_BY_PREFIX: Record<string, string> = {
+  character_: 'Agent',
+  rival_: 'Rival',
+  object_: 'Buildable object',
+  decor_: 'Decor object',
+  expression_: 'Expression',
+  achievement_: 'Badge icon',
+};
 
 // The authoritative frames key for a roster entry lives in its asset field
 // ("frames.json#<key>") — the exact string the webview resolves to render.
@@ -33,18 +50,42 @@ function frameKeyFromAsset(asset?: string): string | null {
   return key.length > 0 ? key : null;
 }
 
-function describeEntity(prefix: (typeof ROSTER_FRAME_PREFIXES)[number]): string {
-  switch (prefix) {
-    case 'character_':
-      return 'Agent';
-    case 'rival_':
-      return 'Rival';
-    case 'object_':
-      return 'Buildable object';
-    case 'decor_':
-      return 'Decor object';
-  }
+// Fixed single-key FX/UI asset families. Each is gated by the matching
+// manifest.viewport asset field, which theme migration backfills onto every
+// manifest (see themeMigration.ts) — so by the time a manifest reaches this
+// check the gate is essentially always set. A manifest that genuinely
+// predates the field (pre-migration / hand-built test fixture) is treated as
+// not-yet-expecting the family rather than guessed at, so it never
+// false-positives. Current gameplay depends on all three (see media/main.js
+// themeHasProjectile / themeHasPoofAsset gating), so a genuinely-expected but
+// missing/empty entry is an error, not a warning.
+interface FixedAssetFamily {
+  entity: string;
+  fallbackKey: string;
+  impact: string;
+  gate: (manifest: ThemeManifest) => string | undefined;
 }
+
+const FIXED_ASSET_FAMILIES: FixedAssetFamily[] = [
+  {
+    entity: 'Projectile FX',
+    fallbackKey: 'projectile',
+    impact: 'ranged attacks will render with no visible projectile',
+    gate: (manifest) => manifest.viewport?.projectile_asset,
+  },
+  {
+    entity: 'Poof FX',
+    fallbackKey: 'poof',
+    impact: 'build/reveal poof animation will render nothing',
+    gate: (manifest) => manifest.viewport?.poof_asset,
+  },
+  {
+    entity: 'Crate icon',
+    fallbackKey: 'crate',
+    impact: 'crate reveal will render nothing',
+    gate: (manifest) => manifest.viewport?.crate_asset,
+  },
+];
 
 export function validateThemeIntegrity(
   manifest: ThemeManifest,
@@ -53,15 +94,15 @@ export function validateThemeIntegrity(
   const issues: ThemeIntegrityIssue[] = [];
   const framesRecord = frames ?? {};
 
-  // Tracks every frames key that is accounted for by a roster entry, so the
-  // orphan pass below can skip them.
+  // Tracks every frames key that is accounted for by a roster entry (or one of
+  // the fixed families below), so the orphan pass can skip them.
   const claimedKeys = new Set<string>();
 
   const checkRoster = (
     prefix: (typeof ROSTER_FRAME_PREFIXES)[number],
     entries: Array<{ id: string; label: string; asset?: string }>,
   ) => {
-    const entity = describeEntity(prefix);
+    const entity = FRAME_ENTITY_BY_PREFIX[prefix];
     for (const { id, label, asset } of entries) {
       // Prefer the authoritative key from the asset field; fall back to a
       // prefix-safe reconstruction so an already-prefixed id ("rival_scarlett")
@@ -106,18 +147,103 @@ export function validateThemeIntegrity(
     (manifest.decor_objects ?? []).map((d) => ({ id: d.decor_id, label: d.display_name, asset: d.sprite_asset })),
   );
 
-  // Orphan pass: any character_/rival_/object_/decor_ frames key with no
-  // matching roster entry is dead art (harmless but worth flagging).
+  // Fixed single-key FX families: projectile / poof / crate. Gated on the
+  // manifest.viewport.*_asset field so a legacy-shaped manifest that predates
+  // the field is skipped instead of guessed at.
+  for (const family of FIXED_ASSET_FAMILIES) {
+    const gateAsset = family.gate(manifest);
+    if (typeof gateAsset !== 'string' || gateAsset.length === 0) continue;
+    const key = frameKeyFromAsset(gateAsset) ?? family.fallbackKey;
+    claimedKeys.add(key);
+    const value = framesRecord[key];
+    if (value === undefined) {
+      issues.push({
+        severity: 'error',
+        kind: 'missing_frames',
+        entity: family.entity,
+        key,
+        message: `${family.entity} (${key}) has no frames — ${family.impact}`,
+      });
+    } else if (Array.isArray(value) && value.length === 0) {
+      issues.push({
+        severity: 'error',
+        kind: 'empty_frames',
+        entity: family.entity,
+        key,
+        message: `${family.entity} (${key}) has an empty frames array — ${family.impact}`,
+      });
+    }
+  }
+
+  // Expressions: a fixed-size cosmetic set (THEME_EXPRESSION_COUNT slots keyed
+  // expression_0..expression_<N-1>, see themePlan.ts) with no manifest-side
+  // roster to check against — the count is a hardcoded pipeline constant, so
+  // it applies uniformly to every current-format theme. Cosmetic-only
+  // (emotes), so missing/empty entries are warnings, never errors.
+  for (let i = 0; i < THEME_EXPRESSION_COUNT; i++) {
+    const key = `expression_${i}`;
+    claimedKeys.add(key);
+    const value = framesRecord[key];
+    if (value === undefined) {
+      issues.push({
+        severity: 'warning',
+        kind: 'missing_frames',
+        entity: 'Expression',
+        key,
+        message: `Expression frame "${key}" has no frames — that emote will not play`,
+      });
+    } else if (Array.isArray(value) && value.length === 0) {
+      issues.push({
+        severity: 'warning',
+        kind: 'empty_frames',
+        entity: 'Expression',
+        key,
+        message: `Expression frame "${key}" has an empty frames array`,
+      });
+    }
+  }
+
+  // Badge/achievement icons: keyed via each badge's own icon_asset field, the
+  // same asset-key convention as the roster checks above. manifest.badges is
+  // the authoritative expected set here (badges are planner/user content, not
+  // a fixed count like expressions). Cosmetic-only (a badge just won't show
+  // its icon), so missing/empty entries are warnings, never errors.
+  (manifest.badges ?? []).forEach((badge, index) => {
+    const key = frameKeyFromAsset(badge.icon_asset) ?? `achievement_${index}`;
+    claimedKeys.add(key);
+    const value = framesRecord[key];
+    if (value === undefined) {
+      issues.push({
+        severity: 'warning',
+        kind: 'missing_frames',
+        entity: 'Badge icon',
+        key,
+        message: `Badge icon "${badge.display_name}" (${key}) has no frames`,
+      });
+    } else if (Array.isArray(value) && value.length === 0) {
+      issues.push({
+        severity: 'warning',
+        kind: 'empty_frames',
+        entity: 'Badge icon',
+        key,
+        message: `Badge icon "${badge.display_name}" (${key}) has an empty frames array`,
+      });
+    }
+  });
+
+  // Orphan pass: any character_/rival_/object_/decor_/expression_/achievement_
+  // frames key with no matching entry from the checks above is dead art
+  // (harmless but worth flagging).
   for (const key of Object.keys(framesRecord)) {
-    const prefix = ROSTER_FRAME_PREFIXES.find((p) => key.startsWith(p));
+    const prefix = Object.keys(FRAME_ENTITY_BY_PREFIX).find((p) => key.startsWith(p));
     if (!prefix) continue;
     if (claimedKeys.has(key)) continue;
     issues.push({
       severity: 'warning',
       kind: 'orphan_frames',
-      entity: describeEntity(prefix),
+      entity: FRAME_ENTITY_BY_PREFIX[prefix],
       key,
-      message: `Frames key "${key}" has no matching roster entry — unused art`,
+      message: `Frames key "${key}" has no matching entry — unused art`,
     });
   }
 

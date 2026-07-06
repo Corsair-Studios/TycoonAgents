@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import { validateThemeIntegrity } from '../src/extension/themeHealth';
 import type { ThemeManifest } from '../src/shared/types';
 
+// Matches buildDefaultBadges() (themeMigration.ts): 20 badges whose icon_asset
+// keys line up 1:1 with baseFrames()'s achievement_0..19, so any test that
+// doesn't care about badges specifically stays "clean" by default.
+function defaultBadges(): ThemeManifest['badges'] {
+  return Array.from({ length: 20 }, (_unused, i) => ({
+    badge_id: `badge_${i}`,
+    display_name: `Badge ${i}`,
+    description: 'test badge',
+    trigger_type: 'OBJECTS_BUILT' as const,
+    threshold: 1,
+    icon_asset: `frames.json#achievement_${i}`,
+  }));
+}
+
 function minimalManifest(overrides: Partial<ThemeManifest> = {}): ThemeManifest {
   return {
     manifest_version: '1',
@@ -19,7 +33,7 @@ function minimalManifest(overrides: Partial<ThemeManifest> = {}): ThemeManifest 
     roster_rivals: [],
     buildable_objects: [],
     decor_objects: [],
-    badges: [],
+    badges: defaultBadges(),
     ...overrides,
   };
 }
@@ -167,7 +181,7 @@ test('a roster entry whose asset key is genuinely absent from frames still error
   assert.match(missing[0].message, /Scarlett/);
 });
 
-test('achievement_ and expression_ frame keys are never flagged as orphans', () => {
+test('achievement_ and expression_ frame keys matching their expected sets produce no orphans', () => {
   const manifest = minimalManifest();
   const frames = baseFrames();
 
@@ -187,4 +201,133 @@ test('undefined roster arrays (older manifests) do not throw and are treated as 
   assert.doesNotThrow(() => validateThemeIntegrity(manifest, frames));
   const issues = validateThemeIntegrity(manifest, frames);
   assert.deepEqual(issues, []);
+});
+
+// ----------------------------------------------------------------------------
+// Fixed-key FX families: projectile / poof / crate
+// ----------------------------------------------------------------------------
+
+test('a missing projectile family, when gated on by viewport.projectile_asset, is flagged as an error', () => {
+  const manifest = minimalManifest({
+    viewport: {
+      native_width: 533,
+      native_height: 751,
+      background_asset: 'frames.json#environment',
+      walkable_nav_polygon: [[0, 0], [1, 0], [1, 1], [1, 1], [0, 1], [0, 1]],
+      projectile_asset: 'frames.json#projectile',
+    },
+  });
+  const frames = baseFrames(); // projectile intentionally absent
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].severity, 'error');
+  assert.equal(issues[0].kind, 'missing_frames');
+  assert.equal(issues[0].entity, 'Projectile FX');
+  assert.equal(issues[0].key, 'projectile');
+});
+
+test('populated projectile/poof/crate families alongside a full roster produce no issues', () => {
+  const manifest = minimalManifest({
+    viewport: {
+      native_width: 533,
+      native_height: 751,
+      background_asset: 'frames.json#environment',
+      walkable_nav_polygon: [[0, 0], [1, 0], [1, 1], [1, 1], [0, 1], [0, 1]],
+      projectile_asset: 'frames.json#projectile',
+      poof_asset: 'frames.json#poof',
+      crate_asset: 'frames.json#crate',
+    },
+  });
+  const frames = {
+    ...baseFrames(),
+    projectile: ['data:img', 'data:img', 'data:img', 'data:img'],
+    poof: ['data:img'],
+    crate: ['data:img'],
+  };
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  assert.deepEqual(issues, []);
+});
+
+test('a legacy-shaped manifest lacking viewport.poof_asset produces no false positive for poof', () => {
+  // viewport carries no poof_asset field at all (predates the field, mirroring
+  // a manifest read before theme migration backfills it).
+  const manifest = minimalManifest();
+  const frames = baseFrames(); // no 'poof' key either
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  assert.deepEqual(issues, []);
+});
+
+// ----------------------------------------------------------------------------
+// Fixed-size cosmetic families: expression_ / achievement_
+// ----------------------------------------------------------------------------
+
+test('a missing expression frame is flagged as a warning, not an error', () => {
+  const manifest = minimalManifest();
+  const frames = baseFrames();
+  delete frames.expression_5;
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].severity, 'warning');
+  assert.equal(issues[0].kind, 'missing_frames');
+  assert.equal(issues[0].entity, 'Expression');
+  assert.equal(issues[0].key, 'expression_5');
+});
+
+test('a missing badge icon is flagged as a warning naming the badge, driven by manifest.badges', () => {
+  const manifest = minimalManifest({
+    badges: [
+      {
+        badge_id: 'build_1',
+        display_name: 'First Build',
+        description: 'Complete your first build.',
+        trigger_type: 'OBJECTS_BUILT',
+        threshold: 1,
+        icon_asset: 'frames.json#achievement_0',
+      },
+    ],
+  });
+  // Expression frames present (so they don't add noise) but NO achievement_
+  // keys at all, so the single declared badge's icon is genuinely missing.
+  const frames = baseFrames();
+  for (let i = 0; i < 20; i++) delete frames[`achievement_${i}`];
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].severity, 'warning');
+  assert.equal(issues[0].kind, 'missing_frames');
+  assert.equal(issues[0].entity, 'Badge icon');
+  assert.equal(issues[0].key, 'achievement_0');
+  assert.match(issues[0].message, /First Build/);
+});
+
+test('an achievement_ frame with no matching badge is flagged as an orphan warning', () => {
+  // Only one badge declared, but frames carries a second achievement_ key —
+  // reliable because manifest.badges is the authoritative expected set.
+  const manifest = minimalManifest({
+    badges: [
+      {
+        badge_id: 'build_1',
+        display_name: 'First Build',
+        description: 'Complete your first build.',
+        trigger_type: 'OBJECTS_BUILT',
+        threshold: 1,
+        icon_asset: 'frames.json#achievement_0',
+      },
+    ],
+  });
+  // Expression frames present (so they don't add noise); achievement_ pruned
+  // down to exactly the claimed key plus one orphan.
+  const frames = baseFrames();
+  for (let i = 2; i < 20; i++) delete frames[`achievement_${i}`];
+
+  const issues = validateThemeIntegrity(manifest, frames);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].kind, 'orphan_frames');
+  assert.equal(issues[0].severity, 'warning');
+  assert.equal(issues[0].entity, 'Badge icon');
+  assert.equal(issues[0].key, 'achievement_1');
 });

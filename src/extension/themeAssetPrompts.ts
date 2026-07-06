@@ -128,6 +128,7 @@ export function buildRivalAtlasPrompt(
     ...rowLines,
     '',
     'Keep each enemy identical across its own five cells: identical face, body, costume, colors, equipment, rendering style, and pixel scale — change only the pose.',
+    'The first frame of each row (the walk-contact pose in cell 1) defines that enemy\'s horizontal center, ground-contact baseline, and overall body scale. Every later frame in the same row keeps that same horizontal center, the same feet baseline, and the same overall body scale. Limbs, pose, and expression may change freely between frames, but the whole body must never slide, re-center, or change size across the row — walking and running are animated IN PLACE, exactly as the game itself moves the sprite across the screen. An enemy that drifts, re-centers, or changes scale between frames of the same row is an incorrect result.',
     'Use one consistent side / three-quarter camera for every enemy so the walk and attack read clearly and the sprite flips cleanly left-to-right.',
     'The attack is a playful, non-graphic, non-contact motion suitable for a general-audience video game: the enemy swings/lunges through empty magenta space and never touches another subject.',
     'On ranged-attack frames, do NOT draw any muzzle flash, gunfire, muzzle smoke, tracer, projectile, spark, or weapon-discharge effect. Show only the enemy\'s firing pose and recoil — the projectile is rendered separately by the game, so a drawn flash is wrong and must be omitted.',
@@ -143,14 +144,31 @@ export function buildRivalAtlasPrompt(
  * Production character scale calibrated from the approved reference character
  * boards (101px, 104px, and 107px median reference heights respectively).
  * Their combined median is 104px in a 128px frame.
+ *
+ * These two constants describe two different stages of the same pipeline and are
+ * deliberately NOT equal:
+ *   - CHARACTER_TARGET_CONTENT_PERCENT is the generation-time target sent to the
+ *     image model (the prompt below). It is kept comfortably below 100% so a
+ *     generated character has headroom and never clips at the cell edge.
+ *   - CHARACTER_TARGET_CONTENT_HEIGHT is the slicer-time normalization target: once
+ *     a board comes back, the production slicer uniformly rescales every
+ *     character's content up to this pixel height inside the 128px cell.
+ * Do not change either value without re-checking this relationship: PERCENT must
+ * stay comfortably below (HEIGHT / 128) * 100, otherwise the generation target would
+ * exceed — or leave no headroom under — the slicer's normalization target.
  */
 export const CHARACTER_TARGET_CONTENT_HEIGHT = 104;
 export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
 
 function boardContract(columns: number, rows: number): string {
+  const cellWidth = 512 / columns;
+  const cellHeight = 512 / rows;
+  const widthPhrase = `${Number.isInteger(cellWidth) ? '' : 'approximately '}${Math.round(cellWidth)} pixels wide`;
+  const heightPhrase = `${Number.isInteger(cellHeight) ? '' : 'approximately '}${Math.round(cellHeight)} pixels tall`;
   return [
     'The outer image canvas is exactly **512 x 512 pixels (1:1)**. Do not crop or change the canvas aspect ratio.',
     `Inside that square canvas is an exact ${columns}-column by ${rows}-row logical grid with ${columns * rows} visually equal cells.`,
+    `Each cell is therefore ${widthPhrase} and ${heightPhrase}; compose every subject to fit that cell shape.`,
     'Keep every subject fully inside its own cell with generous empty padding; nothing may cross a cell boundary.',
     'Do not draw grid lines, labels, numbers, captions, borders, scenery, shadows, or extra subjects.',
     'Paint every unused pixel solid #FF00FF magenta with no texture or gradient.',
@@ -440,6 +458,18 @@ export function buildCharacterAtlasPrompt(
     'No effects crossing into adjacent cells.',
     '',
     'Every frame must function as an independent animation sprite.',
+    '',
+    'Within each row, the first cell defines that character\'s horizontal center, ground-contact baseline, and overall body scale.',
+    '',
+    'Every later cell in that same row keeps the same horizontal center, the same feet baseline, and the same overall body scale.',
+    '',
+    'Limbs, pose, and facial expression may change freely from cell to cell within a row.',
+    '',
+    'The whole body must never slide sideways, re-center, or change size across a row.',
+    '',
+    'Walking and running are animated IN PLACE — the game itself moves the sprite across the screen.',
+    '',
+    'A character that slides, re-centers, or changes size between cells of the same row is an incorrect result.',
     '',
     '---',
     '',

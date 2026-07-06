@@ -37,6 +37,7 @@ import {
   readThemeArchive,
   regenerateThemeBoard,
   renameThemeCharacter,
+  renameThemeStageItem,
   replaceThemeBackground,
   resliceThemeImageFromRaw,
   retryThemeImage,
@@ -47,6 +48,8 @@ import {
   uploadThemeImage,
   generateTheme as generateThemeService,
 } from "../../extension/themeService";
+import { sanitizeRetryNotes } from "../../extension/themeImageRetry";
+import type { ThemeImageRetryMode } from "../../extension/themeImageRetry";
 import type { ThemePlan } from "../../extension/themePlan";
 import type { BoardKind, ThemeImageReviewWaitOptions } from "../../extension/themeService";
 import type { ThemeManifest } from "../../shared/types";
@@ -718,6 +721,42 @@ export class TycoonPanel {
           } finally {
             if (renamingActiveGate) this._themeGenerationGateRetryActive = false;
           }
+        } else if (message.type === "RENAME_THEME_STAGE_ITEM") {
+          const payload = (message as any).payload as {
+            theme_id?: string;
+            item_kind?: string;
+            item_id?: string;
+            name?: string;
+          } | undefined;
+          const themeId = payload?.theme_id ?? "";
+          const itemId = payload?.item_id ?? "";
+          const itemKind = payload?.item_kind === "decor" ? "decor" : "object";
+          if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
+          try {
+            const result = await renameThemeStageItem(
+              this._globalStorageUri,
+              themeId,
+              itemKind,
+              itemId,
+              payload?.name ?? "",
+            );
+            const renamedName = itemKind === "decor"
+              ? result.manifest.decor_objects?.find((d) => d.decor_id === itemId)?.display_name
+              : result.manifest.buildable_objects?.find((o) => o.object_id === itemId)?.display_name;
+            void this._panel.webview.postMessage({
+              type: "THEME_STAGE_ITEM_RENAME_RESULT",
+              payload: { ok: true, item_kind: itemKind, item_id: itemId, name: renamedName },
+            });
+            void this._panel.webview.postMessage({
+              type: "THEME_INITIALIZED",
+              payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
+            });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: "THEME_STAGE_ITEM_RENAME_RESULT",
+              payload: { ok: false, item_kind: itemKind, item_id: itemId, error: errorMessage(err) },
+            });
+          }
         } else if (message.type === "NORMALIZE_THEME_CHARACTER") {
           const payload = (message as any).payload as {
             theme_id?: string;
@@ -837,16 +876,23 @@ export class TycoonPanel {
                 this._themeGenerationReviewGate.replacement = renamed;
               }
             }
+            const retryMode: ThemeImageRetryMode = payload?.mode === "replace"
+              ? "replace"
+              : payload?.mode === "retry"
+                ? "retry"
+                : "augment";
+            // Only user-authored notes for 'replace'/'augment' feed into the next
+            // prompt's creative direction — 'retry' reuses the saved prompt verbatim
+            // and ignores feedback, so it is exempt from this guard.
+            const retryFeedback = retryMode === "retry"
+              ? (payload?.feedback ?? "")
+              : sanitizeRetryNotes(payload?.feedback ?? "");
             const result = await retryThemeImage(
               this._globalStorageUri,
               themeId,
               itemId,
-              payload?.feedback ?? "",
-              payload?.mode === "replace"
-                ? "replace"
-                : payload?.mode === "retry"
-                  ? "retry"
-                  : "augment",
+              retryFeedback,
+              retryMode,
               {
                 provider: imageSettings.provider,
                 apiKey: imageSettings.apiKey,

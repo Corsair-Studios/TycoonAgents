@@ -922,6 +922,47 @@ export async function renameThemeCharacter(
   return { manifest, frames };
 }
 
+/**
+ * Rename one Stage-Editor item (a buildable object or a decor item) by its
+ * stable id. Unlike renameThemeCharacter, decor/object boards have no
+ * per-item image-review entry to keep in sync (they're generated as whole
+ * boards), so this only needs to touch the manifest field and persist —
+ * mirrors renameThemeCharacter's load/mutate/write shape without the
+ * review-document and plan-sync steps that only apply to characters.
+ * Exists mainly for legacy themes stamped by buildDefaultDecorObjects
+ * (themeMigration.ts), which have no saved plan.json for regenerateThemeBoard's
+ * name-sync to draw from.
+ */
+export async function renameThemeStageItem(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  itemKind: 'object' | 'decor',
+  itemId: string,
+  requestedName: string,
+): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> }> {
+  if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
+  const displayName = requestedName.trim().replace(/\s+/g, ' ');
+  if (!displayName) throw new Error('Enter a name.');
+  if (displayName.length > 80) throw new Error('Names must be 80 characters or fewer.');
+
+  const loadedTheme = await loadTheme(globalStorageUri, themeId);
+  if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be renamed.');
+  const { manifest, frames } = loadedTheme;
+
+  if (itemKind === 'object') {
+    const object = manifest.buildable_objects?.find((candidate) => candidate.object_id === itemId);
+    if (!object) throw new Error('The object linked to this ID was not found.');
+    object.display_name = displayName;
+  } else {
+    const decor = manifest.decor_objects?.find((candidate) => candidate.decor_id === itemId);
+    if (!decor) throw new Error('The decor item linked to this ID was not found.');
+    decor.display_name = displayName;
+  }
+
+  await writeThemeFiles(globalStorageUri, manifest, frames);
+  return { manifest, frames };
+}
+
 /** Regenerate one character board, then fit its frames to production scale. */
 export async function normalizeThemeCharacterAtlas(
   globalStorageUri: vscode.Uri,
@@ -1739,6 +1780,7 @@ function applyThemeReplacement(
 }
 
 function characterAtlasGrid(rebuildBoard = false) {
+  const clipGroups = Object.values(ATLAS_CLIPS).map((clip) => clip.frames);
   return {
     columns: 5,
     rows: 4,
@@ -1750,7 +1792,10 @@ function characterAtlasGrid(rebuildBoard = false) {
     // mirroring the rival/object row grouping. Prevents walk/build/melee/shoot/dance
     // frames jumping horizontally as pose mass shifts. Single-frame clips (idle,
     // point, etc.) become harmless 1-member groups.
-    normalizationGroups: Object.values(ATLAS_CLIPS).map((clip) => clip.frames),
+    normalizationGroups: clipGroups,
+    // Every clip (walk, melee, build, shoot, dance, ...) plays in place, so any
+    // drawn side-to-side drift across its frames is unwanted and gets canceled.
+    registrationGroups: clipGroups,
     rebuildBoard,
     squareReviewBoard: rebuildBoard,
   };
@@ -1779,6 +1824,10 @@ async function processObjectAtlas(
     Array.from({ length: 4 }, (_unused, columnIndex) => rowIndex * 4 + columnIndex),
   );
   const objectSlots = rows.flatMap((row, rowIndex) => row.kind === 'object' ? rowSlots[rowIndex] : []);
+  // The poof row is a one-shot FX (small puff to full burst); its frames are
+  // meant to differ, so it is excluded from horizontal registration. Crate
+  // rows are single-frame in practice, so registering them is a harmless no-op.
+  const registrationRowSlots = rows.flatMap((row, rowIndex) => row.kind === 'poof' ? [] : [rowSlots[rowIndex]]);
   // Slice the provider output before optimizing the retained review image. This
   // avoids re-slicing a 512px square whose five logical rows cannot all have an
   // identical integer height. Each animation row shares one crop and anchor.
@@ -1789,6 +1838,7 @@ async function processObjectAtlas(
     targetContentHeight: 104,
     maxContentExtent: 120,
     normalizationGroups: rowSlots,
+    registrationGroups: registrationRowSlots,
   });
   const output = await optimizeSpriteBoardCanvas(generated, 4, rows.length);
   return { output, spritePackage };
@@ -1815,6 +1865,9 @@ async function processRivalAtlas(
     targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
     maxContentExtent: 120,
     normalizationGroups: rowGroups,
+    // Each row's walk+attack frames are one rival animating in place, so any
+    // drawn side-to-side drift across the row is unwanted and gets canceled.
+    registrationGroups: rowGroups,
   });
   const output = await optimizeSpriteBoardCanvas(generated, 5, rows.length);
   return { output, spritePackage };
@@ -1836,6 +1889,10 @@ async function processDecorAtlas(
     targetContentHeight: 104,
     maxContentExtent: 120,
     normalizationGroups: [...staticGroups, ...animGroups],
+    // Only the loopable animated decor row (8-11) plays in place; the
+    // projectile row (12-15) is a one-shot launch-to-impact whose frames are
+    // meant to differ, so it is excluded from horizontal registration.
+    registrationGroups: [animGroups[0]],
   });
   const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
   return { output, spritePackage };

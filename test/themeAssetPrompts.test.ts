@@ -81,6 +81,10 @@ test('rival prompt is a 5x4 compact board with 2-frame walk + 3-frame attack per
   assert.match(prompt, /Row 1 \(Cells 1-5\): the enemy \*\*"Rival 1"\*\*/i);
   assert.match(prompt, /Row 4 \(Cells 16-20\): the enemy \*\*"Rival 4"\*\*/i);
   assert.match(prompt, /flips? cleanly/i);
+  assert.match(prompt, /approximately 102 pixels wide and 128 pixels tall/i);
+  assert.match(prompt, /animated IN PLACE/i);
+  assert.match(prompt, /same horizontal center.*same feet baseline.*same overall body scale/i);
+  assert.match(prompt, /drifts, re-centers, or changes scale.*incorrect result/i);
 });
 
 test('rival prompt scales its board contract and row count to a partial (3-row) board', () => {
@@ -113,6 +117,18 @@ test('character prompt enforces the production sprite-board mime contracts', () 
   assert.match(prompt, /Theme: Night Grid[\s\S]*neon cyberpunk/i);
   assert.doesNotMatch(prompt, /Circuit Broker|Cyberpunk 2049/i);
   assert.doesNotMatch(prompt, /place\/build object|inspect finished work/i);
+  assert.match(prompt, /animated IN PLACE/i);
+  assert.match(prompt, /same horizontal center, the same feet baseline, and the same overall body scale/i);
+  assert.match(prompt, /slides, re-centers, or changes size.*incorrect result/i);
+});
+
+test('CHARACTER_TARGET_CONTENT_PERCENT stays comfortably below the slicer normalization headroom', () => {
+  // Prompt-side generation target must stay below the slicer-side normalization target
+  // (expressed as a percentage of the 128px cell) so generations retain clipping headroom.
+  assert.ok(
+    CHARACTER_TARGET_CONTENT_PERCENT < (CHARACTER_TARGET_CONTENT_HEIGHT / 128) * 100,
+    'CHARACTER_TARGET_CONTENT_PERCENT must stay below (CHARACTER_TARGET_CONTENT_HEIGHT / 128) * 100',
+  );
 });
 
 test('environment prompt treats the reference as an opaque geometry guide', () => {
@@ -142,6 +158,7 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
   assert.match(objects, /near-copy of the first frame/i);
   assert.match(objects, /at least 90% of the subject's pixels stay identical/i);
   assert.match(objects, /width must be identical in every frame/i);
+  assert.match(objects, /128 pixels wide and approximately 102 pixels tall/i);
 
   const finalObjects = buildObjectAtlasPrompt('industrial', 'Factory', [
     ...Array.from({ length: 3 }, (_unused, index) => ({
@@ -284,6 +301,7 @@ test('background decor prompt describes seats, static decor, one animated row, a
   const prompt = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', createDecorBoardRows(decorSpecs()));
   assert.match(prompt, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
   assert.match(prompt, /exact 4-column by 4-row logical grid with 16 visually equal cells/i);
+  assert.match(prompt, /128 pixels wide and 128 pixels tall/i);
   assert.match(prompt, /Row 1 \(Cells 1-4\): FOUR distinct STATIC SITTABLE SEATS/i);
   assert.match(prompt, /character will visibly sit ON/i);
   assert.match(prompt, /Row 2 \(Cells 5-8\): FOUR distinct STATIC decor/i);

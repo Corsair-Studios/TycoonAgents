@@ -1926,6 +1926,9 @@
         : "Write a revised prompt or describe exactly what should change for this item.";
       const savedDraft = reviewUiState.drafts.get(item.id);
       if (savedDraft) feedback.value = savedDraft.feedback;
+      const feedbackHint = document.createElement("div");
+      feedbackHint.className = "theme-review-feedback-hint";
+      feedbackHint.textContent = "Notes only — don't paste a full prompt; layout and art rules are added automatically.";
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
       const mode = document.createElement("select");
@@ -2043,6 +2046,7 @@
       if (nameRow) body.appendChild(nameRow);
       body.appendChild(decisionRow);
       body.appendChild(feedback);
+      body.appendChild(feedbackHint);
       body.appendChild(retryRow);
       body.appendChild(retryStatus);
       body.appendChild(promptDetails);
@@ -3194,6 +3198,7 @@
           '<div class="se-override">' +
             '<div class="se-override-label">Per-object override</div>' +
             '<select id="se-obj" class="se-select"></select>' +
+            '<button id="se-obj-rename" class="se-clear" type="button" title="Rename this object">✎ Rename</button>' +
             '<input id="se-oo" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-oo-clear" class="se-clear" type="button">clear override</button>' +
           '</div>' +
@@ -3216,6 +3221,7 @@
           '<div class="se-override">' +
             '<div class="se-override-label">Per-decor override</div>' +
             '<select id="se-decor" class="se-select"></select>' +
+            '<button id="se-decor-rename" class="se-clear" type="button" title="Rename this decor item">✎ Rename</button>' +
             '<input id="se-do" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-do-clear" class="se-clear" type="button">clear override</button>' +
           '</div>' +
@@ -3247,6 +3253,7 @@
     stageEditEls.ov = wrap.querySelector("#se-ov");
     stageEditEls.ovVal = wrap.querySelector("#se-ov-val");
     stageEditEls.obj = wrap.querySelector("#se-obj");
+    stageEditEls.objRename = wrap.querySelector("#se-obj-rename");
     stageEditEls.oo = wrap.querySelector("#se-oo");
     stageEditEls.ooClear = wrap.querySelector("#se-oo-clear");
     stageEditEls.rs = wrap.querySelector("#se-rs");
@@ -3257,6 +3264,7 @@
     stageEditEls.ds = wrap.querySelector("#se-ds");
     stageEditEls.dsVal = wrap.querySelector("#se-ds-val");
     stageEditEls.decor = wrap.querySelector("#se-decor");
+    stageEditEls.decorRename = wrap.querySelector("#se-decor-rename");
     stageEditEls.do_ = wrap.querySelector("#se-do");
     stageEditEls.doClear = wrap.querySelector("#se-do-clear");
     stageEditEls.ei = wrap.querySelector("#se-ei");
@@ -3319,6 +3327,11 @@
       if (editSelectedObjId) delete themeObjScaleOverrides[editSelectedObjId];
       syncObjOverrideSlider();
     });
+    if (stageEditEls.objRename) {
+      stageEditEls.objRename.addEventListener("click", () => {
+        promptRenameStageItem("object", editSelectedObjId, themeBuildables, "object_id", stageEditEls.objRename);
+      });
+    }
     stageEditEls.rs.addEventListener("input", () => {
       themeRivalScale = parseFloat(stageEditEls.rs.value) || 1;
       stageEditEls.rsVal.textContent = themeRivalScale.toFixed(2);
@@ -3351,6 +3364,11 @@
       if (editSelectedDecorId) delete themeDecorScaleOverrides[editSelectedDecorId];
       syncDecorOverrideSlider();
     });
+    if (stageEditEls.decorRename) {
+      stageEditEls.decorRename.addEventListener("click", () => {
+        promptRenameStageItem("decor", editSelectedDecorId, themeDecor, "decor_id", stageEditEls.decorRename);
+      });
+    }
     stageEditEls.ei.addEventListener("input", () => {
       enemySpawnIntervalSec = parseFloat(stageEditEls.ei.value) || 45;
       stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
@@ -3385,6 +3403,38 @@
   function syncDecorOverrideSlider() {
     const ov = themeDecorScaleOverrides[editSelectedDecorId];
     stageEditEls.do_.value = String(typeof ov === "number" && ov > 0 ? ov : themeDecorScale);
+  }
+  /**
+   * Rename affordance for the Stage Editor's per-object/per-decor override
+   * lists. Legacy themes stamped by buildDefaultDecorObjects (themeMigration.ts)
+   * have permanent placeholder names ("Seat 1", "Decor 1", "Animated Decor 1")
+   * and no saved plan.json for regenerateThemeBoard's name-sync to draw from,
+   * so this is the only way to rename them. Prompts for a new name, disables
+   * the button while the host persists it, then relies on
+   * THEME_STAGE_ITEM_RENAME_RESULT to patch the select option label in place.
+   * @param {"object"|"decor"} itemKind
+   * @param {string} itemId
+   * @param {Array<any>} itemList themeBuildables or themeDecor
+   * @param {"object_id"|"decor_id"} idField
+   * @param {HTMLButtonElement} btn
+   */
+  function promptRenameStageItem(itemKind, itemId, itemList, idField, btn) {
+    if (!selectedThemeId || !itemId) return;
+    const current = itemList.find((entry) => entry && entry[idField] === itemId);
+    const currentName = (current && current.display_name) || itemId;
+    const next = window.prompt("Rename " + (itemKind === "decor" ? "decor item" : "object") + ":", currentName);
+    if (next === null) return;
+    const trimmed = next.trim().replace(/\s+/g, " ");
+    if (!trimmed || trimmed === currentName) return;
+    btn.disabled = true;
+    if (stageEditEls.status) {
+      stageEditEls.status.style.color = "#9fffa0";
+      stageEditEls.status.textContent = "Renaming…";
+    }
+    vscode.postMessage({
+      type: "RENAME_THEME_STAGE_ITEM",
+      payload: { theme_id: selectedThemeId, item_kind: itemKind, item_id: itemId, name: trimmed },
+    });
   }
   function enterEditStage() {
     if (!themeLoaded) return;
@@ -3741,6 +3791,16 @@
   const WANDER_RADIUS = 80;
   /** How close (native px) to destination before agent is considered arrived. */
   const WANDER_ARRIVED_EPS = 3;
+  /**
+   * Resume-walking threshold (native px), used WITH WANDER_ARRIVED_EPS as a
+   * hysteresis band: once an agent is "settled" (arrived), it does not start
+   * walking again until pushed out past this larger radius. A bare
+   * `dist > WANDER_ARRIVED_EPS` check has no hysteresis, so a tiny per-frame
+   * nudge (agent-separation pass, clamp rounding, a shifted build standoff
+   * side) that crosses the 3px line flips movement on/off every frame — the
+   * rapid position/facing "vibrate" bug. See charEntry.settled below.
+   */
+  const WANDER_RESUME_EPS = WANDER_ARRIVED_EPS + 6;
   /** Min real per-frame movement (native px) to count as actually moving (not boundary-stuck jitter). */
   const WANDER_STUCK_EPS = 0.25;
   /** Min intended horizontal component (native px) before movement updates facing (deadzone). */
@@ -5147,6 +5207,26 @@
         const ok = msg.payload && msg.payload.ok;
         stageEditEls.status.textContent = ok ? "Saved to theme ✓" : "Save failed";
         stageEditEls.status.style.color = ok ? "#9fffa0" : "#ff9f9f";
+      }
+    } else if (msg && msg.type === "THEME_STAGE_ITEM_RENAME_RESULT") {
+      const p = msg.payload || {};
+      const isDecor = p.item_kind === "decor";
+      const btn = isDecor ? stageEditEls.decorRename : stageEditEls.objRename;
+      if (btn) btn.disabled = false;
+      if (stageEditEls && stageEditEls.status) {
+        stageEditEls.status.style.color = p.ok ? "#9fffa0" : "#ff9f9f";
+        stageEditEls.status.textContent = p.ok ? "Renamed ✓" : ("Rename failed: " + (p.error || "unknown error"));
+      }
+      if (p.ok && p.name) {
+        const list = isDecor ? themeDecor : themeBuildables;
+        const idField = isDecor ? "decor_id" : "object_id";
+        const entry = list.find((candidate) => candidate && candidate[idField] === p.item_id);
+        if (entry) entry.display_name = p.name;
+        const select = isDecor ? stageEditEls.decor : stageEditEls.obj;
+        if (select) {
+          const option = Array.prototype.find.call(select.options, (opt) => opt.value === p.item_id);
+          if (option) option.textContent = p.name;
+        }
       }
     } else if (msg && msg.type === "BACKGROUND_REPLACE_RESULT") {
       const ok = msg.payload && msg.payload.ok;
@@ -7919,9 +7999,25 @@
     }
     // Resolve standoff target (native space) for active-build agents.
     const activeBuildPlacement = activeBuildObj ? objectPlacement[activeBuildObj.object_id] : null;
-    const activeBuildExclusionR = activeBuildObj && typeof activeBuildObj.exclusion_radius === "number" && activeBuildObj.exclusion_radius > 0
-      ? activeBuildObj.exclusion_radius
-      : 48;
+    // Standoff radius: an explicit per-object exclusion_radius (manifest)
+    // wins; otherwise derive one from the object's OWN rendered size (same
+    // 64 * effectiveObjScale baseSize formula drawBuildableObject uses,
+    // converted from canvas px to native px) plus a small margin, so a
+    // bigger-scaled object gets a proportionally bigger stand-back distance
+    // instead of a flat guess that's too small for large objects (agents
+    // overlapping it) or too large for small ones. Objects have NO collision
+    // — this is purely a "stand a bit back" distance, not physics.
+    const BUILD_STANDOFF_MARGIN_NATIVE = 8;
+    const activeBuildExclusionR = (() => {
+      if (!activeBuildObj) return 48;
+      if (typeof activeBuildObj.exclusion_radius === "number" && activeBuildObj.exclusion_radius > 0) {
+        return activeBuildObj.exclusion_radius;
+      }
+      const objBaseSizeCanvas = 64 * effectiveObjScale(activeBuildObj.object_id);
+      const nativeScale = bgW > 0 ? (bgW / walkableNativeW) : 1;
+      const objectRadiusNative = (objBaseSizeCanvas / 2) / nativeScale;
+      return objectRadiusNative + BUILD_STANDOFF_MARGIN_NATIVE;
+    })();
     let builderSideCounter = 0;
 
     agentList.forEach((agent, idx) => {
@@ -7963,6 +8059,9 @@
           sitting: false,
           sitSeatId: null,
           sitTimeLeft: 0,
+          // Arrival-hysteresis latch shared by wander/build/combat/seat
+          // movement (see WANDER_ARRIVED_EPS / WANDER_RESUME_EPS).
+          settled: false,
         };
       }
       const charEntry = agentCharMap[agent.id];
@@ -8150,17 +8249,26 @@
       // Suppressed entirely while engaging an enemy (Phase 2b preemption).
       let isBuilding = false;
       if (!inConga && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement) {
-        // Alternate standoff side among builders assigned this frame.
-        const side = (builderSideCounter++ % 2 === 0) ? -1 : 1;
-        const ax = activeBuildPlacement.nx;
-        const ay = activeBuildPlacement.ny;
-        // Perpendicular-ish left/right offset along native X, small native Y
-        // nudge so multiple builders on the same side don't fully overlap.
-        const standoffX = ax + side * activeBuildExclusionR;
-        const standoffY = ay + (side * 0.15) * activeBuildExclusionR;
-        const standoff = clampToPolygon(standoffX, standoffY, walkablePolygon);
-        charEntry.destNx = standoff[0];
-        charEntry.destNy = standoff[1];
+        // Once already settled (arrived + latched, see charEntry.settled) at
+        // THIS same build target, freeze destNx/destNy — no per-frame
+        // re-target — so a stationary builder never gets nudged back into
+        // "walking" by a recomputed standoff point. Only re-resolve the
+        // standoff spot while still approaching, or when the target changes.
+        const isNewTarget = charEntry.buildTargetId !== activeBuildObj.object_id;
+        if (isNewTarget || !charEntry.settled) {
+          // Alternate standoff side among builders assigned this frame.
+          const side = (builderSideCounter++ % 2 === 0) ? -1 : 1;
+          const ax = activeBuildPlacement.nx;
+          const ay = activeBuildPlacement.ny;
+          // Perpendicular-ish left/right offset along native X, small native Y
+          // nudge so multiple builders on the same side don't fully overlap.
+          const standoffX = ax + side * activeBuildExclusionR;
+          const standoffY = ay + (side * 0.15) * activeBuildExclusionR;
+          const standoff = clampToPolygon(standoffX, standoffY, walkablePolygon);
+          charEntry.destNx = standoff[0];
+          charEntry.destNy = standoff[1];
+          if (isNewTarget) charEntry.settled = false;
+        }
         charEntry.buildTargetId = activeBuildObj.object_id;
         isBuilding = true;
       } else if (!isEngaging && !inConga) {
@@ -8349,7 +8457,20 @@
       // Synchronized conga cheer: the whole line freezes in place while holding
       // the cheer pose (congaCheerHold shared across all members).
       const congaFrozen = inConga && congaCheerHold > 0;
-      if (!congaFrozen && !charEntry.dancing && !charEntry.sitting && distNative > WANDER_ARRIVED_EPS) {
+      // Arrival hysteresis (shared by wander/build/combat/seat-approach, since
+      // they all just set destNx/destNy and fall through to this one step):
+      // latch "settled" once within WANDER_ARRIVED_EPS, and don't clear it
+      // until pushed out past the larger WANDER_RESUME_EPS. A bare
+      // `distNative > WANDER_ARRIVED_EPS` gate has no hysteresis, so a small
+      // per-frame nudge (agent-separation pass, clamp rounding) that crosses
+      // the 3px line would flip movement on/off every frame — the "vibrate"
+      // bug. Conga/dance/sitting bypass the latch entirely (their own gates).
+      if (charEntry.settled) {
+        if (distNative > WANDER_RESUME_EPS) charEntry.settled = false;
+      } else if (distNative <= WANDER_ARRIVED_EPS) {
+        charEntry.settled = true;
+      }
+      if (!congaFrozen && !charEntry.dancing && !charEntry.sitting && !charEntry.settled) {
         const beforeNx = charEntry.nx, beforeNy = charEntry.ny;
         const step = Math.min(moveSpeed * delta, distNative);
         charEntry.nx += (dxNative / distNative) * step;

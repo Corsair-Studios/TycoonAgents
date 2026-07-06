@@ -148,7 +148,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
       || `A playable isometric environment inspired by ${displayName}.`,
     objects,
     object_motion_hints: objectMotionHints,
-    decor: normalizeNames(input.decor, THEME_DECOR_COUNT, 'Decor'),
+    decor: normalizeDecorNames(input.decor),
     enemies,
     enemy_attack_styles: enemyAttackStyles,
     expressions: normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
@@ -350,6 +350,30 @@ function normalizeAttackStyle(value: unknown): 'melee' | 'ranged' | undefined {
   if (typeof value !== 'string') return undefined;
   const lowered = value.trim().toLowerCase();
   return lowered === 'melee' || lowered === 'ranged' ? lowered : undefined;
+}
+
+/**
+ * Normalize the `decor` list to THEME_DECOR_COUNT (9) entries, padding any
+ * missing slots by their fixed board role rather than one generic label.
+ * Mirrors buildDefaultDecorObjects in themeMigration.ts exactly, so a
+ * planner-padded slot and a migration-padded legacy slot always agree:
+ *   indices 0-3 -> "Seat N" (N = index+1, the sittable row)
+ *   indices 4-7 -> "Decor N" (N = index-3, the static row)
+ *   index 8     -> "Animated Decor 1" (the single looping item)
+ */
+function normalizeDecorNames(values: unknown): string[] {
+  const source = Array.isArray(values) ? values : [];
+  const result = source
+    .map((value) => cleanValue(value))
+    .filter((value) => value.length > 0)
+    .slice(0, THEME_DECOR_COUNT);
+  while (result.length < THEME_DECOR_COUNT) {
+    const index = result.length;
+    if (index < 4) result.push(`Seat ${index + 1}`);
+    else if (index < 8) result.push(`Decor ${index - 3}`);
+    else result.push('Animated Decor 1');
+  }
+  return result;
 }
 
 function normalizeNames(values: unknown, count: number, fallbackLabel: string): string[] {

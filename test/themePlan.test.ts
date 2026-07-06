@@ -114,6 +114,37 @@ test('theme plan emits 9 decor objects: 4 sittable seats, 4 static, 1 animated',
   assert.equal(manifest.viewport?.projectile_asset, 'frames.json#projectile');
 });
 
+test('a plan missing decor entries pads by slot role: seats, static decor, then the animated slot', () => {
+  // Only 2 of 9 decor entries supplied; the remaining 7 must be padded by the
+  // slot's fixed board role (mirrors buildDefaultDecorObjects in
+  // themeMigration.ts), NOT one generic "Decor N" label for every slot.
+  const plan = normalizeThemePlan({
+    display_name: 'Sparse Decor',
+    decor: ['Oak Stool', 'Bench'],
+  });
+  assert.equal(plan.decor.length, 9);
+  assert.equal(plan.decor[0], 'Oak Stool');
+  assert.equal(plan.decor[1], 'Bench');
+  // Padded seats (indices 2-3, the remainder of the 0-3 seat row).
+  assert.equal(plan.decor[2], 'Seat 3');
+  assert.equal(plan.decor[3], 'Seat 4');
+  // Padded static decor (indices 4-7).
+  assert.equal(plan.decor[4], 'Decor 1');
+  assert.equal(plan.decor[5], 'Decor 2');
+  assert.equal(plan.decor[6], 'Decor 3');
+  assert.equal(plan.decor[7], 'Decor 4');
+  // Padded animated decor (index 8) matches buildDefaultDecorObjects exactly.
+  assert.equal(plan.decor[8], 'Animated Decor 1');
+});
+
+test('a plan with zero decor entries pads all 9 slots by role', () => {
+  const plan = normalizeThemePlan({ display_name: 'Empty Decor' });
+  assert.equal(plan.decor.length, 9);
+  for (let i = 0; i < 4; i++) assert.equal(plan.decor[i], `Seat ${i + 1}`);
+  for (let i = 4; i < 8; i++) assert.equal(plan.decor[i], `Decor ${i - 3}`);
+  assert.equal(plan.decor[8], 'Animated Decor 1');
+});
+
 test('theme plan creates 16 agents, 4 enemies, and 13 buildable objects', () => {
   const manifest = themePlanToManifest(normalizeThemePlan({ display_name: 'Clockwork' }));
   assert.equal(manifest.roster_agents?.length, 16);

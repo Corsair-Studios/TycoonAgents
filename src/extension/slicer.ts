@@ -63,10 +63,30 @@ export interface AtlasGrid {
   maxContentExtent?: number;
   /** Slots that must share one crop, scale, and anchor (for example one animation row). */
   normalizationGroups?: number[][];
+  /**
+   * Subset of normalizationGroups whose frames should be horizontally registered
+   * against the group's first frame before the union bbox is computed. Cancels
+   * drawn side-to-side drift in in-place animations (e.g. an idle sway drawn a
+   * few pixels further left each frame). Groups of fewer than 2 cells are a
+   * no-op. Vertical position is never adjusted — intentional bob/hop stays put.
+   */
+  registrationGroups?: number[][];
   /** Reassemble normalized slots into a reviewable magenta-backed sprite board. */
   rebuildBoard?: boolean;
   /** Keep the rebuilt review canvas square while preserving the requested grid. */
   squareReviewBoard?: boolean;
+}
+
+/** One sliced-and-cleaned grid cell, plus its opaque-content bounds. */
+interface SliceCell {
+  slot_id: number;
+  cell: Jimp;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  sumX: number;
+  count: number;
 }
 
 /**
@@ -84,6 +104,10 @@ export interface AtlasGrid {
  *   magenta halo: still-opaque, magenta-dominant pixels that touch an
  *   already-transparent pixel are erased over a few iterations, so multi-pixel
  *   fringe is eaten without thresholding the whole cell.
+ * - Frames listed in a `registrationGroups` entry are horizontally shifted (up
+ *   to ±16px) to best match that group's first frame before the union bbox is
+ *   computed, canceling drawn side-to-side drift across an in-place animation.
+ *   Vertical position is never touched by this step.
  * - Content is horizontally centered using center-of-mass of opaque pixels.
  * - Content is bottom-justified within the 128×128 output canvas.
  * - Empty cells (all magenta/transparent) produce a blank transparent 128×128 image.
@@ -105,16 +129,7 @@ export async function sliceAndNormalizeAtlas(
   const cellW = Math.floor(atlas.bitmap.width / grid.columns);
   const cellH = Math.floor(atlas.bitmap.height / grid.rows);
 
-  const cells: Array<{
-    slot_id: number;
-    cell: Jimp;
-    minX: number;
-    maxX: number;
-    minY: number;
-    maxY: number;
-    sumX: number;
-    count: number;
-  }> = [];
+  const cells: SliceCell[] = [];
 
   for (let row = 0; row < grid.rows; row++) {
     for (let col = 0; col < grid.columns; col++) {
@@ -157,6 +172,13 @@ export async function sliceAndNormalizeAtlas(
 
       cells.push({ slot_id, cell, minX, maxX, minY, maxY, sumX, count });
     }
+  }
+
+  // Cancel drawn horizontal drift within an in-place animation before any
+  // union bbox is computed, so the group-crop/anchor logic below never bakes
+  // the artist's side-to-side wobble into the shared frame.
+  for (const group of grid.registrationGroups ?? []) {
+    registerGroupHorizontally(cells, group);
   }
 
   const referenceHeights = (grid.scaleReferenceSlots ?? [])
@@ -255,6 +277,138 @@ export async function sliceAndNormalizeAtlas(
     slots,
     board: rebuiltBoard ? await rebuiltBoard.getBufferAsync(Jimp.MIME_PNG) : undefined,
   };
+}
+
+/** Pixels this dim or dimmer are treated as background, not sprite content, for registration. */
+const REGISTRATION_OPAQUE_THRESHOLD = 16;
+/** Widest drawn drift this mechanically corrects; wider mismatches are left alone. */
+const REGISTRATION_MAX_SHIFT = 16;
+/** Cost added per pixel where only one side (reference or candidate) is opaque. */
+const REGISTRATION_MISMATCH_PENALTY = 255 * 3;
+
+/**
+ * Horizontally registers every other member of a normalization group against
+ * the group's first (reference) cell, canceling side-to-side drift the artist
+ * drew into an in-place animation before the group's union bbox is computed.
+ * Groups of fewer than two populated cells are left untouched.
+ */
+function registerGroupHorizontally(cells: SliceCell[], group: number[]): void {
+  const members = group
+    .map((slotId) => cells[slotId])
+    .filter((cell): cell is SliceCell => Boolean(cell?.count));
+  if (members.length < 2) return;
+
+  const reference = members[0];
+  for (const member of members.slice(1)) {
+    const dx = findBestHorizontalShift(reference.cell, member.cell);
+    if (dx === 0) continue;
+    shiftCellHorizontally(member.cell, dx);
+    // The shift moved this cell's opaque content, so its cached bounds (used
+    // by the group-union bbox and this cell's own centroid) must be redone.
+    recomputeCellBounds(member);
+  }
+}
+
+/**
+ * Finds the integer horizontal shift dx (within ±REGISTRATION_MAX_SHIFT) that
+ * best aligns `candidate`'s opaque content onto `reference`'s, by minimizing
+ * summed absolute RGB difference over pixels opaque in both, with a fixed
+ * penalty where only one side is opaque. Ties prefer the smaller |dx|, so an
+ * already-aligned pair (dx=0) is never nudged for no reason.
+ */
+function findBestHorizontalShift(reference: Jimp, candidate: Jimp): number {
+  const refData = reference.bitmap.data;
+  const refWidth = reference.bitmap.width;
+  const candData = candidate.bitmap.data;
+  const candWidth = candidate.bitmap.width;
+  const height = Math.min(reference.bitmap.height, candidate.bitmap.height);
+
+  let bestDx = 0;
+  let bestCost = Infinity;
+  for (let dx = -REGISTRATION_MAX_SHIFT; dx <= REGISTRATION_MAX_SHIFT; dx++) {
+    let cost = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < refWidth; x++) {
+        const refIdx = (y * refWidth + x) * 4;
+        const refOpaque = refData[refIdx + 3] > REGISTRATION_OPAQUE_THRESHOLD;
+        // shifted candidate value at x came from the candidate's own (x - dx).
+        const srcX = x - dx;
+        const inBounds = srcX >= 0 && srcX < candWidth;
+        const candIdx = inBounds ? (y * candWidth + srcX) * 4 : -1;
+        const candOpaque = inBounds && candData[candIdx + 3] > REGISTRATION_OPAQUE_THRESHOLD;
+        if (refOpaque && candOpaque) {
+          cost += Math.abs(refData[refIdx] - candData[candIdx])
+            + Math.abs(refData[refIdx + 1] - candData[candIdx + 1])
+            + Math.abs(refData[refIdx + 2] - candData[candIdx + 2]);
+        } else if (refOpaque !== candOpaque) {
+          cost += REGISTRATION_MISMATCH_PENALTY;
+        }
+      }
+    }
+    if (cost < bestCost || (cost === bestCost && Math.abs(dx) < Math.abs(bestDx))) {
+      bestCost = cost;
+      bestDx = dx;
+    }
+  }
+  return bestDx;
+}
+
+/**
+ * Translates a cell's pixels horizontally by dx (positive = right), filling
+ * every vacated column with transparency. Vertical position is untouched:
+ * a pixel at (x, y) only ever moves to (x + dx, y).
+ */
+function shiftCellHorizontally(cell: Jimp, dx: number): void {
+  if (dx === 0) return;
+  const width = cell.bitmap.width;
+  const height = cell.bitmap.height;
+  const source = Buffer.from(cell.bitmap.data);
+  const dest = cell.bitmap.data;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const destIdx = (y * width + x) * 4;
+      const srcX = x - dx;
+      if (srcX >= 0 && srcX < width) {
+        const srcIdx = (y * width + srcX) * 4;
+        dest[destIdx] = source[srcIdx];
+        dest[destIdx + 1] = source[srcIdx + 1];
+        dest[destIdx + 2] = source[srcIdx + 2];
+        dest[destIdx + 3] = source[srcIdx + 3];
+      } else {
+        dest[destIdx] = 0;
+        dest[destIdx + 1] = 0;
+        dest[destIdx + 2] = 0;
+        dest[destIdx + 3] = 0;
+      }
+    }
+  }
+}
+
+/** Rescans a cell's opaque-pixel bounds in place after its pixels were shifted. */
+function recomputeCellBounds(cellInfo: SliceCell): void {
+  let minX = Infinity;
+  let maxX = -1;
+  let minY = Infinity;
+  let maxY = -1;
+  let sumX = 0;
+  let count = 0;
+  const { cell } = cellInfo;
+  cell.scan(0, 0, cell.bitmap.width, cell.bitmap.height, function (x: number, y: number, idx: number) {
+    if (cell.bitmap.data[idx + 3] !== 0) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      sumX += x;
+      count += 1;
+    }
+  });
+  cellInfo.minX = minX;
+  cellInfo.maxX = maxX;
+  cellInfo.minY = minY;
+  cellInfo.maxY = maxY;
+  cellInfo.sumX = sumX;
+  cellInfo.count = count;
 }
 
 /**

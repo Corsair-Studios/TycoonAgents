@@ -2809,6 +2809,12 @@ button.theme-review-preview:focus-visible::after {
   border-color: var(--vscode-inputValidation-errorBorder, #f85149);
 }
 
+.theme-review-feedback-hint {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, var(--muted));
+  margin-top: 4px;
+}
+
 .theme-review-mode {
   flex: 1;
 }
