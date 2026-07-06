@@ -138,6 +138,7 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
   assert.match(objects, /Row 5: OBJECT — Object 5/i);
   assert.match(objects, /four sequential animation frames/i);
   assert.match(objects, /do not hold or duplicate frames/i);
+  assert.match(objects, /locked in the identical position/i);
 
   const finalObjects = buildObjectAtlasPrompt('industrial', 'Factory', [
     ...Array.from({ length: 3 }, (_unused, index) => ({
@@ -291,5 +292,7 @@ test('background decor prompt describes seats, static decor, one animated row, a
   assert.match(prompt, /Cell 16: the BLAST \/ IMPACT effect/i);
   assert.match(prompt, /Cell 1: Decor 1[\s\S]*Cell 8: Decor 8/i);
   assert.match(prompt, /solid #FF00FF magenta/i);
+  assert.match(prompt, /locked in the identical position/i);
+  assert.match(prompt, /locked to the same cell center/i);
   assert.match(prompt, /Creative direction: cozy tavern/i);
 });
