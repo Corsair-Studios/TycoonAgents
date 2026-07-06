@@ -1342,7 +1342,7 @@
     const characters = collectPlanSlots(themePlanCharacters);
     const enemies = collectPlanSlots(themePlanEnemies);
     if (characters.length !== 16) throw new Error(`Characters needs all 16 filled slots (currently ${characters.length}).`);
-    if (enemies.length !== 3) throw new Error(`Enemies needs all 3 filled slots (currently ${enemies.length}).`);
+    if (enemies.length !== 4) throw new Error(`Enemies needs all 4 filled slots (currently ${enemies.length}).`);
     const displayName = themePlanName ? themePlanName.value.trim() : "";
     const creativeDirection = themePlanDirection ? themePlanDirection.value.trim() : "";
     const environment = themePlanEnvironment ? themePlanEnvironment.value.trim() : "";
