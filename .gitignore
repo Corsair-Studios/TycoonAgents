@@ -42,3 +42,4 @@ nul
 
 # Local project MCP config (machine-specific paths)
 .mcp.json
+design-doc/*.mp4
