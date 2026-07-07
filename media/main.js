@@ -25,6 +25,13 @@
   const bootLoaderLabelEl = /** @type {HTMLElement} */ (document.getElementById("boot-loader-label"));
   let bootLoaderPct = 0;
   let bootLoaderDone = false;
+  /** Set by bootLoaderHideNow (onboarding/setup took over) — never revive. */
+  let bootLoaderSuppressed = false;
+  /** Pending fade-end timer from bootLoaderComplete, cancellable by revive. */
+  let bootLoaderHideTimer = null;
+  const bootLoaderStartTs = Date.now();
+  /** Revive window: a completion may only be reversed this soon after boot. */
+  const BOOT_LOADER_REVIVE_WINDOW_MS = 1000;
 
   /** setTimeout that won't keep a Node/test process alive; no-op in real browsers where timers are plain numbers. */
   function unrefTimeout(fn, ms) {
@@ -49,7 +56,8 @@
     if (bootLoaderFillEl) bootLoaderFillEl.style.width = "100%";
     if (bootLoaderLabelEl) bootLoaderLabelEl.textContent = "Ready";
     bootLoaderEl.classList.add("boot-loader--fade");
-    unrefTimeout(() => {
+    bootLoaderHideTimer = unrefTimeout(() => {
+      bootLoaderHideTimer = null;
       if (bootLoaderEl) bootLoaderEl.setAttribute("hidden", "");
     }, 320);
   }
@@ -58,8 +66,36 @@
   function bootLoaderHideNow() {
     if (!bootLoaderEl || bootLoaderDone) return;
     bootLoaderDone = true;
+    bootLoaderSuppressed = true;
     bootLoaderEl.classList.remove("boot-loader--fade");
     bootLoaderEl.setAttribute("hidden", "");
+  }
+
+  /**
+   * Reverse a completion that raced a late THEME_INITIALIZED: if a transient
+   * no-theme verdict (THEME_NONE, or the stage-loading window timing out)
+   * completed the overlay and the real theme arrives a beat later, re-show it
+   * at full opacity — but only while it's still mid-fade, or within
+   * BOOT_LOADER_REVIVE_WINDOW_MS of boot (a mid-session re-show would jar).
+   * Never revives over onboarding/setup (bootLoaderSuppressed).
+   */
+  function bootLoaderRevive() {
+    if (!bootLoaderEl || !bootLoaderDone || bootLoaderSuppressed) return;
+    const stillFading = !bootLoaderEl.hasAttribute("hidden");
+    const withinBootWindow = Date.now() - bootLoaderStartTs < BOOT_LOADER_REVIVE_WINDOW_MS;
+    if (!stillFading && !withinBootWindow) return;
+    if (bootLoaderHideTimer !== null) {
+      clearTimeout(bootLoaderHideTimer);
+      bootLoaderHideTimer = null;
+    }
+    bootLoaderDone = false;
+    bootLoaderEl.classList.remove("boot-loader--fade");
+    bootLoaderEl.removeAttribute("hidden");
+    // Roll the bar back from the forced 100% to the theme milestone so the
+    // ongoing 45→99% progress updates read sensibly again.
+    bootLoaderPct = Math.min(bootLoaderPct, 45);
+    if (bootLoaderFillEl) bootLoaderFillEl.style.width = bootLoaderPct + "%";
+    if (bootLoaderLabelEl) bootLoaderLabelEl.textContent = "Loading theme…";
   }
 
   bootLoaderSetProgress(15, "Connecting…");
@@ -3047,23 +3083,23 @@
   let noThemeSignaled = false;
   // ── Boot-loader all-clear telemetry ──────────────────────────────────────
   // The loading signal (_load.ready, 95% of frames decoded) leads the actual
-  // canvas paint: agents whose CURRENT animation frame hasn't decoded yet
-  // fall back to placeholder stick figures (see "Sprite not yet loaded" in
-  // the worker draw loop), which flashed through the fade. So the overlay
-  // stays fully opaque until render() reports, per frame, that the decoded
-  // theme background was drawn AND no agent had to placeholder-fall-back
-  // while its art was still decoding — for BOOT_THEMED_FRAMES_MIN consecutive
-  // frames AND BOOT_THEMED_HOLD_MS since the first such frame (whichever is
-  // later). Failsafes (setup hide, THEME_NONE, 12s hard timeout) bypass this.
+  // canvas paint: entities whose CURRENT animation frame hasn't decoded yet
+  // are withheld from the frame (never placeholder-drawn — see the sprite
+  // draw paths). The overlay stays fully opaque until render() reports, per
+  // frame, that the decoded theme background was drawn AND no entity was
+  // withheld while its art was still decoding — for BOOT_THEMED_FRAMES_MIN
+  // consecutive frames AND BOOT_THEMED_HOLD_MS since the first such frame
+  // (whichever is later). Failsafes (setup hide, THEME_NONE, 12s hard
+  // timeout) bypass this.
   const BOOT_THEMED_FRAMES_MIN = 5;
   const BOOT_THEMED_HOLD_MS = 250;
   /** This frame drew the decoded theme background (set at the bg drawImage). */
   let bootFrameThemeBgDrawn = false;
-  /** This frame drew a placeholder stick figure where themed art is STILL
-   *  DECODING (img exists but !complete). Missing/errored art (no img, or
-   *  complete with naturalWidth 0) is that agent's permanent presentation and
+  /** This frame WITHHELD an entity whose art is STILL DECODING (img exists
+   *  but !complete). Missing/errored art (no img, or complete with
+   *  naturalWidth 0) is that entity's permanent no-render state and
    *  deliberately does NOT set this — it must never hold the loader hostage. */
-  let bootFramePlaceholderPending = false;
+  let bootFrameSpritePending = false;
   /** Consecutive fully-themed frames painted (resets on any regression). */
   let bootThemedFrames = 0;
   /** nowMs() of the first frame in the current consecutive themed run. */
@@ -4195,45 +4231,14 @@
     }
   }
 
-  /**
-   * Draws a labeled magenta placeholder tile centered at canvas point (cx,cy).
-   * Used wherever a sprite is referenced by the manifest but its frames are
-   * missing from the loaded theme images — a clearly-visible "generate me"
-   * guide cell so the user can see exactly which art still needs generating.
-   * @param {CanvasRenderingContext2D} c
-   * @param {number} cx @param {number} cy center point in canvas px
-   * @param {number} w @param {number} h tile size in canvas px
-   * @param {Array<string>} lines short label lines, e.g. ["DECOR", "Neon Sign"]
-   */
-  function drawPlaceholderTile(c, cx, cy, w, h, lines) {
-    c.save();
-    const x = cx - w / 2, y = cy - h / 2;
-    c.globalAlpha = 0.9;
-    c.fillStyle = "#ff00ff";
-    c.fillRect(x, y, w, h);
-    c.globalAlpha = 1;
-    c.strokeStyle = "#000";
-    c.lineWidth = 2;
-    c.setLineDash([6, 4]);
-    c.strokeRect(x + 1, y + 1, w - 2, h - 2);
-    c.setLineDash([]);
-    c.fillStyle = "#000";
-    c.textAlign = "center";
-    c.textBaseline = "middle";
-    const fs = Math.max(9, Math.min(16, Math.floor(h / 6)));
-    c.font = `bold ${fs}px sans-serif`;
-    const total = lines.length;
-    lines.forEach((ln, i) => {
-      c.fillText(String(ln), cx, cy + (i - (total - 1) / 2) * (fs + 2), w - 6);
-    });
-    c.restore();
-  }
+  // (drawPlaceholderTile removed: manifest entries with missing frames now
+  // render nothing — the theme health check is the "needs art" surface.)
 
   /**
    * Draw one buildable object at canvas point (cx, cy) using its current
    * objectAnimMap phase. Mirrors the agent draw pattern (foot-anchored,
-   * depth-scaled). Falls back to a simple "under construction" marker when
-   * the theme has no crate/poof frames, and never throws on missing art.
+   * depth-scaled). Draws nothing when art is missing/still decoding, and
+   * never throws on missing art.
    * @param {object} obj buildable object manifest entry (object_id, ...)
    * @param {{phase:string, animState:object|null, progress:number}} entry per-object runtime state
    * @param {number} cx @param {number} cy canvas coords (object anchor, ground point)
@@ -4251,13 +4256,14 @@
     if (entry.phase === "active") {
       const crateSlots = themeImages.crate;
       const crateImg = entry.animState && crateSlots ? crateSlots[currentObjectSlot(entry.animState)] : null;
-      if (crateImg && crateImg.complete && crateImg.naturalWidth > 0) {
-        ctx.drawImage(crateImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
-      } else {
-        // Missing crate art for the active build — labeled placeholder so the
-        // user can see which object still needs build/crate art generated.
-        drawPlaceholderTile(ctx, cx, cy - baseSize / 2, baseSize, baseSize, ["BUILD", obj.display_name || objId]);
+      if (!crateImg || !crateImg.complete || crateImg.naturalWidth === 0) {
+        // Crate art missing or still decoding — draw NOTHING (no placeholder
+        // tile, no floating progress bar); the crate pops in on its first
+        // ready frame. Still-decoding art keeps the boot loader opaque.
+        if (crateImg && !crateImg.complete) bootFrameSpritePending = true;
+        return;
       }
+      ctx.drawImage(crateImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
       // Change 2: progress/health bar for the ACTIVE crate — since the build
       // queue guarantees exactly one active object at a time, this bar is
       // always visible while building. Clamp barY so it never clips off the
@@ -4296,17 +4302,11 @@
       const objImg = objSlots ? objSlots[slotIdx] : null;
       if (objImg && objImg.complete && objImg.naturalWidth > 0) {
         ctx.drawImage(objImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
-      } else {
-        // No object art at all — simple placeholder block so the slot isn't blank.
-        ctx.save();
-        ctx.fillStyle = "rgba(120,140,160,0.85)";
-        ctx.strokeStyle = "#2a3a4a";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.rect(cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
+      } else if (objImg && !objImg.complete) {
+        // Object art still decoding — draw nothing (pops in when ready) and
+        // keep the boot loader opaque. Permanently missing art also renders
+        // nothing (the theme health check flags it).
+        bootFrameSpritePending = true;
       }
     }
   }
@@ -4325,19 +4325,19 @@
     if (decorId == null) return;
     const slots = themeImages["decor_" + decorId];
     const baseSize = Math.round(64 * depthScale * effectiveDecorScale(decorId));
-    if (!slots || slots.length === 0) {
-      // Missing art entirely. drawDecor is only ever called for decor that
-      // already has a resolved placement — hidden decor (anchor override
-      // sentinel [-1,-1]) never gets a placement and never reaches here — so
-      // this placeholder only ever marks decor that genuinely needs art.
-      drawPlaceholderTile(ctx, cx, cy - baseSize / 2, baseSize, baseSize, ["DECOR", decor.display_name || decorId]);
-      return;
-    }
+    // Missing art entirely: draw nothing (no placeholder tile) — the theme
+    // health check flags decor that still needs art generated.
+    if (!slots || slots.length === 0) return;
     const anim = decorAnimMap[decorId];
     let slotIdx = 0;
     if (anim) slotIdx = Math.min(anim.frameIndex, slots.length - 1);
     const img = slots[slotIdx] || slots[0];
-    if (!img || !img.complete || img.naturalWidth === 0) return;
+    if (!img || !img.complete || img.naturalWidth === 0) {
+      // Still-decoding decor keeps the boot loader opaque; it pops in when
+      // ready. Errored art (complete, naturalWidth 0) never holds the loader.
+      if (img && !img.complete) bootFrameSpritePending = true;
+      return;
+    }
     const flipped = !!(themeDecorFlipOverrides && themeDecorFlipOverrides[decorId]);
     if (flipped) {
       // Same mirror pattern as the character draw: translate to the right
@@ -4507,18 +4507,6 @@
       themeImages[charId] = slots.map((src) => loadDefringedFrame(src));
     }
   }
-
-  // Worker color by state
-  const STATE_COLOR = {
-    arrive:    "#7fb3ff",
-    walk:      "#5fd06b",
-    build:     "#ff9a3c",
-    haul:      "#c08457",
-    survey:    "#39c2c2",
-    wait:      "#9a9a9a",
-    celebrate: "#ffd23c",
-    leave:     "rgba(150,150,150,0.45)",
-  };
 
   /** @type {{ sessionActive: boolean; workers: Record<string, { id: string; role?: string; state: string }>; completedTasks: number }} */
   let state = { sessionActive: false, workers: {}, completedTasks: 0 };
@@ -5026,6 +5014,17 @@
       }
       if (themeReviewStopGeneration) themeReviewStopGeneration.hidden = true;
     } else if (msg && msg.type === "THEME_INITIALIZED") {
+      // A theme is definitively arriving — clear any earlier no-theme verdict
+      // (a transient THEME_NONE, or the stage-loading window having timed out
+      // before the host answered). Without this reset, a stale noThemeSignaled
+      // forced loadingActive false for the WHOLE incoming load, disabling the
+      // loading-bar suppression and completing the boot loader instantly. If
+      // that stale verdict already completed the overlay moments ago, revive
+      // it at full opacity so nothing placeholder peeks through.
+      noThemeSignaled = false;
+      bootThemedFrames = 0;
+      bootFirstThemedFrameTs = 0;
+      bootLoaderRevive();
       bootLoaderSetProgress(45, "Loading theme…");
       const completedGeneration = themeGenerationRunning;
       themeGenerationRunning = false;
@@ -7288,76 +7287,9 @@
     setupConfigEl.appendChild(dangerSection);
   }
 
-  function drawWorker(x, groundY, worker, idx) {
-    const color = STATE_COLOR[worker.state] || "#9a9a9a";
-    const isLeave = worker.state === "leave";
-
-    // Per-frame motion
-    let bobY = 0;
-    let wobbleX = 0;
-
-    if (worker.state === "celebrate") {
-      // Bounce
-      bobY = -Math.abs(Math.sin(frame * 0.18 + idx) * 14);
-    } else if (worker.state === "build") {
-      // Quick hammer wobble
-      wobbleX = Math.sin(frame * 0.4 + idx) * 3;
-      bobY = Math.abs(Math.sin(frame * 0.4 + idx) * 2) - 2;
-    } else if (worker.state === "walk" || worker.state === "arrive") {
-      // Gentle walk bob
-      bobY = Math.sin(frame * 0.15 + idx) * 3;
-    } else {
-      // Idle sway
-      bobY = Math.sin(frame * 0.08 + idx) * 1.5;
-    }
-
-    ctx.save();
-    if (isLeave) ctx.globalAlpha = 0.45;
-
-    const cx = x + wobbleX;
-    const bodyTop = groundY - 36 + bobY;
-    const bodyH = 22;
-    const bodyW = 14;
-
-    // Body rect
-    ctx.fillStyle = color;
-    ctx.fillRect(cx - bodyW / 2, bodyTop, bodyW, bodyH);
-
-    // Head circle
-    const headR = 8;
-    const headCy = bodyTop - headR - 2;
-    ctx.beginPath();
-    ctx.arc(cx, headCy, headR, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Label
-    ctx.fillStyle = "#e0e0e0";
-    ctx.font = "10px monospace";
-    ctx.textAlign = "center";
-    const label = (worker.role || worker.id).slice(0, 12);
-    ctx.fillText(label, cx, groundY + 14);
-    ctx.fillText(worker.state, cx, groundY + 26);
-
-    ctx.restore();
-  }
-
-  function drawBuildings(groundY, count) {
-    if (count === 0) return;
-    const maxBuildings = Math.min(count, 20);
-    const startX = 20;
-    const spacing = 28;
-    for (let i = 0; i < maxBuildings; i++) {
-      const bx = startX + i * spacing;
-      // Heights grow as more tasks complete (capped)
-      const bh = Math.min(12 + (count - i) * 3, 60);
-      ctx.fillStyle = "#3a4a6a";
-      ctx.fillRect(bx, groundY - bh, 20, bh);
-      // Windows
-      ctx.fillStyle = "#7fb3ff44";
-      ctx.fillRect(bx + 4, groundY - bh + 4, 5, 5);
-      ctx.fillRect(bx + 11, groundY - bh + 4, 5, 5);
-    }
-  }
+  // drawWorker (placeholder stick figures) and drawBuildings (placeholder
+  // cityscape) were removed: entities render only as real themed art, popping
+  // in on their first decoded frame. See the sprite draw paths in render().
 
   function drawHUD(w) {
     // Upper-left session/agents/built overlay removed — redundant + overlapped the UEFN chips.
@@ -8009,7 +7941,7 @@
     // just before drawHUD) from what was ACTUALLY painted, never from the
     // loading signal alone. Reset this frame's paint telemetry here.
     bootFrameThemeBgDrawn = false;
-    bootFramePlaceholderPending = false;
+    bootFrameSpritePending = false;
     if (!bootLoaderDone && loadingActive && themeLoaded) {
       bootLoaderSetProgress(75 + Math.round(_load.frac * 24), "Preparing scene…");
     }
@@ -8044,7 +7976,7 @@
       ctx.fillRect(0, 0, w, h * 0.7);
     }
 
-    // Ground band (always drawn for worker footing reference)
+    // Ground band (pre-theme backdrop only — no entities are drawn on it)
     const groundY = Math.floor(h * 0.78);
     if (!themeLoaded || !themeBackgroundImg || !themeBackgroundImg.complete) {
       ctx.fillStyle = "#2a3a2a";
@@ -8057,10 +7989,8 @@
       ctx.stroke();
     }
 
-    // Buildings (left side) — only shown when no theme is active (and not loading)
-    if (!loadingActive && (!themeLoaded || !themeBackgroundImg || !themeBackgroundImg.complete || themeBackgroundImg.naturalWidth === 0)) {
-      drawBuildings(groundY, state.completedTasks);
-    }
+    // (Placeholder cityscape removed: the pre-theme scene draws no stand-in
+    // buildings or stick figures — entities only appear as real themed art.)
 
     // ── Isometric character placement + wander on themed floor ───────────────
     // Derive the agent list from the metrics table (same source as renderMetrics).
@@ -8170,7 +8100,7 @@
           entry.phase = "active";
           entry.animState = (themeHasCrateAsset && themeImages.crate && themeImages.crate.length > 0)
             ? createAnimState("crate")
-            : null; // null animState → fallback "under construction" marker
+            : null; // null animState → no crate art → crate not drawn
         }
         entry.progress = buildState.activeProgress;
       } else if (status === "built") {
@@ -8981,44 +8911,31 @@
         }
         const img = slots && slots[slot];
         const spriteSize = Math.round(64 * depthScale * themeCharacterScale * effectiveRivalScale(en.rival_id));
-        if (img && img.complete && img.naturalWidth > 0) {
-          const drawX = ecx - spriteSize / 2;
-          const drawY = ecy - spriteSize;
-          const clip = RIVAL_CLIPS[en.animState.action] || RIVAL_CLIPS.walk;
-          // Enemies ALWAYS mirror to face their target/movement direction — not
-          // gated on clip.flippable (mirrors the agent override so a non-flippable
-          // idle/hold clip still faces the right way). facingLeft true = mirror.
-          const shouldFlip = en.facingLeft === true;
-          ctx.save();
-          if (shouldFlip) {
-            ctx.translate(ecx + spriteSize / 2, 0);
-            ctx.scale(-1, 1);
-            ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);
-          } else {
-            ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
-          }
-          ctx.restore();
-        } else if (!slots || slots.length === 0) {
-          // No rival frames at all for this theme — labeled placeholder so the
-          // user can see which enemy still needs art generated.
-          const rivalMeta = themeRivals.find((r) => r && r.rival_id === en.rival_id);
-          const rivalLabel = (rivalMeta && rivalMeta.name) || en.rival_id;
-          drawPlaceholderTile(ctx, ecx, ecy - spriteSize / 2, spriteSize, spriteSize, ["ENEMY", rivalLabel]);
-        } else {
-          // Frames exist but the image isn't ready yet (transient load state)
-          // — small red marker (character-footprint sized) so EVICT mode is
-          // still visible without dominating the stage.
-          ctx.save();
-          ctx.fillStyle = "rgba(200,40,40,0.85)";
-          ctx.strokeStyle = "#5a0a0a";
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          const fallbackRadius = Math.min(10, spriteSize / 4);
-          ctx.arc(ecx, ecy - fallbackRadius, fallbackRadius, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-          ctx.restore();
+        if (!img || !img.complete || img.naturalWidth === 0) {
+          // Rival art missing or still decoding — draw NOTHING (no placeholder
+          // tile, no marker, no floating HP bar); the enemy pops in on its
+          // first ready frame. Still-decoding frames keep the boot loader
+          // opaque; permanently missing art renders nothing (theme health
+          // check flags it) and must not hold the loader.
+          if (img && !img.complete) bootFrameSpritePending = true;
+          return;
         }
+        const drawX = ecx - spriteSize / 2;
+        const drawY = ecy - spriteSize;
+        const clip = RIVAL_CLIPS[en.animState.action] || RIVAL_CLIPS.walk;
+        // Enemies ALWAYS mirror to face their target/movement direction — not
+        // gated on clip.flippable (mirrors the agent override so a non-flippable
+        // idle/hold clip still faces the right way). facingLeft true = mirror.
+        const shouldFlip = en.facingLeft === true;
+        ctx.save();
+        if (shouldFlip) {
+          ctx.translate(ecx + spriteSize / 2, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);
+        } else {
+          ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
+        }
+        ctx.restore();
         // HP bar above the enemy.
         const hpFrac = Math.max(0, Math.min(1, en.hp / en.maxHp));
         const barW = Math.max(12, spriteSize * 0.4);
@@ -9190,19 +9107,17 @@
             ctx.fill();
             ctx.restore();
           }
-        } else {
-          // Sprite not yet loaded — fallback stick figure. If the frame image
-          // exists but is still decoding, this is the transient placeholder
-          // the boot loader must keep covered; a missing/errored image draws
-          // this permanently and must NOT block the loader's all-clear.
-          if (img && !img.complete) bootFramePlaceholderPending = true;
-          drawWorker(cx, cy, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
+        } else if (img && !img.complete) {
+          // Sprite frame still decoding — draw NOTHING (no stick figure, no
+          // floating label); the agent pops in on its first ready frame. The
+          // flag keeps the boot loader opaque over the withheld frame.
+          bootFrameSpritePending = true;
         }
-      } else {
-        // No theme loaded — placeholder stick figure on groundY
-        const fallbackX = Math.max(40, (w - Math.min(80, (w - 40) / Math.max(agentList.length, 1)) * agentList.length) / 2) + idx * Math.min(80, (w - 40) / Math.max(agentList.length, 1));
-        drawWorker(fallbackX, groundY, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
+        // Missing/errored art: render nothing (theme health check flags it).
       }
+      // No themed art available (no theme / background not ready): render
+      // nothing. The old placeholder stick figures were exactly the "bare
+      // chips" screen that flashed before the loaded scene.
     });
 
     // ── Change C: draw ranged-fire projectiles ─────────────────────────
@@ -9350,10 +9265,17 @@
     // the loading window timing out) have no themed scene to wait for and
     // complete immediately. The 12s hard timeout still force-hides anything.
     if (!bootLoaderDone && !loadingActive) {
+      // Until the host has answered with THEME_INITIALIZED or THEME_NONE, a
+      // theme may still be coming (slow theme discovery can outlast the 6s
+      // stage-loading window) — hold opaque rather than complete into the
+      // pre-theme scene. The 12s hard timeout still covers a dead host.
+      const themeOutcomeKnown = themeLoaded || noThemeSignaled;
       const themedSceneExpected = themeLoaded && !noThemeSignaled && _load.ready;
-      if (!themedSceneExpected) {
+      if (!themeOutcomeKnown) {
+        // hold — no verdict yet
+      } else if (!themedSceneExpected) {
         bootLoaderComplete();
-      } else if (bootFrameThemeBgDrawn && !bootFramePlaceholderPending && themeImagesAllSettled()) {
+      } else if (bootFrameThemeBgDrawn && !bootFrameSpritePending && themeImagesAllSettled()) {
         bootThemedFrames++;
         if (bootFirstThemedFrameTs === 0) bootFirstThemedFrameTs = nowMs();
         if (
