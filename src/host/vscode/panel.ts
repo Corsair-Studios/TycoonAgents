@@ -3102,8 +3102,27 @@ export class TycoonPanel {
         <button class="menu-item" role="menuitem" id="menu-about">About</button>
         ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ""}
       </div>
-      <!-- Badge HUD: lower-right silhouette medallion, shown/updated by media/main.js -->
-      <button id="badge-hud-btn" class="badge-hud" hidden aria-label="Badges"><span class="badge-hud-count">0</span></button>
+      <!-- Badge HUD: lower-right gold medallion, shown/updated by media/main.js -->
+      <button id="badge-hud-btn" class="badge-hud" hidden aria-label="Badges" title="Badges — click to view your unlocked badges">
+        <svg class="badge-hud-svg" viewBox="0 0 52 52" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="badgeHudGoldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#fff2c2" />
+              <stop offset="40%" stop-color="#ffb020" />
+              <stop offset="100%" stop-color="#8a4d06" />
+            </linearGradient>
+            <linearGradient id="badgeHudRibbonGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#7a1c26" />
+              <stop offset="100%" stop-color="#4a1017" />
+            </linearGradient>
+          </defs>
+          <path class="badge-hud-ribbon" d="M19 23 L13 50 L26 41 L39 50 L33 23 Z" fill="url(#badgeHudRibbonGrad)" stroke="#141418" stroke-width="1.5" stroke-linejoin="round" />
+          <circle class="badge-hud-disc" cx="26" cy="21" r="17" fill="url(#badgeHudGoldGrad)" stroke="#141418" stroke-width="2.5" />
+          <circle class="badge-hud-disc-rim" cx="26" cy="21" r="12.5" fill="none" stroke="rgba(0,0,0,0.4)" stroke-width="1" />
+          <path class="badge-hud-shine" d="M12 15 A17 17 0 0 1 34 7 L26 21 Z" fill="rgba(255,255,255,0.4)" />
+        </svg>
+        <span class="badge-hud-count">0</span>
+      </button>
     </div>
 
     <!-- Resize handle: drag to split stage vs metrics panel -->

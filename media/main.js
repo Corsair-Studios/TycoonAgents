@@ -250,6 +250,12 @@
 
   const badgeHudBtn       = /** @type {HTMLElement|null} */ (document.getElementById("badge-hud-btn"));
   const badgeHudCountEl   = badgeHudBtn ? /** @type {HTMLElement|null} */ (badgeHudBtn.querySelector(".badge-hud-count")) : null;
+  // Last count rendered into the HUD; -1 means "not yet shown" so the very
+  // first paint (and a rebirth reset, which only ever decreases the count)
+  // never trigger the celebratory pop below — only genuine new unlocks do.
+  let badgeHudLastCount   = -1;
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let badgeHudPopTimer    = null;
   const badgeModalEl      = /** @type {HTMLElement|null} */ (document.getElementById("badge-modal"));
   const badgeBackdropEl   = /** @type {HTMLElement|null} */ (document.getElementById("badge-backdrop"));
   const badgeModalCloseEl = /** @type {HTMLElement|null} */ (document.getElementById("badge-modal-close"));
@@ -283,7 +289,23 @@
       return;
     }
     badgeHudBtn.removeAttribute("hidden");
-    if (badgeHudCountEl) badgeHudCountEl.textContent = String(unlockedBadgeIds.size);
+    const count = unlockedBadgeIds.size;
+    if (badgeHudCountEl) badgeHudCountEl.textContent = String(count);
+    // Brief pop when the count goes up (new badge earned); skipped on first
+    // paint and on rebirth resets, which only ever lower the count.
+    if (badgeHudLastCount >= 0 && count > badgeHudLastCount) {
+      badgeHudBtn.classList.remove("badge-hud-pop");
+      // Force reflow so re-adding the class restarts the animation even if
+      // two unlocks land within the same 600ms window.
+      void badgeHudBtn.offsetWidth;
+      badgeHudBtn.classList.add("badge-hud-pop");
+      if (badgeHudPopTimer) clearTimeout(badgeHudPopTimer);
+      badgeHudPopTimer = setTimeout(() => {
+        badgeHudBtn.classList.remove("badge-hud-pop");
+        badgeHudPopTimer = null;
+      }, 650);
+    }
+    badgeHudLastCount = count;
   }
 
   /**

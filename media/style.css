@@ -546,46 +546,93 @@ body {
   background: rgba(255, 176, 32, 0.22);
 }
 
-/* Badge HUD: lower-right silhouette medallion showing unlocked-badge count.
-   Shown/hidden and updated by media/main.js (only visible when the current
-   theme declares >=1 badge). */
+/* Badge HUD: lower-right gold medallion (laurel disc + ribbon tail) showing
+   unlocked-badge count. Shown/hidden and updated by media/main.js (only
+   visible when the current theme declares >=1 badge). The medal art is
+   inline SVG (see panel.ts) so it needs no external assets and stays under
+   the strict webview CSP; all motion below is CSS-only. */
 .badge-hud {
   position: absolute;
   right: 12px;
   bottom: 12px;
-  width: 44px;
-  height: 44px;
+  width: 52px;
+  height: 52px;
   padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #1b1b22;
-  border: 2px solid rgba(255, 176, 32, 0.55);
-  /* Shield-ish medallion: rounded on top, slight point-in on the bottom
-     corners so it reads as a badge silhouette rather than a plain circle. */
-  border-radius: 50% 50% 45% 45% / 55% 55% 45% 45%;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+  border: none;
+  background: transparent;
   cursor: pointer;
   z-index: 10;
-  transition: background 0.15s, border-color 0.15s, transform 0.1s;
-}
-
-.badge-hud:hover {
-  background: #26262f;
-  border-color: var(--accent);
-  transform: translateY(-1px);
 }
 
 .badge-hud[hidden] {
   display: none;
 }
 
+.badge-hud-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Dark drop-shadow ring keeps the medal readable over bright theme art. */
+  filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.65));
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.badge-hud:hover .badge-hud-svg {
+  transform: translateY(-2px) scale(1.05);
+  filter: drop-shadow(0 5px 11px rgba(0, 0, 0, 0.7));
+}
+
+/* Shine sweep: hidden highlight wedge fades/slides across the disc on hover. */
+.badge-hud-shine {
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: opacity 0.25s ease, transform 0.55s ease;
+}
+
+.badge-hud:hover .badge-hud-shine {
+  opacity: 1;
+  transform: translateX(6px);
+}
+
 .badge-hud-count {
-  font-size: 15px;
-  font-weight: 700;
-  color: #eef0f6;
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 17px;
+  font-weight: 800;
+  color: #fff8e6;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 4px rgba(0, 0, 0, 0.85);
   line-height: 1;
   pointer-events: none;
+}
+
+/* Celebratory pop, briefly toggled by updateBadgeHud() in media/main.js
+   whenever the unlocked count goes up (not on initial load or rebirth reset). */
+@keyframes badgeHudPop {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.32); }
+  60% { transform: scale(0.94); }
+  100% { transform: scale(1); }
+}
+
+/* Same curve as badgeHudPop but keeps .badge-hud-count centered (it is
+   already offset via translate(-50%, -50%), which a plain scale() keyframe
+   would otherwise clobber for the animation's duration). */
+@keyframes badgeHudPopCentered {
+  0% { transform: translate(-50%, -50%) scale(1); }
+  35% { transform: translate(-50%, -50%) scale(1.32); }
+  60% { transform: translate(-50%, -50%) scale(0.94); }
+  100% { transform: translate(-50%, -50%) scale(1); }
+}
+
+.badge-hud.badge-hud-pop .badge-hud-svg {
+  animation: badgeHudPop 0.6s ease;
+}
+
+.badge-hud.badge-hud-pop .badge-hud-count {
+  animation: badgeHudPopCentered 0.6s ease;
 }
 
 /* Engine connection chips — upper-left overlay, mirrors #menu-btn placement */

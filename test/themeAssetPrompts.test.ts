@@ -156,7 +156,8 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
   assert.match(objects, /do not hold or duplicate frames/i);
   assert.match(objects, /locked in the identical position/i);
   assert.match(objects, /near-copy of the first frame/i);
-  assert.match(objects, /at least 90% of the subject's pixels stay identical/i);
+  assert.match(objects, /at least 95% of the subject's pixels stay identical/i);
+  assert.match(objects, /appear static/i);
   assert.match(objects, /width must be identical in every frame/i);
   assert.match(objects, /128 pixels wide and approximately 102 pixels tall/i);
 
@@ -316,7 +317,8 @@ test('background decor prompt describes seats, static decor, one animated row, a
   assert.match(prompt, /locked in the identical position/i);
   assert.match(prompt, /locked to the same cell center/i);
   assert.match(prompt, /near-copy of the first frame/i);
-  assert.match(prompt, /at least 90% of the subject's pixels stay identical/i);
+  assert.match(prompt, /at least 95% of the subject's pixels stay identical/i);
+  assert.match(prompt, /ambient accent/i);
   assert.match(prompt, /same projectile still anchored to that same cell center/i);
   assert.match(prompt, /width must be identical in every frame/i);
   assert.match(prompt, /footprint\/diameter stays constant across frames/i);
