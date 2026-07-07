@@ -17,7 +17,14 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
-import { buildAgentMarkdown } from "./packCatalog";
+import { buildAgentMarkdown, LEAD_AGENTS } from "./packCatalog";
+import {
+  renderDelegationDoctrine,
+  upsertDelegationSection,
+  readExecutionConfig,
+  writeExecutionConfig,
+  type DelegationMode,
+} from "./delegationDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
 import { detectEngineSetups } from "./engineDetect";
@@ -182,6 +189,7 @@ export class TycoonPanel {
         id?: string;
         model?: string;
         pattern?: string;
+        delegation_mode?: string;
         thirdParty?: boolean;
         disclosures?: Array<{
           label?: string;
@@ -290,7 +298,7 @@ export class TycoonPanel {
         } else if (message.type === "checkInstall") {
           this._handleCheckInstall();
         } else if (message.type === "installHooks") {
-          this._handleInstallHooks();
+          this._handleInstallHooks(this._coerceDelegationMode(message.delegation_mode));
         } else if (message.type === "getSettings") {
           this._handleGetSettings();
         } else if (message.type === "setAgentModel") {
@@ -306,7 +314,13 @@ export class TycoonPanel {
             await this._handleRemoveAgent(message.id);
           }
         } else if (message.type === "repairHook") {
-          this._handleInstallHooks();
+          // Repair only fixes the hook registration — it must not silently
+          // revert an existing team_leads project back to flat, so it reuses
+          // whatever mode is already on disk rather than defaulting.
+          const root = this._projectRoot();
+          const currentMode =
+            root !== "" ? readExecutionConfig(path.join(root, ".claude")).delegation_mode : "flat";
+          this._handleInstallHooks(currentMode);
           this._handleGetSettings();
         } else if (message.type === "resetMetrics") {
           void this._handleResetMetrics();
@@ -2504,7 +2518,12 @@ export class TycoonPanel {
     void this._panel.webview.postMessage({ type: "installState", installed, uefnDetected: uefn.detected, uefnSignals: uefn.signals });
   }
 
-  private _handleInstallHooks(): void {
+  /** Coerce an untrusted `delegation_mode` message field to a valid mode, defaulting to "flat". */
+  private _coerceDelegationMode(raw: string | undefined): DelegationMode {
+    return raw === "team_leads" ? "team_leads" : "flat";
+  }
+
+  private _handleInstallHooks(delegationMode: DelegationMode = "flat"): void {
     void this._panel.webview.postMessage({ type: "installState", busy: true });
     try {
       const root = this._projectRoot();
@@ -2549,8 +2568,64 @@ export class TycoonPanel {
       // 6. Write merged settings.
       fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
 
-      // 7. Success.
-      void this._panel.webview.postMessage({ type: "installState", installed: true });
+      // 7. Team Lead Mode (Phase 1) wiring — same `.claude` dir the hook install
+      // just wrote into. A CLAUDE.md write failure is a USER-OWNED-file risk,
+      // so it's caught independently and reported without failing the
+      // (already-successful) hook install.
+      const claudeDir = path.join(root, ".claude");
+      let claudeMdError: string | undefined;
+      try {
+        // 7a. Persist the chosen mode.
+        writeExecutionConfig(claudeDir, { delegation_mode: delegationMode });
+
+        // 7c/7d. Lead agent files + keyword routing — only written for
+        // team_leads. Flat mode leaves any previously-installed lead files
+        // alone (Phase 2 handles removal on downgrade).
+        if (delegationMode === "team_leads") {
+          let cfg = this._readKeywordsConfig(root);
+          for (const a of LEAD_AGENTS) {
+            const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
+            if (!fs.existsSync(agentPath)) {
+              fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
+              fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+            }
+            cfg = setKeywordPattern(cfg, a.id, a.keywords);
+          }
+          const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+          fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+          fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+        }
+      } catch (err) {
+        claudeMdError = String(err);
+      }
+
+      // 7b. Upsert the delegation doctrine into the workspace's CLAUDE.md.
+      // Wrapped separately so a failure here (user-owned file) never fails
+      // the hook install itself.
+      try {
+        const claudeMdPath = path.join(root, "CLAUDE.md");
+        let existingClaudeMd: string | null = null;
+        try {
+          existingClaudeMd = fs.readFileSync(claudeMdPath, "utf8");
+        } catch {
+          existingClaudeMd = null;
+        }
+        const updated = upsertDelegationSection(
+          existingClaudeMd,
+          renderDelegationDoctrine(delegationMode)
+        );
+        fs.writeFileSync(claudeMdPath, updated);
+      } catch (err) {
+        claudeMdError = claudeMdError ?? String(err);
+      }
+
+      // 8. Success.
+      void this._panel.webview.postMessage({
+        type: "installState",
+        installed: true,
+        delegation_mode: delegationMode,
+        ...(claudeMdError !== undefined ? { claudeMdError } : {}),
+      });
     } catch (err) {
       void this._panel.webview.postMessage({
         type: "installState",
@@ -3187,8 +3262,26 @@ export class TycoonPanel {
     <div id="setup-card">
       <h1>TycoonAgents</h1>
       <p id="setup-status">Checking installation&hellip;</p>
-      <button id="install-hooks-btn" hidden>Install hooks</button>
       <p id="setup-error" hidden></p>
+      <div id="delegation-mode-group" class="delegation-mode-group">
+        <div class="delegation-mode-title">Delegation style</div>
+        <label class="delegation-mode-option">
+          <input type="radio" name="delegation-mode" id="delegation-mode-flat" value="flat" checked>
+          <span class="delegation-mode-option-body">
+            <span class="delegation-mode-option-label">Flat (recommended for most projects)</span>
+            <span class="delegation-mode-option-help">The orchestrator briefs specialist workers directly. Lowest token cost, fastest for small-to-medium tasks.</span>
+          </span>
+        </label>
+        <label class="delegation-mode-option">
+          <input type="radio" name="delegation-mode" id="delegation-mode-team-leads" value="team_leads">
+          <span class="delegation-mode-option-body">
+            <span class="delegation-mode-option-label">Team Leads</span>
+            <span class="delegation-mode-option-help">Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs &mdash; many features across many files &mdash; where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Flat.</span>
+          </span>
+        </label>
+        <p class="delegation-mode-footnote">You can change this anytime in Settings. Switching updates this project's agent roster and delegation instructions.</p>
+      </div>
+      <button id="install-hooks-btn" hidden>Install hooks</button>
       <div id="setup-config" hidden><!-- Phase 2: agent model settings --></div>
       <button id="setup-back-btn" hidden>Back</button>
     </div>

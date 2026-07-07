@@ -1311,7 +1311,11 @@
   }
 
   installHooksBtn.addEventListener("click", () => {
-    vscode.postMessage({ type: "installHooks" });
+    const teamLeadsRadio = /** @type {HTMLInputElement|null} */ (
+      document.getElementById("delegation-mode-team-leads")
+    );
+    const delegation_mode = teamLeadsRadio && teamLeadsRadio.checked ? "team_leads" : "flat";
+    vscode.postMessage({ type: "installHooks", delegation_mode });
   });
 
   menuSettingsBtn.addEventListener("click", () => {

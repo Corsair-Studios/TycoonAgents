@@ -1,0 +1,202 @@
+/*
+ * TycoonAgents - https://x.com/thetrashbyrd
+ * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Attribution header - optional; end users may remove it.
+ */
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+/**
+ * The two supported delegation topologies (Team Lead Mode, Phase 1).
+ * See docs/plan/team-lead-mode.md for the full design.
+ */
+export const DELEGATION_MODES = ["flat", "team_leads"] as const;
+
+/** One of the values in {@link DELEGATION_MODES}. */
+export type DelegationMode = (typeof DELEGATION_MODES)[number];
+
+/** Shape of `.claude/tycoon/execution.json`. */
+export interface ExecutionConfig {
+  delegation_mode: DelegationMode;
+}
+
+/** Markers wrapping the managed delegation section inside a project's CLAUDE.md. */
+export const DELEGATION_SECTION_START = "<!-- tycoon:delegation -->";
+export const DELEGATION_SECTION_END = "<!-- /tycoon:delegation -->";
+
+/**
+ * Instructions shared by both delegation modes: delegate implementation via
+ * the Task tool, route search to Explore/haiku agents, brief precisely, cap
+ * reports at 250 words, and never let a change be verified by the agent that
+ * authored it.
+ */
+const PREAMBLE = `## Delegation
+
+Delegate implementation work to specialist agents via the Task tool rather
+than doing it inline. Search tasks (file/code lookup, grep/glob) always go to
+Explore agents running on the haiku model.
+
+Brief every delegated agent precisely:
+- Exact file paths (not glob patterns)
+- Key symbol names (functions, classes, variables relevant to the task)
+- Decisions already made (architecture, patterns established, approaches
+  ruled out)
+- Success criteria (what "done" looks like)
+
+Require every delegated agent to report back in under 250 words: what
+changed (file:line), verification result, open issues.
+
+A change is always verified by someone other than the agent that authored
+it, never self-certified by the agent that wrote it.`;
+
+/** Specialist roster shared by both modes (see .claude/agents/*.md). */
+const ROSTER_TABLE = `## Specialist roster
+
+| Specialist | Task types |
+| --- | --- |
+| coding-specialist | Implementation, editing, bug fixes, refactoring |
+| testing-specialist | Test authoring, specs, coverage |
+| vscode-integration | VS Code extension API, webview, panel, lifecycle |
+| ux-ui-designer | Webview canvas scene, layout, CSS, animation |
+| workspace-monitor | Agent lifecycle/event monitoring, hook-record mapping |
+| search-retrieval | File searching, code lookup, grep/glob (runs on haiku) |`;
+
+/** Flat-mode specific framing: the orchestrator briefs workers directly. */
+const FLAT_SECTION = `## Flat delegation (current mode)
+
+The orchestrator briefs specialist workers directly — there is no
+intermediate layer between the orchestrator and the worker doing the task.`;
+
+/**
+ * Team-Leads-mode specific framing: large multi-feature work routes through
+ * persistent lead agents that own decomposition, briefing, verification, and
+ * upward reporting for their domain.
+ */
+const TEAM_LEADS_SECTION = `## Team Leads delegation (current mode)
+
+Everything in Flat delegation still applies. Additionally, for large
+multi-feature work — roughly 3+ tasks in a domain — route through a team
+lead instead of briefing workers directly:
+
+- **build-lead** owns the coding-specialist, ux-ui-designer, and
+  vscode-integration workers.
+- **quality-lead** owns the testing-specialist and workspace-monitor
+  workers.
+- **search-retrieval** stays flat and is never routed through a team lead.
+
+A team lead decomposes its domain's work, briefs its workers, verifies their
+results, and reports compressed results back up to the orchestrator.
+
+Depth never exceeds orchestrator -> team lead -> worker. A team lead does
+not spawn other team leads.
+
+Task specs and interface contracts are written to docs/plan/*.md files
+rather than left in conversation — team leads read and update those files
+as the source of truth for their domain's work.
+
+No team certifies its own work: verification of a domain's output is done
+by a different lead or by the orchestrator, never by the team that produced
+it.
+
+Small tasks (below the roughly-3-task threshold) skip team leads entirely
+and go straight from the orchestrator to the worker, same as Flat mode.`;
+
+/**
+ * Render the CLAUDE.md section body for a delegation mode. Pure (no
+ * fs/vscode access), so this is unit-testable. The returned string does NOT
+ * include the `<!-- tycoon:delegation -->` markers — use
+ * {@link upsertDelegationSection} to splice it into a CLAUDE.md.
+ */
+export function renderDelegationDoctrine(mode: DelegationMode): string {
+  const parts =
+    mode === "team_leads"
+      ? [PREAMBLE, ROSTER_TABLE, TEAM_LEADS_SECTION]
+      : [PREAMBLE, ROSTER_TABLE, FLAT_SECTION];
+  return parts.join("\n\n");
+}
+
+/**
+ * Splice `sectionBody` into `existingContent` between the managed
+ * `<!-- tycoon:delegation -->` / `<!-- /tycoon:delegation -->` markers.
+ *
+ * - `existingContent` null/empty -> produce a minimal new CLAUDE.md (a
+ *   heading followed by the marked section).
+ * - Markers already present -> replace ONLY the span between them
+ *   (inclusive of the markers themselves); everything outside the span is
+ *   preserved byte-for-byte.
+ * - Content present but no markers -> append the marked section at the end,
+ *   separated from existing content by a blank line. Existing content is
+ *   preserved byte-for-byte.
+ *
+ * Idempotent: calling this twice with the same `sectionBody` on the result
+ * of the first call produces an identical string. Pure (no fs/vscode
+ * access).
+ */
+export function upsertDelegationSection(
+  existingContent: string | null,
+  sectionBody: string
+): string {
+  const body = sectionBody.replace(/\s+$/, "");
+  const block = `${DELEGATION_SECTION_START}\n${body}\n${DELEGATION_SECTION_END}`;
+
+  if (existingContent === null || existingContent.length === 0) {
+    return `# Project Instructions\n\n${block}\n`;
+  }
+
+  const startIdx = existingContent.indexOf(DELEGATION_SECTION_START);
+  const endIdx = existingContent.indexOf(DELEGATION_SECTION_END);
+
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    const before = existingContent.slice(0, startIdx);
+    const after = existingContent.slice(endIdx + DELEGATION_SECTION_END.length);
+    return `${before}${block}${after}`;
+  }
+
+  // No markers found: append at the end, separated by exactly one blank line.
+  const separator = existingContent.endsWith("\n") ? "\n" : "\n\n";
+  return `${existingContent}${separator}${block}\n`;
+}
+
+/** Default execution config used when none has been written yet. */
+const DEFAULT_EXECUTION_CONFIG: ExecutionConfig = { delegation_mode: "flat" };
+
+/** Resolve the path to `<claudeDirPath>/tycoon/execution.json`. */
+function executionConfigPath(claudeDirPath: string): string {
+  return path.join(claudeDirPath, "tycoon", "execution.json");
+}
+
+/**
+ * Read `.claude/tycoon/execution.json`. Tolerant of a missing file, a
+ * missing directory, or invalid/unrecognized JSON — all of those fall back
+ * to the default (`{ delegation_mode: "flat" }`) rather than throwing.
+ */
+export function readExecutionConfig(claudeDirPath: string): ExecutionConfig {
+  try {
+    const raw = fs.readFileSync(executionConfigPath(claudeDirPath), "utf8");
+    const parsed = JSON.parse(raw);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      DELEGATION_MODES.includes(parsed.delegation_mode)
+    ) {
+      return { delegation_mode: parsed.delegation_mode };
+    }
+  } catch {
+    // Missing file, missing dir, invalid JSON, etc. -> use the default.
+  }
+  return { ...DEFAULT_EXECUTION_CONFIG };
+}
+
+/**
+ * Write `.claude/tycoon/execution.json`, creating the `.claude/tycoon`
+ * directory if it doesn't exist yet.
+ */
+export function writeExecutionConfig(
+  claudeDirPath: string,
+  config: ExecutionConfig
+): void {
+  const configPath = executionConfigPath(claudeDirPath);
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+}
