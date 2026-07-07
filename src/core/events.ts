@@ -25,7 +25,10 @@ export type NormalizedEvent =
   | { type: "SessionStop"; at: number; tokens?: number; model?: string }
   // Identity-only registration: seeds an idle roster entry without marking it active.
   | { type: "WorkerRegistered"; at: number; workerId: WorkerId; name?: string; model?: string; description?: string }
-  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string }
+  // parentId/tier are approximate hierarchy telemetry (Team Lead Mode Phase 3): parentId
+  // is the spawning agent inferred from the hook's active-agent stack, tier mirrors the
+  // spawned agent's .md frontmatter (e.g. "lead"). Both undefined outside Team Lead Mode.
+  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string }
   | { type: "WorkerActivity"; at: number; workerId: WorkerId; kind: ActivityKind; detail?: string }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string }
   | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number }

@@ -14,5 +14,8 @@ export interface HookRecord {
   tokens?: number;           // SubagentStop only: total tokens consumed by the subagent session
   model?: string;            // full model id resolved at spawn time, e.g. "claude-sonnet-4-6"
   agentDescription?: string; // description from agent .md frontmatter, if found
+  tier?: string;             // agent tier from .md frontmatter, e.g. "lead" (PreToolUse spawn only)
+  parentId?: string;         // agentId on top of the active-agent stack at spawn time, if any
+                              // (approximate — stack-based inference can misattribute concurrent spawns)
   at: number;                // epoch ms
 }

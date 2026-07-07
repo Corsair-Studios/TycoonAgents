@@ -1,6 +1,8 @@
 # Team Lead Mode — Executable Upgrade Plan
 
-**Status:** Phase 1 shipped (0.0.173). Phase 2 implemented.
+**Status:** Phase 1 shipped (0.0.173). Phase 2 implemented. Phase 3 implemented
+(hierarchy telemetry — hook parentId/tier capture, provider mapping, metrics
+panel team rollup).
 
 ## Summary
 
@@ -72,14 +74,37 @@ This copy is used verbatim in the UI (setup view and Settings panel):
 - The ready-test excludes agents with `tier: lead` frontmatter so it does not
   double-spawn work through a lead and its workers.
 
-## Phase 3
+## Phase 3 (implemented)
 
-- Hierarchy telemetry: the hook script records `parentId` from its active-agent
-  stack at spawn time.
-- `mapHookRecord` passes `parentId` through into the event stream.
-- The metrics panel rolls teams up under their lead. This rollup is
-  approximate under concurrent spawns (stack-based inference can misattribute
-  interleaved spawns) — this caveat is documented in the UI, not hidden.
+- Hierarchy telemetry: the hook script (`hooks/tycoon-claude-hook.cjs`) records
+  `parentId` from its active-agent stack at spawn time (whoever is on top of
+  the stack when a `Task`/`Agent` spawn fires) and `tier` from the spawned
+  agent's `.md` frontmatter, alongside the existing `model` field.
+- `mapHookRecord` (`src/providers/claude-code/mapHookRecord.ts`) passes both
+  through into the `WorkerSpawned` normalized event; `src/core/state.ts`
+  carries them onto `AgentMetric` (`tier`, `parentId`) so they reach the
+  webview in the existing `state` postMessage payload untouched — no changes
+  needed in `claudeCodeProvider.ts` or `panel.ts`, since both already forward
+  objects generically.
+- The metrics panel (`media/main.js` `renderMetrics`/`buildMetricsRow`) rolls
+  workers up under a `tier: "lead"` entry when at least one visible worker's
+  `parentId` matches it: a chevron toggles between individual rows and a
+  collapsed "team" aggregate row (summed tokens/tasks/time, tagged `team`).
+  Expand/collapse state persists per-lead-id via the existing
+  `vscode.getState()/setState()` webview-state mechanism. Projects with no
+  leads, and workers whose `parentId` doesn't resolve to a visible lead,
+  render exactly as before — zero visual change.
+- **Concurrency caveat (accepted limitation):** parent attribution comes from
+  a stack-based inference (whoever was on top of the active-agent stack when
+  a spawn fired), not a ground-truth trace. When two agents spawn workers at
+  the same time, the stack can interleave and misattribute a worker to the
+  wrong lead. This is documented, not silently patched with guesswork — see
+  the Risks section below.
+- Backward compatibility: records written by hook versions predating this
+  change simply omit `parentId`/`tier`; every layer treats them as optional
+  and falls through to today's flat rendering (`mapHookRecord`,
+  `applyEvent`'s `WorkerSpawned` case, and `renderMetrics` all guard with
+  `?? `/`||` defaults, never throw on absence).
 
 ## Phase 4
 

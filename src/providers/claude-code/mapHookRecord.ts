@@ -34,8 +34,10 @@ export function toolToActivityKind(tool: string): ActivityKind {
 /**
  * Pure: translate one HookRecord into zero or more normalized events.
  * Returns [] if unmapped.
- * NOTE (v1 simplification): worker identity uses the hook payload's session id;
- * precise parent<->sub-agent correlation is a later refinement.
+ * NOTE (v1 simplification): worker identity uses the hook payload's session id.
+ * Parent<->sub-agent correlation (parentId/tier, Team Lead Mode Phase 3) is
+ * carried through from the hook's active-agent-stack inference below — it is
+ * approximate, not a ground-truth trace, per docs/plan/team-lead-mode.md.
  */
 export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
   const raw = record.workerId ?? "orchestrator";
@@ -76,6 +78,8 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
             role: record.tool,
             ...(record.model !== undefined ? { model: record.model } : {}),
             ...(record.agentDescription !== undefined ? { description: record.agentDescription } : {}),
+            ...(record.parentId !== undefined ? { parentId: record.parentId } : {}),
+            ...(record.tier !== undefined ? { tier: record.tier } : {}),
           },
           { type: "TaskCompleted", at: record.at, workerId: "orchestrator" },
         ];

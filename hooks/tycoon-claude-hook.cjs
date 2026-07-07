@@ -148,6 +148,25 @@ function readAgentModel(agentsDir, agentId) {
 }
 
 // ---------------------------------------------------------------------------
+// Agent tier from frontmatter (e.g. `tier: lead`) — used by the metrics panel
+// to identify team-lead rows and roll worker totals up under them.
+// ---------------------------------------------------------------------------
+function readAgentTier(agentsDir, agentId) {
+  try {
+    const mdPath = path.join(agentsDir, agentId + ".md");
+    if (!fs.existsSync(mdPath)) return undefined;
+    const content = fs.readFileSync(mdPath, "utf8");
+    // Extract tier from YAML frontmatter between --- markers
+    const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (!fmMatch) return undefined;
+    const tierMatch = fmMatch[1].match(/^tier:\s*(.+)$/m);
+    return tierMatch ? tierMatch[1].trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Keyword-based agent matching
 // ---------------------------------------------------------------------------
 function matchAgentFromKeywords(searchText, keywordsConfig) {
@@ -520,8 +539,21 @@ function main(raw) {
       // MODEL_DEFAULTS[agentId] when the value is falsy.
       const model = resolveModel(rawModel || readAgentModel(agentsDir, agentId), agentId);
       const agentDescription = readAgentDescription(agentsDir, agentId);
+      const tier = readAgentTier(agentsDir, agentId);
 
-      const stackEntry = { agentId, model, timestamp: at, subagentType };
+      // Parent attribution: whoever is on top of the active-agent stack right
+      // now (before this spawn is pushed) is treated as the parent of the
+      // agent being spawned. This is an approximation, not a ground-truth
+      // trace — when two agents spawn workers concurrently the stack can
+      // interleave and misattribute a worker to the wrong lead. Accepted
+      // limitation (see docs/plan/team-lead-mode.md Phase 3); no attempt is
+      // made to disambiguate concurrent spawns further.
+      const parentEntry = peekActiveAgent(activeAgentFile);
+      const parentId = (parentEntry && parentEntry.agentId && parentEntry.agentId !== "none")
+        ? parentEntry.agentId
+        : undefined;
+
+      const stackEntry = { agentId, model, timestamp: at, subagentType, parentId };
       pushActiveAgent(activeAgentFile, stackEntry);
 
       /** @type {Record<string, unknown>} */
@@ -536,6 +568,8 @@ function main(raw) {
         at,
       };
       if (agentDescription) record.agentDescription = agentDescription;
+      if (tier) record.tier = tier;
+      if (parentId) record.parentId = parentId;
       if (payload.session_id) record.sessionId = payload.session_id;
 
       try {

@@ -304,6 +304,58 @@ test("WorkerSpawned without model/description leaves those fields undefined", ()
 });
 
 // ---------------------------------------------------------------------------
+// parentId/tier propagation (Team Lead Mode Phase 3: hierarchy telemetry)
+// ---------------------------------------------------------------------------
+
+test("WorkerSpawned with parentId and tier populates those fields on AgentMetric", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+    parentId: "build-lead",
+    tier: "worker",
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "coding-specialist");
+  assert.ok(metric, "metric should exist for coding-specialist");
+  assert.equal(metric!.parentId, "build-lead");
+  assert.equal(metric!.tier, "worker");
+});
+
+test("WorkerSpawned without parentId/tier leaves those fields undefined (flat / legacy)", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "search-retrieval",
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "search-retrieval");
+  assert.ok(metric);
+  assert.equal(metric!.parentId, undefined);
+  assert.equal(metric!.tier, undefined);
+});
+
+test("Lead spawn (tier: lead) followed by worker spawn (parentId: lead) both populate AgentMetric", () => {
+  let state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "build-lead",
+    role: "Task",
+    tier: "lead",
+  });
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 10,
+    workerId: "coding-specialist",
+    role: "Task",
+    parentId: "build-lead",
+  });
+  const lead = state.agentMetrics.find((m) => m.id === "build-lead");
+  const worker = state.agentMetrics.find((m) => m.id === "coding-specialist");
+  assert.ok(lead && worker);
+  assert.equal(lead!.tier, "lead");
+  assert.equal(worker!.parentId, "build-lead");
+});
+
+// ---------------------------------------------------------------------------
 // Orchestrator lifecycle + per-turn token capture
 // ---------------------------------------------------------------------------
 

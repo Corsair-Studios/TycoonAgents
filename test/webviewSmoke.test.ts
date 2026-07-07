@@ -253,6 +253,39 @@ function buildStatePayload() {
   };
 }
 
+// A state payload exercising Team Lead Mode hierarchy telemetry (Phase 3):
+// one lead (tier: "lead") with two workers attributed via parentId.
+function buildTeamStatePayload() {
+  const agentMetrics = [
+    { id: 'orchestrator', name: 'Orchestrator', status: 'idle', tokens: 500, activeMs: 30000 },
+    {
+      id: 'build-lead', name: 'Build Lead', status: 'active', model: 'opus', tier: 'lead',
+      tokens: 800, activeMs: 40000, taskCount: 1, mcpCount: 0, lastActivityAt: Date.now(),
+    },
+    {
+      id: 'coding-specialist', name: 'Coding Specialist', status: 'active', model: 'sonnet',
+      parentId: 'build-lead', tokens: 4000, activeMs: 90000, taskCount: 2, mcpCount: 1,
+      lastActivityAt: Date.now(),
+    },
+    {
+      id: 'ux-ui-designer', name: 'UX UI Designer', status: 'idle', model: 'sonnet',
+      parentId: 'build-lead', tokens: 1500, activeMs: 50000, taskCount: 1, mcpCount: 0,
+      lastActivityAt: Date.now() - 5000,
+    },
+  ];
+  return {
+    type: 'state',
+    state: {
+      sessionActive: true,
+      completedTasks: 4,
+      idleFreezeMs: 180000,
+      sanityCapMs: 900000,
+      workers: {},
+      agentMetrics,
+    },
+  };
+}
+
 test('media/main.js boots + drives without throwing in a jsdom runtime', async (t) => {
   const src = readFileSync(MAIN_JS_PATH, 'utf8');
 
@@ -451,6 +484,59 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       const tbody = doc.getElementById('metrics-tbody');
       assert.ok(tbody && tbody.children.length > 0, 'metrics table should render agent rows');
       assertNoErrors('state-update');
+    });
+
+    // ── Step 8: Team Lead Mode hierarchy telemetry (Phase 3) ────────────────────
+    await t.test('8. team rollup: lead row expands to nested workers, collapses to an aggregate', async () => {
+      dispatch(buildTeamStatePayload());
+      tick(5);
+      await flush();
+      assertNoErrors('team-rollup-dispatch');
+
+      const tbody = doc.getElementById('metrics-tbody');
+      assert.ok(tbody, 'metrics-tbody should exist');
+
+      // Expanded by default: a chevron on the lead row, an indented worker row.
+      const chevron = tbody.querySelector('.team-chevron');
+      assert.ok(chevron, 'lead row should render a chevron when it has visible children');
+      assert.equal(chevron.getAttribute('aria-expanded'), 'true', 'default state is expanded');
+      const childRows = tbody.querySelectorAll('tr.metrics-row--child');
+      assert.equal(childRows.length, 2, 'both workers should render nested under the lead');
+      assert.equal(tbody.querySelector('.team-tag'), null, 'no aggregate tag while expanded');
+
+      // Collapse: click the chevron.
+      chevron.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assertNoErrors('team-rollup-collapse-click');
+
+      const collapsedChevron = tbody.querySelector('.team-chevron');
+      assert.ok(collapsedChevron, 'chevron should still be present after collapsing');
+      assert.equal(collapsedChevron.getAttribute('aria-expanded'), 'false');
+      assert.equal(tbody.querySelectorAll('tr.metrics-row--child').length, 0, 'workers hidden while collapsed');
+      const tag = tbody.querySelector('.team-tag');
+      assert.ok(tag, 'collapsed lead row should carry a team-aggregate tag');
+
+      // Aggregate tokens column = lead(800) + coding-specialist(4000) + ux-ui-designer(1500) = 6300.
+      const leadRow = collapsedChevron.closest('tr');
+      const tokensCell = leadRow && leadRow.querySelector('td.col-tokens');
+      assert.ok(tokensCell, 'lead row should have a tokens cell');
+      assert.equal(tokensCell.textContent, '6.3k', 'collapsed row should show summed team tokens');
+
+      // Re-expand: state persists across a fresh render (webview-state-backed).
+      collapsedChevron.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assertNoErrors('team-rollup-reexpand-click');
+      assert.equal(tbody.querySelectorAll('tr.metrics-row--child').length, 2, 'workers reappear after re-expanding');
+    });
+
+    // ── Step 9: flat projects (no leads) render exactly as before ───────────────
+    await t.test('9. no leads present -> zero visual change (no chevrons/tags anywhere)', async () => {
+      dispatch(buildStatePayload());
+      tick(5);
+      await flush();
+      const tbody = doc.getElementById('metrics-tbody');
+      assert.ok(tbody, 'metrics-tbody should exist');
+      assert.equal(tbody.querySelectorAll('.team-chevron').length, 0, 'no chevrons without any tier:lead entries');
+      assert.equal(tbody.querySelectorAll('.team-tag').length, 0, 'no team tags without any tier:lead entries');
+      assertNoErrors('flat-state-unchanged');
     });
   } finally {
     process.removeListener('unhandledRejection', onRejection);

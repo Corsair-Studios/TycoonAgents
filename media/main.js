@@ -6514,10 +6514,184 @@
 
   /**
    * Render the agentMetrics array into the DOM table.
-   * @param {Array<{id:string,name:string,status:string,taskCount:number,mcpCount:number,activeMs:number,tokens:number,model?:string,description?:string}>|undefined} metrics
+   * @param {Array<{id:string,name:string,status:string,taskCount:number,mcpCount:number,activeMs:number,tokens:number,model?:string,description?:string,tier?:string,parentId?:string}>|undefined} metrics
    */
   /** Last metrics array received, re-rendered on a timer so live time ticks. */
   let lastMetrics = [];
+
+  // ── Team rollup (Team Lead Mode Phase 3: hierarchy telemetry) ───────────
+  // Entries with tier === "lead" that have at least one visible child (a
+  // worker whose parentId points at them) render as an expand/collapse team
+  // row. Expand/collapse state is persisted per-lead-id in webview state,
+  // mirroring the metricsHeight/rosterOrder persistence above. Defaults to
+  // expanded so a first-time view shows individual rows.
+
+  /** @param {string} leadId */
+  function isTeamExpanded(leadId) {
+    const saved = vscode.getState() || {};
+    const map = saved.teamExpanded || {};
+    return map[leadId] !== false;
+  }
+
+  /** @param {string} leadId @param {boolean} expanded */
+  function setTeamExpanded(leadId, expanded) {
+    const prev = vscode.getState() || {};
+    const map = { ...(prev.teamExpanded || {}) };
+    map[leadId] = expanded;
+    vscode.setState({ ...prev, teamExpanded: map });
+  }
+
+  /** Live (in-progress-inclusive) active ms for one agent metric entry, capped as usual. */
+  function liveMsFor(agent) {
+    const status = ((agent && agent.status) || "idle").toLowerCase();
+    const isActive = status === "active";
+    const seg = agent && agent.workStartAt
+      ? Math.min(Math.max(0, Math.min(Date.now(), (agent.lastActivityAt ?? Date.now()) + idleFreezeMs) - agent.workStartAt), sanityCapMs)
+      : 0;
+    return ((agent && agent.activeMs) || 0) + (isActive ? seg : 0);
+  }
+
+  /**
+   * Build a synthetic "team aggregate" row for a collapsed lead: sums
+   * tasks/MCP/tokens/live-time across the lead and its workers. Approximate
+   * (mirrors the hook's stack-based parent inference) but good enough for a
+   * rollup total — see docs/plan/team-lead-mode.md Phase 3.
+   */
+  function aggregateTeam(lead, children) {
+    const sum = (key) => children.reduce((s, c) => s + ((c && c[key]) || 0), 0);
+    const totalLiveMs = liveMsFor(lead) + children.reduce((s, c) => s + liveMsFor(c), 0);
+    return {
+      ...lead,
+      taskCount: (lead.taskCount || 0) + sum("taskCount"),
+      mcpCount: (lead.mcpCount || 0) + sum("mcpCount"),
+      tokens: (lead.tokens || 0) + sum("tokens"),
+      // Pre-baked total; workStartAt cleared so the row renderer doesn't add
+      // a second live segment on top of what liveMsFor() already counted.
+      activeMs: totalLiveMs,
+      workStartAt: null,
+    };
+  }
+
+  /**
+   * Render one metrics row. `opts.chevron` ("expanded"|"collapsed") marks a
+   * lead's team-rollup row; `opts.indent` marks a worker nested under an
+   * expanded lead; `opts.teamTag` labels a collapsed row as an aggregate.
+   */
+  function buildMetricsRow(agent, maxTokensPerMin, opts) {
+    opts = opts || {};
+    const status = (agent.status || "idle").toLowerCase();
+    const isActive = status === "active";
+    const showActive = isMetricsAgentActive(agent);
+    const row = document.createElement("tr");
+    const rowClasses = [];
+    if (opts.indent) rowClasses.push("metrics-row--child");
+    if (opts.chevron) rowClasses.push("metrics-row--lead");
+    if (rowClasses.length) row.className = rowClasses.join(" ");
+
+    const displayName = agent.name || agent.id;
+
+    const nameTd = document.createElement("td");
+    nameTd.className = `col-name${showActive ? " name--active" : ""}`;
+
+    if (opts.chevron) {
+      const chevronBtn = document.createElement("button");
+      chevronBtn.type = "button";
+      chevronBtn.className = "team-chevron";
+      const expanded = opts.chevron === "expanded";
+      chevronBtn.setAttribute("aria-label", expanded ? "Collapse team" : "Expand team");
+      chevronBtn.setAttribute("aria-expanded", String(expanded));
+      chevronBtn.textContent = expanded ? "▾" : "▸"; // ▾ expanded / ▸ collapsed
+      chevronBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setTeamExpanded(opts.leadId, !expanded);
+        renderMetrics(lastMetrics);
+      });
+      nameTd.appendChild(chevronBtn);
+    } else if (opts.indent) {
+      const spacer = document.createElement("span");
+      spacer.className = "metrics-row-indent";
+      nameTd.appendChild(spacer);
+    }
+
+    const nameText = document.createElement("span");
+    nameText.textContent = displayName;
+    nameTd.appendChild(nameText);
+
+    if (opts.teamTag) {
+      const tag = document.createElement("span");
+      tag.className = "team-tag";
+      tag.textContent = "team";
+      tag.title = "Rolled-up total for this lead's team (lead + its workers, approximate — see docs/plan/team-lead-mode.md).";
+      nameTd.appendChild(tag);
+    }
+
+    // Per-column tooltip: agent name + model + third-person role description.
+    const role = describeRole(agent.description);
+    let nameTitle = displayName;
+    if (agent.model && role) {
+      nameTitle = `${displayName} — ${prettyModel(agent.model)}\n${role}`;
+    } else if (agent.model) {
+      nameTitle = `${displayName} — ${prettyModel(agent.model)}`;
+    } else if (role) {
+      nameTitle = `${displayName}\n${role}`;
+    }
+    nameTd.title = nameTitle;
+    row.appendChild(nameTd);
+
+    // Status bar: green while active, gray while idle. Width encodes the
+    // raw tokens per minute of active time (tokens / activeMs minutes), normalized
+    // to the agent with the highest tokens-per-minute. Active agents always show
+    // a visible green sliver so "working" is never invisible.
+    const mins = (agent.activeMs || 0) / 60000;
+    const tokensPerMin = mins > 0 ? (agent.tokens || 0) / mins : null;
+    const rawPct = tokensPerMin !== null
+      ? Math.round(Math.min(tokensPerMin / maxTokensPerMin, 1) * 100)
+      : 0;
+    const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
+    const statusTd = document.createElement("td");
+    statusTd.className = "col-status";
+    statusTd.title = "Tokens/min — average tokens generated per minute of active time. The bar is scaled to the busiest agent.";
+    const track = document.createElement("div");
+    track.className = "status-bar-track";
+    const fill = document.createElement("div");
+    fill.className = `status-bar-fill ${showActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
+    fill.style.width = `${fillPct}%`;
+    const label = document.createElement("span");
+    label.className = "status-bar-label";
+    label.textContent = showActive ? "active" : (tokensPerMin !== null ? fmtTokens(Math.round(tokensPerMin)) : "—");
+    track.appendChild(fill);
+    track.appendChild(label);
+    statusTd.appendChild(track);
+    row.appendChild(statusTd);
+
+    const tasksTd = document.createElement("td");
+    tasksTd.className = "col-tasks";
+    tasksTd.title = "Tasks — number of Task-tool delegations routed to this agent.";
+    tasksTd.textContent = String(agent.taskCount ?? 0);
+    row.appendChild(tasksTd);
+
+    const mcpTd = document.createElement("td");
+    mcpTd.className = "col-mcp";
+    mcpTd.title = "MCP — number of MCP tool calls this agent has made.";
+    mcpTd.textContent = String(agent.mcpCount ?? 0);
+    row.appendChild(mcpTd);
+
+    // Show live elapsed time while active, capped by idle-freeze and sanity cap.
+    const liveMs = liveMsFor(agent);
+    const timeTd = document.createElement("td");
+    timeTd.className = "col-time";
+    timeTd.title = "Active time this agent has spent working.";
+    timeTd.textContent = fmtMs(liveMs);
+    row.appendChild(timeTd);
+
+    const tokensTd = document.createElement("td");
+    tokensTd.className = "col-tokens";
+    tokensTd.title = "Total tokens this agent has consumed.";
+    tokensTd.textContent = fmtTokens(agent.tokens ?? 0);
+    row.appendChild(tokensTd);
+
+    return row;
+  }
 
   function renderMetrics(metrics) {
     lastMetrics = metrics || [];
@@ -6543,89 +6717,49 @@
       return mins > 0 ? (a.tokens || 0) / mins : 0;
     }));
 
+    // Group workers under a visible lead (tier === "lead"). Approximate —
+    // parentId comes from the hook's active-agent-stack inference and can
+    // misattribute concurrent spawns (docs/plan/team-lead-mode.md Phase 3).
+    const leadIds = new Set(metrics.filter((m) => ((m && m.tier) || "").toLowerCase() === "lead").map((m) => m.id));
+    const childrenByLead = new Map();
+    for (const m of metrics) {
+      if (m && m.parentId && leadIds.has(m.parentId)) {
+        if (!childrenByLead.has(m.parentId)) childrenByLead.set(m.parentId, []);
+        childrenByLead.get(m.parentId).push(m);
+      }
+    }
+    const nestedChildIds = new Set();
+    for (const arr of childrenByLead.values()) {
+      for (const c of arr) nestedChildIds.add(c.id);
+    }
+
     // Rebuild rows
     tbodyEl.innerHTML = "";
     for (const agent of metrics) {
-      const status = (agent.status || "idle").toLowerCase();
-      const isActive = status === "active";
-      const frozen = isActive && (agent.lastActivityAt != null) && (Date.now() - agent.lastActivityAt > idleFreezeMs);
-      const showActive = isMetricsAgentActive(agent);
-      const row = document.createElement("tr");
+      // Rendered nested under its lead below — skip its top-level slot.
+      if (nestedChildIds.has(agent.id)) continue;
 
-      const displayName = agent.name || agent.id;
-
-      const nameTd = document.createElement("td");
-      nameTd.className = `col-name${showActive ? " name--active" : ""}`;
-      nameTd.textContent = displayName;
-      // Per-column tooltip: agent name + model + third-person role description.
-      const role = describeRole(agent.description);
-      let nameTitle = displayName;
-      if (agent.model && role) {
-        nameTitle = `${displayName} — ${prettyModel(agent.model)}\n${role}`;
-      } else if (agent.model) {
-        nameTitle = `${displayName} — ${prettyModel(agent.model)}`;
-      } else if (role) {
-        nameTitle = `${displayName}\n${role}`;
+      const children = leadIds.has(agent.id) ? (childrenByLead.get(agent.id) || []) : [];
+      if (children.length === 0) {
+        // Flat row: no children to roll up — identical to pre-Phase-3 rendering,
+        // including leads that haven't spawned anyone (yet) and any worker whose
+        // parentId doesn't match a currently-visible lead.
+        tbodyEl.appendChild(buildMetricsRow(agent, maxTokensPerMin, {}));
+        continue;
       }
-      nameTd.title = nameTitle;
-      row.appendChild(nameTd);
 
-      // Status bar: green while active, gray while idle. Width encodes the
-      // raw tokens per minute of active time (tokens / activeMs minutes), normalized
-      // to the agent with the highest tokens-per-minute. Active agents always show
-      // a visible green sliver so "working" is never invisible.
-      const mins = (agent.activeMs || 0) / 60000;
-      const tokensPerMin = mins > 0 ? (agent.tokens || 0) / mins : null;
-      const rawPct = tokensPerMin !== null
-        ? Math.round(Math.min(tokensPerMin / maxTokensPerMin, 1) * 100)
-        : 0;
-      const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
-      const statusTd = document.createElement("td");
-      statusTd.className = "col-status";
-      statusTd.title = "Tokens/min — average tokens generated per minute of active time. The bar is scaled to the busiest agent.";
-      const track = document.createElement("div");
-      track.className = "status-bar-track";
-      const fill = document.createElement("div");
-      fill.className = `status-bar-fill ${showActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
-      fill.style.width = `${fillPct}%`;
-      const label = document.createElement("span");
-      label.className = "status-bar-label";
-      label.textContent = showActive ? "active" : (tokensPerMin !== null ? fmtTokens(Math.round(tokensPerMin)) : "—");
-      track.appendChild(fill);
-      track.appendChild(label);
-      statusTd.appendChild(track);
-      row.appendChild(statusTd);
-
-      const tasksTd = document.createElement("td");
-      tasksTd.className = "col-tasks";
-      tasksTd.title = "Tasks — number of Task-tool delegations routed to this agent.";
-      tasksTd.textContent = String(agent.taskCount ?? 0);
-      row.appendChild(tasksTd);
-
-      const mcpTd = document.createElement("td");
-      mcpTd.className = "col-mcp";
-      mcpTd.title = "MCP — number of MCP tool calls this agent has made.";
-      mcpTd.textContent = String(agent.mcpCount ?? 0);
-      row.appendChild(mcpTd);
-
-      // Show live elapsed time while active, capped by idle-freeze and sanity cap.
-      const seg = agent.workStartAt
-        ? Math.min(Math.max(0, Math.min(Date.now(), (agent.lastActivityAt ?? Date.now()) + idleFreezeMs) - agent.workStartAt), sanityCapMs)
-        : 0;
-      const liveMs = (agent.activeMs || 0) + (isActive ? seg : 0);
-      const timeTd = document.createElement("td");
-      timeTd.className = "col-time";
-      timeTd.title = "Active time this agent has spent working.";
-      timeTd.textContent = fmtMs(liveMs);
-      row.appendChild(timeTd);
-
-      const tokensTd = document.createElement("td");
-      tokensTd.className = "col-tokens";
-      tokensTd.title = "Total tokens this agent has consumed.";
-      tokensTd.textContent = fmtTokens(agent.tokens ?? 0);
-      row.appendChild(tokensTd);
-
-      tbodyEl.appendChild(row);
+      if (isTeamExpanded(agent.id)) {
+        tbodyEl.appendChild(buildMetricsRow(agent, maxTokensPerMin, { chevron: "expanded", leadId: agent.id }));
+        for (const child of children) {
+          tbodyEl.appendChild(buildMetricsRow(child, maxTokensPerMin, { indent: true }));
+        }
+      } else {
+        tbodyEl.appendChild(buildMetricsRow(
+          aggregateTeam(agent, children),
+          maxTokensPerMin,
+          { chevron: "collapsed", leadId: agent.id, teamTag: true },
+        ));
+      }
     }
   }
 

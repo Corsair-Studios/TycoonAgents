@@ -35,6 +35,15 @@ export interface AgentMetric {
   model?: string;
   /** One-line description of this agent's role. */
   description?: string;
+  /** Agent tier from .md frontmatter, e.g. "lead" (Team Lead Mode). Undefined for flat agents. */
+  tier?: string;
+  /**
+   * Id of the agent that spawned this one, inferred from the hook's active-agent
+   * stack at spawn time. Approximate under concurrent spawns — see
+   * docs/plan/team-lead-mode.md Phase 3. Undefined when spawned by the
+   * top-level orchestrator or when hierarchy telemetry is unavailable.
+   */
+  parentId?: string;
   status: "active" | "idle" | "done" | "error";
   /** Number of TaskCompleted events attributed to this agent. */
   taskCount: number;
@@ -150,6 +159,8 @@ function upsertMetric(
     name: toDisplayName(workerId),
     model: undefined,
     description: undefined,
+    tier: undefined,
+    parentId: undefined,
     status: "idle",
     taskCount: 0,
     mcpCount: 0,
@@ -301,6 +312,8 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           name: event.name ?? m.name,
           model: event.model ?? m.model,
           description: event.description ?? m.description,
+          tier: event.tier ?? m.tier,
+          parentId: event.parentId ?? m.parentId,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,

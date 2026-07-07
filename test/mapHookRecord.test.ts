@@ -273,6 +273,51 @@ test("PreToolUse Task without model or agentDescription -> WorkerSpawned has no 
 });
 
 // ---------------------------------------------------------------------------
+// parentId/tier propagation (Team Lead Mode Phase 3: hierarchy telemetry)
+// ---------------------------------------------------------------------------
+
+test("PreToolUse Task with parentId and tier -> WorkerSpawned propagates both", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "coding-specialist",
+    parentId: "build-lead",
+    tier: "lead",
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].parentId, "build-lead");
+    assert.equal(events[0].tier, "lead");
+  }
+});
+
+test("PreToolUse Task without parentId/tier -> WorkerSpawned has undefined parentId/tier (legacy hook record)", () => {
+  // Simulates a record written by an OLD hook version that predates parentId/tier.
+  const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-3", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].parentId, undefined);
+    assert.equal(events[0].tier, undefined);
+  }
+});
+
+test("mapHookRecord never throws on a record with unexpected extra fields (forward-compat)", () => {
+  const record = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "sess-4",
+    parentId: "build-lead",
+    tier: "lead",
+    someFutureField: { nested: true },
+    at: T,
+  } as unknown as HookRecord;
+  assert.doesNotThrow(() => mapHookRecord(record));
+});
+
+// ---------------------------------------------------------------------------
 // toolToActivityKind direct tests (unchanged)
 // ---------------------------------------------------------------------------
 
