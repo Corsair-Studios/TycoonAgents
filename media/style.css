@@ -2138,6 +2138,50 @@ tr.metrics-row--child td.col-name {
   font-weight: 500;
 }
 
+/* Delegation stats (Team Lead Mode Phase 4: measurement) */
+#delegation-stats {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.delegation-stats-heading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.delegation-stats-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.delegation-stats-mode {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--text);
+  min-width: 78px;
+}
+
+.delegation-stats-detail {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.delegation-stats-caption {
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  opacity: 0.75;
+}
+
 /* Empty state */
 #metrics-empty {
   padding: 40px 0;

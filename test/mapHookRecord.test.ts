@@ -304,6 +304,62 @@ test("PreToolUse Task without parentId/tier -> WorkerSpawned has undefined paren
   }
 });
 
+// ---------------------------------------------------------------------------
+// delegationMode propagation (Team Lead Mode Phase 4: measurement)
+// ---------------------------------------------------------------------------
+
+test("PreToolUse Task with delegationMode -> WorkerSpawned propagates it", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "coding-specialist",
+    delegationMode: "team_leads",
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].delegationMode, "team_leads");
+  }
+});
+
+test("PreToolUse Skill with delegationMode -> WorkerSpawned propagates it", () => {
+  const record: HookRecord = { event: "PreToolUse", tool: "Skill", delegationMode: "flat", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].delegationMode, "flat");
+  }
+});
+
+test("Stop with delegationMode -> SessionStop propagates it", () => {
+  const record: HookRecord = { event: "Stop", delegationMode: "team_leads", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "SessionStop");
+  if (events[0].type === "SessionStop") {
+    assert.equal(events[0].delegationMode, "team_leads");
+  }
+});
+
+test("PreToolUse Task without delegationMode -> WorkerSpawned has undefined delegationMode (legacy hook record)", () => {
+  // Simulates a record written by a hook version predating Phase 4.
+  const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-5", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].delegationMode, undefined);
+  }
+});
+
+test("Stop without delegationMode -> SessionStop has undefined delegationMode (legacy hook record)", () => {
+  const record: HookRecord = { event: "Stop", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "SessionStop");
+  if (events[0].type === "SessionStop") {
+    assert.equal(events[0].delegationMode, undefined);
+  }
+});
+
 test("mapHookRecord never throws on a record with unexpected extra fields (forward-compat)", () => {
   const record = {
     event: "PreToolUse",

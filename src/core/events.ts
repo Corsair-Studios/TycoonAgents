@@ -22,13 +22,19 @@ export type NormalizedEvent =
   | { type: "SessionStart"; at: number }
   // SessionStop carries the orchestrator's per-turn token delta + model (from the
   // Stop hook's transcript read) so the orchestrator row shows real token usage.
-  | { type: "SessionStop"; at: number; tokens?: number; model?: string }
+  // delegationMode (Team Lead Mode Phase 4) is the .claude/tycoon/execution.json
+  // "flat"|"team_leads" value the hook read at Stop time; undefined on records
+  // written by hook versions predating this field.
+  | { type: "SessionStop"; at: number; tokens?: number; model?: string; delegationMode?: string }
   // Identity-only registration: seeds an idle roster entry without marking it active.
   | { type: "WorkerRegistered"; at: number; workerId: WorkerId; name?: string; model?: string; description?: string }
   // parentId/tier are approximate hierarchy telemetry (Team Lead Mode Phase 3): parentId
   // is the spawning agent inferred from the hook's active-agent stack, tier mirrors the
   // spawned agent's .md frontmatter (e.g. "lead"). Both undefined outside Team Lead Mode.
-  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string }
+  // delegationMode (Team Lead Mode Phase 4) is the delegation topology active at spawn
+  // time ("flat"|"team_leads"); undefined on legacy records — treated as "flat" by
+  // computeDelegationModeStats in core/state.ts.
+  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string; delegationMode?: string }
   | { type: "WorkerActivity"; at: number; workerId: WorkerId; kind: ActivityKind; detail?: string }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string }
   | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number }

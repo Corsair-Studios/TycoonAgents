@@ -17,5 +17,8 @@ export interface HookRecord {
   tier?: string;             // agent tier from .md frontmatter, e.g. "lead" (PreToolUse spawn only)
   parentId?: string;         // agentId on top of the active-agent stack at spawn time, if any
                               // (approximate — stack-based inference can misattribute concurrent spawns)
+  delegationMode?: string;   // "flat" | "team_leads" — .claude/tycoon/execution.json's delegation_mode
+                              // at the time this record was written (Team Lead Mode Phase 4: measurement).
+                              // Absent on records from hook versions predating this field.
   at: number;                // epoch ms
 }

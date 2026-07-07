@@ -5481,6 +5481,7 @@
       }
       // Update metrics panel
       renderMetrics(state.agentMetrics);
+      renderDelegationStats(state.modeStats);
     } else if (msg && msg.type === "skills") {
       renderSkillsList(msg.skills, msg.error);
     } else if (msg && msg.type === "skillInstalled") {
@@ -6771,6 +6772,65 @@
     }
   }
 
+  /** Display label for a delegation mode id. */
+  const DELEGATION_MODE_LABEL = { flat: "Flat", team_leads: "Team Leads" };
+
+  /**
+   * Render the "Delegation stats" section (Team Lead Mode Phase 4:
+   * measurement) — one row per delegation mode that has recorded data, so the
+   * install screen's estimated "10-20% more tokens" claim can be checked
+   * against real numbers measured in this workspace.
+   * @param {Array<{mode:string,completedTasks:number,totalTokens:number,activeMs:number,leadTokens:number,teamTokens:number,leadOverheadPct:number|null}>|undefined} modeStats
+   */
+  function renderDelegationStats(modeStats) {
+    const el = /** @type {HTMLElement} */ (document.getElementById("delegation-stats"));
+    if (!el) return;
+
+    const rows = Array.isArray(modeStats) ? modeStats.filter((m) => m && (m.completedTasks > 0 || m.totalTokens > 0)) : [];
+    if (rows.length === 0) {
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+
+    el.hidden = false;
+    el.innerHTML = "";
+
+    const heading = document.createElement("div");
+    heading.className = "delegation-stats-heading";
+    heading.textContent = "Delegation stats";
+    el.appendChild(heading);
+
+    for (const m of rows) {
+      const label = DELEGATION_MODE_LABEL[m.mode] || m.mode;
+      const tokensPerTask = m.completedTasks > 0 ? Math.round(m.totalTokens / m.completedTasks) : 0;
+
+      const row = document.createElement("div");
+      row.className = "delegation-stats-row";
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "delegation-stats-mode";
+      nameEl.textContent = label;
+      row.appendChild(nameEl);
+
+      const detail = document.createElement("span");
+      detail.className = "delegation-stats-detail";
+      let text = `${m.completedTasks} task${m.completedTasks === 1 ? "" : "s"} · ${fmtTokens(m.totalTokens)} tokens · ${fmtTokens(tokensPerTask)}/task`;
+      if (m.mode === "team_leads" && m.leadOverheadPct !== null) {
+        text += ` · lead overhead ${m.leadOverheadPct.toFixed(1)}% of team tokens`;
+      }
+      detail.textContent = text;
+      row.appendChild(detail);
+
+      el.appendChild(row);
+    }
+
+    const caption = document.createElement("div");
+    caption.className = "delegation-stats-caption";
+    caption.textContent = "Measured this workspace — not an estimate.";
+    el.appendChild(caption);
+  }
+
   // Re-render once a second so any active agent's live time keeps advancing
   // between state pushes.
   setInterval(() => {
@@ -6974,6 +7034,7 @@
     if (msg.ok) {
       lastMetrics = [];
       renderMetrics([]);
+      renderDelegationStats([]);
       renderSettings();
     } else if (dangerStatusEl) {
       dangerStatusEl.textContent = msg.error || "Reset failed";

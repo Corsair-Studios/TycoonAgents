@@ -38,6 +38,8 @@ export function toolToActivityKind(tool: string): ActivityKind {
  * Parent<->sub-agent correlation (parentId/tier, Team Lead Mode Phase 3) is
  * carried through from the hook's active-agent-stack inference below — it is
  * approximate, not a ground-truth trace, per docs/plan/team-lead-mode.md.
+ * delegationMode (Team Lead Mode Phase 4: measurement) is passed through
+ * verbatim on WorkerSpawned/SessionStop when the hook record carries it.
  */
 export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
   const raw = record.workerId ?? "orchestrator";
@@ -52,6 +54,7 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
           at: record.at,
           ...(record.tokens !== undefined ? { tokens: record.tokens } : {}),
           ...(record.model !== undefined ? { model: record.model } : {}),
+          ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
         },
       ];
     case "SubagentStop":
@@ -80,6 +83,7 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
             ...(record.agentDescription !== undefined ? { description: record.agentDescription } : {}),
             ...(record.parentId !== undefined ? { parentId: record.parentId } : {}),
             ...(record.tier !== undefined ? { tier: record.tier } : {}),
+            ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
           },
           { type: "TaskCompleted", at: record.at, workerId: "orchestrator" },
         ];
@@ -94,6 +98,7 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
             role: record.tool,
             ...(record.model !== undefined ? { model: record.model } : {}),
             ...(record.agentDescription !== undefined ? { description: record.agentDescription } : {}),
+            ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
           },
         ];
       }

@@ -8,7 +8,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { mapHookRecord } from "../src/providers/claude-code/mapHookRecord";
 import type { HookRecord } from "../src/providers/claude-code/hookRecord";
-import { applyEvent, initialWorldState, creditedElapsed } from "../src/core/state";
+import { applyEvent, initialWorldState, creditedElapsed, computeDelegationModeStats } from "../src/core/state";
 import type { WorldState } from "../src/core/state";
 
 const T = 1700000000000;
@@ -849,5 +849,102 @@ describe("Delegation Health counters", () => {
     assert.ok(orch, "orchestrator metric must exist");
     // Task + Agent + Task = 3 delegations; Skill does not count
     assert.equal(orch!.delegations, 3, "three Task/Agent spawns should yield delegations===3");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeDelegationModeStats (Team Lead Mode Phase 4: measurement)
+// ---------------------------------------------------------------------------
+
+describe("computeDelegationModeStats", () => {
+  test("empty agentMetrics -> empty stats array", () => {
+    assert.deepEqual(computeDelegationModeStats([]), []);
+  });
+
+  test("lead + two workers (team_leads) + one flat worker: correct per-mode totals and lead overhead %", () => {
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "SessionStart", at: T });
+
+    // team_leads: build-lead spawns coding-specialist + ux-ui-designer.
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 10, workerId: "build-lead", tier: "lead", delegationMode: "team_leads" });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 20, workerId: "coding-specialist", parentId: "build-lead", delegationMode: "team_leads" });
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 30, workerId: "ux-ui-designer", parentId: "build-lead", delegationMode: "team_leads" });
+    // flat: search-retrieval, spawned directly with no lead.
+    state = applyEvent(state, { type: "WorkerSpawned", at: T + 40, workerId: "search-retrieval", delegationMode: "flat" });
+
+    // Complete + stop each with tokens.
+    state = applyEvent(state, { type: "TaskCompleted", at: T + 110, workerId: "build-lead" });
+    state = applyEvent(state, { type: "WorkerStopped", at: T + 110, workerId: "build-lead", tokens: 1000 });
+    state = applyEvent(state, { type: "TaskCompleted", at: T + 120, workerId: "coding-specialist" });
+    state = applyEvent(state, { type: "WorkerStopped", at: T + 120, workerId: "coding-specialist", tokens: 2000 });
+    state = applyEvent(state, { type: "TaskCompleted", at: T + 130, workerId: "ux-ui-designer" });
+    state = applyEvent(state, { type: "WorkerStopped", at: T + 130, workerId: "ux-ui-designer", tokens: 3000 });
+    state = applyEvent(state, { type: "TaskCompleted", at: T + 140, workerId: "search-retrieval" });
+    state = applyEvent(state, { type: "WorkerStopped", at: T + 140, workerId: "search-retrieval", tokens: 500 });
+
+    const stats = computeDelegationModeStats(state.agentMetrics);
+    const teamLeads = stats.find((s) => s.mode === "team_leads");
+    const flat = stats.find((s) => s.mode === "flat");
+
+    assert.ok(teamLeads, "team_leads bucket should exist");
+    assert.equal(teamLeads!.completedTasks, 3, "lead + 2 workers = 3 completed tasks");
+    assert.equal(teamLeads!.totalTokens, 6000, "1000 + 2000 + 3000 = 6000");
+    assert.equal(teamLeads!.activeMs, 300, "100ms per agent x 3 agents");
+    assert.equal(teamLeads!.leadTokens, 1000, "only build-lead's tokens count as lead tokens");
+    assert.equal(teamLeads!.teamTokens, 6000, "lead + its two workers = whole team_leads total here");
+    assert.ok(teamLeads!.leadOverheadPct !== null);
+    assert.ok(
+      Math.abs((teamLeads!.leadOverheadPct as number) - (1000 / 6000) * 100) < 1e-9,
+      "lead overhead % = leadTokens / teamTokens * 100",
+    );
+
+    // flat bucket includes the orchestrator (delegationMode never set on it in
+    // this scenario, so it defaults to "flat") plus search-retrieval.
+    assert.ok(flat, "flat bucket should exist");
+    assert.equal(flat!.completedTasks, 1, "only search-retrieval completed a task in flat mode here");
+    assert.equal(flat!.totalTokens, 500);
+    assert.equal(flat!.leadTokens, 0, "flat bucket never carries lead tokens");
+    assert.equal(flat!.teamTokens, 0, "flat bucket never carries team tokens");
+    assert.equal(flat!.leadOverheadPct, null, "no overhead concept for flat mode");
+  });
+
+  test("agent with no delegationMode (legacy record) is bucketed as flat", () => {
+    const state = applyEvent(initialWorldState(), {
+      type: "WorkerSpawned",
+      at: T,
+      workerId: "legacy-worker",
+      // no delegationMode field at all — simulates a pre-Phase-4 hook record.
+    });
+    const stats = computeDelegationModeStats(state.agentMetrics);
+    assert.equal(stats.length, 1);
+    assert.equal(stats[0].mode, "flat");
+  });
+
+  test("a mode with zero agents produces no entry (no zeroed placeholder row)", () => {
+    const state = applyEvent(initialWorldState(), {
+      type: "WorkerSpawned",
+      at: T,
+      workerId: "flat-only",
+      delegationMode: "flat",
+    });
+    const stats = computeDelegationModeStats(state.agentMetrics);
+    assert.equal(stats.length, 1);
+    assert.equal(stats.find((s) => s.mode === "team_leads"), undefined);
+  });
+
+  test("team_leads mode with no lead-routed work yet: leadOverheadPct is null, not NaN/0", () => {
+    const state = applyEvent(initialWorldState(), {
+      type: "WorkerSpawned",
+      at: T,
+      workerId: "small-task-worker",
+      delegationMode: "team_leads",
+      // No tier "lead" and no parentId — small-task direct delegation per doctrine.
+    });
+    const stats = computeDelegationModeStats(state.agentMetrics);
+    const teamLeads = stats.find((s) => s.mode === "team_leads");
+    assert.ok(teamLeads);
+    assert.equal(teamLeads!.leadTokens, 0);
+    assert.equal(teamLeads!.teamTokens, 0);
+    assert.equal(teamLeads!.leadOverheadPct, null, "0/0 must not become NaN");
   });
 });

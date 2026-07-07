@@ -167,6 +167,31 @@ function readAgentTier(agentsDir, agentId) {
 }
 
 // ---------------------------------------------------------------------------
+// Delegation mode (Team Lead Mode Phase 4: measurement) — read from
+// .claude/tycoon/execution.json and cached for the lifetime of this process
+// (one hook invocation = one event; re-reading per call inside that single
+// invocation would be wasted I/O). Defensive: a missing file, missing dir,
+// or invalid/unrecognized JSON all fall back to "flat" — never throws.
+// Historical records keep whatever mode was cached when THEY were written;
+// toggling the mode later does not retroactively change past records.
+// ---------------------------------------------------------------------------
+let cachedDelegationMode; // undefined until first read this process
+function readDelegationMode(tycoonDir) {
+  if (cachedDelegationMode !== undefined) return cachedDelegationMode;
+  let mode = "flat";
+  try {
+    const parsed = readJsonSafe(path.join(tycoonDir, "execution.json"));
+    if (parsed && (parsed.delegation_mode === "flat" || parsed.delegation_mode === "team_leads")) {
+      mode = parsed.delegation_mode;
+    }
+  } catch {
+    mode = "flat";
+  }
+  cachedDelegationMode = mode;
+  return mode;
+}
+
+// ---------------------------------------------------------------------------
 // Keyword-based agent matching
 // ---------------------------------------------------------------------------
 function matchAgentFromKeywords(searchText, keywordsConfig) {
@@ -431,6 +456,7 @@ function main(raw) {
   const fallbackAgent = keywordsConfig ? (keywordsConfig.fallback_agent || "primary-agent") : "primary-agent";
   const activeAgentFile = path.join(tycoonDir, "active-agent.json");
   const activityFile = path.join(tycoonDir, "activity.jsonl");
+  const delegationMode = readDelegationMode(tycoonDir);
 
   let payload;
   try { payload = JSON.parse(raw); } catch { process.exit(0); }
@@ -460,6 +486,7 @@ function main(raw) {
       workerId,
       at,
     };
+    if (delegationMode) record.delegationMode = delegationMode;
 
     if (popped && popped.model) record.model = popped.model;
 
@@ -570,6 +597,7 @@ function main(raw) {
       if (agentDescription) record.agentDescription = agentDescription;
       if (tier) record.tier = tier;
       if (parentId) record.parentId = parentId;
+      if (delegationMode) record.delegationMode = delegationMode;
       if (payload.session_id) record.sessionId = payload.session_id;
 
       try {
@@ -592,6 +620,7 @@ function main(raw) {
         skillName,
         at,
       };
+      if (delegationMode) record.delegationMode = delegationMode;
       if (payload.session_id) record.sessionId = payload.session_id;
 
       try {
@@ -616,6 +645,7 @@ function main(raw) {
         workerId,
         at,
       };
+      if (delegationMode) record.delegationMode = delegationMode;
       if (payload.session_id) record.sessionId = payload.session_id;
 
       try {
@@ -635,6 +665,7 @@ function main(raw) {
     const record = { event: hookEvent, workerId: "orchestrator", at };
     if (tokens !== undefined) record.tokens = tokens;
     if (model) record.model = model;
+    if (delegationMode) record.delegationMode = delegationMode;
     try {
       fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
     } catch { /* ignore */ }
@@ -658,6 +689,7 @@ function main(raw) {
     at,
   };
   if (toolName) record.tool = toolName;
+  if (delegationMode) record.delegationMode = delegationMode;
   if (payload.session_id) record.sessionId = payload.session_id;
 
   try {

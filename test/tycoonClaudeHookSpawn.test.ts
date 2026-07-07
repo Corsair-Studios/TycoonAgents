@@ -26,6 +26,7 @@ interface ActivityRecord {
   workerId?: string;
   tier?: string;
   parentId?: string;
+  delegationMode?: string;
   [key: string]: unknown;
 }
 
@@ -162,6 +163,84 @@ test("hook never crashes (exit 0) on a payload missing all optional fields", () 
       env: { ...process.env, CLAUDE_PROJECT_DIR: root },
     });
     assert.equal(result.status, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// delegationMode stamping (Team Lead Mode Phase 4: measurement)
+// ---------------------------------------------------------------------------
+
+test("hook stamps delegationMode 'flat' by default when execution.json is missing", () => {
+  const root = setupProject();
+  try {
+    runHook(root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Task",
+      tool_input: { subagent_type: "coding-specialist" },
+      session_id: "test-session-mode-1",
+    });
+    const records = readActivity(root);
+    const spawn = records.find((r) => r.event === "PreToolUse" && r.workerId === "coding-specialist");
+    assert.ok(spawn, "expected a spawn record");
+    assert.equal(spawn!.delegationMode, "flat");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hook stamps delegationMode from .claude/tycoon/execution.json when set to team_leads", () => {
+  const root = setupProject();
+  try {
+    const tycoonDir = join(root, ".claude", "tycoon");
+    mkdirSync(tycoonDir, { recursive: true });
+    writeFileSync(join(tycoonDir, "execution.json"), JSON.stringify({ delegation_mode: "team_leads" }), "utf8");
+
+    runHook(root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Task",
+      tool_input: { subagent_type: "build-lead" },
+      session_id: "test-session-mode-2",
+    });
+    // Stop maps to SessionStop, which also carries delegationMode.
+    runHook(root, { hook_event_name: "Stop", session_id: "test-session-mode-2" });
+
+    const records = readActivity(root);
+    const spawn = records.find((r) => r.event === "PreToolUse" && r.workerId === "build-lead");
+    const stop = records.find((r) => r.event === "Stop");
+    assert.ok(spawn, "expected a spawn record");
+    assert.equal(spawn!.delegationMode, "team_leads");
+    assert.ok(stop, "expected a Stop record");
+    assert.equal(stop!.delegationMode, "team_leads");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hook falls back to 'flat' when execution.json contains invalid JSON (never throws)", () => {
+  const root = setupProject();
+  try {
+    const tycoonDir = join(root, ".claude", "tycoon");
+    mkdirSync(tycoonDir, { recursive: true });
+    writeFileSync(join(tycoonDir, "execution.json"), "{ not valid json", "utf8");
+
+    const result = spawnSync(process.execPath, [HOOK_PATH], {
+      input: JSON.stringify({
+        hook_event_name: "PreToolUse",
+        tool_name: "Task",
+        tool_input: { subagent_type: "coding-specialist" },
+        session_id: "test-session-mode-3",
+      }),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    });
+    assert.equal(result.status, 0, `hook exited non-zero: ${result.stderr}`);
+
+    const records = readActivity(root);
+    const spawn = records.find((r) => r.event === "PreToolUse" && r.workerId === "coding-specialist");
+    assert.ok(spawn, "expected a spawn record");
+    assert.equal(spawn!.delegationMode, "flat", "invalid JSON must fall back to flat, not throw");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

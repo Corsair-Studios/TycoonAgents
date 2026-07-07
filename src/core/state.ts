@@ -44,6 +44,14 @@ export interface AgentMetric {
    * top-level orchestrator or when hierarchy telemetry is unavailable.
    */
   parentId?: string;
+  /**
+   * Delegation topology ("flat" | "team_leads") active when this agent was
+   * spawned (or, for the orchestrator, at its most recent SessionStop). Team
+   * Lead Mode Phase 4: measurement. Undefined on legacy records written
+   * before this field existed — computeDelegationModeStats treats those as
+   * "flat", since pre-Phase-4 telemetry is overwhelmingly flat-mode data.
+   */
+  delegationMode?: string;
   status: "active" | "idle" | "done" | "error";
   /** Number of TaskCompleted events attributed to this agent. */
   taskCount: number;
@@ -161,6 +169,7 @@ function upsertMetric(
     description: undefined,
     tier: undefined,
     parentId: undefined,
+    delegationMode: undefined,
     status: "idle",
     taskCount: 0,
     mcpCount: 0,
@@ -254,6 +263,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
           tokens: m.tokens + (event.tokens ?? 0),
           model: event.model ?? m.model,
+          delegationMode: event.delegationMode ?? m.delegationMode,
           workStartAt: null,
         }),
       );
@@ -314,6 +324,7 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
           description: event.description ?? m.description,
           tier: event.tier ?? m.tier,
           parentId: event.parentId ?? m.parentId,
+          delegationMode: event.delegationMode ?? m.delegationMode,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
@@ -453,4 +464,100 @@ export function applyEvent(state: WorldState, event: NormalizedEvent): WorldStat
     default:
       return state;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Delegation mode measurement (Team Lead Mode Phase 4)
+// ---------------------------------------------------------------------------
+
+/** Per-delegation-mode rollup, one entry per mode that has at least one agent. */
+export interface DelegationModeStats {
+  /** "flat" | "team_leads" (mirrors .claude/tycoon/execution.json's delegation_mode). */
+  mode: string;
+  /** Sum of taskCount across every agent recorded under this mode. */
+  completedTasks: number;
+  /** Sum of tokens across every agent recorded under this mode. */
+  totalTokens: number;
+  /** Sum of activeMs across every agent recorded under this mode. */
+  activeMs: number;
+  /**
+   * team_leads only: tokens consumed by tier==="lead" agents. 0 for "flat"
+   * (leads only exist under Team Leads mode, per doctrine).
+   */
+  leadTokens: number;
+  /**
+   * team_leads only: leadTokens plus tokens consumed by every agent whose
+   * parentId points at one of those leads (i.e. leads + their workers, NOT
+   * every agent recorded under team_leads mode — small-task work that skips
+   * a lead per doctrine is excluded from this denominator, since it was
+   * never part of a team). 0 for "flat".
+   */
+  teamTokens: number;
+  /**
+   * leadTokens / teamTokens as a percentage, or null when teamTokens is 0
+   * (no lead-routed work observed yet). This is the direct measurement of
+   * the install screen's "10-20% more tokens" claim for Team Leads mode.
+   */
+  leadOverheadPct: number | null;
+}
+
+/**
+ * Aggregate agentMetrics into per-delegation-mode stats. Pure — no fs/vscode
+ * access — so it can run against a live WorldState snapshot or a synthetic
+ * fixture in tests.
+ *
+ * Mode resolution: an agent's own `delegationMode` field wins; agents with no
+ * `delegationMode` (legacy records predating Team Lead Mode Phase 4, or an
+ * agent whose spawn/stop event never carried the field) are bucketed as
+ * "flat" — pre-Phase-4 telemetry is overwhelmingly flat-mode data, so this is
+ * the accurate default rather than a guess.
+ *
+ * Only modes with at least one agent produce an entry — callers render "no
+ * data for this mode" by simply not finding it, rather than a zeroed row.
+ */
+export function computeDelegationModeStats(agentMetrics: AgentMetric[]): DelegationModeStats[] {
+  const totals = new Map<string, { completedTasks: number; totalTokens: number; activeMs: number }>();
+  const resolveMode = (m: AgentMetric): string => (m.delegationMode === "team_leads" ? "team_leads" : "flat");
+
+  for (const m of agentMetrics) {
+    const mode = resolveMode(m);
+    const bucket = totals.get(mode) ?? { completedTasks: 0, totalTokens: 0, activeMs: 0 };
+    bucket.completedTasks += m.taskCount;
+    bucket.totalTokens += m.tokens;
+    bucket.activeMs += m.activeMs;
+    totals.set(mode, bucket);
+  }
+
+  // Lead coordination overhead: leads identified by tier === "lead"; their
+  // "team" is the lead plus every agent whose parentId resolves to that lead.
+  const leadIds = new Set(
+    agentMetrics.filter((m) => (m.tier ?? "").toLowerCase() === "lead").map((m) => m.id),
+  );
+  let leadTokens = 0;
+  let teamTokens = 0;
+  for (const m of agentMetrics) {
+    if (leadIds.has(m.id)) {
+      leadTokens += m.tokens;
+      teamTokens += m.tokens;
+    } else if (m.parentId !== undefined && leadIds.has(m.parentId)) {
+      teamTokens += m.tokens;
+    }
+  }
+
+  const result: DelegationModeStats[] = [];
+  for (const [mode, bucket] of totals) {
+    const isTeamLeads = mode === "team_leads";
+    result.push({
+      mode,
+      completedTasks: bucket.completedTasks,
+      totalTokens: bucket.totalTokens,
+      activeMs: bucket.activeMs,
+      leadTokens: isTeamLeads ? leadTokens : 0,
+      teamTokens: isTeamLeads ? teamTokens : 0,
+      leadOverheadPct: isTeamLeads && teamTokens > 0 ? (leadTokens / teamTokens) * 100 : null,
+    });
+  }
+  // Stable, predictable order: "flat" before "team_leads" when both are present.
+  result.sort((a, b) => (a.mode === "flat" ? -1 : b.mode === "flat" ? 1 : 0));
+  return result;
 }

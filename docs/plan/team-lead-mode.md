@@ -1,8 +1,10 @@
 # Team Lead Mode — Executable Upgrade Plan
 
-**Status:** Phase 1 shipped (0.0.173). Phase 2 implemented. Phase 3 implemented
-(hierarchy telemetry — hook parentId/tier capture, provider mapping, metrics
-panel team rollup).
+**Status:** Complete. Phase 1 shipped (0.0.173). Phase 2 implemented. Phase 3
+implemented (hierarchy telemetry — hook parentId/tier capture, provider
+mapping, metrics panel team rollup). Phase 4 implemented (per-mode
+measurement — hook delegationMode stamping, `computeDelegationModeStats`,
+metrics panel "Delegation stats" section).
 
 ## Summary
 
@@ -106,12 +108,58 @@ This copy is used verbatim in the UI (setup view and Settings panel):
   `applyEvent`'s `WorkerSpawned` case, and `renderMetrics` all guard with
   `?? `/`||` defaults, never throw on absence).
 
-## Phase 4
+## Phase 4 (implemented)
 
-- Measurement: track tokens-per-task and rework counts per delegation mode in
-  the metrics panel.
-- Once real numbers are collected, replace the estimated "10-20% more tokens"
-  figure in the honest user-facing copy with measured numbers.
+- **Hook stamping.** `hooks/tycoon-claude-hook.cjs` reads
+  `.claude/tycoon/execution.json` once per process (`readDelegationMode`,
+  cached in a module-level variable — a hook invocation is one event, so this
+  just avoids redundant reads within that single call) and stamps
+  `delegationMode: "flat"|"team_leads"` onto every activity record it writes.
+  Defensive like every other frontmatter/config read in this file: missing
+  file, missing dir, or invalid/unrecognized JSON all fall back to `"flat"`,
+  never throws. Historical records keep the mode they were recorded under —
+  toggling the setting later does not rewrite past records, which is the
+  point: it lets before/after comparisons work.
+- **Provider/state passthrough.** `HookRecord.delegationMode` (optional,
+  `src/providers/claude-code/hookRecord.ts`) flows through `mapHookRecord`
+  onto `WorkerSpawned` and `SessionStop` normalized events, then onto
+  `AgentMetric.delegationMode` in `src/core/state.ts` (set at spawn time for
+  workers, at each Stop for the orchestrator).
+- **Aggregation.** `computeDelegationModeStats(agentMetrics)` in
+  `src/core/state.ts` is a pure function (no fs/vscode access, unit-tested
+  directly) that buckets agents by `delegationMode` (missing =&gt; `"flat"`)
+  and produces, per mode with at least one agent: `completedTasks`,
+  `totalTokens`, `activeMs`, plus `leadTokens`/`teamTokens`/
+  `leadOverheadPct` — tokens spent by `tier==="lead"` agents as a percentage
+  of "team" tokens (the lead plus every agent whose `parentId` points at
+  it). Agents in Team Leads mode that skipped a lead (small-task direct
+  delegation, permitted by doctrine) are excluded from that denominator —
+  they were never part of a team. `panel.ts` calls this on every state push
+  (`_withModeStats`, folded into the existing `_applyTimeAdjustments`
+  pipeline) and attaches the result as `state.modeStats`, which flows to the
+  webview through the same generic `state` postMessage Phase 3 already used
+  — no new message type.
+- **Metrics panel.** `media/main.js` `renderDelegationStats()` renders a
+  "Delegation stats" section under the metrics table: one row per mode with
+  data (tasks, tokens, tokens/task; team_leads additionally shows "lead
+  overhead: X% of team tokens"), a "measured this workspace" caption, and
+  stays hidden entirely when there's no data yet. If only one mode has data,
+  only that row renders — no zeroed placeholder for the other mode.
+- **Scope decision: rework counts dropped.** The original Phase 4 sketch
+  called for tracking "rework counts" per mode alongside tokens-per-task.
+  Hook records carry no task identity (no correlation id linking a task's
+  initial attempt to a later re-do of the same work) — the only way to infer
+  "rework" would be heuristics like "this agent got respawned again soon
+  after its last stop," which is guesswork, not measurement. Rather than
+  ship a fabricated number next to real measured ones, this metric is
+  dropped from Phase 4. If task identity is added to the hook/event schema
+  later, rework tracking can be revisited as its own follow-up.
+- Once enough real usage accumulates, the install screen's estimated
+  "10-20% more tokens" copy (the "Honest user-facing copy" section above,
+  rendered from `src/host/vscode/panel.ts`'s setup-view HTML) can be
+  revisited against the measured `leadOverheadPct` — left as a future edit,
+  not part of this phase, since one workspace's early numbers aren't a
+  reliable replacement for a range claim.
 
 ## Risks
 

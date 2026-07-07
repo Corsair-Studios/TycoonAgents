@@ -9,6 +9,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Runtime } from "./runtime";
+import { computeDelegationModeStats } from "../../core/state";
 import {
   shortFromModelId,
   modelIdFromShort,
@@ -2416,7 +2417,7 @@ export class TycoonPanel {
     try {
       const root = this._projectRoot();
       if (root === "") {
-        return state;
+        return this._withModeStats(state);
       }
       const adjPath = path.join(root, ".claude", "tycoon", "time-adjustments.json");
       let adjustments: Record<string, number> = {};
@@ -2429,7 +2430,7 @@ export class TycoonPanel {
         /* missing or invalid => no adjustments */
       }
       if (Object.keys(adjustments).length === 0) {
-        return state;
+        return this._withModeStats(state);
       }
 
       const applyToMetrics = (metrics: any): any => {
@@ -2459,7 +2460,26 @@ export class TycoonPanel {
       if (Array.isArray(cloned._agentMetricsInternal)) {
         cloned._agentMetricsInternal = applyToMetrics(cloned._agentMetricsInternal);
       }
-      return cloned;
+      return this._withModeStats(cloned);
+    } catch {
+      return state;
+    }
+  }
+
+  /**
+   * Attach `modeStats` (Team Lead Mode Phase 4: measurement) computed from
+   * the final agentMetrics list — per-delegation-mode completed tasks,
+   * tokens, active time, and lead coordination overhead. Computed fresh on
+   * every state push (cheap: a single pass over agentMetrics) so it reflects
+   * any time-adjustment corrections already applied above. Never throws:
+   * falls back to returning `state` unmodified (webview guards on absence).
+   */
+  private _withModeStats(state: any): any {
+    try {
+      if (state === null || typeof state !== "object" || !Array.isArray(state.agentMetrics)) {
+        return state;
+      }
+      return { ...state, modeStats: computeDelegationModeStats(state.agentMetrics) };
     } catch {
       return state;
     }
@@ -3382,6 +3402,10 @@ export class TycoonPanel {
           </thead>
           <tbody id="metrics-tbody"></tbody>
         </table>
+        <!-- Delegation stats (Team Lead Mode Phase 4: measurement) — populated
+             by renderDelegationStats() in media/main.js from state.modeStats.
+             Hidden by default; shown only when at least one mode has data. -->
+        <div id="delegation-stats" hidden></div>
       </div>
     </div>
 
