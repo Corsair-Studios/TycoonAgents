@@ -3045,6 +3045,14 @@
    *  out LOADING_TIMEOUT_MS, and the boot loader hands off to the no-theme
    *  placeholder scene the instant it actually renders. */
   let noThemeSignaled = false;
+  /** Frames render() has ACTUALLY painted the loaded view — decoded theme
+   *  background drawn AND the themed (non-placeholder) sprite layer active.
+   *  The loading signal (_load.ready) leads the canvas paint by a beat, so
+   *  the boot loader only fades once >= 2 such frames exist: the flag frame
+   *  plus one extra rAF, guaranteeing the composited frame under the fade is
+   *  the real scene, never a placeholder flash. Capped at 2 (no reset needed:
+   *  the boot loader is one-shot per webview load). */
+  let sceneFramesPainted = 0;
   function nowMs() { return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now(); }
   /** Progress over the theme background + character frames: { ready, frac }. */
   function themeLoadProgress() {
@@ -7964,15 +7972,21 @@
     const _loadElapsed = themeLoadStartTs > 0 ? (nowMs() - themeLoadStartTs) : Infinity;
     const loadingActive = !noThemeSignaled && !_load.ready && themeLoadStartTs > 0 && _loadElapsed < LOADING_TIMEOUT_MS;
 
-    // Boot loader: smooth 75→99% while sprite frames stream in, then complete
-    // (100% + fade out) the moment this same signal says loading is over —
-    // either genuinely ready, or this render loop's own timeout gave up on it.
-    if (!bootLoaderDone) {
-      if (loadingActive && themeLoaded) {
-        bootLoaderSetProgress(75 + Math.round(_load.frac * 24), "Preparing scene…");
-      } else if (!loadingActive) {
+    // Boot loader: smooth 75→99% while sprite frames stream in. Completion
+    // (100% + fade out) is gated on ACTUAL paint, not the loading signal —
+    // _load.ready leads the canvas by a beat, and fading on it alone let the
+    // placeholder chips flash through. A themed boot only completes after
+    // >= 2 frames have drawn the real background + themed sprite layer (see
+    // sceneFramesPainted). Non-themed paths (THEME_NONE fresh install, or
+    // this loading window timing out) have no themed scene to wait for and
+    // complete immediately; the 12s hard timeout still force-hides anything.
+    if (!bootLoaderDone && !loadingActive) {
+      const themedSceneExpected = themeLoaded && !noThemeSignaled && _load.ready;
+      if (!themedSceneExpected || sceneFramesPainted >= 2) {
         bootLoaderComplete();
       }
+    } else if (!bootLoaderDone && themeLoaded) {
+      bootLoaderSetProgress(75 + Math.round(_load.frac * 24), "Preparing scene…");
     }
 
     // ── Change 2: Fixed-size background (does NOT stretch on resize) ──────────
@@ -7990,6 +8004,11 @@
       const bgX = Math.floor((w - bgW) / 2);
       const bgY = 0; // top-anchor → static regardless of handlebar / canvas height
       ctx.drawImage(themeBackgroundImg, bgX, bgY, bgW, bgH);
+      // Loaded-view paint signal for the boot loader: this frame drew the
+      // decoded theme background, and with loading over the sprite layer
+      // below draws its themed form (agentList is only non-empty then) —
+      // so what's composited after this frame is the real scene.
+      if (!loadingActive && sceneFramesPainted < 2) sceneFramesPainted++;
     } else {
       // Fallback placeholder background
       ctx.fillStyle = "#1a1a2e";
