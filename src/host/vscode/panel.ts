@@ -14,10 +14,11 @@ import {
   modelIdFromShort,
   setFrontmatterModel,
   setKeywordPattern,
+  removeKeywordPattern,
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
-import { buildAgentMarkdown, LEAD_AGENTS } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, LEAD_AGENTS } from "./packCatalog";
 import {
   renderDelegationDoctrine,
   upsertDelegationSection,
@@ -305,6 +306,8 @@ export class TycoonPanel {
           if (message.id !== undefined && message.model !== undefined) {
             this._handleSetAgentModel(message.id, message.model);
           }
+        } else if (message.type === "setDelegationMode") {
+          this._handleSetDelegationMode(message.delegation_mode);
         } else if (message.type === "setAgentKeywords") {
           if (message.id !== undefined && message.pattern !== undefined) {
             this._handleSetAgentKeywords(message.id, message.pattern);
@@ -2580,20 +2583,9 @@ export class TycoonPanel {
 
         // 7c/7d. Lead agent files + keyword routing — only written for
         // team_leads. Flat mode leaves any previously-installed lead files
-        // alone (Phase 2 handles removal on downgrade).
+        // alone (Phase 2 handles removal on downgrade via setDelegationMode).
         if (delegationMode === "team_leads") {
-          let cfg = this._readKeywordsConfig(root);
-          for (const a of LEAD_AGENTS) {
-            const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
-            if (!fs.existsSync(agentPath)) {
-              fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
-              fs.writeFileSync(agentPath, buildAgentMarkdown(a));
-            }
-            cfg = setKeywordPattern(cfg, a.id, a.keywords);
-          }
-          const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
-          fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
-          fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+          this._installLeadAgents(root);
         }
       } catch (err) {
         claudeMdError = String(err);
@@ -2633,6 +2625,140 @@ export class TycoonPanel {
         error: String(err),
       });
     }
+  }
+
+  /**
+   * Write the `LEAD_AGENTS` `.md` files (skipping any that already exist)
+   * and register their keyword routing in `agent-keywords.json`. Shared by
+   * `_handleInstallHooks` (team_leads chosen at install) and
+   * `_handleSetDelegationMode` (switching to team_leads later in Settings).
+   * Idempotent: re-running when the files/entries already exist is a no-op.
+   */
+  private _installLeadAgents(root: string): void {
+    let cfg = this._readKeywordsConfig(root);
+    for (const a of LEAD_AGENTS) {
+      const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
+      if (!fs.existsSync(agentPath)) {
+        fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
+        fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+      }
+      cfg = setKeywordPattern(cfg, a.id, a.keywords);
+    }
+    const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+    fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+    fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+  }
+
+  /**
+   * Remove the `LEAD_AGENTS` `.md` files and their keyword routing entries
+   * when downgrading a project out of team_leads mode. A `.md` file is only
+   * deleted when its frontmatter says `tier: lead` (via
+   * {@link agentMarkdownTier}) — a user's own file that happens to share an
+   * id like `build-lead.md` but wasn't written by TycoonAgents is never
+   * touched. The `agent-keywords.json` routing entries are always safe to
+   * strip by id (that file is TycoonAgents-managed, not user-authored).
+   * Idempotent: safe to call when the files/entries are already absent.
+   */
+  private _removeLeadAgents(root: string): void {
+    for (const a of LEAD_AGENTS) {
+      const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
+      if (fs.existsSync(agentPath)) {
+        let tier: string | undefined;
+        try {
+          tier = agentMarkdownTier(fs.readFileSync(agentPath, "utf8"));
+        } catch {
+          tier = undefined;
+        }
+        if (tier === "lead") {
+          try {
+            fs.unlinkSync(agentPath);
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+    }
+
+    let cfg = this._readKeywordsConfig(root);
+    for (const a of LEAD_AGENTS) {
+      cfg = removeKeywordPattern(cfg, a.id);
+    }
+    const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+    try {
+      fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+      fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+    } catch {
+      /* best-effort: keywords file is non-critical for removal */
+    }
+  }
+
+  /**
+   * Switch the project's delegation mode (Team Lead Mode, Phase 2). Mirrors
+   * `_handleInstallHooks`'s Phase 1 wiring: persists `execution.json`,
+   * installs/removes the lead agent files + keyword routing, and upserts
+   * the managed `CLAUDE.md` doctrine section. Idempotent in both
+   * directions — applying the mode that's already active is a no-op that
+   * still replies success so the UI settles. The `CLAUDE.md` write is a
+   * user-owned-file risk, so (like install) it's isolated in its own
+   * try/catch and reported via `claudeMdError` without failing the mode
+   * switch itself.
+   */
+  private _handleSetDelegationMode(rawMode: string | undefined): void {
+    const mode = this._coerceDelegationMode(rawMode);
+    const root = this._projectRoot();
+    if (root === "") {
+      void this._panel.webview.postMessage({
+        type: "settingsUpdated",
+        ok: false,
+        id: "delegation-mode",
+        field: "delegationMode",
+        error: "No workspace folder open",
+      });
+      return;
+    }
+
+    try {
+      const claudeDir = path.join(root, ".claude");
+      writeExecutionConfig(claudeDir, { delegation_mode: mode });
+      if (mode === "team_leads") {
+        this._installLeadAgents(root);
+      } else {
+        this._removeLeadAgents(root);
+      }
+    } catch (err) {
+      void this._panel.webview.postMessage({
+        type: "settingsUpdated",
+        ok: false,
+        id: "delegation-mode",
+        field: "delegationMode",
+        error: String(err),
+      });
+      return;
+    }
+
+    let claudeMdError: string | undefined;
+    try {
+      const claudeMdPath = path.join(root, "CLAUDE.md");
+      let existingClaudeMd: string | null = null;
+      try {
+        existingClaudeMd = fs.readFileSync(claudeMdPath, "utf8");
+      } catch {
+        existingClaudeMd = null;
+      }
+      const updated = upsertDelegationSection(existingClaudeMd, renderDelegationDoctrine(mode));
+      fs.writeFileSync(claudeMdPath, updated);
+    } catch (err) {
+      claudeMdError = String(err);
+    }
+
+    void this._panel.webview.postMessage({
+      type: "settingsUpdated",
+      ok: true,
+      id: "delegation-mode",
+      field: "delegationMode",
+      delegation_mode: mode,
+      ...(claudeMdError !== undefined ? { claudeMdError } : {}),
+    });
   }
 
   /** Read the agent-keywords config (tolerant), returning a default on failure. */
@@ -2742,11 +2868,15 @@ export class TycoonPanel {
       contextBudget = buildContextBudget(null, []);
     }
 
+    const delegation_mode =
+      root !== "" ? readExecutionConfig(path.join(root, ".claude")).delegation_mode : "flat";
+
     void this._panel.webview.postMessage({
       type: "settings",
       payload: {
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         agents,
+        delegation_mode,
         delegationHealth: { directSearches, directReads, directEdits, delegations, warnThreshold },
         hookHealth,
         contextBudget,

@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildAgentMarkdown, REGULAR_AGENTS, LEAD_AGENTS } from "../src/host/vscode/packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, REGULAR_AGENTS, LEAD_AGENTS } from "../src/host/vscode/packCatalog";
 import { parseAgentMarkdown } from "../src/providers/claude-code/agentRoster";
 
 const agent = {
@@ -100,4 +100,44 @@ test("every REGULAR_AGENTS and LEAD_AGENTS entry builds valid markdown that roun
     assert.equal(parsed.model, a.model);
     assert.equal(parsed.name, a.name);
   }
+});
+
+// ---------------------------------------------------------------------------
+// agentMarkdownTier — the safety predicate the Phase 2 downgrade path
+// (setDelegationMode) uses before deleting a .claude/agents/<id>.md file.
+// ---------------------------------------------------------------------------
+
+test("agentMarkdownTier reads back 'lead' from every LEAD_AGENTS entry's rendered markdown", () => {
+  for (const a of LEAD_AGENTS) {
+    const md = buildAgentMarkdown(a);
+    assert.equal(agentMarkdownTier(md), "lead", `${a.id} must round-trip tier: lead`);
+  }
+});
+
+test("agentMarkdownTier returns undefined for a regular (non-tiered) agent's markdown", () => {
+  for (const a of REGULAR_AGENTS) {
+    const md = buildAgentMarkdown(a);
+    assert.equal(agentMarkdownTier(md), undefined, `${a.id} must have no tier`);
+  }
+});
+
+test("agentMarkdownTier returns undefined for content with no frontmatter at all", () => {
+  assert.equal(agentMarkdownTier("# Just a heading\n\nSome body text."), undefined);
+});
+
+test("agentMarkdownTier returns undefined for a user's own file with a tier-like id but no tier line", () => {
+  // A user could name their own agent file build-lead.md without ever having
+  // gone through TycoonAgents' install — this must never look like tier: lead.
+  const userFile = "---\nmodel: sonnet\n---\n\n# My Own Build Lead\n\nHand-written, not ours.\n";
+  assert.equal(agentMarkdownTier(userFile), undefined);
+});
+
+test("agentMarkdownTier finds tier: lead regardless of position within the frontmatter block", () => {
+  const md = "---\nname: foo\ntier: lead\nmodel: sonnet\n---\nBody.";
+  assert.equal(agentMarkdownTier(md), "lead");
+});
+
+test("agentMarkdownTier does not match a 'tier:' mention in the document body (outside frontmatter)", () => {
+  const md = "---\nmodel: sonnet\n---\n\nThis agent has no tier: lead in the body.\n";
+  assert.equal(agentMarkdownTier(md), undefined);
 });

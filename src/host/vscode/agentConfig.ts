@@ -145,3 +145,28 @@ export function setKeywordPattern(
     },
   };
 }
+
+/**
+ * Remove an agent's entry from the agent-keywords config, returning a NEW
+ * object (the input is never mutated). A no-op (returns `config` unchanged)
+ * when `agents` is missing/malformed or the agent id isn't present, so
+ * callers can call this unconditionally without existence checks. Every
+ * other agent and top-level key (e.g. `fallback_agent`) is preserved.
+ * Inverse of {@link setKeywordPattern}. Pure (no fs/vscode).
+ */
+export function removeKeywordPattern(
+  config: Record<string, any>,
+  agentId: string
+): Record<string, any> {
+  if (
+    !config ||
+    typeof config.agents !== "object" ||
+    config.agents === null ||
+    !(agentId in config.agents)
+  ) {
+    return config;
+  }
+  const nextAgents = { ...config.agents };
+  delete nextAgents[agentId];
+  return { ...config, agents: nextAgents };
+}

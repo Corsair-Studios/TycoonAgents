@@ -11,6 +11,7 @@ import {
   modelIdFromShort,
   setFrontmatterModel,
   setKeywordPattern,
+  removeKeywordPattern,
 } from "../src/host/vscode/agentConfig";
 
 test("shortFromModelId maps known ids and rejects others", () => {
@@ -131,4 +132,51 @@ test("setKeywordPattern does not mutate the input object", () => {
   const clonedBefore = structuredClone(config);
   setKeywordPattern(config, "foo", "changed");
   assert.deepEqual(config, clonedBefore, "input must not be mutated");
+});
+
+test("removeKeywordPattern removes an existing agent entry", () => {
+  const config = { agents: { foo: { pattern: "x" }, bar: { pattern: "y" } } };
+  const out = removeKeywordPattern(config, "foo");
+  assert.equal("foo" in out.agents, false);
+  assert.equal(out.agents.bar.pattern, "y");
+});
+
+test("removeKeywordPattern preserves other agents and top-level keys", () => {
+  const config = {
+    fallback_agent: "claude",
+    agents: { foo: { pattern: "x" }, baz: { pattern: "y" } },
+  };
+  const out = removeKeywordPattern(config, "foo");
+  assert.equal(out.fallback_agent, "claude");
+  assert.equal("foo" in out.agents, false);
+  assert.equal(out.agents.baz.pattern, "y");
+});
+
+test("removeKeywordPattern is a no-op (returns config unchanged) when the agent id is absent", () => {
+  const config = { agents: { bar: { pattern: "y" } } };
+  const out = removeKeywordPattern(config, "foo");
+  assert.deepEqual(out, config);
+});
+
+test("removeKeywordPattern is a no-op when agents is missing or malformed", () => {
+  assert.deepEqual(removeKeywordPattern({}, "foo"), {});
+  assert.deepEqual(removeKeywordPattern({ agents: null }, "foo"), { agents: null });
+  assert.deepEqual(removeKeywordPattern({ agents: "not-an-object" }, "foo"), { agents: "not-an-object" });
+});
+
+test("removeKeywordPattern does not mutate the input object", () => {
+  const config = {
+    fallback_agent: "claude",
+    agents: { foo: { pattern: "x" }, bar: { pattern: "y" } },
+  };
+  const clonedBefore = structuredClone(config);
+  removeKeywordPattern(config, "foo");
+  assert.deepEqual(config, clonedBefore, "input must not be mutated");
+});
+
+test("setKeywordPattern then removeKeywordPattern round-trips back to the original agents map", () => {
+  const config = { agents: { bar: { pattern: "y" } } };
+  const added = setKeywordPattern(config, "build-lead", "lead|team|coordinate");
+  const removed = removeKeywordPattern(added, "build-lead");
+  assert.deepEqual(removed, config);
 });

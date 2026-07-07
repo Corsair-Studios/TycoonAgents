@@ -61,6 +61,33 @@ export function buildAgentMarkdown(agent: {
 }
 
 /**
+ * Read the `tier:` frontmatter value from an agent markdown file's content,
+ * if any. Pure (no fs/vscode access), inverse of the `tier` line
+ * {@link buildAgentMarkdown} writes. This is the safety predicate used
+ * before deleting a `.claude/agents/<id>.md` file when downgrading out of
+ * Team Leads mode: only a file whose frontmatter says `tier: lead` is
+ * eligible for removal, so a user's own file that happens to share an id
+ * like `build-lead.md` (but wasn't written by TycoonAgents) is never
+ * deleted.
+ */
+export function agentMarkdownTier(content: string): string | undefined {
+  const lines = content.split(/\r\n|\n/);
+  if (lines.length === 0 || lines[0] !== "---") {
+    return undefined;
+  }
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "---") {
+      break;
+    }
+    const match = /^\s*tier\s*:\s*(\S+)\s*$/.exec(lines[i]);
+    if (match) {
+      return match[1];
+    }
+  }
+  return undefined;
+}
+
+/**
  * The 8 regular worker agents that make up TycoonAgents' core roster
  * (mirrors the hand-authored `.claude/agents/*.md` files in this repo).
  * Consumers that iterate a catalog for install/discovery should use this

@@ -1140,6 +1140,11 @@
   const setupErrorEl   = /** @type {HTMLElement} */ (document.getElementById("setup-error"));
   const setupConfigEl  = /** @type {HTMLElement} */ (document.getElementById("setup-config"));
   const setupBackBtn   = /** @type {HTMLElement} */ (document.getElementById("setup-back-btn"));
+  // Pre-install delegation-style choice (Team Lead Mode, Phase 1). Once hooks
+  // are installed, the ongoing control is the "Delegation style" section
+  // rendered inside #setup-config by renderSettings() (Phase 2) — this
+  // static picker is hidden then so the two controls never show at once.
+  const delegationModeGroupEl = /** @type {HTMLElement} */ (document.getElementById("delegation-mode-group"));
   const menuSettingsBtn = /** @type {HTMLElement} */ (document.getElementById("menu-settings"));
   const menuThemesBtn   = /** @type {HTMLElement} */ (document.getElementById("menu-themes"));
   
@@ -1280,6 +1285,7 @@
       installHooksBtn.textContent = "Install hooks";
       setupConfigEl.setAttribute("hidden", "");
       setupBackBtn.setAttribute("hidden", "");
+      delegationModeGroupEl.removeAttribute("hidden");
       if (info.error) {
         setupErrorEl.textContent = info.error;
         setupErrorEl.removeAttribute("hidden");
@@ -1289,7 +1295,10 @@
       return;
     }
 
-    // installed === true
+    // installed === true — the delegation-mode choice now lives in the
+    // "Delegation style" section rendered inside #setup-config (Settings),
+    // not this pre-install picker.
+    delegationModeGroupEl.setAttribute("hidden", "");
     if (openedFromSettings) {
       showSetup();
       setupStatusEl.textContent = "Hooks installed ✓";
@@ -6806,6 +6815,12 @@
       vscode.postMessage({ type: "getSettings" });
     } else {
       flashError(row, msg.error || "Update failed");
+      // On failure the host doesn't push a fresh "settings" message, so the
+      // delegation-mode radios (disabled while the change was in flight)
+      // would otherwise stay stuck — re-enable them here.
+      if (msg.field === "delegationMode" && row) {
+        row.querySelectorAll('input[type="radio"]').forEach((el) => { el.disabled = false; });
+      }
     }
   }
 
@@ -6884,6 +6899,66 @@
     doctorResultsEl.id = "doctor-results";
     hookSection.appendChild(doctorResultsEl);
     setupConfigEl.appendChild(hookSection);
+
+    // ── 1.5. Delegation style (Team Lead Mode, Phase 2) ──
+    // Same radio block + exact copy as the pre-install setup-view picker
+    // (#delegation-mode-group in the HTML), rebuilt here so it reflects the
+    // project's actual current mode and applies changes immediately.
+    const delegSection = buildSection("Delegation style");
+    const delegRow = document.createElement("div");
+    delegRow.className = "settings-row";
+    delegRow.dataset.agentRow = "delegation-mode";
+    const delegGroup = document.createElement("div");
+    delegGroup.className = "delegation-mode-group";
+    const currentDelegationMode = lastSettings.delegation_mode === "team_leads" ? "team_leads" : "flat";
+    const delegOptions = [
+      {
+        value: "flat",
+        label: "Flat (recommended for most projects)",
+        help: "The orchestrator briefs specialist workers directly. Lowest token cost, fastest for small-to-medium tasks.",
+      },
+      {
+        value: "team_leads",
+        label: "Team Leads",
+        help: "Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs — many features across many files — where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Flat.",
+      },
+    ];
+    const delegInputs = [];
+    for (const opt of delegOptions) {
+      const optLabel = document.createElement("label");
+      optLabel.className = "delegation-mode-option";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "settings-delegation-mode";
+      input.value = opt.value;
+      if (currentDelegationMode === opt.value) input.checked = true;
+      input.addEventListener("change", () => {
+        if (!input.checked) return;
+        delegInputs.forEach((el) => { el.disabled = true; });
+        vscode.postMessage({ type: "setDelegationMode", delegation_mode: opt.value });
+      });
+      delegInputs.push(input);
+      const body = document.createElement("span");
+      body.className = "delegation-mode-option-body";
+      const labelSpan = document.createElement("span");
+      labelSpan.className = "delegation-mode-option-label";
+      labelSpan.textContent = opt.label;
+      const helpSpan = document.createElement("span");
+      helpSpan.className = "delegation-mode-option-help";
+      helpSpan.textContent = opt.help;
+      body.appendChild(labelSpan);
+      body.appendChild(helpSpan);
+      optLabel.appendChild(input);
+      optLabel.appendChild(body);
+      delegGroup.appendChild(optLabel);
+    }
+    const delegFootnote = document.createElement("p");
+    delegFootnote.className = "delegation-mode-footnote";
+    delegFootnote.textContent = "You can change this anytime in Settings. Switching updates this project's agent roster and delegation instructions.";
+    delegGroup.appendChild(delegFootnote);
+    delegRow.appendChild(delegGroup);
+    delegSection.appendChild(delegRow);
+    setupConfigEl.appendChild(delegSection);
 
     // ── 2. Agents ──
     const agentsSection = buildSection("Agents");
