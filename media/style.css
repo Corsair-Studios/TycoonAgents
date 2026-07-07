@@ -252,6 +252,15 @@ body {
   text-align: left;
 }
 
+/* The class's display:flex (author style) overrides the UA [hidden] rule, so
+   the hidden attribute needs an explicit rule — same pattern as #setup-error
+   above. Without this, hiding the pre-install picker via setAttribute("hidden")
+   in main.js has no visual effect and the block also shows on installed
+   projects (duplicating the Settings "Delegation style" section). */
+.delegation-mode-group[hidden] {
+  display: none;
+}
+
 .delegation-mode-title {
   font-size: 11px;
   font-weight: 700;

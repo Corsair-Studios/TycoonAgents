@@ -3393,7 +3393,11 @@ export class TycoonPanel {
       <h1>TycoonAgents</h1>
       <p id="setup-status">Checking installation&hellip;</p>
       <p id="setup-error" hidden></p>
-      <div id="delegation-mode-group" class="delegation-mode-group">
+      <!-- Pre-install delegation chooser: hidden by default; main.js reveals
+           it ONLY when checkInstall reports hooks not installed. Installed
+           projects use the "Delegation style" section renderSettings() builds
+           inside #setup-config instead — never both at once. -->
+      <div id="delegation-mode-group" class="delegation-mode-group" hidden>
         <div class="delegation-mode-title">Delegation style</div>
         <label class="delegation-mode-option">
           <input type="radio" name="delegation-mode" id="delegation-mode-flat" value="flat" checked>

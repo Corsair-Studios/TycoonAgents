@@ -1264,6 +1264,15 @@
    * @param {{installed:boolean, busy?:boolean, error?:string}} info
    */
   function handleInstallState(info) {
+    // The pre-install delegation chooser's visibility is derived from install
+    // state on EVERY path through this handler: hidden unless this exact
+    // update says hooks are NOT installed (the only state where choosing a
+    // mode at install time makes sense). It ships hidden in the HTML, so a
+    // reload on an installed project never flashes it; installed projects
+    // change mode via the "Delegation style" section renderSettings() builds
+    // inside #setup-config instead.
+    delegationModeGroupEl.setAttribute("hidden", "");
+
     if (info && info.busy) {
       showSetup();
       setupStatusEl.textContent = "Installing…";
@@ -1297,8 +1306,7 @@
 
     // installed === true — the delegation-mode choice now lives in the
     // "Delegation style" section rendered inside #setup-config (Settings),
-    // not this pre-install picker.
-    delegationModeGroupEl.setAttribute("hidden", "");
+    // not this pre-install picker (hidden above, like every non-fresh path).
     if (openedFromSettings) {
       showSetup();
       setupStatusEl.textContent = "Hooks installed ✓";

@@ -538,6 +538,54 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.equal(tbody.querySelectorAll('.team-tag').length, 0, 'no team tags without any tier:lead entries');
       assertNoErrors('flat-state-unchanged');
     });
+
+    // ── Step 10: pre-install delegation chooser visibility (Phase 2 bugfix) ──────
+    // The install-screen #delegation-mode-group must be hidden on every
+    // installState path EXCEPT installed === false (fresh install), and the
+    // Settings render must contribute exactly ONE "Delegation style" section —
+    // never a duplicate of the install-screen block.
+    await t.test('10. delegation chooser: shown only when not installed; settings has one section', async () => {
+      const group = doc.getElementById('delegation-mode-group');
+      assert.ok(group, 'delegation-mode-group should exist');
+
+      // Installed project (the reload case): chooser hidden.
+      dispatch({ type: 'installState', installed: true });
+      assert.ok(group.hasAttribute('hidden'), 'installed === true must hide the pre-install chooser');
+
+      // Fresh install: chooser shown.
+      dispatch({ type: 'installState', installed: false });
+      assert.ok(!group.hasAttribute('hidden'), 'installed === false must show the pre-install chooser');
+
+      // Install kicked off (busy): chooser hidden again.
+      dispatch({ type: 'installState', busy: true });
+      assert.ok(group.hasAttribute('hidden'), 'busy must hide the pre-install chooser');
+
+      // Back to installed, then render Settings: exactly one "Delegation
+      // style" section, inside #setup-config — and the static chooser stays hidden.
+      dispatch({ type: 'installState', installed: true });
+      dispatch({
+        type: 'settings',
+        payload: {
+          hook: { installed: true, lastActivityAt: null },
+          agents: [],
+          delegation_mode: 'team_leads',
+          delegationHealth: {},
+          hookHealth: { healthy: true, issueCount: 0 },
+          contextBudget: null,
+        },
+      });
+      await flush();
+      assert.ok(group.hasAttribute('hidden'), 'settings view must not resurface the pre-install chooser');
+      const setupConfig = doc.getElementById('setup-config');
+      const headings = [...setupConfig.querySelectorAll('.settings-heading')].filter(
+        (h: any) => (h.textContent || '').trim() === 'Delegation style'
+      );
+      assert.equal(headings.length, 1, 'settings must render exactly one Delegation style section');
+      const checked = setupConfig.querySelector('input[name="settings-delegation-mode"]:checked');
+      assert.ok(checked, 'a delegation-mode radio should be checked');
+      assert.equal(checked.value, 'team_leads', 'radio selection must reflect the payload mode');
+      assertNoErrors('delegation-chooser-visibility');
+    });
   } finally {
     process.removeListener('unhandledRejection', onRejection);
     dom.window.close();
