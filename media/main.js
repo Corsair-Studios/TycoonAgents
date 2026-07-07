@@ -3045,14 +3045,29 @@
    *  out LOADING_TIMEOUT_MS, and the boot loader hands off to the no-theme
    *  placeholder scene the instant it actually renders. */
   let noThemeSignaled = false;
-  /** Frames render() has ACTUALLY painted the loaded view — decoded theme
-   *  background drawn AND the themed (non-placeholder) sprite layer active.
-   *  The loading signal (_load.ready) leads the canvas paint by a beat, so
-   *  the boot loader only fades once >= 2 such frames exist: the flag frame
-   *  plus one extra rAF, guaranteeing the composited frame under the fade is
-   *  the real scene, never a placeholder flash. Capped at 2 (no reset needed:
-   *  the boot loader is one-shot per webview load). */
-  let sceneFramesPainted = 0;
+  // ── Boot-loader all-clear telemetry ──────────────────────────────────────
+  // The loading signal (_load.ready, 95% of frames decoded) leads the actual
+  // canvas paint: agents whose CURRENT animation frame hasn't decoded yet
+  // fall back to placeholder stick figures (see "Sprite not yet loaded" in
+  // the worker draw loop), which flashed through the fade. So the overlay
+  // stays fully opaque until render() reports, per frame, that the decoded
+  // theme background was drawn AND no agent had to placeholder-fall-back
+  // while its art was still decoding — for BOOT_THEMED_FRAMES_MIN consecutive
+  // frames AND BOOT_THEMED_HOLD_MS since the first such frame (whichever is
+  // later). Failsafes (setup hide, THEME_NONE, 12s hard timeout) bypass this.
+  const BOOT_THEMED_FRAMES_MIN = 5;
+  const BOOT_THEMED_HOLD_MS = 250;
+  /** This frame drew the decoded theme background (set at the bg drawImage). */
+  let bootFrameThemeBgDrawn = false;
+  /** This frame drew a placeholder stick figure where themed art is STILL
+   *  DECODING (img exists but !complete). Missing/errored art (no img, or
+   *  complete with naturalWidth 0) is that agent's permanent presentation and
+   *  deliberately does NOT set this — it must never hold the loader hostage. */
+  let bootFramePlaceholderPending = false;
+  /** Consecutive fully-themed frames painted (resets on any regression). */
+  let bootThemedFrames = 0;
+  /** nowMs() of the first frame in the current consecutive themed run. */
+  let bootFirstThemedFrameTs = 0;
   function nowMs() { return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now(); }
   /** Progress over the theme background + character frames: { ready, frac }. */
   function themeLoadProgress() {
@@ -3072,6 +3087,23 @@
     }
     const frac = total > 0 ? done / total : 0;
     return { ready: total > 0 && bgOk && frac >= 0.95, frac };
+  }
+  /** True when every image queued for the current theme has SETTLED — decoded
+   *  or errored. Stricter than themeLoadProgress().ready (which passes at 95%
+   *  decoded, letting stick-figure fallbacks flash while stragglers decode).
+   *  An errored <img> has complete=true (naturalWidth 0), so missing art
+   *  counts as settled and can never hang the boot loader's all-clear. */
+  function themeImagesAllSettled() {
+    if (themeBackgroundImg && !themeBackgroundImg.complete) return false;
+    for (const id in themeImages) {
+      const arr = themeImages[id];
+      if (!Array.isArray(arr)) continue;
+      for (let i = 0; i < arr.length; i++) {
+        const im = arr[i];
+        if (im && !im.complete) return false;
+      }
+    }
+    return true;
   }
 
   /** Convert a mouse event to canvas-pixel coords (accounts for CSS scaling). */
@@ -7973,19 +8005,12 @@
     const loadingActive = !noThemeSignaled && !_load.ready && themeLoadStartTs > 0 && _loadElapsed < LOADING_TIMEOUT_MS;
 
     // Boot loader: smooth 75→99% while sprite frames stream in. Completion
-    // (100% + fade out) is gated on ACTUAL paint, not the loading signal —
-    // _load.ready leads the canvas by a beat, and fading on it alone let the
-    // placeholder chips flash through. A themed boot only completes after
-    // >= 2 frames have drawn the real background + themed sprite layer (see
-    // sceneFramesPainted). Non-themed paths (THEME_NONE fresh install, or
-    // this loading window timing out) have no themed scene to wait for and
-    // complete immediately; the 12s hard timeout still force-hides anything.
-    if (!bootLoaderDone && !loadingActive) {
-      const themedSceneExpected = themeLoaded && !noThemeSignaled && _load.ready;
-      if (!themedSceneExpected || sceneFramesPainted >= 2) {
-        bootLoaderComplete();
-      }
-    } else if (!bootLoaderDone && themeLoaded) {
+    // (100% + fade out) is decided at the END of this frame (see the gate
+    // just before drawHUD) from what was ACTUALLY painted, never from the
+    // loading signal alone. Reset this frame's paint telemetry here.
+    bootFrameThemeBgDrawn = false;
+    bootFramePlaceholderPending = false;
+    if (!bootLoaderDone && loadingActive && themeLoaded) {
       bootLoaderSetProgress(75 + Math.round(_load.frac * 24), "Preparing scene…");
     }
 
@@ -8004,11 +8029,8 @@
       const bgX = Math.floor((w - bgW) / 2);
       const bgY = 0; // top-anchor → static regardless of handlebar / canvas height
       ctx.drawImage(themeBackgroundImg, bgX, bgY, bgW, bgH);
-      // Loaded-view paint signal for the boot loader: this frame drew the
-      // decoded theme background, and with loading over the sprite layer
-      // below draws its themed form (agentList is only non-empty then) —
-      // so what's composited after this frame is the real scene.
-      if (!loadingActive && sceneFramesPainted < 2) sceneFramesPainted++;
+      // Boot-loader paint signal: this frame drew the real decoded background.
+      bootFrameThemeBgDrawn = true;
     } else {
       // Fallback placeholder background
       ctx.fillStyle = "#1a1a2e";
@@ -9169,7 +9191,11 @@
             ctx.restore();
           }
         } else {
-          // Sprite not yet loaded — fallback stick figure
+          // Sprite not yet loaded — fallback stick figure. If the frame image
+          // exists but is still decoding, this is the transient placeholder
+          // the boot loader must keep covered; a missing/errored image draws
+          // this permanently and must NOT block the loader's all-clear.
+          if (img && !img.complete) bootFramePlaceholderPending = true;
           drawWorker(cx, cy, worker || { id: agent.id, role: agent.name, state: desiredClip }, idx);
         }
       } else {
@@ -9313,6 +9339,35 @@
     // Badges: cheap per-frame check (small array) so unlocks + the HUD count
     // reflect this frame's build/eviction counters immediately.
     updateBadgeUnlocks();
+
+    // ── Boot loader completion gate (end of frame — judges ACTUAL paint) ────
+    // Strict all-clear for a themed boot: loading window over, EVERY queued
+    // theme image settled (decoded or errored — see themeImagesAllSettled),
+    // the decoded background drawn this frame, no agent stuck on a
+    // still-decoding placeholder fallback, and the themed run has held for
+    // BOOT_THEMED_FRAMES_MIN consecutive frames AND BOOT_THEMED_HOLD_MS
+    // (whichever is later). Non-themed paths (THEME_NONE fresh install, or
+    // the loading window timing out) have no themed scene to wait for and
+    // complete immediately. The 12s hard timeout still force-hides anything.
+    if (!bootLoaderDone && !loadingActive) {
+      const themedSceneExpected = themeLoaded && !noThemeSignaled && _load.ready;
+      if (!themedSceneExpected) {
+        bootLoaderComplete();
+      } else if (bootFrameThemeBgDrawn && !bootFramePlaceholderPending && themeImagesAllSettled()) {
+        bootThemedFrames++;
+        if (bootFirstThemedFrameTs === 0) bootFirstThemedFrameTs = nowMs();
+        if (
+          bootThemedFrames >= BOOT_THEMED_FRAMES_MIN &&
+          nowMs() - bootFirstThemedFrameTs >= BOOT_THEMED_HOLD_MS
+        ) {
+          bootLoaderComplete();
+        }
+      } else {
+        // Regression (placeholder resurfaced / bg not drawn) — restart the run.
+        bootThemedFrames = 0;
+        bootFirstThemedFrameTs = 0;
+      }
+    }
 
     // HUD overlay
     drawHUD(w);
