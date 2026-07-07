@@ -1193,13 +1193,23 @@
   /** Tracks last uefnDetected state from checkInstall. */
   let lastUefnDetected = false;
 
-  /** Show the full-bleed setup overlay; hide the live app view. */
-  function showSetup() {
+  /**
+   * Show the full-bleed setup overlay; hide the live app view.
+   * @param {{hideBootLoader?: boolean}} [opts] Pass `hideBootLoader: false` for
+   *   the transient "we don't know the install/theme state yet" default shown
+   *   at boot (below) — that call is NOT onboarding taking over, it's just the
+   *   safe blank state until checkInstall resolves, and is almost always
+   *   immediately replaced by showMain(). Killing the boot loader there was
+   *   the bug: every panel open called showSetup() synchronously before any
+   *   host response arrived, instantly hiding the overlay and leaving the
+   *   bare placeholder scene visible while the real theme loaded underneath.
+   */
+  function showSetup(opts) {
     setupViewEl.removeAttribute("hidden");
     appEl.setAttribute("hidden", "");
-    // Onboarding/install (or an install error) takes over — the boot loader
-    // would otherwise sit on top of it (or behind it, indefinitely) forever.
-    bootLoaderHideNow();
+    // Onboarding/install (or an install error) genuinely taking over — the
+    // boot loader would otherwise sit on top of it (or behind it, forever).
+    if (!opts || opts.hideBootLoader !== false) bootLoaderHideNow();
   }
 
   /** Show the live app view; hide the setup overlay. */
@@ -3030,6 +3040,11 @@
   const LOADING_TIMEOUT_MS = 6000;
   /** performance.now() when we began waiting for the stage to load. */
   let themeLoadStartTs = 0;
+  /** Set true on THEME_NONE (host confirmed there's no theme to load yet —
+   *  fresh install) so the loading window ends immediately instead of idling
+   *  out LOADING_TIMEOUT_MS, and the boot loader hands off to the no-theme
+   *  placeholder scene the instant it actually renders. */
+  let noThemeSignaled = false;
   function nowMs() { return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now(); }
   /** Progress over the theme background + character frames: { ready, frac }. */
   function themeLoadProgress() {
@@ -4580,7 +4595,10 @@
 
   // Initial state: keep the setup overlay up until we hear back about install
   // status, so we never flash the live view before knowing the hook exists.
-  showSetup();
+  // Don't hide the boot loader here — this is a transient "unknown yet"
+  // default (about to be replaced by showMain() once checkInstall/theme
+  // load resolve), not real onboarding taking over the panel.
+  showSetup({ hideBootLoader: false });
   setupStatusEl.textContent = "Checking installation…";
   installHooksBtn.setAttribute("hidden", "");
   setupErrorEl.setAttribute("hidden", "");
@@ -5336,6 +5354,12 @@
         }
         buildRosterStrip();
       }
+    } else if (msg && msg.type === "THEME_NONE") {
+      // Host looked for a theme on "ready" and found none (fresh install) —
+      // end the boot loader's loading window right away so it hands off to
+      // the no-theme placeholder scene the moment render() actually draws
+      // it, instead of idling for LOADING_TIMEOUT_MS/the 12s hard failsafe.
+      noThemeSignaled = true;
     } else if (msg && msg.type === "STAGE_TUNING_SAVED") {
       if (stageEditEls && stageEditEls.status) {
         const ok = msg.payload && msg.payload.ok;
@@ -7938,7 +7962,7 @@
     // buildings/stick-figures and show a single loading bar instead.
     const _load = themeLoadProgress();
     const _loadElapsed = themeLoadStartTs > 0 ? (nowMs() - themeLoadStartTs) : Infinity;
-    const loadingActive = !_load.ready && themeLoadStartTs > 0 && _loadElapsed < LOADING_TIMEOUT_MS;
+    const loadingActive = !noThemeSignaled && !_load.ready && themeLoadStartTs > 0 && _loadElapsed < LOADING_TIMEOUT_MS;
 
     // Boot loader: smooth 75→99% while sprite frames stream in, then complete
     // (100% + fade out) the moment this same signal says loading is over —

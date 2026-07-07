@@ -203,6 +203,12 @@ export class TycoonPanel {
                 type: "THEME_INITIALIZED",
                 payload: await this._buildThemeInitPayload(t.manifest, t.frames, false),
               });
+            } else {
+              // No theme on disk yet (fresh install) — tell the webview
+              // explicitly so its boot loader can hand off to the no-theme
+              // placeholder scene immediately instead of idling out its
+              // stage-loading timeout.
+              void this._panel.webview.postMessage({ type: "THEME_NONE" });
             }
           })();
         } else if (message.type === "SAVE_STAGE_TUNING") {
