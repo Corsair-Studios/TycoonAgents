@@ -78,6 +78,120 @@ body {
   display: none;
 }
 
+/* ── Boot loader: full-viewport overlay shown from first paint until the
+   theme finishes loading (progress driven by media/main.js). Sits above
+   #app (unstyled default stacking) but below #setup-view (z-index:200) so
+   the onboarding/install card always wins if it needs to show. Purely
+   decorative — never intercepts pointer input. ────────────────────────── */
+#boot-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at 50% 40%, #171b3a 0%, #0a0a0b 72%);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 320ms ease;
+}
+
+#boot-loader[hidden] {
+  display: none;
+}
+
+#boot-loader.boot-loader--fade {
+  opacity: 0;
+}
+
+.boot-loader-glow {
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  max-width: 90vw;
+  max-height: 90vw;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 176, 32, 0.18) 0%, rgba(255, 176, 32, 0) 70%);
+  animation: boot-loader-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes boot-loader-pulse {
+  0%, 100% { transform: scale(0.92); opacity: 0.6; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+.boot-loader-inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 300px;
+  padding: 0 24px;
+}
+
+.boot-loader-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-shadow: 0 0 18px rgba(255, 176, 32, 0.45);
+}
+
+.boot-loader-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.boot-loader-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.3;
+  animation: boot-loader-dot 1.2s ease-in-out infinite;
+}
+
+.boot-loader-dots span:nth-child(2) { animation-delay: 0.15s; }
+.boot-loader-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes boot-loader-dot {
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-3px); }
+}
+
+.boot-loader-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.boot-loader-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffb020, #ffd479);
+  box-shadow: 0 0 8px rgba(255, 176, 32, 0.6);
+  transition: width 380ms ease;
+}
+
+.boot-loader-label {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-loader-glow,
+  .boot-loader-dots span {
+    animation: none;
+  }
+}
+
 #setup-card {
   width: 100%;
   max-width: 360px;

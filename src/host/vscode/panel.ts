@@ -3085,6 +3085,26 @@ export class TycoonPanel {
   <title>TycoonAgents</title>
 </head>
 <body>
+  <!-- Boot loader: full-viewport overlay painted as part of the INITIAL HTML
+       (styled by media/style.css, which is a render-blocking <link> above)
+       so it is on screen before media/main.js has even parsed, let alone
+       before the theme payload/art arrives. media/main.js drives its
+       progress/visibility off real boot milestones; see the "Boot loader
+       overlay" block near the top of that file. Sits above #app but below
+       #setup-view so the onboarding/install card always wins if it needs
+       to show (see showSetup()). -->
+  <div id="boot-loader" role="status" aria-live="polite">
+    <div class="boot-loader-glow" aria-hidden="true"></div>
+    <div class="boot-loader-inner">
+      <div class="boot-loader-title">TycoonAgents</div>
+      <div class="boot-loader-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="boot-loader-track">
+        <div id="boot-loader-fill" class="boot-loader-fill"></div>
+      </div>
+      <div id="boot-loader-label" class="boot-loader-label">Starting&hellip;</div>
+    </div>
+  </div>
+
   <!-- Canvas kept in DOM so existing render loop does not crash; hidden via CSS -->
   <canvas id="stage"></canvas>
 

@@ -10,6 +10,61 @@
 (function () {
   const vscode = acquireVsCodeApi();
 
+  // ── Boot loader overlay ────────────────────────────────────────────────
+  // Markup lives in the INITIAL HTML (panel.ts _getHtmlForWebview + inline
+  // styling in media/style.css) so it paints before this script even runs.
+  // From here we only advance/hide it against real boot milestones:
+  //   script booted (below)              → 15%  "Connecting…"
+  //   THEME_INITIALIZED received         → 45%  "Loading theme…"
+  //   background image decoded (onload)  → 75%  "Preparing scene…"
+  //   sprite frames ready (render loop)  → 75-99% smoothed, then 100% "Ready"
+  // Failsafes: hidden instantly if the onboarding/no-theme setup screen is
+  // shown (showSetup()), and a hard 12s timeout in case milestones stall.
+  const bootLoaderEl      = /** @type {HTMLElement} */ (document.getElementById("boot-loader"));
+  const bootLoaderFillEl  = /** @type {HTMLElement} */ (document.getElementById("boot-loader-fill"));
+  const bootLoaderLabelEl = /** @type {HTMLElement} */ (document.getElementById("boot-loader-label"));
+  let bootLoaderPct = 0;
+  let bootLoaderDone = false;
+
+  /** setTimeout that won't keep a Node/test process alive; no-op in real browsers where timers are plain numbers. */
+  function unrefTimeout(fn, ms) {
+    const id = setTimeout(fn, ms);
+    if (id && typeof id.unref === "function") id.unref();
+    return id;
+  }
+
+  /** Advance the boot loader toward pct (monotonic — never regresses). */
+  function bootLoaderSetProgress(pct, label) {
+    if (!bootLoaderEl || bootLoaderDone) return;
+    bootLoaderPct = Math.max(bootLoaderPct, pct);
+    if (bootLoaderFillEl) bootLoaderFillEl.style.width = bootLoaderPct + "%";
+    if (bootLoaderLabelEl && label) bootLoaderLabelEl.textContent = label;
+  }
+
+  /** Fill to 100%, fade out (~320ms), then remove from layout. */
+  function bootLoaderComplete() {
+    if (!bootLoaderEl || bootLoaderDone) return;
+    bootLoaderDone = true;
+    bootLoaderPct = 100;
+    if (bootLoaderFillEl) bootLoaderFillEl.style.width = "100%";
+    if (bootLoaderLabelEl) bootLoaderLabelEl.textContent = "Ready";
+    bootLoaderEl.classList.add("boot-loader--fade");
+    unrefTimeout(() => {
+      if (bootLoaderEl) bootLoaderEl.setAttribute("hidden", "");
+    }, 320);
+  }
+
+  /** Hide instantly, no fade — used when onboarding/setup takes over, or an error surfaces during boot. */
+  function bootLoaderHideNow() {
+    if (!bootLoaderEl || bootLoaderDone) return;
+    bootLoaderDone = true;
+    bootLoaderEl.classList.remove("boot-loader--fade");
+    bootLoaderEl.setAttribute("hidden", "");
+  }
+
+  bootLoaderSetProgress(15, "Connecting…");
+  unrefTimeout(bootLoaderComplete, 12000);
+
   // ── Resize handle: drag to control metrics panel height ─────────
 
   const metricsPanelEl = /** @type {HTMLElement} */ (document.getElementById("metrics-panel"));
@@ -1142,6 +1197,9 @@
   function showSetup() {
     setupViewEl.removeAttribute("hidden");
     appEl.setAttribute("hidden", "");
+    // Onboarding/install (or an install error) takes over — the boot loader
+    // would otherwise sit on top of it (or behind it, indefinitely) forever.
+    bootLoaderHideNow();
   }
 
   /** Show the live app view; hide the setup overlay. */
@@ -4381,6 +4439,9 @@
     const bgFrames = rawFrames["environment_background"];
     if (bgFrames && bgFrames[0]) {
       const bgImg = new Image();
+      const onBgSettled = () => bootLoaderSetProgress(75, "Preparing scene…");
+      bgImg.onload = onBgSettled;
+      bgImg.onerror = onBgSettled; // don't let a bad image stall the boot loader
       bgImg.src = bgFrames[0];
       themeBackgroundImg = bgImg;
     }
@@ -4907,6 +4968,7 @@
       }
       if (themeReviewStopGeneration) themeReviewStopGeneration.hidden = true;
     } else if (msg && msg.type === "THEME_INITIALIZED") {
+      bootLoaderSetProgress(45, "Loading theme…");
       const completedGeneration = themeGenerationRunning;
       themeGenerationRunning = false;
       themeGenerationStopping = false;
@@ -7877,6 +7939,17 @@
     const _load = themeLoadProgress();
     const _loadElapsed = themeLoadStartTs > 0 ? (nowMs() - themeLoadStartTs) : Infinity;
     const loadingActive = !_load.ready && themeLoadStartTs > 0 && _loadElapsed < LOADING_TIMEOUT_MS;
+
+    // Boot loader: smooth 75→99% while sprite frames stream in, then complete
+    // (100% + fade out) the moment this same signal says loading is over —
+    // either genuinely ready, or this render loop's own timeout gave up on it.
+    if (!bootLoaderDone) {
+      if (loadingActive && themeLoaded) {
+        bootLoaderSetProgress(75 + Math.round(_load.frac * 24), "Preparing scene…");
+      } else if (!loadingActive) {
+        bootLoaderComplete();
+      }
+    }
 
     // ── Change 2: Fixed-size background (does NOT stretch on resize) ──────────
     if (themeLoaded && themeBackgroundImg && themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0) {
