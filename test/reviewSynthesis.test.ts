@@ -36,7 +36,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+const { createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt, applyObjectBoardFrames } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 function legacyManifest(): ThemeManifest {
   return {
@@ -147,7 +147,7 @@ test('objectRowsForItem prefers the CURRENT manifest roster over stale saved obj
     { kind: 'crate' as const },
   ];
 
-  const rows = objectRowsForItem({ object_rows: staleObjectRows }, manifest);
+  const rows = objectRowsForItem({ id: 'objects_01', object_rows: staleObjectRows }, manifest);
 
   assert.notDeepEqual(rows, staleObjectRows);
   assert.equal(rows.length, 5);
@@ -164,6 +164,71 @@ test('objectRowsForItem falls back to saved object_rows only when reconstruction
   // With a normal manifest, reconstruction still succeeds (non-empty), proving the
   // manifest wins even though a saved fallback value is present.
   assert.notDeepEqual(rows, staleObjectRows);
+});
+
+// --- Regression: multi-board object rosters must map poof/crate onto the
+// board that actually carries them, not bleed onto a neighboring board's
+// last object row (the reported bug: crate rendered as object #10's frame). ---
+
+test('objectRowsForItem gives board A (5 objects) no poof/crate, and board B (2 objects + poof + crate) the trailing rows', () => {
+  const manifest = legacyManifest();
+  // 7 objects -> flatRows = 7 objects + poof + crate = 9 rows -> boards of [5, 4]:
+  // board A = objects 0-4 (5 rows, no poof/crate); board B = objects 5-6 + poof + crate.
+  manifest.buildable_objects = manifest.buildable_objects.slice(0, 7);
+
+  const boardA = objectRowsForItem({ id: 'objects_01' }, manifest);
+  assert.equal(boardA.length, 5);
+  assert.ok(boardA.every((row) => row.kind === 'object'), 'board A must carry only object rows');
+  assert.deepEqual(boardA.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
+    'object_0', 'object_1', 'object_2', 'object_3', 'object_4',
+  ]);
+
+  const boardB = objectRowsForItem({ id: 'objects_02' }, manifest);
+  assert.equal(boardB.length, 4);
+  assert.deepEqual(boardB.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
+    'object_5', 'object_6', 'poof', 'crate',
+  ]);
+});
+
+test('applyObjectBoardFrames writes crate/poof only from the board that carries them, at the correct row slots', () => {
+  const manifest = legacyManifest();
+  manifest.buildable_objects = manifest.buildable_objects.slice(0, 7);
+  const boardA = objectRowsForItem({ id: 'objects_01' }, manifest); // 5 object rows, no poof/crate
+  const boardB = objectRowsForItem({ id: 'objects_02' }, manifest); // object_5, object_6, poof, crate
+
+  const makeSlots = (board: string, rowCount: number) =>
+    Array.from({ length: rowCount * 4 }, (_unused, slotIndex) => ({
+      slot_id: slotIndex,
+      data: `${board}_r${Math.floor(slotIndex / 4)}_c${slotIndex % 4}`,
+    }));
+
+  // Both boards write into the SAME shared frames map, as they do in production
+  // (one call per board, sharing the theme's frames.json record).
+  const frames: Record<string, string[]> = {};
+  applyObjectBoardFrames(frames, makeSlots('A', boardA.length), boardA);
+  applyObjectBoardFrames(frames, makeSlots('B', boardB.length), boardB);
+
+  // Board A's own object rows are intact and untouched by board B.
+  assert.deepEqual(frames['object_object_0'], ['A_r0_c0', 'A_r0_c1', 'A_r0_c2', 'A_r0_c3']);
+  assert.deepEqual(frames['object_object_4'], ['A_r4_c0', 'A_r4_c1', 'A_r4_c2', 'A_r4_c3']);
+
+  // Board B's object rows use board B's OWN row indices (0, 1), not the global
+  // object index (5, 6).
+  assert.deepEqual(frames['object_object_5'], ['B_r0_c0', 'B_r0_c1', 'B_r0_c2', 'B_r0_c3']);
+  assert.deepEqual(frames['object_object_6'], ['B_r1_c0', 'B_r1_c1', 'B_r1_c2', 'B_r1_c3']);
+
+  // 'poof' comes from board B's row 2 (all 4 frames); 'crate' from board B's
+  // LAST row (row 3), slot 0 only — never from board A's last row.
+  assert.deepEqual(frames.poof, ['B_r2_c0', 'B_r2_c1', 'B_r2_c2', 'B_r2_c3']);
+  assert.deepEqual(frames.crate, ['B_r3_c0']);
+
+  // Board A (which has no poof/crate row of its own) must never have written
+  // those keys — this is the exact bug: a board without a crate row silently
+  // wrote frames.crate from its own last object row.
+  const framesAfterBoardAOnly: Record<string, string[]> = {};
+  applyObjectBoardFrames(framesAfterBoardAOnly, makeSlots('A', boardA.length), boardA);
+  assert.equal(framesAfterBoardAOnly.crate, undefined);
+  assert.equal(framesAfterBoardAOnly.poof, undefined);
 });
 
 test('decorRowsForItem prefers the CURRENT manifest decor roster over stale saved decor_rows', () => {

@@ -2239,24 +2239,42 @@ function rivalRowsForItem(
 }
 
 /**
- * Object rows for an object-atlas item. Reconstructs the 5-row animated board
- * from the CURRENT manifest (via reconstructObjectRows) as the primary source, so
- * a roster change (e.g. objects added/removed/renamed) regenerates the correct
- * board instead of reusing a stale saved `object_rows` — which would slice the
- * atlas against the wrong objects. Falls back to the item's stored `object_rows`
- * only if reconstruction is empty or throws. Exported for unit testing.
+ * Object rows for an object-atlas item. Mirrors rivalRowsForItem: reconstructs
+ * ALL object boards from the CURRENT manifest via createObjectBoardRows (objects
+ * chunked 5 rows/board, with the poof/crate rows trailing the flattened list),
+ * then picks OUT the board matching this item's own `objects_NN` id — so a
+ * roster change (e.g. objects added/removed/renamed) regenerates the correct
+ * board instead of reusing a stale saved `object_rows`. Without per-item board
+ * indexing, every board fell through to the single-board legacy reconstruction
+ * below, which always appends synthetic poof/crate rows onto the item's first
+ * three object specs — so a mid-roster board (e.g. objects 6-10, no poof/crate
+ * of its own) got its last real object row mislabeled 'crate', and the actual
+ * crate board's rows were built from the wrong specs entirely. Falls back to
+ * the item's stored `object_rows`, then to the legacy single-board
+ * reconstruction, only if the current-manifest board lookup is empty or
+ * throws (e.g. a manifest with zero buildable_objects). Exported for unit
+ * testing.
  */
 export function objectRowsForItem(
-  item: Pick<ThemeImageReviewItem, 'object_specs' | 'object_rows'>,
+  item: Pick<ThemeImageReviewItem, 'object_specs' | 'object_rows'> & Partial<Pick<ThemeImageReviewItem, 'id'>>,
   manifest: ThemeManifest,
 ): ThemeObjectBoardRow[] {
   try {
-    const rows = reconstructObjectRows(item, manifest);
-    return rows.length ? rows : (item.object_rows?.length ? item.object_rows : []);
+    const boards = createObjectBoardRows(themeObjectSpecs(manifest));
+    const boardIndex = Math.max(0, (Number(/objects_(\d+)/.exec(item.id ?? '')?.[1] ?? '1') || 1) - 1);
+    const rows = boards[boardIndex] ?? boards[0] ?? [];
+    if (rows.length) return rows;
   } catch (err) {
     console.warn('TycoonAgents: unable to reconstruct object board rows:', err);
-    return item.object_rows?.length ? item.object_rows : [];
   }
+  if (item.object_rows?.length) return item.object_rows;
+  try {
+    const legacyRows = reconstructObjectRows(item, manifest);
+    if (legacyRows.length) return legacyRows;
+  } catch (err) {
+    console.warn('TycoonAgents: unable to reconstruct legacy object board rows:', err);
+  }
+  return item.object_rows?.length ? item.object_rows : [];
 }
 
 /**
@@ -2493,7 +2511,12 @@ function applyRivalBoardFrames(
   return keys;
 }
 
-function applyObjectBoardFrames(
+/**
+ * Writes one board's object/poof/crate frames into `frames`, keyed off the
+ * board's OWN `rows` list (per-board row index, not a global object index).
+ * Exported for unit testing multi-board mappings (see objectRowsForItem).
+ */
+export function applyObjectBoardFrames(
   frames: Record<string, string[]>,
   slots: Array<{ slot_id: number; data: string }>,
   rows: ThemeObjectBoardRow[],
