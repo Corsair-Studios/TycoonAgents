@@ -2007,9 +2007,12 @@
           statusEl.textContent = "Save failed: " + payload.error;
           statusEl.classList.add("theme-review-error");
         } else if (rejectedById.size) {
+          // Surface the server's per-row reason (e.g. 'Unknown rival "x".') instead of
+          // a generic message, so a future id/kind mismatch is diagnosable from the UI.
+          const reasons = Array.from(rejectedById.values()).join(" ");
           statusEl.textContent = appliedById.size
-            ? (appliedById.size + " name(s) saved; " + rejectedById.size + " rejected.")
-            : "Names were not saved.";
+            ? (appliedById.size + " name(s) saved; " + rejectedById.size + " rejected: " + reasons)
+            : (reasons || "Names were not saved.");
           statusEl.classList.toggle("theme-review-error", !appliedById.size);
         } else {
           statusEl.textContent = "Names saved ✓";
@@ -3703,7 +3706,6 @@
           '<input id="se-ei" class="se-range" type="range" min="10" max="180" step="5" value="45">' +
           '<div class="se-sublabel">Enemy count mode</div>' +
           '<select id="se-ecm" class="se-select"><option value="random">random</option><option value="all">all</option></select>' +
-          '<button id="se-bg" class="se-btn se-btn-ghost" type="button">Replace background…</button>' +
         '</div>' +
         '<div id="se-hint" class="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide) · hover decor + F to flip</div>' +
       '</div>' +
@@ -3742,7 +3744,6 @@
     stageEditEls.save = wrap.querySelector("#se-save");
     stageEditEls.done = wrap.querySelector("#se-done");
     stageEditEls.status = wrap.querySelector("#se-status");
-    stageEditEls.bg = wrap.querySelector("#se-bg");
     stageEditEls.showAll = wrap.querySelector("#se-show-all");
 
     // Wire controls.
@@ -3837,15 +3838,6 @@
     });
     stageEditEls.save.addEventListener("click", saveStageTuning);
     stageEditEls.done.addEventListener("click", exitEditStage);
-    stageEditEls.bg.addEventListener("click", () => {
-      if (!selectedThemeId) {
-        stageEditEls.status.textContent = "No theme selected.";
-        return;
-      }
-      stageEditEls.status.style.color = "#9fffa0";
-      stageEditEls.status.textContent = "Opening image picker…";
-      vscode.postMessage({ type: "REPLACE_BACKGROUND", payload: { theme_id: selectedThemeId } });
-    });
   }
   function syncOverrideSlider() {
     const ov = themeCharScaleOverrides[editSelectedCharId];

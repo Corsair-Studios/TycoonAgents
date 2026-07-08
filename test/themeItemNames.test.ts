@@ -140,3 +140,64 @@ test('applyThemeItemNameChanges trims and collapses internal whitespace', () => 
   assert.equal(result.applied[0].name, 'Supply Crate');
   assert.equal(manifest.buildable_objects[0].display_name, 'Supply Crate');
 });
+
+// Regression test for the "renaming a rival always fails" bug: manifest
+// roster_rivals[].rival_id keeps the `rival_` PREFIX (see themePlan.ts), but
+// the webview's rival_rows carry that prefix STRIPPED (see themeRivalSpecs in
+// themeService.ts, which strips it so frame keys built as `rival_<id>` don't
+// double-prefix). The row id the webview actually posts is the stripped form
+// ("roadblock"), not the manifest's full rival_id ("rival_roadblock").
+test('applyThemeItemNameChanges renames a rival by its stripped rival_rows id, leaving rival_id/atlas_asset untouched', () => {
+  const manifest = testManifest();
+  manifest.roster_rivals = [
+    { rival_id: 'rival_roadblock', name: 'Roadblock', atlas_asset: 'frames.json#rival_roadblock' },
+  ];
+
+  const result = applyThemeItemNameChanges(manifest, [
+    { item_kind: 'rival', id: 'roadblock', name: 'Gung Ho' },
+  ]);
+
+  assert.equal(result.rejected.length, 0);
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.applied[0].id, 'roadblock');
+  assert.equal(manifest.roster_rivals[0].name, 'Gung Ho');
+  // rival_id and atlas_asset are frame-key-linked identifiers, not display text —
+  // a rename must never touch them.
+  assert.equal(manifest.roster_rivals[0].rival_id, 'rival_roadblock');
+  assert.equal(manifest.roster_rivals[0].atlas_asset, 'frames.json#rival_roadblock');
+});
+
+test('applyThemeItemNameChanges still matches a rival by its full (unstripped) rival_id', () => {
+  const manifest = testManifest();
+  manifest.roster_rivals = [
+    { rival_id: 'rival_roadblock', name: 'Roadblock', atlas_asset: 'frames.json#rival_roadblock' },
+  ];
+
+  const result = applyThemeItemNameChanges(manifest, [
+    { item_kind: 'rival', id: 'rival_roadblock', name: 'Gung Ho' },
+  ]);
+
+  assert.equal(result.rejected.length, 0);
+  assert.equal(manifest.roster_rivals[0].name, 'Gung Ho');
+  assert.equal(manifest.roster_rivals[0].rival_id, 'rival_roadblock');
+});
+
+test('applyThemeItemNameChanges applies a mixed object + rival batch and reports an unknown-rival reason by id', () => {
+  const manifest = testManifest();
+  manifest.roster_rivals = [
+    { rival_id: 'rival_roadblock', name: 'Roadblock', atlas_asset: 'frames.json#rival_roadblock' },
+  ];
+
+  const result = applyThemeItemNameChanges(manifest, [
+    { item_kind: 'object', id: 'crate_01', name: 'Supply Crate' },
+    { item_kind: 'rival', id: 'roadblock', name: 'Gung Ho' },
+    { item_kind: 'rival', id: 'ghost', name: 'Nobody' },
+  ]);
+
+  assert.equal(result.applied.length, 2);
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].id, 'ghost');
+  assert.equal(result.rejected[0].reason, 'Unknown rival "ghost".');
+  assert.equal(manifest.buildable_objects[0].display_name, 'Supply Crate');
+  assert.equal(manifest.roster_rivals[0].name, 'Gung Ho');
+});

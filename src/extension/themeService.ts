@@ -999,14 +999,14 @@ export function applyThemeItemNameChanges(
     if (change.item_kind === 'object') {
       const object = manifest.buildable_objects?.find((candidate) => candidate.object_id === change.id);
       if (!object) {
-        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Object not found.' });
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown object "${change.id}".` });
         continue;
       }
       object.display_name = name;
     } else if (change.item_kind === 'decor') {
       const decor = manifest.decor_objects?.find((candidate) => candidate.decor_id === change.id);
       if (!decor) {
-        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Decor item not found.' });
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown decor item "${change.id}".` });
         continue;
       }
       decor.display_name = name;
@@ -1016,19 +1016,26 @@ export function applyThemeItemNameChanges(
         ? manifest.roster_agents?.find((candidate) => candidate.slot_id === Number(agentMatch[1]))
         : undefined;
       if (!agent) {
-        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Character not found.' });
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown character "${change.id}".` });
         continue;
       }
       agent.name = name;
     } else if (change.item_kind === 'rival') {
-      const rival = manifest.roster_rivals?.find((candidate) => candidate.rival_id === change.id);
+      // rival_rows sent by the webview carry rival_id with the `rival_` prefix
+      // STRIPPED (see themeRivalSpecs, which strips it so frame keys built as
+      // `rival_<id>` don't double-prefix), but manifest.roster_rivals[].rival_id
+      // keeps the full prefixed id (see themePlan.ts). Match either form so a
+      // rename lands regardless of which shape the id arrives in.
+      const rival = manifest.roster_rivals?.find((candidate) => (
+        candidate.rival_id === change.id || candidate.rival_id === `rival_${change.id}`
+      ));
       if (!rival) {
-        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Rival not found.' });
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown rival "${change.id}".` });
         continue;
       }
       rival.name = name;
     } else {
-      rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Unknown item kind.' });
+      rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown item kind "${change.item_kind}".` });
       continue;
     }
     applied.push({ item_kind: change.item_kind, id: change.id, name });
