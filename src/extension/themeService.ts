@@ -147,14 +147,18 @@ export type BoardKind =
 
 /**
  * Maps the image provider that will actually run generation to the sprite-board
- * background mode its prompts should request. OpenAI (gpt-image-1/2) supports
- * native alpha transparency, so its boards ask for true transparent pixels.
- * Gemini ("nano banana") cannot emit alpha, so it keeps the legacy magenta
- * chroma-key contract. An unset/unknown provider falls back to 'magenta' —
- * the same safe default the prompt builders themselves use.
+ * background mode its prompts should request. All providers currently use the
+ * legacy magenta chroma-key contract.
+ *
+ * 2026-07-08: gpt-image-2 rejects `background: "transparent"` outright (API
+ * 400 "Transparent background is not supported for this model") — gpt-image-1
+ * supported native alpha but gpt-image-2 dropped it. The transparent-background
+ * plumbing (BoardBackgroundMode, the transparent prompt variants, and the
+ * transparentBackground request option) is kept dormant rather than removed —
+ * re-enable it here for a specific provider if a future model supports alpha.
  */
-export function boardBackgroundModeForProvider(provider: ThemeImageGenerationOptions['provider']): BoardBackgroundMode {
-  return provider === 'openai' ? 'transparent' : 'magenta';
+export function boardBackgroundModeForProvider(_provider: ThemeImageGenerationOptions['provider']): BoardBackgroundMode {
+  return 'magenta';
 }
 
 /**

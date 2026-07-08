@@ -446,12 +446,14 @@ test('removeStaleBoardFrameKeys: no-op when there are no previous frame keys (fi
   assert.deepEqual(frames, { poof: ['OWNED BY BOARD 3'] });
 });
 
-// --- Provider-aware sprite-board backgrounds: OpenAI (gpt-image-1/2) supports
-// native alpha transparency, so its boards should request true transparency;
-// Gemini ("nano banana") can't emit alpha and keeps the legacy magenta contract. ---
+// --- Provider-aware sprite-board backgrounds: gpt-image-2 rejects
+// background: "transparent" outright (API 400, verified 2026-07-08), so every
+// provider currently keeps the legacy magenta chroma-key contract. The
+// transparent-mode prompt builders below remain exercised directly since the
+// plumbing is kept dormant, not removed. ---
 
-test('boardBackgroundModeForProvider maps openai to transparent and gemini (or unset) to magenta', () => {
-  assert.equal(boardBackgroundModeForProvider('openai'), 'transparent');
+test('boardBackgroundModeForProvider maps every provider (including openai) to magenta', () => {
+  assert.equal(boardBackgroundModeForProvider('openai'), 'magenta');
   assert.equal(boardBackgroundModeForProvider('gemini'), 'magenta');
   assert.equal(boardBackgroundModeForProvider(undefined), 'magenta');
 });
