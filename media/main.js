@@ -2849,6 +2849,22 @@
    * scales (effectiveCharScale/effectiveObjScale) stack on top of this.
    */
   let themeOverallScale = 1;
+  /**
+   * Whole-scene fit-down factor, recomputed every render() frame from the
+   * ACTUAL canvas size vs. the theme's fixed native footprint (533x751 by
+   * default, scaled by themeOverallScale). The background is drawn at its
+   * native size, top-anchored and never stretched (see "Fixed-size
+   * background" below) — but that means a stage-area panel shorter/narrower
+   * than the native footprint (a handlebar-dragged-tall metrics panel, a
+   * narrow sidebar) previously let the canvas silently clip anything beyond
+   * its own bounds. Deep-placed, scaled-up decor/objects (Stage Editor
+   * composition puts big foreground props low in the native scene) lost
+   * their bottoms this way, while wandering agents only passed through that
+   * zone transiently and looked fine. Always <=1 (never scales UP past the
+   * theme's authored size); folded into bgW/bgH AND every entity's
+   * depthScale so the whole scene shrinks together with no distortion.
+   */
+  let sceneFitScale = 1;
   /** Per-character scale overrides, keyed by character/frame id. */
   let themeCharScaleOverrides = {};
   /** Per-object scale overrides, keyed by buildable object id. */
@@ -8451,18 +8467,27 @@
       ctx.fillStyle = "#0a0a12";
       ctx.fillRect(0, 0, w, h);
 
-      // Draw at the image's natural size, centered horizontally, TOP-anchored.
+      // Draw at the image's natural size (fit-scaled down to the actual canvas
+      // when needed — see sceneFitScale), centered horizontally, TOP-anchored.
       // Top-anchoring keeps the background (and everything mapped to it) at a
       // fixed screen position: the metrics handlebar resizes the stage from its
       // bottom edge, so a top-anchored image never shifts when h changes.
-      const bgW = themeBackgroundImg.naturalWidth * themeOverallScale;
-      const bgH = themeBackgroundImg.naturalHeight * themeOverallScale;
+      sceneFitScale = Math.min(
+        1,
+        w / (themeBackgroundImg.naturalWidth * themeOverallScale),
+        h / (themeBackgroundImg.naturalHeight * themeOverallScale),
+      );
+      const bgW = themeBackgroundImg.naturalWidth * themeOverallScale * sceneFitScale;
+      const bgH = themeBackgroundImg.naturalHeight * themeOverallScale * sceneFitScale;
       const bgX = Math.floor((w - bgW) / 2);
       const bgY = 0; // top-anchor → static regardless of handlebar / canvas height
       ctx.drawImage(themeBackgroundImg, bgX, bgY, bgW, bgH);
       // Boot-loader paint signal: this frame drew the real decoded background.
       bootFrameThemeBgDrawn = true;
     } else {
+      // No decoded background yet — nothing native-space is drawn this frame,
+      // so nothing should be shrunk either.
+      sceneFitScale = 1;
       // Fallback placeholder background
       ctx.fillStyle = "#1a1a2e";
       ctx.fillRect(0, 0, w, h);
@@ -8516,10 +8541,16 @@
     // Resolve character sprite roster.
     const charIds = rosterOrder.length > 0 ? rosterOrder : Object.keys(themeImages);
 
-    // Compute bg rect for native->canvas mapping (matches the draw above).
+    // Compute bg rect for native->canvas mapping (matches the draw above,
+    // INCLUDING sceneFitScale — every entity is positioned via nativeToCanvas
+    // against this bgW/bgH, so if this drifted from the actual drawn
+    // background rect, entities would be placed as if the full native
+    // 533x751 footprint were always on-canvas even when it had just been
+    // shrunk to fit, undoing the fit-scale's clipping fix for everything
+    // except the background image itself).
     const bgImgReady = themeLoaded && themeBackgroundImg && themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0;
-    const bgW = bgImgReady ? themeBackgroundImg.naturalWidth  * themeOverallScale : w;
-    const bgH = bgImgReady ? themeBackgroundImg.naturalHeight * themeOverallScale : h;
+    const bgW = bgImgReady ? themeBackgroundImg.naturalWidth  * themeOverallScale * sceneFitScale : w;
+    const bgH = bgImgReady ? themeBackgroundImg.naturalHeight * themeOverallScale * sceneFitScale : h;
     const bgX = bgImgReady ? Math.floor((w - bgW) / 2) : 0;
     const bgY = 0; // top-anchor (matches the background draw) → static on resize
     // Cache for the stage-editor mouse handlers (canvas<->native mapping).
@@ -9377,7 +9408,7 @@
         if (!placement) return;
         const canvasPt = nativeToCanvas(placement.nx, placement.ny, bgX, bgY, bgW, bgH);
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
-        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale;
+        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale * sceneFitScale;
         drawDecor(item.decor, canvasPt[0], canvasPt[1], depthScale);
         return;
       }
@@ -9385,7 +9416,7 @@
       if (item.kind === "object") {
         const canvasPt = nativeToCanvas(objectPlacement[item.obj.object_id].nx, objectPlacement[item.obj.object_id].ny, bgX, bgY, bgW, bgH);
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
-        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale;
+        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale * sceneFitScale;
         drawBuildableObject(item.obj, item.entry, canvasPt[0], canvasPt[1], depthScale);
         return;
       }
@@ -9395,7 +9426,7 @@
         const canvasPt = nativeToCanvas(en.nx, en.ny, bgX, bgY, bgW, bgH);
         const ecx = canvasPt[0], ecy = canvasPt[1];
         const tDepth = Math.max(0, Math.min(1, (en.ny - polyMinY) / polyRangeY));
-        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale;
+        const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale * sceneFitScale;
         const rivalKey = typeof en.rival_id === "string" && en.rival_id.startsWith("rival_")
           ? en.rival_id
           : ("rival_" + en.rival_id);
@@ -9465,7 +9496,7 @@
 
       // Depth scale: agents further back (small native Y) draw slightly smaller.
       const tDepth = Math.max(0, Math.min(1, (charEntry.ny - polyMinY) / polyRangeY));
-      const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale; // 0.8 (back) → 1.1 (front), ×overall
+      const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale * sceneFitScale; // 0.8 (back) → 1.1 (front), ×overall×fit
 
       if (bgImgReady && charIds.length > 0) {
         // Pick character sprite by agent index in roster order.
@@ -9506,7 +9537,7 @@
               // Chair depth from ITS OWN ny — identical formula to drawDecor's
               // caller (see the decor draw at the depthScale calc below).
               const chairTDepth = Math.max(0, Math.min(1, (chair.ny - polyMinY) / polyRangeY));
-              const chairDepth = (0.8 + chairTDepth * 0.3) * themeOverallScale;
+              const chairDepth = (0.8 + chairTDepth * 0.3) * themeOverallScale * sceneFitScale;
               seatRaise = SEAT_RAISE_FRAC * (chairScale - 1) * 64 * chairDepth;
             } else if (typeof chairScale === "number") {
               // Fallback: approximate with the character's own depthScale.
@@ -9651,7 +9682,7 @@
         // Size honors overall scale for consistency with the rest of the scene,
         // plus a light depth cue from the projectile's native Y.
         const tDepth = Math.max(0, Math.min(1, (posNy - polyMinY) / polyRangeY));
-        const projScale = (0.8 + tDepth * 0.3) * themeOverallScale;
+        const projScale = (0.8 + tDepth * 0.3) * themeOverallScale * sceneFitScale;
         const size = Math.round(40 * projScale);
         // Rotate the sprite to point along its travel direction. Computed in
         // CANVAS space (not native space) so non-uniform x/y scaling from
