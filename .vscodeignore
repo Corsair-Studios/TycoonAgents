@@ -26,6 +26,7 @@ node_modules/**
 scripts/**
 media/jsconfig.json
 media/globals.d.ts
+eslint.config.mjs
 .mcp.json
 *.log
 **/*.vsix
