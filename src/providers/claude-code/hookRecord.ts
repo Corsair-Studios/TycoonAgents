@@ -1,6 +1,6 @@
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
- * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
 

@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.178",
+  "version": "0.0.179",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
@@ -102,13 +102,15 @@
     "Other"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview",
+    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run test:compiled",
     "check:paths": "node scripts/check-no-absolute-paths.mjs",
     "check:webview": "node scripts/check-webview.mjs",
+    "lint": "eslint .",
     "build": "tsc -p .",
     "build-ext": "tsc -p . && npm run bundle:host",
     "typecheck": "tsc -p . --noEmit",
     "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
+    "test:compiled": "node --test \"out/test/**/*.test.js\"",
     "bundle:uefn": "esbuild uefn-bridge/uefn-server.ts --bundle --platform=node --format=esm --target=node18 --outfile=media/uefn-bridge/uefn-server.mjs",
     "bundle:designdoc": "esbuild design-doc/design-doc-cli.ts --bundle --platform=node --format=esm --target=node18 --outfile=media/skills/design-doc/design-doc-cli.mjs",
     "bundle:themebuilder": "esbuild src/webview/themeBuilder.ts --bundle --outfile=media/theme-builder.js",
@@ -117,15 +119,18 @@
     "release": "node scripts/release.mjs"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@types/node": "^20",
     "@types/vscode": "^1.85.0",
     "docx": "^8.5.0",
     "esbuild": "^0.21.0",
+    "eslint": "^10.6.0",
     "fflate": "^0.8.3",
     "jsdom": "^29.1.1",
     "mammoth": "^1.8.0",
     "typescript": "^5.4.0",
+    "typescript-eslint": "^8.63.0",
     "zod": "^3.23.0"
   },
   "dependencies": {

@@ -1,6 +1,6 @@
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
- * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
 
@@ -12,6 +12,7 @@ import {
   setFrontmatterModel,
   setKeywordPattern,
   removeKeywordPattern,
+  isSafeAgentId,
 } from "../src/host/vscode/agentConfig";
 
 test("shortFromModelId maps known ids and rejects others", () => {
@@ -179,4 +180,28 @@ test("setKeywordPattern then removeKeywordPattern round-trips back to the origin
   const added = setKeywordPattern(config, "build-lead", "lead|team|coordinate");
   const removed = removeKeywordPattern(added, "build-lead");
   assert.deepEqual(removed, config);
+});
+
+test("isSafeAgentId accepts normal agent ids", () => {
+  assert.equal(isSafeAgentId("orchestrator"), true);
+  assert.equal(isSafeAgentId("build-lead"), true);
+  assert.equal(isSafeAgentId("search_retrieval"), true);
+  assert.equal(isSafeAgentId("Agent1"), true);
+  assert.equal(isSafeAgentId("a"), true);
+});
+
+test("isSafeAgentId rejects path traversal and separators", () => {
+  assert.equal(isSafeAgentId(".."), false);
+  assert.equal(isSafeAgentId("../../etc/passwd"), false);
+  assert.equal(isSafeAgentId("foo/bar"), false);
+  assert.equal(isSafeAgentId("foo\\bar"), false);
+  assert.equal(isSafeAgentId("/etc/passwd"), false);
+  assert.equal(isSafeAgentId("C:\\Windows"), false);
+});
+
+test("isSafeAgentId rejects empty string and ids not starting alphanumeric", () => {
+  assert.equal(isSafeAgentId(""), false);
+  assert.equal(isSafeAgentId("-lead"), false);
+  assert.equal(isSafeAgentId("_lead"), false);
+  assert.equal(isSafeAgentId(".hidden"), false);
 });

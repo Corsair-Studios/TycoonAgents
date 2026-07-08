@@ -41,7 +41,7 @@ declare const acquireVsCodeApi: any;
 const vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
 
 export let is_editor_mode = false;
-export let placed_props: BuildableObject[] = [];
+export const placed_props: BuildableObject[] = [];
 
 let draggedPropId: string | null = null;
 let mouseX = 0;

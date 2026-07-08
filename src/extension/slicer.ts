@@ -126,8 +126,6 @@ export async function sliceAndNormalizeAtlas(
     throw new Error('Sprite board grid dimensions must be positive integers.');
   }
   const atlas = await Jimp.read(imageBuffer);
-  const cellW = Math.floor(atlas.bitmap.width / grid.columns);
-  const cellH = Math.floor(atlas.bitmap.height / grid.rows);
 
   const cells: SliceCell[] = [];
 

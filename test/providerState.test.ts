@@ -1,6 +1,6 @@
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
- * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
 
@@ -9,11 +9,11 @@ import assert from "node:assert/strict";
 import { mapHookRecord } from "../src/providers/claude-code/mapHookRecord";
 import type { HookRecord } from "../src/providers/claude-code/hookRecord";
 import { applyEvent, initialWorldState, creditedElapsed, computeDelegationModeStats } from "../src/core/state";
-import type { WorldState } from "../src/core/state";
+import type { MetricsWorldState } from "../src/core/state";
 
 const T = 1700000000000;
 
-function fold(records: HookRecord[]): WorldState {
+function fold(records: HookRecord[]): MetricsWorldState {
   let state = initialWorldState();
   for (const record of records) {
     const events = mapHookRecord(record);
@@ -711,7 +711,7 @@ test("SessionStart after clean stop credits nothing and resets workStartAt", () 
 // ---------------------------------------------------------------------------
 
 /** Locate a metric by id from the public agentMetrics list. */
-function findMetricById(state: WorldState, id: string) {
+function findMetricById(state: MetricsWorldState, id: string) {
   return state.agentMetrics.find((m) => m.id === id);
 }
 

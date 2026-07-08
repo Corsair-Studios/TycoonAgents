@@ -1,6 +1,6 @@
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
- * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
 
@@ -86,7 +86,7 @@ export interface AgentMetric {
 /** Internal tracking record (kept as an alias now that workStartAt is public). */
 type AgentMetricInternal = AgentMetric;
 
-export interface WorldState {
+export interface MetricsWorldState {
   sessionActive: boolean;
   workers: Record<WorkerId, Worker>;
   /** Count of completed tasks - drives build progression. */
@@ -116,7 +116,7 @@ function toDisplayName(id: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?: number }): WorldState {
+export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?: number }): MetricsWorldState {
   return {
     sessionActive: false,
     workers: {},
@@ -218,7 +218,7 @@ export function creditedElapsed(
 
 // Pure reducer: fold a normalized event into the world state.
 // NOTE: skeleton - mappings are intentionally minimal; tune per docs/DESIGN.md section 3.
-export function applyEvent(state: WorldState, event: NormalizedEvent): WorldState {
+export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): MetricsWorldState {
   switch (event.type) {
     case "SessionStart": {
       // The orchestrator (main session) is working for the whole turn — light it
@@ -503,7 +503,7 @@ export interface DelegationModeStats {
 
 /**
  * Aggregate agentMetrics into per-delegation-mode stats. Pure — no fs/vscode
- * access — so it can run against a live WorldState snapshot or a synthetic
+ * access — so it can run against a live MetricsWorldState snapshot or a synthetic
  * fixture in tests.
  *
  * Mode resolution: an agent's own `delegationMode` field wins; agents with no

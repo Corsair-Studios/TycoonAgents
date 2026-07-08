@@ -1,6 +1,6 @@
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
- * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
 
@@ -16,6 +16,7 @@ import {
   setFrontmatterModel,
   setKeywordPattern,
   removeKeywordPattern,
+  isSafeAgentId,
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
@@ -2906,6 +2907,16 @@ export class TycoonPanel {
 
   /** Write the chosen model into an agent's markdown frontmatter. */
   private _handleSetAgentModel(id: string, model: string): void {
+    if (!isSafeAgentId(id)) {
+      void this._panel.webview.postMessage({
+        type: "settingsUpdated",
+        ok: false,
+        id,
+        field: "model",
+        error: "invalid agent id",
+      });
+      return;
+    }
     const fullId = modelIdFromShort(model);
     if (fullId === undefined) {
       void this._panel.webview.postMessage({
@@ -2948,6 +2959,15 @@ export class TycoonPanel {
    * `_handleRemovePack`.
    */
   private async _handleRemoveAgent(id: string): Promise<void> {
+    if (!isSafeAgentId(id)) {
+      void this._panel.webview.postMessage({
+        type: "agentRemoved",
+        id,
+        ok: false,
+        error: "invalid agent id",
+      });
+      return;
+    }
     // The orchestrator is the core session-model agent — never removable.
     if (id === "orchestrator") {
       void this._panel.webview.postMessage({

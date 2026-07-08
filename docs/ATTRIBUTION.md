@@ -10,7 +10,7 @@ How TycoonAgents credits itself: minimally, where it helps, and never by clutter
 ```
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
- * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
 ```
@@ -31,4 +31,4 @@ For hash-comment languages (Python/PowerShell/shell), use the same three lines p
 - This is the credit teammates, repo browsers, and prospective users actually see.
 
 ## TODO
-- Replace the Releases URL placeholder (`https://github.com/TODO/TycoonAgents/releases`) once the repo + releases page exist.
+- Releases URL: `https://github.com/Corsair-Studios/TycoonAgents/releases`.

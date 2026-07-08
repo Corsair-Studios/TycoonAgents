@@ -1,17 +1,17 @@
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
- * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
 
 import { applyEvent, initialWorldState } from "../../core/state";
-import type { WorldState } from "../../core/state";
+import type { MetricsWorldState } from "../../core/state";
 import type { NormalizedEvent } from "../../core/events";
 
-/** Holds the live WorldState and notifies listeners on each change. */
+/** Holds the live MetricsWorldState and notifies listeners on each change. */
 export class Runtime {
-  private state: WorldState;
-  private listeners: Array<(s: WorldState) => void> = [];
+  private state: MetricsWorldState;
+  private listeners: Array<(s: MetricsWorldState) => void> = [];
 
   constructor(private limits?: { idleFreezeMs: number; sanityCapMs: number }) {
     this.state = initialWorldState(limits);
@@ -34,12 +34,12 @@ export class Runtime {
   }
 
   /** Return the current world state snapshot. */
-  getState(): WorldState {
+  getState(): MetricsWorldState {
     return this.state;
   }
 
   /** Subscribe to state changes. Returns a disposable. */
-  onChange(cb: (s: WorldState) => void): { dispose(): void } {
+  onChange(cb: (s: MetricsWorldState) => void): { dispose(): void } {
     this.listeners.push(cb);
     return {
       dispose: () => {

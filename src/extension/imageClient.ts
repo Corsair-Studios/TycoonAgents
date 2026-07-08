@@ -20,6 +20,58 @@ export interface ThemeImageGenerationOptions {
     mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
     filename: string;
   }>;
+  /**
+   * Override for the watchdog timeout (ms). Internal/test use only — leave
+   * unset in production so the default {@link WATCHDOG_TIMEOUT_MS} applies.
+   */
+  watchdogMs?: number;
+}
+
+/**
+ * Independent watchdog timeout for provider HTTP requests, in addition to
+ * the caller-supplied AbortSignal (the user's Cancel button). Without this a
+ * stalled upstream (dropped connection, provider hang) would leave the
+ * request pending forever. Image generation is legitimately slow — large
+ * multi-reference edits can take well over a minute — so this is
+ * intentionally generous. Do not lower it.
+ */
+const WATCHDOG_TIMEOUT_MS = 180_000;
+
+/**
+ * Compose the caller's AbortSignal with an independent watchdog timer, since
+ * `AbortSignal.any` requires Node 20+ and this extension host is bundled for
+ * node18 (esbuild `--target=node18`). Returns a signal that aborts when
+ * EITHER the caller signal aborts OR the timer expires, a `clear()` that
+ * MUST be called on completion (success or failure) so the timer handle
+ * never dangles, and `timedOut()` so callers can raise a clear timeout error
+ * instead of a generic AbortError.
+ */
+function withWatchdog(
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; clear: () => void; timedOut: () => boolean } {
+  const controller = new AbortController();
+  let didTimeOut = false;
+  const timer = setTimeout(() => {
+    didTimeOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const onCallerAbort = (): void => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      controller.abort();
+    } else {
+      callerSignal.addEventListener('abort', onCallerAbort);
+    }
+  }
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
+    },
+    timedOut: () => didTimeOut,
+  };
 }
 
 /**
@@ -77,50 +129,59 @@ async function generateWithImagen3(
     },
   };
 
-  let response: Response;
+  const timeoutMs = options.watchdogMs ?? WATCHDOG_TIMEOUT_MS;
+  const watchdog = withWatchdog(options.signal, timeoutMs);
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: options.signal,
-    });
-  } catch (err) {
-    if (options.signal?.aborted) throw new Error('Generation cancelled by user');
-    throw new Error(`Gemini Image network error: ${String(err)}`);
-  }
-
-  if (!response.ok) {
-    let errBody = '';
+    let response: Response;
     try {
-      errBody = await response.text();
-    } catch {
-      // ignore
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: watchdog.signal,
+      });
+    } catch (err) {
+      if (options.signal?.aborted) throw new Error('Generation cancelled by user');
+      if (watchdog.timedOut()) {
+        throw new Error(`Gemini Image request timed out after ${timeoutMs / 1000}s`);
+      }
+      throw new Error(`Gemini Image network error: ${String(err)}`);
     }
-    throw new Error(
-      `Gemini Image API error ${response.status}: ${errBody.slice(0, 300)}`,
-    );
-  }
 
-  let json: unknown;
-  let rawText = '';
-  try {
-    rawText = await response.text();
-    json = JSON.parse(rawText);
-  } catch {
-    throw new Error(
-      `Gemini Image: failed to parse JSON response. Body: ${rawText.slice(0, 300)}`,
-    );
-  }
+    if (!response.ok) {
+      let errBody = '';
+      try {
+        errBody = await response.text();
+      } catch {
+        // ignore
+      }
+      throw new Error(
+        `Gemini Image API error ${response.status}: ${errBody.slice(0, 300)}`,
+      );
+    }
 
-  const image = findGeminiInlineImage(json);
-  if (!image) {
-    throw new Error(
-      `Gemini Image: response contained no image data (${summarizeGeminiImageResponse(json)}).`,
-    );
-  }
+    let json: unknown;
+    let rawText = '';
+    try {
+      rawText = await response.text();
+      json = JSON.parse(rawText);
+    } catch {
+      throw new Error(
+        `Gemini Image: failed to parse JSON response. Body: ${rawText.slice(0, 300)}`,
+      );
+    }
 
-  return Buffer.from(image.data, 'base64');
+    const image = findGeminiInlineImage(json);
+    if (!image) {
+      throw new Error(
+        `Gemini Image: response contained no image data (${summarizeGeminiImageResponse(json)}).`,
+      );
+    }
+
+    return Buffer.from(image.data, 'base64');
+  } finally {
+    watchdog.clear();
+  }
 }
 
 async function generateWithOpenAI(
@@ -142,74 +203,83 @@ async function generateWithOpenAI(
     background: 'opaque',
   };
 
-  let response: Response;
+  const timeoutMs = options.watchdogMs ?? WATCHDOG_TIMEOUT_MS;
+  const watchdog = withWatchdog(options.signal, timeoutMs);
   try {
-    if (hasReferences) {
-      const form = new FormData();
-      form.append('model', body.model);
-      form.append('prompt', body.prompt);
-      form.append('n', String(body.n));
-      form.append('size', body.size);
-      form.append('quality', body.quality);
-      form.append('background', body.background);
-      for (const image of options.referenceImages ?? []) {
-        form.append(
-          'image[]',
-          new Blob([new Uint8Array(image.data)], { type: image.mimeType }),
-          image.filename,
-        );
-      }
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}` },
-        body: form,
-        signal: options.signal,
-      });
-    } else {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: options.signal,
-      });
-    }
-  } catch (err) {
-    if (options.signal?.aborted) throw new Error('Generation cancelled by user');
-    throw new Error(`OpenAI GPT Image network error: ${String(err)}`);
-  }
-
-  if (!response.ok) {
-    let errBody = '';
+    let response: Response;
     try {
-      errBody = await response.text();
-    } catch {
-      // ignore
+      if (hasReferences) {
+        const form = new FormData();
+        form.append('model', body.model);
+        form.append('prompt', body.prompt);
+        form.append('n', String(body.n));
+        form.append('size', body.size);
+        form.append('quality', body.quality);
+        form.append('background', body.background);
+        for (const image of options.referenceImages ?? []) {
+          form.append(
+            'image[]',
+            new Blob([new Uint8Array(image.data)], { type: image.mimeType }),
+            image.filename,
+          );
+        }
+        response = await fetch(url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: form,
+          signal: watchdog.signal,
+        });
+      } else {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: watchdog.signal,
+        });
+      }
+    } catch (err) {
+      if (options.signal?.aborted) throw new Error('Generation cancelled by user');
+      if (watchdog.timedOut()) {
+        throw new Error(`OpenAI GPT Image request timed out after ${timeoutMs / 1000}s`);
+      }
+      throw new Error(`OpenAI GPT Image network error: ${String(err)}`);
     }
-    throw parseOpenAIImageError(
-      response.status,
-      errBody,
-      response.headers.get('x-request-id'),
-    );
-  }
 
-  let json: unknown;
-  let rawText = '';
-  try {
-    rawText = await response.text();
-    json = JSON.parse(rawText);
-  } catch {
-    throw new Error(
-      `OpenAI GPT Image: failed to parse JSON response. Body: ${rawText.slice(0, 300)}`,
-    );
-  }
+    if (!response.ok) {
+      let errBody = '';
+      try {
+        errBody = await response.text();
+      } catch {
+        // ignore
+      }
+      throw parseOpenAIImageError(
+        response.status,
+        errBody,
+        response.headers.get('x-request-id'),
+      );
+    }
 
-  const data = (json as { data?: Array<{ b64_json?: string }> }).data;
-  if (!Array.isArray(data) || data.length === 0 || !data[0].b64_json) {
-    throw new Error('OpenAI GPT Image: no b64_json in response data.');
-  }
+    let json: unknown;
+    let rawText = '';
+    try {
+      rawText = await response.text();
+      json = JSON.parse(rawText);
+    } catch {
+      throw new Error(
+        `OpenAI GPT Image: failed to parse JSON response. Body: ${rawText.slice(0, 300)}`,
+      );
+    }
 
-  return Buffer.from(data[0].b64_json, 'base64');
+    const data = (json as { data?: Array<{ b64_json?: string }> }).data;
+    if (!Array.isArray(data) || data.length === 0 || !data[0].b64_json) {
+      throw new Error('OpenAI GPT Image: no b64_json in response data.');
+    }
+
+    return Buffer.from(data[0].b64_json, 'base64');
+  } finally {
+    watchdog.clear();
+  }
 }

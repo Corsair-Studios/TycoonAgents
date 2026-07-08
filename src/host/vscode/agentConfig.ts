@@ -1,6 +1,6 @@
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
- * Releases: https://github.com/TODO/TycoonAgents/releases   (TBD - repo not yet created)
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
 
@@ -60,6 +60,18 @@ export function modelIdFromShort(short: string): string | undefined {
 /** Detect the dominant newline style of a document; defaults to "\n". */
 function detectNewline(content: string): string {
   return content.includes("\r\n") ? "\r\n" : "\n";
+}
+
+/**
+ * Validate a webview-supplied agent id before it is interpolated into a
+ * filesystem path (`.claude/agents/<id>.md`). Only lowercase/uppercase
+ * letters, digits, `_`, and `-` are allowed, and the id must start with an
+ * alphanumeric character — this rejects `..`, path separators (`/`, `\`),
+ * absolute paths, and the empty string, so a malicious/buggy webview message
+ * can never escape the agents directory. Pure (no fs/vscode).
+ */
+export function isSafeAgentId(id: string): boolean {
+  return /^[a-z0-9][a-z0-9_-]*$/i.test(id);
 }
 
 /**
