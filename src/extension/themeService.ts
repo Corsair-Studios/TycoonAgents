@@ -1112,10 +1112,7 @@ export async function resumeThemeGeneration(
     loadedTheme.manifest,
     themePlanCreativeDirection(plan),
   );
-  const reviewItems = expectedItems.map((expected) => {
-    const saved = document.items.find((item) => item.id === expected.id);
-    return saved ? { ...expected, ...saved } : expected;
-  });
+  const reviewItems = mergeResumedReviewItems(expectedItems, document.items);
 
   // Repair any missing review rows while retaining statuses, prompts, revisions,
   // and timestamps for every item that survived the interrupted run.
@@ -1444,11 +1441,13 @@ async function applySlicedAtlasFromBuffer(
     frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
     frameKeys = [frameKey];
   } else if (item.kind === 'rival_atlas') {
+    const previousFrameKeys = item.frame_keys;
     const rows = rivalRowsForItem(item, manifest);
     item.rival_rows = rows;
     const rivalAtlas = await processRivalAtlas(buffer, manifest, rows);
     output = rivalAtlas.output;
     frameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
+    removeStaleBoardFrameKeys(frames, previousFrameKeys, frameKeys);
   } else if (item.kind === 'environment') {
     output = await normalizeEnvironmentImage(buffer);
     frames.environment_background = [dataUri(output)];
@@ -1458,11 +1457,19 @@ async function applySlicedAtlasFromBuffer(
     // Reconstruct object_rows from the CURRENT manifest as the primary source
     // (see objectRowsForItem) so a roster change (e.g. objects added/renamed)
     // regenerates the correct board instead of reusing stale saved object_rows.
+    const previousFrameKeys = item.frame_keys;
     const rows = objectRowsForItem(item, manifest);
     item.object_rows = rows;
     const objectAtlas = await processObjectAtlas(buffer, manifest, rows);
     output = objectAtlas.output;
     frameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, rows);
+    // Self-healing re-slice: if the roster shift means this board no longer owns
+    // e.g. 'poof'/'crate' (they moved to a later board once the object count grew),
+    // drop those stale keys from THIS board's own previous ownership so they don't
+    // keep clobbering whatever board correctly owns them now — scoped strictly to
+    // keys this item itself previously wrote, so other boards' keys are untouched
+    // regardless of re-slice order.
+    removeStaleBoardFrameKeys(frames, previousFrameKeys, frameKeys);
   } else if (item.kind === 'background_decor_atlas') {
     // Reconstruct decor_rows from the CURRENT manifest as the primary source
     // (see decorRowsForItem) so a decor roster change regenerates the correct
@@ -2200,6 +2207,7 @@ async function generateRivalAsset(
   onProgress: (message: string) => void,
 ): Promise<void> {
   onProgress(item.label);
+  const previousFrameKeys = await persistedFrameKeysFor(globalStorageUri, plan.theme_id, item.id);
   const generated = await generateThemeImage(item.prompt, options);
   throwIfCancelled(undefined, options?.signal);
   const rows = rivalRowsForItem(item, manifest);
@@ -2209,7 +2217,8 @@ async function generateRivalAsset(
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
-  applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
+  const newFrameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
+  removeStaleBoardFrameKeys(frames, previousFrameKeys, newFrameKeys);
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
@@ -2298,6 +2307,61 @@ export function decorRowsForItem(
   }
 }
 
+/**
+ * Merge a resumed generation's freshly computed review items (`expected`, rebuilt
+ * from the CURRENT plan/manifest) with whatever review document was saved before
+ * the run was interrupted (`savedItems`). Preserves REVIEW PROGRESS from the saved
+ * item — status/revision/updated_at/generation_error — but never lets a saved
+ * item's board-row/prompt/frame-key metadata override the freshly computed
+ * `expected` values. `expected` is rebuilt from the current plan/manifest every
+ * resume, so if the object/rival/decor roster changed shape between the
+ * interrupted run and this resume (e.g. the buildable-object count grew and
+ * pushed poof/crate onto a later board), a naive `{ ...expected, ...saved }`
+ * spread would silently let the OLD saved object_rows and prompt win — the next
+ * `generateOrResumeThemeItem` call would then generate a board image using an
+ * outdated roster shape, baking the wrong content (e.g. a real object rendered
+ * where poof/crate belong) straight into the art itself, no slicing bug
+ * required. This mirrors the manifest-wins policy already enforced by
+ * objectRowsForItem/rivalRowsForItem for the re-slice path — this resume path
+ * must enforce it too, since it runs BEFORE generation. Exported for unit testing.
+ */
+export function mergeResumedReviewItems(
+  expectedItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>>,
+  savedItems: ReadonlyArray<ThemeImageReviewItem>,
+): Array<Omit<ThemeImageReviewItem, 'updated_at'> & { updated_at?: string }> {
+  return expectedItems.map((expected) => {
+    const saved = savedItems.find((item) => item.id === expected.id);
+    if (!saved) return expected;
+    return {
+      ...expected,
+      status: saved.status,
+      revision: saved.revision,
+      updated_at: saved.updated_at,
+      generation_error: saved.generation_error,
+    };
+  });
+}
+
+/**
+ * Look up the frame_keys this item owned in the LAST PERSISTED review document
+ * (on disk), as opposed to the freshly-built `item` passed to a generate*Asset
+ * function — which, when built via buildBoardItems/createReviewItems, already
+ * targets the NEW correct key set and so is useless as a "previous ownership"
+ * baseline. Without reading the persisted keys, a plain regenerate (not just a
+ * re-slice) of a board whose row shape shrank (e.g. it no longer carries
+ * poof/crate) would never purge the stale keys it wrote under its old shape —
+ * only a re-slice (which starts from the on-disk item) would. Returns undefined
+ * if the item has no prior persisted record (first-ever generation).
+ */
+async function persistedFrameKeysFor(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  itemId: string,
+): Promise<string[] | undefined> {
+  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+  return document?.items.find((candidate) => candidate.id === itemId)?.frame_keys;
+}
+
 async function generateObjectAsset(
   globalStorageUri: vscode.Uri,
   reviewDirectoryUri: vscode.Uri,
@@ -2310,6 +2374,7 @@ async function generateObjectAsset(
   progressIndex: number,
 ): Promise<void> {
   onProgress(`${item.label} (${progressIndex}/25)`);
+  const previousFrameKeys = await persistedFrameKeysFor(globalStorageUri, plan.theme_id, item.id);
   const generated = await generateThemeImage(item.prompt, options);
   throwIfCancelled(undefined, options?.signal);
   if (!item.object_rows?.length) throw new Error(`${item.label} is missing object-board row metadata.`);
@@ -2319,7 +2384,12 @@ async function generateObjectAsset(
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
-  applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, item.object_rows);
+  const newFrameKeys = applyObjectBoardFrames(frames, objectAtlas.spritePackage.slots, item.object_rows);
+  // Self-healing regenerate: if this board's row shape shrank since it was last
+  // PERSISTED (e.g. it no longer carries poof/crate because the roster grew and
+  // pushed them onto a later board), drop the stale keys it used to own so they
+  // can't keep clobbering the board that owns them now.
+  removeStaleBoardFrameKeys(frames, previousFrameKeys, newFrameKeys);
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
@@ -2529,6 +2599,31 @@ export function applyObjectBoardFrames(
     keys.push(key);
   });
   return keys;
+}
+
+/**
+ * Delete any frame key a board USED TO write (per its previously saved
+ * `frame_keys`) that it no longer writes after this (re)generation/re-slice
+ * (`newFrameKeys`). This is what makes a re-slice self-healing regardless of
+ * board-processing order: without it, a board whose row composition shrank
+ * (e.g. it lost the 'poof'/'crate' rows because the object roster grew and
+ * pushed them onto a later board) would leave its OLD 'poof'/'crate' values
+ * sitting in frames.json forever, and if that same board is ever reprocessed
+ * again for any reason, it would silently re-clobber whichever board now
+ * legitimately owns those keys. Deletion is scoped strictly to keys THIS
+ * item previously owned, so it can never remove another board's frames.
+ * Exported for unit testing.
+ */
+export function removeStaleBoardFrameKeys(
+  frames: Record<string, string[]>,
+  previousFrameKeys: readonly string[] | undefined,
+  newFrameKeys: readonly string[],
+): void {
+  if (!previousFrameKeys?.length) return;
+  const stillOwned = new Set(newFrameKeys);
+  for (const staleKey of previousFrameKeys) {
+    if (!stillOwned.has(staleKey)) delete frames[staleKey];
+  }
 }
 
 function applyLegacyObjectFrames(

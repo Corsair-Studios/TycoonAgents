@@ -36,7 +36,10 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt, applyObjectBoardFrames } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+const {
+  createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt,
+  applyObjectBoardFrames, removeStaleBoardFrameKeys, mergeResumedReviewItems,
+} = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 function legacyManifest(): ThemeManifest {
   return {
@@ -292,4 +295,152 @@ test('buildReplacementPrompt falls back to saved expression/achievement names wh
   };
   const prompt = buildReplacementPrompt(expressionItem, 'gritty wasteland', manifest);
   assert.match(prompt, /Saved Joy/);
+});
+
+// --- Regression: reproduces the REAL production layout reported as broken —
+// a 12-object theme (cobra_command) with object ids/board split matching the
+// user's actual manifest: board 1 = objects 1-5, board 2 = objects 6-10 (no
+// poof/crate of its own), board 3 = objects 11-12 + poof + crate. Prior to the
+// fix, board 2's item carried stale saved object_rows from an earlier 8-object
+// snapshot of the roster (where board 2 WAS the terminal board and legitimately
+// owned poof/crate), and nothing ever recomputed or purged that staleness. ---
+
+const REAL_OBJECT_IDS: Array<{ object_id: string; display_name: string }> = [
+  { object_id: 'mobile_command_center', display_name: 'Mobile Command Center' },
+  { object_id: 'stealth_recon_drone', display_name: 'Stealth Recon Drone' },
+  { object_id: 'high_voltage_energy_turret', display_name: 'High-Voltage Energy Turret' },
+  { object_id: 'snake_pit_trap', display_name: 'Snake Pit Trap' },
+  { object_id: 'armored_personnel_carrier', display_name: 'Armored Personnel Carrier' },
+  { object_id: 'camouflage_netting', display_name: 'Camouflage Netting' },
+  { object_id: 'explosive_charge_barrel', display_name: 'Explosive Charge Barrel' },
+  { object_id: 'communication_relay_tower', display_name: 'Communication Relay Tower' },
+  { object_id: 'missile_launcher_pod', display_name: 'Missile Launcher Pod' },
+  { object_id: 'security_scanner_console', display_name: 'Security Scanner Console' },
+  { object_id: 'cobra_heliport_platform', display_name: 'Cobra Heliport Platform' },
+  { object_id: 'jungle_surveillance_camera', display_name: 'Jungle Surveillance Camera' },
+];
+
+function realTwelveObjectManifest(): ThemeManifest {
+  const manifest = legacyManifest();
+  manifest.buildable_objects = REAL_OBJECT_IDS.map((object, index) => ({
+    build_order: index,
+    object_id: object.object_id,
+    display_name: object.display_name,
+    sprite_asset: `frames.json#object_${object.object_id}`,
+    anchor_coord: [0.5, 0.5] as [number, number],
+    exclusion_radius: 32,
+    work_units_required: 100,
+  }));
+  return manifest;
+}
+
+test('objectRowsForItem: real 12-object cobra_command layout — board 2 (objects 6-10) carries five real objects and NO poof/crate; board 3 (objects 11-12) carries the poof/crate rows', () => {
+  const manifest = realTwelveObjectManifest();
+
+  const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
+  assert.deepEqual(board1.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
+    'mobile_command_center', 'stealth_recon_drone', 'high_voltage_energy_turret',
+    'snake_pit_trap', 'armored_personnel_carrier',
+  ]);
+
+  const board2 = objectRowsForItem({ id: 'objects_02' }, manifest);
+  assert.deepEqual(board2.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
+    'camouflage_netting', 'explosive_charge_barrel', 'communication_relay_tower',
+    'missile_launcher_pod', 'security_scanner_console',
+  ]);
+  assert.ok(board2.every((row) => row.kind === 'object'), 'board 2 must NOT carry poof/crate rows');
+
+  const board3 = objectRowsForItem({ id: 'objects_03' }, manifest);
+  assert.deepEqual(board3.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
+    'cobra_heliport_platform', 'jungle_surveillance_camera', 'poof', 'crate',
+  ]);
+});
+
+test('mergeResumedReviewItems: a roster that GREW from 8 to 12 objects must not let board 2 keep stale saved poof/crate rows on resume', () => {
+  // The exact production scenario: board 2 was generated back when the roster
+  // only had 8 objects, so it legitimately owned poof+crate at that time and
+  // its saved review-item metadata reflects that ([obj6, obj7, obj8, poof, crate]
+  // in old 0-based/8-object terms == [camouflage_netting, explosive_charge_barrel,
+  // communication_relay_tower, poof, crate]). The roster later grew to 12
+  // objects (adding missile_launcher_pod, security_scanner_console,
+  // cobra_heliport_platform, jungle_surveillance_camera), which should push
+  // poof/crate onto a NEW board 3 and give board 2 five full object rows — but
+  // only if resume prefers the freshly recomputed board over the stale saved one.
+  const eightObjectManifest = realTwelveObjectManifest();
+  eightObjectManifest.buildable_objects = eightObjectManifest.buildable_objects.slice(0, 8);
+  const staleBoard2Rows = objectRowsForItem({ id: 'objects_02' }, eightObjectManifest);
+  // Sanity: under the OLD 8-object roster, board 2 really was the terminal
+  // board and really did own poof/crate.
+  assert.deepEqual(staleBoard2Rows.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
+    'camouflage_netting', 'explosive_charge_barrel', 'communication_relay_tower', 'poof', 'crate',
+  ]);
+
+  const savedItems = [
+    {
+      id: 'objects_02', filename: 'objects_02.png', label: 'stale', kind: 'object_atlas' as const,
+      status: 'accepted' as const, prompt: 'STALE PROMPT', revision: 1, frame_keys: ['a', 'b', 'c', 'poof', 'crate'],
+      object_rows: staleBoard2Rows, updated_at: '2026-07-05T13:59:00.000Z',
+    },
+  ];
+
+  const currentManifest = realTwelveObjectManifest(); // now has all 12 objects
+  const expectedItems = createReviewItems(
+    minimalPlan(),
+    currentManifest,
+    'gritty wasteland',
+  ).filter((item) => item.id === 'objects_02');
+
+  const merged = mergeResumedReviewItems(expectedItems, savedItems);
+  assert.equal(merged.length, 1);
+  const mergedItem = merged[0];
+
+  // The freshly recomputed board wins for rows/prompt/frame_keys...
+  assert.deepEqual(
+    mergedItem.object_rows?.map((row) => row.kind === 'object' ? row.object_id : row.kind),
+    ['camouflage_netting', 'explosive_charge_barrel', 'communication_relay_tower', 'missile_launcher_pod', 'security_scanner_console'],
+  );
+  assert.ok(!mergedItem.frame_keys.includes('poof'), 'resumed board 2 must not carry a stale poof frame key');
+  assert.ok(!mergedItem.frame_keys.includes('crate'), 'resumed board 2 must not carry a stale crate frame key');
+  assert.notEqual(mergedItem.prompt, 'STALE PROMPT');
+
+  // ...but review PROGRESS still comes from the saved document.
+  assert.equal(mergedItem.status, 'accepted');
+  assert.equal(mergedItem.revision, 1);
+  assert.equal(mergedItem.updated_at, '2026-07-05T13:59:00.000Z');
+});
+
+test('mergeResumedReviewItems: an item with no saved counterpart (never generated before) uses the expected item as-is', () => {
+  const manifest = realTwelveObjectManifest();
+  const expectedItems = createReviewItems(minimalPlan(), manifest, 'gritty wasteland')
+    .filter((item) => item.id === 'objects_03');
+  const merged = mergeResumedReviewItems(expectedItems, []);
+  assert.deepEqual(merged, expectedItems);
+});
+
+test('removeStaleBoardFrameKeys: purges a key this item previously owned but no longer writes, without touching unrelated keys', () => {
+  const frames: Record<string, string[]> = {
+    poof: ['STALE_POOF'],
+    crate: ['STALE_CRATE'],
+    object_camouflage_netting: ['KEEP_ME'],
+    object_missile_launcher_pod: ['owned by a different item, must survive'],
+  };
+  // This item previously wrote object_camouflage_netting/poof/crate; now it only
+  // writes five real object keys (poof/crate moved to another board).
+  removeStaleBoardFrameKeys(
+    frames,
+    ['object_camouflage_netting', 'object_explosive_charge_barrel', 'object_communication_relay_tower', 'poof', 'crate'],
+    ['object_camouflage_netting', 'object_explosive_charge_barrel', 'object_communication_relay_tower', 'object_missile_launcher_pod', 'object_security_scanner_console'],
+  );
+  assert.equal(frames.poof, undefined);
+  assert.equal(frames.crate, undefined);
+  assert.deepEqual(frames.object_camouflage_netting, ['KEEP_ME']);
+  assert.deepEqual(frames.object_missile_launcher_pod, ['owned by a different item, must survive']);
+});
+
+test('removeStaleBoardFrameKeys: no-op when there are no previous frame keys (first-ever generation)', () => {
+  const frames: Record<string, string[]> = { poof: ['OWNED BY BOARD 3'] };
+  removeStaleBoardFrameKeys(frames, undefined, ['object_cobra_heliport_platform']);
+  assert.deepEqual(frames, { poof: ['OWNED BY BOARD 3'] });
+  removeStaleBoardFrameKeys(frames, [], ['object_cobra_heliport_platform']);
+  assert.deepEqual(frames, { poof: ['OWNED BY BOARD 3'] });
 });
