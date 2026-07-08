@@ -71,6 +71,7 @@ import {
   resolveThemeImageSettings,
   saveThemeImageSettings,
 } from "../../extension/themeImageSettings";
+import { MSG, MSG_SCHEMAS } from "./messages";
 
 /**
  * Persisted per-theme rebirth (prestige) state, stored host-side in
@@ -178,7 +179,7 @@ export class TycoonPanel {
 
     // Subscribe to runtime state changes
     this._runtimeDisposable = runtime.onChange((state) => {
-      void this._panel.webview.postMessage({ type: "state", state: this._applyTimeAdjustments(state) });
+      void this._panel.webview.postMessage({ type: MSG.STATE, state: this._applyTimeAdjustments(state) });
     });
 
     // Start the engine-status poller (fires immediately, then every 10 s).
@@ -203,15 +204,15 @@ export class TycoonPanel {
           dataNote?: string;
         }>;
       }) => {
-        if (message.type === "ready") {
-          void this._panel.webview.postMessage({ type: "state", state: this._applyTimeAdjustments(runtime.getState()) });
+        if (message.type === MSG.READY) {
+          void this._panel.webview.postMessage({ type: MSG.STATE, state: this._applyTimeAdjustments(runtime.getState()) });
           // Auto-load the latest theme so the main panel shows the real
           // characters + environment on open (mirrors the Theater view).
           void (async () => {
             const t = await loadLatestTheme(this._globalStorageUri);
             if (t) {
               void this._panel.webview.postMessage({
-                type: "THEME_INITIALIZED",
+                type: MSG.THEME_INITIALIZED,
                 payload: await this._buildThemeInitPayload(t.manifest, t.frames, false),
               });
             } else {
@@ -219,51 +220,62 @@ export class TycoonPanel {
               // explicitly so its boot loader can hand off to the no-theme
               // placeholder scene immediately instead of idling out its
               // stage-loading timeout.
-              void this._panel.webview.postMessage({ type: "THEME_NONE" });
+              void this._panel.webview.postMessage({ type: MSG.THEME_NONE });
             }
           })();
-        } else if (message.type === "SAVE_STAGE_TUNING") {
-          const p = (message as any).payload;
-          const ok = await saveThemeTuning(this._globalStorageUri, p);
-          void this._panel.webview.postMessage({ type: "STAGE_TUNING_SAVED", payload: { ok, theme_id: p?.theme_id } });
-        } else if (message.type === "REPLACE_BACKGROUND") {
-          const themeId = (message as any).payload?.theme_id;
-          if (!themeId) {
-            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false } });
+        } else if (message.type === MSG.SAVE_STAGE_TUNING) {
+          const rawStageTuning = (message as any).payload;
+          const parsedStageTuning = MSG_SCHEMAS.SAVE_STAGE_TUNING.safeParse(rawStageTuning);
+          if (!parsedStageTuning.success) {
+            void this._panel.webview.postMessage({
+              type: MSG.STAGE_TUNING_SAVED,
+              payload: { ok: false, theme_id: rawStageTuning?.theme_id },
+            });
             return;
           }
+          const p = parsedStageTuning.data;
+          const ok = await saveThemeTuning(this._globalStorageUri, p);
+          void this._panel.webview.postMessage({ type: MSG.STAGE_TUNING_SAVED, payload: { ok, theme_id: p.theme_id } });
+        } else if (message.type === MSG.REPLACE_BACKGROUND) {
+          const parsedReplaceBg = MSG_SCHEMAS.REPLACE_BACKGROUND.safeParse((message as any).payload);
+          if (!parsedReplaceBg.success) {
+            void this._panel.webview.postMessage({ type: MSG.BACKGROUND_REPLACE_RESULT, payload: { ok: false } });
+            return;
+          }
+          const themeId = parsedReplaceBg.data.theme_id;
           const picked = await vscode.window.showOpenDialog({
             canSelectMany: false,
             openLabel: "Use as background",
             filters: { Images: ["png", "jpg", "jpeg", "webp"] },
           });
           if (!picked || picked.length === 0) {
-            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false, cancelled: true } });
+            void this._panel.webview.postMessage({ type: MSG.BACKGROUND_REPLACE_RESULT, payload: { ok: false, cancelled: true } });
             return;
           }
           const bytes = await vscode.workspace.fs.readFile(picked[0]);
           const updated = await replaceThemeBackground(this._globalStorageUri, themeId, bytes);
           if (updated) {
             void this._panel.webview.postMessage({
-              type: "THEME_INITIALIZED",
+              type: MSG.THEME_INITIALIZED,
               payload: await this._buildThemeInitPayload(updated.manifest, updated.frames, false),
             });
-            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: true } });
+            void this._panel.webview.postMessage({ type: MSG.BACKGROUND_REPLACE_RESULT, payload: { ok: true } });
           } else {
-            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false } });
+            void this._panel.webview.postMessage({ type: MSG.BACKGROUND_REPLACE_RESULT, payload: { ok: false } });
           }
-        } else if (message.type === "UPLOAD_THEME_IMAGE") {
-          const { theme_id, item_id } = (message as any).payload ?? {};
-          if (!theme_id || !item_id) {
-            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false } });
+        } else if (message.type === MSG.UPLOAD_THEME_IMAGE) {
+          const parsedUploadImage = MSG_SCHEMAS.UPLOAD_THEME_IMAGE.safeParse((message as any).payload);
+          if (!parsedUploadImage.success) {
+            void this._panel.webview.postMessage({ type: MSG.BACKGROUND_REPLACE_RESULT, payload: { ok: false } });
             return;
           }
+          const { theme_id, item_id } = parsedUploadImage.data;
           const picked = await vscode.window.showOpenDialog({
             canSelectMany: false,
             filters: { Images: ["png", "jpg", "jpeg", "webp"] },
           });
           if (!picked || picked.length === 0) {
-            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false, cancelled: true } });
+            void this._panel.webview.postMessage({ type: MSG.BACKGROUND_REPLACE_RESULT, payload: { ok: false, cancelled: true } });
             return;
           }
           const bytes = await vscode.workspace.fs.readFile(picked[0]);
@@ -271,54 +283,81 @@ export class TycoonPanel {
           if (result) {
             await this._postThemeImageReview(theme_id);
             void this._panel.webview.postMessage({
-              type: "THEME_INITIALIZED",
+              type: MSG.THEME_INITIALIZED,
               payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
             });
-            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: true } });
+            void this._panel.webview.postMessage({ type: MSG.BACKGROUND_REPLACE_RESULT, payload: { ok: true } });
           } else {
-            void this._panel.webview.postMessage({ type: "BACKGROUND_REPLACE_RESULT", payload: { ok: false } });
+            void this._panel.webview.postMessage({ type: MSG.BACKGROUND_REPLACE_RESULT, payload: { ok: false } });
           }
-        } else if (message.type === "getSkills") {
+        } else if (message.type === MSG.GET_SKILLS) {
           this._handleGetSkills();
-        } else if (message.type === "installSkill") {
-          if (message.id !== undefined) {
-            this._handleInstallSkill(message.id);
+        } else if (message.type === MSG.INSTALL_SKILL) {
+          const parsedInstallSkill = MSG_SCHEMAS.ID_ONLY.safeParse(message);
+          if (parsedInstallSkill.success) {
+            this._handleInstallSkill(parsedInstallSkill.data.id);
+          } else {
+            console.error("TycoonAgents: installSkill payload rejected:", parsedInstallSkill.error.message);
           }
-        } else if (message.type === "removeSkill") {
-          if (message.id !== undefined) {
-            await this._handleRemoveSkill(message.id);
+        } else if (message.type === MSG.REMOVE_SKILL) {
+          const parsedRemoveSkill = MSG_SCHEMAS.ID_ONLY.safeParse(message);
+          if (parsedRemoveSkill.success) {
+            await this._handleRemoveSkill(parsedRemoveSkill.data.id);
+          } else {
+            console.error("TycoonAgents: removeSkill payload rejected:", parsedRemoveSkill.error.message);
           }
-        } else if (message.type === "getMcp") {
+        } else if (message.type === MSG.GET_MCP) {
           this._handleGetMcp();
-        } else if (message.type === "installMcp") {
+        } else if (message.type === MSG.INSTALL_MCP) {
           if (message.id !== undefined) {
             await this._handleInstallMcp(message.id, message.thirdParty === true);
           }
-        } else if (message.type === "removeMcp") {
+        } else if (message.type === MSG.REMOVE_MCP) {
           if (message.id !== undefined) {
             await this._handleRemoveMcp(message.id);
           }
-        } else if (message.type === "checkInstall") {
+        } else if (message.type === MSG.CHECK_INSTALL) {
           this._handleCheckInstall();
-        } else if (message.type === "installHooks") {
-          this._handleInstallHooks(this._coerceDelegationMode(message.delegation_mode));
-        } else if (message.type === "getSettings") {
+        } else if (message.type === MSG.INSTALL_HOOKS) {
+          // SET_DELEGATION_MODE and INSTALL_HOOKS share the same
+          // { delegation_mode?: string } shape.
+          const parsedInstallHooks = MSG_SCHEMAS.SET_DELEGATION_MODE.safeParse(message);
+          if (parsedInstallHooks.success) {
+            this._handleInstallHooks(this._coerceDelegationMode(parsedInstallHooks.data.delegation_mode));
+          } else {
+            console.error("TycoonAgents: installHooks payload rejected:", parsedInstallHooks.error.message);
+          }
+        } else if (message.type === MSG.GET_SETTINGS) {
           this._handleGetSettings();
-        } else if (message.type === "setAgentModel") {
-          if (message.id !== undefined && message.model !== undefined) {
-            this._handleSetAgentModel(message.id, message.model);
+        } else if (message.type === MSG.SET_AGENT_MODEL) {
+          const parsedSetAgentModel = MSG_SCHEMAS.SET_AGENT_MODEL.safeParse(message);
+          if (parsedSetAgentModel.success) {
+            this._handleSetAgentModel(parsedSetAgentModel.data.id, parsedSetAgentModel.data.model);
+          } else {
+            console.error("TycoonAgents: setAgentModel payload rejected:", parsedSetAgentModel.error.message);
           }
-        } else if (message.type === "setDelegationMode") {
-          this._handleSetDelegationMode(message.delegation_mode);
-        } else if (message.type === "setAgentKeywords") {
-          if (message.id !== undefined && message.pattern !== undefined) {
-            this._handleSetAgentKeywords(message.id, message.pattern);
+        } else if (message.type === MSG.SET_DELEGATION_MODE) {
+          const parsedSetDelegationMode = MSG_SCHEMAS.SET_DELEGATION_MODE.safeParse(message);
+          if (parsedSetDelegationMode.success) {
+            this._handleSetDelegationMode(parsedSetDelegationMode.data.delegation_mode);
+          } else {
+            console.error("TycoonAgents: setDelegationMode payload rejected:", parsedSetDelegationMode.error.message);
           }
-        } else if (message.type === "removeAgent") {
-          if (message.id !== undefined) {
-            await this._handleRemoveAgent(message.id);
+        } else if (message.type === MSG.SET_AGENT_KEYWORDS) {
+          const parsedSetAgentKeywords = MSG_SCHEMAS.SET_AGENT_KEYWORDS.safeParse(message);
+          if (parsedSetAgentKeywords.success) {
+            this._handleSetAgentKeywords(parsedSetAgentKeywords.data.id, parsedSetAgentKeywords.data.pattern);
+          } else {
+            console.error("TycoonAgents: setAgentKeywords payload rejected:", parsedSetAgentKeywords.error.message);
           }
-        } else if (message.type === "repairHook") {
+        } else if (message.type === MSG.REMOVE_AGENT) {
+          const parsedRemoveAgent = MSG_SCHEMAS.ID_ONLY.safeParse(message);
+          if (parsedRemoveAgent.success) {
+            await this._handleRemoveAgent(parsedRemoveAgent.data.id);
+          } else {
+            console.error("TycoonAgents: removeAgent payload rejected:", parsedRemoveAgent.error.message);
+          }
+        } else if (message.type === MSG.REPAIR_HOOK) {
           // Repair only fixes the hook registration — it must not silently
           // revert an existing team_leads project back to flat, so it reuses
           // whatever mode is already on disk rather than defaulting.
@@ -327,47 +366,57 @@ export class TycoonPanel {
             root !== "" ? readExecutionConfig(path.join(root, ".claude")).delegation_mode : "flat";
           this._handleInstallHooks(currentMode);
           this._handleGetSettings();
-        } else if (message.type === "resetMetrics") {
+        } else if (message.type === MSG.RESET_METRICS) {
           void this._handleResetMetrics();
-        } else if (message.type === "getPacks") {
+        } else if (message.type === MSG.GET_PACKS) {
           this._handleGetPacks();
-        } else if (message.type === "installPack") {
-          if (message.id !== undefined) {
-            await this._handleInstallPack(message.id, message.thirdParty === true, message.disclosures);
+        } else if (message.type === MSG.INSTALL_PACK) {
+          const parsedInstallPack = MSG_SCHEMAS.INSTALL_PACK.safeParse(message);
+          if (parsedInstallPack.success) {
+            await this._handleInstallPack(
+              parsedInstallPack.data.id,
+              parsedInstallPack.data.thirdParty === true,
+              parsedInstallPack.data.disclosures,
+            );
+          } else {
+            console.error("TycoonAgents: installPack payload rejected:", parsedInstallPack.error.message);
           }
-        } else if (message.type === "removePack") {
-          if (message.id !== undefined) {
-            await this._handleRemovePack(message.id);
+        } else if (message.type === MSG.REMOVE_PACK) {
+          const parsedRemovePack = MSG_SCHEMAS.ID_ONLY.safeParse(message);
+          if (parsedRemovePack.success) {
+            await this._handleRemovePack(parsedRemovePack.data.id);
+          } else {
+            console.error("TycoonAgents: removePack payload rejected:", parsedRemovePack.error.message);
           }
-        } else if (message.type === "copyNudge") {
+        } else if (message.type === MSG.COPY_NUDGE) {
           const text = String((message as any).text ?? "");
           if (text !== "") {
             await vscode.env.clipboard.writeText(text);
             vscode.window.showInformationMessage("Delegation tip copied to clipboard.");
           }
-        } else if (message.type === "copyPrompt") {
+        } else if (message.type === MSG.COPY_PROMPT) {
           const t = String((message as any).text ?? "");
           if (t) {
             await vscode.env.clipboard.writeText(t);
             vscode.window.showInformationMessage("Prompt copied — paste it into Claude Code to run it.");
           }
-        } else if (message.type === "getEngineStatus") {
+        } else if (message.type === MSG.GET_ENGINE_STATUS) {
           this._pollEngineStatus();
-        } else if (message.type === "setupUefnProject") {
+        } else if (message.type === MSG.SETUP_UEFN_PROJECT) {
           this._handleSetupUefnProject();
-        } else if (message.type === "runDoctor") {
+        } else if (message.type === MSG.RUN_DOCTOR) {
           this._handleRunDoctor();
-        } else if (message.type === "applyDoctorFix") {
+        } else if (message.type === MSG.APPLY_DOCTOR_FIX) {
           void this._handleApplyDoctorFix((message as any).removeForeign === true);
-        } else if (message.type === "designDocAction") {
+        } else if (message.type === MSG.DESIGN_DOC_ACTION) {
           await this._handleDesignDocAction((message as any).mode);
-        } else if (message.type === "GET_THEME_IMAGE_SETTINGS") {
+        } else if (message.type === MSG.GET_THEME_IMAGE_SETTINGS) {
           const providers = await getThemeImageConfigurationStatus(this._secrets);
           void this._panel.webview.postMessage({
-            type: "THEME_IMAGE_SETTINGS",
+            type: MSG.THEME_IMAGE_SETTINGS,
             payload: { provider: await getConfiguredThemeImageProvider(this._secrets), providers },
           });
-        } else if (message.type === "SAVE_THEME_IMAGE_SETTINGS") {
+        } else if (message.type === MSG.SAVE_THEME_IMAGE_SETTINGS) {
           const payload = (message as any).payload as { provider?: string; api_key?: string } | undefined;
           try {
             const provider = await saveThemeImageSettings(
@@ -377,19 +426,19 @@ export class TycoonPanel {
             );
             const providers = await getThemeImageConfigurationStatus(this._secrets);
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_SETTINGS",
+              type: MSG.THEME_IMAGE_SETTINGS,
               payload: { provider, providers, saved: true },
             });
           } catch (err) {
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_SETTINGS",
+              type: MSG.THEME_IMAGE_SETTINGS,
               payload: { error: String(err) },
             });
           }
-        } else if (message.type === "LIST_THEMES") {
+        } else if (message.type === MSG.LIST_THEMES) {
           const themes = await listThemes(this._globalStorageUri);
-          void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
-        } else if (message.type === "EXPORT_THEME") {
+          void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
+        } else if (message.type === MSG.EXPORT_THEME) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const themeId = payload?.theme_id ?? "";
           try {
@@ -411,7 +460,7 @@ export class TycoonPanel {
             });
             if (!destination) {
               void this._panel.webview.postMessage({
-                type: "THEME_EXPORT_RESULT",
+                type: MSG.THEME_EXPORT_RESULT,
                 payload: { theme_id: themeId, cancelled: true },
               });
               return;
@@ -419,16 +468,16 @@ export class TycoonPanel {
 
             await vscode.workspace.fs.writeFile(destination, await exportThemeArchive(this._globalStorageUri, themeId));
             void this._panel.webview.postMessage({
-              type: "THEME_EXPORT_RESULT",
+              type: MSG.THEME_EXPORT_RESULT,
               payload: { theme_id: themeId, display_name: theme.display_name },
             });
           } catch (err) {
             void this._panel.webview.postMessage({
-              type: "THEME_EXPORT_RESULT",
+              type: MSG.THEME_EXPORT_RESULT,
               payload: { theme_id: themeId, error: errorMessage(err) },
             });
           }
-        } else if (message.type === "UPGRADE_THEMES") {
+        } else if (message.type === MSG.UPGRADE_THEMES) {
           try {
             const results = await upgradeInstalledThemes(this._globalStorageUri);
             let summary: string;
@@ -448,15 +497,15 @@ export class TycoonPanel {
               }
             }
             void vscode.window.showInformationMessage(summary);
-            void this._panel.webview.postMessage({ type: "UPGRADE_THEMES_DONE", payload: { summary } });
+            void this._panel.webview.postMessage({ type: MSG.UPGRADE_THEMES_DONE, payload: { summary } });
             const themes = await listThemes(this._globalStorageUri);
-            void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
+            void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
           } catch (err) {
             const summary = `Theme upgrade failed: ${errorMessage(err)}`;
             void vscode.window.showErrorMessage(`TycoonAgents: ${summary}`);
-            void this._panel.webview.postMessage({ type: "UPGRADE_THEMES_DONE", payload: { summary, error: errorMessage(err) } });
+            void this._panel.webview.postMessage({ type: MSG.UPGRADE_THEMES_DONE, payload: { summary, error: errorMessage(err) } });
           }
-        } else if (message.type === "IMPORT_THEME") {
+        } else if (message.type === MSG.IMPORT_THEME) {
           try {
             if (this._themeGenerationActive) {
               throw new Error("Stop the active theme generation before importing a theme.");
@@ -470,7 +519,7 @@ export class TycoonPanel {
               title: "Import a TycoonAgents theme",
             });
             if (!picked?.[0]) {
-              void this._panel.webview.postMessage({ type: "THEME_IMPORT_RESULT", payload: { cancelled: true } });
+              void this._panel.webview.postMessage({ type: MSG.THEME_IMPORT_RESULT, payload: { cancelled: true } });
               return;
             }
 
@@ -488,7 +537,7 @@ export class TycoonPanel {
                 "Replace",
               );
               if (answer !== "Replace") {
-                void this._panel.webview.postMessage({ type: "THEME_IMPORT_RESULT", payload: { cancelled: true } });
+                void this._panel.webview.postMessage({ type: MSG.THEME_IMPORT_RESULT, payload: { cancelled: true } });
                 return;
               }
               replace = true;
@@ -496,17 +545,19 @@ export class TycoonPanel {
 
             const imported = await importThemeArchive(this._globalStorageUri, archive, replace);
             const themes = await listThemes(this._globalStorageUri);
-            void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
-            void this._panel.webview.postMessage({ type: "THEME_IMPORT_RESULT", payload: imported });
+            void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
+            void this._panel.webview.postMessage({ type: MSG.THEME_IMPORT_RESULT, payload: imported });
           } catch (err) {
             void this._panel.webview.postMessage({
-              type: "THEME_IMPORT_RESULT",
+              type: MSG.THEME_IMPORT_RESULT,
               payload: { error: errorMessage(err) },
             });
           }
-        } else if (message.type === "DELETE_THEME") {
-          const payload = (message as any).payload as { theme_id?: string } | undefined;
-          const themeId = payload?.theme_id ?? "";
+        } else if (message.type === MSG.DELETE_THEME) {
+          const parsedDeleteTheme = MSG_SCHEMAS.DELETE_THEME.safeParse((message as any).payload);
+          // Falls through to the existing "Theme not found" error path below
+          // when the payload is malformed, same as the prior untyped default.
+          const themeId = parsedDeleteTheme.success ? parsedDeleteTheme.data.theme_id : "";
           let deletedThemeId: string | undefined;
           let deleteError: string | undefined;
           try {
@@ -531,7 +582,7 @@ export class TycoonPanel {
             );
             if (answer !== "Delete") {
               void this._panel.webview.postMessage({
-                type: "THEMES_LIST",
+                type: MSG.THEMES_LIST,
                 payload: { themes: savedThemes },
               });
               return;
@@ -546,63 +597,56 @@ export class TycoonPanel {
           }
           const themes = await listThemes(this._globalStorageUri);
           void this._panel.webview.postMessage({
-            type: "THEMES_LIST",
+            type: MSG.THEMES_LIST,
             payload: {
               themes,
               deleted_theme_id: deletedThemeId,
               delete_error: deleteError,
             },
           });
-        } else if (message.type === "BADGE_UNLOCKED") {
+        } else if (message.type === MSG.BADGE_UNLOCKED) {
           try {
-            const payload = (message as any).payload as { theme_id?: string; badge_id?: string } | undefined;
-            const themeId = payload?.theme_id;
-            const badgeId = payload?.badge_id;
-            if (typeof themeId === "string" && themeId && typeof badgeId === "string" && badgeId) {
-              await this.addUnlockedBadge(themeId, badgeId);
+            const parsedBadge = MSG_SCHEMAS.BADGE_UNLOCKED.safeParse((message as any).payload);
+            if (parsedBadge.success) {
+              await this.addUnlockedBadge(parsedBadge.data.theme_id, parsedBadge.data.badge_id);
             }
           } catch (err) {
             console.error("TycoonAgents: Could not persist badge unlock:", err);
           }
-        } else if (message.type === "SAVE_REBIRTH_STATE") {
+        } else if (message.type === MSG.SAVE_REBIRTH_STATE) {
           try {
-            const payload = (message as any).payload as
-              | { theme_id?: string; state?: RebirthPersist }
-              | undefined;
-            const themeId = payload?.theme_id;
-            const state = payload?.state;
-            if (typeof themeId === "string" && themeId && state && typeof state === "object") {
-              await this.saveRebirthState(themeId, state);
+            const parsedRebirth = MSG_SCHEMAS.SAVE_REBIRTH_STATE.safeParse((message as any).payload);
+            if (parsedRebirth.success) {
+              await this.saveRebirthState(parsedRebirth.data.theme_id, parsedRebirth.data.state as RebirthPersist);
             }
           } catch (err) {
             console.error("TycoonAgents: Could not persist rebirth state:", err);
           }
-        } else if (message.type === "REBIRTH_RESET_BADGES") {
+        } else if (message.type === MSG.REBIRTH_RESET_BADGES) {
           try {
-            const payload = (message as any).payload as { theme_id?: string } | undefined;
-            const themeId = payload?.theme_id;
-            if (typeof themeId === "string" && themeId) {
+            const parsedResetBadges = MSG_SCHEMAS.REBIRTH_RESET_BADGES.safeParse((message as any).payload);
+            if (parsedResetBadges.success) {
               // Durably clear the now-reset badge unlocks (except rebirth_*
               // milestone badges, which persist) so the host doesn't re-send
               // stale unlocks on the next theme init (un-resetting the
               // rebirth). Mirrors doRebirth() clearing webview unlockedBadgeIds.
-              await this._resetThemeBadgeUnlocksForRebirth(themeId);
+              await this._resetThemeBadgeUnlocksForRebirth(parsedResetBadges.data.theme_id);
             }
           } catch (err) {
             console.error("TycoonAgents: Could not reset rebirth badges:", err);
           }
-        } else if (message.type === "SELECT_THEME") {
+        } else if (message.type === MSG.SELECT_THEME) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const t = await loadTheme(this._globalStorageUri, payload?.theme_id ?? "");
           if (t) {
             void this._panel.webview.postMessage({
-              type: "THEME_INITIALIZED",
+              type: MSG.THEME_INITIALIZED,
               payload: await this._buildThemeInitPayload(t.manifest, t.frames, false),
             });
           } else {
-            void this._panel.webview.postMessage({ type: "THEME_GENERATION_ERROR", payload: { message: "Theme not found." } });
+            void this._panel.webview.postMessage({ type: MSG.THEME_GENERATION_ERROR, payload: { message: "Theme not found." } });
           }
-        } else if (message.type === "OPEN_THEME_IMAGES") {
+        } else if (message.type === MSG.OPEN_THEME_IMAGES) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const themeId = payload?.theme_id ?? "";
           if (!/^[a-z0-9_]+$/.test(themeId)) {
@@ -642,13 +686,13 @@ export class TycoonPanel {
               );
             }
           }
-        } else if (message.type === "GET_THEME_IMAGE_REVIEW") {
+        } else if (message.type === MSG.GET_THEME_IMAGE_REVIEW) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const themeId = payload?.theme_id ?? "";
           if (/^[a-z0-9_]+$/.test(themeId)) {
             await this._postThemeImageReview(themeId);
           }
-        } else if (message.type === "SET_THEME_IMAGE_REVIEW_STATUS") {
+        } else if (message.type === MSG.SET_THEME_IMAGE_REVIEW_STATUS) {
           const payload = (message as any).payload as {
             theme_id?: string;
             item_id?: string;
@@ -664,7 +708,7 @@ export class TycoonPanel {
             const isCurrentGate = gate?.themeId === themeId && gate.itemId === itemId;
             if (isCurrentGate && this._themeGenerationGateRetryActive) {
               void this._panel.webview.postMessage({
-                type: "THEME_IMAGE_RETRY_STATE",
+                type: MSG.THEME_IMAGE_RETRY_STATE,
                 payload: { item_id: itemId, busy: true, message: "Wait for the replacement to finish before keeping it." },
               });
               return;
@@ -673,7 +717,7 @@ export class TycoonPanel {
             if (document && status === "accepted" && isCurrentGate) gate.accept();
             await this._postThemeImageReview(themeId);
           }
-        } else if (message.type === "APPROVE_ALL_THEME_IMAGES") {
+        } else if (message.type === MSG.APPROVE_ALL_THEME_IMAGES) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const themeId = payload?.theme_id ?? "";
           try {
@@ -683,21 +727,19 @@ export class TycoonPanel {
             await approveAllThemeImages(this._globalStorageUri, themeId);
             await this._postThemeImageReview(themeId);
             const themes = await listThemes(this._globalStorageUri);
-            void this._panel.webview.postMessage({ type: "THEMES_LIST", payload: { themes } });
+            void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
           } catch (err) {
             void this._panel.webview.postMessage({
-              type: "THEME_APPROVE_ALL_RESULT",
+              type: MSG.THEME_APPROVE_ALL_RESULT,
               payload: { theme_id: themeId, error: errorMessage(err) },
             });
           }
-        } else if (message.type === "RENAME_THEME_CHARACTER") {
-          const payload = (message as any).payload as {
-            theme_id?: string;
-            item_id?: string;
-            name?: string;
-          } | undefined;
-          const themeId = payload?.theme_id ?? "";
-          const itemId = payload?.item_id ?? "";
+        } else if (message.type === MSG.RENAME_THEME_CHARACTER) {
+          const parsedRenameCharacter = MSG_SCHEMAS.RENAME_THEME_CHARACTER.safeParse((message as any).payload);
+          if (!parsedRenameCharacter.success) return;
+          const payload = parsedRenameCharacter.data;
+          const themeId = payload.theme_id;
+          const itemId = payload.item_id;
           if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
           const activeGate = this._themeGenerationReviewGate;
           const renamingActiveGate = this._themeGenerationActive
@@ -705,7 +747,7 @@ export class TycoonPanel {
             && activeGate.itemId === itemId;
           if (this._themeGenerationActive && !renamingActiveGate) {
             void this._panel.webview.postMessage({
-              type: "THEME_CHARACTER_RENAME_STATE",
+              type: MSG.THEME_CHARACTER_RENAME_STATE,
               payload: { item_id: itemId, error: "Only the character currently waiting for review can be renamed." },
             });
             return;
@@ -714,7 +756,7 @@ export class TycoonPanel {
           if (renamingActiveGate) this._themeGenerationGateRetryActive = true;
           try {
             void this._panel.webview.postMessage({
-              type: "THEME_CHARACTER_RENAME_STATE",
+              type: MSG.THEME_CHARACTER_RENAME_STATE,
               payload: { item_id: itemId, busy: true, message: "Saving character name..." },
             });
             const result = await renameThemeCharacter(
@@ -730,33 +772,30 @@ export class TycoonPanel {
             }
             await this._postThemeImageReview(themeId);
             void this._panel.webview.postMessage({
-              type: "THEME_CHARACTER_RENAME_STATE",
+              type: MSG.THEME_CHARACTER_RENAME_STATE,
               payload: { item_id: itemId, busy: false, message: "Character name saved." },
             });
             if (!renamingActiveGate) {
               void this._panel.webview.postMessage({
-                type: "THEME_INITIALIZED",
+                type: MSG.THEME_INITIALIZED,
                 payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
               });
             }
           } catch (err) {
             void this._panel.webview.postMessage({
-              type: "THEME_CHARACTER_RENAME_STATE",
+              type: MSG.THEME_CHARACTER_RENAME_STATE,
               payload: { item_id: itemId, busy: false, error: errorMessage(err) },
             });
           } finally {
             if (renamingActiveGate) this._themeGenerationGateRetryActive = false;
           }
-        } else if (message.type === "RENAME_THEME_STAGE_ITEM") {
-          const payload = (message as any).payload as {
-            theme_id?: string;
-            item_kind?: string;
-            item_id?: string;
-            name?: string;
-          } | undefined;
-          const themeId = payload?.theme_id ?? "";
-          const itemId = payload?.item_id ?? "";
-          const itemKind = payload?.item_kind === "decor" ? "decor" : "object";
+        } else if (message.type === MSG.RENAME_THEME_STAGE_ITEM) {
+          const parsedRenameStageItem = MSG_SCHEMAS.RENAME_THEME_STAGE_ITEM.safeParse((message as any).payload);
+          if (!parsedRenameStageItem.success) return;
+          const payload = parsedRenameStageItem.data;
+          const themeId = payload.theme_id;
+          const itemId = payload.item_id;
+          const itemKind = payload.item_kind === "decor" ? "decor" : "object";
           if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
           try {
             const result = await renameThemeStageItem(
@@ -764,26 +803,26 @@ export class TycoonPanel {
               themeId,
               itemKind,
               itemId,
-              payload?.name ?? "",
+              payload.name ?? "",
             );
             const renamedName = itemKind === "decor"
               ? result.manifest.decor_objects?.find((d) => d.decor_id === itemId)?.display_name
               : result.manifest.buildable_objects?.find((o) => o.object_id === itemId)?.display_name;
             void this._panel.webview.postMessage({
-              type: "THEME_STAGE_ITEM_RENAME_RESULT",
+              type: MSG.THEME_STAGE_ITEM_RENAME_RESULT,
               payload: { ok: true, item_kind: itemKind, item_id: itemId, name: renamedName },
             });
             void this._panel.webview.postMessage({
-              type: "THEME_INITIALIZED",
+              type: MSG.THEME_INITIALIZED,
               payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
             });
           } catch (err) {
             void this._panel.webview.postMessage({
-              type: "THEME_STAGE_ITEM_RENAME_RESULT",
+              type: MSG.THEME_STAGE_ITEM_RENAME_RESULT,
               payload: { ok: false, item_kind: itemKind, item_id: itemId, error: errorMessage(err) },
             });
           }
-        } else if (message.type === "NORMALIZE_THEME_CHARACTER") {
+        } else if (message.type === MSG.NORMALIZE_THEME_CHARACTER) {
           const payload = (message as any).payload as {
             theme_id?: string;
             item_id?: string;
@@ -798,7 +837,7 @@ export class TycoonPanel {
             && activeGate.itemId === itemId;
           if (this._themeGenerationActive && !normalizingDuringActiveGeneration) {
             void this._panel.webview.postMessage({
-              type: "THEME_CHARACTER_NORMALIZE_STATE",
+              type: MSG.THEME_CHARACTER_NORMALIZE_STATE,
               payload: {
                 item_id: itemId,
                 error: "Only the character currently waiting for review can be normalized.",
@@ -812,7 +851,7 @@ export class TycoonPanel {
             const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
             if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
             void this._panel.webview.postMessage({
-              type: "THEME_CHARACTER_NORMALIZE_STATE",
+              type: MSG.THEME_CHARACTER_NORMALIZE_STATE,
               payload: { item_id: itemId, busy: true, message: "Regenerating at the standard character scale..." },
             });
             const result = await normalizeThemeCharacterAtlas(
@@ -825,7 +864,7 @@ export class TycoonPanel {
                 signal: normalizingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
               },
               (message) => void this._panel.webview.postMessage({
-                type: "THEME_CHARACTER_NORMALIZE_STATE",
+                type: MSG.THEME_CHARACTER_NORMALIZE_STATE,
                 payload: { item_id: itemId, busy: true, message },
               }),
             );
@@ -837,35 +876,30 @@ export class TycoonPanel {
             }
             await this._postThemeImageReview(themeId);
             void this._panel.webview.postMessage({
-              type: "THEME_CHARACTER_NORMALIZE_STATE",
+              type: MSG.THEME_CHARACTER_NORMALIZE_STATE,
               payload: { item_id: itemId, busy: false, message: "Regenerated and normalized character ready for review." },
             });
             if (!normalizingDuringActiveGeneration) {
               void this._panel.webview.postMessage({
-                type: "THEME_INITIALIZED",
+                type: MSG.THEME_INITIALIZED,
                 payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
               });
             }
           } catch (err) {
             await this._postThemeImageReview(themeId);
             void this._panel.webview.postMessage({
-              type: "THEME_CHARACTER_NORMALIZE_STATE",
+              type: MSG.THEME_CHARACTER_NORMALIZE_STATE,
               payload: { item_id: itemId, busy: false, error: errorMessage(err) },
             });
           } finally {
             if (normalizingDuringActiveGeneration) this._themeGenerationGateRetryActive = false;
           }
-        } else if (message.type === "RETRY_THEME_IMAGE") {
-          const payload = (message as any).payload as {
-            theme_id?: string;
-            item_id?: string;
-            feedback?: string;
-            mode?: string;
-            image_provider?: string;
-            character_name?: string;
-          } | undefined;
-          const themeId = payload?.theme_id ?? "";
-          const itemId = payload?.item_id ?? "";
+        } else if (message.type === MSG.RETRY_THEME_IMAGE) {
+          const parsedRetryImage = MSG_SCHEMAS.RETRY_THEME_IMAGE.safeParse((message as any).payload);
+          if (!parsedRetryImage.success) return;
+          const payload = parsedRetryImage.data;
+          const themeId = payload.theme_id;
+          const itemId = payload.item_id;
           if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
           const activeGate = this._themeGenerationReviewGate;
           const retryingDuringActiveGeneration = this._themeGenerationActive
@@ -873,7 +907,7 @@ export class TycoonPanel {
             && activeGate.itemId === itemId;
           if (this._themeGenerationActive && !retryingDuringActiveGeneration) {
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_RETRY_STATE",
+              type: MSG.THEME_IMAGE_RETRY_STATE,
               payload: {
                 item_id: itemId,
                 error: "Wait until this image reaches the review step before generating a replacement.",
@@ -887,7 +921,7 @@ export class TycoonPanel {
             const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
             if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_RETRY_STATE",
+              type: MSG.THEME_IMAGE_RETRY_STATE,
               payload: { item_id: itemId, busy: true, message: "Generating replacement..." },
             });
             if (payload?.character_name?.trim()) {
@@ -925,7 +959,7 @@ export class TycoonPanel {
                 signal: retryingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
               },
               (message) => void this._panel.webview.postMessage({
-                type: "THEME_IMAGE_RETRY_STATE",
+                type: MSG.THEME_IMAGE_RETRY_STATE,
                 payload: { item_id: itemId, busy: true, message },
               }),
             );
@@ -938,19 +972,19 @@ export class TycoonPanel {
             }
             await this._postThemeImageReview(themeId);
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_RETRY_STATE",
+              type: MSG.THEME_IMAGE_RETRY_STATE,
               payload: { item_id: itemId, busy: false, message: "Replacement ready for review." },
             });
             if (!retryingDuringActiveGeneration) {
               void this._panel.webview.postMessage({
-                type: "THEME_INITIALIZED",
+                type: MSG.THEME_INITIALIZED,
                 payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
               });
             }
           } catch (err) {
             await this._postThemeImageReview(themeId);
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_RETRY_STATE",
+              type: MSG.THEME_IMAGE_RETRY_STATE,
               payload: { item_id: itemId, busy: false, error: errorMessage(err) },
             });
           } finally {
@@ -962,7 +996,7 @@ export class TycoonPanel {
               }
             }
           }
-        } else if (message.type === "RESLICE_THEME_IMAGE") {
+        } else if (message.type === MSG.RESLICE_THEME_IMAGE) {
           const payload = (message as any).payload as {
             theme_id?: string;
             item_id?: string;
@@ -972,7 +1006,7 @@ export class TycoonPanel {
           if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
           if (this._themeGenerationActive) {
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_RETRY_STATE",
+              type: MSG.THEME_IMAGE_RETRY_STATE,
               payload: {
                 item_id: itemId,
                 error: "Wait until theme generation finishes before re-slicing a board.",
@@ -982,35 +1016,35 @@ export class TycoonPanel {
           }
           try {
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_RETRY_STATE",
+              type: MSG.THEME_IMAGE_RETRY_STATE,
               payload: { item_id: itemId, busy: true, message: "Re-slicing from saved original..." },
             });
             const result = await resliceThemeImageFromRaw(this._globalStorageUri, themeId, itemId);
             if (!result.ok) {
               await this._postThemeImageReview(themeId);
               void this._panel.webview.postMessage({
-                type: "THEME_IMAGE_RETRY_STATE",
+                type: MSG.THEME_IMAGE_RETRY_STATE,
                 payload: { item_id: itemId, busy: false, error: result.reason },
               });
             } else {
               await this._postThemeImageReview(themeId);
               void this._panel.webview.postMessage({
-                type: "THEME_IMAGE_RETRY_STATE",
+                type: MSG.THEME_IMAGE_RETRY_STATE,
                 payload: { item_id: itemId, busy: false, message: "Re-sliced and ready for review." },
               });
               void this._panel.webview.postMessage({
-                type: "THEME_INITIALIZED",
+                type: MSG.THEME_INITIALIZED,
                 payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
               });
             }
           } catch (err) {
             await this._postThemeImageReview(themeId);
             void this._panel.webview.postMessage({
-              type: "THEME_IMAGE_RETRY_STATE",
+              type: MSG.THEME_IMAGE_RETRY_STATE,
               payload: { item_id: itemId, busy: false, error: errorMessage(err) },
             });
           }
-        } else if (message.type === "PLAN_THEME") {
+        } else if (message.type === MSG.PLAN_THEME) {
           const payload = (message as any).payload as { prompt?: string; image_provider?: string } | undefined;
           try {
             if (this._themeGenerationActive) throw new Error("Wait for the current theme generation to finish before planning another theme.");
@@ -1025,11 +1059,11 @@ export class TycoonPanel {
               provider: imageSettings.provider,
               apiKey: imageSettings.apiKey,
             });
-            void this._panel.webview.postMessage({ type: "THEME_PLAN_READY", payload: { plan } });
+            void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_READY, payload: { plan } });
           } catch (err) {
-            void this._panel.webview.postMessage({ type: "THEME_PLAN_ERROR", payload: { message: String(err) } });
+            void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_ERROR, payload: { message: String(err) } });
           }
-        } else if (message.type === "SET_THEME_PAUSE_FOR_REVIEW") {
+        } else if (message.type === MSG.SET_THEME_PAUSE_FOR_REVIEW) {
           const payload = (message as any).payload as { pause_for_review?: boolean } | undefined;
           if (typeof payload?.pause_for_review !== "boolean") return;
           this._themePauseForReview = payload.pause_for_review;
@@ -1038,16 +1072,16 @@ export class TycoonPanel {
               && !this._themeGenerationGateRetryActive) {
             this._themeGenerationReviewGate.accept();
           }
-        } else if (message.type === "CANCEL_THEME_GENERATION") {
+        } else if (message.type === MSG.CANCEL_THEME_GENERATION) {
           const controller = this._themeGenerationAbortController;
           if (this._themeGenerationActive && controller && !controller.signal.aborted) {
             controller.abort();
             void this._panel.webview.postMessage({
-              type: "THEME_GENERATION_PROGRESS",
+              type: MSG.THEME_GENERATION_PROGRESS,
               payload: { message: "Stopping generation..." },
             });
           }
-        } else if (message.type === "GENERATE_THEME") {
+        } else if (message.type === MSG.GENERATE_THEME) {
           const payload = (message as any).payload as {
             plan?: ThemePlan;
             resume_theme_id?: string;
@@ -1056,7 +1090,7 @@ export class TycoonPanel {
           } | undefined;
           if (this._themeGenerationActive) {
             void this._panel.webview.postMessage({
-              type: "THEME_GENERATION_ERROR",
+              type: MSG.THEME_GENERATION_ERROR,
               payload: { message: "A theme generation is already running." },
             });
             return;
@@ -1082,12 +1116,12 @@ export class TycoonPanel {
               throw new Error(`No ${label} API key found. Add and save one above the theme prompt.`);
             }
             const onProgress = (msg: string) => void this._panel.webview.postMessage({
-              type: "THEME_GENERATION_PROGRESS",
+              type: MSG.THEME_GENERATION_PROGRESS,
               payload: { message: msg },
             });
             const onReviewReady = (themeId: string) => {
               generatedThemeId = themeId;
-              void this._panel.webview.postMessage({ type: "THEME_REVIEW_READY", payload: { theme_id: themeId } });
+              void this._panel.webview.postMessage({ type: MSG.THEME_REVIEW_READY, payload: { theme_id: themeId } });
             };
             const imageOptions = {
               provider: imageSettings.provider,
@@ -1124,20 +1158,20 @@ export class TycoonPanel {
                   waitForReview,
                 );
             void this._panel.webview.postMessage({
-              type: "THEME_INITIALIZED",
+              type: MSG.THEME_INITIALIZED,
               payload: await this._buildThemeInitPayload(r.manifest, r.frames, true),
             });
           } catch (err) {
             if (abortController.signal.aborted) {
               void this._panel.webview.postMessage({
-                type: "THEME_GENERATION_CANCELLED",
+                type: MSG.THEME_GENERATION_CANCELLED,
                 payload: {
                   theme_id: generatedThemeId,
                   message: "Generation stopped. Completed images were retained; resume whenever you're ready.",
                 },
               });
             } else {
-              void this._panel.webview.postMessage({ type: "THEME_GENERATION_ERROR", payload: { message: String(err) } });
+              void this._panel.webview.postMessage({ type: MSG.THEME_GENERATION_ERROR, payload: { message: String(err) } });
             }
           } finally {
             this._themeGenerationActive = false;
@@ -1147,7 +1181,7 @@ export class TycoonPanel {
             }
             if (generatedThemeId) await this._postThemeImageReview(generatedThemeId);
           }
-        } else if (message.type === "REGENERATE_BOARD") {
+        } else if (message.type === MSG.REGENERATE_BOARD) {
           const payload = (message as any).payload as {
             theme_id?: string;
             board?: BoardKind;
@@ -1169,7 +1203,7 @@ export class TycoonPanel {
               throw new Error(`No ${label} API key found. Add and save one above the theme prompt.`);
             }
             const onProgress = (msg: string) => void this._panel.webview.postMessage({
-              type: "THEME_GENERATION_PROGRESS",
+              type: MSG.THEME_GENERATION_PROGRESS,
               payload: { message: msg },
             });
             const imageOptions = {
@@ -1186,19 +1220,19 @@ export class TycoonPanel {
               itemId,
             );
             void this._panel.webview.postMessage({
-              type: "BOARD_REGENERATED",
+              type: MSG.BOARD_REGENERATED,
               payload: { theme_id: themeId, board, item_id: itemId, ok: true },
             });
           } catch (err) {
             console.error("TycoonAgents: Board regeneration failed:", err);
             void this._panel.webview.postMessage({
-              type: "BOARD_REGENERATED",
+              type: MSG.BOARD_REGENERATED,
               payload: { theme_id: themeId, board, item_id: itemId, ok: false, error: String(err) },
             });
           } finally {
             if (themeId) await this._postThemeImageReview(themeId);
           }
-        } else if (message.type === "RUN_THEME_HEALTH_CHECK") {
+        } else if (message.type === MSG.RUN_THEME_HEALTH_CHECK) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const themeId = payload?.theme_id ?? "";
           try {
@@ -1207,13 +1241,13 @@ export class TycoonPanel {
             if (!t) throw new Error("Theme not found.");
             const issues = validateThemeIntegrity(t.manifest, t.frames);
             void this._panel.webview.postMessage({
-              type: "THEME_HEALTH_CHECK_RESULT",
+              type: MSG.THEME_HEALTH_CHECK_RESULT,
               payload: { theme_id: themeId, issues },
             });
           } catch (err) {
             console.error("TycoonAgents: Theme health check failed:", err);
             void this._panel.webview.postMessage({
-              type: "THEME_HEALTH_CHECK_RESULT",
+              type: MSG.THEME_HEALTH_CHECK_RESULT,
               payload: {
                 theme_id: themeId,
                 issues: [{ severity: "error", kind: "check_failed", entity: "", key: "", message: String(err) }],
@@ -1410,7 +1444,7 @@ export class TycoonPanel {
           : "",
       })));
       void this._panel.webview.postMessage({
-        type: "THEME_IMAGE_REVIEW",
+        type: MSG.THEME_IMAGE_REVIEW,
         payload: {
           theme_id: review.theme_id,
           display_name: review.display_name,
@@ -1424,7 +1458,7 @@ export class TycoonPanel {
       });
     } catch (err) {
       void this._panel.webview.postMessage({
-        type: "THEME_IMAGE_REVIEW",
+        type: MSG.THEME_IMAGE_REVIEW,
         payload: { theme_id: themeId, items: [], error: String(err) },
       });
     }
@@ -1502,9 +1536,9 @@ export class TycoonPanel {
           projectRoot !== "" &&
           fs.existsSync(path.join(projectRoot, ".claude", "skills", entry.id)),
       }));
-      void this._panel.webview.postMessage({ type: "skills", skills });
+      void this._panel.webview.postMessage({ type: MSG.SKILLS, skills });
     } catch (e) {
-      void this._panel.webview.postMessage({ type: "skills", skills: [], error: String(e) });
+      void this._panel.webview.postMessage({ type: MSG.SKILLS, skills: [], error: String(e) });
     }
   }
 
@@ -1524,7 +1558,7 @@ export class TycoonPanel {
       }>;
     } catch (e) {
       void this._panel.webview.postMessage({
-        type: "skillInstalled",
+        type: MSG.SKILL_INSTALLED,
         id,
         ok: false,
         error: String(e),
@@ -1535,7 +1569,7 @@ export class TycoonPanel {
     const known = catalog.some((entry) => entry.id === id);
     if (!known) {
       void this._panel.webview.postMessage({
-        type: "skillInstalled",
+        type: MSG.SKILL_INSTALLED,
         id,
         ok: false,
         error: "Unknown skill",
@@ -1545,7 +1579,7 @@ export class TycoonPanel {
 
     if (projectRoot === "") {
       void this._panel.webview.postMessage({
-        type: "skillInstalled",
+        type: MSG.SKILL_INSTALLED,
         id,
         ok: false,
         error: "No workspace folder open",
@@ -1555,7 +1589,7 @@ export class TycoonPanel {
 
     const target = path.join(projectRoot, ".claude", "skills", id);
     if (fs.existsSync(target)) {
-      void this._panel.webview.postMessage({ type: "skillInstalled", id, ok: true, alreadyExisted: true });
+      void this._panel.webview.postMessage({ type: MSG.SKILL_INSTALLED, id, ok: true, alreadyExisted: true });
       return;
     }
 
@@ -1563,10 +1597,10 @@ export class TycoonPanel {
       const src = path.join(this._extensionUri.fsPath, "media", "skills", id);
       fs.mkdirSync(path.join(projectRoot, ".claude", "skills"), { recursive: true });
       fs.cpSync(src, target, { recursive: true });
-      void this._panel.webview.postMessage({ type: "skillInstalled", id, ok: true, alreadyExisted: false });
+      void this._panel.webview.postMessage({ type: MSG.SKILL_INSTALLED, id, ok: true, alreadyExisted: false });
     } catch (e) {
       void this._panel.webview.postMessage({
-        type: "skillInstalled",
+        type: MSG.SKILL_INSTALLED,
         id,
         ok: false,
         error: String(e),
@@ -1593,18 +1627,18 @@ export class TycoonPanel {
         description: string;
       }>;
     } catch (e) {
-      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, error: String(e) });
+      void this._panel.webview.postMessage({ type: MSG.SKILL_REMOVED, id, ok: false, error: String(e) });
       return;
     }
 
     const entry = catalog.find((c) => c.id === id);
     if (entry === undefined) {
-      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, error: "Unknown skill" });
+      void this._panel.webview.postMessage({ type: MSG.SKILL_REMOVED, id, ok: false, error: "Unknown skill" });
       return;
     }
 
     if (root === "") {
-      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, error: "No workspace folder open" });
+      void this._panel.webview.postMessage({ type: MSG.SKILL_REMOVED, id, ok: false, error: "No workspace folder open" });
       return;
     }
 
@@ -1614,7 +1648,7 @@ export class TycoonPanel {
       "Remove"
     );
     if (answer !== "Remove") {
-      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, cancelled: true });
+      void this._panel.webview.postMessage({ type: MSG.SKILL_REMOVED, id, ok: false, cancelled: true });
       return;
     }
 
@@ -1623,10 +1657,10 @@ export class TycoonPanel {
       if (fs.existsSync(target)) {
         fs.rmSync(target, { recursive: true, force: true });
       }
-      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: true });
+      void this._panel.webview.postMessage({ type: MSG.SKILL_REMOVED, id, ok: true });
       this._handleGetSkills();
     } catch (e) {
-      void this._panel.webview.postMessage({ type: "skillRemoved", id, ok: false, error: String(e) });
+      void this._panel.webview.postMessage({ type: MSG.SKILL_REMOVED, id, ok: false, error: String(e) });
     }
   }
 
@@ -1675,7 +1709,7 @@ export class TycoonPanel {
       catalog = this._loadMcpCatalog();
     } catch (e) {
       void this._panel.webview.postMessage({
-        type: "mcp",
+        type: MSG.MCP,
         servers: [],
         error: String(e),
       });
@@ -1701,7 +1735,7 @@ export class TycoonPanel {
       network: e.network,
       dataNote: e.dataNote,
     }));
-    void this._panel.webview.postMessage({ type: "mcp", servers });
+    void this._panel.webview.postMessage({ type: MSG.MCP, servers });
   }
 
   /** Build the modal-confirm body for a third-party MCP server install. */
@@ -1738,7 +1772,7 @@ export class TycoonPanel {
         catalog = this._loadMcpCatalog();
       } catch (e) {
         void this._panel.webview.postMessage({
-          type: "mcpInstalled",
+          type: MSG.MCP_INSTALLED,
           id,
           ok: false,
           error: String(e),
@@ -1749,7 +1783,7 @@ export class TycoonPanel {
       const entry = catalog.find((e) => e.id === id);
       if (entry === undefined) {
         void this._panel.webview.postMessage({
-          type: "mcpInstalled",
+          type: MSG.MCP_INSTALLED,
           id,
           ok: false,
           error: "Unknown server",
@@ -1760,7 +1794,7 @@ export class TycoonPanel {
       const root = this._projectRoot();
       if (root === "") {
         void this._panel.webview.postMessage({
-          type: "mcpInstalled",
+          type: MSG.MCP_INSTALLED,
           id,
           ok: false,
           error: "No workspace folder open",
@@ -1780,7 +1814,7 @@ export class TycoonPanel {
         );
         if (answer !== "Install") {
           void this._panel.webview.postMessage({
-            type: "mcpInstalled",
+            type: MSG.MCP_INSTALLED,
             id,
             ok: false,
             cancelled: true,
@@ -1794,7 +1828,7 @@ export class TycoonPanel {
 
       if (hasMcpServer(existing, id)) {
         void this._panel.webview.postMessage({
-          type: "mcpInstalled",
+          type: MSG.MCP_INSTALLED,
           id,
           ok: true,
           alreadyExisted: true,
@@ -1805,14 +1839,14 @@ export class TycoonPanel {
       const merged = mergeMcpServer(existing, id, this._resolveConfigTokens(entry.config));
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
       void this._panel.webview.postMessage({
-        type: "mcpInstalled",
+        type: MSG.MCP_INSTALLED,
         id,
         ok: true,
         alreadyExisted: false,
       });
     } catch (e) {
       void this._panel.webview.postMessage({
-        type: "mcpInstalled",
+        type: MSG.MCP_INSTALLED,
         id,
         ok: false,
         error: String(e),
@@ -1834,19 +1868,19 @@ export class TycoonPanel {
       try {
         catalog = this._loadMcpCatalog();
       } catch (e) {
-        void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, error: String(e) });
+        void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: false, error: String(e) });
         return;
       }
 
       const entry = catalog.find((e) => e.id === id);
       if (entry === undefined) {
-        void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, error: "Unknown server" });
+        void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: false, error: "Unknown server" });
         return;
       }
 
       const root = this._projectRoot();
       if (root === "") {
-        void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, error: "No workspace folder open" });
+        void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: false, error: "No workspace folder open" });
         return;
       }
 
@@ -1856,7 +1890,7 @@ export class TycoonPanel {
         "Remove"
       );
       if (answer !== "Remove") {
-        void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, cancelled: true });
+        void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: false, cancelled: true });
         return;
       }
 
@@ -1864,10 +1898,10 @@ export class TycoonPanel {
       const existing = this._readMcpConfig(mcpPath);
       const updated = removeMcpServer(existing, id);
       fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
-      void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: true });
+      void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: true });
       this._handleGetMcp();
     } catch (e) {
-      void this._panel.webview.postMessage({ type: "mcpRemoved", id, ok: false, error: String(e) });
+      void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: false, error: String(e) });
     }
   }
 
@@ -1933,9 +1967,9 @@ export class TycoonPanel {
           disclosures,
         };
       });
-      this._panel.webview.postMessage({ type: "packs", packs: result });
+      this._panel.webview.postMessage({ type: MSG.PACKS, packs: result });
     } catch (e) {
-      this._panel.webview.postMessage({ type: "packs", packs: [], error: String(e) });
+      this._panel.webview.postMessage({ type: MSG.PACKS, packs: [], error: String(e) });
     }
   }
 
@@ -1973,12 +2007,12 @@ export class TycoonPanel {
       const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
       const pack = packs.find((p: any) => p.id === id);
       if (!pack) {
-        this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, error: "Unknown pack" });
+        this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: "Unknown pack" });
         return;
       }
       const root = this._projectRoot();
       if (root === "") {
-        this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, error: "No workspace folder open" });
+        this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: "No workspace folder open" });
         return;
       }
 
@@ -2002,7 +2036,7 @@ export class TycoonPanel {
         );
         if (answer !== "Install") {
           // User dismissed the modal â€” clear the webview's "installingâ€¦" state.
-          this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, cancelled: true });
+          this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, cancelled: true });
           return;
         }
       }
@@ -2060,9 +2094,9 @@ export class TycoonPanel {
       const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
       fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
       fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
-      this._panel.webview.postMessage({ type: "packInstalled", id, ok: true, results });
+      this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: true, results });
     } catch (e) {
-      this._panel.webview.postMessage({ type: "packInstalled", id, ok: false, error: String(e) });
+      this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: String(e) });
     }
   }
 
@@ -2082,12 +2116,12 @@ export class TycoonPanel {
       const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
       const pack = packs.find((p: any) => p.id === id);
       if (!pack) {
-        this._panel.webview.postMessage({ type: "packRemoved", id, ok: false, error: "Unknown pack" });
+        this._panel.webview.postMessage({ type: MSG.PACK_REMOVED, id, ok: false, error: "Unknown pack" });
         return;
       }
       const root = this._projectRoot();
       if (root === "") {
-        this._panel.webview.postMessage({ type: "packRemoved", id, ok: false, error: "No workspace folder open" });
+        this._panel.webview.postMessage({ type: MSG.PACK_REMOVED, id, ok: false, error: "No workspace folder open" });
         return;
       }
 
@@ -2106,7 +2140,7 @@ export class TycoonPanel {
         "Remove"
       );
       if (answer !== "Remove") {
-        this._panel.webview.postMessage({ type: "packRemoved", id, ok: false, cancelled: true });
+        this._panel.webview.postMessage({ type: MSG.PACK_REMOVED, id, ok: false, cancelled: true });
         return;
       }
 
@@ -2190,13 +2224,13 @@ export class TycoonPanel {
         /* best-effort: keywords file is non-critical for removal */
       }
 
-      this._panel.webview.postMessage({ type: "packRemoved", id, ok: true, results });
+      this._panel.webview.postMessage({ type: MSG.PACK_REMOVED, id, ok: true, results });
       // Refresh installed state the same way install paths do.
       this._handleGetPacks();
       this._handleGetSkills();
       this._handleGetMcp();
     } catch (e) {
-      this._panel.webview.postMessage({ type: "packRemoved", id, ok: false, error: String(e) });
+      this._panel.webview.postMessage({ type: MSG.PACK_REMOVED, id, ok: false, error: String(e) });
     }
   }
 
@@ -2204,7 +2238,7 @@ export class TycoonPanel {
     try {
       const root = this._projectRoot();
       if (root === "") {
-        void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: "No workspace folder open" });
+        void this._panel.webview.postMessage({ type: MSG.UEFN_SETUP_DONE, ok: false, error: "No workspace folder open" });
         return;
       }
       // Install the uefn pack (reuses _handleInstallPack logic via _installPackById).
@@ -2215,7 +2249,7 @@ export class TycoonPanel {
       const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
       const pack = packs.find((p: any) => p.id === "uefn");
       if (!pack) {
-        void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: "UEFN pack not found in catalog" });
+        void this._panel.webview.postMessage({ type: MSG.UEFN_SETUP_DONE, ok: false, error: "UEFN pack not found in catalog" });
         return;
       }
       // Reuse the existing pack-install logic by calling _handleInstallPack("uefn").
@@ -2260,12 +2294,12 @@ export class TycoonPanel {
       const bridgeStatus: "staged" | "exists" = totalWritten > 0 ? "staged" : "exists";
 
       void this._panel.webview.postMessage({
-        type: "uefnSetupDone",
+        type: MSG.UEFN_SETUP_DONE,
         ok: true,
         results: { pack: "uefn", bridge: bridgeStatus, engineFound, locations },
       });
     } catch (e) {
-      void this._panel.webview.postMessage({ type: "uefnSetupDone", ok: false, error: String(e) });
+      void this._panel.webview.postMessage({ type: MSG.UEFN_SETUP_DONE, ok: false, error: String(e) });
     }
   }
 
@@ -2368,7 +2402,7 @@ export class TycoonPanel {
       fs.cpSync(src, dest, { recursive: true });
     } catch (e) {
       vscode.window.showErrorMessage("Failed to install design-doc skill: " + String(e));
-      void this._panel.webview.postMessage({ type: "designDocDone", mode, ok: false, error: String(e) });
+      void this._panel.webview.postMessage({ type: MSG.DESIGN_DOC_DONE, mode, ok: false, error: String(e) });
       return;
     }
     const prompt = mode === "review"
@@ -2378,7 +2412,7 @@ export class TycoonPanel {
     vscode.window.showInformationMessage(
       "Design-doc skill installed and the " + (mode === "review" ? "review" : "generate") + " prompt was copied to your clipboard — paste it into Claude Code to run it."
     );
-    void this._panel.webview.postMessage({ type: "designDocDone", mode, ok: true });
+    void this._panel.webview.postMessage({ type: MSG.DESIGN_DOC_DONE, mode, ok: true });
   }
 
   /**
@@ -2539,7 +2573,7 @@ export class TycoonPanel {
           path.join(root, ".claude", "settings.json")
         ));
     const uefn = root !== "" ? detectUefnProject(root) : { detected: false, signals: [], uefnInstalled: false };
-    void this._panel.webview.postMessage({ type: "installState", installed, uefnDetected: uefn.detected, uefnSignals: uefn.signals });
+    void this._panel.webview.postMessage({ type: MSG.INSTALL_STATE, installed, uefnDetected: uefn.detected, uefnSignals: uefn.signals });
   }
 
   /** Coerce an untrusted `delegation_mode` message field to a valid mode, defaulting to "flat". */
@@ -2548,7 +2582,7 @@ export class TycoonPanel {
   }
 
   private _handleInstallHooks(delegationMode: DelegationMode = "flat"): void {
-    void this._panel.webview.postMessage({ type: "installState", busy: true });
+    void this._panel.webview.postMessage({ type: MSG.INSTALL_STATE, busy: true });
     try {
       const root = this._projectRoot();
       if (root === "") {
@@ -2634,14 +2668,14 @@ export class TycoonPanel {
 
       // 8. Success.
       void this._panel.webview.postMessage({
-        type: "installState",
+        type: MSG.INSTALL_STATE,
         installed: true,
         delegation_mode: delegationMode,
         ...(claudeMdError !== undefined ? { claudeMdError } : {}),
       });
     } catch (err) {
       void this._panel.webview.postMessage({
-        type: "installState",
+        type: MSG.INSTALL_STATE,
         installed: false,
         error: String(err),
       });
@@ -2729,7 +2763,7 @@ export class TycoonPanel {
     const root = this._projectRoot();
     if (root === "") {
       void this._panel.webview.postMessage({
-        type: "settingsUpdated",
+        type: MSG.SETTINGS_UPDATED,
         ok: false,
         id: "delegation-mode",
         field: "delegationMode",
@@ -2748,7 +2782,7 @@ export class TycoonPanel {
       }
     } catch (err) {
       void this._panel.webview.postMessage({
-        type: "settingsUpdated",
+        type: MSG.SETTINGS_UPDATED,
         ok: false,
         id: "delegation-mode",
         field: "delegationMode",
@@ -2773,7 +2807,7 @@ export class TycoonPanel {
     }
 
     void this._panel.webview.postMessage({
-      type: "settingsUpdated",
+      type: MSG.SETTINGS_UPDATED,
       ok: true,
       id: "delegation-mode",
       field: "delegationMode",
@@ -2893,7 +2927,7 @@ export class TycoonPanel {
       root !== "" ? readExecutionConfig(path.join(root, ".claude")).delegation_mode : "flat";
 
     void this._panel.webview.postMessage({
-      type: "settings",
+      type: MSG.SETTINGS,
       payload: {
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         agents,
@@ -2909,7 +2943,7 @@ export class TycoonPanel {
   private _handleSetAgentModel(id: string, model: string): void {
     if (!isSafeAgentId(id)) {
       void this._panel.webview.postMessage({
-        type: "settingsUpdated",
+        type: MSG.SETTINGS_UPDATED,
         ok: false,
         id,
         field: "model",
@@ -2920,7 +2954,7 @@ export class TycoonPanel {
     const fullId = modelIdFromShort(model);
     if (fullId === undefined) {
       void this._panel.webview.postMessage({
-        type: "settingsUpdated",
+        type: MSG.SETTINGS_UPDATED,
         ok: false,
         id,
         field: "model",
@@ -2934,14 +2968,14 @@ export class TycoonPanel {
       const content = fs.readFileSync(filePath, "utf8");
       fs.writeFileSync(filePath, setFrontmatterModel(content, fullId));
       void this._panel.webview.postMessage({
-        type: "settingsUpdated",
+        type: MSG.SETTINGS_UPDATED,
         ok: true,
         id,
         field: "model",
       });
     } catch (err) {
       void this._panel.webview.postMessage({
-        type: "settingsUpdated",
+        type: MSG.SETTINGS_UPDATED,
         ok: false,
         id,
         field: "model",
@@ -2961,7 +2995,7 @@ export class TycoonPanel {
   private async _handleRemoveAgent(id: string): Promise<void> {
     if (!isSafeAgentId(id)) {
       void this._panel.webview.postMessage({
-        type: "agentRemoved",
+        type: MSG.AGENT_REMOVED,
         id,
         ok: false,
         error: "invalid agent id",
@@ -2971,7 +3005,7 @@ export class TycoonPanel {
     // The orchestrator is the core session-model agent — never removable.
     if (id === "orchestrator") {
       void this._panel.webview.postMessage({
-        type: "agentRemoved",
+        type: MSG.AGENT_REMOVED,
         id,
         ok: false,
         error: "core agent cannot be removed",
@@ -2982,7 +3016,7 @@ export class TycoonPanel {
       const root = this._projectRoot();
       if (root === "") {
         void this._panel.webview.postMessage({
-          type: "agentRemoved",
+          type: MSG.AGENT_REMOVED,
           id,
           ok: false,
           error: "No workspace folder open",
@@ -3005,7 +3039,7 @@ export class TycoonPanel {
       );
       if (answer !== "Remove") {
         void this._panel.webview.postMessage({
-          type: "agentRemoved",
+          type: MSG.AGENT_REMOVED,
           id,
           ok: false,
           cancelled: true,
@@ -3035,12 +3069,12 @@ export class TycoonPanel {
         /* best-effort: keywords file is non-critical for removal */
       }
 
-      this._panel.webview.postMessage({ type: "agentRemoved", id, ok: true });
+      this._panel.webview.postMessage({ type: MSG.AGENT_REMOVED, id, ok: true });
       // Refresh the settings/roster the same way setAgentModel-driven changes do.
       this._handleGetSettings();
     } catch (e) {
       void this._panel.webview.postMessage({
-        type: "agentRemoved",
+        type: MSG.AGENT_REMOVED,
         id,
         ok: false,
         error: String(e),
@@ -3063,14 +3097,14 @@ export class TycoonPanel {
       fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
       fs.writeFileSync(keywordsPath, JSON.stringify(updated, null, 2));
       void this._panel.webview.postMessage({
-        type: "settingsUpdated",
+        type: MSG.SETTINGS_UPDATED,
         ok: true,
         id,
         field: "keywords",
       });
     } catch (err) {
       void this._panel.webview.postMessage({
-        type: "settingsUpdated",
+        type: MSG.SETTINGS_UPDATED,
         ok: false,
         id,
         field: "keywords",
@@ -3087,7 +3121,7 @@ export class TycoonPanel {
       "Reset"
     );
     if (answer !== "Reset") {
-      void this._panel.webview.postMessage({ type: "metricsReset", ok: false, cancelled: true });
+      void this._panel.webview.postMessage({ type: MSG.METRICS_RESET, ok: false, cancelled: true });
       return;
     }
     try {
@@ -3127,10 +3161,10 @@ export class TycoonPanel {
         });
       }
 
-      void this._panel.webview.postMessage({ type: "metricsReset", ok: true });
+      void this._panel.webview.postMessage({ type: MSG.METRICS_RESET, ok: true });
     } catch (err) {
       void this._panel.webview.postMessage({
-        type: "metricsReset",
+        type: MSG.METRICS_RESET,
         ok: false,
         error: String(err),
       });
@@ -3174,18 +3208,18 @@ export class TycoonPanel {
   private _handleRunDoctor(): void {
     const root = this._projectRoot();
     if (root === "") {
-      void this._panel.webview.postMessage({ type: "doctorReport", findings: [], foreign: [], error: "No workspace folder open" });
+      void this._panel.webview.postMessage({ type: MSG.DOCTOR_REPORT, findings: [], foreign: [], error: "No workspace folder open" });
       return;
     }
     const { findings, foreign } = this._diagnoseHooks();
-    void this._panel.webview.postMessage({ type: "doctorReport", findings, foreign });
+    void this._panel.webview.postMessage({ type: MSG.DOCTOR_REPORT, findings, foreign });
   }
 
   private async _handleApplyDoctorFix(removeForeign: boolean): Promise<void> {
     try {
       const root = this._projectRoot();
       if (root === "") {
-        void this._panel.webview.postMessage({ type: "doctorFixDone", ok: false, error: "No workspace folder open" });
+        void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: false, error: "No workspace folder open" });
         return;
       }
       const currentHookCommand = this._buildHookCommand();
@@ -3207,9 +3241,9 @@ export class TycoonPanel {
       const hookScriptExists = fs.existsSync(path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs"));
       const findings = diagnose({ localSettings: settings, sharedSettings, currentHookCommand, hookScriptExists });
       const foreign = findForeignHooks(settings, sharedSettings);
-      void this._panel.webview.postMessage({ type: "doctorFixDone", ok: true, changes, findings, foreign });
+      void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: true, changes, findings, foreign });
     } catch (err) {
-      void this._panel.webview.postMessage({ type: "doctorFixDone", ok: false, error: String(err) });
+      void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: false, error: String(err) });
     }
   }
 
@@ -3273,7 +3307,7 @@ export class TycoonPanel {
   /** Poll engine status and push a `engineStatus` message to the webview. */
   private _pollEngineStatus(): void {
     const chips = this._computeEngineStatus();
-    void this._panel.webview.postMessage({ type: "engineStatus", chips });
+    void this._panel.webview.postMessage({ type: MSG.ENGINE_STATUS, chips });
   }
 
   public dispose(): void {

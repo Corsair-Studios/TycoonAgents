@@ -31,20 +31,20 @@ function makeProvider(file: string): ClaudeCodeProvider {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function drainNow(provider: ClaudeCodeProvider, emit: (e: NormalizedEvent) => void): void {
-  (provider as any).drain(emit);
+async function drainNow(provider: ClaudeCodeProvider, emit: (e: NormalizedEvent) => void): Promise<void> {
+  await (provider as any).drain(emit);
 }
 
 function record(at: number): string {
   return JSON.stringify({ event: "UserPromptSubmit", at });
 }
 
-test("complete lines parse into events", () => {
+test("complete lines parse into events", async () => {
   const { dir, file } = setupFile(`${record(1)}\n${record(2)}\n`);
   try {
     const provider = makeProvider(file);
     const events: NormalizedEvent[] = [];
-    drainNow(provider, (e) => events.push(e));
+    await drainNow(provider, (e) => events.push(e));
     assert.equal(events.length, 2);
     assert.equal(events[0].type, "SessionStart");
     assert.equal(events[1].type, "SessionStart");
@@ -53,7 +53,7 @@ test("complete lines parse into events", () => {
   }
 });
 
-test("a partial trailing line is not lost", () => {
+test("a partial trailing line is not lost", async () => {
   const { dir, file } = setupFile(`${record(1)}\n`);
   try {
     const provider = makeProvider(file);
@@ -61,13 +61,13 @@ test("a partial trailing line is not lost", () => {
 
     // Writer flushes a record but hasn't written its trailing newline yet.
     appendFileSync(file, '{"event":"Stop","at":2', "utf8");
-    drainNow(provider, (e) => events.push(e));
+    await drainNow(provider, (e) => events.push(e));
     // Only the first, complete line should have been emitted so far.
     assert.equal(events.length, 1);
 
     // Writer completes the record on a later flush.
     appendFileSync(file, "}\n", "utf8");
-    drainNow(provider, (e) => events.push(e));
+    await drainNow(provider, (e) => events.push(e));
     assert.equal(events.length, 2);
     assert.equal(events[1].type, "SessionStop");
   } finally {
@@ -75,30 +75,30 @@ test("a partial trailing line is not lost", () => {
   }
 });
 
-test("truncation resets offset to 0", () => {
+test("truncation resets offset to 0", async () => {
   const { dir, file } = setupFile(`${record(1)}\n${record(2)}\n`);
   try {
     const provider = makeProvider(file);
     const events: NormalizedEvent[] = [];
-    drainNow(provider, (e) => events.push(e));
+    await drainNow(provider, (e) => events.push(e));
     assert.equal(events.length, 2);
 
     // Simulate rotation: file is truncated and rewritten smaller than the
     // prior offset.
     writeFileSync(file, `${record(3)}\n`, "utf8");
-    drainNow(provider, (e) => events.push(e));
+    await drainNow(provider, (e) => events.push(e));
     assert.equal(events.length, 3);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a malformed JSON line is skipped without aborting the batch", () => {
+test("a malformed JSON line is skipped without aborting the batch", async () => {
   const { dir, file } = setupFile(`${record(1)}\nnot json\n${record(2)}\n`);
   try {
     const provider = makeProvider(file);
     const events: NormalizedEvent[] = [];
-    drainNow(provider, (e) => events.push(e));
+    await drainNow(provider, (e) => events.push(e));
     assert.equal(events.length, 2);
     assert.equal(events[0].at, 1);
     assert.equal(events[1].at, 2);
@@ -107,7 +107,7 @@ test("a malformed JSON line is skipped without aborting the batch", () => {
   }
 });
 
-test("chunk cap is honored across ticks: a large backlog drains fully over multiple calls", () => {
+test("chunk cap is honored across ticks: a large backlog drains fully over multiple calls", async () => {
   // Build a backlog comfortably larger than the provider's 4MB read cap so a
   // single drain() call cannot consume it in one pass.
   const line = record(1) + "\n"; // fixed-size, valid line
@@ -118,7 +118,7 @@ test("chunk cap is honored across ticks: a large backlog drains fully over multi
     const provider = makeProvider(file);
     const events: NormalizedEvent[] = [];
 
-    drainNow(provider, (e) => events.push(e));
+    await drainNow(provider, (e) => events.push(e));
     const offsetAfterFirstTick = (provider as any).offset as number;
     assert.ok(
       offsetAfterFirstTick > 0 && offsetAfterFirstTick < backlog.length,
@@ -131,7 +131,7 @@ test("chunk cap is honored across ticks: a large backlog drains fully over multi
 
     let ticks = 1;
     while ((provider as any).offset < backlog.length && ticks < 10) {
-      drainNow(provider, (e) => events.push(e));
+      await drainNow(provider, (e) => events.push(e));
       ticks += 1;
     }
 

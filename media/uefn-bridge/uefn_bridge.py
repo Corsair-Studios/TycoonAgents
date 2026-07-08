@@ -6,7 +6,10 @@ external MCP server can send commands and receive responses.
 
 Polls a ``command.json`` file for incoming requests, executes them using
 the ``unreal`` API, and writes results to ``response_{id}.json``.  Also
-emits a ``heartbeat.json`` every ~5 seconds.
+emits a ``heartbeat.json`` every ~5 seconds, which carries a per-session
+token that command.json must echo back (cheap partial isolation against a
+stale/unrelated MCP server writing into a shared temp dir — not full auth;
+see the ``_bridge_token`` comment below).
 
 IPC directory: ``.uefn_bridge/`` (next to this script)
 
@@ -25,6 +28,7 @@ import os
 import datetime
 import traceback
 import time
+import secrets
 
 # Reuse device_audit helpers — do NOT duplicate that logic.
 from device_audit import (
@@ -66,6 +70,16 @@ _tick_handle = None        # slate tick callback handle
 _bridge_dir = None         # resolved IPC directory path
 _last_poll_time = 0.0      # monotonic time of last command poll
 _last_heartbeat_time = 0.0 # monotonic time of last heartbeat write
+
+# Session token — a cheap partial mitigation against a stale/unrelated MCP
+# server (e.g. from a previous session, or another user on a shared temp
+# dir) sending commands into this bridge instance. NOT full auth: the temp
+# dir is still world-readable on shared machines, so this only rejects
+# *unintentional* cross-session command delivery, not a determined local
+# attacker. Regenerated every start_bridge() call and published via
+# heartbeat.json so the MCP server can pick it up before its first command.
+_bridge_token = None
+_warned_bad_token = False  # log a rejected-command warning once, not per-poll
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +142,7 @@ def _read_json(filepath):
 
 def _write_heartbeat():
     """Write heartbeat.json with current status."""
-    global _bridge_dir
+    global _bridge_dir, _bridge_token
     try:
         subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
         actor_count = len(subsystem.get_all_level_actors()) if subsystem else 0
@@ -145,6 +159,10 @@ def _write_heartbeat():
         "timestamp": datetime.datetime.now().isoformat(),
         "level_name": level_name,
         "actor_count": actor_count,
+        # Session token — see _bridge_token comment. Absent on older bridge
+        # builds; the MCP server treats a missing field as "no token support"
+        # and falls back to tokenless commands.
+        "token": _bridge_token,
     }
     _write_json(os.path.join(_bridge_dir, "heartbeat.json"), heartbeat)
 
@@ -536,7 +554,7 @@ _METHODS = {
 
 def _process_command():
     """Check for command.json, execute it, and write the response."""
-    global _bridge_dir
+    global _bridge_dir, _bridge_token, _warned_bad_token
 
     cmd_path = os.path.join(_bridge_dir, "command.json")
     if not os.path.exists(cmd_path):
@@ -553,6 +571,20 @@ def _process_command():
 
     if cmd is None:
         unreal.log_warning("uefn_bridge: Could not parse command.json")
+        return
+
+    # Session-token check (see _bridge_token comment for threat model).
+    # Reject any command whose token doesn't match ours. Ignore it entirely
+    # (no response written — the sender either isn't ours or is a
+    # pre-token MCP server that hasn't been upgraded) but log once so a
+    # persistent mismatch is discoverable without spamming the log per poll.
+    if cmd.get("token") != _bridge_token:
+        if not _warned_bad_token:
+            _warned_bad_token = True
+            unreal.log_warning(
+                "uefn_bridge: Rejected command.json with missing/mismatched "
+                "session token (further mismatches will not be logged)."
+            )
         return
 
     cmd_id = cmd.get("id", "unknown")
@@ -628,12 +660,15 @@ def _tick(delta_time):
 def start_bridge():
     """Register the tick callback and begin listening for commands."""
     global _tick_handle, _bridge_dir, _last_poll_time, _last_heartbeat_time
+    global _bridge_token, _warned_bad_token
 
     if _tick_handle is not None:
         unreal.log("uefn_bridge: Bridge already running.")
         return
 
     _bridge_dir = _get_bridge_dir()
+    _bridge_token = secrets.token_hex(16)
+    _warned_bad_token = False
     _last_poll_time = time.monotonic()
     _last_heartbeat_time = 0.0  # write heartbeat immediately on start
 

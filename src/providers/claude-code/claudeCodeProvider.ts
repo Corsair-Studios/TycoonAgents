@@ -4,7 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
-import * as fs from "fs";
+import * as fs from "fs/promises";
 import type { Provider } from "../../core/provider";
 import type { EventSink } from "../../core/events";
 import type { HookRecord } from "./hookRecord";
@@ -26,12 +26,21 @@ export class ClaudeCodeProvider implements Provider {
   public readonly id = "claude-code";
   private timer: ReturnType<typeof setInterval> | undefined;
   private offset = 0;
+  // Guards against overlapping ticks: the poll interval fires on a fixed
+  // cadence regardless of how long the previous tick's async fs work takes,
+  // so a slow disk (or a huge backlog spanning many ticks) could otherwise
+  // start a second drain() while the first is still awaiting I/O. Both
+  // would race on `this.offset`. Skip a tick outright if one is in flight;
+  // the next timer fire will pick up where the in-flight one left off.
+  private draining = false;
 
   constructor(private readonly options: ClaudeCodeProviderOptions) {}
 
   public start(emit: EventSink): void {
     const interval = this.options.pollIntervalMs ?? 250;
-    this.timer = setInterval(() => this.drain(emit), interval);
+    this.timer = setInterval(() => {
+      void this.drain(emit);
+    }, interval);
   }
 
   public stop(): void {
@@ -41,17 +50,28 @@ export class ClaudeCodeProvider implements Provider {
     }
   }
 
-  private drain(emit: EventSink): void {
+  private async drain(emit: EventSink): Promise<void> {
+    if (this.draining) return; // previous tick's async work is still in flight
+    this.draining = true;
     try {
-      if (!fs.existsSync(this.options.activityFile)) return;
-      const size = fs.statSync(this.options.activityFile).size;
+      let stat;
+      try {
+        stat = await fs.stat(this.options.activityFile);
+      } catch {
+        return; // file doesn't exist (yet)
+      }
+      const size = stat.size;
       if (size < this.offset) this.offset = 0; // file truncated/rotated
       if (size <= this.offset) return;
       const length = Math.min(size - this.offset, MAX_READ_BYTES);
-      const fd = fs.openSync(this.options.activityFile, "r");
-      const buffer = Buffer.alloc(length);
-      fs.readSync(fd, buffer, 0, length, this.offset);
-      fs.closeSync(fd);
+      const handle = await fs.open(this.options.activityFile, "r");
+      let buffer: Buffer;
+      try {
+        buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, this.offset);
+      } finally {
+        await handle.close();
+      }
 
       // Only advance past the last confirmed newline; a trailing partial
       // line (writer flushed mid-record, or we hit the read cap) is left
@@ -77,6 +97,8 @@ export class ClaudeCodeProvider implements Provider {
       }
     } catch {
       // ignore transient FS errors; keep polling
+    } finally {
+      this.draining = false;
     }
   }
 }

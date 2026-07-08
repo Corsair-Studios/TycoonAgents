@@ -10,6 +10,41 @@ import path from "path";
 // Bridge directory — honor env var or fall back to OS temp dir (matching Python's tempfile.gettempdir())
 const BRIDGE_DIR = process.env.UEFN_BRIDGE_DIR ?? path.join(os.tmpdir(), "uefn_bridge");
 
+// Session-token compat matrix (cheap partial IPC isolation, not full auth —
+// the shared temp dir is still world-readable; this only stops
+// *unintentional* cross-session command delivery, e.g. a leftover MCP
+// server from a previous session talking to a freshly restarted bridge):
+//
+//   new server x new bridge  -> isolated. Server reads the token the bridge
+//                                published in heartbeat.json and echoes it
+//                                on every command; bridge rejects anything
+//                                that doesn't match.
+//   new server x old bridge  -> tokenless. heartbeat.json has no `token`
+//                                field, so the server omits `token` from
+//                                commands; old bridge ignores unknown
+//                                command fields either way, so this is
+//                                identical to pre-token behavior.
+//   old server x new bridge  -> commands rejected. An un-upgraded server
+//                                never sends a token, so the bridge treats
+//                                every command as a mismatch and drops it
+//                                (logged once). Requires upgrading the
+//                                server to interoperate.
+//   old server x old bridge  -> unchanged, tokenless.
+const HEARTBEAT_PATH = path.join(BRIDGE_DIR, "heartbeat.json");
+
+async function readBridgeToken(): Promise<string | undefined> {
+  try {
+    const raw = await fs.readFile(HEARTBEAT_PATH, "utf8");
+    const heartbeat = JSON.parse(raw) as { token?: unknown };
+    return typeof heartbeat.token === "string" ? heartbeat.token : undefined;
+  } catch {
+    // heartbeat.json missing/unreadable/stale — bridge not started yet, or
+    // an old bridge build that never wrote a token. Either way, fall back
+    // to a tokenless command (see compat matrix above).
+    return undefined;
+  }
+}
+
 // Serialize all requests — Python only handles one command.json at a time
 let requestChain: Promise<unknown> = Promise.resolve();
 let counter = 0;
@@ -28,7 +63,8 @@ async function _callBridgeNow(method: string, params: Record<string, unknown>): 
   const commandTmpPath = path.join(BRIDGE_DIR, `command_${id}.tmp`);
   const responsePath = path.join(BRIDGE_DIR, `response_${id}.json`);
 
-  const payload = JSON.stringify({ id, method, params });
+  const token = await readBridgeToken();
+  const payload = JSON.stringify(token ? { id, method, params, token } : { id, method, params });
 
   // Atomic write: write to .tmp then rename (mirrors Python's os.replace)
   await fs.mkdir(BRIDGE_DIR, { recursive: true });

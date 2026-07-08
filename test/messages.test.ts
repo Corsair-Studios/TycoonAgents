@@ -1,0 +1,94 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { MSG, MSG_SCHEMAS } from '../src/host/vscode/messages';
+
+// media/main.js is a hand-edited browser file that cannot import messages.ts
+// (it's an untyped, non-bundled IIFE). It matches these wire strings by hand,
+// so this is a drift guard, same trick as test/mainPanelClips.test.ts: read
+// the file and assert a few representative literals still appear verbatim.
+function readMainJs(): string {
+  return readFileSync(join(process.cwd(), 'media', 'main.js'), 'utf8');
+}
+
+test('MSG values are all unique wire strings', () => {
+  const values = Object.values(MSG);
+  const unique = new Set(values);
+  assert.equal(unique.size, values.length, 'MSG contains duplicate wire strings');
+});
+
+test('media/main.js still uses a representative sample of MSG wire strings', () => {
+  const src = readMainJs();
+  const spotChecks: Array<[string, string]> = [
+    ['BADGE_UNLOCKED', MSG.BADGE_UNLOCKED],
+    ['installSkill', MSG.INSTALL_SKILL],
+    ['DELETE_THEME', MSG.DELETE_THEME],
+    ['SAVE_STAGE_TUNING', MSG.SAVE_STAGE_TUNING],
+    ['setAgentModel', MSG.SET_AGENT_MODEL],
+  ];
+  for (const [label, wire] of spotChecks) {
+    assert.ok(
+      src.includes(`"${wire}"`) || src.includes(`'${wire}'`),
+      `media/main.js has drifted — expected literal "${wire}" (${label}) not found`,
+    );
+  }
+});
+
+test('SET_AGENT_MODEL schema: valid payload passes', () => {
+  const result = MSG_SCHEMAS.SET_AGENT_MODEL.safeParse({ type: 'setAgentModel', id: 'search-retrieval', model: 'haiku' });
+  assert.equal(result.success, true);
+});
+
+test('SET_AGENT_MODEL schema: missing required field fails', () => {
+  const result = MSG_SCHEMAS.SET_AGENT_MODEL.safeParse({ type: 'setAgentModel', id: 'search-retrieval' });
+  assert.equal(result.success, false);
+});
+
+test('SET_AGENT_MODEL schema: extra fields are tolerated (passthrough)', () => {
+  const result = MSG_SCHEMAS.SET_AGENT_MODEL.safeParse({
+    type: 'setAgentModel',
+    id: 'search-retrieval',
+    model: 'haiku',
+    futureField: 'ignored-by-older-hosts',
+  });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal((result.data as Record<string, unknown>)['futureField'], 'ignored-by-older-hosts');
+  }
+});
+
+test('ID_ONLY schema: valid payload passes, missing id fails', () => {
+  assert.equal(MSG_SCHEMAS.ID_ONLY.safeParse({ type: 'removeSkill', id: 'theme-builder' }).success, true);
+  assert.equal(MSG_SCHEMAS.ID_ONLY.safeParse({ type: 'removeSkill' }).success, false);
+  assert.equal(MSG_SCHEMAS.ID_ONLY.safeParse({ type: 'removeSkill', id: '' }).success, false);
+});
+
+test('DELETE_THEME schema: valid payload passes, missing theme_id fails', () => {
+  assert.equal(MSG_SCHEMAS.DELETE_THEME.safeParse({ theme_id: 'cobra_command' }).success, true);
+  assert.equal(MSG_SCHEMAS.DELETE_THEME.safeParse({}).success, false);
+  assert.equal(MSG_SCHEMAS.DELETE_THEME.safeParse(undefined).success, false);
+});
+
+test('BADGE_UNLOCKED schema: valid payload passes, partial payload fails', () => {
+  assert.equal(
+    MSG_SCHEMAS.BADGE_UNLOCKED.safeParse({ theme_id: 'cobra_command', badge_id: 'first_build' }).success,
+    true,
+  );
+  assert.equal(MSG_SCHEMAS.BADGE_UNLOCKED.safeParse({ theme_id: 'cobra_command' }).success, false);
+});
+
+test('RENAME_THEME_CHARACTER schema: valid payload passes, extra fields tolerated', () => {
+  const result = MSG_SCHEMAS.RENAME_THEME_CHARACTER.safeParse({
+    theme_id: 'cobra_command',
+    item_id: 'char_01',
+    name: 'Vex',
+    unknownFutureField: 42,
+  });
+  assert.equal(result.success, true);
+});
+
+test('RENAME_THEME_CHARACTER schema: missing item_id fails', () => {
+  const result = MSG_SCHEMAS.RENAME_THEME_CHARACTER.safeParse({ theme_id: 'cobra_command', name: 'Vex' });
+  assert.equal(result.success, false);
+});
