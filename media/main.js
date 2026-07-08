@@ -1800,11 +1800,17 @@
       for (const card of themeImageReviewList.querySelectorAll("[data-item-id]")) {
         const itemId = card.getAttribute("data-item-id");
         if (!itemId) continue;
+        const names = {};
+        for (const input of card.querySelectorAll(".theme-review-names-input")) {
+          const rowId = input.getAttribute("data-row-id");
+          if (rowId) names[rowId] = input.value;
+        }
         drafts.set(itemId, {
           feedback: card.querySelector(".theme-review-feedback")?.value || "",
           mode: card.querySelector(".theme-review-mode")?.value || "",
           characterName: card.querySelector(".theme-review-name-input")?.value || "",
           promptOpen: Boolean(card.querySelector(".theme-review-prompt")?.open),
+          names,
         });
       }
     }
@@ -1812,6 +1818,205 @@
       drafts,
       scrollTop: themesScrollEl?.scrollTop || 0,
     };
+  }
+
+  /**
+   * Board-row metadata for the theme review screen's inline "Names" editor.
+   * Manifest display_names drive board regeneration prompts (see
+   * buildReplacementPrompt/objectRowsForItem/decorRowsForItem/rivalRowsForItem
+   * in themeService.ts), so this is the ONLY supported way to rename buildable
+   * objects, decor items, and rivals — the old Stage Editor "✎ Rename" buttons
+   * were removed because window.prompt() is disabled in VS Code webviews and
+   * silently no-ops. Character boards already have a working single-item
+   * rename ("Character name" / Save name, RENAME_THEME_CHARACTER) and are
+   * intentionally left out of this batch editor.
+   * @param {any} item a THEME_IMAGE_REVIEW review item
+   * @returns {Array<{rowId: string, itemKind: "object"|"decor"|"rival", label: string, original: string}>}
+   */
+  function themeReviewNameRows(item) {
+    if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
+      return item.object_rows
+        .filter((row) => row && row.kind === "object" && row.object_id)
+        .map((row) => ({
+          rowId: row.object_id,
+          itemKind: "object",
+          label: humanizeThemeId(row.object_id),
+          original: row.display_name || "",
+        }));
+    }
+    if (item.kind === "background_decor_atlas" && Array.isArray(item.decor_rows)) {
+      const rows = [];
+      let seatIndex = 0;
+      let decorIndex = 0;
+      for (const row of item.decor_rows) {
+        if (!row || !row.decor_id) continue;
+        if (row.kind === "seat") {
+          seatIndex += 1;
+          rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Seat " + seatIndex, original: row.display_name || "" });
+        } else if (row.kind === "decor") {
+          decorIndex += 1;
+          rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Decor " + decorIndex, original: row.display_name || "" });
+        } else if (row.kind === "decor_anim") {
+          rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Animated decor", original: row.display_name || "" });
+        }
+        // Projectile rows are intentionally excluded — no display_name, not user-facing.
+      }
+      return rows;
+    }
+    if (item.kind === "rival_atlas" && Array.isArray(item.rival_rows)) {
+      return item.rival_rows
+        .filter((row) => row && row.rival_id)
+        .map((row) => ({
+          rowId: row.rival_id,
+          itemKind: "rival",
+          label: humanizeThemeId(row.rival_id),
+          original: row.display_name || "",
+        }));
+    }
+    return [];
+  }
+
+  function humanizeThemeId(id) {
+    return String(id).replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+
+  /**
+   * Builds the per-board "Names" editor: one label+input pair per row (see
+   * themeReviewNameRows) plus a batched "Apply names" button that posts ONE
+   * SET_THEME_ITEM_NAMES message for every edited, valid row on this board.
+   * Returns null when the item's kind carries no nameable rows.
+   * @param {any} item
+   * @param {{names?: Record<string,string>}|undefined} savedDraft
+   * @param {boolean} busy true while a previous Apply for this board is in flight
+   * @param {boolean} disabledForGeneration true while an unrelated active generation run blocks edits
+   */
+  function buildThemeReviewNamesSection(item, savedDraft, busy, disabledForGeneration) {
+    const rows = themeReviewNameRows(item);
+    if (!rows.length) return null;
+    const section = document.createElement("div");
+    section.className = "theme-review-names";
+    const title = document.createElement("div");
+    title.className = "theme-review-names-title";
+    title.textContent = "Names";
+    const grid = document.createElement("div");
+    grid.className = "theme-review-names-grid";
+    const inputsDisabled = busy || disabledForGeneration;
+    const inputs = [];
+    for (const row of rows) {
+      const rowEl = document.createElement("label");
+      rowEl.className = "theme-review-names-row";
+      const labelEl = document.createElement("span");
+      labelEl.textContent = row.label;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "theme-review-name-input theme-review-names-input";
+      input.maxLength = 60;
+      input.dataset.rowId = row.rowId;
+      input.dataset.itemKind = row.itemKind;
+      input.dataset.original = row.original;
+      const draftValue = savedDraft?.names && Object.prototype.hasOwnProperty.call(savedDraft.names, row.rowId)
+        ? savedDraft.names[row.rowId]
+        : row.original;
+      input.value = draftValue;
+      input.disabled = inputsDisabled;
+      rowEl.appendChild(labelEl);
+      rowEl.appendChild(input);
+      grid.appendChild(rowEl);
+      inputs.push(input);
+    }
+    const applyBtn = document.createElement("button");
+    applyBtn.className = "skill-btn theme-review-names-apply";
+    applyBtn.type = "button";
+    applyBtn.textContent = busy ? "Saving..." : "Apply names";
+    const statusEl = document.createElement("div");
+    statusEl.className = "theme-review-names-status";
+    const dirtyChanges = () => inputs
+      .map((input) => ({ input, trimmed: input.value.trim().replace(/\s+/g, " ") }))
+      .filter(({ input, trimmed }) => trimmed && trimmed.length <= 60 && trimmed !== input.dataset.original);
+    const updateApplyState = () => {
+      applyBtn.disabled = inputsDisabled || dirtyChanges().length === 0;
+    };
+    for (const input of inputs) input.addEventListener("input", updateApplyState);
+    updateApplyState();
+    applyBtn.addEventListener("click", () => {
+      const changes = [];
+      for (const input of inputs) {
+        const trimmed = input.value.trim().replace(/\s+/g, " ");
+        if (!trimmed || trimmed.length > 60 || trimmed === input.dataset.original) {
+          // Empty/whitespace/too-long edits are rejected client-side — revert
+          // to the last known-good value instead of blocking the rest.
+          input.value = input.dataset.original;
+          continue;
+        }
+        changes.push({ item_kind: input.dataset.itemKind, id: input.dataset.rowId, name: trimmed });
+      }
+      if (!changes.length) {
+        updateApplyState();
+        return;
+      }
+      for (const input of inputs) input.disabled = true;
+      applyBtn.disabled = true;
+      applyBtn.textContent = "Saving...";
+      statusEl.textContent = "";
+      statusEl.classList.remove("theme-review-error");
+      themeReviewBusyItems.set(item.id, "names");
+      vscode.postMessage({
+        type: "SET_THEME_ITEM_NAMES",
+        payload: { theme_id: reviewThemeId, board_id: item.id, changes },
+      });
+    });
+    section.appendChild(title);
+    section.appendChild(grid);
+    section.appendChild(applyBtn);
+    section.appendChild(statusEl);
+    return section;
+  }
+
+  /** Handles a THEME_ITEM_NAMES_RESULT reply without a full review re-render
+   * (which would show stale row names — see themeService.ts's manifest-wins
+   * comment on renameThemeItemsBatch). Patches only the affected board's card. */
+  function applyThemeItemNamesResult(payload) {
+    const boardId = payload.board_id || "";
+    themeReviewBusyItems.delete(boardId);
+    if (!themeImageReviewList) return;
+    const cards = themeImageReviewList.querySelectorAll("[data-item-id]");
+    for (const card of cards) {
+      if (card.getAttribute("data-item-id") !== boardId) continue;
+      const applyBtn = card.querySelector(".theme-review-names-apply");
+      const statusEl = card.querySelector(".theme-review-names-status");
+      const inputs = card.querySelectorAll(".theme-review-names-input");
+      const appliedById = new Map((payload.applied || []).map((change) => [change.id, change.name]));
+      const rejectedById = new Map((payload.rejected || []).map((rejection) => [rejection.id, rejection.reason]));
+      for (const input of inputs) {
+        input.disabled = false;
+        const rowId = input.getAttribute("data-row-id");
+        if (rowId && appliedById.has(rowId)) {
+          const nextName = appliedById.get(rowId);
+          input.value = nextName;
+          input.dataset.original = nextName;
+        } else if (rowId && rejectedById.has(rowId)) {
+          input.value = input.dataset.original;
+        }
+      }
+      if (applyBtn) {
+        applyBtn.textContent = "Apply names";
+        applyBtn.disabled = true;
+      }
+      if (statusEl) {
+        if (payload.error) {
+          statusEl.textContent = "Save failed: " + payload.error;
+          statusEl.classList.add("theme-review-error");
+        } else if (rejectedById.size) {
+          statusEl.textContent = appliedById.size
+            ? (appliedById.size + " name(s) saved; " + rejectedById.size + " rejected.")
+            : "Names were not saved.";
+          statusEl.classList.toggle("theme-review-error", !appliedById.size);
+        } else {
+          statusEl.textContent = "Names saved ✓";
+          statusEl.classList.remove("theme-review-error");
+        }
+      }
+    }
   }
 
   function renderThemeImageReview(payload) {
@@ -2111,15 +2316,16 @@
       const feedbackHint = document.createElement("div");
       feedbackHint.className = "theme-review-feedback-hint";
       feedbackHint.textContent = "Notes only — don't paste a full prompt; layout and art rules are added automatically.";
-      // Object/decor board rows are always drawn from the manifest's
-      // buildable_objects / decor_objects display names — notes here are
-      // creative direction only and cannot rename or reorder rows.
-      let objectListHint = null;
-      if (item.kind === "object_atlas" || item.kind === "background_decor_atlas") {
-        objectListHint = document.createElement("div");
-        objectListHint.className = "theme-review-feedback-hint";
-        objectListHint.textContent = "Row items come from the theme's object list — rename objects in the Stage Editor, then regenerate.";
-      }
+      // Object/decor/rival board rows are always drawn from the manifest's
+      // buildable_objects / decor_objects / roster_rivals display names — the
+      // "Names" editor below is the only way to rename them (notes above are
+      // creative direction only and cannot rename or reorder rows).
+      const namesSection = buildThemeReviewNamesSection(
+        item,
+        savedDraft,
+        themeReviewBusyItems.get(item.id) === "names",
+        Boolean(payload.generation_active && !isCurrentReviewGate),
+      );
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
       const mode = document.createElement("select");
@@ -2243,10 +2449,10 @@
       body.appendChild(meta);
       if (generationError) body.appendChild(generationError);
       if (nameRow) body.appendChild(nameRow);
+      if (namesSection) body.appendChild(namesSection);
       body.appendChild(decisionRow);
       body.appendChild(feedback);
       body.appendChild(feedbackHint);
-      if (objectListHint) body.appendChild(objectListHint);
       body.appendChild(retryRow);
       body.appendChild(retryStatus);
       body.appendChild(retryWarning);
@@ -3465,7 +3671,6 @@
           '<div class="se-override">' +
             '<div class="se-override-label">Per-object override</div>' +
             '<select id="se-obj" class="se-select"></select>' +
-            '<button id="se-obj-rename" class="se-clear" type="button" title="Rename this object">✎ Rename</button>' +
             '<input id="se-oo" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-oo-clear" class="se-clear" type="button">clear override</button>' +
           '</div>' +
@@ -3488,7 +3693,6 @@
           '<div class="se-override">' +
             '<div class="se-override-label">Per-decor override</div>' +
             '<select id="se-decor" class="se-select"></select>' +
-            '<button id="se-decor-rename" class="se-clear" type="button" title="Rename this decor item">✎ Rename</button>' +
             '<input id="se-do" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-do-clear" class="se-clear" type="button">clear override</button>' +
           '</div>' +
@@ -3520,7 +3724,6 @@
     stageEditEls.ov = wrap.querySelector("#se-ov");
     stageEditEls.ovVal = wrap.querySelector("#se-ov-val");
     stageEditEls.obj = wrap.querySelector("#se-obj");
-    stageEditEls.objRename = wrap.querySelector("#se-obj-rename");
     stageEditEls.oo = wrap.querySelector("#se-oo");
     stageEditEls.ooClear = wrap.querySelector("#se-oo-clear");
     stageEditEls.rs = wrap.querySelector("#se-rs");
@@ -3531,7 +3734,6 @@
     stageEditEls.ds = wrap.querySelector("#se-ds");
     stageEditEls.dsVal = wrap.querySelector("#se-ds-val");
     stageEditEls.decor = wrap.querySelector("#se-decor");
-    stageEditEls.decorRename = wrap.querySelector("#se-decor-rename");
     stageEditEls.do_ = wrap.querySelector("#se-do");
     stageEditEls.doClear = wrap.querySelector("#se-do-clear");
     stageEditEls.ei = wrap.querySelector("#se-ei");
@@ -3594,11 +3796,6 @@
       if (editSelectedObjId) delete themeObjScaleOverrides[editSelectedObjId];
       syncObjOverrideSlider();
     });
-    if (stageEditEls.objRename) {
-      stageEditEls.objRename.addEventListener("click", () => {
-        promptRenameStageItem("object", editSelectedObjId, themeBuildables, "object_id", stageEditEls.objRename);
-      });
-    }
     stageEditEls.rs.addEventListener("input", () => {
       themeRivalScale = parseFloat(stageEditEls.rs.value) || 1;
       stageEditEls.rsVal.textContent = themeRivalScale.toFixed(2);
@@ -3631,11 +3828,6 @@
       if (editSelectedDecorId) delete themeDecorScaleOverrides[editSelectedDecorId];
       syncDecorOverrideSlider();
     });
-    if (stageEditEls.decorRename) {
-      stageEditEls.decorRename.addEventListener("click", () => {
-        promptRenameStageItem("decor", editSelectedDecorId, themeDecor, "decor_id", stageEditEls.decorRename);
-      });
-    }
     stageEditEls.ei.addEventListener("input", () => {
       enemySpawnIntervalSec = parseFloat(stageEditEls.ei.value) || 45;
       stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
@@ -3670,38 +3862,6 @@
   function syncDecorOverrideSlider() {
     const ov = themeDecorScaleOverrides[editSelectedDecorId];
     stageEditEls.do_.value = String(typeof ov === "number" && ov > 0 ? ov : themeDecorScale);
-  }
-  /**
-   * Rename affordance for the Stage Editor's per-object/per-decor override
-   * lists. Legacy themes stamped by buildDefaultDecorObjects (themeMigration.ts)
-   * have permanent placeholder names ("Seat 1", "Decor 1", "Animated Decor 1")
-   * and no saved plan.json for regenerateThemeBoard's name-sync to draw from,
-   * so this is the only way to rename them. Prompts for a new name, disables
-   * the button while the host persists it, then relies on
-   * THEME_STAGE_ITEM_RENAME_RESULT to patch the select option label in place.
-   * @param {"object"|"decor"} itemKind
-   * @param {string} itemId
-   * @param {Array<any>} itemList themeBuildables or themeDecor
-   * @param {"object_id"|"decor_id"} idField
-   * @param {HTMLButtonElement} btn
-   */
-  function promptRenameStageItem(itemKind, itemId, itemList, idField, btn) {
-    if (!selectedThemeId || !itemId) return;
-    const current = itemList.find((entry) => entry && entry[idField] === itemId);
-    const currentName = (current && current.display_name) || itemId;
-    const next = window.prompt("Rename " + (itemKind === "decor" ? "decor item" : "object") + ":", currentName);
-    if (next === null) return;
-    const trimmed = next.trim().replace(/\s+/g, " ");
-    if (!trimmed || trimmed === currentName) return;
-    btn.disabled = true;
-    if (stageEditEls.status) {
-      stageEditEls.status.style.color = "#9fffa0";
-      stageEditEls.status.textContent = "Renaming…";
-    }
-    vscode.postMessage({
-      type: "RENAME_THEME_STAGE_ITEM",
-      payload: { theme_id: selectedThemeId, item_kind: itemKind, item_id: itemId, name: trimmed },
-    });
   }
   function enterEditStage() {
     if (!themeLoaded) return;
@@ -5473,26 +5633,8 @@
         stageEditEls.status.textContent = ok ? "Saved to theme ✓" : "Save failed";
         stageEditEls.status.style.color = ok ? "#9fffa0" : "#ff9f9f";
       }
-    } else if (msg && msg.type === "THEME_STAGE_ITEM_RENAME_RESULT") {
-      const p = msg.payload || {};
-      const isDecor = p.item_kind === "decor";
-      const btn = isDecor ? stageEditEls.decorRename : stageEditEls.objRename;
-      if (btn) btn.disabled = false;
-      if (stageEditEls && stageEditEls.status) {
-        stageEditEls.status.style.color = p.ok ? "#9fffa0" : "#ff9f9f";
-        stageEditEls.status.textContent = p.ok ? "Renamed ✓" : ("Rename failed: " + (p.error || "unknown error"));
-      }
-      if (p.ok && p.name) {
-        const list = isDecor ? themeDecor : themeBuildables;
-        const idField = isDecor ? "decor_id" : "object_id";
-        const entry = list.find((candidate) => candidate && candidate[idField] === p.item_id);
-        if (entry) entry.display_name = p.name;
-        const select = isDecor ? stageEditEls.decor : stageEditEls.obj;
-        if (select) {
-          const option = Array.prototype.find.call(select.options, (opt) => opt.value === p.item_id);
-          if (option) option.textContent = p.name;
-        }
-      }
+    } else if (msg && msg.type === "THEME_ITEM_NAMES_RESULT") {
+      applyThemeItemNamesResult(msg.payload || {});
     } else if (msg && msg.type === "BACKGROUND_REPLACE_RESULT") {
       const ok = msg.payload && msg.payload.ok;
       const cancelled = msg.payload && msg.payload.cancelled;

@@ -121,8 +121,8 @@ export const MSG = {
   THEME_APPROVE_ALL_RESULT: "THEME_APPROVE_ALL_RESULT",
   RENAME_THEME_CHARACTER: "RENAME_THEME_CHARACTER",
   THEME_CHARACTER_RENAME_STATE: "THEME_CHARACTER_RENAME_STATE",
-  RENAME_THEME_STAGE_ITEM: "RENAME_THEME_STAGE_ITEM",
-  THEME_STAGE_ITEM_RENAME_RESULT: "THEME_STAGE_ITEM_RENAME_RESULT",
+  SET_THEME_ITEM_NAMES: "SET_THEME_ITEM_NAMES",
+  THEME_ITEM_NAMES_RESULT: "THEME_ITEM_NAMES_RESULT",
   NORMALIZE_THEME_CHARACTER: "NORMALIZE_THEME_CHARACTER",
   THEME_CHARACTER_NORMALIZE_STATE: "THEME_CHARACTER_NORMALIZE_STATE",
   RETRY_THEME_IMAGE: "RETRY_THEME_IMAGE",
@@ -261,12 +261,24 @@ export const MSG_SCHEMAS = {
     })
     .passthrough(),
 
-  RENAME_THEME_STAGE_ITEM: z
+  // Batched rename from the theme review screen's per-board "Names" editor —
+  // one message per board carries every row's change so the host loads/writes
+  // the theme once instead of once per row.
+  SET_THEME_ITEM_NAMES: z
     .object({
       theme_id: z.string().min(1),
-      item_id: z.string().min(1),
-      item_kind: z.string().optional(),
-      name: z.string().optional(),
+      board_id: z.string().min(1).optional(),
+      changes: z
+        .array(
+          z
+            .object({
+              item_kind: z.enum(['object', 'decor', 'character', 'rival']),
+              id: z.string().min(1),
+              name: z.string().min(1).max(60),
+            })
+            .passthrough(),
+        )
+        .min(1),
     })
     .passthrough(),
 

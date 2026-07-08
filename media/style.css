@@ -3136,6 +3136,56 @@ button.theme-review-preview:focus-visible::after {
   border-color: var(--vscode-inputValidation-errorBorder, #f85149);
 }
 
+.theme-review-names {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--vscode-panel-border, var(--border));
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.theme-review-names-title {
+  color: var(--vscode-descriptionForeground, var(--muted));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.theme-review-names-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.theme-review-names-row {
+  display: contents;
+  color: var(--vscode-descriptionForeground, var(--muted));
+  font-size: 11px;
+}
+
+.theme-review-names-input {
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.theme-review-names-apply {
+  align-self: flex-start;
+}
+
+.theme-review-names-status {
+  font-size: 11px;
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.theme-review-names-status.theme-review-error {
+  color: var(--vscode-testing-iconFailed, #f85149);
+}
+
 .theme-review-feedback,
 .theme-review-mode {
   min-width: 0;
@@ -3209,6 +3259,10 @@ button.theme-review-preview:focus-visible::after {
 
   .theme-review-name-row > span {
     grid-column: 1 / -1;
+  }
+
+  .theme-review-names-grid {
+    grid-template-columns: 1fr;
   }
 
   .theme-plan-header,

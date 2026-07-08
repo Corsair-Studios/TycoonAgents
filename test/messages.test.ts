@@ -26,6 +26,7 @@ test('media/main.js still uses a representative sample of MSG wire strings', () 
     ['DELETE_THEME', MSG.DELETE_THEME],
     ['SAVE_STAGE_TUNING', MSG.SAVE_STAGE_TUNING],
     ['setAgentModel', MSG.SET_AGENT_MODEL],
+    ['SET_THEME_ITEM_NAMES', MSG.SET_THEME_ITEM_NAMES],
   ];
   for (const [label, wire] of spotChecks) {
     assert.ok(
@@ -90,5 +91,42 @@ test('RENAME_THEME_CHARACTER schema: valid payload passes, extra fields tolerate
 
 test('RENAME_THEME_CHARACTER schema: missing item_id fails', () => {
   const result = MSG_SCHEMAS.RENAME_THEME_CHARACTER.safeParse({ theme_id: 'cobra_command', name: 'Vex' });
+  assert.equal(result.success, false);
+});
+
+test('SET_THEME_ITEM_NAMES schema: valid batch passes', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_NAMES.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'objects_01',
+    changes: [
+      { item_kind: 'object', id: 'crate_01', name: 'Supply Crate' },
+      { item_kind: 'decor', id: 'seat_01', name: 'Camp Chair' },
+    ],
+  });
+  assert.equal(result.success, true);
+});
+
+test('SET_THEME_ITEM_NAMES schema: empty changes array fails', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_NAMES.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'objects_01',
+    changes: [],
+  });
+  assert.equal(result.success, false);
+});
+
+test('SET_THEME_ITEM_NAMES schema: unknown item_kind fails', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_NAMES.safeParse({
+    theme_id: 'cobra_command',
+    changes: [{ item_kind: 'sprocket', id: 'crate_01', name: 'Supply Crate' }],
+  });
+  assert.equal(result.success, false);
+});
+
+test('SET_THEME_ITEM_NAMES schema: name over 60 characters fails', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_NAMES.safeParse({
+    theme_id: 'cobra_command',
+    changes: [{ item_kind: 'object', id: 'crate_01', name: 'x'.repeat(61) }],
+  });
   assert.equal(result.success, false);
 });

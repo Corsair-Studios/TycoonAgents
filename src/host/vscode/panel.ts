@@ -47,7 +47,7 @@ import {
   readThemeArchive,
   regenerateThemeBoard,
   renameThemeCharacter,
-  renameThemeStageItem,
+  renameThemeItemsBatch,
   replaceThemeBackground,
   resliceThemeImageFromRaw,
   retryThemeImage,
@@ -61,7 +61,7 @@ import {
 import { sanitizeRetryNotes } from "../../extension/themeImageRetry";
 import type { ThemeImageRetryMode } from "../../extension/themeImageRetry";
 import type { ThemePlan } from "../../extension/themePlan";
-import type { BoardKind, ThemeImageReviewWaitOptions } from "../../extension/themeService";
+import type { BoardKind, ThemeImageReviewWaitOptions, ThemeItemNameChange } from "../../extension/themeService";
 import type { ThemeManifest } from "../../shared/types";
 import { themeImagesDirectoryUri, themeRawImagesDirectoryUri } from "../../extension/themeStorage";
 import { validateThemeIntegrity } from "../../extension/themeHealth";
@@ -793,37 +793,39 @@ export class TycoonPanel {
           } finally {
             if (renamingActiveGate) this._themeGenerationGateRetryActive = false;
           }
-        } else if (message.type === MSG.RENAME_THEME_STAGE_ITEM) {
-          const parsedRenameStageItem = MSG_SCHEMAS.RENAME_THEME_STAGE_ITEM.safeParse((message as any).payload);
-          if (!parsedRenameStageItem.success) return;
-          const payload = parsedRenameStageItem.data;
+        } else if (message.type === MSG.SET_THEME_ITEM_NAMES) {
+          const parsedNames = MSG_SCHEMAS.SET_THEME_ITEM_NAMES.safeParse((message as any).payload);
+          if (!parsedNames.success) return;
+          const payload = parsedNames.data;
           const themeId = payload.theme_id;
-          const itemId = payload.item_id;
-          const itemKind = payload.item_kind === "decor" ? "decor" : "object";
-          if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
+          const boardId = payload.board_id ?? "";
+          if (!/^[a-z0-9_]+$/.test(themeId)) return;
           try {
-            const result = await renameThemeStageItem(
+            const { manifest, frames, result } = await renameThemeItemsBatch(
               this._globalStorageUri,
               themeId,
-              itemKind,
-              itemId,
-              payload.name ?? "",
+              payload.changes as ThemeItemNameChange[],
             );
-            const renamedName = itemKind === "decor"
-              ? result.manifest.decor_objects?.find((d) => d.decor_id === itemId)?.display_name
-              : result.manifest.buildable_objects?.find((o) => o.object_id === itemId)?.display_name;
             void this._panel.webview.postMessage({
-              type: MSG.THEME_STAGE_ITEM_RENAME_RESULT,
-              payload: { ok: true, item_kind: itemKind, item_id: itemId, name: renamedName },
+              type: MSG.THEME_ITEM_NAMES_RESULT,
+              payload: {
+                ok: result.rejected.length === 0,
+                theme_id: themeId,
+                board_id: boardId,
+                applied: result.applied,
+                rejected: result.rejected,
+              },
             });
-            void this._panel.webview.postMessage({
-              type: MSG.THEME_INITIALIZED,
-              payload: await this._buildThemeInitPayload(result.manifest, result.frames, true),
-            });
+            if (result.applied.length) {
+              void this._panel.webview.postMessage({
+                type: MSG.THEME_INITIALIZED,
+                payload: await this._buildThemeInitPayload(manifest, frames, true),
+              });
+            }
           } catch (err) {
             void this._panel.webview.postMessage({
-              type: MSG.THEME_STAGE_ITEM_RENAME_RESULT,
-              payload: { ok: false, item_kind: itemKind, item_id: itemId, error: errorMessage(err) },
+              type: MSG.THEME_ITEM_NAMES_RESULT,
+              payload: { ok: false, theme_id: themeId, board_id: boardId, error: errorMessage(err) },
             });
           }
         } else if (message.type === MSG.NORMALIZE_THEME_CHARACTER) {

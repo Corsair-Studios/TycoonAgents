@@ -952,45 +952,114 @@ export async function renameThemeCharacter(
   return { manifest, frames };
 }
 
+/** One row of the theme-review "Names" editor's batched Apply. */
+export interface ThemeItemNameChange {
+  item_kind: 'object' | 'decor' | 'character' | 'rival';
+  id: string;
+  name: string;
+}
+
+export interface ThemeItemNameChangeResult {
+  applied: ThemeItemNameChange[];
+  rejected: Array<{ item_kind: string; id: string; reason: string }>;
+}
+
 /**
- * Rename one Stage-Editor item (a buildable object or a decor item) by its
- * stable id. Unlike renameThemeCharacter, decor/object boards have no
- * per-item image-review entry to keep in sync (they're generated as whole
- * boards), so this only needs to touch the manifest field and persist —
- * mirrors renameThemeCharacter's load/mutate/write shape without the
- * review-document and plan-sync steps that only apply to characters.
- * Exists mainly for legacy themes stamped by buildDefaultDecorObjects
- * (themeMigration.ts), which have no saved plan.json for regenerateThemeBoard's
- * name-sync to draw from.
+ * Pure core of the theme-review "Names" editor's batched Apply: mutates
+ * `manifest` in place, applying every valid change and collecting the rest as
+ * rejections (unknown id, empty/whitespace name, name over 60 chars) without
+ * touching the manifest for those. Kept manifest-only and side-effect-free
+ * (no vscode/file IO) so it's directly unit-testable — mirrors the
+ * "manifest wins" policy objectRowsForItem/decorRowsForItem/rivalRowsForItem
+ * already enforce for board regeneration prompts: renaming here only needs to
+ * land in the manifest, because a subsequent Retry/regenerate reconstructs
+ * board rows from the CURRENT manifest rather than any stale saved snapshot.
+ * Exported for unit testing.
  */
-export async function renameThemeStageItem(
+export function applyThemeItemNameChanges(
+  manifest: ThemeManifest,
+  changes: ThemeItemNameChange[],
+): ThemeItemNameChangeResult {
+  const applied: ThemeItemNameChange[] = [];
+  const rejected: Array<{ item_kind: string; id: string; reason: string }> = [];
+  for (const change of changes) {
+    const name = (change.name ?? '').trim().replace(/\s+/g, ' ');
+    if (!name) {
+      rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Name is empty.' });
+      continue;
+    }
+    if (name.length > 60) {
+      rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Name is longer than 60 characters.' });
+      continue;
+    }
+    if (change.item_kind === 'object') {
+      const object = manifest.buildable_objects?.find((candidate) => candidate.object_id === change.id);
+      if (!object) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Object not found.' });
+        continue;
+      }
+      object.display_name = name;
+    } else if (change.item_kind === 'decor') {
+      const decor = manifest.decor_objects?.find((candidate) => candidate.decor_id === change.id);
+      if (!decor) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Decor item not found.' });
+        continue;
+      }
+      decor.display_name = name;
+    } else if (change.item_kind === 'character') {
+      const agentMatch = /^agent_(\d+)$/.exec(change.id);
+      const agent = agentMatch
+        ? manifest.roster_agents?.find((candidate) => candidate.slot_id === Number(agentMatch[1]))
+        : undefined;
+      if (!agent) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Character not found.' });
+        continue;
+      }
+      agent.name = name;
+    } else if (change.item_kind === 'rival') {
+      const rival = manifest.roster_rivals?.find((candidate) => candidate.rival_id === change.id);
+      if (!rival) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Rival not found.' });
+        continue;
+      }
+      rival.name = name;
+    } else {
+      rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Unknown item kind.' });
+      continue;
+    }
+    applied.push({ item_kind: change.item_kind, id: change.id, name });
+  }
+  return { applied, rejected };
+}
+
+/**
+ * Thin IO wrapper around applyThemeItemNameChanges: loads the theme once,
+ * applies the whole batch, writes once. Rename affordance for the theme
+ * review screen's per-board "Names" editor — buildable-object, decor, and
+ * rival display names have no per-row image-review entry to keep in sync
+ * (they're generated as whole boards, and regeneration reconstructs its
+ * prompt from the current manifest — see buildReplacementPrompt), so this
+ * only needs to touch the manifest and persist. Character changes mirror
+ * what renameThemeCharacter does to the manifest (agent.name), but skip its
+ * plan/review-document/prompt-text sync — the review screen's existing
+ * single-character rename flow (RENAME_THEME_CHARACTER) still owns that
+ * fuller semantics for character boards.
+ */
+export async function renameThemeItemsBatch(
   globalStorageUri: vscode.Uri,
   themeId: string,
-  itemKind: 'object' | 'decor',
-  itemId: string,
-  requestedName: string,
-): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> }> {
+  changes: ThemeItemNameChange[],
+): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]>; result: ThemeItemNameChangeResult }> {
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
-  const displayName = requestedName.trim().replace(/\s+/g, ' ');
-  if (!displayName) throw new Error('Enter a name.');
-  if (displayName.length > 80) throw new Error('Names must be 80 characters or fewer.');
+  if (!changes.length) throw new Error('No name changes were provided.');
 
   const loadedTheme = await loadTheme(globalStorageUri, themeId);
   if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be renamed.');
   const { manifest, frames } = loadedTheme;
 
-  if (itemKind === 'object') {
-    const object = manifest.buildable_objects?.find((candidate) => candidate.object_id === itemId);
-    if (!object) throw new Error('The object linked to this ID was not found.');
-    object.display_name = displayName;
-  } else {
-    const decor = manifest.decor_objects?.find((candidate) => candidate.decor_id === itemId);
-    if (!decor) throw new Error('The decor item linked to this ID was not found.');
-    decor.display_name = displayName;
-  }
-
-  await writeThemeFiles(globalStorageUri, manifest, frames);
-  return { manifest, frames };
+  const result = applyThemeItemNameChanges(manifest, changes);
+  if (result.applied.length) await writeThemeFiles(globalStorageUri, manifest, frames);
+  return { manifest, frames, result };
 }
 
 /** Regenerate one character board, then fit its frames to production scale. */
