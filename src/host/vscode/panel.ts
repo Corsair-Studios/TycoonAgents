@@ -30,7 +30,7 @@ import {
 } from "./delegationDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
-import { detectEngineSetups } from "./engineDetect";
+import { computeEngineChips, mcpEntryForEngine, type EngineChip } from "./engineDetect";
 import { nativeWindowsUserDataPath } from "./revealUri";
 import {
   approveAllThemeImages,
@@ -117,6 +117,10 @@ export class TycoonPanel {
   private _disposables: vscode.Disposable[] = [];
   private _runtimeDisposable: { dispose(): void } | undefined;
   private _enginePollInterval: NodeJS.Timeout | undefined;
+  /** Cached "connected" results for HTTP-probeable engine MCP entries (e.g. unreal-engine-mcp), keyed by engine id. */
+  private _engineProbeCache: Map<string, boolean> = new Map();
+  /** Engine ids with an in-flight probe fetch — guards against stacking probes across poll ticks. */
+  private _engineProbeInFlight: Set<string> = new Set();
   private _themeGenerationActive = false;
   private _themeGenerationAbortController: AbortController | undefined;
   private _themeGenerationGateRetryActive = false;
@@ -3248,11 +3252,40 @@ export class TycoonPanel {
   }
 
   /**
-   * Compute status chips for connected engine bridges (e.g. UEFN).
-   * Returns [] if no engines are configured, so the webview shows nothing.
-   * Designed to be extended: add more engine descriptors to the returned array.
+   * Kick off (or skip, if one is already in flight) a short HTTP probe for
+   * `engineId`'s MCP url. Never throws or rejects outward — the poll loop
+   * only ever reads the cached result via `_engineProbeCache`. Any response
+   * (even 4xx/5xx) counts as "connected"; a network error or the ~1s
+   * AbortController timeout counts as "offline".
    */
-  private _computeEngineStatus(): Array<{ id: string; label: string; state: "connected" | "offline" | "ready" | "setup"; detail: string }> {
+  private _kickEngineProbe(engineId: string, url: string): void {
+    if (this._engineProbeInFlight.has(engineId)) {
+      return;
+    }
+    this._engineProbeInFlight.add(engineId);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1000);
+    fetch(url, { signal: controller.signal })
+      .then(() => {
+        this._engineProbeCache.set(engineId, true);
+      })
+      .catch(() => {
+        this._engineProbeCache.set(engineId, false);
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        this._engineProbeInFlight.delete(engineId);
+      });
+  }
+
+  /**
+   * Compute status chips for every relevant game engine: the live UEFN
+   * heartbeat chip (unchanged special case) plus the union of project
+   * detection, pack-install detection, and `.mcp.json` entries for Godot,
+   * Unity, Unreal, Roblox, and Blender (see engineDetect.ts). Returns [] if
+   * no engines are relevant, so the webview shows nothing.
+   */
+  private _computeEngineStatus(): EngineChip[] {
     const root = this._projectRoot();
     if (root === "") {
       return [];
@@ -3265,13 +3298,23 @@ export class TycoonPanel {
         mcpConfig = parsed as Record<string, unknown>;
       }
     } catch {
-      return detectEngineSetups(root);
+      mcpConfig = {};
     }
+
+    // Kick off (cheap, guarded) probes for any HTTP-based engine MCP entry
+    // before reading the cache, so results converge within a couple of polls.
+    for (const engineId of ["godot", "unity", "unreal", "roblox", "blender"]) {
+      const entry = mcpEntryForEngine(mcpConfig, engineId);
+      if (entry?.isHttp && entry.url) {
+        this._kickEngineProbe(engineId, entry.url);
+      }
+    }
+    const otherChips = computeEngineChips(root, mcpConfig, (engineId) => this._engineProbeCache.get(engineId));
 
     const servers = (mcpConfig["mcpServers"] ?? mcpConfig) as Record<string, unknown>;
     const bridgeEntry = servers["uefn-bridge"] as Record<string, unknown> | undefined;
     if (!bridgeEntry) {
-      return detectEngineSetups(root);
+      return otherChips;
     }
 
     // Resolve the bridge directory from env config or default temp location.
@@ -3301,7 +3344,7 @@ export class TycoonPanel {
       /* file missing or unreadable => offline */
     }
 
-    return [{ id: "uefn", label: "UEFN", state: chipState, detail }, ...detectEngineSetups(root)];
+    return [{ id: "uefn", label: "UEFN", state: chipState, detail }, ...otherChips];
   }
 
   /** Poll engine status and push a `engineStatus` message to the webview. */

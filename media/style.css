@@ -862,8 +862,23 @@ body {
   box-shadow: 0 0 5px rgba(163, 230, 53, 0.7);
 }
 
+/* Stdio MCP entry configured but not cheaply probeable: solid green, no glow. */
+.engine-chip-dot--configured {
+  background: var(--status-active);
+}
+
+/* Pack/skill installed, no MCP configured: neutral/blue-ish "ready" dot. */
+.engine-chip-dot--ready {
+  background: #38BDF8;
+}
+
 .engine-chip-dot--offline {
   background: var(--status-done);
+}
+
+/* Project detected, nothing installed yet: gray. */
+.engine-chip-dot--setup {
+  background: var(--status-idle);
 }
 
 .engine-chip-label {

@@ -4669,9 +4669,23 @@
     stageAreaEl.appendChild(engineChipsEl);
   }
 
+  // Dot visual per chip state:
+  //  connected  - live MCP probe succeeded: green glow (existing)
+  //  configured - stdio MCP entry present, unprobed: solid green, no glow
+  //  ready      - pack/skill installed, no MCP configured: neutral/blue dot
+  //  offline    - MCP configured but probe failed/timed out: amber (existing)
+  //  setup      - project detected, nothing installed: gray
+  var ENGINE_CHIP_STATE_CLASS = {
+    connected: "engine-chip-dot--connected",
+    configured: "engine-chip-dot--configured",
+    ready: "engine-chip-dot--ready",
+    offline: "engine-chip-dot--offline",
+    setup: "engine-chip-dot--setup",
+  };
+
   /**
    * Rebuild the engine chip row from a chips array.
-   * @param {Array<{id:string, label:string, state:"connected"|"offline", detail:string}>} chips
+   * @param {Array<{id:string, label:string, state:"connected"|"configured"|"ready"|"offline"|"setup", detail:string}>} chips
    */
   function renderEngineChips(chips) {
     // Remove all existing chips
@@ -4694,12 +4708,8 @@
       }
 
       const dot = document.createElement("span");
-      // Green for a live/ready engine (UEFN connected, or another engine whose
-      // pack is installed); amber for offline/needs-setup.
-      var dotGreen = chip.state === "connected" || chip.state === "ready";
-      dot.className = dotGreen
-        ? "engine-chip-dot engine-chip-dot--connected"
-        : "engine-chip-dot engine-chip-dot--offline";
+      var stateClass = ENGINE_CHIP_STATE_CLASS[chip.state] || "engine-chip-dot--setup";
+      dot.className = "engine-chip-dot " + stateClass;
 
       const label = document.createElement("span");
       label.className = "engine-chip-label";
