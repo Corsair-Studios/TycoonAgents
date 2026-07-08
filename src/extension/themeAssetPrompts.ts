@@ -1,5 +1,35 @@
 import type { ThemeDecorBoardRow, ThemeObjectBoardRow, ThemeRivalBoardRow } from './themeImageReviewState';
 
+/**
+ * Board background fill mode. 'magenta' is the legacy #FF00FF chroma-key
+ * contract (the only format Gemini/"nano banana" can produce, since it can't
+ * emit alpha). 'transparent' asks for true alpha-0 pixels, used only when the
+ * OpenAI provider (gpt-image-1/2, which supports native transparent
+ * backgrounds) will run the generation. Defaults to 'magenta' everywhere so
+ * existing callers and tests keep their current behavior unless they opt in.
+ */
+export type BoardBackgroundMode = 'magenta' | 'transparent';
+
+/**
+ * The strong closing "every unused pixel" directive shared by the rival and
+ * background-decor board prompts (character/boardContract use their own
+ * slightly different phrasing to match surrounding markdown/emphasis).
+ */
+function finalUnusedPixelSentence(background: BoardBackgroundMode): string {
+  return background === 'transparent'
+    ? 'Every unused pixel must be fully transparent (alpha 0). Do not paint any background color, checkerboard pattern, or solid fill in unused areas.'
+    : 'Every unused pixel must be flat solid #FF00FF magenta.';
+}
+
+/**
+ * Adjective phrase for "___ padding" used outside this module (themeService's
+ * character-normalize retry notes), so freeform revision text stays
+ * consistent with whichever background mode the original board was baked with.
+ */
+export function boardBackgroundPaddingAdjective(background: BoardBackgroundMode): string {
+  return background === 'transparent' ? 'fully transparent' : 'solid-magenta';
+}
+
 export interface ThemeRivalPromptSpec {
   rival_id: string;
   display_name: string;
@@ -112,6 +142,7 @@ export function buildRivalAtlasPrompt(
   creativeDirection: string,
   themeName: string,
   rows: ThemeRivalBoardRow[],
+  background: BoardBackgroundMode = 'magenta',
 ): string {
   if (rows.length < 1 || rows.length > RIVALS_PER_BOARD) {
     throw new Error('Rival boards carry one to four enemy rows.');
@@ -119,9 +150,10 @@ export function buildRivalAtlasPrompt(
   const rowLines = rows.map((row, index) =>
     `Row ${index + 1} (Cells ${index * 5 + 1}-${index * 5 + 5}): the enemy **"${row.display_name}"** from the "${themeName}" theme.`,
   );
+  const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
     `Create one compact rival (enemy) sprite board for the "${themeName}" theme.`,
-    boardContract(5, rows.length),
+    boardContract(5, rows.length, background),
     `Each of the ${rows.length} ROWS is ONE distinct named enemy, shown as a 5-frame mini-atlas:`,
     '  Cells 1-2 of the row: a 2-frame side-view WALK cycle (cell 1 = contact pose, cell 2 = passing/opposite pose) that loops seamlessly cell 2 back to cell 1 — same enemy, only the limbs move.',
     '  Cells 3-5 of the row: a 3-frame ATTACK — cell 3 is the wind-up/anticipation, cell 4 is the strike/lunge (peak), cell 5 is the recovery/settle.',
@@ -130,11 +162,11 @@ export function buildRivalAtlasPrompt(
     'Keep each enemy identical across its own five cells: identical face, body, costume, colors, equipment, rendering style, and pixel scale — change only the pose.',
     'The first frame of each row (the walk-contact pose in cell 1) defines that enemy\'s horizontal center, ground-contact baseline, and overall body scale. Every later frame in the same row keeps that same horizontal center, the same feet baseline, and the same overall body scale. Limbs, pose, and expression may change freely between frames, but the whole body must never slide, re-center, or change size across the row — walking and running are animated IN PLACE, exactly as the game itself moves the sprite across the screen. An enemy that drifts, re-centers, or changes scale between frames of the same row is an incorrect result.',
     'Use one consistent side / three-quarter camera for every enemy so the walk and attack read clearly and the sprite flips cleanly left-to-right.',
-    'The attack is a playful, non-graphic, non-contact motion suitable for a general-audience video game: the enemy swings/lunges through empty magenta space and never touches another subject.',
+    `The attack is a playful, non-graphic, non-contact motion suitable for a general-audience video game: the enemy swings/lunges through empty ${spaceWord} space and never touches another subject.`,
     'On ranged-attack frames, do NOT draw any muzzle flash, gunfire, muzzle smoke, tracer, projectile, spark, or weapon-discharge effect. Show only the enemy\'s firing pose and recoil — the projectile is rendered separately by the game, so a drawn flash is wrong and must be omitted.',
-    'The ENTIRE weapon — including any melee blade, sword, swing arc, gun barrel, or muzzle — must stay fully INSIDE the enemy\'s own cell with clear magenta padding on every side. No part of the weapon, blade, swing arc, or effect may extend to the cell edge or cross into an adjacent cell in ANY frame, including the strike/lunge peak (cell 4). If a swing would reach the cell boundary, shorten or angle it so it stays within the cell.',
-    'Center each enemy in its cell with its feet near the cell bottom and generous magenta padding; nothing crosses a cell boundary.',
-    'Use crisp retro pixel art. Every unused pixel must be flat solid #FF00FF magenta.',
+    `The ENTIRE weapon — including any melee blade, sword, swing arc, gun barrel, or muzzle — must stay fully INSIDE the enemy's own cell with clear ${spaceWord} padding on every side. No part of the weapon, blade, swing arc, or effect may extend to the cell edge or cross into an adjacent cell in ANY frame, including the strike/lunge peak (cell 4). If a swing would reach the cell boundary, shorten or angle it so it stays within the cell.`,
+    `Center each enemy in its cell with its feet near the cell bottom and generous ${spaceWord} padding; nothing crosses a cell boundary.`,
+    `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
     '',
     `Creative direction: ${creativeDirection}`,
   ].join('\n');
@@ -160,7 +192,7 @@ export function buildRivalAtlasPrompt(
 export const CHARACTER_TARGET_CONTENT_HEIGHT = 104;
 export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
 
-function boardContract(columns: number, rows: number): string {
+function boardContract(columns: number, rows: number, background: BoardBackgroundMode = 'magenta'): string {
   const cellWidth = 512 / columns;
   const cellHeight = 512 / rows;
   const widthPhrase = `${Number.isInteger(cellWidth) ? '' : 'approximately '}${Math.round(cellWidth)} pixels wide`;
@@ -171,7 +203,9 @@ function boardContract(columns: number, rows: number): string {
     `Each cell is therefore ${widthPhrase} and ${heightPhrase}; compose every subject to fit that cell shape.`,
     'Keep every subject fully inside its own cell with generous empty padding; nothing may cross a cell boundary.',
     'Do not draw grid lines, labels, numbers, captions, borders, scenery, shadows, or extra subjects.',
-    'Paint every unused pixel solid #FF00FF magenta with no texture or gradient.',
+    background === 'transparent'
+      ? 'Paint every unused pixel fully transparent (alpha 0) — no texture, gradient, or background fill of any kind.'
+      : 'Paint every unused pixel solid #FF00FF magenta with no texture or gradient.',
   ].join('\n');
 }
 
@@ -179,7 +213,9 @@ export function buildCharacterAtlasPrompt(
   creativeDirection: string,
   characterName: string,
   themeName: string,
+  background: BoardBackgroundMode = 'magenta',
 ): string {
+  const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
     'Create one production sprite board, not a poster, illustration, concept sheet, or character lineup.',
     '',
@@ -203,7 +239,9 @@ export function buildCharacterAtlasPrompt(
     '* UI elements',
     '* speech bubbles',
     '',
-    'Every unused pixel on the canvas must be a perfectly flat solid **#FF00FF** magenta with no gradients, lighting, texture, fog, reflections, scenery, or environmental effects.',
+    background === 'transparent'
+      ? 'Every unused pixel on the canvas must be fully transparent (alpha 0) — no gradients, lighting, texture, fog, reflections, scenery, background color, or environmental effects.'
+      : 'Every unused pixel on the canvas must be a perfectly flat solid **#FF00FF** magenta with no gradients, lighting, texture, fog, reflections, scenery, or environmental effects.',
     '',
     'Every cell contains the EXACT SAME character:',
     '',
@@ -228,15 +266,15 @@ export function buildCharacterAtlasPrompt(
     `In walking and neutral-standing cells, the complete character from head to feet occupies exactly ${CHARACTER_TARGET_CONTENT_PERCENT}% of the cell height.`,
     `Measure that ${CHARACTER_TARGET_CONTENT_PERCENT}% against each individual cell, never against the full canvas.`,
     'A standing character below 68% or above 76% of its cell height is an incorrect result.',
-    'Reserve the remaining approximately 28% as solid-magenta safety padding split above the head and below the feet.',
-    'Keep a visible magenta gutter at every horizontal row boundary and below the entire fourth row.',
-    'Do not leave oversized magenta margins around a small character.',
+    `Reserve the remaining approximately 28% as ${background === 'transparent' ? 'fully transparent' : 'solid-magenta'} safety padding split above the head and below the feet.`,
+    `Keep a visible ${spaceWord} gutter at every horizontal row boundary and below the entire fourth row.`,
+    `Do not leave oversized ${spaceWord} margins around a small character.`,
     'Do not zoom in or out based on the character costume, body type, equipment, or pose.',
     'Seated and action poses must preserve the same body scale as the standing poses; only the pose may change.',
     '',
     'Center the character horizontally within every cell.',
     '',
-    'Standing poses must share a consistent baseline inside each cell, with visible magenta safety padding below both feet.',
+    `Standing poses must share a consistent baseline inside each cell, with visible ${spaceWord} safety padding below both feet.`,
     '',
     'Render as crisp retro pixel art using a consistent three-quarter / isometric viewpoint.',
     '',
@@ -282,7 +320,7 @@ export function buildCharacterAtlasPrompt(
     '',
     'The tool never touches anything visible.',
     '',
-    'The tool always swings through empty magenta space.',
+    `The tool always swings through empty ${spaceWord} space.`,
     '',
     '---',
     '',
@@ -302,7 +340,7 @@ export function buildCharacterAtlasPrompt(
     '',
     'Do NOT draw a muzzle flash, gunfire, muzzle smoke, tracer, projectile, energy blast, spark, or discharge effect on the ranged-release frame — show body recoil/follow-through only; the projectile is composited separately by the game.',
     '',
-    'Keep the entire tool or weapon (barrel, blade, swing arc, muzzle) fully inside the character\'s cell with magenta padding; it must never reach the cell edge or cross into an adjacent frame, including the forward-swing and ranged-release frames.',
+    `Keep the entire tool or weapon (barrel, blade, swing arc, muzzle) fully inside the character's cell with ${spaceWord} padding; it must never reach the cell edge or cross into an adjacent frame, including the forward-swing and ranged-release frames.`,
     '',
     '---',
     '',
@@ -431,7 +469,9 @@ export function buildCharacterAtlasPrompt(
     '',
     'If an object would normally exist, omit it completely.',
     '',
-    'The tool must terminate in empty #FF00FF magenta space.',
+    background === 'transparent'
+      ? 'The tool must terminate in empty fully-transparent space.'
+      : 'The tool must terminate in empty #FF00FF magenta space.',
     '',
     'No visible object may ever touch the tool.',
     '',
@@ -487,7 +527,9 @@ export function buildCharacterAtlasPrompt(
     '',
     'Characters only.',
     '',
-    'Every unused pixel remains solid **#FF00FF** magenta.',
+    background === 'transparent'
+      ? 'Every unused pixel remains fully transparent (alpha 0). Do not paint any background color.'
+      : 'Every unused pixel remains solid **#FF00FF** magenta.',
   ].join('\n');
 }
 
@@ -515,6 +557,7 @@ export function buildObjectAtlasPrompt(
   creativeDirection: string,
   themeName: string,
   rows: ThemeObjectBoardRow[],
+  background: BoardBackgroundMode = 'magenta',
 ): string {
   if (rows.length < 1 || rows.length > 5) throw new Error('Object board carries one to five rows.');
   const rowLines = rows.map((row, index) => {
@@ -533,7 +576,7 @@ export function buildObjectAtlasPrompt(
   const hasCrate = rows.some((row) => row.kind === 'crate');
   return [
     `Create one animated object sprite sheet for the "${themeName}" theme.`,
-    boardContract(4, rows.length),
+    boardContract(4, rows.length, background),
     `Treat the grid as ${rows.length} visually equal logical row bands stacked to fill the entire 512px canvas height; the production slicer distributes remainder pixels across row boundaries.`,
     `Each of the ${rows.length} ROWS contains the four sequential animation frames of exactly one listed item:`,
     ...rowLines,
@@ -557,7 +600,9 @@ export function buildObjectAtlasPrompt(
     ] : []),
     ...(hasCrate ? [
       '',
-      'CRATE ROW: draw one closed themed shipping crate in cell 1. Cells 2–4 must remain entirely flat magenta.',
+      background === 'transparent'
+        ? 'CRATE ROW: draw one closed themed shipping crate in cell 1. Cells 2–4 must remain entirely transparent.'
+        : 'CRATE ROW: draw one closed themed shipping crate in cell 1. Cells 2–4 must remain entirely flat magenta.',
       'The crate is one static ready-to-build frame.',
     ] : []),
     '',
@@ -577,6 +622,7 @@ export function buildBackgroundDecorPrompt(
   creativeDirection: string,
   themeName: string,
   rows: ThemeDecorBoardRow[][],
+  background: BoardBackgroundMode = 'magenta',
 ): string {
   if (rows.length !== 4) throw new Error('Background decor boards require exactly four rows.');
   const [seatRow, staticRow, animRow3, projectileRow] = rows;
@@ -588,9 +634,10 @@ export function buildBackgroundDecorPrompt(
   const animName = animDecor.kind === 'projectile' ? '' : animDecor.display_name;
   const cellList = (items: ThemeDecorBoardRow[], startCell: number): string[] =>
     items.map((item, index) => `  Cell ${startCell + index}: ${item.kind === 'projectile' ? 'projectile FX' : item.display_name}`);
+  const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
     `Create one background-decor sprite board for the "${themeName}" theme.`,
-    boardContract(4, 4),
+    boardContract(4, 4, background),
     'The 16 cells form four rows. Each row has a distinct role described below.',
     '',
     'Row 1 (Cells 1-4): FOUR distinct STATIC SITTABLE SEATS.',
@@ -614,18 +661,18 @@ export function buildBackgroundDecorPrompt(
     'Row 4 (Cells 13-16): the themed RANGED-WEAPON-FIRE projectile shown as FOUR sequential ONE-SHOT frames left to right (a launch-to-impact sequence, NOT a loop).',
     `  Match this theme's ranged weapon: a bullet/tracer, an energy laser bolt, a plasma blast, an arrow/bolt, a rocket, or whatever fits "${themeName}".`,
     '  Cell 13: the SHOT / MUZZLE FIRE at launch — a bright muzzle flash or launch burst with the projectile just emerging.',
-    '  Cell 14: the projectile IN FLIGHT — the bolt/bullet/arrow travelling through empty magenta space with a motion trail.',
+    `  Cell 14: the projectile IN FLIGHT — the bolt/bullet/arrow travelling through empty ${spaceWord} space with a motion trail.`,
     '  Cell 15: the projectile HITTING THE TARGET — the moment of contact/impact (sparks or a flash at the strike point).',
     '  Cell 16: the BLAST / IMPACT effect — an expanding burst, explosion, or scatter as the hit resolves.',
     '  Keep a consistent projectile identity, color, and camera across all four frames; this is a one-shot FX, not a decor item.',
-    '  Do NOT draw the weapon, the shooter, or the target object — only the fire, the flying projectile, and its impact burst in empty magenta space.',
+    `  Do NOT draw the weapon, the shooter, or the target object — only the fire, the flying projectile, and its impact burst in empty ${spaceWord} space.`,
     '  Cell 13 defines the projectile\'s exact cell center. Treat cells 14-16 as the same projectile still anchored to that same cell center — only its shape, rotation, and glow may change in place as it travels and impacts.',
     '  The projectile and its effects must stay locked to the same cell center across all four frames — it may rotate or pulse in place, but its overall footprint/diameter stays constant across frames (no growing or shrinking), and it must never shift, slide, or re-center within the cell. A projectile that drifts off-center or grows or shrinks between frames is an incorrect result.',
     '',
-    'Every cell holds exactly one subject fully inside its own cell with generous magenta padding; nothing crosses a cell boundary.',
+    `Every cell holds exactly one subject fully inside its own cell with generous ${spaceWord} padding; nothing crosses a cell boundary.`,
     'Center each item with its lowest contact point near the cell bottom. Keep a consistent isometric camera, lighting, and scale.',
     'Do not draw characters, people, UI, captions, letters, numbers, or grid lines. No object may straddle two cells.',
-    'Use crisp retro pixel art. Every unused pixel must be flat solid #FF00FF magenta.',
+    `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
     '',
     `Creative direction: ${creativeDirection}`,
   ].join('\n');
@@ -635,19 +682,22 @@ export function buildExpressionAtlasPrompt(
   creativeDirection: string,
   themeName: string,
   expressions: string[],
+  background: BoardBackgroundMode = 'magenta',
 ): string {
   const cells = expressions.slice(0, 16).map((expression, index) =>
     `Cell ${index + 1}: ${expression}`,
   );
   return [
     `Create one expression-icon sprite sheet for the "${themeName}" theme.`,
-    boardContract(4, 4),
+    boardContract(4, 4, background),
     'Draw exactly one bold, readable, icon-only expression in each cell, in row-major order:',
     ...cells,
     'Use a consistent speech-bubble icon style. Do not draw full characters.',
     'Do NOT draw the theme character, any character, any face, head, eyes, mouth, hair, or portrait. These are NOT facial expressions on a character.',
     'Each cell is a GENERIC symbolic emote ICON — a simple emoji/pictogram style symbol (e.g. shapes, objects, marks such as a heart, spark/idea star, sweat drop, exclamation, gear, zzz) that reads at a glance inside a speech bubble.',
-    'Flat, bold, high-contrast icon art on solid magenta; centered in its cell.',
+    background === 'transparent'
+      ? 'Flat, bold, high-contrast icon art on a fully transparent background; centered in its cell.'
+      : 'Flat, bold, high-contrast icon art on solid magenta; centered in its cell.',
     'No words, letters, numbers, or punctuation glyphs.',
     '',
     `Creative direction: ${creativeDirection}`,
@@ -658,13 +708,14 @@ export function buildAchievementAtlasPrompt(
   creativeDirection: string,
   themeName: string,
   achievements: string[],
+  background: BoardBackgroundMode = 'magenta',
 ): string {
   const cells = achievements.slice(0, 20).map((achievement, index) =>
     `Cell ${index + 1}: ${achievement}`,
   );
   return [
     `Create one achievement-badge sprite sheet for the "${themeName}" theme.`,
-    boardContract(5, 4),
+    boardContract(5, 4, background),
     'Draw exactly one distinct, polished badge emblem in each cell, in row-major order:',
     ...cells,
     'Keep a consistent badge silhouette and rendering system while making every central emblem distinct.',
@@ -678,10 +729,11 @@ export function buildAchievementAtlasPrompt(
 export function buildEmoteAtlasPrompt(
   creativeDirection: string,
   themeName: string,
+  background: BoardBackgroundMode = 'magenta',
 ): string {
   return [
     `Create one animated emote-icon sprite board for the "${themeName}" theme.`,
-    boardContract(5, 4),
+    boardContract(5, 4, background),
     'Each row is one emote animation with five left-to-right frames.',
     'Row 1: happy celebration / smile, five-frame animation.',
     'Row 2: sleep / low-energy Z state, five-frame animation.',

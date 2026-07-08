@@ -1209,6 +1209,12 @@
   let themeProviderConfigured = { gemini: false, openai: false };
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
+  /** Sticky per-item retry sanitizer warning ("your notes looked like a full
+   * prompt..."), keyed by item id. Set when a THEME_IMAGE_RETRY_STATE reply
+   * carries `payload.warning`; cleared only when the user starts a new retry
+   * for that item — it must survive the busy → progress → done sequence and
+   * the full-list re-render that happens along the way. */
+  const themeReviewRetryWarnings = new Map();
   /** The review-card "Upload" button awaiting a host result (for busy reset). */
   let pendingUploadBtn = null;
   /** Maps a theme-review item's `kind` to the REGENERATE_BOARD board string.
@@ -2105,6 +2111,15 @@
       const feedbackHint = document.createElement("div");
       feedbackHint.className = "theme-review-feedback-hint";
       feedbackHint.textContent = "Notes only — don't paste a full prompt; layout and art rules are added automatically.";
+      // Object/decor board rows are always drawn from the manifest's
+      // buildable_objects / decor_objects display names — notes here are
+      // creative direction only and cannot rename or reorder rows.
+      let objectListHint = null;
+      if (item.kind === "object_atlas" || item.kind === "background_decor_atlas") {
+        objectListHint = document.createElement("div");
+        objectListHint.className = "theme-review-feedback-hint";
+        objectListHint.textContent = "Row items come from the theme's object list — rename objects in the Stage Editor, then regenerate.";
+      }
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
       const mode = document.createElement("select");
@@ -2158,6 +2173,9 @@
         retryBtn.disabled = true;
         retryBtn.textContent = "Generating...";
         themeReviewBusyItems.set(item.id, "retry");
+        themeReviewRetryWarnings.delete(item.id);
+        retryWarning.textContent = "";
+        retryWarning.hidden = true;
         vscode.postMessage({
           type: 'RETRY_THEME_IMAGE',
           payload: {
@@ -2202,6 +2220,11 @@
       }
       const retryStatus = document.createElement("div");
       retryStatus.className = "theme-review-retry-status";
+      const retryWarning = document.createElement("div");
+      retryWarning.className = "theme-review-retry-warning";
+      const persistedRetryWarning = themeReviewRetryWarnings.get(item.id) || "";
+      retryWarning.textContent = persistedRetryWarning;
+      retryWarning.hidden = !persistedRetryWarning;
       retryRow.appendChild(mode);
       retryRow.appendChild(retryBtn);
       if (resliceBtn) retryRow.appendChild(resliceBtn);
@@ -2223,8 +2246,10 @@
       body.appendChild(decisionRow);
       body.appendChild(feedback);
       body.appendChild(feedbackHint);
+      if (objectListHint) body.appendChild(objectListHint);
       body.appendChild(retryRow);
       body.appendChild(retryStatus);
+      body.appendChild(retryWarning);
       body.appendChild(promptDetails);
       card.appendChild(preview);
       card.appendChild(body);
@@ -4965,6 +4990,12 @@
         } else {
           themeReviewBusyItems.delete(itemId);
         }
+        // Sticky: only ever set from a message that actually carries a
+        // warning. Progress/completion messages with no warning field must
+        // not clear it — the notice should survive the whole retry cycle.
+        if (msg.type === "THEME_IMAGE_RETRY_STATE" && msg.payload?.warning) {
+          themeReviewRetryWarnings.set(itemId, msg.payload.warning);
+        }
       }
       const cards = themeImageReviewList ? themeImageReviewList.querySelectorAll("[data-item-id]") : [];
       for (const card of cards) {
@@ -4976,6 +5007,12 @@
         const nameInput = /** @type {HTMLInputElement|null} */ (card.querySelector(".theme-review-name-input"));
         const acceptBtn = /** @type {HTMLButtonElement|null} */ (card.querySelector(".theme-review-accept"));
         const statusEl = /** @type {HTMLElement|null} */ (card.querySelector(".theme-review-retry-status"));
+        const warningEl = /** @type {HTMLElement|null} */ (card.querySelector(".theme-review-retry-warning"));
+        if (warningEl && msg.type === "THEME_IMAGE_RETRY_STATE") {
+          const warningText = themeReviewRetryWarnings.get(itemId) || "";
+          warningEl.textContent = warningText;
+          warningEl.hidden = !warningText;
+        }
         if (acceptBtn) acceptBtn.disabled = Boolean(msg.payload?.busy);
         if (retryBtn && msg.type === "THEME_IMAGE_RETRY_STATE") {
           retryBtn.disabled = Boolean(msg.payload?.busy);

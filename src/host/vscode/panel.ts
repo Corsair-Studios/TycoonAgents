@@ -924,9 +924,34 @@ export class TycoonPanel {
           try {
             const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
             if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
+            const retryMode: ThemeImageRetryMode = payload?.mode === "replace"
+              ? "replace"
+              : payload?.mode === "retry"
+                ? "retry"
+                : "augment";
+            // Only user-authored notes for 'replace'/'augment' feed into the next
+            // prompt's creative direction — 'retry' reuses the saved prompt verbatim
+            // and ignores feedback, so it is exempt from this guard.
+            let retryFeedback = payload?.feedback ?? "";
+            let retryNotesTrimmed = false;
+            if (retryMode !== "retry") {
+              const sanitized = sanitizeRetryNotes(payload?.feedback ?? "");
+              retryFeedback = sanitized.notes;
+              retryNotesTrimmed = sanitized.trimmed;
+            }
             void this._panel.webview.postMessage({
               type: MSG.THEME_IMAGE_RETRY_STATE,
-              payload: { item_id: itemId, busy: true, message: "Generating replacement..." },
+              payload: {
+                item_id: itemId,
+                busy: true,
+                message: "Generating replacement...",
+                ...(retryNotesTrimmed
+                  ? {
+                    warning: "Your notes looked like a full prompt — only the creative-direction section was used. "
+                      + "Row items come from the theme's object list.",
+                  }
+                  : {}),
+              },
             });
             if (payload?.character_name?.trim()) {
               const renamed = await renameThemeCharacter(
@@ -940,17 +965,6 @@ export class TycoonPanel {
                 this._themeGenerationReviewGate.replacement = renamed;
               }
             }
-            const retryMode: ThemeImageRetryMode = payload?.mode === "replace"
-              ? "replace"
-              : payload?.mode === "retry"
-                ? "retry"
-                : "augment";
-            // Only user-authored notes for 'replace'/'augment' feed into the next
-            // prompt's creative direction — 'retry' reuses the saved prompt verbatim
-            // and ignores feedback, so it is exempt from this guard.
-            const retryFeedback = retryMode === "retry"
-              ? (payload?.feedback ?? "")
-              : sanitizeRetryNotes(payload?.feedback ?? "");
             const result = await retryThemeImage(
               this._globalStorageUri,
               themeId,

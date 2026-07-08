@@ -33,8 +33,11 @@ test('note-based retry modes still require feedback', () => {
 });
 
 test('sanitizeRetryNotes passes normal notes through unchanged', () => {
-  assert.equal(sanitizeRetryNotes('  make the sky more blue  '), 'make the sky more blue');
-  assert.equal(sanitizeRetryNotes(''), '');
+  assert.deepEqual(
+    sanitizeRetryNotes('  make the sky more blue  '),
+    { notes: 'make the sky more blue', trimmed: false },
+  );
+  assert.deepEqual(sanitizeRetryNotes(''), { notes: '', trimmed: false });
 });
 
 test('sanitizeRetryNotes salvages the trailing creative-direction block from a pasted full prompt', () => {
@@ -44,9 +47,9 @@ test('sanitizeRetryNotes salvages the trailing creative-direction block from a p
     'Cell 2: walk cycle frame one.',
     'Creative direction: a grizzled space pirate with a cybernetic eye.',
   ].join('\n');
-  assert.equal(
+  assert.deepEqual(
     sanitizeRetryNotes(pastedPrompt),
-    'a grizzled space pirate with a cybernetic eye.',
+    { notes: 'a grizzled space pirate with a cybernetic eye.', trimmed: true },
   );
 });
 
@@ -58,9 +61,9 @@ test('sanitizeRetryNotes uses the LAST creative-direction marker when a prompt w
     'Creative direction: first stale direction, ignore this.',
     'Creative direction: the latest and correct direction.',
   ].join('\n');
-  assert.equal(
+  assert.deepEqual(
     sanitizeRetryNotes(pastedPrompt),
-    'the latest and correct direction.',
+    { notes: 'the latest and correct direction.', trimmed: true },
   );
 });
 
@@ -87,9 +90,9 @@ test('sanitizeRetryNotes flags notes over the 4000-char cap and throws when noth
 test('sanitizeRetryNotes salvages the tail even when the pasted prompt only trips the length cap', () => {
   const longNotes = `${'filler text '.repeat(400)}Creative direction: keep the same silhouette.`;
   assert.ok(longNotes.length > 4000);
-  assert.equal(
+  assert.deepEqual(
     sanitizeRetryNotes(longNotes),
-    'keep the same silhouette.',
+    { notes: 'keep the same silhouette.', trimmed: true },
   );
 });
 
@@ -101,8 +104,9 @@ test('sanitized notes feed into augment mode the same way as hand-typed notes', 
     'Creative direction: give the character a red scarf.',
   ].join('\n');
   const sanitized = sanitizeRetryNotes(pastedPrompt);
+  assert.equal(sanitized.trimmed, true);
   assert.equal(
-    selectThemeImageRetryPrompt('Original', 'replacement', sanitized, 'augment'),
+    selectThemeImageRetryPrompt('Original', 'replacement', sanitized.notes, 'augment'),
     'Original\n\nREVISION NOTES — correct the previous result:\ngive the character a red scarf.',
   );
 });

@@ -39,6 +39,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 const {
   createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt,
   applyObjectBoardFrames, removeStaleBoardFrameKeys, mergeResumedReviewItems,
+  boardBackgroundModeForProvider,
 } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 function legacyManifest(): ThemeManifest {
@@ -443,4 +444,55 @@ test('removeStaleBoardFrameKeys: no-op when there are no previous frame keys (fi
   assert.deepEqual(frames, { poof: ['OWNED BY BOARD 3'] });
   removeStaleBoardFrameKeys(frames, [], ['object_cobra_heliport_platform']);
   assert.deepEqual(frames, { poof: ['OWNED BY BOARD 3'] });
+});
+
+// --- Provider-aware sprite-board backgrounds: OpenAI (gpt-image-1/2) supports
+// native alpha transparency, so its boards should request true transparency;
+// Gemini ("nano banana") can't emit alpha and keeps the legacy magenta contract. ---
+
+test('boardBackgroundModeForProvider maps openai to transparent and gemini (or unset) to magenta', () => {
+  assert.equal(boardBackgroundModeForProvider('openai'), 'transparent');
+  assert.equal(boardBackgroundModeForProvider('gemini'), 'magenta');
+  assert.equal(boardBackgroundModeForProvider(undefined), 'magenta');
+});
+
+test('createReviewItems threads a transparent backgroundMode into every sprite-board prompt it builds', () => {
+  const manifest = legacyManifest();
+  const plan = minimalPlan();
+  const items = createReviewItems(plan, manifest, plan.creative_direction, 'transparent');
+
+  const spriteBoardItems = items.filter((item) => item.kind !== 'environment');
+  assert.ok(spriteBoardItems.length > 0, 'expected at least one sprite-board item to check');
+  for (const item of spriteBoardItems) {
+    assert.doesNotMatch(item.prompt, /magenta/i, `${item.id} prompt must not mention magenta in transparent mode`);
+    assert.doesNotMatch(item.prompt, /#FF00FF/i, `${item.id} prompt must not mention #FF00FF in transparent mode`);
+    assert.match(item.prompt, /fully transparent \(alpha 0\)/i, `${item.id} prompt must carry the alpha directive`);
+  }
+
+  // The environment board has no magenta/transparent keying at all (out of scope).
+  const environmentItem = items.find((item) => item.id === 'environment');
+  assert.ok(environmentItem);
+  assert.doesNotMatch(environmentItem!.prompt, /magenta/i);
+
+  // Default call (no backgroundMode argument) keeps the legacy magenta contract.
+  const defaultItems = createReviewItems(plan, manifest, plan.creative_direction);
+  const defaultCharacterItem = defaultItems.find((item) => item.kind === 'character_atlas');
+  assert.ok(defaultCharacterItem);
+  assert.match(defaultCharacterItem!.prompt, /magenta/i);
+});
+
+test('buildReplacementPrompt threads a transparent backgroundMode through to the underlying builder', () => {
+  const manifest = legacyManifest();
+  const characterItem = {
+    id: 'agent_0', filename: 'agent_0.png', label: 'Agent One', kind: 'character_atlas' as const,
+    status: 'pending' as const, prompt: '', revision: 0, frame_keys: [], updated_at: '',
+    subject: 'Agent One',
+  };
+  const magentaPrompt = buildReplacementPrompt(characterItem, 'gritty wasteland', manifest);
+  assert.match(magentaPrompt, /magenta/i);
+
+  const transparentPrompt = buildReplacementPrompt(characterItem, 'gritty wasteland', manifest, undefined, 'transparent');
+  assert.doesNotMatch(transparentPrompt, /magenta/i);
+  assert.doesNotMatch(transparentPrompt, /#FF00FF/i);
+  assert.match(transparentPrompt, /fully transparent \(alpha 0\)/i);
 });

@@ -11,6 +11,7 @@ import { expandThemePlan } from './translator';
 import { buildDefaultBadges, upgradeThemeManifest } from './themeMigration';
 import { validateThemeIntegrity } from './themeHealth';
 import {
+  boardBackgroundPaddingAdjective,
   buildAchievementAtlasPrompt,
   buildBackgroundDecorPrompt,
   buildCharacterAtlasPrompt,
@@ -28,7 +29,7 @@ import {
   objectBoardFrameKeys,
   rivalBoardFrameKeys,
 } from './themeAssetPrompts';
-import type { ThemeObjectPromptSpec, ThemeRivalPromptSpec } from './themeAssetPrompts';
+import type { BoardBackgroundMode, ThemeObjectPromptSpec, ThemeRivalPromptSpec } from './themeAssetPrompts';
 import { generateThemeImage } from './imageClient';
 import type { ThemeImageGenerationOptions } from './imageClient';
 import {
@@ -143,6 +144,35 @@ export type BoardKind =
   | 'objects'
   | 'expressions'
   | 'achievements';
+
+/**
+ * Maps the image provider that will actually run generation to the sprite-board
+ * background mode its prompts should request. OpenAI (gpt-image-1/2) supports
+ * native alpha transparency, so its boards ask for true transparent pixels.
+ * Gemini ("nano banana") cannot emit alpha, so it keeps the legacy magenta
+ * chroma-key contract. An unset/unknown provider falls back to 'magenta' —
+ * the same safe default the prompt builders themselves use.
+ */
+export function boardBackgroundModeForProvider(provider: ThemeImageGenerationOptions['provider']): BoardBackgroundMode {
+  return provider === 'openai' ? 'transparent' : 'magenta';
+}
+
+/**
+ * Layers the native-transparency request flag onto generation options for a
+ * magenta/transparent-keyed sprite board call (agents, rivals, decor, objects,
+ * expressions, achievements, and their retries). The environment board is
+ * opaque scenery and must never set this — its own call sites build their
+ * options separately and never pass through this helper.
+ */
+function spriteBoardOptions(
+  options: ThemeImageGenerationOptions | undefined,
+): ThemeImageGenerationOptions | undefined {
+  if (!options) return options;
+  return {
+    ...options,
+    transparentBackground: boardBackgroundModeForProvider(options.provider) === 'transparent',
+  };
+}
 
 export async function planTheme(
   prompt: string,
@@ -980,12 +1010,20 @@ export async function normalizeThemeCharacterAtlas(
     throw new Error('Only character sprite boards can be size-normalized.');
   }
 
+  // Match the padding language of the board that will actually be regenerated
+  // (the merged 'augment' prompt appends these notes onto the ORIGINAL saved
+  // prompt, so contradicting its background contract — e.g. demanding magenta
+  // padding on a board originally baked transparent for OpenAI — would confuse
+  // the model).
+  const paddingAdjective = boardBackgroundPaddingAdjective(
+    boardBackgroundModeForProvider(imageGenerationOptions.provider),
+  );
   const notes = [
     'Regenerate this character sprite board at the universal production character scale.',
     'Use an exact 512 x 512 pixel generation canvas with the 5-column by 4-row layout from the original prompt.',
     `In every walking and neutral-standing cell, the complete character from head to feet must occupy exactly ${CHARACTER_TARGET_CONTENT_PERCENT}% of that cell height.`,
-    'Override any earlier feet-on-edge guidance: leave visible solid-magenta padding above and below every sprite so no pixels touch or cross a horizontal row boundary.',
-    'Keep the complete fourth row, including every foot and piece of equipment, inside the canvas with solid-magenta padding below it.',
+    `Override any earlier feet-on-edge guidance: leave visible ${paddingAdjective} padding above and below every sprite so no pixels touch or cross a horizontal row boundary.`,
+    `Keep the complete fourth row, including every foot and piece of equipment, inside the canvas with ${paddingAdjective} padding below it.`,
     'Keep the same character identity, costume, colors, pixel-art style, poses, and cell order.',
   ].join(' ');
 
@@ -1066,7 +1104,12 @@ export async function generateTheme(
 
   await writeThemeFiles(globalStorageUri, manifest, frames);
 
-  const reviewItems = createReviewItems(plan, manifest, creativeDirection);
+  const reviewItems = createReviewItems(
+    plan,
+    manifest,
+    creativeDirection,
+    boardBackgroundModeForProvider(imageGenerationOptions?.provider),
+  );
   await initializeThemeImageReviewDocument(globalStorageUri, themeId, plan.display_name, reviewItems);
   onReviewReady?.(themeId);
 
@@ -1111,6 +1154,7 @@ export async function resumeThemeGeneration(
     plan,
     loadedTheme.manifest,
     themePlanCreativeDirection(plan),
+    boardBackgroundModeForProvider(imageGenerationOptions?.provider),
   );
   const reviewItems = mergeResumedReviewItems(expectedItems, document.items);
 
@@ -1312,7 +1356,7 @@ export async function regenerateThemeBoard(
   const { manifest, frames } = loadedTheme;
   const plan = normalizeThemePlan(savedPlan, manifest.display_name);
 
-  let items = buildBoardItems(plan, manifest, board);
+  let items = buildBoardItems(plan, manifest, board, boardBackgroundModeForProvider(options?.provider));
   if (itemId) {
     items = items.filter((candidate) => candidate.id === itemId);
     if (!items.length) throw new Error(`No regenerable image with id "${itemId}" was found on board "${board}".`);
@@ -1598,7 +1642,13 @@ export async function retryThemeImage(
   const normalizedPlan = savedPlan ? normalizeThemePlan(savedPlan, loadedTheme.manifest.display_name) : undefined;
   const currentPlan = normalizedPlan?.theme_id === themeId ? normalizedPlan : undefined;
 
-  const replacementPrompt = buildReplacementPrompt(item, notes, loadedTheme.manifest, currentPlan);
+  const replacementPrompt = buildReplacementPrompt(
+    item,
+    notes,
+    loadedTheme.manifest,
+    currentPlan,
+    boardBackgroundModeForProvider(imageGenerationOptions.provider),
+  );
   const prompt = selectThemeImageRetryPrompt(item.prompt, replacementPrompt, feedback, mode);
   onProgress?.(`Regenerating ${item.label}...`);
 
@@ -1606,7 +1656,7 @@ export async function retryThemeImage(
   try {
     generated = item.kind === 'environment'
       ? await generateEnvironmentImage(prompt, imageGenerationOptions)
-      : await generateThemeImage(prompt, imageGenerationOptions);
+      : await generateThemeImage(prompt, spriteBoardOptions(imageGenerationOptions));
   } catch (error) {
     await recordUserCorrectableGenerationError(globalStorageUri, themeId, item.id, error);
     throw error;
@@ -1967,6 +2017,7 @@ export function createReviewItems(
   plan: ThemePlan,
   manifest: ThemeManifest,
   creativeDirection: string,
+  backgroundMode: BoardBackgroundMode = 'magenta',
 ): Array<Omit<ThemeImageReviewItem, 'updated_at'>> {
   const characterCreativeDirection = `Creative direction: ${plan.creative_direction}`;
   const characterItems = manifest.roster_agents.map((agent) => ({
@@ -1975,7 +2026,7 @@ export function createReviewItems(
     label: agent.name,
     kind: 'character_atlas' as const,
     status: 'pending' as const,
-    prompt: buildCharacterAtlasPrompt(characterCreativeDirection, agent.name, plan.display_name),
+    prompt: buildCharacterAtlasPrompt(characterCreativeDirection, agent.name, plan.display_name, backgroundMode),
     revision: 0,
     frame_keys: [`agent_${agent.slot_id}`],
     subject: agent.name,
@@ -1992,7 +2043,7 @@ export function createReviewItems(
         label: `Rivals ${firstEnemy}–${lastEnemy}`,
         kind: 'rival_atlas' as const,
         status: 'pending' as const,
-        prompt: buildRivalAtlasPrompt(creativeDirection, plan.display_name, rows),
+        prompt: buildRivalAtlasPrompt(creativeDirection, plan.display_name, rows, backgroundMode),
         revision: 0,
         frame_keys: rivalBoardFrameKeys(rows),
         rival_rows: rows,
@@ -2017,7 +2068,7 @@ export function createReviewItems(
           : `Animated objects ${firstObject}–${lastObject}`,
         kind: 'object_atlas' as const,
         status: 'pending' as const,
-        prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, rows),
+        prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, rows, backgroundMode),
         revision: 0,
         frame_keys: objectBoardFrameKeys(rows),
         object_specs: objectRows.map(({ object_id, display_name }) => ({ object_id, display_name })),
@@ -2041,7 +2092,7 @@ export function createReviewItems(
       revision: 0,
       frame_keys: ['environment_background'],
     },
-    createDecorReviewItem(plan, manifest, creativeDirection),
+    createDecorReviewItem(plan, manifest, creativeDirection, backgroundMode),
     ...objectItems,
     {
       id: 'expressions',
@@ -2049,7 +2100,7 @@ export function createReviewItems(
       label: '16 expressions',
       kind: 'expression_atlas',
       status: 'pending',
-      prompt: buildExpressionAtlasPrompt(creativeDirection, plan.display_name, plan.expressions),
+      prompt: buildExpressionAtlasPrompt(creativeDirection, plan.display_name, plan.expressions, backgroundMode),
       revision: 0,
       frame_keys: plan.expressions.map((_name, index) => `expression_${index}`),
       expression_names: plan.expressions,
@@ -2060,7 +2111,7 @@ export function createReviewItems(
       label: '20 achievement badges',
       kind: 'achievement_atlas',
       status: 'pending',
-      prompt: buildAchievementAtlasPrompt(creativeDirection, plan.display_name, plan.achievements),
+      prompt: buildAchievementAtlasPrompt(creativeDirection, plan.display_name, plan.achievements, backgroundMode),
       revision: 0,
       frame_keys: plan.achievements.map((_name, index) => `achievement_${index}`),
       achievement_names: plan.achievements,
@@ -2078,9 +2129,10 @@ export function buildBoardItems(
   plan: ThemePlan,
   manifest: ThemeManifest,
   board: BoardKind,
+  backgroundMode: BoardBackgroundMode = 'magenta',
 ): Array<Omit<ThemeImageReviewItem, 'updated_at'>> {
   const creativeDirection = themePlanCreativeDirection(plan);
-  const items = createReviewItems(plan, manifest, creativeDirection);
+  const items = createReviewItems(plan, manifest, creativeDirection, backgroundMode);
   switch (board) {
     case 'agents':
       return items.filter((item) => item.kind === 'character_atlas');
@@ -2105,6 +2157,7 @@ function createDecorReviewItem(
   plan: ThemePlan,
   manifest: ThemeManifest,
   creativeDirection: string,
+  backgroundMode: BoardBackgroundMode = 'magenta',
 ): Omit<ThemeImageReviewItem, 'updated_at'> {
   const specs = themeDecorSpecs(manifest);
   const rows = createDecorBoardRows(specs);
@@ -2114,7 +2167,7 @@ function createDecorReviewItem(
     label: 'Background decor',
     kind: 'background_decor_atlas',
     status: 'pending',
-    prompt: buildBackgroundDecorPrompt(creativeDirection, plan.display_name, rows),
+    prompt: buildBackgroundDecorPrompt(creativeDirection, plan.display_name, rows, backgroundMode),
     revision: 0,
     frame_keys: decorBoardFrameKeys(rows),
     decor_rows: rows.flat(),
@@ -2132,7 +2185,7 @@ async function generateAgentAsset(
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
 ): Promise<void> {
-  const generated = await generateThemeImage(item.prompt, options);
+  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
   throwIfCancelled(undefined, options?.signal);
   const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
   throwIfCancelled(undefined, options?.signal);
@@ -2181,7 +2234,7 @@ async function generateDecorAsset(
   onProgress: (message: string) => void,
 ): Promise<void> {
   onProgress('Background decor');
-  const generated = await generateThemeImage(item.prompt, options);
+  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
   throwIfCancelled(undefined, options?.signal);
   const rows = decorRowsForItem(item, manifest);
   const decorAtlas = await processDecorAtlas(generated, manifest);
@@ -2208,7 +2261,7 @@ async function generateRivalAsset(
 ): Promise<void> {
   onProgress(item.label);
   const previousFrameKeys = await persistedFrameKeysFor(globalStorageUri, plan.theme_id, item.id);
-  const generated = await generateThemeImage(item.prompt, options);
+  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
   throwIfCancelled(undefined, options?.signal);
   const rows = rivalRowsForItem(item, manifest);
   const rivalAtlas = await processRivalAtlas(generated, manifest, rows);
@@ -2375,7 +2428,7 @@ async function generateObjectAsset(
 ): Promise<void> {
   onProgress(`${item.label} (${progressIndex}/25)`);
   const previousFrameKeys = await persistedFrameKeysFor(globalStorageUri, plan.theme_id, item.id);
-  const generated = await generateThemeImage(item.prompt, options);
+  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
   throwIfCancelled(undefined, options?.signal);
   if (!item.object_rows?.length) throw new Error(`${item.label} is missing object-board row metadata.`);
   const objectAtlas = await processObjectAtlas(generated, manifest, item.object_rows);
@@ -2405,7 +2458,7 @@ async function generateExpressionAsset(
   onProgress: (message: string) => void,
 ): Promise<void> {
   onProgress('16-expression sprite sheet (24/25)');
-  const generated = await generateThemeImage(item.prompt, options);
+  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
   throwIfCancelled(undefined, options?.signal);
   const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
   throwIfCancelled(undefined, options?.signal);
@@ -2430,7 +2483,7 @@ async function generateAchievementAsset(
   onProgress: (message: string) => void,
 ): Promise<void> {
   onProgress('20 achievement badges (25/25)');
-  const generated = await generateThemeImage(item.prompt, options);
+  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
   throwIfCancelled(undefined, options?.signal);
   const output = await optimizeSpriteBoardCanvas(generated, 5, 4);
   throwIfCancelled(undefined, options?.signal);
@@ -2465,6 +2518,7 @@ export function buildReplacementPrompt(
   creativeDirection: string,
   manifest: ThemeManifest,
   plan?: Pick<ThemePlan, 'expressions' | 'achievements'>,
+  backgroundMode: BoardBackgroundMode = 'magenta',
 ): string {
   if (item.kind === 'environment') return buildEnvironmentPrompt(creativeDirection, manifest.display_name);
   if (item.kind === 'object_atlas') {
@@ -2472,14 +2526,14 @@ export function buildReplacementPrompt(
     // objectRowsForItem) so a roster change regenerates the correct board
     // instead of reusing stale saved object_rows.
     const rows = objectRowsForItem(item, manifest);
-    return buildObjectAtlasPrompt(creativeDirection, manifest.display_name, rows);
+    return buildObjectAtlasPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   if (item.kind === 'background_decor_atlas') {
     // Reconstruct from the CURRENT manifest as the primary source (see
     // decorRowsForItem) so a decor roster change regenerates the correct board
     // instead of reusing stale saved decor_rows.
     const rows = decorRowsToBoard(decorRowsForItem(item, manifest));
-    return buildBackgroundDecorPrompt(creativeDirection, manifest.display_name, rows);
+    return buildBackgroundDecorPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   if (item.kind === 'expression_atlas') {
     // Prefer the CURRENT plan's expression names over the item's saved names,
@@ -2487,7 +2541,7 @@ export function buildReplacementPrompt(
     const names = plan?.expressions?.length
       ? plan.expressions
       : (item.expression_names?.length ? item.expression_names : defaultNames('Expression', 16));
-    return buildExpressionAtlasPrompt(creativeDirection, manifest.display_name, names);
+    return buildExpressionAtlasPrompt(creativeDirection, manifest.display_name, names, backgroundMode);
   }
   if (item.kind === 'achievement_atlas') {
     // Prefer the CURRENT plan's achievement names over the item's saved names,
@@ -2495,14 +2549,14 @@ export function buildReplacementPrompt(
     const names = plan?.achievements?.length
       ? plan.achievements
       : (item.achievement_names?.length ? item.achievement_names : defaultNames('Achievement Badge', 20));
-    return buildAchievementAtlasPrompt(creativeDirection, manifest.display_name, names);
+    return buildAchievementAtlasPrompt(creativeDirection, manifest.display_name, names, backgroundMode);
   }
-  if (item.kind === 'emote_atlas') return buildEmoteAtlasPrompt(creativeDirection, manifest.display_name);
+  if (item.kind === 'emote_atlas') return buildEmoteAtlasPrompt(creativeDirection, manifest.display_name, backgroundMode);
   if (item.kind === 'rival_atlas') {
     const rows = rivalRowsForItem(item, manifest);
-    return buildRivalAtlasPrompt(creativeDirection, manifest.display_name, rows);
+    return buildRivalAtlasPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
-  return buildCharacterAtlasPrompt(creativeDirection, item.subject ?? item.label, manifest.display_name);
+  return buildCharacterAtlasPrompt(creativeDirection, item.subject ?? item.label, manifest.display_name, backgroundMode);
 }
 
 function renameCharacterInPrompt(prompt: string, previousName: string, characterName: string): string {

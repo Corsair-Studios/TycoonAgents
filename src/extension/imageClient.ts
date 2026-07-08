@@ -25,6 +25,15 @@ export interface ThemeImageGenerationOptions {
    * unset in production so the default {@link WATCHDOG_TIMEOUT_MS} applies.
    */
   watchdogMs?: number;
+  /**
+   * Request a native alpha-transparent background instead of an opaque one.
+   * Only meaningful for {@link generateWithOpenAI} (gpt-image-1/2 supports
+   * `background: "transparent"`); the Gemini path has no alpha equivalent and
+   * ignores this flag, relying on the magenta chroma-key contract instead.
+   * Callers should only set this for the magenta/transparent-keyed sprite-board
+   * prompts — never for the opaque environment/scenery board.
+   */
+  transparentBackground?: boolean;
 }
 
 /**
@@ -200,7 +209,7 @@ async function generateWithOpenAI(
     n: 1,
     size,
     quality: 'medium',
-    background: 'opaque',
+    background: options.transparentBackground ? 'transparent' : 'opaque',
   };
 
   const timeoutMs = options.watchdogMs ?? WATCHDOG_TIMEOUT_MS;

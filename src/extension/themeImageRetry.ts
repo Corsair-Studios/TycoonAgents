@@ -16,6 +16,14 @@ function looksLikePastedGenerationPrompt(notes: string): boolean {
   return false;
 }
 
+/** Result of {@link sanitizeRetryNotes}: the notes to use, plus whether they
+ * were salvaged (trimmed) from a pasted full prompt so the caller can warn
+ * the user their text was cut instead of silently swapping it in. */
+export interface SanitizedRetryNotes {
+  notes: string;
+  trimmed: boolean;
+}
+
 /**
  * Guard against retry-notes snowballing: if a user pastes a full saved
  * generation prompt (or something that looks like one) into the retry notes
@@ -23,17 +31,21 @@ function looksLikePastedGenerationPrompt(notes: string): boolean {
  * the whole nested prompt get embedded verbatim into the next prompt. Every
  * prompt builder appends `Creative direction: ${creativeDirection}` with no
  * cap, so an unfiltered paste grows and contradicts itself on each retry.
+ *
+ * Returns `trimmed: true` when the input was salvaged from a pasted prompt,
+ * so callers can surface a visible warning instead of silently swapping in
+ * the shortened text.
  */
-export function sanitizeRetryNotes(notes: string): string {
-  const trimmed = notes.trim();
-  if (!trimmed) return trimmed;
-  if (!looksLikePastedGenerationPrompt(trimmed)) return trimmed;
+export function sanitizeRetryNotes(notes: string): SanitizedRetryNotes {
+  const input = notes.trim();
+  if (!input) return { notes: input, trimmed: false };
+  if (!looksLikePastedGenerationPrompt(input)) return { notes: input, trimmed: false };
 
-  const markers = [...trimmed.matchAll(CREATIVE_DIRECTION_MARKER_RE)];
+  const markers = [...input.matchAll(CREATIVE_DIRECTION_MARKER_RE)];
   if (markers.length > 0) {
     const last = markers[markers.length - 1];
-    const tail = trimmed.slice((last.index ?? 0) + last[0].length).trim();
-    if (tail) return tail;
+    const tail = input.slice((last.index ?? 0) + last[0].length).trim();
+    if (tail) return { notes: tail, trimmed: true };
   }
 
   throw new Error(

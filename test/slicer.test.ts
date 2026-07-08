@@ -224,6 +224,42 @@ test('character review board can remain square around a 5x4 grid', async () => {
   assert.equal(rebuilt.getPixelColor(64, 159), 0xff00ffff);
 });
 
+test('slicer produces identical frames for a transparent-background atlas and its magenta twin', async () => {
+  // OpenAI's native `background: "transparent"` output has no magenta chroma
+  // key at all — every unused pixel is already alpha 0. The chroma-key step
+  // must no-op harmlessly on that input, and content-bbox/normalization/spill
+  // removal (all alpha-driven already) must produce the exact same frames as
+  // the legacy magenta-keyed board with identical sprite content.
+  const cellSize = 20;
+  const buildAtlas = (backgroundColor: number) => {
+    const atlas = new Jimp(cellSize * 5, cellSize * 4, backgroundColor);
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 5; col++) {
+        const x = col * cellSize;
+        const y = row * cellSize;
+        atlas.scan(x + 6, y + 5, 8, 12, function (_px, _py, idx) {
+          this.bitmap.data[idx] = 25;
+          this.bitmap.data[idx + 1] = 80;
+          this.bitmap.data[idx + 2] = 160;
+          this.bitmap.data[idx + 3] = 255;
+        });
+      }
+    }
+    return atlas.getBufferAsync(Jimp.MIME_PNG);
+  };
+
+  const [magentaResult, transparentResult] = await Promise.all([
+    sliceAndNormalizeAtlas(await buildAtlas(0xff00ffff), {}),
+    sliceAndNormalizeAtlas(await buildAtlas(0x00000000), {}),
+  ]);
+
+  assert.equal(transparentResult.slots.length, magentaResult.slots.length);
+  for (let i = 0; i < magentaResult.slots.length; i++) {
+    assert.equal(transparentResult.slots[i].data, magentaResult.slots[i].data, `slot ${i} should match its magenta twin byte-for-byte`);
+    assert.deepEqual(transparentResult.slots[i].meta, magentaResult.slots[i].meta);
+  }
+});
+
 test('rival board (5 uneven columns) does not overflow the source buffer when grouped', async () => {
   // 512 / 5 columns does not divide evenly, so proportional slicing produces
   // column widths of 102, 102, 103, 102, 103. Row-wide normalizationGroups (as

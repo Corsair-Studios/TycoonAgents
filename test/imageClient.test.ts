@@ -99,6 +99,47 @@ test('generateThemeImage (gemini) watchdog rejects a hung request with a clear t
   }
 });
 
+test('generateThemeImage (openai) requests background:"transparent" when transparentBackground is set', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('a test prompt', {
+      provider: 'openai',
+      apiKey: 'test-key',
+      transparentBackground: true,
+    });
+    assert.equal(capturedBody.background, 'transparent');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage (openai) defaults to background:"opaque" when transparentBackground is unset (e.g. the environment board)', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('a test prompt', {
+      provider: 'openai',
+      apiKey: 'test-key',
+    });
+    assert.equal(capturedBody.background, 'opaque');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('generateThemeImage watchdog timer does not fire after a request settles normally', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>

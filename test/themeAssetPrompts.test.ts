@@ -4,6 +4,7 @@ import {
   buildAchievementAtlasPrompt,
   buildBackgroundDecorPrompt,
   buildCharacterAtlasPrompt,
+  buildEmoteAtlasPrompt,
   buildEnvironmentPrompt,
   buildExpressionAtlasPrompt,
   buildObjectAtlasPrompt,
@@ -18,6 +19,12 @@ import {
   rivalBoardFrameKeys,
   RIVALS_PER_BOARD,
 } from '../src/extension/themeAssetPrompts';
+
+/** No magenta wording of any kind should survive in a 'transparent'-mode prompt. */
+function assertNoMagenta(prompt: string): void {
+  assert.doesNotMatch(prompt, /magenta/i);
+  assert.doesNotMatch(prompt, /#FF00FF/i);
+}
 
 function decorSpecs() {
   return Array.from({ length: 9 }, (_unused, index) => ({
@@ -323,4 +330,82 @@ test('background decor prompt describes seats, static decor, one animated row, a
   assert.match(prompt, /width must be identical in every frame/i);
   assert.match(prompt, /footprint\/diameter stays constant across frames/i);
   assert.match(prompt, /Creative direction: cozy tavern/i);
+});
+
+// --- 'transparent' background mode (OpenAI native alpha) ---------------------
+// Every builder defaults to 'magenta' so the assertions above stay valid
+// unchanged. Passing 'transparent' must swap every magenta directive for an
+// equivalent alpha-transparency directive, and leave zero "magenta"/#FF00FF
+// mentions anywhere in the prompt.
+
+test('character prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
+  const prompt = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid', 'transparent');
+  assertNoMagenta(prompt);
+  assert.match(prompt, /fully transparent \(alpha 0\)/i);
+  assert.match(prompt, /tool always swings through empty transparent space/i);
+  assert.match(prompt, /Do not leave oversized transparent margins/i);
+  assert.match(prompt, /visible transparent gutter at every horizontal row boundary/i);
+});
+
+test('rival prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
+  const boards = createRivalBoardRows(rivalSpecs());
+  const prompt = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', boards[0], 'transparent');
+  assertNoMagenta(prompt);
+  assert.match(prompt, /fully transparent \(alpha 0\)/i);
+  assert.match(prompt, /swings\/lunges through empty transparent space/i);
+});
+
+test('object prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
+  const prompt = buildObjectAtlasPrompt('industrial', 'Factory', [
+    { kind: 'object' as const, object_id: 'a', display_name: 'Object A' },
+    { kind: 'poof' as const },
+    { kind: 'crate' as const },
+  ], 'transparent');
+  assertNoMagenta(prompt);
+  assert.match(prompt, /fully transparent \(alpha 0\)/i);
+  assert.match(prompt, /Cells 2–4 must remain entirely transparent/i);
+});
+
+test('background decor prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
+  const prompt = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', createDecorBoardRows(decorSpecs()), 'transparent');
+  assertNoMagenta(prompt);
+  assert.match(prompt, /fully transparent \(alpha 0\)/i);
+});
+
+test('expression prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
+  const prompt = buildExpressionAtlasPrompt(
+    'industrial',
+    'Factory',
+    Array.from({ length: 16 }, (_unused, index) => `Expression ${index + 1}`),
+    'transparent',
+  );
+  assertNoMagenta(prompt);
+  assert.match(prompt, /fully transparent \(alpha 0\)/i);
+  assert.match(prompt, /fully transparent background/i);
+});
+
+test('achievement prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
+  const prompt = buildAchievementAtlasPrompt(
+    'industrial',
+    'Factory',
+    Array.from({ length: 20 }, (_unused, index) => `Badge ${index + 1}`),
+    'transparent',
+  );
+  assertNoMagenta(prompt);
+  assert.match(prompt, /fully transparent \(alpha 0\)/i);
+});
+
+test('emote prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
+  const prompt = buildEmoteAtlasPrompt('industrial', 'Factory', 'transparent');
+  assertNoMagenta(prompt);
+  assert.match(prompt, /fully transparent \(alpha 0\)/i);
+});
+
+test('environment prompt is unaffected by background mode (it has no chroma keying)', () => {
+  // buildEnvironmentPrompt never accepted a background-mode parameter, by design:
+  // the environment board uses a cyan silhouette guide, not magenta/transparent
+  // sprite keying, so it is out of scope for this feature.
+  const prompt = buildEnvironmentPrompt('neon cyberpunk', 'Night Grid');
+  assert.match(prompt, /cyan \(#00FFFF\)/i);
+  assert.doesNotMatch(prompt, /magenta/i);
 });

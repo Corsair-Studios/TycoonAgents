@@ -2775,6 +2775,18 @@ td.col-status {
   font-size: 11px;
 }
 
+/* Sanitizer-trim notice: same amber accent as .theme-review-generation-error,
+   but a plain text line (non-blocking) instead of a bordered box. */
+.theme-review-retry-warning {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.theme-review-retry-warning[hidden] {
+  display: none;
+}
+
 .theme-image-review-list {
   display: flex;
   flex-direction: column;
