@@ -1835,9 +1835,21 @@
    */
   function themeReviewNameRows(item) {
     if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
-      // Positional labels ("Row 1".."Row 5"), not the humanized object_id — the
-      // id is immutable, so a humanized-id label reads as "the old name"
+      // Labels use the GLOBAL object number ("Object 6".."Object 10"), matching
+      // this board's own title ("Animated objects 6-10") and the manifest's
+      // buildable_objects order — not the humanized object_id, since the id is
+      // immutable and a humanized-id label would read as "the old name"
       // forever once the display name has been changed via this editor.
+      // The global offset is derived from the item id's `objects_NN` suffix
+      // (board 1 = objects 1-5, board 2 = objects 6-10, ...), mirroring the
+      // OBJECT_ROWS_PER_BOARD=5 chunking in themeAssetPrompts.ts/createObjectBoardRows
+      // and the same `objects_(\d+)` parse the host uses in reconstructObjectRows
+      // (themeService.ts) — the id format is already the shared source of truth,
+      // so no extra field needs to travel through the review-item payload.
+      const OBJECT_ROWS_PER_BOARD = 5;
+      const boardMatch = /objects_(\d+)/.exec(item.id || "");
+      const boardNumber = boardMatch ? Number(boardMatch[1]) || 1 : 1;
+      const globalOffset = (boardNumber - 1) * OBJECT_ROWS_PER_BOARD;
       let objectIndex = 0;
       return item.object_rows
         .filter((row) => row && row.kind === "object" && row.object_id)
@@ -1846,7 +1858,7 @@
           return {
             rowId: row.object_id,
             itemKind: "object",
-            label: "Row " + objectIndex,
+            label: "Object " + (globalOffset + objectIndex),
             original: row.display_name || "",
           };
         });
