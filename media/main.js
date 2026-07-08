@@ -1158,6 +1158,9 @@
   const themeBuilderPanel   = /** @type {HTMLElement} */ (document.getElementById("theme-builder-panel"));
   const themePickerGrid     = /** @type {HTMLElement} */ (document.getElementById("theme-picker-grid"));
   const themePickerStatus   = /** @type {HTMLElement} */ (document.getElementById("theme-picker-status"));
+  const themeSelectedSection = /** @type {HTMLElement} */ (document.getElementById("theme-selected-section"));
+  const themeSelectedHeading = /** @type {HTMLElement} */ (document.getElementById("theme-selected-heading"));
+  const themeSelectedRoster  = /** @type {HTMLElement} */ (document.getElementById("theme-selected-roster"));
   const themeImportBtn      = /** @type {HTMLButtonElement} */ (document.getElementById("theme-import-btn"));
   const themePromptInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-prompt-input"));
   const themeGenerateBtn    = /** @type {HTMLElement} */ (document.getElementById("theme-generate-btn"));
@@ -2502,12 +2505,15 @@
       return;
     }
     
+    let selectedThemeName = "";
+
     for (const theme of themes) {
       const isSelected = selectedThemeId && theme.theme_id === selectedThemeId;
       const row = document.createElement("div");
       row.className = "theme-picker-row" + (isSelected ? " theme-picker-row--selected" : "");
 
       const themeName = theme.display_name || theme.theme_id;
+      if (isSelected) selectedThemeName = themeName;
 
       const btn = document.createElement("button");
       btn.className = "skill-btn theme-picker-select" + (isSelected ? " theme-picker-select--active" : "");
@@ -2590,21 +2596,27 @@
       themePickerGrid.appendChild(row);
     }
 
-    // ── Roster section inside Themes modal ──────────────────────────────────
-    // Show the current theme's character roster (drag-reorderable) below the list.
-    if (rosterOrder.length > 0) {
-      const rosterSection = document.createElement("div");
-      rosterSection.className = "modal-roster-section";
+    // ── Selected-theme section (Change: reorganized IA) ─────────────────────
+    // The roster order strip is scoped to the CURRENTLY SELECTED theme, so it
+    // lives in its own section headed with that theme's name — separate from
+    // the theme library above (list + Import .zip / Theme Builder), which act
+    // on the library as a whole, not the selection.
+    if (themeSelectedRoster) themeSelectedRoster.innerHTML = "";
+    if (rosterOrder.length > 0 && themeSelectedSection && themeSelectedHeading && themeSelectedRoster) {
+      themeSelectedSection.removeAttribute("hidden");
+      themeSelectedHeading.textContent = selectedThemeName
+        ? `Selected theme — ${selectedThemeName}`
+        : "Selected theme";
 
       const rosterHeading = document.createElement("div");
       rosterHeading.className = "modal-roster-heading";
       rosterHeading.textContent = "Character roster order";
-      rosterSection.appendChild(rosterHeading);
+      themeSelectedRoster.appendChild(rosterHeading);
 
       const rosterNote = document.createElement("div");
       rosterNote.className = "modal-roster-note";
       rosterNote.textContent = "Drag to reorder. The sequence maps agent slots to characters on stage.";
-      rosterSection.appendChild(rosterNote);
+      themeSelectedRoster.appendChild(rosterNote);
 
       const rosterBody = document.createElement("div");
       rosterBody.className = "modal-roster-body";
@@ -2691,8 +2703,9 @@
         rosterBody.appendChild(thumb);
       }
 
-      rosterSection.appendChild(rosterBody);
-      themePickerGrid.appendChild(rosterSection);
+      themeSelectedRoster.appendChild(rosterBody);
+    } else if (themeSelectedSection) {
+      themeSelectedSection.setAttribute("hidden", "");
     }
   }
 

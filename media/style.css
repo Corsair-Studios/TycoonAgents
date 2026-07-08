@@ -3541,13 +3541,36 @@ button.theme-review-preview:focus-visible::after {
   vertical-align: middle;
 }
 
-/* ── Modal roster section (Change 3: roster inside Themes modal) ────────── */
-.modal-roster-section {
+/* ── Theme library group (Change: reorganized Themes modal IA) ──────────── */
+.theme-library-caption {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* ── Selected-theme group: scoped to the current selection, separated from
+   the theme library above (list + Import .zip / Theme Builder). ────────── */
+.theme-selected-section {
   margin-top: 20px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
 }
 
+.theme-selected-section[hidden] {
+  display: none;
+}
+
+.theme-selected-heading {
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+
+/* ── Modal roster section (Change 3: roster inside Themes modal) ────────── */
 .modal-roster-heading {
   font-size: 11px;
   font-weight: 700;

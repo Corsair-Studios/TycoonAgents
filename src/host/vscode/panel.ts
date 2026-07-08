@@ -3616,13 +3616,20 @@ export class TycoonPanel {
       <button id="themes-modal-close" aria-label="Close dialog">&times;</button>
       <div id="themes-scroll">
       <div id="theme-picker-list" role="tabpanel">
-        <h2 style="margin: 0 0 16px;">Themes</h2>
-        <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
-        <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
-        <div class="theme-picker-actions">
-          <button id="theme-import-btn" class="skill-btn">Import .zip</button>
-          <button id="tab-theme-builder" class="skill-btn theme-builder-launch">Theme Builder</button>
-        </div>
+        <section id="theme-library-section" class="theme-library-section">
+          <h2 style="margin: 0 0 16px;">Themes</h2>
+          <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
+          <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
+          <div class="theme-picker-actions">
+            <button id="theme-import-btn" class="skill-btn">Import .zip</button>
+            <button id="tab-theme-builder" class="skill-btn theme-builder-launch">Theme Builder</button>
+          </div>
+          <p class="theme-library-caption">Add a theme &mdash; build one with AI or import a shared .zip.</p>
+        </section>
+        <section id="theme-selected-section" class="theme-selected-section" hidden>
+          <h3 id="theme-selected-heading" class="theme-selected-heading">Selected theme</h3>
+          <div id="theme-selected-roster"></div>
+        </section>
       </div>
       <div id="theme-builder-panel" role="tabpanel" hidden>
         <button id="tab-theme-picker" class="skill-btn" style="margin-bottom: 16px;">&larr; Back to themes</button>
