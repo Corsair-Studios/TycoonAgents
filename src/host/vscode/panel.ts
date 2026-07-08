@@ -806,6 +806,15 @@ export class TycoonPanel {
               themeId,
               payload.changes as ThemeItemNameChange[],
             );
+            if (result.applied.length) {
+              // renameThemeItemsBatch also resyncs the affected boards' saved
+              // review-item prompt/rows (see resyncRenamedReviewItems). Post the
+              // refreshed review BEFORE the result/state message below (same
+              // ordering as RENAME_THEME_CHARACTER) so the Names editor's
+              // confirmation status lands on the freshly-rebuilt card instead of
+              // one about to be replaced.
+              await this._postThemeImageReview(themeId);
+            }
             void this._panel.webview.postMessage({
               type: MSG.THEME_ITEM_NAMES_RESULT,
               payload: {

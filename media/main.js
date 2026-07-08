@@ -1835,14 +1835,21 @@
    */
   function themeReviewNameRows(item) {
     if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
+      // Positional labels ("Row 1".."Row 5"), not the humanized object_id — the
+      // id is immutable, so a humanized-id label reads as "the old name"
+      // forever once the display name has been changed via this editor.
+      let objectIndex = 0;
       return item.object_rows
         .filter((row) => row && row.kind === "object" && row.object_id)
-        .map((row) => ({
-          rowId: row.object_id,
-          itemKind: "object",
-          label: humanizeThemeId(row.object_id),
-          original: row.display_name || "",
-        }));
+        .map((row) => {
+          objectIndex += 1;
+          return {
+            rowId: row.object_id,
+            itemKind: "object",
+            label: "Row " + objectIndex,
+            original: row.display_name || "",
+          };
+        });
     }
     if (item.kind === "background_decor_atlas" && Array.isArray(item.decor_rows)) {
       const rows = [];
@@ -1864,20 +1871,21 @@
       return rows;
     }
     if (item.kind === "rival_atlas" && Array.isArray(item.rival_rows)) {
+      // Positional labels ("Rival 1"..), same reasoning as the object rows above.
+      let rivalIndex = 0;
       return item.rival_rows
         .filter((row) => row && row.rival_id)
-        .map((row) => ({
-          rowId: row.rival_id,
-          itemKind: "rival",
-          label: humanizeThemeId(row.rival_id),
-          original: row.display_name || "",
-        }));
+        .map((row) => {
+          rivalIndex += 1;
+          return {
+            rowId: row.rival_id,
+            itemKind: "rival",
+            label: "Rival " + rivalIndex,
+            original: row.display_name || "",
+          };
+        });
     }
     return [];
-  }
-
-  function humanizeThemeId(id) {
-    return String(id).replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   }
 
   /**
@@ -1972,9 +1980,12 @@
     return section;
   }
 
-  /** Handles a THEME_ITEM_NAMES_RESULT reply without a full review re-render
-   * (which would show stale row names — see themeService.ts's manifest-wins
-   * comment on renameThemeItemsBatch). Patches only the affected board's card. */
+  /** Handles a THEME_ITEM_NAMES_RESULT reply. The host posts a fresh
+   * THEME_IMAGE_REVIEW (full card rebuild, reflecting the resynced prompt/rows —
+   * see resyncRenamedReviewItems in themeService.ts) immediately before this
+   * message, so this only needs to patch the busy/status affordances — labels
+   * are positional (see themeReviewNameRows) and never go stale, and the
+   * rebuilt card's inputs already carry the saved names. */
   function applyThemeItemNamesResult(payload) {
     const boardId = payload.board_id || "";
     themeReviewBusyItems.delete(boardId);

@@ -975,10 +975,13 @@ export interface ThemeItemNameChangeResult {
  * touching the manifest for those. Kept manifest-only and side-effect-free
  * (no vscode/file IO) so it's directly unit-testable — mirrors the
  * "manifest wins" policy objectRowsForItem/decorRowsForItem/rivalRowsForItem
- * already enforce for board regeneration prompts: renaming here only needs to
- * land in the manifest, because a subsequent Retry/regenerate reconstructs
- * board rows from the CURRENT manifest rather than any stale saved snapshot.
- * Exported for unit testing.
+ * already enforce for board regeneration prompts: a full regenerate or a
+ * 'replace' retry reconstructs board rows/prompt from the CURRENT manifest
+ * rather than any stale saved snapshot. 'retry'/'augment' retries do not —
+ * they replay the SAVED item.prompt verbatim/appended (see
+ * selectThemeImageRetryPrompt) — so the caller (renameThemeItemsBatch) also
+ * resyncs the saved review-item prompt/rows after this runs; see
+ * resyncRenamedReviewItems. Exported for unit testing.
  */
 export function applyThemeItemNameChanges(
   manifest: ThemeManifest,
@@ -1047,14 +1050,19 @@ export function applyThemeItemNameChanges(
  * Thin IO wrapper around applyThemeItemNameChanges: loads the theme once,
  * applies the whole batch, writes once. Rename affordance for the theme
  * review screen's per-board "Names" editor — buildable-object, decor, and
- * rival display names have no per-row image-review entry to keep in sync
- * (they're generated as whole boards, and regeneration reconstructs its
- * prompt from the current manifest — see buildReplacementPrompt), so this
- * only needs to touch the manifest and persist. Character changes mirror
- * what renameThemeCharacter does to the manifest (agent.name), but skip its
- * plan/review-document/prompt-text sync — the review screen's existing
- * single-character rename flow (RENAME_THEME_CHARACTER) still owns that
- * fuller semantics for character boards.
+ * rival display names have no per-row image-review entry of their own; they
+ * live inside a whole-board item's object_rows/decor_rows/rival_rows. A
+ * 'replace' retry always rebuilds its prompt fresh from the CURRENT manifest
+ * (see buildReplacementPrompt), so it never went stale — but 'retry' replays
+ * the SAVED item.prompt verbatim and 'augment' appends onto it (see
+ * selectThemeImageRetryPrompt), so without a resync those two modes kept
+ * drawing the OLD name forever. After the manifest write, this also calls
+ * resyncRenamedBoardPrompts to refresh the saved prompt/rows for every board
+ * a renamed row belongs to. Character changes mirror what
+ * renameThemeCharacter does to the manifest (agent.name), but skip that
+ * resync — the review screen's existing single-character rename flow
+ * (RENAME_THEME_CHARACTER) still owns that fuller semantics for character
+ * boards.
  */
 export async function renameThemeItemsBatch(
   globalStorageUri: vscode.Uri,
@@ -1069,7 +1077,15 @@ export async function renameThemeItemsBatch(
   const { manifest, frames } = loadedTheme;
 
   const result = applyThemeItemNameChanges(manifest, changes);
-  if (result.applied.length) await writeThemeFiles(globalStorageUri, manifest, frames);
+  if (result.applied.length) {
+    await writeThemeFiles(globalStorageUri, manifest, frames);
+    // Refresh the SAVED review-item prompt/rows for every board a renamed row
+    // belongs to, so a later 'retry'/'augment' regeneration (which replays the
+    // saved prompt verbatim/appended, not a fresh rebuild) draws the new name
+    // instead of the one baked into the stale saved prompt. See
+    // resyncRenamedReviewItems for the full rationale.
+    await resyncRenamedBoardPrompts(globalStorageUri, themeId, manifest, result.applied);
+  }
   return { manifest, frames, result };
 }
 
@@ -2473,6 +2489,112 @@ export function mergeResumedReviewItems(
       generation_error: saved.generation_error,
     };
   });
+}
+
+/**
+ * Pure core of the rename-driven prompt resync (the "Names" editor's batched
+ * Apply, applyThemeItemNameChanges/renameThemeItemsBatch). Renaming only ever
+ * touched the manifest, on the documented theory that a later Retry/regenerate
+ * "reconstructs board rows from the CURRENT manifest" — true for the 'replace'
+ * retry mode (buildReplacementPrompt always rebuilds fresh), but FALSE for
+ * 'retry' (replays the SAVED item.prompt verbatim) and 'augment' (appends notes
+ * onto the SAVED item.prompt) — see selectThemeImageRetryPrompt in
+ * themeImageRetry.ts. Those two modes silently draw the OLD names forever
+ * because the saved prompt text itself was never refreshed.
+ *
+ * Given the review document as it stood before the rename, the manifest AFTER
+ * applyThemeItemNameChanges wrote the new names into it, the theme's plan, and
+ * the batch of applied changes, returns the review items whose board needs a
+ * freshly-rebuilt prompt/rows so 'retry' and 'augment' inherit the new names
+ * automatically from here on.
+ *
+ * Scoped to only the object/decor/rival boards that actually CONTAIN a renamed
+ * row — every other board, including character/agent boards (the existing
+ * single-character rename flow, RENAME_THEME_CHARACTER, already owns that
+ * fuller plan/prompt-text sync), is left byte-for-byte as saved. Reuses
+ * createReviewItems — the single source of truth for board prompts/rows — plus
+ * mergeResumedReviewItems' merge semantics, so status/revision/updated_at/
+ * generation_error survive the resync untouched: a rename must never bounce an
+ * accepted board back to pending. Exported for unit testing.
+ */
+export function resyncRenamedReviewItems(
+  document: Pick<ThemeImageReviewDocument, 'items'>,
+  manifest: ThemeManifest,
+  plan: ThemePlan,
+  applied: ThemeItemNameChange[],
+): ThemeImageReviewItem[] {
+  // Character renames already have their own fuller sync path; nothing else
+  // to resync if only character rows changed.
+  const affectedIds = new Set(
+    applied.filter((change) => change.item_kind !== 'character').map((change) => change.id),
+  );
+  if (!affectedIds.size) return [];
+
+  const affectedBoardIds = new Set<string>();
+  for (const item of document.items) {
+    if (item.kind === 'object_atlas' && item.object_rows?.some(
+      (row) => row.kind === 'object' && affectedIds.has(row.object_id),
+    )) {
+      affectedBoardIds.add(item.id);
+    } else if (item.kind === 'background_decor_atlas' && item.decor_rows?.some(
+      (row) => row.kind !== 'projectile' && affectedIds.has(row.decor_id),
+    )) {
+      affectedBoardIds.add(item.id);
+    } else if (item.kind === 'rival_atlas' && item.rival_rows?.some(
+      // rival_rows carry the STRIPPED rival_id (see themeRivalSpecs); match either
+      // form since applyThemeItemNameChanges accepts both (see its rival branch).
+      (row) => affectedIds.has(row.rival_id) || affectedIds.has(`rival_${row.rival_id}`),
+    )) {
+      affectedBoardIds.add(item.id);
+    }
+  }
+  if (!affectedBoardIds.size) return [];
+
+  const expectedItems = createReviewItems(
+    plan,
+    manifest,
+    themePlanCreativeDirection(plan),
+    boardBackgroundModeForProvider(undefined),
+  ).filter((item) => affectedBoardIds.has(item.id));
+  const savedItems = document.items.filter((item) => affectedBoardIds.has(item.id));
+
+  // Every expected item here has a saved counterpart by construction
+  // (affectedBoardIds was derived from document.items), so the merge always
+  // carries a real updated_at through.
+  return mergeResumedReviewItems(expectedItems, savedItems) as ThemeImageReviewItem[];
+}
+
+/**
+ * IO wrapper around resyncRenamedReviewItems: loads the saved review document
+ * and plan, computes the refreshed items, and persists each one. Silently
+ * no-ops (logs a warning) if the review document or plan can't be loaded —
+ * the manifest rename itself already succeeded and must not be rolled back
+ * just because the resync convenience couldn't run; the next full
+ * regenerate/resume still self-heals via mergeResumedReviewItems.
+ */
+async function resyncRenamedBoardPrompts(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  manifest: ThemeManifest,
+  applied: ThemeItemNameChange[],
+): Promise<void> {
+  if (!applied.some((change) => change.item_kind !== 'character')) return;
+  try {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    if (!document) return;
+    const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
+      ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+    if (!savedPlan) return;
+    const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+    if (plan.theme_id !== themeId) return;
+
+    const refreshed = resyncRenamedReviewItems(document, manifest, plan, applied);
+    for (const item of refreshed) {
+      await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, item);
+    }
+  } catch (err) {
+    console.warn('TycoonAgents: unable to resync review-board prompts after rename:', err);
+  }
 }
 
 /**

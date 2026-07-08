@@ -39,7 +39,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 const {
   createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt,
   applyObjectBoardFrames, removeStaleBoardFrameKeys, mergeResumedReviewItems,
-  boardBackgroundModeForProvider,
+  boardBackgroundModeForProvider, resyncRenamedReviewItems, applyThemeItemNameChanges,
 } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 function legacyManifest(): ThemeManifest {
@@ -497,4 +497,96 @@ test('buildReplacementPrompt threads a transparent backgroundMode through to the
   assert.doesNotMatch(transparentPrompt, /magenta/i);
   assert.doesNotMatch(transparentPrompt, /#FF00FF/i);
   assert.match(transparentPrompt, /fully transparent \(alpha 0\)/i);
+});
+
+// --- Regression: renaming a buildable object/decor/rival via the theme-review
+// "Names" editor only ever touched the manifest (applyThemeItemNameChanges),
+// on the theory that regeneration always rebuilds board rows/prompts fresh
+// from the manifest. True for a full regenerate or a 'replace' retry
+// (buildReplacementPrompt/objectRowsForItem etc.), but FALSE for 'retry' and
+// 'augment' retries, which replay the SAVED item.prompt verbatim/appended (see
+// selectThemeImageRetryPrompt in themeImageRetry.ts) — so without a resync,
+// those two modes kept drawing the OLD name forever. resyncRenamedReviewItems
+// is the fix: it rebuilds ONLY the boards a renamed row belongs to. ---
+
+function savedReviewDocumentItems(manifest: ThemeManifest, plan: ThemePlan) {
+  return createReviewItems(plan, manifest, plan.creative_direction).map((item, index) => ({
+    ...item,
+    status: 'accepted' as const,
+    revision: index + 1,
+    updated_at: `2026-01-01T00:0${index % 10}:00.000Z`,
+  }));
+}
+
+test('resyncRenamedReviewItems rebuilds only the object board containing the renamed row, with the new name baked into its prompt', () => {
+  const manifest = realTwelveObjectManifest();
+  const plan = minimalPlan();
+  // Saved document reflects generation BEFORE the rename (old name baked into
+  // board 2's prompt, matching the real cobra_command layout from the tests
+  // above: board 2 = objects 6-10, including camouflage_netting).
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+  const savedBoard2 = savedItems.find((item) => item.id === 'objects_02')!;
+  assert.match(savedBoard2.prompt, /Camouflage Netting/);
+
+  const result = applyThemeItemNameChanges(manifest, [
+    { item_kind: 'object', id: 'camouflage_netting', name: 'Ghillie Netting' },
+  ]);
+  assert.equal(result.applied.length, 1);
+  assert.equal(manifest.buildable_objects.find((o) => o.object_id === 'camouflage_netting')?.display_name, 'Ghillie Netting');
+
+  const refreshed = resyncRenamedReviewItems({ items: savedItems }, manifest, plan, result.applied);
+
+  // Only the board that actually carries the renamed row comes back.
+  assert.deepEqual(refreshed.map((item) => item.id), ['objects_02']);
+  const refreshedBoard2 = refreshed[0];
+  assert.match(refreshedBoard2.prompt, /Ghillie Netting/);
+  assert.doesNotMatch(refreshedBoard2.prompt, /Camouflage Netting/);
+
+  // Review PROGRESS survives the resync untouched — a rename must never bounce
+  // an accepted board back to pending.
+  assert.equal(refreshedBoard2.status, savedBoard2.status);
+  assert.equal(refreshedBoard2.revision, savedBoard2.revision);
+  assert.equal(refreshedBoard2.updated_at, savedBoard2.updated_at);
+
+  // Unaffected boards (objects_01, objects_03, and every non-object board) are
+  // simply absent from the resync result — the caller only overwrites what's
+  // returned here, so their saved prompt/rows are left byte-for-byte alone.
+  assert.ok(!refreshed.some((item) => item.id === 'objects_01'));
+  assert.ok(!refreshed.some((item) => item.id === 'objects_03'));
+});
+
+test('resyncRenamedReviewItems is a no-op for a character-only rename batch (that flow already has its own sync)', () => {
+  const manifest = realTwelveObjectManifest();
+  const plan = minimalPlan();
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+
+  const refreshed = resyncRenamedReviewItems(
+    { items: savedItems },
+    manifest,
+    plan,
+    [{ item_kind: 'character', id: 'agent_0', name: 'Vex' }],
+  );
+
+  assert.deepEqual(refreshed, []);
+});
+
+test('resyncRenamedReviewItems matches a rival rename by its stripped rival_rows id and refreshes that rival board', () => {
+  const manifest = realTwelveObjectManifest(); // 3 rivals -> a single rivals_01 board
+  const plan = minimalPlan();
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+  const savedRivalBoard = savedItems.find((item) => item.id === 'rivals_01')!;
+  assert.match(savedRivalBoard.prompt, /Rival 0/);
+
+  // applyThemeItemNameChanges accepts the stripped id form (see the
+  // themeItemNames.test.ts regression coverage for this).
+  const result = applyThemeItemNameChanges(manifest, [
+    { item_kind: 'rival', id: '0', name: 'Warden' },
+  ]);
+  assert.equal(result.applied.length, 1);
+
+  const refreshed = resyncRenamedReviewItems({ items: savedItems }, manifest, plan, result.applied);
+  assert.deepEqual(refreshed.map((item) => item.id), ['rivals_01']);
+  assert.match(refreshed[0].prompt, /Warden/);
+  assert.equal(refreshed[0].status, savedRivalBoard.status);
+  assert.equal(refreshed[0].revision, savedRivalBoard.revision);
 });
