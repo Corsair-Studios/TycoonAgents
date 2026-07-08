@@ -105,7 +105,7 @@ async function generateWithImagen3(
   apiKey: string,
   options: ThemeImageGenerationOptions,
 ): Promise<Buffer> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent?key=${apiKey}`;
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent';
   const body = {
     contents: [
       {
@@ -136,7 +136,7 @@ async function generateWithImagen3(
     try {
       response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify(body),
         signal: watchdog.signal,
       });

@@ -1,5 +1,7 @@
 # Roadmap — TycoonAgents
 
+> **Historical document (June 2026) — frozen.** This is the original v0 plan the project was built from; it is intentionally not updated. Current state lives in the release history (git log), docs/plan/, and the shipped extension itself.
+
 > The phased plan derived from the Project Brief. Each phase is a coherent, demoable increment whose acceptance criteria are pinned *before* work starts — that's how drift is caught at the gate.
 
 ## Sequencing rationale

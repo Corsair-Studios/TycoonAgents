@@ -1,5 +1,7 @@
 # TycoonAgents — Design
 
+> **Historical document (June 2026) — frozen.** This is the original v0 spec the project was built from; it is intentionally not updated. Current state lives in the release history (git log), docs/plan/, and the shipped extension itself.
+
 > **v0 working draft.** This is an original specification; the implementation is built **from this document**.
 
 ---
