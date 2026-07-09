@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mapHookRecord } from "../src/providers/claude-code/mapHookRecord";
 import type { HookRecord } from "../src/providers/claude-code/hookRecord";
 import { applyEvent, initialWorldState, creditedElapsed, computeDelegationModeStats } from "../src/core/state";
-import type { MetricsWorldState } from "../src/core/state";
+import type { MetricsWorldState, AgentMetric } from "../src/core/state";
 
 const T = 1700000000000;
 
@@ -946,5 +946,61 @@ describe("computeDelegationModeStats", () => {
     assert.equal(teamLeads!.leadTokens, 0);
     assert.equal(teamLeads!.teamTokens, 0);
     assert.equal(teamLeads!.leadOverheadPct, null, "0/0 must not become NaN");
+  });
+
+  test("wallClockMs is the true span (min workStartAt to max lastActivityAt), NOT the activeMs sum", () => {
+    // Two agents in the same mode, both still active (no WorkerStopped) so
+    // workStartAt stays populated: A runs [1000,5000], B runs [3000,9000],
+    // overlapping from 3000-5000. wallClockMs must be the union span
+    // (9000 - 1000 = 8000), while activeMs stays the plain per-agent SUM.
+    let state = initialWorldState();
+    state = applyEvent(state, { type: "WorkerSpawned", at: 1000, workerId: "agent-a", delegationMode: "flat" });
+    state = applyEvent(state, { type: "WorkerActivity", at: 5000, workerId: "agent-a", kind: "build" });
+    state = applyEvent(state, { type: "WorkerSpawned", at: 3000, workerId: "agent-b", delegationMode: "flat" });
+    state = applyEvent(state, { type: "WorkerActivity", at: 9000, workerId: "agent-b", kind: "build" });
+
+    const a = state.agentMetrics.find((m) => m.id === "agent-a");
+    const b = state.agentMetrics.find((m) => m.id === "agent-b");
+    assert.equal(a!.workStartAt, 1000);
+    assert.equal(a!.lastActivityAt, 5000);
+    assert.equal(b!.workStartAt, 3000);
+    assert.equal(b!.lastActivityAt, 9000);
+
+    const stats = computeDelegationModeStats(state.agentMetrics);
+    const flat = stats.find((s) => s.mode === "flat");
+    assert.ok(flat);
+    assert.equal(flat!.wallClockMs, 8000, "min(workStartAt)=1000 to max(lastActivityAt)=9000");
+    assert.equal(
+      flat!.activeMs,
+      a!.activeMs + b!.activeMs,
+      "activeMs must remain the plain per-agent SUM, unchanged by wallClockMs",
+    );
+  });
+
+  test("wallClockMs is 0 when timestamps are missing/0", () => {
+    const base: AgentMetric = {
+      id: "x",
+      name: "X",
+      status: "idle",
+      taskCount: 0,
+      mcpCount: 0,
+      activeMs: 0,
+      tokens: 0,
+      workStartAt: null,
+      lastActivityAt: null,
+      directSearches: 0,
+      directReads: 0,
+      directEdits: 0,
+      delegations: 0,
+    };
+    // One agent with null timestamps, one with 0 timestamps (falsy, not "positive finite").
+    const metrics: AgentMetric[] = [
+      { ...base, id: "no-timestamps", delegationMode: "flat", workStartAt: null, lastActivityAt: null },
+      { ...base, id: "zero-timestamps", delegationMode: "flat", workStartAt: 0, lastActivityAt: 0 },
+    ];
+    const stats = computeDelegationModeStats(metrics);
+    const flat = stats.find((s) => s.mode === "flat");
+    assert.ok(flat);
+    assert.equal(flat!.wallClockMs, 0, "no agent contributes a positive-finite start/last pair");
   });
 });

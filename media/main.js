@@ -7338,7 +7338,7 @@
    * lead's team-rollup row; `opts.indent` marks a worker nested under an
    * expanded lead; `opts.teamTag` labels a collapsed row as an aggregate.
    */
-  function buildMetricsRow(agent, maxTokensPerSec, opts) {
+  function buildMetricsRow(agent, maxTokensPerMin, opts) {
     opts = opts || {};
     const status = (agent.status || "idle").toLowerCase();
     const isActive = status === "active";
@@ -7399,22 +7399,19 @@
     nameTd.title = nameTitle;
     row.appendChild(nameTd);
 
-    // Live elapsed active time (same basis as the Time column below) drives
-    // both the throughput number and the status-bar fill.
-    const liveMs = liveMsFor(agent);
-
-    // Status bar: green while active, gray while idle. Width encodes tokens
-    // per second of live active time, normalized to the agent with the
-    // highest tokens-per-second. Active agents always show a visible green
-    // sliver so "working" is never invisible.
-    const tokensPerSec = liveMs > 0 ? (agent.tokens || 0) / (liveMs / 1000) : 0;
-    const rawPct = liveMs > 0
-      ? Math.round(Math.min(tokensPerSec / maxTokensPerSec, 1) * 100)
+    // Status bar: green while active, gray while idle. Width encodes the
+    // raw tokens per minute of active time (tokens / activeMs minutes), normalized
+    // to the agent with the highest tokens-per-minute. Active agents always show
+    // a visible green sliver so "working" is never invisible.
+    const mins = (agent.activeMs || 0) / 60000;
+    const tokensPerMin = mins > 0 ? (agent.tokens || 0) / mins : null;
+    const rawPct = tokensPerMin !== null
+      ? Math.round(Math.min(tokensPerMin / maxTokensPerMin, 1) * 100)
       : 0;
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Tokens/sec — tokens generated per second of active time. The bar is scaled to the busiest agent.";
+    statusTd.title = "Tokens/min — average tokens generated per minute of active time. The bar is scaled to the busiest agent.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -7422,7 +7419,7 @@
     fill.style.width = `${fillPct}%`;
     const label = document.createElement("span");
     label.className = "status-bar-label";
-    label.textContent = showActive ? "active" : fmtTokensPerSec(tokensPerSec);
+    label.textContent = showActive ? "active" : (tokensPerMin !== null ? fmtTokens(Math.round(tokensPerMin)) : "—");
     track.appendChild(fill);
     track.appendChild(label);
     statusTd.appendChild(track);
@@ -7441,7 +7438,7 @@
     row.appendChild(mcpTd);
 
     // Show live elapsed time while active, capped by idle-freeze and sanity cap.
-    // (liveMs computed above, shared with the throughput calc.)
+    const liveMs = liveMsFor(agent);
     const timeTd = document.createElement("td");
     timeTd.className = "col-time";
     timeTd.title = "Active time this agent has spent working.";
@@ -7459,62 +7456,26 @@
 
   function renderMetrics(metrics) {
     lastMetrics = metrics || [];
-    const bodyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-body"));
     const emptyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-empty"));
     const tableEl = /** @type {HTMLElement} */ (document.getElementById("metrics-table"));
     const tbodyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-tbody"));
 
-    if (!bodyEl || !emptyEl || !tableEl || !tbodyEl) return;
-
-    // The throughput column header still reads "Tokens/min" in panel.ts markup
-    // (out of scope to edit directly here) — relabel it to match the now
-    // per-second metric. Idempotent: only touches the DOM when stale.
-    const throughputHeaderTh = tableEl.querySelector("thead th:nth-child(2)");
-    if (throughputHeaderTh && throughputHeaderTh.textContent !== "Tok/s") {
-      throughputHeaderTh.textContent = "Tok/s";
-    }
-
-    // Live team-throughput headline: sum of every agent's tokens/sec, shown
-    // above the table whenever it's visible. Created once, then updated in
-    // place on every render so it ticks along with the per-row live time.
-    let headlineEl = /** @type {HTMLElement} */ (document.getElementById("metrics-team-throughput"));
-    if (!headlineEl) {
-      headlineEl = document.createElement("div");
-      headlineEl.id = "metrics-team-throughput";
-      headlineEl.className = "metrics-team-throughput";
-      bodyEl.insertBefore(headlineEl, bodyEl.firstChild);
-    }
+    if (!emptyEl || !tableEl || !tbodyEl) return;
 
     if (!metrics || metrics.length === 0) {
       emptyEl.style.display = "";
       tableEl.style.display = "none";
-      headlineEl.style.display = "none";
       return;
     }
 
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // Team throughput = sum of tokens/sec across every agent currently (or
-    // ever) active, using the same live-ms basis as each row. Total tokens
-    // shown alongside for context.
-    let teamTokensPerSec = 0;
-    let totalTokens = 0;
-    for (const m of metrics) {
-      if (!m) continue;
-      totalTokens += m.tokens || 0;
-      const mLiveMs = liveMsFor(m);
-      if (mLiveMs > 0) teamTokensPerSec += (m.tokens || 0) / (mLiveMs / 1000);
-    }
-    headlineEl.style.display = "";
-    headlineEl.textContent = `Team throughput: ${fmtTokensPerSec(teamTokensPerSec)} · ${fmtTokens(totalTokens)} tokens total`;
-
-    // Tokens per second of live active time: each agent's token total divided
-    // by its live active seconds (no model weighting). Used to scale the
-    // status bar, normalized to the busiest agent.
-    const maxTokensPerSec = Math.max(1, ...metrics.map(a => {
-      const aLiveMs = liveMsFor(a);
-      return aLiveMs > 0 ? (a.tokens || 0) / (aLiveMs / 1000) : 0;
+    // Raw tokens per minute of active time: each agent's token total divided by
+    // its finalized active minutes (no model weighting). Used to scale the status bar.
+    const maxTokensPerMin = Math.max(1, ...metrics.map(a => {
+      const mins = (a.activeMs || 0) / 60000;
+      return mins > 0 ? (a.tokens || 0) / mins : 0;
     }));
 
     // Group workers under a visible lead (tier === "lead"). Approximate —
@@ -7544,19 +7505,19 @@
         // Flat row: no children to roll up — identical to pre-Phase-3 rendering,
         // including leads that haven't spawned anyone (yet) and any worker whose
         // parentId doesn't match a currently-visible lead.
-        tbodyEl.appendChild(buildMetricsRow(agent, maxTokensPerSec, {}));
+        tbodyEl.appendChild(buildMetricsRow(agent, maxTokensPerMin, {}));
         continue;
       }
 
       if (isTeamExpanded(agent.id)) {
-        tbodyEl.appendChild(buildMetricsRow(agent, maxTokensPerSec, { chevron: "expanded", leadId: agent.id }));
+        tbodyEl.appendChild(buildMetricsRow(agent, maxTokensPerMin, { chevron: "expanded", leadId: agent.id }));
         for (const child of children) {
-          tbodyEl.appendChild(buildMetricsRow(child, maxTokensPerSec, { indent: true }));
+          tbodyEl.appendChild(buildMetricsRow(child, maxTokensPerMin, { indent: true }));
         }
       } else {
         tbodyEl.appendChild(buildMetricsRow(
           aggregateTeam(agent, children),
-          maxTokensPerSec,
+          maxTokensPerMin,
           { chevron: "collapsed", leadId: agent.id, teamTag: true },
         ));
       }
@@ -7571,7 +7532,7 @@
    * measurement) — one row per delegation mode that has recorded data, so the
    * install screen's estimated "10-20% more tokens" claim can be checked
    * against real numbers measured in this workspace.
-   * @param {Array<{mode:string,completedTasks:number,totalTokens:number,activeMs:number,leadTokens:number,teamTokens:number,leadOverheadPct:number|null}>|undefined} modeStats
+   * @param {Array<{mode:string,completedTasks:number,totalTokens:number,activeMs:number,leadTokens:number,teamTokens:number,leadOverheadPct:number|null,wallClockMs?:number}>|undefined} modeStats
    */
   function renderDelegationStats(modeStats) {
     const el = /** @type {HTMLElement} */ (document.getElementById("delegation-stats"));
@@ -7610,6 +7571,13 @@
       if (m.mode === "team_leads" && m.leadOverheadPct !== null) {
         text += ` · lead overhead ${m.leadOverheadPct.toFixed(1)}% of team tokens`;
       }
+      // activeMs is the mode's total active time summed across its agents;
+      // unlike wallClockMs it persists after agents stop (workStartAt nulls
+      // on stop), so throughput keeps showing post-run instead of "—".
+      const modeTokPerSec = (typeof m.activeMs === "number" && m.activeMs > 0)
+        ? m.totalTokens / (m.activeMs / 1000)
+        : 0;
+      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"}`;
       detail.textContent = text;
       row.appendChild(detail);
 

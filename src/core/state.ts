@@ -481,6 +481,14 @@ export interface DelegationModeStats {
   /** Sum of activeMs across every agent recorded under this mode. */
   activeMs: number;
   /**
+   * True wall-clock span for this mode: max(lastActivityAt) - min(workStartAt)
+   * across the mode's agents, in ms. Unlike activeMs (a SUM across agents that
+   * overcounts concurrent/parallel work), this reflects real elapsed time, so
+   * totalTokens / (wallClockMs / 1000) is an honest tokens/second for the mode.
+   * 0 when there isn't at least one agent with both timestamps known.
+   */
+  wallClockMs: number;
+  /**
    * team_leads only: tokens consumed by tier==="lead" agents. 0 for "flat"
    * (leads only exist under Team Leads mode, per doctrine).
    */
@@ -516,15 +524,30 @@ export interface DelegationModeStats {
  * data for this mode" by simply not finding it, rather than a zeroed row.
  */
 export function computeDelegationModeStats(agentMetrics: AgentMetric[]): DelegationModeStats[] {
-  const totals = new Map<string, { completedTasks: number; totalTokens: number; activeMs: number }>();
+  const totals = new Map<
+    string,
+    { completedTasks: number; totalTokens: number; activeMs: number; minStart: number; maxLast: number }
+  >();
   const resolveMode = (m: AgentMetric): string => (m.delegationMode === "team_leads" ? "team_leads" : "flat");
 
   for (const m of agentMetrics) {
     const mode = resolveMode(m);
-    const bucket = totals.get(mode) ?? { completedTasks: 0, totalTokens: 0, activeMs: 0 };
+    const bucket = totals.get(mode) ?? {
+      completedTasks: 0,
+      totalTokens: 0,
+      activeMs: 0,
+      minStart: Infinity,
+      maxLast: -Infinity,
+    };
     bucket.completedTasks += m.taskCount;
     bucket.totalTokens += m.tokens;
     bucket.activeMs += m.activeMs;
+    if (typeof m.workStartAt === "number" && isFinite(m.workStartAt) && m.workStartAt > 0) {
+      bucket.minStart = Math.min(bucket.minStart, m.workStartAt);
+    }
+    if (typeof m.lastActivityAt === "number" && isFinite(m.lastActivityAt) && m.lastActivityAt > 0) {
+      bucket.maxLast = Math.max(bucket.maxLast, m.lastActivityAt);
+    }
     totals.set(mode, bucket);
   }
 
@@ -547,11 +570,16 @@ export function computeDelegationModeStats(agentMetrics: AgentMetric[]): Delegat
   const result: DelegationModeStats[] = [];
   for (const [mode, bucket] of totals) {
     const isTeamLeads = mode === "team_leads";
+    const wallClockMs =
+      isFinite(bucket.minStart) && isFinite(bucket.maxLast) && bucket.maxLast > bucket.minStart
+        ? bucket.maxLast - bucket.minStart
+        : 0;
     result.push({
       mode,
       completedTasks: bucket.completedTasks,
       totalTokens: bucket.totalTokens,
       activeMs: bucket.activeMs,
+      wallClockMs,
       leadTokens: isTeamLeads ? leadTokens : 0,
       teamTokens: isTeamLeads ? teamTokens : 0,
       leadOverheadPct: isTeamLeads && teamTokens > 0 ? (leadTokens / teamTokens) * 100 : null,
