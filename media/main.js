@@ -7421,7 +7421,8 @@
         const group = document.createElement("div");
         group.className = "model-radio-group";
         const groupName = `model-${agent.id}`;
-        for (const model of ["opus", "sonnet", "haiku", "fable"]) {
+        // Most-advanced first, left to right: Fable > Opus > Sonnet > Haiku.
+        for (const model of ["fable", "opus", "sonnet", "haiku"]) {
           const lbl = document.createElement("label");
           lbl.className = "model-radio";
           const input = document.createElement("input");
