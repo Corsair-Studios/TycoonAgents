@@ -37,10 +37,10 @@ test('looping pingpong clips bounce at both ends', () => {
 test('one-shot clips settle on their final frame', () => {
   const state = createCharacterAnimation('melee');
   advanceCharacterAnimation(state, 1);
-  assert.equal(currentCharacterSlot(state), 8);
+  assert.equal(currentCharacterSlot(state), 14);
   assert.equal(state.completed, true);
   advanceCharacterAnimation(state, 1);
-  assert.equal(currentCharacterSlot(state), 8);
+  assert.equal(currentCharacterSlot(state), 14);
 });
 
 test('changing actions resets playback state', () => {

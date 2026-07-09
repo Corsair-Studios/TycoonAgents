@@ -3095,15 +3095,14 @@
     walk:      { frames: [0, 1, 2, 3, 4],  fps: 10, loop: true,  flippable: true },
     idle:      { frames: [16],              fps: 0,  loop: true,  flippable: false, hold: true },
     sit:       { frames: [15],              fps: 0,  loop: true,  flippable: true,  hold: true },
-    melee:     { frames: [5, 6, 7, 8],     fps: 12, loop: false, flippable: true },
+    melee:     { frames: [10, 11, 14],     fps: 12, loop: false, flippable: true },
     build:     { frames: [5, 6, 7, 8],     fps: 6,  loop: true,  flippable: true },
     tool_idle: { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
-    shoot:     { frames: [10, 11],         fps: 8,  loop: false, flippable: true,  pingpong: true },
+    shoot:     { frames: [12, 13],         fps: 8,  loop: false, flippable: true,  pingpong: true },
     dance:     { frames: [17, 18, 19],     fps: 6,  loop: true,  flippable: false, pingpong: true },
     cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
     point:     { frames: [12],             fps: 0,  loop: true,  flippable: true,  hold: true },
     signal:    { frames: [13],             fps: 0,  loop: true,  flippable: false, hold: true },
-    dodge:     { frames: [14],             fps: 0,  loop: false, flippable: true,  hold: true },
   };
 
   // RIVAL_CLIPS mirrors the src copy exactly (a test enforces byte parity).
@@ -9688,8 +9687,10 @@
               nearest.hp = 0;
               nearest.fleeing = true;
               nearest.targetAgentId = null;
-              // Celebration: the agent that landed the killing blow dances 5s.
-              startAgentDance(charEntry);
+              // Celebration: only dance once ALL enemies are defeated (none
+              // still fighting) — nearest.fleeing is already true above, so
+              // this check naturally excludes it.
+              if (!activeEnemies.some((e) => !e.fleeing)) startAgentDance(charEntry);
               // Distances to each native edge; run out the nearest one.
               const dLeft = nearest.nx;
               const dRight = walkableNativeW - nearest.nx;
