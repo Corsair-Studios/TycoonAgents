@@ -984,13 +984,13 @@ export interface ThemeItemNameChangeResult {
  * touching the manifest for those. Kept manifest-only and side-effect-free
  * (no vscode/file IO) so it's directly unit-testable — mirrors the
  * "manifest wins" policy objectRowsForItem/decorRowsForItem/rivalRowsForItem
- * already enforce for board regeneration prompts: a full regenerate or a
- * 'replace' retry reconstructs board rows/prompt from the CURRENT manifest
- * rather than any stale saved snapshot. 'retry'/'augment' retries do not —
- * they replay the SAVED item.prompt verbatim/appended (see
- * selectThemeImageRetryPrompt) — so the caller (renameThemeItemsBatch) also
- * resyncs the saved review-item prompt/rows after this runs; see
- * resyncRenamedReviewItems. Exported for unit testing.
+ * already enforce for board regeneration prompts: every regenerate mode
+ * (including 'retry'/'augment', as of the retryThemeImage fresh-base rebuild —
+ * see selectThemeImageRetryPrompt) now reconstructs board rows/prompt from the
+ * CURRENT manifest at generation time. The caller (renameThemeItemsBatch)
+ * still resyncs the saved review-item prompt/rows right after this runs (see
+ * resyncRenamedReviewItems) so the on-disk prompt/rows reflect the rename
+ * immediately, without waiting for the next retry. Exported for unit testing.
  */
 export function applyThemeItemNameChanges(
   manifest: ThemeManifest,
@@ -1060,14 +1060,14 @@ export function applyThemeItemNameChanges(
  * applies the whole batch, writes once. Rename affordance for the theme
  * review screen's per-board "Names" editor — buildable-object, decor, and
  * rival display names have no per-row image-review entry of their own; they
- * live inside a whole-board item's object_rows/decor_rows/rival_rows. A
- * 'replace' retry always rebuilds its prompt fresh from the CURRENT manifest
- * (see buildReplacementPrompt), so it never went stale — but 'retry' replays
- * the SAVED item.prompt verbatim and 'augment' appends onto it (see
- * selectThemeImageRetryPrompt), so without a resync those two modes kept
- * drawing the OLD name forever. After the manifest write, this also calls
- * resyncRenamedBoardPrompts to refresh the saved prompt/rows for every board
- * a renamed row belongs to. Character changes mirror what
+ * live inside a whole-board item's object_rows/decor_rows/rival_rows. Every
+ * regenerate mode rebuilds its prompt fresh from the CURRENT manifest at
+ * generation time (see buildReplacementPrompt and retryThemeImage's
+ * freshBasePrompt), so a rename is picked up on the very next retry either
+ * way — but this still calls resyncRenamedBoardPrompts after the manifest
+ * write so the saved review-item prompt/rows reflect the rename immediately,
+ * for anything that reads them before the next generation (e.g. the review
+ * screen's "view prompt" display). Character changes mirror what
  * renameThemeCharacter does to the manifest (agent.name), but skip that
  * resync — the review screen's existing single-character rename flow
  * (RENAME_THEME_CHARACTER) still owns that fuller semantics for character
@@ -1761,15 +1761,24 @@ export async function retryThemeImage(
     ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
   const normalizedPlan = savedPlan ? normalizeThemePlan(savedPlan, loadedTheme.manifest.display_name) : undefined;
   const currentPlan = normalizedPlan?.theme_id === themeId ? normalizedPlan : undefined;
+  const backgroundMode = boardBackgroundModeForProvider(imageGenerationOptions.provider);
 
-  const replacementPrompt = buildReplacementPrompt(
-    item,
-    notes,
-    loadedTheme.manifest,
-    currentPlan,
-    boardBackgroundModeForProvider(imageGenerationOptions.provider),
-  );
-  const prompt = selectThemeImageRetryPrompt(item.prompt, replacementPrompt, feedback, mode);
+  // 'replace' explicitly swaps the theme's creative direction for the user's
+  // typed notes — that is what "replace" means.
+  const replacementPrompt = buildReplacementPrompt(item, notes, loadedTheme.manifest, currentPlan, backgroundMode);
+  // 'retry'/'augment' instead reroll the CURRENT template + manifest while
+  // keeping the theme's OWN creative direction (from plan.json), not the
+  // retry notes — a "reroll the current contract" refresh, not a content
+  // swap. This is what makes retry/augment pick up prompt-template fixes
+  // (e.g. a margin rule added in a later release) that shipped after this
+  // item was first generated, instead of forever replaying whatever template
+  // was current back then (see selectThemeImageRetryPrompt for the full
+  // rationale). Falls back to the stale saved prompt only when plan.json is
+  // missing/mismatched (rare) — no worse than the old always-stale behavior.
+  const freshBasePrompt = currentPlan
+    ? buildReplacementPrompt(item, themePlanCreativeDirection(currentPlan), loadedTheme.manifest, currentPlan, backgroundMode)
+    : item.prompt;
+  const prompt = selectThemeImageRetryPrompt(freshBasePrompt, replacementPrompt, feedback, mode);
   onProgress?.(`Regenerating ${item.label}...`);
 
   let generated: Buffer;
@@ -2518,13 +2527,13 @@ export function mergeResumedReviewItems(
 /**
  * Pure core of the rename-driven prompt resync (the "Names" editor's batched
  * Apply, applyThemeItemNameChanges/renameThemeItemsBatch). Renaming only ever
- * touched the manifest, on the documented theory that a later Retry/regenerate
- * "reconstructs board rows from the CURRENT manifest" — true for the 'replace'
- * retry mode (buildReplacementPrompt always rebuilds fresh), but FALSE for
- * 'retry' (replays the SAVED item.prompt verbatim) and 'augment' (appends notes
- * onto the SAVED item.prompt) — see selectThemeImageRetryPrompt in
- * themeImageRetry.ts. Those two modes silently draw the OLD names forever
- * because the saved prompt text itself was never refreshed.
+ * touched the manifest. Every regenerate mode — including 'retry'/'augment'
+ * since retryThemeImage's freshBasePrompt rebuild — now reconstructs board
+ * rows/prompt from the CURRENT manifest at generation time (see
+ * selectThemeImageRetryPrompt in themeImageRetry.ts), so a rename is always
+ * picked up on the next retry regardless of mode. This resync exists so the
+ * saved on-disk prompt/rows reflect the rename immediately, without waiting
+ * for the next generation.
  *
  * Given the review document as it stood before the rename, the manifest AFTER
  * applyThemeItemNameChanges wrote the new names into it, the theme's plan, and

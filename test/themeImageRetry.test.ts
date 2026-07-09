@@ -2,19 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeRetryNotes, selectThemeImageRetryPrompt } from '../src/extension/themeImageRetry';
 
-test('retry mode reuses the saved prompt verbatim without notes', () => {
-  const savedPrompt = 'Original prompt\nwith exact formatting.  ';
+test('retry mode rerolls the fresh current-template base, ignoring feedback', () => {
+  const freshBasePrompt = 'Fresh base prompt\nbuilt from the CURRENT template + manifest.  ';
   assert.equal(
-    selectThemeImageRetryPrompt(savedPrompt, 'replacement', '', 'retry'),
-    savedPrompt,
+    selectThemeImageRetryPrompt(freshBasePrompt, 'replacement', 'ignored feedback', 'retry'),
+    freshBasePrompt,
   );
 });
 
-test('retry mode rejects legacy images without a saved prompt', () => {
-  assert.throws(
-    () => selectThemeImageRetryPrompt(undefined, 'replacement', '', 'retry'),
-    /no saved prompt/i,
-  );
+test('retry mode never fails for "no saved prompt" — a fresh base is always available', () => {
+  // Previously 'retry' replayed the saved item.prompt verbatim and threw when
+  // it was missing/blank. Now it always rebuilds from the current template +
+  // manifest (see themeService.retryThemeImage), so an empty base string is
+  // simply returned rather than treated as an error condition.
+  assert.equal(selectThemeImageRetryPrompt('', 'replacement', '', 'retry'), '');
 });
 
 test('note-based retry modes still require feedback', () => {

@@ -54,23 +54,35 @@ export function sanitizeRetryNotes(notes: string): SanitizedRetryNotes {
   );
 }
 
-/** Select the prompt used for a review-image retry. */
+/**
+ * Select the prompt used for a review-image retry.
+ *
+ * `freshBasePrompt` is always a rebuild from the CURRENT template + manifest
+ * (same buildReplacementPrompt machinery 'replace' uses), just with the
+ * theme's own creative direction instead of user notes — see
+ * themeService.retryThemeImage. This is what makes 'retry' mean "reroll the
+ * CURRENT contract": a board generated before a prompt-template fix (e.g. a
+ * margin/geometry rule added in a later release) picks up that fix on its
+ * very next retry instead of replaying whatever template was current when it
+ * was first generated. 'augment' appends the user's notes onto that same
+ * fresh base, so a revision request also benefits from any template fixes.
+ * 'replace' is the one mode that intentionally swaps the creative direction
+ * itself for the user's notes (`replacementPrompt`).
+ *
+ * Because a fresh base is always constructible from the manifest, 'retry' can
+ * no longer fail with "no saved prompt" — that error is gone.
+ */
 export function selectThemeImageRetryPrompt(
-  savedPrompt: string | undefined,
+  freshBasePrompt: string,
   replacementPrompt: string,
   feedback: string,
   mode: ThemeImageRetryMode,
 ): string {
-  if (mode === 'retry') {
-    if (!savedPrompt?.trim()) {
-      throw new Error('This image has no saved prompt to retry. Add notes or replace the creative direction instead.');
-    }
-    return savedPrompt;
-  }
+  if (mode === 'retry') return freshBasePrompt;
 
   const notes = feedback.trim();
   if (!notes) throw new Error('Add retry instructions before generating a replacement.');
-  return mode === 'augment' && savedPrompt
-    ? `${savedPrompt}\n\nREVISION NOTES — correct the previous result:\n${notes}`
+  return mode === 'augment'
+    ? `${freshBasePrompt}\n\nREVISION NOTES — correct the previous result:\n${notes}`
     : replacementPrompt;
 }
