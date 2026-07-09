@@ -2220,44 +2220,52 @@ tr.metrics-row--child td.col-name {
   border-radius: 3px;
 }
 
-/* ── Project Plan (optional feature) ─────────────────────────────── */
-#project-plan-section {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--border);
-  background: var(--bg);
+/* ── Metrics / Project Plan tab bar (optional feature) ───────────────
+   The Plan tab only ever renders while projectPlanEnabled is true; the
+   whole bar is hidden[hidden] otherwise (see updateMetricsTabsUI() in
+   media/main.js) so nothing new shows for opted-out projects. */
+.metrics-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
-.project-plan-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 10px 16px;
-  background: var(--surface);
+.metrics-tabs[hidden] {
+  display: none;
+}
+
+.metrics-tab-btn {
+  padding: 9px 14px 8px;
+  background: transparent;
   border: none;
-  border-bottom: 1px solid var(--border);
-  color: var(--accent);
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
   font-family: inherit;
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   cursor: pointer;
-  text-align: left;
 }
 
-.project-plan-header:hover {
-  background: rgba(255, 176, 32, 0.08);
+.metrics-tab-btn:hover {
+  color: var(--text);
 }
 
-.project-plan-chevron {
-  font-size: 11px;
-  color: var(--muted);
+.metrics-tab-btn--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
+/* ── Project Plan (optional feature) ─────────────────────────────── */
 .project-plan-body {
+  flex: 0 0 auto;
   overflow-y: auto;
-  max-height: 60vh;
+  /* Same safety cap as #metrics-body — see its comment. */
+  max-height: calc(100vh - 52px);
   padding: 12px 16px 16px;
   display: flex;
   flex-direction: column;

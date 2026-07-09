@@ -106,34 +106,68 @@
   const metricsPanelEl = /** @type {HTMLElement} */ (document.getElementById("metrics-panel"));
   const resizeHandleEl = /** @type {HTMLElement} */ (document.getElementById("resize-handle"));
 
-  // ── Project Plan (optional feature) ──────────────────────────────
-  const projectPlanSectionEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-section"));
-  const projectPlanHeaderEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-header"));
+  // ── Project Plan (optional feature) — hosted as a tab next to Metrics ──
+  const metricsBodyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-body"));
+  const metricsTabsEl = /** @type {HTMLElement} */ (document.getElementById("metrics-tabs"));
+  const metricsTabBtnEl = /** @type {HTMLElement} */ (document.getElementById("metrics-tab-btn"));
+  const planTabBtnEl = /** @type {HTMLElement} */ (document.getElementById("plan-tab-btn"));
   const projectPlanBodyEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-body"));
   /** Whether the user's project has the optional Project Plan feature turned on (from PLAN_STATE.enabled). Default false so nothing new shows unless the host confirms it's on. */
   let projectPlanEnabled = false;
   /** Last plan snapshot from PLAN_STATE.plan (null = feature off, or on with no plan.json yet). @type {null|{version:number,title:string,phases:Array<Object>,tasks:Array<Object>,currentPhaseId:(string|null),currentTaskId:(string|null)}} */
   let currentProjectPlan = null;
-  /** Whether the collapsible Project Plan section body is collapsed. */
-  let projectPlanCollapsed = false;
+  /** Which tab is visible in the metrics panel: "metrics" (default) or "plan". Only meaningful while projectPlanEnabled is true. Restored from webview state so it survives reloads. */
+  let activeMetricsTab = "metrics";
   /** Reference to the Settings screen's Project Plan checkbox, kept live so a PLAN_STATE update can sync its checked state without a full renderSettings() re-render. */
   let projectPlanCheckboxEl = null;
 
-  if (projectPlanHeaderEl) {
-    projectPlanHeaderEl.addEventListener("click", () => {
-      projectPlanCollapsed = !projectPlanCollapsed;
-      updateProjectPlanCollapsedUI();
-    });
+  (function restoreActiveMetricsTab() {
+    const saved = vscode.getState();
+    if (saved && saved.activeMetricsTab === "plan") activeMetricsTab = "plan";
+  })();
+
+  /** Persist the active metrics tab into the same webview state blob used for metricsHeight/rosterOrder/teamExpanded/etc. */
+  function saveActiveMetricsTab() {
+    const prev = vscode.getState() || {};
+    vscode.setState({ ...prev, activeMetricsTab });
   }
 
-  /** Reflect projectPlanCollapsed onto the header/body DOM (chevron + hidden). */
-  function updateProjectPlanCollapsedUI() {
-    if (!projectPlanHeaderEl || !projectPlanBodyEl) return;
-    projectPlanHeaderEl.setAttribute("aria-expanded", String(!projectPlanCollapsed));
-    projectPlanBodyEl.hidden = projectPlanCollapsed;
-    const chevron = projectPlanHeaderEl.querySelector(".project-plan-chevron");
-    if (chevron) chevron.textContent = projectPlanCollapsed ? "▸" : "▾";
+  /** Reflect (activeMetricsTab, projectPlanEnabled) onto the tab bar + content visibility. The whole tab bar (not just the Plan tab) is hidden when the feature is off, per the gating requirement — no lone/empty tab bar. */
+  function updateMetricsTabsUI() {
+    if (!metricsTabsEl || !metricsBodyEl || !projectPlanBodyEl) return;
+    if (!projectPlanEnabled) {
+      metricsTabsEl.hidden = true;
+      metricsBodyEl.hidden = false;
+      projectPlanBodyEl.hidden = true;
+      return;
+    }
+    metricsTabsEl.hidden = false;
+    const onPlan = activeMetricsTab === "plan";
+    metricsBodyEl.hidden = onPlan;
+    projectPlanBodyEl.hidden = !onPlan;
+    if (metricsTabBtnEl) {
+      metricsTabBtnEl.classList.toggle("metrics-tab-btn--active", !onPlan);
+      metricsTabBtnEl.setAttribute("aria-selected", String(!onPlan));
+    }
+    if (planTabBtnEl) {
+      planTabBtnEl.classList.toggle("metrics-tab-btn--active", onPlan);
+      planTabBtnEl.setAttribute("aria-selected", String(onPlan));
+    }
   }
+
+  /** Switch the visible metrics-panel tab and persist the choice. */
+  function setActiveMetricsTab(tab) {
+    activeMetricsTab = tab === "plan" ? "plan" : "metrics";
+    saveActiveMetricsTab();
+    updateMetricsTabsUI();
+  }
+
+  if (metricsTabBtnEl) metricsTabBtnEl.addEventListener("click", () => setActiveMetricsTab("metrics"));
+  if (planTabBtnEl) planTabBtnEl.addEventListener("click", () => setActiveMetricsTab("plan"));
+
+  // Paint the correct initial state before the first PLAN_STATE reply arrives
+  // (projectPlanEnabled defaults false, so this just hides the tab bar).
+  updateMetricsTabsUI();
 
   /** True when an earlier phase (lower num) still has a pending gate — mirrors src/host/vscode/projectPlan.ts's isPhaseUnblocked for read-only "locked" styling. No state is mutated client-side; the host is the source of truth. */
   function isProjectPlanPhaseLocked(plan, phase) {
@@ -235,15 +269,19 @@
     return card;
   }
 
-  /** Rebuild the whole Project Plan section from (projectPlanEnabled, currentProjectPlan). Hides the section entirely when the feature is off. */
+  /** Rebuild the Project Plan tab content from (projectPlanEnabled, currentProjectPlan). Falls back to the Metrics tab and hides the tab bar entirely when the feature is off. */
   function renderProjectPlanSection() {
-    if (!projectPlanSectionEl || !projectPlanBodyEl) return;
+    if (!projectPlanBodyEl) return;
     if (!projectPlanEnabled) {
-      projectPlanSectionEl.hidden = true;
+      projectPlanBodyEl.innerHTML = "";
+      if (activeMetricsTab === "plan") {
+        setActiveMetricsTab("metrics"); // also refreshes tab bar/content visibility
+      } else {
+        updateMetricsTabsUI();
+      }
       return;
     }
-    projectPlanSectionEl.hidden = false;
-    updateProjectPlanCollapsedUI();
+    updateMetricsTabsUI();
     projectPlanBodyEl.innerHTML = "";
 
     const plan = currentProjectPlan;
@@ -7865,8 +7903,8 @@
     setupConfigEl.appendChild(delegSection);
 
     // ── 1.6. Project Plan (optional) ──
-    // Opt-in toggle for the collapsible phase/task approval section in the
-    // metrics panel (see #project-plan-section / renderProjectPlanSection()).
+    // Opt-in toggle for the Project Plan tab in the metrics panel (see
+    // #project-plan-body / renderProjectPlanSection()).
     // Reuses the same checkbox-row visual language as the theme builder's
     // "Pause after each image" toggle.
     const planSection = buildSection("Project Plan");

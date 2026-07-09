@@ -3632,6 +3632,14 @@ export class TycoonPanel {
         <span class="header-dot"></span>
         <span class="header-title">Tycoon Agents &mdash; Agent Metrics</span>
       </div>
+      <!-- Tab bar: switches between Metrics and the optional Project Plan
+           view. Hidden entirely unless PLAN_STATE reports enabled:true (see
+           updateMetricsTabsUI() in media/main.js) so nothing new shows for
+           projects that haven't opted in. -->
+      <div id="metrics-tabs" class="metrics-tabs" role="tablist" hidden>
+        <button id="metrics-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="true" aria-controls="metrics-body">Metrics</button>
+        <button id="plan-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="project-plan-body">Project Plan</button>
+      </div>
       <div id="metrics-body">
         <div id="metrics-empty">No agents yet &mdash; start a session to see activity.</div>
         <table id="metrics-table" style="display:none">
@@ -3652,17 +3660,11 @@ export class TycoonPanel {
              Hidden by default; shown only when at least one mode has data. -->
         <div id="delegation-stats" hidden></div>
       </div>
-      <!-- Project Plan (optional feature, opt-in via Settings): collapsible
-           phase/task approval section. Hidden unless PLAN_STATE reports
-           enabled:true; body rebuilt by renderProjectPlanSection() in
-           media/main.js. -->
-      <div id="project-plan-section" class="project-plan-section" hidden>
-        <button id="project-plan-header" class="project-plan-header" type="button" aria-expanded="true" aria-controls="project-plan-body">
-          <span class="project-plan-chevron">&#9662;</span>
-          <span class="project-plan-title">Project Plan</span>
-        </button>
-        <div id="project-plan-body" class="project-plan-body"></div>
-      </div>
+      <!-- Project Plan (optional feature, opt-in via Settings): tab content
+           hosted next to Metrics inside the same panel. Hidden unless
+           PLAN_STATE reports enabled:true; rebuilt by
+           renderProjectPlanSection() in media/main.js. -->
+      <div id="project-plan-body" class="project-plan-body" hidden></div>
     </div>
 
   </div><!-- /#app -->
