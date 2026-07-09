@@ -113,6 +113,9 @@ export const MSG = {
   SAVE_REBIRTH_STATE: "SAVE_REBIRTH_STATE",
   REBIRTH_RESET_BADGES: "REBIRTH_RESET_BADGES",
 
+  // ---- build progress persistence ------------------------------------------
+  SAVE_BUILD_PROGRESS: "saveBuildProgress",
+
   // ---- theme image review / retry / reslice / normalize / rename ---------
   OPEN_THEME_IMAGES: "OPEN_THEME_IMAGES",
   GET_THEME_IMAGE_REVIEW: "GET_THEME_IMAGE_REVIEW",
@@ -268,6 +271,14 @@ export const MSG_SCHEMAS = {
     .passthrough(),
 
   REBIRTH_RESET_BADGES: z.object({ theme_id: z.string().min(1) }).passthrough(),
+
+  // ---- build progress persistence ------------------------------------------
+  SAVE_BUILD_PROGRESS: z
+    .object({
+      themeId: z.string().min(1),
+      builtCount: z.number().int().nonnegative(),
+    })
+    .passthrough(),
 
   // ---- theme character / stage item rename ---------------------------------
   RENAME_THEME_CHARACTER: z

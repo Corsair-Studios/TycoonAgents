@@ -1159,6 +1159,11 @@
     rollRebirthRequirement();
     rebirthConfirmPending = false;
     persistRebirth();
+    // buildBuiltCount itself is deliberately NOT reset by rebirth (it's a
+    // lifetime counter — see comment above), but persist it here too so the
+    // rebirth-reset path always leaves a fresh save on the host, matching
+    // every other rebirth-state field persisted just above.
+    saveBuildProgress();
     // Durably clear the host-side badge unlocks we just wiped locally, so the
     // host doesn't re-send stale unlocks on the next theme init (which would
     // un-reset this rebirth). persistRebirth() above already saved the fresh
@@ -2968,8 +2973,8 @@
         if (thumbImg) {
           const imgEl = document.createElement("img");
           imgEl.src = thumbImg.src;
-          imgEl.width = 44;
-          imgEl.height = 44;
+          imgEl.width = 88;
+          imgEl.height = 88;
           imgEl.draggable = false;
           imgEl.style.pointerEvents = "none";
           thumb.appendChild(imgEl);
@@ -3373,6 +3378,25 @@
   let buildQueue = [];
   /** Count of queue entries fully built so far (index into buildQueue). */
   let buildBuiltCount = 0;
+  /** Debounce timer handle for persisting buildBuiltCount to the host (see saveBuildProgress). */
+  let buildProgressSaveTimer = 0;
+  /**
+   * Debounced persist of buildBuiltCount to the host (750ms), so rapid
+   * consecutive builds don't spam postMessage. Posted under selectedThemeId
+   * (the theme currently loaded on stage — mirrors saveStageTuning's
+   * theme_id source). No-ops if no theme is loaded.
+   */
+  function saveBuildProgress() {
+    if (!selectedThemeId) return;
+    if (buildProgressSaveTimer) clearTimeout(buildProgressSaveTimer);
+    buildProgressSaveTimer = setTimeout(() => {
+      buildProgressSaveTimer = 0;
+      vscode.postMessage({
+        type: "saveBuildProgress",
+        payload: { themeId: selectedThemeId, builtCount: buildBuiltCount },
+      });
+    }, 750);
+  }
   /** Count of rival agents successfully evicted (fled offscreen and pruned) this theme session. */
   let rivalsEvictedCount = 0;
   /**
@@ -5911,43 +5935,38 @@
         themeObjectScale = (vp && typeof vp.object_scale === "number" && vp.object_scale > 0) ? vp.object_scale : 1;
         themeOverallScale = (vp && typeof vp.overall_scale === "number" && vp.overall_scale > 0) ? vp.overall_scale : 1;
         themeCharScaleOverrides = (vp && vp.character_scale_overrides && typeof vp.character_scale_overrides === "object") ? vp.character_scale_overrides : {};
-        // Per-object overrides used to be ABSOLUTE final scales that REPLACED
-        // themeObjectScale entirely (see effectiveObjScale's history above).
-        // Now they compose as a MULTIPLIER on top of the global. Migrate
-        // once, here, at load: object_scale + object_scale_overrides are
-        // always saved together (saveStageTuning), so themeObjectScale
-        // (just set above) is exactly the global value that was in effect
-        // when each override was captured — dividing it back out is the
-        // least-surprising mapping, since as long as the global slider isn't
-        // touched after load, effectiveObjScale reproduces the pre-migration
-        // rendered size exactly: global * (savedOverride / global) ===
-        // savedOverride. Moving the global slider afterwards then visibly
-        // scales every object, including ones with an override (the fix).
+        // Per-object overrides are stored on disk as MULTIPLIERS on top of
+        // the global "Object scale" slider (see effectiveObjScale — the UI
+        // writes them directly as multipliers, neutral/no-override = 1).
+        // Load them as-is; do NOT divide by themeObjectScale here — that was
+        // a one-time legacy migration for pre-multiplier absolute-scale
+        // saves, but running it on every load re-divides the already-correct
+        // stored multiplier each time the theme loads, shrinking it toward 0
+        // over repeated reloads/updates (the saved value gets written back
+        // to disk via saveStageTuning, compounding the shrink).
         {
           const rawObjOverrides = (vp && vp.object_scale_overrides && typeof vp.object_scale_overrides === "object") ? vp.object_scale_overrides : {};
           themeObjScaleOverrides = {};
           for (const k of Object.keys(rawObjOverrides)) {
             const v = rawObjOverrides[k];
-            if (typeof v === "number" && v > 0) themeObjScaleOverrides[k] = v / themeObjectScale;
+            if (typeof v === "number" && v > 0) themeObjScaleOverrides[k] = v;
           }
         }
         themeRivalScale = (vp && typeof vp.rival_scale === "number" && vp.rival_scale > 0) ? vp.rival_scale : 1;
         themeRivalScaleOverrides = (vp && vp.rival_scale_overrides && typeof vp.rival_scale_overrides === "object") ? Object.assign({}, vp.rival_scale_overrides) : {};
         themeDecorScale = (vp && typeof vp.decor_scale === "number" && vp.decor_scale > 0) ? vp.decor_scale : DECOR_SCALE;
-        // Per-decor overrides used to be ABSOLUTE final scales that REPLACED
-        // themeDecorScale entirely (see effectiveDecorScale's history above).
-        // Now they compose as a MULTIPLIER on top of the global. Migrate
-        // once, here, at load — identical rationale/mechanism to the
-        // per-object migration just above: decor_scale + decor_scale_overrides
-        // are always saved together (saveStageTuning), so themeDecorScale
-        // (just set above) is exactly the global value in effect when each
-        // override was captured.
+        // Per-decor overrides are stored on disk as MULTIPLIERS on top of the
+        // global "Decor scale" slider (see effectiveDecorScale — identical
+        // rationale to the per-object load just above: load the stored
+        // multiplier as-is, do NOT divide by themeDecorScale here, or the
+        // already-correct value gets re-divided (and re-saved) on every
+        // load, shrinking toward 0 over repeated reloads/updates.
         {
           const rawDecorOverrides = (vp && vp.decor_scale_overrides && typeof vp.decor_scale_overrides === "object") ? vp.decor_scale_overrides : {};
           themeDecorScaleOverrides = {};
           for (const k of Object.keys(rawDecorOverrides)) {
             const v = rawDecorOverrides[k];
-            if (typeof v === "number" && v > 0) themeDecorScaleOverrides[k] = v / themeDecorScale;
+            if (typeof v === "number" && v > 0) themeDecorScaleOverrides[k] = v;
           }
         }
 
@@ -5972,14 +5991,32 @@
         // Stable random permutation seeded by theme_id — deterministic per
         // theme, doesn't reshuffle on re-render.
         buildQueue = buildSeededQueue(themeBuildables, initializedThemeId);
-        buildBuiltCount = 0;
+        // Restore persisted build progress (host-provided) instead of always
+        // starting a fresh reload/update at 0 — clamp to the queue length in
+        // case the theme's buildable list shrank since the value was saved.
+        {
+          const rawSavedProgress = (msg.payload && typeof msg.payload.savedBuildProgress === "number") ? msg.payload.savedBuildProgress : 0;
+          buildBuiltCount = Math.max(0, Math.min(buildQueue.length, rawSavedProgress));
+        }
         buildCurrentProgress = 0;
+        // Reconstruct the visual built state for the restored count: mark the
+        // first buildBuiltCount queued objects' anim entries as already-idle
+        // (fully built), matching how the per-frame render loop derives BUILT
+        // status from buildBuiltCount (see computeBuildState / the per-object
+        // status loop). Without this, those objects would lazily transition
+        // through their crate/poof build animation on next render instead of
+        // appearing already-built.
+        for (let i = 0; i < buildBuiltCount && i < buildQueue.length; i++) {
+          const objId = buildQueue[i];
+          objectAnimMap[objId] = { phase: "idle", animState: createObjectIdleAnimState(objId), progress: 1 };
+        }
         // ── Badges (reset per theme) ─────────────────────────────────────
         themeBadges = Array.isArray(manifest?.badges) ? manifest.badges : [];
         rivalsEvictedCount = 0;
         // Seed from the host's persisted per-theme unlocks so previously-earned
-        // badges stay unlocked across sessions; only the session counters
-        // (rivalsEvictedCount/buildBuiltCount) reset to 0 above/below.
+        // badges stay unlocked across sessions; only the session counter
+        // (rivalsEvictedCount) resets to 0 above — buildBuiltCount is now
+        // RESTORED from savedBuildProgress just above, not reset to 0.
         currentBadgeThemeId = initializedThemeId || (manifest && manifest.theme_id) || null;
         const seededUnlockIds = Array.isArray(msg.payload?.unlocked_badge_ids) ? msg.payload.unlocked_badge_ids : [];
         unlockedBadgeIds = new Set(seededUnlockIds);
@@ -8618,6 +8655,7 @@
       buildBuiltCount++;
       cycleObjectsBuilt++;
       persistRebirth();
+      saveBuildProgress();
       buildCurrentProgress = 0;
       // Celebration (no-poof fast path): builders dance on completion. This
       // branch runs exactly once per object (progress reset to 0 right after).
@@ -9411,6 +9449,7 @@
             buildBuiltCount++;
             cycleObjectsBuilt++;
             persistRebirth();
+            saveBuildProgress();
             buildCurrentProgress = 0;
           }
         }

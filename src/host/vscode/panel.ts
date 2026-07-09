@@ -643,6 +643,7 @@ export class TycoonPanel {
             await deleteTheme(this._globalStorageUri, themeId);
             await this._removeThemeBadgeUnlocks(themeId);
             await this._removeThemeRebirthState(themeId);
+            await this._removeThemeBuildProgress(themeId);
             deletedThemeId = themeId;
           } catch (err) {
             deleteError = String(err);
@@ -686,6 +687,15 @@ export class TycoonPanel {
             }
           } catch (err) {
             console.error("TycoonAgents: Could not reset rebirth badges:", err);
+          }
+        } else if (message.type === MSG.SAVE_BUILD_PROGRESS) {
+          try {
+            const parsedBuildProgress = MSG_SCHEMAS.SAVE_BUILD_PROGRESS.safeParse((message as any).payload);
+            if (parsedBuildProgress.success) {
+              await this.saveBuildProgress(parsedBuildProgress.data.themeId, parsedBuildProgress.data.builtCount);
+            }
+          } catch (err) {
+            console.error("TycoonAgents: Could not persist build progress:", err);
           }
         } else if (message.type === MSG.SELECT_THEME) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
@@ -1545,6 +1555,62 @@ export class TycoonPanel {
     }
   }
 
+  // --- Build progress persistence -------------------------------------
+  // Per-theme buildable-object "built" count, persisted host-side so it
+  // survives webview disposal/reload and VSIX updates. Previously this
+  // lived only in the webview's in-memory buildBuiltCount, which reset to
+  // 0 on every theme load. Mirrors the badge-unlock / rebirth-state
+  // persistence above (file-based, since this panel only has
+  // globalStorageUri, not an ExtensionContext/Memento).
+  private _buildProgressUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this._globalStorageUri, "build-progress.json");
+  }
+
+  private async _readBuildProgressStore(): Promise<Record<string, number>> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this._buildProgressUri());
+      const parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private async _writeBuildProgressStore(store: Record<string, number>): Promise<void> {
+    try {
+      await vscode.workspace.fs.writeFile(
+        this._buildProgressUri(),
+        Buffer.from(JSON.stringify(store, null, 2), "utf8"),
+      );
+    } catch (err) {
+      console.error("TycoonAgents: Could not save build progress:", err);
+    }
+  }
+
+  private async getBuildProgress(themeId: string | undefined): Promise<number> {
+    if (!themeId) return 0;
+    const store = await this._readBuildProgressStore();
+    const entry = store[themeId];
+    return typeof entry === "number" && entry >= 0 ? entry : 0;
+  }
+
+  private async saveBuildProgress(themeId: string, builtCount: number): Promise<void> {
+    if (!themeId) return;
+    const clamped = Math.max(0, Math.trunc(builtCount));
+    const store = await this._readBuildProgressStore();
+    store[themeId] = clamped;
+    await this._writeBuildProgressStore(store);
+  }
+
+  private async _removeThemeBuildProgress(themeId: string): Promise<void> {
+    if (!themeId) return;
+    const store = await this._readBuildProgressStore();
+    if (themeId in store) {
+      delete store[themeId];
+      await this._writeBuildProgressStore(store);
+    }
+  }
+
   /** Builds a THEME_INITIALIZED payload, seeding persisted badge unlocks. */
   private async _buildThemeInitPayload(
     manifest: ThemeManifest,
@@ -1556,6 +1622,7 @@ export class TycoonPanel {
     is_editor_mode: boolean;
     unlocked_badge_ids: string[];
     rebirth_state: RebirthPersist | null;
+    savedBuildProgress: number;
   }> {
     return {
       manifest,
@@ -1563,6 +1630,7 @@ export class TycoonPanel {
       is_editor_mode: isEditorMode,
       unlocked_badge_ids: await this.getUnlockedBadges(manifest?.theme_id),
       rebirth_state: await this.getRebirthState(manifest?.theme_id),
+      savedBuildProgress: await this.getBuildProgress(manifest?.theme_id),
     };
   }
 
