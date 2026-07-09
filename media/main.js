@@ -2943,6 +2943,17 @@
   let themeDecorFlipOverrides = {};
   /** Stage-Editor horizontal-flip overrides, object_id -> true when flipped. Loaded from manifest.viewport.object_flip_overrides. */
   let themeObjFlipOverrides = {};
+  /**
+   * Non-destructive Stage-Editor HIDE set for decor, decor_id -> present when
+   * hidden. Distinct from the [-1,-1] anchor-hide sentinel above: hidden decor
+   * here keeps its live placement (position/scale untouched) — it's simply
+   * excluded from normal-play drawing/hit-testing, and shown at reduced
+   * opacity in Edit-Stage "show all objects" mode so it can be found again.
+   * Loaded from manifest.viewport.decor_hidden (a string[] on the wire;
+   * kept as a Set at runtime for O(1) toggle/lookup).
+   * @type {Set<string>}
+   */
+  let themeDecorHidden = new Set();
 
   // ── Background Decor + Sitting ──────────────────────────────────────────
   /** Decor objects from manifest.decor_objects (read-only). @type {Array<object>} */
@@ -3311,7 +3322,8 @@
   /**
    * Fraction of the SHOOTER's own rendered sprite height that a projectile's
    * spawn origin is raised above the shooter's BASE (feet) position — shots
-   * now leave from up near the gun/shoulder (0.8 = 80% up the sprite) rather
+   * now leave from the upper chest (0.7 = 70% up the sprite — about 20%
+   * above the vertical center; 0.8 read as firing from the head) rather
    * than the midsection. Computed by each spawnProjectile call site from that
    * shooter's actual depthScale/scale/sceneFitScale (mirrors the existing
    * muzzle-forward X push, which does the same canvas-px→native-px
@@ -3319,7 +3331,7 @@
    * depth projection, and sceneFitScale rather than being a hardcoded pixel
    * offset. Tunable.
    */
-  const PROJECTILE_ORIGIN_HEIGHT_FRAC = 0.8;
+  const PROJECTILE_ORIGIN_HEIGHT_FRAC = 0.7;
   /**
    * How far the projectile's spawn ORIGIN is pushed toward the shooter's
    * leading edge (in the facing direction) as a fraction of the shooter's
@@ -3594,6 +3606,9 @@
     for (let i = 0; i < themeDecor.length; i++) {
       const id = themeDecor[i].decor_id;
       if (id == null) continue;
+      // H-hidden decor is only selectable in show-all mode (the "bring it
+      // back" path) — outside that it's not drawn, so it must not be clickable.
+      if (themeDecorHidden.has(id) && !showAll) continue;
       let p = decorPlacement[id];
       if (!p) {
         if (showAll) p = decorFallbackPlacement(themeDecor[i], i);
@@ -3806,6 +3821,7 @@
             '<select id="se-decor" class="se-select"></select>' +
             '<input id="se-do" class="se-range" type="range" min="0.3" max="3" step="0.05" value="1">' +
             '<button id="se-do-clear" class="se-clear" type="button">clear override</button>' +
+            '<button id="se-decor-hide" class="se-clear se-decor-hide-btn" type="button">Hide</button>' +
           '</div>' +
         '</div>' +
         '<div class="se-section">' +
@@ -3815,7 +3831,7 @@
           '<div class="se-sublabel">Enemy count mode</div>' +
           '<select id="se-ecm" class="se-select"><option value="random">random</option><option value="all">all</option></select>' +
         '</div>' +
-        '<div id="se-hint" class="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide) · select/drag + F to flip</div>' +
+        '<div id="se-hint" class="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide) · select/drag + F to flip · decor: H or Hide button to hide/unhide (non-destructive)</div>' +
       '</div>' +
       '<div class="se-footer">' +
         '<button id="se-save" class="se-btn se-btn-primary" type="button">Save</button>' +
@@ -3846,6 +3862,7 @@
     stageEditEls.decor = wrap.querySelector("#se-decor");
     stageEditEls.do_ = wrap.querySelector("#se-do");
     stageEditEls.doClear = wrap.querySelector("#se-do-clear");
+    stageEditEls.decorHideBtn = wrap.querySelector("#se-decor-hide");
     stageEditEls.ei = wrap.querySelector("#se-ei");
     stageEditEls.eiVal = wrap.querySelector("#se-ei-val");
     stageEditEls.ecm = wrap.querySelector("#se-ecm");
@@ -3930,6 +3947,7 @@
       editSelectedDecorId = stageEditEls.decor.value;
       editFlipTargetKind = "decor";
       syncDecorOverrideSlider();
+      syncDecorHideButton();
     });
     stageEditEls.do_.addEventListener("input", () => {
       if (!editSelectedDecorId) return;
@@ -3939,6 +3957,14 @@
       if (editSelectedDecorId) delete themeDecorScaleOverrides[editSelectedDecorId];
       syncDecorOverrideSlider();
     });
+    if (stageEditEls.decorHideBtn) {
+      stageEditEls.decorHideBtn.addEventListener("click", () => {
+        if (!editSelectedDecorId) return;
+        toggleDecorHidden(editSelectedDecorId);
+        syncDecorHideButton();
+        refreshDecorDropdownLabels();
+      });
+    }
     stageEditEls.ei.addEventListener("input", () => {
       enemySpawnIntervalSec = parseFloat(stageEditEls.ei.value) || 45;
       stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
@@ -3970,6 +3996,31 @@
     // scale" slider (see effectiveDecorScale), so the neutral/no-override
     // starting position is 1 — not the current global value.
     stageEditEls.do_.value = String(typeof ov === "number" && ov > 0 ? ov : 1);
+  }
+  /**
+   * Label for a decor's per-decor override dropdown entry — appends
+   * " (hidden)" when the decor is currently H-hidden, so the list shows
+   * hide state at a glance (spec item 5).
+   * @param {object} d a themeDecor entry
+   */
+  function decorOptionLabel(d) {
+    const base = (d && (d.display_name || d.decor_id)) || "";
+    return d && d.decor_id != null && themeDecorHidden.has(d.decor_id) ? base + " (hidden)" : base;
+  }
+  /** Refresh the per-decor dropdown's option labels in place (hide-state suffix) without disturbing the current selection. */
+  function refreshDecorDropdownLabels() {
+    if (!stageEditEls.decor) return;
+    for (const opt of stageEditEls.decor.options) {
+      const d = themeDecor.find((x) => x && x.decor_id === opt.value);
+      if (d) opt.textContent = decorOptionLabel(d);
+    }
+  }
+  /** Sync the Hide/Unhide button's label + enabled state to the currently selected decor. */
+  function syncDecorHideButton() {
+    if (!stageEditEls.decorHideBtn) return;
+    const hidden = editSelectedDecorId ? themeDecorHidden.has(editSelectedDecorId) : false;
+    stageEditEls.decorHideBtn.textContent = hidden ? "Unhide" : "Hide";
+    stageEditEls.decorHideBtn.disabled = !editSelectedDecorId;
   }
   function enterEditStage() {
     if (!themeLoaded) return;
@@ -4041,9 +4092,10 @@
     stageEditEls.ds.value = String(themeDecorScale);
     stageEditEls.dsVal.textContent = themeDecorScale.toFixed(2);
     // Per-decor override list: every decor object from the loaded theme.
+    // Labels get a " (hidden)" suffix for H-hidden decor (decorOptionLabel).
     const decorOptions = themeDecor
       .filter((d) => d && d.decor_id != null)
-      .map((d) => ({ id: d.decor_id, label: d.display_name || d.decor_id }));
+      .map((d) => ({ id: d.decor_id, label: decorOptionLabel(d) }));
     stageEditEls.decor.innerHTML = "";
     for (const opt of decorOptions) {
       const optEl = document.createElement("option");
@@ -4053,6 +4105,7 @@
     }
     editSelectedDecorId = (decorOptions[0] && decorOptions[0].id) || "";
     syncDecorOverrideSlider();
+    syncDecorHideButton();
     stageEditEls.status.textContent = "";
     stageEditPanel.removeAttribute("hidden");
   }
@@ -4106,6 +4159,13 @@
     for (const k of Object.keys(themeDecorFlipOverrides)) {
       if (validDecorIds.has(k)) prunedDecorFlipOverrides[k] = themeDecorFlipOverrides[k];
     }
+    // Same pruning for the H-hide set: only ids for decor that still exist in
+    // the current theme are worth persisting. Serialized as an array on the
+    // wire (decor_hidden), converted back to a Set on load.
+    const prunedDecorHidden = [];
+    for (const id of themeDecorHidden) {
+      if (validDecorIds.has(id)) prunedDecorHidden.push(id);
+    }
     vscode.postMessage({
       type: "SAVE_STAGE_TUNING",
       payload: {
@@ -4124,6 +4184,7 @@
         decor_anchor_overrides: themeDecorAnchorOverrides,
         object_flip_overrides: prunedObjFlipOverrides,
         decor_flip_overrides: prunedDecorFlipOverrides,
+        decor_hidden: prunedDecorHidden,
         enemy_config: {
           spawn_interval_seconds: enemySpawnIntervalSec,
           count_mode: enemyCountMode,
@@ -4173,6 +4234,24 @@
       } else if (kind === "decor" && id) {
         if (themeDecorFlipOverrides[id]) delete themeDecorFlipOverrides[id];
         else themeDecorFlipOverrides[id] = true;
+        e.preventDefault();
+      }
+    }
+    // H toggles the non-destructive HIDE state of the CURRENT Edit-Stage
+    // selection — same "current item" targeting as F-flip above, but
+    // decor-only (buildable objects are gameplay progression, not hideable
+    // in v1 — see toggleDecorHidden). Mirrors the F handler's guards exactly.
+    if ((e.key === "h" || e.key === "H") && editStageMode) {
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      const kind = dragObjectId ? dragObjectType : editFlipTargetKind;
+      const id = dragObjectId
+        ? dragObjectId
+        : kind === "decor" ? editSelectedDecorId : null;
+      if (kind === "decor" && id) {
+        toggleDecorHidden(id);
+        syncDecorHideButton();
+        refreshDecorDropdownLabels();
         e.preventDefault();
       }
     }
@@ -5645,6 +5724,9 @@
           ? Object.assign({}, vp.decor_flip_overrides) : {};
         themeObjFlipOverrides = (vp && typeof vp.object_flip_overrides === "object" && vp.object_flip_overrides)
           ? Object.assign({}, vp.object_flip_overrides) : {};
+        themeDecorHidden = new Set(
+          Array.isArray(vp && vp.decor_hidden) ? vp.decor_hidden.filter((id) => typeof id === "string") : []
+        );
         objectPlacement = {};
         objectHomePlacement = {};
         if (themeBuildables.length > 0) {
@@ -8299,6 +8381,29 @@
     charEntry.sitTimeLeft = 0;
   }
 
+  /**
+   * Toggle the non-destructive Stage-Editor HIDE state for a decor item
+   * (themeDecorHidden — see its declaration for how this differs from the
+   * [-1,-1] anchor-hide sentinel). Hidden decor keeps its live placement, so
+   * unlike the anchor-sentinel path there's no automatic "seat's decorPlacement
+   * disappeared" trigger for the per-frame sitting-maintenance check to catch —
+   * when hiding a seat, explicitly reuse freeAgentSeat to stand up whichever
+   * agent currently owns it (seatOccupancy stores the occupying agent id).
+   * @param {string} decorId
+   */
+  function toggleDecorHidden(decorId) {
+    if (decorId == null) return;
+    if (themeDecorHidden.has(decorId)) {
+      themeDecorHidden.delete(decorId);
+      return;
+    }
+    themeDecorHidden.add(decorId);
+    for (const id in agentCharMap) {
+      const ce = agentCharMap[id];
+      if (ce && ce.sitSeatId === decorId) freeAgentSeat(ce);
+    }
+  }
+
   // debug hotkey: c=conga (the former f=fast-forward-build debug instabuild
   // hotkey was removed — F is now the Edit-Stage flip shortcut above; the
   // poof/build flow it used to shortcut is confirmed working on its own).
@@ -9250,7 +9355,9 @@
           for (const d of themeDecor) {
             const sid = d.decor_id;
             const p = sid != null ? decorPlacement[sid] : null;
-            if (p && p.sittable && seatOccupancy[sid] == null) {
+            // H-hidden seats leave the pool entirely — never offered to an
+            // idle agent looking for somewhere to sit (see toggleDecorHidden).
+            if (p && p.sittable && seatOccupancy[sid] == null && !themeDecorHidden.has(sid)) {
               // Atomic test-and-set: claim the seat the instant it's found
               // free, in this same synchronous iteration — JS's single-
               // threaded execution means no other agent's forEach iteration
@@ -9566,12 +9673,20 @@
       const decor = themeDecor[di];
       const decorId = decor.decor_id;
       if (decorId == null) continue;
+      const showAll = editStageMode && stageShowAllObjects;
+      // H-hidden decor (themeDecorHidden — non-destructive, keeps its live
+      // placement) is skipped entirely in normal play / edit-without-show-all,
+      // matching the anchor-hide sentinel's visibility rule. In show-all it's
+      // still merged into the depth list (ghost = true) so it draws at reduced
+      // opacity — the "bring it back" path (see drawDecor call below).
+      const ghost = themeDecorHidden.has(decorId) && showAll;
+      if (themeDecorHidden.has(decorId) && !showAll) continue;
       let placement = decorPlacement[decorId];
       if (!placement) {
         // Edit-Stage show-all: synthesize a display-only fallback placement so
         // hidden/unplaced decor is visible + selectable for placing/scaling.
         // Not persisted (moving it writes a real anchor override → un-hides).
-        if (editStageMode && stageShowAllObjects) placement = decorFallbackPlacement(decor, di);
+        if (showAll) placement = decorFallbackPlacement(decor, di);
         else continue;
       }
       const dAnim = decorAnimMap[decorId];
@@ -9579,7 +9694,7 @@
         const dSlots = themeImages["decor_" + decorId];
         advanceDecorAnim(dAnim, delta, dSlots ? dSlots.length : 1);
       }
-      depthList.push({ kind: "decor", decor, ny: placement.ny, placement });
+      depthList.push({ kind: "decor", decor, ny: placement.ny, placement, ghost });
     }
     depthList.sort((a, b) => a.ny - b.ny);
 
@@ -9590,7 +9705,16 @@
         const canvasPt = nativeToCanvas(placement.nx, placement.ny, bgX, bgY, bgW, bgH);
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
         const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale * sceneFitScale;
-        drawDecor(item.decor, canvasPt[0], canvasPt[1], depthScale);
+        if (item.ghost) {
+          // H-hidden decor shown in Edit-Stage show-all: reduced opacity so it
+          // reads as "hidden" while still being visible/clickable to unhide.
+          const prevAlpha = ctx.globalAlpha;
+          ctx.globalAlpha = prevAlpha * 0.35;
+          drawDecor(item.decor, canvasPt[0], canvasPt[1], depthScale);
+          ctx.globalAlpha = prevAlpha;
+        } else {
+          drawDecor(item.decor, canvasPt[0], canvasPt[1], depthScale);
+        }
         return;
       }
 

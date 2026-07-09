@@ -54,6 +54,12 @@ export interface ViewportConfig {
   rival_scale_overrides?: Record<string, number>;
   decor_scale?: number;
   decor_scale_overrides?: Record<string, number>;
+  // Non-destructive Stage-Editor HIDE list for decor, set in Edit Stage.
+  // Array of DecorObject.decor_id values currently hidden from normal play.
+  // Distinct from the decor_anchor_overrides [-1,-1] sentinel: hidden decor
+  // here keeps its live position/scale — it's purely a visibility toggle.
+  // Absent/empty = nothing hidden. Survives art regeneration.
+  decor_hidden?: string[];
 }
 
 export interface AgentConfig {

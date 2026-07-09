@@ -217,6 +217,10 @@ export const MSG_SCHEMAS = {
       // builds that don't send them still validate.
       object_flip_overrides: z.record(z.boolean()).optional(),
       decor_flip_overrides: z.record(z.boolean()).optional(),
+      // Non-destructive Stage-Editor HIDE list for decor, set by the H
+      // hotkey / Hide button. Optional so older webview builds that don't
+      // send it still validate.
+      decor_hidden: z.array(z.string()).optional(),
     })
     .passthrough(),
 

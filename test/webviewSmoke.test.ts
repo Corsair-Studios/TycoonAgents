@@ -522,6 +522,52 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('flip-hotkey');
     });
 
+    // ── Step 6c: H-hide hotkey ───────────────────────────────────────────────────
+    // H toggles the non-destructive hide state of whatever the per-decor
+    // override dropdown currently targets (mirrors the F-flip test above).
+    // Selecting 'd1' via #se-decor, then pressing H, should add 'd1' to
+    // decor_hidden in the next SAVE_STAGE_TUNING payload; pressing H again
+    // should remove it.
+    await t.test('6c. H hides the Edit-Stage decor selection and persists it', () => {
+      const decorSelect = doc.getElementById('se-decor');
+      assert.ok(decorSelect, 'se-decor select should exist');
+      decorSelect.value = 'd1';
+      decorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+
+      win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'h', bubbles: true, cancelable: true }));
+      const saveBtn = doc.getElementById('se-save');
+      assert.ok(saveBtn, 'se-save button should exist');
+      saveBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+
+      const firstSave = [...posted].reverse().find((m: any) => m.type === 'SAVE_STAGE_TUNING');
+      assert.ok(firstSave, 'a SAVE_STAGE_TUNING message should have been posted');
+      assert.ok(
+        Array.isArray(firstSave.payload.decor_hidden) && firstSave.payload.decor_hidden.includes('d1'),
+        'H should hide the selected decor (d1)'
+      );
+      assert.equal(
+        doc.getElementById('se-decor-hide').textContent,
+        'Unhide',
+        'the Hide button should now read Unhide'
+      );
+
+      // Press H again on the same selection -> un-hides it.
+      win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'h', bubbles: true, cancelable: true }));
+      saveBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      const secondSave = [...posted].reverse().find((m: any) => m.type === 'SAVE_STAGE_TUNING');
+      assert.ok(secondSave, 'a second SAVE_STAGE_TUNING message should have been posted');
+      assert.ok(
+        !Array.isArray(secondSave.payload.decor_hidden) || !secondSave.payload.decor_hidden.includes('d1'),
+        'pressing H again should un-hide d1'
+      );
+      assert.equal(
+        doc.getElementById('se-decor-hide').textContent,
+        'Hide',
+        'the Hide button should read Hide again'
+      );
+      assertNoErrors('hide-hotkey');
+    });
+
     // ── Step 7: agent-activity state update ─────────────────────────────────────
     await t.test('7. state update drives HUD/character path', async () => {
       dispatch(buildStatePayload());
@@ -1002,6 +1048,50 @@ test('global "Decor scale" slider visibly scales decor items that already have a
   assert.ok(
     Math.abs(ratio2 - 2) < 0.15,
     `d2 (0.5x override) width should ~double when the global slider doubles (ratio=${ratio2})`
+  );
+  h.win.close();
+});
+
+// ── Non-destructive decor HIDE: skipped in normal play ─────────────────────
+// H (or the Hide button) toggles themeDecorHidden without touching the
+// decor's placement/scale (see toggleDecorHidden in main.js). Confirms the
+// render-time consequence: once hidden and Edit Stage is exited (back to
+// normal-play draw rules), the decor's sprite stops being drawn each frame.
+test('H-hidden decor is not drawn in normal play (non-destructive hide)', async () => {
+  const h = await bootObjScaleHarness();
+  h.dispatch(buildDecorScaleThemePayload(1, {}, ['d1']));
+  await h.flush();
+  h.tick(3);
+  assert.equal(h.errors.length, 0, `boot threw: ${h.errors.map(String).join('; ')}`);
+
+  const preHideDraws = countDraws(h.drawLog, DECOR_SCALE_PX.d1);
+  assert.ok(preHideDraws > 0, 'd1 should be drawn before being hidden');
+
+  // Enter Edit Stage, select d1, press H to hide it, then Done back out to
+  // normal-play mode.
+  const editBtn = h.doc.getElementById('menu-edit-stage');
+  assert.ok(editBtn, 'menu-edit-stage should have been injected');
+  editBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  h.tick(1);
+
+  const decorSelect = h.doc.getElementById('se-decor');
+  assert.ok(decorSelect, 'se-decor select should exist');
+  decorSelect.value = 'd1';
+  decorSelect.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+  h.win.dispatchEvent(new h.win.KeyboardEvent('keydown', { key: 'h', bubbles: true, cancelable: true }));
+
+  const doneBtn = h.doc.getElementById('se-done');
+  assert.ok(doneBtn, 'se-done button should exist');
+  doneBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  const marker = h.drawLog.length;
+  h.tick(3);
+  const slice = h.drawLog.slice(marker);
+  assert.equal(h.errors.length, 0, `post-hide render threw: ${h.errors.map(String).join('; ')}`);
+  assert.equal(
+    countDraws(slice, DECOR_SCALE_PX.d1),
+    0,
+    'a hidden decor must not be drawn during normal play'
   );
   h.win.close();
 });

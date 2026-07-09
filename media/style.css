@@ -3890,6 +3890,15 @@ button.theme-review-preview:focus-visible::after {
   color: var(--se-accent);
 }
 
+.se-decor-hide-btn {
+  margin-left: 10px;
+}
+
+.se-decor-hide-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .se-btn {
   padding: 8px 10px;
   border-radius: 7px;
