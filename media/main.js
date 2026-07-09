@@ -7327,18 +7327,23 @@
   }
 
   /**
-   * Format an estimated $ figure. Always prefixed with "~" (this is a rough
-   * blended estimate, never a billed/exact amount), e.g. "~$0.42", "<$0.01",
-   * "~$128". Returns "—" for null (unknown model / no tokens).
+   * Format an estimated $ figure. Prefixed with "~" by default (this is a
+   * rough blended estimate, never a billed/exact amount), e.g. "~$0.42",
+   * "<$0.01", "~$128". Returns "—" for null (unknown model / no tokens).
+   * Pass withTilde=false to omit the leading "~" (e.g. in a narrow column
+   * whose header already signals "estimate").
    * @param {number|null} v
+   * @param {boolean} [withTilde=true]
    * @returns {string}
    */
-  function fmtUSD(v) {
+  function fmtUSD(v, withTilde) {
+    if (withTilde === undefined) withTilde = true;
+    const tilde = withTilde ? "~" : "";
     if (v == null) return "—";
-    if (v <= 0) return "~$0.00";
+    if (v <= 0) return `${tilde}$0.00`;
     if (v < 0.01) return "<$0.01";
-    if (v < 100) return `~$${v.toFixed(2)}`;
-    return `~$${Math.round(v)}`;
+    if (v < 100) return `${tilde}$${v.toFixed(2)}`;
+    return `${tilde}$${Math.round(v)}`;
   }
 
   /**
@@ -7547,7 +7552,7 @@
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Estimated cost rate (~$/min of active time) — a rough blended estimate from total tokens × approx. model price (no input/output split available; not a billed figure). The bar is scaled to the priciest agent.";
+    statusTd.title = "Estimated cost rate ($/min of active time) — a rough blended estimate from total tokens × approx. model price (no input/output split available; not a billed figure). The bar is scaled to the priciest agent.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -7555,7 +7560,7 @@
     fill.style.width = `${fillPct}%`;
     const label = document.createElement("span");
     label.className = "status-bar-label";
-    label.textContent = showActive ? "active" : (usdPerMin !== null ? `${fmtUSD(usdPerMin)}/min` : "—");
+    label.textContent = showActive ? "active" : (usdPerMin !== null ? `${fmtUSD(usdPerMin, false)}/min` : "—");
     track.appendChild(fill);
     track.appendChild(label);
     statusTd.appendChild(track);
@@ -7598,39 +7603,14 @@
 
     if (!emptyEl || !tableEl || !tbodyEl) return;
 
-    // "Est. spend this run" headline — lives at the top of #metrics-body (the
-    // old #metrics-team-throughput headline's spot). Created lazily since it
-    // isn't in the static HTML (panel.ts is out of scope for this feature).
-    let headlineEl = document.getElementById("metrics-cost-headline");
-    if (!headlineEl && metricsBodyEl) {
-      headlineEl = document.createElement("div");
-      headlineEl.id = "metrics-cost-headline";
-      headlineEl.className = "metrics-cost-headline";
-      metricsBodyEl.insertBefore(headlineEl, metricsBodyEl.firstChild);
-    }
-
     if (!metrics || metrics.length === 0) {
       emptyEl.style.display = "";
       tableEl.style.display = "none";
-      if (headlineEl) headlineEl.hidden = true;
       return;
     }
 
     emptyEl.style.display = "none";
     tableEl.style.display = "";
-
-    if (headlineEl) {
-      // Sum of each agent's rough estimated cost (skip agents whose model is
-      // unknown — estCostUSD returns null for those rather than treating them
-      // as $0).
-      const totalCostUSD = metrics.reduce((sum, a) => {
-        const c = estCostUSD(a && a.tokens, a && a.model);
-        return c != null ? sum + c : sum;
-      }, 0);
-      headlineEl.hidden = false;
-      headlineEl.textContent = `Est. spend this run: ${fmtUSD(totalCostUSD)}`;
-      headlineEl.title = "Rough estimate from total tokens × approx. blended model price per agent (no input/output split available). Not a billed figure.";
-    }
 
     // Estimated $/min burn rate of active time per agent (rough blended
     // estimate — see estCostUSD). Used to scale the status bar; unpriced
