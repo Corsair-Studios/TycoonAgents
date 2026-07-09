@@ -104,6 +104,14 @@ interface SliceCell {
  *   magenta halo: still-opaque, magenta-dominant pixels that touch an
  *   already-transparent pixel are erased over a few iterations, so multi-pixel
  *   fringe is eaten without thresholding the whole cell.
+ * - A despill pass (despillMagentaEdges) then handles the fringe that survives
+ *   all of the above: a faint magenta tint blended over a DARK subject pixel
+ *   (e.g. the art style's black outlines) is too low-luminance to trip the
+ *   magenta-dominant erase pass, but still reads as a visible purple halo.
+ *   Any opaque pixel within 2px of transparency whose red and blue channels
+ *   both spill clearly above green is desaturated toward green (or, for an
+ *   extreme spill, made transparent) instead of erased outright, so the
+ *   silhouette is never thinned.
  * - Frames listed in a `registrationGroups` entry are horizontally shifted (up
  *   to ±16px) to best match that group's first frame before the union bbox is
  *   computed, canceling drawn side-to-side drift across an in-place animation.
@@ -142,6 +150,7 @@ export async function sliceAndNormalizeAtlas(
       keyBorderConnectedMagenta(cell);
       removeAllChromaMagenta(cell);
       defringeMagentaEdges(cell);
+      despillMagentaEdges(cell);
       if (row > 0) {
         removeRowBoundarySpill(cell, cells[slot_id - grid.columns].cell);
       }
@@ -485,13 +494,84 @@ function isChromaMagenta(r: number, g: number, b: number): boolean {
  * halo blended between sprite and background (e.g. rgb(150,40,200)) — are caught.
  * Green must sit well below both red and blue with roughly balanced red/blue,
  * which excludes normal skin, red, orange, and purple sprite colors.
+ *
+ * The r/b floor is tuned down slightly (from 110) to reach a bit further into
+ * near-magenta blends at the extreme without opening the door to legitimate
+ * red or purple art: the asymmetric-channel guards above (g well below both
+ * r and b, with r/b roughly balanced) still exclude those.
  */
 function isMagentaDominant(r: number, g: number, b: number): boolean {
   return g < r - 40
     && g < b - 40
-    && r > 110
-    && b > 110
+    && r > 90
+    && b > 90
     && Math.abs(r - b) < 110;
+}
+
+/**
+ * Despill pass. defringeMagentaEdges erases whole pixels once they read as
+ * clearly magenta-dominant, but a faint magenta tint blended over a DARK
+ * subject pixel — the black outlines this art style relies on — often stays
+ * too low-luminance to trip that erase threshold (e.g. rgb(70,20,70)) while
+ * still reading as a visible purple halo in-game, especially along sprite
+ * bottoms.
+ *
+ * For every still-opaque pixel within EDGE_RADIUS of a transparent pixel
+ * (edge proximity keeps this from ever touching legitimately pink/purple
+ * interior art, which sits far from any cut edge), a clear red+blue spill
+ * over green is desaturated toward green rather than deleted, so the
+ * silhouette is never thinned. An extreme spill is instead made fully
+ * transparent, since at that point it is background bleed, not tinted art.
+ *
+ * Edge proximity is evaluated against a pre-pass alpha snapshot so pixels
+ * this same pass turns transparent don't cascade into eating further pixels
+ * within the same call.
+ */
+function despillMagentaEdges(cell: Jimp): void {
+  const width = cell.bitmap.width;
+  const height = cell.bitmap.height;
+  const data = cell.bitmap.data;
+  const EDGE_RADIUS = 2;
+  const SPILL_MARGIN = 40;
+  const STRONG_SPILL_MARGIN = 100;
+  const CLAMP_HEADROOM = 30;
+
+  const alphaSnapshot = new Uint8Array(width * height);
+  for (let i = 0; i < alphaSnapshot.length; i++) alphaSnapshot[i] = data[i * 4 + 3];
+
+  const isNearTransparentEdge = (x: number, y: number): boolean => {
+    for (let dy = -EDGE_RADIUS; dy <= EDGE_RADIUS; dy++) {
+      for (let dx = -EDGE_RADIUS; dx <= EDGE_RADIUS; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        if (alphaSnapshot[ny * width + nx] === 0) return true;
+      }
+    }
+    return false;
+  };
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const offset = y * width + x;
+      const idx = offset * 4;
+      if (data[idx + 3] === 0) continue;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      if (!(r > g + SPILL_MARGIN && b > g + SPILL_MARGIN)) continue;
+      if (!isNearTransparentEdge(x, y)) continue;
+
+      if (r > g + STRONG_SPILL_MARGIN && b > g + STRONG_SPILL_MARGIN) {
+        data[idx + 3] = 0;
+        continue;
+      }
+      const clamped = Math.min(r, b, g + CLAMP_HEADROOM);
+      data[idx] = clamped;
+      data[idx + 2] = clamped;
+    }
+  }
 }
 
 /**

@@ -294,3 +294,109 @@ test('rival board (5 uneven columns) does not overflow the source buffer when gr
   assert.ok(result.slots[0].meta.opaqueCount > 0);
   assert.ok(result.slots[4].meta.opaqueCount > 0);
 });
+
+test('despill desaturates a magenta-tinted fringe over a black outline instead of deleting it', async () => {
+  // Simulates the reported bug: the image model anti-aliases a subject's black
+  // outline into the #FF00FF backdrop, leaving a thin, low-luminance
+  // magenta-tinted rim that survives the existing chroma-key and erase-based
+  // de-fringe passes because it is too dark to read as "magenta-dominant".
+  const cellWidth = 20;
+  const cellHeight = 20;
+  const atlas = new Jimp(cellWidth * 5, cellHeight * 4, 0xff00ffff);
+  for (let row = 0; row < 4; row++) {
+    for (let col = 0; col < 5; col++) {
+      const x = col * cellWidth;
+      const y = row * cellHeight;
+      // A 1px dim magenta-tinted "fringe" ring around a solid black outline.
+      atlas.scan(x + 5, y + 4, 10, 14, function (_px, _py, idx) {
+        this.bitmap.data[idx] = 70;
+        this.bitmap.data[idx + 1] = 20;
+        this.bitmap.data[idx + 2] = 70;
+        this.bitmap.data[idx + 3] = 255;
+      });
+      atlas.scan(x + 6, y + 5, 8, 12, function (_px, _py, idx) {
+        this.bitmap.data[idx] = 20;
+        this.bitmap.data[idx + 1] = 20;
+        this.bitmap.data[idx + 2] = 20;
+        this.bitmap.data[idx + 3] = 255;
+      });
+      // One extreme, still low-luminance spill pixel on the ring to exercise the
+      // despill pass's "extreme spill -> fully transparent" branch too.
+      // 0x690469ff = rgb(105, 4, 105) at full alpha.
+      atlas.setPixelColor(0x690469ff, x + 9, y + 4);
+    }
+  }
+
+  const result = await sliceAndNormalizeAtlas(
+    await atlas.getBufferAsync(Jimp.MIME_PNG),
+    {},
+  );
+  const first = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+
+  let fringedPixels = 0;
+  let blackOutlinePixels = 0;
+  first.scan(0, 0, first.bitmap.width, first.bitmap.height, function (_x, _y, idx) {
+    const r = this.bitmap.data[idx];
+    const g = this.bitmap.data[idx + 1];
+    const b = this.bitmap.data[idx + 2];
+    const a = this.bitmap.data[idx + 3];
+    if (a === 0) return;
+    if (r > g + 40 && b > g + 40) fringedPixels++;
+    if (r === 20 && g === 20 && b === 20) blackOutlinePixels++;
+  });
+
+  // No pixel in the final sprite still reads as magenta-fringed...
+  assert.equal(fringedPixels, 0);
+  // ...and despill clamped color rather than deleting pixels, so the black
+  // outline silhouette survives intact rather than being thinned away.
+  assert.ok(blackOutlinePixels > 0);
+});
+
+test('despill leaves a legitimately purple interior region untouched', async () => {
+  // A purple/pink region deep inside the sprite (far from any cut edge) must
+  // never be mistaken for magenta spill, even though it satisfies the same
+  // red/blue-over-green channel test the despill pass uses at edges.
+  const cellWidth = 20;
+  const cellHeight = 20;
+  const atlas = new Jimp(cellWidth * 5, cellHeight * 4, 0xff00ffff);
+  for (let row = 0; row < 4; row++) {
+    for (let col = 0; col < 5; col++) {
+      const x = col * cellWidth;
+      const y = row * cellHeight;
+      // A large solid black block, comfortably clear of the cell's magenta
+      // background on all sides.
+      atlas.scan(x + 3, y + 3, 14, 14, function (_px, _py, idx) {
+        this.bitmap.data[idx] = 20;
+        this.bitmap.data[idx + 1] = 20;
+        this.bitmap.data[idx + 2] = 20;
+        this.bitmap.data[idx + 3] = 255;
+      });
+      // A 2x2 purple interior patch at the block's center, 6+ px from any
+      // transparent pixel — well outside the despill pass's edge radius.
+      atlas.scan(x + 9, y + 9, 2, 2, function (_px, _py, idx) {
+        this.bitmap.data[idx] = 150;
+        this.bitmap.data[idx + 1] = 50;
+        this.bitmap.data[idx + 2] = 180;
+        this.bitmap.data[idx + 3] = 255;
+      });
+    }
+  }
+
+  const result = await sliceAndNormalizeAtlas(
+    await atlas.getBufferAsync(Jimp.MIME_PNG),
+    {},
+  );
+  const first = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+
+  let purplePixels = 0;
+  first.scan(0, 0, first.bitmap.width, first.bitmap.height, function (_x, _y, idx) {
+    const r = this.bitmap.data[idx];
+    const g = this.bitmap.data[idx + 1];
+    const b = this.bitmap.data[idx + 2];
+    const a = this.bitmap.data[idx + 3];
+    if (a === 255 && r === 150 && g === 50 && b === 180) purplePixels++;
+  });
+
+  // The interior purple patch (4 source pixels) survives byte-for-byte.
+  assert.equal(purplePixels, 4);
+});

@@ -325,6 +325,8 @@ test('background decor prompt describes seats, static decor, one animated row, a
   assert.match(prompt, /Cell 16: the BLAST \/ IMPACT effect/i);
   assert.match(prompt, /Cell 1: Decor 1[\s\S]*Cell 8: Decor 8/i);
   assert.match(prompt, /solid #FF00FF magenta/i);
+  assert.match(prompt, /NO anti-aliasing/i);
+  assert.match(prompt, /never tint any subject pixel with the background magenta/i);
   assert.match(prompt, /locked in the identical position/i);
   assert.match(prompt, /locked to the same cell center/i);
   assert.match(prompt, /near-copy of the first frame/i);
@@ -374,6 +376,8 @@ test('background decor prompt in transparent mode has an alpha directive and zer
   const prompt = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', createDecorBoardRows(decorSpecs()), 'transparent');
   assertNoMagenta(prompt);
   assert.match(prompt, /fully transparent \(alpha 0\)/i);
+  assert.match(prompt, /NO anti-aliasing/i);
+  assert.doesNotMatch(prompt, /never tint any subject pixel with the background magenta/i);
 });
 
 test('expression prompt in transparent mode has an alpha directive and zero magenta mentions', () => {

@@ -211,6 +211,9 @@ function boardContract(columns: number, rows: number, background: BoardBackgroun
     background === 'transparent'
       ? 'Paint every unused pixel fully transparent (alpha 0) — no texture, gradient, or background fill of any kind.'
       : 'Paint every unused pixel solid #FF00FF magenta with no texture or gradient.',
+    background === 'transparent'
+      ? 'Render every subject with crisp, hard pixel-art edges: NO anti-aliasing, feathering, glow, or soft blending where the subject meets the background. Every edge pixel is either fully subject-colored or fully transparent — never a blend. Give each subject a clean solid dark outline.'
+      : 'Render every subject with crisp, hard pixel-art edges: NO anti-aliasing, feathering, glow, or soft blending where the subject meets the background. Every edge pixel is either fully subject-colored or fully background — never a blend. Give each subject a clean solid dark outline, and never tint any subject pixel with the background magenta.',
   ].join('\n');
 }
 
