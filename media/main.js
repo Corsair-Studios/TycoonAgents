@@ -2960,7 +2960,7 @@
 
       let modalDragId = null;
 
-      for (const charId of rosterOrder) {
+      for (const [rosterIdx, charId] of rosterOrder.entries()) {
         const slots = themeImages[charId];
         const thumbImg = slots && (slots[16] || slots[0]);
 
@@ -2982,10 +2982,10 @@
           thumb.textContent = charId.slice(0, 2).toUpperCase();
         }
 
-        // Label below thumbnail
+        // Slot-number badge (current displayed position, 1-based)
         const charLabel = document.createElement("div");
         charLabel.className = "modal-roster-char-label";
-        charLabel.textContent = charId.slice(0, 8);
+        charLabel.textContent = String(rosterIdx + 1);
         thumb.appendChild(charLabel);
 
         thumb.addEventListener("dragstart", function (e) {
