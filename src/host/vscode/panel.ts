@@ -3720,6 +3720,9 @@ export class TycoonPanel {
       </div>
       <div id="packs-list" role="tabpanel" hidden></div>
       <div id="skills-list" role="tabpanel"></div>
+      <div id="skills-footer">
+        <a id="skills-more-link" href="https://github.com/anthropics/skills" target="_blank" rel="noopener noreferrer">Get more skills &rarr; Claude Agent Skills marketplace</a>
+      </div>
       <div id="mcp-list" role="tabpanel" hidden></div>
     </div>
   </div>

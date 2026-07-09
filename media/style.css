@@ -1634,6 +1634,30 @@ body {
   border-radius: 3px;
 }
 
+/* Static footer link under the Skills tab's list — always visible while the
+   Skills tab is active (independent of renderSkillsList's empty/error/loaded
+   states). Hidden via CSS sibling selector when #skills-list is hidden by
+   the Packs/MCP tab switch, so no JS wiring is needed. */
+#skills-footer {
+  flex-shrink: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+#skills-list[hidden] ~ #skills-footer {
+  display: none;
+}
+
+#skills-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+#skills-footer a:hover {
+  text-decoration: underline;
+}
+
 .skill-row {
   display: flex;
   align-items: center;
