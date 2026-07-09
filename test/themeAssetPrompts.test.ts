@@ -120,7 +120,10 @@ test('character prompt enforces the production sprite-board mime contracts', () 
   assert.match(prompt, /Do not leave oversized magenta margins/i);
   assert.match(prompt, /visible magenta gutter at every horizontal row boundary/i);
   assert.match(prompt, /safety padding below both feet/i);
-  assert.doesNotMatch(prompt, /Melee strike|Ranged fire/i);
+  assert.match(prompt, /Melee strike[\s\S]*Ranged fire/i);
+  assert.match(prompt, /never mixes melee and ranged in one frame/i);
+  assert.match(prompt, /No firearm anywhere/i);
+  assert.match(prompt, /No melee weapon/i);
   assert.match(prompt, /solid \*\*#FF00FF\*\*/i);
   assert.match(prompt, /Theme: Night Grid[\s\S]*neon cyberpunk/i);
   assert.doesNotMatch(prompt, /Circuit Broker|Cyberpunk 2049/i);
