@@ -702,7 +702,12 @@ export async function uploadThemeImage(
       });
     }
 
-    await writeThemeFiles(globalStorageUri, manifest, frames);
+    // Merge-safe write (see writeThemeFiles): scope the frames.json write to
+    // just the keys this upload owns, so it can't revert a concurrently
+    // in-flight board retry's already-saved frames for other keys.
+    await writeThemeFiles(globalStorageUri, manifest, frames, [
+      ...new Set([...frameKeys, ...(item?.frame_keys ?? [])]),
+    ]);
     return { manifest, frames };
   } catch {
     return undefined;
@@ -1576,6 +1581,11 @@ async function applySlicedAtlasFromBuffer(
 ): Promise<{ output: Buffer; frameKeys: string[] }> {
   let output = buffer;
   let frameKeys = item.frame_keys;
+  // Captured before any branch reassigns frameKeys, so it always reflects
+  // this item's frame keys as of the START of this (possibly slow) operation.
+  // Used below to scope the final frames.json write to just the keys this
+  // operation actually owns — see the writeThemeFiles call at the bottom.
+  const previousFrameKeys = item.frame_keys;
 
   if (item.kind === 'character_atlas') {
     const characterAtlas = await processCharacterAtlas(buffer, manifest);
@@ -1585,7 +1595,6 @@ async function applySlicedAtlasFromBuffer(
     frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
     frameKeys = [frameKey];
   } else if (item.kind === 'rival_atlas') {
-    const previousFrameKeys = item.frame_keys;
     const rows = rivalRowsForItem(item, manifest);
     item.rival_rows = rows;
     const rivalAtlas = await processRivalAtlas(buffer, manifest, rows);
@@ -1601,7 +1610,6 @@ async function applySlicedAtlasFromBuffer(
     // Reconstruct object_rows from the CURRENT manifest as the primary source
     // (see objectRowsForItem) so a roster change (e.g. objects added/renamed)
     // regenerates the correct board instead of reusing stale saved object_rows.
-    const previousFrameKeys = item.frame_keys;
     const rows = objectRowsForItem(item, manifest);
     item.object_rows = rows;
     const objectAtlas = await processObjectAtlas(buffer, manifest, rows);
@@ -1645,7 +1653,19 @@ async function applySlicedAtlasFromBuffer(
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   // (Harmless on the re-slice path: it re-saves the same bytes we just read.)
   await persistRawAtlas(globalStorageUri, themeId, item.filename, buffer);
-  await writeThemeFiles(globalStorageUri, manifest, frames);
+  // Merge-safe write: retryThemeImage/resliceThemeImageFromRaw load frames.json
+  // once at the START of this operation, then this function runs a slow
+  // image-generation API call before reaching this write. If a DIFFERENT
+  // board's retry loaded its own frames.json snapshot in between and finishes
+  // (and writes) before this one does, a blind overwrite here would silently
+  // revert that other board's frames back to the stale snapshot this call
+  // started with — e.g. a background-decor regen's new art getting reverted by
+  // a slower, later-finishing object-board regen. Scoping the write to just
+  // the keys THIS item owns (its new frame keys plus any it just dropped)
+  // avoids that lost-update race; every other key defers to disk.
+  await writeThemeFiles(globalStorageUri, manifest, frames, [
+    ...new Set([...frameKeys, ...previousFrameKeys]),
+  ]);
   return { output, frameKeys };
 }
 
@@ -2949,14 +2969,66 @@ async function markGenerated(
   });
 }
 
+/**
+ * Writes manifest.json and frames.json for a theme.
+ *
+ * `ownedFrameKeys`, when provided, makes the frames.json write MERGE-SAFE: the
+ * current on-disk frames.json is re-read immediately before writing, and only
+ * the given keys are overlaid from `frames` onto that fresh copy (a key absent
+ * from `frames` is deleted, matching removeStaleBoardFrameKeys semantics) —
+ * every OTHER key defers to whatever is currently on disk instead of this
+ * call's in-memory snapshot. This matters because board regeneration is slow
+ * (an image-generation API call sits between the frames.json read and this
+ * write), so several boards can be retried concurrently; each retry loads its
+ * own frames.json snapshot before its slow call, and a blind overwrite here
+ * would let a later-finishing retry silently revert an earlier, faster
+ * retry's already-saved frames back to stale art.
+ *
+ * Omit `ownedFrameKeys` to keep the previous full-overwrite behavior, which
+ * is still correct for callers where `frames` is the one continuously-updated
+ * in-memory copy for the whole synchronous operation (e.g. the initial
+ * full-theme generation pass, tuning/rename saves).
+ */
+/**
+ * Pure merge step behind writeThemeFiles' merge-safe frames.json write (see
+ * that function's doc comment for the full race it closes). Exported so the
+ * merge algorithm itself can be unit-tested without mocking the vscode
+ * filesystem API: given whatever is CURRENTLY on disk plus this operation's
+ * in-memory `frames` and the keys it owns, returns the object that should be
+ * written — every non-owned key comes from disk, every owned key comes from
+ * `frames` (or is dropped if `frames` no longer has it, matching
+ * removeStaleBoardFrameKeys semantics).
+ */
+export function mergeOwnedFrames(
+  onDiskFrames: Record<string, string[]> | undefined,
+  frames: Record<string, string[]>,
+  ownedFrameKeys: readonly string[],
+): Record<string, string[]> {
+  const merged = { ...(onDiskFrames ?? frames) };
+  for (const key of ownedFrameKeys) {
+    if (key in frames) merged[key] = frames[key];
+    else delete merged[key];
+  }
+  return merged;
+}
+
 async function writeThemeFiles(
   globalStorageUri: vscode.Uri,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
+  ownedFrameKeys?: readonly string[],
 ): Promise<void> {
   await vscode.workspace.fs.createDirectory(themeDirectoryUri(globalStorageUri, manifest.theme_id));
   await vscode.workspace.fs.writeFile(themeManifestUri(globalStorageUri, manifest.theme_id), jsonBuffer(manifest));
-  await vscode.workspace.fs.writeFile(themeFramesUri(globalStorageUri, manifest.theme_id), jsonBuffer(frames));
+
+  let framesToWrite = frames;
+  if (ownedFrameKeys) {
+    const onDiskFrames = await readJson<Record<string, string[]>>(
+      themeFramesUri(globalStorageUri, manifest.theme_id),
+    );
+    framesToWrite = mergeOwnedFrames(onDiskFrames, frames, ownedFrameKeys);
+  }
+  await vscode.workspace.fs.writeFile(themeFramesUri(globalStorageUri, manifest.theme_id), jsonBuffer(framesToWrite));
 }
 
 async function saveReviewImage(directoryUri: vscode.Uri, filename: string, data: Buffer): Promise<void> {
