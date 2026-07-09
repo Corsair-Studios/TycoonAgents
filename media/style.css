@@ -2197,6 +2197,19 @@ tr.metrics-row--child td.col-name {
   opacity: 0.75;
 }
 
+/* Estimated spend headline (replaces the removed tokens/min team-throughput
+   readout at the top of #metrics-body — rough $ estimate, see fmtUSD/estCostUSD
+   in main.js). */
+.metrics-cost-headline {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Empty state */
 #metrics-empty {
   padding: 40px 0;

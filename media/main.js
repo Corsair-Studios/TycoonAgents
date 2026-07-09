@@ -112,6 +112,15 @@
   const metricsTabBtnEl = /** @type {HTMLElement} */ (document.getElementById("metrics-tab-btn"));
   const planTabBtnEl = /** @type {HTMLElement} */ (document.getElementById("plan-tab-btn"));
   const projectPlanBodyEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-body"));
+
+  // The #metrics-table "Tokens/min" column header (static HTML in panel.ts) now
+  // shows an estimated $/min burn rate instead — relabel it from here so the
+  // header stays in sync without touching panel.ts.
+  (function relabelMetricsStatusColumnHeader() {
+    const th = document.querySelector("#metrics-table thead th:nth-child(2)");
+    if (th) th.textContent = "Est. $/min";
+  })();
+
   /** Whether the user's project has the optional Project Plan feature turned on (from PLAN_STATE.enabled). Default false so nothing new shows unless the host confirms it's on. */
   let projectPlanEnabled = false;
   /** Last plan snapshot from PLAN_STATE.plan (null = feature off, or on with no plan.json yet). @type {null|{version:number,title:string,phases:Array<Object>,tasks:Array<Object>,currentPhaseId:(string|null),currentTaskId:(string|null)}} */
@@ -7276,6 +7285,63 @@
   }
 
   /**
+   * Approximate BLENDED $ per MILLION tokens, keyed by model family. Only TOTAL
+   * tokens are available per agent (no input/output/cache split), so treat this
+   * as a rough estimate — RATIOS between models matter more than absolute
+   * accuracy. Update when model pricing changes. (~2026-07) [fable price is an
+   * estimate — update once known.]
+   * @type {{opus:number, sonnet:number, haiku:number, fable:number}}
+   */
+  const MODEL_PRICE_PER_MTOK = { opus: 30, sonnet: 6, haiku: 2, fable: 6 };
+
+  /**
+   * Blended $/million-token price for a model id/family string, or null when
+   * the family can't be determined (unpriced models are excluded from cost
+   * sums/rates, never shown as $0).
+   * @param {string|null|undefined} model
+   * @returns {number|null}
+   */
+  function modelPricePerMtok(model) {
+    if (!model) return null;
+    const s = String(model).toLowerCase();
+    if (s.indexOf("opus") >= 0) return MODEL_PRICE_PER_MTOK.opus;
+    if (s.indexOf("sonnet") >= 0) return MODEL_PRICE_PER_MTOK.sonnet;
+    if (s.indexOf("haiku") >= 0) return MODEL_PRICE_PER_MTOK.haiku;
+    if (s.indexOf("fable") >= 0) return MODEL_PRICE_PER_MTOK.fable;
+    return null;
+  }
+
+  /**
+   * Rough estimated $ cost for a total token count at a given model's blended
+   * price. Returns null when the model is unknown or there are no tokens —
+   * callers render "—" and exclude nulls from sums/rates rather than treating
+   * them as $0.
+   * @param {number|undefined} tokens
+   * @param {string|null|undefined} model
+   * @returns {number|null}
+   */
+  function estCostUSD(tokens, model) {
+    const price = modelPricePerMtok(model);
+    if (price == null || !(tokens > 0)) return null;
+    return (tokens / 1e6) * price;
+  }
+
+  /**
+   * Format an estimated $ figure. Always prefixed with "~" (this is a rough
+   * blended estimate, never a billed/exact amount), e.g. "~$0.42", "<$0.01",
+   * "~$128". Returns "—" for null (unknown model / no tokens).
+   * @param {number|null} v
+   * @returns {string}
+   */
+  function fmtUSD(v) {
+    if (v == null) return "—";
+    if (v <= 0) return "~$0.00";
+    if (v < 0.01) return "<$0.01";
+    if (v < 100) return `~$${v.toFixed(2)}`;
+    return `~$${Math.round(v)}`;
+  }
+
+  /**
    * Conjugate a verb into its third-person singular form.
    * @param {string} verb
    * @returns {string}
@@ -7405,7 +7471,7 @@
    * lead's team-rollup row; `opts.indent` marks a worker nested under an
    * expanded lead; `opts.teamTag` labels a collapsed row as an aggregate.
    */
-  function buildMetricsRow(agent, maxTokensPerMin, opts) {
+  function buildMetricsRow(agent, maxUsdPerMin, opts) {
     opts = opts || {};
     const status = (agent.status || "idle").toLowerCase();
     const isActive = status === "active";
@@ -7466,19 +7532,22 @@
     nameTd.title = nameTitle;
     row.appendChild(nameTd);
 
-    // Status bar: green while active, gray while idle. Width encodes the
-    // raw tokens per minute of active time (tokens / activeMs minutes), normalized
-    // to the agent with the highest tokens-per-minute. Active agents always show
-    // a visible green sliver so "working" is never invisible.
+    // Status bar: green while active, gray while idle. Width encodes an
+    // ESTIMATED $/min burn rate (estCostUSD(tokens, model) / active minutes),
+    // normalized to the agent with the highest rate. This is a rough blended
+    // estimate (total tokens only, no input/output split) — ratios matter more
+    // than absolute accuracy. Active agents always show a visible green sliver
+    // so "working" is never invisible.
     const mins = (agent.activeMs || 0) / 60000;
-    const tokensPerMin = mins > 0 ? (agent.tokens || 0) / mins : null;
-    const rawPct = tokensPerMin !== null
-      ? Math.round(Math.min(tokensPerMin / maxTokensPerMin, 1) * 100)
+    const costUSD = estCostUSD(agent.tokens, agent.model);
+    const usdPerMin = costUSD != null && mins > 0 ? costUSD / mins : null;
+    const rawPct = usdPerMin !== null
+      ? Math.round(Math.min(usdPerMin / maxUsdPerMin, 1) * 100)
       : 0;
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Tokens/min — average tokens generated per minute of active time. The bar is scaled to the busiest agent.";
+    statusTd.title = "Estimated cost rate (~$/min of active time) — a rough blended estimate from total tokens × approx. model price (no input/output split available; not a billed figure). The bar is scaled to the priciest agent.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -7486,7 +7555,7 @@
     fill.style.width = `${fillPct}%`;
     const label = document.createElement("span");
     label.className = "status-bar-label";
-    label.textContent = showActive ? "active" : (tokensPerMin !== null ? fmtTokens(Math.round(tokensPerMin)) : "—");
+    label.textContent = showActive ? "active" : (usdPerMin !== null ? `${fmtUSD(usdPerMin)}/min` : "—");
     track.appendChild(fill);
     track.appendChild(label);
     statusTd.appendChild(track);
@@ -7529,20 +7598,47 @@
 
     if (!emptyEl || !tableEl || !tbodyEl) return;
 
+    // "Est. spend this run" headline — lives at the top of #metrics-body (the
+    // old #metrics-team-throughput headline's spot). Created lazily since it
+    // isn't in the static HTML (panel.ts is out of scope for this feature).
+    let headlineEl = document.getElementById("metrics-cost-headline");
+    if (!headlineEl && metricsBodyEl) {
+      headlineEl = document.createElement("div");
+      headlineEl.id = "metrics-cost-headline";
+      headlineEl.className = "metrics-cost-headline";
+      metricsBodyEl.insertBefore(headlineEl, metricsBodyEl.firstChild);
+    }
+
     if (!metrics || metrics.length === 0) {
       emptyEl.style.display = "";
       tableEl.style.display = "none";
+      if (headlineEl) headlineEl.hidden = true;
       return;
     }
 
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // Raw tokens per minute of active time: each agent's token total divided by
-    // its finalized active minutes (no model weighting). Used to scale the status bar.
-    const maxTokensPerMin = Math.max(1, ...metrics.map(a => {
+    if (headlineEl) {
+      // Sum of each agent's rough estimated cost (skip agents whose model is
+      // unknown — estCostUSD returns null for those rather than treating them
+      // as $0).
+      const totalCostUSD = metrics.reduce((sum, a) => {
+        const c = estCostUSD(a && a.tokens, a && a.model);
+        return c != null ? sum + c : sum;
+      }, 0);
+      headlineEl.hidden = false;
+      headlineEl.textContent = `Est. spend this run: ${fmtUSD(totalCostUSD)}`;
+      headlineEl.title = "Rough estimate from total tokens × approx. blended model price per agent (no input/output split available). Not a billed figure.";
+    }
+
+    // Estimated $/min burn rate of active time per agent (rough blended
+    // estimate — see estCostUSD). Used to scale the status bar; unpriced
+    // agents (unknown model) don't participate.
+    const maxUsdPerMin = Math.max(0.0001, ...metrics.map(a => {
       const mins = (a.activeMs || 0) / 60000;
-      return mins > 0 ? (a.tokens || 0) / mins : 0;
+      const cost = estCostUSD(a.tokens, a.model);
+      return cost != null && mins > 0 ? cost / mins : 0;
     }));
 
     // Group workers under a visible lead (tier === "lead"). Approximate —
@@ -7572,19 +7668,19 @@
         // Flat row: no children to roll up — identical to pre-Phase-3 rendering,
         // including leads that haven't spawned anyone (yet) and any worker whose
         // parentId doesn't match a currently-visible lead.
-        tbodyEl.appendChild(buildMetricsRow(agent, maxTokensPerMin, {}));
+        tbodyEl.appendChild(buildMetricsRow(agent, maxUsdPerMin, {}));
         continue;
       }
 
       if (isTeamExpanded(agent.id)) {
-        tbodyEl.appendChild(buildMetricsRow(agent, maxTokensPerMin, { chevron: "expanded", leadId: agent.id }));
+        tbodyEl.appendChild(buildMetricsRow(agent, maxUsdPerMin, { chevron: "expanded", leadId: agent.id }));
         for (const child of children) {
-          tbodyEl.appendChild(buildMetricsRow(child, maxTokensPerMin, { indent: true }));
+          tbodyEl.appendChild(buildMetricsRow(child, maxUsdPerMin, { indent: true }));
         }
       } else {
         tbodyEl.appendChild(buildMetricsRow(
           aggregateTeam(agent, children),
-          maxTokensPerMin,
+          maxUsdPerMin,
           { chevron: "collapsed", leadId: agent.id, teamTag: true },
         ));
       }
@@ -7644,10 +7740,20 @@
       const modeTokPerSec = (typeof m.activeMs === "number" && m.activeMs > 0)
         ? m.totalTokens / (m.activeMs / 1000)
         : 0;
-      const modeTokPerMin = (typeof m.activeMs === "number" && m.activeMs > 0)
-        ? m.totalTokens / (m.activeMs / 60000)
-        : 0;
-      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"} · ${modeTokPerMin > 0 ? fmtTokens(Math.round(modeTokPerMin)) + " tok/min" : "—"}`;
+      // Estimated $/min burn rate for this mode: sum estCostUSD(tokens, model)
+      // across the mode's agents (unpriced models excluded, not treated as $0),
+      // divided by the same activeMs basis as the tok/s figure above — mirrors
+      // resolveMode() in core/state.ts (delegationMode === "team_leads" wins,
+      // everything else buckets as "flat").
+      const modeAgents = lastMetrics.filter((a) => a && ((a.delegationMode === "team_leads" ? "team_leads" : "flat") === m.mode));
+      const modeCostUSD = modeAgents.reduce((sum, a) => {
+        const c = estCostUSD(a.tokens, a.model);
+        return c != null ? sum + c : sum;
+      }, 0);
+      const modeUsdPerMin = (typeof m.activeMs === "number" && m.activeMs > 0 && modeCostUSD > 0)
+        ? modeCostUSD / (m.activeMs / 60000)
+        : null;
+      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"} · ${modeUsdPerMin != null ? fmtUSD(modeUsdPerMin) + "/min" : "—"}`;
       detail.textContent = text;
       row.appendChild(detail);
 
@@ -8094,14 +8200,17 @@
       const stats = document.createElement("div");
       stats.className = "agent-stats";
       const mins = m && m.activeMs ? m.activeMs / 60000 : 0;
-      const tpm = mins > 0 ? Math.round((m.tokens || 0) / mins) : 0;
+      // Rough estimated $/min burn rate (see estCostUSD) — falls back to the
+      // settings-configured agent.model if the metrics record has none yet.
+      const chipCostUSD = m ? estCostUSD(m.tokens, m.model || agent.model) : null;
+      const chipUsdPerMin = chipCostUSD != null && mins > 0 ? chipCostUSD / mins : null;
       const chip = (label, value) => {
         const c = document.createElement("span");
         c.className = "stat-chip";
         c.textContent = `${label} ${value}`;
         return c;
       };
-      stats.appendChild(chip("tok/min", fmtTokens(tpm)));
+      stats.appendChild(chip("~$/min", fmtUSD(chipUsdPerMin)));
       stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
       stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));
       row.appendChild(stats);
