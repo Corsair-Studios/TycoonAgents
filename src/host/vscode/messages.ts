@@ -5,6 +5,7 @@
  */
 
 import { z } from "zod";
+import { ProjectPlanSchema } from "./projectPlan";
 
 /**
  * Single source of truth for the webview<->host `message.type` wire strings
@@ -144,6 +145,12 @@ export const MSG = {
   BOARD_REGENERATED: "BOARD_REGENERATED",
   RUN_THEME_HEALTH_CHECK: "RUN_THEME_HEALTH_CHECK",
   THEME_HEALTH_CHECK_RESULT: "THEME_HEALTH_CHECK_RESULT",
+
+  // ---- project plan (optional): phase/task approval loop -------------------
+  APPROVE_PHASE: "APPROVE_PHASE",
+  OVERRIDE_TASK: "OVERRIDE_TASK",
+  REQUEST_PLAN: "REQUEST_PLAN",
+  PLAN_STATE: "PLAN_STATE",
 } as const;
 
 /** Union of every wire string this module knows about (either direction). */
@@ -302,4 +309,18 @@ export const MSG_SCHEMAS = {
       character_name: z.string().optional(),
     })
     .passthrough(),
+
+  // ---- project plan (optional): phase/task approval loop -------------------
+  APPROVE_PHASE: z.object({ phaseId: z.string().min(1) }).passthrough(),
+
+  OVERRIDE_TASK: z
+    .object({
+      taskId: z.string().min(1),
+      action: z.enum(["approve", "retry", "skip"]),
+    })
+    .passthrough(),
+
+  REQUEST_PLAN: z.object({}).passthrough(),
+
+  PLAN_STATE: z.object({ plan: ProjectPlanSchema.nullable() }).passthrough(),
 } as const;

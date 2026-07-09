@@ -73,6 +73,7 @@ import {
   saveThemeImageSettings,
 } from "../../extension/themeImageSettings";
 import { MSG, MSG_SCHEMAS } from "./messages";
+import { readPlan, writePlan, approvePhase, overrideTask } from "./projectPlan";
 
 /**
  * Persisted per-theme rebirth (prestige) state, stored host-side in
@@ -104,6 +105,52 @@ function errorMessage(error: unknown): string {
 import { mergeTycoonHooks } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { diagnose, DoctorFinding, findForeignHooks, repairSettings } from "./hookDoctor";
+
+/**
+ * Optional "Project Plan" feature (opt-in, default OFF): resolve
+ * `.claude/tycoon/plan.json` and read/write the `projectPlanEnabled` flag
+ * inside `.claude/tycoon/execution.json` — the SAME file
+ * `delegationDoctrine.ts`'s `readExecutionConfig`/`writeExecutionConfig`
+ * store `delegation_mode` in. These read/write the raw JSON directly
+ * (instead of going through that module's typed `ExecutionConfig` shape) so
+ * this feature stays additive without touching delegationDoctrine.ts.
+ */
+function projectPlanFilePath(root: string): string {
+  return path.join(root, ".claude", "tycoon", "plan.json");
+}
+
+function projectPlanExecutionConfigPath(root: string): string {
+  return path.join(root, ".claude", "tycoon", "execution.json");
+}
+
+/** Read the opt-in flag; missing file/dir/field all default to `false`. */
+function readProjectPlanEnabled(root: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(projectPlanExecutionConfigPath(root), "utf8"));
+    return parsed !== null && typeof parsed === "object" && parsed.projectPlanEnabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persist the opt-in flag, preserving any other fields (e.g.
+ * `delegation_mode`) already on disk via a read-modify-write merge.
+ * `delegationDoctrine.ts`'s `writeExecutionConfig` does the same merge in
+ * the other direction, so either writer preserves the other's keys.
+ */
+function writeProjectPlanEnabled(root: string, enabled: boolean): void {
+  const configPath = projectPlanExecutionConfigPath(root);
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (parsed !== null && typeof parsed === "object") existing = parsed as Record<string, unknown>;
+  } catch {
+    /* missing/invalid => start fresh */
+  }
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({ ...existing, projectPlanEnabled: enabled }, null, 2));
+}
 
 /** Singleton webview panel that renders the TycoonAgents visualization. */
 export class TycoonPanel {
@@ -1285,6 +1332,61 @@ export class TycoonPanel {
               },
             });
           }
+        } else if (message.type === MSG.REQUEST_PLAN) {
+          // Optional "Project Plan" feature — opt-in via projectPlanEnabled
+          // in execution.json (default OFF). Disabled/no-workspace both
+          // resolve to a null plan so the webview can no-op cleanly.
+          const root = this._projectRoot();
+          if (root === "" || !readProjectPlanEnabled(root)) {
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            return;
+          }
+          const plan = readPlan(projectPlanFilePath(root));
+          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan });
+        } else if (message.type === MSG.APPROVE_PHASE) {
+          const root = this._projectRoot();
+          if (root === "" || !readProjectPlanEnabled(root)) {
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            return;
+          }
+          const parsedApprovePhase = MSG_SCHEMAS.APPROVE_PHASE.safeParse(message);
+          if (!parsedApprovePhase.success) {
+            console.error("TycoonAgents: APPROVE_PHASE payload rejected:", parsedApprovePhase.error.message);
+            return;
+          }
+          const planPath = projectPlanFilePath(root);
+          const currentPlan = readPlan(planPath);
+          if (!currentPlan) {
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            return;
+          }
+          const updatedPlan = approvePhase(currentPlan, parsedApprovePhase.data.phaseId);
+          writePlan(planPath, updatedPlan);
+          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: updatedPlan });
+        } else if (message.type === MSG.OVERRIDE_TASK) {
+          const root = this._projectRoot();
+          if (root === "" || !readProjectPlanEnabled(root)) {
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            return;
+          }
+          const parsedOverrideTask = MSG_SCHEMAS.OVERRIDE_TASK.safeParse(message);
+          if (!parsedOverrideTask.success) {
+            console.error("TycoonAgents: OVERRIDE_TASK payload rejected:", parsedOverrideTask.error.message);
+            return;
+          }
+          const planPath = projectPlanFilePath(root);
+          const currentPlan = readPlan(planPath);
+          if (!currentPlan) {
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            return;
+          }
+          const updatedPlan = overrideTask(
+            currentPlan,
+            parsedOverrideTask.data.taskId,
+            parsedOverrideTask.data.action
+          );
+          writePlan(planPath, updatedPlan);
+          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: updatedPlan });
         }
       },
       null,

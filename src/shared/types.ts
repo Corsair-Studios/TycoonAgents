@@ -164,3 +164,53 @@ export interface WorldState {
     resolve: number; // HP
   }>;
 }
+
+// ============================================================================
+// PROJECT PLAN (optional, opt-in): PHASES containing TASKS, approved/retried
+// by the user. A skill built separately drives execution; the extension only
+// defines the data model, pure state-transition logic, and plan.json I/O —
+// zero runtime AI calls happen here. See src/host/vscode/projectPlan.ts.
+// ============================================================================
+
+export type PlanTaskStatus =
+  | 'pending'
+  | 'active'
+  | 'verifying'
+  | 'done'
+  | 'needs_fix'
+  | 'skipped'
+  | 'blocked';
+
+export type PlanTaskApproval = 'pending' | 'approved' | 'retry';
+
+export interface PlanTask {
+  id: string;
+  phaseId: string;
+  title: string;
+  detail: string;
+  agents?: string[];
+  acceptanceCriteria: string[];
+  dependsOn?: string[];
+  status: PlanTaskStatus;
+  verifyAttempts: number;
+  approval?: PlanTaskApproval;
+  notes?: string;
+}
+
+export interface PlanPhase {
+  id: string;
+  num: number;
+  name: string;
+  goal: string;
+  gate: 'pending' | 'approved';
+  taskIds: string[];
+}
+
+export interface ProjectPlan {
+  version: number;
+  title: string;
+  phases: PlanPhase[];
+  tasks: PlanTask[];
+  currentPhaseId: string | null;
+  currentTaskId: string | null;
+}

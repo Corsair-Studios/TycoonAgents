@@ -2,6 +2,8 @@
 
 # <Project Title> — Milestone Plan
 
+> This document's structure is consumed by the TycoonAgents `project-plan` skill: each Milestone becomes a phase, and each Deliverable becomes a task. Keep Deliverables discrete (one per task) and give each clear, checkable Acceptance Criteria.
+
 ## Overview
 
 > *One paragraph: what this plan covers and the target timeframe, if known.*

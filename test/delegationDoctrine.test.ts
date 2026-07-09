@@ -147,3 +147,52 @@ test("readExecutionConfig tolerates invalid JSON by falling back to the default"
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// writeExecutionConfig merge-safety (execution.json is shared with panel.ts's
+// projectPlanEnabled flag; writeExecutionConfig must not clobber sibling keys)
+// ---------------------------------------------------------------------------
+
+test("writeExecutionConfig preserves an unrelated key (e.g. projectPlanEnabled) already on disk", () => {
+  const root = tmpRoot();
+  try {
+    const claudeDir = path.join(root, ".claude");
+    const configPath = path.join(claudeDir, "tycoon", "execution.json");
+
+    // Simulate panel.ts's writeProjectPlanEnabled having already written the file.
+    writeExecutionConfig(claudeDir, { delegation_mode: "flat" });
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const before = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    fs.writeFileSync(configPath, JSON.stringify({ ...before, projectPlanEnabled: true }, null, 2));
+
+    // Now writeExecutionConfig sets a new delegation_mode; projectPlanEnabled must survive.
+    writeExecutionConfig(claudeDir, { delegation_mode: "team_leads" });
+
+    const onDisk = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    assert.deepEqual(onDisk, { delegation_mode: "team_leads", projectPlanEnabled: true });
+
+    const config = readExecutionConfig(claudeDir);
+    assert.deepEqual(config, { delegation_mode: "team_leads" });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("writeExecutionConfig then a raw projectPlanEnabled write then readExecutionConfig: both keys present on disk", () => {
+  const root = tmpRoot();
+  try {
+    const claudeDir = path.join(root, ".claude");
+    const configPath = path.join(claudeDir, "tycoon", "execution.json");
+
+    writeExecutionConfig(claudeDir, { delegation_mode: "team_leads" });
+
+    const existing = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    fs.writeFileSync(configPath, JSON.stringify({ ...existing, projectPlanEnabled: true }, null, 2));
+
+    const onDisk = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    assert.equal(onDisk.delegation_mode, "team_leads");
+    assert.equal(onDisk.projectPlanEnabled, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

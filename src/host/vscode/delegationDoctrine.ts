@@ -191,12 +191,27 @@ export function readExecutionConfig(claudeDirPath: string): ExecutionConfig {
 /**
  * Write `.claude/tycoon/execution.json`, creating the `.claude/tycoon`
  * directory if it doesn't exist yet.
+ *
+ * NOTE: this file is shared with panel.ts's `projectPlanEnabled` flag (see
+ * `writeProjectPlanEnabled`), so this performs a read-modify-write merge —
+ * `config` is spread over whatever is already on disk — rather than
+ * overwriting the whole file. A missing/unreadable/corrupt existing file is
+ * treated as `{}`.
  */
 export function writeExecutionConfig(
   claudeDirPath: string,
   config: ExecutionConfig
 ): void {
   const configPath = executionConfigPath(claudeDirPath);
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (parsed !== null && typeof parsed === "object") {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Missing file, missing dir, invalid JSON, etc. -> merge onto {}.
+  }
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  fs.writeFileSync(configPath, JSON.stringify({ ...existing, ...config }, null, 2));
 }
