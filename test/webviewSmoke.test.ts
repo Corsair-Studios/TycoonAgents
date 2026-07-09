@@ -77,7 +77,11 @@ const RUNTIME_CREATED_IDS = new Set([
 // ── Fake 2D canvas context ──────────────────────────────────────────────────
 // A robust no-op context: every method is a no-op, settable props are accepted,
 // and the handful of methods whose RETURN value main.js reads give sane stubs.
-function makeCtxStub(canvasEl: unknown): unknown {
+// Optional `drawLog`: when provided, every ctx.drawImage(...) call's raw args
+// are pushed onto it — lets a test assert on drawn sizes (dWidth/dHeight)
+// without exposing any of main.js's internal closures. Unused by the main
+// boot test below (only the object-scale composition test opts in).
+function makeCtxStub(canvasEl: unknown, drawLog?: unknown[][]): unknown {
   const gradient = { addColorStop() {} };
   const target: Record<string, unknown> = {
     canvas: canvasEl,
@@ -93,6 +97,11 @@ function makeCtxStub(canvasEl: unknown): unknown {
       data: new Uint8ClampedArray(Math.max(1, (w || 1) * (h || 1)) * 4),
     }),
   };
+  if (drawLog) {
+    target.drawImage = (...args: unknown[]) => {
+      drawLog.push(args);
+    };
+  }
   return new Proxy(target, {
     get(t, prop: string) {
       if (prop in t) return t[prop];
@@ -590,4 +599,271 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
     process.removeListener('unhandledRejection', onRejection);
     dom.window.close();
   }
+});
+
+// ── Object-scale composition regression (crate constant-size + global slider
+// multiplying per-object overrides instead of being replaced by them) ───────
+//
+// effectiveObjScale/crateSize live inside main.js's closure with no exported
+// hook, so these two bugs are asserted the same way the rest of this file
+// asserts behavior: boot main.js for real, drive it through actual message
+// dispatch / DOM events, and read back what it actually drew via ctx.drawImage
+// call args (dWidth) — recorded through makeCtxStub's optional drawLog.
+//
+// Distinct Image `src` values per sprite key let a test tell a crate draw
+// apart from a buildable-object-art draw in the recorded call log.
+const OBJ_SCALE_PX = {
+  bg: 'data:obj-scale-fixture,bg',
+  crate: 'data:obj-scale-fixture,crate',
+  o1: 'data:obj-scale-fixture,o1',
+  o2: 'data:obj-scale-fixture,o2',
+};
+
+function buildObjScaleThemePayload(objectScale: number, overrides: Record<string, number>, objectIds: string[]) {
+  const buildable_objects = objectIds.map((id, i) => ({
+    object_id: id,
+    display_name: id,
+    build_order: i,
+    anchor_coord: [0.5, 0.5],
+  }));
+  const frames: Record<string, string[]> = {
+    environment_background: [OBJ_SCALE_PX.bg],
+    crate: [OBJ_SCALE_PX.crate, OBJ_SCALE_PX.crate],
+    poof: [OBJ_SCALE_PX.crate, OBJ_SCALE_PX.crate],
+  };
+  for (const id of objectIds) frames[`object_${id}`] = [(OBJ_SCALE_PX as any)[id]];
+  return {
+    type: 'THEME_INITIALIZED',
+    payload: {
+      theme_id: 'obj_scale_fixture',
+      manifest: {
+        theme_id: 'obj_scale_fixture',
+        viewport: {
+          native_width: 1280,
+          native_height: 720,
+          walkable_nav_polygon: [[0.1, 0.6], [0.9, 0.6], [0.9, 0.95], [0.1, 0.95]],
+          object_scale: objectScale,
+          object_scale_overrides: overrides,
+          crate_asset: 'frames.json#crate',
+          poof_asset: 'frames.json#poof',
+        },
+        roster_agents: [],
+        roster_rivals: [],
+        buildable_objects,
+        decor_objects: [],
+        badges: [],
+      },
+      frames,
+      badges: [],
+      unlocked_badge_ids: [],
+    },
+  };
+}
+
+// Minimal boot harness (no agent-roster / rebirth wiring needed here) that
+// records every ctx.drawImage call's dWidth so a test can inspect drawn
+// sprite sizes without reaching into main.js's private closures.
+async function bootObjScaleHarness() {
+  const src = readFileSync(MAIN_JS_PATH, 'utf8');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+    url: 'https://webview.local/',
+  });
+  const win: any = dom.window;
+  const doc = win.document;
+
+  const ids = scanElementIds(src);
+  for (const id of ids) {
+    if (RUNTIME_CREATED_IDS.has(id)) continue;
+    if (doc.getElementById(id)) continue;
+    const el = doc.createElement(tagForId(id));
+    el.id = id;
+    doc.body.appendChild(el);
+  }
+  let stage = doc.getElementById('stage');
+  if (!stage || stage.tagName.toLowerCase() !== 'canvas') {
+    if (stage) stage.remove();
+    stage = doc.createElement('canvas');
+    stage.id = 'stage';
+    doc.body.appendChild(stage);
+  }
+  stage.width = 1066;
+  stage.height = 760;
+
+  win.acquireVsCodeApi = () => ({
+    postMessage: () => {},
+    getState: () => ({}),
+    setState: () => {},
+  });
+
+  const rafQueue: Array<(ts: number) => void> = [];
+  win.requestAnimationFrame = (cb: (ts: number) => void) => {
+    rafQueue.push(cb);
+    return rafQueue.length;
+  };
+  win.cancelAnimationFrame = () => {};
+  win.Image = makeFakeImage(win);
+
+  const drawLog: unknown[][] = [];
+  win.HTMLCanvasElement.prototype.getContext = function (this: any) {
+    if (!this.__ctxStub) this.__ctxStub = makeCtxStub(this, drawLog);
+    return this.__ctxStub;
+  };
+  win.HTMLCanvasElement.prototype.toDataURL = function () {
+    return OBJ_SCALE_PX.bg;
+  };
+
+  const errors: any[] = [];
+  win.addEventListener('error', (e: any) => {
+    errors.push(e && (e.error || e.message) ? e.error || e.message : e);
+  });
+  win.onerror = (msg: any, _s: any, _l: any, _c: any, err: any) => errors.push(err || msg);
+
+  vm.runInContext(src, dom.getInternalVMContext(), { filename: 'media/main.js' });
+
+  async function flush() {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  }
+  let rafTs = 0;
+  function tick(n: number) {
+    for (let i = 0; i < n; i++) {
+      const cbs = rafQueue.splice(0);
+      rafTs += 16;
+      for (const cb of cbs) {
+        try {
+          cb(rafTs);
+        } catch (e) {
+          errors.push(e);
+        }
+      }
+    }
+  }
+  function dispatch(data: any) {
+    win.dispatchEvent(new win.MessageEvent('message', { data }));
+  }
+
+  await flush();
+  return { win, doc, dispatch, tick, flush, drawLog, errors };
+}
+
+// Last drawImage call whose image src matches `src`, or undefined. main.js
+// calls ctx.drawImage(img, dx, dy, dWidth, dHeight) everywhere relevant here.
+function lastDrawWidth(drawLog: unknown[][], src: string): number | undefined {
+  for (let i = drawLog.length - 1; i >= 0; i--) {
+    const args = drawLog[i] as any[];
+    if (args[0] && args[0].src === src) return args[3] as number;
+  }
+  return undefined;
+}
+
+// Count of drawImage calls in a drawLog SLICE (see slice()) whose image src
+// matches `src`. Used to tell a per-frame render draw (recurs every tick)
+// apart from the one-time image-preload/defringe pass (main.js samples each
+// decoded sprite once via an offscreen canvas), which also calls drawImage
+// and would otherwise be indistinguishable from a "real" render by src alone.
+function countDraws(drawLog: unknown[][], src: string): number {
+  let n = 0;
+  for (const args of drawLog as any[][]) {
+    if (args[0] && args[0].src === src) n++;
+  }
+  return n;
+}
+
+test('crate size ignores the target object\'s per-object scale override', async () => {
+  // Single buildable object -> it is unambiguously buildQueue[0] (active),
+  // so every frame draws the crate, never the final object art. Same
+  // anchor_coord + canvas size across runs => identical depthScale, so crate
+  // width is directly comparable between runs.
+  const runs: Record<string, number> = {};
+  for (const [label, objectScale, overrides] of [
+    ['globalOnly', 2, {}],
+    ['withBigOverride', 2, { o1: 3 }], // legacy-absolute override, same global
+    ['halfGlobal', 1, {}],
+  ] as [string, number, Record<string, number>][]) {
+    const h = await bootObjScaleHarness();
+    h.dispatch(buildObjScaleThemePayload(objectScale, overrides, ['o1']));
+    await h.flush();
+    h.tick(3);
+    assert.equal(h.errors.length, 0, `[${label}] threw: ${h.errors.map(String).join('; ')}`);
+    const w = lastDrawWidth(h.drawLog, OBJ_SCALE_PX.crate);
+    assert.ok(typeof w === 'number' && w > 0, `[${label}] crate should have been drawn`);
+    runs[label] = w as number;
+    h.win.close();
+  }
+  assert.equal(
+    runs.globalOnly,
+    runs.withBigOverride,
+    `crate width must ignore the per-object override (global-only=${runs.globalOnly}, with 3x override=${runs.withBigOverride})`
+  );
+  assert.ok(
+    Math.abs(runs.globalOnly - 2 * runs.halfGlobal) <= 1,
+    `crate width must still track the GLOBAL object-scale slider (global=2 -> ${runs.globalOnly}, global=1 -> ${runs.halfGlobal})`
+  );
+});
+
+test('global "Object scale" slider visibly scales an object that already has a per-object override', async () => {
+  // Two objects: whichever the seeded build queue picks first renders as the
+  // crate (active) every frame; the other is "unbuilt" and, once edit-stage
+  // mode is entered, falls through to idle-art rendering at
+  // effectiveObjScale every frame. This test doesn't hardcode which is which
+  // — it identifies the per-frame-drawn "idle" object from a drawLog SLICE
+  // covering only the edit-stage-mode ticks: the image-preload/defringe pass
+  // draws each object's art exactly ONCE (during initial load, before this
+  // slice), so within the slice the truly-idle object is the one with
+  // draws > 0 and the active (crate-only) object has draws === 0 for its
+  // own object_ art.
+  const h = await bootObjScaleHarness();
+  h.dispatch(buildObjScaleThemePayload(1, { o1: 2, o2: 0.5 }, ['o1', 'o2']));
+  await h.flush();
+  h.tick(2);
+  assert.equal(h.errors.length, 0, `boot threw: ${h.errors.map(String).join('; ')}`);
+
+  const editBtn = h.doc.getElementById('menu-edit-stage');
+  assert.ok(editBtn, 'menu-edit-stage should have been injected');
+  editBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const markerA = h.drawLog.length;
+  h.tick(2);
+  const sliceAB = h.drawLog.slice(markerA);
+
+  const o1Draws = countDraws(sliceAB, OBJ_SCALE_PX.o1);
+  const o2Draws = countDraws(sliceAB, OBJ_SCALE_PX.o2);
+  assert.ok(
+    (o1Draws > 0) !== (o2Draws > 0),
+    `exactly one object should render idle art per-frame in edit-stage mode (o1Draws=${o1Draws}, o2Draws=${o2Draws})`
+  );
+  const idleSrc = o1Draws > 0 ? OBJ_SCALE_PX.o1 : OBJ_SCALE_PX.o2;
+
+  const crateW1 = lastDrawWidth(sliceAB, OBJ_SCALE_PX.crate);
+  const idleW1 = lastDrawWidth(sliceAB, idleSrc);
+  assert.ok(typeof crateW1 === 'number' && crateW1 > 0, 'crate should be drawn at global=1');
+  assert.ok(typeof idleW1 === 'number' && idleW1 > 0, 'the non-active object should render idle art in edit-stage mode');
+
+  // Simulate the real user drag: move the global "Object scale" slider.
+  const os = h.doc.getElementById('se-os');
+  assert.ok(os, 'se-os (global object-scale slider) should exist');
+  os.value = '2';
+  os.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+  const markerB = h.drawLog.length;
+  h.tick(2);
+  const sliceBC = h.drawLog.slice(markerB);
+
+  const crateW2 = lastDrawWidth(sliceBC, OBJ_SCALE_PX.crate);
+  const idleW2 = lastDrawWidth(sliceBC, idleSrc);
+  assert.ok(typeof crateW2 === 'number', 'crate should still be drawn after the global slider moves');
+  assert.ok(typeof idleW2 === 'number', 'idle object should still be drawn after the global slider moves');
+  const crateRatio = (crateW2 as number) / (crateW1 as number);
+  const idleRatio = (idleW2 as number) / (idleW1 as number);
+  assert.ok(
+    Math.abs(crateRatio - 2) < 0.15,
+    `crate width should ~double when the global slider doubles (ratio=${crateRatio})`
+  );
+  // This is the actual regression: previously an object WITH an override
+  // ignored the global slider entirely (ratio would stay ~1.0).
+  assert.ok(
+    Math.abs(idleRatio - 2) < 0.15,
+    `overridden object's width should ~double when the global slider doubles, proving the ` +
+    `global slider is no longer replaced by the per-object override (ratio=${idleRatio})`
+  );
+  h.win.close();
 });

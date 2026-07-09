@@ -2985,10 +2985,24 @@
   const SIT_SECONDS = 12;
   /** How close (native px) to a seat's sit-point before the agent is "seated". */
   const SIT_ARRIVED_EPS = 4;
-  /** Effective object scale for a given buildable object id. */
+  /**
+   * Effective object scale for a given buildable object id: the GLOBAL
+   * "Object scale" slider (themeObjectScale) composed MULTIPLICATIVELY with
+   * an optional per-object override (treated as a multiplier on top of the
+   * global, defaulting to 1 = "no adjustment" when absent).
+   *
+   * Previously a present override REPLACED the global outright, so any
+   * object WITHOUT an override was the only one that tracked the global
+   * slider — reported as "the scale-objects slider only affects one object."
+   * Legacy saved overrides (pre-this-fix) were absolute final scales; they
+   * are migrated to multipliers once at theme load (divided by the
+   * then-current global) so existing stage tunings render unchanged the
+   * moment they're loaded — see the THEME_INITIALIZED handler.
+   */
   function effectiveObjScale(objId) {
     const o = themeObjScaleOverrides[objId];
-    return (typeof o === "number" && o > 0) ? o : themeObjectScale;
+    const mult = (typeof o === "number" && o > 0) ? o : 1;
+    return themeObjectScale * mult;
   }
   /** Native build-progress units one completed coding task contributes. Tunable. */
   const UNITS_PER_TASK = 34;
@@ -3897,7 +3911,10 @@
   }
   function syncObjOverrideSlider() {
     const ov = themeObjScaleOverrides[editSelectedObjId];
-    stageEditEls.oo.value = String(typeof ov === "number" && ov > 0 ? ov : themeObjectScale);
+    // Overrides now compose as a multiplier on top of the global "Object
+    // scale" slider (see effectiveObjScale), so the neutral/no-override
+    // starting position is 1 — not the current global value.
+    stageEditEls.oo.value = String(typeof ov === "number" && ov > 0 ? ov : 1);
   }
   function syncRivalOverrideSlider() {
     const ov = themeRivalScaleOverrides[editSelectedRivalId];
@@ -4502,6 +4519,17 @@
 
     const objId = obj.object_id;
     const baseSize = Math.round(64 * depthScale * effectiveObjScale(objId));
+    // The pre-build CRATE has ONE constant default size, unaffected by the
+    // target object's PER-OBJECT scale override (Stage Editor per-object
+    // scales go up to 3x — without this split, a crate at a heavily-scaled
+    // site would balloon/shrink to match the object it's about to become).
+    // depthScale/sceneFitScale (folded into depthScale by the caller) stay —
+    // those are spatial correctness, not per-object styling. The GLOBAL
+    // "Object scale" slider (themeObjectScale) still applies: it's treated
+    // the same as every other global scale knob (theme-wide, not per-site),
+    // so a user dialing all objects up/down plausibly wants crates to follow
+    // suit. Only the per-object override is dropped from the crate's size.
+    const crateSize = Math.round(64 * depthScale * themeObjectScale);
 
     if (entry.phase === "active") {
       const crateSlots = themeImages.crate;
@@ -4513,15 +4541,17 @@
         if (crateImg && !crateImg.complete) bootFrameSpritePending = true;
         return;
       }
-      ctx.drawImage(crateImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+      ctx.drawImage(crateImg, cx - crateSize / 2, cy - crateSize, crateSize, crateSize);
       // Change 2: progress/health bar for the ACTIVE crate — since the build
       // queue guarantees exactly one active object at a time, this bar is
       // always visible while building. Clamp barY so it never clips off the
       // top of the canvas (e.g. tall objects near the top of the stage).
-      const barW = Math.max(24, baseSize * 0.9);
+      // Sized off crateSize (matches the crate actually drawn above), not
+      // the per-object baseSize.
+      const barW = Math.max(24, crateSize * 0.9);
       const barH = 6;
       const barX = cx - barW / 2;
-      const barY = Math.max(2, cy - baseSize - 14);
+      const barY = Math.max(2, cy - crateSize - 14);
       ctx.save();
       // Background track.
       ctx.fillStyle = "rgba(0,0,0,0.55)";
@@ -5376,7 +5406,26 @@
         themeObjectScale = (vp && typeof vp.object_scale === "number" && vp.object_scale > 0) ? vp.object_scale : 1;
         themeOverallScale = (vp && typeof vp.overall_scale === "number" && vp.overall_scale > 0) ? vp.overall_scale : 1;
         themeCharScaleOverrides = (vp && vp.character_scale_overrides && typeof vp.character_scale_overrides === "object") ? vp.character_scale_overrides : {};
-        themeObjScaleOverrides = (vp && vp.object_scale_overrides && typeof vp.object_scale_overrides === "object") ? vp.object_scale_overrides : {};
+        // Per-object overrides used to be ABSOLUTE final scales that REPLACED
+        // themeObjectScale entirely (see effectiveObjScale's history above).
+        // Now they compose as a MULTIPLIER on top of the global. Migrate
+        // once, here, at load: object_scale + object_scale_overrides are
+        // always saved together (saveStageTuning), so themeObjectScale
+        // (just set above) is exactly the global value that was in effect
+        // when each override was captured — dividing it back out is the
+        // least-surprising mapping, since as long as the global slider isn't
+        // touched after load, effectiveObjScale reproduces the pre-migration
+        // rendered size exactly: global * (savedOverride / global) ===
+        // savedOverride. Moving the global slider afterwards then visibly
+        // scales every object, including ones with an override (the fix).
+        {
+          const rawObjOverrides = (vp && vp.object_scale_overrides && typeof vp.object_scale_overrides === "object") ? vp.object_scale_overrides : {};
+          themeObjScaleOverrides = {};
+          for (const k of Object.keys(rawObjOverrides)) {
+            const v = rawObjOverrides[k];
+            if (typeof v === "number" && v > 0) themeObjScaleOverrides[k] = v / themeObjectScale;
+          }
+        }
         themeRivalScale = (vp && typeof vp.rival_scale === "number" && vp.rival_scale > 0) ? vp.rival_scale : 1;
         themeRivalScaleOverrides = (vp && vp.rival_scale_overrides && typeof vp.rival_scale_overrides === "object") ? Object.assign({}, vp.rival_scale_overrides) : {};
         themeDecorScale = (vp && typeof vp.decor_scale === "number" && vp.decor_scale > 0) ? vp.decor_scale : DECOR_SCALE;
@@ -8671,20 +8720,23 @@
     // Resolve standoff target (native space) for active-build agents.
     const activeBuildPlacement = activeBuildObj ? objectPlacement[activeBuildObj.object_id] : null;
     // Standoff radius: an explicit per-object exclusion_radius (manifest)
-    // wins; otherwise derive one from the object's OWN rendered size (same
-    // 64 * effectiveObjScale baseSize formula drawBuildableObject uses,
-    // converted from canvas px to native px) plus a small margin, so a
-    // bigger-scaled object gets a proportionally bigger stand-back distance
-    // instead of a flat guess that's too small for large objects (agents
-    // overlapping it) or too large for small ones. Objects have NO collision
-    // — this is purely a "stand a bit back" distance, not physics.
+    // wins; otherwise derive one from the ACTIVE object's own rendered size
+    // — while active, what's actually on screen is the crate (constant
+    // default size, GLOBAL object-scale only — see drawBuildableObject's
+    // crateSize), not the per-object-scaled final art, so this mirrors that
+    // same "64 * depthScale * themeObjectScale" formula (depthScale folded
+    // in via nativeScale below) plus a small margin. A bigger-scaled object
+    // gets a proportionally bigger stand-back distance once it's built, but
+    // while it's still a crate every site gets the same crate-sized standoff.
+    // Objects have NO collision — this is purely a "stand a bit back"
+    // distance, not physics.
     const BUILD_STANDOFF_MARGIN_NATIVE = 8;
     const activeBuildExclusionR = (() => {
       if (!activeBuildObj) return 48;
       if (typeof activeBuildObj.exclusion_radius === "number" && activeBuildObj.exclusion_radius > 0) {
         return activeBuildObj.exclusion_radius;
       }
-      const objBaseSizeCanvas = 64 * effectiveObjScale(activeBuildObj.object_id);
+      const objBaseSizeCanvas = 64 * themeObjectScale;
       const nativeScale = bgW > 0 ? (bgW / walkableNativeW) : 1;
       const objectRadiusNative = (objBaseSizeCanvas / 2) / nativeScale;
       return objectRadiusNative + BUILD_STANDOFF_MARGIN_NATIVE;
