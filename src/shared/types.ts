@@ -42,6 +42,11 @@ export interface ViewportConfig {
   // DecorObject.decor_id -> true when that decor (and any character seated in it)
   // is mirrored horizontally. Absent/false = not flipped. Survives regeneration.
   decor_flip_overrides?: Record<string, boolean>;
+  // Per-buildable horizontal-flip overrides set in the Stage Editor. Keyed by
+  // BuildableObject.object_id -> true when that object's built art is mirrored
+  // horizontally. Absent/false = not flipped. Survives regeneration. Buildables
+  // are never sittable, so this never interacts with seat-alignment math.
+  object_flip_overrides?: Record<string, boolean>;
   overall_scale?: number;
   projectile_asset?: string;
   enemy_config?: EnemyConfig;

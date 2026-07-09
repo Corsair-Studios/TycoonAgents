@@ -2928,6 +2928,8 @@
   let themeDecorAnchorOverrides = {};
   /** Stage-Editor horizontal-flip overrides, decor_id -> true when flipped. Loaded from manifest.viewport.decor_flip_overrides. */
   let themeDecorFlipOverrides = {};
+  /** Stage-Editor horizontal-flip overrides, object_id -> true when flipped. Loaded from manifest.viewport.object_flip_overrides. */
+  let themeObjFlipOverrides = {};
 
   // ── Background Decor + Sitting ──────────────────────────────────────────
   /** Decor objects from manifest.decor_objects (read-only). @type {Array<object>} */
@@ -3378,7 +3380,7 @@
   let dragObjectId = null;
   /** Type of the dragged scene object: "buildable" | "decor" | null. */
   let dragObjectType = null;
-  /** Type of the scene object currently under the cursor (hover, not drag): "buildable" | "decor" | null. Used by the F-to-flip decor shortcut. */
+  /** Type of the scene object currently under the cursor (hover, not drag): "buildable" | "decor" | null. Drives the cursor style only (F-flip targets the click/dropdown SELECTION — see editFlipTargetKind — not hover). */
   let hoverSceneObjType = null;
   /** Id of the scene object currently under the cursor (hover, not drag), or null. */
   let hoverSceneObjId = null;
@@ -3392,6 +3394,15 @@
   let editSelectedRivalId = "";
   /** Decor decor_id selected in the per-decor override control. */
   let editSelectedDecorId = "";
+  /**
+   * Which kind of item the F-flip hotkey targets: "buildable" | "decor" | null.
+   * This is the same "current item" concept the scale sliders act on
+   * (editSelectedObjId/editSelectedDecorId) — set whenever the user picks an
+   * item, either by clicking it on the canvas (which also drives a drag) or
+   * via the per-object/per-decor override dropdown. null means nothing is
+   * currently selected, so F is a no-op.
+   */
+  let editFlipTargetKind = null;
 
   // ── Stage loading progress (a bar replaces placeholders while loading) ────
   const LOADING_TIMEOUT_MS = 6000;
@@ -3577,6 +3588,9 @@
     if (hit) {
       dragObjectType = hit.type;
       dragObjectId = hit.id;
+      // Clicking/dragging an item also makes it the F-flip hotkey's target —
+      // same "current item" concept the scale sliders use.
+      editFlipTargetKind = hit.type;
       // Auto-select the picked object/decor in its per-item override control
       // so the scale slider you'd want next is already pointed at it.
       if (hit.type === "buildable" && stageEditEls.obj) {
@@ -3773,7 +3787,7 @@
           '<div class="se-sublabel">Enemy count mode</div>' +
           '<select id="se-ecm" class="se-select"><option value="random">random</option><option value="all">all</option></select>' +
         '</div>' +
-        '<div id="se-hint" class="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide) · hover decor + F to flip</div>' +
+        '<div id="se-hint" class="se-hint">Polygon: drag points · dbl-click edge to add · right-click to remove.<br>Objects/decor: drag to move · right-click to reset (decor: hide) · select/drag + F to flip</div>' +
       '</div>' +
       '<div class="se-footer">' +
         '<button id="se-save" class="se-btn se-btn-primary" type="button">Save</button>' +
@@ -3853,6 +3867,7 @@
     });
     stageEditEls.obj.addEventListener("change", () => {
       editSelectedObjId = stageEditEls.obj.value;
+      editFlipTargetKind = "buildable";
       syncObjOverrideSlider();
     });
     stageEditEls.oo.addEventListener("input", () => {
@@ -3885,6 +3900,7 @@
     });
     stageEditEls.decor.addEventListener("change", () => {
       editSelectedDecorId = stageEditEls.decor.value;
+      editFlipTargetKind = "decor";
       syncDecorOverrideSlider();
     });
     stageEditEls.do_.addEventListener("input", () => {
@@ -3928,6 +3944,8 @@
     if (!themeLoaded) return;
     buildStageEditPanel();
     editStageMode = true;
+    // No item is selected yet — F is a no-op until the user picks one.
+    editFlipTargetKind = null;
     // Build the per-character override list strictly from the playable roster
     // (manifest.roster_agents), keyed "agent_"+slot_id to match effectiveCharScale/
     // themeImages. Never fall back to Object.keys(themeImages) — that set also
@@ -4015,6 +4033,7 @@
     dragObjectType = null;
     hoverSceneObjType = null;
     hoverSceneObjId = null;
+    editFlipTargetKind = null;
     canvas.style.cursor = "default";
     if (stageEditPanel) stageEditPanel.setAttribute("hidden", "");
   }
@@ -4046,6 +4065,16 @@
     for (const k of Object.keys(themeDecorScaleOverrides)) {
       if (validDecorIds.has(k)) prunedDecorScaleOverrides[k] = themeDecorScaleOverrides[k];
     }
+    // Same pruning for the F-flip overrides: only keys for items that still
+    // exist in the current theme are worth persisting.
+    const prunedObjFlipOverrides = {};
+    for (const k of Object.keys(themeObjFlipOverrides)) {
+      if (validObjIds.has(k)) prunedObjFlipOverrides[k] = themeObjFlipOverrides[k];
+    }
+    const prunedDecorFlipOverrides = {};
+    for (const k of Object.keys(themeDecorFlipOverrides)) {
+      if (validDecorIds.has(k)) prunedDecorFlipOverrides[k] = themeDecorFlipOverrides[k];
+    }
     vscode.postMessage({
       type: "SAVE_STAGE_TUNING",
       payload: {
@@ -4062,7 +4091,8 @@
         decor_scale_overrides: prunedDecorScaleOverrides,
         object_anchor_overrides: themeObjAnchorOverrides,
         decor_anchor_overrides: themeDecorAnchorOverrides,
-        decor_flip_overrides: themeDecorFlipOverrides,
+        object_flip_overrides: prunedObjFlipOverrides,
+        decor_flip_overrides: prunedDecorFlipOverrides,
         enemy_config: {
           spawn_interval_seconds: enemySpawnIntervalSec,
           count_mode: enemyCountMode,
@@ -4092,12 +4122,28 @@
   // Escape exits the stage editor.
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && editStageMode) exitEditStage();
-    // F toggles a horizontal-flip override on the hovered decor (Stage
-    // Editor only). Never hijacks F outside edit mode or off a decor hover.
-    if ((e.key === "f" || e.key === "F") && editStageMode && hoverSceneObjType === "decor" && hoverSceneObjId) {
-      if (themeDecorFlipOverrides[hoverSceneObjId]) delete themeDecorFlipOverrides[hoverSceneObjId];
-      else themeDecorFlipOverrides[hoverSceneObjId] = true;
-      e.preventDefault();
+    // F flips the CURRENT Edit-Stage selection horizontally — the same
+    // buildable/decor "current item" the per-object/per-decor scale sliders
+    // act on (editSelectedObjId/editSelectedDecorId, tracked via
+    // editFlipTargetKind), including one that's mid-drag. Never hijacks F
+    // outside edit mode, off a text input (mirrors the debug-hotkey guard
+    // below), or when nothing is selected.
+    if ((e.key === "f" || e.key === "F") && editStageMode) {
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      const kind = dragObjectId ? dragObjectType : editFlipTargetKind;
+      const id = dragObjectId
+        ? dragObjectId
+        : kind === "buildable" ? editSelectedObjId : kind === "decor" ? editSelectedDecorId : null;
+      if (kind === "buildable" && id) {
+        if (themeObjFlipOverrides[id]) delete themeObjFlipOverrides[id];
+        else themeObjFlipOverrides[id] = true;
+        e.preventDefault();
+      } else if (kind === "decor" && id) {
+        if (themeDecorFlipOverrides[id]) delete themeDecorFlipOverrides[id];
+        else themeDecorFlipOverrides[id] = true;
+        e.preventDefault();
+      }
     }
   });
 
@@ -4581,7 +4627,19 @@
       const slotIdx = entry.animState ? currentObjectSlot(entry.animState) : 0;
       const objImg = objSlots ? objSlots[slotIdx] : null;
       if (objImg && objImg.complete && objImg.naturalWidth > 0) {
-        ctx.drawImage(objImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+        if (themeObjFlipOverrides && themeObjFlipOverrides[objId]) {
+          // Same mirror pattern as drawDecor/character flip: translate to the
+          // right edge of the target box, scale(-1,1), then draw with local
+          // x=0 so the mirrored sprite lands in the identical on-screen box
+          // (flip is around the sprite's own vertical centerline, not cx).
+          ctx.save();
+          ctx.translate(cx + baseSize / 2, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(objImg, 0, cy - baseSize, baseSize, baseSize);
+          ctx.restore();
+        } else {
+          ctx.drawImage(objImg, cx - baseSize / 2, cy - baseSize, baseSize, baseSize);
+        }
       } else if (objImg && !objImg.complete) {
         // Object art still decoding — draw nothing (pops in when ready) and
         // keep the boot loader opaque. Permanently missing art also renders
@@ -5539,6 +5597,8 @@
           ? Object.assign({}, vp.decor_anchor_overrides) : {};
         themeDecorFlipOverrides = (vp && typeof vp.decor_flip_overrides === "object" && vp.decor_flip_overrides)
           ? Object.assign({}, vp.decor_flip_overrides) : {};
+        themeObjFlipOverrides = (vp && typeof vp.object_flip_overrides === "object" && vp.object_flip_overrides)
+          ? Object.assign({}, vp.object_flip_overrides) : {};
         objectPlacement = {};
         objectHomePlacement = {};
         if (themeBuildables.length > 0) {
@@ -7907,8 +7967,7 @@
     if (!activeObjId) return; // all built
     // Incremental RATE stays gated: enemies, conga, and "no builder" pause the
     // per-frame advance. The >=1 completion check is NOT gated here — it runs
-    // unconditionally in completeBuildIfReady() (called every frame), so a
-    // fast-forward (F hotkey) that pushes progress past 1 always poofs/advances.
+    // unconditionally in completeBuildIfReady() (called every frame).
     if (enemiesAlive) return; // enemy preemption pauses building
     if (congaActive) return; // conga easter-egg pauses building (like enemies)
     if (buildProgressBuilderCount <= 0) return; // no one actively building right now
@@ -7924,10 +7983,9 @@
   }
 
   /**
-   * Ungated completion check: whenever buildCurrentProgress has reached 1 (via
-   * normal building OR the F fast-forward hotkey), transition the active object
-   * to POOF (or advance directly if no poof art). Runs every frame regardless
-   * of enemy/conga/builder gating so F reliably completes an object.
+   * Ungated completion check: whenever buildCurrentProgress has reached 1,
+   * transition the active object to POOF (or advance directly if no poof
+   * art). Runs every frame regardless of enemy/conga/builder gating.
    */
   function completeBuildIfReady() {
     if (buildQueue.length === 0) return;
@@ -8195,7 +8253,9 @@
     charEntry.sitTimeLeft = 0;
   }
 
-  // debug hotkeys: c=conga, f=fast-forward build
+  // debug hotkey: c=conga (the former f=fast-forward-build debug instabuild
+  // hotkey was removed — F is now the Edit-Stage flip shortcut above; the
+  // poof/build flow it used to shortcut is confirmed working on its own).
   document.addEventListener("keydown", (e) => {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -8205,14 +8265,6 @@
       if (congaActive) return;
       if (lastAgentList.length < 1) return;
       startConga(lastAgentList);
-    } else if (key === "f") {
-      // Fast-forward the CURRENT active object's build by one full object
-      // (a build normally takes 20 real minutes). +1.0 progress per press;
-      // completeBuildIfReady() (called every frame) does the poof/advance,
-      // so completion fires regardless of builder/enemy/conga gating.
-      if (congaActive) return;
-      if (buildBuiltCount >= buildQueue.length) return; // nothing left to build
-      buildCurrentProgress += 1; // +1.0 progress = one full object, regardless of ramp
     }
   });
 
@@ -8648,8 +8700,8 @@
     // agent loop below) and on enemiesAlive (enemy preemption pauses it).
     if (themeBuildables.length > 0) {
       updateBuildProgress(delta, enemiesAlive);
-      // Ungated: completes the object once progress hits 1 (normal build OR the
-      // F fast-forward hotkey), even if enemies/conga/no-builder paused the rate.
+      // Ungated: completes the object once progress hits 1 (normal build),
+      // even if enemies/conga/no-builder paused the rate.
       completeBuildIfReady();
     }
     buildProgressBuilderCount = 0; // reset; re-armed by the agent loop below

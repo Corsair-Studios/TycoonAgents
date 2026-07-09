@@ -515,6 +515,7 @@ export async function saveThemeTuning(
     object_anchor_overrides?: Record<string, [number, number]>;
     decor_anchor_overrides?: Record<string, [number, number]>;
     decor_flip_overrides?: Record<string, boolean>;
+    object_flip_overrides?: Record<string, boolean>;
     overall_scale?: number;
     enemy_config?: EnemyConfig;
     rival_scale?: number;
@@ -560,6 +561,8 @@ export async function saveThemeTuning(
     };
     const decorFlips = sanitizeFlips(tuning.decor_flip_overrides);
     if (decorFlips) manifest.viewport.decor_flip_overrides = decorFlips;
+    const objFlips = sanitizeFlips(tuning.object_flip_overrides);
+    if (objFlips) manifest.viewport.object_flip_overrides = objFlips;
     if (tuning.overall_scale !== undefined) {
       const overall = Number(tuning.overall_scale);
       if (Number.isFinite(overall) && overall > 0) {
@@ -761,6 +764,7 @@ function preserveViewportTuning(newViewport: ViewportConfig, oldViewport: Viewpo
   newViewport.object_anchor_overrides = oldViewport.object_anchor_overrides ?? newViewport.object_anchor_overrides;
   newViewport.decor_anchor_overrides = oldViewport.decor_anchor_overrides ?? newViewport.decor_anchor_overrides;
   newViewport.decor_flip_overrides = oldViewport.decor_flip_overrides ?? newViewport.decor_flip_overrides;
+  newViewport.object_flip_overrides = oldViewport.object_flip_overrides ?? newViewport.object_flip_overrides;
   newViewport.enemy_config = oldViewport.enemy_config ?? newViewport.enemy_config;
 }
 

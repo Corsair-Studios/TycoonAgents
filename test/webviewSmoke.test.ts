@@ -485,6 +485,43 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('edit-stage');
     });
 
+    // ── Step 6b: F-flip hotkey ───────────────────────────────────────────────────
+    // F flips whatever the per-object/per-decor override dropdown currently
+    // targets (the same "current item" the scale sliders act on). Selecting
+    // 'o1' via #se-obj, then pressing F, should toggle object_flip_overrides.o1
+    // in the next SAVE_STAGE_TUNING payload; pressing F again should undo it.
+    await t.test('6b. F flips the Edit-Stage object selection and persists it', () => {
+      const objSelect = doc.getElementById('se-obj');
+      assert.ok(objSelect, 'se-obj select should exist');
+      objSelect.value = 'o1';
+      objSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+
+      win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'f', bubbles: true, cancelable: true }));
+      const saveBtn = doc.getElementById('se-save');
+      assert.ok(saveBtn, 'se-save button should exist');
+      saveBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+
+      const firstSave = [...posted].reverse().find((m: any) => m.type === 'SAVE_STAGE_TUNING');
+      assert.ok(firstSave, 'a SAVE_STAGE_TUNING message should have been posted');
+      assert.equal(
+        firstSave.payload.object_flip_overrides && firstSave.payload.object_flip_overrides.o1,
+        true,
+        'F should flip the selected object (o1)'
+      );
+
+      // Press F again on the same selection -> toggles the flip back off.
+      win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'f', bubbles: true, cancelable: true }));
+      saveBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      const secondSave = [...posted].reverse().find((m: any) => m.type === 'SAVE_STAGE_TUNING');
+      assert.ok(secondSave, 'a second SAVE_STAGE_TUNING message should have been posted');
+      assert.equal(
+        !!(secondSave.payload.object_flip_overrides && secondSave.payload.object_flip_overrides.o1),
+        false,
+        'pressing F again should un-flip o1'
+      );
+      assertNoErrors('flip-hotkey');
+    });
+
     // ── Step 7: agent-activity state update ─────────────────────────────────────
     await t.test('7. state update drives HUD/character path', async () => {
       dispatch(buildStatePayload());

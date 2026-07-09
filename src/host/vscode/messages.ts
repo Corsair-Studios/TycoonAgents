@@ -212,6 +212,11 @@ export const MSG_SCHEMAS = {
       object_scale: z.number(),
       character_scale_overrides: z.record(z.number()),
       object_scale_overrides: z.record(z.number()),
+      // Per-buildable/per-decor horizontal-flip overrides set by the Stage
+      // Editor's F hotkey. Optional/passthrough-compatible so older webview
+      // builds that don't send them still validate.
+      object_flip_overrides: z.record(z.boolean()).optional(),
+      decor_flip_overrides: z.record(z.boolean()).optional(),
     })
     .passthrough(),
 
