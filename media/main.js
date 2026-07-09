@@ -2889,10 +2889,23 @@
     const o = themeRivalScaleOverrides[rivalId];
     return (typeof o === "number" && o > 0) ? o : themeRivalScale;
   }
-  /** Effective decor scale for a given decor_id. */
+  /**
+   * Effective decor scale for a given decor_id: the GLOBAL "Decor scale"
+   * slider (themeDecorScale) composed MULTIPLICATIVELY with an optional
+   * per-decor override (treated as a multiplier on top of the global,
+   * defaulting to 1 = "no adjustment" when absent). Mirrors effectiveObjScale
+   * below (same bug, same fix) — a present override used to REPLACE the
+   * global outright, so any decor item WITHOUT an override was the only kind
+   * that tracked the global slider ("scale-decor slider only affects a
+   * couple of items"). Legacy saved overrides (pre-this-fix) were absolute
+   * final scales; they are migrated to multipliers once at theme load
+   * (divided by the then-current global) so existing stage tunings render
+   * unchanged the moment they're loaded — see the THEME_INITIALIZED handler.
+   */
   function effectiveDecorScale(decorId) {
     const o = themeDecorScaleOverrides[decorId];
-    return (typeof o === "number" && o > 0) ? o : themeDecorScale;
+    const mult = (typeof o === "number" && o > 0) ? o : 1;
+    return themeDecorScale * mult;
   }
 
   // ── Phase 2a: build loop state ───────────────────────────────────────────
@@ -3286,12 +3299,27 @@
    */
   const PROJECTILE_ART_ANGLE_OFFSET = 0;
   /**
-   * Fraction of walkableNativeH that a projectile's origin/impact points are
-   * raised above the shooter/target's BASE (feet) position, so shots read as
-   * coming from roughly gun / mid-character height instead of the ground.
-   * Both endpoints are raised equally so the shot angle is unaffected. Tunable.
+   * Fraction of walkableNativeH that a projectile's IMPACT (target) point is
+   * raised above the target's BASE (feet) position, so shots read as landing
+   * at roughly the target's center mass instead of the ground. The ORIGIN
+   * side no longer uses this flat fraction — see PROJECTILE_ORIGIN_HEIGHT_FRAC,
+   * which is expressed relative to the shooter's own rendered sprite height
+   * instead (stays correct across character scale/depth/sceneFitScale; a flat
+   * fraction of walkableNativeH does not). Tunable.
    */
   const PROJECTILE_GUN_HEIGHT_FRAC = 0.06;
+  /**
+   * Fraction of the SHOOTER's own rendered sprite height that a projectile's
+   * spawn origin is raised above the shooter's BASE (feet) position — shots
+   * now leave from up near the gun/shoulder (0.8 = 80% up the sprite) rather
+   * than the midsection. Computed by each spawnProjectile call site from that
+   * shooter's actual depthScale/scale/sceneFitScale (mirrors the existing
+   * muzzle-forward X push, which does the same canvas-px→native-px
+   * conversion for width), so it stays correct across character scales,
+   * depth projection, and sceneFitScale rather than being a hardcoded pixel
+   * offset. Tunable.
+   */
+  const PROJECTILE_ORIGIN_HEIGHT_FRAC = 0.8;
   /**
    * How far the projectile's spawn ORIGIN is pushed toward the shooter's
    * leading edge (in the facing direction) as a fraction of the shooter's
@@ -3938,7 +3966,10 @@
   }
   function syncDecorOverrideSlider() {
     const ov = themeDecorScaleOverrides[editSelectedDecorId];
-    stageEditEls.do_.value = String(typeof ov === "number" && ov > 0 ? ov : themeDecorScale);
+    // Overrides now compose as a multiplier on top of the global "Decor
+    // scale" slider (see effectiveDecorScale), so the neutral/no-override
+    // starting position is 1 — not the current global value.
+    stageEditEls.do_.value = String(typeof ov === "number" && ov > 0 ? ov : 1);
   }
   function enterEditStage() {
     if (!themeLoaded) return;
@@ -5487,7 +5518,22 @@
         themeRivalScale = (vp && typeof vp.rival_scale === "number" && vp.rival_scale > 0) ? vp.rival_scale : 1;
         themeRivalScaleOverrides = (vp && vp.rival_scale_overrides && typeof vp.rival_scale_overrides === "object") ? Object.assign({}, vp.rival_scale_overrides) : {};
         themeDecorScale = (vp && typeof vp.decor_scale === "number" && vp.decor_scale > 0) ? vp.decor_scale : DECOR_SCALE;
-        themeDecorScaleOverrides = (vp && typeof vp.decor_scale_overrides === "object" && vp.decor_scale_overrides) ? Object.assign({}, vp.decor_scale_overrides) : {};
+        // Per-decor overrides used to be ABSOLUTE final scales that REPLACED
+        // themeDecorScale entirely (see effectiveDecorScale's history above).
+        // Now they compose as a MULTIPLIER on top of the global. Migrate
+        // once, here, at load — identical rationale/mechanism to the
+        // per-object migration just above: decor_scale + decor_scale_overrides
+        // are always saved together (saveStageTuning), so themeDecorScale
+        // (just set above) is exactly the global value in effect when each
+        // override was captured.
+        {
+          const rawDecorOverrides = (vp && vp.decor_scale_overrides && typeof vp.decor_scale_overrides === "object") ? vp.decor_scale_overrides : {};
+          themeDecorScaleOverrides = {};
+          for (const k of Object.keys(rawDecorOverrides)) {
+            const v = rawDecorOverrides[k];
+            if (typeof v === "number" && v > 0) themeDecorScaleOverrides[k] = v / themeDecorScale;
+          }
+        }
 
         // ── Phase 2a: capture buildable objects + resolve stable placement ──
         const manifest = msg.payload?.manifest;
@@ -8272,21 +8318,28 @@
    * Change C: spawn a ranged-fire projectile from (fromNx,fromNy) toward a
    * snapshotted target (toNx,toNy). No-op unless the theme provides the
    * projectile asset (graceful fallback). Purely visual — no damage here.
-   * @param {number} fromNx native x of the shooter
-   * @param {number} fromNy native y of the shooter
-   * @param {number} toNx snapshotted native x of the target
-   * @param {number} toNy snapshotted native y of the target
+   * @param {number} fromNx native x of the shooter's origin (already includes
+   *   the muzzle-forward X push AND the PROJECTILE_ORIGIN_HEIGHT_FRAC-based
+   *   height raise — both computed by the caller from that shooter's own
+   *   rendered sprite size, since only the caller knows which scale/depth
+   *   applies)
+   * @param {number} fromNy native y of the shooter's origin (already raised
+   *   — see fromNx doc above)
+   * @param {number} toNx snapshotted native x of the target (raw feet position)
+   * @param {number} toNy snapshotted native y of the target (raw feet position)
    */
   function spawnProjectile(fromNx, fromNy, toNx, toNy) {
     if (!themeHasProjectile) return;
-    // Raise both endpoints equally by a fraction of the walkable height so
-    // the shot originates/lands at roughly gun (mid-character) height
-    // instead of the feet/base — canvas y increases downward, so "up" is
-    // a negative y offset. Raising both ends keeps the travel angle intact.
+    // Only the IMPACT side still gets the flat walkableNativeH-fraction lift
+    // here (reads as landing at roughly the target's center mass) — canvas y
+    // increases downward, so "up" is a negative y offset. The origin side no
+    // longer gets this flat lift: fromNy arrives already positioned by the
+    // caller relative to the shooter's own rendered height (see
+    // PROJECTILE_ORIGIN_HEIGHT_FRAC).
     const gunLift = PROJECTILE_GUN_HEIGHT_FRAC * walkableNativeH;
     activeProjectiles.push({
       fromNx: fromNx,
-      fromNy: fromNy - gunLift,
+      fromNy: fromNy,
       toNx: toNx,
       toNy: toNy - gunLift,
       t: 0,
@@ -8472,7 +8525,18 @@
           const enHalfWidthNative = enHalfWidthPx * (walkableNativeW / lastBgW);
           const enFacingSign = en.facingLeft ? -1 : 1;
           const enMuzzleForward = enHalfWidthNative * PROJECTILE_MUZZLE_FRAC;
-          spawnProjectile(en.nx + enFacingSign * enMuzzleForward, en.ny, targetEnt.nx, targetEnt.ny);
+          // Origin height (PROJECTILE_ORIGIN_HEIGHT_FRAC of the rival's own
+          // RENDERED sprite height, not a flat fraction of walkableNativeH).
+          // Reproduces the real draw-time depthScale — enDepthScale above
+          // omits sceneFitScale (it only feeds the X muzzle push, which is
+          // unaffected by it), so sceneFitScale is folded in separately here
+          // — then converts that canvas-px height into native space via the
+          // same lastBgH ratio the X conversion above uses for lastBgW.
+          const enFullDepthScale = enDepthScale * sceneFitScale;
+          const enSpriteHeightPx = Math.round(64 * enFullDepthScale * themeCharacterScale * effectiveRivalScale(en.rival_id));
+          const enSpriteHeightNative = enSpriteHeightPx * (walkableNativeH / lastBgH);
+          const enOriginNy = en.ny - PROJECTILE_ORIGIN_HEIGHT_FRAC * enSpriteHeightNative;
+          spawnProjectile(en.nx + enFacingSign * enMuzzleForward, enOriginNy, targetEnt.nx, targetEnt.ny);
         }
         if (en.attackCooldown <= 0) en.attackCooldown = ENEMY_ATTACK_INTERVAL;
       } else {
@@ -8978,7 +9042,19 @@
                 const shooterHalfWidthNative = shooterHalfWidthPx * (walkableNativeW / bgW);
                 const shooterFacingSign = charEntry.facingLeft ? -1 : 1;
                 const shooterMuzzleForward = shooterHalfWidthNative * PROJECTILE_MUZZLE_FRAC;
-                spawnProjectile(charEntry.nx + shooterFacingSign * shooterMuzzleForward, charEntry.ny, nearest.nx, nearest.ny);
+                // Origin height (PROJECTILE_ORIGIN_HEIGHT_FRAC of the
+                // shooter's own RENDERED sprite height, not a flat fraction
+                // of walkableNativeH). Reproduces the real draw-time
+                // depthScale — shooterDepthScale above omits sceneFitScale
+                // (it only feeds the X muzzle push, which is unaffected by
+                // it), so sceneFitScale is folded in separately here — then
+                // converts that canvas-px height into native space via the
+                // same bgH ratio the X conversion above uses for bgW.
+                const shooterFullDepthScale = shooterDepthScale * sceneFitScale;
+                const shooterSpriteHeightPx = Math.round(64 * shooterFullDepthScale * shooterScale);
+                const shooterSpriteHeightNative = shooterSpriteHeightPx * (walkableNativeH / bgH);
+                const shooterOriginNy = charEntry.ny - PROJECTILE_ORIGIN_HEIGHT_FRAC * shooterSpriteHeightNative;
+                spawnProjectile(charEntry.nx + shooterFacingSign * shooterMuzzleForward, shooterOriginNy, nearest.nx, nearest.ny);
               }
             }
             // Change 2: on defeat, transition to FLEEING (run off nearest edge)

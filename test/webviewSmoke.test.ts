@@ -904,3 +904,104 @@ test('global "Object scale" slider visibly scales an object that already has a p
   );
   h.win.close();
 });
+
+// ── Decor-scale composition regression (identical bug/fix to the object-scale
+// one above, applied to effectiveDecorScale/themeDecorScale/
+// themeDecorScaleOverrides): a per-decor override used to REPLACE the global
+// "Decor scale" slider outright, so any decor item WITH an override ignored
+// the global slider — reported as "the scale-decor slider only affects a
+// couple of items." Unlike buildable objects, decor renders every frame
+// unconditionally (no build-queue/edit-stage gating), so this test doesn't
+// need the idle-vs-active distinction the object-scale test above does.
+const DECOR_SCALE_PX = {
+  bg: 'data:decor-scale-fixture,bg',
+  d1: 'data:decor-scale-fixture,d1',
+  d2: 'data:decor-scale-fixture,d2',
+};
+
+function buildDecorScaleThemePayload(decorScale: number, overrides: Record<string, number>, decorIds: string[]) {
+  const decor_objects = decorIds.map((id, i) => ({
+    decor_id: id,
+    display_name: id,
+    anchor_coord: [0.2 + i * 0.15, 0.7],
+  }));
+  const frames: Record<string, string[]> = {
+    environment_background: [DECOR_SCALE_PX.bg],
+  };
+  for (const id of decorIds) frames[`decor_${id}`] = [(DECOR_SCALE_PX as any)[id]];
+  return {
+    type: 'THEME_INITIALIZED',
+    payload: {
+      theme_id: 'decor_scale_fixture',
+      manifest: {
+        theme_id: 'decor_scale_fixture',
+        viewport: {
+          native_width: 1280,
+          native_height: 720,
+          walkable_nav_polygon: [[0.1, 0.6], [0.9, 0.6], [0.9, 0.95], [0.1, 0.95]],
+          decor_scale: decorScale,
+          decor_scale_overrides: overrides,
+        },
+        roster_agents: [],
+        roster_rivals: [],
+        buildable_objects: [],
+        decor_objects,
+        badges: [],
+      },
+      frames,
+      badges: [],
+      unlocked_badge_ids: [],
+    },
+  };
+}
+
+test('global "Decor scale" slider visibly scales decor items that already have a per-decor override', async () => {
+  const h = await bootObjScaleHarness();
+  // d1 has a 2x override, d2 has a 0.5x override — both should still track
+  // the global slider under the fixed (multiplicative) composition.
+  h.dispatch(buildDecorScaleThemePayload(1, { d1: 2, d2: 0.5 }, ['d1', 'd2']));
+  await h.flush();
+  h.tick(3);
+  assert.equal(h.errors.length, 0, `boot threw: ${h.errors.map(String).join('; ')}`);
+
+  const w1d1 = lastDrawWidth(h.drawLog, DECOR_SCALE_PX.d1);
+  const w1d2 = lastDrawWidth(h.drawLog, DECOR_SCALE_PX.d2);
+  assert.ok(typeof w1d1 === 'number' && w1d1 > 0, 'd1 should be drawn at global=1');
+  assert.ok(typeof w1d2 === 'number' && w1d2 > 0, 'd2 should be drawn at global=1');
+
+  // Enter Edit Stage (needed only to get the se-ds global-slider element into
+  // the DOM — decor itself already renders every frame regardless of mode).
+  const editBtn = h.doc.getElementById('menu-edit-stage');
+  assert.ok(editBtn, 'menu-edit-stage should have been injected');
+  editBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  h.tick(1);
+
+  // Simulate the real user drag: move the global "Decor scale" slider.
+  const ds = h.doc.getElementById('se-ds');
+  assert.ok(ds, 'se-ds (global decor-scale slider) should exist');
+  ds.value = '2';
+  ds.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+  const marker = h.drawLog.length;
+  h.tick(2);
+  const slice = h.drawLog.slice(marker);
+  assert.equal(h.errors.length, 0, `slider drive threw: ${h.errors.map(String).join('; ')}`);
+
+  const w2d1 = lastDrawWidth(slice, DECOR_SCALE_PX.d1);
+  const w2d2 = lastDrawWidth(slice, DECOR_SCALE_PX.d2);
+  assert.ok(typeof w2d1 === 'number', 'd1 should still be drawn after the global slider moves');
+  assert.ok(typeof w2d2 === 'number', 'd2 should still be drawn after the global slider moves');
+
+  const ratio1 = (w2d1 as number) / (w1d1 as number);
+  const ratio2 = (w2d2 as number) / (w1d2 as number);
+  // This is the actual regression: previously decor WITH an override ignored
+  // the global slider entirely (ratio would stay ~1.0).
+  assert.ok(
+    Math.abs(ratio1 - 2) < 0.15,
+    `d1 (2x override) width should ~double when the global slider doubles (ratio=${ratio1})`
+  );
+  assert.ok(
+    Math.abs(ratio2 - 2) < 0.15,
+    `d2 (0.5x override) width should ~double when the global slider doubles (ratio=${ratio2})`
+  );
+  h.win.close();
+});
