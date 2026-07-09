@@ -170,6 +170,8 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
   assert.match(objects, /1\/4 of the canvas width wide and 1\/5 of the canvas height tall/i);
   assert.match(objects, /wider than it is tall \(about 1\.25:1\)/i);
   assert.match(objects, /never touch the cell's bottom edge/i);
+  assert.match(objects, /fills about 75% of its cell's height/i);
+  assert.match(objects, /unbroken gutter along EVERY horizontal row boundary/i);
   assert.match(objects, /naturally TALL object.*must be SCALED DOWN to fit entirely inside the cell/i);
 
   const finalObjects = buildObjectAtlasPrompt('industrial', 'Factory', [
@@ -315,6 +317,8 @@ test('background decor prompt describes seats, static decor, one animated row, a
   assert.match(prompt, /4-column by 4-row grid of 16 equal cells/i);
   assert.match(prompt, /Each cell is a perfect square/i);
   assert.match(prompt, /never touch the cell's bottom edge/i);
+  assert.match(prompt, /fills about 75% of its cell's height/i);
+  assert.match(prompt, /unbroken magenta gutter along EVERY horizontal row boundary/i);
   assert.match(prompt, /naturally TALL item.*must be SCALED DOWN to fit entirely inside its cell/i);
   assert.match(prompt, /Row 1 \(Cells 1-4\): FOUR distinct STATIC SITTABLE SEATS/i);
   assert.match(prompt, /character will visibly sit ON/i);

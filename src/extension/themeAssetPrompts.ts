@@ -600,6 +600,8 @@ export function buildObjectAtlasPrompt(
     'Every cell must be a distinct real generated frame; do not hold or duplicate frames.',
     'Make cell 4 flow seamlessly back to cell 1. Keep motion subtle and the body stationary.',
     'Center each object with its lowest contact point just above the cell bottom, leaving a clear strip of empty background (about 5% of the cell height) beneath it — the object must never touch the cell\'s bottom edge, or its base will be sliced off flat. Preserve relative scale across every board.',
+    'Size every object to a strict height budget: it fills about 75% of its cell\'s height — a subject taller than 80% of its cell height is an incorrect result.',
+    'When the board is complete, a continuous visible strip of empty background must separate every row and every column — check the finished image for an unbroken gutter along EVERY horizontal row boundary; any subject touching that gutter is drawn too large and is an incorrect result.',
     'A naturally TALL object (an antenna, tower, rack, mounted screen, or any top-heavy subject) must be SCALED DOWN to fit entirely inside the cell with its top and bottom margins intact — never stretch it to fill the cell height, and never let it reach the top or bottom edge to preserve height. Prefer a smaller, fully-contained object over a taller one that crowds or touches a boundary; compact staging beats height. A tall object that touches or crosses any cell edge is an incorrect result.',
     ...(hasPoof ? [
       '',
@@ -680,6 +682,8 @@ export function buildBackgroundDecorPrompt(
     '',
     `Every cell holds exactly one subject fully inside its own cell with generous ${spaceWord} padding; nothing crosses a cell boundary.`,
     'Center each item with its lowest contact point just above the cell bottom, leaving a clear strip of empty background (about 5% of the cell height) beneath it — the item must never touch the cell\'s bottom edge, or its base will be sliced off flat. Keep a consistent isometric camera, lighting, and scale.',
+    `Size every item to a strict height budget: it fills about 75% of its cell's height — an item taller than 80% of its cell height is an incorrect result.`,
+    `When the board is complete, a continuous visible strip of empty ${spaceWord} must separate every row and every column — check the finished image for an unbroken ${spaceWord} gutter along EVERY horizontal row boundary; any item touching that gutter is drawn too large and is an incorrect result.`,
     'A naturally TALL item (a banner, tower, rack, standing screen, or any top-heavy subject) must be SCALED DOWN to fit entirely inside its cell with the required top and bottom margins intact — never stretch it to fill the cell height, and never let it reach a cell edge to preserve height. Prefer a smaller, fully-contained item over a taller one that crowds or touches a boundary; compact staging beats height. A tall item that touches or crosses any cell edge is an incorrect result.',
     'Do not draw characters, people, UI, captions, letters, numbers, or grid lines. No object may straddle two cells.',
     `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
