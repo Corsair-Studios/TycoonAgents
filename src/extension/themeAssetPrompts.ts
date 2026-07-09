@@ -618,7 +618,7 @@ export function buildObjectAtlasPrompt(
     ] : []),
     '',
     'Use crisp retro pixel art with consistent viewpoint, lighting, rendering style, and camera distance.',
-    'CAMERA (applies to every object identically): a classic 2:1 pixel-art isometric interior view — vertical lines stay perfectly vertical, horizontal surfaces recede along a shallow 2:1 diagonal (about 27 degrees), viewer looking down at about 30 degrees. Never draw an object flat-on / front-facing — an object whose perspective does not match the room\'s isometric angle is an incorrect result.',
+    'CAMERA (applies to every object identically, and MUST match the room/background it sits in): a classic 2:1 pixel-art isometric interior view — vertical lines stay perfectly vertical, all horizontal surfaces (tops, bases, panels, treads) recede along a shallow 2:1 diagonal (about 27 degrees), viewer looking down at about 30 degrees. Orient every object in three-quarter view with a front CORNER (not a flat face) pointing toward the viewer, so exactly two sides are visible and its top/base reads as a 2:1 diamond — the same way the room\'s floor and walls recede. Never draw an object flat-on, front-elevation, or in side-profile with a single face square to the camera — an object whose perspective does not match the room\'s isometric angle is an incorrect result.',
     '',
     `Creative direction: ${creativeDirection}`,
   ].join('\n');

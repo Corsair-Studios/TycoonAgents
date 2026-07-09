@@ -173,6 +173,7 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
   assert.match(objects, /fills about 75% of its cell's height/i);
   assert.match(objects, /unbroken gutter along EVERY horizontal row boundary/i);
   assert.match(objects, /2:1 pixel-art isometric interior view/i);
+  assert.match(objects, /front CORNER \(not a flat face\) pointing toward the viewer/i);
   assert.match(objects, /naturally TALL object.*must be SCALED DOWN to fit entirely inside the cell/i);
 
   const finalObjects = buildObjectAtlasPrompt('industrial', 'Factory', [

@@ -3322,8 +3322,8 @@
   /**
    * Fraction of the SHOOTER's own rendered sprite height that a projectile's
    * spawn origin is raised above the shooter's BASE (feet) position — shots
-   * now leave from the upper chest (0.7 = 70% up the sprite — about 20%
-   * above the vertical center; 0.8 read as firing from the head) rather
+   * now leave from just above the sprite's vertical center (0.55 = 55% up;
+   * 0.8 read as firing from the head, 0.7 still too high per playtest) rather
    * than the midsection. Computed by each spawnProjectile call site from that
    * shooter's actual depthScale/scale/sceneFitScale (mirrors the existing
    * muzzle-forward X push, which does the same canvas-px→native-px
@@ -3331,7 +3331,7 @@
    * depth projection, and sceneFitScale rather than being a hardcoded pixel
    * offset. Tunable.
    */
-  const PROJECTILE_ORIGIN_HEIGHT_FRAC = 0.7;
+  const PROJECTILE_ORIGIN_HEIGHT_FRAC = 0.55;
   /**
    * How far the projectile's spawn ORIGIN is pushed toward the shooter's
    * leading edge (in the facing direction) as a fraction of the shooter's
