@@ -3611,11 +3611,16 @@ export class TycoonPanel {
               <stop offset="0%" stop-color="#7a1c26" />
               <stop offset="100%" stop-color="#4a1017" />
             </linearGradient>
+            <clipPath id="badgeHudDiscClip">
+              <circle cx="26" cy="21" r="17" />
+            </clipPath>
           </defs>
           <path class="badge-hud-ribbon" d="M19 23 L13 50 L26 41 L39 50 L33 23 Z" fill="url(#badgeHudRibbonGrad)" stroke="#141418" stroke-width="1.5" stroke-linejoin="round" />
           <circle class="badge-hud-disc" cx="26" cy="21" r="17" fill="url(#badgeHudGoldGrad)" stroke="#141418" stroke-width="2.5" />
           <circle class="badge-hud-disc-rim" cx="26" cy="21" r="12.5" fill="none" stroke="rgba(0,0,0,0.4)" stroke-width="1" />
-          <path class="badge-hud-shine" d="M12 15 A17 17 0 0 1 34 7 L26 21 Z" fill="rgba(255,255,255,0.4)" />
+          <g clip-path="url(#badgeHudDiscClip)">
+            <path class="badge-hud-shine" d="M12 15 A17 17 0 0 1 34 7 L26 21 Z" fill="rgba(255,255,255,0.4)" />
+          </g>
         </svg>
         <span class="badge-hud-count">0</span>
       </button>
