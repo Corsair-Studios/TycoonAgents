@@ -2282,6 +2282,23 @@ tr.metrics-row--child td.col-name {
   padding: 8px 0;
 }
 
+/* Stats footer: phase-gate progress + task status breakdown */
+.plan-stats-footer {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.plan-stats-line {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .plan-phase {
   border: 1px solid var(--border);
   border-radius: 6px;

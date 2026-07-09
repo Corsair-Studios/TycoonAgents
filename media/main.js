@@ -132,6 +132,39 @@
     vscode.setState({ ...prev, activeMetricsTab });
   }
 
+  /**
+   * Measure #metrics-body's natural (content-hug) rendered height in px, even
+   * while it's the hidden tab. Briefly clears the `hidden` attribute to bring
+   * it back into flex layout (siblings size independently on the main axis in
+   * a column flex container, so this doesn't disturb the visible tab's own
+   * height), reads offsetHeight, then restores `hidden` — all synchronously,
+   * so the browser never paints the intermediate state (no visible flicker).
+   * @returns {number}
+   */
+  function measureMetricsBodyHeight() {
+    if (!metricsBodyEl) return 0;
+    const wasHidden = metricsBodyEl.hidden;
+    if (wasHidden) metricsBodyEl.hidden = false;
+    const h = metricsBodyEl.offsetHeight;
+    if (wasHidden) metricsBodyEl.hidden = wasHidden;
+    return h;
+  }
+
+  /**
+   * Lock #project-plan-body's height to #metrics-body's current natural
+   * height so switching tabs never changes the panel's outer height. Content
+   * beyond that height scrolls internally (overflow-y:auto in CSS). Call on
+   * tab switch, on plan re-render, and while resize-dragging.
+   */
+  function syncProjectPlanBodyHeight() {
+    if (!metricsBodyEl || !projectPlanBodyEl) return;
+    const h = measureMetricsBodyHeight();
+    if (h > 0) {
+      projectPlanBodyEl.style.height = `${h}px`;
+      projectPlanBodyEl.style.minHeight = `${h}px`;
+    }
+  }
+
   /** Reflect (activeMetricsTab, projectPlanEnabled) onto the tab bar + content visibility. The whole tab bar (not just the Plan tab) is hidden when the feature is off, per the gating requirement — no lone/empty tab bar. */
   function updateMetricsTabsUI() {
     if (!metricsTabsEl || !metricsBodyEl || !projectPlanBodyEl) return;
@@ -159,6 +192,7 @@
   function setActiveMetricsTab(tab) {
     activeMetricsTab = tab === "plan" ? "plan" : "metrics";
     saveActiveMetricsTab();
+    syncProjectPlanBodyHeight();
     updateMetricsTabsUI();
   }
 
@@ -290,6 +324,7 @@
       empty.className = "plan-empty";
       empty.textContent = "No plan yet — generate one with the project-plan skill.";
       projectPlanBodyEl.appendChild(empty);
+      syncProjectPlanBodyHeight();
       return;
     }
 
@@ -355,6 +390,36 @@
 
       projectPlanBodyEl.appendChild(phaseEl);
     }
+
+    // Stats footer: phase-gate progress + task status breakdown.
+    if (plan.phases.length > 0 || plan.tasks.length > 0) {
+      const approvedPhases = plan.phases.filter((p) => p.gate === "approved").length;
+      const statusCounts = {};
+      for (const t of plan.tasks) statusCounts[t.status] = (statusCounts[t.status] || 0) + 1;
+      const statusOrder = ["done", "active", "verifying", "pending", "needs_fix", "blocked", "skipped"];
+      const statusLabel = { done: "done", active: "active", verifying: "verifying", pending: "pending", needs_fix: "needs-fix", blocked: "blocked", skipped: "skipped" };
+      const parts = [];
+      for (const s of statusOrder) {
+        if (statusCounts[s]) parts.push(`${statusCounts[s]} ${statusLabel[s]}`);
+      }
+
+      const footer = document.createElement("div");
+      footer.className = "plan-stats-footer";
+
+      const phasesLine = document.createElement("div");
+      phasesLine.className = "plan-stats-line";
+      phasesLine.textContent = `Phases: ${approvedPhases}/${plan.phases.length} approved`;
+      footer.appendChild(phasesLine);
+
+      const tasksLine = document.createElement("div");
+      tasksLine.className = "plan-stats-line";
+      tasksLine.textContent = `Tasks: ${plan.tasks.length} total` + (parts.length ? ` · ${parts.join(" · ")}` : "");
+      footer.appendChild(tasksLine);
+
+      projectPlanBodyEl.appendChild(footer);
+    }
+
+    syncProjectPlanBodyHeight();
   }
 
   /** Sync the Settings-screen checkbox (if currently rendered) to projectPlanEnabled. */
@@ -402,12 +467,14 @@
       // Metrics height = distance from pointer to bottom of viewport.
       const px = window.innerHeight - ev.clientY;
       applyMetricsHeight(px);
+      syncProjectPlanBodyHeight();
     }
 
     function onUp(ev) {
       const px = window.innerHeight - ev.clientY;
       const clamped = applyMetricsHeight(px);
       saveMetricsHeight(clamped);
+      syncProjectPlanBodyHeight();
       resizeHandleEl.classList.remove("dragging");
       resizeHandleEl.removeEventListener("pointermove", onMove);
       resizeHandleEl.removeEventListener("pointerup", onUp);
@@ -7577,7 +7644,10 @@
       const modeTokPerSec = (typeof m.activeMs === "number" && m.activeMs > 0)
         ? m.totalTokens / (m.activeMs / 1000)
         : 0;
-      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"}`;
+      const modeTokPerMin = (typeof m.activeMs === "number" && m.activeMs > 0)
+        ? m.totalTokens / (m.activeMs / 60000)
+        : 0;
+      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"} · ${modeTokPerMin > 0 ? fmtTokens(Math.round(modeTokPerMin)) + " tok/min" : "—"}`;
       detail.textContent = text;
       row.appendChild(detail);
 
