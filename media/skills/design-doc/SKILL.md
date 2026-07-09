@@ -36,13 +36,27 @@ node .claude/skills/design-doc/design-doc-cli.mjs docx2md ./design-docs/<name>.d
 
 Supported markdown: `#`/`##`/`###` headings, paragraphs, `-`/`*` bullets, `**bold**`.
 
+## Template library
+
+Templates live as separate files in `templates/` next to this skill, not inline here:
+
+| File | Use for |
+|------|---------|
+| `templates/gdd.md` | Game Design Document — used when engine signals detect a game (see table above). |
+| `templates/prd.md` | Product Requirements Document — used when no game-engine signal is found. |
+| `templates/adr.md` | Architecture Decision Record — use when the user asks to document a specific technical decision rather than a whole product/game. |
+| `templates/milestone-plan.md` | Milestone/delivery plan — use when the user asks for a milestone, sprint, or delivery plan, or when a GDD/PRD's "Scope & Milestones" section needs to be broken out into its own doc. |
+
+Read the appropriate template file(s) before drafting — do not reconstruct the sections from memory. Each template has section headings with brief italic/blockquote guidance for what belongs in that section; replace the guidance with real content drawn from the codebase, and keep the guidance text out of the final draft.
+
 ## Generate workflow
 
-1. Detect game/product (see above).
-2. Scan the project — source files, configs, assets, README — to understand what's actually built. Be honest about gaps; note assumptions.
-3. Draft markdown following the matching template below; save to `./design-docs/<name>.md`.
-4. Run `md2docx` to produce the `.docx`.
-5. Tell the user the file is in `./design-docs/` for them to review and edit in Word. They can ask for a re-review once edits are done.
+1. Detect game/product (see above) to choose `templates/gdd.md` or `templates/prd.md`. If the request is specifically for a milestone plan or an architecture decision, use `templates/milestone-plan.md` or `templates/adr.md` instead (or in addition).
+2. Read the chosen template file(s) from `templates/`.
+3. Scan the project — source files, configs, assets, README — to understand what's actually built. Be honest about gaps; note assumptions.
+4. Draft markdown following the template's section structure; save to `./design-docs/<name>.md`.
+5. Run `md2docx` to produce the `.docx`.
+6. Tell the user the file is in `./design-docs/` for them to review and edit in Word. They can ask for a re-review once edits are done.
 
 ## Review workflow
 
@@ -52,60 +66,6 @@ For each `.docx` in `./design-docs/`:
 2. Summarize what the project is intended to be per the doc.
 3. Flag mismatches between the doc's intent and what's actually in the codebase.
 4. Recommend which TycoonAgents packs or agents to install to close the gaps.
-
-## GDD template
-
-```markdown
-# <Game Title>
-
-## High-Concept Pitch
-One or two sentences.
-
-## Genre & Platform
-
-## Core Gameplay Loop
-What the player does moment to moment.
-
-## Key Mechanics
-
-## Player Progression & Goals
-
-## World / Setting
-
-## Art & Audio Direction
-
-## Technical
-Engine, tools, third-party libraries.
-
-## Scope & Milestones
-
-## Risks & Open Questions
-```
-
-## PRD template
-
-```markdown
-# <Product Title>
-
-## Problem / Opportunity
-
-## Target Users
-
-## Goals & Success Metrics
-
-## Core Features
-
-## User Flows
-
-## Non-Functional Requirements
-Performance, security, accessibility, etc.
-
-## Tech Stack
-
-## Milestones & Scope
-
-## Risks & Open Questions
-```
 
 ## Notes
 

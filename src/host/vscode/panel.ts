@@ -28,6 +28,7 @@ import {
   writeExecutionConfig,
   type DelegationMode,
 } from "./delegationDoctrine";
+import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
 import { computeEngineChips, mcpEntryForEngine, type EngineChip } from "./engineDetect";
@@ -2686,10 +2687,11 @@ export class TycoonPanel {
         } catch {
           existingClaudeMd = null;
         }
-        const updated = upsertDelegationSection(
+        let updated = upsertDelegationSection(
           existingClaudeMd,
           renderDelegationDoctrine(delegationMode)
         );
+        updated = upsertCodeRulesSection(updated, renderCodeRules());
         fs.writeFileSync(claudeMdPath, updated);
       } catch (err) {
         claudeMdError = claudeMdError ?? String(err);
