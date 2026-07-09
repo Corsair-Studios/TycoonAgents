@@ -4599,11 +4599,12 @@
     if ((e.key === "h" || e.key === "H") && editStageMode) {
       const t = e.target;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
-      const kind = dragObjectId ? dragObjectType : editFlipTargetKind;
-      const id = dragObjectId
-        ? dragObjectId
-        : kind === "decor" ? editSelectedDecorId : null;
-      if (kind === "decor" && id) {
+      // Decor is the only hideable kind, so H acts on the current decor
+      // selection directly. It must NOT depend on editFlipTargetKind (null
+      // until the decor dropdown changes) — that gap made H a no-op on entry.
+      // Mirrors the Hide button, which gates on editSelectedDecorId.
+      const id = (dragObjectId && dragObjectType === "decor") ? dragObjectId : editSelectedDecorId;
+      if (id) {
         toggleDecorHidden(id);
         syncDecorHideButton();
         refreshDecorDropdownLabels();
