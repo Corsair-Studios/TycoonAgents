@@ -106,6 +106,224 @@
   const metricsPanelEl = /** @type {HTMLElement} */ (document.getElementById("metrics-panel"));
   const resizeHandleEl = /** @type {HTMLElement} */ (document.getElementById("resize-handle"));
 
+  // ── Project Plan (optional feature) ──────────────────────────────
+  const projectPlanSectionEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-section"));
+  const projectPlanHeaderEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-header"));
+  const projectPlanBodyEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-body"));
+  /** Whether the user's project has the optional Project Plan feature turned on (from PLAN_STATE.enabled). Default false so nothing new shows unless the host confirms it's on. */
+  let projectPlanEnabled = false;
+  /** Last plan snapshot from PLAN_STATE.plan (null = feature off, or on with no plan.json yet). @type {null|{version:number,title:string,phases:Array<Object>,tasks:Array<Object>,currentPhaseId:(string|null),currentTaskId:(string|null)}} */
+  let currentProjectPlan = null;
+  /** Whether the collapsible Project Plan section body is collapsed. */
+  let projectPlanCollapsed = false;
+  /** Reference to the Settings screen's Project Plan checkbox, kept live so a PLAN_STATE update can sync its checked state without a full renderSettings() re-render. */
+  let projectPlanCheckboxEl = null;
+
+  if (projectPlanHeaderEl) {
+    projectPlanHeaderEl.addEventListener("click", () => {
+      projectPlanCollapsed = !projectPlanCollapsed;
+      updateProjectPlanCollapsedUI();
+    });
+  }
+
+  /** Reflect projectPlanCollapsed onto the header/body DOM (chevron + hidden). */
+  function updateProjectPlanCollapsedUI() {
+    if (!projectPlanHeaderEl || !projectPlanBodyEl) return;
+    projectPlanHeaderEl.setAttribute("aria-expanded", String(!projectPlanCollapsed));
+    projectPlanBodyEl.hidden = projectPlanCollapsed;
+    const chevron = projectPlanHeaderEl.querySelector(".project-plan-chevron");
+    if (chevron) chevron.textContent = projectPlanCollapsed ? "▸" : "▾";
+  }
+
+  /** True when an earlier phase (lower num) still has a pending gate — mirrors src/host/vscode/projectPlan.ts's isPhaseUnblocked for read-only "locked" styling. No state is mutated client-side; the host is the source of truth. */
+  function isProjectPlanPhaseLocked(plan, phase) {
+    return plan.phases.some((p) => p.num < phase.num && p.gate !== "approved");
+  }
+
+  /** @param {string} status @returns {string} */
+  function projectPlanTaskStatusLabel(status) {
+    switch (status) {
+      case "pending": return "Pending";
+      case "active": return "Active";
+      case "verifying": return "Verifying";
+      case "done": return "Done";
+      case "needs_fix": return "Needs fix";
+      case "skipped": return "Skipped";
+      case "blocked": return "Blocked";
+      default: return String(status || "");
+    }
+  }
+
+  /** Build an OVERRIDE_TASK action button. @param {string} label @param {"approve"|"retry"|"skip"} action @param {string} taskId */
+  function buildProjectPlanTaskButton(label, action, taskId) {
+    const btn = document.createElement("button");
+    btn.className = "skill-btn plan-task-btn plan-task-btn--" + action;
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      vscode.postMessage({ type: "OVERRIDE_TASK", taskId, action });
+    });
+    return btn;
+  }
+
+  /** Build one task card (title, status badge, verify attempts, collapsible detail/acceptance criteria, contextual action buttons). */
+  function buildProjectPlanTaskCard(task) {
+    const card = document.createElement("div");
+    card.className = "plan-task-card";
+    card.dataset.taskId = task.id;
+
+    const head = document.createElement("div");
+    head.className = "plan-task-head";
+
+    const title = document.createElement("span");
+    title.className = "plan-task-title";
+    title.textContent = task.title || task.id;
+    head.appendChild(title);
+
+    const badge = document.createElement("span");
+    badge.className = "plan-status-badge plan-status-badge--" + task.status;
+    badge.textContent = projectPlanTaskStatusLabel(task.status);
+    head.appendChild(badge);
+
+    if (task.verifyAttempts > 0) {
+      const attempts = document.createElement("span");
+      attempts.className = "plan-task-attempts";
+      attempts.textContent = "verify ×" + task.verifyAttempts;
+      head.appendChild(attempts);
+    }
+
+    card.appendChild(head);
+
+    if (task.detail || (task.acceptanceCriteria && task.acceptanceCriteria.length)) {
+      const details = document.createElement("details");
+      details.className = "plan-task-details";
+      const summary = document.createElement("summary");
+      summary.textContent = "Details";
+      details.appendChild(summary);
+      if (task.detail) {
+        const detailP = document.createElement("p");
+        detailP.className = "plan-task-detail";
+        detailP.textContent = task.detail;
+        details.appendChild(detailP);
+      }
+      if (task.acceptanceCriteria && task.acceptanceCriteria.length) {
+        const ul = document.createElement("ul");
+        ul.className = "plan-task-criteria";
+        for (const criterion of task.acceptanceCriteria) {
+          const li = document.createElement("li");
+          li.textContent = criterion;
+          ul.appendChild(li);
+        }
+        details.appendChild(ul);
+      }
+      card.appendChild(details);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "plan-task-actions";
+    const showRetrySkip = task.status === "active" || task.status === "verifying"
+      || task.status === "needs_fix" || task.status === "blocked";
+    const showApprove = task.status === "needs_fix";
+    if (showApprove) actions.appendChild(buildProjectPlanTaskButton("Approve", "approve", task.id));
+    if (showRetrySkip) {
+      actions.appendChild(buildProjectPlanTaskButton("Retry", "retry", task.id));
+      actions.appendChild(buildProjectPlanTaskButton("Skip", "skip", task.id));
+    }
+    if (actions.childElementCount > 0) card.appendChild(actions);
+
+    return card;
+  }
+
+  /** Rebuild the whole Project Plan section from (projectPlanEnabled, currentProjectPlan). Hides the section entirely when the feature is off. */
+  function renderProjectPlanSection() {
+    if (!projectPlanSectionEl || !projectPlanBodyEl) return;
+    if (!projectPlanEnabled) {
+      projectPlanSectionEl.hidden = true;
+      return;
+    }
+    projectPlanSectionEl.hidden = false;
+    updateProjectPlanCollapsedUI();
+    projectPlanBodyEl.innerHTML = "";
+
+    const plan = currentProjectPlan;
+    if (!plan) {
+      const empty = document.createElement("p");
+      empty.className = "plan-empty";
+      empty.textContent = "No plan yet — generate one with the project-plan skill.";
+      projectPlanBodyEl.appendChild(empty);
+      return;
+    }
+
+    const tasksById = {};
+    for (const t of plan.tasks) tasksById[t.id] = t;
+
+    const phases = plan.phases.slice().sort((a, b) => a.num - b.num);
+    for (const phase of phases) {
+      const phaseEl = document.createElement("div");
+      phaseEl.className = "plan-phase";
+      const locked = isProjectPlanPhaseLocked(plan, phase);
+      if (locked) phaseEl.classList.add("plan-phase--locked");
+
+      const phaseHead = document.createElement("div");
+      phaseHead.className = "plan-phase-head";
+      const phaseTitle = document.createElement("span");
+      phaseTitle.className = "plan-phase-title";
+      phaseTitle.textContent = `Phase ${phase.num}: ${phase.name}`;
+      phaseHead.appendChild(phaseTitle);
+      const gateBadge = document.createElement("span");
+      gateBadge.className = "plan-gate-badge plan-gate-badge--" + phase.gate;
+      gateBadge.textContent = phase.gate === "approved" ? "Approved" : "Pending";
+      phaseHead.appendChild(gateBadge);
+      if (locked) {
+        const lockBadge = document.createElement("span");
+        lockBadge.className = "plan-lock-badge";
+        lockBadge.textContent = "Locked";
+        phaseHead.appendChild(lockBadge);
+      }
+      phaseEl.appendChild(phaseHead);
+
+      if (phase.goal) {
+        const goalEl = document.createElement("div");
+        goalEl.className = "plan-phase-goal";
+        goalEl.textContent = phase.goal;
+        phaseEl.appendChild(goalEl);
+      }
+
+      const tasksWrap = document.createElement("div");
+      tasksWrap.className = "plan-phase-tasks";
+      for (const taskId of phase.taskIds) {
+        const task = tasksById[taskId];
+        if (task) tasksWrap.appendChild(buildProjectPlanTaskCard(task));
+      }
+      phaseEl.appendChild(tasksWrap);
+
+      const allTasksDone = phase.taskIds.every((tid) => {
+        const t = tasksById[tid];
+        return t && (t.status === "done" || t.status === "skipped");
+      });
+      if (phase.gate === "pending") {
+        const approveBtn = document.createElement("button");
+        approveBtn.className = "skill-btn plan-approve-phase-btn";
+        approveBtn.type = "button";
+        approveBtn.textContent = "Approve phase";
+        approveBtn.disabled = !allTasksDone;
+        approveBtn.addEventListener("click", () => {
+          approveBtn.disabled = true;
+          vscode.postMessage({ type: "APPROVE_PHASE", phaseId: phase.id });
+        });
+        phaseEl.appendChild(approveBtn);
+      }
+
+      projectPlanBodyEl.appendChild(phaseEl);
+    }
+  }
+
+  /** Sync the Settings-screen checkbox (if currently rendered) to projectPlanEnabled. */
+  function syncProjectPlanSettingsToggle() {
+    if (projectPlanCheckboxEl) projectPlanCheckboxEl.checked = projectPlanEnabled;
+  }
+
   const MIN_METRICS_PX = 44;   // header must always stay visible
 
   /** Apply a metrics panel height in px, clamped to valid range. */
@@ -5085,6 +5303,11 @@
   // Ask the host for current engine connection status immediately.
   vscode.postMessage({ type: "getEngineStatus" });
 
+  // Ask the host for the optional Project Plan state. No-ops on the host
+  // side (PLAN_STATE comes back with enabled:false, plan:null) when the
+  // feature isn't turned on or there's no workspace.
+  vscode.postMessage({ type: "REQUEST_PLAN" });
+
   // ── Engine connection chips (upper-left overlay) ─────────────────
 
   const engineChipsEl = document.createElement("div");
@@ -6137,6 +6360,14 @@
       el.appendChild(refreshEl);
     } else if (msg && msg.type === "designDocDone") {
       /* handled by host info message */
+    } else if (msg && msg.type === "PLAN_STATE") {
+      // Optional "Project Plan" feature. `enabled` mirrors the Settings
+      // toggle; `plan` is null when the feature is off, or on with no
+      // plan.json generated yet.
+      projectPlanEnabled = Boolean(msg.enabled);
+      currentProjectPlan = msg.plan || null;
+      syncProjectPlanSettingsToggle();
+      renderProjectPlanSection();
     }
   });
 
@@ -7632,6 +7863,38 @@
     delegRow.appendChild(delegGroup);
     delegSection.appendChild(delegRow);
     setupConfigEl.appendChild(delegSection);
+
+    // ── 1.6. Project Plan (optional) ──
+    // Opt-in toggle for the collapsible phase/task approval section in the
+    // metrics panel (see #project-plan-section / renderProjectPlanSection()).
+    // Reuses the same checkbox-row visual language as the theme builder's
+    // "Pause after each image" toggle.
+    const planSection = buildSection("Project Plan");
+    const planRow = document.createElement("div");
+    planRow.className = "settings-row";
+    planRow.dataset.agentRow = "project-plan-enabled";
+    const planLabel = document.createElement("label");
+    planLabel.className = "theme-generation-approval-toggle";
+    const planCheckbox = document.createElement("input");
+    planCheckbox.type = "checkbox";
+    planCheckbox.id = "project-plan-enabled-checkbox";
+    planCheckbox.checked = projectPlanEnabled;
+    planCheckbox.addEventListener("change", () => {
+      vscode.postMessage({ type: "SET_PROJECT_PLAN_ENABLED", enabled: planCheckbox.checked });
+    });
+    projectPlanCheckboxEl = planCheckbox;
+    const planTextWrap = document.createElement("span");
+    const planTitle = document.createElement("span");
+    planTitle.textContent = "Project Plan (optional, experimental)";
+    const planNote = document.createElement("small");
+    planNote.textContent = "Opt-in phase/task planning workflow with approve/retry controls. Off by default.";
+    planTextWrap.appendChild(planTitle);
+    planTextWrap.appendChild(planNote);
+    planLabel.appendChild(planCheckbox);
+    planLabel.appendChild(planTextWrap);
+    planRow.appendChild(planLabel);
+    planSection.appendChild(planRow);
+    setupConfigEl.appendChild(planSection);
 
     // ── 2. Agents ──
     const agentsSection = buildSection("Agents");

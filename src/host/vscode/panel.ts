@@ -1335,18 +1335,19 @@ export class TycoonPanel {
         } else if (message.type === MSG.REQUEST_PLAN) {
           // Optional "Project Plan" feature — opt-in via projectPlanEnabled
           // in execution.json (default OFF). Disabled/no-workspace both
-          // resolve to a null plan so the webview can no-op cleanly.
+          // resolve to a null plan (and enabled:false) so the webview can
+          // no-op cleanly and hide the section.
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
             return;
           }
           const plan = readPlan(projectPlanFilePath(root));
-          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan });
+          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan });
         } else if (message.type === MSG.APPROVE_PHASE) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
             return;
           }
           const parsedApprovePhase = MSG_SCHEMAS.APPROVE_PHASE.safeParse(message);
@@ -1357,16 +1358,16 @@ export class TycoonPanel {
           const planPath = projectPlanFilePath(root);
           const currentPlan = readPlan(planPath);
           if (!currentPlan) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan: null });
             return;
           }
           const updatedPlan = approvePhase(currentPlan, parsedApprovePhase.data.phaseId);
           writePlan(planPath, updatedPlan);
-          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: updatedPlan });
+          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan: updatedPlan });
         } else if (message.type === MSG.OVERRIDE_TASK) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
             return;
           }
           const parsedOverrideTask = MSG_SCHEMAS.OVERRIDE_TASK.safeParse(message);
@@ -1377,7 +1378,7 @@ export class TycoonPanel {
           const planPath = projectPlanFilePath(root);
           const currentPlan = readPlan(planPath);
           if (!currentPlan) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: null });
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan: null });
             return;
           }
           const updatedPlan = overrideTask(
@@ -1386,7 +1387,25 @@ export class TycoonPanel {
             parsedOverrideTask.data.action
           );
           writePlan(planPath, updatedPlan);
-          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, plan: updatedPlan });
+          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan: updatedPlan });
+        } else if (message.type === MSG.SET_PROJECT_PLAN_ENABLED) {
+          // Settings-screen toggle: persist the opt-in flag, then re-post
+          // PLAN_STATE with the fresh enabled value so the webview can show
+          // or hide the Project Plan section immediately.
+          const parsedSetPlanEnabled = MSG_SCHEMAS.SET_PROJECT_PLAN_ENABLED.safeParse(message);
+          if (!parsedSetPlanEnabled.success) {
+            console.error("TycoonAgents: SET_PROJECT_PLAN_ENABLED payload rejected:", parsedSetPlanEnabled.error.message);
+            return;
+          }
+          const root = this._projectRoot();
+          if (root === "") {
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
+            return;
+          }
+          writeProjectPlanEnabled(root, parsedSetPlanEnabled.data.enabled);
+          const enabled = readProjectPlanEnabled(root);
+          const plan = enabled ? readPlan(projectPlanFilePath(root)) : null;
+          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled, plan });
         }
       },
       null,
@@ -3632,6 +3651,17 @@ export class TycoonPanel {
              by renderDelegationStats() in media/main.js from state.modeStats.
              Hidden by default; shown only when at least one mode has data. -->
         <div id="delegation-stats" hidden></div>
+      </div>
+      <!-- Project Plan (optional feature, opt-in via Settings): collapsible
+           phase/task approval section. Hidden unless PLAN_STATE reports
+           enabled:true; body rebuilt by renderProjectPlanSection() in
+           media/main.js. -->
+      <div id="project-plan-section" class="project-plan-section" hidden>
+        <button id="project-plan-header" class="project-plan-header" type="button" aria-expanded="true" aria-controls="project-plan-body">
+          <span class="project-plan-chevron">&#9662;</span>
+          <span class="project-plan-title">Project Plan</span>
+        </button>
+        <div id="project-plan-body" class="project-plan-body"></div>
       </div>
     </div>
 

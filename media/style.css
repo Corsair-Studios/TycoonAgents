@@ -2220,6 +2220,271 @@ tr.metrics-row--child td.col-name {
   border-radius: 3px;
 }
 
+/* ── Project Plan (optional feature) ─────────────────────────────── */
+#project-plan-section {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.project-plan-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-plan-header:hover {
+  background: rgba(255, 176, 32, 0.08);
+}
+
+.project-plan-chevron {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.project-plan-body {
+  overflow-y: auto;
+  max-height: 60vh;
+  padding: 12px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.project-plan-body[hidden] {
+  display: none;
+}
+
+.plan-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 0;
+}
+
+.plan-phase {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-phase--locked {
+  opacity: 0.6;
+}
+
+.plan-phase-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.plan-phase-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.plan-phase-goal {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.plan-phase-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-approve-phase-btn {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 4px 12px;
+}
+
+/* Gate / lock badges reuse the .status-pill visual language (rounded pill,
+   colored border + tinted background). */
+.plan-gate-badge,
+.plan-lock-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.plan-gate-badge--pending {
+  background: rgba(113, 113, 122, 0.15);
+  color: var(--status-idle);
+  border: 1px solid var(--status-idle);
+}
+
+.plan-gate-badge--approved {
+  background: rgba(163, 230, 53, 0.15);
+  color: var(--status-active);
+  border: 1px solid var(--status-active);
+}
+
+.plan-lock-badge {
+  background: rgba(161, 161, 170, 0.12);
+  color: var(--muted);
+  border: 1px solid var(--muted);
+}
+
+.plan-task-card {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-task-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.plan-task-title {
+  font-size: 12px;
+  color: var(--text);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.plan-task-attempts {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* Status badges: one distinct color per PlanTask.status (7 total), reusing
+   the existing Hi-Vis palette vars so nothing new is introduced. */
+.plan-status-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.plan-status-badge--pending {
+  background: rgba(113, 113, 122, 0.15);
+  color: var(--status-idle);
+  border: 1px solid var(--status-idle);
+}
+
+.plan-status-badge--active {
+  background: rgba(163, 230, 53, 0.15);
+  color: var(--status-active);
+  border: 1px solid var(--status-active);
+}
+
+.plan-status-badge--verifying {
+  background: rgba(167, 139, 250, 0.15);
+  color: var(--col-mcp);
+  border: 1px solid var(--col-mcp);
+}
+
+.plan-status-badge--done {
+  background: rgba(255, 176, 32, 0.15);
+  color: var(--status-done);
+  border: 1px solid var(--status-done);
+}
+
+.plan-status-badge--needs_fix {
+  background: rgba(251, 113, 133, 0.15);
+  color: var(--status-error);
+  border: 1px solid var(--status-error);
+}
+
+.plan-status-badge--skipped {
+  background: rgba(161, 161, 170, 0.15);
+  color: var(--muted);
+  border: 1px solid var(--muted);
+}
+
+.plan-status-badge--blocked {
+  background: rgba(45, 212, 191, 0.15);
+  color: var(--col-tasks);
+  border: 1px solid var(--col-tasks);
+}
+
+.plan-task-details {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.plan-task-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.plan-task-detail {
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.plan-task-criteria {
+  margin: 4px 0 0 16px;
+  line-height: 1.5;
+}
+
+.plan-task-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.plan-task-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.plan-task-btn--skip {
+  background: rgba(161, 161, 170, 0.10);
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+.plan-task-btn--skip:hover:not(:disabled) {
+  background: rgba(161, 161, 170, 0.22);
+}
+
+.plan-task-btn--approve {
+  background: rgba(163, 230, 53, 0.12);
+  border-color: var(--status-active);
+  color: var(--status-active);
+}
+
+.plan-task-btn--approve:hover:not(:disabled) {
+  background: rgba(163, 230, 53, 0.26);
+}
+
 /* Status progress bar */
 td.col-status {
   width: 70px;

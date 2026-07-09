@@ -151,6 +151,7 @@ export const MSG = {
   OVERRIDE_TASK: "OVERRIDE_TASK",
   REQUEST_PLAN: "REQUEST_PLAN",
   PLAN_STATE: "PLAN_STATE",
+  SET_PROJECT_PLAN_ENABLED: "SET_PROJECT_PLAN_ENABLED",
 } as const;
 
 /** Union of every wire string this module knows about (either direction). */
@@ -322,5 +323,12 @@ export const MSG_SCHEMAS = {
 
   REQUEST_PLAN: z.object({}).passthrough(),
 
-  PLAN_STATE: z.object({ plan: ProjectPlanSchema.nullable() }).passthrough(),
+  // `enabled` mirrors the projectPlanEnabled toggle so the webview always
+  // knows whether to show the Project Plan section, even when `plan` is
+  // null (feature off, or on with no plan.json yet).
+  PLAN_STATE: z
+    .object({ plan: ProjectPlanSchema.nullable(), enabled: z.boolean() })
+    .passthrough(),
+
+  SET_PROJECT_PLAN_ENABLED: z.object({ enabled: z.boolean() }).passthrough(),
 } as const;
