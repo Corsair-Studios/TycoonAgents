@@ -81,14 +81,15 @@ test('rivalBoardFrameKeys yields one rival_<id> key per enemy row', () => {
 test('rival prompt is a 5x4 compact board with 2-frame walk + 3-frame attack per enemy row', () => {
   const boards = createRivalBoardRows(rivalSpecs());
   const prompt = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', boards[0]);
-  assert.match(prompt, /512 x 512 pixels \(1:1\)/i);
-  assert.match(prompt, /5-column by 4-row logical grid with 20 visually equal cells/i);
+  assert.match(prompt, /one perfect SQUARE \(1:1 aspect ratio\)/i);
+  assert.match(prompt, /5-column by 4-row grid of 20 equal cells/i);
   assert.match(prompt, /2-frame side-view WALK cycle/i);
   assert.match(prompt, /3-frame ATTACK/i);
   assert.match(prompt, /Row 1 \(Cells 1-5\): the enemy \*\*"Rival 1"\*\*/i);
   assert.match(prompt, /Row 4 \(Cells 16-20\): the enemy \*\*"Rival 4"\*\*/i);
   assert.match(prompt, /flips? cleanly/i);
-  assert.match(prompt, /approximately 102 pixels wide and 128 pixels tall/i);
+  assert.match(prompt, /1\/5 of the canvas width wide and 1\/4 of the canvas height tall/i);
+  assert.match(prompt, /taller than it is wide \(about 1\.25:1\)/i);
   assert.match(prompt, /animated IN PLACE/i);
   assert.match(prompt, /same horizontal center.*same feet baseline.*same overall body scale/i);
   assert.match(prompt, /drifts, re-centers, or changes scale.*incorrect result/i);
@@ -98,7 +99,7 @@ test('rival prompt scales its board contract and row count to a partial (3-row) 
   const threeRivals = rivalSpecs().slice(0, 3);
   const boards = createRivalBoardRows(threeRivals);
   const prompt = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', boards[0]);
-  assert.match(prompt, /5-column by 3-row logical grid with 15 visually equal cells/i);
+  assert.match(prompt, /5-column by 3-row grid of 15 equal cells/i);
   assert.match(prompt, /Each of the 3 ROWS is ONE distinct named enemy/i);
 });
 
@@ -106,7 +107,7 @@ test('character prompt enforces the production sprite-board mime contracts', () 
   const prompt = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid');
   assert.match(prompt, /EXACT SAME character[\s\S]*\*\*"Nova"\*\* from the \*\*Night Grid\*\* theme/i);
   assert.match(prompt, /exact \*\*5-column by 4-row grid\*\* containing \*\*20 equal-sized cells\*\*/i);
-  assert.match(prompt, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
+  assert.match(prompt, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
   assert.match(prompt, /TOOL HANDLING ANIMATION[\s\S]*tool always swings through empty magenta space/i);
   assert.match(prompt, /INVISIBLE CHAIR CONTRACT \(ABSOLUTE\)[\s\S]*support is completely invisible/i);
   assert.match(prompt, /EMPTY TARGET CONTRACT \(HIGHEST PRIORITY\)[\s\S]*No construction result/i);
@@ -156,8 +157,8 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
       display_name: `Object ${index + 1}`,
     })),
   );
-  assert.match(objects, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
-  assert.match(objects, /exact 4-column by 5-row logical grid with 20 visually equal cells/i);
+  assert.match(objects, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
+  assert.match(objects, /4-column by 5-row grid of 20 equal cells/i);
   assert.match(objects, /Row 5: OBJECT — Object 5/i);
   assert.match(objects, /four sequential animation frames/i);
   assert.match(objects, /do not hold or duplicate frames/i);
@@ -166,7 +167,9 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
   assert.match(objects, /at least 95% of the subject's pixels stay identical/i);
   assert.match(objects, /appear static/i);
   assert.match(objects, /width must be identical in every frame/i);
-  assert.match(objects, /128 pixels wide and approximately 102 pixels tall/i);
+  assert.match(objects, /1\/4 of the canvas width wide and 1\/5 of the canvas height tall/i);
+  assert.match(objects, /wider than it is tall \(about 1\.25:1\)/i);
+  assert.match(objects, /never touch the cell's bottom edge/i);
 
   const finalObjects = buildObjectAtlasPrompt('industrial', 'Factory', [
     ...Array.from({ length: 3 }, (_unused, index) => ({
@@ -186,8 +189,8 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
     'Factory',
     Array.from({ length: 16 }, (_unused, index) => `Expression ${index + 1}`),
   );
-  assert.match(expressions, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
-  assert.match(expressions, /exact 4-column by 4-row logical grid with 16 visually equal cells/i);
+  assert.match(expressions, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
+  assert.match(expressions, /4-column by 4-row grid of 16 equal cells/i);
   assert.match(expressions, /Cell 16: Expression 16/);
 
   const achievements = buildAchievementAtlasPrompt(
@@ -195,8 +198,8 @@ test('aggregate prompts define animated object rows, 16 expressions, and 20 badg
     'Factory',
     Array.from({ length: 20 }, (_unused, index) => `Badge ${index + 1}`),
   );
-  assert.match(achievements, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
-  assert.match(achievements, /exact 5-column by 4-row logical grid with 20 visually equal cells/i);
+  assert.match(achievements, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
+  assert.match(achievements, /5-column by 4-row grid of 20 equal cells/i);
   assert.match(achievements, /Cell 20: Badge 20/);
   assert.match(achievements, /do not include unlock requirements/i);
 });
@@ -307,9 +310,10 @@ test('createDecorBoardRows maps 9 decor items onto the 4x4 seat/decor/anim/proje
 
 test('background decor prompt describes seats, static decor, one animated row, and a ranged-fire projectile row', () => {
   const prompt = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', createDecorBoardRows(decorSpecs()));
-  assert.match(prompt, /outer image canvas is exactly \*\*512 x 512 pixels \(1:1\)\*\*/i);
-  assert.match(prompt, /exact 4-column by 4-row logical grid with 16 visually equal cells/i);
-  assert.match(prompt, /128 pixels wide and 128 pixels tall/i);
+  assert.match(prompt, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
+  assert.match(prompt, /4-column by 4-row grid of 16 equal cells/i);
+  assert.match(prompt, /Each cell is a perfect square/i);
+  assert.match(prompt, /never touch the cell's bottom edge/i);
   assert.match(prompt, /Row 1 \(Cells 1-4\): FOUR distinct STATIC SITTABLE SEATS/i);
   assert.match(prompt, /character will visibly sit ON/i);
   assert.match(prompt, /Row 2 \(Cells 5-8\): FOUR distinct STATIC decor/i);

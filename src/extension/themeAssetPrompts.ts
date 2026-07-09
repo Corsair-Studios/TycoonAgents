@@ -165,7 +165,7 @@ export function buildRivalAtlasPrompt(
     `The attack is a playful, non-graphic, non-contact motion suitable for a general-audience video game: the enemy swings/lunges through empty ${spaceWord} space and never touches another subject.`,
     'On ranged-attack frames, do NOT draw any muzzle flash, gunfire, muzzle smoke, tracer, projectile, spark, or weapon-discharge effect. Show only the enemy\'s firing pose and recoil — the projectile is rendered separately by the game, so a drawn flash is wrong and must be omitted.',
     `The ENTIRE weapon — including any melee blade, sword, swing arc, gun barrel, or muzzle — must stay fully INSIDE the enemy's own cell with clear ${spaceWord} padding on every side. No part of the weapon, blade, swing arc, or effect may extend to the cell edge or cross into an adjacent cell in ANY frame, including the strike/lunge peak (cell 4). If a swing would reach the cell boundary, shorten or angle it so it stays within the cell.`,
-    `Center each enemy in its cell with its feet near the cell bottom and generous ${spaceWord} padding; nothing crosses a cell boundary.`,
+    `Center each enemy in its cell with its feet just above the cell bottom (leave a thin strip of empty ${spaceWord} background below the feet — never touching the cell's bottom edge) and generous ${spaceWord} padding; nothing crosses a cell boundary.`,
     `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
     '',
     `Creative direction: ${creativeDirection}`,
@@ -193,15 +193,20 @@ export const CHARACTER_TARGET_CONTENT_HEIGHT = 104;
 export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
 
 function boardContract(columns: number, rows: number, background: BoardBackgroundMode = 'magenta'): string {
-  const cellWidth = 512 / columns;
-  const cellHeight = 512 / rows;
-  const widthPhrase = `${Number.isInteger(cellWidth) ? '' : 'approximately '}${Math.round(cellWidth)} pixels wide`;
-  const heightPhrase = `${Number.isInteger(cellHeight) ? '' : 'approximately '}${Math.round(cellHeight)} pixels tall`;
+  // Geometry is stated in canvas FRACTIONS, not absolute pixels: image models
+  // return whatever resolution the API grants (e.g. 1024x1024), so any pixel
+  // number we state is a lie at generation time and gets ignored or, worse,
+  // followed at the wrong scale. Fractions stay true at every resolution.
+  const shapePhrase = columns === rows
+    ? 'a perfect square'
+    : columns < rows
+      ? `wider than it is tall (about ${(rows / columns).toFixed(2)}:1)`
+      : `taller than it is wide (about ${(columns / rows).toFixed(2)}:1)`;
   return [
-    'The outer image canvas is exactly **512 x 512 pixels (1:1)**. Do not crop or change the canvas aspect ratio.',
-    `Inside that square canvas is an exact ${columns}-column by ${rows}-row logical grid with ${columns * rows} visually equal cells.`,
-    `Each cell is therefore ${widthPhrase} and ${heightPhrase}; compose every subject to fit that cell shape.`,
-    'Keep every subject fully inside its own cell with generous empty padding; nothing may cross a cell boundary.',
+    'The outer image canvas is one perfect SQUARE (1:1 aspect ratio). Do not crop or change the canvas aspect ratio.',
+    `Divide the full canvas into an exact ${columns}-column by ${rows}-row grid of ${columns * rows} equal cells: every cell is exactly 1/${columns} of the canvas width wide and 1/${rows} of the canvas height tall.`,
+    `Each cell is ${shapePhrase}; compose every subject to fit that cell shape.`,
+    'Keep every subject fully inside its own cell with clear empty padding on ALL FOUR sides — top, bottom, left, and right. The subject must never touch or cross any cell edge; anything drawn past a cell boundary is sliced off flat by the game, so a subject that touches its cell\'s bottom edge is an incorrect result.',
     'Do not draw grid lines, labels, numbers, captions, borders, scenery, shadows, or extra subjects.',
     background === 'transparent'
       ? 'Paint every unused pixel fully transparent (alpha 0) — no texture, gradient, or background fill of any kind.'
@@ -219,7 +224,7 @@ export function buildCharacterAtlasPrompt(
   return [
     'Create one production sprite board, not a poster, illustration, concept sheet, or character lineup.',
     '',
-    'The outer image canvas is exactly **512 x 512 pixels (1:1)**. Do not crop the canvas to the 5:4 grid bounds.',
+    'The outer image canvas is one perfect SQUARE (1:1 aspect ratio). Do not crop the canvas to the 5:4 grid bounds.',
     'Inside that square canvas is an exact **5-column by 4-row grid** containing **20 equal-sized cells**.',
     '',
     'Every character must remain completely inside its own cell with generous empty padding on all sides. Nothing may cross cell boundaries.',
@@ -591,7 +596,7 @@ export function buildObjectAtlasPrompt(
     'These are inanimate objects. The subject\'s width must be identical in every frame of the row — the leftmost and rightmost pixels of the subject stay in the same columns across all frames. Permitted animation is limited to lighting and glow changes, flicker, color shifts, and small rotating or moving internal parts; the overall body of the object never moves, stretches, or changes size. A subject whose width grows or shrinks between frames is an incorrect result.',
     'Every cell must be a distinct real generated frame; do not hold or duplicate frames.',
     'Make cell 4 flow seamlessly back to cell 1. Keep motion subtle and the body stationary.',
-    'Center each object with its lowest contact point near the cell bottom. Preserve relative scale across every board.',
+    'Center each object with its lowest contact point just above the cell bottom, leaving a clear strip of empty background (about 5% of the cell height) beneath it — the object must never touch the cell\'s bottom edge, or its base will be sliced off flat. Preserve relative scale across every board.',
     ...(hasPoof ? [
       '',
       'POOF ROW: a four-frame one-shot reveal, centered and large enough to cover a full object.',
@@ -670,7 +675,7 @@ export function buildBackgroundDecorPrompt(
     '  The projectile and its effects must stay locked to the same cell center across all four frames — it may rotate or pulse in place, but its overall footprint/diameter stays constant across frames (no growing or shrinking), and it must never shift, slide, or re-center within the cell. A projectile that drifts off-center or grows or shrinks between frames is an incorrect result.',
     '',
     `Every cell holds exactly one subject fully inside its own cell with generous ${spaceWord} padding; nothing crosses a cell boundary.`,
-    'Center each item with its lowest contact point near the cell bottom. Keep a consistent isometric camera, lighting, and scale.',
+    'Center each item with its lowest contact point just above the cell bottom, leaving a clear strip of empty background (about 5% of the cell height) beneath it — the item must never touch the cell\'s bottom edge, or its base will be sliced off flat. Keep a consistent isometric camera, lighting, and scale.',
     'Do not draw characters, people, UI, captions, letters, numbers, or grid lines. No object may straddle two cells.',
     `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
     '',
