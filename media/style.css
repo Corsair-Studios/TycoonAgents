@@ -3526,6 +3526,31 @@ button.theme-review-preview:focus-visible::after {
   margin-top: 4px;
 }
 
+/* Custom-mode caution + empty-prompt hint: same amber accent as the
+   sanitizer-trim notice above, since both flag "read this before you retry". */
+.theme-review-custom-warning {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.theme-review-custom-warning[hidden] {
+  display: none;
+}
+
+.theme-review-prompt-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.theme-review-prompt-row .theme-review-prompt {
+  flex: 1;
+  min-width: 0;
+}
+
+.theme-review-copy-prompt {
+  flex: 0 0 auto;
+}
+
 .theme-review-mode {
   flex: 1;
 }

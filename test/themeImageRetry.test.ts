@@ -97,6 +97,41 @@ test('sanitizeRetryNotes salvages the tail even when the pasted prompt only trip
   );
 });
 
+test('custom mode returns the notes verbatim, ignoring the template and creative-direction wrapper', () => {
+  assert.equal(
+    selectThemeImageRetryPrompt(
+      'Fresh base prompt built from the CURRENT template + manifest.',
+      'replacement',
+      '  A full hand-written generation prompt, board layout and all.  ',
+      'custom',
+    ),
+    'A full hand-written generation prompt, board layout and all.',
+  );
+});
+
+test('custom mode still requires non-empty notes', () => {
+  assert.throws(
+    () => selectThemeImageRetryPrompt('Original', 'replacement', '   ', 'custom'),
+    /custom mode needs a prompt/i,
+  );
+});
+
+test('custom mode bypasses the pasted-prompt sanitizer — a full prompt is expected verbatim', () => {
+  // Text that would normally trip looksLikePastedGenerationPrompt/sanitizeRetryNotes
+  // (board header + multiple "Cell N:" lines) must pass through untouched in
+  // 'custom' mode, since selectThemeImageRetryPrompt never calls the sanitizer.
+  const pastedPrompt = [
+    'Create one 512 x 512 sprite board on a solid magenta background.',
+    'Cell 1: idle pose facing right.',
+    'Cell 2: walk cycle frame one.',
+    'Creative direction: a grizzled space pirate with a cybernetic eye.',
+  ].join('\n');
+  assert.equal(
+    selectThemeImageRetryPrompt('Fresh base', 'replacement', pastedPrompt, 'custom'),
+    pastedPrompt,
+  );
+});
+
 test('sanitized notes feed into augment mode the same way as hand-typed notes', () => {
   const pastedPrompt = [
     'Create one 512 x 512 sprite board on a solid magenta background.',

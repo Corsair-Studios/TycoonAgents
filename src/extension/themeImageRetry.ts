@@ -1,4 +1,4 @@
-export type ThemeImageRetryMode = 'augment' | 'replace' | 'retry';
+export type ThemeImageRetryMode = 'augment' | 'replace' | 'retry' | 'custom';
 
 /** Notes longer than this are treated as a probable pasted full prompt. */
 const RETRY_NOTES_MAX_CHARS = 4000;
@@ -71,6 +71,13 @@ export function sanitizeRetryNotes(notes: string): SanitizedRetryNotes {
  *
  * Because a fresh base is always constructible from the manifest, 'retry' can
  * no longer fail with "no saved prompt" — that error is gone.
+ *
+ * 'custom' is the power-user escape hatch: the notes ARE the entire
+ * generation prompt, verbatim, with no board/cell template and no
+ * creative-direction wrapper. `freshBasePrompt`/`replacementPrompt` are
+ * ignored in this mode — the caller (retryThemeImage) still builds them
+ * unconditionally since that's cheap string composition, but they play no
+ * role in what gets sent to the image provider.
  */
 export function selectThemeImageRetryPrompt(
   freshBasePrompt: string,
@@ -81,6 +88,10 @@ export function selectThemeImageRetryPrompt(
   if (mode === 'retry') return freshBasePrompt;
 
   const notes = feedback.trim();
+  if (mode === 'custom') {
+    if (!notes) throw new Error('Custom mode needs a prompt.');
+    return notes;
+  }
   if (!notes) throw new Error('Add retry instructions before generating a replacement.');
   return mode === 'augment'
     ? `${freshBasePrompt}\n\nREVISION NOTES — correct the previous result:\n${notes}`

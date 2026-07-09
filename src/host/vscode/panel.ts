@@ -997,13 +997,20 @@ export class TycoonPanel {
               ? "replace"
               : payload?.mode === "retry"
                 ? "retry"
-                : "augment";
+                : payload?.mode === "custom"
+                  ? "custom"
+                  : "augment";
             // Only user-authored notes for 'replace'/'augment' feed into the next
             // prompt's creative direction — 'retry' reuses the saved prompt verbatim
-            // and ignores feedback, so it is exempt from this guard.
+            // and ignores feedback, so it is exempt from this guard. 'custom' is the
+            // power-user escape hatch: the notes ARE the whole prompt, so the
+            // sanitizer (which guards against pasted full prompts) must NOT run —
+            // a full pasted prompt is exactly what this mode expects.
             let retryFeedback = payload?.feedback ?? "";
             let retryNotesTrimmed = false;
-            if (retryMode !== "retry") {
+            if (retryMode === "custom") {
+              if (!retryFeedback.trim()) throw new Error("Custom mode needs a prompt.");
+            } else if (retryMode !== "retry") {
               const sanitized = sanitizeRetryNotes(payload?.feedback ?? "");
               retryFeedback = sanitized.notes;
               retryNotesTrimmed = sanitized.trimmed;

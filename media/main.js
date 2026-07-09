@@ -2682,6 +2682,17 @@
       const feedbackHint = document.createElement("div");
       feedbackHint.className = "theme-review-feedback-hint";
       feedbackHint.textContent = "Notes only — don't paste a full prompt; layout and art rules are added automatically.";
+      // Custom mode bypasses the template + sanitizer entirely — the notes ARE
+      // the prompt, so the user is on the hook for grid/background/isolation
+      // rules the template would otherwise guarantee. Shown only in custom mode.
+      const customModeWarning = document.createElement("div");
+      customModeWarning.className = "theme-review-feedback-hint theme-review-custom-warning";
+      customModeWarning.textContent = "Advanced: your notes become the ENTIRE prompt. You must keep the theme's grid (columns×rows), the magenta background, one subject per cell, and no grid lines — or slicing will fail. Tip: Copy the current prompt below and edit it.";
+      customModeWarning.hidden = true;
+      const customModeEmptyHint = document.createElement("div");
+      customModeEmptyHint.className = "theme-review-feedback-hint theme-review-custom-warning";
+      customModeEmptyHint.textContent = "Custom mode needs a prompt.";
+      customModeEmptyHint.hidden = true;
       // Object/decor/rival board rows are always drawn from the manifest's
       // buildable_objects / decor_objects / roster_rivals display names — the
       // "Names" editor below is the only way to rename them (notes above are
@@ -2706,9 +2717,13 @@
       retryOption.value = "retry";
       retryOption.textContent = "No notes, just retry";
       retryOption.disabled = !item.prompt;
+      const customOption = document.createElement("option");
+      customOption.value = "custom";
+      customOption.textContent = "Full prompt (advanced) — use my notes verbatim";
       mode.appendChild(augmentOption);
       mode.appendChild(replaceOption);
       mode.appendChild(retryOption);
+      mode.appendChild(customOption);
       mode.value = "replace";
       if (item.generation_error) mode.value = "replace";
       if (savedDraft?.mode
@@ -2728,7 +2743,8 @@
       // An inactive run may leave a valid review item without an image. Let the
       // user recover that checkpoint directly; during an active run, only the
       // exact item paused at the review gate may issue a replacement request.
-      retryBtn.disabled = retryBusy || Boolean(payload.generation_active && !isCurrentReviewGate);
+      const retryBtnBaseDisabled = retryBusy || Boolean(payload.generation_active && !isCurrentReviewGate);
+      retryBtn.disabled = retryBtnBaseDisabled;
       retryBtn.title = !item.image_src && !payload.generation_active
         ? "Generate this unfinished image using the notes above."
         : payload.generation_active && !isCurrentReviewGate
@@ -2762,10 +2778,16 @@
       });
       const updateRetryMode = () => {
         const retriesSavedPrompt = mode.value === "retry";
+        const isCustomMode = mode.value === "custom";
         feedback.disabled = retriesSavedPrompt;
         if (retriesSavedPrompt) feedback.removeAttribute("aria-invalid");
+        customModeWarning.hidden = !isCustomMode;
+        const customEmpty = isCustomMode && !feedback.value.trim();
+        customModeEmptyHint.hidden = !customEmpty;
+        retryBtn.disabled = retryBtnBaseDisabled || customEmpty;
       };
       mode.addEventListener("change", updateRetryMode);
+      feedback.addEventListener("input", updateRetryMode);
       updateRetryMode();
       // Re-slice re-runs slicing on the saved raw atlas with no image-API cost.
       // Only available when the theme saved its original atlas (older themes did not).
@@ -2811,6 +2833,29 @@
       promptDetails.appendChild(promptSummary);
       promptDetails.appendChild(promptText);
 
+      // Lets the user grab the exact assembled prompt as a starting point for
+      // custom mode (or any other manual edit), without retyping it by hand.
+      const copyPromptBtn = document.createElement("button");
+      copyPromptBtn.type = "button";
+      copyPromptBtn.className = "skill-btn theme-review-copy-prompt";
+      copyPromptBtn.dataset.idleText = "Copy prompt";
+      copyPromptBtn.textContent = "Copy prompt";
+      copyPromptBtn.disabled = !item.prompt;
+      copyPromptBtn.title = item.prompt
+        ? "Copy the exact assembled prompt to the clipboard."
+        : "No prompt was saved for this image.";
+      copyPromptBtn.addEventListener("click", () => {
+        if (!item.prompt || !navigator.clipboard?.writeText) return;
+        navigator.clipboard.writeText(item.prompt).then(() => {
+          copyPromptBtn.textContent = "Copied!";
+          setTimeout(() => { copyPromptBtn.textContent = copyPromptBtn.dataset.idleText; }, 1500);
+        }).catch(() => {});
+      });
+      const promptRow = document.createElement("div");
+      promptRow.className = "theme-review-prompt-row";
+      promptRow.appendChild(promptDetails);
+      promptRow.appendChild(copyPromptBtn);
+
       body.appendChild(heading);
       body.appendChild(meta);
       if (generationError) body.appendChild(generationError);
@@ -2819,10 +2864,12 @@
       body.appendChild(decisionRow);
       body.appendChild(feedback);
       body.appendChild(feedbackHint);
+      body.appendChild(customModeWarning);
+      body.appendChild(customModeEmptyHint);
       body.appendChild(retryRow);
       body.appendChild(retryStatus);
       body.appendChild(retryWarning);
-      body.appendChild(promptDetails);
+      body.appendChild(promptRow);
       card.appendChild(preview);
       card.appendChild(body);
       themeImageReviewList.appendChild(card);
