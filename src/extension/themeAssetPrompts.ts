@@ -618,6 +618,7 @@ export function buildObjectAtlasPrompt(
     ] : []),
     '',
     'Use crisp retro pixel art with consistent viewpoint, lighting, rendering style, and camera distance.',
+    'CAMERA (applies to every object identically): a classic 2:1 pixel-art isometric interior view — vertical lines stay perfectly vertical, horizontal surfaces recede along a shallow 2:1 diagonal (about 27 degrees), viewer looking down at about 30 degrees. Never draw an object flat-on / front-facing — an object whose perspective does not match the room\'s isometric angle is an incorrect result.',
     '',
     `Creative direction: ${creativeDirection}`,
   ].join('\n');
@@ -682,6 +683,7 @@ export function buildBackgroundDecorPrompt(
     '',
     `Every cell holds exactly one subject fully inside its own cell with generous ${spaceWord} padding; nothing crosses a cell boundary.`,
     'Center each item with its lowest contact point just above the cell bottom, leaving a clear strip of empty background (about 5% of the cell height) beneath it — the item must never touch the cell\'s bottom edge, or its base will be sliced off flat. Keep a consistent isometric camera, lighting, and scale.',
+    'CAMERA (applies to every item identically): a classic 2:1 pixel-art isometric interior view — vertical lines stay perfectly vertical, horizontal surfaces and wall tops recede along a shallow 2:1 diagonal (about 27 degrees), viewer looking down at about 30 degrees. Wall-hung items (banners, signs, screens, mounted lights) hang on an ANGLED wall plane in that same projection: their top edge recedes along the 2:1 diagonal exactly like the room\'s walls. Never draw any item flat-on / front-facing — an item whose perspective does not match the room\'s isometric angle is an incorrect result.',
     `Size every item to a strict height budget: it fills about 75% of its cell's height — an item taller than 80% of its cell height is an incorrect result.`,
     `When the board is complete, a continuous visible strip of empty ${spaceWord} must separate every row and every column — check the finished image for an unbroken ${spaceWord} gutter along EVERY horizontal row boundary; any item touching that gutter is drawn too large and is an incorrect result.`,
     'A naturally TALL item (a banner, tower, rack, standing screen, or any top-heavy subject) must be SCALED DOWN to fit entirely inside its cell with the required top and bottom margins intact — never stretch it to fill the cell height, and never let it reach a cell edge to preserve height. Prefer a smaller, fully-contained item over a taller one that crowds or touches a boundary; compact staging beats height. A tall item that touches or crosses any cell edge is an incorrect result.',

@@ -152,7 +152,7 @@ export async function sliceAndNormalizeAtlas(
       defringeMagentaEdges(cell);
       despillMagentaEdges(cell);
       if (row > 0) {
-        removeRowBoundarySpill(cell, cells[slot_id - grid.columns].cell);
+        reclaimRowBoundarySpill(cell, cells[slot_id - grid.columns]);
       }
       if (col > 0) {
         removeColumnBoundarySpill(cell, cells[slot_id - 1].cell);
@@ -237,7 +237,14 @@ export async function sliceAndNormalizeAtlas(
       const maxY = groupBounds?.maxY ?? cellInfo.maxY;
       const bw = maxX - minX + 1;
       const bh = maxY - minY + 1;
-      const scale = Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh);
+      // Row-boundary reclamation (reclaimRowBoundarySpill) can grow a cell's
+      // content taller than the fixed 128px output frame (an oversized subject's
+      // reclaimed base pixels are appended below its original crop). maxContentExtent
+      // already guards this for every production grid, but cap against the frame's
+      // own dimensions too so a grid that omits maxContentExtent still scales the
+      // now-taller content down to fit instead of letting destY go negative and
+      // silently clip the top of the sprite at composite time below.
+      const scale = Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh, 128 / bw, 128 / bh);
       const resizedWidth = Math.max(1, Math.round(bw * scale));
       const resizedHeight = Math.max(1, Math.round(bh * scale));
       // Grouped bounds (normalizationGroups) union minX/maxX/minY/maxY across every
@@ -623,19 +630,49 @@ function defringeMagentaEdges(cell: Jimp): void {
 }
 
 /**
- * Image models sometimes let the feet or equipment from one row cross into
- * the row below. Once the atlas is sliced, that overflow looks like a small,
- * disconnected object at the top of the next cell and would otherwise be
- * normalized along with the real sprite.
- *
- * Remove only a minor top-connected component that continues opaque pixels
- * from the preceding cell. If the component is most of the current cell's
- * content, keep it: that is more likely a badly framed but recoverable sprite
- * than row-boundary debris.
+ * Widest slice, as a fraction of the LOWER cell's own height, searched below a
+ * row boundary for base pixels an oversized subject spilled downward out of
+ * the cell above. Pixels found connected within this window are reclaimed
+ * into the upper cell (see reclaimRowBoundarySpill) instead of being
+ * discarded, so a subject drawn taller than its grid cell keeps its full,
+ * tapered base rather than being flat-cut at the grid line. Spill connected
+ * pixels found deeper than this window are still discarded, same as before
+ * this feature existed — a component that reaches this far past the boundary
+ * reads as noise, not a recoverable base.
  */
-function removeRowBoundarySpill(cell: Jimp, cellAbove: Jimp): void {
+const ROW_OVERFLOW_RECLAIM_FRACTION = 0.2;
+
+/**
+ * Image models sometimes draw a subject taller than its grid cell, so its
+ * base crosses the row boundary and lands in the top strip of the cell below.
+ * Once the atlas is sliced, that overflow looks like a small, disconnected
+ * component at the top of the next cell.
+ *
+ * Find only a minor top-connected component in `cell` that continues opaque
+ * pixels from `cellAboveInfo`'s bottom row (8-connected flood from that
+ * boundary-adjacent seed). If the component is most of `cell`'s own content,
+ * leave it alone: that is more likely a badly framed but recoverable sprite
+ * that happens to touch the cell top than row-boundary debris.
+ *
+ * Otherwise the component is genuine spill. Pixels within
+ * ROW_OVERFLOW_RECLAIM_FRACTION of `cell`'s own height are reclaimed: copied
+ * into a taller replacement for `cellAboveInfo.cell` (grown downward, below
+ * its previous bottom edge, at the same x/relative-y they held in `cell`) and
+ * cleared from `cell`, so the overflow is moved rather than duplicated.
+ * `cellAboveInfo`'s cached content bounds are recomputed to cover the newly
+ * added pixels. Any connected pixels deeper than the window are simply
+ * cleared from `cell`, matching this function's pre-reclamation behavior.
+ *
+ * Where a component seeds off `cellAboveInfo`'s bottom row by coincidence
+ * (the lower cell's own subject happens to touch it) rather than genuine
+ * continuation, the majority-content guard above already protects it; for a
+ * true minority spill component, only pixels actually connected to that seed
+ * are ever claimed, so a separate subject elsewhere in `cell` is untouched.
+ */
+function reclaimRowBoundarySpill(cell: Jimp, cellAboveInfo: SliceCell): void {
   const width = cell.bitmap.width;
   const height = cell.bitmap.height;
+  const cellAbove = cellAboveInfo.cell;
   if (width !== cellAbove.bitmap.width) return;
 
   const visited = new Uint8Array(width * height);
@@ -681,9 +718,43 @@ function removeRowBoundarySpill(cell: Jimp, cellAbove: Jimp): void {
     }
   }
 
-  // Never erase the primary subject if it happens to touch the cell's top.
+  // Never touch the primary subject if it happens to touch the cell's top.
   if (queue.length * 2 >= opaqueCount) return;
-  for (const offset of queue) cell.bitmap.data[offset * 4 + 3] = 0;
+
+  const reclaimWindowPx = Math.max(1, Math.round(height * ROW_OVERFLOW_RECLAIM_FRACTION));
+  const claimed: number[] = [];
+  let maxClaimedY = -1;
+  for (const offset of queue) {
+    const y = Math.floor(offset / width);
+    if (y < reclaimWindowPx) {
+      claimed.push(offset);
+      if (y > maxClaimedY) maxClaimedY = y;
+    } else {
+      cell.bitmap.data[offset * 4 + 3] = 0;
+    }
+  }
+  if (claimed.length === 0) return;
+
+  const oldAboveHeight = cellAbove.bitmap.height;
+  const grown = new Jimp(cellAbove.bitmap.width, oldAboveHeight + maxClaimedY + 1, 0x00000000);
+  // Same width, contiguous rows: a straight buffer copy reproduces the
+  // original cell's pixels starting at row 0 of the grown bitmap.
+  grown.bitmap.data.set(cellAbove.bitmap.data, 0);
+  for (const offset of claimed) {
+    const x = offset % width;
+    const y = Math.floor(offset / width);
+    const srcIdx = offset * 4;
+    const destIdx = ((oldAboveHeight + y) * grown.bitmap.width + x) * 4;
+    grown.bitmap.data[destIdx] = cell.bitmap.data[srcIdx];
+    grown.bitmap.data[destIdx + 1] = cell.bitmap.data[srcIdx + 1];
+    grown.bitmap.data[destIdx + 2] = cell.bitmap.data[srcIdx + 2];
+    grown.bitmap.data[destIdx + 3] = cell.bitmap.data[srcIdx + 3];
+    // Claimed by the cell above; clear it here so it is not left behind (and
+    // not double-counted when this cell's own content bounds are scanned).
+    cell.bitmap.data[srcIdx + 3] = 0;
+  }
+  cellAboveInfo.cell = grown;
+  recomputeCellBounds(cellAboveInfo);
 }
 
 /**

@@ -400,3 +400,170 @@ test('despill leaves a legitimately purple interior region untouched', async () 
   // The interior purple patch (4 source pixels) survives byte-for-byte.
   assert.equal(purplePixels, 4);
 });
+
+test('row-overflow reclamation moves a spilled base into the upper cell, keeping the complete tapered subject', async () => {
+  // A 100px cell, so the ~20% reclaim window covers 20px below the boundary.
+  const cellSize = 100;
+  const atlas = new Jimp(cellSize * 2, cellSize * 2, 0xff00ffff);
+  const BLUE = 0x1950a0ff;
+  const RED = 0xc82828ff;
+
+  // The subject's torso (slot 0, row0/col0): solid, touching the cell's own
+  // bottom row (y=99) — this is what would previously produce a flat-cut base.
+  atlas.scan(30, 10, 40, 90, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(BLUE, idx);
+  });
+  // The subject's tapering base actually drawn by the model 15 rows into the
+  // cell below (slot 2, row1/col0), connected to the torso across the
+  // boundary and narrowing row by row (never a flat cut).
+  for (let y = 0; y < 15; y++) {
+    atlas.scan(30 + y, cellSize + y, 40 - 2 * y, 1, function (_x, _y2, idx) {
+      this.bitmap.data.writeUInt32BE(BLUE, idx);
+    });
+  }
+  // The lower cell's own unrelated subject, well below the reclaim window and
+  // spatially separate from the base, so it must be left untouched.
+  atlas.scan(70, cellSize + 50, 20, 40, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(RED, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(
+    await atlas.getBufferAsync(Jimp.MIME_PNG),
+    {},
+    { columns: 2, rows: 2 },
+  );
+
+  const torsoFrame = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+  let minY = Infinity;
+  let maxY = -1;
+  const rowWidth = new Map<number, number>();
+  torsoFrame.scan(0, 0, 128, 128, function (_x, y, idx) {
+    if (this.bitmap.data[idx + 3] === 0) return;
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+    rowWidth.set(y, (rowWidth.get(y) ?? 0) + 1);
+  });
+
+  // The reclaimed base extends the sliced content by the full drawn height
+  // (90-row torso + 15-row base), rather than being flat-cut at the boundary.
+  assert.equal(maxY - minY + 1, 105);
+  const topRowWidth = rowWidth.get(minY)!;
+  const bottomRowWidth = rowWidth.get(maxY)!;
+  assert.equal(topRowWidth, 40);
+  // The bottom row is the narrow end of the taper (12px), not a flat 40px cut.
+  assert.equal(bottomRowWidth, 12);
+  assert.ok(bottomRowWidth < topRowWidth);
+});
+
+test('row-overflow reclamation leaves the lower cell\'s own subject untouched', async () => {
+  const cellSize = 100;
+  const atlas = new Jimp(cellSize * 2, cellSize * 2, 0xff00ffff);
+  const BLUE = 0x1950a0ff;
+  const RED = 0xc82828ff;
+
+  atlas.scan(30, 10, 40, 90, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(BLUE, idx);
+  });
+  for (let y = 0; y < 15; y++) {
+    atlas.scan(30 + y, cellSize + y, 40 - 2 * y, 1, function (_x, _y2, idx) {
+      this.bitmap.data.writeUInt32BE(BLUE, idx);
+    });
+  }
+  // The lower cell's own subject: 20 x 40 = 800px, far from the boundary.
+  atlas.scan(70, cellSize + 50, 20, 40, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(RED, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(
+    await atlas.getBufferAsync(Jimp.MIME_PNG),
+    {},
+    { columns: 2, rows: 2 },
+  );
+
+  const lowerFrame = await Jimp.read(Buffer.from(result.slots[2].data.split(',')[1], 'base64'));
+  let redPixels = 0;
+  let bluePixels = 0;
+  lowerFrame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === RED) redPixels++;
+    if (color === BLUE) bluePixels++;
+  });
+
+  // Its own 800px subject survives with none of the reclaimed base's pixels.
+  assert.equal(redPixels, 800);
+  assert.equal(bluePixels, 0);
+});
+
+test('row-overflow reclamation does not affect a board with no boundary-touching content (regression guard)', async () => {
+  const cellSize = 100;
+  const buildAtlas = async (lowerCellHasUnrelatedContent: boolean) => {
+    const atlas = new Jimp(cellSize * 2, cellSize * 2, 0xff00ffff);
+    // Well clear of the row boundary (stops 20px short of the cell bottom).
+    atlas.scan(30, 10, 40, 70, function (_x, _y, idx) {
+      this.bitmap.data.writeUInt32BE(0x1950a0ff, idx);
+    });
+    if (lowerCellHasUnrelatedContent) {
+      atlas.scan(10, cellSize + 50, 10, 10, function (_x, _y, idx) {
+        this.bitmap.data.writeUInt32BE(0xc82828ff, idx);
+      });
+    }
+    return atlas.getBufferAsync(Jimp.MIME_PNG);
+  };
+
+  const [withoutLowerContent, withLowerContent] = await Promise.all([
+    sliceAndNormalizeAtlas(await buildAtlas(false), {}, { columns: 2, rows: 2 }),
+    sliceAndNormalizeAtlas(await buildAtlas(true), {}, { columns: 2, rows: 2 }),
+  ]);
+
+  // Content that never touches the row boundary is untouched by reclamation
+  // regardless of what exists in the cell below — byte-identical to the
+  // pre-reclamation slice of the same upper-cell content.
+  assert.equal(withoutLowerContent.slots[0].data, withLowerContent.slots[0].data);
+  assert.deepEqual(withoutLowerContent.slots[0].meta, withLowerContent.slots[0].meta);
+});
+
+test('row-overflow reclamation only claims pixels connected to the upper subject when two subjects touch the same strip', async () => {
+  const cellSize = 100;
+  const atlas = new Jimp(cellSize * 2, cellSize * 2, 0xff00ffff);
+  const BLUE = 0x1950a0ff;
+  const GREEN = 0x2ecc40ff;
+
+  // Upper cell (slot 0): a body plus a narrow leg that touches the cell's
+  // bottom row only at x=20..29.
+  atlas.scan(20, 10, 50, 70, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(BLUE, idx);
+  });
+  atlas.scan(20, 80, 10, 20, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(BLUE, idx);
+  });
+
+  // Lower cell (slot 2) top strip: Blob A continues the leg (connected,
+  // x=20..29) and Blob B is an unrelated subject also touching the top of
+  // the strip (x=70..89) but with no adjacency to the upper cell's content.
+  atlas.scan(20, cellSize, 10, 10, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(BLUE, idx);
+  });
+  atlas.scan(70, cellSize, 20, 10, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(GREEN, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(
+    await atlas.getBufferAsync(Jimp.MIME_PNG),
+    {},
+    { columns: 2, rows: 2 },
+  );
+
+  const lowerFrame = await Jimp.read(Buffer.from(result.slots[2].data.split(',')[1], 'base64'));
+  let bluePixels = 0;
+  let greenPixels = 0;
+  lowerFrame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === BLUE) bluePixels++;
+    if (color === GREEN) greenPixels++;
+  });
+
+  // Blob A (100px, connected to the leg) is reclaimed into the upper cell;
+  // Blob B (200px, unconnected) is left exactly as drawn in the lower cell.
+  assert.equal(bluePixels, 0);
+  assert.equal(greenPixels, 200);
+});
