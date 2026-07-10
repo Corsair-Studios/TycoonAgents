@@ -387,6 +387,164 @@ test("repairSettings: already-correct settings -> changes:[]", () => {
   assert.deepEqual(changes, [], "No changes expected when settings already correct");
 });
 
+// ---------------------------------------------------------------------------
+// diagnose: operational health (legacy artifacts, stale lock, stuck stack,
+// malformed activity records) — all driven by optional DoctorInput fields
+// that a settings-only diagnose() call simply omits.
+// ---------------------------------------------------------------------------
+
+test("diagnose: healthy settings + no operational-health data supplied -> stays hooks-healthy (backward compatible)", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].id, "hooks-healthy");
+});
+
+test("diagnose: leftover legacy state files present -> legacy-artifacts error, not healthy", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    legacyArtifacts: { leftoverFiles: ["hook-config.json"], hookCommands: [] },
+  });
+  const f = findings.find((x: DoctorFinding) => x.id === "legacy-artifacts");
+  assert.ok(f, "should contain legacy-artifacts finding");
+  assert.equal(f!.severity, "error");
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "hooks-healthy"), "must not report healthy");
+});
+
+test("diagnose: legacy hook commands present (no leftover files) -> legacy-artifacts error", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    legacyArtifacts: { leftoverFiles: [], hookCommands: [FOREIGN_CMD] },
+  });
+  const f = findings.find((x: DoctorFinding) => x.id === "legacy-artifacts");
+  assert.ok(f, "should contain legacy-artifacts finding");
+});
+
+test("diagnose: empty legacyArtifacts (no leftovers) -> no legacy-artifacts finding, stays healthy", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    legacyArtifacts: { leftoverFiles: [], hookCommands: [] },
+  });
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "legacy-artifacts"));
+  assert.ok(findings.some((x: DoctorFinding) => x.id === "hooks-healthy"));
+});
+
+test("diagnose: stale lock (>30s old) -> hooks-lock-stale error, not healthy", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    lockFileAgeMs: 45_000,
+  });
+  const f = findings.find((x: DoctorFinding) => x.id === "hooks-lock-stale");
+  assert.ok(f, "should contain hooks-lock-stale finding");
+  assert.equal(f!.severity, "error");
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "hooks-healthy"));
+});
+
+test("diagnose: fresh lock (<30s old) -> no hooks-lock-stale finding", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    lockFileAgeMs: 500,
+  });
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "hooks-lock-stale"));
+});
+
+test("diagnose: non-empty stack with stale timestamp (>10min) -> hooks-stack-stuck error, not healthy", () => {
+  const settings = buildFullSettings(CMD);
+  const now = 1_000_000_000_000;
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    activeAgentState: { stack: [{ agentId: "coding-specialist" }], agentId: "coding-specialist", timestampMs: now - 11 * 60 * 1000 },
+    nowMs: now,
+  });
+  const f = findings.find((x: DoctorFinding) => x.id === "hooks-stack-stuck");
+  assert.ok(f, "should contain hooks-stack-stuck finding");
+  assert.equal(f!.severity, "error");
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "hooks-healthy"));
+});
+
+test("diagnose: empty stack + agentId 'none' -> no hooks-stack-stuck finding even if timestamp is old", () => {
+  const settings = buildFullSettings(CMD);
+  const now = 1_000_000_000_000;
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    activeAgentState: { stack: [], agentId: "none", timestampMs: now - 60 * 60 * 1000 },
+    nowMs: now,
+  });
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "hooks-stack-stuck"));
+});
+
+test("diagnose: non-empty stack with RECENT timestamp -> no hooks-stack-stuck finding", () => {
+  const settings = buildFullSettings(CMD);
+  const now = 1_000_000_000_000;
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    activeAgentState: { stack: [{ agentId: "coding-specialist" }], agentId: "coding-specialist", timestampMs: now - 5_000 },
+    nowMs: now,
+  });
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "hooks-stack-stuck"));
+});
+
+test("diagnose: malformed activity tail lines -> activity-malformed warn", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    activityTailLines: ["{not json", '{"event":"Stop","at":1}'],
+  });
+  const f = findings.find((x: DoctorFinding) => x.id === "activity-malformed");
+  assert.ok(f, "should contain activity-malformed finding");
+  assert.equal(f!.severity, "warn");
+});
+
+test("diagnose: well-formed activity tail lines -> no activity-malformed finding, stays healthy", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+    activityTailLines: ['{"event":"Stop","at":1}', '{"event":"PreToolUse","at":2}'],
+  });
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "activity-malformed"));
+  assert.ok(findings.some((x: DoctorFinding) => x.id === "hooks-healthy"));
+});
+
 test("repairSettings: stale Tycoon command -> replaced with currentHookCommand, no duplicate", () => {
   const input = buildFullSettings(OLD_CMD); // all slots have old path
   const { settings } = repairSettings(input, CMD, { removeForeign: false });

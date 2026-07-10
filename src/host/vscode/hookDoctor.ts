@@ -16,6 +16,22 @@ export interface DoctorInput {
   sharedSettings: any | null;
   currentHookCommand: string;
   hookScriptExists: boolean;
+  /**
+   * Operational-health inputs (all optional). `diagnose` itself stays
+   * fs-free/pure for unit testing, so the caller (panel.ts) does the actual
+   * filesystem reads and passes the parsed results in here. Omitting a field
+   * simply skips its corresponding check — install-time / settings-only
+   * callers that don't have this data are unaffected.
+   */
+  legacyArtifacts?: { leftoverFiles: string[]; hookCommands: string[] };
+  /** Age (ms) of `.claude/tycoon/active-agent.json.lock`, if it exists. */
+  lockFileAgeMs?: number;
+  /** Parsed `.claude/tycoon/active-agent.json`, or null if absent/unreadable. */
+  activeAgentState?: { stack: unknown[]; agentId: string; timestampMs?: number } | null;
+  /** Trailing raw lines from `.claude/tycoon/activity.jsonl` (already read by the caller). */
+  activityTailLines?: string[];
+  /** Clock used for staleness comparisons; defaults to Date.now(). Overridable for tests. */
+  nowMs?: number;
 }
 
 const TYCOON_MARKER = "tycoon-claude-hook.cjs";
@@ -216,6 +232,82 @@ export function diagnose(input: DoctorInput): DoctorFinding[] {
       fixable: true,
       destructive: true,
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Operational health: installed/wired correctly is not the same as
+  // actually working. A leftover foreign hook system, a stale lock, or a
+  // stuck active-agent stack can freeze activity tracking even though every
+  // check above passes. These only fire when the caller supplied the
+  // corresponding data (see DoctorInput) — a settings-only diagnose() call
+  // (e.g. from install-time code that hasn't read the runtime state files)
+  // simply skips them.
+  // ---------------------------------------------------------------------
+
+  const legacyLeftoverFiles = input.legacyArtifacts?.leftoverFiles ?? [];
+  const legacyHookCommands = input.legacyArtifacts?.hookCommands ?? [];
+  if (legacyLeftoverFiles.length > 0 || legacyHookCommands.length > 0) {
+    findings.push({
+      id: "legacy-artifacts",
+      severity: "error",
+      title: "Leftover agent-hook artifacts detected",
+      detail:
+        "Leftover files from a previously-installed agent system were found — they can corrupt activity tracking.",
+      fixable: true,
+      destructive: true,
+    });
+  }
+
+  const STALE_LOCK_MS = 30_000;
+  if (typeof input.lockFileAgeMs === "number" && input.lockFileAgeMs > STALE_LOCK_MS) {
+    findings.push({
+      id: "hooks-lock-stale",
+      severity: "error",
+      title: "Stale hook lock",
+      detail: "A stale hook lock is blocking activity updates.",
+      fixable: true,
+      destructive: false,
+    });
+  }
+
+  if (input.activeAgentState) {
+    const { stack, agentId, timestampMs } = input.activeAgentState;
+    const now = typeof input.nowMs === "number" ? input.nowMs : Date.now();
+    const STUCK_STACK_MS = 10 * 60 * 1000;
+    const hasActivity = (Array.isArray(stack) && stack.length > 0) || (agentId !== undefined && agentId !== "none");
+    const isStale = typeof timestampMs === "number" && now - timestampMs > STUCK_STACK_MS;
+    if (hasActivity && isStale) {
+      findings.push({
+        id: "hooks-stack-stuck",
+        severity: "error",
+        title: "Agent activity looks stuck",
+        detail: "Agent activity looks stuck (the active-agent stack has not drained).",
+        fixable: true,
+        destructive: false,
+      });
+    }
+  }
+
+  if (Array.isArray(input.activityTailLines) && input.activityTailLines.length > 0) {
+    const parsesOk = (line: string): boolean => {
+      try {
+        const parsed = JSON.parse(line);
+        return !!parsed && typeof parsed === "object" && typeof parsed.event === "string";
+      } catch {
+        return false;
+      }
+    };
+    const anyMalformed = input.activityTailLines.some((line) => line.trim() !== "" && !parsesOk(line));
+    if (anyMalformed) {
+      findings.push({
+        id: "activity-malformed",
+        severity: "warn",
+        title: "Malformed activity records",
+        detail: "Recent activity records are malformed.",
+        fixable: false,
+        destructive: false,
+      });
+    }
   }
 
   if (findings.length === 0) {

@@ -49,6 +49,11 @@ function atomicWriteSync(filePath, data) {
   }
 }
 
+// A lock file older than this is assumed to belong to a crashed or foreign
+// process (every hook invocation finishes in well under this window) and is
+// safe to steal rather than let the active-agent stack freeze forever.
+const LOCK_STALE_MS = 30000;
+
 function acquireLock(lockPath, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -61,8 +66,8 @@ function acquireLock(lockPath, timeoutMs = 5000) {
       if (e.code === "EEXIST") {
         try {
           const stat = fs.statSync(lockPath);
-          if (Date.now() - stat.mtimeMs > 30000) { fs.unlinkSync(lockPath); continue; }
-        } catch { /* stale check failed, keep waiting */ }
+          if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) { fs.unlinkSync(lockPath); continue; }
+        } catch { /* stale check failed (lock vanished mid-check, etc.) - keep waiting */ }
         const end = Date.now() + 10;
         while (Date.now() < end) { /* spin */ }
       } else {

@@ -106,9 +106,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-import { mergeTycoonHooks } from "./hookInstall";
+import {
+  mergeTycoonHooks,
+  cleanupForeignHookArtifacts,
+  findLegacyHookCommands,
+  LEGACY_STATE_FILE_NAMES,
+} from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
-import { diagnose, DoctorFinding, findForeignHooks, repairSettings } from "./hookDoctor";
+import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings } from "./hookDoctor";
 
 /**
  * Optional "Project Plan" feature (opt-in, default OFF): resolve
@@ -2856,8 +2861,15 @@ export class TycoonPanel {
       }
 
       // 1. Ensure .claude/tycoon exists.
-      const tycoonDir = path.join(root, ".claude", "tycoon");
+      const claudeDir = path.join(root, ".claude");
+      const tycoonDir = path.join(claudeDir, "tycoon");
       fs.mkdirSync(tycoonDir, { recursive: true });
+
+      // 1b. Strip any leftover artifacts from a foreign/legacy agent-hook
+      // system (stale lock, stuck stack, root-level state files, and hook
+      // commands wired into our own event slots) BEFORE we read/merge
+      // settings below, so our hooks are guaranteed to land on a clean base.
+      cleanupForeignHookArtifacts(claudeDir);
 
       // 2. Copy the bundled hook into the project.
       const src = vscode.Uri.joinPath(
@@ -2896,7 +2908,6 @@ export class TycoonPanel {
       // just wrote into. A CLAUDE.md write failure is a USER-OWNED-file risk,
       // so it's caught independently and reported without failing the
       // (already-successful) hook install.
-      const claudeDir = path.join(root, ".claude");
       // Review pass is on by default (execution.json's reviewEnabled)
       // whenever a project is freshly installed/repaired — the setup
       // screen's checkbox is checked by default and, when the user
@@ -3585,18 +3596,122 @@ export class TycoonPanel {
     return null;
   }
 
+  /**
+   * Read-only scan for leftover foreign/legacy agent-hook artifacts: known
+   * root-level state files (see LEGACY_STATE_FILE_NAMES) plus any
+   * `agent-activity-*.json` files, and legacy hook commands still wired into
+   * our own event slots in `localSettings`/`sharedSettings`. Does not mutate
+   * anything — {@link cleanupForeignHookArtifacts} is the fix path.
+   */
+  private _detectLegacyArtifacts(
+    claudeDir: string,
+    localSettings: any | null,
+    sharedSettings: any | null
+  ): { leftoverFiles: string[]; hookCommands: string[] } {
+    const leftoverFiles: string[] = [];
+    for (const name of LEGACY_STATE_FILE_NAMES) {
+      if (fs.existsSync(path.join(claudeDir, name))) {
+        leftoverFiles.push(name);
+      }
+    }
+    try {
+      if (fs.existsSync(claudeDir)) {
+        for (const entry of fs.readdirSync(claudeDir)) {
+          if (/^agent-activity-.*\.json$/.test(entry)) {
+            leftoverFiles.push(entry);
+          }
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
+    const hookCommands = [
+      ...findLegacyHookCommands(localSettings),
+      ...findLegacyHookCommands(sharedSettings),
+    ];
+    return { leftoverFiles, hookCommands };
+  }
+
+  /**
+   * Reads the operational-health signals Hook Doctor needs but `diagnose()`
+   * itself can't see (it stays fs-free/pure for unit testing): the age of
+   * `active-agent.json.lock`, the current shape of `active-agent.json`, and
+   * a tail of recent `activity.jsonl` records.
+   */
+  private _readOperationalHealth(claudeDir: string): {
+    lockFileAgeMs?: number;
+    activeAgentState?: { stack: unknown[]; agentId: string; timestampMs?: number } | null;
+    activityTailLines?: string[];
+  } {
+    const tycoonDir = path.join(claudeDir, "tycoon");
+
+    let lockFileAgeMs: number | undefined;
+    try {
+      const stat = fs.statSync(path.join(tycoonDir, "active-agent.json.lock"));
+      lockFileAgeMs = Date.now() - stat.mtimeMs;
+    } catch {
+      /* lock absent -> check skipped */
+    }
+
+    let activeAgentState: { stack: unknown[]; agentId: string; timestampMs?: number } | null = null;
+    try {
+      const raw = fs.readFileSync(path.join(tycoonDir, "active-agent.json"), "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        activeAgentState = {
+          stack: Array.isArray(parsed.stack) ? parsed.stack : [],
+          agentId: typeof parsed.agentId === "string" ? parsed.agentId : "none",
+          timestampMs: typeof parsed.timestamp === "number" ? parsed.timestamp : undefined,
+        };
+      }
+    } catch {
+      /* file absent/invalid -> check skipped */
+    }
+
+    let activityTailLines: string[] | undefined;
+    try {
+      const raw = fs.readFileSync(path.join(tycoonDir, "activity.jsonl"), "utf8");
+      const lines = raw
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l !== "");
+      activityTailLines = lines.slice(-5);
+    } catch {
+      /* file absent -> check skipped */
+    }
+
+    return { lockFileAgeMs, activeAgentState, activityTailLines };
+  }
+
+  /** Assembles a full DoctorInput (settings + operational health) from disk for `root`. */
+  private _gatherDoctorInput(root: string): DoctorInput {
+    const claudeDir = path.join(root, ".claude");
+    const localSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"));
+    const sharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
+    const currentHookCommand = this._buildHookCommand();
+    const hookScriptExists = fs.existsSync(path.join(claudeDir, "tycoon", "tycoon-claude-hook.cjs"));
+    const legacyArtifacts = this._detectLegacyArtifacts(claudeDir, localSettings, sharedSettings);
+    const { lockFileAgeMs, activeAgentState, activityTailLines } = this._readOperationalHealth(claudeDir);
+    return {
+      localSettings,
+      sharedSettings,
+      currentHookCommand,
+      hookScriptExists,
+      legacyArtifacts,
+      lockFileAgeMs,
+      activeAgentState,
+      activityTailLines,
+    };
+  }
+
   private _diagnoseHooks(): { findings: DoctorFinding[]; foreign: string[] } {
     const root = this._projectRoot();
     if (root === "") {
       return { findings: [], foreign: [] };
     }
-    const localSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.local.json"));
-    const sharedSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.json"));
-    const currentHookCommand = this._buildHookCommand();
-    const hookScriptPath = path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs");
-    const hookScriptExists = fs.existsSync(hookScriptPath);
-    const findings = diagnose({ localSettings, sharedSettings, currentHookCommand, hookScriptExists });
-    const foreign = findForeignHooks(localSettings, sharedSettings);
+    const input = this._gatherDoctorInput(root);
+    const findings = diagnose(input);
+    const foreign = findForeignHooks(input.localSettings, input.sharedSettings);
     return { findings, foreign };
   }
 
@@ -3610,6 +3725,14 @@ export class TycoonPanel {
     void this._panel.webview.postMessage({ type: MSG.DOCTOR_REPORT, findings, foreign });
   }
 
+  /**
+   * "Troubleshoot & Fix": first strips leftover foreign/legacy agent-hook
+   * artifacts (stale lock, stuck stack, root-level state files, legacy hook
+   * commands on our events — the same reset `cleanupForeignHookArtifacts`
+   * performs at install time), then runs the existing settings repair
+   * (missing/stale/duplicate/split slots, optional foreign-command removal),
+   * then re-diagnoses from the now-fixed on-disk state.
+   */
   private async _handleApplyDoctorFix(removeForeign: boolean): Promise<void> {
     try {
       const root = this._projectRoot();
@@ -3617,11 +3740,15 @@ export class TycoonPanel {
         void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: false, error: "No workspace folder open" });
         return;
       }
+      const claudeDir = path.join(root, ".claude");
       const currentHookCommand = this._buildHookCommand();
-      const localSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.local.json"));
-      const sharedSettings = this._readSettingsTolerant(path.join(root, ".claude", "settings.json"));
+
+      const cleanup = cleanupForeignHookArtifacts(claudeDir);
+
+      const localSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"));
+      const sharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
       const foreignCommands = findForeignHooks(localSettings, sharedSettings);
-      if (removeForeign) {
+      if (removeForeign && foreignCommands.length > 0) {
         const answer = await vscode.window.showWarningMessage(
           "The following hook commands will be permanently removed:\n\n" + foreignCommands.join("\n"),
           { modal: true },
@@ -3632,11 +3759,18 @@ export class TycoonPanel {
         }
       }
       const { settings, changes } = repairSettings(localSettings, currentHookCommand, { removeForeign, foreignCommands: removeForeign ? foreignCommands : undefined });
-      fs.writeFileSync(path.join(root, ".claude", "settings.local.json"), JSON.stringify(settings, null, 2));
-      const hookScriptExists = fs.existsSync(path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs"));
-      const findings = diagnose({ localSettings: settings, sharedSettings, currentHookCommand, hookScriptExists });
-      const foreign = findForeignHooks(settings, sharedSettings);
-      void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: true, changes, findings, foreign });
+      fs.writeFileSync(path.join(claudeDir, "settings.local.json"), JSON.stringify(settings, null, 2));
+
+      const input = this._gatherDoctorInput(root);
+      const findings = diagnose(input);
+      const foreign = findForeignHooks(input.localSettings, input.sharedSettings);
+      void this._panel.webview.postMessage({
+        type: MSG.DOCTOR_FIX_DONE,
+        ok: true,
+        changes: [...cleanup.changes, ...changes],
+        findings,
+        foreign,
+      });
     } catch (err) {
       void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: false, error: String(err) });
     }
