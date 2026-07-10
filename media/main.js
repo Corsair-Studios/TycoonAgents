@@ -2782,6 +2782,7 @@
         feedback.disabled = retriesSavedPrompt;
         if (retriesSavedPrompt) feedback.removeAttribute("aria-invalid");
         customModeWarning.hidden = !isCustomMode;
+        feedbackHint.hidden = isCustomMode;
         const customEmpty = isCustomMode && !feedback.value.trim();
         customModeEmptyHint.hidden = !customEmpty;
         retryBtn.disabled = retryBtnBaseDisabled || customEmpty;
