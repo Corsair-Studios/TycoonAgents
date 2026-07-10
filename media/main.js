@@ -3670,8 +3670,13 @@
   const IDEA_CHANCE = 0.02;
   /** Chance, on transitioning into a seated pose, of a brief "sleep" bubble. */
   const SLEEP_CHANCE = 0.02;
-  /** Chance, per idle wander-decision, of a very rare playful "love" bubble. */
-  const FLAVOR_BUBBLE_CHANCE = 0.008;
+  /** Chance, per idle-still frame, of a rare playful "love" bubble (also requires
+   * proximity to another idle-still agent — see LOVE_NEAR_NATIVE_SQ below). */
+  const LOVE_CHANCE = 0.03;
+  /** Native-space squared distance under which two idle-still agents count as
+   * "cozy" for the love-bubble proximity gate (agents are ~34 native units
+   * apart per MIN_AGENT_SEP_NATIVE, so 60 is a comfortably close threshold). */
+  const LOVE_NEAR_NATIVE_SQ = 60 * 60;
   /** Chance a build-celebration/victory dancer also shows a "thumbs-up" bubble. */
   const HAPPY_BUBBLE_CHANCE = 0.5;
   /** Chance, on an idle→engaged (combat) transition, of a brief "anger" bubble. */
@@ -8946,6 +8951,7 @@
       const e = agentCharMap[id];
       if (!e) continue;
       e.congaIndex = order++;
+      showExpression(e, 5, 1.8); // music bubble, coincides with conga start
       e.dancing = false;
       e.danceTimeLeft = 0;
       freeAgentSeat(e);
@@ -9678,6 +9684,10 @@
           prevActive: false,
           prevSitting: false,
           prevEngaging: false,
+          // Set each frame from idleAndStill (see below) so other agents can
+          // read "was this agent idle-still THIS frame" for the love-bubble
+          // proximity gate. Display-only; never drives movement/state.
+          idleStill: false,
           // Team-formation signal latch (Part 3): true once this lead has
           // played its "signal" emote for the CURRENT team; reset to false
           // when the team disbands so a reformed team signals again.
@@ -9960,6 +9970,25 @@
       // is fully preempted by conga/engage/build. While dancing it holds
       // position and a manual frame mixer swaps the three dance frames.
       const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga;
+      charEntry.idleStill = idleAndStill;
+
+      // ── Proximity "love" bubble (rare, requires a nearby idle-still agent) ──
+      // Independent of the wander-decision else-if chain below (does not
+      // consume a wander-decision tick or touch wanderTimer) so it can never
+      // interfere with destination picking. Display-only. other.idleStill may
+      // reflect this frame or last frame depending on agentCharMap iteration
+      // order — fine for a cosmetic trigger.
+      if (idleAndStill && !charEntry.emoting && (charEntry.bubbleCooldown || 0) <= 0 && Math.random() < LOVE_CHANCE) {
+        const myNx = charEntry.nx, myNy = charEntry.ny;
+        for (const oid in agentCharMap) {
+          const other = agentCharMap[oid];
+          if (other === charEntry || !other.idleStill) continue;
+          if (typeof other.nx !== "number" || typeof other.ny !== "number") continue;
+          const dx = other.nx - myNx, dy = other.ny - myNy;
+          if (dx * dx + dy * dy <= LOVE_NEAR_NATIVE_SQ) { showExpression(charEntry, 0, 1.6); break; }
+        }
+      }
+
       if (charEntry.dancing) {
         if (inConga) {
           // Conga fully preempts any dance (idle solo-dance OR celebration).
@@ -10076,13 +10105,6 @@
       if (charEntry.sitting && !charEntry.prevSitting && Math.random() < SLEEP_CHANCE) showExpression(charEntry, 6, 1.8);
       charEntry.prevSitting = charEntry.sitting;
 
-      // ── Flavor bubble (ultra-rare playful "love" beat) ──────────────────
-      // Independent of the wander-decision else-if chain below (does not
-      // consume a wander-decision tick or touch wanderTimer) so it can never
-      // interfere with destination picking. Display-only.
-      if (idleAndStill && !congaActive && !charEntry.emoting && Math.random() < FLAVOR_BUBBLE_CHANCE) {
-        showExpression(charEntry, 0, 1.6);
-      }
 
       // ── Wander logic (native polygon space) ───────────────────────
       // Dancing agents hold position (no wander). Conga members are driven
@@ -10677,13 +10699,13 @@
             const bframes = themeImages["expression_" + charEntry.bubbleExpr];
             const bimg = bframes && bframes[0];
             if (bimg && bimg.complete && bimg.naturalWidth > 0) {
-              const bs = 34; // icon size
+              const bs = 28; // icon size
               const bx = cx; // center over head
-              const by = cy - spriteSize - 18; // above head, like an HP bar
+              const by = cy - spriteSize - 15; // above head, like an HP bar
               ctx.save();
               ctx.globalAlpha = Math.min(1, charEntry.bubbleTimeLeft * 3); // brief fade-out tail
               ctx.fillStyle = "rgba(255,255,255,0.92)";
-              const pad = 4, bw = bs + pad * 2, bh = bs + pad * 2, br = 8;
+              const pad = 3, bw = bs + pad * 2, bh = bs + pad * 2, br = 7;
               const rx = bx - bw / 2, ry = by - bh / 2;
               ctx.beginPath();
               ctx.moveTo(rx + br, ry);
