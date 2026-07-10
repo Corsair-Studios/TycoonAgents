@@ -6386,6 +6386,16 @@
       // the no-theme placeholder scene the moment render() actually draws
       // it, instead of idling for LOADING_TIMEOUT_MS/the 12s hard failsafe.
       noThemeSignaled = true;
+    } else if (msg && msg.type === "THEME_SELECT_ABORTED") {
+      // Host declined the switch (theme-switch warning modal was dismissed
+      // instead of confirmed) — revert the optimistic selectedThemeId set on
+      // click (theme-picker click handler, ~line 2952) back to the theme
+      // that's still actually loaded, and re-render the picker's highlight.
+      const stillLoadedId = msg.payload && msg.payload.theme_id;
+      if (typeof stillLoadedId === "string") {
+        selectedThemeId = stillLoadedId;
+        renderThemesList(lastThemesList);
+      }
     } else if (msg && msg.type === "STAGE_TUNING_SAVED") {
       if (stageEditEls && stageEditEls.status) {
         const ok = msg.payload && msg.payload.ok;

@@ -114,6 +114,14 @@ import {
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings } from "./hookDoctor";
+import {
+  projectScopeKey,
+  readCompositeWithMigration,
+  writeComposite,
+  removeProjectThemeEntry,
+  removeThemeEverywhere,
+  shouldWarnOnThemeSwitch,
+} from "./progressScope";
 
 /**
  * Optional "Project Plan" feature (opt-in, default OFF): resolve
@@ -179,6 +187,14 @@ export class TycoonPanel {
   /** Engine ids with an in-flight probe fetch — guards against stacking probes across poll ticks. */
   private _engineProbeInFlight: Set<string> = new Set();
   private _themeGenerationActive = false;
+  /**
+   * theme_id of the theme most recently sent to the webview via
+   * THEME_INITIALIZED (set inside `_buildThemeInitPayload`, which every
+   * THEME_INITIALIZED post funnels through). Used to know the "currently
+   * loaded" theme for the theme-switch warning and the scoped stats reset —
+   * this panel doesn't otherwise track active theme state host-side.
+   */
+  private _currentThemeId: string | undefined;
   private _themeGenerationAbortController: AbortController | undefined;
   private _themeGenerationGateRetryActive = false;
   private _themePauseForReview = true;
@@ -716,7 +732,35 @@ export class TycoonPanel {
           }
         } else if (message.type === MSG.SELECT_THEME) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
-          const t = await loadTheme(this._globalStorageUri, payload?.theme_id ?? "");
+          const targetThemeId = payload?.theme_id ?? "";
+          const previousThemeId = this._currentThemeId;
+
+          // Warn before switching AWAY from a theme that already has
+          // unlocked badges in THIS project — each theme's progress is
+          // tracked independently, so switching starts the target theme
+          // fresh (its own saved progress, if any, comes back untouched).
+          if (previousThemeId && previousThemeId !== targetThemeId) {
+            const previousBadgeCount = (await this.getUnlockedBadges(previousThemeId)).length;
+            if (shouldWarnOnThemeSwitch(previousThemeId, targetThemeId, previousBadgeCount)) {
+              const themes = await listThemes(this._globalStorageUri);
+              const targetName = themes.find((th) => th.theme_id === targetThemeId)?.display_name ?? targetThemeId;
+              const previousName = themes.find((th) => th.theme_id === previousThemeId)?.display_name ?? previousThemeId;
+              const answer = await vscode.window.showWarningMessage(
+                `Switching to "${targetName}". Each theme tracks its own badges — it starts fresh here. Your "${previousName}" progress (${previousBadgeCount} badges) is saved and comes back when you switch to it again.`,
+                { modal: true },
+                "Switch theme",
+              );
+              if (answer !== "Switch theme") {
+                void this._panel.webview.postMessage({
+                  type: MSG.THEME_SELECT_ABORTED,
+                  payload: { theme_id: previousThemeId },
+                });
+                return;
+              }
+            }
+          }
+
+          const t = await loadTheme(this._globalStorageUri, targetThemeId);
           if (t) {
             void this._panel.webview.postMessage({
               type: MSG.THEME_INITIALIZED,
@@ -1479,49 +1523,72 @@ export class TycoonPanel {
     }
   }
 
+  /**
+   * Stable per-workspace scope id (see progressScope.ts). All three durable
+   * stores (badge-unlocks / rebirth-state / build-progress) are keyed by
+   * `${scopeKey}|${themeId}` so progress no longer leaks across projects that
+   * happen to load the same theme_id out of shared globalStorage.
+   */
+  private _projectScopeKey(): string {
+    return projectScopeKey(this._projectRoot());
+  }
+
   private async getUnlockedBadges(themeId: string | undefined): Promise<string[]> {
     if (!themeId) return [];
     const store = await this._readBadgeUnlocksStore();
-    return Array.isArray(store[themeId]) ? store[themeId] : [];
+    const { value, store: migratedStore, migrated } = readCompositeWithMigration(
+      store,
+      this._projectScopeKey(),
+      themeId,
+    );
+    if (migrated) await this._writeBadgeUnlocksStore(migratedStore);
+    return Array.isArray(value) ? value : [];
   }
 
   private async addUnlockedBadge(themeId: string, badgeId: string): Promise<void> {
     if (!themeId || !badgeId) return;
+    const scopeKey = this._projectScopeKey();
     const store = await this._readBadgeUnlocksStore();
-    const existing = Array.isArray(store[themeId]) ? store[themeId] : [];
+    const { value, store: migratedStore } = readCompositeWithMigration(store, scopeKey, themeId);
+    const existing = Array.isArray(value) ? value : [];
     if (!existing.includes(badgeId)) {
-      store[themeId] = [...existing, badgeId];
-      await this._writeBadgeUnlocksStore(store);
-    }
-  }
-
-  private async _removeThemeBadgeUnlocks(themeId: string): Promise<void> {
-    if (!themeId) return;
-    const store = await this._readBadgeUnlocksStore();
-    if (themeId in store) {
-      delete store[themeId];
-      await this._writeBadgeUnlocksStore(store);
+      await this._writeBadgeUnlocksStore(writeComposite(migratedStore, scopeKey, themeId, [...existing, badgeId]));
+    } else if (migratedStore !== store) {
+      await this._writeBadgeUnlocksStore(migratedStore);
     }
   }
 
   /**
-   * On Rebirth, wipe a theme's persisted badge unlocks EXCEPT badge_ids
-   * starting with "rebirth_" — those mark permanent prestige milestones
-   * (rebirth_1/2/3) and must survive every future Rebirth. Mirrors the
-   * webview's doRebirth() local unlockedBadgeIds filtering. A full wipe
-   * (including rebirth_* badges) still happens via resetMetrics().
+   * Fully removes a theme's badge unlocks (legacy key + every project's
+   * composite key) — used when the theme itself is deleted from disk, which
+   * removes it for every workspace, not just the current one.
+   */
+  private async _removeThemeBadgeUnlocks(themeId: string): Promise<void> {
+    if (!themeId) return;
+    const store = await this._readBadgeUnlocksStore();
+    const next = removeThemeEverywhere(store, themeId);
+    if (next !== store) await this._writeBadgeUnlocksStore(next);
+  }
+
+  /**
+   * On Rebirth, wipe the CURRENT project's persisted badge unlocks for this
+   * theme EXCEPT badge_ids starting with "rebirth_" — those mark permanent
+   * prestige milestones (rebirth_1/2/3) and must survive every future
+   * Rebirth. Mirrors the webview's doRebirth() local unlockedBadgeIds
+   * filtering. A full wipe (including rebirth_* badges) still happens via
+   * the scoped stats reset (_handleResetMetrics).
    */
   private async _resetThemeBadgeUnlocksForRebirth(themeId: string): Promise<void> {
     if (!themeId) return;
+    const scopeKey = this._projectScopeKey();
     const store = await this._readBadgeUnlocksStore();
-    const existing = Array.isArray(store[themeId]) ? store[themeId] : [];
+    const { value, store: migratedStore } = readCompositeWithMigration(store, scopeKey, themeId);
+    const existing = Array.isArray(value) ? value : [];
     const kept = existing.filter((id) => typeof id === "string" && id.startsWith("rebirth_"));
-    if (kept.length > 0) {
-      store[themeId] = kept;
-    } else {
-      delete store[themeId];
-    }
-    await this._writeBadgeUnlocksStore(store);
+    const next = kept.length > 0
+      ? writeComposite(migratedStore, scopeKey, themeId, kept)
+      : removeProjectThemeEntry(migratedStore, scopeKey, themeId);
+    await this._writeBadgeUnlocksStore(next);
   }
 
   // --- Rebirth (prestige) persistence -------------------------------
@@ -1559,24 +1626,30 @@ export class TycoonPanel {
   private async getRebirthState(themeId: string | undefined): Promise<RebirthPersist | null> {
     if (!themeId) return null;
     const store = await this._readRebirthStore();
-    const entry = store[themeId];
-    return entry && typeof entry === "object" ? entry : null;
+    const { value, store: migratedStore, migrated } = readCompositeWithMigration(
+      store,
+      this._projectScopeKey(),
+      themeId,
+    );
+    if (migrated) await this._writeRebirthStore(migratedStore);
+    return value && typeof value === "object" ? value : null;
   }
 
   private async saveRebirthState(themeId: string, state: RebirthPersist): Promise<void> {
     if (!themeId || !state || typeof state !== "object") return;
     const store = await this._readRebirthStore();
-    store[themeId] = state;
-    await this._writeRebirthStore(store);
+    await this._writeRebirthStore(writeComposite(store, this._projectScopeKey(), themeId, state));
   }
 
+  /**
+   * Fully removes a theme's rebirth state (legacy key + every project's
+   * composite key) — used when the theme itself is deleted from disk.
+   */
   private async _removeThemeRebirthState(themeId: string): Promise<void> {
     if (!themeId) return;
     const store = await this._readRebirthStore();
-    if (themeId in store) {
-      delete store[themeId];
-      await this._writeRebirthStore(store);
-    }
+    const next = removeThemeEverywhere(store, themeId);
+    if (next !== store) await this._writeRebirthStore(next);
   }
 
   // --- Build progress persistence -------------------------------------
@@ -1614,28 +1687,40 @@ export class TycoonPanel {
   private async getBuildProgress(themeId: string | undefined): Promise<number> {
     if (!themeId) return 0;
     const store = await this._readBuildProgressStore();
-    const entry = store[themeId];
-    return typeof entry === "number" && entry >= 0 ? entry : 0;
+    const { value, store: migratedStore, migrated } = readCompositeWithMigration(
+      store,
+      this._projectScopeKey(),
+      themeId,
+    );
+    if (migrated) await this._writeBuildProgressStore(migratedStore);
+    return typeof value === "number" && value >= 0 ? value : 0;
   }
 
   private async saveBuildProgress(themeId: string, builtCount: number): Promise<void> {
     if (!themeId) return;
     const clamped = Math.max(0, Math.trunc(builtCount));
     const store = await this._readBuildProgressStore();
-    store[themeId] = clamped;
-    await this._writeBuildProgressStore(store);
+    await this._writeBuildProgressStore(writeComposite(store, this._projectScopeKey(), themeId, clamped));
   }
 
+  /**
+   * Fully removes a theme's build progress (legacy key + every project's
+   * composite key) — used when the theme itself is deleted from disk.
+   */
   private async _removeThemeBuildProgress(themeId: string): Promise<void> {
     if (!themeId) return;
     const store = await this._readBuildProgressStore();
-    if (themeId in store) {
-      delete store[themeId];
-      await this._writeBuildProgressStore(store);
-    }
+    const next = removeThemeEverywhere(store, themeId);
+    if (next !== store) await this._writeBuildProgressStore(next);
   }
 
-  /** Builds a THEME_INITIALIZED payload, seeding persisted badge unlocks. */
+  /**
+   * Builds a THEME_INITIALIZED payload, seeding persisted badge unlocks.
+   * Also latches `_currentThemeId` — every THEME_INITIALIZED post funnels
+   * through here, so this is the single place the host learns/updates which
+   * theme is "currently loaded" (used by the theme-switch warning and the
+   * scoped stats reset).
+   */
   private async _buildThemeInitPayload(
     manifest: ThemeManifest,
     frames: Record<string, string[]>,
@@ -1648,6 +1733,7 @@ export class TycoonPanel {
     rebirth_state: RebirthPersist | null;
     savedBuildProgress: number;
   }> {
+    this._currentThemeId = manifest?.theme_id;
     return {
       manifest,
       frames,
@@ -3519,13 +3605,30 @@ export class TycoonPanel {
     }
   }
 
-  /** Truncate the activity log, reset runtime state, and re-seed the roster. */
+  /**
+   * Truncate the (session-global) activity log, reset runtime state,
+   * re-seed the roster, and — if a theme is currently loaded — clear ONLY
+   * that theme's badge/rebirth/build-progress entries for THIS project
+   * (composite `${scopeKey}|${themeId}` keys). Other themes and other
+   * projects' entries for the SAME theme are left untouched.
+   */
   private async _handleResetMetrics(): Promise<void> {
-    const answer = await vscode.window.showWarningMessage(
-      "Reset all session metrics? This cannot be undone.",
-      { modal: true },
-      "Reset"
-    );
+    const themeId = this._currentThemeId;
+    let themeName = themeId;
+    if (themeId) {
+      try {
+        const themes = await listThemes(this._globalStorageUri);
+        themeName = themes.find((th) => th.theme_id === themeId)?.display_name ?? themeId;
+      } catch {
+        // Best-effort label only; fall back to the raw theme_id.
+      }
+    }
+
+    const confirmMessage = themeId
+      ? `Reset stats for "${themeName}" in this project? This clears its badges, build progress, and rebirth for this project only — other themes and projects are unaffected. This can't be undone.`
+      : "Reset session metrics? This cannot be undone.";
+
+    const answer = await vscode.window.showWarningMessage(confirmMessage, { modal: true }, "Reset");
     if (answer !== "Reset") {
       void this._panel.webview.postMessage({ type: MSG.METRICS_RESET, ok: false, cancelled: true });
       return;
@@ -3542,11 +3645,24 @@ export class TycoonPanel {
 
       this._runtime.reset();
 
-      // Fresh slate: wipe persisted rebirth state and badge unlocks for ALL
-      // themes. The user wants rebirth requirements to change ONLY on a user
-      // reset, so this is the one place both stores are cleared wholesale.
-      await this._writeRebirthStore({});
-      await this._writeBadgeUnlocksStore({});
+      // Scoped wipe: only the CURRENT project's entries for the CURRENTLY
+      // LOADED theme are removed from each store — other themes (and this
+      // same theme in other projects) survive untouched. No active theme
+      // (e.g. panel opened but nothing loaded yet) => nothing to scope, so
+      // this step is a no-op and only the activity log / runtime reset.
+      if (themeId) {
+        const scopeKey = this._projectScopeKey();
+        const [badgeStore, rebirthStore, buildStore] = await Promise.all([
+          this._readBadgeUnlocksStore(),
+          this._readRebirthStore(),
+          this._readBuildProgressStore(),
+        ]);
+        await Promise.all([
+          this._writeBadgeUnlocksStore(removeProjectThemeEntry(badgeStore, scopeKey, themeId)),
+          this._writeRebirthStore(removeProjectThemeEntry(rebirthStore, scopeKey, themeId)),
+          this._writeBuildProgressStore(removeProjectThemeEntry(buildStore, scopeKey, themeId)),
+        ]);
+      }
 
       // Re-seed the full installed-agent roster (mirrors extension.ts).
       const agentsDir = path.join(root, ".claude", "agents");

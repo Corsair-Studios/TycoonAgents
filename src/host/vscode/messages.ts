@@ -110,6 +110,10 @@ export const MSG = {
   SELECT_THEME: "SELECT_THEME",
   THEME_INITIALIZED: "THEME_INITIALIZED",
   THEME_NONE: "THEME_NONE",
+  // Sent instead of THEME_INITIALIZED when the user cancels the
+  // theme-switch warning modal — lets the webview revert its optimistic
+  // "selected" highlight back to the theme that's still actually loaded.
+  THEME_SELECT_ABORTED: "THEME_SELECT_ABORTED",
 
   // ---- badges / rebirth persistence --------------------------------------
   BADGE_UNLOCKED: "BADGE_UNLOCKED",
