@@ -9,7 +9,7 @@ import type {
 
 export const THEME_CHARACTER_COUNT = 16;
 export const THEME_ENEMY_COUNT = 4; // one full enemy board of RIVALS_PER_BOARD (4)
-export const THEME_OBJECT_COUNT = 13;
+export const THEME_OBJECT_COUNT = 22;
 export const THEME_EXPRESSION_COUNT = 16;
 /**
  * Cells 0-3 of the 16-cell expression board are PINNED to a fixed universal
@@ -64,7 +64,9 @@ export interface ObjectClip {
 export const OBJECT_CLIPS: Record<ObjectClipName, ObjectClip> = {
   object_idle: { frames: [0, 1, 2, 3], fps: 5, loop: true },
   crate: { frames: [0], fps: 0, loop: true, hold: true },
-  poof: { frames: [0, 1, 2, 3], fps: 12, loop: false },
+  // 7-frame one-shot build-completion puff (v2 object pipeline, objects_02
+  // board cells 9-15): small puff -> full burst -> dissipate.
+  poof: { frames: [0, 1, 2, 3, 4, 5, 6], fps: 12, loop: false },
 };
 
 export type RivalClipName = 'walk' | 'attack';
@@ -288,7 +290,9 @@ export function toSafeAssetId(value: string): string {
  * built, every character upgrades from melee to ranged combat. Therefore the FIRST
  * object of every theme MUST be a themed rack of ranged weapons (laser rifles, missiles,
  * crossbows, etc.), regardless of theme. This reserves slot 0 for that rack while the
- * remaining 12 slots come from the plan, keeping the total at THEME_OBJECT_COUNT (13).
+ * remaining 21 slots come from the plan, keeping the total at THEME_OBJECT_COUNT (22:
+ * 20 static objects on board 1, plus the 2 animated objects on board 2 — see
+ * themeAssetPrompts.ts's OBJECT_STATIC_COUNT / OBJECT_ANIMATED_COUNT).
  */
 function reserveRangedWeaponRackSlot(
   values: unknown,

@@ -52,28 +52,63 @@ export interface ThemeDecorPromptSpec {
   display_name: string;
 }
 
-/** Number of rows packed onto one 4x5 animated-object board. */
-export const OBJECT_ROWS_PER_BOARD = 5;
+/**
+ * v2 object pipeline: exactly TWO fixed-shape 4x5 (20-cell) boards.
+ *   - Board 1 ("objects_01"): OBJECT_STATIC_COUNT (20) single-frame static
+ *     objects, one per cell in row-major order.
+ *   - Board 2 ("objects_02"): OBJECT_ANIMATED_COUNT (2) animated objects (4
+ *     frames each, rows 1-2), a 7-frame POOF (cells 9-15), 4 unused blank
+ *     cells (16-19), and a 1-frame CRATE (cell 20).
+ * Total buildable objects = OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT = 22
+ * (== THEME_OBJECT_COUNT in themePlan.ts).
+ */
+export const OBJECT_STATIC_COUNT = 20;
+export const OBJECT_ANIMATED_COUNT = 2;
+/** Frame count of the one-shot build-completion POOF FX (board 2, cells 9-15). */
+export const OBJECT_POOF_FRAME_COUNT = 7;
 
-export function createObjectBoardRows(objects: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[][] {
-  if (objects.length < 1) throw new Error('Object generation requires at least one object.');
-  const asRows = (items: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[] => items.map((object) => ({
-    kind: 'object',
+/** Board 1: OBJECT_STATIC_COUNT single-frame static objects, one per cell. */
+export function createObjectBoard1Rows(objects: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[] {
+  if (objects.length !== OBJECT_STATIC_COUNT) {
+    throw new Error(`Object board 1 requires exactly ${OBJECT_STATIC_COUNT} static objects.`);
+  }
+  return objects.map((object): ThemeObjectBoardRow => ({
+    kind: 'object_static',
     object_id: object.object_id,
     display_name: object.display_name,
     ...(object.motion_hint ? { motion_hint: object.motion_hint } : {}),
     ...(object.is_ranged_rack ? { is_ranged_rack: true } : {}),
   }));
-  const flatRows: ThemeObjectBoardRow[] = [...asRows(objects), { kind: 'poof' }, { kind: 'crate' }];
-  const boards: ThemeObjectBoardRow[][] = [];
-  for (let start = 0; start < flatRows.length; start += OBJECT_ROWS_PER_BOARD) {
-    boards.push(flatRows.slice(start, start + OBJECT_ROWS_PER_BOARD));
-  }
-  return boards;
 }
 
+/**
+ * Board 2: exactly OBJECT_ANIMATED_COUNT animated objects (rows 1-2, 4 frames
+ * each) followed by the fixed poof + crate entries. Cells 16-19 (blank
+ * padding) and the exact cell ranges are implicit in this fixed layout — see
+ * buildObjectBoard2Prompt / processObjectAtlas / applyObjectBoardFrames.
+ */
+export function createObjectBoard2Rows(animatedObjects: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[] {
+  if (animatedObjects.length !== OBJECT_ANIMATED_COUNT) {
+    throw new Error(`Object board 2 requires exactly ${OBJECT_ANIMATED_COUNT} animated objects.`);
+  }
+  const animRows = animatedObjects.map((object): ThemeObjectBoardRow => ({
+    kind: 'object_anim',
+    object_id: object.object_id,
+    display_name: object.display_name,
+    ...(object.motion_hint ? { motion_hint: object.motion_hint } : {}),
+  }));
+  return [...animRows, { kind: 'poof' }, { kind: 'crate' }];
+}
+
+/**
+ * Frame keys for either board's `object_rows` array: `object_static`/
+ * `object_anim` entries map to `object_<id>`; `poof`/`crate` map to their own
+ * fixed key name.
+ */
 export function objectBoardFrameKeys(rows: ThemeObjectBoardRow[]): string[] {
-  return rows.map((row) => row.kind === 'object' ? `object_${row.object_id}` : row.kind);
+  return rows.map((row) => (
+    row.kind === 'object_static' || row.kind === 'object_anim' ? `object_${row.object_id}` : row.kind
+  ));
 }
 
 /**
@@ -567,65 +602,141 @@ export function buildEnvironmentPrompt(
   ].join('\n');
 }
 
-/** Five item rows on a 4x5 animated-object board. */
+/**
+ * Shared "lights/highlights only — no structural movement" animation
+ * constraint for one 4-frame animated-object row. Reused verbatim for both
+ * animated-object rows on object board 2, matching the constraint the v1
+ * pipeline applied to every animated-object row.
+ */
+function objectRowAnimationConstraintLines(rowLabel: string): string[] {
+  return [
+    `${rowLabel}: all four cells show the same finished object from one fixed three-quarter/isometric camera.`,
+    'Keep the object body, contact point, scale, colors, and lighting identical. Change only moving or glowing parts.',
+    'The object BODY MUST NOT move, shift, translate, rotate, resize, or reposition between the four frames. Every structural/body pixel stays in the EXACT same location in all four cells.',
+    'Only lights, glows, screens, indicator lights, and the brightness or color of subtle highlights may change between frames — NO moving, rotating, or shifting parts of any kind (internal or external). The silhouette and footprint are pixel-identical across all four frames.',
+    'Do NOT bob, sway, breathe, scale, or drift the object. Treat these four cells as the identical object photographed from a locked camera, changing only its lights/color.',
+    'The FIRST cell of this row defines the subject\'s exact position, outline, and footprint. Treat every later cell in the row as a near-copy of the first frame, redrawn with only small internal details changed.',
+    'Across the frames of this row, the subject must stay locked in the identical position within each cell: same horizontal center, same baseline, same overall footprint. Animate through internal motion only (glow, flicker, moving parts, small secondary details) — never by shifting, sliding, or re-centering the whole subject between frames. The animation must be subtle: at least 95% of the subject\'s pixels stay identical from frame to frame, and its outline/silhouette is pixel-identical across the whole row. The animation is an EXTREMELY subtle ambient accent, not a focal point: at a glance the object should appear static, with motion only visible on close inspection. Use low-contrast changes — a faint glow swell, a dim blinking indicator, a slight flicker — never large flashing areas, strong color swings, fast motion, or high-contrast changes that pull the eye. A subject that shifts, slides, or sways side-to-side between frames is an incorrect result. An animation bold enough to draw attention away from the characters is an incorrect result.',
+    'This is an inanimate object. The subject\'s width must be identical in every frame of the row — the leftmost and rightmost pixels of the subject stay in the same columns across all frames. Permitted animation is limited STRICTLY to lights and subtle highlights: emissive elements, glows, screens, and indicator lights may brighten, dim, flicker, or shift color, and existing highlights may subtly change brightness or hue. NOTHING structural moves — no rotating, tilting, wobbling, breathing, sliding, or resizing of the object or ANY of its parts, internal or external; the shape, outline, silhouette, position, footprint, and every structural pixel are pixel-identical in every frame. A subject whose width grows or shrinks between frames is an incorrect result.',
+    'Every cell in this row must be a distinct real generated frame; do not hold or duplicate frames.',
+    'Make the row\'s last cell flow seamlessly back to its first cell. Keep motion subtle and the body stationary.',
+  ];
+}
+
+/** Shared object sizing/placement/camera guidance reused by both object boards. */
+function objectSizingAndCameraLines(): string[] {
+  return [
+    'Center each object with its lowest contact point just above the cell bottom, leaving a clear strip of empty background (about 5% of the cell height) beneath it — the object must never touch the cell\'s bottom edge, or its base will be sliced off flat. Preserve relative scale across the whole board.',
+    'Size every object to a strict height budget: it fills about 75% of its cell\'s height — a subject taller than 80% of its cell height is an incorrect result.',
+    'When the board is complete, a continuous visible strip of empty background must separate every row and every column — check the finished image for an unbroken gutter along EVERY horizontal row boundary; any subject touching that gutter is drawn too large and is an incorrect result.',
+    'A naturally TALL object (an antenna, tower, rack, mounted screen, or any top-heavy subject) must be SCALED DOWN to fit entirely inside the cell with its top and bottom margins intact — never stretch it to fill the cell height, and never let it reach the top or bottom edge to preserve height. Prefer a smaller, fully-contained object over a taller one that crowds or touches a boundary; compact staging beats height. A tall object that touches or crosses any cell edge is an incorrect result.',
+    'Use crisp retro pixel art with consistent viewpoint, lighting, rendering style, and camera distance.',
+    'CAMERA (applies to every object identically, and MUST match the room/background it sits in): a classic 2:1 pixel-art isometric interior view — vertical lines stay perfectly vertical, all horizontal surfaces (tops, bases, panels, treads) recede along a shallow 2:1 diagonal (about 27 degrees), viewer looking down at about 30 degrees. Orient every object in three-quarter view with a front CORNER (not a flat face) pointing toward the viewer, so exactly two sides are visible and its top/base reads as a 2:1 diamond — the same way the room\'s floor and walls recede. Never draw an object flat-on, front-elevation, or in side-profile with a single face square to the camera — an object whose perspective does not match the room\'s isometric angle is an incorrect result.',
+  ];
+}
+
+/**
+ * Object board dispatcher: board 1's `object_rows` are all `object_static`
+ * (20 single-frame cells); board 2's carry `object_anim`/`poof`/`crate`
+ * entries. Both callers (createReviewItems / buildReplacementPrompt) already
+ * know which board they are building from the reconstructed `rows`, so this
+ * inspects the row shape rather than requiring a separate board-number param.
+ */
 export function buildObjectAtlasPrompt(
   creativeDirection: string,
   themeName: string,
   rows: ThemeObjectBoardRow[],
   background: BoardBackgroundMode = 'magenta',
 ): string {
-  if (rows.length < 1 || rows.length > 5) throw new Error('Object board carries one to five rows.');
-  const rowLines = rows.map((row, index) => {
-    if (row.kind === 'object') {
-      if (row.is_ranged_rack) {
-        return `Row ${index + 1}: OBJECT — ${row.display_name} — a wall- or floor-mounted rack/stand displaying several themed RANGED weapons (rifles, launchers, or bows appropriate to the setting), clearly readable as ranged weapons — NOT a crate, shelf, or melee weapons; subtle idle motion (a status light pulse or faint weapon gleam)`;
-      }
-      const motion = row.motion_hint
-        ?? 'invent one subtle functional motion or light cycle that reads clearly across four loopable phases';
-      return `Row ${index + 1}: OBJECT — ${row.display_name} — ${motion}`;
+  const isBoard2 = rows.some((row) => row.kind === 'object_anim' || row.kind === 'poof' || row.kind === 'crate');
+  return isBoard2
+    ? buildObjectBoard2Prompt(creativeDirection, themeName, rows, background)
+    : buildObjectBoard1Prompt(creativeDirection, themeName, rows, background);
+}
+
+/**
+ * Board 1 ("objects_01"): OBJECT_STATIC_COUNT (20) distinct STATIC buildable
+ * objects, one per cell in row-major order (Cell 1..20) on a 4x5 grid. Each
+ * cell is a single, fully-built theme structure — no animation.
+ */
+export function buildObjectBoard1Prompt(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeObjectBoardRow[],
+  background: BoardBackgroundMode = 'magenta',
+): string {
+  if (rows.length !== OBJECT_STATIC_COUNT) {
+    throw new Error(`Object board 1 requires exactly ${OBJECT_STATIC_COUNT} static-object cells.`);
+  }
+  const cellLines = rows.map((row, index) => {
+    if (row.kind !== 'object_static') throw new Error('Object board 1 cells must all be static objects.');
+    if (row.is_ranged_rack) {
+      return `Cell ${index + 1}: ${row.display_name} — a wall- or floor-mounted rack/stand displaying several themed RANGED weapons (rifles, launchers, or bows appropriate to the setting), clearly readable as ranged weapons — NOT a crate, shelf, or melee weapons.`;
     }
-    if (row.kind === 'poof') return `Row ${index + 1}: POOF — use the one-shot reveal rules below`;
-    return `Row ${index + 1}: CRATE — use the static crate rules below`;
+    return `Cell ${index + 1}: ${row.display_name} — one complete, fully-built theme structure/prop.`;
   });
-  const hasPoof = rows.some((row) => row.kind === 'poof');
-  const hasCrate = rows.some((row) => row.kind === 'crate');
   return [
-    `Create one animated object sprite sheet for the "${themeName}" theme.`,
-    boardContract(4, rows.length, background),
-    `Treat the grid as ${rows.length} visually equal logical row bands stacked to fill the entire 512px canvas height; the production slicer distributes remainder pixels across row boundaries.`,
-    `Each of the ${rows.length} ROWS contains the four sequential animation frames of exactly one listed item:`,
-    ...rowLines,
+    `Create one static buildable-object sprite board for the "${themeName}" theme.`,
+    boardContract(4, 5, background),
+    `${OBJECT_STATIC_COUNT} distinct STATIC buildable objects, one per cell in row-major order (Cell 1 through Cell ${OBJECT_STATIC_COUNT}), each a fully-built theme structure:`,
+    ...cellLines,
     '',
-    'OBJECT ROWS: all four cells show the same finished object from one fixed three-quarter/isometric camera.',
-    'Keep the object body, contact point, scale, colors, and lighting identical. Change only moving or glowing parts.',
-    'The object BODY MUST NOT move, shift, translate, rotate, resize, or reposition between the four frames. Every structural/body pixel stays in the EXACT same location in all four cells.',
-    'Only lights, glows, screens, indicator lights, and the brightness or color of subtle highlights may change between frames — NO moving, rotating, or shifting parts of any kind (internal or external). The silhouette and footprint are pixel-identical across all four frames.',
-    'Do NOT bob, sway, breathe, scale, or drift the object. Treat frames 1-4 as the identical object photographed from a locked camera, changing only its lights/color.',
-    'The FIRST cell of an animation row defines the subject\'s exact position, outline, and footprint. Treat every later cell in that row as a near-copy of the first frame, redrawn with only small internal details changed.',
-    'Across the frames of an animation row, the subject must stay locked in the identical position within each cell: same horizontal center, same baseline, same overall footprint. Animate through internal motion only (glow, flicker, moving parts, small secondary details) — never by shifting, sliding, or re-centering the whole subject between frames. The animation must be subtle: at least 95% of the subject\'s pixels stay identical from frame to frame, and its outline/silhouette is pixel-identical across the whole row. The animation is an EXTREMELY subtle ambient accent, not a focal point: at a glance the object should appear static, with motion only visible on close inspection. Use low-contrast changes — a faint glow swell, a dim blinking indicator, a slight flicker — never large flashing areas, strong color swings, fast motion, or high-contrast changes that pull the eye. A subject that shifts, slides, or sways side-to-side between frames is an incorrect result. An animation bold enough to draw attention away from the characters is an incorrect result.',
-    'These are inanimate objects. The subject\'s width must be identical in every frame of the row — the leftmost and rightmost pixels of the subject stay in the same columns across all frames. Permitted animation is limited STRICTLY to lights and subtle highlights: emissive elements, glows, screens, and indicator lights may brighten, dim, flicker, or shift color, and existing highlights may subtly change brightness or hue. NOTHING structural moves — no rotating, tilting, wobbling, breathing, sliding, or resizing of the object or ANY of its parts, internal or external; the shape, outline, silhouette, position, footprint, and every structural pixel are pixel-identical in every frame. A subject whose width grows or shrinks between frames is an incorrect result.',
-    'Every cell must be a distinct real generated frame; do not hold or duplicate frames.',
-    'Make cell 4 flow seamlessly back to cell 1. Keep motion subtle and the body stationary.',
-    'Center each object with its lowest contact point just above the cell bottom, leaving a clear strip of empty background (about 5% of the cell height) beneath it — the object must never touch the cell\'s bottom edge, or its base will be sliced off flat. Preserve relative scale across every board.',
-    'Size every object to a strict height budget: it fills about 75% of its cell\'s height — a subject taller than 80% of its cell height is an incorrect result.',
-    'When the board is complete, a continuous visible strip of empty background must separate every row and every column — check the finished image for an unbroken gutter along EVERY horizontal row boundary; any subject touching that gutter is drawn too large and is an incorrect result.',
-    'A naturally TALL object (an antenna, tower, rack, mounted screen, or any top-heavy subject) must be SCALED DOWN to fit entirely inside the cell with its top and bottom margins intact — never stretch it to fill the cell height, and never let it reach the top or bottom edge to preserve height. Prefer a smaller, fully-contained object over a taller one that crowds or touches a boundary; compact staging beats height. A tall object that touches or crosses any cell edge is an incorrect result.',
-    ...(hasPoof ? [
-      '',
-      'POOF ROW: a four-frame one-shot reveal, centered and large enough to cover a full object.',
-      'Cell 1 begins as a small low smoke puff; cell 2 grows outward; cell 3 is full and opaque;',
-      'cell 4 dissipates into faint wisps. Use neutral light-grey/white smoke with a subtle theme-color tint.',
-    ] : []),
-    ...(hasCrate ? [
-      '',
-      background === 'transparent'
-        ? 'CRATE ROW: draw one closed themed shipping crate in cell 1. Cells 2–4 must remain entirely transparent.'
-        : 'CRATE ROW: draw one closed themed shipping crate in cell 1. Cells 2–4 must remain entirely flat magenta.',
-      'The crate is one static ready-to-build frame.',
-    ] : []),
+    'Each cell shows exactly ONE finished, fully-built object as a single static frame — no animation, no motion, no partial construction. Every object is complete and ready to use.',
+    ...objectSizingAndCameraLines(),
     '',
-    'Use crisp retro pixel art with consistent viewpoint, lighting, rendering style, and camera distance.',
-    'CAMERA (applies to every object identically, and MUST match the room/background it sits in): a classic 2:1 pixel-art isometric interior view — vertical lines stay perfectly vertical, all horizontal surfaces (tops, bases, panels, treads) recede along a shallow 2:1 diagonal (about 27 degrees), viewer looking down at about 30 degrees. Orient every object in three-quarter view with a front CORNER (not a flat face) pointing toward the viewer, so exactly two sides are visible and its top/base reads as a 2:1 diamond — the same way the room\'s floor and walls recede. Never draw an object flat-on, front-elevation, or in side-profile with a single face square to the camera — an object whose perspective does not match the room\'s isometric angle is an incorrect result.',
+    `Creative direction: ${creativeDirection}`,
+  ].join('\n');
+}
+
+/**
+ * Board 2 ("objects_02"): a 4x5 grid mixing five roles — two animated objects
+ * (row 1 = Cells 1-4, row 2 = Cells 5-8; 4 frames each, lights/highlights-only
+ * motion), a 7-frame one-shot build-completion POOF spanning Cells 9-15 (row 3
+ * plus the first three cells of row 4), four unused blank Cells 16-19, and a
+ * single static CRATE in the final Cell 20.
+ */
+export function buildObjectBoard2Prompt(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeObjectBoardRow[],
+  background: BoardBackgroundMode = 'magenta',
+): string {
+  const [rowA, rowB, poofRow, crateRow] = rows;
+  if (
+    rows.length !== OBJECT_ANIMATED_COUNT + 2
+    || rowA?.kind !== 'object_anim' || rowB?.kind !== 'object_anim'
+    || poofRow?.kind !== 'poof' || crateRow?.kind !== 'crate'
+  ) {
+    throw new Error('Object board 2 requires exactly two animated objects, one poof entry, and one crate entry.');
+  }
+  const motionA = rowA.motion_hint
+    ?? 'invent one subtle functional motion or light cycle that reads clearly across four loopable phases';
+  const motionB = rowB.motion_hint
+    ?? 'invent one subtle functional motion or light cycle that reads clearly across four loopable phases';
+  return [
+    `Create one animated-object + build-effects sprite board for the "${themeName}" theme.`,
+    boardContract(4, 5, background),
+    'The 20 cells (4 columns x 5 rows, row-major) carry FIVE distinct roles:',
+    `Row 1 (Cells 1-4): the four sequential animation frames of ONE object — ${rowA.display_name} — ${motionA}`,
+    `Row 2 (Cells 5-8): the four sequential animation frames of a SECOND object — ${rowB.display_name} — ${motionB}`,
+    `Cells 9-15 (spanning row 3 and the first three cells of row 4): a SEVEN-frame one-shot build-completion POOF — use the POOF rules below.`,
+    'Cells 16-19 (the rest of row 4 and all of row 5): leave completely EMPTY — background fill only, no object, no effect, no stray marks of any kind.',
+    'Cell 20 (the final cell): a single static build CRATE — use the CRATE rules below.',
+    '',
+    ...objectRowAnimationConstraintLines('Row 1 (Cells 1-4)'),
+    '',
+    ...objectRowAnimationConstraintLines('Row 2 (Cells 5-8)'),
+    '',
+    `POOF (Cells 9-15): a ${OBJECT_POOF_FRAME_COUNT}-frame one-shot reveal, centered and large enough to cover a full object, progressing smoothly from a small puff to a full burst to dissipation:`,
+    'Cell 9 begins as a small low smoke puff.',
+    'Cells 10-12 grow the puff outward through to a full, opaque burst.',
+    'Cells 13-15 dissipate the burst smoothly into faint wisps.',
+    'Use neutral light-grey/white smoke with a subtle theme-color tint. Every cell must be a distinct real generated frame; do not hold or duplicate frames. Keep the puff centered on the same point across all seven frames.',
+    '',
+    'EMPTY CELLS (16-19): paint them with nothing but the board\'s own background fill — no object, no smoke, no crate, no stray marks.',
+    '',
+    'CRATE (Cell 20): draw one closed themed shipping crate. The crate is one static ready-to-build frame.',
+    ...objectSizingAndCameraLines(),
     '',
     `Creative direction: ${creativeDirection}`,
   ].join('\n');

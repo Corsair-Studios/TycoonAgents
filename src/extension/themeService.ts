@@ -23,10 +23,13 @@ import {
   CHARACTER_TARGET_CONTENT_PERCENT,
   buildRivalAtlasPrompt,
   createDecorBoardRows,
-  createObjectBoardRows,
+  createObjectBoard1Rows,
+  createObjectBoard2Rows,
   createRivalBoardRows,
   decorBoardFrameKeys,
   objectBoardFrameKeys,
+  OBJECT_ANIMATED_COUNT,
+  OBJECT_STATIC_COUNT,
   rivalBoardFrameKeys,
 } from './themeAssetPrompts';
 import type { BoardBackgroundMode, ThemeObjectPromptSpec, ThemeRivalPromptSpec } from './themeAssetPrompts';
@@ -72,6 +75,7 @@ import type { ThemeImageRetryMode } from './themeImageRetry';
 import {
   ATLAS_CLIPS,
   normalizeThemePlan,
+  THEME_OBJECT_COUNT,
   themePlanCreativeDirection,
   themePlanToManifest,
   toSafeAssetId,
@@ -2024,33 +2028,58 @@ async function processCharacterAtlas(
   return { output, spritePackage: normalized };
 }
 
+/**
+ * Slice one of the two fixed 4x5 (20-cell) object boards.
+ *   - Board 1 (all `object_static` rows, length OBJECT_STATIC_COUNT): each
+ *     cell is an independent single-frame object, normalized on its own (no
+ *     grouping/registration needed since there is nothing to keep in sync
+ *     across frames).
+ *   - Board 2 (`[object_anim, object_anim, poof, crate]`): row 1 (cells 0-3)
+ *     and row 2 (cells 4-7) are each a 4-frame animated-object group; cells
+ *     8-14 are the 7-frame poof group (spans the row 2/row 3 boundary); cell
+ *     19 is the single-frame crate. Only the two animated-object groups are
+ *     horizontally registered — poof is a one-shot FX whose frames are meant
+ *     to differ, and the crate is single-frame, so registering either is a
+ *     no-op at best.
+ */
 async function processObjectAtlas(
   generated: Buffer,
   manifest: ThemeManifest,
   rows: ThemeObjectBoardRow[],
 ): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
-  if (rows.length < 1 || rows.length > 5) throw new Error('Object board carries one to five rows.');
-  const rowSlots = rows.map((_row, rowIndex) =>
-    Array.from({ length: 4 }, (_unused, columnIndex) => rowIndex * 4 + columnIndex),
-  );
-  const objectSlots = rows.flatMap((row, rowIndex) => row.kind === 'object' ? rowSlots[rowIndex] : []);
-  // The poof row is a one-shot FX (small puff to full burst); its frames are
-  // meant to differ, so it is excluded from horizontal registration. Crate
-  // rows are single-frame in practice, so registering them is a harmless no-op.
-  const registrationRowSlots = rows.flatMap((row, rowIndex) => row.kind === 'poof' ? [] : [rowSlots[rowIndex]]);
-  // Slice the provider output before optimizing the retained review image. This
-  // avoids re-slicing a 512px square whose five logical rows cannot all have an
-  // identical integer height. Each animation row shares one crop and anchor.
+  const isBoard2 = rows.some((row) => row.kind === 'object_anim' || row.kind === 'poof' || row.kind === 'crate');
+  if (isBoard2) {
+    if (rows.length !== OBJECT_ANIMATED_COUNT + 2) {
+      throw new Error('Object board 2 requires exactly two animated objects, one poof entry, and one crate entry.');
+    }
+    const animGroups = [[0, 1, 2, 3], [4, 5, 6, 7]];
+    const poofGroup = [8, 9, 10, 11, 12, 13, 14];
+    const crateGroup = [19];
+    const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
+      columns: 4,
+      rows: 5,
+      scaleReferenceSlots: [...animGroups[0], ...animGroups[1]],
+      targetContentHeight: 104,
+      maxContentExtent: 120,
+      normalizationGroups: [...animGroups, poofGroup, crateGroup],
+      registrationGroups: animGroups,
+    });
+    const output = await optimizeSpriteBoardCanvas(generated, 4, 5);
+    return { output, spritePackage };
+  }
+  if (rows.length !== OBJECT_STATIC_COUNT) {
+    throw new Error(`Object board 1 requires exactly ${OBJECT_STATIC_COUNT} static-object cells.`);
+  }
+  const allSlots = Array.from({ length: OBJECT_STATIC_COUNT }, (_unused, index) => index);
   const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
     columns: 4,
-    rows: rows.length,
-    scaleReferenceSlots: objectSlots,
+    rows: 5,
+    scaleReferenceSlots: allSlots,
     targetContentHeight: 104,
     maxContentExtent: 120,
-    normalizationGroups: rowSlots,
-    registrationGroups: registrationRowSlots,
+    normalizationGroups: allSlots.map((slot) => [slot]),
   });
-  const output = await optimizeSpriteBoardCanvas(generated, 4, rows.length);
+  const output = await optimizeSpriteBoardCanvas(generated, 4, 5);
   return { output, spritePackage };
 }
 
@@ -2209,25 +2238,36 @@ export function createReviewItems(
   let objectItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
   try {
     const objectSpecs = themeObjectSpecs(manifest, plan.object_motion_hints);
-    objectItems = createObjectBoardRows(objectSpecs).map((rows, index) => {
-      const objectRows = rows.filter((row): row is Extract<ThemeObjectBoardRow, { kind: 'object' }> => row.kind === 'object');
-      const firstObject = index * 5 + 1;
-      const lastObject = firstObject + objectRows.length - 1;
-      return {
-        id: `objects_${String(index + 1).padStart(2, '0')}`,
-        filename: `objects_${String(index + 1).padStart(2, '0')}.png`,
-        label: index === 2
-          ? `Animated objects ${firstObject}–${lastObject} + build effects`
-          : `Animated objects ${firstObject}–${lastObject}`,
+    const staticSpecs = objectSpecs.slice(0, OBJECT_STATIC_COUNT);
+    const animatedSpecs = objectSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT);
+    const board1Rows = createObjectBoard1Rows(staticSpecs);
+    const board2Rows = createObjectBoard2Rows(animatedSpecs);
+    objectItems = [
+      {
+        id: 'objects_01',
+        filename: 'objects_01.png',
+        label: `Static objects 1–${OBJECT_STATIC_COUNT}`,
         kind: 'object_atlas' as const,
         status: 'pending' as const,
-        prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, rows, backgroundMode),
+        prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, board1Rows, backgroundMode),
         revision: 0,
-        frame_keys: objectBoardFrameKeys(rows),
-        object_specs: objectRows.map(({ object_id, display_name }) => ({ object_id, display_name })),
-        object_rows: rows,
-      };
-    });
+        frame_keys: objectBoardFrameKeys(board1Rows),
+        object_specs: staticSpecs.map(({ object_id, display_name }) => ({ object_id, display_name })),
+        object_rows: board1Rows,
+      },
+      {
+        id: 'objects_02',
+        filename: 'objects_02.png',
+        label: `Animated objects ${OBJECT_STATIC_COUNT + 1}–${OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT} + build effects`,
+        kind: 'object_atlas' as const,
+        status: 'pending' as const,
+        prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, board2Rows, backgroundMode),
+        revision: 0,
+        frame_keys: objectBoardFrameKeys(board2Rows),
+        object_specs: animatedSpecs.map(({ object_id, display_name }) => ({ object_id, display_name })),
+        object_rows: board2Rows,
+      },
+    ];
   } catch (err) {
     console.warn('TycoonAgents: skipping object board items in review synthesis:', err);
     objectItems = [];
@@ -2454,30 +2494,29 @@ function rivalRowsForItem(
 }
 
 /**
- * Object rows for an object-atlas item. Mirrors rivalRowsForItem: reconstructs
- * ALL object boards from the CURRENT manifest via createObjectBoardRows (objects
- * chunked 5 rows/board, with the poof/crate rows trailing the flattened list),
- * then picks OUT the board matching this item's own `objects_NN` id — so a
- * roster change (e.g. objects added/removed/renamed) regenerates the correct
- * board instead of reusing a stale saved `object_rows`. Without per-item board
- * indexing, every board fell through to the single-board legacy reconstruction
- * below, which always appends synthetic poof/crate rows onto the item's first
- * three object specs — so a mid-roster board (e.g. objects 6-10, no poof/crate
- * of its own) got its last real object row mislabeled 'crate', and the actual
- * crate board's rows were built from the wrong specs entirely. Falls back to
- * the item's stored `object_rows`, then to the legacy single-board
- * reconstruction, only if the current-manifest board lookup is empty or
- * throws (e.g. a manifest with zero buildable_objects). Exported for unit
+ * Object rows for an object-atlas item. Mirrors rivalRowsForItem, but the v2
+ * object pipeline always has exactly TWO fixed-shape boards (unlike rivals,
+ * whose board count scales with roster size): `objects_01` is
+ * createObjectBoard1Rows(the first OBJECT_STATIC_COUNT specs) and
+ * `objects_02` is createObjectBoard2Rows(the next OBJECT_ANIMATED_COUNT
+ * specs). Reconstructing from the CURRENT manifest (rather than reusing a
+ * stale saved `object_rows`) means a roster rename/reorder regenerates the
+ * correct board content. Falls back to the item's stored `object_rows`, then
+ * to a lenient legacy reconstruction, only if the current-manifest
+ * reconstruction is empty or throws (e.g. a manifest whose buildable_objects
+ * count doesn't match the current 22-object contract). Exported for unit
  * testing.
  */
 export function objectRowsForItem(
   item: Pick<ThemeImageReviewItem, 'object_specs' | 'object_rows'> & Partial<Pick<ThemeImageReviewItem, 'id'>>,
   manifest: ThemeManifest,
 ): ThemeObjectBoardRow[] {
+  const boardNumber = Number(/objects_(\d+)/.exec(item.id ?? '')?.[1] ?? '1') || 1;
   try {
-    const boards = createObjectBoardRows(themeObjectSpecs(manifest));
-    const boardIndex = Math.max(0, (Number(/objects_(\d+)/.exec(item.id ?? '')?.[1] ?? '1') || 1) - 1);
-    const rows = boards[boardIndex] ?? boards[0] ?? [];
+    const objectSpecs = themeObjectSpecs(manifest);
+    const rows = boardNumber >= 2
+      ? createObjectBoard2Rows(objectSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT))
+      : createObjectBoard1Rows(objectSpecs.slice(0, OBJECT_STATIC_COUNT));
     if (rows.length) return rows;
   } catch (err) {
     console.warn('TycoonAgents: unable to reconstruct object board rows:', err);
@@ -2590,7 +2629,7 @@ export function resyncRenamedReviewItems(
   const affectedBoardIds = new Set<string>();
   for (const item of document.items) {
     if (item.kind === 'object_atlas' && item.object_rows?.some(
-      (row) => row.kind === 'object' && affectedIds.has(row.object_id),
+      (row) => (row.kind === 'object_static' || row.kind === 'object_anim') && affectedIds.has(row.object_id),
     )) {
       affectedBoardIds.add(item.id);
     } else if (item.kind === 'background_decor_atlas' && item.decor_rows?.some(
@@ -2827,33 +2866,55 @@ function renameCharacterInPrompt(prompt: string, previousName: string, character
 }
 
 /**
- * Reconstruct a 5-row animated object board for a legacy object-atlas review item
- * that predates animated boards (no object_rows). Uses the item's stored object
- * specs (falling back to the manifest) so retries always take the animated path.
- * Layout: up to 3 object rows, then a poof row and a crate row, padded to 5 rows.
+ * Lenient legacy fallback for an object-atlas review item whose board can't be
+ * reconstructed from the current manifest via createObjectBoard1Rows /
+ * createObjectBoard2Rows (e.g. a manifest whose buildable_objects count
+ * doesn't match the current 22-object / 20-static-plus-2-animated contract).
+ * Uses the item's stored object specs (falling back to the manifest), padding
+ * with synthetic placeholders rather than throwing, so a retry never crashes
+ * even against a malformed/legacy roster. `objects_02` (or any board number
+ * >= 2) reconstructs board 2's [animA, animB, poof, crate] shape from the
+ * LAST OBJECT_ANIMATED_COUNT specs; every other id reconstructs board 1's 20
+ * static cells from the first OBJECT_STATIC_COUNT specs.
  */
 function reconstructObjectRows(
-  item: Pick<ThemeImageReviewItem, 'object_specs'>,
+  item: Pick<ThemeImageReviewItem, 'object_specs'> & Partial<Pick<ThemeImageReviewItem, 'id'>>,
   manifest: ThemeManifest,
 ): ThemeObjectBoardRow[] {
-  const specs = item.object_specs?.length
-    ? item.object_specs
-    : themeObjectSpecs(manifest).slice(0, 3);
-  const objectRows: ThemeObjectBoardRow[] = specs.slice(0, 3).map((spec) => ({
-    kind: 'object' as const,
-    object_id: spec.object_id,
-    display_name: spec.display_name,
+  const boardNumber = Number(/objects_(\d+)/.exec(item.id ?? '')?.[1] ?? '1') || 1;
+  const specs = (item.object_specs?.length ? item.object_specs : themeObjectSpecs(manifest))
+    .map((spec) => ({ object_id: spec.object_id, display_name: spec.display_name }));
+  if (boardNumber >= 2) {
+    const animated = specs.slice(Math.max(0, specs.length - OBJECT_ANIMATED_COUNT));
+    const animRows: ThemeObjectBoardRow[] = animated.map((spec) => ({ kind: 'object_anim' as const, ...spec }));
+    while (animRows.length < OBJECT_ANIMATED_COUNT) {
+      animRows.push({
+        kind: 'object_anim' as const,
+        object_id: `object_${animRows.length + 1}`,
+        display_name: `Object ${animRows.length + 1}`,
+      });
+    }
+    return [...animRows.slice(0, OBJECT_ANIMATED_COUNT), { kind: 'poof' }, { kind: 'crate' }];
+  }
+  const staticRows: ThemeObjectBoardRow[] = specs.slice(0, OBJECT_STATIC_COUNT).map((spec) => ({
+    kind: 'object_static' as const,
+    ...spec,
   }));
-  const rows: ThemeObjectBoardRow[] = [...objectRows, { kind: 'poof' }, { kind: 'crate' }];
-  while (rows.length < 5) rows.push({ kind: 'crate' });
-  return rows.slice(0, 5);
+  while (staticRows.length < OBJECT_STATIC_COUNT) {
+    staticRows.push({
+      kind: 'object_static' as const,
+      object_id: `object_${staticRows.length + 1}`,
+      display_name: `Object ${staticRows.length + 1}`,
+    });
+  }
+  return staticRows;
 }
 
 function themeObjectSpecs(
   manifest: ThemeManifest,
   motionHints?: string[],
 ): ThemeObjectPromptSpec[] {
-  return manifest.buildable_objects.slice(0, 13).map((object, index) => {
+  return manifest.buildable_objects.slice(0, THEME_OBJECT_COUNT).map((object, index) => {
     // build_order 0 is the themed ranged-weapon rack (see themePlan.ts); it gets
     // dedicated rack visual guidance and ignores any planner motion hint.
     const isRangedRack = index === 0;
@@ -2895,8 +2956,12 @@ function applyRivalBoardFrames(
 }
 
 /**
- * Writes one board's object/poof/crate frames into `frames`, keyed off the
- * board's OWN `rows` list (per-board row index, not a global object index).
+ * Writes one object board's frames into `frames`.
+ *   - Board 1 (all `object_static` rows): cell i -> `object_<id>`, 1 frame.
+ *   - Board 2 (`[object_anim, object_anim, poof, crate]`): row 1 (slots 0-3)
+ *     and row 2 (slots 4-7) -> `object_<id>`, 4 frames each; slots 8-14 ->
+ *     `poof`, 7 frames; slot 19 -> `crate`, 1 frame. Slots 15-18 are unused
+ *     blank padding and own no frame key.
  * Exported for unit testing multi-board mappings (see objectRowsForItem).
  */
 export function applyObjectBoardFrames(
@@ -2904,11 +2969,35 @@ export function applyObjectBoardFrames(
   slots: Array<{ slot_id: number; data: string }>,
   rows: ThemeObjectBoardRow[],
 ): string[] {
+  const isBoard2 = rows.some((row) => row.kind === 'object_anim' || row.kind === 'poof' || row.kind === 'crate');
   const keys: string[] = [];
-  rows.forEach((row, rowIndex) => {
-    const rowFrames = slots.slice(rowIndex * 4, rowIndex * 4 + 4).map((slot) => slot.data);
-    const key = row.kind === 'object' ? `object_${row.object_id}` : row.kind;
-    frames[key] = row.kind === 'crate' ? rowFrames.slice(0, 1) : rowFrames;
+  const sliceData = (start: number, end: number) => slots.slice(start, end).map((slot) => slot.data);
+  if (isBoard2) {
+    const [rowA, rowB, poofRow, crateRow] = rows;
+    if (rowA?.kind === 'object_anim') {
+      const key = `object_${rowA.object_id}`;
+      frames[key] = sliceData(0, 4);
+      keys.push(key);
+    }
+    if (rowB?.kind === 'object_anim') {
+      const key = `object_${rowB.object_id}`;
+      frames[key] = sliceData(4, 8);
+      keys.push(key);
+    }
+    if (poofRow?.kind === 'poof') {
+      frames.poof = sliceData(8, 15);
+      keys.push('poof');
+    }
+    if (crateRow?.kind === 'crate') {
+      frames.crate = sliceData(19, 20);
+      keys.push('crate');
+    }
+    return keys;
+  }
+  rows.forEach((row, index) => {
+    if (row.kind !== 'object_static') return;
+    const key = `object_${row.object_id}`;
+    frames[key] = slots[index] ? [slots[index].data] : [];
     keys.push(key);
   });
   return keys;

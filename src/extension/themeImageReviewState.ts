@@ -22,8 +22,22 @@ export interface ThemeImageGenerationError {
   categories?: string[];
 }
 
+/**
+ * v2 object pipeline: TWO fixed-shape 4x5 (20-cell) boards, keyed `objects_01`
+ * (board 1) and `objects_02` (board 2) — see themeAssetPrompts.ts's
+ * createObjectBoard1Rows / createObjectBoard2Rows.
+ *   - Board 1's `object_rows` array is exactly 20 `object_static` entries, one
+ *     per cell in row-major order (Cell 1..20), each a single-frame object.
+ *   - Board 2's `object_rows` array is exactly 4 entries in this fixed order:
+ *     [object_anim, object_anim, poof, crate]. `object_anim` #1 occupies row 1
+ *     (cells 1-4, 4 frames) and #2 occupies row 2 (cells 5-8, 4 frames); `poof`
+ *     occupies cells 9-15 (7 frames, spanning row 3 and the first three cells of
+ *     row 4); cells 16-19 are unused blank padding; `crate` is the single last
+ *     cell (cell 20, 1 frame).
+ */
 export type ThemeObjectBoardRow =
-  | { kind: 'object'; object_id: string; display_name: string; motion_hint?: string; is_ranged_rack?: boolean }
+  | { kind: 'object_static'; object_id: string; display_name: string; motion_hint?: string; is_ranged_rack?: boolean }
+  | { kind: 'object_anim'; object_id: string; display_name: string; motion_hint?: string }
   | { kind: 'poof' }
   | { kind: 'crate' };
 

@@ -63,7 +63,10 @@ function legacyManifest(): ThemeManifest {
       name: `Rival ${index}`,
       atlas_asset: `frames.json#rival_${index}`,
     })),
-    // Legacy theme: only 12 objects (createObjectBoardRows packs any positive count).
+    // Legacy/off-count theme: only 12 objects. The v2 object pipeline requires
+    // EXACTLY 22 (20 static + 2 animated) to build either board, so this
+    // intentionally exercises the graceful-skip path (see the "off-count"
+    // test below) rather than the normal two-board reconstruction.
     buildable_objects: Array.from({ length: 12 }, (_unused, index) => ({
       build_order: index,
       object_id: `object_${index}`,
@@ -110,19 +113,19 @@ test('createReviewItems does not throw for a legacy manifest with off-count riva
   assert.ok(decorItem, 'expected a background_decor item to be synthesized despite off-count rivals/objects');
   assert.equal(decorItem?.kind, 'background_decor_atlas');
 
-  // Off-count rival/object boards are now synthesized (packers accept any positive
-  // roster count) rather than skipped: 3 rivals pack into 1 board (up to 4 rivals/board).
+  // Off-count rival boards still synthesize gracefully (createRivalBoardRows
+  // accepts any positive roster count): 3 rivals pack into 1 board (up to 4/board).
   const rivalItems = result.filter((item) => item.kind === 'rival_atlas');
   assert.equal(rivalItems.length, 1, 'expected exactly one rival_atlas board for 3 rivals');
   assert.deepEqual(rivalItems.map((item) => item.id), ['rivals_01']);
 
-  // createObjectBoardRows packs any positive object count (12 objects + poof + crate =
-  // 14 rows -> boards of [5, 5, 4] rows), and buildObjectAtlasPrompt now accepts a
-  // partial trailing board (one to five rows), so all three boards synthesize instead
-  // of the whole set being discarded by the surrounding try/catch.
+  // The v2 object pipeline requires EXACTLY 22 objects (20 static + 2 animated)
+  // to build either fixed-shape board (createObjectBoard1Rows/createObjectBoard2Rows
+  // both throw on any other count). This manifest has 12, so BOTH object boards
+  // are gracefully skipped by the surrounding try/catch rather than partially
+  // degrading — unlike rivals, there is no partial/dynamic object board layout.
   const objectItems = result.filter((item) => item.kind === 'object_atlas');
-  assert.equal(objectItems.length, 3, 'expected three object_atlas boards for 12 objects + poof + crate');
-  assert.deepEqual(objectItems.map((item) => item.id), ['objects_01', 'objects_02', 'objects_03']);
+  assert.equal(objectItems.length, 0, 'expected zero object_atlas boards for an off-count (12) object roster');
 
   // Everything else still gets synthesized.
   assert.ok(result.some((item) => item.kind === 'character_atlas'));
@@ -134,8 +137,27 @@ test('createReviewItems does not throw for a legacy manifest with off-count riva
 // --- Regression: regeneration must prefer the CURRENT manifest/plan over stale
 // saved review-item metadata (mirrors the already-fixed rivalRowsForItem). ---
 
-test('objectRowsForItem prefers the CURRENT manifest roster over stale saved object_rows', () => {
+/**
+ * A manifest carrying the FULL v2 contract of 22 buildable objects: the first
+ * OBJECT_STATIC_COUNT (20, indices 0-19) are static (board 1), and the last
+ * OBJECT_ANIMATED_COUNT (2, indices 20-21) are the animated pair (board 2).
+ */
+function fullObjectManifest(): ThemeManifest {
   const manifest = legacyManifest();
+  manifest.buildable_objects = Array.from({ length: 22 }, (_unused, index) => ({
+    build_order: index,
+    object_id: `object_${index}`,
+    display_name: `Object ${index}`,
+    sprite_asset: `frames.json#object_object_${index}`,
+    anchor_coord: [0.5, 0.5] as [number, number],
+    exclusion_radius: 32,
+    work_units_required: 100,
+  }));
+  return manifest;
+}
+
+test('objectRowsForItem prefers the CURRENT manifest roster over stale saved object_rows', () => {
+  const manifest = fullObjectManifest();
   // Simulate the roster having been edited (renamed) after the item's object_rows
   // were saved from a prior generation.
   manifest.buildable_objects = manifest.buildable_objects.map((object) => ({
@@ -143,96 +165,82 @@ test('objectRowsForItem prefers the CURRENT manifest roster over stale saved obj
     display_name: `New ${object.display_name}`,
   }));
 
-  // No object_specs saved, so reconstructObjectRows falls through to the manifest
-  // (its own untouched legacy behavior) rather than the stale object_rows below.
   const staleObjectRows = [
-    { kind: 'object' as const, object_id: 'object_0', display_name: 'STALE Object 0' },
-    { kind: 'poof' as const },
-    { kind: 'crate' as const },
+    { kind: 'object_static' as const, object_id: 'object_0', display_name: 'STALE Object 0' },
   ];
 
   const rows = objectRowsForItem({ id: 'objects_01', object_rows: staleObjectRows }, manifest);
 
   assert.notDeepEqual(rows, staleObjectRows);
-  assert.equal(rows.length, 5);
-  assert.equal(rows[0].kind, 'object');
-  assert.equal(rows[0].kind === 'object' ? rows[0].display_name : undefined, 'New Object 0');
+  assert.equal(rows.length, 20);
+  assert.equal(rows[0].kind, 'object_static');
+  assert.equal(rows[0].kind === 'object_static' ? rows[0].display_name : undefined, 'New Object 0');
 });
 
-test('objectRowsForItem falls back to saved object_rows only when reconstruction is empty', () => {
-  const manifest = legacyManifest();
+test('objectRowsForItem falls back to saved object_rows when the manifest object count does not match the 22-object contract', () => {
+  const manifest = legacyManifest(); // only 12 buildable_objects — neither board can be reconstructed
   const staleObjectRows = [{ kind: 'crate' as const }];
-  // reconstructObjectRows only throws/empties in pathological cases; this asserts
-  // the fallback plumbing returns the saved rows verbatim when it does.
   const rows = objectRowsForItem({ object_rows: staleObjectRows, object_specs: [] }, manifest);
-  // With a normal manifest, reconstruction still succeeds (non-empty), proving the
-  // manifest wins even though a saved fallback value is present.
-  assert.notDeepEqual(rows, staleObjectRows);
+  assert.deepEqual(rows, staleObjectRows);
 });
 
-// --- Regression: multi-board object rosters must map poof/crate onto the
-// board that actually carries them, not bleed onto a neighboring board's
-// last object row (the reported bug: crate rendered as object #10's frame). ---
+// --- Regression: the v2 object pipeline always splits a full 22-object roster
+// into exactly two FIXED-shape boards — board 1 (the first 20 objects, one
+// static frame per cell) and board 2 (the last 2 objects, animated, plus the
+// fixed poof/crate entries) — never a dynamic/partial split. ---
 
-test('objectRowsForItem gives board A (5 objects) no poof/crate, and board B (2 objects + poof + crate) the trailing rows', () => {
-  const manifest = legacyManifest();
-  // 7 objects -> flatRows = 7 objects + poof + crate = 9 rows -> boards of [5, 4]:
-  // board A = objects 0-4 (5 rows, no poof/crate); board B = objects 5-6 + poof + crate.
-  manifest.buildable_objects = manifest.buildable_objects.slice(0, 7);
+test('objectRowsForItem: a full 22-object roster gives board 1 the first 20 objects (all object_static) and board 2 the last 2 objects plus poof/crate', () => {
+  const manifest = fullObjectManifest();
 
-  const boardA = objectRowsForItem({ id: 'objects_01' }, manifest);
-  assert.equal(boardA.length, 5);
-  assert.ok(boardA.every((row) => row.kind === 'object'), 'board A must carry only object rows');
-  assert.deepEqual(boardA.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
-    'object_0', 'object_1', 'object_2', 'object_3', 'object_4',
-  ]);
+  const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
+  assert.equal(board1.length, 20);
+  assert.ok(board1.every((row) => row.kind === 'object_static'), 'board 1 must carry only static-object cells');
+  assert.deepEqual(
+    board1.map((row) => row.kind === 'object_static' ? row.object_id : row.kind),
+    Array.from({ length: 20 }, (_unused, index) => `object_${index}`),
+  );
 
-  const boardB = objectRowsForItem({ id: 'objects_02' }, manifest);
-  assert.equal(boardB.length, 4);
-  assert.deepEqual(boardB.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
-    'object_5', 'object_6', 'poof', 'crate',
-  ]);
+  const board2 = objectRowsForItem({ id: 'objects_02' }, manifest);
+  assert.deepEqual(board2.map((row) => row.kind), ['object_anim', 'object_anim', 'poof', 'crate']);
+  assert.deepEqual(
+    board2.slice(0, 2).map((row) => row.kind === 'object_anim' ? row.object_id : row.kind),
+    ['object_20', 'object_21'],
+  );
 });
 
-test('applyObjectBoardFrames writes crate/poof only from the board that carries them, at the correct row slots', () => {
-  const manifest = legacyManifest();
-  manifest.buildable_objects = manifest.buildable_objects.slice(0, 7);
-  const boardA = objectRowsForItem({ id: 'objects_01' }, manifest); // 5 object rows, no poof/crate
-  const boardB = objectRowsForItem({ id: 'objects_02' }, manifest); // object_5, object_6, poof, crate
+test('applyObjectBoardFrames: board 1 writes one single-frame object_<id> key per cell', () => {
+  const manifest = fullObjectManifest();
+  const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
 
-  const makeSlots = (board: string, rowCount: number) =>
-    Array.from({ length: rowCount * 4 }, (_unused, slotIndex) => ({
-      slot_id: slotIndex,
-      data: `${board}_r${Math.floor(slotIndex / 4)}_c${slotIndex % 4}`,
-    }));
-
-  // Both boards write into the SAME shared frames map, as they do in production
-  // (one call per board, sharing the theme's frames.json record).
+  const slots = Array.from({ length: 20 }, (_unused, slotIndex) => ({ slot_id: slotIndex, data: `cell_${slotIndex}` }));
   const frames: Record<string, string[]> = {};
-  applyObjectBoardFrames(frames, makeSlots('A', boardA.length), boardA);
-  applyObjectBoardFrames(frames, makeSlots('B', boardB.length), boardB);
+  const keys = applyObjectBoardFrames(frames, slots, board1);
 
-  // Board A's own object rows are intact and untouched by board B.
-  assert.deepEqual(frames['object_object_0'], ['A_r0_c0', 'A_r0_c1', 'A_r0_c2', 'A_r0_c3']);
-  assert.deepEqual(frames['object_object_4'], ['A_r4_c0', 'A_r4_c1', 'A_r4_c2', 'A_r4_c3']);
+  assert.equal(keys.length, 20);
+  assert.deepEqual(frames.object_object_0, ['cell_0']);
+  assert.deepEqual(frames.object_object_19, ['cell_19']);
+  assert.equal(frames.poof, undefined);
+  assert.equal(frames.crate, undefined);
+});
 
-  // Board B's object rows use board B's OWN row indices (0, 1), not the global
-  // object index (5, 6).
-  assert.deepEqual(frames['object_object_5'], ['B_r0_c0', 'B_r0_c1', 'B_r0_c2', 'B_r0_c3']);
-  assert.deepEqual(frames['object_object_6'], ['B_r1_c0', 'B_r1_c1', 'B_r1_c2', 'B_r1_c3']);
+test('applyObjectBoardFrames: board 2 writes two 4-frame animated objects, a 7-frame poof (cells 9-15), and a 1-frame crate (cell 20) — cells 16-19 own no key', () => {
+  const manifest = fullObjectManifest();
+  const board2 = objectRowsForItem({ id: 'objects_02' }, manifest); // [object_anim(20), object_anim(21), poof, crate]
 
-  // 'poof' comes from board B's row 2 (all 4 frames); 'crate' from board B's
-  // LAST row (row 3), slot 0 only — never from board A's last row.
-  assert.deepEqual(frames.poof, ['B_r2_c0', 'B_r2_c1', 'B_r2_c2', 'B_r2_c3']);
-  assert.deepEqual(frames.crate, ['B_r3_c0']);
+  const slots = Array.from({ length: 20 }, (_unused, slotIndex) => ({ slot_id: slotIndex, data: `cell_${slotIndex}` }));
+  const frames: Record<string, string[]> = {};
+  const keys = applyObjectBoardFrames(frames, slots, board2);
 
-  // Board A (which has no poof/crate row of its own) must never have written
-  // those keys — this is the exact bug: a board without a crate row silently
-  // wrote frames.crate from its own last object row.
-  const framesAfterBoardAOnly: Record<string, string[]> = {};
-  applyObjectBoardFrames(framesAfterBoardAOnly, makeSlots('A', boardA.length), boardA);
-  assert.equal(framesAfterBoardAOnly.crate, undefined);
-  assert.equal(framesAfterBoardAOnly.poof, undefined);
+  // Row 1 (cells 0-3): first animated object, 4 frames.
+  assert.deepEqual(frames.object_object_20, ['cell_0', 'cell_1', 'cell_2', 'cell_3']);
+  // Row 2 (cells 4-7): second animated object, 4 frames.
+  assert.deepEqual(frames.object_object_21, ['cell_4', 'cell_5', 'cell_6', 'cell_7']);
+  // Cells 8-14: the 7-frame poof, spanning the row 2/row 3 boundary.
+  assert.deepEqual(frames.poof, ['cell_8', 'cell_9', 'cell_10', 'cell_11', 'cell_12', 'cell_13', 'cell_14']);
+  // Cell 19 (the last cell): the single-frame crate.
+  assert.deepEqual(frames.crate, ['cell_19']);
+  // Cells 15-18 are blank padding — no frame key was written for them.
+  assert.deepEqual(keys.sort(), ['crate', 'object_object_20', 'object_object_21', 'poof'].sort());
 });
 
 test('decorRowsForItem prefers the CURRENT manifest decor roster over stale saved decor_rows', () => {
@@ -298,13 +306,11 @@ test('buildReplacementPrompt falls back to saved expression/achievement names wh
   assert.match(prompt, /Saved Joy/);
 });
 
-// --- Regression: reproduces the REAL production layout reported as broken —
-// a 12-object theme (cobra_command) with object ids/board split matching the
-// user's actual manifest: board 1 = objects 1-5, board 2 = objects 6-10 (no
-// poof/crate of its own), board 3 = objects 11-12 + poof + crate. Prior to the
-// fix, board 2's item carried stale saved object_rows from an earlier 8-object
-// snapshot of the roster (where board 2 WAS the terminal board and legitimately
-// owned poof/crate), and nothing ever recomputed or purged that staleness. ---
+// --- Regression: reproduces a REAL production-shaped 22-object roster (cobra
+// command) under the v2 fixed-two-board contract: board 1 = the first 20
+// (all static), board 2 = the last 2 (animated) plus the fixed poof/crate
+// entries. A resumed session must always prefer the freshly recomputed board
+// over any stale saved object_rows/prompt/frame_keys. ---
 
 const REAL_OBJECT_IDS: Array<{ object_id: string; display_name: string }> = [
   { object_id: 'mobile_command_center', display_name: 'Mobile Command Center' },
@@ -319,9 +325,20 @@ const REAL_OBJECT_IDS: Array<{ object_id: string; display_name: string }> = [
   { object_id: 'security_scanner_console', display_name: 'Security Scanner Console' },
   { object_id: 'cobra_heliport_platform', display_name: 'Cobra Heliport Platform' },
   { object_id: 'jungle_surveillance_camera', display_name: 'Jungle Surveillance Camera' },
+  { object_id: 'supply_depot_crate_stack', display_name: 'Supply Depot Crate Stack' },
+  { object_id: 'sandbag_bunker', display_name: 'Sandbag Bunker' },
+  { object_id: 'watchtower_platform', display_name: 'Watchtower Platform' },
+  { object_id: 'barbed_wire_fence', display_name: 'Barbed Wire Fence' },
+  { object_id: 'field_hospital_tent', display_name: 'Field Hospital Tent' },
+  { object_id: 'ammo_storage_locker', display_name: 'Ammo Storage Locker' },
+  { object_id: 'vehicle_repair_bay', display_name: 'Vehicle Repair Bay' },
+  { object_id: 'satellite_uplink_dish', display_name: 'Satellite Uplink Dish' },
+  // Last 2 (indices 20-21): the ANIMATED pair on board 2.
+  { object_id: 'rotating_radar_array', display_name: 'Rotating Radar Array' },
+  { object_id: 'pulsing_reactor_core', display_name: 'Pulsing Reactor Core' },
 ];
 
-function realTwelveObjectManifest(): ThemeManifest {
+function realThemedObjectManifest(): ThemeManifest {
   const manifest = legacyManifest();
   manifest.buildable_objects = REAL_OBJECT_IDS.map((object, index) => ({
     build_order: index,
@@ -335,61 +352,41 @@ function realTwelveObjectManifest(): ThemeManifest {
   return manifest;
 }
 
-test('objectRowsForItem: real 12-object cobra_command layout — board 2 (objects 6-10) carries five real objects and NO poof/crate; board 3 (objects 11-12) carries the poof/crate rows', () => {
-  const manifest = realTwelveObjectManifest();
+test('objectRowsForItem: real 22-object cobra_command roster — board 1 carries the first 20 (static), board 2 carries the last 2 (animated) plus poof/crate', () => {
+  const manifest = realThemedObjectManifest();
 
   const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
-  assert.deepEqual(board1.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
-    'mobile_command_center', 'stealth_recon_drone', 'high_voltage_energy_turret',
-    'snake_pit_trap', 'armored_personnel_carrier',
-  ]);
+  assert.equal(board1.length, 20);
+  assert.equal(board1[0].kind === 'object_static' ? board1[0].object_id : undefined, 'mobile_command_center');
+  assert.equal(board1[19].kind === 'object_static' ? board1[19].object_id : undefined, 'satellite_uplink_dish');
 
   const board2 = objectRowsForItem({ id: 'objects_02' }, manifest);
-  assert.deepEqual(board2.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
-    'camouflage_netting', 'explosive_charge_barrel', 'communication_relay_tower',
-    'missile_launcher_pod', 'security_scanner_console',
-  ]);
-  assert.ok(board2.every((row) => row.kind === 'object'), 'board 2 must NOT carry poof/crate rows');
-
-  const board3 = objectRowsForItem({ id: 'objects_03' }, manifest);
-  assert.deepEqual(board3.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
-    'cobra_heliport_platform', 'jungle_surveillance_camera', 'poof', 'crate',
-  ]);
+  assert.deepEqual(board2.map((row) => row.kind), ['object_anim', 'object_anim', 'poof', 'crate']);
+  assert.equal(board2[0].kind === 'object_anim' ? board2[0].object_id : undefined, 'rotating_radar_array');
+  assert.equal(board2[1].kind === 'object_anim' ? board2[1].object_id : undefined, 'pulsing_reactor_core');
 });
 
-test('mergeResumedReviewItems: a roster that GREW from 8 to 12 objects must not let board 2 keep stale saved poof/crate rows on resume', () => {
-  // The exact production scenario: board 2 was generated back when the roster
-  // only had 8 objects, so it legitimately owned poof+crate at that time and
-  // its saved review-item metadata reflects that ([obj6, obj7, obj8, poof, crate]
-  // in old 0-based/8-object terms == [camouflage_netting, explosive_charge_barrel,
-  // communication_relay_tower, poof, crate]). The roster later grew to 12
-  // objects (adding missile_launcher_pod, security_scanner_console,
-  // cobra_heliport_platform, jungle_surveillance_camera), which should push
-  // poof/crate onto a NEW board 3 and give board 2 five full object rows — but
-  // only if resume prefers the freshly recomputed board over the stale saved one.
-  const eightObjectManifest = realTwelveObjectManifest();
-  eightObjectManifest.buildable_objects = eightObjectManifest.buildable_objects.slice(0, 8);
-  const staleBoard2Rows = objectRowsForItem({ id: 'objects_02' }, eightObjectManifest);
-  // Sanity: under the OLD 8-object roster, board 2 really was the terminal
-  // board and really did own poof/crate.
-  assert.deepEqual(staleBoard2Rows.map((row) => row.kind === 'object' ? row.object_id : row.kind), [
-    'camouflage_netting', 'explosive_charge_barrel', 'communication_relay_tower', 'poof', 'crate',
-  ]);
-
+test('mergeResumedReviewItems: object board 2 always recomputes fresh rows/prompt/frame_keys, never keeping a stale saved snapshot', () => {
+  // Simulate a stale saved board 2 (e.g. saved before an object rename) that
+  // still carries old object ids/prompt/frame_keys.
+  const staleBoard2Rows = [
+    { kind: 'object_anim' as const, object_id: 'OLD_radar', display_name: 'OLD Rotating Radar Array' },
+    { kind: 'object_anim' as const, object_id: 'OLD_core', display_name: 'OLD Pulsing Reactor Core' },
+    { kind: 'poof' as const },
+    { kind: 'crate' as const },
+  ];
   const savedItems = [
     {
       id: 'objects_02', filename: 'objects_02.png', label: 'stale', kind: 'object_atlas' as const,
-      status: 'accepted' as const, prompt: 'STALE PROMPT', revision: 1, frame_keys: ['a', 'b', 'c', 'poof', 'crate'],
+      status: 'accepted' as const, prompt: 'STALE PROMPT', revision: 1,
+      frame_keys: ['object_OLD_radar', 'object_OLD_core', 'poof', 'crate'],
       object_rows: staleBoard2Rows, updated_at: '2026-07-05T13:59:00.000Z',
     },
   ];
 
-  const currentManifest = realTwelveObjectManifest(); // now has all 12 objects
-  const expectedItems = createReviewItems(
-    minimalPlan(),
-    currentManifest,
-    'gritty wasteland',
-  ).filter((item) => item.id === 'objects_02');
+  const manifest = realThemedObjectManifest();
+  const expectedItems = createReviewItems(minimalPlan(), manifest, 'gritty wasteland')
+    .filter((item) => item.id === 'objects_02');
 
   const merged = mergeResumedReviewItems(expectedItems, savedItems);
   assert.equal(merged.length, 1);
@@ -397,11 +394,10 @@ test('mergeResumedReviewItems: a roster that GREW from 8 to 12 objects must not 
 
   // The freshly recomputed board wins for rows/prompt/frame_keys...
   assert.deepEqual(
-    mergedItem.object_rows?.map((row) => row.kind === 'object' ? row.object_id : row.kind),
-    ['camouflage_netting', 'explosive_charge_barrel', 'communication_relay_tower', 'missile_launcher_pod', 'security_scanner_console'],
+    mergedItem.object_rows?.map((row) => row.kind === 'object_anim' ? row.object_id : row.kind),
+    ['rotating_radar_array', 'pulsing_reactor_core', 'poof', 'crate'],
   );
-  assert.ok(!mergedItem.frame_keys.includes('poof'), 'resumed board 2 must not carry a stale poof frame key');
-  assert.ok(!mergedItem.frame_keys.includes('crate'), 'resumed board 2 must not carry a stale crate frame key');
+  assert.ok(!mergedItem.frame_keys.includes('object_OLD_radar'), 'resumed board 2 must not carry a stale object id');
   assert.notEqual(mergedItem.prompt, 'STALE PROMPT');
 
   // ...but review PROGRESS still comes from the saved document.
@@ -411,9 +407,9 @@ test('mergeResumedReviewItems: a roster that GREW from 8 to 12 objects must not 
 });
 
 test('mergeResumedReviewItems: an item with no saved counterpart (never generated before) uses the expected item as-is', () => {
-  const manifest = realTwelveObjectManifest();
+  const manifest = realThemedObjectManifest();
   const expectedItems = createReviewItems(minimalPlan(), manifest, 'gritty wasteland')
-    .filter((item) => item.id === 'objects_03');
+    .filter((item) => item.id === 'objects_02');
   const merged = mergeResumedReviewItems(expectedItems, []);
   assert.deepEqual(merged, expectedItems);
 });
@@ -518,15 +514,14 @@ function savedReviewDocumentItems(manifest: ThemeManifest, plan: ThemePlan) {
   }));
 }
 
-test('resyncRenamedReviewItems rebuilds only the object board containing the renamed row, with the new name baked into its prompt', () => {
-  const manifest = realTwelveObjectManifest();
+test('resyncRenamedReviewItems rebuilds only object board 1 when a STATIC object (index < 20) is renamed, with the new name baked into its prompt', () => {
+  const manifest = realThemedObjectManifest();
   const plan = minimalPlan();
   // Saved document reflects generation BEFORE the rename (old name baked into
-  // board 2's prompt, matching the real cobra_command layout from the tests
-  // above: board 2 = objects 6-10, including camouflage_netting).
+  // board 1's prompt — camouflage_netting is index 5, a static object on board 1).
   const savedItems = savedReviewDocumentItems(manifest, plan);
-  const savedBoard2 = savedItems.find((item) => item.id === 'objects_02')!;
-  assert.match(savedBoard2.prompt, /Camouflage Netting/);
+  const savedBoard1 = savedItems.find((item) => item.id === 'objects_01')!;
+  assert.match(savedBoard1.prompt, /Camouflage Netting/);
 
   const result = applyThemeItemNameChanges(manifest, [
     { item_kind: 'object', id: 'camouflage_netting', name: 'Ghillie Netting' },
@@ -537,26 +532,45 @@ test('resyncRenamedReviewItems rebuilds only the object board containing the ren
   const refreshed = resyncRenamedReviewItems({ items: savedItems }, manifest, plan, result.applied);
 
   // Only the board that actually carries the renamed row comes back.
-  assert.deepEqual(refreshed.map((item) => item.id), ['objects_02']);
-  const refreshedBoard2 = refreshed[0];
-  assert.match(refreshedBoard2.prompt, /Ghillie Netting/);
-  assert.doesNotMatch(refreshedBoard2.prompt, /Camouflage Netting/);
+  assert.deepEqual(refreshed.map((item) => item.id), ['objects_01']);
+  const refreshedBoard1 = refreshed[0];
+  assert.match(refreshedBoard1.prompt, /Ghillie Netting/);
+  assert.doesNotMatch(refreshedBoard1.prompt, /Camouflage Netting/);
 
   // Review PROGRESS survives the resync untouched — a rename must never bounce
   // an accepted board back to pending.
-  assert.equal(refreshedBoard2.status, savedBoard2.status);
-  assert.equal(refreshedBoard2.revision, savedBoard2.revision);
-  assert.equal(refreshedBoard2.updated_at, savedBoard2.updated_at);
+  assert.equal(refreshedBoard1.status, savedBoard1.status);
+  assert.equal(refreshedBoard1.revision, savedBoard1.revision);
+  assert.equal(refreshedBoard1.updated_at, savedBoard1.updated_at);
 
-  // Unaffected boards (objects_01, objects_03, and every non-object board) are
-  // simply absent from the resync result — the caller only overwrites what's
-  // returned here, so their saved prompt/rows are left byte-for-byte alone.
+  // The unaffected board (objects_02, and every non-object board) is simply
+  // absent from the resync result — the caller only overwrites what's
+  // returned here, so its saved prompt/rows are left byte-for-byte alone.
+  assert.ok(!refreshed.some((item) => item.id === 'objects_02'));
+});
+
+test('resyncRenamedReviewItems rebuilds only object board 2 when an ANIMATED object (index >= 20) is renamed', () => {
+  const manifest = realThemedObjectManifest();
+  const plan = minimalPlan();
+  // rotating_radar_array is index 20 — the first animated object, on board 2.
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+  const savedBoard2 = savedItems.find((item) => item.id === 'objects_02')!;
+  assert.match(savedBoard2.prompt, /Rotating Radar Array/);
+
+  const result = applyThemeItemNameChanges(manifest, [
+    { item_kind: 'object', id: 'rotating_radar_array', name: 'Spinning Dish Array' },
+  ]);
+  assert.equal(result.applied.length, 1);
+
+  const refreshed = resyncRenamedReviewItems({ items: savedItems }, manifest, plan, result.applied);
+  assert.deepEqual(refreshed.map((item) => item.id), ['objects_02']);
+  assert.match(refreshed[0].prompt, /Spinning Dish Array/);
+  assert.doesNotMatch(refreshed[0].prompt, /Rotating Radar Array/);
   assert.ok(!refreshed.some((item) => item.id === 'objects_01'));
-  assert.ok(!refreshed.some((item) => item.id === 'objects_03'));
 });
 
 test('resyncRenamedReviewItems is a no-op for a character-only rename batch (that flow already has its own sync)', () => {
-  const manifest = realTwelveObjectManifest();
+  const manifest = realThemedObjectManifest();
   const plan = minimalPlan();
   const savedItems = savedReviewDocumentItems(manifest, plan);
 
@@ -571,7 +585,7 @@ test('resyncRenamedReviewItems is a no-op for a character-only rename batch (tha
 });
 
 test('resyncRenamedReviewItems matches a rival rename by its stripped rival_rows id and refreshes that rival board', () => {
-  const manifest = realTwelveObjectManifest(); // 3 rivals -> a single rivals_01 board
+  const manifest = realThemedObjectManifest(); // 3 rivals -> a single rivals_01 board
   const plan = minimalPlan();
   const savedItems = savedReviewDocumentItems(manifest, plan);
   const savedRivalBoard = savedItems.find((item) => item.id === 'rivals_01')!;

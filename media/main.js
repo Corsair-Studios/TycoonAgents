@@ -2175,24 +2175,28 @@
    */
   function themeReviewNameRows(item) {
     if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
-      // Labels use the GLOBAL object number ("Object 6".."Object 10"), matching
-      // this board's own title ("Animated objects 6-10") and the manifest's
-      // buildable_objects order — not the humanized object_id, since the id is
-      // immutable and a humanized-id label would read as "the old name"
-      // forever once the display name has been changed via this editor.
-      // The global offset is derived from the item id's `objects_NN` suffix
-      // (board 1 = objects 1-5, board 2 = objects 6-10, ...), mirroring the
-      // OBJECT_ROWS_PER_BOARD=5 chunking in themeAssetPrompts.ts/createObjectBoardRows
-      // and the same `objects_(\d+)` parse the host uses in reconstructObjectRows
-      // (themeService.ts) — the id format is already the shared source of truth,
-      // so no extra field needs to travel through the review-item payload.
-      const OBJECT_ROWS_PER_BOARD = 5;
+      // v2 object pipeline (themeImageReviewState.ts ThemeObjectBoardRow):
+      // board `objects_01` is exactly OBJECT_STATIC_COUNT (20) `object_static`
+      // rows (Object 1..20); board `objects_02` is the fixed 4-entry order
+      // [object_anim, object_anim, poof, crate] — its two `object_anim` rows
+      // continue the SAME global numbering (Object 21, Object 22), matching
+      // this board's own title ("Animated objects 21-22 + build effects").
+      // Labels use the global object number, not the humanized object_id,
+      // since the id is immutable and a humanized-id label would read as
+      // "the old name" forever once renamed via this editor.
+      // `poof`/`crate` rows carry no object_id/display_name and aren't
+      // renameable (SET_THEME_ITEM_NAMES's item_kind enum has no 'poof' or
+      // 'crate' case — see messages.ts), so they're filtered out here same
+      // as any other row missing an object_id; this is NOT a fixed
+      // rows-per-board chunk boundary, it mirrors OBJECT_STATIC_COUNT (the
+      // host's own board-1/board-2 split point in themeAssetPrompts.ts).
+      const OBJECT_STATIC_COUNT = 20;
       const boardMatch = /objects_(\d+)/.exec(item.id || "");
       const boardNumber = boardMatch ? Number(boardMatch[1]) || 1 : 1;
-      const globalOffset = (boardNumber - 1) * OBJECT_ROWS_PER_BOARD;
+      const globalOffset = boardNumber <= 1 ? 0 : OBJECT_STATIC_COUNT;
       let objectIndex = 0;
       return item.object_rows
-        .filter((row) => row && row.kind === "object" && row.object_id)
+        .filter((row) => row && (row.kind === "object_static" || row.kind === "object_anim") && row.object_id)
         .map((row) => {
           objectIndex += 1;
           return {
@@ -3179,7 +3183,7 @@
   const OBJECT_CLIPS = {
     object_idle: { frames: [0, 1, 2, 3], fps: 5,  loop: true },
     crate:       { frames: [0],          fps: 0,  loop: true, hold: true },
-    poof:        { frames: [0, 1, 2, 3], fps: 12, loop: false },
+    poof:        { frames: [0, 1, 2, 3, 4, 5, 6], fps: 12, loop: false },
   };
 
   /** Theme data set by THEME_INITIALIZED */
@@ -5169,7 +5173,12 @@
     if (entry.phase === "poof" || entry.phase === "idle" || (entry.phase === "unbuilt" && editStageMode)) {
       const objSlots = themeImages["object_" + objId];
       const slotIdx = entry.animState ? currentObjectSlot(entry.animState) : 0;
-      const objImg = objSlots ? objSlots[slotIdx] : null;
+      // v2 object pipeline: board 1's 20 static objects load ONE frame
+      // (objSlots.length === 1), but object_idle's clip still cycles
+      // slotIdx 0..3 — without the modulo, objSlots[1..3] are undefined and
+      // the object flickers to nothing 3 frames out of 4. Board 2's 2
+      // animated objects load 4 frames, so slotIdx % 4 is a no-op there.
+      const objImg = (objSlots && objSlots.length) ? objSlots[slotIdx % objSlots.length] : null;
       if (objImg && objImg.complete && objImg.naturalWidth > 0) {
         if (themeObjFlipOverrides && themeObjFlipOverrides[objId]) {
           // Same mirror pattern as drawDecor/character flip: translate to the
