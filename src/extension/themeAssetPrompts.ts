@@ -716,9 +716,10 @@ export function buildExpressionAtlasPrompt(
     'Draw exactly one bold, readable, icon-only expression in each cell, in row-major order:',
     ...cells,
     'Cells 1-4 are standard universal emotes (celebration, sleep, idea, team/rally); cells 5-16 are theme-specific flavor icons.',
-    'Use a consistent speech-bubble icon style. Do not draw full characters.',
+    'Use a consistent, bold, flat icon style. Do not draw full characters.',
     'Do NOT draw the theme character, any character, any face, head, eyes, mouth, hair, or portrait. These are NOT facial expressions on a character.',
-    'Each cell is a GENERIC symbolic emote ICON — a simple emoji/pictogram style symbol (e.g. shapes, objects, marks such as a heart, spark/idea star, sweat drop, exclamation, gear, zzz) that reads at a glance inside a speech bubble.',
+    'Each cell is a GENERIC symbolic emote ICON — a single, simple, instantly-readable emoji/pictogram symbol (e.g. a heart, spark/idea star, sweat drop, exclamation mark, gear, zzz) drawn LARGE and centered to fill most of the cell. Prioritize clarity and readability at very small sizes over detail.',
+    'Do NOT draw any speech bubble, balloon, callout, chat bubble, circle, frame, border, panel, outline, or container around the icon — the app displays the icon inside its own bubble, so render ONLY the bare icon itself.',
     background === 'transparent'
       ? 'Flat, bold, high-contrast icon art on a fully transparent background; centered in its cell.'
       : 'Flat, bold, high-contrast icon art on solid magenta; centered in its cell.',
