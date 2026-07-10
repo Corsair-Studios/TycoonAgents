@@ -1675,7 +1675,12 @@ export class TycoonPanel {
         let currentPrompt: string | undefined;
         if (loadedTheme && currentPlan && creativeDirection !== undefined) {
           try {
-            currentPrompt = buildReplacementPrompt(item, creativeDirection, loadedTheme.manifest, currentPlan, backgroundMode);
+            // preferPlanObjects=true: DISPLAY-only. The "View/Copy prompt"
+            // surface should reflect the CURRENT plan's 22-object v2 board even
+            // for a legacy off-count manifest. Retry-generation callers leave
+            // this false so their prompt stays consistent with manifest-based
+            // slicing (see buildReplacementPrompt).
+            currentPrompt = buildReplacementPrompt(item, creativeDirection, loadedTheme.manifest, currentPlan, backgroundMode, true);
           } catch {
             currentPrompt = undefined;
           }

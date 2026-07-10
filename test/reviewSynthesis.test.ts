@@ -42,6 +42,9 @@ const {
   boardBackgroundModeForProvider, resyncRenamedReviewItems, applyThemeItemNameChanges,
 } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { normalizeThemePlan } = require('../src/extension/themePlan') as typeof import('../src/extension/themePlan');
+
 function legacyManifest(): ThemeManifest {
   return {
     manifest_version: '1',
@@ -304,6 +307,62 @@ test('buildReplacementPrompt falls back to saved expression/achievement names wh
   };
   const prompt = buildReplacementPrompt(expressionItem, 'gritty wasteland', manifest);
   assert.match(prompt, /Saved Joy/);
+});
+
+test('buildReplacementPrompt: objects_01 rebuilds the NEW 20-static-object board from the CURRENT plan even when the manifest is still a LEGACY off-count roster', () => {
+  // Legacy manifest stuck at the pre-v2 object count (12 buildable_objects) —
+  // createObjectBoard1Rows/2Rows both throw on anything but an exact 20/2
+  // split, so the manifest-based reconstruction inside objectRowsForItem
+  // cannot succeed here.
+  const manifest = legacyManifest();
+
+  // A CURRENT plan, normalized the same way loadCurrentThemePlan normalizes
+  // every saved plan.json on load: normalizeThemePlan always pads/reserves
+  // `objects` to THEME_OBJECT_COUNT (22), regardless of the manifest's stale
+  // count.
+  const plan = normalizeThemePlan({
+    ...minimalPlan(),
+    objects: Array.from({ length: 21 }, (_unused, index) => `Current Object ${index}`),
+  });
+  assert.equal(plan.objects.length, 22);
+
+  // Simulate the item's saved data from BEFORE the 2-board rework: an old
+  // animated-board shape that must never leak into the rebuilt prompt now
+  // that a normalized plan is available.
+  const staleObjectRows = Array.from({ length: 5 }, (_unused, index) => ({
+    kind: 'object_anim' as const,
+    object_id: `stale_anim_${index}`,
+    display_name: `STALE Old Animated Object ${index}`,
+  }));
+  const item = {
+    id: 'objects_01', filename: 'objects_01.png', label: 'Objects 1', kind: 'object_atlas' as const,
+    status: 'pending' as const, prompt: 'STALE ORIGINAL PROMPT TEXT', revision: 0, frame_keys: [], updated_at: '',
+    object_rows: staleObjectRows,
+  };
+
+  // DISPLAY path (preferPlanObjects=true, the panel's _postThemeImageReview
+  // currentPrompt computation): rebuild board 1 from the CURRENT plan.
+  const displayPrompt = buildReplacementPrompt(
+    item, plan.creative_direction, manifest, plan, 'magenta', true,
+  );
+
+  // NEW board-1 (20 single-frame STATIC objects) language, not the stale
+  // 5-animated board and not the item's stale saved prompt text.
+  assert.match(displayPrompt, /Create one static buildable-object sprite board/);
+  assert.match(displayPrompt, /20 distinct STATIC buildable objects/);
+  assert.doesNotMatch(displayPrompt, /STALE/);
+
+  // RETRY-GENERATION path (default preferPlanObjects=false): the plan is IGNORED
+  // for object rows, so a legacy off-count manifest that can't reconstruct
+  // either 2-board falls back to the item's stale saved object_rows exactly as
+  // it did before this fix — proving Retry (which pairs with manifest-based
+  // slicing) did not regress. The 5-row animated stale board can't satisfy
+  // buildObjectAtlasPrompt's board-2 shape check, so it throws instead of
+  // silently emitting a plan-derived prompt.
+  assert.throws(
+    () => buildReplacementPrompt(item, plan.creative_direction, manifest, plan),
+    /Object board 2 requires/,
+  );
 });
 
 // --- Regression: reproduces a REAL production-shaped 22-object roster (cobra

@@ -422,7 +422,7 @@ function normalizeNames(values: unknown, count: number, fallbackLabel: string): 
   return result;
 }
 
-function uniqueIds(names: string[], fallback: string): string[] {
+export function uniqueIds(names: string[], fallback: string): string[] {
   const used = new Set<string>();
   return names.map((name, index) => {
     const base = toSafeAssetId(name) || `${fallback}_${index + 1}`;

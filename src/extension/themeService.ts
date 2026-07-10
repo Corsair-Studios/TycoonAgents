@@ -79,6 +79,7 @@ import {
   themePlanCreativeDirection,
   themePlanToManifest,
   toSafeAssetId,
+  uniqueIds,
 } from './themePlan';
 import type { ThemePlan } from './themePlan';
 import {
@@ -2499,19 +2500,41 @@ function rivalRowsForItem(
  * whose board count scales with roster size): `objects_01` is
  * createObjectBoard1Rows(the first OBJECT_STATIC_COUNT specs) and
  * `objects_02` is createObjectBoard2Rows(the next OBJECT_ANIMATED_COUNT
- * specs). Reconstructing from the CURRENT manifest (rather than reusing a
- * stale saved `object_rows`) means a roster rename/reorder regenerates the
- * correct board content. Falls back to the item's stored `object_rows`, then
- * to a lenient legacy reconstruction, only if the current-manifest
- * reconstruction is empty or throws (e.g. a manifest whose buildable_objects
- * count doesn't match the current 22-object contract). Exported for unit
- * testing.
+ * specs).
+ *
+ * When a `plan` is supplied, its object roster (`plan.objects` /
+ * `plan.object_motion_hints`, via themeObjectSpecsFromPlan) is tried FIRST —
+ * mirroring buildReplacementPrompt's existing preference for
+ * plan.expressions/plan.achievements over saved item names. normalizeThemePlan
+ * always pads/trims `plan.objects` to THEME_OBJECT_COUNT (22) on load, so this
+ * lets a LEGACY manifest still stuck at a pre-v2 buildable_objects count (which
+ * makes the manifest-based reconstruction below throw, since
+ * createObjectBoard1Rows/2Rows require an exact 20/2 split) still resolve to
+ * the CURRENT 2-board contract instead of falling through to a stale board.
+ * Reconstructing from the CURRENT manifest is the next fallback (so a roster
+ * rename/reorder regenerates the correct board content even with no plan).
+ * Falls back to the item's stored `object_rows`, then to a lenient legacy
+ * reconstruction, only if both the plan-based and manifest-based
+ * reconstructions are empty, throw, or (for plan) unavailable. Exported for
+ * unit testing.
  */
 export function objectRowsForItem(
   item: Pick<ThemeImageReviewItem, 'object_specs' | 'object_rows'> & Partial<Pick<ThemeImageReviewItem, 'id'>>,
   manifest: ThemeManifest,
+  plan?: Pick<ThemePlan, 'objects' | 'object_motion_hints'>,
 ): ThemeObjectBoardRow[] {
   const boardNumber = Number(/objects_(\d+)/.exec(item.id ?? '')?.[1] ?? '1') || 1;
+  if (plan?.objects?.length) {
+    try {
+      const planSpecs = themeObjectSpecsFromPlan(plan);
+      const rows = boardNumber >= 2
+        ? createObjectBoard2Rows(planSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT))
+        : createObjectBoard1Rows(planSpecs.slice(0, OBJECT_STATIC_COUNT));
+      if (rows.length) return rows;
+    } catch (err) {
+      console.warn('TycoonAgents: unable to reconstruct object board rows from plan:', err);
+    }
+  }
   try {
     const objectSpecs = themeObjectSpecs(manifest);
     const rows = boardNumber >= 2
@@ -2815,15 +2838,28 @@ export function buildReplacementPrompt(
   item: ThemeImageReviewItem,
   creativeDirection: string,
   manifest: ThemeManifest,
-  plan?: Pick<ThemePlan, 'expressions' | 'achievements'>,
+  plan?: Pick<ThemePlan, 'expressions' | 'achievements' | 'objects' | 'object_motion_hints'>,
   backgroundMode: BoardBackgroundMode = 'magenta',
+  // DISPLAY-ONLY opt-in. When true, the object board rebuilds its rows from the
+  // CURRENT plan's 22-object roster (via objectRowsForItem's plan path) so the
+  // "Copy/View prompt" surface always reflects the latest 2-board contract even
+  // for a legacy off-count manifest. It MUST stay false for any caller whose
+  // prompt actually feeds image GENERATION: object slicing
+  // (applySlicedAtlasFromBuffer) is still manifest-based, so a plan-derived
+  // prompt paired with manifest-based slicing would produce a mismatched retry
+  // for a legacy object board. Only the panel's _postThemeImageReview display
+  // loop sets this true.
+  preferPlanObjects = false,
 ): string {
   if (item.kind === 'environment') return buildEnvironmentPrompt(creativeDirection, manifest.display_name);
   if (item.kind === 'object_atlas') {
-    // Reconstruct from the CURRENT manifest as the primary source (see
-    // objectRowsForItem) so a roster change regenerates the correct board
-    // instead of reusing stale saved object_rows.
-    const rows = objectRowsForItem(item, manifest);
+    // Reconstruct from the CURRENT manifest (see objectRowsForItem), falling
+    // back to the item's stale saved object_rows / legacy reconstruction — this
+    // matches applySlicedAtlasFromBuffer's manifest-based slicing so a real
+    // Retry stays consistent. Only the DISPLAY path (preferPlanObjects) also
+    // tries the current plan's 22-object roster first, so "Copy/View prompt"
+    // reflects the v2 contract even for a legacy off-count manifest.
+    const rows = objectRowsForItem(item, manifest, preferPlanObjects ? plan : undefined);
     return buildObjectAtlasPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   if (item.kind === 'background_decor_atlas') {
@@ -2922,6 +2958,33 @@ function themeObjectSpecs(
     return {
       object_id: object.object_id,
       display_name: object.display_name,
+      ...(isRangedRack ? { is_ranged_rack: true } : {}),
+      ...(hint ? { motion_hint: hint } : {}),
+    };
+  });
+}
+
+/**
+ * Same shape as themeObjectSpecs, but sourced from a ThemePlan's `objects` /
+ * `object_motion_hints` (rather than a ThemeManifest's `buildable_objects`).
+ * Used by objectRowsForItem to prefer the CURRENT plan's roster over a
+ * possibly-stale/off-count manifest. object_ids are derived with the same
+ * uniqueIds(names, 'object') scheme themePlanToManifest uses when it actually
+ * bakes a plan into a manifest, so ids here match what generation would
+ * eventually assign. Index 0 is always the reserved ranged-weapon rack slot
+ * (see reserveRangedWeaponRackSlot in themePlan.ts's normalizeThemePlan).
+ */
+function themeObjectSpecsFromPlan(
+  plan: Pick<ThemePlan, 'objects' | 'object_motion_hints'>,
+): ThemeObjectPromptSpec[] {
+  const objects = plan.objects.slice(0, THEME_OBJECT_COUNT);
+  const ids = uniqueIds(objects, 'object');
+  return objects.map((displayName, index) => {
+    const isRangedRack = index === 0;
+    const hint = !isRangedRack ? (plan.object_motion_hints?.[index] ?? '').trim() : '';
+    return {
+      object_id: ids[index],
+      display_name: displayName,
       ...(isRangedRack ? { is_ranged_rack: true } : {}),
       ...(hint ? { motion_hint: hint } : {}),
     };
