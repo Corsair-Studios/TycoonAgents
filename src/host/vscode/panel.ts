@@ -3944,7 +3944,7 @@ export class TycoonPanel {
             <div id="theme-plan-enemies" class="theme-plan-slot-grid"></div>
           </fieldset>
           <label class="theme-plan-field">
-            <span>Objects <small>13 animated objects, comma separated · 3 sprite sheets</small></span>
+            <span>Objects <small>22 objects, comma separated · 2 sprite sheets</small></span>
             <textarea id="theme-plan-objects" rows="3"></textarea>
           </label>
           <label class="theme-plan-field">
