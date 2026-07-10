@@ -15,9 +15,11 @@ import * as crypto from "crypto";
  * shared across every workspace on the machine — so a badge/rebirth/build
  * entry for "cobra_command" in project A leaked into project B's view of the
  * same theme. These helpers introduce a composite `${scopeKey}|${themeId}`
- * key while staying backward-compatible with legacy plain-`themeId` entries
- * via one-time, transparent, non-destructive migration (see
- * `readCompositeWithMigration`).
+ * key. The legacy-entry carry-forward migration that used to exist here has
+ * been REMOVED: every (project, theme) pair now starts cold on a composite
+ * key, and legacy plain-`themeId` entries are never read, copied, or
+ * persisted. This makes the scoped "Reset" flow authoritative — once reset,
+ * an entry cannot be resurrected from a lingering legacy key.
  *
  * Kept dependency-free (fs/vscode-free) so it's directly unit-testable; the
  * vscode.workspace.fs read/write plumbing lives in panel.ts, which imports
@@ -45,28 +47,28 @@ export function compositeKey(scopeKey: string, themeId: string): string {
   return `${scopeKey}|${themeId}`;
 }
 
-/** Result of a migration-aware composite read. */
+/** Result of a composite read. Kept `{ value, store, migrated }`-shaped for caller compatibility. */
 export interface CompositeReadResult<T> {
-  /** The resolved value (composite entry, or migrated-in legacy entry), if any. */
+  /** The resolved value (composite entry only), if any. */
   value: T | undefined;
-  /**
-   * The store to persist. Identical to the input `store` reference when
-   * nothing changed; a NEW object (input left untouched) when a legacy entry
-   * was copied forward under the composite key.
-   */
+  /** Always the input `store` reference, unchanged — this function never mutates or copies. */
   store: Record<string, T>;
-  /** True iff a legacy plain-themeId entry was copied into the composite key. */
+  /**
+   * Always `false`. Migration was removed; this field is kept only so
+   * existing callers (which persist when `migrated` is true) compile
+   * unchanged and simply never re-persist.
+   */
   migrated: boolean;
 }
 
 /**
- * Read a (project, theme) entry from a store keyed by composite keys, with
- * one-time transparent migration from a legacy plain-`themeId` key: if the
- * composite key is missing but a legacy entry exists, the legacy value is
- * copied forward under the composite key in the RETURNED store (the input
- * store is never mutated) so the caller can persist it. The legacy key is
- * deliberately left in place — harmless, and another project may still need
- * to migrate from it.
+ * Read a (project, theme) entry from a store keyed by composite keys.
+ *
+ * Migration from the legacy plain-`themeId` key has been REMOVED: this reads
+ * ONLY `${scopeKey}|${themeId}`. A legacy plain-`themeId` entry, if present,
+ * is never read, copied, or persisted — a store that only has a legacy entry
+ * reads as cold (value `undefined`) for any composite key. Per-project cold
+ * start is intended (see file header).
  */
 export function readCompositeWithMigration<T>(
   store: Record<string, T>,
@@ -74,13 +76,8 @@ export function readCompositeWithMigration<T>(
   themeId: string,
 ): CompositeReadResult<T> {
   const key = compositeKey(scopeKey, themeId);
-  if (Object.prototype.hasOwnProperty.call(store, key)) {
-    return { value: store[key], store, migrated: false };
-  }
-  if (Object.prototype.hasOwnProperty.call(store, themeId)) {
-    return { value: store[themeId], store: { ...store, [key]: store[themeId] }, migrated: true };
-  }
-  return { value: undefined, store, migrated: false };
+  const value = Object.prototype.hasOwnProperty.call(store, key) ? store[key] : undefined;
+  return { value, store, migrated: false };
 }
 
 /** Write a (project, theme) entry. Returns a NEW store; input is untouched. */
@@ -109,6 +106,25 @@ export function removeProjectThemeEntry<T>(
   const next = { ...store };
   delete next[key];
   return next;
+}
+
+/**
+ * Delete the legacy plain-`themeId` entry (if present) from a store. Used
+ * alongside {@link removeProjectThemeEntry} by the scoped "reset stats" flow
+ * so a stale pre-scoping global entry can't linger or (now that migration is
+ * removed) resurface later for some other project. Other themes' legacy
+ * entries and every project's composite entries are left intact. Returns the
+ * SAME store reference (with `changed: false`) when there was nothing to
+ * remove, so callers can skip a write.
+ */
+export function removeLegacyThemeEntry<T>(
+  store: Record<string, T>,
+  themeId: string,
+): { store: Record<string, T>; changed: boolean } {
+  if (!Object.prototype.hasOwnProperty.call(store, themeId)) return { store, changed: false };
+  const next = { ...store };
+  delete next[themeId];
+  return { store: next, changed: true };
 }
 
 /**

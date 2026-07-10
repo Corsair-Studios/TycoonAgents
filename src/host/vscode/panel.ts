@@ -119,6 +119,7 @@ import {
   readCompositeWithMigration,
   writeComposite,
   removeProjectThemeEntry,
+  removeLegacyThemeEntry,
   removeThemeEverywhere,
   shouldWarnOnThemeSwitch,
 } from "./progressScope";
@@ -251,6 +252,11 @@ export class TycoonPanel {
     this._runtime = runtime;
     this._globalStorageUri = globalStorageUri;
     this._secrets = secrets;
+
+    // Auto-heal the CLAUDE.md delegation doctrine once per panel open (see
+    // _ensureDelegationDoctrineCurrent doc comment) — fixes 0% delegation on
+    // projects upgraded from a version that predates the doctrine.
+    this._ensureDelegationDoctrineCurrent();
 
     this._update();
 
@@ -2919,16 +2925,22 @@ export class TycoonPanel {
     return false;
   }
 
+  /**
+   * True if TycoonAgents' hook is wired into either settings file for
+   * `root`. Shared by `_handleCheckInstall` (Hook Health / setup screen) and
+   * `_ensureDelegationDoctrineCurrent` (the auto-heal consent proxy — never
+   * touch CLAUDE.md on a project that hasn't opted into TycoonAgents).
+   */
+  private _hooksInstalledForRoot(root: string): boolean {
+    return (
+      this._settingsReferencesHook(path.join(root, ".claude", "settings.local.json")) ||
+      this._settingsReferencesHook(path.join(root, ".claude", "settings.json"))
+    );
+  }
+
   private _handleCheckInstall(): void {
     const root = this._projectRoot();
-    const installed =
-      root !== "" &&
-      (this._settingsReferencesHook(
-        path.join(root, ".claude", "settings.local.json")
-      ) ||
-        this._settingsReferencesHook(
-          path.join(root, ".claude", "settings.json")
-        ));
+    const installed = root !== "" && this._hooksInstalledForRoot(root);
     const uefn = root !== "" ? detectUefnProject(root) : { detected: false, signals: [], uefnInstalled: false };
     void this._panel.webview.postMessage({ type: MSG.INSTALL_STATE, installed, uefnDetected: uefn.detected, uefnSignals: uefn.signals });
   }
@@ -2936,6 +2948,73 @@ export class TycoonPanel {
   /** Coerce an untrusted `delegation_mode` message field to a valid mode, defaulting to "flat". */
   private _coerceDelegationMode(raw: string | undefined): DelegationMode {
     return raw === "team_leads" ? "team_leads" : "flat";
+  }
+
+  /**
+   * Auto-heal: refresh the managed CLAUDE.md delegation-doctrine (+ code
+   * rules) section once per panel open. The doctrine is normally only
+   * written by explicit Install Hooks / Repair Hook / Set-delegation-mode /
+   * Set-review actions — it's never refreshed on a VSIX upgrade. A project
+   * that installed TycoonAgents before the doctrine existed (added 0.0.173)
+   * has a CLAUDE.md with no managed section at all, so the orchestrator
+   * never delegates (0% delegation) even after upgrading to a version that
+   * ships the doctrine.
+   *
+   * GATE: only touches CLAUDE.md when TycoonAgents hooks are already
+   * installed for this project ({@link _hooksInstalledForRoot} — the same
+   * signal `_handleCheckInstall`/Hook Health use) — that's the consent
+   * proxy so a project that never opted into TycoonAgents is never touched.
+   * Reads `delegation_mode`/`reviewEnabled` from execution.json via the
+   * same `readExecutionConfig` the mode/review handlers use (falling back
+   * to its own defaults — Direct/"flat" + reviewEnabled true — when
+   * execution.json is absent). Writes ONLY when the freshly-rendered
+   * section actually differs from what's on disk (marker-scoped upsert —
+   * text outside the markers is untouched); does not reinstall hooks.
+   * Wrapped in try/catch so a failure here can never break panel
+   * construction/rendering.
+   */
+  private _ensureDelegationDoctrineCurrent(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+      if (!this._hooksInstalledForRoot(root)) return;
+
+      const claudeDir = path.join(root, ".claude");
+      const { delegation_mode, reviewEnabled } = readExecutionConfig(claudeDir);
+
+      const claudeMdPath = path.join(root, "CLAUDE.md");
+      let existingClaudeMd: string | null = null;
+      try {
+        existingClaudeMd = fs.readFileSync(claudeMdPath, "utf8");
+      } catch {
+        existingClaudeMd = null;
+      }
+
+      const updated = this._buildClaudeMdDoctrine(existingClaudeMd, delegation_mode, reviewEnabled ?? true);
+      if (existingClaudeMd !== null && updated === existingClaudeMd) return; // already current — no write, no notice
+
+      fs.writeFileSync(claudeMdPath, updated);
+      vscode.window.showInformationMessage("Refreshed delegation instructions in CLAUDE.md for this version.");
+    } catch {
+      // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
+   * Build the full managed CLAUDE.md doctrine content (delegation section +
+   * code rules section) for a given mode/reviewEnabled, splicing into
+   * `existingContent`. Shared by `_handleInstallHooks` (the reference write
+   * path) and `_ensureDelegationDoctrineCurrent` (auto-heal) so both
+   * produce IDENTICAL output for the same inputs — auto-heal never drifts
+   * from what a fresh Install/Repair would write.
+   */
+  private _buildClaudeMdDoctrine(
+    existingContent: string | null,
+    mode: DelegationMode,
+    reviewEnabled: boolean
+  ): string {
+    const withDelegation = upsertDelegationSection(existingContent, renderDelegationDoctrine(mode, reviewEnabled));
+    return upsertCodeRulesSection(withDelegation, renderCodeRules());
   }
 
   private _handleInstallHooks(delegationMode: DelegationMode = "flat"): void {
@@ -3022,9 +3101,12 @@ export class TycoonPanel {
         claudeMdError = String(err);
       }
 
-      // 7b. Upsert the delegation doctrine into the workspace's CLAUDE.md.
-      // Wrapped separately so a failure here (user-owned file) never fails
-      // the hook install itself.
+      // 7b. Upsert the delegation doctrine + code rules into the
+      // workspace's CLAUDE.md (shared builder — see _buildClaudeMdDoctrine
+      // — so this and the auto-heal path in _ensureDelegationDoctrineCurrent
+      // always produce identical output for the same inputs). Wrapped
+      // separately so a failure here (user-owned file) never fails the hook
+      // install itself.
       try {
         const claudeMdPath = path.join(root, "CLAUDE.md");
         let existingClaudeMd: string | null = null;
@@ -3033,11 +3115,7 @@ export class TycoonPanel {
         } catch {
           existingClaudeMd = null;
         }
-        let updated = upsertDelegationSection(
-          existingClaudeMd,
-          renderDelegationDoctrine(delegationMode, reviewEnabled)
-        );
-        updated = upsertCodeRulesSection(updated, renderCodeRules());
+        const updated = this._buildClaudeMdDoctrine(existingClaudeMd, delegationMode, reviewEnabled);
         fs.writeFileSync(claudeMdPath, updated);
       } catch (err) {
         claudeMdError = claudeMdError ?? String(err);
@@ -3657,10 +3735,16 @@ export class TycoonPanel {
           this._readRebirthStore(),
           this._readBuildProgressStore(),
         ]);
+        // Composite removal is authoritative (migration is gone). ALSO strip
+        // the legacy plain-themeId entry so stale pre-scoping global data
+        // can't linger or reappear.
+        const badgeLegacy = removeLegacyThemeEntry(removeProjectThemeEntry(badgeStore, scopeKey, themeId), themeId);
+        const rebirthLegacy = removeLegacyThemeEntry(removeProjectThemeEntry(rebirthStore, scopeKey, themeId), themeId);
+        const buildLegacy = removeLegacyThemeEntry(removeProjectThemeEntry(buildStore, scopeKey, themeId), themeId);
         await Promise.all([
-          this._writeBadgeUnlocksStore(removeProjectThemeEntry(badgeStore, scopeKey, themeId)),
-          this._writeRebirthStore(removeProjectThemeEntry(rebirthStore, scopeKey, themeId)),
-          this._writeBuildProgressStore(removeProjectThemeEntry(buildStore, scopeKey, themeId)),
+          this._writeBadgeUnlocksStore(badgeLegacy.store),
+          this._writeRebirthStore(rebirthLegacy.store),
+          this._writeBuildProgressStore(buildLegacy.store),
         ]);
       }
 

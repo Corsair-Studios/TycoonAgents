@@ -13,6 +13,7 @@ import {
   readCompositeWithMigration,
   writeComposite,
   removeProjectThemeEntry,
+  removeLegacyThemeEntry,
   removeThemeEverywhere,
   shouldWarnOnThemeSwitch,
 } from "../src/host/vscode/progressScope";
@@ -68,47 +69,81 @@ test("composite key isolates entries by project and by theme", () => {
 });
 
 // ---------------------------------------------------------------------------
-// legacy -> composite migration
+// migration removed: composite-only reads, legacy entries are cold
 // ---------------------------------------------------------------------------
 
-test("readCompositeWithMigration copies a legacy plain-themeId entry forward once, preserving the value", () => {
+test("readCompositeWithMigration reads ONLY the composite key — a legacy plain-themeId entry is never migrated in", () => {
   const scope = projectScopeKey("D:/ACode/ProjectA");
-  const legacyStore: Record<string, string[]> = { cobra_command: ["legacy_badge_1", "legacy_badge_2"] };
+  const legacyOnlyStore: Record<string, string[]> = { cobra_command: ["legacy_badge_1", "legacy_badge_2"] };
 
-  const first = readCompositeWithMigration(legacyStore, scope, "cobra_command");
-  assert.equal(first.migrated, true);
-  assert.deepEqual(first.value, ["legacy_badge_1", "legacy_badge_2"]);
-  // Input store is untouched; a NEW store is returned with the composite key added.
-  assert.equal(legacyStore["cobra_command"] !== undefined, true);
-  assert.deepEqual(first.store[compositeKey(scope, "cobra_command")], ["legacy_badge_1", "legacy_badge_2"]);
-  // Legacy key is left in place (harmless — another project may still migrate from it).
-  assert.deepEqual(first.store["cobra_command"], ["legacy_badge_1", "legacy_badge_2"]);
+  const result = readCompositeWithMigration(legacyOnlyStore, scope, "cobra_command");
 
-  // Second read (against the migrated store) is a normal composite hit, not another migration.
-  const second = readCompositeWithMigration(first.store, scope, "cobra_command");
-  assert.equal(second.migrated, false);
-  assert.deepEqual(second.value, ["legacy_badge_1", "legacy_badge_2"]);
+  // Cold: the composite key doesn't exist, so the legacy value is never surfaced.
+  assert.equal(result.value, undefined);
+  assert.equal(result.migrated, false);
+  // Never mutated or copied — same store reference, legacy key untouched.
+  assert.equal(result.store, legacyOnlyStore);
+  assert.deepEqual(legacyOnlyStore, { cobra_command: ["legacy_badge_1", "legacy_badge_2"] });
 });
 
-test("readCompositeWithMigration lets a SECOND project also migrate from the same legacy entry", () => {
-  const scopeA = projectScopeKey("D:/ACode/ProjectA");
-  const scopeB = projectScopeKey("D:/ACode/ProjectB");
-  const legacyStore: Record<string, number> = { cobra_command: 7 };
+test("readCompositeWithMigration returns the composite value when present, ignoring any legacy entry", () => {
+  const scope = projectScopeKey("D:/ACode/ProjectA");
+  let store: Record<string, string[]> = { cobra_command: ["legacy_badge"] };
+  store = writeComposite(store, scope, "cobra_command", ["composite_badge"]);
 
-  const migratedForA = readCompositeWithMigration(legacyStore, scopeA, "cobra_command").store;
-  const migratedForB = readCompositeWithMigration(migratedForA, scopeB, "cobra_command");
+  const result = readCompositeWithMigration(store, scope, "cobra_command");
 
-  assert.equal(migratedForB.migrated, true);
-  assert.equal(migratedForB.value, 7);
-  assert.equal(migratedForB.store[compositeKey(scopeA, "cobra_command")], 7);
-  assert.equal(migratedForB.store[compositeKey(scopeB, "cobra_command")], 7);
+  assert.deepEqual(result.value, ["composite_badge"]);
+  assert.equal(result.migrated, false);
+  assert.equal(result.store, store);
 });
 
-test("readCompositeWithMigration returns undefined and does not migrate when neither key exists", () => {
+test("readCompositeWithMigration returns undefined and never migrates when neither key exists", () => {
   const scope = projectScopeKey("D:/ACode/ProjectA");
   const result = readCompositeWithMigration({}, scope, "unknown_theme");
   assert.equal(result.value, undefined);
   assert.equal(result.migrated, false);
+});
+
+// ---------------------------------------------------------------------------
+// removeLegacyThemeEntry
+// ---------------------------------------------------------------------------
+
+test("removeLegacyThemeEntry deletes the plain-themeId key and reports changed:true", () => {
+  const store: Record<string, string[]> = { cobra_command: ["legacy"], other_theme: ["x"] };
+  const { store: next, changed } = removeLegacyThemeEntry(store, "cobra_command");
+  assert.equal(changed, true);
+  assert.equal("cobra_command" in next, false);
+  assert.deepEqual(next["other_theme"], ["x"]);
+  // Input untouched.
+  assert.deepEqual(store["cobra_command"], ["legacy"]);
+});
+
+test("removeLegacyThemeEntry is a no-op (same reference, changed:false) when there's no legacy key", () => {
+  const scope = projectScopeKey("D:/ACode/ProjectA");
+  const store: Record<string, string[]> = { [compositeKey(scope, "cobra_command")]: ["a"] };
+  const { store: next, changed } = removeLegacyThemeEntry(store, "cobra_command");
+  assert.equal(changed, false);
+  assert.equal(next, store);
+});
+
+// ---------------------------------------------------------------------------
+// reset-style removal (composite + legacy) leaves a subsequent read cold
+// ---------------------------------------------------------------------------
+
+test("after removing both the composite and legacy entries, a subsequent read is cold (no resurrection)", () => {
+  const scope = projectScopeKey("D:/ACode/ProjectA");
+  let store: Record<string, string[]> = { cobra_command: ["legacy"] };
+  store = writeComposite(store, scope, "cobra_command", ["composite"]);
+
+  const afterComposite = removeProjectThemeEntry(store, scope, "cobra_command");
+  const { store: afterBoth } = removeLegacyThemeEntry(afterComposite, "cobra_command");
+
+  const result = readCompositeWithMigration(afterBoth, scope, "cobra_command");
+  assert.equal(result.value, undefined);
+  assert.equal(result.migrated, false);
+  assert.equal("cobra_command" in afterBoth, false);
+  assert.equal(compositeKey(scope, "cobra_command") in afterBoth, false);
 });
 
 // ---------------------------------------------------------------------------
