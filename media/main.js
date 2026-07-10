@@ -6595,6 +6595,28 @@
         }
       }
 
+      const remaining = Array.isArray(msg.findings) ? msg.findings.filter(f => f && f.severity !== "ok") : [];
+      if (remaining.length > 0) {
+        const note = document.createElement("div");
+        note.className = "doctor-finding";
+        note.style.marginTop = "6px";
+        note.textContent = "Still detected after fix:";
+        el.appendChild(note);
+        for (const f of remaining) {
+          const row = document.createElement("div");
+          row.className = "doctor-finding";
+          const icon = document.createElement("span");
+          icon.className = f.severity === "warn" ? "doctor-icon-warn" : "doctor-icon-error";
+          icon.textContent = f.severity === "warn" ? "⚠" : "✗";
+          const text = document.createElement("span");
+          text.className = "doctor-finding-text";
+          text.textContent = f.title + " — this may mean a previously-installed agent hook is still active in this session; fully restart the IDE, then run Troubleshoot & Fix again.";
+          row.appendChild(icon);
+          row.appendChild(text);
+          el.appendChild(row);
+        }
+      }
+
       const findings = Array.isArray(msg.findings) ? msg.findings : [];
       const foreign = Array.isArray(msg.foreign) ? msg.foreign : [];
       const refreshEl = document.createElement("div");

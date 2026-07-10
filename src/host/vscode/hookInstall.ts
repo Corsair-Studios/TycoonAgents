@@ -332,6 +332,7 @@ export function cleanupForeignHookArtifacts(claudeDirRoot: string): CleanupResul
     const filePath = path.join(claudeDirRoot, name);
     if (fs.existsSync(filePath)) {
       try {
+        try { fs.chmodSync(filePath, 0o666); } catch { /* best-effort */ }
         fs.unlinkSync(filePath);
         result.deletedLeftoverFiles.push(name);
       } catch {
@@ -344,7 +345,9 @@ export function cleanupForeignHookArtifacts(claudeDirRoot: string): CleanupResul
       for (const entry of fs.readdirSync(claudeDirRoot)) {
         if (LEGACY_ACTIVITY_FILE_PATTERN.test(entry)) {
           try {
-            fs.unlinkSync(path.join(claudeDirRoot, entry));
+            const entryPath = path.join(claudeDirRoot, entry);
+            try { fs.chmodSync(entryPath, 0o666); } catch { /* best-effort */ }
+            fs.unlinkSync(entryPath);
             result.deletedLeftoverFiles.push(entry);
           } catch {
             /* best-effort */

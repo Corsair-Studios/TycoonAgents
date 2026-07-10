@@ -254,7 +254,7 @@ export function diagnose(input: DoctorInput): DoctorFinding[] {
       detail:
         "Leftover files from a previously-installed agent system were found — they can corrupt activity tracking.",
       fixable: true,
-      destructive: true,
+      destructive: false,
     });
   }
 

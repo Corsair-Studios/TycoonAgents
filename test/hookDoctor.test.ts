@@ -417,6 +417,8 @@ test("diagnose: leftover legacy state files present -> legacy-artifacts error, n
   const f = findings.find((x: DoctorFinding) => x.id === "legacy-artifacts");
   assert.ok(f, "should contain legacy-artifacts finding");
   assert.equal(f!.severity, "error");
+  assert.equal(f!.fixable, true);
+  assert.equal(f!.destructive, false, "leftover state-file cleanup is safe to auto-fix, unlike removing foreign hook commands");
   assert.ok(!findings.some((x: DoctorFinding) => x.id === "hooks-healthy"), "must not report healthy");
 });
 
