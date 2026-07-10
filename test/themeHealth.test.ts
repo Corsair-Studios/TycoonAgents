@@ -41,7 +41,7 @@ function minimalManifest(overrides: Partial<ThemeManifest> = {}): ThemeManifest 
 function baseFrames(): Record<string, string[]> {
   const frames: Record<string, string[]> = {};
   for (let i = 0; i < 20; i++) frames[`achievement_${i}`] = ['data:img'];
-  for (let i = 0; i < 16; i++) frames[`expression_${i}`] = ['data:img'];
+  for (let i = 0; i < 7; i++) frames[`expression_${i}`] = ['data:img'];
   return frames;
 }
 

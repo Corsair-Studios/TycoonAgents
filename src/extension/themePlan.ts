@@ -10,19 +10,23 @@ import type {
 export const THEME_CHARACTER_COUNT = 16;
 export const THEME_ENEMY_COUNT = 4; // one full enemy board of RIVALS_PER_BOARD (4)
 export const THEME_OBJECT_COUNT = 22;
-export const THEME_EXPRESSION_COUNT = 16;
+export const THEME_EXPRESSION_COUNT = 7;
 /**
- * Cells 0-3 of the 16-cell expression board are PINNED to a fixed universal
+ * All 7 cells of the expression board are PINNED to a fixed universal
  * meaning (see applyFixedExpressionLabels) so the runtime can reliably map
  * gameplay events to them regardless of what the LLM would otherwise name
- * them. Order must match the legacy alias in themeService.applyExpressionFrames
- * (emote_smile, emote_sleep, emote_idea, emote_team). Cells 4-15 stay theme flavor.
+ * them. This is the full expression contract now — no theme-flavor cells
+ * remain. Order matters: index == expression_N frame key, and the runtime
+ * (media/main.js) depends on this exact pin order.
  */
 export const FIXED_EXPRESSION_LABELS = [
-  'Happy / celebration',
-  'Sleep / low-energy zzz',
+  'Love',
   'Idea / discovery spark',
+  'Anger',
   'Team action / rally',
+  'Thumbs up',
+  'Music',
+  'Sleep / low-energy zzz',
 ] as const;
 export const THEME_ACHIEVEMENT_COUNT = 20;
 export const THEME_DECOR_COUNT = 9;

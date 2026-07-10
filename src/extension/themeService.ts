@@ -1644,8 +1644,8 @@ async function applySlicedAtlasFromBuffer(
     manifest.viewport.projectile_asset = 'frames.json#projectile';
     item.decor_rows = rows;
   } else if (item.kind === 'expression_atlas') {
-    output = await optimizeSpriteBoardCanvas(buffer, 4, 4);
-    const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 4 });
+    output = await optimizeSpriteBoardCanvas(buffer, 4, 2);
+    const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 2 });
     frameKeys = applyExpressionFrames(frames, spritePackage.slots);
   } else if (item.kind === 'achievement_atlas') {
     output = await optimizeSpriteBoardCanvas(buffer, 5, 4);
@@ -2290,7 +2290,7 @@ export function createReviewItems(
     {
       id: 'expressions',
       filename: 'expressions.png',
-      label: '16 expressions',
+      label: '7 expressions',
       kind: 'expression_atlas',
       status: 'pending',
       prompt: buildExpressionAtlasPrompt(creativeDirection, plan.display_name, plan.expressions, backgroundMode),
@@ -2755,15 +2755,15 @@ async function generateExpressionAsset(
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
 ): Promise<void> {
-  onProgress('16-expression sprite sheet (24/25)');
+  onProgress('7-expression sprite sheet (24/25)');
   const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
   throwIfCancelled(undefined, options?.signal);
-  const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
+  const output = await optimizeSpriteBoardCanvas(generated, 4, 2);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
-  const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 4 });
+  const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 2 });
   throwIfCancelled(undefined, options?.signal);
   applyExpressionFrames(frames, spritePackage.slots);
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
@@ -2838,7 +2838,7 @@ export function buildReplacementPrompt(
     // falling back to the saved names, then generic defaults.
     const names = plan?.expressions?.length
       ? plan.expressions
-      : (item.expression_names?.length ? item.expression_names : defaultNames('Expression', 16));
+      : (item.expression_names?.length ? item.expression_names : defaultNames('Expression', 7));
     return buildExpressionAtlasPrompt(creativeDirection, manifest.display_name, names, backgroundMode);
   }
   if (item.kind === 'achievement_atlas') {
@@ -3044,16 +3044,17 @@ function applyExpressionFrames(
   frames: Record<string, string[]>,
   slots: Array<{ slot_id: number; data: string }>,
 ): string[] {
-  const keys = slots.slice(0, 16).map((slot, index) => {
+  // No legacy 'emote_smile'/'emote_sleep'/'emote_idea'/'emote_team' alias here:
+  // those strings are body-clip STATE labels used only by themeBuilder.ts /
+  // theme-builder.js (current_emote -> point/sit/dance/signal clip selection),
+  // never keys read out of the `frames` image map. Writing them here produced
+  // dead frame-image entries nobody consumed. See the distinct expression-icon
+  // bubble system (expression_0..6) vs. body point/signal clips note.
+  return slots.slice(0, 7).map((slot, index) => {
     const key = `expression_${index}`;
     frames[key] = [slot.data];
     return key;
   });
-  const legacyAliases = ['emote_smile', 'emote_sleep', 'emote_idea', 'emote_team'];
-  legacyAliases.forEach((key, index) => {
-    if (slots[index]) frames[key] = [slots[index].data];
-  });
-  return keys;
 }
 
 function applyAchievementFrames(

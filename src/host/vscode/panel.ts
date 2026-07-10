@@ -3948,7 +3948,7 @@ export class TycoonPanel {
             <textarea id="theme-plan-objects" rows="3"></textarea>
           </label>
           <label class="theme-plan-field">
-            <span>Expressions <small>16 expressions, comma separated · 1 sprite sheet</small></span>
+            <span>Expressions <small>7 expressions, comma separated · 1 sprite sheet</small></span>
             <textarea id="theme-plan-expressions" rows="3"></textarea>
           </label>
           <label class="theme-plan-field">

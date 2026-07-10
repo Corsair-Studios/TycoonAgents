@@ -818,15 +818,16 @@ export function buildExpressionAtlasPrompt(
   expressions: string[],
   background: BoardBackgroundMode = 'magenta',
 ): string {
-  const cells = expressions.slice(0, 16).map((expression, index) =>
+  const cells = expressions.slice(0, 7).map((expression, index) =>
     `Cell ${index + 1}: ${expression}`,
   );
   return [
     `Create one expression-icon sprite sheet for the "${themeName}" theme.`,
-    boardContract(4, 4, background),
+    boardContract(4, 2, background),
     'Draw exactly one bold, readable, icon-only expression in each cell, in row-major order:',
     ...cells,
-    'Cells 1-4 are standard universal emotes (celebration, sleep, idea, team/rally); cells 5-16 are theme-specific flavor icons.',
+    'Cell 8 (last cell of the grid) is unused padding — leave it blank/empty background, no icon.',
+    'All 7 cells are standard universal emotes (love, idea, anger, team/rally, thumbs up, music, sleep) — none are theme-specific flavor icons.',
     'Use a consistent, bold, flat icon style. Do not draw full characters.',
     'Do NOT draw the theme character, any character, any face, head, eyes, mouth, hair, or portrait. These are NOT facial expressions on a character.',
     'Each cell is a GENERIC symbolic emote ICON — a single, simple, instantly-readable emoji/pictogram symbol (e.g. a heart, spark/idea star, sweat drop, exclamation mark, gear, zzz) drawn LARGE and centered to fill most of the cell. Prioritize clarity and readability at very small sizes over detail.',

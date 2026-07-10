@@ -3670,10 +3670,12 @@
   const IDEA_CHANCE = 0.02;
   /** Chance, on transitioning into a seated pose, of a brief "sleep" bubble. */
   const SLEEP_CHANCE = 0.02;
-  /** Chance, per idle wander-decision, of a very rare theme-flavor bubble. */
+  /** Chance, per idle wander-decision, of a very rare playful "love" bubble. */
   const FLAVOR_BUBBLE_CHANCE = 0.008;
-  /** Chance a build-celebration/victory dancer also shows a "happy" bubble. */
+  /** Chance a build-celebration/victory dancer also shows a "thumbs-up" bubble. */
   const HAPPY_BUBBLE_CHANCE = 0.5;
+  /** Chance, on an idle→engaged (combat) transition, of a brief "anger" bubble. */
+  const ANGER_CHANCE = 0.05;
 
   /** True while a conga line is snaking around the perimeter. */
   let congaActive = false;
@@ -8760,7 +8762,7 @@
       const ce = agentCharMap[id];
       if (ce) {
         startAgentDance(ce);
-        if (Math.random() < HAPPY_BUBBLE_CHANCE) showExpression(ce, 0, 1.8);
+        if (Math.random() < HAPPY_BUBBLE_CHANCE) showExpression(ce, 4, 1.8);
       }
     }
   }
@@ -8995,11 +8997,12 @@
    * bubble kinds. No-op (no crash) when the theme has no expression atlas
    * for this index — see themeImages["expression_"+index].
    * @param {object} entry an agentCharMap entry
-   * @param {number} index 0..15 into the theme's expression atlas
+   * @param {number} index 0..6 into the theme's expression atlas (0=love,
+   *   1=idea, 2=anger, 3=team, 4=thumbs-up, 5=music, 6=sleep)
    * @param {number} durationSec how long (seconds) the bubble stays visible
    */
   function showExpression(entry, index, durationSec) {
-    if (!entry || index < 0 || index > 15) return;
+    if (!entry || index < 0 || index > 6) return;
     if ((entry.bubbleCooldown || 0) > 0) return; // shared per-agent rate limit
     const frames = themeImages && themeImages["expression_" + index];
     if (!frames || !frames[0]) return; // theme has no expression atlas -> no bubble
@@ -9664,16 +9667,17 @@
           emoteClip: null,
           emoteTimeLeft: 0,
           emoteCooldown: 0,
-          // Rare "expression" icon-bubble state (happy/sleep/idea/team/flavor).
+          // Rare "expression" icon-bubble state (love/idea/anger/team/thumbs-up/music/sleep).
           // Purely a display overlay — see showExpression; never influences
           // movement, clip selection, seat, or dance state.
           bubbleExpr: -1,
           bubbleTimeLeft: 0,
           bubbleCooldown: 0,
-          // Edge-detect latches for the idea/sleep bubble triggers (idle→active
-          // and walking→seated transitions respectively).
+          // Edge-detect latches for the idea/sleep/anger bubble triggers
+          // (idle→active, walking→seated, idle→engaged transitions).
           prevActive: false,
           prevSitting: false,
+          prevEngaging: false,
           // Team-formation signal latch (Part 3): true once this lead has
           // played its "signal" emote for the CURRENT team; reset to false
           // when the team disbands so a reformed team signals again.
@@ -9701,7 +9705,7 @@
 
       // ── Idea bubble (rare, on idle→active transition) ─────────────
       // Display-only: does not affect isActive or anything derived from it.
-      if (isActive && !charEntry.prevActive && Math.random() < IDEA_CHANCE) showExpression(charEntry, 2, 1.6);
+      if (isActive && !charEntry.prevActive && Math.random() < IDEA_CHANCE) showExpression(charEntry, 1, 1.6);
       charEntry.prevActive = isActive;
 
       // ── Team-formation signal (Part 3, rare/informative) ──────────────
@@ -9882,7 +9886,7 @@
               // this check naturally excludes it.
               if (!activeEnemies.some((e) => !e.fleeing)) {
                 startAgentDance(charEntry);
-                if (Math.random() < HAPPY_BUBBLE_CHANCE) showExpression(charEntry, 0, 1.8);
+                if (Math.random() < HAPPY_BUBBLE_CHANCE) showExpression(charEntry, 4, 1.8);
               }
               // Distances to each native edge; run out the nearest one.
               const dLeft = nearest.nx;
@@ -9909,6 +9913,13 @@
         }
       }
       if (!isEngaging) charEntry.combatTargetInstanceId = null;
+
+      // ── Anger bubble (rare, on idle→engaged transition) ────────────────
+      // Display-only, mirrors the prevActive/prevSitting latch pattern above
+      // so it fires once when combat begins rather than spamming every frame
+      // isEngaging stays true.
+      if (isEngaging && !charEntry.prevEngaging && Math.random() < ANGER_CHANCE) showExpression(charEntry, 2, 1.6);
+      charEntry.prevEngaging = isEngaging;
 
       // ── BUILD targeting (Phase 2a) ──────────────────────────────────
       // Active agents head for the current ACTIVE build target's standoff
@@ -10062,15 +10073,15 @@
       // sit-session — a per-frame roll would spam since a seated pose is
       // held for seconds and BUBBLE_COOLDOWN_SEC alone wouldn't prevent
       // re-firing every time it expires while still seated. Display-only.
-      if (charEntry.sitting && !charEntry.prevSitting && Math.random() < SLEEP_CHANCE) showExpression(charEntry, 1, 1.8);
+      if (charEntry.sitting && !charEntry.prevSitting && Math.random() < SLEEP_CHANCE) showExpression(charEntry, 6, 1.8);
       charEntry.prevSitting = charEntry.sitting;
 
-      // ── Flavor bubble (ultra-rare playful beat, theme-specific frames) ──
+      // ── Flavor bubble (ultra-rare playful "love" beat) ──────────────────
       // Independent of the wander-decision else-if chain below (does not
       // consume a wander-decision tick or touch wanderTimer) so it can never
       // interfere with destination picking. Display-only.
       if (idleAndStill && !congaActive && !charEntry.emoting && Math.random() < FLAVOR_BUBBLE_CHANCE) {
-        showExpression(charEntry, 4 + Math.floor(Math.random() * 12), 1.6);
+        showExpression(charEntry, 0, 1.6);
       }
 
       // ── Wander logic (native polygon space) ───────────────────────
@@ -10090,6 +10101,7 @@
           charEntry.destNx = charEntry.nx;
           charEntry.destNy = charEntry.ny;
           charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
+          showExpression(charEntry, 5, 1.8); // music bubble, coincides with dance start
         } else if (idleAndStill && !congaActive && themeDecor.length > 0 && Math.random() < SIT_CHANCE) {
           // Claim a free seat (if any) and start walking to it. The sitting
           // maintenance block above then drives arrival + seated hold. Never
@@ -10688,7 +10700,10 @@
               ctx.lineTo(bx, ry + bh + 5);
               ctx.closePath();
               ctx.fill();
-              ctx.drawImage(bimg, bx - bs / 2, by - bs / 2, bs, bs);
+              // Gentle vertical bob for the icon only — bubble backing/tail
+              // above stay fixed; ~±2px, purely cosmetic (display-only).
+              const bob = Math.sin((performance.now ? performance.now() : Date.now()) / 180) * 2;
+              ctx.drawImage(bimg, bx - bs / 2, (by - bs / 2) - bob, bs, bs);
               ctx.restore();
             }
           }

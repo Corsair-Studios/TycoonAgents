@@ -20,7 +20,7 @@ test('theme plan normalizes every editable slot to the required count', () => {
   assert.equal(plan.enemies.length, 4);
   assert.equal(plan.objects.length, 22);
   assert.equal(plan.decor.length, 9);
-  assert.equal(plan.expressions.length, 16);
+  assert.equal(plan.expressions.length, 7);
   assert.equal(plan.achievements.length, 20);
 });
 

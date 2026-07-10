@@ -57,7 +57,7 @@ export async function expandThemePlan(
     '  "decor": ["9 background decor names: first 4 are sittable seats, next 4 are static scenery props, last 1 is a subtly animated scenery item"],',
     '  "enemies": ["4 named enemy designs"],',
     '  "enemy_attack_styles": [<one of "melee" or "ranged" for EACH enemy, SAME ORDER as "enemies"; "ranged" if that enemy fights primarily with a gun, bow, thrown weapon, or energy/projectile weapon at a distance; "melee" if it fights hand-to-hand or with a close-contact weapon (fists, claws, blade, club, spear)>],',
-    '  "expressions": ["16 short, visually distinct expression names"],',
+    '  "expressions": ["7 short, visually distinct expression names"],',
     '  "achievements": ["20 short achievement badge design names"]',
     '}',
     '',
