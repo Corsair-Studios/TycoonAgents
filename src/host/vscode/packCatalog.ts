@@ -20,9 +20,13 @@ export interface PackAgent {
    * Optional roster tier. Omitted (undefined) for regular worker agents.
    * `"lead"` marks a team-lead coordinator that owns a set of worker
    * agents — installers and the ready-test skill must not treat lead
-   * agents the same as regular workers (see `LEAD_AGENTS`).
+   * agents the same as regular workers (see `LEAD_AGENTS`). `"reviewer"`
+   * marks the optional Review-pass agent (see `REVIEWER_AGENTS`) — it IS a
+   * normal spawnable leaf worker (unlike a lead, it owns no team), the tier
+   * exists only so install/remove can safely identify TycoonAgents-owned
+   * `reviewer.md` files the same way lead removal does for `tier: lead`.
    */
-  tier?: "lead";
+  tier?: "lead" | "reviewer";
 }
 
 /**
@@ -42,7 +46,7 @@ export function buildAgentMarkdown(agent: {
   model: string;
   role: string;
   keywords: string;
-  tier?: "lead";
+  tier?: "lead" | "reviewer";
 }): string {
   return (
     "---\n" +
@@ -188,5 +192,30 @@ export const LEAD_AGENTS: PackAgent[] = [
     role:
       "Team lead for verification work — owns the testing-specialist and workspace-monitor workers. Decomposes test/verification assignments, briefs workers, cross-checks results against acceptance criteria written in docs/plan/*.md, and reports compressed results upward. Never certifies work produced by its own team without running the checks.",
     keywords: "quality|verify|test plan|acceptance|audit",
+  },
+];
+
+/**
+ * The optional Review-pass agent (composes with either delegation mode; on
+ * by default via `execution.json`'s `reviewEnabled`). Kept in its own list
+ * (rather than merged into `REGULAR_AGENTS` or `LEAD_AGENTS`) so its
+ * install/remove is driven by the `reviewEnabled` toggle instead of by
+ * `delegation_mode` — a project can be Direct+Review, Team-Leads+Review,
+ * or either mode with Review off. Unlike `LEAD_AGENTS`, a reviewer is a
+ * normal spawnable leaf worker: it owns no team of its own, so the
+ * ready-test skill (which excludes only `tier: lead`) spawns it like any
+ * other agent. `tier: "reviewer"` exists solely as the safety marker
+ * `agentMarkdownTier` uses before deleting a `reviewer.md` file when the
+ * toggle is turned off — mirrors the `tier: "lead"` removal safety check.
+ */
+export const REVIEWER_AGENTS: PackAgent[] = [
+  {
+    id: "reviewer",
+    name: "Reviewer",
+    model: "sonnet",
+    tier: "reviewer",
+    role:
+      "Reviews a specialist's COMPLETED work for a task — reads the diff, checks it against the task's intent and acceptance criteria, and flags bugs, regressions, or quality issues it finds. Returns either APPROVE or a concise list of required changes. Does not implement fixes itself; a required change goes back to the specialist that authored the work.",
+    keywords: "review|verify|approve|correctness|quality|regression",
   },
 ];

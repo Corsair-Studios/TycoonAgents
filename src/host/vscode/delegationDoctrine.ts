@@ -19,6 +19,14 @@ export type DelegationMode = (typeof DELEGATION_MODES)[number];
 /** Shape of `.claude/tycoon/execution.json`. */
 export interface ExecutionConfig {
   delegation_mode: DelegationMode;
+  /**
+   * Optional "Review pass" toggle (composes with either delegation_mode):
+   * before the orchestrator reports a specialist's task as done, it routes
+   * the change to the `reviewer` agent for a correctness/quality pass.
+   * Defaults to `true` when the key is absent from execution.json (on by
+   * default) — see {@link readExecutionConfig}.
+   */
+  reviewEnabled?: boolean;
 }
 
 /** Markers wrapping the managed delegation section inside a project's CLAUDE.md. */
@@ -62,8 +70,8 @@ const ROSTER_TABLE = `## Specialist roster
 | workspace-monitor | Agent lifecycle/event monitoring, hook-record mapping |
 | search-retrieval | File searching, code lookup, grep/glob (runs on haiku) |`;
 
-/** Flat-mode specific framing: the orchestrator briefs workers directly. */
-const FLAT_SECTION = `## Flat delegation (current mode)
+/** Direct-mode specific framing: the orchestrator briefs workers itself. */
+const DIRECT_SECTION = `## Direct delegation (current mode)
 
 The orchestrator briefs specialist workers directly — there is no
 intermediate layer between the orchestrator and the worker doing the task.`;
@@ -75,7 +83,7 @@ intermediate layer between the orchestrator and the worker doing the task.`;
  */
 const TEAM_LEADS_SECTION = `## Team Leads delegation (current mode)
 
-Everything in Flat delegation still applies. Additionally, for large
+Everything in Direct delegation still applies. Additionally, for large
 multi-feature work — roughly 3+ tasks in a domain — route through a team
 lead instead of briefing workers directly:
 
@@ -83,7 +91,7 @@ lead instead of briefing workers directly:
   vscode-integration workers.
 - **quality-lead** owns the testing-specialist and workspace-monitor
   workers.
-- **search-retrieval** stays flat and is never routed through a team lead.
+- **search-retrieval** stays direct and is never routed through a team lead.
 
 A team lead decomposes its domain's work, briefs its workers, verifies their
 results, and reports compressed results back up to the orchestrator.
@@ -100,19 +108,44 @@ by a different lead or by the orchestrator, never by the team that produced
 it.
 
 Small tasks (below the roughly-3-task threshold) skip team leads entirely
-and go straight from the orchestrator to the worker, same as Flat mode.`;
+and go straight from the orchestrator to the worker, same as Direct mode.`;
+
+/**
+ * Optional "Review pass" framing (composes with either base mode — appended
+ * regardless of whether the orchestrator is briefing workers directly or
+ * routing through team leads). A SINGLE review gate: one round of
+ * reviewer-requested fixes, never an unbounded approve/reject loop.
+ */
+const REVIEW_SECTION = `## Review pass (enabled)
+
+Before the orchestrator reports a specialist's task as done, it routes the
+change to the \`reviewer\` agent for a correctness and quality pass: read the
+diff, check it against the task's intent and acceptance criteria, and flag
+bugs, regressions, or quality issues.
+
+If the reviewer requires changes, the orchestrator sends them back to the
+original specialist to fix, then re-checks with the reviewer once more. This
+is a single review gate, not an open-ended loop — after that one round of
+fixes the orchestrator reports the outcome rather than cycling further.
+
+Only reviewed-and-approved work is reported to the user as complete.`;
 
 /**
  * Render the CLAUDE.md section body for a delegation mode. Pure (no
  * fs/vscode access), so this is unit-testable. The returned string does NOT
  * include the `<!-- tycoon:delegation -->` markers — use
  * {@link upsertDelegationSection} to splice it into a CLAUDE.md.
+ *
+ * `reviewEnabled` (default `true`, matching execution.json's default)
+ * composes with either mode: when true, {@link REVIEW_SECTION} is appended
+ * after the mode-specific section; when false, it's omitted entirely.
  */
-export function renderDelegationDoctrine(mode: DelegationMode): string {
-  const parts =
-    mode === "team_leads"
-      ? [PREAMBLE, ROSTER_TABLE, TEAM_LEADS_SECTION]
-      : [PREAMBLE, ROSTER_TABLE, FLAT_SECTION];
+export function renderDelegationDoctrine(mode: DelegationMode, reviewEnabled = true): string {
+  const modeSection = mode === "team_leads" ? TEAM_LEADS_SECTION : DIRECT_SECTION;
+  const parts = [PREAMBLE, ROSTER_TABLE, modeSection];
+  if (reviewEnabled) {
+    parts.push(REVIEW_SECTION);
+  }
   return parts.join("\n\n");
 }
 
@@ -159,7 +192,7 @@ export function upsertDelegationSection(
 }
 
 /** Default execution config used when none has been written yet. */
-const DEFAULT_EXECUTION_CONFIG: ExecutionConfig = { delegation_mode: "flat" };
+const DEFAULT_EXECUTION_CONFIG: ExecutionConfig = { delegation_mode: "flat", reviewEnabled: true };
 
 /** Resolve the path to `<claudeDirPath>/tycoon/execution.json`. */
 function executionConfigPath(claudeDirPath: string): string {
@@ -168,19 +201,27 @@ function executionConfigPath(claudeDirPath: string): string {
 
 /**
  * Read `.claude/tycoon/execution.json`. Tolerant of a missing file, a
- * missing directory, or invalid/unrecognized JSON — all of those fall back
- * to the default (`{ delegation_mode: "flat" }`) rather than throwing.
+ * missing directory, or invalid JSON — all of those fall back to the
+ * default (`{ delegation_mode: "flat", reviewEnabled: true }`) rather than
+ * throwing. Each field is resolved independently (not all-or-nothing): a
+ * file that only ever had `reviewEnabled` written to it (e.g. via
+ * `writeExecutionConfig(dir, { reviewEnabled: false })` before
+ * `delegation_mode` was ever persisted) still reads back that value, with
+ * `delegation_mode` falling back to `"flat"`.
+ *
+ * `reviewEnabled` defaults to `true` whenever the key is absent/non-boolean
+ * on disk — the Review pass is on by default, so a project that has never
+ * touched the toggle (or predates it) reads as enabled.
  */
 export function readExecutionConfig(claudeDirPath: string): ExecutionConfig {
   try {
     const raw = fs.readFileSync(executionConfigPath(claudeDirPath), "utf8");
     const parsed = JSON.parse(raw);
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      DELEGATION_MODES.includes(parsed.delegation_mode)
-    ) {
-      return { delegation_mode: parsed.delegation_mode };
+    if (parsed !== null && typeof parsed === "object") {
+      return {
+        delegation_mode: DELEGATION_MODES.includes(parsed.delegation_mode) ? parsed.delegation_mode : "flat",
+        reviewEnabled: typeof parsed.reviewEnabled === "boolean" ? parsed.reviewEnabled : true,
+      };
     }
   } catch {
     // Missing file, missing dir, invalid JSON, etc. -> use the default.
@@ -196,11 +237,13 @@ export function readExecutionConfig(claudeDirPath: string): ExecutionConfig {
  * `writeProjectPlanEnabled`), so this performs a read-modify-write merge —
  * `config` is spread over whatever is already on disk — rather than
  * overwriting the whole file. A missing/unreadable/corrupt existing file is
- * treated as `{}`.
+ * treated as `{}`. `config` is a partial patch (e.g. `{ reviewEnabled }`
+ * alone, without `delegation_mode`) so callers can update either field
+ * independently without clobbering the other.
  */
 export function writeExecutionConfig(
   claudeDirPath: string,
-  config: ExecutionConfig
+  config: Partial<ExecutionConfig>
 ): void {
   const configPath = executionConfigPath(claudeDirPath);
   let existing: Record<string, unknown> = {};

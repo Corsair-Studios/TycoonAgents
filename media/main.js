@@ -1679,6 +1679,16 @@
     );
     const delegation_mode = teamLeadsRadio && teamLeadsRadio.checked ? "team_leads" : "flat";
     vscode.postMessage({ type: "installHooks", delegation_mode });
+    // installHooks always turns the Review pass on by default (see
+    // panel.ts's _handleInstallHooks). If the pre-install checkbox was
+    // unchecked, follow up with a setReviewEnabled(false) — messages are
+    // processed in order, so this lands right after install completes.
+    const reviewPassCheckbox = /** @type {HTMLInputElement|null} */ (
+      document.getElementById("review-pass-checkbox")
+    );
+    if (reviewPassCheckbox && !reviewPassCheckbox.checked) {
+      vscode.postMessage({ type: "setReviewEnabled", enabled: false });
+    }
   });
 
   menuSettingsBtn.addEventListener("click", () => {
@@ -7798,8 +7808,8 @@
     }
   }
 
-  /** Display label for a delegation mode id. */
-  const DELEGATION_MODE_LABEL = { flat: "Flat", team_leads: "Team Leads" };
+  /** Display label for a delegation mode id (the "flat" enum value renders as "Direct"). */
+  const DELEGATION_MODE_LABEL = { flat: "Direct", team_leads: "Team Leads" };
 
   /**
    * Render the "Delegation stats" section (Team Lead Mode Phase 4:
@@ -8064,10 +8074,12 @@
     } else {
       flashError(row, msg.error || "Update failed");
       // On failure the host doesn't push a fresh "settings" message, so the
-      // delegation-mode radios (disabled while the change was in flight)
-      // would otherwise stay stuck — re-enable them here.
+      // delegation-mode radios / review-pass checkbox (disabled while the
+      // change was in flight) would otherwise stay stuck — re-enable here.
       if (msg.field === "delegationMode" && row) {
         row.querySelectorAll('input[type="radio"]').forEach((el) => { el.disabled = false; });
+      } else if (msg.field === "reviewEnabled" && row) {
+        row.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.disabled = false; });
       }
     }
   }
@@ -8163,13 +8175,13 @@
     const delegOptions = [
       {
         value: "flat",
-        label: "Flat (recommended for most projects)",
-        help: "The orchestrator briefs specialist workers directly. Lowest token cost, fastest for small-to-medium tasks.",
+        label: "Direct (recommended for most projects)",
+        help: "The orchestrator briefs specialist workers directly — it does the reviewing itself. Lowest coordination cost; best for focused fixes.",
       },
       {
         value: "team_leads",
         label: "Team Leads",
-        help: "Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs — many features across many files — where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Flat.",
+        help: "Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs — many features across many files — where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Direct.",
       },
     ];
     const delegInputs = [];
@@ -8208,6 +8220,41 @@
     delegRow.appendChild(delegGroup);
     delegSection.appendChild(delegRow);
     setupConfigEl.appendChild(delegSection);
+
+    // ── 1.5b. Review pass (optional, on by default) ──
+    // Composes with either delegation style above rather than being a third
+    // radio — a separate checkbox row in the same "Delegation style" section.
+    const reviewRow = document.createElement("div");
+    reviewRow.className = "settings-row";
+    reviewRow.dataset.agentRow = "review-enabled";
+    const reviewGroup = document.createElement("div");
+    reviewGroup.className = "delegation-mode-group";
+    const reviewOptLabel = document.createElement("label");
+    reviewOptLabel.className = "delegation-mode-option review-pass-option";
+    const reviewCheckbox = document.createElement("input");
+    reviewCheckbox.type = "checkbox";
+    reviewCheckbox.id = "review-pass-enabled-checkbox";
+    // Absent/undefined reads as enabled — the toggle is on by default.
+    reviewCheckbox.checked = lastSettings.reviewEnabled !== false;
+    reviewCheckbox.addEventListener("change", () => {
+      reviewCheckbox.disabled = true;
+      vscode.postMessage({ type: "setReviewEnabled", enabled: reviewCheckbox.checked });
+    });
+    const reviewBody = document.createElement("span");
+    reviewBody.className = "delegation-mode-option-body";
+    const reviewLabelSpan = document.createElement("span");
+    reviewLabelSpan.className = "delegation-mode-option-label";
+    reviewLabelSpan.textContent = "Review pass (optional, on by default)";
+    const reviewHelpSpan = document.createElement("span");
+    reviewHelpSpan.className = "delegation-mode-option-help";
+    reviewHelpSpan.textContent = "Routes each significant change through a reviewer agent before it's marked done. Catches bugs and regressions early; roughly 20-40% more tokens on non-trivial tasks. Turn off for speed/lowest cost.";
+    reviewBody.appendChild(reviewLabelSpan);
+    reviewBody.appendChild(reviewHelpSpan);
+    reviewOptLabel.appendChild(reviewCheckbox);
+    reviewOptLabel.appendChild(reviewBody);
+    reviewGroup.appendChild(reviewOptLabel);
+    reviewRow.appendChild(reviewGroup);
+    delegSection.appendChild(reviewRow);
 
     // ── 1.6. Project Plan (optional) ──
     // Opt-in toggle for the Project Plan tab in the metrics panel (see

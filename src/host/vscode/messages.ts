@@ -58,6 +58,9 @@ export const MSG = {
   SETTINGS_UPDATED: "settingsUpdated",
   SET_AGENT_MODEL: "setAgentModel",
   SET_DELEGATION_MODE: "setDelegationMode",
+  // Sibling of SET_DELEGATION_MODE: the optional "Review pass" toggle
+  // composes with either delegation_mode rather than being a third mode.
+  SET_REVIEW_ENABLED: "setReviewEnabled",
   SET_AGENT_KEYWORDS: "setAgentKeywords",
   REMOVE_AGENT: "removeAgent",
   AGENT_REMOVED: "agentRemoved",
@@ -213,6 +216,10 @@ export const MSG_SCHEMAS = {
   SET_DELEGATION_MODE: z
     .object({ delegation_mode: z.string().optional() })
     .passthrough(),
+
+  // Sibling of SET_DELEGATION_MODE — the optional Review-pass toggle, on by
+  // default (see delegationDoctrine.ts's ExecutionConfig.reviewEnabled).
+  SET_REVIEW_ENABLED: z.object({ enabled: z.boolean() }).passthrough(),
 
   // ---- theme: stage tuning / background / manual image upload -------------
   SAVE_STAGE_TUNING: z

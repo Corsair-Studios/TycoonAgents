@@ -20,7 +20,7 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
-import { buildAgentMarkdown, agentMarkdownTier, LEAD_AGENTS } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
 import {
   renderDelegationDoctrine,
   upsertDelegationSection,
@@ -250,6 +250,7 @@ export class TycoonPanel {
         model?: string;
         pattern?: string;
         delegation_mode?: string;
+        enabled?: boolean;
         thirdParty?: boolean;
         disclosures?: Array<{
           label?: string;
@@ -398,6 +399,13 @@ export class TycoonPanel {
             this._handleSetDelegationMode(parsedSetDelegationMode.data.delegation_mode);
           } else {
             console.error("TycoonAgents: setDelegationMode payload rejected:", parsedSetDelegationMode.error.message);
+          }
+        } else if (message.type === MSG.SET_REVIEW_ENABLED) {
+          const parsedSetReviewEnabled = MSG_SCHEMAS.SET_REVIEW_ENABLED.safeParse(message);
+          if (parsedSetReviewEnabled.success) {
+            this._handleSetReviewEnabled(parsedSetReviewEnabled.data.enabled);
+          } else {
+            console.error("TycoonAgents: setReviewEnabled payload rejected:", parsedSetReviewEnabled.error.message);
           }
         } else if (message.type === MSG.SET_AGENT_KEYWORDS) {
           const parsedSetAgentKeywords = MSG_SCHEMAS.SET_AGENT_KEYWORDS.safeParse(message);
@@ -2889,16 +2897,29 @@ export class TycoonPanel {
       // so it's caught independently and reported without failing the
       // (already-successful) hook install.
       const claudeDir = path.join(root, ".claude");
+      // Review pass is on by default (execution.json's reviewEnabled)
+      // whenever a project is freshly installed/repaired — the setup
+      // screen's checkbox is checked by default and, when the user
+      // unchecks it, the webview follows this installHooks message with a
+      // SET_REVIEW_ENABLED(false) that turns it back off.
+      const reviewEnabled = true;
       let claudeMdError: string | undefined;
       try {
-        // 7a. Persist the chosen mode.
-        writeExecutionConfig(claudeDir, { delegation_mode: delegationMode });
+        // 7a. Persist the chosen mode + the default Review-pass state.
+        writeExecutionConfig(claudeDir, { delegation_mode: delegationMode, reviewEnabled });
 
         // 7c/7d. Lead agent files + keyword routing — only written for
         // team_leads. Flat mode leaves any previously-installed lead files
         // alone (Phase 2 handles removal on downgrade via setDelegationMode).
         if (delegationMode === "team_leads") {
           this._installLeadAgents(root);
+        }
+
+        // 7e. Reviewer agent file + keyword routing — installed by default,
+        // regardless of delegation_mode (the Review pass composes with
+        // either base mode).
+        if (reviewEnabled) {
+          this._installReviewerAgent(root);
         }
       } catch (err) {
         claudeMdError = String(err);
@@ -2917,7 +2938,7 @@ export class TycoonPanel {
         }
         let updated = upsertDelegationSection(
           existingClaudeMd,
-          renderDelegationDoctrine(delegationMode)
+          renderDelegationDoctrine(delegationMode, reviewEnabled)
         );
         updated = upsertCodeRulesSection(updated, renderCodeRules());
         fs.writeFileSync(claudeMdPath, updated);
@@ -2942,15 +2963,17 @@ export class TycoonPanel {
   }
 
   /**
-   * Write the `LEAD_AGENTS` `.md` files (skipping any that already exist)
-   * and register their keyword routing in `agent-keywords.json`. Shared by
-   * `_handleInstallHooks` (team_leads chosen at install) and
-   * `_handleSetDelegationMode` (switching to team_leads later in Settings).
-   * Idempotent: re-running when the files/entries already exist is a no-op.
+   * Write a roster of `PackAgent` `.md` files (skipping any that already
+   * exist) and register their keyword routing in `agent-keywords.json`.
+   * Shared, mode-agnostic install path: `_installLeadAgents` applies it to
+   * `LEAD_AGENTS` (team_leads), `_installReviewerAgent` applies it to
+   * `REVIEWER_AGENTS` (the Review-pass toggle) — either can install
+   * regardless of the other's state. Idempotent: re-running when the
+   * files/entries already exist is a no-op.
    */
-  private _installLeadAgents(root: string): void {
+  private _installAgentFiles(root: string, agentsToInstall: PackAgent[]): void {
     let cfg = this._readKeywordsConfig(root);
-    for (const a of LEAD_AGENTS) {
+    for (const a of agentsToInstall) {
       const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
       if (!fs.existsSync(agentPath)) {
         fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
@@ -2964,17 +2987,20 @@ export class TycoonPanel {
   }
 
   /**
-   * Remove the `LEAD_AGENTS` `.md` files and their keyword routing entries
-   * when downgrading a project out of team_leads mode. A `.md` file is only
-   * deleted when its frontmatter says `tier: lead` (via
-   * {@link agentMarkdownTier}) — a user's own file that happens to share an
-   * id like `build-lead.md` but wasn't written by TycoonAgents is never
-   * touched. The `agent-keywords.json` routing entries are always safe to
-   * strip by id (that file is TycoonAgents-managed, not user-authored).
+   * Remove a roster of `PackAgent` `.md` files and their keyword routing
+   * entries. A `.md` file is only deleted when its frontmatter `tier:`
+   * matches `expectedTier` (via {@link agentMarkdownTier}) — a user's own
+   * file that happens to share an id like `build-lead.md` or `reviewer.md`
+   * but wasn't written by TycoonAgents is never touched. The
+   * `agent-keywords.json` routing entries are always safe to strip by id
+   * (that file is TycoonAgents-managed, not user-authored). Shared,
+   * mode-agnostic removal path: `_removeLeadAgents` applies it to
+   * `LEAD_AGENTS` with `expectedTier: "lead"`, `_removeReviewerAgent`
+   * applies it to `REVIEWER_AGENTS` with `expectedTier: "reviewer"`.
    * Idempotent: safe to call when the files/entries are already absent.
    */
-  private _removeLeadAgents(root: string): void {
-    for (const a of LEAD_AGENTS) {
+  private _removeAgentFiles(root: string, agentsToRemove: PackAgent[], expectedTier: string): void {
+    for (const a of agentsToRemove) {
       const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
       if (fs.existsSync(agentPath)) {
         let tier: string | undefined;
@@ -2983,7 +3009,7 @@ export class TycoonPanel {
         } catch {
           tier = undefined;
         }
-        if (tier === "lead") {
+        if (tier === expectedTier) {
           try {
             fs.unlinkSync(agentPath);
           } catch {
@@ -2994,7 +3020,7 @@ export class TycoonPanel {
     }
 
     let cfg = this._readKeywordsConfig(root);
-    for (const a of LEAD_AGENTS) {
+    for (const a of agentsToRemove) {
       cfg = removeKeywordPattern(cfg, a.id);
     }
     const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
@@ -3004,6 +3030,41 @@ export class TycoonPanel {
     } catch {
       /* best-effort: keywords file is non-critical for removal */
     }
+  }
+
+  /**
+   * Install the `LEAD_AGENTS` `.md` files. Shared by `_handleInstallHooks`
+   * (team_leads chosen at install) and `_handleSetDelegationMode`
+   * (switching to team_leads later in Settings).
+   */
+  private _installLeadAgents(root: string): void {
+    this._installAgentFiles(root, LEAD_AGENTS);
+  }
+
+  /**
+   * Remove the `LEAD_AGENTS` `.md` files when downgrading a project out of
+   * team_leads mode.
+   */
+  private _removeLeadAgents(root: string): void {
+    this._removeAgentFiles(root, LEAD_AGENTS, "lead");
+  }
+
+  /**
+   * Install the `REVIEWER_AGENTS` `.md` file(s). Runs regardless of the
+   * project's `delegation_mode` — the Review pass composes with either
+   * base mode. Called from `_handleInstallHooks` (Review on by default at
+   * fresh install) and `_handleSetReviewEnabled` (toggled on in Settings).
+   */
+  private _installReviewerAgent(root: string): void {
+    this._installAgentFiles(root, REVIEWER_AGENTS);
+  }
+
+  /**
+   * Remove the `REVIEWER_AGENTS` `.md` file(s) when the Review pass is
+   * turned off via `_handleSetReviewEnabled`.
+   */
+  private _removeReviewerAgent(root: string): void {
+    this._removeAgentFiles(root, REVIEWER_AGENTS, "reviewer");
   }
 
   /**
@@ -3050,6 +3111,11 @@ export class TycoonPanel {
       return;
     }
 
+    // Doctrine composes delegation_mode with the (unrelated) reviewEnabled
+    // toggle — re-read the merged execution.json so a mode switch never
+    // silently resets the Review-pass section on/off.
+    const reviewEnabled = readExecutionConfig(path.join(root, ".claude")).reviewEnabled ?? true;
+
     let claudeMdError: string | undefined;
     try {
       const claudeMdPath = path.join(root, "CLAUDE.md");
@@ -3059,7 +3125,7 @@ export class TycoonPanel {
       } catch {
         existingClaudeMd = null;
       }
-      const updated = upsertDelegationSection(existingClaudeMd, renderDelegationDoctrine(mode));
+      const updated = upsertDelegationSection(existingClaudeMd, renderDelegationDoctrine(mode, reviewEnabled));
       fs.writeFileSync(claudeMdPath, updated);
     } catch (err) {
       claudeMdError = String(err);
@@ -3071,6 +3137,73 @@ export class TycoonPanel {
       id: "delegation-mode",
       field: "delegationMode",
       delegation_mode: mode,
+      ...(claudeMdError !== undefined ? { claudeMdError } : {}),
+    });
+  }
+
+  /**
+   * Toggle the optional "Review pass" (on by default). Mirrors
+   * `_handleSetDelegationMode`'s wiring exactly, but for the orthogonal
+   * `reviewEnabled` flag: persists `execution.json` (merge-safe — does not
+   * touch `delegation_mode`), installs/removes the `reviewer` agent file,
+   * and upserts the managed `CLAUDE.md` doctrine section using whatever
+   * `delegation_mode` is already on disk. Works regardless of base mode.
+   */
+  private _handleSetReviewEnabled(enabled: boolean): void {
+    const root = this._projectRoot();
+    if (root === "") {
+      void this._panel.webview.postMessage({
+        type: MSG.SETTINGS_UPDATED,
+        ok: false,
+        id: "review-enabled",
+        field: "reviewEnabled",
+        error: "No workspace folder open",
+      });
+      return;
+    }
+
+    try {
+      const claudeDir = path.join(root, ".claude");
+      writeExecutionConfig(claudeDir, { reviewEnabled: enabled });
+      if (enabled) {
+        this._installReviewerAgent(root);
+      } else {
+        this._removeReviewerAgent(root);
+      }
+    } catch (err) {
+      void this._panel.webview.postMessage({
+        type: MSG.SETTINGS_UPDATED,
+        ok: false,
+        id: "review-enabled",
+        field: "reviewEnabled",
+        error: String(err),
+      });
+      return;
+    }
+
+    const mode = readExecutionConfig(path.join(root, ".claude")).delegation_mode;
+
+    let claudeMdError: string | undefined;
+    try {
+      const claudeMdPath = path.join(root, "CLAUDE.md");
+      let existingClaudeMd: string | null = null;
+      try {
+        existingClaudeMd = fs.readFileSync(claudeMdPath, "utf8");
+      } catch {
+        existingClaudeMd = null;
+      }
+      const updated = upsertDelegationSection(existingClaudeMd, renderDelegationDoctrine(mode, enabled));
+      fs.writeFileSync(claudeMdPath, updated);
+    } catch (err) {
+      claudeMdError = String(err);
+    }
+
+    void this._panel.webview.postMessage({
+      type: MSG.SETTINGS_UPDATED,
+      ok: true,
+      id: "review-enabled",
+      field: "reviewEnabled",
+      reviewEnabled: enabled,
       ...(claudeMdError !== undefined ? { claudeMdError } : {}),
     });
   }
@@ -3182,8 +3315,10 @@ export class TycoonPanel {
       contextBudget = buildContextBudget(null, []);
     }
 
-    const delegation_mode =
-      root !== "" ? readExecutionConfig(path.join(root, ".claude")).delegation_mode : "flat";
+    const execCfg =
+      root !== "" ? readExecutionConfig(path.join(root, ".claude")) : { delegation_mode: "flat" as const, reviewEnabled: true };
+    const delegation_mode = execCfg.delegation_mode;
+    const reviewEnabled = execCfg.reviewEnabled ?? true;
 
     void this._panel.webview.postMessage({
       type: MSG.SETTINGS,
@@ -3191,6 +3326,7 @@ export class TycoonPanel {
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         agents,
         delegation_mode,
+        reviewEnabled,
         delegationHealth: { directSearches, directReads, directEdits, delegations, warnThreshold },
         hookHealth,
         contextBudget,
@@ -3796,15 +3932,22 @@ export class TycoonPanel {
         <label class="delegation-mode-option">
           <input type="radio" name="delegation-mode" id="delegation-mode-flat" value="flat" checked>
           <span class="delegation-mode-option-body">
-            <span class="delegation-mode-option-label">Flat (recommended for most projects)</span>
-            <span class="delegation-mode-option-help">The orchestrator briefs specialist workers directly. Lowest token cost, fastest for small-to-medium tasks.</span>
+            <span class="delegation-mode-option-label">Direct (recommended for most projects)</span>
+            <span class="delegation-mode-option-help">The orchestrator briefs specialist workers directly &mdash; it does the reviewing itself. Lowest coordination cost; best for focused fixes.</span>
           </span>
         </label>
         <label class="delegation-mode-option">
           <input type="radio" name="delegation-mode" id="delegation-mode-team-leads" value="team_leads">
           <span class="delegation-mode-option-body">
             <span class="delegation-mode-option-label">Team Leads</span>
-            <span class="delegation-mode-option-help">Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs &mdash; many features across many files &mdash; where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Flat.</span>
+            <span class="delegation-mode-option-help">Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs &mdash; many features across many files &mdash; where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Direct.</span>
+          </span>
+        </label>
+        <label class="delegation-mode-option review-pass-option">
+          <input type="checkbox" id="review-pass-checkbox" checked>
+          <span class="delegation-mode-option-body">
+            <span class="delegation-mode-option-label">Review pass (optional, on by default)</span>
+            <span class="delegation-mode-option-help">Routes each significant change through a reviewer agent before it's marked done. Catches bugs and regressions early; roughly 20-40% more tokens on non-trivial tasks. Turn off for speed/lowest cost.</span>
           </span>
         </label>
         <p class="delegation-mode-footnote">You can change this anytime in Settings. Switching updates this project's agent roster and delegation instructions.</p>

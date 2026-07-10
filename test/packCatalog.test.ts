@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildAgentMarkdown, agentMarkdownTier, REGULAR_AGENTS, LEAD_AGENTS } from "../src/host/vscode/packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS } from "../src/host/vscode/packCatalog";
 import { parseAgentMarkdown } from "../src/providers/claude-code/agentRoster";
 
 const agent = {
@@ -100,6 +100,54 @@ test("every REGULAR_AGENTS and LEAD_AGENTS entry builds valid markdown that roun
     assert.equal(parsed.model, a.model);
     assert.equal(parsed.name, a.name);
   }
+});
+
+// ---------------------------------------------------------------------------
+// REVIEWER_AGENTS — the optional Review-pass agent (on by default via
+// execution.json's reviewEnabled). It is NOT a team lead: no `tier: lead`,
+// so the ready-test skill (which excludes only `tier: lead`) spawns it like
+// any other worker. It carries `tier: "reviewer"` solely as the safety
+// marker install/remove uses to identify TycoonAgents-owned files.
+// ---------------------------------------------------------------------------
+
+test("REVIEWER_AGENTS contains exactly one 'reviewer' entry, tier 'reviewer' (not 'lead'), sonnet", () => {
+  assert.equal(REVIEWER_AGENTS.length, 1);
+  const reviewer = REVIEWER_AGENTS[0];
+  assert.equal(reviewer.id, "reviewer");
+  assert.equal(reviewer.model, "sonnet");
+  assert.equal(reviewer.tier, "reviewer");
+  assert.notEqual(reviewer.tier, "lead", "reviewer must not carry tier: lead (would hide it from the ready-test skill)");
+});
+
+test("REVIEWER_AGENTS shares no id with REGULAR_AGENTS or LEAD_AGENTS", () => {
+  const otherIds = new Set([...REGULAR_AGENTS, ...LEAD_AGENTS].map((a) => a.id));
+  for (const r of REVIEWER_AGENTS) {
+    assert.ok(!otherIds.has(r.id), `${r.id} must not collide with an existing regular/lead agent id`);
+  }
+});
+
+test("every REVIEWER_AGENTS entry builds valid markdown that round-trips", () => {
+  for (const a of REVIEWER_AGENTS) {
+    const md = buildAgentMarkdown(a);
+    const parsed = parseAgentMarkdown(a.id, md);
+    assert.equal(parsed.model, a.model);
+    assert.equal(parsed.name, a.name);
+  }
+});
+
+test("agentMarkdownTier reads back 'reviewer' from REVIEWER_AGENTS' rendered markdown", () => {
+  for (const a of REVIEWER_AGENTS) {
+    const md = buildAgentMarkdown(a);
+    assert.equal(agentMarkdownTier(md), "reviewer", `${a.id} must round-trip tier: reviewer`);
+  }
+});
+
+test("a lead-tier and a reviewer-tier agent are distinguishable via agentMarkdownTier (install/remove never confuses the two)", () => {
+  const leadMd = buildAgentMarkdown(LEAD_AGENTS[0]);
+  const reviewerMd = buildAgentMarkdown(REVIEWER_AGENTS[0]);
+  assert.equal(agentMarkdownTier(leadMd), "lead");
+  assert.equal(agentMarkdownTier(reviewerMd), "reviewer");
+  assert.notEqual(agentMarkdownTier(leadMd), agentMarkdownTier(reviewerMd));
 });
 
 // ---------------------------------------------------------------------------
