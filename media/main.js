@@ -2828,8 +2828,15 @@
       promptDetails.open = Boolean(savedDraft?.promptOpen);
       const promptSummary = document.createElement("summary");
       promptSummary.textContent = "View generation prompt";
+      // Prefer the prompt a retry would build RIGHT NOW (current template +
+      // manifest + plan) over the stale prompt saved at original generation
+      // (item.prompt), so View/Copy reflect any prompt-template changes that
+      // shipped since this image was first generated. Falls back to the
+      // saved prompt when the fresh one couldn't be computed (e.g. legacy
+      // theme with no plan.json).
+      const displayPrompt = item.currentPrompt || item.prompt;
       const promptText = document.createElement("pre");
-      promptText.textContent = item.prompt || "Legacy image — no original prompt was saved.";
+      promptText.textContent = displayPrompt || "Legacy image — no original prompt was saved.";
       promptDetails.appendChild(promptSummary);
       promptDetails.appendChild(promptText);
 
@@ -2840,13 +2847,13 @@
       copyPromptBtn.className = "skill-btn theme-review-copy-prompt";
       copyPromptBtn.dataset.idleText = "Copy prompt";
       copyPromptBtn.textContent = "Copy prompt";
-      copyPromptBtn.disabled = !item.prompt;
-      copyPromptBtn.title = item.prompt
+      copyPromptBtn.disabled = !displayPrompt;
+      copyPromptBtn.title = displayPrompt
         ? "Copy the exact assembled prompt to the clipboard."
         : "No prompt was saved for this image.";
       copyPromptBtn.addEventListener("click", () => {
-        if (!item.prompt || !navigator.clipboard?.writeText) return;
-        navigator.clipboard.writeText(item.prompt).then(() => {
+        if (!displayPrompt || !navigator.clipboard?.writeText) return;
+        navigator.clipboard.writeText(displayPrompt).then(() => {
           copyPromptBtn.textContent = "Copied!";
           setTimeout(() => { copyPromptBtn.textContent = copyPromptBtn.dataset.idleText; }, 1500);
         }).catch(() => {});

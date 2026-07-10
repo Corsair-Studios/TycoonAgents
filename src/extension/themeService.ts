@@ -1736,6 +1736,26 @@ export async function resliceThemeImageFromRaw(
   return { ok: true, manifest, frames };
 }
 
+/**
+ * Load the theme's CURRENT plan.json (not a stale review-item snapshot) so
+ * callers can rebuild a fresh prompt reflecting any plan/roster changes since
+ * an item was first generated. Shared by retryThemeImage (the 'retry'/
+ * 'augment' fresh-base prompt) and the image-review "current prompt" preview.
+ * Falls back to undefined for legacy themes with no plan.json, or a plan
+ * whose theme_id no longer matches (renamed/mismatched) — callers then fall
+ * back to the item's stale saved prompt.
+ */
+export async function loadCurrentThemePlan(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  displayNameFallback: string,
+): Promise<ThemePlan | undefined> {
+  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
+    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const normalizedPlan = savedPlan ? normalizeThemePlan(savedPlan, displayNameFallback) : undefined;
+  return normalizedPlan?.theme_id === themeId ? normalizedPlan : undefined;
+}
+
 export async function retryThemeImage(
   globalStorageUri: vscode.Uri,
   themeId: string,
@@ -1764,10 +1784,7 @@ export async function retryThemeImage(
   // current set instead of the stale one. Missing/unparsable plan.json is
   // non-fatal: buildReplacementPrompt falls back to the item's saved names, then
   // generic defaults.
-  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
-  const normalizedPlan = savedPlan ? normalizeThemePlan(savedPlan, loadedTheme.manifest.display_name) : undefined;
-  const currentPlan = normalizedPlan?.theme_id === themeId ? normalizedPlan : undefined;
+  const currentPlan = await loadCurrentThemePlan(globalStorageUri, themeId, loadedTheme.manifest.display_name);
   const backgroundMode = boardBackgroundModeForProvider(imageGenerationOptions.provider);
 
   // 'replace' explicitly swaps the theme's creative direction for the user's

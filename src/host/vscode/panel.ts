@@ -35,12 +35,15 @@ import { computeEngineChips, mcpEntryForEngine, type EngineChip } from "./engine
 import { nativeWindowsUserDataPath } from "./revealUri";
 import {
   approveAllThemeImages,
+  boardBackgroundModeForProvider,
+  buildReplacementPrompt,
   deleteTheme,
   ensureThemeReviewImages,
   exportThemeArchive,
   getThemeImageReview,
   importThemeArchive,
   listThemes,
+  loadCurrentThemePlan,
   loadTheme,
   loadLatestTheme,
   normalizeThemeCharacterAtlas,
@@ -61,6 +64,7 @@ import {
 } from "../../extension/themeService";
 import { sanitizeRetryNotes } from "../../extension/themeImageRetry";
 import type { ThemeImageRetryMode } from "../../extension/themeImageRetry";
+import { themePlanCreativeDirection } from "../../extension/themePlan";
 import type { ThemePlan } from "../../extension/themePlan";
 import type { BoardKind, ThemeImageReviewWaitOptions, ThemeItemNameChange } from "../../extension/themeService";
 import type { ThemeManifest } from "../../shared/types";
@@ -1655,20 +1659,43 @@ export class TycoonPanel {
     try {
       const review = await getThemeImageReview(this._globalStorageUri, themeId);
       const rawDirectoryUri = themeRawImagesDirectoryUri(this._globalStorageUri, themeId);
-      const items = await Promise.all(review.entries.map(async ({ item, imageUri, generated }) => ({
-        ...item,
-        generated,
-        // Only sliced atlas boards can be re-sliced; environment boards normalize a
-        // single image, so they never carry a re-sliceable raw atlas.
-        has_raw_atlas: item.kind === "environment"
-          ? false
-          : await this._uriExists(vscode.Uri.joinPath(rawDirectoryUri, item.filename)),
-        image_src: imageUri
-          ? this._panel.webview.asWebviewUri(
-              imageUri.with({ query: `revision=${item.revision}&updated=${encodeURIComponent(item.updated_at)}` }),
-            ).toString()
-          : "",
-      })));
+      // Compute the prompt a retry would build RIGHT NOW (current template +
+      // manifest + plan), so "View/Copy prompt" doesn't just show the stale
+      // prompt saved at original generation (item.prompt). Mirrors the
+      // fresh-base prompt retryThemeImage computes for 'retry'/'augment'.
+      // Loaded once per post, not per item, since it requires disk reads;
+      // the per-item buildReplacementPrompt call itself is pure string work.
+      const loadedTheme = await loadTheme(this._globalStorageUri, themeId);
+      const currentPlan = loadedTheme
+        ? await loadCurrentThemePlan(this._globalStorageUri, themeId, loadedTheme.manifest.display_name)
+        : undefined;
+      const backgroundMode = boardBackgroundModeForProvider(await getConfiguredThemeImageProvider(this._secrets));
+      const creativeDirection = currentPlan ? themePlanCreativeDirection(currentPlan) : undefined;
+      const items = await Promise.all(review.entries.map(async ({ item, imageUri, generated }) => {
+        let currentPrompt: string | undefined;
+        if (loadedTheme && currentPlan && creativeDirection !== undefined) {
+          try {
+            currentPrompt = buildReplacementPrompt(item, creativeDirection, loadedTheme.manifest, currentPlan, backgroundMode);
+          } catch {
+            currentPrompt = undefined;
+          }
+        }
+        return {
+          ...item,
+          currentPrompt,
+          generated,
+          // Only sliced atlas boards can be re-sliced; environment boards normalize a
+          // single image, so they never carry a re-sliceable raw atlas.
+          has_raw_atlas: item.kind === "environment"
+            ? false
+            : await this._uriExists(vscode.Uri.joinPath(rawDirectoryUri, item.filename)),
+          image_src: imageUri
+            ? this._panel.webview.asWebviewUri(
+                imageUri.with({ query: `revision=${item.revision}&updated=${encodeURIComponent(item.updated_at)}` }),
+              ).toString()
+            : "",
+        };
+      }));
       void this._panel.webview.postMessage({
         type: MSG.THEME_IMAGE_REVIEW,
         payload: {
