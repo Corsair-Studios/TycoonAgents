@@ -10656,13 +10656,13 @@
             const bframes = themeImages["expression_" + charEntry.bubbleExpr];
             const bimg = bframes && bframes[0];
             if (bimg && bimg.complete && bimg.naturalWidth > 0) {
-              const bs = 26; // icon size
+              const bs = 34; // icon size
               const bx = cx; // center over head
               const by = cy - spriteSize - 18; // above head, like an HP bar
               ctx.save();
               ctx.globalAlpha = Math.min(1, charEntry.bubbleTimeLeft * 3); // brief fade-out tail
               ctx.fillStyle = "rgba(255,255,255,0.92)";
-              const pad = 5, bw = bs + pad * 2, bh = bs + pad * 2, br = 7;
+              const pad = 4, bw = bs + pad * 2, bh = bs + pad * 2, br = 8;
               const rx = bx - bw / 2, ry = by - bh / 2;
               ctx.beginPath();
               ctx.moveTo(rx + br, ry);
