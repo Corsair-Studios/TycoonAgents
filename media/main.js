@@ -9627,9 +9627,16 @@
     // id, so the per-agent loop can tell a lead "your team just formed."
     // Built once per frame, before the loop, since it needs the full roster.
     const leadChildCount = {};
+    // Set of lead agent ids (Part 3b), so the per-agent loop can tell a
+    // worker "you just joined a lead's team" regardless of active-count
+    // bookkeeping above. Built from the same agentList pass.
+    const leadIds = new Set();
     for (const m of agentList) {
       if (m && m.parentId && isMetricsAgentActive(m)) {
         leadChildCount[m.parentId] = (leadChildCount[m.parentId] || 0) + 1;
+      }
+      if (m && m.tier && m.tier.toLowerCase() === "lead") {
+        leadIds.add(m.id);
       }
     }
 
@@ -9692,6 +9699,10 @@
           // played its "signal" emote for the CURRENT team; reset to false
           // when the team disbands so a reformed team signals again.
           teamSignaled: false,
+          // Edge-detect latch for the worker "just joined a team" bubble
+          // (Part 3b): true while this agent is currently a child of a
+          // visible lead, so the false→true transition fires once per join.
+          prevInTeam: false,
           // Conga-line state (assigned/cleared by updateConga).
           congaIndex: -1,
           // Sitting state (idle festivity, mirrors solo-dance system).
@@ -9718,6 +9729,14 @@
       if (isActive && !charEntry.prevActive && Math.random() < IDEA_CHANCE) showExpression(charEntry, 1, 1.6);
       charEntry.prevActive = isActive;
 
+      // ── Team-join bubble (Part 3b, worker side) ────────────────────
+      // When this agent becomes a child of a visible lead (leadIds, built
+      // above), show the team bubble once on the false→true join edge.
+      // Display-only; mirrors the prevActive/prevSitting latch pattern.
+      const inTeam = !!(agent && agent.parentId && leadIds.has(agent.parentId));
+      if (inTeam && !charEntry.prevInTeam && !charEntry.emoting) showExpression(charEntry, 3, 2.0);
+      charEntry.prevInTeam = inTeam;
+
       // ── Team-formation signal (Part 3, rare/informative) ──────────────
       // When this agent is a visible team lead (tier === "lead") and it has
       // ≥1 active worker child, play a one-shot "signal" (arms-up rally)
@@ -9736,6 +9755,9 @@
             charEntry.teamSignaled = true;
           }
         } else {
+          // Team just completed/disbanded (active children dropped to 0
+          // after having formed): payoff thumbs-up, once.
+          if (charEntry.teamSignaled) showExpression(charEntry, 4, 2.0);
           charEntry.teamSignaled = false;
         }
       }
