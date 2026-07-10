@@ -128,7 +128,11 @@ original specialist to fix, then re-checks with the reviewer once more. This
 is a single review gate, not an open-ended loop — after that one round of
 fixes the orchestrator reports the outcome rather than cycling further.
 
-Only reviewed-and-approved work is reported to the user as complete.`;
+The reviewer's pass is a quality assist, not a sign-off: it catches bugs and
+regressions BEFORE the change reaches the user, so the human reviews cleaner
+work. The user is the final reviewer — the orchestrator surfaces the
+reviewed change for the user to approve and never treats the reviewer
+agent's pass as final acceptance.`;
 
 /**
  * Render the CLAUDE.md section body for a delegation mode. Pure (no
