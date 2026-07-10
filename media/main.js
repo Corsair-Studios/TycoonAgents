@@ -2783,6 +2783,13 @@
         if (retriesSavedPrompt) feedback.removeAttribute("aria-invalid");
         customModeWarning.hidden = !isCustomMode;
         feedbackHint.hidden = isCustomMode;
+        if (mode.value === "augment") {
+          feedbackHint.textContent = "Your notes are ADDED to the theme's current prompt as revision notes — layout and art rules are kept.";
+        } else if (mode.value === "replace") {
+          feedbackHint.textContent = "Your notes REPLACE the theme's creative direction only — layout, grid, and art rules are kept.";
+        } else if (retriesSavedPrompt) {
+          feedbackHint.textContent = "No notes used — rebuilds from the current template, picking up any recent prompt fixes.";
+        }
         const customEmpty = isCustomMode && !feedback.value.trim();
         customModeEmptyHint.hidden = !customEmpty;
         retryBtn.disabled = retryBtnBaseDisabled || customEmpty;
