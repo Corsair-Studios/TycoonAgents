@@ -715,6 +715,7 @@ export function buildExpressionAtlasPrompt(
     boardContract(4, 4, background),
     'Draw exactly one bold, readable, icon-only expression in each cell, in row-major order:',
     ...cells,
+    'Cells 1-4 are standard universal emotes (celebration, sleep, idea, team/rally); cells 5-16 are theme-specific flavor icons.',
     'Use a consistent speech-bubble icon style. Do not draw full characters.',
     'Do NOT draw the theme character, any character, any face, head, eyes, mouth, hair, or portrait. These are NOT facial expressions on a character.',
     'Each cell is a GENERIC symbolic emote ICON — a simple emoji/pictogram style symbol (e.g. shapes, objects, marks such as a heart, spark/idea star, sweat drop, exclamation, gear, zzz) that reads at a glance inside a speech bubble.',

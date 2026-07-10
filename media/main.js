@@ -3659,6 +3659,18 @@
   /** Minimum seconds between one agent's playful "point" emotes (rate limit). */
   const EMOTE_COOLDOWN_SEC = 20;
 
+  // ── Expression bubbles (rare, meaningful — see showExpression) ─────────
+  /** Minimum seconds between one agent's expression bubbles (shared rate limit). */
+  const BUBBLE_COOLDOWN_SEC = 16;
+  /** Chance, on an idle→active transition, of a brief "idea" bubble. */
+  const IDEA_CHANCE = 0.02;
+  /** Chance, on transitioning into a seated pose, of a brief "sleep" bubble. */
+  const SLEEP_CHANCE = 0.02;
+  /** Chance, per idle wander-decision, of a very rare theme-flavor bubble. */
+  const FLAVOR_BUBBLE_CHANCE = 0.008;
+  /** Chance a build-celebration/victory dancer also shows a "happy" bubble. */
+  const HAPPY_BUBBLE_CHANCE = 0.5;
+
   /** True while a conga line is snaking around the perimeter. */
   let congaActive = false;
   /** Seconds remaining in the current conga run. */
@@ -8737,7 +8749,10 @@
   function celebrateBuildContributors() {
     for (const id of currentBuildContributors) {
       const ce = agentCharMap[id];
-      if (ce) startAgentDance(ce);
+      if (ce) {
+        startAgentDance(ce);
+        if (Math.random() < HAPPY_BUBBLE_CHANCE) showExpression(ce, 0, 1.8);
+      }
     }
   }
 
@@ -8961,6 +8976,27 @@
     entry.emoting = true;
     entry.emoteClip = clipName;
     entry.emoteTimeLeft = durationSec;
+  }
+
+  /**
+   * Show a rare "expression" icon bubble above an agent's head — a pure
+   * display overlay (bubbleExpr/bubbleTimeLeft/bubbleCooldown) that never
+   * touches movement, clip selection, seat, or dance state. Rate-limited by
+   * a single shared per-agent cooldown (BUBBLE_COOLDOWN_SEC) across all
+   * bubble kinds. No-op (no crash) when the theme has no expression atlas
+   * for this index — see themeImages["expression_"+index].
+   * @param {object} entry an agentCharMap entry
+   * @param {number} index 0..15 into the theme's expression atlas
+   * @param {number} durationSec how long (seconds) the bubble stays visible
+   */
+  function showExpression(entry, index, durationSec) {
+    if (!entry || index < 0 || index > 15) return;
+    if ((entry.bubbleCooldown || 0) > 0) return; // shared per-agent rate limit
+    const frames = themeImages && themeImages["expression_" + index];
+    if (!frames || !frames[0]) return; // theme has no expression atlas -> no bubble
+    entry.bubbleExpr = index;
+    entry.bubbleTimeLeft = durationSec;
+    entry.bubbleCooldown = BUBBLE_COOLDOWN_SEC;
   }
 
   /**
@@ -9619,6 +9655,16 @@
           emoteClip: null,
           emoteTimeLeft: 0,
           emoteCooldown: 0,
+          // Rare "expression" icon-bubble state (happy/sleep/idea/team/flavor).
+          // Purely a display overlay — see showExpression; never influences
+          // movement, clip selection, seat, or dance state.
+          bubbleExpr: -1,
+          bubbleTimeLeft: 0,
+          bubbleCooldown: 0,
+          // Edge-detect latches for the idea/sleep bubble triggers (idle→active
+          // and walking→seated transitions respectively).
+          prevActive: false,
+          prevSitting: false,
           // Team-formation signal latch (Part 3): true once this lead has
           // played its "signal" emote for the CURRENT team; reset to false
           // when the team disbands so a reformed team signals again.
@@ -9644,6 +9690,11 @@
       const isActive = isMetricsAgentActive(agent);
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
+      // ── Idea bubble (rare, on idle→active transition) ─────────────
+      // Display-only: does not affect isActive or anything derived from it.
+      if (isActive && !charEntry.prevActive && Math.random() < IDEA_CHANCE) showExpression(charEntry, 2, 1.6);
+      charEntry.prevActive = isActive;
+
       // ── Team-formation signal (Part 3, rare/informative) ──────────────
       // When this agent is a visible team lead (tier === "lead") and it has
       // ≥1 active worker child, play a one-shot "signal" (arms-up rally)
@@ -9658,6 +9709,7 @@
           const leadIsWalking = leadWorkerState === "walk" || leadWorkerState === "arrive" || leadWorkerState === "leave";
           if (!charEntry.teamSignaled && !charEntry.dancing && !charEntry.emoting && !leadIsWalking) {
             playEmote(charEntry, "signal", 1.4);
+            showExpression(charEntry, 3, 2.0);
             charEntry.teamSignaled = true;
           }
         } else {
@@ -9819,7 +9871,10 @@
               // Celebration: only dance once ALL enemies are defeated (none
               // still fighting) — nearest.fleeing is already true above, so
               // this check naturally excludes it.
-              if (!activeEnemies.some((e) => !e.fleeing)) startAgentDance(charEntry);
+              if (!activeEnemies.some((e) => !e.fleeing)) {
+                startAgentDance(charEntry);
+                if (Math.random() < HAPPY_BUBBLE_CHANCE) showExpression(charEntry, 0, 1.8);
+              }
               // Distances to each native edge; run out the nearest one.
               const dLeft = nearest.nx;
               const dRight = walkableNativeW - nearest.nx;
@@ -9937,6 +9992,13 @@
       }
       if (charEntry.emoteCooldown > 0) charEntry.emoteCooldown -= delta;
 
+      // ── Expression-bubble countdown (mirrors the emote countdown above) ──
+      if (charEntry.bubbleTimeLeft > 0) {
+        charEntry.bubbleTimeLeft -= delta;
+        if (charEntry.bubbleTimeLeft <= 0) charEntry.bubbleExpr = -1;
+      }
+      if (charEntry.bubbleCooldown > 0) charEntry.bubbleCooldown -= delta;
+
       // ── Sitting (idle festivity, mirrors solo-dance) ──────────────
       // A seated (or walking-to-seat) agent holds its seat until it either
       // finishes SIT_SECONDS or is preempted by going active / building /
@@ -9982,6 +10044,24 @@
             }
           }
         }
+      }
+
+      // ── Sleep bubble (rare, on transition into seated) ─────────────
+      // charEntry.sitting has its final value for this frame now (set true
+      // on arrival above, held true while seated, or false/never-seated).
+      // prevSitting latches the transition so this fires at most once per
+      // sit-session — a per-frame roll would spam since a seated pose is
+      // held for seconds and BUBBLE_COOLDOWN_SEC alone wouldn't prevent
+      // re-firing every time it expires while still seated. Display-only.
+      if (charEntry.sitting && !charEntry.prevSitting && Math.random() < SLEEP_CHANCE) showExpression(charEntry, 1, 1.8);
+      charEntry.prevSitting = charEntry.sitting;
+
+      // ── Flavor bubble (ultra-rare playful beat, theme-specific frames) ──
+      // Independent of the wander-decision else-if chain below (does not
+      // consume a wander-decision tick or touch wanderTimer) so it can never
+      // interfere with destination picking. Display-only.
+      if (idleAndStill && !congaActive && !charEntry.emoting && Math.random() < FLAVOR_BUBBLE_CHANCE) {
+        showExpression(charEntry, 4 + Math.floor(Math.random() * 12), 1.6);
       }
 
       // ── Wander logic (native polygon space) ───────────────────────
@@ -10567,6 +10647,42 @@
             ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
           }
           ctx.restore();
+
+          // Rare "expression" icon bubble above the head (display-only —
+          // see showExpression). Drawn in un-flipped canvas coords, same
+          // cx/cy/spriteSize as the sprite just drawn above. No-op when the
+          // theme has no expression atlas (bubbleExpr never gets set).
+          if (charEntry.bubbleExpr >= 0 && charEntry.bubbleTimeLeft > 0) {
+            const bframes = themeImages["expression_" + charEntry.bubbleExpr];
+            const bimg = bframes && bframes[0];
+            if (bimg && bimg.complete && bimg.naturalWidth > 0) {
+              const bs = 26; // icon size
+              const bx = cx; // center over head
+              const by = cy - spriteSize - 18; // above head, like an HP bar
+              ctx.save();
+              ctx.globalAlpha = Math.min(1, charEntry.bubbleTimeLeft * 3); // brief fade-out tail
+              ctx.fillStyle = "rgba(255,255,255,0.92)";
+              const pad = 5, bw = bs + pad * 2, bh = bs + pad * 2, br = 7;
+              const rx = bx - bw / 2, ry = by - bh / 2;
+              ctx.beginPath();
+              ctx.moveTo(rx + br, ry);
+              ctx.arcTo(rx + bw, ry, rx + bw, ry + bh, br);
+              ctx.arcTo(rx + bw, ry + bh, rx, ry + bh, br);
+              ctx.arcTo(rx, ry + bh, rx, ry, br);
+              ctx.arcTo(rx, ry, rx + bw, ry, br);
+              ctx.closePath();
+              ctx.fill();
+              // Little downward tail pointing toward the head.
+              ctx.beginPath();
+              ctx.moveTo(bx - 4, ry + bh - 1);
+              ctx.lineTo(bx + 4, ry + bh - 1);
+              ctx.lineTo(bx, ry + bh + 5);
+              ctx.closePath();
+              ctx.fill();
+              ctx.drawImage(bimg, bx - bs / 2, by - bs / 2, bs, bs);
+              ctx.restore();
+            }
+          }
 
           // Label below feet — drawn in un-flipped canvas coords so it stays
           // centered directly under the agent regardless of facing direction.

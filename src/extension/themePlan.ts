@@ -11,6 +11,19 @@ export const THEME_CHARACTER_COUNT = 16;
 export const THEME_ENEMY_COUNT = 4; // one full enemy board of RIVALS_PER_BOARD (4)
 export const THEME_OBJECT_COUNT = 13;
 export const THEME_EXPRESSION_COUNT = 16;
+/**
+ * Cells 0-3 of the 16-cell expression board are PINNED to a fixed universal
+ * meaning (see applyFixedExpressionLabels) so the runtime can reliably map
+ * gameplay events to them regardless of what the LLM would otherwise name
+ * them. Order must match the legacy alias in themeService.applyExpressionFrames
+ * (emote_smile, emote_sleep, emote_idea, emote_team). Cells 4-15 stay theme flavor.
+ */
+export const FIXED_EXPRESSION_LABELS = [
+  'Happy / celebration',
+  'Sleep / low-energy zzz',
+  'Idea / discovery spark',
+  'Team action / rally',
+] as const;
 export const THEME_ACHIEVEMENT_COUNT = 20;
 export const THEME_DECOR_COUNT = 9;
 
@@ -150,7 +163,9 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     decor: normalizeDecorNames(input.decor),
     enemies,
     enemy_attack_styles: enemyAttackStyles,
-    expressions: normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
+    expressions: applyFixedExpressionLabels(
+      normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
+    ),
     achievements: normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge'),
   };
 }
@@ -372,6 +387,20 @@ function normalizeDecorNames(values: unknown): string[] {
     else if (index < 8) result.push(`Decor ${index - 3}`);
     else result.push('Animated Decor 1');
   }
+  return result;
+}
+
+/**
+ * Overwrite cells 0-3 of an already-length-normalized expressions array with
+ * the FIXED_EXPRESSION_LABELS contract, dropping whatever flavor names the
+ * LLM (or a fallback) produced for those slots. Cells 4-15 (theme flavor)
+ * pass through unchanged. Length stays THEME_EXPRESSION_COUNT.
+ */
+function applyFixedExpressionLabels(expressions: string[]): string[] {
+  const result = expressions.slice();
+  FIXED_EXPRESSION_LABELS.forEach((label, index) => {
+    result[index] = label;
+  });
   return result;
 }
 
