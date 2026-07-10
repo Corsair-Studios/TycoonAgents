@@ -3163,8 +3163,8 @@
     shoot:     { frames: [12, 13],         fps: 8,  loop: false, flippable: true,  pingpong: true },
     dance:     { frames: [17, 18, 19],     fps: 6,  loop: true,  flippable: false, pingpong: true },
     cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
-    point:     { frames: [12],             fps: 0,  loop: true,  flippable: true,  hold: true },
-    signal:    { frames: [13],             fps: 0,  loop: true,  flippable: false, hold: true },
+    point:     { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
+    signal:    { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
   };
 
   // RIVAL_CLIPS mirrors the src copy exactly (a test enforces byte parity).
@@ -3654,6 +3654,10 @@
   const DANCE_SECONDS_MIN = 2, DANCE_SECONDS_MAX = 3;
   /** Seconds between dance-frame swaps (manual frame mixer). */
   const DANCE_FRAME_SWAP = 0.35;
+  /** Chance, per idle wander-decision, that an idle agent throws in a rare playful "point" emote. */
+  const POINT_CHANCE = 0.01;
+  /** Minimum seconds between one agent's playful "point" emotes (rate limit). */
+  const EMOTE_COOLDOWN_SEC = 20;
 
   /** True while a conga line is snaking around the perimeter. */
   let congaActive = false;
@@ -8942,6 +8946,24 @@
   }
 
   /**
+   * Start a rare, one-shot emote hold (point/signal) on a single agent's
+   * charMap entry. Mirrors startAgentDance's shape but drives its own
+   * emoting/emoteClip/emoteTimeLeft fields instead of dancing/danceTimeLeft,
+   * so an emote never fights a dance over the same state. Refuses to start
+   * over an already-dancing, already-emoting, or actively seated agent.
+   * @param {object} entry an agentCharMap entry
+   * @param {string} clipName "point" or "signal" (ATLAS_CLIPS hold clip)
+   * @param {number} durationSec how long (seconds) the emote holds
+   */
+  function playEmote(entry, clipName, durationSec) {
+    if (!entry || entry.dancing || entry.emoting) return;
+    if (entry.sitting) return; // don't override a seated pose
+    entry.emoting = true;
+    entry.emoteClip = clipName;
+    entry.emoteTimeLeft = durationSec;
+  }
+
+  /**
    * Stand a seated (or seat-bound) agent up and release its seat. Safe to call
    * on any charEntry (no-op if it isn't sitting). Clears the per-agent sit
    * fields and marks the seat free in seatOccupancy.
@@ -9545,6 +9567,18 @@
     })();
     let builderSideCounter = 0;
 
+    // ── Team-formation signal prep (Part 3) ────────────────────────────
+    // Count each lead's ACTIVE worker children (same isMetricsAgentActive
+    // source of truth as isActive below) from agentMetrics, keyed by lead
+    // id, so the per-agent loop can tell a lead "your team just formed."
+    // Built once per frame, before the loop, since it needs the full roster.
+    const leadChildCount = {};
+    for (const m of agentList) {
+      if (m && m.parentId && isMetricsAgentActive(m)) {
+        leadChildCount[m.parentId] = (leadChildCount[m.parentId] || 0) + 1;
+      }
+    }
+
     agentList.forEach((agent, idx) => {
       // Look up a live worker (if one exists) for this agent.
       const worker = state.workers[agent.id] || null;
@@ -9578,6 +9612,17 @@
           danceTimeLeft: 0,
           danceFrameTimer: 0,
           lastDanceIdx: -1,
+          // Rare one-shot emote state (point/signal hold clips) — separate
+          // from dancing so an emote and a dance never fight over the same
+          // fields (see playEmote and its countdown beside danceTimeLeft's).
+          emoting: false,
+          emoteClip: null,
+          emoteTimeLeft: 0,
+          emoteCooldown: 0,
+          // Team-formation signal latch (Part 3): true once this lead has
+          // played its "signal" emote for the CURRENT team; reset to false
+          // when the team disbands so a reformed team signals again.
+          teamSignaled: false,
           // Conga-line state (assigned/cleared by updateConga).
           congaIndex: -1,
           // Sitting state (idle festivity, mirrors solo-dance system).
@@ -9598,6 +9643,27 @@
       // NOT influence this; it's still used elsewhere below for animation.
       const isActive = isMetricsAgentActive(agent);
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
+
+      // ── Team-formation signal (Part 3, rare/informative) ──────────────
+      // When this agent is a visible team lead (tier === "lead") and it has
+      // ≥1 active worker child, play a one-shot "signal" (arms-up rally)
+      // emote once per team-formation. teamSignaled latches so it fires only
+      // on the 0→≥1 transition, and resets on disband so a reformed team
+      // signals again. Defensive field access — a lead may lack a char entry
+      // elsewhere, but here charEntry always exists (just created above).
+      if (((agent && agent.tier) || "").toLowerCase() === "lead") {
+        const leadTeamSize = leadChildCount[agent.id] || 0;
+        if (leadTeamSize >= 1) {
+          const leadWorkerState = worker ? worker.state : null;
+          const leadIsWalking = leadWorkerState === "walk" || leadWorkerState === "arrive" || leadWorkerState === "leave";
+          if (!charEntry.teamSignaled && !charEntry.dancing && !charEntry.emoting && !leadIsWalking) {
+            playEmote(charEntry, "signal", 1.4);
+            charEntry.teamSignaled = true;
+          }
+        } else {
+          charEntry.teamSignaled = false;
+        }
+      }
 
       // ── Conga line (ultra-rare easter egg) ───────────────────────────
       // While a conga is active and this agent is enrolled, it fully preempts
@@ -9856,6 +9922,21 @@
         }
       }
 
+      // ── Emote countdown (rare one-shot point/signal hold) ─────────
+      // Mirrors the danceTimeLeft countdown above but for the separate
+      // emoting/emoteClip/emoteTimeLeft fields; uses the same per-frame
+      // `delta` the dance countdown uses. emoteCooldown rate-limits how
+      // often a NEW playful "point" can start (Part 4) — decremented
+      // unconditionally so it counts down even while not emoting.
+      if (charEntry.emoting) {
+        charEntry.emoteTimeLeft -= delta;
+        if (charEntry.emoteTimeLeft <= 0) {
+          charEntry.emoting = false;
+          charEntry.emoteClip = null;
+        }
+      }
+      if (charEntry.emoteCooldown > 0) charEntry.emoteCooldown -= delta;
+
       // ── Sitting (idle festivity, mirrors solo-dance) ──────────────
       // A seated (or walking-to-seat) agent holds its seat until it either
       // finishes SIT_SECONDS or is preempted by going active / building /
@@ -9967,6 +10048,16 @@
             charEntry.destNx = dest[0];
             charEntry.destNy = dest[1];
           }
+          charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
+        } else if (idleAndStill && !congaActive && !charEntry.emoting && (charEntry.emoteCooldown || 0) <= 0 && Math.random() < POINT_CHANCE) {
+          // Rare playful "point" emote (Part 4): a quick static hold, gated by
+          // its own cooldown so one agent can't spam it. Only reached when the
+          // dance roll above did NOT trigger this tick (else-if chain).
+          playEmote(charEntry, "point", 1.2);
+          charEntry.emoteCooldown = EMOTE_COOLDOWN_SEC;
+          // Re-arm the wander timer like the dance/sit branches above, so this
+          // rare roll only happens once per wander-decision tick instead of
+          // re-rolling every frame while wanderTimer stays <= 0.
           charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
         } else {
           // Pick new destination: active agents roam freely; idle agents stay near home.
@@ -10101,6 +10192,15 @@
       // over build/idle since inConga preempted those blocks above.
       if (inConga) {
         desiredClip = congaCheerHold > 0 ? "cheer" : "walk";
+      }
+      // EMOTE override (rare, one-shot informative/playful pose): while
+      // charEntry.emoting is true, show its static held clip (point/signal).
+      // Checked BEFORE dance so a dance always wins over a pending emote —
+      // playEmote also refuses to start an emote while already dancing, and
+      // a dance-start elsewhere doesn't clear an in-progress emote, so this
+      // ordering is what actually makes dance take priority moment to moment.
+      if (charEntry.emoting) {
+        desiredClip = charEntry.emoteClip;
       }
       // DANCE override (highest priority for an idle festivity): a dancing
       // agent's clip is "dance". Its frameIndex is driven by the manual mixer
