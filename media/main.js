@@ -8766,9 +8766,7 @@
     resetBtn.className = "skill-btn settings-btn danger-btn";
     resetBtn.textContent = "Reset session metrics";
     resetBtn.addEventListener("click", () => {
-      if (window.confirm("Reset all session metrics? This cannot be undone.")) {
-        vscode.postMessage({ type: "resetMetrics" });
-      }
+      vscode.postMessage({ type: "resetMetrics" });
     });
     dangerStatusEl = document.createElement("span");
     dangerStatusEl.className = "danger-status";
