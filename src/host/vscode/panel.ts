@@ -3748,26 +3748,10 @@ export class TycoonPanel {
    * projects' entries for the SAME theme are left untouched.
    */
   private async _handleResetMetrics(): Promise<void> {
+    // Confirmation now happens in-panel (webview modal) before this message
+    // is ever sent — see showResetConfirmModal() in media/main.js. By the
+    // time we get here the reset is already user-approved; run it directly.
     const themeId = this._currentThemeId;
-    let themeName = themeId;
-    if (themeId) {
-      try {
-        const themes = await listThemes(this._globalStorageUri);
-        themeName = themes.find((th) => th.theme_id === themeId)?.display_name ?? themeId;
-      } catch {
-        // Best-effort label only; fall back to the raw theme_id.
-      }
-    }
-
-    const confirmMessage = themeId
-      ? `Reset stats for "${themeName}" in this project? This clears its badges, build progress, and rebirth for this project only — other themes and projects are unaffected. This can't be undone.`
-      : "Reset session metrics? This cannot be undone.";
-
-    const answer = await vscode.window.showWarningMessage(confirmMessage, { modal: true }, "Reset");
-    if (answer !== "Reset") {
-      void this._panel.webview.postMessage({ type: MSG.METRICS_RESET, ok: false, cancelled: true });
-      return;
-    }
     try {
       const root = this._projectRoot();
       const activityPath = path.join(

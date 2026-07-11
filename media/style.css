@@ -1345,6 +1345,63 @@ body {
   max-width: 300px;
 }
 
+/* ── Reset-confirm modal (in-panel replacement for the native VS Code
+   showWarningMessage confirm) ────────────────────────────────────────
+   Mirrors #about-modal's backdrop/dialog/title language exactly so the
+   confirmation reads as part of the panel rather than an IDE dialog.
+   Built lazily in JS and appended to <body>, same as #badge-detail-modal;
+   z-index matches badge-detail-modal so it can layer above other popups. */
+#reset-confirm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#reset-confirm-modal[hidden] {
+  display: none;
+}
+
+#reset-confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+#reset-confirm-dialog {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px 24px;
+  min-width: 260px;
+  max-width: 360px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+#reset-confirm-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+#reset-confirm-message {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.reset-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* ── Rebirth prestige panel (sits above #badge-list, same dark-glass +
    amber-accent language as the badge cards above) ───────────────────── */
 .rebirth-panel {

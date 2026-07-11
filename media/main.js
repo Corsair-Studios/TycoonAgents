@@ -668,7 +668,9 @@
   // it was opened more recently, then about modal, then menu.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (badgeDetailModalEl && !badgeDetailModalEl.hasAttribute("hidden")) {
+      if (resetConfirmModalEl && !resetConfirmModalEl.hasAttribute("hidden")) {
+        closeResetConfirmModal();
+      } else if (badgeDetailModalEl && !badgeDetailModalEl.hasAttribute("hidden")) {
         closeBadgeDetail();
       } else if (badgeModalEl && !badgeModalEl.hasAttribute("hidden")) {
         closeModal(badgeModalEl);
@@ -1006,6 +1008,90 @@
     try {
       const btn = badgeDetailModalEl.querySelector(".badge-detail-close");
       if (btn) /** @type {HTMLElement} */ (btn).focus();
+    } catch (_e) { /* noop */ }
+  }
+
+  // ── Reset-confirm modal (in-panel replacement for the removed native
+  // VS Code showWarningMessage confirm) ────────────────────────────────
+  // A single reusable modal, built lazily and appended to <body>, mirroring
+  // the About modal's backdrop/dialog/hidden-attribute mechanism so it opens
+  // and closes exactly the same way (openModal/closeModal use the same
+  // "hidden" attribute toggle). Closed via Cancel, backdrop click, or
+  // Escape (see the shared keydown handler below); "Reset" posts
+  // resetMetrics to the host then closes.
+  /** @type {HTMLElement|null} */ let resetConfirmModalEl = null;
+  /** @type {HTMLElement|null} */ let resetConfirmMessageEl = null;
+  /** @type {HTMLElement|null} */ let resetConfirmCancelBtn = null;
+
+  function closeResetConfirmModal() {
+    if (resetConfirmModalEl) resetConfirmModalEl.setAttribute("hidden", "");
+  }
+
+  function buildResetConfirmModal() {
+    if (resetConfirmModalEl) return;
+
+    const modal = document.createElement("div");
+    modal.id = "reset-confirm-modal";
+    modal.setAttribute("hidden", "");
+
+    const backdrop = document.createElement("div");
+    backdrop.id = "reset-confirm-backdrop";
+    backdrop.addEventListener("click", closeResetConfirmModal);
+    modal.appendChild(backdrop);
+
+    const dialog = document.createElement("div");
+    dialog.id = "reset-confirm-dialog";
+
+    const title = document.createElement("div");
+    title.id = "reset-confirm-title";
+    title.textContent = "Reset session stats?";
+    dialog.appendChild(title);
+
+    resetConfirmMessageEl = document.createElement("p");
+    resetConfirmMessageEl.id = "reset-confirm-message";
+    dialog.appendChild(resetConfirmMessageEl);
+
+    const actions = document.createElement("div");
+    actions.className = "reset-confirm-actions";
+
+    resetConfirmCancelBtn = document.createElement("button");
+    resetConfirmCancelBtn.type = "button";
+    resetConfirmCancelBtn.className = "skill-btn settings-btn";
+    resetConfirmCancelBtn.textContent = "Cancel";
+    resetConfirmCancelBtn.addEventListener("click", closeResetConfirmModal);
+    actions.appendChild(resetConfirmCancelBtn);
+
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "skill-btn settings-btn danger-btn";
+    confirmBtn.textContent = "Reset";
+    confirmBtn.addEventListener("click", () => {
+      vscode.postMessage({ type: "resetMetrics" });
+      closeResetConfirmModal();
+    });
+    actions.appendChild(confirmBtn);
+
+    dialog.appendChild(actions);
+    modal.appendChild(dialog);
+    document.body.appendChild(modal);
+    resetConfirmModalEl = modal;
+  }
+
+  /**
+   * Show the in-panel "reset session stats" confirmation. Mirrors the
+   * wording the host's showWarningMessage used to show (see the removed
+   * confirmMessage in panel.ts _handleResetMetrics).
+   */
+  function showResetConfirmModal() {
+    buildResetConfirmModal();
+    if (!resetConfirmModalEl || !resetConfirmMessageEl) return;
+    resetConfirmMessageEl.textContent =
+      currentThemePlan && currentThemePlan.display_name
+        ? `Reset stats for "${currentThemePlan.display_name}" in this project? This clears its badges, build progress, and rebirth for this project only — other themes and projects are unaffected. This can't be undone.`
+        : "Reset session metrics? This can't be undone.";
+    resetConfirmModalEl.removeAttribute("hidden");
+    try {
+      if (resetConfirmCancelBtn) resetConfirmCancelBtn.focus();
     } catch (_e) { /* noop */ }
   }
 
@@ -8867,7 +8953,7 @@
     resetBtn.className = "skill-btn settings-btn danger-btn";
     resetBtn.textContent = "Reset session metrics";
     resetBtn.addEventListener("click", () => {
-      vscode.postMessage({ type: "resetMetrics" });
+      showResetConfirmModal();
     });
     dangerStatusEl = document.createElement("span");
     dangerStatusEl.className = "danger-status";
