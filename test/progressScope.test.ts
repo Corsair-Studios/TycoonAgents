@@ -16,6 +16,7 @@ import {
   removeLegacyThemeEntry,
   removeThemeEverywhere,
   shouldWarnOnThemeSwitch,
+  resolveProjectRoot,
 } from "../src/host/vscode/progressScope";
 
 // ---------------------------------------------------------------------------
@@ -213,4 +214,46 @@ test("shouldWarnOnThemeSwitch warns only when switching away from a theme with >
   assert.equal(shouldWarnOnThemeSwitch("cobra_command", "cobra_command", 5), false);
   assert.equal(shouldWarnOnThemeSwitch(undefined, "cyberpunk_2049", 5), false);
   assert.equal(shouldWarnOnThemeSwitch("", "cyberpunk_2049", 5), false);
+});
+
+// ---------------------------------------------------------------------------
+// resolveProjectRoot — regression coverage for the cross-project data-bleed
+// bug (CLAUDE_PROJECT_DIR is process-wide, not per-window; the open
+// workspace folder must win unless the env var matches an open folder).
+// ---------------------------------------------------------------------------
+
+test("resolveProjectRoot prefers the workspace folder over a different env value", () => {
+  const root = resolveProjectRoot(["D:/ACode/ProjectA"], "D:/ACode/TycoonAgents");
+  assert.equal(root, "D:/ACode/ProjectA");
+});
+
+test("resolveProjectRoot falls back to the env var when no workspace folder is open", () => {
+  const root = resolveProjectRoot([], "D:/ACode/TycoonAgents");
+  assert.equal(root, "D:/ACode/TycoonAgents");
+});
+
+test("resolveProjectRoot returns empty string when there is no workspace and no env var", () => {
+  const root = resolveProjectRoot([], undefined);
+  assert.equal(root, "");
+});
+
+test("resolveProjectRoot honors the env var when it matches an open folder (case/slash-insensitive)", () => {
+  const root = resolveProjectRoot(["D:/ACode/ProjectA"], "D:\\ACode\\PROJECTA");
+  assert.equal(root, "D:\\ACode\\PROJECTA");
+});
+
+test("resolveProjectRoot (multi-root): env matching the second folder returns the env value", () => {
+  const root = resolveProjectRoot(
+    ["D:/ACode/ProjectA", "D:/ACode/ProjectB"],
+    "D:/ACode/ProjectB",
+  );
+  assert.equal(root, "D:/ACode/ProjectB");
+});
+
+test("resolveProjectRoot (multi-root): env matching neither folder falls back to the first folder", () => {
+  const root = resolveProjectRoot(
+    ["D:/ACode/ProjectA", "D:/ACode/ProjectB"],
+    "D:/ACode/TycoonAgents",
+  );
+  assert.equal(root, "D:/ACode/ProjectA");
 });

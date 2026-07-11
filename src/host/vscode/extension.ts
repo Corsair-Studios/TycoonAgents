@@ -13,6 +13,7 @@ import { ClaudeCodeProvider } from "../../providers/claude-code/claudeCodeProvid
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { activate as activateTheater, deactivate as deactivateTheater } from "../../extension/main";
 import { seedBundledThemes, upgradeInstalledThemes } from "../../extension/themeService";
+import { resolveProjectRoot } from "./progressScope";
 
 let provider: ClaudeCodeProvider | undefined;
 let demoDisposable: { dispose(): void } | undefined;
@@ -33,12 +34,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Start the Claude Code provider if not already running
     if (!provider) {
-      // Resolve activity file: prefer CLAUDE_PROJECT_DIR env var, else the first
-      // VS Code workspace folder. Must match the path resolution in the hook script.
-      const projectRoot =
-        process.env["CLAUDE_PROJECT_DIR"] ??
-        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
-        "";
+      // Resolve activity file: workspace-first, CLAUDE_PROJECT_DIR only as a
+      // match/fallback (it's a process-wide env var, not per-window — see
+      // resolveProjectRoot() in progressScope.ts). Must match panel.ts's
+      // _projectRoot() and the path resolution in the hook script.
+      const workspacePaths = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+      const projectRoot = resolveProjectRoot(workspacePaths, process.env["CLAUDE_PROJECT_DIR"]);
       const activityFile = path.join(projectRoot, ".claude", "tycoon", "activity.jsonl");
 
       // Seed the full installed-agent roster so every agent appears as an idle

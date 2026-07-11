@@ -122,6 +122,7 @@ import {
   removeLegacyThemeEntry,
   removeThemeEverywhere,
   shouldWarnOnThemeSwitch,
+  resolveProjectRoot,
 } from "./progressScope";
 
 /**
@@ -1875,10 +1876,7 @@ export class TycoonPanel {
 
   private _handleGetSkills(): void {
     const catalogPath = path.join(this._extensionUri.fsPath, "media", "skills", "catalog.json");
-    const projectRoot =
-      process.env["CLAUDE_PROJECT_DIR"] ??
-      vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
-      "";
+    const projectRoot = this._projectRoot();
     try {
       const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8")) as Array<{
         id: string;
@@ -1907,10 +1905,7 @@ export class TycoonPanel {
 
   private _handleInstallSkill(id: string): void {
     const catalogPath = path.join(this._extensionUri.fsPath, "media", "skills", "catalog.json");
-    const projectRoot =
-      process.env["CLAUDE_PROJECT_DIR"] ??
-      vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
-      "";
+    const projectRoot = this._projectRoot();
 
     let catalog: Array<{ id: string; name: string; description: string }>;
     try {
@@ -2883,13 +2878,19 @@ export class TycoonPanel {
     }
   }
 
-  /** Resolve the project root, matching extension.ts. */
+  /**
+   * Resolve the project root, matching extension.ts. Workspace-first: the
+   * open workspace folder is the only per-window source of truth for "which
+   * project this panel belongs to." CLAUDE_PROJECT_DIR is a process-wide env
+   * var (shared by every window), so it is honored only as a match against
+   * an open folder, or as a last-resort fallback when no folder is open —
+   * never allowed to override a differing open workspace. See
+   * resolveProjectRoot() in progressScope.ts for the precedence logic.
+   */
   private _projectRoot(): string {
-    return (
-      process.env["CLAUDE_PROJECT_DIR"] ??
-      vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
-      ""
-    );
+    const folders = vscode.workspace.workspaceFolders;
+    const paths = folders ? folders.map((f) => f.uri.fsPath) : [];
+    return resolveProjectRoot(paths, process.env["CLAUDE_PROJECT_DIR"]);
   }
 
   /** True if any hook command in the given settings file references our hook. */

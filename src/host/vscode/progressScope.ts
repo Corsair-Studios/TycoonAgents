@@ -149,6 +149,45 @@ export function removeThemeEverywhere<T>(store: Record<string, T>, themeId: stri
 }
 
 /**
+ * Resolve "which project is this window/panel scoped to" — workspace-first,
+ * env-var-fallback-only.
+ *
+ * `CLAUDE_PROJECT_DIR` is a PROCESS-WIDE environment variable inherited by
+ * the whole VS Code / extension-host process, not a per-window value. When
+ * the IDE (or an Extension Development Host) is launched from some fixed
+ * directory, that single env value leaks into every open window, so it can
+ * never be trusted as the primary source of "which project is this" — doing
+ * so causes cross-project data bleed (activity/badges/build progress from
+ * one project appearing in every other project). The open workspace folder
+ * is the only genuinely per-window source of truth.
+ *
+ * Precedence:
+ * 1. If a workspace folder is open, use its path — UNLESS the env var is set
+ *    and normalizes-equal to one of the open workspace folders, in which
+ *    case the env var's exact string is returned (same project, matching
+ *    value; avoids an unnecessary divergence between the two).
+ * 2. If no workspace folder is open, fall back to the env var (or "" if
+ *    unset) — an empty window has no other per-window signal available.
+ */
+export function resolveProjectRoot(
+  workspaceFolderPaths: readonly string[],
+  claudeProjectDirEnv: string | undefined,
+): string {
+  const normalize = (p: string): string => path.resolve(p).replace(/\\/g, "/").toLowerCase();
+  const primary = workspaceFolderPaths[0];
+  if (primary) {
+    if (
+      claudeProjectDirEnv &&
+      workspaceFolderPaths.some((f) => normalize(f) === normalize(claudeProjectDirEnv))
+    ) {
+      return claudeProjectDirEnv;
+    }
+    return primary;
+  }
+  return claudeProjectDirEnv ?? "";
+}
+
+/**
  * Decide whether the theme-switch warning modal should be shown: only when
  * there IS a currently-loaded theme, it differs from the target, and it has
  * at least one unlocked badge (for the current project) to lose visibility
