@@ -168,7 +168,7 @@ function animatedObjectSpecs(count: number) {
   }));
 }
 
-test('aggregate prompts define the two-board object layout, 7 expressions, and 20 badges', () => {
+test('aggregate prompts define the two-board object layout, 8 expressions, and 20 badges', () => {
   const board1Rows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_STATIC_COUNT));
   const objects = buildObjectAtlasPrompt('industrial', 'Factory', board1Rows);
   assert.match(objects, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
@@ -195,11 +195,12 @@ test('aggregate prompts define the two-board object layout, 7 expressions, and 2
   const expressions = buildExpressionAtlasPrompt(
     'industrial',
     'Factory',
-    Array.from({ length: 7 }, (_unused, index) => `Expression ${index + 1}`),
+    Array.from({ length: 8 }, (_unused, index) => `Expression ${index + 1}`),
   );
   assert.match(expressions, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
   assert.match(expressions, /4-column by 2-row grid of 8 equal cells/i);
-  assert.match(expressions, /Cell 7: Expression 7/);
+  assert.match(expressions, /Cell 8: Expression 8/);
+  assert.match(expressions, /Cell 8 \(last cell of the grid\) is the "dazed \/ hit" icon/i);
 
   const achievements = buildAchievementAtlasPrompt(
     'industrial',

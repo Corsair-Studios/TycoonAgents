@@ -818,7 +818,7 @@ export function buildExpressionAtlasPrompt(
   expressions: string[],
   background: BoardBackgroundMode = 'magenta',
 ): string {
-  const cells = expressions.slice(0, 7).map((expression, index) =>
+  const cells = expressions.slice(0, 8).map((expression, index) =>
     `Cell ${index + 1}: ${expression}`,
   );
   return [
@@ -826,8 +826,8 @@ export function buildExpressionAtlasPrompt(
     boardContract(4, 2, background),
     'Draw exactly one bold, readable, icon-only expression in each cell, in row-major order:',
     ...cells,
-    'Cell 8 (last cell of the grid) is unused padding — leave it blank/empty background, no icon.',
-    'All 7 cells are standard universal emotes (love, idea, anger, team/rally, thumbs up, music, sleep) — none are theme-specific flavor icons.',
+    'Cell 8 (last cell of the grid) is the "dazed / hit" icon: draw a classic "seeing stars" symbol — a small cluster of stars and/or a spiral swirling above/around a point, the universal comic symbol for being dazed or struck. Keep it a bare, simple, high-contrast icon matching the style of the other 7 cells — no head, face, or character, just the stars/spiral motif.',
+    'All 8 cells are standard universal emotes (love, idea, anger, team/rally, thumbs up, music, sleep, dazed/hit) — none are theme-specific flavor icons.',
     'Use a consistent, bold, flat icon style. Do not draw full characters.',
     'Do NOT draw the theme character, any character, any face, head, eyes, mouth, hair, or portrait. These are NOT facial expressions on a character.',
     'Each cell is a GENERIC symbolic emote ICON — a single, simple, instantly-readable emoji/pictogram symbol (e.g. a heart, spark/idea star, sweat drop, exclamation mark, gear, zzz) drawn LARGE and centered to fill most of the cell. Prioritize clarity and readability at very small sizes over detail.',

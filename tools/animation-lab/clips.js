@@ -19,6 +19,7 @@ const ATLAS_CLIPS = {
   cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
   point: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
   signal: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
+  block: { frames: [14], fps: 6, loop: false, flippable: true },
 };
 
 if (typeof window !== 'undefined') {

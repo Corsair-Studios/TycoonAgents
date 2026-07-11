@@ -20,6 +20,7 @@ const REQUIRED_CLIP_NAMES = [
   'cheer',
   'point',
   'signal',
+  'block',
 ];
 
 test('ATLAS_CLIPS exposes exactly the required clip names', () => {

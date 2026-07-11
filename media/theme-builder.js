@@ -12,7 +12,11 @@
     dance: { frames: [17, 18, 19], fps: 6, loop: true, flippable: false, pingpong: true },
     cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
     point: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
-    signal: { frames: [19], fps: 0, loop: true, flippable: false, hold: true }
+    signal: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
+    // Idle ambient combat: brief block/flinch hit-reaction pose (reuses melee's
+    // dodge frame 14), played as a one-shot emote override — see media/main.js
+    // playEmote(entry, "block", ...). Purely cosmetic, no gameplay effect.
+    block: { frames: [14], fps: 6, loop: false, flippable: true }
   };
 
   // src/webview/animationPlayback.ts

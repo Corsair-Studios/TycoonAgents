@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeThemePlan,
   themePlanToManifest,
+  FIXED_EXPRESSION_LABELS,
 } from '../src/extension/themePlan';
 import type { ThemePlan } from '../src/extension/themePlan';
 
@@ -20,8 +21,23 @@ test('theme plan normalizes every editable slot to the required count', () => {
   assert.equal(plan.enemies.length, 4);
   assert.equal(plan.objects.length, 22);
   assert.equal(plan.decor.length, 9);
-  assert.equal(plan.expressions.length, 7);
+  assert.equal(plan.expressions.length, 8);
+  assert.equal(plan.expressions[7], 'Dazed / hit');
   assert.equal(plan.achievements.length, 20);
+});
+
+test('FIXED_EXPRESSION_LABELS carries the 8-icon expression contract, ending in "Dazed / hit"', () => {
+  assert.equal(FIXED_EXPRESSION_LABELS.length, 8);
+  assert.deepEqual(FIXED_EXPRESSION_LABELS, [
+    'Love',
+    'Idea / discovery spark',
+    'Anger',
+    'Team action / rally',
+    'Thumbs up',
+    'Music',
+    'Sleep / low-energy zzz',
+    'Dazed / hit',
+  ]);
 });
 
 test('object slot 0 is always a themed ranged weapon rack (build_order 0 convention)', () => {

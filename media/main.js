@@ -3197,6 +3197,11 @@
     cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
     point:     { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
     signal:    { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
+    // Idle ambient combat (cosmetic hit-reaction): a brief block/flinch pose
+    // reusing melee's dodge frame (14). Played as a one-shot emote override
+    // (see playEmote / charEntry.emoteClip) exactly like point/signal —
+    // characters take NO damage, this is purely visual.
+    block:     { frames: [14],             fps: 6,  loop: false, flippable: true },
   };
 
   // RIVAL_CLIPS mirrors the src copy exactly (a test enforces byte parity).
@@ -3872,6 +3877,17 @@
    * far to one side.
    */
   const TARGET_SWITCH_MARGIN = 30;
+  /**
+   * Idle ambient combat: cosmetic hit-reaction (block/flinch pose, see
+   * ATLAS_CLIPS.block) rate-limit. A random cooldown in this range is drawn
+   * each time a character's block reaction fires, so it reads as an
+   * occasional flinch rather than a fixed metronome. Purely visual — no
+   * damage, no eviction.
+   */
+  const HIT_REACT_COOLDOWN_MIN = 2;
+  const HIT_REACT_COOLDOWN_MAX = 4;
+  /** Duration (seconds) the block/flinch pose holds before returning to the normal engage clip. */
+  const HIT_REACT_HOLD_SEC = 0.4;
 
   // ── Stage editor (live polygon + scale tuning) ───────────────────────────
   /** True while the "Edit Stage" overlay is active. */
@@ -9041,6 +9057,10 @@
         fleeDestNy: 0,
         animState: createAnimState("walk"),
         targetAgentId: null,
+        // Idle ambient combat: raid-target bookkeeping (lazily resolved by
+        // advanceEnemies' targeting pass — see raidBuiltIds there).
+        targetKind: null, // "object" | "agent" | null
+        targetObjId: null,
       });
     }
   }
@@ -9213,12 +9233,12 @@
    * bubble kinds. No-op (no crash) when the theme has no expression atlas
    * for this index — see themeImages["expression_"+index].
    * @param {object} entry an agentCharMap entry
-   * @param {number} index 0..6 into the theme's expression atlas (0=love,
-   *   1=idea, 2=anger, 3=team, 4=thumbs-up, 5=music, 6=sleep)
+   * @param {number} index 0..7 into the theme's expression atlas (0=love,
+   *   1=idea, 2=anger, 3=team, 4=thumbs-up, 5=music, 6=sleep, 7=dazed/hit)
    * @param {number} durationSec how long (seconds) the bubble stays visible
    */
   function showExpression(entry, index, durationSec) {
-    if (!entry || index < 0 || index > 6) return;
+    if (!entry || index < 0 || index > 7) return;
     if ((entry.bubbleCooldown || 0) > 0) return; // shared per-agent rate limit
     const frames = themeImages && themeImages["expression_" + index];
     if (!frames || !frames[0]) return; // theme has no expression atlas -> no bubble
@@ -9345,6 +9365,18 @@
       if (p[1] > enPolyMaxY) enPolyMaxY = p[1];
     }
     const enPolyRangeY = Math.max(enPolyMaxY - enPolyMinY, 1);
+
+    // ── RAID targeting (idle ambient combat) ──────────────────────────────
+    // Resolved ONCE per frame (not per enemy) and reused by every enemy's
+    // targeting below. Rivals raid built objects before turning on agents.
+    // objectPlacement[id] is the SAME resolved native position the object
+    // draw path uses (depthList "kind === object" branch, ~L10701), so an
+    // enemy paths to exactly where the object is drawn. Objects are a raid
+    // TARGET only — never damaged/destroyed, and buildBuiltCount/build state
+    // are never touched here.
+    const raidBuildState = themeBuildables.length > 0 ? computeBuildState() : null;
+    const raidBuiltIds = raidBuildState ? raidBuildState.builtIds : null;
+
     for (const en of activeEnemies) {
       if (en.fleeing) {
         // Change 2: defeated enemy runs off the nearest edge (a bit faster
@@ -9368,49 +9400,94 @@
         advanceRivalAnim(en.animState, delta);
         continue;
       }
-      // ── Change B: attack the NEAREST agent ──────────────────────────
+      // ── Change B: attack the nearest RAID target (built object first,
+      // nearest agent as fallback) ──────────────────────────────────────
       // Per-enemy attack/fire cadence timers (lazy-init; not per-frame spawn).
       if (typeof en.attackCooldown !== "number") en.attackCooldown = 0;
       if (typeof en.shotCooldown !== "number") en.shotCooldown = 0;
       en.attackCooldown -= delta;
       en.shotCooldown -= delta;
 
-      // Find the nearest on-stage agent by native distance. agentCharMap is
-      // pruned to the current agentList each frame, so its entries are exactly
-      // the agents currently on the floor.
-      let nearestEnt = null, nearestDist = Infinity;
-      let nearestId = null;
-      for (const id of Object.keys(agentCharMap)) {
-        const ent = agentCharMap[id];
-        if (!ent) continue;
-        const adx = ent.nx - en.nx, ady = ent.ny - en.ny;
-        const d = Math.sqrt(adx * adx + ady * ady);
-        if (d < nearestDist) { nearestDist = d; nearestEnt = ent; nearestId = id; }
+      // Find the nearest BUILT object (raidBuiltIds), by the same resolved
+      // native placement the object draw path uses. Unbuilt/active(crate)
+      // slots are never targeted — raidBuiltIds only contains fully-built
+      // object ids (see computeBuildState).
+      let nearestObjPlacement = null, nearestObjDist = Infinity, nearestObjId = null;
+      if (raidBuiltIds && raidBuiltIds.size > 0) {
+        for (const objId of raidBuiltIds) {
+          const p = objectPlacement[objId];
+          if (!p) continue;
+          const odx = p.nx - en.nx, ody = p.ny - en.ny;
+          const d = Math.sqrt(odx * odx + ody * ody);
+          if (d < nearestObjDist) { nearestObjDist = d; nearestObjPlacement = p; nearestObjId = objId; }
+        }
       }
 
-      // ── Target STICKINESS ───────────────────────────────────────────────
-      // Keep chasing the SAME agent (en.chaseTargetId — distinct from
-      // en.targetAgentId, which is the agent currently attacking THIS enemy)
-      // until another agent is closer by more than TARGET_SWITCH_MARGIN. This
-      // stops the target (and thus facing + walk direction) from flip-flopping
-      // between two near-equidistant agents each frame.
       let targetEnt = null, targetDist = Infinity;
-      const stickyEnt = en.chaseTargetId ? agentCharMap[en.chaseTargetId] : null;
-      if (stickyEnt) {
-        const sdx = stickyEnt.nx - en.nx, sdy = stickyEnt.ny - en.ny;
-        const currentDist = Math.sqrt(sdx * sdx + sdy * sdy);
-        if (nearestEnt && nearestDist < currentDist - TARGET_SWITCH_MARGIN) {
-          // A meaningfully-closer agent appeared — switch.
+      if (nearestObjPlacement) {
+        // ── Built object exists: raid it. Object-target STICKINESS mirrors
+        // the agent stickiness below so the enemy doesn't flip-flop between
+        // two near-equidistant buildings each frame. ─────────────────────
+        en.targetKind = "object";
+        const stickyObjId = (en.targetObjId && raidBuiltIds.has(en.targetObjId)) ? en.targetObjId : null;
+        const stickyObjPlacement = stickyObjId ? objectPlacement[stickyObjId] : null;
+        if (stickyObjPlacement) {
+          const sdx = stickyObjPlacement.nx - en.nx, sdy = stickyObjPlacement.ny - en.ny;
+          const currentDist = Math.sqrt(sdx * sdx + sdy * sdy);
+          if (nearestObjDist < currentDist - TARGET_SWITCH_MARGIN) {
+            targetEnt = nearestObjPlacement; targetDist = nearestObjDist;
+            en.targetObjId = nearestObjId;
+          } else {
+            targetEnt = stickyObjPlacement; targetDist = currentDist;
+          }
+        } else {
+          targetEnt = nearestObjPlacement; targetDist = nearestObjDist;
+          en.targetObjId = nearestObjId;
+        }
+        // Not chasing an agent while a built object is being raided.
+        en.chaseTargetId = null;
+      } else {
+        // ── No built object on the floor — fall back to the original
+        // nearest-agent targeting. ─────────────────────────────────────
+        en.targetKind = "agent";
+        en.targetObjId = null;
+
+        // Find the nearest on-stage agent by native distance. agentCharMap is
+        // pruned to the current agentList each frame, so its entries are exactly
+        // the agents currently on the floor.
+        let nearestEnt = null, nearestDist = Infinity;
+        let nearestId = null;
+        for (const id of Object.keys(agentCharMap)) {
+          const ent = agentCharMap[id];
+          if (!ent) continue;
+          const adx = ent.nx - en.nx, ady = ent.ny - en.ny;
+          const d = Math.sqrt(adx * adx + ady * ady);
+          if (d < nearestDist) { nearestDist = d; nearestEnt = ent; nearestId = id; }
+        }
+
+        // ── Target STICKINESS ───────────────────────────────────────────────
+        // Keep chasing the SAME agent (en.chaseTargetId — distinct from
+        // en.targetAgentId, which is the agent currently attacking THIS enemy)
+        // until another agent is closer by more than TARGET_SWITCH_MARGIN. This
+        // stops the target (and thus facing + walk direction) from flip-flopping
+        // between two near-equidistant agents each frame.
+        const stickyEnt = en.chaseTargetId ? agentCharMap[en.chaseTargetId] : null;
+        if (stickyEnt) {
+          const sdx = stickyEnt.nx - en.nx, sdy = stickyEnt.ny - en.ny;
+          const currentDist = Math.sqrt(sdx * sdx + sdy * sdy);
+          if (nearestEnt && nearestDist < currentDist - TARGET_SWITCH_MARGIN) {
+            // A meaningfully-closer agent appeared — switch.
+            targetEnt = nearestEnt; targetDist = nearestDist;
+            en.chaseTargetId = nearestId;
+          } else {
+            // Keep the current target.
+            targetEnt = stickyEnt; targetDist = currentDist;
+          }
+        } else if (nearestEnt) {
+          // No (valid) current target — adopt the nearest agent.
           targetEnt = nearestEnt; targetDist = nearestDist;
           en.chaseTargetId = nearestId;
-        } else {
-          // Keep the current target.
-          targetEnt = stickyEnt; targetDist = currentDist;
         }
-      } else if (nearestEnt) {
-        // No (valid) current target — adopt the nearest agent.
-        targetEnt = nearestEnt; targetDist = nearestDist;
-        en.chaseTargetId = nearestId;
       }
 
       if (!targetEnt) {
@@ -10007,15 +10084,21 @@
         }
       }
 
-      // ── EVICT combat targeting (Phase 2b) ────────────────────────────
-      // While any enemy is alive, active agents STOP building/wandering and
-      // instead engage the nearest alive enemy: walk to melee range, then
-      // tick its hp down. This fully preempts the Phase 2a build block below
+      // ── EVICT combat targeting (Phase 2b / idle ambient combat) ─────
+      // While any enemy is alive, agents STOP building/wandering and instead
+      // engage the nearest alive enemy: walk to melee range, then tick its
+      // hp down. This fully preempts the Phase 2a build block below
       // (isBuilding stays false so build standoff logic never runs).
+      // NOTE: no longer gated on isActive — idle agents defend/fight back
+      // too (ambient combat), not just agents with a live coding task. This
+      // mirrors how ACTIVE agents already engage from anywhere on the floor
+      // (no proximity gate), so idle agents behave symmetrically rather than
+      // needing a separate "nearby only" radius. Build (isBuilding) remains
+      // isActive-gated below — only combat engagement is now unconditional.
       let isEngaging = false;
       let engageInRange = false;
       // A celebrating (dancing) agent pauses combat for the dance's duration.
-      if (!inConga && !charEntry.dancing && isActive && enemiesAlive) {
+      if (!inConga && !charEntry.dancing && enemiesAlive) {
         let nearestEnemy = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
           if (en.fleeing) continue; // Change 2: fleeing enemies are not threats
@@ -10066,6 +10149,26 @@
             nearest.hp -= AGENT_DPS * delta;
             // Enemy faces its attacker; agent facing is set below from relative x.
             nearest.facingLeft = (charEntry.nx > nearest.nx);
+            // ── Cosmetic hit-reaction (idle ambient combat) ────────────────
+            // Occasionally play a brief "block" flinch pose while toe-to-toe
+            // with an attacking enemy. Purely visual: no damage, no eviction
+            // impact — nearest.hp / cycleRivalsEvicted are untouched here.
+            // Rate-limited by charEntry.hitReactCooldown (lazy-init, randomized
+            // ~2-4s) so it reads as an occasional flinch, not every frame.
+            // playEmote sets emoting/emoteClip="block"/emoteTimeLeft; the clip
+            // selection pass (desiredClip) applies charEntry.emoteClip as an
+            // override AFTER the melee/shoot engage override, so "block" briefly
+            // interrupts melee/shoot exactly like the existing point/signal
+            // one-shots, then returns to the normal engage clip on its own.
+            if (typeof charEntry.hitReactCooldown !== "number") {
+              charEntry.hitReactCooldown = HIT_REACT_COOLDOWN_MIN + Math.random() * (HIT_REACT_COOLDOWN_MAX - HIT_REACT_COOLDOWN_MIN);
+            }
+            charEntry.hitReactCooldown -= delta;
+            if (nearest.combatMode === "attack" && charEntry.hitReactCooldown <= 0) {
+              playEmote(charEntry, "block", HIT_REACT_HOLD_SEC);
+              charEntry.hitReactCooldown = HIT_REACT_COOLDOWN_MIN + Math.random() * (HIT_REACT_COOLDOWN_MAX - HIT_REACT_COOLDOWN_MIN);
+              showExpression(charEntry, 7, 1.2);
+            }
             // Change C: ranged agents fire a projectile at the enemy on a
             // throttled cadence (target position snapshotted at fire time).
             // No-op when the theme lacks the projectile asset (fallback).
@@ -10512,14 +10615,17 @@
       } else {
         desiredClip = isActive ? "walk" : "idle";
       }
-      // STRICT RULE: a NON-active agent may only ever play walk / idle / sit /
-      // dance. workerStateToClip can yield "build" (build/haul), "tool_idle"
-      // (survey) or "cheer" (celebrate) from a worker record, but build & combat
-      // are ACTIVE-ONLY. Clamp any active-only clip down to walk/idle here so no
-      // downstream branch can surface it for an inactive agent. (isBuilding /
-      // isEngaging are already gated on isActive, so the build/melee/shoot
-      // overrides below can never fire when !isActive; sit/dance overrides come
-      // after and remain valid for inactive agents.)
+      // STRICT RULE: a NON-active agent's STATUS clip may only ever be
+      // walk / idle / sit / dance. workerStateToClip can yield "build"
+      // (build/haul), "tool_idle" (survey) or "cheer" (celebrate) from a
+      // worker record, but build is ACTIVE-ONLY. Clamp any active-only
+      // status clip down to walk/idle here so no downstream STATUS branch can
+      // surface it for an inactive agent. (isBuilding remains isActive-gated,
+      // so the build override below can never fire when !isActive. isEngaging
+      // is now UNCONDITIONAL — idle ambient combat — so the melee/shoot
+      // override below intentionally overrides this clamp for engaging idle
+      // agents too; sit/dance overrides come after and remain valid for
+      // inactive agents.)
       if (!isActive && desiredClip !== "walk" && desiredClip !== "idle") {
         desiredClip = "idle";
       }
@@ -10533,10 +10639,11 @@
       if (isBuilding && !isMoving) {
         desiredClip = "build";
       }
-      // EVICT override (Phase 2b): walking toward an enemy uses "walk"
-      // (already covered by isMoving above); once in melee range, force the
-      // melee clip — takes priority over the build override since isBuilding
-      // is never true while isEngaging is true.
+      // EVICT override (Phase 2b / idle ambient combat): walking toward an
+      // enemy uses "walk" (already covered by isMoving above); once in melee
+      // range, force the melee clip — takes priority over the build override
+      // since isBuilding is never true while isEngaging is true. Applies to
+      // idle agents too now (isEngaging is no longer isActive-gated).
       if (isEngaging) {
         // Ranged upgrade: shoot instead of melee once the rack is built. The
         // shoot/melee one-shots both re-loop during sustained in-range combat

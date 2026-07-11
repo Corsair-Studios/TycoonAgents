@@ -10,9 +10,9 @@ import type {
 export const THEME_CHARACTER_COUNT = 16;
 export const THEME_ENEMY_COUNT = 4; // one full enemy board of RIVALS_PER_BOARD (4)
 export const THEME_OBJECT_COUNT = 22;
-export const THEME_EXPRESSION_COUNT = 7;
+export const THEME_EXPRESSION_COUNT = 8;
 /**
- * All 7 cells of the expression board are PINNED to a fixed universal
+ * All 8 cells of the expression board are PINNED to a fixed universal
  * meaning (see applyFixedExpressionLabels) so the runtime can reliably map
  * gameplay events to them regardless of what the LLM would otherwise name
  * them. This is the full expression contract now — no theme-flavor cells
@@ -27,11 +27,12 @@ export const FIXED_EXPRESSION_LABELS = [
   'Thumbs up',
   'Music',
   'Sleep / low-energy zzz',
+  'Dazed / hit',
 ] as const;
 export const THEME_ACHIEVEMENT_COUNT = 20;
 export const THEME_DECOR_COUNT = 9;
 
-export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal';
+export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal'|'block';
 
 export interface AtlasClip {
   frames: number[];    // 1+ slot indices into the 20-cell character atlas
@@ -54,6 +55,10 @@ export const ATLAS_CLIPS: Record<ClipName, AtlasClip> = {
   cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
   point: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
   signal: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
+  // Idle ambient combat: brief block/flinch hit-reaction pose (reuses melee's
+  // dodge frame 14), played as a one-shot emote override — see media/main.js
+  // playEmote(entry, "block", ...). Purely cosmetic, no gameplay effect.
+  block: { frames: [14], fps: 6, loop: false, flippable: true },
 };
 
 export type ObjectClipName = 'object_idle' | 'crate' | 'poof';
