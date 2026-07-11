@@ -1,7 +1,63 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { upgradeThemeManifest } from '../src/extension/themeMigration';
-import type { ThemeManifest } from '../src/shared/types';
+import { THEME_OBJECT_COUNT } from '../src/extension/themePlan';
+import type { BuildableObject, ThemeManifest } from '../src/shared/types';
+
+// themeService.ts does `import * as vscode from 'vscode'` at module scope (needed by
+// other exports); applyThemeItemNameChanges itself never touches the vscode API, but
+// Node can't resolve the 'vscode' module outside the real extension host. Stub the
+// module loader so the require chain below resolves under plain `node --test` — same
+// trick as test/themeItemNames.test.ts / test/reviewSynthesis.test.ts.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const NodeModule = require('module');
+const originalLoad = NodeModule._load;
+function makeVscodeStub(): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handler: ProxyHandler<any> = {
+    get(target, prop) {
+      if (prop === '__esModule') return true;
+      if (!(prop in target)) {
+        target[prop] = new Proxy(function stub() {}, handler);
+      }
+      return target[prop];
+    },
+    apply() {
+      return new Proxy({}, handler);
+    },
+    construct() {
+      return new Proxy({}, handler);
+    },
+  };
+  return new Proxy({}, handler);
+}
+const vscodeStub = makeVscodeStub();
+NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain: boolean) {
+  if (request === 'vscode') return vscodeStub;
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { applyThemeItemNameChanges } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+
+/** Builds `count` real (non-placeholder) buildable objects with distinct ids/names. */
+function realBuildableObjects(count: number): BuildableObject[] {
+  const objects: BuildableObject[] = [];
+  for (let i = 0; i < count; i++) {
+    objects.push({
+      build_order: i,
+      object_id: `real_${i}`,
+      display_name: `Real Object ${i}`,
+      sprite_asset: `frames.json#object_real_${i}`,
+      anchor_coord: [0.1 + i * 0.01, 0.2],
+      exclusion_radius: 40,
+      work_units_required: 50,
+      anim_fps: 8,
+      anim_loop: false,
+    });
+  }
+  return objects;
+}
 
 function minimalManifest(overrides: Partial<ThemeManifest> = {}): ThemeManifest {
   return {
@@ -191,7 +247,11 @@ test('preserves existing fields: buildable_objects, roster_rivals, character_sca
 
   const { manifest, changed } = upgradeThemeManifest(source);
 
-  assert.deepEqual(manifest.buildable_objects, source.buildable_objects);
+  // The single existing buildable object is preserved exactly; the rest of the
+  // array is padded up to the v2 object contract (THEME_OBJECT_COUNT) with
+  // placeholders, so length grows but the original entry is untouched at index 0.
+  assert.deepEqual(manifest.buildable_objects[0], source.buildable_objects[0]);
+  assert.equal(manifest.buildable_objects.length, THEME_OBJECT_COUNT);
   assert.deepEqual(manifest.roster_rivals, source.roster_rivals);
   assert.equal(manifest.viewport.character_scale, 1.25);
   assert.deepEqual(manifest.decor_objects, existingDecor);
@@ -242,4 +302,62 @@ test('backfills anim_fps/anim_loop on buildable_objects missing them, leaves alr
   const second = upgradeThemeManifest(first.manifest);
   assert.deepEqual(second.manifest, first.manifest);
   assert.deepEqual(second.changed, []);
+});
+
+test('pads a legacy manifest with 12 buildable_objects up to THEME_OBJECT_COUNT, preserving the originals', () => {
+  const originals = realBuildableObjects(12);
+  const { manifest, changed } = upgradeThemeManifest(minimalManifest({ buildable_objects: originals }));
+
+  assert.equal(manifest.buildable_objects.length, THEME_OBJECT_COUNT);
+
+  // The first 12 real objects are preserved byte-for-byte (id + display_name).
+  for (let i = 0; i < 12; i++) {
+    assert.equal(manifest.buildable_objects[i].object_id, originals[i].object_id);
+    assert.equal(manifest.buildable_objects[i].display_name, originals[i].display_name);
+  }
+
+  // First padded slot (index 12) is a real, renameable placeholder object.
+  const first = manifest.buildable_objects[12];
+  assert.equal(first.object_id, 'object_13');
+  assert.equal(first.display_name, 'Object 13');
+  assert.equal(first.build_order, 12);
+  assert.equal(first.sprite_asset, 'frames.json#object_object_13');
+
+  // Last slot (index 21) closes out the 22-object contract.
+  assert.equal(manifest.buildable_objects[21].object_id, 'object_22');
+
+  assert.ok(changed.some((c) => /Padded buildable_objects/.test(c)), `expected a "Padded buildable_objects" change entry, got: ${changed.join(' | ')}`);
+});
+
+test('buildable_objects padding is idempotent: a second pass adds nothing further', () => {
+  const first = upgradeThemeManifest(minimalManifest({ buildable_objects: realBuildableObjects(12) }));
+  const second = upgradeThemeManifest(first.manifest);
+
+  assert.equal(second.manifest.buildable_objects.length, THEME_OBJECT_COUNT);
+  assert.ok(!second.changed.some((c) => /Padded buildable_objects/.test(c)), `second pass must not re-pad, got: ${second.changed.join(' | ')}`);
+});
+
+test('a manifest already at THEME_OBJECT_COUNT buildable_objects is left untouched (no padding)', () => {
+  const full = realBuildableObjects(THEME_OBJECT_COUNT);
+  const { manifest, changed } = upgradeThemeManifest(minimalManifest({ buildable_objects: full }));
+
+  assert.equal(manifest.buildable_objects.length, THEME_OBJECT_COUNT);
+  assert.deepEqual(manifest.buildable_objects, full);
+  assert.ok(!changed.some((c) => /Padded/.test(c)), `healthy manifest must not report padding, got: ${changed.join(' | ')}`);
+});
+
+test('INTEGRATION: a padded placeholder object cell is renameable via applyThemeItemNameChanges (the bug fixed)', () => {
+  const { manifest: paddedManifest } = upgradeThemeManifest(minimalManifest({ buildable_objects: realBuildableObjects(12) }));
+
+  const result = applyThemeItemNameChanges(paddedManifest, [
+    { item_kind: 'object', id: 'object_13', name: 'Cobra Flight Deck' },
+  ]);
+
+  assert.deepEqual(result.rejected, [], `rename of a padded cell must not be rejected, got: ${JSON.stringify(result.rejected)}`);
+  assert.equal(result.applied.length, 1);
+  assert.deepEqual(result.applied[0], { item_kind: 'object', id: 'object_13', name: 'Cobra Flight Deck' });
+
+  const renamed = paddedManifest.buildable_objects.find((o) => o.object_id === 'object_13');
+  assert.ok(renamed, 'object_13 must exist in the padded manifest');
+  assert.equal(renamed!.display_name, 'Cobra Flight Deck');
 });

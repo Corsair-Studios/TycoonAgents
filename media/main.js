@@ -2317,7 +2317,7 @@
           return {
             rowId: row.object_id,
             itemKind: "object",
-            label: "Object " + (globalOffset + objectIndex),
+            label: "Object " + (globalOffset + objectIndex) + (row.is_ranged_rack ? " (Weapons Rack)" : ""),
             original: row.display_name || "",
           };
         });
@@ -6220,6 +6220,19 @@
         const manifest = msg.payload?.manifest;
         themeBuildables = Array.isArray(manifest?.buildable_objects)
           ? manifest.buildable_objects.slice().sort((a, b) => (a.build_order || 0) - (b.build_order || 0))
+            // Legacy manifests pad buildable_objects to 22 entries, ~10 of which
+            // are art-less PLACEHOLDERS (no generated frames until the object
+            // board is regenerated). Drop them from the in-game build queue so
+            // they don't build as invisible/empty objects. themeImages is
+            // populated synchronously by preloadThemeImages above (the .map at
+            // its assignment creates the frame array immediately, only pixels
+            // load async), so themeImages["object_<id>"] is a non-empty array
+            // for real objects and absent/empty for placeholders by this point.
+            // Placeholders stay renameable in the Theme Builder and become
+            // buildable automatically once their art is regenerated. If a theme
+            // legitimately has ZERO object art yet, the filtered list is empty
+            // and the build queue is empty — correct (nothing to build).
+            .filter((obj) => (themeImages["object_" + obj.object_id]?.length || 0) > 0)
           : [];
         themeHasCrateAsset = !!(vp && vp.crate_asset);
         themeHasPoofAsset = !!(vp && vp.poof_asset);

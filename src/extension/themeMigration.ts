@@ -1,4 +1,5 @@
 import type { DecorObject, EnemyConfig, ThemeBadge, ThemeManifest } from '../shared/types';
+import { THEME_OBJECT_COUNT } from './themePlan';
 
 const DEFAULT_ENEMY_CONFIG: EnemyConfig = { spawn_interval_seconds: 45, count_mode: 'random' };
 
@@ -340,6 +341,35 @@ export function upgradeThemeManifest(manifest: ThemeManifest): { manifest: Theme
     if (touchedAnyBuildableObject) {
       changed.push('buildable object anim params');
     }
+  }
+
+  // Pad buildable_objects up to the v2 contract count (THEME_OBJECT_COUNT = 22:
+  // 20 static on board 1 + 2 animated on board 2) so a legacy theme generated
+  // with fewer objects has a REAL, renameable/regenerate-able entry for EVERY
+  // board cell. Without this, renaming a cell beyond the saved object count is
+  // rejected ("Unknown object object_N"). Placeholder ids mirror themeObjectSpecs'
+  // `object_<n>` scheme (1-based) so board rows, frame keys, and rename line up;
+  // objects are art-less until the object board is regenerated (the runtime
+  // safely skips objects with no frames). Idempotent: once the array is at the
+  // contract count the loop does nothing.
+  if (Array.isArray(upgraded.buildable_objects) && upgraded.buildable_objects.length < THEME_OBJECT_COUNT) {
+    const padStart = upgraded.buildable_objects.length;
+    while (upgraded.buildable_objects.length < THEME_OBJECT_COUNT) {
+      const index = upgraded.buildable_objects.length;
+      const objectId = `object_${index + 1}`;
+      upgraded.buildable_objects.push({
+        build_order: index,
+        object_id: objectId,
+        display_name: `Object ${index + 1}`,
+        sprite_asset: `frames.json#object_${objectId}`,
+        anchor_coord: [0.5, 0.5],
+        exclusion_radius: 32,
+        work_units_required: 100,
+        anim_fps: 5,
+        anim_loop: true,
+      });
+    }
+    changed.push(`Padded buildable_objects ${padStart} -> ${THEME_OBJECT_COUNT}`);
   }
 
   return { manifest: upgraded, changed };
