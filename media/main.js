@@ -4631,8 +4631,8 @@
     let charOptions;
     if (themeRosterAgents.length) {
       charOptions = themeRosterAgents
-        .filter((a) => a && a.slot_id)
-        .map((a) => ({ id: "agent_" + a.slot_id, label: a.name || a.slot_id }));
+        .filter((a) => a && a.slot_id != null)
+        .map((a) => ({ id: "agent_" + a.slot_id, label: a.name || ("agent_" + a.slot_id) }));
     } else {
       charOptions = rosterOrder
         .filter((id) => typeof id === "string" && id.startsWith("agent_"))
