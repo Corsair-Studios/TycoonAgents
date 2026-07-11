@@ -9,7 +9,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Runtime } from "./runtime";
-import { computeDelegationModeStats } from "../../core/state";
+import { computeDelegationModeStats, computeStateFromRecords } from "../../core/state";
+import type { HookRecord } from "../../providers/claude-code/hookRecord";
 import {
   shortFromModelId,
   modelIdFromShort,
@@ -3513,6 +3514,30 @@ export class TycoonPanel {
     const delegations: number = orchMetric?.delegations ?? 0;
     const warnThreshold: number =
       vscode.workspace.getConfiguration("tycoonagents").get<number>("delegationWarnThreshold", 5);
+    const cumulativeTokens: number = Array.isArray(state.agentMetrics)
+      ? state.agentMetrics.reduce((sum: number, m: any) => sum + (m?.tokens ?? 0), 0)
+      : 0;
+
+    // "This session" scoping: rebuild state from activity.jsonl records filtered
+    // to the current session id, via the SAME reducer path the live runtime
+    // uses (computeStateFromRecords -> mapHookRecord -> applyEvent). Additive to
+    // the cumulative fields above, which remain unchanged (back-compat).
+    const activityRecords = this._readActivityRecords(root);
+    const currentSessionId = this._currentSessionId(activityRecords);
+    let sessionHealth:
+      | { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number }
+      | undefined;
+    if (currentSessionId !== undefined) {
+      const sessionState = computeStateFromRecords(activityRecords, currentSessionId);
+      const sessionOrchMetric = sessionState.agentMetrics.find((m) => m.id === "orchestrator");
+      sessionHealth = {
+        directSearches: sessionOrchMetric?.directSearches ?? 0,
+        directReads: sessionOrchMetric?.directReads ?? 0,
+        directEdits: sessionOrchMetric?.directEdits ?? 0,
+        delegations: sessionOrchMetric?.delegations ?? 0,
+        tokens: sessionState.agentMetrics.reduce((sum, m) => sum + (m.tokens ?? 0), 0),
+      };
+    }
 
     // Run hook diagnostic to compute hookHealth for the settings panel
     const { findings } = this._diagnoseHooks();
@@ -3559,7 +3584,16 @@ export class TycoonPanel {
         agents,
         delegation_mode,
         reviewEnabled,
-        delegationHealth: { directSearches, directReads, directEdits, delegations, warnThreshold },
+        delegationHealth: {
+          directSearches,
+          directReads,
+          directEdits,
+          delegations,
+          warnThreshold,
+          tokens: cumulativeTokens,
+          session: sessionHealth,
+          sessionId: currentSessionId,
+        },
         hookHealth,
         contextBudget,
       },
@@ -3922,6 +3956,52 @@ export class TycoonPanel {
     }
 
     return { lockFileAgeMs, activeAgentState, activityTailLines };
+  }
+
+  /**
+   * Reads and parses the FULL `.claude/tycoon/activity.jsonl` for `root` into
+   * an ordered HookRecord[] (oldest first), skipping blank/unparseable lines.
+   * Used by the Delegation Health dual view (session-scoped vs. cumulative
+   * rebuild via computeStateFromRecords) — unlike _readOperationalHealth's
+   * activityTailLines (last 5 raw lines, for Hook Doctor display), this reads
+   * every record so a session-scoped replay is complete.
+   */
+  private _readActivityRecords(root: string): HookRecord[] {
+    const records: HookRecord[] = [];
+    try {
+      const raw = fs.readFileSync(
+        path.join(root, ".claude", "tycoon", "activity.jsonl"),
+        "utf8"
+      );
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed === "") continue;
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === "object") {
+            records.push(parsed as HookRecord);
+          }
+        } catch {
+          /* skip malformed line */
+        }
+      }
+    } catch {
+      /* activity.jsonl absent -> no records */
+    }
+    return records;
+  }
+
+  /**
+   * The CURRENT session id: the `sessionId` carried on the LAST record (by
+   * file order) that has one. Undefined if no record carries a sessionId
+   * (empty log, or every record predates the hook writing sessionId).
+   */
+  private _currentSessionId(records: HookRecord[]): string | undefined {
+    for (let i = records.length - 1; i >= 0; i--) {
+      const sid = records[i]?.sessionId;
+      if (typeof sid === "string" && sid !== "") return sid;
+    }
+    return undefined;
   }
 
   /** Assembles a full DoctorInput (settings + operational health) from disk for `root`. */

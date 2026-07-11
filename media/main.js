@@ -8660,75 +8660,98 @@
     setupConfigEl.appendChild(routingSection);
 
   // ── 3b. Delegation Health ──
+  // Dual view: "this session" (scoped to the current Claude Code session id,
+  // rebuilt host-side from activity.jsonl via computeStateFromRecords) vs.
+  // "since last reset" (the pre-existing cumulative fields — unchanged shape,
+  // back-compat; the log is cleared on Reset, so cumulative == since reset).
   const dhSection = buildSection("Delegation Health");
   const dh = (lastSettings && lastSettings.delegationHealth) || {};
-  const directSearches = (typeof dh.directSearches === "number") ? dh.directSearches : 0;
-  const directReads    = (typeof dh.directReads    === "number") ? dh.directReads    : 0;
-  const directEdits    = (typeof dh.directEdits    === "number") ? dh.directEdits    : 0;
-  const delegations    = (typeof dh.delegations    === "number") ? dh.delegations    : 0;
-  const warnThreshold  = (typeof dh.warnThreshold  === "number") ? dh.warnThreshold  : 5;
+  const cumDirectSearches = (typeof dh.directSearches === "number") ? dh.directSearches : 0;
+  const cumDirectReads    = (typeof dh.directReads    === "number") ? dh.directReads    : 0;
+  const cumDirectEdits    = (typeof dh.directEdits    === "number") ? dh.directEdits    : 0;
+  const cumDelegations    = (typeof dh.delegations    === "number") ? dh.delegations    : 0;
+  const cumTokens         = (typeof dh.tokens         === "number") ? dh.tokens         : 0;
+  const warnThreshold     = (typeof dh.warnThreshold  === "number") ? dh.warnThreshold  : 5;
+  // Session-scoped fields are additive on delegationHealth.session — absent
+  // when the host couldn't determine a current session id (e.g. no hook
+  // activity yet). hasSession gates the fallback described in the plan: no
+  // session -> show only the cumulative "Since last reset" row.
+  const sess = (dh.session && typeof dh.session === "object") ? dh.session : null;
+  const hasSession = sess !== null;
+  const sessDirectSearches = hasSession && typeof sess.directSearches === "number" ? sess.directSearches : 0;
+  const sessDirectReads    = hasSession && typeof sess.directReads    === "number" ? sess.directReads    : 0;
+  const sessDirectEdits    = hasSession && typeof sess.directEdits    === "number" ? sess.directEdits    : 0;
+  const sessDelegations    = hasSession && typeof sess.delegations    === "number" ? sess.delegations    : 0;
+  const sessTokens         = hasSession && typeof sess.tokens         === "number" ? sess.tokens         : 0;
   // Reads are allowed for known files (per CLAUDE.md) — they are NOT a leak, so
   // they are excluded from the ratio. Only direct Grep/Glob and edits count.
-  const dhLeak = directSearches + directEdits;
-  const dhTotal = delegations + dhLeak;
-  if (dhTotal === 0) {
+  const cumLeak = cumDirectSearches + cumDirectEdits;
+  const cumTotal = cumDelegations + cumLeak;
+  const sessLeak = sessDirectSearches + sessDirectEdits;
+  const sessTotal = sessDelegations + sessLeak;
+  // The actionable leak breakdown further down reflects THIS SESSION's
+  // numbers when available, falling back to cumulative when no session
+  // scoping could be determined (matching the single-row fallback above).
+  const leakSearches = hasSession ? sessDirectSearches : cumDirectSearches;
+  const leakReads = hasSession ? sessDirectReads : cumDirectReads;
+  const leakEdits = hasSession ? sessDirectEdits : cumDirectEdits;
+  const leakDelegations = hasSession ? sessDelegations : cumDelegations;
+  if (cumTotal === 0 && sessTotal === 0) {
     const emptyP = document.createElement("p");
     emptyP.className = "settings-empty";
-    emptyP.textContent = "No delegatable activity yet this session.";
+    emptyP.textContent = "No delegatable activity yet since the last reset.";
     dhSection.appendChild(emptyP);
   } else {
-    const ratio = delegations / dhTotal;
-    // Green / yellow / red traffic light, consistent with the rest of the UI.
-    const light = ratio >= 0.6
-      ? { color: "var(--status-active)", label: "Delegating well", glow: true }
-      : ratio >= 0.35
-        ? { color: "var(--status-done)", label: "Some direct work", glow: false }
-        : { color: "var(--status-error)", label: "Low delegation", glow: false };
-    const badge = document.createElement("div");
-    badge.className = "settings-row";
-    badge.style.flexDirection = "row";
-    badge.style.alignItems = "center";
-    badge.style.gap = "6px";
-    const dot = document.createElement("span");
-    dot.style.display = "inline-block";
-    dot.style.width = "9px";
-    dot.style.height = "9px";
-    dot.style.borderRadius = "50%";
-    dot.style.background = light.color;
-    if (light.glow) { dot.style.boxShadow = "0 0 5px " + light.color; }
-    const badgeSpan = document.createElement("span");
-    badgeSpan.style.fontWeight = "600";
-    badgeSpan.textContent = `${light.label} · ${Math.round(ratio * 100)}%`;
-    badge.appendChild(dot);
-    badge.appendChild(badgeSpan);
-    dhSection.appendChild(badge);
+    // Renders one traffic-light row: "<label> — X% delegated (a of b) · ~N tokens".
+    function delegationHealthRow(label, delegs, total, tokens) {
+      const ratio = total > 0 ? delegs / total : 0;
+      // Green / yellow / red traffic light, consistent with the rest of the UI.
+      const light = total === 0
+        ? { color: "var(--muted)", glow: false }
+        : ratio >= 0.6
+          ? { color: "var(--status-active)", glow: true }
+          : ratio >= 0.35
+            ? { color: "var(--status-done)", glow: false }
+            : { color: "var(--status-error)", glow: false };
+      const row = document.createElement("div");
+      row.className = "settings-row";
+      row.style.flexDirection = "row";
+      row.style.alignItems = "center";
+      row.style.gap = "6px";
+      const dot = document.createElement("span");
+      dot.style.display = "inline-block";
+      dot.style.width = "9px";
+      dot.style.height = "9px";
+      dot.style.borderRadius = "50%";
+      dot.style.background = light.color;
+      if (light.glow) { dot.style.boxShadow = "0 0 5px " + light.color; }
+      const span = document.createElement("span");
+      span.style.fontWeight = "600";
+      span.textContent = total > 0
+        ? `${label} — ${Math.round(ratio * 100)}% delegated (${delegs} of ${total}) · ~${fmtTokens(tokens)} tokens`
+        : `${label} — no activity yet`;
+      row.appendChild(dot);
+      row.appendChild(span);
+      return row;
+    }
 
-    const summaryRow = document.createElement("div");
-    summaryRow.className = "settings-row";
-    const summarySpan = document.createElement("span");
-    summarySpan.textContent = `Orchestrator delegated ${delegations} tasks; did ${directSearches} searches and ${directEdits} edits directly.`;
-    summaryRow.appendChild(summarySpan);
-    dhSection.appendChild(summaryRow);
-
-    const delegRow = document.createElement("div");
-    delegRow.className = "settings-row";
-    const delegSpan = document.createElement("span");
-    delegSpan.textContent = `Delegations: ${delegations}`;
-    delegRow.appendChild(delegSpan);
-    dhSection.appendChild(delegRow);
+    if (hasSession) {
+      dhSection.appendChild(delegationHealthRow("This session", sessDelegations, sessTotal, sessTokens));
+    }
+    dhSection.appendChild(delegationHealthRow("Since last reset", cumDelegations, cumTotal, cumTokens));
 
     const searchRow = document.createElement("div");
     searchRow.className = "settings-row";
     const searchSpan = document.createElement("span");
-    searchSpan.textContent = `Direct searches (Grep/Glob): ${directSearches} — delegate to search-retrieval (Haiku, ~40x cheaper)`;
-    if (directSearches > warnThreshold) { searchSpan.style.color = "var(--status-error)"; }
+    searchSpan.textContent = `Direct searches (Grep/Glob): ${leakSearches} — delegate to search-retrieval (Haiku, ~40x cheaper)`;
+    if (leakSearches > warnThreshold) { searchSpan.style.color = "var(--status-error)"; }
     searchRow.appendChild(searchSpan);
     dhSection.appendChild(searchRow);
 
     const editRow = document.createElement("div");
     editRow.className = "settings-row";
     const editSpan = document.createElement("span");
-    editSpan.textContent = `Direct edits: ${directEdits} — delegate to coding-specialist (Sonnet)`;
+    editSpan.textContent = `Direct edits: ${leakEdits} — delegate to coding-specialist (Sonnet)`;
     editRow.appendChild(editSpan);
     dhSection.appendChild(editRow);
 
@@ -8736,7 +8759,7 @@
     readRow.className = "settings-row";
     const readSpan = document.createElement("span");
     readSpan.style.color = "var(--muted)";
-    readSpan.textContent = `Direct file reads: ${directReads} — allowed for known files`;
+    readSpan.textContent = `Direct file reads: ${leakReads} — allowed for known files`;
     readRow.appendChild(readSpan);
     dhSection.appendChild(readRow);
 
@@ -8745,38 +8768,48 @@
     const noteSpan = document.createElement("span");
     noteSpan.style.color = "var(--muted)";
     noteSpan.style.fontSize = "11px";
-    noteSpan.textContent = "Session totals — reflects the whole session so far.";
+    noteSpan.textContent = hasSession
+      ? "Breakdown above reflects this session; “Since last reset” totals every session's activity since the log was last cleared by Reset."
+      : "No current session detected — breakdown reflects activity since the last reset (the log is cleared on Reset).";
     noteRow.appendChild(noteSpan);
     dhSection.appendChild(noteRow);
 
     // Builds the "Copy delegation tip" text live from this render's counters
-    // (directSearches/directReads/directEdits/delegations, computed above from
+    // (leakSearches/leakReads/leakEdits/leakDelegations — this session's
+    // numbers when known, else cumulative — computed above from
     // lastSettings.delegationHealth) and the installed roster (`agents`,
     // computed at the top of renderSettings from lastSettings.agents). Keeps
     // the tip honest to the actual project + session instead of a fixed
     // 2-agent hardcoded string.
     function buildDelegationTip() {
-      const leakTotal = directSearches + directEdits;
-      const totalActions = delegations + leakTotal;
-      const ratio = totalActions > 0 ? delegations / totalActions : 0;
+      const leakTotal = leakSearches + leakEdits;
+      const totalActions = leakDelegations + leakTotal;
+      const ratio = totalActions > 0 ? leakDelegations / totalActions : 0;
       const lines = [];
       lines.push(
         totalActions > 0
-          ? `Delegation this session: ${Math.round(ratio * 100)}% (${delegations} delegated of ${totalActions} action${totalActions === 1 ? "" : "s"}).`
+          ? `Delegation this session: ${Math.round(ratio * 100)}% (${leakDelegations} delegated of ${totalActions} action${totalActions === 1 ? "" : "s"}).`
           : "Delegation this session: no delegatable activity yet."
       );
-      if (directEdits > 0) {
-        lines.push(`• ${directEdits} direct edit${directEdits === 1 ? "" : "s"} → send these to coding-specialist.`);
+      if (leakEdits > 0) {
+        lines.push(`• ${leakEdits} direct edit${leakEdits === 1 ? "" : "s"} → send these to coding-specialist.`);
       }
-      if (directSearches > 0) {
-        lines.push(`• ${directSearches} direct search${directSearches === 1 ? "" : "es"} → send these to search-retrieval (Haiku, ~40x cheaper).`);
+      if (leakSearches > 0) {
+        lines.push(`• ${leakSearches} direct search${leakSearches === 1 ? "" : "es"} → send these to search-retrieval (Haiku, ~40x cheaper).`);
       }
-      if (directEdits === 0 && directSearches === 0 && delegations > 0) {
+      if (leakEdits === 0 && leakSearches === 0 && leakDelegations > 0) {
         lines.push("Delegation looks healthy — keep routing work to specialists.");
       }
-      if (directReads > 0) {
-        lines.push(`Known-file reads (${directReads}) are fine — keep those direct per CLAUDE.md.`);
+      if (leakReads > 0) {
+        lines.push(`Known-file reads (${leakReads}) are fine — keep those direct per CLAUDE.md.`);
       }
+      const cumTotalActions = cumDelegations + cumLeak;
+      const cumRatio = cumTotalActions > 0 ? cumDelegations / cumTotalActions : 0;
+      lines.push(
+        cumTotalActions > 0
+          ? `Since last reset: ${Math.round(cumRatio * 100)}% (${cumDelegations} of ${cumTotalActions}), ~${fmtTokens(cumTokens)} tokens.`
+          : "Since last reset: no delegatable activity yet."
+      );
       lines.push("");
       lines.push("Route by task type:");
       for (const agent of agents) {

@@ -20,5 +20,8 @@ export interface HookRecord {
   delegationMode?: string;   // "flat" | "team_leads" — .claude/tycoon/execution.json's delegation_mode
                               // at the time this record was written (Team Lead Mode Phase 4: measurement).
                               // Absent on records from hook versions predating this field.
+  sessionId?: string;        // Claude Code session id (hooks/tycoon-claude-hook.cjs: payload.session_id).
+                              // Used to scope "this session" views (Delegation Health dual view). Absent on
+                              // records from hook versions predating this field.
   at: number;                // epoch ms
 }

@@ -42,8 +42,15 @@ export function toolToActivityKind(tool: string): ActivityKind {
  * verbatim on WorkerSpawned/SessionStop when the hook record carries it.
  */
 export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
-  const raw = record.workerId ?? "orchestrator";
-  const workerId = UUID_RE.test(raw) ? "orchestrator" : raw;
+  // The current hook (hooks/tycoon-claude-hook.cjs) only ever writes the
+  // literal string "orchestrator" or a real named agent id as workerId, and
+  // omits it entirely to mean "orchestrator" (fallback below). A UUID-format
+  // workerId is therefore always a legacy/malformed record from an old hook
+  // version; skip it rather than folding it into "orchestrator", which would
+  // over-credit the orchestrator's directEdits/directSearches/delegations
+  // counts (see panel.ts's Delegation Health panel).
+  if (record.workerId !== undefined && UUID_RE.test(record.workerId)) return [];
+  const workerId = record.workerId ?? "orchestrator";
   switch (record.event) {
     case "UserPromptSubmit":
       return [{ type: "SessionStart", at: record.at }];

@@ -5,6 +5,8 @@
  */
 
 import type { NormalizedEvent, WorkerId } from "./events";
+import { mapHookRecord } from "../providers/claude-code/mapHookRecord";
+import type { HookRecord } from "../providers/claude-code/hookRecord";
 
 // Pure, host-agnostic world state (see docs/DESIGN.md section 7.3).
 // Knows nothing about VS Code, Claude, or any provider.
@@ -588,4 +590,37 @@ export function computeDelegationModeStats(agentMetrics: AgentMetric[]): Delegat
   // Stable, predictable order: "flat" before "team_leads" when both are present.
   result.sort((a, b) => (a.mode === "flat" ? -1 : b.mode === "flat" ? 1 : 0));
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Session-scoped state rebuild (Delegation Health dual view: "this session"
+// vs. "since last reset")
+// ---------------------------------------------------------------------------
+
+/**
+ * Rebuild a MetricsWorldState by replaying a list of raw HookRecords through
+ * the SAME reducer path the live runtime uses (mapHookRecord -> applyEvent),
+ * starting from a fresh initialWorldState(). Pure — no fs/vscode access — so
+ * it can run against a records array read from disk by a host, or a synthetic
+ * fixture in tests.
+ *
+ * When `filterSessionId` is provided, only records whose `sessionId` matches
+ * are folded in (records with no sessionId, e.g. from hook versions predating
+ * that field, are excluded from a session-scoped rebuild). When
+ * `filterSessionId` is undefined, every record is folded in — this reproduces
+ * the cumulative "since last reset" state (equivalent to the live runtime's
+ * accumulated state, given the same records).
+ */
+export function computeStateFromRecords(
+  records: HookRecord[],
+  filterSessionId?: string,
+): MetricsWorldState {
+  let state = initialWorldState();
+  for (const record of records) {
+    if (filterSessionId !== undefined && record.sessionId !== filterSessionId) continue;
+    for (const event of mapHookRecord(record)) {
+      state = applyEvent(state, event);
+    }
+  }
+  return state;
 }

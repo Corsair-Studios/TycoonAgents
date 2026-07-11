@@ -378,15 +378,58 @@ test("mapHookRecord never throws on a record with unexpected extra fields (forwa
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// UUID workerId scrubbing → remapped to "orchestrator"
+// UUID workerId scrubbing → SKIPPED entirely (never folded into "orchestrator")
 // ---------------------------------------------------------------------------
 
-test("UUID workerId is remapped to 'orchestrator'", () => {
+test("UUID workerId on SubagentStop is skipped -> [] (not folded into 'orchestrator')", () => {
   const record: HookRecord = {
     event: "SubagentStop",
     workerId: "80cc5964-b3dd-48eb-af81-08506c2e1ea2",
     at: T,
   };
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 0, "a UUID-format workerId must be skipped, not credited to any agent");
+});
+
+test("UUID workerId on PreToolUse Task is skipped -> [] (no WorkerSpawned/TaskCompleted emitted)", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "550e8400-e29b-41d4-a716-446655440000",
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.ok(Array.isArray(events));
+  assert.equal(events.length, 0, "a UUID-format workerId must be skipped, not credited to the orchestrator's delegation count");
+});
+
+test("named agent-id workerId (non-UUID) maps events to that agent id", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "coding-specialist", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 2);
+  if (events[0].type === "TaskCompleted") {
+    assert.equal(events[0].workerId, "coding-specialist");
+  }
+  if (events[1].type === "WorkerStopped") {
+    assert.equal(events[1].workerId, "coding-specialist");
+  }
+});
+
+test("missing workerId (field omitted) still falls back to 'orchestrator'", () => {
+  const record: HookRecord = { event: "SubagentStop", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 2);
+  if (events[0].type === "TaskCompleted") {
+    assert.equal(events[0].workerId, "orchestrator");
+  }
+  if (events[1].type === "WorkerStopped") {
+    assert.equal(events[1].workerId, "orchestrator");
+  }
+});
+
+test("literal 'orchestrator' workerId (not a UUID) still maps to orchestrator", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "orchestrator", at: T };
   const events = mapHookRecord(record);
   assert.equal(events.length, 2);
   if (events[0].type === "TaskCompleted") {
