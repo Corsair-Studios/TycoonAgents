@@ -61,11 +61,6 @@ export interface AtlasGrid {
   targetContentHeight?: number;
   /** Per-slot safety cap that prevents unusually wide poses from being clipped. */
   maxContentExtent?: number;
-  /** Pixels to raise ONLY the last row's crop top (Y is top-down, so this
-   * moves the crop UP, capturing content that spilled above the final row's
-   * boundary — e.g. raised-arm character poses). Other rows are unaffected.
-   * Absolute px, tuned for the 512px character generation canvas. */
-  lastRowTopOffset?: number;
   /** Slots that must share one crop, scale, and anchor (for example one animation row). */
   normalizationGroups?: number[][];
   /**
@@ -149,8 +144,7 @@ export async function sliceAndNormalizeAtlas(
       // canvas cannot divide evenly by the requested row/column count.
       const left = Math.floor(col * atlas.bitmap.width / grid.columns);
       const right = Math.floor((col + 1) * atlas.bitmap.width / grid.columns);
-      const lastRowLift = row === grid.rows - 1 ? (grid.lastRowTopOffset ?? 0) : 0;
-      const top = Math.max(0, Math.floor(row * atlas.bitmap.height / grid.rows) - lastRowLift);
+      const top = Math.floor(row * atlas.bitmap.height / grid.rows);
       const bottom = Math.floor((row + 1) * atlas.bitmap.height / grid.rows);
       const cell = atlas.clone().crop(left, top, right - left, bottom - top);
       keyBorderConnectedMagenta(cell);
