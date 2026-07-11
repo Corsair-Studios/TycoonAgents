@@ -311,7 +311,7 @@ export const MSG_SCHEMAS = {
         .array(
           z
             .object({
-              item_kind: z.enum(['object', 'decor', 'character', 'rival']),
+              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'badge']),
               id: z.string().min(1),
               name: z.string().min(1).max(60),
             })

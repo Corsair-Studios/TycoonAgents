@@ -2264,6 +2264,7 @@
           mode: card.querySelector(".theme-review-mode")?.value || "",
           characterName: card.querySelector(".theme-review-name-input")?.value || "",
           promptOpen: Boolean(card.querySelector(".theme-review-prompt")?.open),
+          namesOpen: Boolean(card.querySelector(".theme-review-names-details")?.open),
           names,
         });
       }
@@ -2285,7 +2286,7 @@
    * rename ("Character name" / Save name, RENAME_THEME_CHARACTER) and are
    * intentionally left out of this batch editor.
    * @param {any} item a THEME_IMAGE_REVIEW review item
-   * @returns {Array<{rowId: string, itemKind: "object"|"decor"|"rival", label: string, original: string}>}
+   * @returns {Array<{rowId: string, itemKind: "object"|"decor"|"rival"|"badge", label: string, original: string}>}
    */
   function themeReviewNameRows(item) {
     if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
@@ -2355,6 +2356,16 @@
           };
         });
     }
+    if (item.kind === "achievement_atlas" && Array.isArray(item.achievement_names)) {
+      // Themed, positional badge names (Badge 1..20). Posts item_kind "badge",
+      // rowId achievement_<index> — see applyThemeItemNameChanges' badge branch.
+      return item.achievement_names.map((name, index) => ({
+        rowId: "achievement_" + index,
+        itemKind: "badge",
+        label: "Badge " + (index + 1),
+        original: name || "",
+      }));
+    }
     return [];
   }
 
@@ -2373,9 +2384,20 @@
     if (!rows.length) return null;
     const section = document.createElement("div");
     section.className = "theme-review-names";
-    const title = document.createElement("div");
-    title.className = "theme-review-names-title";
-    title.textContent = "Names";
+    // Collapsible (collapsed by default) — mirrors the "View generation prompt"
+    // <details>/<summary> pattern. Open state is persisted the SAME way as
+    // promptOpen: captureThemeReviewUiState() reads .theme-review-names-details
+    // .open into the per-board draft (keyed by item.id) so it survives the
+    // card re-renders host updates trigger.
+    const details = document.createElement("details");
+    details.className = "theme-review-names-details";
+    details.open = Boolean(savedDraft?.namesOpen);
+    const summary = document.createElement("summary");
+    summary.textContent = "Names";
+    details.appendChild(summary);
+    details.addEventListener("toggle", () => {
+      if (savedDraft) savedDraft.namesOpen = details.open;
+    });
     const grid = document.createElement("div");
     grid.className = "theme-review-names-grid";
     const inputsDisabled = busy || disabledForGeneration;
@@ -2443,10 +2465,10 @@
         payload: { theme_id: reviewThemeId, board_id: item.id, changes },
       });
     });
-    section.appendChild(title);
-    section.appendChild(grid);
-    section.appendChild(applyBtn);
-    section.appendChild(statusEl);
+    details.appendChild(grid);
+    details.appendChild(applyBtn);
+    details.appendChild(statusEl);
+    section.appendChild(details);
     return section;
   }
 

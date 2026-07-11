@@ -3557,6 +3557,22 @@ button.theme-review-preview:focus-visible::after {
   color: var(--vscode-testing-iconFailed, #f85149);
 }
 
+/* Collapsible "Names" editor — mirrors the .theme-review-prompt <details>
+   summary styling. Collapsed by default; the flex column keeps the grid,
+   Apply button, and status stacked once expanded. */
+.theme-review-names-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.theme-review-names-details > summary {
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground, #4daafc);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
 .theme-review-feedback,
 .theme-review-mode {
   min-width: 0;

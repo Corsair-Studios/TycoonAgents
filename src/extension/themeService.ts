@@ -979,7 +979,7 @@ export async function renameThemeCharacter(
 
 /** One row of the theme-review "Names" editor's batched Apply. */
 export interface ThemeItemNameChange {
-  item_kind: 'object' | 'decor' | 'character' | 'rival';
+  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'badge';
   id: string;
   name: string;
 }
@@ -1058,6 +1058,19 @@ export function applyThemeItemNameChanges(
         continue;
       }
       rival.name = name;
+    } else if (change.item_kind === 'badge') {
+      // Badge slots are positional: rowId is `achievement_<index>` (see themeReviewNameRows).
+      // manifest.badges carry the universal default labels; set this theme's badge label to the
+      // themed name here, and mirror it into plan.achievements in resyncRenamedBoardPrompts (the
+      // themed source of truth) so it survives reopen and the achievement-icon prompt.
+      const badgeMatch = /^achievement_(\d+)$/.exec(change.id);
+      const badgeIndex = badgeMatch ? Number(badgeMatch[1]) : -1;
+      const badge = badgeIndex >= 0 ? manifest.badges?.[badgeIndex] : undefined;
+      if (!badge) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown badge "${change.id}".` });
+        continue;
+      }
+      badge.display_name = name;
     } else {
       rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown item kind "${change.item_kind}".` });
       continue;
@@ -2665,6 +2678,8 @@ export function resyncRenamedReviewItems(
       (row) => affectedIds.has(row.rival_id) || affectedIds.has(`rival_${row.rival_id}`),
     )) {
       affectedBoardIds.add(item.id);
+    } else if (item.kind === 'achievement_atlas' && applied.some((change) => change.item_kind === 'badge')) {
+      affectedBoardIds.add(item.id);
     }
   }
   if (!affectedBoardIds.size) return [];
@@ -2706,6 +2721,25 @@ async function resyncRenamedBoardPrompts(
     if (!savedPlan) return;
     const plan = normalizeThemePlan(savedPlan, manifest.display_name);
     if (plan.theme_id !== themeId) return;
+
+    // Badge (achievement) names are themed and live in plan.achievements — mirror the applied
+    // badge renames into the plan and persist it so the achievement board rebuilds with the new
+    // names (createReviewItems reads plan.achievements) and they survive theme reopen.
+    const badgeChanges = applied.filter((change) => change.item_kind === 'badge');
+    if (badgeChanges.length) {
+      let planChanged = false;
+      for (const change of badgeChanges) {
+        const m = /^achievement_(\d+)$/.exec(change.id);
+        const idx = m ? Number(m[1]) : -1;
+        if (idx >= 0 && idx < plan.achievements.length) {
+          plan.achievements[idx] = change.name;
+          planChanged = true;
+        }
+      }
+      if (planChanged) {
+        await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+      }
+    }
 
     const refreshed = resyncRenamedReviewItems(document, manifest, plan, applied);
     for (const item of refreshed) {

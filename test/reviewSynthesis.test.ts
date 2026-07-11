@@ -720,3 +720,115 @@ test('resyncRenamedReviewItems matches a rival rename by its stripped rival_rows
   assert.equal(refreshed[0].status, savedRivalBoard.status);
   assert.equal(refreshed[0].revision, savedRivalBoard.revision);
 });
+
+// --- Regression: per-slot rename of the 20 ACHIEVEMENT BADGES. A badge change
+// carries item_kind 'badge' with a positional id `achievement_<index>` and
+// renames manifest.badges[index].display_name; the resync then rebuilds the
+// achievement_atlas board so its achievement_names reflect the CURRENT plan. ---
+
+/** A manifest carrying the full 20-badge roster the per-slot rename operates on. */
+function badge20Manifest(): ThemeManifest {
+  const manifest = legacyManifest();
+  manifest.badges = Array.from({ length: 20 }, (_unused, index) => ({
+    badge_id: `badge_${index}`,
+    display_name: `Badge ${index}`,
+    description: `Badge ${index} description`,
+    trigger_type: 'OBJECTS_BUILT' as const,
+    threshold: index + 1,
+    icon_asset: `frames.json#achievement_${index}`,
+  }));
+  return manifest;
+}
+
+/** A plan with a full 20-entry achievements list so `achievement_<index>` slots exist. */
+function plan20(): ThemePlan {
+  return {
+    ...minimalPlan(),
+    achievements: Array.from({ length: 20 }, (_unused, index) => `Badge ${index}`),
+  };
+}
+
+test('applyThemeItemNameChanges badge — happy path sets manifest.badges[index].display_name and returns the change in applied', () => {
+  const manifest = badge20Manifest();
+  const result = applyThemeItemNameChanges(manifest, [
+    { item_kind: 'badge', id: 'achievement_3', name: 'Themed Badge D' },
+  ]);
+
+  assert.equal(manifest.badges[3].display_name, 'Themed Badge D');
+  assert.deepEqual(result.applied, [{ item_kind: 'badge', id: 'achievement_3', name: 'Themed Badge D' }]);
+  assert.equal(result.rejected.length, 0);
+  // No collateral: neighbouring badge slots are untouched.
+  assert.equal(manifest.badges[2].display_name, 'Badge 2');
+  assert.equal(manifest.badges[4].display_name, 'Badge 4');
+});
+
+test('applyThemeItemNameChanges badge — out-of-range and garbage ids are rejected with an "Unknown badge" reason and leave the manifest unchanged', () => {
+  const manifest = badge20Manifest();
+  const result = applyThemeItemNameChanges(manifest, [
+    { item_kind: 'badge', id: 'achievement_99', name: 'Way Out Of Range' },
+    { item_kind: 'badge', id: 'not_a_badge', name: 'Garbage Id' },
+  ]);
+
+  assert.equal(result.applied.length, 0);
+  assert.equal(result.rejected.length, 2);
+  assert.deepEqual(result.rejected.map((entry) => entry.id).sort(), ['achievement_99', 'not_a_badge']);
+  for (const entry of result.rejected) {
+    assert.equal(entry.item_kind, 'badge');
+    assert.match(entry.reason, /Unknown badge/);
+  }
+  // Manifest badges are byte-for-byte the defaults — nothing was written.
+  assert.deepEqual(manifest.badges.map((badge) => badge.display_name), plan20().achievements);
+});
+
+test('resyncRenamedReviewItems badge — rebuilds ONLY the achievement board, with achievement_names reflecting the CURRENT plan; unaffected boards are absent', () => {
+  const manifest = badge20Manifest();
+  // Saved review document was generated BEFORE the rename: the achievement
+  // board still bakes the old slot-3 name.
+  const planBefore = plan20();
+  const savedItems = savedReviewDocumentItems(manifest, planBefore);
+  const savedAchievements = savedItems.find((item) => item.id === 'achievements')!;
+  assert.equal(savedAchievements.kind, 'achievement_atlas');
+  assert.equal(savedAchievements.achievement_names?.[3], 'Badge 3');
+  // The document also carries unrelated boards (e.g. object board 1) that must
+  // stay out of the resync result.
+  assert.ok(savedItems.some((item) => item.id === 'objects_01'));
+
+  // Simulate the plan write-back (resyncRenamedBoardPrompts mirrors the badge
+  // rename into plan.achievements before calling the pure resync).
+  const planAfter = plan20();
+  planAfter.achievements[3] = 'Themed Badge D';
+
+  const refreshed = resyncRenamedReviewItems(
+    { items: savedItems },
+    manifest,
+    planAfter,
+    [{ item_kind: 'badge', id: 'achievement_3', name: 'Themed Badge D' }],
+  );
+
+  // Only the achievement board comes back, and it carries the new name.
+  assert.deepEqual(refreshed.map((item) => item.id), ['achievements']);
+  const refreshedAchievements = refreshed[0];
+  assert.equal(refreshedAchievements.achievement_names?.[3], 'Themed Badge D');
+  // Review PROGRESS survives the resync untouched.
+  assert.equal(refreshedAchievements.status, savedAchievements.status);
+  assert.equal(refreshedAchievements.revision, savedAchievements.revision);
+  // Unaffected boards (object/rival/decor/etc.) are simply not returned.
+  assert.ok(!refreshed.some((item) => item.id === 'objects_01'));
+});
+
+test('resyncRenamedReviewItems no badge — a non-badge, non-matching change leaves the achievement board out of the result', () => {
+  const manifest = badge20Manifest();
+  const plan = plan20();
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+
+  const refreshed = resyncRenamedReviewItems(
+    { items: savedItems },
+    manifest,
+    plan,
+    // An object rename for an id that no board's rows contain: nothing to resync.
+    [{ item_kind: 'object', id: 'nonexistent_object', name: 'Ghost' }],
+  );
+
+  // An empty result means no board (including the achievement board) was resynced.
+  assert.deepEqual(refreshed, []);
+});
