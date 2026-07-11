@@ -2950,18 +2950,32 @@ function themeObjectSpecs(
   manifest: ThemeManifest,
   motionHints?: string[],
 ): ThemeObjectPromptSpec[] {
-  return manifest.buildable_objects.slice(0, THEME_OBJECT_COUNT).map((object, index) => {
-    // build_order 0 is the themed ranged-weapon rack (see themePlan.ts); it gets
-    // dedicated rack visual guidance and ignores any planner motion hint.
-    const isRangedRack = index === 0;
-    const hint = !isRangedRack ? (motionHints?.[index] ?? '').trim() : '';
-    return {
-      object_id: object.object_id,
-      display_name: object.display_name,
-      ...(isRangedRack ? { is_ranged_rack: true } : {}),
-      ...(hint ? { motion_hint: hint } : {}),
-    };
-  });
+  const specs: ThemeObjectPromptSpec[] = manifest.buildable_objects
+    .slice(0, THEME_OBJECT_COUNT)
+    .map((object, index) => {
+      // build_order 0 is the themed ranged-weapon rack (see themePlan.ts); it gets
+      // dedicated rack visual guidance and ignores any planner motion hint.
+      const isRangedRack = index === 0;
+      const hint = !isRangedRack ? (motionHints?.[index] ?? '').trim() : '';
+      return {
+        object_id: object.object_id,
+        display_name: object.display_name,
+        ...(isRangedRack ? { is_ranged_rack: true } : {}),
+        ...(hint ? { motion_hint: hint } : {}),
+      };
+    });
+  // Pad legacy / pre-v2 manifests (fewer than THEME_OBJECT_COUNT buildable_objects)
+  // up to the fixed 22-slot v2 contract so board 1 always resolves its 20 static
+  // cells and board 2 its 2 animated cells. Without this, an existing theme whose
+  // manifest still carries a pre-v2 object count makes createObjectBoard1Rows /
+  // createObjectBoard2Rows and processObjectAtlas throw "requires exactly 20
+  // static-object cells" during review-item re-synthesis and on Re-slice, blocking
+  // object replacement on existing themes. Placeholders mirror reconstructObjectRows.
+  while (specs.length < THEME_OBJECT_COUNT) {
+    const n = specs.length + 1;
+    specs.push({ object_id: `object_${n}`, display_name: `Object ${n}` });
+  }
+  return specs;
 }
 
 /**

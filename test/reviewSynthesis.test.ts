@@ -45,6 +45,9 @@ const {
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { normalizeThemePlan } = require('../src/extension/themePlan') as typeof import('../src/extension/themePlan');
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { OBJECT_STATIC_COUNT, OBJECT_ANIMATED_COUNT } = require('../src/extension/themeAssetPrompts') as typeof import('../src/extension/themeAssetPrompts');
+
 function legacyManifest(): ThemeManifest {
   return {
     manifest_version: '1',
@@ -122,13 +125,13 @@ test('createReviewItems does not throw for a legacy manifest with off-count riva
   assert.equal(rivalItems.length, 1, 'expected exactly one rival_atlas board for 3 rivals');
   assert.deepEqual(rivalItems.map((item) => item.id), ['rivals_01']);
 
-  // The v2 object pipeline requires EXACTLY 22 objects (20 static + 2 animated)
-  // to build either fixed-shape board (createObjectBoard1Rows/createObjectBoard2Rows
-  // both throw on any other count). This manifest has 12, so BOTH object boards
-  // are gracefully skipped by the surrounding try/catch rather than partially
-  // degrading — unlike rivals, there is no partial/dynamic object board layout.
+  // The v2 object pipeline now PADS a legacy/off-count manifest's
+  // buildable_objects up to the fixed 22-object contract (20 static + 2
+  // animated), so BOTH fixed-shape boards synthesize even for a 12-object
+  // legacy roster instead of being skipped by the surrounding try/catch.
   const objectItems = result.filter((item) => item.kind === 'object_atlas');
-  assert.equal(objectItems.length, 0, 'expected zero object_atlas boards for an off-count (12) object roster');
+  assert.equal(objectItems.length, 2, 'expected two object_atlas boards for a padded off-count (12) object roster');
+  assert.deepEqual(objectItems.map((item) => item.id), ['objects_01', 'objects_02']);
 
   // Everything else still gets synthesized.
   assert.ok(result.some((item) => item.kind === 'character_atlas'));
@@ -180,11 +183,15 @@ test('objectRowsForItem prefers the CURRENT manifest roster over stale saved obj
   assert.equal(rows[0].kind === 'object_static' ? rows[0].display_name : undefined, 'New Object 0');
 });
 
-test('objectRowsForItem falls back to saved object_rows when the manifest object count does not match the 22-object contract', () => {
-  const manifest = legacyManifest(); // only 12 buildable_objects — neither board can be reconstructed
+test('objectRowsForItem PADS a legacy off-count manifest up to the 22-object contract instead of falling back to saved object_rows', () => {
+  const manifest = legacyManifest(); // only 12 buildable_objects — pre-v2 count
   const staleObjectRows = [{ kind: 'crate' as const }];
+  // Board 1 (default id) now reconstructs from the padded manifest (12 real
+  // specs + placeholders) rather than returning the stale saved rows.
   const rows = objectRowsForItem({ object_rows: staleObjectRows, object_specs: [] }, manifest);
-  assert.deepEqual(rows, staleObjectRows);
+  assert.notDeepEqual(rows, staleObjectRows);
+  assert.equal(rows.length, OBJECT_STATIC_COUNT);
+  assert.ok(rows.every((row) => row.kind === 'object_static'), 'padded board 1 must be all object_static');
 });
 
 // --- Regression: the v2 object pipeline always splits a full 22-object roster
@@ -209,6 +216,57 @@ test('objectRowsForItem: a full 22-object roster gives board 1 the first 20 obje
     board2.slice(0, 2).map((row) => row.kind === 'object_anim' ? row.object_id : row.kind),
     ['object_20', 'object_21'],
   );
+});
+
+// --- Regression: the v2 object pipeline now PADS a legacy manifest whose
+// buildable_objects count is BELOW the 22-object contract (themeObjectSpecs
+// fills the tail with `object_<n>` placeholder specs), so both fixed-shape
+// boards reconstruct instead of throwing / falling back to stale rows. ---
+
+function legacy13Manifest(): ThemeManifest {
+  const manifest = legacyManifest();
+  manifest.buildable_objects = Array.from({ length: 13 }, (_unused, index) => ({
+    build_order: index,
+    object_id: `legacy_obj_${index}`,
+    display_name: `Legacy Object ${index}`,
+    sprite_asset: `frames.json#legacy_obj_${index}`,
+    anchor_coord: [0, 0] as [number, number],
+    exclusion_radius: 40,
+    work_units_required: 10,
+  }));
+  return manifest;
+}
+
+test('objectRowsForItem: a legacy 13-object manifest PADS board 1 to 20 static rows — 13 real object_ids then 7 placeholders (object_14..object_20)', () => {
+  const manifest = legacy13Manifest();
+  const board1 = objectRowsForItem({ id: 'objects_01' }, manifest); // NO plan arg
+
+  assert.equal(board1.length, OBJECT_STATIC_COUNT);
+  assert.ok(board1.every((row) => row.kind === 'object_static'), 'every board-1 row must be object_static');
+
+  const ids = board1.map((row) => (row.kind === 'object_static' ? row.object_id : row.kind));
+  // The first 13 rows carry the manifest's real object_ids.
+  assert.deepEqual(ids.slice(0, 13), Array.from({ length: 13 }, (_unused, index) => `legacy_obj_${index}`));
+  // The remaining 7 are synthetic placeholders padded up to the 20-static contract.
+  assert.deepEqual(
+    ids.slice(13),
+    ['object_14', 'object_15', 'object_16', 'object_17', 'object_18', 'object_19', 'object_20'],
+  );
+});
+
+test('objectRowsForItem: a legacy 13-object manifest still yields board 2 as [object_anim, object_anim, poof, crate]', () => {
+  const manifest = legacy13Manifest();
+  const board2 = objectRowsForItem({ id: 'objects_02' }, manifest); // NO plan arg
+
+  assert.equal(board2.length, OBJECT_ANIMATED_COUNT + 2);
+  assert.deepEqual(board2.map((row) => row.kind), ['object_anim', 'object_anim', 'poof', 'crate']);
+});
+
+test('objectRowsForItem: a healthy 22-object manifest still yields 20 static rows for board 1 (padding leaves the full-roster path unchanged)', () => {
+  const manifest = fullObjectManifest();
+  const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
+  assert.equal(board1.length, OBJECT_STATIC_COUNT);
+  assert.ok(board1.every((row) => row.kind === 'object_static'));
 });
 
 test('applyObjectBoardFrames: board 1 writes one single-frame object_<id> key per cell', () => {
@@ -353,16 +411,15 @@ test('buildReplacementPrompt: objects_01 rebuilds the NEW 20-static-object board
   assert.doesNotMatch(displayPrompt, /STALE/);
 
   // RETRY-GENERATION path (default preferPlanObjects=false): the plan is IGNORED
-  // for object rows, so a legacy off-count manifest that can't reconstruct
-  // either 2-board falls back to the item's stale saved object_rows exactly as
-  // it did before this fix — proving Retry (which pairs with manifest-based
-  // slicing) did not regress. The 5-row animated stale board can't satisfy
-  // buildObjectAtlasPrompt's board-2 shape check, so it throws instead of
-  // silently emitting a plan-derived prompt.
-  assert.throws(
-    () => buildReplacementPrompt(item, plan.creative_direction, manifest, plan),
-    /Object board 2 requires/,
-  );
+  // for object rows, so board 1 rebuilds from the CURRENT manifest — which the
+  // v2 pipeline now PADS up to the 22-object contract for a legacy off-count
+  // roster. The item's stale saved object_rows are therefore never used, and
+  // the padded manifest yields a valid board-1 prompt (no throw), keeping Retry
+  // consistent with the manifest-based slicing it pairs with.
+  const retryPrompt = buildReplacementPrompt(item, plan.creative_direction, manifest, plan);
+  assert.match(retryPrompt, /Create one static buildable-object sprite board/);
+  assert.match(retryPrompt, /20 distinct STATIC buildable objects/);
+  assert.doesNotMatch(retryPrompt, /STALE/);
 });
 
 // --- Regression: reproduces a REAL production-shaped 22-object roster (cobra
