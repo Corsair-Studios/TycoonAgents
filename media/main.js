@@ -8140,9 +8140,17 @@
    */
   function handleMetricsReset(msg) {
     if (msg.ok) {
-      lastMetrics = [];
-      renderMetrics([]);
-      renderDelegationStats([]);
+      // Bug fix: do NOT blank the metrics table / delegation stats here.
+      // The host's runtime.reset() + WorkerRegistered re-seed loop already
+      // fires onChange -> a "state" message (see the msg.type === "state"
+      // handler above, L6442) carrying the full roster with zeroed stats,
+      // and that "state" message arrives BEFORE this metricsReset ack.
+      // Clearing lastMetrics/renderMetrics/renderDelegationStats here ran
+      // AFTER that correct re-seed render and wiped it out, leaving the
+      // AGENT METRICS table empty until the next task's "state" push.
+      // renderMetrics()/renderDelegationStats() are driven by the "state"
+      // handler (L6459-6460) and self-maintain lastMetrics (see
+      // renderMetrics, L7790) — nothing to do here.
       renderSettings();
       // ── Bug fix: also clear persisted badge/build/rebirth WORLD state so
       // the medal count + built objects actually disappear on Reset, instead
