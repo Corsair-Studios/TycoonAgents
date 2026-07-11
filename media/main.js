@@ -8487,6 +8487,15 @@
     setupConfigEl.appendChild(agentsSection);
 
     // ── 3. Keyword routing ──
+    // Agents (non-orchestrator) whose keywords field is empty/whitespace —
+    // keyword routing can never match them until the user sets a pattern.
+    // Separate signal from the task-count-based "Routing health" line above.
+    function unconfiguredKeywordAgents() {
+      return (lastSettings.agents || []).filter(function (a) {
+        return a && !a.isOrchestrator && (!a.keywords || String(a.keywords).trim() === "");
+      });
+    }
+
     const routingSection = buildSection("Keyword routing");
     const note = fallbackNote();
     const noteEl = document.createElement("div");
@@ -8518,6 +8527,10 @@
       input.className = "keyword-input";
       input.value = agent.keywords || "";
       input.placeholder = "kw1|kw2|kw3";
+      if (!agent.keywords || String(agent.keywords).trim() === "") {
+        input.title = "No routing keywords set — routing to this agent is disabled";
+        input.style.borderColor = "var(--status-error)";
+      }
       const saveBtn = document.createElement("button");
       saveBtn.className = "skill-btn settings-btn";
       saveBtn.textContent = "Save";
@@ -8529,6 +8542,18 @@
       row.appendChild(inputWrap);
 
       routingSection.appendChild(row);
+    }
+
+    const unconfiguredAgents = unconfiguredKeywordAgents();
+    if (unconfiguredAgents.length > 0) {
+      const unconfiguredEl = document.createElement("div");
+      unconfiguredEl.className = "rec-badge rec-amber";
+      const unconfiguredText = document.createElement("span");
+      unconfiguredText.className = "rec-text";
+      const names = unconfiguredAgents.map(function (a) { return a.name || a.id; }).join(", ");
+      unconfiguredText.textContent = `⚠ ${unconfiguredAgents.length} agent${unconfiguredAgents.length === 1 ? "" : "s"} have no routing keywords — keyword routing to them is disabled until set: ${names}.`;
+      unconfiguredEl.appendChild(unconfiguredText);
+      routingSection.appendChild(unconfiguredEl);
     }
     setupConfigEl.appendChild(routingSection);
 
@@ -8622,13 +8647,65 @@
     noteRow.appendChild(noteSpan);
     dhSection.appendChild(noteRow);
 
+    // Builds the "Copy delegation tip" text live from this render's counters
+    // (directSearches/directReads/directEdits/delegations, computed above from
+    // lastSettings.delegationHealth) and the installed roster (`agents`,
+    // computed at the top of renderSettings from lastSettings.agents). Keeps
+    // the tip honest to the actual project + session instead of a fixed
+    // 2-agent hardcoded string.
+    function buildDelegationTip() {
+      const leakTotal = directSearches + directEdits;
+      const totalActions = delegations + leakTotal;
+      const ratio = totalActions > 0 ? delegations / totalActions : 0;
+      const lines = [];
+      lines.push(
+        totalActions > 0
+          ? `Delegation this session: ${Math.round(ratio * 100)}% (${delegations} delegated of ${totalActions} action${totalActions === 1 ? "" : "s"}).`
+          : "Delegation this session: no delegatable activity yet."
+      );
+      if (directEdits > 0) {
+        lines.push(`• ${directEdits} direct edit${directEdits === 1 ? "" : "s"} → send these to coding-specialist.`);
+      }
+      if (directSearches > 0) {
+        lines.push(`• ${directSearches} direct search${directSearches === 1 ? "" : "es"} → send these to search-retrieval (Haiku, ~40x cheaper).`);
+      }
+      if (directEdits === 0 && directSearches === 0 && delegations > 0) {
+        lines.push("Delegation looks healthy — keep routing work to specialists.");
+      }
+      if (directReads > 0) {
+        lines.push(`Known-file reads (${directReads}) are fine — keep those direct per CLAUDE.md.`);
+      }
+      lines.push("");
+      lines.push("Route by task type:");
+      for (const agent of agents) {
+        if (agent.isOrchestrator) continue;
+        const modelLabel = agent.model || "default";
+        const kws = (agent.keywords || "")
+          .split("|")
+          .map((k) => k.trim())
+          .filter(Boolean)
+          .slice(0, 4);
+        const hint = kws.length ? kws.join(", ") : "general tasks";
+        lines.push(`• ${agent.name || agent.id} (${modelLabel}) → ${hint}`);
+      }
+      lines.push("");
+      lines.push("Keep direct: reading known files, coordination, and talking to you.");
+      const unconfiguredAgents = unconfiguredKeywordAgents();
+      if (unconfiguredAgents.length > 0) {
+        lines.push("");
+        lines.push(`Routing not configured for: ${unconfiguredAgents.map((a) => a.name || a.id).join(", ")}`);
+        lines.push("These agents have no keywords in .claude/tycoon/agent-keywords.json, so keyword routing can't send work to them. Please set sensible routing keywords for them.");
+      }
+      return lines.join("\n");
+    }
+
     const btnRow = document.createElement("div");
     btnRow.className = "settings-row";
     const copyBtn = document.createElement("button");
     copyBtn.className = "skill-btn settings-btn";
     copyBtn.textContent = "Copy delegation tip";
     copyBtn.addEventListener("click", function () {
-      vscode.postMessage({ type: "copyNudge", text: "Delegate all searches and file reads to sub-agents per CLAUDE.md - search-retrieval for lookups, coding-specialist for edits." });
+      vscode.postMessage({ type: "copyNudge", text: buildDelegationTip() });
     });
     btnRow.appendChild(copyBtn);
     dhSection.appendChild(btnRow);

@@ -21,6 +21,7 @@ import {
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
 import { buildAgentMarkdown, agentMarkdownTier, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
+import { seedMissingAgentKeywords } from "./agentKeywordDefaults";
 import {
   renderDelegationDoctrine,
   upsertDelegationSection,
@@ -258,6 +259,12 @@ export class TycoonPanel {
     // _ensureDelegationDoctrineCurrent doc comment) — fixes 0% delegation on
     // projects upgraded from a version that predates the doctrine.
     this._ensureDelegationDoctrineCurrent();
+
+    // Auto-heal missing/empty agent-keywords.json entries once per panel
+    // open (see _ensureAgentKeywordsSeeded doc comment) — fixes inert
+    // `kw1|kw2|kw3` placeholders on projects whose roster was never
+    // registered for keyword routing.
+    this._ensureAgentKeywordsSeeded();
 
     this._update();
 
@@ -3002,6 +3009,47 @@ export class TycoonPanel {
   }
 
   /**
+   * Auto-heal: backfill missing/empty `agent-keywords.json` entries for
+   * every currently-installed agent (`.claude/agents/*.md`) that has a
+   * known default (see `DEFAULT_AGENT_KEYWORDS`/`seedMissingAgentKeywords`
+   * in `./agentKeywordDefaults`). A project can end up with an agent's
+   * routing entry missing or empty for several reasons — hand-authored
+   * `.claude/agents/*.md` files added outside the pack-install flow, or a
+   * project upgraded from a version that predates a given built-in agent —
+   * and an empty entry renders as an inert `kw1|kw2|kw3` placeholder in the
+   * settings UI, silently disabling keyword routing for that agent.
+   *
+   * GATE: only runs when TycoonAgents hooks are already installed for this
+   * project ({@link _hooksInstalledForRoot} — the same consent proxy
+   * `_ensureDelegationDoctrineCurrent` uses), so a project that hasn't
+   * opted into TycoonAgents is never touched. Never overwrites a non-empty
+   * existing pattern (a user's own customization always wins) and never
+   * writes when nothing changed. Wrapped in try/catch so a failure here can
+   * never break panel construction/rendering.
+   */
+  private _ensureAgentKeywordsSeeded(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+      if (!this._hooksInstalledForRoot(root)) return;
+
+      const agentsDir = path.join(root, ".claude", "agents");
+      const installedAgentIds = loadAgentRoster(agentsDir).map((a) => a.id);
+      if (installedAgentIds.length === 0) return;
+
+      const config = this._readKeywordsConfig(root);
+      const { config: updated, changed } = seedMissingAgentKeywords(config, installedAgentIds);
+      if (!changed) return;
+
+      const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+      fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+      fs.writeFileSync(keywordsPath, JSON.stringify(updated, null, 2));
+    } catch {
+      // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
    * Build the full managed CLAUDE.md doctrine content (delegation section +
    * code rules section) for a given mode/reviewEnabled, splicing into
    * `existingContent`. Shared by `_handleInstallHooks` (the reference write
@@ -3069,6 +3117,14 @@ export class TycoonPanel {
 
       // 6. Write merged settings.
       fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
+
+      // 6b. Backfill routing keywords for any already-present hand-authored
+      // agent (see _ensureAgentKeywordsSeeded) so a fresh install populates
+      // keyword routing immediately rather than waiting for a panel reopen.
+      // Must run AFTER step 6 — its hooks-installed gate reads the settings
+      // file just written above. Best-effort — internally try/caught, never
+      // fails the hook install.
+      this._ensureAgentKeywordsSeeded();
 
       // 7. Team Lead Mode (Phase 1) wiring — same `.claude` dir the hook install
       // just wrote into. A CLAUDE.md write failure is a USER-OWNED-file risk,
