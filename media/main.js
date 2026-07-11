@@ -10,6 +10,24 @@
 (function () {
   const vscode = acquireVsCodeApi();
 
+  // ── One-time legacy rebirth-cache purge (bug fix: Reset session metrics /
+  // reload / upgrade leaking stale badge+build state across sessions) ──────
+  // The host is now the authoritative source of scoped badge/build/rebirth
+  // state (sent as rebirth_state on THEME_INITIALIZED). A pre-existing
+  // per-workspace `rebirth` blob in getState() may be leaked/unscoped from
+  // before scoping was introduced. Drop it ONCE per workspace, before the
+  // rehydration path (below, on THEME_INITIALIZED) ever reads
+  // getState().rebirth as a fallback — guarded by rebirthCacheV2 so it only
+  // runs the first time and never interferes with normal persistence after.
+  try {
+    const _st0 = vscode.getState() || {};
+    if (!_st0.rebirthCacheV2) {
+      if (_st0.rebirth) delete _st0.rebirth;
+      _st0.rebirthCacheV2 = true;
+      vscode.setState(_st0);
+    }
+  } catch (e) { /* best-effort */ }
+
   // ── Boot loader overlay ────────────────────────────────────────────────
   // Markup lives in the INITIAL HTML (panel.ts _getHtmlForWebview + inline
   // styling in media/style.css) so it paints before this script even runs.
@@ -8126,6 +8144,36 @@
       renderMetrics([]);
       renderDelegationStats([]);
       renderSettings();
+      // ── Bug fix: also clear persisted badge/build/rebirth WORLD state so
+      // the medal count + built objects actually disappear on Reset, instead
+      // of surviving Reset/reload/upgrade via the webview's own getState()
+      // cache and buildBuiltCount (requiredRebirthBadgeIds is intentionally
+      // left alone — it's the host-driven requirement definition, not
+      // progress, and gets repopulated by the next host payload). ──────────
+      unlockedBadgeIds = new Set();
+      cycleObjectsBuilt = 0;
+      cycleRivalsEvicted = 0;
+      cyclePeakActive = 0;
+      rebirthCount = 0;
+      rebirthBaseline = { built: 0, evicted: 0, tasks: 0 };
+      // buildBuiltCount/buildCurrentProgress drive the WORLD's visible built
+      // objects (see computeBuildState) — a separate counter from
+      // cycleObjectsBuilt (badge/rebirth-cycle progress only). Without
+      // zeroing these the built objects stay visible after Reset.
+      buildBuiltCount = 0;
+      buildCurrentProgress = 0;
+      // Purge the persisted blob so a reload can't rehydrate stale progress.
+      try {
+        const prev = vscode.getState() || {};
+        delete prev.rebirth;
+        vscode.setState(prev);
+      } catch (e) { /* best-effort */ }
+      renderBadgePanel();
+      renderRebirthPanel();
+      // Mirrors the update site used everywhere else the unlocked count
+      // changes (see updateBadgeHud, L708) rather than duplicating its
+      // hidden/pop-animation logic here.
+      updateBadgeHud();
     } else if (dangerStatusEl) {
       dangerStatusEl.textContent = msg.error || "Reset failed";
       dangerStatusEl.classList.add("settings-error-note");
