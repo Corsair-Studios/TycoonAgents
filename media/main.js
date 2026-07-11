@@ -3784,14 +3784,14 @@
 
   // ── Expression bubbles (rare, meaningful — see showExpression) ─────────
   /** Minimum seconds between one agent's expression bubbles (shared rate limit). */
-  const BUBBLE_COOLDOWN_SEC = 16;
+  const BUBBLE_COOLDOWN_SEC = 60;
   /** Chance, on an idle→active transition, of a brief "idea" bubble. */
   const IDEA_CHANCE = 0.02;
   /** Chance, on transitioning into a seated pose, of a brief "sleep" bubble. */
   const SLEEP_CHANCE = 0.02;
   /** Chance, per idle-still frame, of a rare playful "love" bubble (also requires
    * proximity to another idle-still agent — see LOVE_NEAR_NATIVE_SQ below). */
-  const LOVE_CHANCE = 0.03;
+  const LOVE_CHANCE = 0.006;
   /** Native-space squared distance under which two idle-still agents count as
    * "cozy" for the love-bubble proximity gate (agents are ~34 native units
    * apart per MIN_AGENT_SEP_NATIVE, so 60 is a comfortably close threshold). */
@@ -10795,6 +10795,15 @@
       // sitting never coexists with dance/conga/engage/build (all preempt it).
       if (charEntry.sitting) {
         desiredClip = "sit";
+      }
+      // FINAL MOVEMENT GUARD: a physically-moving agent ALWAYS walks — no
+      // combat (shoot/melee), celebration (cheer), or emote (point/signal/
+      // block) pose may play mid-slide; those only begin once the agent is
+      // stationary at its destination. Exemptions: "dance"/"sit" are genuine
+      // in-place festivity states (position-locked), and conga members walk
+      // their line with an intentional periodic cheer, so leave those clips.
+      if (isMoving && !inConga && desiredClip !== "dance" && desiredClip !== "sit") {
+        desiredClip = "walk";
       }
 
       const anim = charEntry.animState;
