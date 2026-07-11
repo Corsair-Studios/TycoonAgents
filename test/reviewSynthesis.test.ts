@@ -40,6 +40,7 @@ const {
   createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt,
   applyObjectBoardFrames, removeStaleBoardFrameKeys, mergeResumedReviewItems,
   boardBackgroundModeForProvider, resyncRenamedReviewItems, applyThemeItemNameChanges,
+  refreshSavedReviewItemMetadata,
 } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -831,4 +832,125 @@ test('resyncRenamedReviewItems no badge — a non-badge, non-matching change lea
 
   // An empty result means no board (including the achievement board) was resynced.
   assert.deepEqual(refreshed, []);
+});
+
+// --- refreshSavedReviewItemMetadata: for-DISPLAY merge that folds the
+// freshly-synthesized `expected` item's structural metadata (label +
+// object_rows/object_specs/rival_rows/decor_rows/achievement_names/
+// expression_names) onto a SAVED item WITHOUT disturbing its generation state
+// (status/revision/updated_at/prompt/etc.). Purpose: existing themes whose
+// saved object item predates the v2 `object_rows` must still show the inline
+// Names editor, because the current-manifest-derived expected.object_rows now
+// refreshes onto the item. ---
+
+function twenty(prefix: string) {
+  return Array.from({ length: 20 }, (_unused, index) => ({
+    kind: 'object_static' as const,
+    object_id: `obj_${index}`,
+    display_name: `${prefix} ${index + 1}`,
+  }));
+}
+
+test('refreshSavedReviewItemMetadata: refreshes a saved object item that is MISSING object_rows (existing pre-v2 theme) while preserving its generation state', () => {
+  const saved = {
+    id: 'objects_01', filename: 'objects_01.png', label: 'stale label', kind: 'object_atlas' as const,
+    status: 'accepted' as const, prompt: 'ORIGINAL SAVED PROMPT', revision: 3, frame_keys: ['object_obj_0'],
+    updated_at: '2026-03-14T09:26:53.000Z',
+    // NOTE: intentionally NO object_rows — this is the pre-v2 saved shape.
+  };
+  const expectedRows = Array.from({ length: 20 }, (_unused, index) => ({
+    kind: 'object_static' as const, object_id: `obj_${index}`, display_name: `Object ${index + 1}`,
+  }));
+  const expected = {
+    id: 'objects_01', filename: 'objects_01.png', label: 'Static objects 1–20', kind: 'object_atlas' as const,
+    status: 'pending' as const, prompt: 'FRESH EXPECTED PROMPT', revision: 0, frame_keys: [],
+    object_rows: expectedRows,
+  };
+
+  const merged = refreshSavedReviewItemMetadata(saved, expected);
+
+  // Structural metadata comes from `expected`.
+  assert.equal(merged.object_rows?.length, 20);
+  assert.deepEqual(merged.object_rows, expectedRows);
+  assert.equal(merged.label, 'Static objects 1–20');
+  // Generation state stays from `saved`.
+  assert.equal(merged.status, 'accepted');
+  assert.equal(merged.revision, 3);
+  assert.equal(merged.updated_at, '2026-03-14T09:26:53.000Z');
+  assert.equal(merged.prompt, 'ORIGINAL SAVED PROMPT');
+  assert.deepEqual(merged.frame_keys, ['object_obj_0']);
+});
+
+test('refreshSavedReviewItemMetadata: OVERRIDES a stale short object_rows array with the fresh 20-row expected array', () => {
+  const saved = {
+    id: 'objects_01', filename: 'objects_01.png', label: 'label', kind: 'object_atlas' as const,
+    status: 'accepted' as const, prompt: 'p', revision: 2, frame_keys: [], updated_at: '2026-02-02T00:00:00.000Z',
+    object_rows: twenty('STALE').slice(0, 5), // old/short: only 5 rows
+  };
+  const freshRows = twenty('Fresh');
+  const expected = {
+    id: 'objects_01', filename: 'objects_01.png', label: 'Static objects 1–20', kind: 'object_atlas' as const,
+    status: 'pending' as const, prompt: 'x', revision: 0, frame_keys: [],
+    object_rows: freshRows,
+  };
+
+  const merged = refreshSavedReviewItemMetadata(saved, expected);
+  assert.equal(merged.object_rows?.length, 20);
+  assert.deepEqual(merged.object_rows, freshRows);
+});
+
+test('refreshSavedReviewItemMetadata: does NOT wipe a saved field the expected item lacks (expected has no object_rows)', () => {
+  const savedDecorRows = [
+    { kind: 'seat' as const, decor_id: 'decor_0', display_name: 'Saved Bench' },
+    { kind: 'projectile' as const },
+  ];
+  const saved = {
+    id: 'background_decor', filename: 'background_decor.png', label: 'Decor', kind: 'background_decor_atlas' as const,
+    status: 'accepted' as const, prompt: 'SAVED DECOR PROMPT', revision: 4, frame_keys: [],
+    updated_at: '2026-04-01T12:00:00.000Z',
+    decor_rows: savedDecorRows,
+    // NOTE: no object_rows on the saved item either.
+  };
+  const freshDecorRows = [
+    { kind: 'seat' as const, decor_id: 'decor_0', display_name: 'Fresh Bench' },
+    { kind: 'projectile' as const },
+  ];
+  const expected = {
+    id: 'background_decor', filename: 'background_decor.png', label: 'Decor', kind: 'background_decor_atlas' as const,
+    status: 'pending' as const, prompt: 'x', revision: 0, frame_keys: [],
+    decor_rows: freshDecorRows,
+    // expected deliberately carries NO object_rows.
+  };
+
+  const merged = refreshSavedReviewItemMetadata(saved, expected);
+  // decor_rows refreshed from expected...
+  assert.deepEqual(merged.decor_rows, freshDecorRows);
+  // ...but object_rows must remain undefined (expected never carried it, so it wasn't set).
+  assert.equal(merged.object_rows, undefined);
+  // A non-structural field is preserved unchanged from saved.
+  assert.equal(merged.prompt, 'SAVED DECOR PROMPT');
+});
+
+test('refreshSavedReviewItemMetadata: refreshes achievement_names from expected onto the saved achievement board', () => {
+  const oldNames = Array.from({ length: 20 }, (_unused, index) => `Old Badge ${index}`);
+  const newNames = Array.from({ length: 20 }, (_unused, index) => `Themed Badge ${index}`);
+  const saved = {
+    id: 'achievements', filename: 'achievements.png', label: 'Achievements', kind: 'achievement_atlas' as const,
+    status: 'accepted' as const, prompt: 'SAVED ACH PROMPT', revision: 7, frame_keys: [],
+    updated_at: '2026-05-05T05:05:05.000Z',
+    achievement_names: oldNames,
+  };
+  const expected = {
+    id: 'achievements', filename: 'achievements.png', label: 'Achievements', kind: 'achievement_atlas' as const,
+    status: 'pending' as const, prompt: 'x', revision: 0, frame_keys: [],
+    achievement_names: newNames,
+  };
+
+  const merged = refreshSavedReviewItemMetadata(saved, expected);
+  assert.deepEqual(merged.achievement_names, newNames);
+  assert.equal(merged.achievement_names?.length, 20);
+  // Generation state preserved.
+  assert.equal(merged.status, 'accepted');
+  assert.equal(merged.revision, 7);
+  assert.equal(merged.updated_at, '2026-05-05T05:05:05.000Z');
 });

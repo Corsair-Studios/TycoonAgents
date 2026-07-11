@@ -819,6 +819,34 @@ export async function ensureThemeReviewImages(
   return { directoryUri, imageUris: await listReviewImageUris(directoryUri), recovered: true };
 }
 
+/**
+ * Merge a freshly-synthesized `expected` review item into its `saved` counterpart
+ * for DISPLAY: keep the saved item's generation state (status / revision / updated_at /
+ * generation_error / filename / image association) but refresh the STRUCTURAL per-slot
+ * metadata that drives the inline Names editor + prompt (label + object_rows / object_specs /
+ * rival_rows / decor_rows / achievement_names / expression_names) from `expected`, which is
+ * built from the CURRENT manifest/plan. Without this, a theme generated before the v2 object
+ * board shape (or before these row fields existed) keeps stale/absent rows on disk, so the
+ * Names editor shows nothing for its object/rival/decor boards even though the current
+ * manifest defines every slot. Each field is only overridden when `expected` actually
+ * carries it (so a board kind that has no such field is never wiped). Exported for unit testing.
+ */
+export function refreshSavedReviewItemMetadata(
+  saved: ThemeImageReviewItem,
+  expected: Omit<ThemeImageReviewItem, 'updated_at'>,
+): ThemeImageReviewItem {
+  return {
+    ...saved,
+    label: expected.label,
+    ...(expected.object_rows !== undefined ? { object_rows: expected.object_rows } : {}),
+    ...(expected.object_specs !== undefined ? { object_specs: expected.object_specs } : {}),
+    ...(expected.rival_rows !== undefined ? { rival_rows: expected.rival_rows } : {}),
+    ...(expected.decor_rows !== undefined ? { decor_rows: expected.decor_rows } : {}),
+    ...(expected.achievement_names !== undefined ? { achievement_names: expected.achievement_names } : {}),
+    ...(expected.expression_names !== undefined ? { expression_names: expected.expression_names } : {}),
+  };
+}
+
 export async function getThemeImageReview(
   globalStorageUri: vscode.Uri,
   themeId: string,
@@ -860,8 +888,11 @@ export async function getThemeImageReview(
   // Augment the saved review items with the FULL expected item set for this
   // theme's plan, so boards that were never generated still show up as
   // pending "placeholder" cards instead of being silently absent. This is
-  // display-time only: saved items are kept verbatim (never downgraded to
-  // pending) and the on-disk review document is left untouched.
+  // display-time only: a saved item's generation STATE is preserved (never
+  // downgraded to pending), but its per-slot row/name metadata is refreshed
+  // from the current manifest/plan (see refreshSavedReviewItemMetadata) so the
+  // Names editor reflects the live board shape; the on-disk review document is
+  // left untouched.
   let items = document?.items ?? [];
   if (manifest) {
     try {
@@ -877,7 +908,7 @@ export async function getThemeImageReview(
         const mergedExpected: ThemeImageReviewItem[] = expectedItems.map((expected) => {
           const saved = savedItems.find((candidate) => candidate.id === expected.id);
           return saved
-            ? { ...saved, label: expected.label }
+            ? refreshSavedReviewItemMetadata(saved, expected)
             : { ...expected, updated_at: new Date(0).toISOString() };
         });
         const extraSaved = savedItems.filter((candidate) => !expectedIds.has(candidate.id));
