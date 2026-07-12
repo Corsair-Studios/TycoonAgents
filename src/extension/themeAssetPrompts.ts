@@ -33,6 +33,8 @@ export function boardBackgroundPaddingAdjective(background: BoardBackgroundMode)
 export interface ThemeRivalPromptSpec {
   rival_id: string;
   display_name: string;
+  /** Concrete visual-appearance spec from the plan (silhouette, colors, materials, signature features). */
+  visual_description?: string;
 }
 
 export interface ThemeObjectPromptSpec {
@@ -45,11 +47,15 @@ export interface ThemeObjectPromptSpec {
    * the object row emits explicit rack visual guidance instead of the generic template.
    */
   is_ranged_rack?: boolean;
+  /** Concrete visual-appearance spec from the plan (silhouette, colors, materials, signature features). */
+  visual_description?: string;
 }
 
 export interface ThemeDecorPromptSpec {
   decor_id: string;
   display_name: string;
+  /** Concrete visual-appearance spec from the plan (silhouette, colors, materials, signature features). */
+  visual_description?: string;
 }
 
 /**
@@ -78,6 +84,7 @@ export function createObjectBoard1Rows(objects: ThemeObjectPromptSpec[]): ThemeO
     display_name: object.display_name,
     ...(object.motion_hint ? { motion_hint: object.motion_hint } : {}),
     ...(object.is_ranged_rack ? { is_ranged_rack: true } : {}),
+    ...(object.visual_description ? { visual_description: object.visual_description } : {}),
   }));
 }
 
@@ -96,6 +103,7 @@ export function createObjectBoard2Rows(animatedObjects: ThemeObjectPromptSpec[])
     object_id: object.object_id,
     display_name: object.display_name,
     ...(object.motion_hint ? { motion_hint: object.motion_hint } : {}),
+    ...(object.visual_description ? { visual_description: object.visual_description } : {}),
   }));
   return [...animRows, { kind: 'poof' }, { kind: 'crate' }];
 }
@@ -123,12 +131,15 @@ export function createDecorBoardRows(decor: ThemeDecorPromptSpec[]): ThemeDecorB
   if (decor.length !== 9) throw new Error('Background decor generation requires exactly 9 decor items.');
   const seats = decor.slice(0, 4).map((item): ThemeDecorBoardRow => ({
     kind: 'seat', decor_id: item.decor_id, display_name: item.display_name,
+    ...(item.visual_description ? { visual_description: item.visual_description } : {}),
   }));
   const statics = decor.slice(4, 8).map((item): ThemeDecorBoardRow => ({
     kind: 'decor', decor_id: item.decor_id, display_name: item.display_name,
+    ...(item.visual_description ? { visual_description: item.visual_description } : {}),
   }));
   const anim: ThemeDecorBoardRow = {
     kind: 'decor_anim', decor_id: decor[8].decor_id, display_name: decor[8].display_name,
+    ...(decor[8].visual_description ? { visual_description: decor[8].visual_description } : {}),
   };
   const projectile: ThemeDecorBoardRow = { kind: 'projectile' };
   return [seats, statics, [anim], [projectile]];
@@ -158,6 +169,7 @@ export function createRivalBoardRows(rivals: ThemeRivalPromptSpec[]): ThemeRival
       kind: 'rival',
       rival_id: rival.rival_id,
       display_name: rival.display_name,
+      ...(rival.visual_description ? { visual_description: rival.visual_description } : {}),
     })));
   }
   return boards;
@@ -183,7 +195,8 @@ export function buildRivalAtlasPrompt(
     throw new Error('Rival boards carry one to four enemy rows.');
   }
   const rowLines = rows.map((row, index) =>
-    `Row ${index + 1} (Cells ${index * 5 + 1}-${index * 5 + 5}): the enemy **"${row.display_name}"** from the "${themeName}" theme.`,
+    `Row ${index + 1} (Cells ${index * 5 + 1}-${index * 5 + 5}): the enemy **"${row.display_name}"** from the "${themeName}" theme.`
+    + (row.visual_description ? ` Appearance — depict this exact design: ${row.visual_description}` : ''),
   );
   const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
@@ -262,6 +275,7 @@ export function buildCharacterAtlasPrompt(
   characterName: string,
   themeName: string,
   background: BoardBackgroundMode = 'magenta',
+  visualDescription?: string,
 ): string {
   const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
@@ -297,6 +311,9 @@ export function buildCharacterAtlasPrompt(
     '',
     `**"${characterName}"** from the **${themeName}** theme.`,
     '',
+    ...(visualDescription
+      ? [`Appearance — depict this exact design: ${visualDescription}`, '']
+      : []),
     'Maintain absolute consistency across all 20 frames:',
     '',
     '* identical face',
@@ -683,9 +700,11 @@ export function buildObjectBoard1Prompt(
   const cellLines = rows.map((row, index) => {
     if (row.kind !== 'object_static') throw new Error('Object board 1 cells must all be static objects.');
     if (row.is_ranged_rack) {
-      return `Cell ${index + 1}: ${row.display_name} — a wall- or floor-mounted rack/stand displaying several themed RANGED weapons (rifles, launchers, or bows appropriate to the setting), clearly readable as ranged weapons — NOT a crate, shelf, or melee weapons.`;
+      return `Cell ${index + 1}: ${row.display_name} — a wall- or floor-mounted rack/stand displaying several themed RANGED weapons (rifles, launchers, or bows appropriate to the setting), clearly readable as ranged weapons — NOT a crate, shelf, or melee weapons.`
+        + (row.visual_description ? ` — ${row.visual_description}` : '');
     }
-    return `Cell ${index + 1}: ${row.display_name} — one complete, fully-built theme structure/prop.`;
+    return `Cell ${index + 1}: ${row.display_name} — one complete, fully-built theme structure/prop.`
+      + (row.visual_description ? ` — ${row.visual_description}` : '');
   });
   return [
     `Create one static buildable-object sprite board for the "${themeName}" theme.`,
@@ -729,8 +748,10 @@ export function buildObjectBoard2Prompt(
     `Create one animated-object + build-effects sprite board for the "${themeName}" theme.`,
     boardContract(4, 5, background),
     'The 20 cells (4 columns x 5 rows, row-major) carry FIVE distinct roles:',
-    `Row 1 (Cells 1-4): the four sequential animation frames of ONE object — ${rowA.display_name} — ${motionA}`,
-    `Row 2 (Cells 5-8): the four sequential animation frames of a SECOND object — ${rowB.display_name} — ${motionB}`,
+    `Row 1 (Cells 1-4): the four sequential animation frames of ONE object — ${rowA.display_name} — ${motionA}`
+      + (rowA.visual_description ? ` — ${rowA.visual_description}` : ''),
+    `Row 2 (Cells 5-8): the four sequential animation frames of a SECOND object — ${rowB.display_name} — ${motionB}`
+      + (rowB.visual_description ? ` — ${rowB.visual_description}` : ''),
     `Cells 9-15 (spanning row 3 and the first three cells of row 4): a SEVEN-frame one-shot build-completion POOF — use the POOF rules below.`,
     'Cells 16-19 (the rest of row 4 and all of row 5): leave completely EMPTY — background fill only, no object, no effect, no stray marks of any kind.',
     'Cell 20 (the final cell): a single static build CRATE — use the CRATE rules below.',
@@ -774,8 +795,13 @@ export function buildBackgroundDecorPrompt(
   }
   const animDecor = animRow3[0];
   const animName = animDecor.kind === 'projectile' ? '' : animDecor.display_name;
+  const animDescription = animDecor.kind === 'projectile' ? '' : (animDecor.visual_description ?? '');
   const cellList = (items: ThemeDecorBoardRow[], startCell: number): string[] =>
-    items.map((item, index) => `  Cell ${startCell + index}: ${item.kind === 'projectile' ? 'projectile FX' : item.display_name}`);
+    items.map((item, index) => {
+      const base = `  Cell ${startCell + index}: ${item.kind === 'projectile' ? 'projectile FX' : item.display_name}`;
+      const description = item.kind === 'projectile' ? '' : item.visual_description;
+      return description ? `${base} — ${description}` : base;
+    });
   const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
     `Create one background-decor sprite board for the "${themeName}" theme.`,
@@ -793,7 +819,7 @@ export function buildBackgroundDecorPrompt(
     ...cellList(staticRow, 5),
     '',
     'Row 3 (Cells 9-12): ONE animated decor item shown as FOUR sequential loopable frames left to right.',
-    `  Item: ${animName}`,
+    `  Item: ${animName}${animDescription ? ` — ${animDescription}` : ''}`,
     'All four cells show the SAME item from one fixed camera; change only lights and subtle highlights — never moving, rotating, or shifting parts.',
     'Cell 12 must flow seamlessly back to cell 9. Keep the body stationary and the motion subtle.',
     'Cell 9 is the first frame of this animation row and defines the subject\'s exact position, outline, and footprint. Treat cells 10-12 as a near-copy of the first frame, redrawn with only small internal details changed.',

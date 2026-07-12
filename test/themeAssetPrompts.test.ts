@@ -415,3 +415,112 @@ test('environment prompt is unaffected by background mode (it has no chroma keyi
   assert.match(prompt, /cyan \(#00FFFF\)/i);
   assert.doesNotMatch(prompt, /magenta/i);
 });
+
+// --- Per-item visual descriptions --------------------------------------------
+//
+// Each builder appends a description when its row/param carries a non-empty
+// visual_description, and must stay BYTE-IDENTICAL to a no-description call
+// when it's absent, empty, or explicitly undefined.
+
+test('buildCharacterAtlasPrompt injects an Appearance line only when a visual description is supplied, and stays byte-identical without one', () => {
+  const baseline = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid');
+  const omittedParam = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid', 'magenta');
+  const explicitUndefined = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid', 'magenta', undefined);
+  const emptyString = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid', 'magenta', '');
+  assert.equal(omittedParam, baseline);
+  assert.equal(explicitUndefined, baseline);
+  assert.equal(emptyString, baseline);
+  assert.doesNotMatch(baseline, /Appearance — depict this exact design/);
+
+  const withDescription = buildCharacterAtlasPrompt(
+    'neon cyberpunk', 'Nova', 'Night Grid', 'magenta',
+    'A chrome humanoid with glowing blue circuitry seams',
+  );
+  assert.match(withDescription, /Appearance — depict this exact design: A chrome humanoid with glowing blue circuitry seams/);
+  assert.notEqual(withDescription, baseline);
+});
+
+test('buildRivalAtlasPrompt appends an Appearance line per-row when visual_description is present, and stays byte-identical without one', () => {
+  const baselineRows = createRivalBoardRows(rivalSpecs()); // no visual_description on any spec
+  const baseline = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', baselineRows[0]);
+
+  // An explicit empty-string description is dropped by createRivalBoardRows's spread
+  // guard, so the row shape (and the resulting prompt) must match the baseline exactly.
+  const emptyDescRows = createRivalBoardRows(
+    rivalSpecs().map((spec, index) => (index === 0 ? { ...spec, visual_description: '' } : spec)),
+  );
+  assert.equal(buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', emptyDescRows[0]), baseline);
+
+  const describedRows = createRivalBoardRows(
+    rivalSpecs().map((spec, index) => (index === 0 ? { ...spec, visual_description: 'A menacing red-eyed scrap drone' } : spec)),
+  );
+  const described = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', describedRows[0]);
+  assert.match(described, /Appearance — depict this exact design: A menacing red-eyed scrap drone/);
+  assert.doesNotMatch(baseline, /Appearance — depict this exact design/);
+});
+
+test('buildObjectBoard1Prompt appends the visual description carried by a row built via createObjectBoard1Rows, byte-identical without one', () => {
+  const baselineRows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_STATIC_COUNT));
+  const baseline = buildObjectAtlasPrompt('sci-fi', 'Orbital', baselineRows);
+
+  const emptyDescRows = createObjectBoard1Rows(
+    staticObjectSpecs(OBJECT_STATIC_COUNT).map((spec, index) => (index === 0 ? { ...spec, visual_description: '' } : spec)),
+  );
+  assert.equal(buildObjectAtlasPrompt('sci-fi', 'Orbital', emptyDescRows), baseline);
+
+  const describedRows = createObjectBoard1Rows(
+    staticObjectSpecs(OBJECT_STATIC_COUNT).map((spec, index) => (index === 0
+      ? { ...spec, visual_description: 'A rugged steel weapon locker with amber warning lights' }
+      : spec)),
+  );
+  const described = buildObjectAtlasPrompt('sci-fi', 'Orbital', describedRows);
+  const describedLine = described.split('\n').find((line) => line.startsWith('Cell 1: '));
+  assert.ok(describedLine, 'Cell 1 line must be present');
+  assert.ok(describedLine?.endsWith(' — A rugged steel weapon locker with amber warning lights'));
+  assert.doesNotMatch(baseline, /A rugged steel weapon locker/);
+});
+
+test('buildObjectBoard1Prompt appends the visual description to the ranged-rack cell too', () => {
+  const specs = staticObjectSpecs(OBJECT_STATIC_COUNT);
+  const rows = createObjectBoard1Rows([
+    {
+      ...specs[0],
+      object_id: 'rack',
+      display_name: 'Laser Rifle Rack',
+      is_ranged_rack: true,
+      visual_description: 'Wall-mounted chrome rack holding three glowing laser rifles',
+    },
+    ...specs.slice(1),
+  ]);
+  const prompt = buildObjectAtlasPrompt('sci-fi', 'Orbital', rows);
+  const rackLine = prompt.split('\n').find((line) => line.startsWith('Cell 1: Laser Rifle Rack'));
+  assert.ok(rackLine, 'Cell 1 rack line must be present');
+  assert.ok(rackLine?.endsWith(' — Wall-mounted chrome rack holding three glowing laser rifles'));
+});
+
+test('buildBackgroundDecorPrompt appends visual descriptions to seat and animated decor cells, byte-identical without them', () => {
+  const baseline = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', createDecorBoardRows(decorSpecs()));
+
+  const emptyDescSpecs = decorSpecs().map((spec, index) => (
+    index === 0 || index === 8 ? { ...spec, visual_description: '' } : spec
+  ));
+  assert.equal(
+    buildBackgroundDecorPrompt('cozy tavern', 'Tavern', createDecorBoardRows(emptyDescSpecs)),
+    baseline,
+  );
+
+  const describedSpecs = decorSpecs().map((spec, index) => {
+    if (index === 0) return { ...spec, visual_description: 'A weathered oak stool with a worn leather cushion' };
+    if (index === 8) return { ...spec, visual_description: 'A slow-turning ceiling fan with brass blades' };
+    return spec;
+  });
+  const described = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', createDecorBoardRows(describedSpecs));
+  const seatLine = described.split('\n').find((line) => line.trim().startsWith('Cell 1: Decor 1'));
+  const animLine = described.split('\n').find((line) => line.trim().startsWith('Item: Decor 9'));
+  assert.ok(seatLine, 'Cell 1 seat line must be present');
+  assert.ok(seatLine?.endsWith(' — A weathered oak stool with a worn leather cushion'));
+  assert.ok(animLine, 'animated decor Item line must be present');
+  assert.ok(animLine?.endsWith(' — A slow-turning ceiling fan with brass blades'));
+  assert.doesNotMatch(baseline, /A weathered oak stool/);
+  assert.doesNotMatch(baseline, /A slow-turning ceiling fan/);
+});

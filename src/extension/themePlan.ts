@@ -100,6 +100,14 @@ export interface ThemePlan {
   display_name: string;
   creative_direction: string;
   characters: string[];
+  /**
+   * Optional per-character concrete visual-appearance spec (same length/order as
+   * `characters`): silhouette/form, primary + accent colors, materials/finish,
+   * and 1-2 signature identifying features. Threaded into buildCharacterAtlasPrompt
+   * so the image model depicts a specific design instead of guessing from the name.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  character_descriptions?: string[];
   environment: string;
   objects: string[];
   /**
@@ -109,7 +117,19 @@ export interface ThemePlan {
    * Internal plan field only — NOT part of the immutable shared/types contract.
    */
   object_motion_hints?: string[];
+  /**
+   * Optional per-object concrete visual-appearance spec (same length/order as
+   * `objects`). See `character_descriptions` for the shape/intent.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  object_descriptions?: string[];
   decor: string[];
+  /**
+   * Optional per-decor concrete visual-appearance spec (same length/order as
+   * `decor`). See `character_descriptions` for the shape/intent.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  decor_descriptions?: string[];
   enemies: string[];
   /**
    * Optional per-enemy combat classification (same length/order as `enemies`).
@@ -118,6 +138,12 @@ export interface ThemePlan {
    * Internal plan field only — NOT part of the immutable shared/types contract.
    */
   enemy_attack_styles?: Array<'melee' | 'ranged' | undefined>;
+  /**
+   * Optional per-enemy concrete visual-appearance spec (same length/order as
+   * `enemies`). See `character_descriptions` for the shape/intent.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  enemy_descriptions?: string[];
   expressions: string[];
   achievements: string[];
 }
@@ -155,31 +181,68 @@ const WALKABLE_NAV_POLYGON: [number, number][] = [
 export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Custom Theme'): ThemePlan {
   const displayName = cleanValue(input.display_name) || cleanValue(fallbackName) || 'Custom Theme';
   const themeId = toSafeThemeId(input.theme_id || displayName);
-  const { objects, objectMotionHints } = reserveRangedWeaponRackSlot(
+  const { objects, objectMotionHints, objectDescriptions } = reserveRangedWeaponRackSlot(
     input.objects,
     displayName,
     input.object_motion_hints,
+    input.object_descriptions,
   );
-  const { enemies, enemyAttackStyles } = normalizeEnemies(input.enemies, input.enemy_attack_styles);
+  const { enemies, enemyAttackStyles, enemyDescriptions } = normalizeEnemies(
+    input.enemies,
+    input.enemy_attack_styles,
+    input.enemy_descriptions,
+  );
+  const characters = normalizeNames(input.characters, THEME_CHARACTER_COUNT, 'Character');
+  const decor = normalizeDecorNames(input.decor);
   return {
     version: 1,
     theme_id: themeId,
     display_name: displayName,
     creative_direction: cleanValue(input.creative_direction)
       || `A cohesive game-art interpretation of ${displayName}.`,
-    characters: normalizeNames(input.characters, THEME_CHARACTER_COUNT, 'Character'),
+    characters,
+    character_descriptions: alignDescriptions(input.characters, input.character_descriptions, characters),
     environment: cleanValue(input.environment)
       || `A playable isometric environment inspired by ${displayName}.`,
     objects,
     object_motion_hints: objectMotionHints,
-    decor: normalizeDecorNames(input.decor),
+    object_descriptions: objectDescriptions,
+    decor,
+    decor_descriptions: alignDescriptions(input.decor, input.decor_descriptions, decor),
     enemies,
     enemy_attack_styles: enemyAttackStyles,
+    enemy_descriptions: enemyDescriptions,
     expressions: applyFixedExpressionLabels(
       normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
     ),
     achievements: normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge'),
   };
+}
+
+/**
+ * Pair a raw name array with a parallel raw "extra" array (a visual
+ * description, in practice) using the SAME blank-filtering order that
+ * `normalizeNames`/`normalizeDecorNames` apply to `rawNames` itself, then
+ * align the surviving extras 1:1 with `normalizedNames` (which is already
+ * padded/truncated to its fixed count). Padded/fallback entries (added
+ * because the planner supplied fewer names than required) get '' — never a
+ * misaligned description carried over from an unrelated name. Returns
+ * undefined when there is no extra data at all, so callers can fall back to
+ * current (no-description) behavior cleanly.
+ */
+function alignDescriptions(
+  rawNames: unknown,
+  rawExtra: unknown,
+  normalizedNames: string[],
+): string[] | undefined {
+  if (!Array.isArray(rawExtra) || rawExtra.length === 0) return undefined;
+  const names = Array.isArray(rawNames) ? rawNames.map((value) => cleanValue(value)) : [];
+  const extras = rawExtra.map((value) => cleanValue(value));
+  const paired = names
+    .map((name, index) => ({ name, extra: extras[index] ?? '' }))
+    .filter((entry) => entry.name.length > 0);
+  const aligned = normalizedNames.map((_name, index) => paired[index]?.extra ?? '');
+  return aligned.some((description) => description.length > 0) ? aligned : undefined;
 }
 
 export function themePlanCreativeDirection(plan: ThemePlan): string {
@@ -308,13 +371,16 @@ function reserveRangedWeaponRackSlot(
   values: unknown,
   displayName: string,
   motionHints?: unknown,
-): { objects: string[]; objectMotionHints?: string[] } {
+  descriptions?: unknown,
+): { objects: string[]; objectMotionHints?: string[]; objectDescriptions?: string[] } {
   const rawSource = (Array.isArray(values) ? values : []).map((value) => cleanValue(value));
   const rawHints = Array.isArray(motionHints) ? motionHints.map((value) => cleanValue(value)) : [];
-  // Pair each name with its planner-supplied motion hint before filtering blanks,
-  // so hints stay aligned to their object even after empty names are dropped.
+  const rawDescriptions = Array.isArray(descriptions) ? descriptions.map((value) => cleanValue(value)) : [];
+  // Pair each name with its planner-supplied motion hint and description before
+  // filtering blanks, so both stay aligned to their object even after empty
+  // names are dropped.
   const paired = rawSource
-    .map((name, index) => ({ name, hint: rawHints[index] ?? '' }))
+    .map((name, index) => ({ name, hint: rawHints[index] ?? '', description: rawDescriptions[index] ?? '' }))
     .filter((entry) => entry.name.length > 0);
 
   const first = paired[0]?.name ?? '';
@@ -324,16 +390,24 @@ function reserveRangedWeaponRackSlot(
   const hasRack = looksLikeRangedWeaponRack(first);
   const rack = hasRack ? first : `${displayName} Ranged Weapon Rack`;
   const rackHint = hasRack ? paired[0]?.hint ?? '' : '';
+  const rackDescription = hasRack ? paired[0]?.description ?? '' : '';
   const rest = hasRack ? paired.slice(1) : paired;
 
   const restNames = normalizeNames(rest.map((entry) => entry.name), THEME_OBJECT_COUNT - 1, 'Object');
   const objects = [rack, ...restNames].slice(0, THEME_OBJECT_COUNT);
-  // Align hints to the final object list: rack hint first, then the rest's hints
-  // in order, padded with empty strings so index i maps to objects[i].
+  // Align hints/descriptions to the final object list: rack value first, then the
+  // rest's values in order, padded with empty strings so index i maps to objects[i].
   const hints = [rackHint, ...rest.map((entry) => entry.hint)].slice(0, THEME_OBJECT_COUNT);
   while (hints.length < objects.length) hints.push('');
+  const descriptionsAligned = [rackDescription, ...rest.map((entry) => entry.description)].slice(0, THEME_OBJECT_COUNT);
+  while (descriptionsAligned.length < objects.length) descriptionsAligned.push('');
   const hasAnyHint = hints.some((hint) => hint.length > 0);
-  return { objects, objectMotionHints: hasAnyHint ? hints : undefined };
+  const hasAnyDescription = descriptionsAligned.some((description) => description.length > 0);
+  return {
+    objects,
+    objectMotionHints: hasAnyHint ? hints : undefined,
+    objectDescriptions: hasAnyDescription ? descriptionsAligned : undefined,
+  };
 }
 
 /** Heuristic: does a name describe a rack/rack-like store of RANGED weapons? */
@@ -357,13 +431,20 @@ function looksLikeRangedWeaponRack(name: string): boolean {
 function normalizeEnemies(
   values: unknown,
   styles: unknown,
-): { enemies: string[]; enemyAttackStyles?: Array<'melee' | 'ranged' | undefined> } {
+  descriptions?: unknown,
+): {
+  enemies: string[];
+  enemyAttackStyles?: Array<'melee' | 'ranged' | undefined>;
+  enemyDescriptions?: string[];
+} {
   const rawNames = Array.isArray(values) ? values : [];
   const rawStyles = Array.isArray(styles) ? styles : [];
+  const rawDescriptions = Array.isArray(descriptions) ? descriptions.map((value) => cleanValue(value)) : [];
   const paired = rawNames
     .map((value, index) => ({
       name: cleanValue(value),
       style: normalizeAttackStyle(rawStyles[index]),
+      description: rawDescriptions[index] ?? '',
     }))
     .filter((entry) => entry.name.length > 0);
 
@@ -371,7 +452,14 @@ function normalizeEnemies(
   const stylesAligned = paired.map((entry) => entry.style).slice(0, THEME_ENEMY_COUNT);
   while (stylesAligned.length < enemies.length) stylesAligned.push(undefined);
   const hasAnyStyle = stylesAligned.some((style) => style !== undefined);
-  return { enemies, enemyAttackStyles: hasAnyStyle ? stylesAligned : undefined };
+  const descriptionsAligned = paired.map((entry) => entry.description).slice(0, THEME_ENEMY_COUNT);
+  while (descriptionsAligned.length < enemies.length) descriptionsAligned.push('');
+  const hasAnyDescription = descriptionsAligned.some((description) => description.length > 0);
+  return {
+    enemies,
+    enemyAttackStyles: hasAnyStyle ? stylesAligned : undefined,
+    enemyDescriptions: hasAnyDescription ? descriptionsAligned : undefined,
+  };
 }
 
 function normalizeAttackStyle(value: unknown): 'melee' | 'ranged' | undefined {

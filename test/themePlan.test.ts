@@ -261,3 +261,128 @@ test('enemy_attack_styles stays paired to its own enemy across blank-name filter
   assert.equal(plan.enemy_attack_styles?.[2], undefined); // padded fallback enemy, no style
   assert.equal(plan.enemy_attack_styles?.[3], undefined);
 });
+
+// --- Per-item visual descriptions (character/object/decor/enemy) -----------
+//
+// alignDescriptions() (themePlan.ts, private) pairs each raw name with its
+// raw description BEFORE blank-name filtering/padding, mirroring the
+// enemy_attack_styles / object_motion_hints pairing pattern above. It is not
+// exported, so its contract is validated through normalizeThemePlan, the
+// same way enemy_attack_styles' internal normalizeAttackStyle is validated.
+
+test('character_descriptions align to characters, pad missing with empty string, and omit entirely when absent', () => {
+  const withDescriptions = normalizeThemePlan({
+    display_name: 'Neon Harbor',
+    characters: ['Dockmaster', 'Scrap Runner'],
+    character_descriptions: ['A grizzled dockworker in a weathered coat', 'A wiry scavenger with a jury-rigged jetpack'],
+  });
+  assert.equal(withDescriptions.characters.length, 16);
+  assert.equal(withDescriptions.character_descriptions?.length, 16);
+  assert.equal(withDescriptions.character_descriptions?.[0], 'A grizzled dockworker in a weathered coat');
+  assert.equal(withDescriptions.character_descriptions?.[1], 'A wiry scavenger with a jury-rigged jetpack');
+  // Padded fallback characters (2-15) get an empty description, never a stale/misaligned one.
+  for (let i = 2; i < 16; i++) assert.equal(withDescriptions.character_descriptions?.[i], '');
+
+  // No description array supplied at all -> field stays fully undefined, never throws.
+  const withoutDescriptions = normalizeThemePlan({
+    display_name: 'Neon Harbor',
+    characters: ['Dockmaster'],
+  });
+  assert.equal(withoutDescriptions.character_descriptions, undefined);
+});
+
+test('character_descriptions stays paired to its own character across blank-name filtering (index alignment survives)', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Alignment Test',
+    characters: ['Grunt', '', 'Brute'],
+    character_descriptions: ['grunt desc', 'orphaned desc', 'brute desc'],
+  });
+  assert.equal(plan.characters[0], 'Grunt');
+  assert.equal(plan.characters[1], 'Brute'); // blank dropped, Brute shifts up to index 1
+  assert.equal(plan.character_descriptions?.[0], 'grunt desc'); // Grunt keeps its own description
+  assert.equal(plan.character_descriptions?.[1], 'brute desc'); // Brute keeps ITS OWN description, not the dropped blank's
+});
+
+test('character_descriptions omit the field entirely when every supplied description is blank/whitespace', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Blank Descriptions',
+    characters: ['A', 'B'],
+    character_descriptions: ['   ', ''],
+  });
+  assert.equal(plan.character_descriptions, undefined);
+});
+
+test('decor_descriptions align to the 9-slot decor board and pad missing slots with empty string', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Cozy Tavern',
+    decor: ['Oak Stool', 'Bench'],
+    decor_descriptions: ['A rustic wooden stool', 'A long oak bench'],
+  });
+  assert.equal(plan.decor.length, 9);
+  assert.equal(plan.decor_descriptions?.length, 9);
+  assert.equal(plan.decor_descriptions?.[0], 'A rustic wooden stool');
+  assert.equal(plan.decor_descriptions?.[1], 'A long oak bench');
+  for (let i = 2; i < 9; i++) assert.equal(plan.decor_descriptions?.[i], '');
+});
+
+test('object_descriptions stay aligned to objects across ranged-weapon-rack slot-0 coercion', () => {
+  // Planner had no rack: slot 0 is coerced to the themed default and gets no
+  // planner description; the planner's own objects shift down and keep their descriptions.
+  const coerced = normalizeThemePlan({
+    display_name: 'Neon Harbor',
+    objects: ['Console', 'Crane', 'Generator'],
+    object_descriptions: ['a flickering terminal', 'a yellow gantry crane', 'a humming reactor core'],
+  });
+  assert.equal(coerced.objects[0], 'Neon Harbor Ranged Weapon Rack');
+  assert.equal(coerced.object_descriptions?.[0], ''); // coerced rack has no planner description
+  assert.equal(coerced.objects[1], 'Console');
+  assert.equal(coerced.object_descriptions?.[1], 'a flickering terminal');
+  assert.equal(coerced.objects[2], 'Crane');
+  assert.equal(coerced.object_descriptions?.[2], 'a yellow gantry crane');
+  assert.equal(coerced.object_descriptions?.length, 22);
+
+  // Planner already supplied a rack: its own description stays on slot 0.
+  const kept = normalizeThemePlan({
+    display_name: 'Neon Command',
+    objects: ['Laser Rifle Rack', 'Control Tower'],
+    object_descriptions: ['a wall rack of glowing rifles', 'a tall radar tower'],
+  });
+  assert.equal(kept.objects[0], 'Laser Rifle Rack');
+  assert.equal(kept.object_descriptions?.[0], 'a wall rack of glowing rifles');
+  assert.equal(kept.objects[1], 'Control Tower');
+  assert.equal(kept.object_descriptions?.[1], 'a tall radar tower');
+
+  // No descriptions supplied at all -> field omitted, never throws.
+  const none = normalizeThemePlan({ display_name: 'Neon Harbor', objects: ['Console'] });
+  assert.equal(none.object_descriptions, undefined);
+});
+
+test('enemy_descriptions stay paired to their own enemy across blank-name filtering, and omit when absent', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Alignment Test',
+    enemies: ['Grunt', '', 'Brute'],
+    enemy_descriptions: ['grunt desc', 'orphaned desc', 'brute desc'],
+  });
+  assert.equal(plan.enemies[0], 'Grunt');
+  assert.equal(plan.enemies[1], 'Brute'); // blank dropped, Brute shifts up to index 1
+  assert.equal(plan.enemy_descriptions?.[0], 'grunt desc');
+  assert.equal(plan.enemy_descriptions?.[1], 'brute desc'); // Brute keeps ITS OWN description
+  assert.equal(plan.enemy_descriptions?.length, 4);
+
+  const none = normalizeThemePlan({ display_name: 'No Descriptions', enemies: ['Alpha'] });
+  assert.equal(none.enemy_descriptions, undefined);
+});
+
+test('a plan JSON that omits every *_descriptions array entirely never throws and leaves each field undefined', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'No Descriptions Anywhere',
+    characters: ['A'],
+    objects: ['Console'],
+    decor: ['Stool'],
+    enemies: ['Grunt'],
+  });
+  assert.equal(plan.character_descriptions, undefined);
+  assert.equal(plan.object_descriptions, undefined);
+  assert.equal(plan.decor_descriptions, undefined);
+  assert.equal(plan.enemy_descriptions, undefined);
+});

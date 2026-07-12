@@ -36,8 +36,23 @@ export interface ThemeImageGenerationError {
  *     cell (cell 20, 1 frame).
  */
 export type ThemeObjectBoardRow =
-  | { kind: 'object_static'; object_id: string; display_name: string; motion_hint?: string; is_ranged_rack?: boolean }
-  | { kind: 'object_anim'; object_id: string; display_name: string; motion_hint?: string }
+  | {
+      kind: 'object_static';
+      object_id: string;
+      display_name: string;
+      motion_hint?: string;
+      is_ranged_rack?: boolean;
+      /** Concrete visual-appearance spec from the plan, threaded from ThemeObjectPromptSpec. */
+      visual_description?: string;
+    }
+  | {
+      kind: 'object_anim';
+      object_id: string;
+      display_name: string;
+      motion_hint?: string;
+      /** Concrete visual-appearance spec from the plan, threaded from ThemeObjectPromptSpec. */
+      visual_description?: string;
+    }
   | { kind: 'poof' }
   | { kind: 'crate' };
 
@@ -47,7 +62,13 @@ export type ThemeObjectBoardRow =
  * such rows → four enemies; three boards cover all 12 rivals. Rival frames are
  * keyed `rival_<id>` (five frames each): [walk0, walk1, attack0, attack1, attack2].
  */
-export type ThemeRivalBoardRow = { kind: 'rival'; rival_id: string; display_name: string };
+export type ThemeRivalBoardRow = {
+  kind: 'rival';
+  rival_id: string;
+  display_name: string;
+  /** Concrete visual-appearance spec from the plan, threaded from ThemeRivalPromptSpec. */
+  visual_description?: string;
+};
 
 /**
  * One row of the 4x4 background-decor board. Rows 1-2 carry four single-frame
@@ -55,9 +76,9 @@ export type ThemeRivalBoardRow = { kind: 'rival'; rival_id: string; display_name
  * ranged-weapon-fire projectile FX (four one-shot frames → frames['projectile']).
  */
 export type ThemeDecorBoardRow =
-  | { kind: 'seat'; decor_id: string; display_name: string }        // row 1 cell (single frame)
-  | { kind: 'decor'; decor_id: string; display_name: string }       // row 2 cell (single frame)
-  | { kind: 'decor_anim'; decor_id: string; display_name: string }  // row 3 item (four frames)
+  | { kind: 'seat'; decor_id: string; display_name: string; visual_description?: string }        // row 1 cell (single frame)
+  | { kind: 'decor'; decor_id: string; display_name: string; visual_description?: string }       // row 2 cell (single frame)
+  | { kind: 'decor_anim'; decor_id: string; display_name: string; visual_description?: string }  // row 3 item (four frames)
   | { kind: 'projectile' };                                         // row 4 ranged-fire FX (four frames)
 
 export interface ThemeImageReviewItem {

@@ -997,7 +997,10 @@ export async function renameThemeCharacter(
     const direction = plan
       ? themePlanCreativeDirection(plan)
       : `Match the existing visual direction for ${manifest.display_name}.`;
-    item.prompt = buildCharacterAtlasPrompt(direction, characterName, manifest.display_name);
+    const description = agent
+      ? (plan?.character_descriptions?.[agent.slot_id] ?? '').trim() || undefined
+      : undefined;
+    item.prompt = buildCharacterAtlasPrompt(direction, characterName, manifest.display_name, 'magenta', description);
   }
 
   await writeThemeFiles(globalStorageUri, manifest, frames);
@@ -2253,11 +2256,18 @@ function decorRowsToBoard(rows: ThemeDecorBoardRow[]): ThemeDecorBoardRow[][] {
   return [seats, statics, [animated[0]], [projectile]];
 }
 
-function themeDecorSpecs(manifest: ThemeManifest): Array<{ decor_id: string; display_name: string }> {
-  return (manifest.decor_objects ?? []).slice(0, 9).map((decor) => ({
-    decor_id: decor.decor_id,
-    display_name: decor.display_name,
-  }));
+function themeDecorSpecs(
+  manifest: ThemeManifest,
+  descriptions?: string[],
+): Array<{ decor_id: string; display_name: string; visual_description?: string }> {
+  return (manifest.decor_objects ?? []).slice(0, 9).map((decor, index) => {
+    const description = (descriptions?.[index] ?? '').trim();
+    return {
+      decor_id: decor.decor_id,
+      display_name: decor.display_name,
+      ...(description ? { visual_description: description } : {}),
+    };
+  });
 }
 
 export function createReviewItems(
@@ -2273,14 +2283,20 @@ export function createReviewItems(
     label: agent.name,
     kind: 'character_atlas' as const,
     status: 'pending' as const,
-    prompt: buildCharacterAtlasPrompt(characterCreativeDirection, agent.name, plan.display_name, backgroundMode),
+    prompt: buildCharacterAtlasPrompt(
+      characterCreativeDirection,
+      agent.name,
+      plan.display_name,
+      backgroundMode,
+      (plan.character_descriptions?.[agent.slot_id] ?? '').trim() || undefined,
+    ),
     revision: 0,
     frame_keys: [`agent_${agent.slot_id}`],
     subject: agent.name,
   }));
   let enemyItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
   try {
-    const rivalBoards = createRivalBoardRows(themeRivalSpecs(manifest));
+    const rivalBoards = createRivalBoardRows(themeRivalSpecs(manifest, plan.enemy_descriptions));
     enemyItems = rivalBoards.map((rows, index) => {
       const firstEnemy = index * rows.length + 1;
       const lastEnemy = firstEnemy + rows.length - 1;
@@ -2302,7 +2318,7 @@ export function createReviewItems(
   }
   let objectItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
   try {
-    const objectSpecs = themeObjectSpecs(manifest, plan.object_motion_hints);
+    const objectSpecs = themeObjectSpecs(manifest, plan.object_motion_hints, plan.object_descriptions);
     const staticSpecs = objectSpecs.slice(0, OBJECT_STATIC_COUNT);
     const animatedSpecs = objectSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT);
     const board1Rows = createObjectBoard1Rows(staticSpecs);
@@ -2417,7 +2433,7 @@ function createDecorReviewItem(
   creativeDirection: string,
   backgroundMode: BoardBackgroundMode = 'magenta',
 ): Omit<ThemeImageReviewItem, 'updated_at'> {
-  const specs = themeDecorSpecs(manifest);
+  const specs = themeDecorSpecs(manifest, plan.decor_descriptions);
   const rows = createDecorBoardRows(specs);
   return {
     id: 'background_decor',
@@ -2545,10 +2561,11 @@ async function generateRivalAsset(
 function rivalRowsForItem(
   item: Pick<ThemeImageReviewItem, 'id' | 'rival_rows'>,
   manifest: ThemeManifest,
+  descriptions?: string[],
 ): ThemeRivalBoardRow[] {
   let boards: ThemeRivalBoardRow[][];
   try {
-    boards = createRivalBoardRows(themeRivalSpecs(manifest));
+    boards = createRivalBoardRows(themeRivalSpecs(manifest, descriptions));
   } catch (err) {
     console.warn('TycoonAgents: unable to reconstruct rival board rows:', err);
     return item.rival_rows?.length ? item.rival_rows : [];
@@ -2585,7 +2602,14 @@ function rivalRowsForItem(
 export function objectRowsForItem(
   item: Pick<ThemeImageReviewItem, 'object_specs' | 'object_rows'> & Partial<Pick<ThemeImageReviewItem, 'id'>>,
   manifest: ThemeManifest,
-  plan?: Pick<ThemePlan, 'objects' | 'object_motion_hints'>,
+  plan?: Pick<ThemePlan, 'objects' | 'object_motion_hints' | 'object_descriptions'>,
+  // Independent of `plan`/preferPlanObjects above: descriptions are PROMPT-ONLY
+  // text, not row geometry, so they can safely be merged onto the manifest-driven
+  // rows below even when the caller intentionally keeps row RECONSTRUCTION
+  // manifest-based (to stay consistent with manifest-based slicing). Callers that
+  // have a plan available on the real (non-display) retry path should still pass
+  // its object_descriptions here even when they pass `undefined` for `plan` itself.
+  descriptions?: string[],
 ): ThemeObjectBoardRow[] {
   const boardNumber = Number(/objects_(\d+)/.exec(item.id ?? '')?.[1] ?? '1') || 1;
   if (plan?.objects?.length) {
@@ -2600,7 +2624,7 @@ export function objectRowsForItem(
     }
   }
   try {
-    const objectSpecs = themeObjectSpecs(manifest);
+    const objectSpecs = themeObjectSpecs(manifest, undefined, descriptions);
     const rows = boardNumber >= 2
       ? createObjectBoard2Rows(objectSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT))
       : createObjectBoard1Rows(objectSpecs.slice(0, OBJECT_STATIC_COUNT));
@@ -2629,9 +2653,10 @@ export function objectRowsForItem(
 export function decorRowsForItem(
   item: Pick<ThemeImageReviewItem, 'decor_rows'>,
   manifest: ThemeManifest,
+  descriptions?: string[],
 ): ThemeDecorBoardRow[] {
   try {
-    const rows = createDecorBoardRows(themeDecorSpecs(manifest)).flat();
+    const rows = createDecorBoardRows(themeDecorSpecs(manifest, descriptions)).flat();
     return rows.length ? rows : (item.decor_rows?.length ? item.decor_rows : []);
   } catch (err) {
     console.warn('TycoonAgents: unable to reconstruct decor board rows:', err);
@@ -2923,7 +2948,10 @@ export function buildReplacementPrompt(
   item: ThemeImageReviewItem,
   creativeDirection: string,
   manifest: ThemeManifest,
-  plan?: Pick<ThemePlan, 'expressions' | 'achievements' | 'objects' | 'object_motion_hints'>,
+  plan?: Pick<ThemePlan,
+    | 'expressions' | 'achievements' | 'objects' | 'object_motion_hints'
+    | 'character_descriptions' | 'object_descriptions' | 'decor_descriptions' | 'enemy_descriptions'
+  >,
   backgroundMode: BoardBackgroundMode = 'magenta',
   // DISPLAY-ONLY opt-in. When true, the object board rebuilds its rows from the
   // CURRENT plan's 22-object roster (via objectRowsForItem's plan path) so the
@@ -2944,14 +2972,18 @@ export function buildReplacementPrompt(
     // Retry stays consistent. Only the DISPLAY path (preferPlanObjects) also
     // tries the current plan's 22-object roster first, so "Copy/View prompt"
     // reflects the v2 contract even for a legacy off-count manifest.
-    const rows = objectRowsForItem(item, manifest, preferPlanObjects ? plan : undefined);
+    // `plan?.object_descriptions` is passed unconditionally (independent of
+    // preferPlanObjects): descriptions are prompt-only text, not row geometry, so
+    // a REAL retry can safely pick up plan-authored appearance guidance on the
+    // manifest-driven rows without disturbing manifest-based slicing consistency.
+    const rows = objectRowsForItem(item, manifest, preferPlanObjects ? plan : undefined, plan?.object_descriptions);
     return buildObjectAtlasPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   if (item.kind === 'background_decor_atlas') {
     // Reconstruct from the CURRENT manifest as the primary source (see
     // decorRowsForItem) so a decor roster change regenerates the correct board
     // instead of reusing stale saved decor_rows.
-    const rows = decorRowsToBoard(decorRowsForItem(item, manifest));
+    const rows = decorRowsToBoard(decorRowsForItem(item, manifest, plan?.decor_descriptions));
     return buildBackgroundDecorPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   if (item.kind === 'expression_atlas') {
@@ -2972,10 +3004,26 @@ export function buildReplacementPrompt(
   }
   if (item.kind === 'emote_atlas') return buildEmoteAtlasPrompt(creativeDirection, manifest.display_name, backgroundMode);
   if (item.kind === 'rival_atlas') {
-    const rows = rivalRowsForItem(item, manifest);
+    const rows = rivalRowsForItem(item, manifest, plan?.enemy_descriptions);
     return buildRivalAtlasPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
-  return buildCharacterAtlasPrompt(creativeDirection, item.subject ?? item.label, manifest.display_name, backgroundMode);
+  const agentSlotId = agentSlotIdFromFrameKey(item.frame_keys[0] || item.id);
+  const characterDescription = agentSlotId !== undefined
+    ? (plan?.character_descriptions?.[agentSlotId] ?? '').trim() || undefined
+    : undefined;
+  return buildCharacterAtlasPrompt(
+    creativeDirection,
+    item.subject ?? item.label,
+    manifest.display_name,
+    backgroundMode,
+    characterDescription,
+  );
+}
+
+/** Extract the roster_agents slot_id from a character frame key like `agent_3`, or undefined if it doesn't match. */
+function agentSlotIdFromFrameKey(frameKey: string): number | undefined {
+  const match = /^agent_(\d+)$/.exec(frameKey);
+  return match ? Number(match[1]) : undefined;
 }
 
 function renameCharacterInPrompt(prompt: string, previousName: string, characterName: string): string {
@@ -3034,6 +3082,7 @@ function reconstructObjectRows(
 function themeObjectSpecs(
   manifest: ThemeManifest,
   motionHints?: string[],
+  descriptions?: string[],
 ): ThemeObjectPromptSpec[] {
   const specs: ThemeObjectPromptSpec[] = manifest.buildable_objects
     .slice(0, THEME_OBJECT_COUNT)
@@ -3042,11 +3091,13 @@ function themeObjectSpecs(
       // dedicated rack visual guidance and ignores any planner motion hint.
       const isRangedRack = index === 0;
       const hint = !isRangedRack ? (motionHints?.[index] ?? '').trim() : '';
+      const description = (descriptions?.[index] ?? '').trim();
       return {
         object_id: object.object_id,
         display_name: object.display_name,
         ...(isRangedRack ? { is_ranged_rack: true } : {}),
         ...(hint ? { motion_hint: hint } : {}),
+        ...(description ? { visual_description: description } : {}),
       };
     });
   // Pad legacy / pre-v2 manifests (fewer than THEME_OBJECT_COUNT buildable_objects)
@@ -3074,29 +3125,35 @@ function themeObjectSpecs(
  * (see reserveRangedWeaponRackSlot in themePlan.ts's normalizeThemePlan).
  */
 function themeObjectSpecsFromPlan(
-  plan: Pick<ThemePlan, 'objects' | 'object_motion_hints'>,
+  plan: Pick<ThemePlan, 'objects' | 'object_motion_hints' | 'object_descriptions'>,
 ): ThemeObjectPromptSpec[] {
   const objects = plan.objects.slice(0, THEME_OBJECT_COUNT);
   const ids = uniqueIds(objects, 'object');
   return objects.map((displayName, index) => {
     const isRangedRack = index === 0;
     const hint = !isRangedRack ? (plan.object_motion_hints?.[index] ?? '').trim() : '';
+    const description = (plan.object_descriptions?.[index] ?? '').trim();
     return {
       object_id: ids[index],
       display_name: displayName,
       ...(isRangedRack ? { is_ranged_rack: true } : {}),
       ...(hint ? { motion_hint: hint } : {}),
+      ...(description ? { visual_description: description } : {}),
     };
   });
 }
 
-function themeRivalSpecs(manifest: ThemeManifest): ThemeRivalPromptSpec[] {
-  return manifest.roster_rivals.map((rival) => ({
-    // rival_id already carries the `rival_` prefix (see themePlan.ts); strip it so
-    // frame keys built as `rival_<id>` don't double-prefix.
-    rival_id: rival.rival_id.replace(/^rival_/, ''),
-    display_name: rival.name,
-  }));
+function themeRivalSpecs(manifest: ThemeManifest, descriptions?: string[]): ThemeRivalPromptSpec[] {
+  return manifest.roster_rivals.map((rival, index) => {
+    const description = (descriptions?.[index] ?? '').trim();
+    return {
+      // rival_id already carries the `rival_` prefix (see themePlan.ts); strip it so
+      // frame keys built as `rival_<id>` don't double-prefix.
+      rival_id: rival.rival_id.replace(/^rival_/, ''),
+      display_name: rival.name,
+      ...(description ? { visual_description: description } : {}),
+    };
+  });
 }
 
 /**
