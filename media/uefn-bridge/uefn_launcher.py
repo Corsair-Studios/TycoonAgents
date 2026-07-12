@@ -153,6 +153,12 @@ _TOOLS = [
         "description": "Find unreferenced assets across all types, estimate reclaimable size",
         "action": "asset_sweep",
     },
+    {
+        "icon": "\U0001f50e",  # magnifying glass tilted right
+        "name": "Property Inspector",
+        "description": "Dump a selected actor's editor properties to find internal names",
+        "action": "property_inspector",
+    },
 ]
 
 
@@ -434,6 +440,17 @@ def _launch_tool(action):
             unreal.log_warning("uefn_launcher: Failed to launch asset_sweep: " + str(e))
             if _HAS_TKINTER:
                 messagebox.showerror("Error", "Failed to launch Dead Asset Sweep:\n" + str(e))
+
+    elif action == "property_inspector":
+        try:
+            import importlib
+            import property_inspector
+            importlib.reload(property_inspector)
+            property_inspector.show_ui()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch property_inspector: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Property Inspector:\n" + str(e))
 
     else:
         unreal.log_warning("uefn_launcher: Unknown action: " + str(action))
