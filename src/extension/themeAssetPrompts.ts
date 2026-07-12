@@ -368,6 +368,8 @@ export function buildCharacterAtlasPrompt(
     '',
     'Inspect handheld tool.',
     '',
+    'TOP CONTAINMENT (row 2): keep the topmost point of the tool at or below the head throughout the wind-up, forward swing, and follow-through -- the tool arcs FORWARD and DOWNWARD, never raised straight overhead. The entire figure AND the tool must stay inside the cell with clear padding above the highest point; if a swing would push the tool past the top edge of the cell, lower the arc. Never let the tool or any pixel cross the top boundary of the cell.',
+    '',
     'This is NOT a construction scene.',
     '',
     'The character is only demonstrating tool use.',

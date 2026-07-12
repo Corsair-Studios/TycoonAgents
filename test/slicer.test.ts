@@ -567,3 +567,157 @@ test('row-overflow reclamation only claims pixels connected to the upper subject
   assert.equal(bluePixels, 0);
   assert.equal(greenPixels, 200);
 });
+
+// Shared measurables for the feet-anchor cases below. A single 1x1 cell keeps
+// the row/column boundary-spill passes out of the picture (they only run for
+// row>0 / col>0), and with no targetContentHeight/maxContentExtent the board
+// scale is exactly 1, so the sliced content is bottom-justified WITHOUT any
+// resize — output pixel rows map to source rows exactly (destY = 128 - bh).
+const FEET_BLUE = 0x1950a0ff; // dense body block
+const FEET_RED = 0xc82828ff; // thin below-feet drag (a cape tip)
+
+async function measureFeetFrame(dataUri: string): Promise<{ blueMaxY: number; redCount: number; footY: number }> {
+  const frame = await Jimp.read(Buffer.from(dataUri.split(',')[1], 'base64'));
+  let blueMaxY = -1;
+  let redCount = 0;
+  let footY = -1;
+  frame.scan(0, 0, 128, 128, function (_x, y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (this.bitmap.data[idx + 3] !== 0) footY = Math.max(footY, y);
+    if (color === FEET_BLUE) blueMaxY = Math.max(blueMaxY, y);
+    if (color === FEET_RED) redCount++;
+  });
+  return { blueMaxY, redCount, footY };
+}
+
+test('feetAnchorMinWidthRatio bottom-justifies to the body feet, trimming a thin below-feet cape', async () => {
+  // A 100x100 cell: a dense 40px-wide body (rows 10..69) with a thin 4px-wide
+  // tail (rows 70..79) dragging straight down from it — a simulated cape tip.
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  atlas.scan(40, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_BLUE, idx);
+  });
+  atlas.scan(58, 70, 4, 10, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_RED, idx);
+  });
+  const buffer = await atlas.getBufferAsync(Jimp.MIME_PNG);
+
+  const [without, withAnchor] = await Promise.all([
+    sliceAndNormalizeAtlas(buffer, {}, { columns: 1, rows: 1 }),
+    sliceAndNormalizeAtlas(buffer, {}, { columns: 1, rows: 1, feetAnchorMinWidthRatio: 0.2 }),
+  ]);
+
+  const noField = await measureFeetFrame(without.slots[0].data);
+  const anchored = await measureFeetFrame(withAnchor.slots[0].data);
+
+  // Without the field the whole bbox (body + tail) is bottom-justified, so the
+  // TAIL sits on the frame floor and the body's feet float 10px above it.
+  assert.equal(noField.footY, 127);
+  assert.equal(noField.blueMaxY, 117);
+  assert.equal(noField.redCount, 40); // 4px x 10 rows of tail survive
+
+  // With the field the below-feet tail is trimmed off the bbox bottom, so the
+  // BODY's feet are what bottom-justify to the frame floor, and the tail is gone.
+  assert.equal(anchored.blueMaxY, 127);
+  assert.equal(anchored.redCount, 0);
+  // Concrete anchor shift: the body feet dropped a full 10px onto the floor.
+  assert.equal(anchored.blueMaxY - noField.blueMaxY, 10);
+});
+
+test('feetAnchorMinWidthRatio survives horizontal registration re-scan (register->recompute ordering)', async () => {
+  // Regression for the ordering bug: the feet-anchor trim used to run during the
+  // per-cell scan, but registerGroupHorizontally runs AFTER it and re-scans every
+  // shifted member via recomputeCellBounds — which OVERWROTE the trimmed maxY back
+  // to the cape-inclusive bottom. The 1x1 feet tests never triggered registration,
+  // so they missed it. Here two cells form ONE registration+normalization group,
+  // each drawing the SAME body+tail but at DIFFERENT horizontal offsets so
+  // registration WILL shift the second member (dx !== 0) and fire recomputeCellBounds.
+  const cellSize = 100;
+  const atlas = new Jimp(cellSize * 2, cellSize, 0xff00ffff);
+
+  // Slot 0 (reference): dense 40px body (rows 10..69) + a thin 4px tail (rows 70..79).
+  atlas.scan(30, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_BLUE, idx);
+  });
+  atlas.scan(48, 70, 4, 10, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_RED, idx);
+  });
+
+  // Slot 1 (col 1): the identical body+tail shifted +12px right within its cell —
+  // the drawn drift registration must cancel. 12 < REGISTRATION_MAX_SHIFT(16), so
+  // it registers cleanly to dx=-12 rather than clamping.
+  atlas.scan(cellSize + 42, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_BLUE, idx);
+  });
+  atlas.scan(cellSize + 60, 70, 4, 10, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_RED, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, {
+    columns: 2,
+    rows: 1,
+    normalizationGroups: [[0, 1]],
+    registrationGroups: [[0, 1]],
+    feetAnchorMinWidthRatio: 0.2,
+  });
+
+  // Registration cancelled the 12px drift, so both frames share one content left edge —
+  // proof the register->recompute path actually fired on slot 1.
+  assert.equal(result.slots[0].meta.left, result.slots[1].meta.left);
+
+  // Feet-anchor STILL applied after registration: the shared (grouped) union bbox
+  // anchored to the BODY's feet, so both frames put the body's feet on the floor and
+  // the below-feet tail is gone. On the old ordering recomputeCellBounds reverted the
+  // shifted cell's maxY to the cape tip, unioning the tail back in — the body would
+  // float at y=117 and 40 tail pixels would survive in each frame.
+  for (const slot of result.slots) {
+    const anchored = await measureFeetFrame(slot.data);
+    assert.equal(anchored.blueMaxY, 127);
+    assert.equal(anchored.redCount, 0);
+  }
+});
+
+test('feetAnchorMinWidthRatio is a no-op when nothing thin trails below the feet', async () => {
+  // Just the dense body block — its lowest row is as dense as the densest row,
+  // so the feet line never moves and the slice must be byte-identical with vs
+  // without the field.
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  atlas.scan(40, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_BLUE, idx);
+  });
+  const buffer = await atlas.getBufferAsync(Jimp.MIME_PNG);
+
+  const [without, withAnchor] = await Promise.all([
+    sliceAndNormalizeAtlas(buffer, {}, { columns: 1, rows: 1 }),
+    sliceAndNormalizeAtlas(buffer, {}, { columns: 1, rows: 1, feetAnchorMinWidthRatio: 0.2 }),
+  ]);
+
+  assert.equal(withAnchor.slots[0].data, without.slots[0].data);
+  assert.deepEqual(withAnchor.slots[0].meta, without.slots[0].meta);
+});
+
+test('feetAnchorMinWidthRatio keeps the original bottom when the trim would exceed 25% of the bbox height (safety fallback)', async () => {
+  // Body 40 rows (10..49) plus a thin 30-row tail (50..79). Trimming to the
+  // first dense row would remove 30 of the 70px bbox height (>25%), which the
+  // safety guard rejects — so the output must stay identical to the no-field
+  // slice rather than gutting the (legitimately) narrow-bottomed content.
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  atlas.scan(40, 10, 40, 40, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_BLUE, idx);
+  });
+  atlas.scan(58, 50, 4, 30, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(FEET_RED, idx);
+  });
+  const buffer = await atlas.getBufferAsync(Jimp.MIME_PNG);
+
+  const [without, withAnchor] = await Promise.all([
+    sliceAndNormalizeAtlas(buffer, {}, { columns: 1, rows: 1 }),
+    sliceAndNormalizeAtlas(buffer, {}, { columns: 1, rows: 1, feetAnchorMinWidthRatio: 0.2 }),
+  ]);
+
+  // Safety fallback engaged: the tail is retained and the frame is unchanged.
+  assert.equal(withAnchor.slots[0].data, without.slots[0].data);
+  assert.deepEqual(withAnchor.slots[0].meta, without.slots[0].meta);
+  const anchored = await measureFeetFrame(withAnchor.slots[0].data);
+  assert.ok(anchored.redCount > 0, 'the tail must be retained under the safety fallback');
+});

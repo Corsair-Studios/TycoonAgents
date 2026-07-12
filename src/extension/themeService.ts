@@ -2066,6 +2066,10 @@ function characterAtlasGrid(rebuildBoard = false) {
     // Every clip (walk, melee, build, shoot, dance, ...) plays in place, so any
     // drawn side-to-side drift across its frames is unwanted and gets canceled.
     registrationGroups: clipGroups,
+    // A flowing cape trailing BELOW the feet would otherwise inflate the content
+    // bbox and lift the figure; trim the thin below-feet drag so scale + anchor
+    // key to the dense feet row instead of the sparse cape tip.
+    feetAnchorMinWidthRatio: 0.2,
     rebuildBoard,
     squareReviewBoard: rebuildBoard,
   };
@@ -2165,6 +2169,9 @@ async function processRivalAtlas(
     // Each row's walk+attack frames are one rival animating in place, so any
     // drawn side-to-side drift across the row is unwanted and gets canceled.
     registrationGroups: rowGroups,
+    // Same cape-drag guard as characters: trim thin below-feet content so scale +
+    // bottom-justify anchor to the dense feet row, not a trailing cape tip.
+    feetAnchorMinWidthRatio: 0.2,
   });
   const output = await optimizeSpriteBoardCanvas(generated, 5, rows.length);
   return { output, spritePackage };

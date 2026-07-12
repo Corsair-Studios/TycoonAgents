@@ -71,6 +71,13 @@ export interface AtlasGrid {
    * no-op. Vertical position is never adjusted — intentional bob/hop stays put.
    */
   registrationGroups?: number[][];
+  /**
+   * Characters/rivals only. Trims thin content trailing BELOW the feet (e.g. a
+   * cape drag) from the content bbox bottom so the cell scales + bottom-justifies
+   * to the FEET, not the cape tip. A bottom row counts as 'feet' only if its
+   * opaque-pixel count is >= this ratio of the densest row's count. Ignored when unset.
+   */
+  feetAnchorMinWidthRatio?: number;
   /** Reassemble normalized slots into a reviewable magenta-backed sprite board. */
   rebuildBoard?: boolean;
   /** Keep the rebuilt review canvas square while preserving the requested grid. */
@@ -186,6 +193,34 @@ export async function sliceAndNormalizeAtlas(
   // the artist's side-to-side wobble into the shared frame.
   for (const group of grid.registrationGroups ?? []) {
     registerGroupHorizontally(cells, group);
+  }
+
+  // Feet-anchor pass (characters/rivals). MUST run AFTER registerGroupHorizontally —
+  // that path re-scans shifted cells and would overwrite an in-scan trim — and BEFORE
+  // boardScale/groupedBounds so reference heights and group unions use the feet, not
+  // the cape tip. For each cell, rescan its CURRENT bbox for per-row opaque counts and
+  // move the effective bottom up to the lowest DENSE row (the feet), trimming thin
+  // below-feet content (a cape drag), but only when the trim removes <= 25% of the bbox
+  // height (safety fallback for legitimately narrow-bottomed poses).
+  if (grid.feetAnchorMinWidthRatio && grid.feetAnchorMinWidthRatio > 0) {
+    const feetRatio = grid.feetAnchorMinWidthRatio;
+    for (const cellInfo of cells) {
+      if (cellInfo.count <= 0) continue;
+      const { cell, minY, maxY } = cellInfo;
+      const rowOpaqueCounts = new Array(cell.bitmap.height).fill(0);
+      cell.scan(0, minY, cell.bitmap.width, maxY - minY + 1, function (_x: number, y: number, idx: number) {
+        if (cell.bitmap.data[idx + 3] !== 0) rowOpaqueCounts[y] += 1;
+      });
+      let maxRowCount = 0;
+      for (let y = minY; y <= maxY; y++) if (rowOpaqueCounts[y] > maxRowCount) maxRowCount = rowOpaqueCounts[y];
+      const feetThreshold = maxRowCount * feetRatio;
+      let feetY = maxY;
+      for (let y = maxY; y >= minY; y--) { if (rowOpaqueCounts[y] >= feetThreshold) { feetY = y; break; } }
+      const bboxHeight = maxY - minY + 1;
+      if (feetY < maxY && (maxY - feetY) <= 0.25 * bboxHeight) {
+        cellInfo.maxY = feetY;
+      }
+    }
   }
 
   const referenceHeights = (grid.scaleReferenceSlots ?? [])
