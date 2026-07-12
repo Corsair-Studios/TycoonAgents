@@ -5,7 +5,7 @@
     walk: { frames: [0, 1, 2, 3, 4], fps: 10, loop: true, flippable: true },
     idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
     sit: { frames: [15], fps: 0, loop: true, flippable: true, hold: true },
-    melee: { frames: [10, 11, 14], fps: 12, loop: false, flippable: true },
+    melee: { frames: [10, 11], fps: 12, loop: false, flippable: true },
     build: { frames: [5, 6, 7, 8], fps: 6, loop: true, flippable: true },
     tool_idle: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
     shoot: { frames: [12, 13], fps: 8, loop: false, flippable: true, pingpong: true },
@@ -13,8 +13,9 @@
     cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
     point: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
     signal: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
-    // Idle ambient combat: brief block/flinch hit-reaction pose (reuses melee's
-    // dodge frame 14), played as a one-shot emote override — see media/main.js
+    // Idle ambient combat: brief block/flinch hit-reaction pose. Frame 14 is the
+    // block clip's OWN dedicated dodge/flinch frame (no longer part of the melee
+    // clip), played as a one-shot emote override — see media/main.js
     // playEmote(entry, "block", ...). Purely cosmetic, no gameplay effect.
     block: { frames: [14], fps: 6, loop: false, flippable: true }
   };
