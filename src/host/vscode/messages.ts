@@ -134,6 +134,8 @@ export const MSG = {
   THEME_CHARACTER_RENAME_STATE: "THEME_CHARACTER_RENAME_STATE",
   SET_THEME_ITEM_NAMES: "SET_THEME_ITEM_NAMES",
   THEME_ITEM_NAMES_RESULT: "THEME_ITEM_NAMES_RESULT",
+  SET_THEME_ITEM_DESCRIPTIONS: "SET_THEME_ITEM_DESCRIPTIONS",
+  THEME_ITEM_DESCRIPTIONS_RESULT: "THEME_ITEM_DESCRIPTIONS_RESULT",
   NORMALIZE_THEME_CHARACTER: "NORMALIZE_THEME_CHARACTER",
   THEME_CHARACTER_NORMALIZE_STATE: "THEME_CHARACTER_NORMALIZE_STATE",
   RETRY_THEME_IMAGE: "RETRY_THEME_IMAGE",
@@ -314,6 +316,30 @@ export const MSG_SCHEMAS = {
               item_kind: z.enum(['object', 'decor', 'character', 'rival', 'badge']),
               id: z.string().min(1),
               name: z.string().min(1).max(60),
+            })
+            .passthrough(),
+        )
+        .min(1),
+    })
+    .passthrough(),
+
+  // Batched description edit from the theme review screen's per-board
+  // "Descriptions" editor — mirrors SET_THEME_ITEM_NAMES, but descriptions live
+  // in plan.json (character_descriptions/object_descriptions/decor_descriptions/
+  // enemy_descriptions), never the manifest, and there is no 'badge' kind (badges
+  // have no visual-description field). description ALLOWS an empty string — that
+  // clears the row's description — unlike name, which requires min(1).
+  SET_THEME_ITEM_DESCRIPTIONS: z
+    .object({
+      theme_id: z.string().min(1),
+      board_id: z.string().min(1).optional(),
+      changes: z
+        .array(
+          z
+            .object({
+              item_kind: z.enum(['object', 'decor', 'character', 'rival']),
+              id: z.string().min(1),
+              description: z.string().max(400),
             })
             .passthrough(),
         )

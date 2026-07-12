@@ -3573,6 +3573,73 @@ button.theme-review-preview:focus-visible::after {
   margin-bottom: 2px;
 }
 
+/* "Descriptions" editor — mirrors .theme-review-names above, but rows stack
+   label-over-textarea (flex column) instead of the names grid, since visual
+   descriptions are multi-line. */
+.theme-review-descriptions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--vscode-panel-border, var(--border));
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.theme-review-descriptions-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.theme-review-descriptions-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--vscode-descriptionForeground, var(--muted));
+  font-size: 11px;
+}
+
+.theme-review-description-input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  color: var(--vscode-input-foreground, var(--text));
+  background: var(--vscode-input-background, #171a1f);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 4px;
+}
+
+.theme-review-descriptions-apply {
+  align-self: flex-start;
+}
+
+.theme-review-descriptions-status {
+  font-size: 11px;
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.theme-review-descriptions-status.theme-review-error {
+  color: var(--vscode-testing-iconFailed, #f85149);
+}
+
+.theme-review-descriptions-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.theme-review-descriptions-details > summary {
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground, #4daafc);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
 .theme-review-feedback,
 .theme-review-mode {
   min-width: 0;

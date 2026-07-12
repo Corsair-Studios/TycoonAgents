@@ -2259,6 +2259,11 @@
           const rowId = input.getAttribute("data-row-id");
           if (rowId) names[rowId] = input.value;
         }
+        const descriptions = {};
+        for (const textarea of card.querySelectorAll(".theme-review-descriptions-input")) {
+          const rowId = textarea.getAttribute("data-row-id");
+          if (rowId) descriptions[rowId] = textarea.value;
+        }
         drafts.set(itemId, {
           feedback: card.querySelector(".theme-review-feedback")?.value || "",
           mode: card.querySelector(".theme-review-mode")?.value || "",
@@ -2266,6 +2271,8 @@
           promptOpen: Boolean(card.querySelector(".theme-review-prompt")?.open),
           namesOpen: Boolean(card.querySelector(".theme-review-names-details")?.open),
           names,
+          descriptionsOpen: Boolean(card.querySelector(".theme-review-descriptions-details")?.open),
+          descriptions,
         });
       }
     }
@@ -2470,6 +2477,234 @@
     details.appendChild(statusEl);
     section.appendChild(details);
     return section;
+  }
+
+  /**
+   * Board-row metadata for the theme review screen's inline "Descriptions"
+   * editor (0.0.265's per-item visual_description text, added 0.0.266). Unlike
+   * themeReviewNameRows, this INCLUDES the character_atlas card (one row, the
+   * board's own item.id/character_description) since character descriptions
+   * have no other edit surface — the existing "Character name" field only
+   * covers the name. Descriptions live in plan.json
+   * (character_descriptions/object_descriptions/decor_descriptions/
+   * enemy_descriptions), never the manifest — see SET_THEME_ITEM_DESCRIPTIONS
+   * and applyThemeItemDescriptionChanges in themeService.ts.
+   * @param {any} item a THEME_IMAGE_REVIEW review item
+   * @returns {Array<{rowId: string, itemKind: "object"|"decor"|"rival"|"character", label: string, original: string}>}
+   */
+  function themeReviewDescriptionRows(item) {
+    if (item.kind === "character_atlas") {
+      return [{
+        rowId: item.id,
+        itemKind: "character",
+        label: "Visual description",
+        original: item.character_description || "",
+      }];
+    }
+    if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
+      const OBJECT_STATIC_COUNT = 20;
+      const boardMatch = /objects_(\d+)/.exec(item.id || "");
+      const boardNumber = boardMatch ? Number(boardMatch[1]) || 1 : 1;
+      const globalOffset = boardNumber <= 1 ? 0 : OBJECT_STATIC_COUNT;
+      let objectIndex = 0;
+      return item.object_rows
+        .filter((row) => row && (row.kind === "object_static" || row.kind === "object_anim") && row.object_id)
+        .map((row) => {
+          objectIndex += 1;
+          return {
+            rowId: row.object_id,
+            itemKind: "object",
+            label: "Object " + (globalOffset + objectIndex) + (row.is_ranged_rack ? " (Weapons Rack)" : ""),
+            original: row.visual_description || "",
+          };
+        });
+    }
+    if (item.kind === "background_decor_atlas" && Array.isArray(item.decor_rows)) {
+      const rows = [];
+      let seatIndex = 0;
+      let decorIndex = 0;
+      for (const row of item.decor_rows) {
+        if (!row || !row.decor_id) continue;
+        if (row.kind === "seat") {
+          seatIndex += 1;
+          rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Seat " + seatIndex, original: row.visual_description || "" });
+        } else if (row.kind === "decor") {
+          decorIndex += 1;
+          rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Decor " + decorIndex, original: row.visual_description || "" });
+        } else if (row.kind === "decor_anim") {
+          rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Animated decor", original: row.visual_description || "" });
+        }
+      }
+      return rows;
+    }
+    if (item.kind === "rival_atlas" && Array.isArray(item.rival_rows)) {
+      let rivalIndex = 0;
+      return item.rival_rows
+        .filter((row) => row && row.rival_id)
+        .map((row) => {
+          rivalIndex += 1;
+          return {
+            rowId: row.rival_id,
+            itemKind: "rival",
+            label: "Rival " + rivalIndex,
+            original: row.visual_description || "",
+          };
+        });
+    }
+    return [];
+  }
+
+  /**
+   * Builds the per-board "Descriptions" editor: one label+textarea pair per row
+   * (see themeReviewDescriptionRows) plus a batched "Apply descriptions" button
+   * that posts ONE SET_THEME_ITEM_DESCRIPTIONS message for every CHANGED row on
+   * this board. Descriptions are multi-line, so this uses a <textarea> where the
+   * Names editor uses a single-line <input>. Collapsed by default (mirrors the
+   * Names editor's collapsible behavior), and — unlike Names — an edited row is
+   * allowed to be blank (that clears the description), so "changed" is the only
+   * dirty test, not "non-empty". Returns null when the item's kind carries no
+   * describable rows.
+   * @param {any} item
+   * @param {{descriptions?: Record<string,string>}|undefined} savedDraft
+   * @param {boolean} busy true while a previous Apply for this board is in flight
+   * @param {boolean} disabledForGeneration true while an unrelated active generation run blocks edits
+   */
+  function buildThemeReviewDescriptionsSection(item, savedDraft, busy, disabledForGeneration) {
+    const rows = themeReviewDescriptionRows(item);
+    if (!rows.length) return null;
+    const section = document.createElement("div");
+    section.className = "theme-review-descriptions";
+    const details = document.createElement("details");
+    details.className = "theme-review-descriptions-details";
+    details.open = Boolean(savedDraft?.descriptionsOpen);
+    const summary = document.createElement("summary");
+    summary.textContent = "Descriptions";
+    details.appendChild(summary);
+    details.addEventListener("toggle", () => {
+      if (savedDraft) savedDraft.descriptionsOpen = details.open;
+    });
+    const grid = document.createElement("div");
+    grid.className = "theme-review-descriptions-grid";
+    const inputsDisabled = busy || disabledForGeneration;
+    const inputs = [];
+    for (const row of rows) {
+      const rowEl = document.createElement("label");
+      rowEl.className = "theme-review-descriptions-row";
+      const labelEl = document.createElement("span");
+      labelEl.textContent = row.label;
+      const textarea = document.createElement("textarea");
+      textarea.className = "theme-review-description-input theme-review-descriptions-input";
+      textarea.rows = 2;
+      textarea.maxLength = 400;
+      textarea.dataset.rowId = row.rowId;
+      textarea.dataset.itemKind = row.itemKind;
+      textarea.dataset.original = row.original;
+      const draftValue = savedDraft?.descriptions && Object.prototype.hasOwnProperty.call(savedDraft.descriptions, row.rowId)
+        ? savedDraft.descriptions[row.rowId]
+        : row.original;
+      textarea.value = draftValue;
+      textarea.disabled = inputsDisabled;
+      rowEl.appendChild(labelEl);
+      rowEl.appendChild(textarea);
+      grid.appendChild(rowEl);
+      inputs.push(textarea);
+    }
+    const applyBtn = document.createElement("button");
+    applyBtn.className = "skill-btn theme-review-descriptions-apply";
+    applyBtn.type = "button";
+    applyBtn.textContent = busy ? "Saving..." : "Apply descriptions";
+    const statusEl = document.createElement("div");
+    statusEl.className = "theme-review-descriptions-status";
+    // Unlike names, a description edit is dirty (and valid) even when the new
+    // value is blank — clearing a description is a legitimate change.
+    const dirtyChanges = () => inputs
+      .map((input) => ({ input, trimmed: input.value.trim() }))
+      .filter(({ input, trimmed }) => trimmed.length <= 400 && trimmed !== input.dataset.original);
+    const updateApplyState = () => {
+      applyBtn.disabled = inputsDisabled || dirtyChanges().length === 0;
+    };
+    for (const input of inputs) input.addEventListener("input", updateApplyState);
+    updateApplyState();
+    applyBtn.addEventListener("click", () => {
+      const changes = [];
+      for (const input of inputs) {
+        const trimmed = input.value.trim();
+        if (trimmed.length > 400 || trimmed === input.dataset.original) {
+          if (trimmed.length > 400) input.value = input.dataset.original;
+          continue;
+        }
+        changes.push({ item_kind: input.dataset.itemKind, id: input.dataset.rowId, description: trimmed });
+      }
+      if (!changes.length) {
+        updateApplyState();
+        return;
+      }
+      for (const input of inputs) input.disabled = true;
+      applyBtn.disabled = true;
+      applyBtn.textContent = "Saving...";
+      statusEl.textContent = "";
+      statusEl.classList.remove("theme-review-error");
+      themeReviewBusyItems.set(item.id, "descriptions");
+      vscode.postMessage({
+        type: "SET_THEME_ITEM_DESCRIPTIONS",
+        payload: { theme_id: reviewThemeId, board_id: item.id, changes },
+      });
+    });
+    details.appendChild(grid);
+    details.appendChild(applyBtn);
+    details.appendChild(statusEl);
+    section.appendChild(details);
+    return section;
+  }
+
+  /** Handles a THEME_ITEM_DESCRIPTIONS_RESULT reply. Mirrors
+   * applyThemeItemNamesResult: the host posts a fresh THEME_IMAGE_REVIEW (full
+   * card rebuild reflecting the resynced prompt/rows — see
+   * resyncDescriptionReviewItems in themeService.ts) immediately before this
+   * message, so this only needs to patch the busy/status affordances. */
+  function applyThemeItemDescriptionsResult(payload) {
+    const boardId = payload.board_id || "";
+    themeReviewBusyItems.delete(boardId);
+    if (!themeImageReviewList) return;
+    const cards = themeImageReviewList.querySelectorAll("[data-item-id]");
+    for (const card of cards) {
+      if (card.getAttribute("data-item-id") !== boardId) continue;
+      const applyBtn = card.querySelector(".theme-review-descriptions-apply");
+      const statusEl = card.querySelector(".theme-review-descriptions-status");
+      const inputs = card.querySelectorAll(".theme-review-descriptions-input");
+      const appliedById = new Map((payload.applied || []).map((change) => [change.id, change.description]));
+      const rejectedById = new Map((payload.rejected || []).map((rejection) => [rejection.id, rejection.reason]));
+      for (const input of inputs) {
+        input.disabled = false;
+        const rowId = input.getAttribute("data-row-id");
+        if (rowId && appliedById.has(rowId)) {
+          const nextDescription = appliedById.get(rowId);
+          input.value = nextDescription;
+          input.dataset.original = nextDescription;
+        } else if (rowId && rejectedById.has(rowId)) {
+          input.value = input.dataset.original;
+        }
+      }
+      if (applyBtn) {
+        applyBtn.textContent = "Apply descriptions";
+        applyBtn.disabled = true;
+      }
+      if (statusEl) {
+        if (payload.error) {
+          statusEl.textContent = "Save failed: " + payload.error;
+          statusEl.classList.add("theme-review-error");
+        } else if (rejectedById.size) {
+          const reasons = Array.from(rejectedById.values()).join(" ");
+          statusEl.textContent = appliedById.size
+            ? (appliedById.size + " description(s) saved; " + rejectedById.size + " rejected: " + reasons)
+            : (reasons || "Descriptions were not saved.");
+          statusEl.classList.toggle("theme-review-error", !appliedById.size);
+        } else {
+          statusEl.textContent = "Descriptions saved ✓";
+          statusEl.classList.remove("theme-review-error");
+        }
+      }
+    }
   }
 
   /** Handles a THEME_ITEM_NAMES_RESULT reply. The host posts a fresh
@@ -2843,6 +3078,15 @@
         themeReviewBusyItems.get(item.id) === "names",
         Boolean(payload.generation_active && !isCurrentReviewGate),
       );
+      // Per-item visual descriptions (0.0.265) replace the manual "retry with
+      // notes" loop for steering appearance — edit + regenerate here instead of
+      // typing free-text notes into the feedback box below every time.
+      const descriptionsSection = buildThemeReviewDescriptionsSection(
+        item,
+        savedDraft,
+        themeReviewBusyItems.get(item.id) === "descriptions",
+        Boolean(payload.generation_active && !isCurrentReviewGate),
+      );
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
       const mode = document.createElement("select");
@@ -3016,6 +3260,7 @@
       if (generationError) body.appendChild(generationError);
       if (nameRow) body.appendChild(nameRow);
       if (namesSection) body.appendChild(namesSection);
+      if (descriptionsSection) body.appendChild(descriptionsSection);
       body.appendChild(decisionRow);
       body.appendChild(feedback);
       body.appendChild(feedbackHint);
@@ -6560,6 +6805,8 @@
       }
     } else if (msg && msg.type === "THEME_ITEM_NAMES_RESULT") {
       applyThemeItemNamesResult(msg.payload || {});
+    } else if (msg && msg.type === "THEME_ITEM_DESCRIPTIONS_RESULT") {
+      applyThemeItemDescriptionsResult(msg.payload || {});
     } else if (msg && msg.type === "BACKGROUND_REPLACE_RESULT") {
       const ok = msg.payload && msg.payload.ok;
       const cancelled = msg.payload && msg.payload.cancelled;

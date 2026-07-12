@@ -91,6 +91,8 @@ export interface ThemeImageReviewItem {
   revision: number;
   frame_keys: string[];
   subject?: string;
+  /** Character boards only: current plan.character_descriptions[slot_id] text, for the review UI's Descriptions editor. */
+  character_description?: string;
   object_specs?: Array<{ object_id: string; display_name: string }>;
   object_rows?: ThemeObjectBoardRow[];
   decor_rows?: ThemeDecorBoardRow[];

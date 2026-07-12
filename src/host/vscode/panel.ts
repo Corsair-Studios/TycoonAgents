@@ -60,6 +60,7 @@ import {
   resumeThemeGeneration,
   saveThemeTuning,
   updateThemeImageReviewStatus,
+  updateThemeItemDescriptionsBatch,
   upgradeInstalledThemes,
   uploadThemeImage,
   generateTheme as generateThemeService,
@@ -68,7 +69,12 @@ import { sanitizeRetryNotes } from "../../extension/themeImageRetry";
 import type { ThemeImageRetryMode } from "../../extension/themeImageRetry";
 import { themePlanCreativeDirection } from "../../extension/themePlan";
 import type { ThemePlan } from "../../extension/themePlan";
-import type { BoardKind, ThemeImageReviewWaitOptions, ThemeItemNameChange } from "../../extension/themeService";
+import type {
+  BoardKind,
+  ThemeImageReviewWaitOptions,
+  ThemeItemDescriptionChange,
+  ThemeItemNameChange,
+} from "../../extension/themeService";
 import type { ThemeManifest } from "../../shared/types";
 import { themeImagesDirectoryUri, themeRawImagesDirectoryUri } from "../../extension/themeStorage";
 import { validateThemeIntegrity } from "../../extension/themeHealth";
@@ -968,6 +974,44 @@ export class TycoonPanel {
           } catch (err) {
             void this._panel.webview.postMessage({
               type: MSG.THEME_ITEM_NAMES_RESULT,
+              payload: { ok: false, theme_id: themeId, board_id: boardId, error: errorMessage(err) },
+            });
+          }
+        } else if (message.type === MSG.SET_THEME_ITEM_DESCRIPTIONS) {
+          const parsedDescriptions = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse((message as any).payload);
+          if (!parsedDescriptions.success) return;
+          const payload = parsedDescriptions.data;
+          const themeId = payload.theme_id;
+          const boardId = payload.board_id ?? "";
+          if (!/^[a-z0-9_]+$/.test(themeId)) return;
+          try {
+            const result = await updateThemeItemDescriptionsBatch(
+              this._globalStorageUri,
+              themeId,
+              payload.changes as ThemeItemDescriptionChange[],
+            );
+            if (result.applied.length) {
+              // updateThemeItemDescriptionsBatch also resyncs the affected boards'
+              // saved review-item prompt/rows (see resyncDescriptionReviewItems).
+              // Post the refreshed review BEFORE the result message below (same
+              // ordering as SET_THEME_ITEM_NAMES) so the Descriptions editor's
+              // confirmation status lands on the freshly-rebuilt card instead of
+              // one about to be replaced.
+              await this._postThemeImageReview(themeId);
+            }
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_ITEM_DESCRIPTIONS_RESULT,
+              payload: {
+                ok: result.rejected.length === 0,
+                theme_id: themeId,
+                board_id: boardId,
+                applied: result.applied,
+                rejected: result.rejected,
+              },
+            });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_ITEM_DESCRIPTIONS_RESULT,
               payload: { ok: false, theme_id: themeId, board_id: boardId, error: errorMessage(err) },
             });
           }

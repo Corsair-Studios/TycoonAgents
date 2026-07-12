@@ -1157,6 +1157,194 @@ export async function renameThemeItemsBatch(
   return { manifest, frames, result };
 }
 
+/** One row of the theme-review "Descriptions" editor's batched Apply. Unlike
+ * ThemeItemNameChange, there is no 'badge' kind (badges have no visual
+ * description field) and 'character' IS included (unlike the Names editor,
+ * which intentionally leaves character boards to RENAME_THEME_CHARACTER). */
+export interface ThemeItemDescriptionChange {
+  item_kind: 'object' | 'decor' | 'character' | 'rival';
+  id: string;
+  description: string;
+}
+
+export interface ThemeItemDescriptionChangeResult {
+  applied: ThemeItemDescriptionChange[];
+  rejected: Array<{ item_kind: string; id: string; reason: string }>;
+}
+
+/** Pad `list` (or start a new array) so index `index` exists, then set it. Never
+ * mutates the input array in place — callers assign the return value back onto
+ * the plan field, keeping `plan` safe to hand to multiple call sites. */
+function setPlanDescriptionAt(list: string[] | undefined, index: number, value: string): string[] {
+  const arr = list ? [...list] : [];
+  while (arr.length <= index) arr.push('');
+  arr[index] = value;
+  return arr;
+}
+
+/**
+ * Pure core of the theme-review "Descriptions" editor's batched Apply: mutates
+ * `plan` in place (never `manifest` — descriptions are prompt-layer text that
+ * lives in plan.json's `character_descriptions` / `object_descriptions` /
+ * `decor_descriptions` / `enemy_descriptions` arrays, NOT the shared manifest
+ * contract; see applyThemeItemNameChanges for the contrasting manifest-display-name
+ * path this deliberately does NOT follow). `manifest` is read-only here, used only
+ * to resolve each row id to its positional index in the matching plan array (object/
+ * decor/rival indices mirror manifest.buildable_objects/decor_objects/roster_rivals
+ * order — see themeObjectSpecs/themeDecorSpecs/themeRivalSpecs; character index is
+ * the agent's slot_id, matching plan.character_descriptions[agent.slot_id] as read
+ * in createReviewItems/buildCharacterAtlasPrompt).
+ *
+ * An empty (or whitespace-only) description is a valid, applied change — it CLEARS
+ * that row's description, unlike applyThemeItemNameChanges which rejects an empty
+ * name. Only an unknown id is rejected. Exported for unit testing.
+ */
+export function applyThemeItemDescriptionChanges(
+  manifest: ThemeManifest,
+  plan: ThemePlan,
+  changes: ThemeItemDescriptionChange[],
+): ThemeItemDescriptionChangeResult {
+  const applied: ThemeItemDescriptionChange[] = [];
+  const rejected: Array<{ item_kind: string; id: string; reason: string }> = [];
+  for (const change of changes) {
+    const description = (change.description ?? '').trim();
+    if (change.item_kind === 'object') {
+      const index = manifest.buildable_objects?.findIndex((candidate) => candidate.object_id === change.id) ?? -1;
+      if (index < 0) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown object "${change.id}".` });
+        continue;
+      }
+      plan.object_descriptions = setPlanDescriptionAt(plan.object_descriptions, index, description);
+    } else if (change.item_kind === 'decor') {
+      const index = manifest.decor_objects?.findIndex((candidate) => candidate.decor_id === change.id) ?? -1;
+      if (index < 0) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown decor item "${change.id}".` });
+        continue;
+      }
+      plan.decor_descriptions = setPlanDescriptionAt(plan.decor_descriptions, index, description);
+    } else if (change.item_kind === 'rival') {
+      // Same stripped/full rival_id matching as applyThemeItemNameChanges — the
+      // webview's rival_rows carry the `rival_` prefix stripped (see themeRivalSpecs).
+      const index = manifest.roster_rivals?.findIndex((candidate) => (
+        candidate.rival_id === change.id || candidate.rival_id === `rival_${change.id}`
+      )) ?? -1;
+      if (index < 0) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown rival "${change.id}".` });
+        continue;
+      }
+      plan.enemy_descriptions = setPlanDescriptionAt(plan.enemy_descriptions, index, description);
+    } else if (change.item_kind === 'character') {
+      const agentMatch = /^agent_(\d+)$/.exec(change.id);
+      const slotId = agentMatch ? Number(agentMatch[1]) : -1;
+      const agent = slotId >= 0 ? manifest.roster_agents?.find((candidate) => candidate.slot_id === slotId) : undefined;
+      if (!agent) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown character "${change.id}".` });
+        continue;
+      }
+      plan.character_descriptions = setPlanDescriptionAt(plan.character_descriptions, agent.slot_id, description);
+    } else {
+      const unknownKind = (change as { item_kind: string }).item_kind;
+      rejected.push({ item_kind: unknownKind, id: change.id, reason: `Unknown item kind "${unknownKind}".` });
+      continue;
+    }
+    applied.push({ item_kind: change.item_kind, id: change.id, description });
+  }
+  return { applied, rejected };
+}
+
+/**
+ * Pure core of the description-driven prompt resync — the "Descriptions" editor's
+ * counterpart to resyncRenamedReviewItems. Unlike renaming, a character description
+ * edit has NO other sync path (RENAME_THEME_CHARACTER only handles the character's
+ * NAME), so character_atlas boards are included here — the one difference from
+ * resyncRenamedReviewItems's affected-board detection, which deliberately excludes
+ * them. Exported for unit testing.
+ */
+export function resyncDescriptionReviewItems(
+  document: Pick<ThemeImageReviewDocument, 'items'>,
+  manifest: ThemeManifest,
+  plan: ThemePlan,
+  applied: ThemeItemDescriptionChange[],
+): ThemeImageReviewItem[] {
+  const affectedIds = new Set(applied.map((change) => change.id));
+  if (!affectedIds.size) return [];
+
+  const affectedBoardIds = new Set<string>();
+  for (const item of document.items) {
+    if (item.kind === 'object_atlas' && item.object_rows?.some(
+      (row) => (row.kind === 'object_static' || row.kind === 'object_anim') && affectedIds.has(row.object_id),
+    )) {
+      affectedBoardIds.add(item.id);
+    } else if (item.kind === 'background_decor_atlas' && item.decor_rows?.some(
+      (row) => row.kind !== 'projectile' && affectedIds.has(row.decor_id),
+    )) {
+      affectedBoardIds.add(item.id);
+    } else if (item.kind === 'rival_atlas' && item.rival_rows?.some(
+      (row) => affectedIds.has(row.rival_id) || affectedIds.has(`rival_${row.rival_id}`),
+    )) {
+      affectedBoardIds.add(item.id);
+    } else if (item.kind === 'character_atlas' && affectedIds.has(item.id)) {
+      affectedBoardIds.add(item.id);
+    }
+  }
+  if (!affectedBoardIds.size) return [];
+
+  const expectedItems = createReviewItems(
+    plan,
+    manifest,
+    themePlanCreativeDirection(plan),
+    boardBackgroundModeForProvider(undefined),
+  ).filter((item) => affectedBoardIds.has(item.id));
+  const savedItems = document.items.filter((item) => affectedBoardIds.has(item.id));
+
+  return mergeResumedReviewItems(expectedItems, savedItems) as ThemeImageReviewItem[];
+}
+
+/**
+ * Thin IO wrapper around applyThemeItemDescriptionChanges: loads the theme's
+ * manifest (read-only, for id resolution) and its saved plan.json, applies the
+ * batch, and writes ONLY the plan back — descriptions never touch the manifest
+ * (contrast renameThemeItemsBatch, which writes the manifest). Mirrors the
+ * badge-rename branch of resyncRenamedBoardPrompts (plan write + resync), never
+ * the manifest-display-name path the rest of that function follows for object/
+ * decor/character/rival renames.
+ */
+export async function updateThemeItemDescriptionsBatch(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  changes: ThemeItemDescriptionChange[],
+): Promise<ThemeItemDescriptionChangeResult> {
+  if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
+  if (!changes.length) throw new Error('No description changes were provided.');
+
+  const loadedTheme = await loadTheme(globalStorageUri, themeId);
+  if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be updated.');
+  const { manifest } = loadedTheme;
+
+  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
+    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  if (!savedPlan) throw new Error('This theme has no saved plan — descriptions require plan.json.');
+  const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+  if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, changes);
+  if (result.applied.length) {
+    await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+    try {
+      const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+      if (document) {
+        const refreshed = resyncDescriptionReviewItems(document, manifest, plan, result.applied);
+        for (const item of refreshed) {
+          await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, item);
+        }
+      }
+    } catch (err) {
+      console.warn('TycoonAgents: unable to resync review-board prompts after description change:', err);
+    }
+  }
+  return result;
+}
+
 /** Regenerate one character board, then fit its frames to production scale. */
 export async function normalizeThemeCharacterAtlas(
   globalStorageUri: vscode.Uri,
@@ -2293,6 +2481,7 @@ export function createReviewItems(
     revision: 0,
     frame_keys: [`agent_${agent.slot_id}`],
     subject: agent.name,
+    character_description: (plan.character_descriptions?.[agent.slot_id] ?? '').trim() || undefined,
   }));
   let enemyItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
   try {
