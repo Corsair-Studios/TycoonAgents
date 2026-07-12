@@ -10894,7 +10894,7 @@
       const sepList = [];
       for (const agent of agentList) {
         const ent = agentCharMap[agent.id];
-        if (ent && ent.sitSeatId == null) sepList.push(ent);
+        if (ent && ent.sitSeatId == null && ent.settled) sepList.push(ent);
       }
       for (let i = 0; i < sepList.length; i++) {
         for (let j = i + 1; j < sepList.length; j++) {
@@ -10915,7 +10915,17 @@
           const overlap = (MIN_AGENT_SEP_NATIVE - dist) * AGENT_SEP_STRENGTH;
           const push = overlap / 2;
           a.nx -= ux * push; a.ny -= uy * push;
+          if (typeof a.destNx === "number") {
+            a.destNx -= ux * push; a.destNy -= uy * push;
+            const cda = clampToPolygon(a.destNx, a.destNy, walkablePolygon);
+            a.destNx = cda[0]; a.destNy = cda[1];
+          }
           b.nx += ux * push; b.ny += uy * push;
+          if (typeof b.destNx === "number") {
+            b.destNx += ux * push; b.destNy += uy * push;
+            const cdb = clampToPolygon(b.destNx, b.destNy, walkablePolygon);
+            b.destNx = cdb[0]; b.destNy = cdb[1];
+          }
           const clampedA = clampToPolygon(a.nx, a.ny, walkablePolygon);
           a.nx = clampedA[0]; a.ny = clampedA[1];
           const clampedB = clampToPolygon(b.nx, b.ny, walkablePolygon);
