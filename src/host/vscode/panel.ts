@@ -2685,6 +2685,8 @@ export class TycoonPanel {
     let unchanged = 0;
     for (const name of fs.readdirSync(bridgeDir)) {
       if (name === "uefn-server.mjs") continue;
+      if (name === "__pycache__") continue;
+      if (name.endsWith(".pyc") || name.endsWith(".pyo")) continue;
       const srcPath = path.join(bridgeDir, name);
       if (!fs.statSync(srcPath).isFile()) continue;
       const destPath = path.join(pyDest, name);

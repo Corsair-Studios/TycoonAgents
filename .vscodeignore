@@ -30,3 +30,6 @@ eslint.config.mjs
 .mcp.json
 *.log
 **/*.vsix
+**/__pycache__/**
+**/*.pyc
+**/*.pyo

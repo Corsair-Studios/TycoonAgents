@@ -43,3 +43,8 @@ nul
 # Local project MCP config (machine-specific paths)
 .mcp.json
 design-doc/*.mp4
+
+# Python bytecode caches (must never be tracked or shipped in the VSIX)
+__pycache__/
+*.pyc
+*.pyo
