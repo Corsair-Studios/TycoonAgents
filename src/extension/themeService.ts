@@ -2040,6 +2040,14 @@ function applyThemeReplacement(
 
 function characterAtlasGrid(rebuildBoard = false) {
   const clipGroups = Object.values(ATLAS_CLIPS).map((clip) => clip.frames);
+  // Melee's wind-up (frame 10, weapon coiled HIGH) and strike (frame 11, lunge LOW)
+  // are DISTINCT poses; unioning them into one normalization bbox spans a tall
+  // vertical range that trips the maxContentExtent cap and shrinks BOTH row-3 cells
+  // below board scale. Normalize each melee cell to its OWN bbox (like the aim cells)
+  // while keeping melee in registrationGroups for horizontal stability.
+  const normalizationGroups = Object.entries(ATLAS_CLIPS)
+    .filter(([name]) => name !== 'melee')
+    .map(([, clip]) => clip.frames);
   return {
     columns: 5,
     rows: 4,
@@ -2048,10 +2056,11 @@ function characterAtlasGrid(rebuildBoard = false) {
     targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
     maxContentExtent: 120,
     // Group each animation CLIP's frames so they share one union bbox/crop/anchor,
-    // mirroring the rival/object row grouping. Prevents walk/build/melee/shoot/dance
+    // mirroring the rival/object row grouping. Prevents walk/build/shoot/dance
     // frames jumping horizontally as pose mass shifts. Single-frame clips (idle,
-    // point, etc.) become harmless 1-member groups.
-    normalizationGroups: clipGroups,
+    // point, etc.) become harmless 1-member groups. Melee is EXCLUDED here (each
+    // of its cells normalizes to its own bbox) but stays in registrationGroups.
+    normalizationGroups,
     // Every clip (walk, melee, build, shoot, dance, ...) plays in place, so any
     // drawn side-to-side drift across its frames is unwanted and gets canceled.
     registrationGroups: clipGroups,
