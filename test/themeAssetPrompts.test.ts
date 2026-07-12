@@ -116,7 +116,7 @@ test('character prompt enforces the production sprite-board mime contracts', () 
   assert.match(prompt, /INVISIBLE CHAIR CONTRACT \(ABSOLUTE\)[\s\S]*support is completely invisible/i);
   assert.match(prompt, /EMPTY TARGET CONTRACT \(HIGHEST PRIORITY\)[\s\S]*No construction result/i);
   assert.match(prompt, /playful, non-graphic, non-contact actions/i);
-  assert.equal(CHARACTER_TARGET_CONTENT_HEIGHT, 104);
+  assert.equal(CHARACTER_TARGET_CONTENT_HEIGHT, 118);
   assert.equal(CHARACTER_TARGET_CONTENT_PERCENT, 72);
   assert.match(prompt, /complete character from head to feet occupies exactly 72% of the cell height/i);
   assert.match(prompt, /72% against each individual cell/i);

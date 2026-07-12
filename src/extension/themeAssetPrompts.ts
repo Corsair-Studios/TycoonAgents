@@ -224,7 +224,11 @@ export function buildRivalAtlasPrompt(
  * stay comfortably below (HEIGHT / 128) * 100, otherwise the generation target would
  * exceed — or leave no headroom under — the slicer's normalization target.
  */
-export const CHARACTER_TARGET_CONTENT_HEIGHT = 104;
+// Raised 104 -> 118 so characters/rivals fill ~92% of the 128px frame (was ~81%),
+// preserving more of the 1024px source detail and removing the per-pose
+// normalize-shrink. Content is still scaled to FIT within maxContentExtent (<= 128),
+// so nothing clips. PERCENT (72) stays comfortably below (118/128)*100 = ~92%.
+export const CHARACTER_TARGET_CONTENT_HEIGHT = 118;
 export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
 
 function boardContract(columns: number, rows: number, background: BoardBackgroundMode = 'magenta'): string {

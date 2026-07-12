@@ -2054,7 +2054,9 @@ function characterAtlasGrid(rebuildBoard = false) {
     // Walking and neutral-standing slots are stable body-height references.
     scaleReferenceSlots: [0, 1, 2, 3, 4, 16],
     targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
-    maxContentExtent: 120,
+    // Raised 120 -> 126 so characters fill ~92-98% of the 128px frame (less
+    // downscaling of the 1024px source = sharper); still <= 128 so nothing clips.
+    maxContentExtent: 126,
     // Group each animation CLIP's frames so they share one union bbox/crop/anchor,
     // mirroring the rival/object row grouping. Prevents walk/build/shoot/dance
     // frames jumping horizontally as pose mass shifts. Single-frame clips (idle,
@@ -2156,7 +2158,9 @@ async function processRivalAtlas(
     rows: rows.length,
     scaleReferenceSlots: Array.from({ length: rows.length * 5 }, (_unused, cell) => cell),
     targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
-    maxContentExtent: 120,
+    // Raised 120 -> 126 so rivals fill ~92-98% of the 128px frame (less
+    // downscaling of the 1024px source = sharper); still <= 128 so nothing clips.
+    maxContentExtent: 126,
     normalizationGroups: rowGroups,
     // Each row's walk+attack frames are one rival animating in place, so any
     // drawn side-to-side drift across the row is unwanted and gets canceled.
