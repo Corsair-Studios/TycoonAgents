@@ -214,6 +214,7 @@ def run(keywords=None):
             "status": "error: 'unreal' module not available (must run inside UEFN)",
             "actor_count": 0,
             "matches": [],
+            "all_properties": [],
             "all_count": 0,
             "report_path": "",
         }
@@ -233,6 +234,7 @@ def run(keywords=None):
             "status": "error: unhandled exception (see log)",
             "actor_count": 0,
             "matches": [],
+            "all_properties": [],
             "all_count": 0,
             "report_path": "",
         }
@@ -244,24 +246,24 @@ def _run_inner(keywords_lower):
     except Exception as e:
         status = "error: get_editor_subsystem raised: " + str(e)
         print("property_inspector: " + status)
-        return {"status": status, "actor_count": 0, "matches": [], "all_count": 0, "report_path": ""}
+        return {"status": status, "actor_count": 0, "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
 
     if subsystem is None:
         status = "error: could not get EditorActorSubsystem"
         print("property_inspector: " + status)
-        return {"status": status, "actor_count": 0, "matches": [], "all_count": 0, "report_path": ""}
+        return {"status": status, "actor_count": 0, "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
 
     try:
         selected = subsystem.get_selected_level_actors()
     except Exception as e:
         status = "error: get_selected_level_actors raised: " + str(e)
         print("property_inspector: " + status)
-        return {"status": status, "actor_count": 0, "matches": [], "all_count": 0, "report_path": ""}
+        return {"status": status, "actor_count": 0, "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
 
     if not selected:
         status = "no actor selected — select a prefab in the Outliner and try again"
         print("property_inspector: " + status)
-        return {"status": status, "actor_count": 0, "matches": [], "all_count": 0, "report_path": ""}
+        return {"status": status, "actor_count": 0, "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
 
     all_properties = []
     actors_info = []
@@ -328,6 +330,7 @@ def _run_inner(keywords_lower):
         "status": status,
         "actor_count": len(actors_info),
         "matches": matches,
+        "all_properties": all_properties,
         "all_count": len(all_properties),
         "report_path": path,
     }
@@ -360,15 +363,6 @@ def show_ui():
 
 
 def _show_window(result):
-    all_properties = list(result.get("matches", []))
-    # matches first, then the rest of all_properties (excluding duplicates already in matches)
-    matched_names = {(p["internal_name"], p["owner"]) for p in result.get("matches", [])}
-    for p in result.get("all_properties", []):
-        key = (p["internal_name"], p["owner"])
-        if key not in matched_names:
-            all_properties.append(p)
-            matched_names.add(key)
-
     root = tk.Tk()
     root.title("Trashbyrd's Property Inspector")
     root.geometry("900x600")
@@ -402,13 +396,17 @@ def _show_window(result):
         font=("Segoe UI", 16, "bold"), fg=_ACCENT_BLUE, bg=_BG,
     ).pack(side=tk.LEFT)
 
-    status = result.get("status", "")
-    actor_count = result.get("actor_count", 0)
-    all_count = result.get("all_count", 0)
-    stats_text = "Actors: {}  |  Properties: {}  |  {}".format(actor_count, all_count, status)
-    tk.Label(
-        top_frame, text=stats_text, font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG,
-    ).pack(side=tk.RIGHT)
+    refresh_button = tk.Button(
+        top_frame, text="⟳ Refresh selection",
+        bg=_ENTRY_BG, fg=_ENTRY_FG, activebackground=_SECTION_BG, activeforeground=_HEADER_FG,
+        relief=tk.FLAT, font=("Segoe UI", 9), padx=8,
+    )
+    refresh_button.pack(side=tk.LEFT, padx=(12, 0))
+
+    stats_label = tk.Label(
+        top_frame, text="", font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG,
+    )
+    stats_label.pack(side=tk.RIGHT)
 
     # -- Report path (selectable) --
     if result.get("report_path"):
@@ -457,18 +455,20 @@ def _show_window(result):
     tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-    match_keys = matched_names  # (internal_name, owner) pairs from keyword matches
+    # Mutable container so the refresh closures below can swap in fresh data
+    # without needing `nonlocal` on plain locals.
+    state = {"props": [], "match_keys": set()}
 
     def _populate(filter_text=""):
         tree.delete(*tree.get_children())
         filter_text = filter_text.lower().strip()
-        for p in all_properties:
+        for p in state["props"]:
             haystack = "{} {} {} {}".format(
                 p["internal_name"], p["value"], p["type"], p["owner"]
             ).lower()
             if filter_text and filter_text not in haystack:
                 continue
-            is_match = (p["internal_name"], p["owner"]) in match_keys
+            is_match = (p["internal_name"], p["owner"]) in state["match_keys"]
             tree.insert(
                 "", tk.END,
                 values=(
@@ -480,11 +480,48 @@ def _show_window(result):
 
     tree.tag_configure("match", foreground=_ACCENT_GREEN)
 
+    def _rebuild_from_result(res):
+        # matches first, then the rest of all_properties (excluding duplicates
+        # already present in matches) — same dedup/ordering as before.
+        combined = list(res.get("matches", []))
+        keys = {(p["internal_name"], p["owner"]) for p in res.get("matches", [])}
+        for p in res.get("all_properties", []):
+            key = (p["internal_name"], p["owner"])
+            if key not in keys:
+                combined.append(p)
+                keys.add(key)
+
+        state["props"] = combined
+        state["match_keys"] = keys
+
+        stats_text = "Actors: {}  |  Properties: {}  |  {}".format(
+            res.get("actor_count", 0), res.get("all_count", 0), res.get("status", ""),
+        )
+        stats_label.config(text=stats_text)
+
+        _populate(search_var.get())
+
+    def _on_refresh():
+        try:
+            fresh_result = run()
+        except Exception:
+            print("property_inspector: refresh failed:\n" + traceback.format_exc())
+            fresh_result = {
+                "status": "error: refresh failed (see Output Log)",
+                "actor_count": 0,
+                "all_count": 0,
+                "matches": [],
+                "all_properties": [],
+            }
+        _rebuild_from_result(fresh_result)
+
+    refresh_button.config(command=_on_refresh)
+
     def _on_search_changed(*_args):
         _populate(search_var.get())
 
     search_var.trace_add("write", _on_search_changed)
-    _populate("")
+    _rebuild_from_result(result)
 
     # -- Tick pump so the window stays responsive inside UEFN's editor loop --
     _tick_handle = [None]
