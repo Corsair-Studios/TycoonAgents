@@ -2375,7 +2375,12 @@
         if (!row || !row.decor_id) continue;
         if (row.kind === "seat") {
           seatIndex += 1;
-          rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Seat " + seatIndex, original: row.display_name || "" });
+          rows.push({
+            rowId: row.decor_id,
+            itemKind: "decor",
+            label: "Seat " + seatIndex + (seatIndex === 1 ? " (Leader's Throne)" : ""),
+            original: row.display_name || "",
+          });
         } else if (row.kind === "decor") {
           decorIndex += 1;
           rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Decor " + decorIndex, original: row.display_name || "" });
@@ -2501,7 +2506,12 @@
         if (!row || !row.decor_id) continue;
         if (row.kind === "seat") {
           seatIndex += 1;
-          rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Seat " + seatIndex, original: row.visual_description || "" });
+          rows.push({
+            rowId: row.decor_id,
+            itemKind: "decor",
+            label: "Seat " + seatIndex + (seatIndex === 1 ? " (Leader's Throne)" : ""),
+            original: row.visual_description || "",
+          });
         } else if (row.kind === "decor") {
           decorIndex += 1;
           rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Decor " + decorIndex, original: row.visual_description || "" });
