@@ -130,3 +130,39 @@ test('SET_THEME_ITEM_NAMES schema: name over 60 characters fails', () => {
   });
   assert.equal(result.success, false);
 });
+
+// SET_THEME_ITEM_NAMES deliberately has NO 'crate'/'poof' item_kind — the
+// build crate and poof effect are never renamed (description-only, via
+// SET_THEME_ITEM_DESCRIPTIONS below).
+test('SET_THEME_ITEM_NAMES schema: crate/poof item_kind fails (never renameable)', () => {
+  const crateResult = MSG_SCHEMAS.SET_THEME_ITEM_NAMES.safeParse({
+    theme_id: 'cobra_command',
+    changes: [{ item_kind: 'crate', id: 'crate', name: 'Supply Crate' }],
+  });
+  assert.equal(crateResult.success, false);
+  const poofResult = MSG_SCHEMAS.SET_THEME_ITEM_NAMES.safeParse({
+    theme_id: 'cobra_command',
+    changes: [{ item_kind: 'poof', id: 'poof', name: 'Poof' }],
+  });
+  assert.equal(poofResult.success, false);
+});
+
+test('SET_THEME_ITEM_DESCRIPTIONS schema: accepts crate/poof item_kind, including an empty (clearing) description', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'objects_02',
+    changes: [
+      { item_kind: 'crate', id: 'crate', description: 'A reinforced steel crate with hazard stripes.' },
+      { item_kind: 'poof', id: 'poof', description: '' },
+    ],
+  });
+  assert.equal(result.success, true);
+});
+
+test('SET_THEME_ITEM_DESCRIPTIONS schema: unknown item_kind still fails', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
+    theme_id: 'cobra_command',
+    changes: [{ item_kind: 'badge', id: 'achievement_0', description: 'x' }],
+  });
+  assert.equal(result.success, false);
+});

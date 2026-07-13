@@ -23,17 +23,18 @@ export interface ThemeImageGenerationError {
 }
 
 /**
- * v2 object pipeline: TWO fixed-shape 4x5 (20-cell) boards, keyed `objects_01`
+ * v3 object pipeline: TWO fixed-shape 4x4 (16-cell) boards, keyed `objects_01`
  * (board 1) and `objects_02` (board 2) — see themeAssetPrompts.ts's
  * createObjectBoard1Rows / createObjectBoard2Rows.
- *   - Board 1's `object_rows` array is exactly 20 `object_static` entries, one
- *     per cell in row-major order (Cell 1..20), each a single-frame object.
- *   - Board 2's `object_rows` array is exactly 4 entries in this fixed order:
- *     [object_anim, object_anim, poof, crate]. `object_anim` #1 occupies row 1
- *     (cells 1-4, 4 frames) and #2 occupies row 2 (cells 5-8, 4 frames); `poof`
- *     occupies cells 9-15 (7 frames, spanning row 3 and the first three cells of
- *     row 4); cells 16-19 are unused blank padding; `crate` is the single last
- *     cell (cell 20, 1 frame).
+ *   - Board 1's `object_rows` array is exactly 16 `object_static` entries, one
+ *     per cell in row-major order (Cell 1..16), each a single-frame object.
+ *   - Board 2's `object_rows` array is exactly 7 entries in this fixed order:
+ *     [object_anim, object_anim, poof, object_static, object_static,
+ *     object_static, crate]. `object_anim` #1 occupies row 1 (cells 1-4, 4
+ *     frames) and #2 occupies row 2 (cells 5-8, 4 frames); `poof` occupies
+ *     row 3 (cells 9-12, 4 frames); the three `object_static` entries occupy
+ *     the first three cells of row 4 (cells 13-15, 1 frame each); `crate` is
+ *     the single last cell (cell 16, 1 frame).
  */
 export type ThemeObjectBoardRow =
   | {
@@ -53,8 +54,8 @@ export type ThemeObjectBoardRow =
       /** Concrete visual-appearance spec from the plan, threaded from ThemeObjectPromptSpec. */
       visual_description?: string;
     }
-  | { kind: 'poof' }
-  | { kind: 'crate' };
+  | { kind: 'poof'; /** Concrete visual-appearance spec from plan.poof_description. */ visual_description?: string }
+  | { kind: 'crate'; /** Concrete visual-appearance spec from plan.crate_description. */ visual_description?: string };
 
 /**
  * One row of a 5x4 (20-cell) rival board. Each row is ONE enemy: cols 0-1 are a
@@ -93,6 +94,10 @@ export interface ThemeImageReviewItem {
   subject?: string;
   /** Character boards only: current plan.character_descriptions[slot_id] text, for the review UI's Descriptions editor. */
   character_description?: string;
+  /** Object board 2 (objects_02) only: current plan.crate_description text, for the review UI's Descriptions editor. Required (crate is never renamed/removed), but may be blank. */
+  crate_description?: string;
+  /** Object board 2 (objects_02) only: current plan.poof_description text, for the review UI's Descriptions editor. Required (poof is never renamed/removed), but may be blank. */
+  poof_description?: string;
   object_specs?: Array<{ object_id: string; display_name: string }>;
   object_rows?: ThemeObjectBoardRow[];
   decor_rows?: ThemeDecorBoardRow[];

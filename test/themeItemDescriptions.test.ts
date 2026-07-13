@@ -221,6 +221,101 @@ test('applyThemeItemDescriptionChanges rejects an unknown id without corrupting 
   assert.equal(manifest.roster_agents[0].name, 'Agent Zero');
 });
 
+// --- crate/poof: single required, description-only plan fields --------------
+// Unlike object/decor/character/rival, 'crate' and 'poof' are NOT indexed
+// into a roster array — there is exactly one crate and one poof per theme, so
+// applyThemeItemDescriptionChanges writes plan.crate_description /
+// plan.poof_description directly, with no manifest id lookup (the id is
+// carried through unchanged but never validated against a roster).
+
+test('applyThemeItemDescriptionChanges writes plan.crate_description / plan.poof_description for crate/poof kinds', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  assert.equal(plan.crate_description, undefined);
+  assert.equal(plan.poof_description, undefined);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'crate', id: 'crate', description: 'A reinforced steel crate with hazard stripes.' },
+    { item_kind: 'poof', id: 'poof', description: 'A small puff of glittering violet smoke.' },
+  ]);
+
+  assert.equal(result.applied.length, 2);
+  assert.equal(result.rejected.length, 0);
+  assert.equal(plan.crate_description, 'A reinforced steel crate with hazard stripes.');
+  assert.equal(plan.poof_description, 'A small puff of glittering violet smoke.');
+});
+
+test('applyThemeItemDescriptionChanges clears crate/poof descriptions on an empty/whitespace-only value', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  plan.crate_description = 'A reinforced steel crate with hazard stripes.';
+  plan.poof_description = 'A small puff of glittering violet smoke.';
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'crate', id: 'crate', description: '   ' },
+    { item_kind: 'poof', id: 'poof', description: '' },
+  ]);
+
+  assert.equal(result.applied.length, 2);
+  assert.equal(result.rejected.length, 0);
+  assert.equal(plan.crate_description, '');
+  assert.equal(plan.poof_description, '');
+});
+
+test('applyThemeItemDescriptionChanges trims surrounding whitespace on crate/poof descriptions', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'crate', id: 'crate', description: '   Weathered wooden crate.   ' },
+  ]);
+
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.applied[0].description, 'Weathered wooden crate.');
+  assert.equal(plan.crate_description, 'Weathered wooden crate.');
+});
+
+test('applyThemeItemDescriptionChanges still rejects a truly unknown item_kind alongside valid crate/poof changes', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'crate', id: 'crate', description: 'Supply crate.' },
+    { item_kind: 'sprocket' as unknown as 'crate', id: 'no_such_kind', description: 'Ghost.' },
+  ]);
+
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.applied[0].item_kind, 'crate');
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].id, 'no_such_kind');
+  assert.equal(plan.crate_description, 'Supply crate.');
+});
+
+test('resyncDescriptionReviewItems rebuilds the objects_02 board when the crate or poof description changes, with the new text baked into its prompt', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+  const savedBoard = savedItems.find((item) => item.id === 'objects_02')!;
+  const otherBoard = savedItems.find((item) => item.id === 'objects_01')!;
+  assert.doesNotMatch(savedBoard.prompt, /hazard stripes/);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'crate', id: 'crate', description: 'A reinforced steel crate with hazard stripes.' },
+  ]);
+  assert.equal(result.applied.length, 1);
+
+  const refreshed = resyncDescriptionReviewItems({ items: savedItems }, manifest, plan, result.applied);
+  assert.deepEqual(refreshed.map((item) => item.id), ['objects_02']);
+  assert.match(refreshed[0].prompt, /hazard stripes/);
+  assert.equal(refreshed[0].crate_description, 'A reinforced steel crate with hazard stripes.');
+
+  // Review progress survives the resync untouched, and the OTHER object board is untouched.
+  assert.equal(refreshed[0].status, savedBoard.status);
+  assert.equal(refreshed[0].revision, savedBoard.revision);
+  assert.equal(refreshed[0].updated_at, savedBoard.updated_at);
+  assert.notEqual(otherBoard.id, refreshed[0].id);
+});
+
 test('applyThemeItemDescriptionChanges matches a rival by its stripped rival_rows id (rival_id keeps the prefix)', () => {
   const manifest = testManifest();
   const plan = testPlan();

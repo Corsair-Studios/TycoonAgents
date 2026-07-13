@@ -323,8 +323,8 @@ test('pads a legacy manifest with 12 buildable_objects up to THEME_OBJECT_COUNT,
   assert.equal(first.build_order, 12);
   assert.equal(first.sprite_asset, 'frames.json#object_object_13');
 
-  // Last slot (index 21) closes out the 22-object contract.
-  assert.equal(manifest.buildable_objects[21].object_id, 'object_22');
+  // Last slot (index 20) closes out the 21-object contract.
+  assert.equal(manifest.buildable_objects[20].object_id, 'object_21');
 
   assert.ok(changed.some((c) => /Padded buildable_objects/.test(c)), `expected a "Padded buildable_objects" change entry, got: ${changed.join(' | ')}`);
 });
@@ -344,6 +344,24 @@ test('a manifest already at THEME_OBJECT_COUNT buildable_objects is left untouch
   assert.equal(manifest.buildable_objects.length, THEME_OBJECT_COUNT);
   assert.deepEqual(manifest.buildable_objects, full);
   assert.ok(!changed.some((c) => /Padded/.test(c)), `healthy manifest must not report padding, got: ${changed.join(' | ')}`);
+});
+
+test('a manifest with MORE than THEME_OBJECT_COUNT buildable_objects is truncated down, preserving the originals in order', () => {
+  const over = realBuildableObjects(THEME_OBJECT_COUNT + 5);
+  const { manifest, changed } = upgradeThemeManifest(minimalManifest({ buildable_objects: over }));
+
+  assert.equal(manifest.buildable_objects.length, THEME_OBJECT_COUNT);
+  assert.deepEqual(manifest.buildable_objects, over.slice(0, THEME_OBJECT_COUNT));
+  assert.ok(changed.some((c) => /Truncated buildable_objects/.test(c)), `expected a "Truncated buildable_objects" change entry, got: ${changed.join(' | ')}`);
+});
+
+test('buildable_objects truncation is idempotent: a second pass makes no further changes', () => {
+  const first = upgradeThemeManifest(minimalManifest({ buildable_objects: realBuildableObjects(THEME_OBJECT_COUNT + 5) }));
+  const second = upgradeThemeManifest(first.manifest);
+
+  assert.equal(second.manifest.buildable_objects.length, THEME_OBJECT_COUNT);
+  assert.deepEqual(second.manifest, first.manifest);
+  assert.ok(!second.changed.some((c) => /Truncated/.test(c)), `second pass must not re-truncate, got: ${second.changed.join(' | ')}`);
 });
 
 test('INTEGRATION: a padded placeholder object cell is renameable via applyThemeItemNameChanges (the bug fixed)', () => {

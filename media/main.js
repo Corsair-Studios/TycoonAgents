@@ -2302,12 +2302,12 @@
    */
   function themeReviewNameRows(item) {
     if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
-      // v2 object pipeline (themeImageReviewState.ts ThemeObjectBoardRow):
-      // board `objects_01` is exactly OBJECT_STATIC_COUNT (20) `object_static`
-      // rows (Object 1..20); board `objects_02` is the fixed 4-entry order
-      // [object_anim, object_anim, poof, crate] — its two `object_anim` rows
-      // continue the SAME global numbering (Object 21, Object 22), matching
-      // this board's own title ("Animated objects 21-22 + build effects").
+      // v3 object pipeline (themeImageReviewState.ts ThemeObjectBoardRow):
+      // board `objects_01` is exactly OBJECT_BOARD1_STATIC_COUNT (16)
+      // `object_static` rows (Object 1..16); board `objects_02` is the fixed
+      // 7-entry order [object_anim, object_anim, poof, object_static,
+      // object_static, object_static, crate] — 2 animated (row 1-2), a poof
+      // one-shot (row 3), 3 static objects + a crate (row 4).
       // Labels use the global object number, not the humanized object_id,
       // since the id is immutable and a humanized-id label would read as
       // "the old name" forever once renamed via this editor.
@@ -2315,21 +2315,40 @@
       // renameable (SET_THEME_ITEM_NAMES's item_kind enum has no 'poof' or
       // 'crate' case — see messages.ts), so they're filtered out here same
       // as any other row missing an object_id; this is NOT a fixed
-      // rows-per-board chunk boundary, it mirrors OBJECT_STATIC_COUNT (the
-      // host's own board-1/board-2 split point in themeAssetPrompts.ts).
-      const OBJECT_STATIC_COUNT = 20;
+      // rows-per-board chunk boundary, it mirrors OBJECT_BOARD1_STATIC_COUNT
+      // (the host's own board-1/board-2 split point in themeAssetPrompts.ts).
+      // Board 2's row array is in CELL order (anim, anim, poof, static x3,
+      // crate), but its true global spec order (themeObjectSpecs) is board-2
+      // statics (17-19) THEN animated (20-21) — see objectSpecs slicing in
+      // reviewSynthesisItems (themeService.ts): board2StaticSpecs is
+      // objectSpecs[16..19), animatedSpecs is objectSpecs[19..21). So the
+      // number is derived per-kind (independent static/anim counters), not
+      // from array position, to match the board-2 label ("Objects 17-21 (3
+      // static + 2 animated)") and avoid a 17/18 vs 20/21 swap.
+      const OBJECT_BOARD1_STATIC_COUNT = 16;
+      const OBJECT_BOARD2_STATIC_COUNT = 3;
       const boardMatch = /objects_(\d+)/.exec(item.id || "");
       const boardNumber = boardMatch ? Number(boardMatch[1]) || 1 : 1;
-      const globalOffset = boardNumber <= 1 ? 0 : OBJECT_STATIC_COUNT;
-      let objectIndex = 0;
+      let staticIndex = 0;
+      let animIndex = 0;
       return item.object_rows
         .filter((row) => row && (row.kind === "object_static" || row.kind === "object_anim") && row.object_id)
         .map((row) => {
-          objectIndex += 1;
+          let globalNumber;
+          if (boardNumber <= 1) {
+            staticIndex += 1;
+            globalNumber = staticIndex;
+          } else if (row.kind === "object_static") {
+            staticIndex += 1;
+            globalNumber = OBJECT_BOARD1_STATIC_COUNT + staticIndex;
+          } else {
+            animIndex += 1;
+            globalNumber = OBJECT_BOARD1_STATIC_COUNT + OBJECT_BOARD2_STATIC_COUNT + animIndex;
+          }
           return {
             rowId: row.object_id,
             itemKind: "object",
-            label: "Object " + (globalOffset + objectIndex) + (row.is_ranged_rack ? " (Weapons Rack)" : ""),
+            label: "Object " + globalNumber + (row.is_ranged_rack ? " (Weapons Rack)" : ""),
             original: row.display_name || "",
           };
         });
@@ -2404,22 +2423,50 @@
       }];
     }
     if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
-      const OBJECT_STATIC_COUNT = 20;
+      // v3 object pipeline — see the matching comment in themeReviewNameRows
+      // above for the full board-1/board-2 layout and the per-kind global
+      // numbering (board 2 statics are 17-19, animated are 20-21).
+      const OBJECT_BOARD1_STATIC_COUNT = 16;
+      const OBJECT_BOARD2_STATIC_COUNT = 3;
       const boardMatch = /objects_(\d+)/.exec(item.id || "");
       const boardNumber = boardMatch ? Number(boardMatch[1]) || 1 : 1;
-      const globalOffset = boardNumber <= 1 ? 0 : OBJECT_STATIC_COUNT;
-      let objectIndex = 0;
-      return item.object_rows
+      let staticIndex = 0;
+      let animIndex = 0;
+      const rows = item.object_rows
         .filter((row) => row && (row.kind === "object_static" || row.kind === "object_anim") && row.object_id)
         .map((row) => {
-          objectIndex += 1;
+          let globalNumber;
+          if (boardNumber <= 1) {
+            staticIndex += 1;
+            globalNumber = staticIndex;
+          } else if (row.kind === "object_static") {
+            staticIndex += 1;
+            globalNumber = OBJECT_BOARD1_STATIC_COUNT + staticIndex;
+          } else {
+            animIndex += 1;
+            globalNumber = OBJECT_BOARD1_STATIC_COUNT + OBJECT_BOARD2_STATIC_COUNT + animIndex;
+          }
           return {
             rowId: row.object_id,
             itemKind: "object",
-            label: "Object " + (globalOffset + objectIndex) + (row.is_ranged_rack ? " (Weapons Rack)" : ""),
+            label: "Object " + globalNumber + (row.is_ranged_rack ? " (Weapons Rack)" : ""),
             original: row.visual_description || "",
           };
         });
+      // Object board 2 also carries the single REQUIRED build crate and
+      // build-completion poof effect (v3 object pipeline — see
+      // buildObjectBoard2Prompt in themeAssetPrompts.ts). Unlike every other
+      // row above, these are description-ONLY (no name row — see
+      // themeReviewNameRows, which deliberately omits 'crate'/'poof' from
+      // SET_THEME_ITEM_NAMES' item_kind enum) and are never renamed or
+      // removed; only their appearance is editable. They only exist on
+      // board 2 (the board whose item carries crate_description/
+      // poof_description), never board 1.
+      if (boardNumber >= 2) {
+        rows.push({ rowId: "crate", itemKind: "crate", label: "Build crate (required)", original: item.crate_description || "" });
+        rows.push({ rowId: "poof", itemKind: "poof", label: "Build poof effect (required)", original: item.poof_description || "" });
+      }
+      return rows;
     }
     if (item.kind === "background_decor_atlas" && Array.isArray(item.decor_rows)) {
       const rows = [];
@@ -2537,6 +2584,16 @@
     const nameInputs = [];
     const descInputs = [];
     for (const row of rows) {
+      // The build crate and poof effect are required for every theme (never
+      // renamed or removed) — flag that once, right before the first of the
+      // two rows, so it reads as a note about them specifically rather than
+      // a blanket statement at the top of the whole editor.
+      if (row.rowId === "crate") {
+        const requiredNote = document.createElement("div");
+        requiredNote.className = "theme-review-names-descriptions-hint";
+        requiredNote.textContent = "The build crate and poof effect below are required for every theme — you can describe their appearance, but not rename or remove them.";
+        grid.appendChild(requiredNote);
+      }
       const rowEl = document.createElement("div");
       rowEl.className = "theme-review-names-descriptions-row";
       const labelEl = document.createElement("span");
@@ -3593,7 +3650,7 @@
   const OBJECT_CLIPS = {
     object_idle: { frames: [0, 1, 2, 3], fps: 5,  loop: true },
     crate:       { frames: [0],          fps: 0,  loop: true, hold: true },
-    poof:        { frames: [0, 1, 2, 3, 4, 5, 6], fps: 12, loop: false },
+    poof:        { frames: [0, 1, 2, 3], fps: 12, loop: false },
   };
 
   /** Theme data set by THEME_INITIALIZED */
@@ -5601,11 +5658,12 @@
     if (entry.phase === "poof" || entry.phase === "idle" || (entry.phase === "unbuilt" && editStageMode)) {
       const objSlots = themeImages["object_" + objId];
       const slotIdx = entry.animState ? currentObjectSlot(entry.animState) : 0;
-      // v2 object pipeline: board 1's 20 static objects load ONE frame
-      // (objSlots.length === 1), but object_idle's clip still cycles
-      // slotIdx 0..3 — without the modulo, objSlots[1..3] are undefined and
-      // the object flickers to nothing 3 frames out of 4. Board 2's 2
-      // animated objects load 4 frames, so slotIdx % 4 is a no-op there.
+      // v3 object pipeline: every STATIC object (board 1's 16 + board 2's 3)
+      // loads ONE frame (objSlots.length === 1), but object_idle's clip still
+      // cycles slotIdx 0..3 — without the modulo, objSlots[1..3] are
+      // undefined and the object flickers to nothing 3 frames out of 4.
+      // Board 2's 2 ANIMATED objects load 4 frames, so slotIdx % 4 is a
+      // no-op there.
       const objImg = (objSlots && objSlots.length) ? objSlots[slotIdx % objSlots.length] : null;
       if (objImg && objImg.complete && objImg.naturalWidth > 0) {
         if (themeObjFlipOverrides && themeObjFlipOverrides[objId]) {
@@ -6489,7 +6547,7 @@
         const manifest = msg.payload?.manifest;
         themeBuildables = Array.isArray(manifest?.buildable_objects)
           ? manifest.buildable_objects.slice().sort((a, b) => (a.build_order || 0) - (b.build_order || 0))
-            // Legacy manifests pad buildable_objects to 22 entries, ~10 of which
+            // Legacy manifests pad buildable_objects to 21 entries, ~10 of which
             // are art-less PLACEHOLDERS (no generated frames until the object
             // board is regenerated). Drop them from the in-game build queue so
             // they don't build as invisible/empty objects. themeImages is

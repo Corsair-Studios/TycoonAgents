@@ -19,7 +19,7 @@ test('theme plan normalizes every editable slot to the required count', () => {
   assert.equal(plan.theme_id, 'neon_harbor');
   assert.equal(plan.characters.length, 16);
   assert.equal(plan.enemies.length, 4);
-  assert.equal(plan.objects.length, 22);
+  assert.equal(plan.objects.length, 21);
   assert.equal(plan.decor.length, 9);
   assert.equal(plan.expressions.length, 8);
   assert.equal(plan.expressions[7], 'Dazed / hit');
@@ -47,7 +47,7 @@ test('object slot 0 is always a themed ranged weapon rack (build_order 0 convent
     display_name: 'Neon Harbor',
     objects: ['Console', 'Crane', 'Generator'],
   });
-  assert.equal(coerced.objects.length, 22);
+  assert.equal(coerced.objects.length, 21);
   assert.equal(coerced.objects[0], 'Neon Harbor Ranged Weapon Rack');
   assert.equal(coerced.objects[1], 'Console');
   assert.equal(coerced.objects[2], 'Crane');
@@ -59,13 +59,13 @@ test('object slot 0 is always a themed ranged weapon rack (build_order 0 convent
   });
   assert.equal(kept.objects[0], 'Laser Rifle Rack');
   assert.equal(kept.objects[1], 'Control Tower');
-  assert.equal(kept.objects.length, 22);
+  assert.equal(kept.objects.length, 21);
 
   // The rack becomes build_order 0 in the manifest, so runtime treats it as the ranged rack.
   const manifest = themePlanToManifest(kept);
   assert.equal(manifest.buildable_objects?.[0].build_order, 0);
   assert.equal(manifest.buildable_objects?.[0].display_name, 'Laser Rifle Rack');
-  assert.equal(manifest.buildable_objects?.length, 22);
+  assert.equal(manifest.buildable_objects?.length, 21);
 });
 
 test('object motion hints stay aligned to objects across rack coercion', () => {
@@ -161,11 +161,11 @@ test('a plan with zero decor entries pads all 9 slots by role', () => {
   assert.equal(plan.decor[8], 'Animated Decor 1');
 });
 
-test('theme plan creates 16 agents, 4 enemies, and 22 buildable objects', () => {
+test('theme plan creates 16 agents, 4 enemies, and 21 buildable objects', () => {
   const manifest = themePlanToManifest(normalizeThemePlan({ display_name: 'Clockwork' }));
   assert.equal(manifest.roster_agents?.length, 16);
   assert.equal(manifest.roster_rivals?.length, 4);
-  assert.equal(manifest.buildable_objects?.length, 22);
+  assert.equal(manifest.buildable_objects?.length, 21);
   assert.match(manifest.roster_agents?.[0].atlas_asset ?? '', /^frames\.json#agent_0$/);
   assert.equal(manifest.viewport?.crate_asset, 'frames.json#crate');
   assert.equal(manifest.viewport?.poof_asset, 'frames.json#poof');
@@ -339,7 +339,7 @@ test('object_descriptions stay aligned to objects across ranged-weapon-rack slot
   assert.equal(coerced.object_descriptions?.[1], 'a flickering terminal');
   assert.equal(coerced.objects[2], 'Crane');
   assert.equal(coerced.object_descriptions?.[2], 'a yellow gantry crane');
-  assert.equal(coerced.object_descriptions?.length, 22);
+  assert.equal(coerced.object_descriptions?.length, 21);
 
   // Planner already supplied a rack: its own description stays on slot 0.
   const kept = normalizeThemePlan({

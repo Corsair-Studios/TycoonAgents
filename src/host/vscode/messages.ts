@@ -326,9 +326,13 @@ export const MSG_SCHEMAS = {
   // Batched description edit from the theme review screen's per-board
   // "Descriptions" editor — mirrors SET_THEME_ITEM_NAMES, but descriptions live
   // in plan.json (character_descriptions/object_descriptions/decor_descriptions/
-  // enemy_descriptions), never the manifest, and there is no 'badge' kind (badges
-  // have no visual-description field). description ALLOWS an empty string — that
-  // clears the row's description — unlike name, which requires min(1).
+  // enemy_descriptions/crate_description/poof_description), never the manifest,
+  // and there is no 'badge' kind (badges have no visual-description field).
+  // description ALLOWS an empty string — that clears the row's description —
+  // unlike name, which requires min(1). 'crate' and 'poof' are the single
+  // required build-crate / build-completion-poof rows (object board 2) —
+  // description-only, deliberately absent from SET_THEME_ITEM_NAMES since
+  // neither is ever renamed or removed.
   SET_THEME_ITEM_DESCRIPTIONS: z
     .object({
       theme_id: z.string().min(1),
@@ -337,7 +341,7 @@ export const MSG_SCHEMAS = {
         .array(
           z
             .object({
-              item_kind: z.enum(['object', 'decor', 'character', 'rival']),
+              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof']),
               id: z.string().min(1),
               description: z.string().max(400),
             })

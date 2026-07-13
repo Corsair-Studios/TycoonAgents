@@ -9,7 +9,7 @@ import type {
 
 export const THEME_CHARACTER_COUNT = 16;
 export const THEME_ENEMY_COUNT = 4; // one full enemy board of RIVALS_PER_BOARD (4)
-export const THEME_OBJECT_COUNT = 22;
+export const THEME_OBJECT_COUNT = 21;
 export const THEME_EXPRESSION_COUNT = 8;
 /**
  * All 8 cells of the expression board are PINNED to a fixed universal
@@ -74,9 +74,9 @@ export interface ObjectClip {
 export const OBJECT_CLIPS: Record<ObjectClipName, ObjectClip> = {
   object_idle: { frames: [0, 1, 2, 3], fps: 5, loop: true },
   crate: { frames: [0], fps: 0, loop: true, hold: true },
-  // 7-frame one-shot build-completion puff (v2 object pipeline, objects_02
-  // board cells 9-15): small puff -> full burst -> dissipate.
-  poof: { frames: [0, 1, 2, 3, 4, 5, 6], fps: 12, loop: false },
+  // 4-frame one-shot build-completion puff (v3 object pipeline, objects_02
+  // board row 3 / cells 9-12): small puff -> full burst -> dissipate.
+  poof: { frames: [0, 1, 2, 3], fps: 12, loop: false },
 };
 
 export type RivalClipName = 'walk' | 'attack';
@@ -123,6 +123,25 @@ export interface ThemePlan {
    * Internal plan field only — NOT part of the immutable shared/types contract.
    */
   object_descriptions?: string[];
+  /**
+   * Optional concrete visual-appearance spec for the single build CRATE that
+   * appears while an object is under construction (object board 2 / objects_02,
+   * cell 16 — see buildObjectBoard2Prompt). A single string, not an array: there
+   * is exactly ONE crate per theme, unlike character/object/decor/enemy
+   * descriptions which are per-slot arrays. The crate is REQUIRED for every
+   * theme (never renamed/removed) — only its appearance is editable.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  crate_description?: string;
+  /**
+   * Optional concrete visual-appearance spec for the single build-completion
+   * POOF effect (object board 2 / objects_02, cells 9-12 — see
+   * buildObjectBoard2Prompt). A single string, not an array — see
+   * `crate_description` for the shape/intent; the poof is likewise REQUIRED
+   * and never renamed/removed, only its appearance is editable.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  poof_description?: string;
   decor: string[];
   /**
    * Optional per-decor concrete visual-appearance spec (same length/order as
@@ -207,6 +226,8 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     objects,
     object_motion_hints: objectMotionHints,
     object_descriptions: objectDescriptions,
+    crate_description: cleanValue(input.crate_description) || undefined,
+    poof_description: cleanValue(input.poof_description) || undefined,
     decor,
     decor_descriptions: alignDescriptions(input.decor, input.decor_descriptions, decor),
     enemies,
@@ -363,9 +384,9 @@ export function toSafeAssetId(value: string): string {
  * built, every character upgrades from melee to ranged combat. Therefore the FIRST
  * object of every theme MUST be a themed rack of ranged weapons (laser rifles, missiles,
  * crossbows, etc.), regardless of theme. This reserves slot 0 for that rack while the
- * remaining 21 slots come from the plan, keeping the total at THEME_OBJECT_COUNT (22:
- * 20 static objects on board 1, plus the 2 animated objects on board 2 — see
- * themeAssetPrompts.ts's OBJECT_STATIC_COUNT / OBJECT_ANIMATED_COUNT).
+ * remaining 20 slots come from the plan, keeping the total at THEME_OBJECT_COUNT (21:
+ * 19 static objects [16 on board 1 + 3 on board 2], plus the 2 animated objects on
+ * board 2 — see themeAssetPrompts.ts's OBJECT_STATIC_COUNT / OBJECT_ANIMATED_COUNT).
  */
 function reserveRangedWeaponRackSlot(
   values: unknown,

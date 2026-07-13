@@ -20,6 +20,8 @@ interface PlannerModelOutput {
   objects?: unknown;
   object_motion_hints?: unknown;
   object_descriptions?: unknown;
+  crate_description?: string;
+  poof_description?: string;
   decor?: unknown;
   decor_descriptions?: unknown;
   enemies?: unknown;
@@ -57,9 +59,11 @@ export async function expandThemePlan(
     '  "characters": ["16 named character or worker designs"],',
     '  "character_descriptions": ["16 concrete visual-appearance specs, one per character in the same order"],',
     '  "environment": "one detailed isometric environment description",',
-    '  "objects": ["22 named props or buildable objects; the FIRST entry MUST be a themed rack of RANGED weapons (e.g. a laser-rifle rack, a missile rack, a crossbow rack) — pick a ranged weapon type that fits the setting and name it as a rack/stand of those weapons; the LAST 2 entries are the only ones that will be animated, so make them naturally motion-friendly (e.g. a machine with blinking lights, a spinning device)"],',
-    '  "object_motion_hints": ["22 SHORT idle-motion phrases, one per object in the same order (e.g. \\"radar dish slowly rotates\\", \\"reactor core pulses\\"); only the LAST 2 objects are actually animated in-game, so focus these hints there — describe one subtle looping motion or light cycle per object"],',
-    '  "object_descriptions": ["22 concrete visual-appearance specs, one per object in the same order"],',
+    '  "objects": ["21 named props or buildable objects; the FIRST entry MUST be a themed rack of RANGED weapons (e.g. a laser-rifle rack, a missile rack, a crossbow rack) — pick a ranged weapon type that fits the setting and name it as a rack/stand of those weapons; the LAST 2 entries are the only ones that will be animated, so make them naturally motion-friendly (e.g. a machine with blinking lights, a spinning device)"],',
+    '  "object_motion_hints": ["21 SHORT idle-motion phrases, one per object in the same order (e.g. \\"radar dish slowly rotates\\", \\"reactor core pulses\\"); only the LAST 2 objects are actually animated in-game, so focus these hints there — describe one subtle looping motion or light cycle per object"],',
+    '  "object_descriptions": ["21 concrete visual-appearance specs, one per object in the same order"],',
+    '  "crate_description": "a concrete visual-appearance spec for the single build CRATE that appears while an object is under construction — the shipping/supply crate prop, themed to fit the pack",',
+    '  "poof_description": "a concrete visual-appearance spec for the single build-completion POOF effect — the burst/reveal FX that plays when an object finishes building, themed to fit the pack",',
     '  "decor": ["9 background decor names: first 4 are sittable seats, next 4 are static scenery props, last 1 is a subtly animated scenery item"],',
     '  "decor_descriptions": ["9 concrete visual-appearance specs, one per decor item in the same order"],',
     '  "enemies": ["4 named enemy designs"],',
@@ -72,6 +76,7 @@ export async function expandThemePlan(
     'Achievements are visual concepts only; do not define unlock rules yet.',
     '',
     'Every "*_descriptions" array is a concise (1-2 sentence) CONCRETE visual spec for the matching named entry at the same index: overall silhouette/form, primary + accent colors, key materials/finish, and 1-2 signature identifying features.',
+    '"crate_description" and "poof_description" are the same kind of concise CONCRETE visual spec, but each is a single string (not an array) — there is exactly one build crate and one build-completion poof effect per theme.',
     'Each description must be consistent with "creative_direction" and coherent across the whole set (shared palette, materials, and art language).',
     'If the named item corresponds to a recognizable, well-known design (a famous character, vehicle, building, weapon, logo, etc.), describe THAT specific design faithfully — accuracy over generic invention is the whole point of these fields.',
   ].join('\n');
@@ -129,6 +134,8 @@ export async function expandThemePlan(
     object_descriptions: Array.isArray(model.object_descriptions)
       ? model.object_descriptions as string[]
       : undefined,
+    crate_description: typeof model.crate_description === 'string' ? model.crate_description : undefined,
+    poof_description: typeof model.poof_description === 'string' ? model.poof_description : undefined,
     decor: Array.isArray(model.decor) ? model.decor as string[] : [],
     decor_descriptions: Array.isArray(model.decor_descriptions)
       ? model.decor_descriptions as string[]

@@ -29,6 +29,8 @@ import {
   decorBoardFrameKeys,
   objectBoardFrameKeys,
   OBJECT_ANIMATED_COUNT,
+  OBJECT_BOARD1_STATIC_COUNT,
+  OBJECT_BOARD2_STATIC_COUNT,
   OBJECT_STATIC_COUNT,
   rivalBoardFrameKeys,
 } from './themeAssetPrompts';
@@ -1160,9 +1162,12 @@ export async function renameThemeItemsBatch(
 /** One row of the theme-review "Descriptions" editor's batched Apply. Unlike
  * ThemeItemNameChange, there is no 'badge' kind (badges have no visual
  * description field) and 'character' IS included (unlike the Names editor,
- * which intentionally leaves character boards to RENAME_THEME_CHARACTER). */
+ * which intentionally leaves character boards to RENAME_THEME_CHARACTER).
+ * 'crate' and 'poof' address the single required build-crate / build-poof
+ * rows (object board 2) — description-only, id is not looked up against any
+ * roster (there is exactly one of each per theme). */
 export interface ThemeItemDescriptionChange {
-  item_kind: 'object' | 'decor' | 'character' | 'rival';
+  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof';
   id: string;
   description: string;
 }
@@ -1186,12 +1191,14 @@ function setPlanDescriptionAt(list: string[] | undefined, index: number, value: 
  * Pure core of the theme-review "Descriptions" editor's batched Apply: mutates
  * `plan` in place (never `manifest` — descriptions are prompt-layer text that
  * lives in plan.json's `character_descriptions` / `object_descriptions` /
- * `decor_descriptions` / `enemy_descriptions` arrays, NOT the shared manifest
- * contract; see applyThemeItemNameChanges for the contrasting manifest-display-name
- * path this deliberately does NOT follow). `manifest` is read-only here, used only
- * to resolve each row id to its positional index in the matching plan array (object/
- * decor/rival indices mirror manifest.buildable_objects/decor_objects/roster_rivals
- * order — see themeObjectSpecs/themeDecorSpecs/themeRivalSpecs; character index is
+ * `decor_descriptions` / `enemy_descriptions` arrays, or (for 'crate'/'poof')
+ * the single `crate_description` / `poof_description` strings, NOT the shared
+ * manifest contract; see applyThemeItemNameChanges for the contrasting
+ * manifest-display-name path this deliberately does NOT follow). `manifest` is
+ * read-only here, used only to resolve each row id to its positional index in
+ * the matching plan array (object/decor/rival indices mirror
+ * manifest.buildable_objects/decor_objects/roster_rivals order — see
+ * themeObjectSpecs/themeDecorSpecs/themeRivalSpecs; character index is
  * the agent's slot_id, matching plan.character_descriptions[agent.slot_id] as read
  * in createReviewItems/buildCharacterAtlasPrompt).
  *
@@ -1242,6 +1249,12 @@ export function applyThemeItemDescriptionChanges(
         continue;
       }
       plan.character_descriptions = setPlanDescriptionAt(plan.character_descriptions, agent.slot_id, description);
+    } else if (change.item_kind === 'crate') {
+      // Single field, not an indexed array — exactly one crate per theme.
+      plan.crate_description = description;
+    } else if (change.item_kind === 'poof') {
+      // Single field, not an indexed array — exactly one poof per theme.
+      plan.poof_description = description;
     } else {
       const unknownKind = (change as { item_kind: string }).item_kind;
       rejected.push({ item_kind: unknownKind, id: change.id, reason: `Unknown item kind "${unknownKind}".` });
@@ -1268,12 +1281,15 @@ export function resyncDescriptionReviewItems(
 ): ThemeImageReviewItem[] {
   const affectedIds = new Set(applied.map((change) => change.id));
   if (!affectedIds.size) return [];
+  // crate/poof descriptions are single plan fields (not row-indexed), so they
+  // always affect the fixed 'objects_02' board rather than a specific row id.
+  const crateOrPoofChanged = applied.some((change) => change.item_kind === 'crate' || change.item_kind === 'poof');
 
   const affectedBoardIds = new Set<string>();
   for (const item of document.items) {
-    if (item.kind === 'object_atlas' && item.object_rows?.some(
+    if (item.kind === 'object_atlas' && (item.object_rows?.some(
       (row) => (row.kind === 'object_static' || row.kind === 'object_anim') && affectedIds.has(row.object_id),
-    )) {
+    ) || (crateOrPoofChanged && item.id === 'objects_02'))) {
       affectedBoardIds.add(item.id);
     } else if (item.kind === 'background_decor_atlas' && item.decor_rows?.some(
       (row) => row.kind !== 'projectile' && affectedIds.has(row.decor_id),
@@ -2280,18 +2296,20 @@ async function processCharacterAtlas(
 }
 
 /**
- * Slice one of the two fixed 4x5 (20-cell) object boards.
- *   - Board 1 (all `object_static` rows, length OBJECT_STATIC_COUNT): each
- *     cell is an independent single-frame object, normalized on its own (no
- *     grouping/registration needed since there is nothing to keep in sync
- *     across frames).
- *   - Board 2 (`[object_anim, object_anim, poof, crate]`): row 1 (cells 0-3)
- *     and row 2 (cells 4-7) are each a 4-frame animated-object group; cells
- *     8-14 are the 7-frame poof group (spans the row 2/row 3 boundary); cell
- *     19 is the single-frame crate. Only the two animated-object groups are
- *     horizontally registered — poof is a one-shot FX whose frames are meant
- *     to differ, and the crate is single-frame, so registering either is a
- *     no-op at best.
+ * Slice one of the two fixed 4x4 (16-cell) object boards.
+ *   - Board 1 (all `object_static` rows, length OBJECT_BOARD1_STATIC_COUNT):
+ *     each cell is an independent single-frame object, normalized on its own
+ *     (no grouping/registration needed since there is nothing to keep in
+ *     sync across frames).
+ *   - Board 2 (`[object_anim, object_anim, poof, object_static,
+ *     object_static, object_static, crate]`): row 1 (cells 0-3) and row 2
+ *     (cells 4-7) are each a 4-frame animated-object group; cells 8-11 are
+ *     the 4-frame poof group (row 3); cells 12-14 are the three single-frame
+ *     static objects (the first three cells of row 4); cell 15 is the
+ *     single-frame crate (the last cell of row 4). Only the two
+ *     animated-object groups are horizontally registered — poof is a
+ *     one-shot FX whose frames are meant to differ, and the static/crate
+ *     cells are single-frame, so registering any of them is a no-op at best.
  */
 async function processObjectAtlas(
   generated: Buffer,
@@ -2300,37 +2318,41 @@ async function processObjectAtlas(
 ): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
   const isBoard2 = rows.some((row) => row.kind === 'object_anim' || row.kind === 'poof' || row.kind === 'crate');
   if (isBoard2) {
-    if (rows.length !== OBJECT_ANIMATED_COUNT + 2) {
-      throw new Error('Object board 2 requires exactly two animated objects, one poof entry, and one crate entry.');
+    if (rows.length !== OBJECT_ANIMATED_COUNT + OBJECT_BOARD2_STATIC_COUNT + 2) {
+      throw new Error('Object board 2 requires exactly two animated objects, one poof entry, three static objects, and one crate entry.');
     }
     const animGroups = [[0, 1, 2, 3], [4, 5, 6, 7]];
-    const poofGroup = [8, 9, 10, 11, 12, 13, 14];
-    const crateGroup = [19];
+    const poofGroup = [8, 9, 10, 11];
+    const staticGroups = [[12], [13], [14]];
+    const crateGroup = [15];
     const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
       columns: 4,
-      rows: 5,
-      scaleReferenceSlots: [...animGroups[0], ...animGroups[1]],
+      rows: 4,
+      // Scale reference includes BOTH animated groups and the 3 new static
+      // object cells (real buildable objects) — poof/crate are FX/props, not
+      // objects, so they stay out of the reference set as before.
+      scaleReferenceSlots: [...animGroups[0], ...animGroups[1], ...staticGroups.flat()],
       targetContentHeight: 104,
       maxContentExtent: 120,
-      normalizationGroups: [...animGroups, poofGroup, crateGroup],
+      normalizationGroups: [...animGroups, poofGroup, ...staticGroups, crateGroup],
       registrationGroups: animGroups,
     });
-    const output = await optimizeSpriteBoardCanvas(generated, 4, 5);
+    const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
     return { output, spritePackage };
   }
-  if (rows.length !== OBJECT_STATIC_COUNT) {
-    throw new Error(`Object board 1 requires exactly ${OBJECT_STATIC_COUNT} static-object cells.`);
+  if (rows.length !== OBJECT_BOARD1_STATIC_COUNT) {
+    throw new Error(`Object board 1 requires exactly ${OBJECT_BOARD1_STATIC_COUNT} static-object cells.`);
   }
-  const allSlots = Array.from({ length: OBJECT_STATIC_COUNT }, (_unused, index) => index);
+  const allSlots = Array.from({ length: OBJECT_BOARD1_STATIC_COUNT }, (_unused, index) => index);
   const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
     columns: 4,
-    rows: 5,
+    rows: 4,
     scaleReferenceSlots: allSlots,
     targetContentHeight: 104,
     maxContentExtent: 120,
     normalizationGroups: allSlots.map((slot) => [slot]),
   });
-  const output = await optimizeSpriteBoardCanvas(generated, 4, 5);
+  const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
   return { output, spritePackage };
 }
 
@@ -2508,34 +2530,37 @@ export function createReviewItems(
   let objectItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
   try {
     const objectSpecs = themeObjectSpecs(manifest, plan.object_motion_hints, plan.object_descriptions);
-    const staticSpecs = objectSpecs.slice(0, OBJECT_STATIC_COUNT);
+    const board1StaticSpecs = objectSpecs.slice(0, OBJECT_BOARD1_STATIC_COUNT);
+    const board2StaticSpecs = objectSpecs.slice(OBJECT_BOARD1_STATIC_COUNT, OBJECT_STATIC_COUNT);
     const animatedSpecs = objectSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT);
-    const board1Rows = createObjectBoard1Rows(staticSpecs);
-    const board2Rows = createObjectBoard2Rows(animatedSpecs);
+    const board1Rows = createObjectBoard1Rows(board1StaticSpecs);
+    const board2Rows = createObjectBoard2Rows(animatedSpecs, board2StaticSpecs, plan.poof_description, plan.crate_description);
     objectItems = [
       {
         id: 'objects_01',
         filename: 'objects_01.png',
-        label: `Static objects 1–${OBJECT_STATIC_COUNT}`,
+        label: `Static objects 1–${OBJECT_BOARD1_STATIC_COUNT}`,
         kind: 'object_atlas' as const,
         status: 'pending' as const,
         prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, board1Rows, backgroundMode),
         revision: 0,
         frame_keys: objectBoardFrameKeys(board1Rows),
-        object_specs: staticSpecs.map(({ object_id, display_name }) => ({ object_id, display_name })),
+        object_specs: board1StaticSpecs.map(({ object_id, display_name }) => ({ object_id, display_name })),
         object_rows: board1Rows,
       },
       {
         id: 'objects_02',
         filename: 'objects_02.png',
-        label: `Animated objects ${OBJECT_STATIC_COUNT + 1}–${OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT} + build effects`,
+        label: `Objects ${OBJECT_BOARD1_STATIC_COUNT + 1}–${THEME_OBJECT_COUNT} (${OBJECT_BOARD2_STATIC_COUNT} static + ${OBJECT_ANIMATED_COUNT} animated) + build effects`,
         kind: 'object_atlas' as const,
         status: 'pending' as const,
         prompt: buildObjectAtlasPrompt(creativeDirection, plan.display_name, board2Rows, backgroundMode),
         revision: 0,
         frame_keys: objectBoardFrameKeys(board2Rows),
-        object_specs: animatedSpecs.map(({ object_id, display_name }) => ({ object_id, display_name })),
+        object_specs: [...animatedSpecs, ...board2StaticSpecs].map(({ object_id, display_name }) => ({ object_id, display_name })),
         object_rows: board2Rows,
+        crate_description: (plan.crate_description ?? '').trim() || undefined,
+        poof_description: (plan.poof_description ?? '').trim() || undefined,
       },
     ];
   } catch (err) {
@@ -2765,21 +2790,21 @@ function rivalRowsForItem(
 }
 
 /**
- * Object rows for an object-atlas item. Mirrors rivalRowsForItem, but the v2
+ * Object rows for an object-atlas item. Mirrors rivalRowsForItem, but the v3
  * object pipeline always has exactly TWO fixed-shape boards (unlike rivals,
  * whose board count scales with roster size): `objects_01` is
- * createObjectBoard1Rows(the first OBJECT_STATIC_COUNT specs) and
+ * createObjectBoard1Rows(the first OBJECT_BOARD1_STATIC_COUNT specs) and
  * `objects_02` is createObjectBoard2Rows(the next OBJECT_ANIMATED_COUNT
- * specs).
+ * specs, the last OBJECT_BOARD2_STATIC_COUNT specs).
  *
  * When a `plan` is supplied, its object roster (`plan.objects` /
  * `plan.object_motion_hints`, via themeObjectSpecsFromPlan) is tried FIRST —
  * mirroring buildReplacementPrompt's existing preference for
  * plan.expressions/plan.achievements over saved item names. normalizeThemePlan
- * always pads/trims `plan.objects` to THEME_OBJECT_COUNT (22) on load, so this
- * lets a LEGACY manifest still stuck at a pre-v2 buildable_objects count (which
+ * always pads/trims `plan.objects` to THEME_OBJECT_COUNT (21) on load, so this
+ * lets a LEGACY manifest still stuck at a pre-v3 buildable_objects count (which
  * makes the manifest-based reconstruction below throw, since
- * createObjectBoard1Rows/2Rows require an exact 20/2 split) still resolve to
+ * createObjectBoard1Rows/2Rows require an exact 16/(2+3) split) still resolve to
  * the CURRENT 2-board contract instead of falling through to a stale board.
  * Reconstructing from the CURRENT manifest is the next fallback (so a roster
  * rename/reorder regenerates the correct board content even with no plan).
@@ -2791,7 +2816,7 @@ function rivalRowsForItem(
 export function objectRowsForItem(
   item: Pick<ThemeImageReviewItem, 'object_specs' | 'object_rows'> & Partial<Pick<ThemeImageReviewItem, 'id'>>,
   manifest: ThemeManifest,
-  plan?: Pick<ThemePlan, 'objects' | 'object_motion_hints' | 'object_descriptions'>,
+  plan?: Pick<ThemePlan, 'objects' | 'object_motion_hints' | 'object_descriptions' | 'crate_description' | 'poof_description'>,
   // Independent of `plan`/preferPlanObjects above: descriptions are PROMPT-ONLY
   // text, not row geometry, so they can safely be merged onto the manifest-driven
   // rows below even when the caller intentionally keeps row RECONSTRUCTION
@@ -2799,14 +2824,24 @@ export function objectRowsForItem(
   // have a plan available on the real (non-display) retry path should still pass
   // its object_descriptions here even when they pass `undefined` for `plan` itself.
   descriptions?: string[],
+  // Same independence as `descriptions` above, but for the single crate/poof
+  // appearance specs (plan.poof_description / plan.crate_description). Used
+  // only for board 2 (createObjectBoard2Rows ignores extra args for board 1).
+  poofDescription?: string,
+  crateDescription?: string,
 ): ThemeObjectBoardRow[] {
   const boardNumber = Number(/objects_(\d+)/.exec(item.id ?? '')?.[1] ?? '1') || 1;
   if (plan?.objects?.length) {
     try {
       const planSpecs = themeObjectSpecsFromPlan(plan);
       const rows = boardNumber >= 2
-        ? createObjectBoard2Rows(planSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT))
-        : createObjectBoard1Rows(planSpecs.slice(0, OBJECT_STATIC_COUNT));
+        ? createObjectBoard2Rows(
+          planSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT),
+          planSpecs.slice(OBJECT_BOARD1_STATIC_COUNT, OBJECT_STATIC_COUNT),
+          plan.poof_description,
+          plan.crate_description,
+        )
+        : createObjectBoard1Rows(planSpecs.slice(0, OBJECT_BOARD1_STATIC_COUNT));
       if (rows.length) return rows;
     } catch (err) {
       console.warn('TycoonAgents: unable to reconstruct object board rows from plan:', err);
@@ -2815,8 +2850,13 @@ export function objectRowsForItem(
   try {
     const objectSpecs = themeObjectSpecs(manifest, undefined, descriptions);
     const rows = boardNumber >= 2
-      ? createObjectBoard2Rows(objectSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT))
-      : createObjectBoard1Rows(objectSpecs.slice(0, OBJECT_STATIC_COUNT));
+      ? createObjectBoard2Rows(
+        objectSpecs.slice(OBJECT_STATIC_COUNT, OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT),
+        objectSpecs.slice(OBJECT_BOARD1_STATIC_COUNT, OBJECT_STATIC_COUNT),
+        poofDescription,
+        crateDescription,
+      )
+      : createObjectBoard1Rows(objectSpecs.slice(0, OBJECT_BOARD1_STATIC_COUNT));
     if (rows.length) return rows;
   } catch (err) {
     console.warn('TycoonAgents: unable to reconstruct object board rows:', err);
@@ -3140,10 +3180,11 @@ export function buildReplacementPrompt(
   plan?: Pick<ThemePlan,
     | 'expressions' | 'achievements' | 'objects' | 'object_motion_hints'
     | 'character_descriptions' | 'object_descriptions' | 'decor_descriptions' | 'enemy_descriptions'
+    | 'crate_description' | 'poof_description'
   >,
   backgroundMode: BoardBackgroundMode = 'magenta',
   // DISPLAY-ONLY opt-in. When true, the object board rebuilds its rows from the
-  // CURRENT plan's 22-object roster (via objectRowsForItem's plan path) so the
+  // CURRENT plan's 21-object roster (via objectRowsForItem's plan path) so the
   // "Copy/View prompt" surface always reflects the latest 2-board contract even
   // for a legacy off-count manifest. It MUST stay false for any caller whose
   // prompt actually feeds image GENERATION: object slicing
@@ -3159,13 +3200,21 @@ export function buildReplacementPrompt(
     // back to the item's stale saved object_rows / legacy reconstruction — this
     // matches applySlicedAtlasFromBuffer's manifest-based slicing so a real
     // Retry stays consistent. Only the DISPLAY path (preferPlanObjects) also
-    // tries the current plan's 22-object roster first, so "Copy/View prompt"
-    // reflects the v2 contract even for a legacy off-count manifest.
-    // `plan?.object_descriptions` is passed unconditionally (independent of
-    // preferPlanObjects): descriptions are prompt-only text, not row geometry, so
-    // a REAL retry can safely pick up plan-authored appearance guidance on the
-    // manifest-driven rows without disturbing manifest-based slicing consistency.
-    const rows = objectRowsForItem(item, manifest, preferPlanObjects ? plan : undefined, plan?.object_descriptions);
+    // tries the current plan's 21-object roster first, so "Copy/View prompt"
+    // reflects the v3 contract even for a legacy off-count manifest.
+    // `plan?.object_descriptions` (and the crate/poof descriptions below) are
+    // passed unconditionally (independent of preferPlanObjects): descriptions
+    // are prompt-only text, not row geometry, so a REAL retry can safely pick
+    // up plan-authored appearance guidance on the manifest-driven rows
+    // without disturbing manifest-based slicing consistency.
+    const rows = objectRowsForItem(
+      item,
+      manifest,
+      preferPlanObjects ? plan : undefined,
+      plan?.object_descriptions,
+      plan?.poof_description,
+      plan?.crate_description,
+    );
     return buildObjectAtlasPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   if (item.kind === 'background_decor_atlas') {
@@ -3227,13 +3276,15 @@ function renameCharacterInPrompt(prompt: string, previousName: string, character
  * Lenient legacy fallback for an object-atlas review item whose board can't be
  * reconstructed from the current manifest via createObjectBoard1Rows /
  * createObjectBoard2Rows (e.g. a manifest whose buildable_objects count
- * doesn't match the current 22-object / 20-static-plus-2-animated contract).
- * Uses the item's stored object specs (falling back to the manifest), padding
- * with synthetic placeholders rather than throwing, so a retry never crashes
- * even against a malformed/legacy roster. `objects_02` (or any board number
- * >= 2) reconstructs board 2's [animA, animB, poof, crate] shape from the
- * LAST OBJECT_ANIMATED_COUNT specs; every other id reconstructs board 1's 20
- * static cells from the first OBJECT_STATIC_COUNT specs.
+ * doesn't match the current 21-object / 16-static-plus-2-animated-plus-3-static
+ * contract). Uses the item's stored object specs (falling back to the
+ * manifest), padding with synthetic placeholders rather than throwing, so a
+ * retry never crashes even against a malformed/legacy roster. `objects_02`
+ * (or any board number >= 2) reconstructs board 2's [animA, animB, poof,
+ * staticA, staticB, staticC, crate] shape from the LAST OBJECT_ANIMATED_COUNT
+ * + OBJECT_BOARD2_STATIC_COUNT specs (animated pair first, in row order);
+ * every other id reconstructs board 1's OBJECT_BOARD1_STATIC_COUNT static
+ * cells from the first OBJECT_BOARD1_STATIC_COUNT specs.
  */
 function reconstructObjectRows(
   item: Pick<ThemeImageReviewItem, 'object_specs'> & Partial<Pick<ThemeImageReviewItem, 'id'>>,
@@ -3252,13 +3303,31 @@ function reconstructObjectRows(
         display_name: `Object ${animRows.length + 1}`,
       });
     }
-    return [...animRows.slice(0, OBJECT_ANIMATED_COUNT), { kind: 'poof' }, { kind: 'crate' }];
+    const boardTwoStatics = specs.slice(
+      Math.max(0, specs.length - OBJECT_ANIMATED_COUNT - OBJECT_BOARD2_STATIC_COUNT),
+      Math.max(0, specs.length - OBJECT_ANIMATED_COUNT),
+    );
+    const staticRows: ThemeObjectBoardRow[] = boardTwoStatics.map((spec) => ({ kind: 'object_static' as const, ...spec }));
+    while (staticRows.length < OBJECT_BOARD2_STATIC_COUNT) {
+      const n = OBJECT_BOARD1_STATIC_COUNT + staticRows.length + 1;
+      staticRows.push({
+        kind: 'object_static' as const,
+        object_id: `object_${n}`,
+        display_name: `Object ${n}`,
+      });
+    }
+    return [
+      ...animRows.slice(0, OBJECT_ANIMATED_COUNT),
+      { kind: 'poof' },
+      ...staticRows.slice(0, OBJECT_BOARD2_STATIC_COUNT),
+      { kind: 'crate' },
+    ];
   }
-  const staticRows: ThemeObjectBoardRow[] = specs.slice(0, OBJECT_STATIC_COUNT).map((spec) => ({
+  const staticRows: ThemeObjectBoardRow[] = specs.slice(0, OBJECT_BOARD1_STATIC_COUNT).map((spec) => ({
     kind: 'object_static' as const,
     ...spec,
   }));
-  while (staticRows.length < OBJECT_STATIC_COUNT) {
+  while (staticRows.length < OBJECT_BOARD1_STATIC_COUNT) {
     staticRows.push({
       kind: 'object_static' as const,
       object_id: `object_${staticRows.length + 1}`,
@@ -3289,13 +3358,14 @@ function themeObjectSpecs(
         ...(description ? { visual_description: description } : {}),
       };
     });
-  // Pad legacy / pre-v2 manifests (fewer than THEME_OBJECT_COUNT buildable_objects)
-  // up to the fixed 22-slot v2 contract so board 1 always resolves its 20 static
-  // cells and board 2 its 2 animated cells. Without this, an existing theme whose
-  // manifest still carries a pre-v2 object count makes createObjectBoard1Rows /
-  // createObjectBoard2Rows and processObjectAtlas throw "requires exactly 20
-  // static-object cells" during review-item re-synthesis and on Re-slice, blocking
-  // object replacement on existing themes. Placeholders mirror reconstructObjectRows.
+  // Pad legacy / pre-v3 manifests (fewer than THEME_OBJECT_COUNT buildable_objects)
+  // up to the fixed 21-slot v3 contract so board 1 always resolves its 16 static
+  // cells and board 2 its 2 animated + 3 static cells. Without this, an existing
+  // theme whose manifest still carries a pre-v3 object count makes
+  // createObjectBoard1Rows/createObjectBoard2Rows and processObjectAtlas throw
+  // "requires exactly 16 static-object cells" during review-item re-synthesis and
+  // on Re-slice, blocking object replacement on existing themes. Placeholders
+  // mirror reconstructObjectRows.
   while (specs.length < THEME_OBJECT_COUNT) {
     const n = specs.length + 1;
     specs.push({ object_id: `object_${n}`, display_name: `Object ${n}` });
@@ -3366,10 +3436,11 @@ function applyRivalBoardFrames(
 /**
  * Writes one object board's frames into `frames`.
  *   - Board 1 (all `object_static` rows): cell i -> `object_<id>`, 1 frame.
- *   - Board 2 (`[object_anim, object_anim, poof, crate]`): row 1 (slots 0-3)
- *     and row 2 (slots 4-7) -> `object_<id>`, 4 frames each; slots 8-14 ->
- *     `poof`, 7 frames; slot 19 -> `crate`, 1 frame. Slots 15-18 are unused
- *     blank padding and own no frame key.
+ *   - Board 2 (`[object_anim, object_anim, poof, object_static,
+ *     object_static, object_static, crate]`): row 1 (slots 0-3) and row 2
+ *     (slots 4-7) -> `object_<id>`, 4 frames each; slots 8-11 -> `poof`, 4
+ *     frames; slots 12-14 -> `object_<id>`, 1 frame each (the three row-4
+ *     static objects); slot 15 -> `crate`, 1 frame.
  * Exported for unit testing multi-board mappings (see objectRowsForItem).
  */
 export function applyObjectBoardFrames(
@@ -3381,7 +3452,7 @@ export function applyObjectBoardFrames(
   const keys: string[] = [];
   const sliceData = (start: number, end: number) => slots.slice(start, end).map((slot) => slot.data);
   if (isBoard2) {
-    const [rowA, rowB, poofRow, crateRow] = rows;
+    const [rowA, rowB, poofRow, staticC, staticD, staticE, crateRow] = rows;
     if (rowA?.kind === 'object_anim') {
       const key = `object_${rowA.object_id}`;
       frames[key] = sliceData(0, 4);
@@ -3393,11 +3464,18 @@ export function applyObjectBoardFrames(
       keys.push(key);
     }
     if (poofRow?.kind === 'poof') {
-      frames.poof = sliceData(8, 15);
+      frames.poof = sliceData(8, 12);
       keys.push('poof');
     }
+    ([[staticC, 12], [staticD, 13], [staticE, 14]] as const).forEach(([row, slotIndex]) => {
+      if (row?.kind !== 'object_static') return;
+      const key = `object_${row.object_id}`;
+      const slot = slots[slotIndex];
+      frames[key] = slot ? [slot.data] : [];
+      keys.push(key);
+    });
     if (crateRow?.kind === 'crate') {
-      frames.crate = sliceData(19, 20);
+      frames.crate = sliceData(15, 16);
       keys.push('crate');
     }
     return keys;

@@ -47,7 +47,9 @@ const {
 const { normalizeThemePlan } = require('../src/extension/themePlan') as typeof import('../src/extension/themePlan');
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { OBJECT_STATIC_COUNT, OBJECT_ANIMATED_COUNT } = require('../src/extension/themeAssetPrompts') as typeof import('../src/extension/themeAssetPrompts');
+const {
+  OBJECT_ANIMATED_COUNT, OBJECT_BOARD1_STATIC_COUNT, OBJECT_BOARD2_STATIC_COUNT,
+} = require('../src/extension/themeAssetPrompts') as typeof import('../src/extension/themeAssetPrompts');
 
 function legacyManifest(): ThemeManifest {
   return {
@@ -70,10 +72,11 @@ function legacyManifest(): ThemeManifest {
       name: `Rival ${index}`,
       atlas_asset: `frames.json#rival_${index}`,
     })),
-    // Legacy/off-count theme: only 12 objects. The v2 object pipeline requires
-    // EXACTLY 22 (20 static + 2 animated) to build either board, so this
-    // intentionally exercises the graceful-skip path (see the "off-count"
-    // test below) rather than the normal two-board reconstruction.
+    // Legacy/off-count theme: only 12 objects. The v3 object pipeline requires
+    // EXACTLY 21 (16 static on board 1 + 3 static + 2 animated on board 2) to
+    // build either board, so this intentionally exercises the graceful-skip
+    // path (see the "off-count" test below) rather than the normal two-board
+    // reconstruction.
     buildable_objects: Array.from({ length: 12 }, (_unused, index) => ({
       build_order: index,
       object_id: `object_${index}`,
@@ -126,10 +129,11 @@ test('createReviewItems does not throw for a legacy manifest with off-count riva
   assert.equal(rivalItems.length, 1, 'expected exactly one rival_atlas board for 3 rivals');
   assert.deepEqual(rivalItems.map((item) => item.id), ['rivals_01']);
 
-  // The v2 object pipeline now PADS a legacy/off-count manifest's
-  // buildable_objects up to the fixed 22-object contract (20 static + 2
-  // animated), so BOTH fixed-shape boards synthesize even for a 12-object
-  // legacy roster instead of being skipped by the surrounding try/catch.
+  // The v3 object pipeline now PADS a legacy/off-count manifest's
+  // buildable_objects up to the fixed 21-object contract (16 static on board 1
+  // + 3 static + 2 animated on board 2), so BOTH fixed-shape boards synthesize
+  // even for a 12-object legacy roster instead of being skipped by the
+  // surrounding try/catch.
   const objectItems = result.filter((item) => item.kind === 'object_atlas');
   assert.equal(objectItems.length, 2, 'expected two object_atlas boards for a padded off-count (12) object roster');
   assert.deepEqual(objectItems.map((item) => item.id), ['objects_01', 'objects_02']);
@@ -145,13 +149,15 @@ test('createReviewItems does not throw for a legacy manifest with off-count riva
 // saved review-item metadata (mirrors the already-fixed rivalRowsForItem). ---
 
 /**
- * A manifest carrying the FULL v2 contract of 22 buildable objects: the first
- * OBJECT_STATIC_COUNT (20, indices 0-19) are static (board 1), and the last
- * OBJECT_ANIMATED_COUNT (2, indices 20-21) are the animated pair (board 2).
+ * A manifest carrying the FULL v3 contract of 21 buildable objects: the first
+ * OBJECT_BOARD1_STATIC_COUNT (16, indices 0-15) are static (board 1), the next
+ * OBJECT_BOARD2_STATIC_COUNT (3, indices 16-18) are static (board 2 row 4),
+ * and the last OBJECT_ANIMATED_COUNT (2, indices 19-20) are the animated pair
+ * (board 2 rows 1-2).
  */
 function fullObjectManifest(): ThemeManifest {
   const manifest = legacyManifest();
-  manifest.buildable_objects = Array.from({ length: 22 }, (_unused, index) => ({
+  manifest.buildable_objects = Array.from({ length: 21 }, (_unused, index) => ({
     build_order: index,
     object_id: `object_${index}`,
     display_name: `Object ${index}`,
@@ -179,48 +185,56 @@ test('objectRowsForItem prefers the CURRENT manifest roster over stale saved obj
   const rows = objectRowsForItem({ id: 'objects_01', object_rows: staleObjectRows }, manifest);
 
   assert.notDeepEqual(rows, staleObjectRows);
-  assert.equal(rows.length, 20);
+  assert.equal(rows.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.equal(rows[0].kind, 'object_static');
   assert.equal(rows[0].kind === 'object_static' ? rows[0].display_name : undefined, 'New Object 0');
 });
 
-test('objectRowsForItem PADS a legacy off-count manifest up to the 22-object contract instead of falling back to saved object_rows', () => {
-  const manifest = legacyManifest(); // only 12 buildable_objects — pre-v2 count
+test('objectRowsForItem PADS a legacy off-count manifest up to the 21-object contract instead of falling back to saved object_rows', () => {
+  const manifest = legacyManifest(); // only 12 buildable_objects — pre-v3 count
   const staleObjectRows = [{ kind: 'crate' as const }];
   // Board 1 (default id) now reconstructs from the padded manifest (12 real
   // specs + placeholders) rather than returning the stale saved rows.
   const rows = objectRowsForItem({ object_rows: staleObjectRows, object_specs: [] }, manifest);
   assert.notDeepEqual(rows, staleObjectRows);
-  assert.equal(rows.length, OBJECT_STATIC_COUNT);
+  assert.equal(rows.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.ok(rows.every((row) => row.kind === 'object_static'), 'padded board 1 must be all object_static');
 });
 
-// --- Regression: the v2 object pipeline always splits a full 22-object roster
-// into exactly two FIXED-shape boards — board 1 (the first 20 objects, one
-// static frame per cell) and board 2 (the last 2 objects, animated, plus the
-// fixed poof/crate entries) — never a dynamic/partial split. ---
+// --- Regression: the v3 object pipeline always splits a full 21-object roster
+// into exactly two FIXED-shape boards — board 1 (the first 16 objects, one
+// static frame per cell) and board 2 (the last 2 objects, animated, plus 3
+// more static objects, plus the fixed poof/crate entries) — never a
+// dynamic/partial split. ---
 
-test('objectRowsForItem: a full 22-object roster gives board 1 the first 20 objects (all object_static) and board 2 the last 2 objects plus poof/crate', () => {
+test('objectRowsForItem: a full 21-object roster gives board 1 the first 16 objects (all object_static) and board 2 the last 2 (animated) plus 3 static plus poof/crate', () => {
   const manifest = fullObjectManifest();
 
   const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
-  assert.equal(board1.length, 20);
+  assert.equal(board1.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.ok(board1.every((row) => row.kind === 'object_static'), 'board 1 must carry only static-object cells');
   assert.deepEqual(
     board1.map((row) => row.kind === 'object_static' ? row.object_id : row.kind),
-    Array.from({ length: 20 }, (_unused, index) => `object_${index}`),
+    Array.from({ length: OBJECT_BOARD1_STATIC_COUNT }, (_unused, index) => `object_${index}`),
   );
 
   const board2 = objectRowsForItem({ id: 'objects_02' }, manifest);
-  assert.deepEqual(board2.map((row) => row.kind), ['object_anim', 'object_anim', 'poof', 'crate']);
+  assert.deepEqual(
+    board2.map((row) => row.kind),
+    ['object_anim', 'object_anim', 'poof', 'object_static', 'object_static', 'object_static', 'crate'],
+  );
   assert.deepEqual(
     board2.slice(0, 2).map((row) => row.kind === 'object_anim' ? row.object_id : row.kind),
-    ['object_20', 'object_21'],
+    ['object_19', 'object_20'],
+  );
+  assert.deepEqual(
+    board2.slice(3, 6).map((row) => row.kind === 'object_static' ? row.object_id : row.kind),
+    ['object_16', 'object_17', 'object_18'],
   );
 });
 
-// --- Regression: the v2 object pipeline now PADS a legacy manifest whose
-// buildable_objects count is BELOW the 22-object contract (themeObjectSpecs
+// --- Regression: the v3 object pipeline now PADS a legacy manifest whose
+// buildable_objects count is BELOW the 21-object contract (themeObjectSpecs
 // fills the tail with `object_<n>` placeholder specs), so both fixed-shape
 // boards reconstruct instead of throwing / falling back to stale rows. ---
 
@@ -238,35 +252,45 @@ function legacy13Manifest(): ThemeManifest {
   return manifest;
 }
 
-test('objectRowsForItem: a legacy 13-object manifest PADS board 1 to 20 static rows — 13 real object_ids then 7 placeholders (object_14..object_20)', () => {
+test('objectRowsForItem: a legacy 13-object manifest PADS board 1 to 16 static rows — 13 real object_ids then 3 placeholders (object_14..object_16)', () => {
   const manifest = legacy13Manifest();
   const board1 = objectRowsForItem({ id: 'objects_01' }, manifest); // NO plan arg
 
-  assert.equal(board1.length, OBJECT_STATIC_COUNT);
+  assert.equal(board1.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.ok(board1.every((row) => row.kind === 'object_static'), 'every board-1 row must be object_static');
 
   const ids = board1.map((row) => (row.kind === 'object_static' ? row.object_id : row.kind));
   // The first 13 rows carry the manifest's real object_ids.
   assert.deepEqual(ids.slice(0, 13), Array.from({ length: 13 }, (_unused, index) => `legacy_obj_${index}`));
-  // The remaining 7 are synthetic placeholders padded up to the 20-static contract.
-  assert.deepEqual(
-    ids.slice(13),
-    ['object_14', 'object_15', 'object_16', 'object_17', 'object_18', 'object_19', 'object_20'],
-  );
+  // The remaining 3 are synthetic placeholders padded up to the 16-static board-1 contract.
+  assert.deepEqual(ids.slice(13), ['object_14', 'object_15', 'object_16']);
 });
 
-test('objectRowsForItem: a legacy 13-object manifest still yields board 2 as [object_anim, object_anim, poof, crate]', () => {
+test('objectRowsForItem: a legacy 13-object manifest still yields board 2 as [object_anim, object_anim, poof, object_static, object_static, object_static, crate]', () => {
   const manifest = legacy13Manifest();
   const board2 = objectRowsForItem({ id: 'objects_02' }, manifest); // NO plan arg
 
-  assert.equal(board2.length, OBJECT_ANIMATED_COUNT + 2);
-  assert.deepEqual(board2.map((row) => row.kind), ['object_anim', 'object_anim', 'poof', 'crate']);
+  assert.equal(board2.length, OBJECT_ANIMATED_COUNT + OBJECT_BOARD2_STATIC_COUNT + 2);
+  assert.deepEqual(
+    board2.map((row) => row.kind),
+    ['object_anim', 'object_anim', 'poof', 'object_static', 'object_static', 'object_static', 'crate'],
+  );
+  // Padded placeholders continue the object_14.. sequence past board 1's 3 (object_14-16):
+  // board 2's 3 statics are object_17-19, the animated pair is object_20-21.
+  assert.deepEqual(
+    board2.slice(3, 6).map((row) => row.kind === 'object_static' ? row.object_id : row.kind),
+    ['object_17', 'object_18', 'object_19'],
+  );
+  assert.deepEqual(
+    board2.slice(0, 2).map((row) => row.kind === 'object_anim' ? row.object_id : row.kind),
+    ['object_20', 'object_21'],
+  );
 });
 
-test('objectRowsForItem: a healthy 22-object manifest still yields 20 static rows for board 1 (padding leaves the full-roster path unchanged)', () => {
+test('objectRowsForItem: a healthy 21-object manifest still yields 16 static rows for board 1 (padding leaves the full-roster path unchanged)', () => {
   const manifest = fullObjectManifest();
   const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
-  assert.equal(board1.length, OBJECT_STATIC_COUNT);
+  assert.equal(board1.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.ok(board1.every((row) => row.kind === 'object_static'));
 });
 
@@ -274,35 +298,41 @@ test('applyObjectBoardFrames: board 1 writes one single-frame object_<id> key pe
   const manifest = fullObjectManifest();
   const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
 
-  const slots = Array.from({ length: 20 }, (_unused, slotIndex) => ({ slot_id: slotIndex, data: `cell_${slotIndex}` }));
+  const slots = Array.from({ length: OBJECT_BOARD1_STATIC_COUNT }, (_unused, slotIndex) => ({ slot_id: slotIndex, data: `cell_${slotIndex}` }));
   const frames: Record<string, string[]> = {};
   const keys = applyObjectBoardFrames(frames, slots, board1);
 
-  assert.equal(keys.length, 20);
+  assert.equal(keys.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.deepEqual(frames.object_object_0, ['cell_0']);
-  assert.deepEqual(frames.object_object_19, ['cell_19']);
+  assert.deepEqual(frames.object_object_15, ['cell_15']);
   assert.equal(frames.poof, undefined);
   assert.equal(frames.crate, undefined);
 });
 
-test('applyObjectBoardFrames: board 2 writes two 4-frame animated objects, a 7-frame poof (cells 9-15), and a 1-frame crate (cell 20) — cells 16-19 own no key', () => {
+test('applyObjectBoardFrames: board 2 writes two 4-frame animated objects, a 4-frame poof (cells 9-12), three 1-frame static objects (cells 13-15), and a 1-frame crate (cell 16)', () => {
   const manifest = fullObjectManifest();
-  const board2 = objectRowsForItem({ id: 'objects_02' }, manifest); // [object_anim(20), object_anim(21), poof, crate]
+  const board2 = objectRowsForItem({ id: 'objects_02' }, manifest); // [object_anim(19), object_anim(20), poof, static(16), static(17), static(18), crate]
 
-  const slots = Array.from({ length: 20 }, (_unused, slotIndex) => ({ slot_id: slotIndex, data: `cell_${slotIndex}` }));
+  const slots = Array.from({ length: 16 }, (_unused, slotIndex) => ({ slot_id: slotIndex, data: `cell_${slotIndex}` }));
   const frames: Record<string, string[]> = {};
   const keys = applyObjectBoardFrames(frames, slots, board2);
 
   // Row 1 (cells 0-3): first animated object, 4 frames.
-  assert.deepEqual(frames.object_object_20, ['cell_0', 'cell_1', 'cell_2', 'cell_3']);
+  assert.deepEqual(frames.object_object_19, ['cell_0', 'cell_1', 'cell_2', 'cell_3']);
   // Row 2 (cells 4-7): second animated object, 4 frames.
-  assert.deepEqual(frames.object_object_21, ['cell_4', 'cell_5', 'cell_6', 'cell_7']);
-  // Cells 8-14: the 7-frame poof, spanning the row 2/row 3 boundary.
-  assert.deepEqual(frames.poof, ['cell_8', 'cell_9', 'cell_10', 'cell_11', 'cell_12', 'cell_13', 'cell_14']);
-  // Cell 19 (the last cell): the single-frame crate.
-  assert.deepEqual(frames.crate, ['cell_19']);
-  // Cells 15-18 are blank padding — no frame key was written for them.
-  assert.deepEqual(keys.sort(), ['crate', 'object_object_20', 'object_object_21', 'poof'].sort());
+  assert.deepEqual(frames.object_object_20, ['cell_4', 'cell_5', 'cell_6', 'cell_7']);
+  // Cells 8-11 (row 3): the 4-frame poof.
+  assert.deepEqual(frames.poof, ['cell_8', 'cell_9', 'cell_10', 'cell_11']);
+  // Cells 12-14 (the first three cells of row 4): three single-frame static objects.
+  assert.deepEqual(frames.object_object_16, ['cell_12']);
+  assert.deepEqual(frames.object_object_17, ['cell_13']);
+  assert.deepEqual(frames.object_object_18, ['cell_14']);
+  // Cell 15 (the last cell): the single-frame crate.
+  assert.deepEqual(frames.crate, ['cell_15']);
+  assert.deepEqual(
+    keys.sort(),
+    ['crate', 'object_object_16', 'object_object_17', 'object_object_18', 'object_object_19', 'object_object_20', 'poof'].sort(),
+  );
 });
 
 test('decorRowsForItem prefers the CURRENT manifest decor roster over stale saved decor_rows', () => {
@@ -368,22 +398,22 @@ test('buildReplacementPrompt falls back to saved expression/achievement names wh
   assert.match(prompt, /Saved Joy/);
 });
 
-test('buildReplacementPrompt: objects_01 rebuilds the NEW 20-static-object board from the CURRENT plan even when the manifest is still a LEGACY off-count roster', () => {
-  // Legacy manifest stuck at the pre-v2 object count (12 buildable_objects) —
-  // createObjectBoard1Rows/2Rows both throw on anything but an exact 20/2
-  // split, so the manifest-based reconstruction inside objectRowsForItem
-  // cannot succeed here.
+test('buildReplacementPrompt: objects_01 rebuilds the NEW 16-static-object board from the CURRENT plan even when the manifest is still a LEGACY off-count roster', () => {
+  // Legacy manifest stuck at the pre-v3 object count (12 buildable_objects) —
+  // createObjectBoard1Rows/2Rows both throw on anything but an exact
+  // 16/(2+3) split, so the manifest-based reconstruction inside
+  // objectRowsForItem cannot succeed here.
   const manifest = legacyManifest();
 
   // A CURRENT plan, normalized the same way loadCurrentThemePlan normalizes
   // every saved plan.json on load: normalizeThemePlan always pads/reserves
-  // `objects` to THEME_OBJECT_COUNT (22), regardless of the manifest's stale
+  // `objects` to THEME_OBJECT_COUNT (21), regardless of the manifest's stale
   // count.
   const plan = normalizeThemePlan({
     ...minimalPlan(),
-    objects: Array.from({ length: 21 }, (_unused, index) => `Current Object ${index}`),
+    objects: Array.from({ length: 20 }, (_unused, index) => `Current Object ${index}`),
   });
-  assert.equal(plan.objects.length, 22);
+  assert.equal(plan.objects.length, 21);
 
   // Simulate the item's saved data from BEFORE the 2-board rework: an old
   // animated-board shape that must never leak into the rebuilt prompt now
@@ -405,29 +435,29 @@ test('buildReplacementPrompt: objects_01 rebuilds the NEW 20-static-object board
     item, plan.creative_direction, manifest, plan, 'magenta', true,
   );
 
-  // NEW board-1 (20 single-frame STATIC objects) language, not the stale
+  // NEW board-1 (16 single-frame STATIC objects) language, not the stale
   // 5-animated board and not the item's stale saved prompt text.
   assert.match(displayPrompt, /Create one static buildable-object sprite board/);
-  assert.match(displayPrompt, /20 distinct STATIC buildable objects/);
+  assert.match(displayPrompt, /16 distinct STATIC buildable objects/);
   assert.doesNotMatch(displayPrompt, /STALE/);
 
   // RETRY-GENERATION path (default preferPlanObjects=false): the plan is IGNORED
   // for object rows, so board 1 rebuilds from the CURRENT manifest — which the
-  // v2 pipeline now PADS up to the 22-object contract for a legacy off-count
+  // v3 pipeline now PADS up to the 21-object contract for a legacy off-count
   // roster. The item's stale saved object_rows are therefore never used, and
   // the padded manifest yields a valid board-1 prompt (no throw), keeping Retry
   // consistent with the manifest-based slicing it pairs with.
   const retryPrompt = buildReplacementPrompt(item, plan.creative_direction, manifest, plan);
   assert.match(retryPrompt, /Create one static buildable-object sprite board/);
-  assert.match(retryPrompt, /20 distinct STATIC buildable objects/);
+  assert.match(retryPrompt, /16 distinct STATIC buildable objects/);
   assert.doesNotMatch(retryPrompt, /STALE/);
 });
 
-// --- Regression: reproduces a REAL production-shaped 22-object roster (cobra
-// command) under the v2 fixed-two-board contract: board 1 = the first 20
-// (all static), board 2 = the last 2 (animated) plus the fixed poof/crate
-// entries. A resumed session must always prefer the freshly recomputed board
-// over any stale saved object_rows/prompt/frame_keys. ---
+// --- Regression: reproduces a REAL production-shaped 21-object roster (cobra
+// command) under the v3 fixed-two-board contract: board 1 = the first 16
+// (all static), board 2 = the last 2 (animated) plus 3 more static objects
+// plus the fixed poof/crate entries. A resumed session must always prefer the
+// freshly recomputed board over any stale saved object_rows/prompt/frame_keys. ---
 
 const REAL_OBJECT_IDS: Array<{ object_id: string; display_name: string }> = [
   { object_id: 'mobile_command_center', display_name: 'Mobile Command Center' },
@@ -446,11 +476,12 @@ const REAL_OBJECT_IDS: Array<{ object_id: string; display_name: string }> = [
   { object_id: 'sandbag_bunker', display_name: 'Sandbag Bunker' },
   { object_id: 'watchtower_platform', display_name: 'Watchtower Platform' },
   { object_id: 'barbed_wire_fence', display_name: 'Barbed Wire Fence' },
+  // Board 1 ends here — indices 0-15 (16 static objects).
+  // Board 2's 3 static objects (indices 16-18, row 4 cells 13-15).
   { object_id: 'field_hospital_tent', display_name: 'Field Hospital Tent' },
   { object_id: 'ammo_storage_locker', display_name: 'Ammo Storage Locker' },
   { object_id: 'vehicle_repair_bay', display_name: 'Vehicle Repair Bay' },
-  { object_id: 'satellite_uplink_dish', display_name: 'Satellite Uplink Dish' },
-  // Last 2 (indices 20-21): the ANIMATED pair on board 2.
+  // Last 2 (indices 19-20): the ANIMATED pair on board 2 (rows 1-2).
   { object_id: 'rotating_radar_array', display_name: 'Rotating Radar Array' },
   { object_id: 'pulsing_reactor_core', display_name: 'Pulsing Reactor Core' },
 ];
@@ -469,18 +500,25 @@ function realThemedObjectManifest(): ThemeManifest {
   return manifest;
 }
 
-test('objectRowsForItem: real 22-object cobra_command roster — board 1 carries the first 20 (static), board 2 carries the last 2 (animated) plus poof/crate', () => {
+test('objectRowsForItem: real 21-object cobra_command roster — board 1 carries the first 16 (static), board 2 carries the last 2 (animated) plus 3 static plus poof/crate', () => {
   const manifest = realThemedObjectManifest();
 
   const board1 = objectRowsForItem({ id: 'objects_01' }, manifest);
-  assert.equal(board1.length, 20);
+  assert.equal(board1.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.equal(board1[0].kind === 'object_static' ? board1[0].object_id : undefined, 'mobile_command_center');
-  assert.equal(board1[19].kind === 'object_static' ? board1[19].object_id : undefined, 'satellite_uplink_dish');
+  assert.equal(board1[15].kind === 'object_static' ? board1[15].object_id : undefined, 'barbed_wire_fence');
 
   const board2 = objectRowsForItem({ id: 'objects_02' }, manifest);
-  assert.deepEqual(board2.map((row) => row.kind), ['object_anim', 'object_anim', 'poof', 'crate']);
+  assert.deepEqual(
+    board2.map((row) => row.kind),
+    ['object_anim', 'object_anim', 'poof', 'object_static', 'object_static', 'object_static', 'crate'],
+  );
   assert.equal(board2[0].kind === 'object_anim' ? board2[0].object_id : undefined, 'rotating_radar_array');
   assert.equal(board2[1].kind === 'object_anim' ? board2[1].object_id : undefined, 'pulsing_reactor_core');
+  assert.deepEqual(
+    board2.slice(3, 6).map((row) => row.kind === 'object_static' ? row.object_id : undefined),
+    ['field_hospital_tent', 'ammo_storage_locker', 'vehicle_repair_bay'],
+  );
 });
 
 test('mergeResumedReviewItems: object board 2 always recomputes fresh rows/prompt/frame_keys, never keeping a stale saved snapshot', () => {
@@ -512,7 +550,7 @@ test('mergeResumedReviewItems: object board 2 always recomputes fresh rows/promp
   // The freshly recomputed board wins for rows/prompt/frame_keys...
   assert.deepEqual(
     mergedItem.object_rows?.map((row) => row.kind === 'object_anim' ? row.object_id : row.kind),
-    ['rotating_radar_array', 'pulsing_reactor_core', 'poof', 'crate'],
+    ['rotating_radar_array', 'pulsing_reactor_core', 'poof', 'object_static', 'object_static', 'object_static', 'crate'],
   );
   assert.ok(!mergedItem.frame_keys.includes('object_OLD_radar'), 'resumed board 2 must not carry a stale object id');
   assert.notEqual(mergedItem.prompt, 'STALE PROMPT');
@@ -631,7 +669,7 @@ function savedReviewDocumentItems(manifest: ThemeManifest, plan: ThemePlan) {
   }));
 }
 
-test('resyncRenamedReviewItems rebuilds only object board 1 when a STATIC object (index < 20) is renamed, with the new name baked into its prompt', () => {
+test('resyncRenamedReviewItems rebuilds only object board 1 when a STATIC object (index < 16) is renamed, with the new name baked into its prompt', () => {
   const manifest = realThemedObjectManifest();
   const plan = minimalPlan();
   // Saved document reflects generation BEFORE the rename (old name baked into
@@ -666,10 +704,10 @@ test('resyncRenamedReviewItems rebuilds only object board 1 when a STATIC object
   assert.ok(!refreshed.some((item) => item.id === 'objects_02'));
 });
 
-test('resyncRenamedReviewItems rebuilds only object board 2 when an ANIMATED object (index >= 20) is renamed', () => {
+test('resyncRenamedReviewItems rebuilds only object board 2 when an ANIMATED object (index >= 19) is renamed', () => {
   const manifest = realThemedObjectManifest();
   const plan = minimalPlan();
-  // rotating_radar_array is index 20 — the first animated object, on board 2.
+  // rotating_radar_array is index 19 — the first animated object, on board 2.
   const savedItems = savedReviewDocumentItems(manifest, plan);
   const savedBoard2 = savedItems.find((item) => item.id === 'objects_02')!;
   assert.match(savedBoard2.prompt, /Rotating Radar Array/);
@@ -839,30 +877,30 @@ test('resyncRenamedReviewItems no badge — a non-badge, non-matching change lea
 // object_rows/object_specs/rival_rows/decor_rows/achievement_names/
 // expression_names) onto a SAVED item WITHOUT disturbing its generation state
 // (status/revision/updated_at/prompt/etc.). Purpose: existing themes whose
-// saved object item predates the v2 `object_rows` must still show the inline
+// saved object item predates the v3 `object_rows` must still show the inline
 // Names editor, because the current-manifest-derived expected.object_rows now
 // refreshes onto the item. ---
 
-function twenty(prefix: string) {
-  return Array.from({ length: 20 }, (_unused, index) => ({
+function sixteen(prefix: string) {
+  return Array.from({ length: 16 }, (_unused, index) => ({
     kind: 'object_static' as const,
     object_id: `obj_${index}`,
     display_name: `${prefix} ${index + 1}`,
   }));
 }
 
-test('refreshSavedReviewItemMetadata: refreshes a saved object item that is MISSING object_rows (existing pre-v2 theme) while preserving its generation state', () => {
+test('refreshSavedReviewItemMetadata: refreshes a saved object item that is MISSING object_rows (existing pre-v3 theme) while preserving its generation state', () => {
   const saved = {
     id: 'objects_01', filename: 'objects_01.png', label: 'stale label', kind: 'object_atlas' as const,
     status: 'accepted' as const, prompt: 'ORIGINAL SAVED PROMPT', revision: 3, frame_keys: ['object_obj_0'],
     updated_at: '2026-03-14T09:26:53.000Z',
-    // NOTE: intentionally NO object_rows — this is the pre-v2 saved shape.
+    // NOTE: intentionally NO object_rows — this is the pre-v3 saved shape.
   };
-  const expectedRows = Array.from({ length: 20 }, (_unused, index) => ({
+  const expectedRows = Array.from({ length: 16 }, (_unused, index) => ({
     kind: 'object_static' as const, object_id: `obj_${index}`, display_name: `Object ${index + 1}`,
   }));
   const expected = {
-    id: 'objects_01', filename: 'objects_01.png', label: 'Static objects 1–20', kind: 'object_atlas' as const,
+    id: 'objects_01', filename: 'objects_01.png', label: 'Static objects 1–16', kind: 'object_atlas' as const,
     status: 'pending' as const, prompt: 'FRESH EXPECTED PROMPT', revision: 0, frame_keys: [],
     object_rows: expectedRows,
   };
@@ -870,9 +908,9 @@ test('refreshSavedReviewItemMetadata: refreshes a saved object item that is MISS
   const merged = refreshSavedReviewItemMetadata(saved, expected);
 
   // Structural metadata comes from `expected`.
-  assert.equal(merged.object_rows?.length, 20);
+  assert.equal(merged.object_rows?.length, 16);
   assert.deepEqual(merged.object_rows, expectedRows);
-  assert.equal(merged.label, 'Static objects 1–20');
+  assert.equal(merged.label, 'Static objects 1–16');
   // Generation state stays from `saved`.
   assert.equal(merged.status, 'accepted');
   assert.equal(merged.revision, 3);
@@ -881,21 +919,21 @@ test('refreshSavedReviewItemMetadata: refreshes a saved object item that is MISS
   assert.deepEqual(merged.frame_keys, ['object_obj_0']);
 });
 
-test('refreshSavedReviewItemMetadata: OVERRIDES a stale short object_rows array with the fresh 20-row expected array', () => {
+test('refreshSavedReviewItemMetadata: OVERRIDES a stale short object_rows array with the fresh 16-row expected array', () => {
   const saved = {
     id: 'objects_01', filename: 'objects_01.png', label: 'label', kind: 'object_atlas' as const,
     status: 'accepted' as const, prompt: 'p', revision: 2, frame_keys: [], updated_at: '2026-02-02T00:00:00.000Z',
-    object_rows: twenty('STALE').slice(0, 5), // old/short: only 5 rows
+    object_rows: sixteen('STALE').slice(0, 5), // old/short: only 5 rows
   };
-  const freshRows = twenty('Fresh');
+  const freshRows = sixteen('Fresh');
   const expected = {
-    id: 'objects_01', filename: 'objects_01.png', label: 'Static objects 1–20', kind: 'object_atlas' as const,
+    id: 'objects_01', filename: 'objects_01.png', label: 'Static objects 1–16', kind: 'object_atlas' as const,
     status: 'pending' as const, prompt: 'x', revision: 0, frame_keys: [],
     object_rows: freshRows,
   };
 
   const merged = refreshSavedReviewItemMetadata(saved, expected);
-  assert.equal(merged.object_rows?.length, 20);
+  assert.equal(merged.object_rows?.length, 16);
   assert.deepEqual(merged.object_rows, freshRows);
 });
 

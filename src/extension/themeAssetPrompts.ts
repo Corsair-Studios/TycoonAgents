@@ -59,24 +59,28 @@ export interface ThemeDecorPromptSpec {
 }
 
 /**
- * v2 object pipeline: exactly TWO fixed-shape 4x5 (20-cell) boards.
- *   - Board 1 ("objects_01"): OBJECT_STATIC_COUNT (20) single-frame static
- *     objects, one per cell in row-major order.
+ * v3 object pipeline: exactly TWO fixed-shape 4x4 (16-cell) boards.
+ *   - Board 1 ("objects_01"): OBJECT_BOARD1_STATIC_COUNT (16) single-frame
+ *     static objects, one per cell in row-major order.
  *   - Board 2 ("objects_02"): OBJECT_ANIMATED_COUNT (2) animated objects (4
- *     frames each, rows 1-2), a 7-frame POOF (cells 9-15), 4 unused blank
- *     cells (16-19), and a 1-frame CRATE (cell 20).
- * Total buildable objects = OBJECT_STATIC_COUNT + OBJECT_ANIMATED_COUNT = 22
- * (== THEME_OBJECT_COUNT in themePlan.ts).
+ *     frames each, rows 1-2), an OBJECT_POOF_FRAME_COUNT (4)-frame POOF (row
+ *     3, cells 9-12), OBJECT_BOARD2_STATIC_COUNT (3) single-frame static
+ *     objects (row 4, cells 13-15), and a 1-frame CRATE (cell 16).
+ * Total buildable objects = OBJECT_STATIC_COUNT (19) + OBJECT_ANIMATED_COUNT
+ * (2) = 21 (== THEME_OBJECT_COUNT in themePlan.ts). OBJECT_STATIC_COUNT ==
+ * OBJECT_BOARD1_STATIC_COUNT + OBJECT_BOARD2_STATIC_COUNT (16 + 3 = 19).
  */
-export const OBJECT_STATIC_COUNT = 20;
+export const OBJECT_STATIC_COUNT = 19;
 export const OBJECT_ANIMATED_COUNT = 2;
-/** Frame count of the one-shot build-completion POOF FX (board 2, cells 9-15). */
-export const OBJECT_POOF_FRAME_COUNT = 7;
+export const OBJECT_BOARD1_STATIC_COUNT = 16;
+export const OBJECT_BOARD2_STATIC_COUNT = 3;
+/** Frame count of the one-shot build-completion POOF FX (board 2, row 3 / cells 9-12). */
+export const OBJECT_POOF_FRAME_COUNT = 4;
 
-/** Board 1: OBJECT_STATIC_COUNT single-frame static objects, one per cell. */
+/** Board 1: OBJECT_BOARD1_STATIC_COUNT single-frame static objects, one per cell. */
 export function createObjectBoard1Rows(objects: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[] {
-  if (objects.length !== OBJECT_STATIC_COUNT) {
-    throw new Error(`Object board 1 requires exactly ${OBJECT_STATIC_COUNT} static objects.`);
+  if (objects.length !== OBJECT_BOARD1_STATIC_COUNT) {
+    throw new Error(`Object board 1 requires exactly ${OBJECT_BOARD1_STATIC_COUNT} static objects.`);
   }
   return objects.map((object): ThemeObjectBoardRow => ({
     kind: 'object_static',
@@ -90,13 +94,26 @@ export function createObjectBoard1Rows(objects: ThemeObjectPromptSpec[]): ThemeO
 
 /**
  * Board 2: exactly OBJECT_ANIMATED_COUNT animated objects (rows 1-2, 4 frames
- * each) followed by the fixed poof + crate entries. Cells 16-19 (blank
- * padding) and the exact cell ranges are implicit in this fixed layout — see
- * buildObjectBoard2Prompt / processObjectAtlas / applyObjectBoardFrames.
+ * each), the fixed poof entry (row 3), OBJECT_BOARD2_STATIC_COUNT static
+ * objects (the first 3 cells of row 4), and the fixed crate entry (the last
+ * cell of row 4). The exact cell ranges are implicit in this fixed layout —
+ * see buildObjectBoard2Prompt / processObjectAtlas / applyObjectBoardFrames.
  */
-export function createObjectBoard2Rows(animatedObjects: ThemeObjectPromptSpec[]): ThemeObjectBoardRow[] {
+export function createObjectBoard2Rows(
+  animatedObjects: ThemeObjectPromptSpec[],
+  staticObjects: ThemeObjectPromptSpec[],
+  // Optional single-string appearance specs for the fixed poof/crate cells
+  // (plan.poof_description / plan.crate_description — see themePlan.ts).
+  // Absent/undefined leaves those rows with no visual_description, so the
+  // generated prompt is byte-identical to before this parameter existed.
+  poofDescription?: string,
+  crateDescription?: string,
+): ThemeObjectBoardRow[] {
   if (animatedObjects.length !== OBJECT_ANIMATED_COUNT) {
     throw new Error(`Object board 2 requires exactly ${OBJECT_ANIMATED_COUNT} animated objects.`);
+  }
+  if (staticObjects.length !== OBJECT_BOARD2_STATIC_COUNT) {
+    throw new Error(`Object board 2 requires exactly ${OBJECT_BOARD2_STATIC_COUNT} static objects.`);
   }
   const animRows = animatedObjects.map((object): ThemeObjectBoardRow => ({
     kind: 'object_anim',
@@ -105,7 +122,23 @@ export function createObjectBoard2Rows(animatedObjects: ThemeObjectPromptSpec[])
     ...(object.motion_hint ? { motion_hint: object.motion_hint } : {}),
     ...(object.visual_description ? { visual_description: object.visual_description } : {}),
   }));
-  return [...animRows, { kind: 'poof' }, { kind: 'crate' }];
+  const staticRows = staticObjects.map((object): ThemeObjectBoardRow => ({
+    kind: 'object_static',
+    object_id: object.object_id,
+    display_name: object.display_name,
+    ...(object.motion_hint ? { motion_hint: object.motion_hint } : {}),
+    ...(object.is_ranged_rack ? { is_ranged_rack: true } : {}),
+    ...(object.visual_description ? { visual_description: object.visual_description } : {}),
+  }));
+  const poofRow: ThemeObjectBoardRow = {
+    kind: 'poof',
+    ...(poofDescription?.trim() ? { visual_description: poofDescription.trim() } : {}),
+  };
+  const crateRow: ThemeObjectBoardRow = {
+    kind: 'crate',
+    ...(crateDescription?.trim() ? { visual_description: crateDescription.trim() } : {}),
+  };
+  return [...animRows, poofRow, ...staticRows, crateRow];
 }
 
 /**
@@ -685,9 +718,9 @@ export function buildObjectAtlasPrompt(
 }
 
 /**
- * Board 1 ("objects_01"): OBJECT_STATIC_COUNT (20) distinct STATIC buildable
- * objects, one per cell in row-major order (Cell 1..20) on a 4x5 grid. Each
- * cell is a single, fully-built theme structure — no animation.
+ * Board 1 ("objects_01"): OBJECT_BOARD1_STATIC_COUNT (16) distinct STATIC
+ * buildable objects, one per cell in row-major order (Cell 1..16) on a 4x4
+ * grid. Each cell is a single, fully-built theme structure — no animation.
  */
 export function buildObjectBoard1Prompt(
   creativeDirection: string,
@@ -695,8 +728,8 @@ export function buildObjectBoard1Prompt(
   rows: ThemeObjectBoardRow[],
   background: BoardBackgroundMode = 'magenta',
 ): string {
-  if (rows.length !== OBJECT_STATIC_COUNT) {
-    throw new Error(`Object board 1 requires exactly ${OBJECT_STATIC_COUNT} static-object cells.`);
+  if (rows.length !== OBJECT_BOARD1_STATIC_COUNT) {
+    throw new Error(`Object board 1 requires exactly ${OBJECT_BOARD1_STATIC_COUNT} static-object cells.`);
   }
   const cellLines = rows.map((row, index) => {
     if (row.kind !== 'object_static') throw new Error('Object board 1 cells must all be static objects.');
@@ -709,8 +742,8 @@ export function buildObjectBoard1Prompt(
   });
   return [
     `Create one static buildable-object sprite board for the "${themeName}" theme.`,
-    boardContract(4, 5, background),
-    `${OBJECT_STATIC_COUNT} distinct STATIC buildable objects, one per cell in row-major order (Cell 1 through Cell ${OBJECT_STATIC_COUNT}), each a fully-built theme structure:`,
+    boardContract(4, 4, background),
+    `${OBJECT_BOARD1_STATIC_COUNT} distinct STATIC buildable objects, one per cell in row-major order (Cell 1 through Cell ${OBJECT_BOARD1_STATIC_COUNT}), each a fully-built theme structure:`,
     ...cellLines,
     '',
     'Each cell shows exactly ONE finished, fully-built object as a single static frame — no animation, no motion, no partial construction. Every object is complete and ready to use.',
@@ -721,11 +754,11 @@ export function buildObjectBoard1Prompt(
 }
 
 /**
- * Board 2 ("objects_02"): a 4x5 grid mixing five roles — two animated objects
+ * Board 2 ("objects_02"): a 4x4 grid mixing four roles — two animated objects
  * (row 1 = Cells 1-4, row 2 = Cells 5-8; 4 frames each, lights/highlights-only
- * motion), a 7-frame one-shot build-completion POOF spanning Cells 9-15 (row 3
- * plus the first three cells of row 4), four unused blank Cells 16-19, and a
- * single static CRATE in the final Cell 20.
+ * motion), a 4-frame one-shot build-completion POOF filling row 3 (Cells
+ * 9-12), OBJECT_BOARD2_STATIC_COUNT (3) static objects in the first three
+ * cells of row 4 (Cells 13-15), and a single static CRATE in the final Cell 16.
  */
 export function buildObjectBoard2Prompt(
   creativeDirection: string,
@@ -733,43 +766,51 @@ export function buildObjectBoard2Prompt(
   rows: ThemeObjectBoardRow[],
   background: BoardBackgroundMode = 'magenta',
 ): string {
-  const [rowA, rowB, poofRow, crateRow] = rows;
+  const [rowA, rowB, poofRow, staticC, staticD, staticE, crateRow] = rows;
   if (
-    rows.length !== OBJECT_ANIMATED_COUNT + 2
+    rows.length !== OBJECT_ANIMATED_COUNT + OBJECT_BOARD2_STATIC_COUNT + 2
     || rowA?.kind !== 'object_anim' || rowB?.kind !== 'object_anim'
-    || poofRow?.kind !== 'poof' || crateRow?.kind !== 'crate'
+    || poofRow?.kind !== 'poof'
+    || staticC?.kind !== 'object_static' || staticD?.kind !== 'object_static' || staticE?.kind !== 'object_static'
+    || crateRow?.kind !== 'crate'
   ) {
-    throw new Error('Object board 2 requires exactly two animated objects, one poof entry, and one crate entry.');
+    throw new Error('Object board 2 requires exactly two animated objects, one poof entry, three static objects, and one crate entry.');
   }
   const motionA = rowA.motion_hint
     ?? 'invent one subtle functional motion or light cycle that reads clearly across four loopable phases';
   const motionB = rowB.motion_hint
     ?? 'invent one subtle functional motion or light cycle that reads clearly across four loopable phases';
+  const staticCells = [staticC, staticD, staticE].map((row, index) => (
+    `Cell ${13 + index}: ${row.display_name} — one complete, fully-built theme structure/prop.`
+      + (row.visual_description ? ` — ${row.visual_description}` : '')
+  ));
   return [
     `Create one animated-object + build-effects sprite board for the "${themeName}" theme.`,
-    boardContract(4, 5, background),
-    'The 20 cells (4 columns x 5 rows, row-major) carry FIVE distinct roles:',
+    boardContract(4, 4, background),
+    'The 16 cells (4 columns x 4 rows, row-major) carry FOUR distinct roles:',
     `Row 1 (Cells 1-4): the four sequential animation frames of ONE object — ${rowA.display_name} — ${motionA}`
       + (rowA.visual_description ? ` — ${rowA.visual_description}` : ''),
     `Row 2 (Cells 5-8): the four sequential animation frames of a SECOND object — ${rowB.display_name} — ${motionB}`
       + (rowB.visual_description ? ` — ${rowB.visual_description}` : ''),
-    `Cells 9-15 (spanning row 3 and the first three cells of row 4): a SEVEN-frame one-shot build-completion POOF — use the POOF rules below.`,
-    'Cells 16-19 (the rest of row 4 and all of row 5): leave completely EMPTY — background fill only, no object, no effect, no stray marks of any kind.',
-    'Cell 20 (the final cell): a single static build CRATE — use the CRATE rules below.',
+    'Row 3 (Cells 9-12): a FOUR-frame one-shot build-completion POOF — use the POOF rules below.',
+    'Row 4 (Cells 13-15): three distinct STATIC buildable objects, one complete fully-built theme structure/prop per cell, no animation:',
+    ...staticCells,
+    'Cell 16 (the final cell of row 4): a single static build CRATE — use the CRATE rules below.',
     '',
     ...objectRowAnimationConstraintLines('Row 1 (Cells 1-4)'),
     '',
     ...objectRowAnimationConstraintLines('Row 2 (Cells 5-8)'),
     '',
-    `POOF (Cells 9-15): a ${OBJECT_POOF_FRAME_COUNT}-frame one-shot reveal, centered and large enough to cover a full object, progressing smoothly from a small puff to a full burst to dissipation:`,
+    `POOF (Cells 9-12): a ${OBJECT_POOF_FRAME_COUNT}-frame one-shot reveal, centered and large enough to cover a full object, progressing smoothly from a small puff to a full burst to dissipation:`
+      + (poofRow.visual_description ? ` Appearance — depict this exact design: ${poofRow.visual_description}` : ''),
     'Cell 9 begins as a small low smoke puff.',
-    'Cells 10-12 grow the puff outward through to a full, opaque burst.',
-    'Cells 13-15 dissipate the burst smoothly into faint wisps.',
-    'Use neutral light-grey/white smoke with a subtle theme-color tint. Every cell must be a distinct real generated frame; do not hold or duplicate frames. Keep the puff centered on the same point across all seven frames.',
+    'Cell 10 grows the puff outward toward a full, opaque burst.',
+    'Cell 11 is the full, opaque burst.',
+    'Cell 12 dissipates the burst smoothly into faint wisps.',
+    'Use neutral light-grey/white smoke with a subtle theme-color tint. Every cell must be a distinct real generated frame; do not hold or duplicate frames. Keep the puff centered on the same point across all four frames.',
     '',
-    'EMPTY CELLS (16-19): paint them with nothing but the board\'s own background fill — no object, no smoke, no crate, no stray marks.',
-    '',
-    'CRATE (Cell 20): draw one closed themed shipping crate. The crate is one static ready-to-build frame.',
+    'CRATE (Cell 16): draw one closed themed shipping crate. The crate is one static ready-to-build frame.'
+      + (crateRow.visual_description ? ` Appearance — depict this exact design: ${crateRow.visual_description}` : ''),
     ...objectSizingAndCameraLines(),
     '',
     `Creative direction: ${creativeDirection}`,

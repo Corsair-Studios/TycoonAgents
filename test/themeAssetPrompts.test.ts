@@ -18,8 +18,9 @@ import {
   decorBoardFrameKeys,
   objectBoardFrameKeys,
   OBJECT_ANIMATED_COUNT,
+  OBJECT_BOARD1_STATIC_COUNT,
+  OBJECT_BOARD2_STATIC_COUNT,
   OBJECT_POOF_FRAME_COUNT,
-  OBJECT_STATIC_COUNT,
   rivalBoardFrameKeys,
   RIVALS_PER_BOARD,
 } from '../src/extension/themeAssetPrompts';
@@ -168,13 +169,20 @@ function animatedObjectSpecs(count: number) {
   }));
 }
 
+function board2StaticObjectSpecs(count: number) {
+  return Array.from({ length: count }, (_unused, index) => ({
+    object_id: `board2_static_${index + 1}`,
+    display_name: `Board2 Static ${index + 1}`,
+  }));
+}
+
 test('aggregate prompts define the two-board object layout, 8 expressions, and 20 badges', () => {
-  const board1Rows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_STATIC_COUNT));
+  const board1Rows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT));
   const objects = buildObjectAtlasPrompt('industrial', 'Factory', board1Rows);
   assert.match(objects, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
-  assert.match(objects, /4-column by 5-row grid of 20 equal cells/i);
-  assert.match(objects, /Cell 20: Object 20/i);
-  assert.match(objects, /20 distinct STATIC buildable objects/i);
+  assert.match(objects, /4-column by 4-row grid of 16 equal cells/i);
+  assert.match(objects, /Cell 16: Object 16/i);
+  assert.match(objects, /16 distinct STATIC buildable objects/i);
   assert.match(objects, /never touch the cell's bottom edge/i);
   assert.match(objects, /fills about 75% of its cell's height/i);
   assert.match(objects, /unbroken gutter along EVERY horizontal row boundary/i);
@@ -184,14 +192,15 @@ test('aggregate prompts define the two-board object layout, 8 expressions, and 2
   assert.match(objects, /about 25 degrees/i);
   assert.match(objects, /bottom-LEFT corner sits LOWER on the canvas than its bottom-RIGHT corner/i);
 
-  const board2Rows = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT));
+  const board2Rows = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT), board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT));
   const board2 = buildObjectAtlasPrompt('industrial', 'Factory', board2Rows);
-  assert.match(board2, /4-column by 5-row grid of 20 equal cells/i);
+  assert.match(board2, /4-column by 4-row grid of 16 equal cells/i);
   assert.match(board2, /Row 1 \(Cells 1-4\).*Animated Object 1/i);
   assert.match(board2, /Row 2 \(Cells 5-8\).*Animated Object 2/i);
-  assert.match(board2, /Cells 9-15.*SEVEN-frame one-shot build-completion POOF/i);
-  assert.match(board2, /Cells 16-19.*EMPTY/i);
-  assert.match(board2, /Cell 20.*CRATE/i);
+  assert.match(board2, /Cells 9-12.*FOUR-frame one-shot build-completion POOF/i);
+  assert.match(board2, /Row 4 \(Cells 13-15\).*three distinct STATIC buildable objects/i);
+  assert.match(board2, /Cell 13: Board2 Static 1/i);
+  assert.match(board2, /Cell 16.*CRATE/i);
   assert.match(board2, new RegExp(`${OBJECT_POOF_FRAME_COUNT}-frame one-shot reveal`, 'i'));
 
   const expressions = buildExpressionAtlasPrompt(
@@ -216,7 +225,7 @@ test('aggregate prompts define the two-board object layout, 8 expressions, and 2
 });
 
 test('object board 1 prompt emits explicit ranged-rack guidance for cell 1 and generic guidance elsewhere', () => {
-  const specs = staticObjectSpecs(OBJECT_STATIC_COUNT);
+  const specs = staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT);
   const rows = createObjectBoard1Rows([
     { ...specs[0], object_id: 'rack', display_name: 'Laser Rifle Rack', is_ranged_rack: true },
     ...specs.slice(1),
@@ -229,18 +238,21 @@ test('object board 1 prompt emits explicit ranged-rack guidance for cell 1 and g
   assert.match(prompt, /Cell 2: Object 2 — one complete, fully-built theme structure\/prop/i);
 });
 
-test('object board 1 prompt requires exactly OBJECT_STATIC_COUNT cells', () => {
+test('object board 1 prompt requires exactly OBJECT_BOARD1_STATIC_COUNT cells', () => {
   assert.throws(
-    () => buildObjectAtlasPrompt('industrial', 'Factory', createObjectBoard1Rows(staticObjectSpecs(OBJECT_STATIC_COUNT)).slice(0, 5)),
-    /exactly 20 static-object cells/,
+    () => buildObjectAtlasPrompt('industrial', 'Factory', createObjectBoard1Rows(staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT)).slice(0, 5)),
+    /exactly 16 static-object cells/,
   );
 });
 
 test('object board 2 prompt threads per-object motion hints and falls back to the generic default', () => {
-  const rows = createObjectBoard2Rows([
-    { object_id: 'radar', display_name: 'Radar Dish', motion_hint: 'radar dish slowly rotates' },
-    { object_id: 'core', display_name: 'Reactor Core' },
-  ]);
+  const rows = createObjectBoard2Rows(
+    [
+      { object_id: 'radar', display_name: 'Radar Dish', motion_hint: 'radar dish slowly rotates' },
+      { object_id: 'core', display_name: 'Reactor Core' },
+    ],
+    board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT),
+  );
   const prompt = buildObjectAtlasPrompt('sci-fi', 'Orbital', rows);
   assert.match(prompt, /Row 1 \(Cells 1-4\): the four sequential animation frames of ONE object — Radar Dish — radar dish slowly rotates/i);
   assert.match(prompt, /Row 2 \(Cells 5-8\): the four sequential animation frames of a SECOND object — Reactor Core — invent one subtle functional motion/i);
@@ -248,39 +260,104 @@ test('object board 2 prompt threads per-object motion hints and falls back to th
   assert.equal((prompt.match(/Permitted animation is limited STRICTLY to lights and subtle highlights/gi) ?? []).length, 2);
 });
 
-test('createObjectBoard1Rows carries is_ranged_rack and motion_hint onto the object cells, and requires exactly OBJECT_STATIC_COUNT objects', () => {
-  const specs = staticObjectSpecs(OBJECT_STATIC_COUNT).map((spec, index) => ({
+test('createObjectBoard1Rows carries is_ranged_rack and motion_hint onto the object cells, and requires exactly OBJECT_BOARD1_STATIC_COUNT objects', () => {
+  const specs = staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT).map((spec, index) => ({
     ...spec,
     ...(index === 0 ? { is_ranged_rack: true } : {}),
     ...(index === 1 ? { motion_hint: 'gently hums' } : {}),
   }));
   const rows = createObjectBoard1Rows(specs);
-  assert.equal(rows.length, OBJECT_STATIC_COUNT);
+  assert.equal(rows.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.ok(rows.every((row) => row.kind === 'object_static'));
   const rackRow = rows[0];
   assert.equal(rackRow.kind === 'object_static' ? rackRow.is_ranged_rack : undefined, true);
   const hintRow = rows[1];
   assert.equal(hintRow.kind === 'object_static' ? hintRow.motion_hint : undefined, 'gently hums');
 
-  assert.throws(() => createObjectBoard1Rows(staticObjectSpecs(19)), /exactly 20 static objects/);
-  assert.throws(() => createObjectBoard1Rows(staticObjectSpecs(21)), /exactly 20 static objects/);
+  assert.throws(() => createObjectBoard1Rows(staticObjectSpecs(15)), /exactly 16 static objects/);
+  assert.throws(() => createObjectBoard1Rows(staticObjectSpecs(17)), /exactly 16 static objects/);
 });
 
-test('createObjectBoard2Rows returns [animA, animB, poof, crate] and requires exactly OBJECT_ANIMATED_COUNT animated objects', () => {
-  const rows = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT));
-  assert.deepEqual(rows.map((row) => row.kind), ['object_anim', 'object_anim', 'poof', 'crate']);
-  assert.deepEqual(objectBoardFrameKeys(rows), ['object_anim_1', 'object_anim_2', 'poof', 'crate']);
+test('createObjectBoard2Rows returns [animA, animB, poof, staticA, staticB, staticC, crate] and requires exactly OBJECT_ANIMATED_COUNT animated + OBJECT_BOARD2_STATIC_COUNT static objects', () => {
+  const rows = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT), board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT));
+  assert.deepEqual(rows.map((row) => row.kind), ['object_anim', 'object_anim', 'poof', 'object_static', 'object_static', 'object_static', 'crate']);
+  assert.deepEqual(objectBoardFrameKeys(rows), [
+    'object_anim_1', 'object_anim_2', 'poof',
+    'object_board2_static_1', 'object_board2_static_2', 'object_board2_static_3',
+    'crate',
+  ]);
 
-  assert.throws(() => createObjectBoard2Rows(animatedObjectSpecs(1)), /exactly 2 animated objects/);
-  assert.throws(() => createObjectBoard2Rows(animatedObjectSpecs(3)), /exactly 2 animated objects/);
+  assert.throws(() => createObjectBoard2Rows(animatedObjectSpecs(1), board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT)), /exactly 2 animated objects/);
+  assert.throws(() => createObjectBoard2Rows(animatedObjectSpecs(3), board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT)), /exactly 2 animated objects/);
+  assert.throws(() => createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT), board2StaticObjectSpecs(2)), /exactly 3 static objects/);
+  assert.throws(() => createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT), board2StaticObjectSpecs(4)), /exactly 3 static objects/);
 });
 
-test('objectBoardFrameKeys yields one object_<id> key per cell for board 1 (20 static objects)', () => {
-  const rows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_STATIC_COUNT));
+test('createObjectBoard2Rows sets visual_description on the poof/crate rows only when supplied', () => {
+  const withDescriptions = createObjectBoard2Rows(
+    animatedObjectSpecs(OBJECT_ANIMATED_COUNT),
+    board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT),
+    'a small puff of glittering violet smoke',
+    'a reinforced steel crate with hazard stripes',
+  );
+  const poofRow = withDescriptions.find((row) => row.kind === 'poof');
+  const crateRow = withDescriptions.find((row) => row.kind === 'crate');
+  assert.equal(poofRow?.kind === 'poof' ? poofRow.visual_description : undefined, 'a small puff of glittering violet smoke');
+  assert.equal(crateRow?.kind === 'crate' ? crateRow.visual_description : undefined, 'a reinforced steel crate with hazard stripes');
+
+  // Whitespace-only descriptions are treated as absent, same as every other visual_description field.
+  const blank = createObjectBoard2Rows(
+    animatedObjectSpecs(OBJECT_ANIMATED_COUNT),
+    board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT),
+    '   ',
+    '',
+  );
+  const blankPoofRow = blank.find((row) => row.kind === 'poof');
+  const blankCrateRow = blank.find((row) => row.kind === 'crate');
+  assert.equal(blankPoofRow?.kind === 'poof' ? blankPoofRow.visual_description : undefined, undefined);
+  assert.equal(blankCrateRow?.kind === 'crate' ? blankCrateRow.visual_description : undefined, undefined);
+
+  // Omitted entirely -> no visual_description field on either row (existing 2-arg callers unaffected).
+  const withoutDescriptions = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT), board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT));
+  const noDescPoofRow = withoutDescriptions.find((row) => row.kind === 'poof');
+  const noDescCrateRow = withoutDescriptions.find((row) => row.kind === 'crate');
+  assert.equal(noDescPoofRow?.kind === 'poof' ? noDescPoofRow.visual_description : undefined, undefined);
+  assert.equal(noDescCrateRow?.kind === 'crate' ? noDescCrateRow.visual_description : undefined, undefined);
+});
+
+test('object board 2 prompt injects the crate/poof descriptions when present, and is byte-identical to the no-description prompt when absent', () => {
+  const rowsWithoutDescriptions = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT), board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT));
+  const baselinePrompt = buildObjectAtlasPrompt('industrial', 'Factory', rowsWithoutDescriptions);
+
+  // Explicitly passing `undefined` for both is the same as omitting them — byte-identical.
+  const rowsExplicitUndefined = createObjectBoard2Rows(
+    animatedObjectSpecs(OBJECT_ANIMATED_COUNT),
+    board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT),
+    undefined,
+    undefined,
+  );
+  assert.equal(buildObjectAtlasPrompt('industrial', 'Factory', rowsExplicitUndefined), baselinePrompt);
+
+  const rowsWithDescriptions = createObjectBoard2Rows(
+    animatedObjectSpecs(OBJECT_ANIMATED_COUNT),
+    board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT),
+    'a small puff of glittering violet smoke',
+    'a reinforced steel crate with hazard stripes',
+  );
+  const promptWithDescriptions = buildObjectAtlasPrompt('industrial', 'Factory', rowsWithDescriptions);
+  assert.match(promptWithDescriptions, /FOUR-frame one-shot build-completion POOF[\s\S]*a small puff of glittering violet smoke/i);
+  assert.match(promptWithDescriptions, /Appearance — depict this exact design: a small puff of glittering violet smoke/i);
+  assert.match(promptWithDescriptions, /draw one closed themed shipping crate[\s\S]*a reinforced steel crate with hazard stripes/i);
+  assert.match(promptWithDescriptions, /Appearance — depict this exact design: a reinforced steel crate with hazard stripes/i);
+  assert.notEqual(promptWithDescriptions, baselinePrompt);
+});
+
+test('objectBoardFrameKeys yields one object_<id> key per cell for board 1 (16 static objects)', () => {
+  const rows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT));
   const keys = objectBoardFrameKeys(rows);
-  assert.equal(keys.length, OBJECT_STATIC_COUNT);
+  assert.equal(keys.length, OBJECT_BOARD1_STATIC_COUNT);
   assert.deepEqual(keys.slice(0, 3), ['object_object_1', 'object_object_2', 'object_object_3']);
-  assert.equal(keys[keys.length - 1], 'object_object_20');
+  assert.equal(keys[keys.length - 1], 'object_object_16');
 });
 
 test('createDecorBoardRows maps 9 decor items onto the 4x4 seat/decor/anim/projectile layout', () => {
@@ -361,14 +438,14 @@ test('rival prompt in transparent mode has an alpha directive and zero magenta m
 });
 
 test('object board 1 prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
-  const rows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_STATIC_COUNT));
+  const rows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT));
   const prompt = buildObjectAtlasPrompt('industrial', 'Factory', rows, 'transparent');
   assertNoMagenta(prompt);
   assert.match(prompt, /fully transparent \(alpha 0\)/i);
 });
 
 test('object board 2 prompt in transparent mode has an alpha directive and zero magenta mentions', () => {
-  const rows = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT));
+  const rows = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT), board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT));
   const prompt = buildObjectAtlasPrompt('industrial', 'Factory', rows, 'transparent');
   assertNoMagenta(prompt);
   assert.match(prompt, /fully transparent \(alpha 0\)/i);
@@ -464,16 +541,16 @@ test('buildRivalAtlasPrompt appends an Appearance line per-row when visual_descr
 });
 
 test('buildObjectBoard1Prompt appends the visual description carried by a row built via createObjectBoard1Rows, byte-identical without one', () => {
-  const baselineRows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_STATIC_COUNT));
+  const baselineRows = createObjectBoard1Rows(staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT));
   const baseline = buildObjectAtlasPrompt('sci-fi', 'Orbital', baselineRows);
 
   const emptyDescRows = createObjectBoard1Rows(
-    staticObjectSpecs(OBJECT_STATIC_COUNT).map((spec, index) => (index === 0 ? { ...spec, visual_description: '' } : spec)),
+    staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT).map((spec, index) => (index === 0 ? { ...spec, visual_description: '' } : spec)),
   );
   assert.equal(buildObjectAtlasPrompt('sci-fi', 'Orbital', emptyDescRows), baseline);
 
   const describedRows = createObjectBoard1Rows(
-    staticObjectSpecs(OBJECT_STATIC_COUNT).map((spec, index) => (index === 0
+    staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT).map((spec, index) => (index === 0
       ? { ...spec, visual_description: 'A rugged steel weapon locker with amber warning lights' }
       : spec)),
   );
@@ -485,7 +562,7 @@ test('buildObjectBoard1Prompt appends the visual description carried by a row bu
 });
 
 test('buildObjectBoard1Prompt appends the visual description to the ranged-rack cell too', () => {
-  const specs = staticObjectSpecs(OBJECT_STATIC_COUNT);
+  const specs = staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT);
   const rows = createObjectBoard1Rows([
     {
       ...specs[0],

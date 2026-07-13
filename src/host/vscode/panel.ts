@@ -1834,7 +1834,7 @@ export class TycoonPanel {
         if (loadedTheme && currentPlan && creativeDirection !== undefined) {
           try {
             // preferPlanObjects=true: DISPLAY-only. The "View/Copy prompt"
-            // surface should reflect the CURRENT plan's 22-object v2 board even
+            // surface should reflect the CURRENT plan's 21-object v3 board even
             // for a legacy off-count manifest. Retry-generation callers leave
             // this false so their prompt stays consistent with manifest-based
             // slicing (see buildReplacementPrompt).
@@ -4593,7 +4593,7 @@ export class TycoonPanel {
             <div id="theme-plan-enemies" class="theme-plan-slot-grid"></div>
           </fieldset>
           <label class="theme-plan-field">
-            <span>Objects <small>22 objects, comma separated · 2 sprite sheets</small></span>
+            <span>Objects <small>21 objects, comma separated · 2 sprite sheets</small></span>
             <textarea id="theme-plan-objects" rows="3"></textarea>
           </label>
           <label class="theme-plan-field">

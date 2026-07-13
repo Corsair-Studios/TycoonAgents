@@ -343,15 +343,23 @@ export function upgradeThemeManifest(manifest: ThemeManifest): { manifest: Theme
     }
   }
 
-  // Pad buildable_objects up to the v2 contract count (THEME_OBJECT_COUNT = 22:
-  // 20 static on board 1 + 2 animated on board 2) so a legacy theme generated
-  // with fewer objects has a REAL, renameable/regenerate-able entry for EVERY
-  // board cell. Without this, renaming a cell beyond the saved object count is
-  // rejected ("Unknown object object_N"). Placeholder ids mirror themeObjectSpecs'
-  // `object_<n>` scheme (1-based) so board rows, frame keys, and rename line up;
-  // objects are art-less until the object board is regenerated (the runtime
-  // safely skips objects with no frames). Idempotent: once the array is at the
-  // contract count the loop does nothing.
+  // Pad/truncate buildable_objects to the v3 contract count (THEME_OBJECT_COUNT =
+  // 21: 16 static on board 1 + 3 static + 2 animated on board 2) so every theme
+  // has a REAL, renameable/regenerate-able entry for EVERY board cell — neither
+  // more nor fewer. Without padding, renaming a cell beyond the saved object
+  // count is rejected ("Unknown object object_N"); without truncation, a
+  // manifest carrying MORE than the contract count (e.g. downgraded from a
+  // future/larger contract) would leave orphaned trailing objects with no board
+  // cell to render into. Placeholder ids mirror themeObjectSpecs' `object_<n>`
+  // scheme (1-based) so board rows, frame keys, and rename line up; objects are
+  // art-less until the object board is regenerated (the runtime safely skips
+  // objects with no frames). Idempotent: once the array is at the contract
+  // count, neither branch does anything.
+  if (Array.isArray(upgraded.buildable_objects) && upgraded.buildable_objects.length > THEME_OBJECT_COUNT) {
+    const before = upgraded.buildable_objects.length;
+    upgraded.buildable_objects = upgraded.buildable_objects.slice(0, THEME_OBJECT_COUNT);
+    changed.push(`Truncated buildable_objects ${before} -> ${THEME_OBJECT_COUNT}`);
+  }
   if (Array.isArray(upgraded.buildable_objects) && upgraded.buildable_objects.length < THEME_OBJECT_COUNT) {
     const padStart = upgraded.buildable_objects.length;
     while (upgraded.buildable_objects.length < THEME_OBJECT_COUNT) {
