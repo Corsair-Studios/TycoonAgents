@@ -410,8 +410,8 @@ def _show_window(result):
 
     # -- Report path (selectable) --
     if result.get("report_path"):
-        path_frame = tk.Frame(root, bg=_BG, padx=12, pady=(0, 6))
-        path_frame.pack(fill=tk.X)
+        path_frame = tk.Frame(root, bg=_BG, padx=12)
+        path_frame.pack(fill=tk.X, pady=(0, 6))
         tk.Label(path_frame, text="Report:", font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG).pack(side=tk.LEFT)
         path_entry = tk.Entry(
             path_frame, font=("Consolas", 8), fg=_ACCENT_GREEN, bg=_BG,
