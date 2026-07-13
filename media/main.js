@@ -3901,8 +3901,18 @@
   const SEAT_SEATED_NUDGE_PX = 4;
   /** Chance, per idle wander-decision, that an idle agent goes to sit on a free seat. */
   const SIT_CHANCE = 0.05;
+  /**
+   * Leader-throne tunables (Feature: leader-throne). "Leader" = the
+   * roster-slot-0 character — see isLeaderEntry. An idle leader should
+   * spend MOST of its idle time on the throne, so it gets a much higher
+   * sit chance than everyone else, plus a longer dwell (LEADER_SIT_DWELL_MULT
+   * below) once seated so it lingers instead of popping up and down.
+   */
+  const LEADER_SIT_CHANCE = 0.6;
   /** How long (seconds) a character stays seated before standing up. */
   const SIT_SECONDS = 12;
+  /** Multiplier applied to SIT_SECONDS for the leader's throne dwell time. */
+  const LEADER_SIT_DWELL_MULT = 2;
   /** How close (native px) to a seat's sit-point before the agent is "seated". */
   const SIT_ARRIVED_EPS = 4;
   /**
@@ -9776,6 +9786,50 @@
   }
 
   /**
+   * The leader throne ("Seat 1"): the FIRST sittable, non-hidden decor item
+   * in themeDecor, reserved for the roster-slot-0 ("leader") character —
+   * see isLeaderEntry. Recomputed on demand rather than cached: it's only
+   * called from the idle sit-decision and the per-seated-agent stale-
+   * occupant check (never once per frame per idle agent), themeDecor is
+   * small, and always-live means a Stage-Editor hide toggle or a decor
+   * regen is reflected immediately instead of through a stale cached id.
+   * @returns {string|null} the throne's decor_id, or null if no seat exists.
+   */
+  function leaderSeatId() {
+    for (const d of themeDecor) {
+      const sid = d && d.decor_id;
+      if (sid == null) continue;
+      const p = decorPlacement[sid];
+      if (!p || !p.sittable) continue;
+      if (themeDecorHidden.has(sid)) continue;
+      return sid;
+    }
+    return null;
+  }
+
+  /**
+   * True iff charEntry is the current "leader" — the FIRST agent in this
+   * frame's agentList (idx === 0). agentMetrics (the source agentList is
+   * built from) is append-only and never trimmed within a session, so
+   * agentMetrics[0] is provably the stable orchestrator entry; idx === 0
+   * still resolves to charIds[0] (rosterOrder[0]'s costume) via the same
+   * costume-cycling formula the draw and projectile-shooter code use:
+   * charIds[idx % charIds.length] (see ~11480 and ~10707), so a roster
+   * drag-reorder still moves the throne's costume immediately (charIds is
+   * rebuilt from the live rosterOrder every render() call) — only the
+   * agent-selection half changed, from "idx % charIds.length === 0" (which
+   * matched every idx that's a multiple of charIds.length once agentList
+   * outgrew the costume count, producing multiple simultaneous leaders) to
+   * "idx === 0" (exactly one leader, always the orchestrator).
+   * @param {object} charEntry an agentCharMap entry
+   * @param {number} idx the entry's index in this frame's agentList
+   * @param {string[]} charIds this frame's resolved roster/costume id list
+   */
+  function isLeaderEntry(charEntry, idx, charIds) {
+    return !!charEntry && Array.isArray(charIds) && charIds.length > 0 && idx === 0;
+  }
+
+  /**
    * Toggle the non-destructive Stage-Editor HIDE state for a decor item
    * (themeDecorHidden — see its declaration for how this differs from the
    * [-1,-1] anchor-hide sentinel). Hidden decor keeps its live placement, so
@@ -10519,6 +10573,12 @@
       const isActive = isMetricsAgentActive(agent);
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
+      // Leader throne (Feature: leader-throne): recomputed every frame from
+      // the live charIds/rosterOrder — see isLeaderEntry's doc. Reused below
+      // by the stale-throne-occupant check, the sit-chance/dwell tuning, and
+      // the seat-claim throne reserve/preference.
+      const isLeader = isLeaderEntry(charEntry, idx, charIds);
+
       // ── Idea bubble (rare, on idle→active transition) ─────────────
       // Display-only: does not affect isActive or anything derived from it.
       if (isActive && !charEntry.prevActive && Math.random() < IDEA_CHANCE) showExpression(charEntry, 1, 1.6);
@@ -10897,7 +10957,14 @@
       // engaging / conga. sitSeatId being set means "committed to a seat"
       // (either en route or already seated). When preempted, free the seat.
       if (charEntry.sitSeatId != null) {
-        if (!idleAndStill) {
+        // Stale-throne safety (Feature: leader-throne): a roster drag-
+        // reorder can change who's leader while a FORMER leader is still
+        // seated on the throne. Catch and evict it here — this only runs
+        // for currently-seated/en-route agents (a small subset, never a
+        // full-roster scan), so it's cheap even though it's per-frame.
+        if (charEntry.sitSeatId === leaderSeatId() && !isLeader) {
+          freeAgentSeat(charEntry);
+        } else if (!idleAndStill) {
           // Went active / conga / enemy / build took priority — stand up.
           freeAgentSeat(charEntry);
         } else {
@@ -10910,7 +10977,9 @@
             const sdy = seat.sitNy - charEntry.ny;
             if (Math.sqrt(sdx * sdx + sdy * sdy) <= SIT_ARRIVED_EPS) {
               charEntry.sitting = true;
-              charEntry.sitTimeLeft = SIT_SECONDS;
+              // Leader-throne dwell: the leader lingers on its seat much
+              // longer than a normal idle sit (LEADER_SIT_DWELL_MULT).
+              charEntry.sitTimeLeft = SIT_SECONDS * (isLeader ? LEADER_SIT_DWELL_MULT : 1);
               // Record the chair's decor id so the draw path can raise the
               // seated character in proportion to the chair's decor scale
               // (sitSeatId IS the decorPlacement/effectiveDecorScale key).
@@ -10967,7 +11036,7 @@
           charEntry.destNy = charEntry.ny;
           charEntry.wanderTimer = WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
           showExpression(charEntry, 5, 1.8); // music bubble, coincides with dance start
-        } else if (idleAndStill && !congaActive && themeDecor.length > 0 && Math.random() < SIT_CHANCE) {
+        } else if (idleAndStill && !congaActive && themeDecor.length > 0 && Math.random() < (isLeader ? LEADER_SIT_CHANCE : SIT_CHANCE)) {
           // Claim a free seat (if any) and start walking to it. The sitting
           // maintenance block above then drives arrival + seated hold. Never
           // triggers while conga is active or the agent is a build/enemy target
@@ -10982,20 +11051,35 @@
             freeAgentSeat(charEntry);
           }
           let freeSeatId = null;
-          for (const d of themeDecor) {
-            const sid = d.decor_id;
-            const p = sid != null ? decorPlacement[sid] : null;
-            // H-hidden seats leave the pool entirely — never offered to an
-            // idle agent looking for somewhere to sit (see toggleDecorHidden).
-            if (p && p.sittable && seatOccupancy[sid] == null && !themeDecorHidden.has(sid)) {
-              // Atomic test-and-set: claim the seat the instant it's found
-              // free, in this same synchronous iteration — JS's single-
-              // threaded execution means no other agent's forEach iteration
-              // can run between the seatOccupancy[sid]==null check above and
-              // this write, so two agents can never race onto the same seat.
-              seatOccupancy[sid] = charEntry.__id;
-              freeSeatId = sid;
-              break;
+          // Leader throne (Feature: leader-throne): the leader tries its
+          // reserved seat FIRST, ahead of the general scan below, so an idle
+          // leader reliably returns to "Seat 1" rather than picking whatever
+          // ordinary seat happens to come first in themeDecor.
+          const throneId = leaderSeatId();
+          if (isLeader && throneId != null && seatOccupancy[throneId] == null) {
+            seatOccupancy[throneId] = charEntry.__id;
+            freeSeatId = throneId;
+          }
+          if (freeSeatId == null) {
+            for (const d of themeDecor) {
+              const sid = d.decor_id;
+              // Throne reservation: a non-leader never claims Seat 1, even
+              // when it's free — it's kept empty/reserved for the leader
+              // (see leaderSeatId/isLeaderEntry).
+              if (sid === throneId && !isLeader) continue;
+              const p = sid != null ? decorPlacement[sid] : null;
+              // H-hidden seats leave the pool entirely — never offered to an
+              // idle agent looking for somewhere to sit (see toggleDecorHidden).
+              if (p && p.sittable && seatOccupancy[sid] == null && !themeDecorHidden.has(sid)) {
+                // Atomic test-and-set: claim the seat the instant it's found
+                // free, in this same synchronous iteration — JS's single-
+                // threaded execution means no other agent's forEach iteration
+                // can run between the seatOccupancy[sid]==null check above and
+                // this write, so two agents can never race onto the same seat.
+                seatOccupancy[sid] = charEntry.__id;
+                freeSeatId = sid;
+                break;
+              }
             }
           }
           if (freeSeatId != null) {
@@ -11565,13 +11649,13 @@
             const bframes = themeImages["expression_" + charEntry.bubbleExpr];
             const bimg = bframes && bframes[0];
             if (bimg && bimg.complete && bimg.naturalWidth > 0) {
-              const bs = 28; // icon size
+              const bs = 20; // icon size (~70% of 28)
               const bx = cx; // center over head
-              const by = cy - spriteSize - 15; // above head, like an HP bar
+              const by = cy - spriteSize - 11; // above head, like an HP bar (~70% of 15, keeps it just above the head now that the bubble itself is smaller)
               ctx.save();
               ctx.globalAlpha = Math.min(1, charEntry.bubbleTimeLeft * 3); // brief fade-out tail
               ctx.fillStyle = "rgba(255,255,255,0.92)";
-              const pad = 3, bw = bs + pad * 2, bh = bs + pad * 2, br = 7;
+              const pad = 2, bw = bs + pad * 2, bh = bs + pad * 2, br = 5; // pad ~70% of 3, corner radius ~70% of 7
               const rx = bx - bw / 2, ry = by - bh / 2;
               ctx.beginPath();
               ctx.moveTo(rx + br, ry);
@@ -11581,16 +11665,18 @@
               ctx.arcTo(rx, ry, rx + bw, ry, br);
               ctx.closePath();
               ctx.fill();
-              // Little downward tail pointing toward the head.
+              // Little downward tail pointing toward the head (~70% of the
+              // original 4px half-width / 5px drop).
               ctx.beginPath();
-              ctx.moveTo(bx - 4, ry + bh - 1);
-              ctx.lineTo(bx + 4, ry + bh - 1);
-              ctx.lineTo(bx, ry + bh + 5);
+              ctx.moveTo(bx - 3, ry + bh - 1);
+              ctx.lineTo(bx + 3, ry + bh - 1);
+              ctx.lineTo(bx, ry + bh + 4);
               ctx.closePath();
               ctx.fill();
               // Gentle vertical bob for the icon only — bubble backing/tail
-              // above stay fixed; ~±2px, purely cosmetic (display-only).
-              const bob = Math.sin((performance.now ? performance.now() : Date.now()) / 180) * 2;
+              // above stay fixed; ~±1.4px (~70% of the original 2px),
+              // purely cosmetic (display-only).
+              const bob = Math.sin((performance.now ? performance.now() : Date.now()) / 180) * 1.4;
               ctx.drawImage(bimg, bx - bs / 2, (by - bs / 2) - bob, bs, bs);
               ctx.restore();
             }
