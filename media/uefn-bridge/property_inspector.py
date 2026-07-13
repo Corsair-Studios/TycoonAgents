@@ -513,7 +513,10 @@ def _show_window(result):
                 "matches": [],
                 "all_properties": [],
             }
-        _rebuild_from_result(fresh_result)
+        try:
+            _rebuild_from_result(fresh_result)
+        except Exception:
+            print("property_inspector: rebuild after refresh failed:\n" + traceback.format_exc())
 
     refresh_button.config(command=_on_refresh)
 
@@ -522,8 +525,6 @@ def _show_window(result):
 
     search_var.trace_add("write", _on_search_changed)
     search_entry.bind("<KeyRelease>", lambda _e: _populate(search_var.get()))
-    _rebuild_from_result(result)
-
     # -- Tick pump so the window stays responsive inside UEFN's editor loop --
     _tick_handle = [None]
 
@@ -531,12 +532,13 @@ def _show_window(result):
         try:
             root.update()
         except tk.TclError:
+            # window was destroyed — stop pumping
             if _tick_handle[0] is not None and _HAS_UNREAL:
                 unreal.unregister_slate_post_tick_callback(_tick_handle[0])
                 _tick_handle[0] = None
-
-    if _HAS_UNREAL:
-        _tick_handle[0] = unreal.register_slate_post_tick_callback(_tick_pump)
+        except Exception:
+            # never let a transient per-tick update error kill the pump
+            pass
 
     def _on_close():
         if _tick_handle[0] is not None and _HAS_UNREAL:
@@ -545,6 +547,24 @@ def _show_window(result):
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
+
+    # Register the pump and force an initial render of the fully-built window
+    # BEFORE the first populate, so an error while filling the tree can never
+    # leave the window blank (mirrors material_browser.py's proven order).
+    if _HAS_UNREAL:
+        _tick_handle[0] = unreal.register_slate_post_tick_callback(_tick_pump)
+    try:
+        root.update_idletasks()
+        root.update()
+    except Exception:
+        pass
+
+    # Initial fill — wrapped so any failure shows an empty (but fully drawn)
+    # window plus a traceback in the Output Log, instead of a blank window.
+    try:
+        _rebuild_from_result(result)
+    except Exception:
+        print("property_inspector: initial populate failed:\n" + traceback.format_exc())
 
 
 # ---------------------------------------------------------------------------
