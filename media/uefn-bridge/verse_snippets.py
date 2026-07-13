@@ -286,6 +286,7 @@ def show_verse_snippets():
 
     # --- Filter bindings ---
     filter_var.trace_add("write", lambda *_: _populate_list())
+    filter_entry.bind("<KeyRelease>", lambda _e: _populate_list())
     cat_combo.bind("<<ComboboxSelected>>", lambda *_: _populate_list())
 
     # --- Tick pump ---

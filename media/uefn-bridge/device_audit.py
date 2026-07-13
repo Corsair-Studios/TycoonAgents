@@ -1153,6 +1153,7 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
             devices_label.config(text=f"Devices ({report['total_devices']})")
 
     search_var.trace_add("write", _on_search_changed)
+    search_entry.bind("<KeyRelease>", lambda _e: _on_search_changed())
 
     # ================================================================
     # Bottom section — Verse-parsed device connections
