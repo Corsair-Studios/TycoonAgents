@@ -181,6 +181,8 @@ test('aggregate prompts define the two-board object layout, 8 expressions, and 2
   assert.match(objects, /2:1 pixel-art isometric interior view/i);
   assert.match(objects, /front CORNER \(not a flat face\) pointing toward the viewer/i);
   assert.match(objects, /naturally TALL object.*must be SCALED DOWN to fit entirely inside the cell/i);
+  assert.match(objects, /about 25 degrees/i);
+  assert.match(objects, /bottom-LEFT corner sits LOWER on the canvas than its bottom-RIGHT corner/i);
 
   const board2Rows = createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT));
   const board2 = buildObjectAtlasPrompt('industrial', 'Factory', board2Rows);
@@ -309,6 +311,8 @@ test('background decor prompt describes seats, static decor, one animated row, a
   assert.match(prompt, /2:1 pixel-art isometric interior view/i);
   assert.match(prompt, /hang on an ANGLED wall plane/i);
   assert.match(prompt, /naturally TALL item.*must be SCALED DOWN to fit entirely inside its cell/i);
+  assert.match(prompt, /about 25 degrees/i);
+  assert.match(prompt, /bottom-LEFT corner sits LOWER on the canvas than its bottom-RIGHT corner/i);
   assert.match(prompt, /Row 1 \(Cells 1-4\): FOUR distinct STATIC SITTABLE SEATS/i);
   assert.match(prompt, /character will visibly sit ON/i);
   assert.match(prompt, /Row 2 \(Cells 5-8\): FOUR distinct STATIC decor/i);
