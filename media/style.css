@@ -3507,7 +3507,13 @@ button.theme-review-preview:focus-visible::after {
   border-color: var(--vscode-inputValidation-errorBorder, #f85149);
 }
 
-.theme-review-names {
+/* Merged "Names & descriptions" editor (0.0.267) — one block per item, name
+   input stacked directly above its description textarea. Replaces the two
+   former independent .theme-review-names / .theme-review-descriptions
+   collapsibles; the per-field input styling (.theme-review-name-input,
+   .theme-review-description-input) is unchanged and still shared with the
+   standalone "Character name" row above (.theme-review-name-row). */
+.theme-review-names-descriptions {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3517,87 +3523,70 @@ button.theme-review-preview:focus-visible::after {
   background: rgba(0, 0, 0, 0.16);
 }
 
-.theme-review-names-title {
+.theme-review-names-descriptions-hint {
   color: var(--vscode-descriptionForeground, var(--muted));
+  font-size: 11px;
+  font-style: italic;
+}
+
+.theme-review-names-descriptions-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* One block per item: label, then the name input (if this row has one),
+   then the description textarea directly beneath it (if this row has one). */
+.theme-review-names-descriptions-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--vscode-descriptionForeground, var(--muted));
+  font-size: 11px;
+}
+
+.theme-review-names-descriptions-label {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
-.theme-review-names-grid {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 6px 8px;
-}
-
-.theme-review-names-row {
-  display: contents;
-  color: var(--vscode-descriptionForeground, var(--muted));
-  font-size: 11px;
-}
-
-.theme-review-names-input {
+.theme-review-names-descriptions-row .theme-review-name-input {
   min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   padding: 5px 8px;
   font-size: 12px;
 }
 
-.theme-review-names-apply {
+.theme-review-names-descriptions-apply {
   align-self: flex-start;
 }
 
-.theme-review-names-status {
+.theme-review-names-descriptions-status {
   font-size: 11px;
   color: var(--vscode-testing-iconPassed, #3fb950);
 }
 
-.theme-review-names-status.theme-review-error {
+.theme-review-names-descriptions-status.theme-review-error {
   color: var(--vscode-testing-iconFailed, #f85149);
 }
 
-/* Collapsible "Names" editor — mirrors the .theme-review-prompt <details>
-   summary styling. Collapsed by default; the flex column keeps the grid,
-   Apply button, and status stacked once expanded. */
-.theme-review-names-details {
+/* Collapsible — mirrors the .theme-review-prompt <details> summary styling.
+   Collapsed by default; the flex column keeps the hint, grid, Apply button,
+   and status stacked once expanded. */
+.theme-review-names-descriptions-details {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.theme-review-names-details > summary {
+.theme-review-names-descriptions-details > summary {
   cursor: pointer;
   color: var(--vscode-textLink-foreground, #4daafc);
   font-size: 11px;
   margin-bottom: 2px;
-}
-
-/* "Descriptions" editor — mirrors .theme-review-names above, but rows stack
-   label-over-textarea (flex column) instead of the names grid, since visual
-   descriptions are multi-line. */
-.theme-review-descriptions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 9px 10px;
-  border: 1px solid var(--vscode-panel-border, var(--border));
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.16);
-}
-
-.theme-review-descriptions-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.theme-review-descriptions-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--vscode-descriptionForeground, var(--muted));
-  font-size: 11px;
 }
 
 .theme-review-description-input {
@@ -3612,32 +3601,6 @@ button.theme-review-preview:focus-visible::after {
   background: var(--vscode-input-background, #171a1f);
   border: 1px solid var(--vscode-input-border, var(--border));
   border-radius: 4px;
-}
-
-.theme-review-descriptions-apply {
-  align-self: flex-start;
-}
-
-.theme-review-descriptions-status {
-  font-size: 11px;
-  color: var(--vscode-testing-iconPassed, #3fb950);
-}
-
-.theme-review-descriptions-status.theme-review-error {
-  color: var(--vscode-testing-iconFailed, #f85149);
-}
-
-.theme-review-descriptions-details {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.theme-review-descriptions-details > summary {
-  cursor: pointer;
-  color: var(--vscode-textLink-foreground, #4daafc);
-  font-size: 11px;
-  margin-bottom: 2px;
 }
 
 .theme-review-feedback,
@@ -3738,10 +3701,6 @@ button.theme-review-preview:focus-visible::after {
 
   .theme-review-name-row > span {
     grid-column: 1 / -1;
-  }
-
-  .theme-review-names-grid {
-    grid-template-columns: 1fr;
   }
 
   .theme-plan-header,

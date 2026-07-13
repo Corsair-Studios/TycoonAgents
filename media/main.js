@@ -1653,6 +1653,10 @@
   let themeProviderConfigured = { gemini: false, openai: false };
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
+  /** Per-item Set of {"names","descriptions"} outstanding replies for the
+   * merged "Names & descriptions" editor's single Apply click — see
+   * buildThemeReviewNamesDescriptionsSection. */
+  const themeReviewNamesDescriptionsPending = new Map();
   /** Sticky per-item retry sanitizer warning ("your notes looked like a full
    * prompt..."), keyed by item id. Set when a THEME_IMAGE_RETRY_STATE reply
    * carries `payload.warning`; cleared only when the user starts a new retry
@@ -2269,9 +2273,10 @@
           mode: card.querySelector(".theme-review-mode")?.value || "",
           characterName: card.querySelector(".theme-review-name-input")?.value || "",
           promptOpen: Boolean(card.querySelector(".theme-review-prompt")?.open),
-          namesOpen: Boolean(card.querySelector(".theme-review-names-details")?.open),
+          // Single merged section now — namesOpen drives the one <details>
+          // (the old, separate descriptionsOpen flag is retired).
+          namesOpen: Boolean(card.querySelector(".theme-review-names-descriptions-details")?.open),
           names,
-          descriptionsOpen: Boolean(card.querySelector(".theme-review-descriptions-details")?.open),
           descriptions,
         });
       }
@@ -2377,109 +2382,6 @@
   }
 
   /**
-   * Builds the per-board "Names" editor: one label+input pair per row (see
-   * themeReviewNameRows) plus a batched "Apply names" button that posts ONE
-   * SET_THEME_ITEM_NAMES message for every edited, valid row on this board.
-   * Returns null when the item's kind carries no nameable rows.
-   * @param {any} item
-   * @param {{names?: Record<string,string>}|undefined} savedDraft
-   * @param {boolean} busy true while a previous Apply for this board is in flight
-   * @param {boolean} disabledForGeneration true while an unrelated active generation run blocks edits
-   */
-  function buildThemeReviewNamesSection(item, savedDraft, busy, disabledForGeneration) {
-    const rows = themeReviewNameRows(item);
-    if (!rows.length) return null;
-    const section = document.createElement("div");
-    section.className = "theme-review-names";
-    // Collapsible (collapsed by default) — mirrors the "View generation prompt"
-    // <details>/<summary> pattern. Open state is persisted the SAME way as
-    // promptOpen: captureThemeReviewUiState() reads .theme-review-names-details
-    // .open into the per-board draft (keyed by item.id) so it survives the
-    // card re-renders host updates trigger.
-    const details = document.createElement("details");
-    details.className = "theme-review-names-details";
-    details.open = Boolean(savedDraft?.namesOpen);
-    const summary = document.createElement("summary");
-    summary.textContent = "Names";
-    details.appendChild(summary);
-    details.addEventListener("toggle", () => {
-      if (savedDraft) savedDraft.namesOpen = details.open;
-    });
-    const grid = document.createElement("div");
-    grid.className = "theme-review-names-grid";
-    const inputsDisabled = busy || disabledForGeneration;
-    const inputs = [];
-    for (const row of rows) {
-      const rowEl = document.createElement("label");
-      rowEl.className = "theme-review-names-row";
-      const labelEl = document.createElement("span");
-      labelEl.textContent = row.label;
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "theme-review-name-input theme-review-names-input";
-      input.maxLength = 60;
-      input.dataset.rowId = row.rowId;
-      input.dataset.itemKind = row.itemKind;
-      input.dataset.original = row.original;
-      const draftValue = savedDraft?.names && Object.prototype.hasOwnProperty.call(savedDraft.names, row.rowId)
-        ? savedDraft.names[row.rowId]
-        : row.original;
-      input.value = draftValue;
-      input.disabled = inputsDisabled;
-      rowEl.appendChild(labelEl);
-      rowEl.appendChild(input);
-      grid.appendChild(rowEl);
-      inputs.push(input);
-    }
-    const applyBtn = document.createElement("button");
-    applyBtn.className = "skill-btn theme-review-names-apply";
-    applyBtn.type = "button";
-    applyBtn.textContent = busy ? "Saving..." : "Apply names";
-    const statusEl = document.createElement("div");
-    statusEl.className = "theme-review-names-status";
-    const dirtyChanges = () => inputs
-      .map((input) => ({ input, trimmed: input.value.trim().replace(/\s+/g, " ") }))
-      .filter(({ input, trimmed }) => trimmed && trimmed.length <= 60 && trimmed !== input.dataset.original);
-    const updateApplyState = () => {
-      applyBtn.disabled = inputsDisabled || dirtyChanges().length === 0;
-    };
-    for (const input of inputs) input.addEventListener("input", updateApplyState);
-    updateApplyState();
-    applyBtn.addEventListener("click", () => {
-      const changes = [];
-      for (const input of inputs) {
-        const trimmed = input.value.trim().replace(/\s+/g, " ");
-        if (!trimmed || trimmed.length > 60 || trimmed === input.dataset.original) {
-          // Empty/whitespace/too-long edits are rejected client-side — revert
-          // to the last known-good value instead of blocking the rest.
-          input.value = input.dataset.original;
-          continue;
-        }
-        changes.push({ item_kind: input.dataset.itemKind, id: input.dataset.rowId, name: trimmed });
-      }
-      if (!changes.length) {
-        updateApplyState();
-        return;
-      }
-      for (const input of inputs) input.disabled = true;
-      applyBtn.disabled = true;
-      applyBtn.textContent = "Saving...";
-      statusEl.textContent = "";
-      statusEl.classList.remove("theme-review-error");
-      themeReviewBusyItems.set(item.id, "names");
-      vscode.postMessage({
-        type: "SET_THEME_ITEM_NAMES",
-        payload: { theme_id: reviewThemeId, board_id: item.id, changes },
-      });
-    });
-    details.appendChild(grid);
-    details.appendChild(applyBtn);
-    details.appendChild(statusEl);
-    section.appendChild(details);
-    return section;
-  }
-
-  /**
    * Board-row metadata for the theme review screen's inline "Descriptions"
    * editor (0.0.265's per-item visual_description text, added 0.0.266). Unlike
    * themeReviewNameRows, this INCLUDES the character_atlas card (one row, the
@@ -2555,127 +2457,254 @@
   }
 
   /**
-   * Builds the per-board "Descriptions" editor: one label+textarea pair per row
-   * (see themeReviewDescriptionRows) plus a batched "Apply descriptions" button
-   * that posts ONE SET_THEME_ITEM_DESCRIPTIONS message for every CHANGED row on
-   * this board. Descriptions are multi-line, so this uses a <textarea> where the
-   * Names editor uses a single-line <input>. Collapsed by default (mirrors the
-   * Names editor's collapsible behavior), and — unlike Names — an edited row is
-   * allowed to be blank (that clears the description), so "changed" is the only
-   * dirty test, not "non-empty". Returns null when the item's kind carries no
-   * describable rows.
+   * Unions themeReviewNameRows(item) and themeReviewDescriptionRows(item) by
+   * rowId (== the underlying object_id/decor_id/rival_id/achievement row id/
+   * character item.id) so the merged "Names & descriptions" editor can render
+   * one block per item with the name input directly above its description
+   * textarea. Preserves the row-set asymmetry from the two sources instead of
+   * papering over it: badge rows have nameRow only (no description column for
+   * achievements), character rows have descRow only (name lives in the
+   * separate "Character name" / RENAME_THEME_CHARACTER widget), and
+   * object/decor/rival rows have both. Order follows themeReviewNameRows
+   * first (covers the common both-rows case), then appends any
+   * description-only rows (character) not already seen.
+   * @param {any} item a THEME_IMAGE_REVIEW review item
+   * @returns {Array<{rowId: string, label: string, nameRow: object|null, descRow: object|null}>}
+   */
+  function themeReviewNamesDescriptionsRows(item) {
+    const nameRows = themeReviewNameRows(item);
+    const descRows = themeReviewDescriptionRows(item);
+    const nameById = new Map(nameRows.map((row) => [row.rowId, row]));
+    const descById = new Map(descRows.map((row) => [row.rowId, row]));
+    const orderedIds = [];
+    const seen = new Set();
+    for (const row of nameRows) {
+      if (seen.has(row.rowId)) continue;
+      seen.add(row.rowId);
+      orderedIds.push(row.rowId);
+    }
+    for (const row of descRows) {
+      if (seen.has(row.rowId)) continue;
+      seen.add(row.rowId);
+      orderedIds.push(row.rowId);
+    }
+    return orderedIds.map((rowId) => {
+      const nameRow = nameById.get(rowId) || null;
+      const descRow = descById.get(rowId) || null;
+      return { rowId, label: (nameRow || descRow).label, nameRow, descRow };
+    });
+  }
+
+  /**
+   * Builds the single, merged "Names & descriptions" editor: one block per
+   * unioned row (see themeReviewNamesDescriptionsRows) with the name <input>
+   * directly above the description <textarea> — omitting whichever field the
+   * row doesn't carry (badges: name only; characters: description only). One
+   * "Apply" button gathers CHANGED fields from both kinds and posts
+   * SET_THEME_ITEM_NAMES / SET_THEME_ITEM_DESCRIPTIONS (existing payload
+   * shapes, unchanged) — either, or both, depending on what actually changed.
+   * Collapsed by default; open state is persisted the same way the old
+   * separate sections did (captureThemeReviewUiState() reads
+   * .theme-review-names-descriptions-details.open into savedDraft.namesOpen —
+   * the old, now-retired descriptionsOpen flag no longer exists). Returns
+   * null when the item's kind carries no nameable or describable rows.
    * @param {any} item
-   * @param {{descriptions?: Record<string,string>}|undefined} savedDraft
+   * @param {{names?: Record<string,string>, descriptions?: Record<string,string>}|undefined} savedDraft
    * @param {boolean} busy true while a previous Apply for this board is in flight
    * @param {boolean} disabledForGeneration true while an unrelated active generation run blocks edits
    */
-  function buildThemeReviewDescriptionsSection(item, savedDraft, busy, disabledForGeneration) {
-    const rows = themeReviewDescriptionRows(item);
+  function buildThemeReviewNamesDescriptionsSection(item, savedDraft, busy, disabledForGeneration) {
+    const rows = themeReviewNamesDescriptionsRows(item);
     if (!rows.length) return null;
     const section = document.createElement("div");
-    section.className = "theme-review-descriptions";
+    section.className = "theme-review-names-descriptions";
     const details = document.createElement("details");
-    details.className = "theme-review-descriptions-details";
-    details.open = Boolean(savedDraft?.descriptionsOpen);
+    details.className = "theme-review-names-descriptions-details";
+    details.open = Boolean(savedDraft?.namesOpen);
     const summary = document.createElement("summary");
-    summary.textContent = "Descriptions";
+    summary.textContent = "Names & descriptions";
     details.appendChild(summary);
     details.addEventListener("toggle", () => {
-      if (savedDraft) savedDraft.descriptionsOpen = details.open;
+      if (savedDraft) savedDraft.namesOpen = details.open;
     });
+    const hint = document.createElement("div");
+    hint.className = "theme-review-names-descriptions-hint";
+    hint.textContent = "Descriptions are optional — leave blank to let the image generator work from the name alone.";
+    details.appendChild(hint);
     const grid = document.createElement("div");
-    grid.className = "theme-review-descriptions-grid";
+    grid.className = "theme-review-names-descriptions-grid";
     const inputsDisabled = busy || disabledForGeneration;
-    const inputs = [];
+    const nameInputs = [];
+    const descInputs = [];
     for (const row of rows) {
-      const rowEl = document.createElement("label");
-      rowEl.className = "theme-review-descriptions-row";
+      const rowEl = document.createElement("div");
+      rowEl.className = "theme-review-names-descriptions-row";
       const labelEl = document.createElement("span");
+      labelEl.className = "theme-review-names-descriptions-label";
       labelEl.textContent = row.label;
-      const textarea = document.createElement("textarea");
-      textarea.className = "theme-review-description-input theme-review-descriptions-input";
-      textarea.rows = 2;
-      textarea.maxLength = 400;
-      textarea.dataset.rowId = row.rowId;
-      textarea.dataset.itemKind = row.itemKind;
-      textarea.dataset.original = row.original;
-      const draftValue = savedDraft?.descriptions && Object.prototype.hasOwnProperty.call(savedDraft.descriptions, row.rowId)
-        ? savedDraft.descriptions[row.rowId]
-        : row.original;
-      textarea.value = draftValue;
-      textarea.disabled = inputsDisabled;
       rowEl.appendChild(labelEl);
-      rowEl.appendChild(textarea);
+      if (row.nameRow) {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "theme-review-name-input theme-review-names-input";
+        input.maxLength = 60;
+        input.placeholder = "Name";
+        input.dataset.rowId = row.nameRow.rowId;
+        input.dataset.itemKind = row.nameRow.itemKind;
+        input.dataset.original = row.nameRow.original;
+        const draftValue = savedDraft?.names && Object.prototype.hasOwnProperty.call(savedDraft.names, row.nameRow.rowId)
+          ? savedDraft.names[row.nameRow.rowId]
+          : row.nameRow.original;
+        input.value = draftValue;
+        input.disabled = inputsDisabled;
+        rowEl.appendChild(input);
+        nameInputs.push(input);
+      }
+      if (row.descRow) {
+        const textarea = document.createElement("textarea");
+        textarea.className = "theme-review-description-input theme-review-descriptions-input";
+        textarea.rows = 2;
+        textarea.maxLength = 400;
+        textarea.placeholder = "Optional appearance description…";
+        textarea.dataset.rowId = row.descRow.rowId;
+        textarea.dataset.itemKind = row.descRow.itemKind;
+        textarea.dataset.original = row.descRow.original;
+        const draftValue = savedDraft?.descriptions && Object.prototype.hasOwnProperty.call(savedDraft.descriptions, row.descRow.rowId)
+          ? savedDraft.descriptions[row.descRow.rowId]
+          : row.descRow.original;
+        textarea.value = draftValue;
+        textarea.disabled = inputsDisabled;
+        rowEl.appendChild(textarea);
+        descInputs.push(textarea);
+      }
       grid.appendChild(rowEl);
-      inputs.push(textarea);
     }
+    details.appendChild(grid);
     const applyBtn = document.createElement("button");
-    applyBtn.className = "skill-btn theme-review-descriptions-apply";
+    applyBtn.className = "skill-btn theme-review-names-descriptions-apply";
     applyBtn.type = "button";
-    applyBtn.textContent = busy ? "Saving..." : "Apply descriptions";
+    applyBtn.textContent = busy ? "Saving..." : "Apply";
     const statusEl = document.createElement("div");
-    statusEl.className = "theme-review-descriptions-status";
+    statusEl.className = "theme-review-names-descriptions-status";
+    const dirtyNameChanges = () => nameInputs
+      .map((input) => ({ input, trimmed: input.value.trim().replace(/\s+/g, " ") }))
+      .filter(({ input, trimmed }) => trimmed && trimmed.length <= 60 && trimmed !== input.dataset.original);
     // Unlike names, a description edit is dirty (and valid) even when the new
     // value is blank — clearing a description is a legitimate change.
-    const dirtyChanges = () => inputs
+    const dirtyDescriptionChanges = () => descInputs
       .map((input) => ({ input, trimmed: input.value.trim() }))
       .filter(({ input, trimmed }) => trimmed.length <= 400 && trimmed !== input.dataset.original);
     const updateApplyState = () => {
-      applyBtn.disabled = inputsDisabled || dirtyChanges().length === 0;
+      applyBtn.disabled = inputsDisabled
+        || (dirtyNameChanges().length === 0 && dirtyDescriptionChanges().length === 0);
     };
-    for (const input of inputs) input.addEventListener("input", updateApplyState);
+    for (const input of nameInputs) input.addEventListener("input", updateApplyState);
+    for (const input of descInputs) input.addEventListener("input", updateApplyState);
     updateApplyState();
     applyBtn.addEventListener("click", () => {
-      const changes = [];
-      for (const input of inputs) {
+      const nameChanges = [];
+      for (const input of nameInputs) {
+        const trimmed = input.value.trim().replace(/\s+/g, " ");
+        if (!trimmed || trimmed.length > 60 || trimmed === input.dataset.original) {
+          // Empty/whitespace/too-long edits are rejected client-side — revert
+          // to the last known-good value instead of blocking the rest.
+          input.value = input.dataset.original;
+          continue;
+        }
+        nameChanges.push({ item_kind: input.dataset.itemKind, id: input.dataset.rowId, name: trimmed });
+      }
+      const descriptionChanges = [];
+      for (const input of descInputs) {
         const trimmed = input.value.trim();
         if (trimmed.length > 400 || trimmed === input.dataset.original) {
           if (trimmed.length > 400) input.value = input.dataset.original;
           continue;
         }
-        changes.push({ item_kind: input.dataset.itemKind, id: input.dataset.rowId, description: trimmed });
+        descriptionChanges.push({ item_kind: input.dataset.itemKind, id: input.dataset.rowId, description: trimmed });
       }
-      if (!changes.length) {
+      if (!nameChanges.length && !descriptionChanges.length) {
         updateApplyState();
         return;
       }
-      for (const input of inputs) input.disabled = true;
+      for (const input of nameInputs) input.disabled = true;
+      for (const input of descInputs) input.disabled = true;
       applyBtn.disabled = true;
       applyBtn.textContent = "Saving...";
       statusEl.textContent = "";
       statusEl.classList.remove("theme-review-error");
-      themeReviewBusyItems.set(item.id, "descriptions");
-      vscode.postMessage({
-        type: "SET_THEME_ITEM_DESCRIPTIONS",
-        payload: { theme_id: reviewThemeId, board_id: item.id, changes },
-      });
+      // Both messages can be in flight at once (host handles each
+      // independently and resyncs with its own fresh THEME_IMAGE_REVIEW +
+      // *_RESULT reply) — track which of the two this Apply actually sent so
+      // the single button/inputs only re-enable once ALL of them have
+      // settled (see applyThemeItemNamesResult/applyThemeItemDescriptionsResult).
+      const pending = new Set();
+      if (nameChanges.length) pending.add("names");
+      if (descriptionChanges.length) pending.add("descriptions");
+      themeReviewNamesDescriptionsPending.set(item.id, pending);
+      themeReviewBusyItems.set(item.id, "names_descriptions");
+      if (nameChanges.length) {
+        vscode.postMessage({
+          type: "SET_THEME_ITEM_NAMES",
+          payload: { theme_id: reviewThemeId, board_id: item.id, changes: nameChanges },
+        });
+      }
+      if (descriptionChanges.length) {
+        vscode.postMessage({
+          type: "SET_THEME_ITEM_DESCRIPTIONS",
+          payload: { theme_id: reviewThemeId, board_id: item.id, changes: descriptionChanges },
+        });
+      }
     });
-    details.appendChild(grid);
     details.appendChild(applyBtn);
     details.appendChild(statusEl);
     section.appendChild(details);
     return section;
   }
 
+  /** Re-enables every name/description input plus the shared Apply button for
+   * one merged editor once ALL pending SET_THEME_ITEM_NAMES/
+   * SET_THEME_ITEM_DESCRIPTIONS replies for that board have settled. Called
+   * from applyThemeItemNamesResult/applyThemeItemDescriptionsResult instead of
+   * each handler only touching its own field kind, since the two share a
+   * single Apply button that must not re-enable until BOTH are done. */
+  function finalizeThemeReviewNamesDescriptions(card) {
+    if (!card) return;
+    const applyBtn = card.querySelector(".theme-review-names-descriptions-apply");
+    for (const input of card.querySelectorAll(".theme-review-names-input")) input.disabled = false;
+    for (const input of card.querySelectorAll(".theme-review-descriptions-input")) input.disabled = false;
+    if (applyBtn) {
+      applyBtn.textContent = "Apply";
+      applyBtn.disabled = true;
+    }
+  }
+
   /** Handles a THEME_ITEM_DESCRIPTIONS_RESULT reply. Mirrors
    * applyThemeItemNamesResult: the host posts a fresh THEME_IMAGE_REVIEW (full
    * card rebuild reflecting the resynced prompt/rows — see
    * resyncDescriptionReviewItems in themeService.ts) immediately before this
-   * message, so this only needs to patch the busy/status affordances. */
+   * message, so this only needs to patch the description fields plus status
+   * text. The merged editor's single Apply button/inputs only get re-enabled
+   * (via finalizeThemeReviewNamesDescriptions) once themeReviewNamesDescriptionsPending
+   * shows no more outstanding names/descriptions replies for this board —
+   * SET_THEME_ITEM_NAMES may still be in flight from the same Apply click. */
   function applyThemeItemDescriptionsResult(payload) {
     const boardId = payload.board_id || "";
-    themeReviewBusyItems.delete(boardId);
+    const pending = themeReviewNamesDescriptionsPending.get(boardId);
+    if (pending) pending.delete("descriptions");
+    const stillPending = Boolean(pending && pending.size);
+    if (!stillPending) {
+      themeReviewNamesDescriptionsPending.delete(boardId);
+      themeReviewBusyItems.delete(boardId);
+    }
     if (!themeImageReviewList) return;
     const cards = themeImageReviewList.querySelectorAll("[data-item-id]");
     for (const card of cards) {
       if (card.getAttribute("data-item-id") !== boardId) continue;
-      const applyBtn = card.querySelector(".theme-review-descriptions-apply");
-      const statusEl = card.querySelector(".theme-review-descriptions-status");
+      const statusEl = card.querySelector(".theme-review-names-descriptions-status");
       const inputs = card.querySelectorAll(".theme-review-descriptions-input");
       const appliedById = new Map((payload.applied || []).map((change) => [change.id, change.description]));
       const rejectedById = new Map((payload.rejected || []).map((rejection) => [rejection.id, rejection.reason]));
       for (const input of inputs) {
-        input.disabled = false;
         const rowId = input.getAttribute("data-row-id");
         if (rowId && appliedById.has(rowId)) {
           const nextDescription = appliedById.get(rowId);
@@ -2685,10 +2714,7 @@
           input.value = input.dataset.original;
         }
       }
-      if (applyBtn) {
-        applyBtn.textContent = "Apply descriptions";
-        applyBtn.disabled = true;
-      }
+      if (!stillPending) finalizeThemeReviewNamesDescriptions(card);
       if (statusEl) {
         if (payload.error) {
           statusEl.textContent = "Save failed: " + payload.error;
@@ -2699,7 +2725,7 @@
             ? (appliedById.size + " description(s) saved; " + rejectedById.size + " rejected: " + reasons)
             : (reasons || "Descriptions were not saved.");
           statusEl.classList.toggle("theme-review-error", !appliedById.size);
-        } else {
+        } else if (appliedById.size) {
           statusEl.textContent = "Descriptions saved ✓";
           statusEl.classList.remove("theme-review-error");
         }
@@ -2710,23 +2736,30 @@
   /** Handles a THEME_ITEM_NAMES_RESULT reply. The host posts a fresh
    * THEME_IMAGE_REVIEW (full card rebuild, reflecting the resynced prompt/rows —
    * see resyncRenamedReviewItems in themeService.ts) immediately before this
-   * message, so this only needs to patch the busy/status affordances — labels
-   * are positional (see themeReviewNameRows) and never go stale, and the
-   * rebuilt card's inputs already carry the saved names. */
+   * message, so this only needs to patch the name fields plus status text —
+   * labels are positional (see themeReviewNameRows) and never go stale. See
+   * applyThemeItemDescriptionsResult for why the shared Apply button/inputs
+   * only re-enable once themeReviewNamesDescriptionsPending is empty for this
+   * board (a merged Apply click can have a SET_THEME_ITEM_DESCRIPTIONS reply
+   * still outstanding). */
   function applyThemeItemNamesResult(payload) {
     const boardId = payload.board_id || "";
-    themeReviewBusyItems.delete(boardId);
+    const pending = themeReviewNamesDescriptionsPending.get(boardId);
+    if (pending) pending.delete("names");
+    const stillPending = Boolean(pending && pending.size);
+    if (!stillPending) {
+      themeReviewNamesDescriptionsPending.delete(boardId);
+      themeReviewBusyItems.delete(boardId);
+    }
     if (!themeImageReviewList) return;
     const cards = themeImageReviewList.querySelectorAll("[data-item-id]");
     for (const card of cards) {
       if (card.getAttribute("data-item-id") !== boardId) continue;
-      const applyBtn = card.querySelector(".theme-review-names-apply");
-      const statusEl = card.querySelector(".theme-review-names-status");
+      const statusEl = card.querySelector(".theme-review-names-descriptions-status");
       const inputs = card.querySelectorAll(".theme-review-names-input");
       const appliedById = new Map((payload.applied || []).map((change) => [change.id, change.name]));
       const rejectedById = new Map((payload.rejected || []).map((rejection) => [rejection.id, rejection.reason]));
       for (const input of inputs) {
-        input.disabled = false;
         const rowId = input.getAttribute("data-row-id");
         if (rowId && appliedById.has(rowId)) {
           const nextName = appliedById.get(rowId);
@@ -2736,10 +2769,7 @@
           input.value = input.dataset.original;
         }
       }
-      if (applyBtn) {
-        applyBtn.textContent = "Apply names";
-        applyBtn.disabled = true;
-      }
+      if (!stillPending) finalizeThemeReviewNamesDescriptions(card);
       if (statusEl) {
         if (payload.error) {
           statusEl.textContent = "Save failed: " + payload.error;
@@ -2752,7 +2782,7 @@
             ? (appliedById.size + " name(s) saved; " + rejectedById.size + " rejected: " + reasons)
             : (reasons || "Names were not saved.");
           statusEl.classList.toggle("theme-review-error", !appliedById.size);
-        } else {
+        } else if (appliedById.size) {
           statusEl.textContent = "Names saved ✓";
           statusEl.classList.remove("theme-review-error");
         }
@@ -3069,22 +3099,16 @@
       customModeEmptyHint.textContent = "Custom mode needs a prompt.";
       customModeEmptyHint.hidden = true;
       // Object/decor/rival board rows are always drawn from the manifest's
-      // buildable_objects / decor_objects / roster_rivals display names — the
-      // "Names" editor below is the only way to rename them (notes above are
-      // creative direction only and cannot rename or reorder rows).
-      const namesSection = buildThemeReviewNamesSection(
-        item,
-        savedDraft,
-        themeReviewBusyItems.get(item.id) === "names",
-        Boolean(payload.generation_active && !isCurrentReviewGate),
-      );
-      // Per-item visual descriptions (0.0.265) replace the manual "retry with
-      // notes" loop for steering appearance — edit + regenerate here instead of
+      // buildable_objects / decor_objects / roster_rivals display names, and
+      // per-item visual descriptions (0.0.265) replace the manual "retry with
+      // notes" loop for steering appearance — this merged editor (0.0.266
+      // split it into two sections; re-merged here into one) is the only way
+      // to rename rows, and edit + regenerate descriptions here instead of
       // typing free-text notes into the feedback box below every time.
-      const descriptionsSection = buildThemeReviewDescriptionsSection(
+      const namesDescriptionsSection = buildThemeReviewNamesDescriptionsSection(
         item,
         savedDraft,
-        themeReviewBusyItems.get(item.id) === "descriptions",
+        themeReviewBusyItems.get(item.id) === "names_descriptions",
         Boolean(payload.generation_active && !isCurrentReviewGate),
       );
       const retryRow = document.createElement("div");
@@ -3259,8 +3283,7 @@
       body.appendChild(meta);
       if (generationError) body.appendChild(generationError);
       if (nameRow) body.appendChild(nameRow);
-      if (namesSection) body.appendChild(namesSection);
-      if (descriptionsSection) body.appendChild(descriptionsSection);
+      if (namesDescriptionsSection) body.appendChild(namesDescriptionsSection);
       body.appendChild(decisionRow);
       body.appendChild(feedback);
       body.appendChild(feedbackHint);
