@@ -27,18 +27,18 @@ except ImportError:
 # Theme constants (matching project palette)
 # ---------------------------------------------------------------------------
 
-_BG = "#1e1e2e"
-_SECTION_BG = "#2a2a3e"
-_HEADER_FG = "#e0e0ff"
-_ACCENT_GREEN = "#4caf50"
-_ACCENT_BLUE = "#7ec8e3"
-_TEXT_FG = "#c0c0d0"
-_TEXT_DIM = "#808090"
-_CARD_HOVER = "#353550"
+_BG = "#D2CEC4"
+_SECTION_BG = "#EBE7DD"
+_HEADER_FG = "#1A1A1A"
+_ACCENT_GREEN = "#2F8F3E"
+_ACCENT_BLUE = "#F15B29"
+_TEXT_FG = "#2B2B2B"
+_TEXT_DIM = "#57524C"
+_CARD_HOVER = "#F6E7DB"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
 # cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.279"
+BRIDGE_VERSION = "0.0.280"
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ def _show_mcp_info():
         background=_BG, foreground=_HEADER_FG,
         font=("Segoe UI", 9, "bold"), relief="flat",
     )
-    style.map("MCP.Treeview", background=[("selected", "#3a3a5e")])
+    style.map("MCP.Treeview", background=[("selected", "#F6D9C9")])
 
     tk.Label(
         win, text="MCP Bridge Commands",
@@ -552,7 +552,7 @@ def show_launcher():
             padx=12,
             pady=10,
             cursor="hand2",
-            highlightbackground="#3a3a50",
+            highlightbackground="#B8B2A4",
             highlightthickness=1,
         )
         card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
@@ -680,8 +680,8 @@ def show_launcher():
                 ts=hb["timestamp"][:19] if hb["timestamp"] else "?",
             )
         else:
-            status_dot.itemconfig(_dot_id, fill="#e74c3c")
-            status_text.config(text="Bridge disconnected", fg="#e74c3c")
+            status_dot.itemconfig(_dot_id, fill="#C0392B")
+            status_text.config(text="Bridge disconnected", fg="#C0392B")
             bar_text = "Bridge: disconnected"
             if hb["status"] == "stopped":
                 bar_text += " (stopped)"

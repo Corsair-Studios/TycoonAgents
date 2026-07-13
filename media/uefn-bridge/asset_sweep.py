@@ -43,16 +43,16 @@ from asset_usage import confirm_orphans, get_project_prefix
 # Theme constants (matching project palette)
 # ---------------------------------------------------------------------------
 
-_BG           = "#1e1e2e"
-_SECTION_BG   = "#2a2a3e"
-_HEADER_FG    = "#e0e0ff"
-_ACCENT_GREEN = "#4caf50"
-_ACCENT_BLUE  = "#7ec8e3"
-_ACCENT_RED   = "#ef5350"
-_TEXT_FG      = "#c0c0d0"
-_TEXT_DIM     = "#808090"
-_ENTRY_BG     = "#353550"
-_ENTRY_FG     = "#e0e0ff"
+_BG           = "#D2CEC4"
+_SECTION_BG   = "#EBE7DD"
+_HEADER_FG    = "#1A1A1A"
+_ACCENT_GREEN = "#2F8F3E"
+_ACCENT_BLUE  = "#F15B29"
+_ACCENT_RED   = "#C0392B"
+_TEXT_FG      = "#2B2B2B"
+_TEXT_DIM     = "#57524C"
+_ENTRY_BG     = "#FBFAF6"
+_ENTRY_FG     = "#1A1A1A"
 
 # UI state for the tick pump
 _tick_handle = [None]
@@ -364,15 +364,15 @@ def show_asset_sweep():
 
     style.configure("Header.TLabel",  background=_BG, foreground=_HEADER_FG,
                     font=("Segoe UI", 13, "bold"))
-    style.configure("Warn.TLabel",    background=_BG, foreground="#ffb74d",
+    style.configure("Warn.TLabel",    background=_BG, foreground="#9A5D00",
                     font=("Segoe UI", 8))
     style.configure("Dark.TLabel",    background=_BG, foreground=_TEXT_FG,
                     font=("Segoe UI", 10))
     style.configure("Status.TLabel",  background=_SECTION_BG, foreground=_TEXT_DIM,
                     font=("Segoe UI", 9), padding=(8, 4))
-    style.configure("Accent.TButton", background=_ACCENT_BLUE, foreground="#1e1e2e",
+    style.configure("Accent.TButton", background=_ACCENT_BLUE, foreground="#1A1A1A",
                     font=("Segoe UI", 10, "bold"), padding=(14, 6), relief="flat")
-    style.map("Accent.TButton", background=[("active", "#a8d8ea")])
+    style.map("Accent.TButton", background=[("active", "#D24E1F")])
 
     style.configure("Sweep.Treeview",
                     background=_SECTION_BG, foreground=_TEXT_FG,
@@ -381,21 +381,21 @@ def show_asset_sweep():
     style.configure("Sweep.Treeview.Heading",
                     background=_BG, foreground=_HEADER_FG,
                     font=("Segoe UI", 9, "bold"), relief="flat")
-    style.map("Sweep.Treeview", background=[("selected", "#3a3a5e")])
+    style.map("Sweep.Treeview", background=[("selected", "#F6D9C9")])
 
     style.configure("Dark.TCombobox",
                     fieldbackground=_ENTRY_BG, background=_ENTRY_BG,
-                    foreground=_ENTRY_FG, selectbackground="#3a3a5e",
-                    selectforeground="#ffffff", arrowcolor=_ACCENT_BLUE)
+                    foreground=_ENTRY_FG, selectbackground="#F6D9C9",
+                    selectforeground="#1A1A1A", arrowcolor=_ACCENT_BLUE)
     style.map("Dark.TCombobox",
               fieldbackground=[("readonly", _ENTRY_BG)],
               foreground=[("readonly", _ENTRY_FG)],
-              selectbackground=[("readonly", "#3a3a5e")],
-              selectforeground=[("readonly", "#ffffff")])
+              selectbackground=[("readonly", "#F6D9C9")],
+              selectforeground=[("readonly", "#1A1A1A")])
     root.option_add("*TCombobox*Listbox.background",       _ENTRY_BG)
     root.option_add("*TCombobox*Listbox.foreground",       _ENTRY_FG)
-    root.option_add("*TCombobox*Listbox.selectBackground", "#3a3a5e")
-    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    root.option_add("*TCombobox*Listbox.selectBackground", "#F6D9C9")
+    root.option_add("*TCombobox*Listbox.selectForeground", "#1A1A1A")
 
     # ------------------------------------------------------------------
     # Header area
@@ -419,7 +419,7 @@ def show_asset_sweep():
     # ------------------------------------------------------------------
     # Disclaimer banner
     # ------------------------------------------------------------------
-    warn_frame = tk.Frame(root, bg="#2a1a00", padx=12, pady=6)
+    warn_frame = tk.Frame(root, bg="#F6E7DB", padx=12, pady=6)
     warn_frame.pack(fill="x")
 
     tk.Label(
@@ -430,8 +430,8 @@ def show_asset_sweep():
             "(e.g. LoadObject / Verse LoadAsset with computed paths)."
         ),
         font=("Segoe UI", 8),
-        fg="#ffb74d",
-        bg="#2a1a00",
+        fg="#9A5D00",
+        bg="#F6E7DB",
         anchor="w",
         justify="left",
     ).pack(fill="x")

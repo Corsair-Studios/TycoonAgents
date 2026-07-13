@@ -33,15 +33,15 @@ except ImportError:
 # Theme constants (matching launcher palette)
 # ---------------------------------------------------------------------------
 
-_BG = "#1e1e2e"
-_SECTION_BG = "#2a2a3e"
-_HEADER_FG = "#e0e0ff"
-_ACCENT_GREEN = "#4caf50"
-_ACCENT_BLUE = "#7ec8e3"
-_TEXT_FG = "#c0c0d0"
-_TEXT_DIM = "#808090"
-_ENTRY_BG = "#353550"
-_ENTRY_FG = "#e0e0ff"
+_BG = "#D2CEC4"
+_SECTION_BG = "#EBE7DD"
+_HEADER_FG = "#1A1A1A"
+_ACCENT_GREEN = "#2F8F3E"
+_ACCENT_BLUE = "#F15B29"
+_TEXT_FG = "#2B2B2B"
+_TEXT_DIM = "#57524C"
+_ENTRY_BG = "#FBFAF6"
+_ENTRY_FG = "#1A1A1A"
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ def show_batch_ui():
         foreground=_HEADER_FG,
         font=("Segoe UI", 9, "bold"),
     )
-    style.map("Treeview", background=[("selected", "#3a3a50")])
+    style.map("Treeview", background=[("selected", "#F6D9C9")])
 
     # Combobox styling for dark theme
     style.configure(
@@ -287,21 +287,21 @@ def show_batch_ui():
         fieldbackground=_ENTRY_BG,
         background=_ENTRY_BG,
         foreground=_ENTRY_FG,
-        selectbackground="#3a3a50",
-        selectforeground="#ffffff",
+        selectbackground="#F6D9C9",
+        selectforeground="#1A1A1A",
         arrowcolor=_ACCENT_BLUE,
     )
     style.map(
         "Dark.TCombobox",
         fieldbackground=[("readonly", _ENTRY_BG)],
         foreground=[("readonly", _ENTRY_FG)],
-        selectbackground=[("readonly", "#3a3a50")],
-        selectforeground=[("readonly", "#ffffff")],
+        selectbackground=[("readonly", "#F6D9C9")],
+        selectforeground=[("readonly", "#1A1A1A")],
     )
     root.option_add("*TCombobox*Listbox.background", _ENTRY_BG)
     root.option_add("*TCombobox*Listbox.foreground", _ENTRY_FG)
-    root.option_add("*TCombobox*Listbox.selectBackground", "#3a3a50")
-    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    root.option_add("*TCombobox*Listbox.selectBackground", "#F6D9C9")
+    root.option_add("*TCombobox*Listbox.selectForeground", "#1A1A1A")
 
     # ==================================================================
     # Filter section
@@ -384,9 +384,9 @@ def show_batch_ui():
         text="Preview",
         font=("Segoe UI", 9, "bold"),
         bg=_ACCENT_BLUE,
-        fg="#ffffff",
-        activebackground="#5aa8c3",
-        activeforeground="#ffffff",
+        fg="#1A1A1A",
+        activebackground="#D24E1F",
+        activeforeground="#1A1A1A",
         relief=tk.FLAT,
         padx=14,
         pady=2,
@@ -485,9 +485,9 @@ def show_batch_ui():
         text="Apply",
         font=("Segoe UI", 9, "bold"),
         bg=_ACCENT_GREEN,
-        fg="#ffffff",
-        activebackground="#3d9140",
-        activeforeground="#ffffff",
+        fg="#1A1A1A",
+        activebackground="#256E30",
+        activeforeground="#1A1A1A",
         relief=tk.FLAT,
         padx=14,
         pady=2,
@@ -549,13 +549,13 @@ def show_batch_ui():
         unreal.log(f"batch_tools: Preview — filter_type={ft!r}, filter_value={fv!r}, property={prop!r}")
 
         if ft in ("class", "label") and not fv:
-            results_label.config(text="Enter a filter value.", fg="#e74c3c")
+            results_label.config(text="Enter a filter value.", fg="#C0392B")
             return
 
         try:
             matched = _match_actors(ft, fv)
         except Exception as e:
-            results_label.config(text="Error: " + str(e), fg="#e74c3c")
+            results_label.config(text="Error: " + str(e), fg="#C0392B")
             return
 
         for actor, label, class_name in matched:
@@ -586,17 +586,17 @@ def show_batch_ui():
         unreal.log(f"batch_tools: Apply — filter_type={ft!r}, filter_value={fv!r}, property={prop!r}, value={val!r}, dry_run={dry}")
 
         if not prop:
-            results_label.config(text="Enter a property name.", fg="#e74c3c")
+            results_label.config(text="Enter a property name.", fg="#C0392B")
             return
 
         if ft in ("class", "label") and not fv:
-            results_label.config(text="Enter a filter value.", fg="#e74c3c")
+            results_label.config(text="Enter a filter value.", fg="#C0392B")
             return
 
         try:
             result = batch_set_property(ft, fv, prop, val, dry_run=dry)
         except Exception as e:
-            results_label.config(text="Error: " + str(e), fg="#e74c3c")
+            results_label.config(text="Error: " + str(e), fg="#C0392B")
             return
 
         # Update the preview table with results

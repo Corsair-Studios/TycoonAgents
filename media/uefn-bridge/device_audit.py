@@ -884,16 +884,16 @@ def _safe_label(actor):
 # ---------------------------------------------------------------------------
 
 # Dark theme colors
-_BG = "#1e1e2e"
-_TEXT = "#c0c0d0"
-_ACCENT = "#7ec8e3"
-_SECTION_BG = "#2a2a3e"
-_HEADER_BG = "#2a2a3e"
-_HEADER_FG = "#e0e0ff"
-_ACCENT_BLUE = "#7ec8e3"
-_TEXT_DIM = "#808090"
-_ENTRY_BG = "#353550"
-_ENTRY_FG = "#e0e0ff"
+_BG = "#D2CEC4"
+_TEXT = "#2B2B2B"
+_ACCENT = "#F15B29"
+_SECTION_BG = "#EBE7DD"
+_HEADER_BG = "#EBE7DD"
+_HEADER_FG = "#1A1A1A"
+_ACCENT_BLUE = "#F15B29"
+_TEXT_DIM = "#57524C"
+_ENTRY_BG = "#FBFAF6"
+_ENTRY_FG = "#1A1A1A"
 
 
 def _treeview_sort_column(tree, col, reverse, numeric_cols=None):
@@ -1002,7 +1002,7 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
         font=("Segoe UI", 9, "bold"),
         relief="flat",
     )
-    style.map("Treeview", background=[("selected", "#3a3a5e")])
+    style.map("Treeview", background=[("selected", "#F6D9C9")])
 
     # -- Actor lookup for double-click selection --
     actor_map = {}  # treeview item id -> unreal actor
@@ -1189,11 +1189,11 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
     # Grouped-tree row styles (reuse the file's existing palette).
     detail_tree.tag_configure("section", foreground=_HEADER_FG, font=("Segoe UI", 9, "bold"))
     detail_tree.tag_configure("detail", foreground=_TEXT)
-    detail_tree.tag_configure("conn", foreground="#4caf50")
+    detail_tree.tag_configure("conn", foreground="#227A32")
     detail_tree.tag_configure("info", foreground=_TEXT_DIM)
     # Legacy tags retained for any lingering references.
-    detail_tree.tag_configure("actor_ref", foreground="#4caf50")
-    detail_tree.tag_configure("asset_ref", foreground="#7ec8e3")
+    detail_tree.tag_configure("actor_ref", foreground="#227A32")
+    detail_tree.tag_configure("asset_ref", foreground="#A8431A")
 
     detail_scroll = ttk.Scrollbar(bottom_frame, orient=tk.VERTICAL, command=detail_tree.yview)
     detail_tree.configure(yscrollcommand=detail_scroll.set)

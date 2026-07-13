@@ -29,13 +29,13 @@ except ImportError:
 # Theme constants
 # ---------------------------------------------------------------------------
 
-_BG = "#1e1e2e"
-_SECTION_BG = "#2a2a3e"
-_HEADER_FG = "#e0e0ff"
-_ACCENT_GREEN = "#4caf50"
-_ACCENT_BLUE = "#7ec8e3"
-_TEXT_FG = "#c0c0d0"
-_TEXT_DIM = "#808090"
+_BG = "#D2CEC4"
+_SECTION_BG = "#EBE7DD"
+_HEADER_FG = "#1A1A1A"
+_ACCENT_GREEN = "#2F8F3E"
+_ACCENT_BLUE = "#F15B29"
+_TEXT_FG = "#2B2B2B"
+_TEXT_DIM = "#57524C"
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ def show_keyboard_shortcuts():
     style.configure("KS.Treeview.Heading",
         background=_BG, foreground=_HEADER_FG,
         font=("Segoe UI", 9, "bold"), relief="flat")
-    style.map("KS.Treeview", background=[("selected", "#3a3a5e")])
+    style.map("KS.Treeview", background=[("selected", "#F6D9C9")])
 
     # Header
     header_frame = tk.Frame(root, bg=_BG, padx=16, pady=12)

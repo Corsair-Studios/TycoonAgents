@@ -52,15 +52,15 @@ _DEFAULT_KEYWORDS = (
 _VALUE_MAX_LEN = 200
 
 # Dark theme colors (matches the rest of the Power Tools suite).
-_BG = "#1e1e2e"
-_SECTION_BG = "#2a2a3e"
-_HEADER_FG = "#e0e0ff"
-_ACCENT_BLUE = "#7ec8e3"
-_ACCENT_GREEN = "#4caf50"
-_TEXT_FG = "#c0c0d0"
-_TEXT_DIM = "#808090"
-_ENTRY_BG = "#353550"
-_ENTRY_FG = "#e0e0ff"
+_BG = "#D2CEC4"
+_SECTION_BG = "#EBE7DD"
+_HEADER_FG = "#1A1A1A"
+_ACCENT_BLUE = "#F15B29"
+_ACCENT_GREEN = "#2F8F3E"
+_TEXT_FG = "#2B2B2B"
+_TEXT_DIM = "#57524C"
+_ENTRY_BG = "#FBFAF6"
+_ENTRY_FG = "#1A1A1A"
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +385,7 @@ def _show_window(result):
         background=_SECTION_BG, foreground=_HEADER_FG,
         borderwidth=0, font=("Segoe UI", 9, "bold"), relief="flat",
     )
-    style.map("Treeview", background=[("selected", "#3a3a5e")])
+    style.map("Treeview", background=[("selected", "#F6D9C9")])
 
     # -- Top bar --
     top_frame = tk.Frame(root, bg=_BG, padx=12, pady=8)

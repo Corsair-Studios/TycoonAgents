@@ -40,15 +40,15 @@ except ImportError:
 # Theme constants (matching launcher/batch_tools palette)
 # ---------------------------------------------------------------------------
 
-_BG = "#1e1e2e"
-_SECTION_BG = "#2a2a3e"
-_HEADER_FG = "#e0e0ff"
-_ACCENT_GREEN = "#4caf50"
-_ACCENT_BLUE = "#7ec8e3"
-_TEXT_FG = "#c0c0d0"
-_TEXT_DIM = "#808090"
-_ENTRY_BG = "#353550"
-_ENTRY_FG = "#e0e0ff"
+_BG = "#D2CEC4"
+_SECTION_BG = "#EBE7DD"
+_HEADER_FG = "#1A1A1A"
+_ACCENT_GREEN = "#2F8F3E"
+_ACCENT_BLUE = "#F15B29"
+_TEXT_FG = "#2B2B2B"
+_TEXT_DIM = "#57524C"
+_ENTRY_BG = "#FBFAF6"
+_ENTRY_FG = "#1A1A1A"
 
 # UI state for the tick pump
 _tick_handle = [None]
@@ -888,12 +888,12 @@ def show_texture_finder():
     style.configure(
         "Search.TButton",
         background=_ACCENT_BLUE,
-        foreground="#1e1e2e",
+        foreground="#1A1A1A",
         font=("Segoe UI", 10, "bold"),
         padding=(14, 6),
         relief="flat",
     )
-    style.map("Search.TButton", background=[("active", "#a8d8ea")])
+    style.map("Search.TButton", background=[("active", "#D24E1F")])
 
     style.configure(
         "Treeview",
@@ -910,29 +910,29 @@ def show_texture_finder():
         font=("Segoe UI", 9, "bold"),
         relief="flat",
     )
-    style.map("Treeview", background=[("selected", "#3a3a5e")])
+    style.map("Treeview", background=[("selected", "#F6D9C9")])
 
     style.configure(
         "Dark.TCombobox",
         fieldbackground=_ENTRY_BG,
         background=_ENTRY_BG,
         foreground=_ENTRY_FG,
-        selectbackground="#3a3a5e",
-        selectforeground="#ffffff",
+        selectbackground="#F6D9C9",
+        selectforeground="#1A1A1A",
         arrowcolor=_ACCENT_BLUE,
     )
     style.map(
         "Dark.TCombobox",
         fieldbackground=[("readonly", _ENTRY_BG)],
         foreground=[("readonly", _ENTRY_FG)],
-        selectbackground=[("readonly", "#3a3a5e")],
-        selectforeground=[("readonly", "#ffffff")],
+        selectbackground=[("readonly", "#F6D9C9")],
+        selectforeground=[("readonly", "#1A1A1A")],
     )
     # Force the dropdown listbox colors (tk, not ttk)
     root.option_add("*TCombobox*Listbox.background", _ENTRY_BG)
     root.option_add("*TCombobox*Listbox.foreground", _ENTRY_FG)
-    root.option_add("*TCombobox*Listbox.selectBackground", "#3a3a5e")
-    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    root.option_add("*TCombobox*Listbox.selectBackground", "#F6D9C9")
+    root.option_add("*TCombobox*Listbox.selectForeground", "#1A1A1A")
 
     # ------------------------------------------------------------------
     # Top bar: Filter | Project Only checkbox | Refresh button
@@ -998,10 +998,10 @@ def show_texture_finder():
 
     # Row tags: level-1 texture rows
     tree.tag_configure("texture", foreground=_ACCENT_BLUE, font=("Consolas", 9, "bold"))
-    tree.tag_configure("orphan",  foreground="#e57373",    font=("Consolas", 9, "bold"))
+    tree.tag_configure("orphan",  foreground="#C0392B",    font=("Consolas", 9, "bold"))
     # Level-2 referencing asset rows
     tree.tag_configure("material", foreground=_ACCENT_GREEN, font=("Consolas", 9))
-    tree.tag_configure("niagara",  foreground="#ce93d8",     font=("Consolas", 9))
+    tree.tag_configure("niagara",  foreground="#8E44AD",     font=("Consolas", 9))
 
     vsb = ttk.Scrollbar(tree_frame, orient="vertical",   command=tree.yview)
     hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
