@@ -34,12 +34,12 @@ _ACCENT_GREEN = "#2F8F3E"
 _ACCENT_BLUE = "#F15B29"
 _TEXT_FG = "#2B2B2B"
 _TEXT_DIM = "#57524C"
-_CARD_HOVER = "#D9501F"
-_CARD_BORDER = "#C24A1B"
+_CARD_HOVER = "#F15B29"
+_CARD_BORDER = "#B8B2A4"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
 # cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.281"
+BRIDGE_VERSION = "0.0.282"
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +549,7 @@ def show_launcher():
 
         card = tk.Frame(
             cards_frame,
-            bg=_ACCENT_BLUE,
+            bg=_SECTION_BG,
             padx=12,
             pady=10,
             cursor="hand2",
@@ -563,7 +563,7 @@ def show_launcher():
             card,
             text=tool["icon"],
             font=("Segoe UI", 22),
-            bg=_ACCENT_BLUE,
+            bg=_SECTION_BG,
             fg=_HEADER_FG,
         )
         icon_label.pack(anchor=tk.W, pady=(0, 4))
@@ -573,7 +573,7 @@ def show_launcher():
             text=tool["name"],
             font=("Segoe UI", 11, "bold"),
             fg=_HEADER_FG,
-            bg=_ACCENT_BLUE,
+            bg=_SECTION_BG,
             anchor=tk.W,
         )
         name_label.pack(fill=tk.X)
@@ -582,8 +582,8 @@ def show_launcher():
             card,
             text=tool["description"],
             font=("Segoe UI", 9),
-            fg=_TEXT_FG,
-            bg=_ACCENT_BLUE,
+            fg=_TEXT_DIM,
+            bg=_SECTION_BG,
             anchor=tk.W,
             wraplength=140,
         )
@@ -611,7 +611,7 @@ def show_launcher():
         def _make_leave_handler(c, i, n, d):
             def _leave(_event):
                 for w in (c, i, n, d):
-                    w.configure(bg=_ACCENT_BLUE)
+                    w.configure(bg=_SECTION_BG)
             return _leave
 
         enter_handler = _make_enter_handler(card, icon_label, name_label, desc_label)
