@@ -1,12 +1,13 @@
 """
 Build-Mode Cleanup
 ====================
-WRITE tool. Bulk-sets a small set of actor-level "build mode" boolean
-properties to False across ALL level actors (not just the current
-selection) — e.g. "Register with Structural Grid", "Forcibly Structurally
-Supported", "Structurally Support Overlapping Actors". These are the
-internal property names discovered via property_inspector.py on
-BP_Blockout_Floor actors.
+WRITE tool. Bulk-sets a small set of actor-level "build mode" properties
+to a per-property Off/On target across ALL level actors (not just the
+current selection) — e.g. "Register with Structural Grid", "Forcibly
+Structurally Supported", "Structurally Support Overlapping Actors". Each
+property can independently be left untouched ("leave"), forced to its Off
+value, or forced to its On value. These are the internal property names
+discovered via property_inspector.py on BP_Blockout_Floor actors.
 
 Safety model:
   - run(apply=False) is a STRICTLY read-only dry run: it never calls
@@ -44,16 +45,24 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Config — EASILY EXTENDED: add more actor-level bool property names here.
-# Every entry is set to _TARGET_VALUE (False) wherever it is found.
+# Config — EASILY EXTENDED: add more actor-level properties here. Each entry
+# carries its OWN off/on values, so plain booleans (off=False, on=True) and
+# future non-boolean/enum properties (e.g. off=<EnumA>, on=<EnumB>) can both
+# be supported without changing the run()/UI logic — just append a dict.
 # ---------------------------------------------------------------------------
 
 _BUILD_MODE_PROPS = [
-    "register_with_structural_grid",
-    "forcibly_structurally_supported",
-    "structurally_support_overlapping_actors",
+    {"name": "register_with_structural_grid", "label": "Register with Structural Grid", "off": False, "on": True},
+    {"name": "forcibly_structurally_supported", "label": "Forcibly Structurally Supported", "off": False, "on": True},
+    {"name": "structurally_support_overlapping_actors", "label": "Structurally Support Overlapping Actors", "off": False, "on": True},
 ]
-_TARGET_VALUE = False
+
+# Valid per-property states. "leave" (the default) means the property is
+# skipped entirely for every actor: no get_editor_property read, no
+# set_editor_property write, no diff/count of any kind.
+_STATE_LEAVE = "leave"
+_STATE_OFF = "off"
+_STATE_ON = "on"
 
 # How often (in actors scanned) to invoke progress_cb / pump the UI.
 _PROGRESS_EVERY = 2000
@@ -73,13 +82,23 @@ _ENTRY_FG = "#1A1A1A"
 _ACCENT_RED = "#C0392B"
 
 
-def _empty_report(status):
+def _default_states():
+    """All properties default to 'leave' — a bare run() call is a harmless
+    no-op scan (headless-safe)."""
+    return {entry["name"]: _STATE_LEAVE for entry in _BUILD_MODE_PROPS}
+
+
+def _empty_report(status, states=None):
+    states = states or _default_states()
     return {
         "status": status,
         "actors_scanned": 0,
         "actors_with_props": 0,
         "actors_changed": 0,
-        "per_property": {p: {"have": 0, "changed": 0} for p in _BUILD_MODE_PROPS},
+        "per_property": {
+            entry["name"]: {"state": states.get(entry["name"], _STATE_LEAVE), "have": 0, "changed": 0}
+            for entry in _BUILD_MODE_PROPS
+        },
         "per_class": {},
         "total_changes": 0,
         "applied": False,
@@ -99,14 +118,24 @@ def _safe_class_name(actor):
 # Headless core
 # ---------------------------------------------------------------------------
 
-def run(apply=False, progress_cb=None):
+def run(apply=False, progress_cb=None, states=None):
     """
     Scan (and, if apply=True, mutate) every level actor's build-mode
     properties. Never raises — always returns a report dict, even on
     failure (see _empty_report's "status" field for the reason).
 
+    states is a dict {property_name: "off"|"leave"|"on"}. A property left
+    at (or defaulted to) "leave" is skipped ENTIRELY for every actor: no
+    get_editor_property read, no set_editor_property write, no diff/count.
+    "off"/"on" select that property config entry's "off"/"on" value as the
+    target; actors whose current value differs are counted (dry run) or
+    written (apply). If states is omitted or None, every property defaults
+    to "leave", so a bare run() call is a harmless no-op scan — matches
+    the existing headless-safe behavior of this module.
+
     apply=False (default) is STRICTLY read-only: no set_editor_property
-    calls are made, only get_editor_property.
+    calls are made, only get_editor_property, and only for non-"leave"
+    properties.
 
     apply=True wraps all writes in one undoable transaction (when
     ScopedEditorTransaction is available) and calls actor.modify() before
@@ -118,16 +147,20 @@ def run(apply=False, progress_cb=None):
 
     Returns:
         {status, actors_scanned, actors_with_props, actors_changed,
-         per_property: {prop: {have, changed}}, per_class: {class: change_count},
+         per_property: {prop: {state, have, changed}},
+         per_class: {class: change_count},
          total_changes, applied, transaction_used, notes}
     """
+    if states is None:
+        states = _default_states()
+
     if not _HAS_UNREAL:
-        result = _empty_report("error: 'unreal' module not available (must run inside UEFN)")
+        result = _empty_report("error: 'unreal' module not available (must run inside UEFN)", states)
         print("build_mode_cleanup: " + result["status"])
         return result
 
     try:
-        return _run_inner(apply, progress_cb)
+        return _run_inner(apply, progress_cb, states)
     except Exception:
         tb = traceback.format_exc()
         try:
@@ -135,30 +168,30 @@ def run(apply=False, progress_cb=None):
         except Exception:
             pass
         print("build_mode_cleanup: unhandled exception:\n" + tb)
-        result = _empty_report("error: unhandled exception (see log)")
+        result = _empty_report("error: unhandled exception (see log)", states)
         result["applied"] = bool(apply)
         return result
 
 
-def _run_inner(apply, progress_cb):
+def _run_inner(apply, progress_cb, states):
     try:
         subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
     except Exception as e:
         status = "error: get_editor_subsystem raised: " + str(e)
         print("build_mode_cleanup: " + status)
-        return _empty_report(status)
+        return _empty_report(status, states)
 
     if subsystem is None:
         status = "error: could not get EditorActorSubsystem"
         print("build_mode_cleanup: " + status)
-        return _empty_report(status)
+        return _empty_report(status, states)
 
     try:
         actors = subsystem.get_all_level_actors()
     except Exception as e:
         status = "error: get_all_level_actors raised: " + str(e)
         print("build_mode_cleanup: " + status)
-        return _empty_report(status)
+        return _empty_report(status, states)
 
     if actors is None:
         actors = []
@@ -167,7 +200,17 @@ def _run_inner(apply, progress_cb):
     except Exception:
         total_actors = 0
 
-    per_property = {p: {"have": 0, "changed": 0} for p in _BUILD_MODE_PROPS}
+    # Entries whose state != "leave" — these are the ONLY ones ever read or
+    # written. "leave" entries are fully skipped below (no get, no set).
+    active_entries = [
+        entry for entry in _BUILD_MODE_PROPS
+        if states.get(entry["name"], _STATE_LEAVE) != _STATE_LEAVE
+    ]
+
+    per_property = {
+        entry["name"]: {"state": states.get(entry["name"], _STATE_LEAVE), "have": 0, "changed": 0}
+        for entry in _BUILD_MODE_PROPS
+    }
     per_class = {}
     notes = []
     counters = {"actors_scanned": 0, "actors_with_props": 0, "actors_changed": 0, "total_changes": 0}
@@ -178,7 +221,11 @@ def _run_inner(apply, progress_cb):
             actor_had_prop = False
             actor_changes = 0
 
-            for prop in _BUILD_MODE_PROPS:
+            for entry in active_entries:
+                prop = entry["name"]
+                state = states.get(prop, _STATE_LEAVE)
+                target = entry["on"] if state == _STATE_ON else entry["off"]
+
                 try:
                     value = actor.get_editor_property(prop)
                 except Exception:
@@ -189,7 +236,7 @@ def _run_inner(apply, progress_cb):
                 actor_had_prop = True
                 per_property[prop]["have"] += 1
 
-                if value == _TARGET_VALUE:
+                if value == target:
                     continue  # already at the target — nothing to do
 
                 if not do_write:
@@ -204,7 +251,7 @@ def _run_inner(apply, progress_cb):
                     # but it does mean this change may not be undoable.
                     pass
                 try:
-                    actor.set_editor_property(prop, _TARGET_VALUE)
+                    actor.set_editor_property(prop, target)
                 except Exception:
                     # Write failed — don't count it as changed.
                     continue
@@ -239,7 +286,7 @@ def _run_inner(apply, progress_cb):
 
         if has_txn_ctor:
             try:
-                with unreal.ScopedEditorTransaction("Disable build-mode properties"):
+                with unreal.ScopedEditorTransaction("Update build-mode properties"):
                     _scan(do_write=True)
                 transaction_used = True
             except Exception:
@@ -303,7 +350,7 @@ def show_ui():
 def _show_window():
     root = tk.Tk()
     root.title("Build-Mode Cleanup")
-    root.geometry("760x520")
+    root.geometry("760x680")
     root.configure(bg=_BG)
     root.attributes("-topmost", True)
 
@@ -335,14 +382,89 @@ def _show_window():
     ).pack(anchor=tk.W)
 
     desc_text = (
-        "Sets these build-mode properties to False on ALL level actors: "
-        + ", ".join(_BUILD_MODE_PROPS)
-        + ".\nDry Run is read-only. Apply writes in one undoable action (Ctrl+Z to undo)."
+        "Choose Off / Leave as is / On for each property below, then scan or apply "
+        "across ALL level actors. Properties left as 'Leave as is' are never read or "
+        "written.\nDry Run is read-only. Apply writes in one undoable action (Ctrl+Z to undo)."
     )
     tk.Label(
         top_frame, text=desc_text, font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG,
         justify=tk.LEFT, wraplength=720,
     ).pack(anchor=tk.W, pady=(4, 0))
+
+    # -- Property controls --
+    controls_frame = tk.Frame(root, bg=_SECTION_BG, padx=12, pady=8)
+    controls_frame.pack(fill=tk.X, padx=12, pady=(4, 4))
+
+    tk.Label(
+        controls_frame, text="PROPERTY CONTROLS",
+        font=("Segoe UI", 10, "bold"), fg=_HEADER_FG, bg=_SECTION_BG,
+    ).pack(anchor=tk.W, pady=(0, 4))
+
+    property_vars = {}
+    for entry in _BUILD_MODE_PROPS:
+        prop_name = entry["name"]
+        var = tk.StringVar(value=_STATE_LEAVE)
+        property_vars[prop_name] = var
+
+        row = tk.Frame(controls_frame, bg=_SECTION_BG)
+        row.pack(fill=tk.X, pady=2)
+
+        tk.Label(
+            row, text=entry["label"], font=("Segoe UI", 9), fg=_TEXT_FG, bg=_SECTION_BG,
+            width=38, anchor=tk.W,
+        ).pack(side=tk.LEFT)
+
+        tk.Radiobutton(
+            row, text="Off", variable=var, value=_STATE_OFF,
+            bg=_SECTION_BG, fg=_ACCENT_RED, selectcolor=_ENTRY_BG,
+            activebackground=_SECTION_BG, activeforeground=_ACCENT_RED,
+            font=("Segoe UI", 9),
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        tk.Radiobutton(
+            row, text="Leave as is", variable=var, value=_STATE_LEAVE,
+            bg=_SECTION_BG, fg=_TEXT_DIM, selectcolor=_ENTRY_BG,
+            activebackground=_SECTION_BG, activeforeground=_TEXT_DIM,
+            font=("Segoe UI", 9),
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        tk.Radiobutton(
+            row, text="On", variable=var, value=_STATE_ON,
+            bg=_SECTION_BG, fg=_ACCENT_GREEN, selectcolor=_ENTRY_BG,
+            activebackground=_SECTION_BG, activeforeground=_ACCENT_GREEN,
+            font=("Segoe UI", 9),
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+    master_row = tk.Frame(controls_frame, bg=_SECTION_BG)
+    master_row.pack(fill=tk.X, pady=(6, 0))
+
+    tk.Label(
+        master_row, text="Set all:", font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_SECTION_BG,
+    ).pack(side=tk.LEFT)
+
+    def _make_set_all(state):
+        def _handler():
+            for var in property_vars.values():
+                var.set(state)
+        return _handler
+
+    tk.Button(
+        master_row, text="Off", command=_make_set_all(_STATE_OFF),
+        bg=_ENTRY_BG, fg=_ACCENT_RED, activebackground=_SECTION_BG, activeforeground=_ACCENT_RED,
+        relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=8, pady=2,
+    ).pack(side=tk.LEFT, padx=(6, 0))
+
+    tk.Button(
+        master_row, text="Leave", command=_make_set_all(_STATE_LEAVE),
+        bg=_ENTRY_BG, fg=_TEXT_DIM, activebackground=_SECTION_BG, activeforeground=_TEXT_DIM,
+        relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=8, pady=2,
+    ).pack(side=tk.LEFT, padx=(4, 0))
+
+    tk.Button(
+        master_row, text="On", command=_make_set_all(_STATE_ON),
+        bg=_ENTRY_BG, fg=_ACCENT_GREEN, activebackground=_SECTION_BG, activeforeground=_ACCENT_GREEN,
+        relief=tk.FLAT, font=("Segoe UI", 9, "bold"), padx=8, pady=2,
+    ).pack(side=tk.LEFT, padx=(4, 0))
 
     # -- Buttons --
     button_frame = tk.Frame(root, bg=_BG, padx=12, pady=4)
@@ -356,7 +478,7 @@ def _show_window():
     dry_run_button.pack(side=tk.LEFT)
 
     apply_button = tk.Button(
-        button_frame, text="Apply (set False)",
+        button_frame, text="Apply",
         bg=_ACCENT_RED, fg="#FBFAF6", activebackground="#A93226", activeforeground="#FBFAF6",
         relief=tk.FLAT, font=("Segoe UI", 10, "bold"), padx=10, pady=4,
     )
@@ -371,14 +493,16 @@ def _show_window():
     tree_frame = tk.Frame(root, bg=_SECTION_BG)
     tree_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(8, 4))
 
-    columns = ("property", "have", "changed")
+    columns = ("property", "state", "have", "changed")
     tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=8)
     tree.heading("property", text="Property")
+    tree.heading("state", text="State")
     tree.heading("have", text="Actors With Prop")
-    tree.heading("changed", text="Currently On / Would Change")
-    tree.column("property", width=340)
-    tree.column("have", width=150, anchor=tk.CENTER)
-    tree.column("changed", width=200, anchor=tk.CENTER)
+    tree.heading("changed", text="Would Change")
+    tree.column("property", width=300)
+    tree.column("state", width=90, anchor=tk.CENTER)
+    tree.column("have", width=140, anchor=tk.CENTER)
+    tree.column("changed", width=140, anchor=tk.CENTER)
 
     scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
     tree.configure(yscrollcommand=scroll.set)
@@ -401,9 +525,16 @@ def _show_window():
     def _populate_tree(per_property):
         for row in tree.get_children():
             tree.delete(row)
-        for prop in _BUILD_MODE_PROPS:
-            counts = per_property.get(prop, {"have": 0, "changed": 0})
-            tree.insert("", tk.END, values=(prop, counts.get("have", 0), counts.get("changed", 0)))
+        for entry in _BUILD_MODE_PROPS:
+            prop_name = entry["name"]
+            counts = per_property.get(prop_name, {"state": _STATE_LEAVE, "have": 0, "changed": 0})
+            tree.insert(
+                "", tk.END,
+                values=(entry["label"], counts.get("state", _STATE_LEAVE), counts.get("have", 0), counts.get("changed", 0)),
+            )
+
+    def _read_states():
+        return {name: var.get() for name, var in property_vars.items()}
 
     def _make_progress_cb():
         def _cb(scanned, total):
@@ -423,7 +554,9 @@ def _show_window():
         except Exception:
             pass
         try:
-            result = run(apply=False, progress_cb=_make_progress_cb())
+            states = _read_states()
+            tree.heading("changed", text="Would Change")
+            result = run(apply=False, progress_cb=_make_progress_cb(), states=states)
             progress_label.config(text="")
             if result.get("status") != "ok":
                 status_label.config(text="Dry run failed: " + str(result.get("status")), fg=_ACCENT_RED)
@@ -431,7 +564,8 @@ def _show_window():
                 _populate_tree(result.get("per_property", {}))
                 classes = result.get("per_class", {})
                 summary_label.config(
-                    text="Scanned {} actors; {} would change across {} classes.".format(
+                    text="Scanned {} actors; {} would change across {} classes. "
+                    "(Properties left as 'Leave as is' are not read or counted.)".format(
                         result.get("actors_scanned", 0),
                         result.get("total_changes", 0),
                         len(classes),
@@ -449,13 +583,24 @@ def _show_window():
     def _on_apply():
         dry_run_button.config(state=tk.DISABLED)
         apply_button.config(state=tk.DISABLED)
-        status_label.config(text="Scanning before apply...", fg=_TEXT_DIM)
         try:
-            root.update()
-        except Exception:
-            pass
-        try:
-            precheck = run(apply=False, progress_cb=_make_progress_cb())
+            states = _read_states()
+            active_names = [name for name, state in states.items() if state != _STATE_LEAVE]
+            if not active_names:
+                messagebox.showinfo(
+                    "Build-Mode Cleanup",
+                    "Nothing selected — every property is 'Leave as is'.",
+                )
+                status_label.config(text="Nothing selected — choose Off or On for at least one property.", fg=_TEXT_DIM)
+                return
+
+            status_label.config(text="Scanning before apply...", fg=_TEXT_DIM)
+            try:
+                root.update()
+            except Exception:
+                pass
+
+            precheck = run(apply=False, progress_cb=_make_progress_cb(), states=states)
             progress_label.config(text="")
             if precheck.get("status") != "ok":
                 status_label.config(text="Pre-apply scan failed: " + str(precheck.get("status")), fg=_ACCENT_RED)
@@ -464,16 +609,19 @@ def _show_window():
             total_changes = precheck.get("total_changes", 0)
             actors_changed = precheck.get("actors_changed", 0)
             if total_changes == 0:
+                tree.heading("changed", text="Would Change")
                 _populate_tree(precheck.get("per_property", {}))
-                summary_label.config(text="Nothing to change — all target properties are already False.")
+                summary_label.config(text="Nothing to change — selected properties already match their target.")
                 status_label.config(text="No apply needed.", fg=_ACCENT_GREEN)
                 return
 
             proceed = messagebox.askyesno(
                 "Apply build-mode cleanup",
-                "This will set {} to False on {} properties across {} actors "
-                "(one undoable action). Proceed?".format(
-                    ", ".join(_BUILD_MODE_PROPS), total_changes, actors_changed,
+                "This will change {} propert{} across {} actors ({} total value changes) "
+                "in one undoable action. Properties left as 'Leave as is' will not be touched. "
+                "Proceed?".format(
+                    len(active_names), "y" if len(active_names) == 1 else "ies",
+                    actors_changed, total_changes,
                 ),
             )
             if not proceed:
@@ -486,12 +634,13 @@ def _show_window():
             except Exception:
                 pass
 
-            result = run(apply=True, progress_cb=_make_progress_cb())
+            result = run(apply=True, progress_cb=_make_progress_cb(), states=states)
             progress_label.config(text="")
             if result.get("status") != "ok":
                 status_label.config(text="Apply failed: " + str(result.get("status")), fg=_ACCENT_RED)
                 return
 
+            tree.heading("changed", text="Changed")
             _populate_tree(result.get("per_property", {}))
             classes = result.get("per_class", {})
             summary_label.config(
@@ -504,7 +653,7 @@ def _show_window():
             notes = result.get("notes") or []
             note_suffix = (" " + " ".join(notes)) if notes else ""
             status_label.config(
-                text="Applied: {} changes. Undo with Ctrl+Z in the editor.{}".format(
+                text="Applied {} changes; Ctrl+Z to undo.{}".format(
                     result.get("total_changes", 0), note_suffix,
                 ),
                 fg=_ACCENT_GREEN,
@@ -555,7 +704,10 @@ def _show_window():
     # Initial state — an empty tree with placeholder rows, no scan run yet
     # (scanning ~44,700 actors is not something to do implicitly on open).
     try:
-        _populate_tree({p: {"have": 0, "changed": 0} for p in _BUILD_MODE_PROPS})
+        _populate_tree({
+            entry["name"]: {"state": _STATE_LEAVE, "have": 0, "changed": 0}
+            for entry in _BUILD_MODE_PROPS
+        })
     except Exception:
         print("build_mode_cleanup: initial populate failed:\n" + traceback.format_exc())
 
