@@ -462,7 +462,6 @@ def _show_window(result):
     def _populate(filter_text=""):
         for _row in tree.get_children():
             tree.delete(_row)
-        _shown = 0
         filter_text = filter_text.lower().strip()
         for p in state["props"]:
             haystack = "{} {} {} {}".format(
@@ -479,11 +478,6 @@ def _show_window(result):
                 ),
                 tags=("match",) if is_match else (),
             )
-            _shown += 1
-        try:
-            print("property_inspector: filter=%r -> %d/%d rows" % (filter_text, _shown, len(state["props"])))
-        except Exception:
-            pass
 
     tree.tag_configure("match", foreground=_ACCENT_GREEN)
 

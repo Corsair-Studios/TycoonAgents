@@ -39,7 +39,7 @@ _CARD_BORDER = "#B8B2A4"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
 # cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.282"
+BRIDGE_VERSION = "0.0.283"
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +163,12 @@ _TOOLS = [
         "name": "Property Inspector",
         "description": "Dump a selected actor's editor properties to find internal names",
         "action": "property_inspector",
+    },
+    {
+        "icon": "\U0001f9f1",  # bricks
+        "name": "Build-Mode Cleanup",
+        "description": "Bulk-set build-mode props (structural grid, etc.) to False on all level actors.",
+        "action": "build_mode_cleanup",
     },
 ]
 
@@ -456,6 +462,17 @@ def _launch_tool(action):
             unreal.log_warning("uefn_launcher: Failed to launch property_inspector: " + str(e))
             if _HAS_TKINTER:
                 messagebox.showerror("Error", "Failed to launch Property Inspector:\n" + str(e))
+
+    elif action == "build_mode_cleanup":
+        try:
+            import importlib
+            import build_mode_cleanup
+            importlib.reload(build_mode_cleanup)
+            build_mode_cleanup.show_ui()
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: Failed to launch build_mode_cleanup: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to launch Build-Mode Cleanup:\n" + str(e))
 
     else:
         unreal.log_warning("uefn_launcher: Unknown action: " + str(action))
