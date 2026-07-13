@@ -36,6 +36,10 @@ _TEXT_FG = "#c0c0d0"
 _TEXT_DIM = "#808090"
 _CARD_HOVER = "#353550"
 
+# Bridge version, shown in the launcher footer so users can tell a stale
+# cached copy apart from the current one.
+BRIDGE_VERSION = "0.0.273"
+
 
 # ---------------------------------------------------------------------------
 # Bridge status helpers
@@ -620,6 +624,16 @@ def show_launcher():
     # ==================================================================
     footer_frame = tk.Frame(root, bg=_SECTION_BG, padx=8, pady=2)
     footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+    # Version label on the left (opposite the @thetrashbyrd link)
+    footer_version = tk.Label(
+        footer_frame,
+        text="v" + BRIDGE_VERSION,
+        font=("Segoe UI", 8),
+        fg=_TEXT_DIM,
+        bg=_SECTION_BG,
+    )
+    footer_version.pack(side=tk.LEFT, padx=(4, 0))
 
     # @thetrashbyrd on the right (no logo — already in title bar)
     footer_social = tk.Label(
