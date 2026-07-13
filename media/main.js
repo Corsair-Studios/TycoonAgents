@@ -2331,6 +2331,14 @@
       const boardNumber = boardMatch ? Number(boardMatch[1]) || 1 : 1;
       let staticIndex = 0;
       let animIndex = 0;
+      // Board 2's row array is in CELL order (anim, anim, static x3), not
+      // numeric order (statics are 17-19, animated are 20-21 — see the
+      // globalNumber derivation below, which is the SAME value used for both
+      // the displayed label and this sort key so a row can never show one
+      // number while sorting as another). Sort ascending by that global
+      // number so the editor lists 17, 18, 19, 20, 21 — the build order —
+      // instead of the board's cell order. This is a no-op on board 1, whose
+      // rows are already produced in ascending 1-16 order.
       return item.object_rows
         .filter((row) => row && (row.kind === "object_static" || row.kind === "object_anim") && row.object_id)
         .map((row) => {
@@ -2348,10 +2356,16 @@
           return {
             rowId: row.object_id,
             itemKind: "object",
-            label: "Object " + globalNumber + (row.is_ranged_rack ? " (Weapons Rack)" : ""),
+            globalNumber,
+            label:
+              "Object " +
+              globalNumber +
+              (row.is_ranged_rack ? " (Weapons Rack)" : "") +
+              (row.kind === "object_anim" ? " (animated)" : ""),
             original: row.display_name || "",
           };
-        });
+        })
+        .sort((a, b) => a.globalNumber - b.globalNumber);
     }
     if (item.kind === "background_decor_atlas" && Array.isArray(item.decor_rows)) {
       const rows = [];
@@ -2432,6 +2446,11 @@
       const boardNumber = boardMatch ? Number(boardMatch[1]) || 1 : 1;
       let staticIndex = 0;
       let animIndex = 0;
+      // See the matching sort comment in themeReviewNameRows: board 2's row
+      // array is in CELL order (anim, anim, static x3), so sort ascending by
+      // the same globalNumber used for the label to list 17-19 then 20-21
+      // (build order). No-op on board 1 (already 1-16 in order). crate/poof
+      // are pushed onto `rows` AFTER this sort, so they stay last.
       const rows = item.object_rows
         .filter((row) => row && (row.kind === "object_static" || row.kind === "object_anim") && row.object_id)
         .map((row) => {
@@ -2449,10 +2468,16 @@
           return {
             rowId: row.object_id,
             itemKind: "object",
-            label: "Object " + globalNumber + (row.is_ranged_rack ? " (Weapons Rack)" : ""),
+            globalNumber,
+            label:
+              "Object " +
+              globalNumber +
+              (row.is_ranged_rack ? " (Weapons Rack)" : "") +
+              (row.kind === "object_anim" ? " (animated)" : ""),
             original: row.visual_description || "",
           };
-        });
+        })
+        .sort((a, b) => a.globalNumber - b.globalNumber);
       // Object board 2 also carries the single REQUIRED build crate and
       // build-completion poof effect (v3 object pipeline — see
       // buildObjectBoard2Prompt in themeAssetPrompts.ts). Unlike every other
