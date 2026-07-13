@@ -38,7 +38,7 @@ _CARD_HOVER = "#353550"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
 # cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.274"
+BRIDGE_VERSION = "0.0.275"
 
 
 # ---------------------------------------------------------------------------

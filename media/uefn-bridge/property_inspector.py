@@ -521,6 +521,7 @@ def _show_window(result):
         _populate(search_var.get())
 
     search_var.trace_add("write", _on_search_changed)
+    search_entry.bind("<KeyRelease>", lambda _e: _populate(search_var.get()))
     _rebuild_from_result(result)
 
     # -- Tick pump so the window stays responsive inside UEFN's editor loop --
