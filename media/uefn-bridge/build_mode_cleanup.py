@@ -55,6 +55,16 @@ _BUILD_MODE_PROPS = [
     {"name": "register_with_structural_grid", "label": "Register with Structural Grid", "off": False, "on": True},
     {"name": "forcibly_structurally_supported", "label": "Forcibly Structurally Supported", "off": False, "on": True},
     {"name": "structurally_support_overlapping_actors", "label": "Structurally Support Overlapping Actors", "off": False, "on": True},
+    {"name": "play_bounce",            "label": "Play Bounce",             "off": False, "on": True},
+    {"name": "propagate_bounce",       "label": "Propagate Bounce",        "off": False, "on": True},
+    {"name": "is_player_buildable",    "label": "Is Player Buildable",     "off": False, "on": True},
+    {"name": "player_placed",          "label": "Player Placed",           "off": False, "on": True},
+    {"name": "allow_interact",         "label": "Allow Interact",          "off": False, "on": True},
+    {"name": "allow_weak_spots",       "label": "Allow Weak Spots",        "off": False, "on": True},
+    {"name": "force_damage_ping",      "label": "Force Damage Ping",       "off": False, "on": True},
+    {"name": "apply_impulse_on_damge", "label": "Apply Impulse On Damage", "off": False, "on": True},
+    {"name": "show_damage_cracks",     "label": "Show Damage Cracks",      "off": False, "on": True},
+    {"name": "can_be_damaged",         "label": "Can Be Damaged",          "off": False, "on": True},
 ]
 
 # Valid per-property states. "leave" (the default) means the property is
@@ -350,7 +360,7 @@ def show_ui():
 def _show_window():
     root = tk.Tk()
     root.title("Build-Mode Cleanup")
-    root.geometry("760x680")
+    root.geometry("760x780")
     root.configure(bg=_BG)
     root.attributes("-topmost", True)
 
@@ -392,6 +402,11 @@ def _show_window():
     ).pack(anchor=tk.W, pady=(4, 0))
 
     # -- Property controls --
+    # 13 property rows no longer fit comfortably in a fixed-height window,
+    # so the rows live in a scrollable Canvas (fixed viewport height) while
+    # the "Set all" row and the rest of the window stay put — this keeps
+    # every row reachable (mouse-wheel or scrollbar) regardless of screen
+    # size, without growing the window past what a typical display can show.
     controls_frame = tk.Frame(root, bg=_SECTION_BG, padx=12, pady=8)
     controls_frame.pack(fill=tk.X, padx=12, pady=(4, 4))
 
@@ -400,13 +415,50 @@ def _show_window():
         font=("Segoe UI", 10, "bold"), fg=_HEADER_FG, bg=_SECTION_BG,
     ).pack(anchor=tk.W, pady=(0, 4))
 
+    rows_viewport = tk.Frame(controls_frame, bg=_SECTION_BG)
+    rows_viewport.pack(fill=tk.X)
+
+    rows_canvas = tk.Canvas(
+        rows_viewport, bg=_SECTION_BG, height=260, highlightthickness=0, bd=0,
+    )
+    rows_scroll = ttk.Scrollbar(rows_viewport, orient=tk.VERTICAL, command=rows_canvas.yview)
+    rows_canvas.configure(yscrollcommand=rows_scroll.set)
+    rows_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    rows_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    rows_inner = tk.Frame(rows_canvas, bg=_SECTION_BG)
+    rows_window = rows_canvas.create_window((0, 0), window=rows_inner, anchor="nw")
+
+    def _on_rows_inner_configure(_event):
+        try:
+            rows_canvas.configure(scrollregion=rows_canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_rows_canvas_configure(event):
+        try:
+            rows_canvas.itemconfig(rows_window, width=event.width)
+        except Exception:
+            pass
+
+    def _on_rows_mousewheel(event):
+        try:
+            rows_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except Exception:
+            pass
+
+    rows_inner.bind("<Configure>", _on_rows_inner_configure)
+    rows_canvas.bind("<Configure>", _on_rows_canvas_configure)
+    rows_canvas.bind("<Enter>", lambda _e: rows_canvas.bind_all("<MouseWheel>", _on_rows_mousewheel))
+    rows_canvas.bind("<Leave>", lambda _e: rows_canvas.unbind_all("<MouseWheel>"))
+
     property_vars = {}
     for entry in _BUILD_MODE_PROPS:
         prop_name = entry["name"]
         var = tk.StringVar(value=_STATE_LEAVE)
         property_vars[prop_name] = var
 
-        row = tk.Frame(controls_frame, bg=_SECTION_BG)
+        row = tk.Frame(rows_inner, bg=_SECTION_BG)
         row.pack(fill=tk.X, pady=2)
 
         tk.Label(
@@ -686,6 +738,10 @@ def _show_window():
         if _tick_handle[0] is not None and _HAS_UNREAL:
             unreal.unregister_slate_post_tick_callback(_tick_handle[0])
             _tick_handle[0] = None
+        try:
+            rows_canvas.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)

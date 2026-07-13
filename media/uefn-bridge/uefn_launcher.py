@@ -39,7 +39,7 @@ _CARD_BORDER = "#B8B2A4"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
 # cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.284"
+BRIDGE_VERSION = "0.0.285"
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +571,9 @@ def show_launcher():
             pady=10,
             cursor="hand2",
             highlightbackground=_CARD_BORDER,
-            highlightthickness=1,
+            highlightthickness=0,
+            relief=tk.RAISED,
+            borderwidth=5,
         )
         card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
         cards_frame.rowconfigure(row, weight=1)
@@ -606,33 +608,53 @@ def show_launcher():
         )
         desc_label.pack(fill=tk.X, pady=(2, 0))
 
-        # Bind click to all widgets in the card
+        # Bind press to all widgets in the card (physical-button feel)
         action = tool["action"]
+        hover_state = [False]
 
-        def _make_click_handler(a):
-            return lambda _event: _launch_tool(a)
+        def _make_press_handler(a, c, i, n, d, hs):
+            def _press(_event):
+                c.configure(relief=tk.SUNKEN, borderwidth=5)
+                _launch_tool(a)
 
-        handler = _make_click_handler(action)
-        card.bind("<Button-1>", handler)
-        icon_label.bind("<Button-1>", handler)
-        name_label.bind("<Button-1>", handler)
-        desc_label.bind("<Button-1>", handler)
+                def _restore():
+                    if hs[0]:
+                        c.configure(relief=tk.RAISED, borderwidth=3)
+                        for w in (c, i, n, d):
+                            w.configure(bg=_CARD_HOVER)
+                    else:
+                        c.configure(relief=tk.RAISED, borderwidth=5)
+                        for w in (c, i, n, d):
+                            w.configure(bg=_SECTION_BG)
+
+                root.after(1000, _restore)
+            return _press
+
+        press_handler = _make_press_handler(action, card, icon_label, name_label, desc_label, hover_state)
+        card.bind("<ButtonPress-1>", press_handler)
+        icon_label.bind("<ButtonPress-1>", press_handler)
+        name_label.bind("<ButtonPress-1>", press_handler)
+        desc_label.bind("<ButtonPress-1>", press_handler)
 
         # Hover effects
-        def _make_enter_handler(c, i, n, d):
+        def _make_enter_handler(c, i, n, d, hs):
             def _enter(_event):
                 for w in (c, i, n, d):
                     w.configure(bg=_CARD_HOVER)
+                hs[0] = True
+                c.configure(relief=tk.RAISED, borderwidth=3)
             return _enter
 
-        def _make_leave_handler(c, i, n, d):
+        def _make_leave_handler(c, i, n, d, hs):
             def _leave(_event):
                 for w in (c, i, n, d):
                     w.configure(bg=_SECTION_BG)
+                hs[0] = False
+                c.configure(relief=tk.RAISED, borderwidth=5)
             return _leave
 
-        enter_handler = _make_enter_handler(card, icon_label, name_label, desc_label)
-        leave_handler = _make_leave_handler(card, icon_label, name_label, desc_label)
+        enter_handler = _make_enter_handler(card, icon_label, name_label, desc_label, hover_state)
+        leave_handler = _make_leave_handler(card, icon_label, name_label, desc_label, hover_state)
 
         card.bind("<Enter>", enter_handler)
         card.bind("<Leave>", leave_handler)
