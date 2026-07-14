@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { validateThemeIntegrity } from '../src/extension/themeHealth';
 import type { ThemeManifest } from '../src/shared/types';
 
-// Matches buildDefaultBadges() (themeMigration.ts): 24 badges whose icon_asset
-// keys cover exactly the set achievement_0..23 (the same claimed key set as the
-// real roster, where the 4 rebirth badges map to slots 20..23), lining up 1:1
-// with baseFrames()'s achievement_0..23 so any test that doesn't care about
-// badges specifically stays "clean" by default. (Board cell 24 is a spare that
-// is never persisted, so it is not part of this set.)
+// Matches buildDefaultBadges() (themeMigration.ts): 25 badges whose icon_asset
+// keys cover exactly the set achievement_0..24 (the same claimed key set as the
+// real roster, where the rebirth badges and rebirth_5 map into slots 20..24),
+// lining up 1:1 with baseFrames()'s achievement_0..24 so any test that doesn't
+// care about badges specifically stays "clean" by default. (All 25 board cells
+// are now claimed; there is no spare.)
 function defaultBadges(): ThemeManifest['badges'] {
-  return Array.from({ length: 24 }, (_unused, i) => ({
+  return Array.from({ length: 25 }, (_unused, i) => ({
     badge_id: `badge_${i}`,
     display_name: `Badge ${i}`,
     description: 'test badge',
@@ -43,8 +43,8 @@ function minimalManifest(overrides: Partial<ThemeManifest> = {}): ThemeManifest 
 
 function baseFrames(): Record<string, string[]> {
   const frames: Record<string, string[]> = {};
-  // 24 claimed badge icons (achievement_0..23); cell 24 is a spare not persisted.
-  for (let i = 0; i < 24; i++) frames[`achievement_${i}`] = ['data:img'];
+  // 25 claimed badge icons (achievement_0..24); every board cell is claimed.
+  for (let i = 0; i < 25; i++) frames[`achievement_${i}`] = ['data:img'];
   for (let i = 0; i < 8; i++) frames[`expression_${i}`] = ['data:img'];
   return frames;
 }
@@ -297,7 +297,7 @@ test('a missing badge icon is flagged as a warning naming the badge, driven by m
   // Expression frames present (so they don't add noise) but NO achievement_
   // keys at all, so the single declared badge's icon is genuinely missing.
   const frames = baseFrames();
-  for (let i = 0; i < 24; i++) delete frames[`achievement_${i}`];
+  for (let i = 0; i < 25; i++) delete frames[`achievement_${i}`];
 
   const issues = validateThemeIntegrity(manifest, frames);
   assert.equal(issues.length, 1);
@@ -326,7 +326,7 @@ test('an achievement_ frame with no matching badge is flagged as an orphan warni
   // Expression frames present (so they don't add noise); achievement_ pruned
   // down to exactly the claimed key plus one orphan.
   const frames = baseFrames();
-  for (let i = 2; i < 24; i++) delete frames[`achievement_${i}`];
+  for (let i = 2; i < 25; i++) delete frames[`achievement_${i}`];
 
   const issues = validateThemeIntegrity(manifest, frames);
   assert.equal(issues.length, 1);

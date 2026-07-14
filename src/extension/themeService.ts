@@ -3557,14 +3557,12 @@ function applyAchievementFrames(
   frames: Record<string, string[]>,
   slots: Array<{ slot_id: number; data: string }>,
 ): string[] {
-  // The board is 5×5 = 25 cells, but the 24 default badges claim only
-  // achievement_0..23; cell 24 is a drawn-but-unclaimed SPARE reserved for a
-  // future 5th rebirth badge. Persist exactly the 24 claimed frames (matching
-  // the old 20-cell board's "persist == claimed" invariant) so the spare cell
-  // is NOT written as unclaimed art — otherwise Theme Health's orphan pass
-  // would flag achievement_24 on every generated theme. A future 25th badge
-  // that claims achievement_24 should bump this to slice(0, 25).
-  return slots.slice(0, 24).map((slot, index) => {
+  // The board is 5×5 = 25 cells, and all 25 default badges claim
+  // achievement_0..24 (the rebirth_5 badge claims the formerly-spare cell 24).
+  // Persist exactly the 25 claimed frames, upholding the "persist == claimed"
+  // invariant so every drawn cell maps to a badge and Theme Health's orphan
+  // pass stays clean.
+  return slots.slice(0, 25).map((slot, index) => {
     const key = `achievement_${index}`;
     frames[key] = [slot.data];
     return key;

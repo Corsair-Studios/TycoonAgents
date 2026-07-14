@@ -76,15 +76,15 @@ function buildDefaultDecorObjects(): DecorObject[] {
 }
 
 /**
- * Builds the fixed 24-entry default badge roster (5 OBJECTS_BUILT, 8
- * RIVALS_EVICTED, 5 TASKS_COMPLETED, 2 AGENTS_ACTIVE, 3 REBIRTH_COUNT, 1
+ * Builds the fixed 25-entry default badge roster (5 OBJECTS_BUILT, 8
+ * RIVALS_EVICTED, 5 TASKS_COMPLETED, 2 AGENTS_ACTIVE, 4 REBIRTH_COUNT, 1
  * OBJECTS_BUILT_POST_REBIRTH), each mapped to its OWN cell on the 5×5=25-cell
- * achievement art board (achievement_0..achievement_23). Every one of the 24
- * badges has a UNIQUE icon; slot achievement_24 is left spare for a future 5th
- * rebirth badge. Applied whenever a manifest has no badges, so the badge UI
- * always has content to render. (Legacy 20-cell themes lack achievement_20..24
- * until regenerated; the badge panel degrades a missing icon frame to a generic
- * placeholder rather than throwing.)
+ * achievement art board (achievement_0..achievement_24). Every one of the 25
+ * badges has a UNIQUE icon; the rebirth_5 badge claims the formerly-spare cell
+ * achievement_24, so all 25 cells are now claimed. Applied whenever a manifest
+ * has no badges, so the badge UI always has content to render. (Legacy 20-cell
+ * themes lack achievement_20..24 until regenerated; the badge panel degrades a
+ * missing icon frame to a generic placeholder rather than throwing.)
  */
 export function buildDefaultBadges(): ThemeBadge[] {
   return [
@@ -271,6 +271,14 @@ export function buildDefaultBadges(): ThemeBadge[] {
       trigger_type: 'REBIRTH_COUNT',
       threshold: 3,
       icon_asset: 'frames.json#achievement_22',
+    },
+    {
+      badge_id: 'rebirth_5',
+      display_name: 'Reborn Five Times',
+      description: 'Reach Rebirth ×5. This badge is permanent — it survives every future Rebirth.',
+      trigger_type: 'REBIRTH_COUNT',
+      threshold: 5,
+      icon_asset: 'frames.json#achievement_24',
     },
     {
       badge_id: 'reborn_builder',

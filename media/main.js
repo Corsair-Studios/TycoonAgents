@@ -4263,6 +4263,8 @@
   const HAPPY_BUBBLE_CHANCE = 0.5;
   /** Chance, on an idle→engaged (combat) transition, of a brief "anger" bubble. */
   const ANGER_CHANCE = 0.05;
+  /** Seconds an evicted rival shows the "dazed/hit" (expression 7) bubble as it flees. */
+  const HURT_EXPR_SEC = 1.8;
 
   /** True while a conga line is snaking around the perimeter. */
   let congaActive = false;
@@ -4449,6 +4451,13 @@
    * Ignored outside edit mode (each render/hit gate ANDs with editStageMode).
    */
   let stageShowAllObjects = true;
+  /**
+   * Edit-Stage only: when true, draw the amber walkable/boundary polygon
+   * overlay. Toggleable so it can be hidden when it obscures objects being
+   * placed. Default true = prior edit behavior. Ignored outside edit mode
+   * (the draw gate ANDs with editStageMode).
+   */
+  let showBoundaryPolygon = true;
   /** Index of the polygon vertex currently being dragged, or -1. */
   let dragVertexIndex = -1;
   /** Index of the polygon vertex under the cursor (for hover highlight), or -1. */
@@ -4826,6 +4835,8 @@
         '<div class="se-section">' +
           '<button id="se-show-all" class="se-btn se-btn-ghost" type="button">Show current view only</button>' +
           '<div class="se-sublabel">Toggle to reveal every buildable + decor (even unbuilt/hidden) for placing &amp; scaling.</div>' +
+          '<button id="se-toggle-boundary" class="se-btn se-btn-ghost" type="button">Hide boundary</button>' +
+          '<div class="se-sublabel">Toggle the amber walkable/boundary polygon overlay (hide it when it obscures objects).</div>' +
         '</div>' +
         '<div class="se-section">' +
           '<div class="se-section-title">Objects</div>' +
@@ -4907,6 +4918,7 @@
     stageEditEls.done = wrap.querySelector("#se-done");
     stageEditEls.status = wrap.querySelector("#se-status");
     stageEditEls.showAll = wrap.querySelector("#se-show-all");
+    stageEditEls.toggleBoundary = wrap.querySelector("#se-toggle-boundary");
 
     // Wire controls.
     if (stageEditEls.showAll) {
@@ -4921,6 +4933,20 @@
         // label refresh is all that's needed here (redraw is automatic).
         stageShowAllObjects = !stageShowAllObjects;
         syncShowAllLabel();
+      });
+    }
+    if (stageEditEls.toggleBoundary) {
+      const syncBoundaryLabel = () => {
+        stageEditEls.toggleBoundary.textContent = showBoundaryPolygon
+          ? "Hide boundary"
+          : "Show boundary";
+      };
+      syncBoundaryLabel();
+      stageEditEls.toggleBoundary.addEventListener("click", () => {
+        // Flip the flag; the polygon draw gate reads it each frame, so a label
+        // refresh is all that's needed here (redraw is automatic).
+        showBoundaryPolygon = !showBoundaryPolygon;
+        syncBoundaryLabel();
       });
     }
     stageEditEls.cs.addEventListener("input", () => {
@@ -10056,6 +10082,52 @@
   }
 
   /**
+   * Draw the expression-icon bubble above a sprite's head — a pure display
+   * overlay shared by BOTH agents and rivals. Fully guarded: no-op (no throw)
+   * when no bubble is active (exprIndex < 0 / timeLeft <= 0) or the theme's
+   * expression frame isn't ready. Reads ctx/themeImages from closure. Behavior
+   * is identical to the former inline agent block (same sizes, fade, bob, tail).
+   * @param {number} exprIndex 0..7 into the theme expression atlas, or -1/undefined for none
+   * @param {number} timeLeft remaining bubble seconds (drives the fade-out tail)
+   * @param {number} cx sprite center x (canvas, un-flipped)
+   * @param {number} cy sprite baseline y (canvas, un-flipped)
+   * @param {number} spriteSize rendered sprite size (px)
+   */
+  function drawExpressionBubble(exprIndex, timeLeft, cx, cy, spriteSize) {
+    if (!(exprIndex >= 0) || !(timeLeft > 0)) return;
+    const bframes = themeImages["expression_" + exprIndex];
+    const bimg = bframes && bframes[0];
+    if (!bimg || !bimg.complete || bimg.naturalWidth <= 0) return;
+    const bs = 20; // icon size (~70% of 28)
+    const bx = cx; // center over head
+    const by = cy - spriteSize - 11; // above head, like an HP bar
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, timeLeft * 3); // brief fade-out tail
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    const pad = 2, bw = bs + pad * 2, bh = bs + pad * 2, br = 5;
+    const rx = bx - bw / 2, ry = by - bh / 2;
+    ctx.beginPath();
+    ctx.moveTo(rx + br, ry);
+    ctx.arcTo(rx + bw, ry, rx + bw, ry + bh, br);
+    ctx.arcTo(rx + bw, ry + bh, rx, ry + bh, br);
+    ctx.arcTo(rx, ry + bh, rx, ry, br);
+    ctx.arcTo(rx, ry, rx + bw, ry, br);
+    ctx.closePath();
+    ctx.fill();
+    // Little downward tail pointing toward the head.
+    ctx.beginPath();
+    ctx.moveTo(bx - 3, ry + bh - 1);
+    ctx.lineTo(bx + 3, ry + bh - 1);
+    ctx.lineTo(bx, ry + bh + 4);
+    ctx.closePath();
+    ctx.fill();
+    // Gentle vertical bob for the icon only (display-only).
+    const bob = Math.sin((performance.now ? performance.now() : Date.now()) / 180) * 1.4;
+    ctx.drawImage(bimg, bx - bs / 2, (by - bs / 2) - bob, bs, bs);
+    ctx.restore();
+  }
+
+  /**
    * Stand a seated (or seat-bound) agent up and release its seat. Safe to call
    * on any charEntry (no-op if it isn't sitting). Clears the per-agent sit
    * fields and marks the seat free in seatOccupancy.
@@ -10230,6 +10302,15 @@
     const raidBuiltIds = raidBuildState ? raidBuildState.builtIds : null;
 
     for (const en of activeEnemies) {
+      // Expression-bubble countdown for rivals (mirrors the agent tick at the
+      // charEntry loop). Placed BEFORE the fleeing `continue` so an evicted
+      // rival's dazed/hit bubble still fades out as it flees off-screen.
+      // Guarded so rivals without bubble fields (undefined) are untouched.
+      if (en.bubbleTimeLeft > 0) {
+        en.bubbleTimeLeft -= delta;
+        if (en.bubbleTimeLeft <= 0) en.bubbleExpr = -1;
+      }
+      if (en.bubbleCooldown > 0) en.bubbleCooldown -= delta;
       if (en.fleeing) {
         // Change 2: defeated enemy runs off the nearest edge (a bit faster
         // than walk-in), using the walk clip, facing its travel direction.
@@ -11095,6 +11176,11 @@
               nearest.hp = 0;
               nearest.fleeing = true;
               nearest.targetAgentId = null;
+              // Show the "dazed/hit" (index 7) bubble once as the rival is
+              // evicted. The !fleeing guard above makes this the single
+              // once-per-rival eviction transition. showExpression is a no-op
+              // if the theme lacks an expression atlas.
+              showExpression(nearest, 7, HURT_EXPR_SEC);
               // Celebration: only dance once ALL enemies are defeated (none
               // still fighting) — nearest.fleeing is already true above, so
               // this check naturally excludes it.
@@ -11881,6 +11967,11 @@
         ctx.strokeStyle = "rgba(255,255,255,0.4)";
         ctx.lineWidth = 1;
         ctx.strokeRect(barX, barY, barW, barH);
+        // Expression bubble above the rival (e.g. dazed/hit on eviction),
+        // via the same shared helper agents use. Fully guarded: rivals lacking
+        // bubble fields (undefined) fail the >=0 / >0 checks inside and draw
+        // nothing, so spawnEnemyWave rivals are unaffected.
+        drawExpressionBubble(en.bubbleExpr, en.bubbleTimeLeft, ecx, ecy, spriteSize);
         return;
       }
 
@@ -11983,45 +12074,10 @@
           ctx.restore();
 
           // Rare "expression" icon bubble above the head (display-only —
-          // see showExpression). Drawn in un-flipped canvas coords, same
-          // cx/cy/spriteSize as the sprite just drawn above. No-op when the
-          // theme has no expression atlas (bubbleExpr never gets set).
-          if (charEntry.bubbleExpr >= 0 && charEntry.bubbleTimeLeft > 0) {
-            const bframes = themeImages["expression_" + charEntry.bubbleExpr];
-            const bimg = bframes && bframes[0];
-            if (bimg && bimg.complete && bimg.naturalWidth > 0) {
-              const bs = 20; // icon size (~70% of 28)
-              const bx = cx; // center over head
-              const by = cy - spriteSize - 11; // above head, like an HP bar (~70% of 15, keeps it just above the head now that the bubble itself is smaller)
-              ctx.save();
-              ctx.globalAlpha = Math.min(1, charEntry.bubbleTimeLeft * 3); // brief fade-out tail
-              ctx.fillStyle = "rgba(255,255,255,0.92)";
-              const pad = 2, bw = bs + pad * 2, bh = bs + pad * 2, br = 5; // pad ~70% of 3, corner radius ~70% of 7
-              const rx = bx - bw / 2, ry = by - bh / 2;
-              ctx.beginPath();
-              ctx.moveTo(rx + br, ry);
-              ctx.arcTo(rx + bw, ry, rx + bw, ry + bh, br);
-              ctx.arcTo(rx + bw, ry + bh, rx, ry + bh, br);
-              ctx.arcTo(rx, ry + bh, rx, ry, br);
-              ctx.arcTo(rx, ry, rx + bw, ry, br);
-              ctx.closePath();
-              ctx.fill();
-              // Little downward tail pointing toward the head (~70% of the
-              // original 4px half-width / 5px drop).
-              ctx.beginPath();
-              ctx.moveTo(bx - 3, ry + bh - 1);
-              ctx.lineTo(bx + 3, ry + bh - 1);
-              ctx.lineTo(bx, ry + bh + 4);
-              ctx.closePath();
-              ctx.fill();
-              // Gentle vertical bob for the icon only — bubble backing/tail
-              // above stay fixed; ~±1.4px (~70% of the original 2px),
-              // purely cosmetic (display-only).
-              const bob = Math.sin((performance.now ? performance.now() : Date.now()) / 180) * 1.4;
-              ctx.drawImage(bimg, bx - bs / 2, (by - bs / 2) - bob, bs, bs);
-              ctx.restore();
-            }
-          }
+          // see showExpression / drawExpressionBubble). Drawn in un-flipped
+          // canvas coords, same cx/cy/spriteSize as the sprite just drawn
+          // above. No-op when the theme has no expression atlas.
+          drawExpressionBubble(charEntry.bubbleExpr, charEntry.bubbleTimeLeft, cx, cy, spriteSize);
 
           // Label below feet — drawn in un-flipped canvas coords so it stays
           // centered directly under the agent regardless of facing direction.
@@ -12146,7 +12202,7 @@
     //  the walkable polygon, so the standalone N-key view is no longer needed.)
 
     // ── Stage editor overlay (draggable polygon handles) ───────────────
-    if (editStageMode && themeLoaded && walkablePolygon && walkablePolygon.length > 2) {
+    if (editStageMode && themeLoaded && showBoundaryPolygon && walkablePolygon && walkablePolygon.length > 2) {
       ctx.save();
       // Filled + stroked outline (amber to distinguish from the green nav view)
       ctx.beginPath();
