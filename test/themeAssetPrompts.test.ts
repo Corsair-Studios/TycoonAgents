@@ -124,6 +124,10 @@ test('character prompt enforces the production sprite-board mime contracts', () 
   assert.match(prompt, /below 68% or above 76%.*incorrect result/i);
   assert.match(prompt, /Do not leave oversized magenta margins/i);
   assert.match(prompt, /visible magenta gutter at every horizontal row boundary/i);
+  // Hardening: uniform scale, horizontal containment, and an explicit no-border directive.
+  assert.match(prompt, /UNIFORM SCALE \(ALL 20 CELLS\)[\s\S]*head-to-feet height must be IDENTICAL/i);
+  assert.match(prompt, /HORIZONTAL CONTAINMENT \(ALL 20 CELLS\)[\s\S]*margin on BOTH the left AND the right/i);
+  assert.match(prompt, /NO BORDERS OR GRID ARTIFACTS \(ABSOLUTE\)[\s\S]*runs edge to edge with NO framing of any kind/i);
   assert.match(prompt, /safety padding below both feet/i);
   assert.match(prompt, /Melee strike[\s\S]*Ranged fire/i);
   assert.match(prompt, /never mixes melee and ranged in one frame/i);

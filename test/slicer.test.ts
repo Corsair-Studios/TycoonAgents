@@ -1,8 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Jimp from 'jimp';
-import { sliceAndNormalizeAtlas } from '../src/extension/slicer';
+import { sliceAndNormalizeAtlas, detectOuterFrame } from '../src/extension/slicer';
 import { CHARACTER_TARGET_CONTENT_HEIGHT } from '../src/extension/themeAssetPrompts';
+
+// The slicer's own magenta chroma-key test, mirrored here so detectOuterFrame
+// tests exercise the exact background predicate the production call passes in.
+const isChromaMagentaBg = (r: number, g: number, b: number): boolean =>
+  r >= 180 && b >= 180 && g <= 90 && r - g >= 120 && b - g >= 120 && Math.abs(r - b) <= 80;
 
 test('slicer removes all chroma magenta including enclosed regions surrounded by the sprite', async () => {
   const cellWidth = 20;
@@ -720,4 +725,87 @@ test('feetAnchorMinWidthRatio keeps the original bottom when the trim would exce
   assert.deepEqual(withAnchor.slots[0].meta, without.slots[0].meta);
   const anchored = await measureFeetFrame(withAnchor.slots[0].data);
   assert.ok(anchored.redCount > 0, 'the tail must be retained under the safety fallback');
+});
+
+// --- Outer-frame trim -------------------------------------------------------
+
+const OF_BLACK = 0x000000ff;
+const OF_MAGENTA = 0xff00ffff;
+const OF_BLUE = 0x1950a0ff; // sprite in cell (0,0)
+const OF_RED = 0xc82828ff;  // sprites in every other cell
+
+// Draws a 200x160 magenta interior with a distinguishable centered sprite block
+// per 5x4 grid cell, at (offsetX, offsetY) within `atlas`. Cell (0,0) is blue,
+// the rest red, so trimmed slices can be checked for grid alignment.
+function drawFramedInterior(atlas: Jimp, offsetX: number, offsetY: number): void {
+  const cell = 40;
+  atlas.scan(offsetX, offsetY, cell * 5, cell * 4, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(OF_MAGENTA, idx);
+  });
+  for (let row = 0; row < 4; row++) {
+    for (let col = 0; col < 5; col++) {
+      const color = row === 0 && col === 0 ? OF_BLUE : OF_RED;
+      atlas.scan(offsetX + col * cell + 12, offsetY + row * cell + 12, 16, 16, function (_x, _y, idx) {
+        this.bitmap.data.writeUInt32BE(color, idx);
+      });
+    }
+  }
+}
+
+test('detectOuterFrame finds a uniform black border and trim restores grid alignment', async () => {
+  const K = 8;
+  // 200x160 interior wrapped in a solid black K-px border on all four sides.
+  const framed = new Jimp(200 + 2 * K, 160 + 2 * K, OF_BLACK);
+  drawFramedInterior(framed, K, K);
+
+  const inset = detectOuterFrame(framed, isChromaMagentaBg, {});
+  assert.deepEqual(inset, { top: K, left: K, right: K, bottom: K });
+
+  // Slicing the framed board must produce byte-identical slots to slicing an
+  // unframed magenta twin with the same sprite layout — proof the trim put the
+  // grid back exactly where it belongs (a known blue block in cell 0, etc.).
+  const twin = new Jimp(200, 160, OF_MAGENTA);
+  drawFramedInterior(twin, 0, 0);
+  const [framedResult, twinResult] = await Promise.all([
+    sliceAndNormalizeAtlas(await framed.getBufferAsync(Jimp.MIME_PNG), {}),
+    sliceAndNormalizeAtlas(await twin.getBufferAsync(Jimp.MIME_PNG), {}),
+  ]);
+  assert.equal(framedResult.slots.length, twinResult.slots.length);
+  for (let i = 0; i < twinResult.slots.length; i++) {
+    assert.equal(framedResult.slots[i].data, twinResult.slots[i].data, `slot ${i} should match its unframed twin`);
+  }
+  // The blue cell-0 sprite survives (grid-aligned) while the red cells differ.
+  assert.ok(framedResult.slots[0].meta.opaqueCount > 0);
+});
+
+test('detectOuterFrame returns zero inset for a magenta sheet with no frame (no regression)', () => {
+  const sheet = new Jimp(200, 160, OF_MAGENTA);
+  drawFramedInterior(sheet, 0, 0);
+  const inset = detectOuterFrame(sheet, isChromaMagentaBg, {});
+  assert.deepEqual(inset, { top: 0, left: 0, right: 0, bottom: 0 });
+});
+
+test('detectOuterFrame peels an asymmetric frame with the correct per-side inset', () => {
+  const top = 6;
+  const bottom = 10;
+  const left = 4;
+  const right = 12;
+  const framed = new Jimp(200 + left + right, 160 + top + bottom, OF_BLACK);
+  drawFramedInterior(framed, left, top);
+  const inset = detectOuterFrame(framed, isChromaMagentaBg, {});
+  assert.deepEqual(inset, { top, left, right, bottom });
+});
+
+test('detectOuterFrame respects the per-side trim cap and never over-crops', () => {
+  // A pathological all-black sheet (no magenta interior ever reached): every
+  // ring is a uniform non-background color, so peeling would consume everything.
+  // The 15% cap must stop it, and the min-region guard keeps it safe.
+  const black = new Jimp(200, 160, OF_BLACK);
+  const inset = detectOuterFrame(black, isChromaMagentaBg, { minRegionWidth: 20, minRegionHeight: 16 });
+  assert.ok(inset.left <= Math.floor(200 * 0.15));
+  assert.ok(inset.right <= Math.floor(200 * 0.15));
+  assert.ok(inset.top <= Math.floor(160 * 0.15));
+  assert.ok(inset.bottom <= Math.floor(160 * 0.15));
+  assert.ok(200 - inset.left - inset.right >= 20);
+  assert.ok(160 - inset.top - inset.bottom >= 16);
 });

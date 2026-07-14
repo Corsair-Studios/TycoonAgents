@@ -140,7 +140,33 @@ export async function sliceAndNormalizeAtlas(
       || !Number.isInteger(grid.rows) || grid.rows <= 0) {
     throw new Error('Sprite board grid dimensions must be positive integers.');
   }
-  const atlas = await Jimp.read(imageBuffer);
+  let atlas = await Jimp.read(imageBuffer);
+
+  // Some image models (e.g. nano-banana/Gemini) wrap the whole sheet in a solid
+  // NON-background border (typically black). Because the grid is cut at fixed
+  // proportional offsets, that border shifts every cell. Peel any uniform outer
+  // frame off first, stopping exactly at the magenta padding, so the grid math
+  // below sees the same sheet it would have without the frame. Plain magenta
+  // padding is never trimmed, so a well-formed sheet gets zero trim (no change).
+  const frameInset = detectOuterFrame(atlas, isChromaMagenta, {
+    minRegionWidth: grid.columns * 4,
+    minRegionHeight: grid.rows * 4,
+  });
+  if (frameInset.top || frameInset.left || frameInset.right || frameInset.bottom) {
+    const fw = atlas.bitmap.width;
+    const fh = atlas.bitmap.height;
+    atlas = atlas.clone().crop(
+      frameInset.left,
+      frameInset.top,
+      fw - frameInset.left - frameInset.right,
+      fh - frameInset.top - frameInset.bottom,
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `[slicer] Trimmed outer frame (px): top=${frameInset.top} left=${frameInset.left} `
+      + `right=${frameInset.right} bottom=${frameInset.bottom}`,
+    );
+  }
 
   const cells: SliceCell[] = [];
 
@@ -529,6 +555,169 @@ function isChromaMagenta(r: number, g: number, b: number): boolean {
     && r - g >= 120
     && b - g >= 120
     && Math.abs(r - b) <= 80;
+}
+
+/** Per-side inset, in pixels, of a detected uniform outer frame. */
+export interface OuterFrameInset {
+  top: number;
+  left: number;
+  right: number;
+  bottom: number;
+}
+
+export interface DetectOuterFrameOptions {
+  /** Per-channel color tolerance (0..255) for "same color" ring pixels. Default 24. */
+  colorTolerance?: number;
+  /** Fraction of a ring that must match its dominant color to count as uniform. Default 0.9. */
+  dominantFraction?: number;
+  /** Hard cap on trim per side, as a fraction of that dimension. Default 0.15. */
+  maxTrimFraction?: number;
+  /** If the trimmed region would be narrower than this (px), abort with zero inset. */
+  minRegionWidth?: number;
+  /** If the trimmed region would be shorter than this (px), abort with zero inset. */
+  minRegionHeight?: number;
+}
+
+const ZERO_INSET: OuterFrameInset = { top: 0, left: 0, right: 0, bottom: 0 };
+
+/**
+ * Detects a uniform, solid-color OUTER FRAME (e.g. a black border some image
+ * models draw around the whole sheet) so it can be cropped away before the
+ * fixed proportional grid is applied — otherwise the border shifts every cell.
+ *
+ * Each of the 4 edges is peeled INDEPENDENTLY. For an edge's current outermost
+ * row/column, the ring's dominant color is found; the ring is peeled iff
+ * >= `dominantFraction` of its pixels are within `colorTolerance` (per channel)
+ * of that single dominant color AND that dominant color is NOT the magenta
+ * background (`isBackgroundColor`). Peeling stops the moment a ring is
+ * background (magenta padding) or mixed (sprite pixels) — so a solid frame is
+ * removed and the sprite grid's own internal magenta padding is preserved.
+ *
+ * A well-formed magenta-to-edge sheet therefore gets ZERO trim (identical to
+ * pre-existing behavior). Trim on any side is capped at `maxTrimFraction`; if a
+ * frame would exceed it, that side stops rather than over-cropping. Degenerate
+ * detection (region too small) returns zero inset, and any thrown error fails
+ * safe to zero inset.
+ *
+ * @param atlas             The source sprite sheet.
+ * @param isBackgroundColor Predicate identifying the chroma-key background
+ *                          color (pass `isChromaMagenta`).
+ * @param opts              Tuning + safety bounds.
+ */
+export function detectOuterFrame(
+  atlas: Jimp,
+  isBackgroundColor: (r: number, g: number, b: number) => boolean,
+  opts: DetectOuterFrameOptions = {},
+): OuterFrameInset {
+  try {
+    const W = atlas.bitmap.width;
+    const H = atlas.bitmap.height;
+    if (!W || !H) return { ...ZERO_INSET };
+
+    const tol = opts.colorTolerance ?? 24;
+    const frac = opts.dominantFraction ?? 0.9;
+    const maxFrac = opts.maxTrimFraction ?? 0.15;
+    const minRegionWidth = opts.minRegionWidth ?? 1;
+    const minRegionHeight = opts.minRegionHeight ?? 1;
+    const maxTrimX = Math.floor(W * maxFrac);
+    const maxTrimY = Math.floor(H * maxFrac);
+    const data = atlas.bitmap.data;
+
+    const rgbAt = (x: number, y: number): [number, number, number] => {
+      const i = (y * W + x) * 4;
+      return [data[i], data[i + 1], data[i + 2]];
+    };
+
+    // Returns true when `pixels` form a uniform ring of a single NON-background
+    // color (>= frac within tolerance of the dominant color).
+    const isUniformNonBackgroundRing = (pixels: Array<[number, number, number]>): boolean => {
+      if (pixels.length === 0) return false;
+      // Dominant color via a coarse (3-bit/channel) histogram, then average the
+      // winning bucket for a stable representative color.
+      const buckets = new Map<number, { r: number; g: number; b: number; n: number }>();
+      for (const [r, g, b] of pixels) {
+        const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+        let e = buckets.get(key);
+        if (!e) { e = { r: 0, g: 0, b: 0, n: 0 }; buckets.set(key, e); }
+        e.r += r; e.g += g; e.b += b; e.n += 1;
+      }
+      let best: { r: number; g: number; b: number; n: number } | undefined;
+      for (const e of buckets.values()) if (!best || e.n > best.n) best = e;
+      if (!best) return false;
+      const dr = best.r / best.n;
+      const dg = best.g / best.n;
+      const db = best.b / best.n;
+      // A background-colored ring means we've reached the magenta padding: stop.
+      if (isBackgroundColor(dr, dg, db)) return false;
+      let within = 0;
+      for (const [r, g, b] of pixels) {
+        if (Math.abs(r - dr) <= tol && Math.abs(g - dg) <= tol && Math.abs(b - db) <= tol) within += 1;
+      }
+      return within >= frac * pixels.length;
+    };
+
+    const inset = { top: 0, left: 0, right: 0, bottom: 0 };
+
+    // TOP: peel rows from the top edge.
+    while (inset.top < maxTrimY) {
+      const y = inset.top;
+      const x0 = inset.left;
+      const x1 = W - 1 - inset.right;
+      const yBottom = H - 1 - inset.bottom;
+      if (x0 > x1 || y >= yBottom) break;
+      const ring: Array<[number, number, number]> = [];
+      for (let x = x0; x <= x1; x++) ring.push(rgbAt(x, y));
+      if (!isUniformNonBackgroundRing(ring)) break;
+      inset.top += 1;
+    }
+    // BOTTOM: peel rows from the bottom edge.
+    while (inset.bottom < maxTrimY) {
+      const y = H - 1 - inset.bottom;
+      const x0 = inset.left;
+      const x1 = W - 1 - inset.right;
+      const yTop = inset.top;
+      if (x0 > x1 || y <= yTop) break;
+      const ring: Array<[number, number, number]> = [];
+      for (let x = x0; x <= x1; x++) ring.push(rgbAt(x, y));
+      if (!isUniformNonBackgroundRing(ring)) break;
+      inset.bottom += 1;
+    }
+    // LEFT: peel columns from the left edge (over the already-trimmed y range).
+    while (inset.left < maxTrimX) {
+      const x = inset.left;
+      const y0 = inset.top;
+      const y1 = H - 1 - inset.bottom;
+      const xRight = W - 1 - inset.right;
+      if (y0 > y1 || x >= xRight) break;
+      const ring: Array<[number, number, number]> = [];
+      for (let y = y0; y <= y1; y++) ring.push(rgbAt(x, y));
+      if (!isUniformNonBackgroundRing(ring)) break;
+      inset.left += 1;
+    }
+    // RIGHT: peel columns from the right edge.
+    while (inset.right < maxTrimX) {
+      const x = W - 1 - inset.right;
+      const y0 = inset.top;
+      const y1 = H - 1 - inset.bottom;
+      const xLeft = inset.left;
+      if (y0 > y1 || x <= xLeft) break;
+      const ring: Array<[number, number, number]> = [];
+      for (let y = y0; y <= y1; y++) ring.push(rgbAt(x, y));
+      if (!isUniformNonBackgroundRing(ring)) break;
+      inset.right += 1;
+    }
+
+    const regionWidth = W - inset.left - inset.right;
+    const regionHeight = H - inset.top - inset.bottom;
+    if (regionWidth < minRegionWidth || regionHeight < minRegionHeight
+        || regionWidth <= 0 || regionHeight <= 0) {
+      return { ...ZERO_INSET };
+    }
+    return inset;
+  } catch {
+    // Fail safe to current behavior (no trim) on any unexpected error.
+    return { ...ZERO_INSET };
+  }
 }
 
 /**
