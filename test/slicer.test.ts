@@ -796,6 +796,164 @@ test('detectOuterFrame peels an asymmetric frame with the correct per-side inset
   assert.deepEqual(inset, { top, left, right, bottom });
 });
 
+// --- clipWidthOverflow (character-board same-size poses) --------------------
+
+const CWO_BLUE = 0x1950a0ff;
+
+// Reads the opaque-content bounding box of a normalized 128px frame plus which
+// vertical frame edges its content touches.
+async function readFrameBox(dataUri: string): Promise<{
+  height: number;
+  width: number;
+  minY: number;
+  touchesLeft: boolean;
+  touchesRight: boolean;
+}> {
+  const img = await Jimp.read(Buffer.from(dataUri.split(',')[1], 'base64'));
+  let minX = Infinity;
+  let maxX = -1;
+  let minY = Infinity;
+  let maxY = -1;
+  let touchesLeft = false;
+  let touchesRight = false;
+  img.scan(0, 0, 128, 128, function (x, y, idx) {
+    if (this.bitmap.data[idx + 3] === 0) return;
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+    if (x === 0) touchesLeft = true;
+    if (x === 127) touchesRight = true;
+  });
+  return { height: maxY - minY + 1, width: maxX - minX + 1, minY, touchesLeft, touchesRight };
+}
+
+// Builds a 5x4 atlas whose row-0 reference slots (0..4) fix the board height
+// (a 20x40 body -> boardScale 1 at targetContentHeight 40) and whose row-1
+// normalization group [5,6] pairs a very WIDE frame A (160px, slot 5) with a
+// NORMAL frame B (20px, slot 6) at the same 40px height. Without clipWidthOverflow
+// the group's 160px union width trips the width caps and shrinks BOTH members.
+async function buildCascadeAtlas(): Promise<Buffer> {
+  const CW = 200;
+  const CH = 64;
+  const atlas = new Jimp(CW * 5, CH * 4, 0xff00ffff);
+  // Reference bodies, slots 0..4 (row 0): 20 wide x 40 tall.
+  for (let col = 0; col < 5; col++) {
+    atlas.scan(col * CW + 90, 20, 20, 40, function (_x, _y, idx) {
+      this.bitmap.data.writeUInt32BE(CWO_BLUE, idx);
+    });
+  }
+  // Frame A (slot 5, row 1 col 0): 160 wide x 40 tall.
+  atlas.scan(20, CH + 20, 160, 40, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(CWO_BLUE, idx);
+  });
+  // Frame B (slot 6, row 1 col 1): 20 wide x 40 tall.
+  atlas.scan(CW + 90, CH + 20, 20, 40, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(CWO_BLUE, idx);
+  });
+  return atlas.getBufferAsync(Jimp.MIME_PNG);
+}
+
+function cascadeGrid(clipWidthOverflow?: boolean) {
+  return {
+    columns: 5,
+    rows: 4,
+    scaleReferenceSlots: [0, 1, 2, 3, 4],
+    targetContentHeight: 40,
+    maxContentExtent: 120,
+    normalizationGroups: [[5, 6]],
+    ...(clipWidthOverflow !== undefined ? { clipWidthOverflow } : {}),
+  };
+}
+
+test('clipWidthOverflow keeps a normal pose at board scale when its clip-mate is very wide (cascade fixed)', async () => {
+  const buffer = await buildCascadeAtlas();
+  const [clipped, unclipped] = await Promise.all([
+    sliceAndNormalizeAtlas(buffer, {}, cascadeGrid(true)),
+    sliceAndNormalizeAtlas(buffer, {}, cascadeGrid(false)),
+  ]);
+
+  const reference = await readFrameBox(clipped.slots[0].data);
+  assert.equal(reference.height, 40, 'reference walk cell renders at board scale');
+
+  // Flag TRUE: frame B (the normal pose) is NOT shrunk by its wide clip-mate —
+  // it renders at the same board height as the reference cell.
+  const frameBClipped = await readFrameBox(clipped.slots[6].data);
+  assert.equal(frameBClipped.height, reference.height);
+
+  // Flag FALSE (old/object behavior): the 160px union width shrinks the whole
+  // clip, so frame B renders SMALLER than the reference cell.
+  const frameBUnclipped = await readFrameBox(unclipped.slots[6].data);
+  assert.equal(frameBUnclipped.height, 30);
+  assert.ok(frameBUnclipped.height < reference.height);
+});
+
+test('clipWidthOverflow lets a wide pose clip at the frame edge instead of shrinking the clip', async () => {
+  const buffer = await buildCascadeAtlas();
+  const [clipped, unclipped] = await Promise.all([
+    sliceAndNormalizeAtlas(buffer, {}, cascadeGrid(true)),
+    sliceAndNormalizeAtlas(buffer, {}, cascadeGrid(false)),
+  ]);
+
+  // Flag TRUE: frame A scales to board scale (160px wide > 128px frame) so its
+  // horizontal overflow is clipped by the frame on BOTH sides.
+  const frameAClipped = await readFrameBox(clipped.slots[5].data);
+  assert.ok(frameAClipped.touchesLeft, 'wide pose overflows the left frame edge');
+  assert.ok(frameAClipped.touchesRight, 'wide pose overflows the right frame edge');
+
+  // Flag FALSE: the pair scaled down instead, so frame A fits with margin and
+  // touches neither vertical edge.
+  const frameAUnclipped = await readFrameBox(unclipped.slots[5].data);
+  assert.ok(!frameAUnclipped.touchesLeft);
+  assert.ok(!frameAUnclipped.touchesRight);
+});
+
+test('clipWidthOverflow still applies the height cap so a tall pose is not top-clipped', async () => {
+  const CW = 200;
+  const CH = 200;
+  const atlas = new Jimp(CW * 2, CH * 2, 0xff00ffff);
+  // Reference body slot 0 (row0 col0): 20 wide x 40 tall -> boardScale 1.
+  atlas.scan(90, 20, 20, 40, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(CWO_BLUE, idx);
+  });
+  // Tall pose slot 3 (row1 col1): 20 wide x 160 tall (exceeds maxContentExtent 120
+  // and the 128px frame), clear of every cell boundary.
+  atlas.scan(CW + 90, CH + 20, 20, 160, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(CWO_BLUE, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, {
+    columns: 2,
+    rows: 2,
+    scaleReferenceSlots: [0],
+    targetContentHeight: 40,
+    maxContentExtent: 120,
+    clipWidthOverflow: true,
+  });
+
+  const tall = await readFrameBox(result.slots[3].data);
+  // The height cap (maxContentExtent/bh) shrank 160px -> 120px, so the content
+  // fits inside the frame and its top is preserved (minY > 0, not clipped at 0).
+  assert.equal(tall.height, 120);
+  assert.ok(tall.minY > 0, 'tall pose top is protected, not clipped at the frame top');
+});
+
+test('clipWidthOverflow unset is byte-identical to the pre-change scale path (object/decor no-regression)', async () => {
+  const buffer = await buildCascadeAtlas();
+  const [omitted, explicitFalse] = await Promise.all([
+    sliceAndNormalizeAtlas(buffer, {}, cascadeGrid(undefined)),
+    sliceAndNormalizeAtlas(buffer, {}, cascadeGrid(false)),
+  ]);
+
+  assert.equal(omitted.slots.length, explicitFalse.slots.length);
+  for (let i = 0; i < omitted.slots.length; i++) {
+    assert.equal(omitted.slots[i].data, explicitFalse.slots[i].data, `slot ${i} unchanged when the flag is unset`);
+  }
+  // And the wide-clip member is still shrunk on the default path (old behavior).
+  const frameB = await readFrameBox(omitted.slots[6].data);
+  assert.equal(frameB.height, 30);
+});
+
 test('detectOuterFrame respects the per-side trim cap and never over-crops', () => {
   // A pathological all-black sheet (no magenta interior ever reached): every
   // ring is a uniform non-background color, so peeling would consume everything.

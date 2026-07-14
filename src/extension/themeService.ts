@@ -2277,6 +2277,11 @@ function characterAtlasGrid(rebuildBoard = false) {
     // bbox and lift the figure; trim the thin below-feet drag so scale + anchor
     // key to the dense feet row instead of the sparse cape tip.
     feetAnchorMinWidthRatio: 0.2,
+    // Character poses must all render at the same (board) height. A wide pose
+    // (extended weapon/arms) would otherwise trip the width caps and shrink its
+    // whole clip below board scale; clip the horizontal overflow at the frame
+    // edge instead. Height caps stay in force so heads/feet are never clipped.
+    clipWidthOverflow: true,
     rebuildBoard,
     squareReviewBoard: rebuildBoard,
   };

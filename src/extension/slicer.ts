@@ -78,6 +78,12 @@ export interface AtlasGrid {
    * opaque-pixel count is >= this ratio of the densest row's count. Ignored when unset.
    */
   feetAnchorMinWidthRatio?: number;
+  /**
+   * When true, horizontal content overflow clips at the frame edge instead of
+   * shrinking the cell/clip; height still caps to protect head/feet — used for
+   * character boards so all poses stay the same size.
+   */
+  clipWidthOverflow?: boolean;
   /** Reassemble normalized slots into a reviewable magenta-backed sprite board. */
   rebuildBoard?: boolean;
   /** Keep the rebuilt review canvas square while preserving the requested grid. */
@@ -305,7 +311,9 @@ export async function sliceAndNormalizeAtlas(
       // own dimensions too so a grid that omits maxContentExtent still scales the
       // now-taller content down to fit instead of letting destY go negative and
       // silently clip the top of the sprite at composite time below.
-      const scale = Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh, 128 / bw, 128 / bh);
+      const scale = grid.clipWidthOverflow
+        ? Math.min(boardScale, maxContentExtent / bh, 128 / bh)
+        : Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh, 128 / bw, 128 / bh);
       const resizedWidth = Math.max(1, Math.round(bw * scale));
       const resizedHeight = Math.max(1, Math.round(bh * scale));
       // Grouped bounds (normalizationGroups) union minX/maxX/minY/maxY across every
