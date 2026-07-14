@@ -843,6 +843,29 @@
   }
 
   /**
+   * Compact, event-accurate title for a badge slot, derived ONLY from the
+   * canonical trigger_type + threshold (mirrors badgeExplanation's cases).
+   * Deliberately does NOT use display_name: that field is overwritten with
+   * themed flavor text on rename (themeService SET_THEME_ITEM_NAMES) and is
+   * already the editable value, so it is not a stable event descriptor.
+   * Returns null on a null/invalid badge or an unknown/missing trigger_type
+   * so callers cleanly fall back to a plain slot label. Pure, no side effects.
+   */
+  function badgeEventTitle(bd) {
+    if (!bd || !bd.trigger_type || typeof bd.threshold !== "number") return null;
+    const t = bd.threshold;
+    switch (bd.trigger_type) {
+      case "OBJECTS_BUILT": return "Build " + t + " Objects";
+      case "RIVALS_EVICTED": return "Evict " + t + " Rivals";
+      case "TASKS_COMPLETED": return "Complete " + t + " Tasks";
+      case "AGENTS_ACTIVE": return t + " Agents Active";
+      case "REBIRTH_COUNT": return "Reach Rebirth ×" + t;
+      case "OBJECTS_BUILT_POST_REBIRTH": return "Build " + t + " Objects (post-rebirth)";
+      default: return null;
+    }
+  }
+
+  /**
    * Current per-cycle progress line for a locked badge, e.g. "3 / 10 built".
    * Measured within the current rebirth cycle (baseline-adjusted) so both the
    * grid card and the detail popup agree with updateBadgeUnlocks(). Guards
@@ -2409,12 +2432,26 @@
     if (item.kind === "achievement_atlas" && Array.isArray(item.achievement_names)) {
       // Themed, positional badge names (Badge 1..20). Posts item_kind "badge",
       // rowId achievement_<index> — see applyThemeItemNameChanges' badge branch.
-      return item.achievement_names.map((name, index) => ({
-        rowId: "achievement_" + index,
-        itemKind: "badge",
-        label: "Badge " + (index + 1),
-        original: name || "",
-      }));
+      // Enrich each slot label with the event the badge rewards, derived from
+      // the manifest badge at the SAME index (themeBadges === manifest.badges,
+      // populated where manifest is applied) via badgeEventTitle — which reads
+      // the canonical trigger_type + threshold, NOT display_name (that gets
+      // overwritten with themed flavor text on rename). The "Badge N" prefix is
+      // kept so existing UX/tests that match it still hold; the " — <title>"
+      // suffix is purely additive context. Fully guarded: a missing/short
+      // themeBadges, or a badge with no trigger_type/threshold, cleanly falls
+      // back to plain "Badge N".
+      const badges = Array.isArray(themeBadges) ? themeBadges : [];
+      return item.achievement_names.map((name, index) => {
+        const bd = badges[index] || null;
+        const eventTitle = bd ? badgeEventTitle(bd) : null;
+        return {
+          rowId: "achievement_" + index,
+          itemKind: "badge",
+          label: "Badge " + (index + 1) + (eventTitle ? " — " + eventTitle : ""),
+          original: name || "",
+        };
+      });
     }
     return [];
   }
