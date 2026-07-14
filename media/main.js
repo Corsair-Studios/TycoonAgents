@@ -4251,9 +4251,10 @@
   const IDEA_CHANCE = 0.02;
   /** Chance, on transitioning into a seated pose, of a brief "sleep" bubble. */
   const SLEEP_CHANCE = 0.02;
-  /** Chance, per idle-still frame, of a rare playful "love" bubble (also requires
-   * proximity to another idle-still agent — see LOVE_NEAR_NATIVE_SQ below). */
-  const LOVE_CHANCE = 0.006;
+  /** Per-second probability (multiplied by delta) of a rare playful "love"
+   * bubble; heart is intentionally rare. Also requires proximity to another
+   * idle-still agent — see LOVE_NEAR_NATIVE_SQ below. */
+  const LOVE_CHANCE = 0.02;
   /** Native-space squared distance under which two idle-still agents count as
    * "cozy" for the love-bubble proximity gate (agents are ~34 native units
    * apart per MIN_AGENT_SEP_NATIVE, so 60 is a comfortably close threshold). */
@@ -11202,11 +11203,12 @@
       // interfere with destination picking. Display-only. other.idleStill may
       // reflect this frame or last frame depending on agentCharMap iteration
       // order — fine for a cosmetic trigger.
-      if (idleAndStill && !charEntry.emoting && (charEntry.bubbleCooldown || 0) <= 0 && Math.random() < LOVE_CHANCE) {
+      if (idleAndStill && !charEntry.emoting && !charEntry.extinguishTargetId && (charEntry.bubbleCooldown || 0) <= 0 && Math.random() < LOVE_CHANCE * delta) {
         const myNx = charEntry.nx, myNy = charEntry.ny;
         for (const oid in agentCharMap) {
           const other = agentCharMap[oid];
           if (other === charEntry || !other.idleStill) continue;
+          if (other.extinguishTargetId) continue;
           if (typeof other.nx !== "number" || typeof other.ny !== "number") continue;
           const dx = other.nx - myNx, dy = other.ny - myNy;
           if (dx * dx + dy * dy <= LOVE_NEAR_NATIVE_SQ) { showExpression(charEntry, 0, 1.6); break; }
