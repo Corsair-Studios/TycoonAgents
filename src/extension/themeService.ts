@@ -2341,6 +2341,11 @@ async function processObjectAtlas(
       maxContentExtent: 120,
       normalizationGroups: [...animGroups, poofGroup, ...staticGroups, crateGroup],
       registrationGroups: animGroups,
+      // The 2 animated objects animate lighting/glow in place; brightness-based
+      // registration gets fooled by the lighting change and bakes side-to-side
+      // drift. Align by silhouette overlap only. Objects only — chars/rivals
+      // keep RGB registration.
+      registrationShapeOnly: true,
     });
     const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
     return { output, spritePackage };

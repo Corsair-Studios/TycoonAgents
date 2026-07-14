@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Jimp from 'jimp';
-import { sliceAndNormalizeAtlas, detectOuterFrame } from '../src/extension/slicer';
+import { sliceAndNormalizeAtlas, detectOuterFrame, findBestHorizontalShift } from '../src/extension/slicer';
 import { CHARACTER_TARGET_CONTENT_HEIGHT } from '../src/extension/themeAssetPrompts';
 
 // The slicer's own magenta chroma-key test, mirrored here so detectOuterFrame
@@ -952,6 +952,49 @@ test('clipWidthOverflow unset is byte-identical to the pre-change scale path (ob
   // And the wide-clip member is still shrunk on the default path (old behavior).
   const frameB = await readFrameBox(omitted.slots[6].data);
   assert.equal(frameB.height, 30);
+});
+
+// --- shape-only registration (in-place lighting animations) -----------------
+
+// Builds a small frame with one solid opaque rectangle (alpha 255, opaque to the
+// registration threshold) at a given x offset and RGB brightness; the rest is
+// fully transparent background. Used to feed findBestHorizontalShift directly.
+function solidRectFrame(rectX: number, brightness: number): Jimp {
+  const frame = new Jimp(40, 20, 0x00000000);
+  frame.scan(rectX, 5, 8, 10, function (_x, _y, idx) {
+    this.bitmap.data[idx] = brightness;
+    this.bitmap.data[idx + 1] = brightness;
+    this.bitmap.data[idx + 2] = brightness;
+    this.bitmap.data[idx + 3] = 255;
+  });
+  return frame;
+}
+
+test('shape-only registration returns 0 for identical silhouettes at different brightness', () => {
+  // The animated-object bug: two frames share an identical silhouette at the SAME
+  // position but the animation changes lighting (frame B much dimmer). Shape-only
+  // registration ignores per-pixel brightness, so it must not invent a shift.
+  const bright = solidRectFrame(16, 220);
+  const dim = solidRectFrame(16, 40);
+  assert.equal(findBestHorizontalShift(bright, dim, true), 0);
+});
+
+test('shape-only registration cancels real drift despite a lighting change', () => {
+  // Frame B has the same silhouette shifted +6px right AND a different brightness.
+  // Shape-only must still align it back (dx = -6); the lighting must not prevent
+  // correct drift cancellation.
+  const reference = solidRectFrame(16, 220);
+  const driftedDim = solidRectFrame(22, 40); // +6px right, dimmer
+  assert.equal(findBestHorizontalShift(reference, driftedDim, true), -6);
+});
+
+test('RGB registration path is unchanged for a same-brightness drift (character path guard)', () => {
+  // With shapeOnly false/undefined (the character/rival path) a +6px drift at the
+  // same brightness still registers back to dx = -6, exactly as before the change.
+  const reference = solidRectFrame(16, 220);
+  const drifted = solidRectFrame(22, 220); // +6px right, same brightness
+  assert.equal(findBestHorizontalShift(reference, drifted, false), -6);
+  assert.equal(findBestHorizontalShift(reference, drifted), -6);
 });
 
 test('detectOuterFrame respects the per-side trim cap and never over-crops', () => {

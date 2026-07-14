@@ -72,6 +72,12 @@ export interface AtlasGrid {
    */
   registrationGroups?: number[][];
   /**
+   * Align registration by silhouette overlap only (ignore per-pixel brightness)
+   * — for in-place lighting animations where RGB-based matching gets fooled by
+   * the lighting change; characters keep RGB matching.
+   */
+  registrationShapeOnly?: boolean;
+  /**
    * Characters/rivals only. Trims thin content trailing BELOW the feet (e.g. a
    * cape drag) from the content bbox bottom so the cell scales + bottom-justifies
    * to the FEET, not the cape tip. A bottom row counts as 'feet' only if its
@@ -224,7 +230,7 @@ export async function sliceAndNormalizeAtlas(
   // union bbox is computed, so the group-crop/anchor logic below never bakes
   // the artist's side-to-side wobble into the shared frame.
   for (const group of grid.registrationGroups ?? []) {
-    registerGroupHorizontally(cells, group);
+    registerGroupHorizontally(cells, group, grid.registrationShapeOnly);
   }
 
   // Feet-anchor pass (characters/rivals). MUST run AFTER registerGroupHorizontally —
@@ -375,7 +381,7 @@ const REGISTRATION_MISMATCH_PENALTY = 255 * 3;
  * drew into an in-place animation before the group's union bbox is computed.
  * Groups of fewer than two populated cells are left untouched.
  */
-function registerGroupHorizontally(cells: SliceCell[], group: number[]): void {
+function registerGroupHorizontally(cells: SliceCell[], group: number[], shapeOnly?: boolean): void {
   const members = group
     .map((slotId) => cells[slotId])
     .filter((cell): cell is SliceCell => Boolean(cell?.count));
@@ -383,7 +389,7 @@ function registerGroupHorizontally(cells: SliceCell[], group: number[]): void {
 
   const reference = members[0];
   for (const member of members.slice(1)) {
-    const dx = findBestHorizontalShift(reference.cell, member.cell);
+    const dx = findBestHorizontalShift(reference.cell, member.cell, shapeOnly);
     if (dx === 0) continue;
     shiftCellHorizontally(member.cell, dx);
     // The shift moved this cell's opaque content, so its cached bounds (used
@@ -399,7 +405,7 @@ function registerGroupHorizontally(cells: SliceCell[], group: number[]): void {
  * penalty where only one side is opaque. Ties prefer the smaller |dx|, so an
  * already-aligned pair (dx=0) is never nudged for no reason.
  */
-function findBestHorizontalShift(reference: Jimp, candidate: Jimp): number {
+export function findBestHorizontalShift(reference: Jimp, candidate: Jimp, shapeOnly?: boolean): number {
   const refData = reference.bitmap.data;
   const refWidth = reference.bitmap.width;
   const candData = candidate.bitmap.data;
@@ -420,9 +426,14 @@ function findBestHorizontalShift(reference: Jimp, candidate: Jimp): number {
         const candIdx = inBounds ? (y * candWidth + srcX) * 4 : -1;
         const candOpaque = inBounds && candData[candIdx + 3] > REGISTRATION_OPAQUE_THRESHOLD;
         if (refOpaque && candOpaque) {
-          cost += Math.abs(refData[refIdx] - candData[candIdx])
-            + Math.abs(refData[refIdx + 1] - candData[candIdx + 1])
-            + Math.abs(refData[refIdx + 2] - candData[candIdx + 2]);
+          // Shape-only registration ignores per-pixel brightness so an in-place
+          // lighting/glow animation can't fool the alignment; the silhouette
+          // mismatch penalty below still drives the shift toward true overlap.
+          if (!shapeOnly) {
+            cost += Math.abs(refData[refIdx] - candData[candIdx])
+              + Math.abs(refData[refIdx + 1] - candData[candIdx + 1])
+              + Math.abs(refData[refIdx + 2] - candData[candIdx + 2]);
+          }
         } else if (refOpaque !== candOpaque) {
           cost += REGISTRATION_MISMATCH_PENALTY;
         }
