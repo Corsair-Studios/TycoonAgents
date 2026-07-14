@@ -111,6 +111,9 @@ def _empty_report(status, states=None):
         },
         "per_class": {},
         "total_changes": 0,
+        "write_failures": 0,
+        "modify_failures": 0,
+        "sample_errors": [],
         "applied": False,
         "transaction_used": False,
         "notes": [],
@@ -223,7 +226,11 @@ def _run_inner(apply, progress_cb, states):
     }
     per_class = {}
     notes = []
-    counters = {"actors_scanned": 0, "actors_with_props": 0, "actors_changed": 0, "total_changes": 0}
+    sample_errors = []
+    counters = {
+        "actors_scanned": 0, "actors_with_props": 0, "actors_changed": 0,
+        "total_changes": 0, "write_failures": 0, "modify_failures": 0,
+    }
 
     def _scan(do_write):
         for actor in actors:
@@ -256,14 +263,19 @@ def _run_inner(apply, progress_cb, states):
 
                 try:
                     actor.modify()
-                except Exception:
+                except Exception as e:
                     # modify() failing shouldn't block the write attempt,
                     # but it does mean this change may not be undoable.
-                    pass
+                    counters["modify_failures"] += 1
+                    if len(sample_errors) < 5:
+                        sample_errors.append("modify: " + str(e))
                 try:
                     actor.set_editor_property(prop, target)
-                except Exception:
+                except Exception as e:
                     # Write failed — don't count it as changed.
+                    counters["write_failures"] += 1
+                    if len(sample_errors) < 5:
+                        sample_errors.append("set " + prop + ": " + str(e))
                     continue
 
                 per_property[prop]["changed"] += 1
@@ -333,6 +345,9 @@ def _run_inner(apply, progress_cb, states):
         "per_property": per_property,
         "per_class": per_class,
         "total_changes": counters["total_changes"],
+        "write_failures": counters["write_failures"],
+        "modify_failures": counters["modify_failures"],
+        "sample_errors": sample_errors,
         "applied": bool(apply),
         "transaction_used": transaction_used,
         "notes": notes,
@@ -466,40 +481,34 @@ def _show_window():
             width=38, anchor=tk.W,
         ).pack(side=tk.LEFT)
 
-        # indicatoron=False turns each Radiobutton into a plain labeled
-        # toggle button with NO indicator dot — the three dots all looked
-        # "filled" against the light TE theme, making it unclear which
-        # option was actually active. The shared var/value wiring below is
-        # unchanged; only the rendering style changes to a segmented-button
-        # look. selectcolor is set to match each button's own selected chip
-        # color so Tk's built-in indicatoron=False selected-bg doesn't
-        # flash a mismatched color before the emphasis trace repaints it.
-        rb_off = tk.Radiobutton(
-            row, text="Off", variable=var, value=_STATE_OFF,
-            indicatoron=False, bg=_SECTION_BG, fg=_TEXT_FG,
-            selectcolor=_ACCENT_RED, activebackground=_SECTION_BG,
-            activeforeground=_TEXT_FG, font=("Segoe UI", 9),
+        # Plain tk.Buttons (NOT Radiobuttons): a segmented look where the
+        # shared StringVar `var` holds the selected state and `_emphasize`
+        # is the SOLE painter. Using Radiobuttons with indicatoron=False
+        # made Tk's OWN selected-background rendering fight the emphasis
+        # trace in the pumped loop, leaving the previously-selected chip
+        # still colored (two chips appeared active). Plain Buttons have no
+        # auto select-rendering — each click just sets the var, and the one
+        # trace below repaints all three deterministically.
+        off_btn = tk.Button(
+            row, text="Off", command=lambda v=var: v.set(_STATE_OFF),
+            bg=_SECTION_BG, fg=_TEXT_FG, font=("Segoe UI", 9),
             borderwidth=1, padx=8, pady=2,
         )
-        rb_off.pack(side=tk.LEFT, padx=(4, 0))
+        off_btn.pack(side=tk.LEFT, padx=(4, 0))
 
-        rb_leave = tk.Radiobutton(
-            row, text="Leave as is", variable=var, value=_STATE_LEAVE,
-            indicatoron=False, bg=_SECTION_BG, fg=_TEXT_FG,
-            selectcolor=_TEXT_DIM, activebackground=_SECTION_BG,
-            activeforeground=_TEXT_FG, font=("Segoe UI", 9),
+        leave_btn = tk.Button(
+            row, text="Leave as is", command=lambda v=var: v.set(_STATE_LEAVE),
+            bg=_SECTION_BG, fg=_TEXT_FG, font=("Segoe UI", 9),
             borderwidth=1, padx=8, pady=2,
         )
-        rb_leave.pack(side=tk.LEFT, padx=(4, 0))
+        leave_btn.pack(side=tk.LEFT, padx=(4, 0))
 
-        rb_on = tk.Radiobutton(
-            row, text="On", variable=var, value=_STATE_ON,
-            indicatoron=False, bg=_SECTION_BG, fg=_TEXT_FG,
-            selectcolor=_ACCENT_GREEN, activebackground=_SECTION_BG,
-            activeforeground=_TEXT_FG, font=("Segoe UI", 9),
+        on_btn = tk.Button(
+            row, text="On", command=lambda v=var: v.set(_STATE_ON),
+            bg=_SECTION_BG, fg=_TEXT_FG, font=("Segoe UI", 9),
             borderwidth=1, padx=8, pady=2,
         )
-        rb_on.pack(side=tk.LEFT, padx=(4, 0))
+        on_btn.pack(side=tk.LEFT, padx=(4, 0))
 
         # Segmented-button emphasis: paint whichever of the three buttons
         # matches the var's current value as a solid colored CHIP (light
@@ -508,7 +517,7 @@ def _show_window():
         # trace on the SHARED var (not a button command=) so it updates on
         # both a direct click AND a Set-All button press — the var-wiring
         # itself is untouched, this only observes it.
-        def _make_emphasis(v=var, off_btn=rb_off, leave_btn=rb_leave, on_btn=rb_on):
+        def _make_emphasis(v=var, off_btn=off_btn, leave_btn=leave_btn, on_btn=on_btn):
             bold_font = ("Segoe UI", 9, "bold")
             normal_font = ("Segoe UI", 9)
             chip_fg = "#FBFAF6"
@@ -709,6 +718,23 @@ def _show_window():
             dry_run_button.config(state=tk.NORMAL)
             apply_button.config(state=tk.NORMAL)
 
+    def _modal(fn, *a, **k):
+        # The window is -topmost, so messageboxes (and UEFN's own native
+        # "can't edit" dialog) render BEHIND it. Drop topmost while a modal
+        # is up, then restore it.
+        try:
+            root.attributes("-topmost", False)
+            root.update_idletasks()
+        except Exception:
+            pass
+        try:
+            return fn(*a, **k)
+        finally:
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+
     def _on_apply():
         dry_run_button.config(state=tk.DISABLED)
         apply_button.config(state=tk.DISABLED)
@@ -716,7 +742,8 @@ def _show_window():
             states = _read_states()
             active_names = [name for name, state in states.items() if state != _STATE_LEAVE]
             if not active_names:
-                messagebox.showinfo(
+                _modal(
+                    messagebox.showinfo,
                     "Build-Mode Cleanup",
                     "Nothing selected — every property is 'Leave as is'.",
                 )
@@ -748,10 +775,13 @@ def _show_window():
                 status_label.config(text="No apply needed.", fg=_ACCENT_GREEN)
                 return
 
-            proceed = messagebox.askyesno(
+            proceed = _modal(
+                messagebox.askyesno,
                 "Apply build-mode cleanup",
                 "This will change {} propert{} across {} actors ({} total value changes) "
                 "in one undoable action. Properties left as 'Leave as is' will not be touched. "
+                "This can take several minutes for large levels — the editor may appear frozen "
+                "while it runs, and if UEFN cannot edit some assets it will show its own dialog. "
                 "Proceed?".format(
                     len(active_names), "y" if len(active_names) == 1 else "ies",
                     actors_changed, total_changes,
@@ -767,7 +797,19 @@ def _show_window():
             except Exception:
                 pass
 
-            result = run(apply=True, progress_cb=_make_progress_cb(), states=states)
+            # Drop topmost so UEFN's own native read-only/checkout dialog is
+            # reachable while the writes run; restore it immediately after.
+            try:
+                root.attributes("-topmost", False)
+            except Exception:
+                pass
+            try:
+                result = run(apply=True, progress_cb=_make_progress_cb(), states=states)
+            finally:
+                try:
+                    root.attributes("-topmost", True)
+                except Exception:
+                    pass
             progress_label.config(text="")
             if result.get("status") != "ok":
                 status_label.config(text="Apply failed: " + str(result.get("status")), fg=_ACCENT_RED)
@@ -789,12 +831,23 @@ def _show_window():
             )
             notes = result.get("notes") or []
             note_suffix = (" " + " ".join(notes)) if notes else ""
-            status_label.config(
-                text="Applied {} changes; Ctrl+Z to undo.{}".format(
-                    result.get("total_changes", 0), note_suffix,
-                ),
-                fg=_ACCENT_GREEN,
+            total_applied = result.get("total_changes", 0)
+            write_failures = result.get("write_failures", 0)
+            status_text = "Applied {} changes; Ctrl+Z to undo.{}".format(
+                total_applied, note_suffix,
             )
+            status_fg = _ACCENT_GREEN
+            if write_failures > 0:
+                status_text += (
+                    " {} writes could not be applied (assets may be "
+                    "read-only/locked — check UEFN's dialog).".format(write_failures)
+                )
+                sample_errors = result.get("sample_errors") or []
+                if sample_errors:
+                    status_text += " First error: " + str(sample_errors[0])
+                if total_applied == 0:
+                    status_fg = _ACCENT_RED
+            status_label.config(text=status_text, fg=status_fg)
         except Exception:
             tb = traceback.format_exc()
             print("build_mode_cleanup: apply handler failed:\n" + tb)
