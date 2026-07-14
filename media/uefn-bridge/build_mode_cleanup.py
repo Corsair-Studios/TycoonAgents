@@ -466,26 +466,62 @@ def _show_window():
             width=38, anchor=tk.W,
         ).pack(side=tk.LEFT)
 
-        tk.Radiobutton(
+        # selectcolor is the indicator FILL when selected. _ENTRY_BG (near-
+        # white) was nearly invisible against the light TE theme's row
+        # background — the "shows on but also off" ambiguity report. Use the
+        # bold accent orange instead so the filled dot is unmistakable.
+        rb_off = tk.Radiobutton(
             row, text="Off", variable=var, value=_STATE_OFF,
-            bg=_SECTION_BG, fg=_ACCENT_RED, selectcolor=_ENTRY_BG,
+            bg=_SECTION_BG, fg=_ACCENT_RED, selectcolor=_ACCENT_BLUE,
             activebackground=_SECTION_BG, activeforeground=_ACCENT_RED,
             font=("Segoe UI", 9),
-        ).pack(side=tk.LEFT, padx=(4, 0))
+        )
+        rb_off.pack(side=tk.LEFT, padx=(4, 0))
 
-        tk.Radiobutton(
+        rb_leave = tk.Radiobutton(
             row, text="Leave as is", variable=var, value=_STATE_LEAVE,
-            bg=_SECTION_BG, fg=_TEXT_DIM, selectcolor=_ENTRY_BG,
+            bg=_SECTION_BG, fg=_TEXT_DIM, selectcolor=_ACCENT_BLUE,
             activebackground=_SECTION_BG, activeforeground=_TEXT_DIM,
             font=("Segoe UI", 9),
-        ).pack(side=tk.LEFT, padx=(4, 0))
+        )
+        rb_leave.pack(side=tk.LEFT, padx=(4, 0))
 
-        tk.Radiobutton(
+        rb_on = tk.Radiobutton(
             row, text="On", variable=var, value=_STATE_ON,
-            bg=_SECTION_BG, fg=_ACCENT_GREEN, selectcolor=_ENTRY_BG,
+            bg=_SECTION_BG, fg=_ACCENT_GREEN, selectcolor=_ACCENT_BLUE,
             activebackground=_SECTION_BG, activeforeground=_ACCENT_GREEN,
             font=("Segoe UI", 9),
-        ).pack(side=tk.LEFT, padx=(4, 0))
+        )
+        rb_on.pack(side=tk.LEFT, padx=(4, 0))
+
+        # Belt-and-suspenders visual emphasis: bold whichever of the three
+        # labels matches the var's current value, normal-weight the other
+        # two. Driven by a trace on the SHARED var (not a button command=)
+        # so it updates on both a direct click AND a Set-All button press —
+        # the var-wiring itself is untouched, this only observes it.
+        def _make_emphasis(v=var, off_btn=rb_off, leave_btn=rb_leave, on_btn=rb_on):
+            bold_font = ("Segoe UI", 9, "bold")
+            normal_font = ("Segoe UI", 9)
+
+            def _emphasize(*_args):
+                try:
+                    state = v.get()
+                    off_btn.config(font=bold_font if state == _STATE_OFF else normal_font)
+                    leave_btn.config(font=bold_font if state == _STATE_LEAVE else normal_font)
+                    on_btn.config(font=bold_font if state == _STATE_ON else normal_font)
+                except Exception:
+                    pass
+            return _emphasize
+
+        _emphasize_selected = _make_emphasis()
+        try:
+            var.trace_add("write", _emphasize_selected)
+        except Exception:
+            try:
+                var.trace("w", lambda *_a, _cb=_emphasize_selected: _cb())
+            except Exception:
+                pass
+        _emphasize_selected()
 
     master_row = tk.Frame(controls_frame, bg=_SECTION_BG)
     master_row.pack(fill=tk.X, pady=(6, 0))
@@ -498,6 +534,14 @@ def _show_window():
         def _handler():
             for var in property_vars.values():
                 var.set(state)
+            # Force an immediate repaint — this window runs on a manual
+            # UEFN slate tick pump (root.update()), not a normal mainloop,
+            # so a burst of var.set() calls can sit unpainted until the
+            # next tick. Nudge it now so all 13 radios visibly move.
+            try:
+                root.update_idletasks()
+            except Exception:
+                pass
         return _handler
 
     tk.Button(
@@ -614,6 +658,10 @@ def _show_window():
                 status_label.config(text="Dry run failed: " + str(result.get("status")), fg=_ACCENT_RED)
             else:
                 _populate_tree(result.get("per_property", {}))
+                try:
+                    root.update_idletasks()
+                except Exception:
+                    pass
                 classes = result.get("per_class", {})
                 summary_label.config(
                     text="Scanned {} actors; {} would change across {} classes. "
@@ -663,6 +711,10 @@ def _show_window():
             if total_changes == 0:
                 tree.heading("changed", text="Would Change")
                 _populate_tree(precheck.get("per_property", {}))
+                try:
+                    root.update_idletasks()
+                except Exception:
+                    pass
                 summary_label.config(text="Nothing to change — selected properties already match their target.")
                 status_label.config(text="No apply needed.", fg=_ACCENT_GREEN)
                 return
@@ -694,6 +746,10 @@ def _show_window():
 
             tree.heading("changed", text="Changed")
             _populate_tree(result.get("per_property", {}))
+            try:
+                root.update_idletasks()
+            except Exception:
+                pass
             classes = result.get("per_class", {})
             summary_label.config(
                 text="Scanned {} actors; {} changed across {} classes.".format(

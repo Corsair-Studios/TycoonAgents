@@ -39,7 +39,7 @@ _CARD_BORDER = "#B8B2A4"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
 # cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.285"
+BRIDGE_VERSION = "0.0.286"
 
 
 # ---------------------------------------------------------------------------
@@ -560,23 +560,47 @@ def show_launcher():
     cards_frame.columnconfigure(1, weight=1)
     cards_frame.columnconfigure(2, weight=1)
 
+    # Flat card + offset drop-shadow constants. The shadow frame sits behind
+    # the card (bottom-right peek) and only ITS place() offset ever changes;
+    # the card's place() geometry is constant, so the tile never moves/resizes.
+    _MAX_SHADOW = 4
+    _HOVER_SHADOW = 2
+    _SHADOW_COLOR = "#9A9182"
+    _CARD_MIN_W = 190
+    _CARD_MIN_H = 140
+
     for idx, tool in enumerate(_TOOLS):
         row = idx // 3
         col = idx % 3
 
+        holder = tk.Frame(cards_frame, bg=_BG, width=_CARD_MIN_W, height=_CARD_MIN_H)
+        holder.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+        holder.grid_propagate(False)
+        cards_frame.rowconfigure(row, weight=1)
+
+        # Shadow first (bottom layer), card second (stacked above it).
+        shadow = tk.Frame(holder, bg=_SHADOW_COLOR)
+        shadow.place(
+            x=_MAX_SHADOW, y=_MAX_SHADOW, relwidth=1.0, relheight=1.0,
+            width=-_MAX_SHADOW, height=-_MAX_SHADOW,
+        )
+
         card = tk.Frame(
-            cards_frame,
+            holder,
             bg=_SECTION_BG,
             padx=12,
             pady=10,
             cursor="hand2",
             highlightbackground=_CARD_BORDER,
-            highlightthickness=0,
-            relief=tk.RAISED,
-            borderwidth=5,
+            highlightthickness=1,
+            relief=tk.FLAT,
+            borderwidth=0,
         )
-        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
-        cards_frame.rowconfigure(row, weight=1)
+        card.place(
+            x=0, y=0, relwidth=1.0, relheight=1.0,
+            width=-_MAX_SHADOW, height=-_MAX_SHADOW,
+        )
+        card.lift()
 
         icon_label = tk.Label(
             card,
@@ -608,53 +632,58 @@ def show_launcher():
         )
         desc_label.pack(fill=tk.X, pady=(2, 0))
 
-        # Bind press to all widgets in the card (physical-button feel)
+        # Bind press to all widgets in the card (physical-button feel).
+        # Only the SHADOW's place offset changes on press/hover/rest — the
+        # card itself is never re-placed, so the tile cannot shift.
         action = tool["action"]
         hover_state = [False]
 
-        def _make_press_handler(a, c, i, n, d, hs):
+        def _make_press_handler(a, sh, c, i, n, d, hs):
             def _press(_event):
-                c.configure(relief=tk.SUNKEN, borderwidth=5)
+                sh.place_configure(x=0, y=0)
                 _launch_tool(a)
 
                 def _restore():
                     if hs[0]:
-                        c.configure(relief=tk.RAISED, borderwidth=3)
+                        sh.place_configure(x=_HOVER_SHADOW, y=_HOVER_SHADOW)
                         for w in (c, i, n, d):
                             w.configure(bg=_CARD_HOVER)
                     else:
-                        c.configure(relief=tk.RAISED, borderwidth=5)
+                        sh.place_configure(x=_MAX_SHADOW, y=_MAX_SHADOW)
                         for w in (c, i, n, d):
                             w.configure(bg=_SECTION_BG)
 
                 root.after(1000, _restore)
             return _press
 
-        press_handler = _make_press_handler(action, card, icon_label, name_label, desc_label, hover_state)
+        press_handler = _make_press_handler(
+            action, shadow, card, icon_label, name_label, desc_label, hover_state
+        )
         card.bind("<ButtonPress-1>", press_handler)
         icon_label.bind("<ButtonPress-1>", press_handler)
         name_label.bind("<ButtonPress-1>", press_handler)
         desc_label.bind("<ButtonPress-1>", press_handler)
 
-        # Hover effects
-        def _make_enter_handler(c, i, n, d, hs):
+        # Hover effects — shadow shrinks (looks slightly pressed); card
+        # geometry is untouched, only its (and its labels') bg recolors.
+        def _make_enter_handler(sh, c, i, n, d, hs):
             def _enter(_event):
                 for w in (c, i, n, d):
                     w.configure(bg=_CARD_HOVER)
                 hs[0] = True
-                c.configure(relief=tk.RAISED, borderwidth=3)
+                sh.place_configure(x=_HOVER_SHADOW, y=_HOVER_SHADOW)
             return _enter
 
-        def _make_leave_handler(c, i, n, d, hs):
+        def _make_leave_handler(sh, c, i, n, d, hs):
             def _leave(_event):
                 for w in (c, i, n, d):
                     w.configure(bg=_SECTION_BG)
                 hs[0] = False
-                c.configure(relief=tk.RAISED, borderwidth=5)
+                sh.place_configure(x=_MAX_SHADOW, y=_MAX_SHADOW)
             return _leave
 
-        enter_handler = _make_enter_handler(card, icon_label, name_label, desc_label, hover_state)
-        leave_handler = _make_leave_handler(card, icon_label, name_label, desc_label, hover_state)
+        enter_handler = _make_enter_handler(shadow, card, icon_label, name_label, desc_label, hover_state)
+        leave_handler = _make_leave_handler(shadow, card, icon_label, name_label, desc_label, hover_state)
 
         card.bind("<Enter>", enter_handler)
         card.bind("<Leave>", leave_handler)
