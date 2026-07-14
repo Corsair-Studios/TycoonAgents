@@ -39,7 +39,7 @@ _CARD_BORDER = "#B8B2A4"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
 # cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.286"
+BRIDGE_VERSION = "0.0.287"
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +567,7 @@ def show_launcher():
     _HOVER_SHADOW = 2
     _SHADOW_COLOR = "#9A9182"
     _CARD_MIN_W = 190
-    _CARD_MIN_H = 140
+    _CARD_MIN_H = 170
 
     for idx, tool in enumerate(_TOOLS):
         row = idx // 3
@@ -627,10 +627,11 @@ def show_launcher():
             font=("Segoe UI", 9),
             fg=_TEXT_DIM,
             bg=_SECTION_BG,
-            anchor=tk.W,
+            anchor="w",
+            justify=tk.LEFT,
             wraplength=140,
         )
-        desc_label.pack(fill=tk.X, pady=(2, 0))
+        desc_label.pack(anchor="w", fill=tk.X, pady=(2, 0))
 
         # Bind press to all widgets in the card (physical-button feel).
         # Only the SHADOW's place offset changes on press/hover/rest — the

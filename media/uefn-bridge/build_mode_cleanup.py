@@ -466,49 +466,74 @@ def _show_window():
             width=38, anchor=tk.W,
         ).pack(side=tk.LEFT)
 
-        # selectcolor is the indicator FILL when selected. _ENTRY_BG (near-
-        # white) was nearly invisible against the light TE theme's row
-        # background — the "shows on but also off" ambiguity report. Use the
-        # bold accent orange instead so the filled dot is unmistakable.
+        # indicatoron=False turns each Radiobutton into a plain labeled
+        # toggle button with NO indicator dot — the three dots all looked
+        # "filled" against the light TE theme, making it unclear which
+        # option was actually active. The shared var/value wiring below is
+        # unchanged; only the rendering style changes to a segmented-button
+        # look. selectcolor is set to match each button's own selected chip
+        # color so Tk's built-in indicatoron=False selected-bg doesn't
+        # flash a mismatched color before the emphasis trace repaints it.
         rb_off = tk.Radiobutton(
             row, text="Off", variable=var, value=_STATE_OFF,
-            bg=_SECTION_BG, fg=_ACCENT_RED, selectcolor=_ACCENT_BLUE,
-            activebackground=_SECTION_BG, activeforeground=_ACCENT_RED,
-            font=("Segoe UI", 9),
+            indicatoron=False, bg=_SECTION_BG, fg=_TEXT_FG,
+            selectcolor=_ACCENT_RED, activebackground=_SECTION_BG,
+            activeforeground=_TEXT_FG, font=("Segoe UI", 9),
+            borderwidth=1, padx=8, pady=2,
         )
         rb_off.pack(side=tk.LEFT, padx=(4, 0))
 
         rb_leave = tk.Radiobutton(
             row, text="Leave as is", variable=var, value=_STATE_LEAVE,
-            bg=_SECTION_BG, fg=_TEXT_DIM, selectcolor=_ACCENT_BLUE,
-            activebackground=_SECTION_BG, activeforeground=_TEXT_DIM,
-            font=("Segoe UI", 9),
+            indicatoron=False, bg=_SECTION_BG, fg=_TEXT_FG,
+            selectcolor=_TEXT_DIM, activebackground=_SECTION_BG,
+            activeforeground=_TEXT_FG, font=("Segoe UI", 9),
+            borderwidth=1, padx=8, pady=2,
         )
         rb_leave.pack(side=tk.LEFT, padx=(4, 0))
 
         rb_on = tk.Radiobutton(
             row, text="On", variable=var, value=_STATE_ON,
-            bg=_SECTION_BG, fg=_ACCENT_GREEN, selectcolor=_ACCENT_BLUE,
-            activebackground=_SECTION_BG, activeforeground=_ACCENT_GREEN,
-            font=("Segoe UI", 9),
+            indicatoron=False, bg=_SECTION_BG, fg=_TEXT_FG,
+            selectcolor=_ACCENT_GREEN, activebackground=_SECTION_BG,
+            activeforeground=_TEXT_FG, font=("Segoe UI", 9),
+            borderwidth=1, padx=8, pady=2,
         )
         rb_on.pack(side=tk.LEFT, padx=(4, 0))
 
-        # Belt-and-suspenders visual emphasis: bold whichever of the three
-        # labels matches the var's current value, normal-weight the other
-        # two. Driven by a trace on the SHARED var (not a button command=)
-        # so it updates on both a direct click AND a Set-All button press —
-        # the var-wiring itself is untouched, this only observes it.
+        # Segmented-button emphasis: paint whichever of the three buttons
+        # matches the var's current value as a solid colored CHIP (light
+        # text, sunken relief, bold), and the other two as plain cream
+        # buttons (dark text, raised relief, normal weight). Driven by a
+        # trace on the SHARED var (not a button command=) so it updates on
+        # both a direct click AND a Set-All button press — the var-wiring
+        # itself is untouched, this only observes it.
         def _make_emphasis(v=var, off_btn=rb_off, leave_btn=rb_leave, on_btn=rb_on):
             bold_font = ("Segoe UI", 9, "bold")
             normal_font = ("Segoe UI", 9)
+            chip_fg = "#FBFAF6"
+            unselected_bg = _SECTION_BG
+
+            def _style(btn, color, selected):
+                if selected:
+                    btn.config(
+                        bg=color, fg=chip_fg, activebackground=color,
+                        activeforeground=chip_fg, relief=tk.SUNKEN,
+                        font=bold_font,
+                    )
+                else:
+                    btn.config(
+                        bg=unselected_bg, fg=_TEXT_FG, activebackground=unselected_bg,
+                        activeforeground=_TEXT_FG, relief=tk.RAISED,
+                        font=normal_font,
+                    )
 
             def _emphasize(*_args):
                 try:
                     state = v.get()
-                    off_btn.config(font=bold_font if state == _STATE_OFF else normal_font)
-                    leave_btn.config(font=bold_font if state == _STATE_LEAVE else normal_font)
-                    on_btn.config(font=bold_font if state == _STATE_ON else normal_font)
+                    _style(off_btn, _ACCENT_RED, state == _STATE_OFF)
+                    _style(leave_btn, _TEXT_DIM, state == _STATE_LEAVE)
+                    _style(on_btn, _ACCENT_GREEN, state == _STATE_ON)
                 except Exception:
                     pass
             return _emphasize
