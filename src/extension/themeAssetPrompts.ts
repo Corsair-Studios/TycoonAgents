@@ -933,12 +933,12 @@ export function buildAchievementAtlasPrompt(
   achievements: string[],
   background: BoardBackgroundMode = 'magenta',
 ): string {
-  const cells = achievements.slice(0, 20).map((achievement, index) =>
+  const cells = achievements.slice(0, 25).map((achievement, index) =>
     `Cell ${index + 1}: ${achievement}`,
   );
   return [
     `Create one achievement-badge sprite sheet for the "${themeName}" theme.`,
-    boardContract(5, 4, background),
+    boardContract(5, 5, background),
     'Draw exactly one distinct, polished badge emblem in each cell, in row-major order:',
     ...cells,
     'Keep a consistent badge silhouette and rendering system while making every central emblem distinct.',

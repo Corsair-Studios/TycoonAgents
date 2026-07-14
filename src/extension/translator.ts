@@ -70,7 +70,7 @@ export async function expandThemePlan(
     '  "enemy_attack_styles": [<one of "melee" or "ranged" for EACH enemy, SAME ORDER as "enemies"; "ranged" if that enemy fights primarily with a gun, bow, thrown weapon, or energy/projectile weapon at a distance; "melee" if it fights hand-to-hand or with a close-contact weapon (fists, claws, blade, club, spear)>],',
     '  "enemy_descriptions": ["4 concrete visual-appearance specs, one per enemy in the same order"],',
     '  "expressions": ["7 short, visually distinct expression names"],',
-    '  "achievements": ["20 short achievement badge design names"]',
+    '  "achievements": ["25 short achievement badge design names"]',
     '}',
     '',
     'Achievements are visual concepts only; do not define unlock rules yet.',

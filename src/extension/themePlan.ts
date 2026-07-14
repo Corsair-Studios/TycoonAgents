@@ -29,7 +29,7 @@ export const FIXED_EXPRESSION_LABELS = [
   'Sleep / low-energy zzz',
   'Dazed / hit',
 ] as const;
-export const THEME_ACHIEVEMENT_COUNT = 20;
+export const THEME_ACHIEVEMENT_COUNT = 25;
 export const THEME_DECOR_COUNT = 9;
 
 export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal'|'block';

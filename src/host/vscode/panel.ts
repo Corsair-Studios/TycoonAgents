@@ -4601,7 +4601,7 @@ export class TycoonPanel {
             <textarea id="theme-plan-expressions" rows="3"></textarea>
           </label>
           <label class="theme-plan-field">
-            <span>Achievement badges <small>20 designs, comma separated · 1 sprite sheet</small></span>
+            <span>Achievement badges <small>25 designs, comma separated · 1 sprite sheet</small></span>
             <textarea id="theme-plan-achievements" rows="3"></textarea>
           </label>
           <div class="theme-plan-footer">

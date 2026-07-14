@@ -1900,8 +1900,8 @@ async function applySlicedAtlasFromBuffer(
     const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 2 });
     frameKeys = applyExpressionFrames(frames, spritePackage.slots);
   } else if (item.kind === 'achievement_atlas') {
-    output = await optimizeSpriteBoardCanvas(buffer, 5, 4);
-    const spritePackage = await sliceAndNormalizeAtlas(output, manifest);
+    output = await optimizeSpriteBoardCanvas(buffer, 5, 5);
+    const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 5, rows: 5 });
     frameKeys = applyAchievementFrames(frames, spritePackage.slots);
   } else {
     output = await optimizeSpriteBoard(buffer);
@@ -2606,7 +2606,7 @@ export function createReviewItems(
     {
       id: 'achievements',
       filename: 'achievements.png',
-      label: '20 achievement badges',
+      label: '25 achievement badges',
       kind: 'achievement_atlas',
       status: 'pending',
       prompt: buildAchievementAtlasPrompt(creativeDirection, plan.display_name, plan.achievements, backgroundMode),
@@ -3152,15 +3152,15 @@ async function generateAchievementAsset(
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
 ): Promise<void> {
-  onProgress('20 achievement badges (25/25)');
+  onProgress('25 achievement badges (25/25)');
   const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
   throwIfCancelled(undefined, options?.signal);
-  const output = await optimizeSpriteBoardCanvas(generated, 5, 4);
+  const output = await optimizeSpriteBoardCanvas(generated, 5, 5);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(reviewDirectoryUri, item.filename, output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
-  const spritePackage = await sliceAndNormalizeAtlas(output, manifest);
+  const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 5, rows: 5 });
   throwIfCancelled(undefined, options?.signal);
   applyAchievementFrames(frames, spritePackage.slots);
   await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
@@ -3247,7 +3247,7 @@ export function buildReplacementPrompt(
     // falling back to the saved names, then generic defaults.
     const names = plan?.achievements?.length
       ? plan.achievements
-      : (item.achievement_names?.length ? item.achievement_names : defaultNames('Achievement Badge', 20));
+      : (item.achievement_names?.length ? item.achievement_names : defaultNames('Achievement Badge', 25));
     return buildAchievementAtlasPrompt(creativeDirection, manifest.display_name, names, backgroundMode);
   }
   if (item.kind === 'emote_atlas') return buildEmoteAtlasPrompt(creativeDirection, manifest.display_name, backgroundMode);
@@ -3557,7 +3557,14 @@ function applyAchievementFrames(
   frames: Record<string, string[]>,
   slots: Array<{ slot_id: number; data: string }>,
 ): string[] {
-  return slots.slice(0, 20).map((slot, index) => {
+  // The board is 5×5 = 25 cells, but the 24 default badges claim only
+  // achievement_0..23; cell 24 is a drawn-but-unclaimed SPARE reserved for a
+  // future 5th rebirth badge. Persist exactly the 24 claimed frames (matching
+  // the old 20-cell board's "persist == claimed" invariant) so the spare cell
+  // is NOT written as unclaimed art — otherwise Theme Health's orphan pass
+  // would flag achievement_24 on every generated theme. A future 25th badge
+  // that claims achievement_24 should bump this to slice(0, 25).
+  return slots.slice(0, 24).map((slot, index) => {
     const key = `achievement_${index}`;
     frames[key] = [slot.data];
     return key;

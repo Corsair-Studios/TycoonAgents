@@ -78,13 +78,13 @@ function buildDefaultDecorObjects(): DecorObject[] {
 /**
  * Builds the fixed 24-entry default badge roster (5 OBJECTS_BUILT, 8
  * RIVALS_EVICTED, 5 TASKS_COMPLETED, 2 AGENTS_ACTIVE, 3 REBIRTH_COUNT, 1
- * OBJECTS_BUILT_POST_REBIRTH), reusing the achievement art board's frames
- * (achievement_0..achievement_19) as icons. The achievement atlas only has 20
- * cells, so the last 4 badges reuse existing frame indices rather than
- * referencing an out-of-range achievement_N (same "reuse over add" approach
- * already implicit in this list running exactly 0..19 with no gaps). Applied
- * whenever a manifest has no badges, so the badge UI always has content to
- * render.
+ * OBJECTS_BUILT_POST_REBIRTH), each mapped to its OWN cell on the 5×5=25-cell
+ * achievement art board (achievement_0..achievement_23). Every one of the 24
+ * badges has a UNIQUE icon; slot achievement_24 is left spare for a future 5th
+ * rebirth badge. Applied whenever a manifest has no badges, so the badge UI
+ * always has content to render. (Legacy 20-cell themes lack achievement_20..24
+ * until regenerated; the badge panel degrades a missing icon frame to a generic
+ * placeholder rather than throwing.)
  */
 export function buildDefaultBadges(): ThemeBadge[] {
   return [
@@ -254,7 +254,7 @@ export function buildDefaultBadges(): ThemeBadge[] {
       description: 'Rebirth once. This badge is permanent — it survives every future Rebirth.',
       trigger_type: 'REBIRTH_COUNT',
       threshold: 1,
-      icon_asset: 'frames.json#achievement_17',
+      icon_asset: 'frames.json#achievement_20',
     },
     {
       badge_id: 'rebirth_2',
@@ -262,7 +262,7 @@ export function buildDefaultBadges(): ThemeBadge[] {
       description: 'Rebirth twice. This badge is permanent — it survives every future Rebirth.',
       trigger_type: 'REBIRTH_COUNT',
       threshold: 2,
-      icon_asset: 'frames.json#achievement_18',
+      icon_asset: 'frames.json#achievement_21',
     },
     {
       badge_id: 'rebirth_3',
@@ -270,7 +270,7 @@ export function buildDefaultBadges(): ThemeBadge[] {
       description: 'Rebirth three times. This badge is permanent — it survives every future Rebirth.',
       trigger_type: 'REBIRTH_COUNT',
       threshold: 3,
-      icon_asset: 'frames.json#achievement_19',
+      icon_asset: 'frames.json#achievement_22',
     },
     {
       badge_id: 'reborn_builder',
@@ -278,7 +278,7 @@ export function buildDefaultBadges(): ThemeBadge[] {
       description: 'After at least one Rebirth, build 10 objects in a single cycle.',
       trigger_type: 'OBJECTS_BUILT_POST_REBIRTH',
       threshold: 10,
-      icon_asset: 'frames.json#achievement_3',
+      icon_asset: 'frames.json#achievement_23',
     },
   ];
 }

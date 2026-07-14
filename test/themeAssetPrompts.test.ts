@@ -220,11 +220,11 @@ test('aggregate prompts define the two-board object layout, 8 expressions, and 2
   const achievements = buildAchievementAtlasPrompt(
     'industrial',
     'Factory',
-    Array.from({ length: 20 }, (_unused, index) => `Badge ${index + 1}`),
+    Array.from({ length: 25 }, (_unused, index) => `Badge ${index + 1}`),
   );
   assert.match(achievements, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
-  assert.match(achievements, /5-column by 4-row grid of 20 equal cells/i);
-  assert.match(achievements, /Cell 20: Badge 20/);
+  assert.match(achievements, /5-column by 5-row grid of 25 equal cells/i);
+  assert.match(achievements, /Cell 25: Badge 25/);
   assert.match(achievements, /do not include unlock requirements/i);
 });
 

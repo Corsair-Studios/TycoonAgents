@@ -2020,7 +2020,7 @@
       enemies,
       objects: collectCommaList(themePlanObjects, 13, "Objects"),
       expressions: collectCommaList(themePlanExpressions, 16, "Expressions"),
-      achievements: collectCommaList(themePlanAchievements, 20, "Achievement badges"),
+      achievements: collectCommaList(themePlanAchievements, 25, "Achievement badges"),
     };
   }
 
@@ -2430,7 +2430,7 @@
         });
     }
     if (item.kind === "achievement_atlas" && Array.isArray(item.achievement_names)) {
-      // Themed, positional badge names (Badge 1..20). Posts item_kind "badge",
+      // Themed, positional badge names (Badge 1..25). Posts item_kind "badge",
       // rowId achievement_<index> — see applyThemeItemNameChanges' badge branch.
       // Enrich each slot label with the event the badge rewards, derived from
       // the manifest badge at the SAME index (themeBadges === manifest.badges,

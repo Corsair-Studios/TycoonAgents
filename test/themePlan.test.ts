@@ -23,7 +23,7 @@ test('theme plan normalizes every editable slot to the required count', () => {
   assert.equal(plan.decor.length, 9);
   assert.equal(plan.expressions.length, 8);
   assert.equal(plan.expressions[7], 'Dazed / hit');
-  assert.equal(plan.achievements.length, 20);
+  assert.equal(plan.achievements.length, 25);
 });
 
 test('FIXED_EXPRESSION_LABELS carries the 8-icon expression contract, ending in "Dazed / hit"', () => {
