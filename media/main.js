@@ -3699,7 +3699,17 @@
   const SMOKE_RISE_NATIVE = 26;     // how far (native px, pre-scale) a puff drifts up over one cycle
   const SMOKE_MAX_ALPHA = 0.55;     // peak opacity of a puff
   const SMOKE_FADEOUT = 0.4;        // s to fade the whole column out once the attack stops
-  // (Phase 2 will add extinguish constants — do NOT add them now.)
+  // ── Extinguish (Phase 2) ─────────────────────────────────────────────────
+  // Cosmetic-only: an IDLE character routed to a smoking object plays the build
+  // clip there to force-clear the smoke. NO build/gameplay state change. See
+  // assignExtinguishers / updateExtinguishProgress and the movement-loop hooks.
+  const EXTINGUISH_BASE = 3.0;       // s to extinguish with ONE character
+  const EXTINGUISH_MIN = 1.0;        // floor (many characters)
+  const EXTINGUISH_MAX = 3.0;        // ceiling
+  const EXTINGUISH_PER_CHAR = 0.8;   // s shaved per extra character
+  const EXTINGUISH_MAX_ASSIGN = 3;   // max characters routed to one smoking object
+  const EXTINGUISH_SMOKE_MIN = 0.5;  // smoke intensity at/above which an object "needs" extinguishing
+  const EXTINGUISH_ARRIVE_EPS = 24;  // native px: within this of the object counts as "at" it (gather, don't pile on center)
 
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
@@ -5793,7 +5803,7 @@
       //    past the delay. Lazily create the entry on first engaged frame.
       for (const oid of engaged) {
         let s = objectSmoke[oid];
-        if (!s) s = objectSmoke[oid] = { underAttack: 0, intensity: 0, anim: 0 };
+        if (!s) s = objectSmoke[oid] = { underAttack: 0, intensity: 0, anim: 0, extinguishProgress: 0 };
         s.underAttack += delta;
         if (s.underAttack >= SMOKE_ATTACK_DELAY) {
           s.intensity = Math.min(1, s.intensity + delta / SMOKE_FADEOUT);
@@ -5801,8 +5811,8 @@
         s.anim += delta; // 4. advance the rising loop
       }
       // 3. Not under attack this frame: reset and ramp intensity toward 0;
-      //    delete once fully faded. PHASE 2: a character extinguishing this
-      //    object will hook in here (force intensity toward 0 / mark doused).
+      //    delete once fully faded. (Character extinguishing is handled
+      //    separately in updateExtinguishProgress, which force-clears the entry.)
       for (const oid of Object.keys(objectSmoke)) {
         if (engaged.has(oid)) continue;
         const s = objectSmoke[oid];
@@ -5854,6 +5864,115 @@
         ctx.restore();
       }
     } catch (e) { /* cosmetic only — one bad frame must not break render() */ }
+  }
+
+  /**
+   * Extinguish assignment pre-pass (Phase 2). Once per frame, AFTER
+   * updateObjectSmoke and BEFORE the character movement loop. Routes idle,
+   * eligible characters to smoking objects that still "need" extinguishing,
+   * capped at EXTINGUISH_MAX_ASSIGN per object. Reads charEntry.extinguishEligible
+   * (published by the movement loop last frame — a 1-frame lag is fine for a
+   * cosmetic effect) and charEntry.nx/ny; writes only charEntry.extinguishTargetId.
+   * Fully guarded — never throws.
+   */
+  function assignExtinguishers() {
+    try {
+      // 1. Smoking objects that still need work (have a known placement).
+      const needy = new Set();
+      for (const oid in objectSmoke) {
+        const s = objectSmoke[oid];
+        if (s && s.intensity >= EXTINGUISH_SMOKE_MIN && objectPlacement[oid]) needy.add(oid);
+      }
+      // 2. Release stale assignments; count survivors per object.
+      const assignedCount = {};
+      for (const aid in agentCharMap) {
+        const ce = agentCharMap[aid];
+        if (!ce) continue;
+        const tid = ce.extinguishTargetId;
+        if (tid == null) continue;
+        if (!needy.has(tid) || ce.extinguishEligible === false) {
+          ce.extinguishTargetId = null;
+          continue;
+        }
+        assignedCount[tid] = (assignedCount[tid] || 0) + 1;
+      }
+      // 3. Fill each needy object up to capacity with nearest unassigned eligible chars.
+      for (const oid of needy) {
+        const p = objectPlacement[oid];
+        if (!p) continue;
+        let count = assignedCount[oid] || 0;
+        while (count < EXTINGUISH_MAX_ASSIGN) {
+          let bestId = null, bestDist = Infinity;
+          for (const aid in agentCharMap) {
+            const ce = agentCharMap[aid];
+            if (!ce) continue;
+            if (ce.extinguishTargetId != null) continue;
+            if (ce.extinguishEligible === false) continue;
+            if (typeof ce.nx !== "number" || typeof ce.ny !== "number") continue;
+            const dx = p.nx - ce.nx, dy = p.ny - ce.ny;
+            const d = dx * dx + dy * dy;
+            if (d < bestDist) { bestDist = d; bestId = aid; }
+          }
+          if (bestId == null) break;
+          agentCharMap[bestId].extinguishTargetId = oid;
+          count++;
+        }
+      }
+    } catch (e) { /* cosmetic only — never let extinguish assignment throw */ }
+  }
+
+  /**
+   * Extinguish progress accrual (Phase 2). Once per frame, AFTER the character
+   * movement loop (positions settled). Tallies ARRIVED, non-fighting characters
+   * per smoking object; more characters extinguish faster. On completion the
+   * object's smoke is force-cleared (entry deleted) and its characters released.
+   * Combat always wins: a character fighting a rival (combatTargetInstanceId set)
+   * does not count. Fully guarded — never throws.
+   * @param {number} delta seconds since last frame
+   */
+  function updateExtinguishProgress(delta) {
+    try {
+      if (!Number.isFinite(delta) || delta < 0) delta = 0;
+      // 1. Active extinguishers per objId: arrived AND not fighting a rival.
+      const active = {};
+      for (const aid in agentCharMap) {
+        const ce = agentCharMap[aid];
+        if (!ce) continue;
+        const tid = ce.extinguishTargetId;
+        if (tid == null) continue;
+        if (ce.combatTargetInstanceId) continue; // peeled off to fight a rival
+        const p = objectPlacement[tid];
+        if (!p) continue;
+        if (typeof ce.nx !== "number" || typeof ce.ny !== "number") continue;
+        const dx = p.nx - ce.nx, dy = p.ny - ce.ny;
+        if (Math.sqrt(dx * dx + dy * dy) > EXTINGUISH_ARRIVE_EPS) continue;
+        active[tid] = (active[tid] || 0) + 1;
+      }
+      // 2. Accrue for objects with >=1 active extinguisher; force-clear on complete.
+      for (const oid in objectSmoke) {
+        const s = objectSmoke[oid];
+        if (!s) continue;
+        const k = active[oid] || 0;
+        if (k < 1) continue; // no accrual with zero extinguishers (progress holds)
+        let dur = EXTINGUISH_BASE - (k - 1) * EXTINGUISH_PER_CHAR;
+        if (dur < EXTINGUISH_MIN) dur = EXTINGUISH_MIN;
+        if (dur > EXTINGUISH_MAX) dur = EXTINGUISH_MAX;
+        if (!(dur > 0)) dur = EXTINGUISH_MIN;
+        s.extinguishProgress = (s.extinguishProgress || 0) + delta / dur;
+        if (s.extinguishProgress >= 1) {
+          // Force-clear: reset so a still-attacking rival must wait another
+          // SMOKE_ATTACK_DELAY to re-smoke; release every assigned character.
+          s.intensity = 0;
+          s.underAttack = 0;
+          s.extinguishProgress = 0;
+          for (const aid in agentCharMap) {
+            const ce = agentCharMap[aid];
+            if (ce && ce.extinguishTargetId === oid) ce.extinguishTargetId = null;
+          }
+          delete objectSmoke[oid]; // updateObjectSmoke recreates on re-attack
+        }
+      }
+    } catch (e) { /* cosmetic only — never let extinguish accrual throw */ }
   }
 
   /**
@@ -10526,6 +10645,9 @@
     // targeting (advanceEnemies above) and buildState derivation, BEFORE the
     // object draw pass. Reads only; feeds drawObjectSmoke in drawBuildableObject.
     updateObjectSmoke(delta, buildState.builtIds);
+    // Extinguish (Phase 2): route idle, eligible characters to smoking objects
+    // BEFORE the movement loop so their dest override (below) can act this frame.
+    assignExtinguishers();
     const activeBuildId = buildState.activeId;
     let activeBuildObj = null;
     for (const obj of themeBuildables) {
@@ -10698,6 +10820,10 @@
           // Arrival-hysteresis latch shared by wander/build/combat/seat
           // movement (see WANDER_ARRIVED_EPS / WANDER_RESUME_EPS).
           settled: false,
+          // Extinguish (Phase 2): id of the smoking object this idle char is
+          // routed to (null = none); eligibility republished each frame below.
+          extinguishTargetId: null,
+          extinguishEligible: false,
         };
       }
       const charEntry = agentCharMap[agent.id];
@@ -11012,6 +11138,27 @@
       const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga;
       charEntry.idleStill = idleAndStill;
 
+      // ── Extinguish eligibility + intent (Phase 2, cosmetic) ────────────
+      // Publish eligibility (read by assignExtinguishers next frame — a 1-frame
+      // lag is fine here). Then derive this-frame intent: an idle char with a
+      // still-smoking assigned object that isn't fighting a rival (combat always
+      // wins). extinguishArrived latches once within EXTINGUISH_ARRIVE_EPS of it.
+      charEntry.extinguishEligible = idleAndStill && (charEntry.sitSeatId == null) && !isEngaging;
+      const isExtinguishing = !!(
+        charEntry.extinguishTargetId &&
+        objectSmoke[charEntry.extinguishTargetId] &&
+        charEntry.extinguishEligible !== false &&
+        !isEngaging
+      );
+      let extinguishArrived = false;
+      if (isExtinguishing) {
+        const ep = objectPlacement[charEntry.extinguishTargetId];
+        if (ep) {
+          const edx = ep.nx - charEntry.nx, edy = ep.ny - charEntry.ny;
+          extinguishArrived = Math.sqrt(edx * edx + edy * edy) <= EXTINGUISH_ARRIVE_EPS;
+        }
+      }
+
       // ── Proximity "love" bubble (rare, requires a nearby idle-still agent) ──
       // Independent of the wander-decision else-if chain below (does not
       // consume a wander-decision tick or touch wanderTimer) so it can never
@@ -11159,7 +11306,7 @@
       // Dancing agents hold position (no wander). Conga members are driven
       // by updateConga's destination assignment above.
       if (!inConga) charEntry.wanderTimer -= delta;
-      if (!inConga && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && charEntry.wanderTimer <= 0) {
+      if (!inConga && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.wanderTimer <= 0) {
         // At this idle wander-decision point, an eligible idle agent may
         // instead start dancing (rare) or go sit on a free seat (rare).
         // Otherwise pick a new destination.
@@ -11265,6 +11412,20 @@
         }
       }
 
+      // ── Extinguish destination override (Phase 2) ──────────────────
+      // An assigned idle char walks to its smoking object, then holds (gather
+      // around it, don't pile on the exact center). Runs AFTER the wander
+      // decision (whose sit/wander branches are gated off for extinguishers)
+      // so it has the final say on dest. Combat/build never coexist here
+      // (isExtinguishing requires !isEngaging and an idle char never builds).
+      if (isExtinguishing) {
+        const ep = objectPlacement[charEntry.extinguishTargetId];
+        if (ep) {
+          if (extinguishArrived) { charEntry.destNx = charEntry.nx; charEntry.destNy = charEntry.ny; }
+          else { charEntry.destNx = ep.nx; charEntry.destNy = ep.ny; }
+        }
+      }
+
       // ── Step toward destination ────────────────────────────────────
       // Dancing agents hold position (dest == current pos). Conga leader
       // moves a touch faster so the line snakes; followers use walk speed.
@@ -11365,7 +11526,7 @@
       else if (!isMoving && (desiredClip === "walk")) desiredClip = "idle";
       // BUILD override: once arrived at the standoff spot for an active
       // build target, force the build clip — never while still walking.
-      if (isBuilding && !isMoving) {
+      if ((isBuilding || (isExtinguishing && extinguishArrived)) && !isMoving) {
         desiredClip = "build";
       }
       // EVICT override (Phase 2b / idle ambient combat): walking toward an
@@ -11457,6 +11618,10 @@
       // sets frameIndex directly (17/18/19), never the same frame twice.
       if (!charEntry.dancing) advanceAnim(anim, delta);
     });
+
+    // Extinguish (Phase 2): accrue extinguish progress now that all character
+    // positions are settled this frame; force-clears smoke on completion.
+    updateExtinguishProgress(delta);
 
     // ── Agent separation pass (second pass, after all base nx/ny updates
     // above are settled for this frame) ────────────────────────────────
