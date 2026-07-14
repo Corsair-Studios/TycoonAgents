@@ -3688,6 +3688,19 @@
     poof:        { frames: [0, 1, 2, 3], fps: 12, loop: false },
   };
 
+  // ── Cosmetic damage-smoke overlay (Phase 1) ──────────────────────────────
+  // Purely visual: a built object under sustained rival attack emits a rising,
+  // fading poof-sprite smoke column. NO gameplay effect (no build pause, no
+  // un-building, no damage). See objectSmoke / updateObjectSmoke / drawObjectSmoke.
+  const SMOKE_ATTACK_DELAY = 0.5;   // s of continuous attack before an object starts smoking
+  const SMOKE_SCALE = 0.30;         // smoke puff size as a fraction of the object's poof baseSize
+  const SMOKE_PUFFS = 2;            // overlapping rising puffs for a continuous column
+  const SMOKE_CYCLE = 1.2;          // s for one puff to rise + fade
+  const SMOKE_RISE_NATIVE = 26;     // how far (native px, pre-scale) a puff drifts up over one cycle
+  const SMOKE_MAX_ALPHA = 0.55;     // peak opacity of a puff
+  const SMOKE_FADEOUT = 0.4;        // s to fade the whole column out once the attack stops
+  // (Phase 2 will add extinguish constants — do NOT add them now.)
+
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
   /** @type {Record<string, string[]>} raw frames per character (slot → data-URI) */
@@ -3826,6 +3839,15 @@
    * @type {Record<string, {phase: string, animState: object, progress: number}>}
    */
   let objectAnimMap = {};
+  /**
+   * Cosmetic damage-smoke state per built object, keyed by object_id.
+   * underAttack: seconds of continuous attack accumulated; intensity: 0..1
+   * column opacity/scale factor; anim: seconds elapsed, drives the rising loop.
+   * Created lazily the first frame an object is under attack; deleted when the
+   * column has fully faded. Purely visual — never affects build/attack logic.
+   * @type {Record<string, {underAttack:number, intensity:number, anim:number}>}
+   */
+  const objectSmoke = {};
   /**
    * Per-object idle-animation fps/loop overrides declared in the manifest
    * (buildable_objects[].anim_fps / anim_loop), keyed by object_id. Mirrors
@@ -5731,6 +5753,107 @@
         bootFrameSpritePending = true;
       }
     }
+
+    // Cosmetic damage-smoke overlay (Phase 1): draw AFTER the object's normal
+    // art for ANY object with a live smoke entry, regardless of phase. Only
+    // built (idle-phase) objects ever accrue a smoke entry, so this runs at the
+    // function tail where those objects land. Fully guarded — never throws.
+    try { drawObjectSmoke(objId, cx, cy, baseSize, ctx); } catch (e) {}
+  }
+
+  /**
+   * Cosmetic damage-smoke bookkeeping (Phase 1). Once per frame, AFTER enemy
+   * targeting is resolved and buildState is derived, but BEFORE the object draw
+   * pass. Ramps a smoke column on any BUILT object currently being raided by a
+   * live, non-fleeing rival, and fades it back out when the attack stops.
+   * NOTE: buildState is local to render(), so the built-id Set is passed in as
+   * `builtIds` (the real in-scope name is buildState.builtIds at the call site).
+   * Reads activeEnemies (en.targetKind/targetObjId/fleeing) — the same signal
+   * the raid-targeting code uses — but mutates nothing outside objectSmoke.
+   * @param {number} delta seconds since last frame
+   * @param {Set<string>} builtIds fully-built object ids (buildState.builtIds)
+   */
+  function updateObjectSmoke(delta, builtIds) {
+    try {
+      if (!Number.isFinite(delta) || delta < 0) delta = 0;
+      // 1. Built objIds engaged by a live, non-fleeing rival (same signal as
+      //    the raid-targeting block: targetKind === 'object' + truthy
+      //    targetObjId + not fleeing + membership in the already-built set).
+      const engaged = new Set();
+      if (builtIds && builtIds.size > 0 && Array.isArray(activeEnemies)) {
+        for (const en of activeEnemies) {
+          if (!en || en.fleeing) continue;
+          if (en.targetKind !== "object") continue;
+          const oid = en.targetObjId;
+          if (!oid || !builtIds.has(oid)) continue;
+          engaged.add(oid);
+        }
+      }
+      // 2. Under-attack objects: accumulate, then ramp intensity toward 1 once
+      //    past the delay. Lazily create the entry on first engaged frame.
+      for (const oid of engaged) {
+        let s = objectSmoke[oid];
+        if (!s) s = objectSmoke[oid] = { underAttack: 0, intensity: 0, anim: 0 };
+        s.underAttack += delta;
+        if (s.underAttack >= SMOKE_ATTACK_DELAY) {
+          s.intensity = Math.min(1, s.intensity + delta / SMOKE_FADEOUT);
+        }
+        s.anim += delta; // 4. advance the rising loop
+      }
+      // 3. Not under attack this frame: reset and ramp intensity toward 0;
+      //    delete once fully faded. PHASE 2: a character extinguishing this
+      //    object will hook in here (force intensity toward 0 / mark doused).
+      for (const oid of Object.keys(objectSmoke)) {
+        if (engaged.has(oid)) continue;
+        const s = objectSmoke[oid];
+        if (!s) { delete objectSmoke[oid]; continue; }
+        s.underAttack = 0;
+        s.intensity -= delta / SMOKE_FADEOUT;
+        if (s.intensity <= 0) { delete objectSmoke[oid]; continue; }
+        s.anim += delta; // keep the column rising while it fades out
+      }
+    } catch (e) { /* cosmetic only — never let smoke bookkeeping throw */ }
+  }
+
+  /**
+   * Draw the cosmetic smoke column for one object, reusing the poof sprite as a
+   * rising, fading, looped puff stack anchored just above the object top. Fully
+   * guarded so one bad frame (missing poof art, no entry) can never throw inside
+   * render(). Coordinate convention matches drawBuildableObject's poof draw:
+   * the object spans (cy - baseSize) .. cy, so smoke sits above cy - baseSize.
+   * @param {string} objId
+   * @param {number} cx @param {number} cy object anchor (ground point), canvas px
+   * @param {number} baseSize object draw size in canvas px
+   * @param {CanvasRenderingContext2D} ctx
+   */
+  function drawObjectSmoke(objId, cx, cy, baseSize, ctx) {
+    try {
+      const s = objectSmoke[objId];
+      if (!s || s.intensity <= 0) return;
+      const poof = OBJECT_CLIPS.poof;
+      const poofSlots = themeImages.poof;
+      if (!poof || !poof.frames || !poof.frames.length) return;
+      if (!poofSlots || !poofSlots.length) return;
+      const frames = poof.frames;
+      const fi = ((Math.floor(s.anim * poof.fps) % frames.length) + frames.length) % frames.length;
+      const poofImg = poofSlots[frames[fi]]; // same slot lookup as the poof draw (~drawBuildableObject)
+      if (!poofImg || !poofImg.complete || poofImg.naturalWidth === 0) return;
+      const size = baseSize * SMOKE_SCALE;
+      if (!(size > 0)) return;
+      // Rise reads on-screen when scaled by the object's on-screen size
+      // (baseSize/64 ≈ depthScale·objScale), so distant objects smoke smaller.
+      const riseScale = baseSize / 64;
+      for (let i = 0; i < SMOKE_PUFFS; i++) {
+        const phase = ((s.anim / SMOKE_CYCLE) + i / SMOKE_PUFFS) % 1; // 0..1 rising progress
+        const riseY = phase * SMOKE_RISE_NATIVE * riseScale;
+        const alpha = SMOKE_MAX_ALPHA * (1 - phase) * s.intensity;    // fade as it rises + overall intensity
+        if (alpha <= 0) continue;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+        ctx.drawImage(poofImg, cx - size / 2, cy - baseSize - riseY, size, size);
+        ctx.restore();
+      }
+    } catch (e) { /* cosmetic only — one bad frame must not break render() */ }
   }
 
   /**
@@ -10399,6 +10522,10 @@
     if (!rangedUnlocked && rackObjectId && buildState.builtIds.has(rackObjectId)) {
       rangedUnlocked = true;
     }
+    // Cosmetic damage-smoke (Phase 1): update once per frame here — AFTER enemy
+    // targeting (advanceEnemies above) and buildState derivation, BEFORE the
+    // object draw pass. Reads only; feeds drawObjectSmoke in drawBuildableObject.
+    updateObjectSmoke(delta, buildState.builtIds);
     const activeBuildId = buildState.activeId;
     let activeBuildObj = null;
     for (const obj of themeBuildables) {
