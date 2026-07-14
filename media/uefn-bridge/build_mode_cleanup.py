@@ -534,6 +534,10 @@ def _show_window():
                     _style(off_btn, _ACCENT_RED, state == _STATE_OFF)
                     _style(leave_btn, _TEXT_DIM, state == _STATE_LEAVE)
                     _style(on_btn, _ACCENT_GREEN, state == _STATE_ON)
+                    try:
+                        root.update_idletasks()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             return _emphasize

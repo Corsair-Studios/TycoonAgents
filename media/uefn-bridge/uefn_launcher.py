@@ -39,7 +39,7 @@ _CARD_BORDER = "#B8B2A4"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
 # cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.287"
+BRIDGE_VERSION = "0.0.288"
 
 
 # ---------------------------------------------------------------------------
