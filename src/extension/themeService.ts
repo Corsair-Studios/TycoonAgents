@@ -2489,6 +2489,10 @@ async function processObjectAtlas(
       // drift. Align by silhouette overlap only. Objects only — chars/rivals
       // keep RGB registration.
       registrationShapeOnly: true,
+      // Never enlarge small drawn content beyond its native crop size — avoids
+      // jagged nearest-neighbor upscaling when the image model draws an object
+      // small in its cell.
+      noUpscale: true,
     });
     const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
     return { output, spritePackage };
@@ -2504,6 +2508,10 @@ async function processObjectAtlas(
     targetContentHeight: 104,
     maxContentExtent: 120,
     normalizationGroups: allSlots.map((slot) => [slot]),
+    // Never enlarge small drawn content beyond its native crop size — avoids
+    // jagged nearest-neighbor upscaling when the image model draws an object
+    // small in its cell.
+    noUpscale: true,
   });
   const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
   return { output, spritePackage };

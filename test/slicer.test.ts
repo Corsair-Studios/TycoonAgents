@@ -1010,3 +1010,74 @@ test('detectOuterFrame respects the per-side trim cap and never over-crops', () 
   assert.ok(200 - inset.left - inset.right >= 20);
   assert.ok(160 - inset.top - inset.bottom >= 16);
 });
+
+// --- noUpscale (small content must not be enlarged past its native size) ---
+
+const NU_BLUE = 0x1950a0ff;
+const NU_NATIVE_HEIGHT = 20;
+const NU_TARGET_HEIGHT = 60;
+
+// Reads the opaque-content bbox height of a normalized 128px frame.
+async function opaqueContentHeight(dataUri: string): Promise<number> {
+  const image = await Jimp.read(Buffer.from(dataUri.split(',')[1], 'base64'));
+  let minY = Infinity;
+  let maxY = -1;
+  image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (_x, y, idx) {
+    if (this.bitmap.data[idx + 3] !== 0) {
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+  });
+  return maxY - minY + 1;
+}
+
+// A single 1x1-cell atlas whose only content is drawn well below
+// targetContentHeight (20px content vs a 60px target), comfortably clear of
+// the cell edges so no boundary-spill pass touches it.
+async function buildSmallContentAtlas(): Promise<Buffer> {
+  const cellSize = 100;
+  const contentWidth = 10;
+  const atlas = new Jimp(cellSize, cellSize, 0xff00ffff);
+  atlas.scan(45, cellSize - NU_NATIVE_HEIGHT - 10, contentWidth, NU_NATIVE_HEIGHT, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(NU_BLUE, idx);
+  });
+  return atlas.getBufferAsync(Jimp.MIME_PNG);
+}
+
+test('baseline (no noUpscale): small content is enlarged toward the target height', async () => {
+  const buffer = await buildSmallContentAtlas();
+  // Built via an intermediate variable (not an inline literal) so this grid
+  // object is structurally, not freshly, checked against AtlasGrid.
+  const grid = {
+    columns: 1,
+    rows: 1,
+    scaleReferenceSlots: [0],
+    targetContentHeight: NU_TARGET_HEIGHT,
+    maxContentExtent: 120,
+  };
+  const result = await sliceAndNormalizeAtlas(buffer, {}, grid);
+  const height = await opaqueContentHeight(result.slots[0].data);
+  // boardScale = 60 / 20 = 3x; nearest-neighbor rounding gives a little slop,
+  // but the content must land near the 60px target and well past its native
+  // 20px height, proving upscaling is the default behavior.
+  assert.ok(height > NU_NATIVE_HEIGHT * 2, `expected enlargement well past native ${NU_NATIVE_HEIGHT}px, got ${height}`);
+  assert.ok(Math.abs(height - NU_TARGET_HEIGHT) <= 2, `expected ~${NU_TARGET_HEIGHT}px scaled height, got ${height}`);
+});
+
+test('noUpscale:true clamps board scale to 1 so small content stays at native size (no enlargement)', async () => {
+  const buffer = await buildSmallContentAtlas();
+  const grid = {
+    columns: 1,
+    rows: 1,
+    scaleReferenceSlots: [0],
+    targetContentHeight: NU_TARGET_HEIGHT,
+    maxContentExtent: 120,
+    noUpscale: true,
+  };
+  const result = await sliceAndNormalizeAtlas(buffer, {}, grid);
+  const height = await opaqueContentHeight(result.slots[0].data);
+  // With noUpscale, boardScale is clamped to a max of 1, so content this small
+  // must never be enlarged past its own native (drawn) height — a 1px
+  // tolerance covers nearest-neighbor rounding, nothing more.
+  assert.ok(height <= NU_NATIVE_HEIGHT + 1, `expected no enlargement (<=${NU_NATIVE_HEIGHT + 1}px), got ${height}`);
+});

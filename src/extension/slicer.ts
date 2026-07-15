@@ -90,6 +90,13 @@ export interface AtlasGrid {
    * character boards so all poses stay the same size.
    */
   clipWidthOverflow?: boolean;
+  /**
+   * When true, clamps the board-wide boardScale so it is never greater than 1
+   * -- content is never enlarged beyond its native source-crop size, only ever
+   * shrunk. Prevents nearest-neighbor upscaling artifacts on small drawn
+   * content. Per-cell caps (maxContentExtent, 128px) are unaffected.
+   */
+  noUpscale?: boolean;
   /** Reassemble normalized slots into a reviewable magenta-backed sprite board. */
   rebuildBoard?: boolean;
   /** Keep the rebuilt review canvas square while preserving the requested grid. */
@@ -269,9 +276,12 @@ export async function sliceAndNormalizeAtlas(
   const medianReferenceHeight = referenceHeights.length
     ? referenceHeights[Math.floor(referenceHeights.length / 2)]
     : undefined;
-  const boardScale = grid.targetContentHeight && medianReferenceHeight
+  let boardScale = grid.targetContentHeight && medianReferenceHeight
     ? grid.targetContentHeight / medianReferenceHeight
     : 1;
+  if (grid.noUpscale) {
+    boardScale = Math.min(boardScale, 1);
+  }
   const maxContentExtent = grid.maxContentExtent ?? Number.POSITIVE_INFINITY;
   const groupedBounds = new Map<number, { minX: number; maxX: number; minY: number; maxY: number }>();
   for (const group of grid.normalizationGroups ?? []) {

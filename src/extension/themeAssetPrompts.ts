@@ -752,6 +752,7 @@ export function buildObjectBoard1Prompt(
     ...cellLines,
     '',
     'Each cell shows exactly ONE finished, fully-built object as a single static frame — no animation, no motion, no partial construction. Every object is complete and ready to use.',
+    'Draw every object LARGE within its cell: fill most of the cell with only a small, uniform margin on all sides, and keep the same consistent visual size across all 16 cells — no object may be left small or floating in a sea of empty background.',
     ...objectSizingAndCameraLines(),
     '',
     `Creative direction: ${creativeDirection}`,
