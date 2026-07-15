@@ -159,10 +159,24 @@ test('SET_THEME_ITEM_DESCRIPTIONS schema: accepts crate/poof item_kind, includin
   assert.equal(result.success, true);
 });
 
+test('SET_THEME_ITEM_DESCRIPTIONS schema: accepts badge item_kind (positional achievement descriptions)', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'achievements',
+    changes: [{ item_kind: 'badge', id: 'achievement_0', description: 'A gold laurel wreath around a hammer.' }],
+  });
+  assert.equal(result.success, true);
+});
+
 test('SET_THEME_ITEM_DESCRIPTIONS schema: unknown item_kind still fails', () => {
   const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
     theme_id: 'cobra_command',
-    changes: [{ item_kind: 'badge', id: 'achievement_0', description: 'x' }],
+    changes: [{ item_kind: 'sticker', id: 'achievement_0', description: 'x' }],
   });
   assert.equal(result.success, false);
+});
+
+test('RESET_THEME_BADGE_NAMES schema: valid payload passes, missing theme_id fails', () => {
+  assert.equal(MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse({ theme_id: 'cobra_command' }).success, true);
+  assert.equal(MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse({}).success, false);
 });

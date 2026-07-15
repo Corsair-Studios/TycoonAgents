@@ -104,6 +104,10 @@ export interface ThemeImageReviewItem {
   rival_rows?: ThemeRivalBoardRow[];
   expression_names?: string[];
   achievement_names?: string[];
+  /** Achievement/badge board only: positional (index === badge slot) appearance
+   * text from plan.achievement_descriptions, for the review UI's Descriptions
+   * editor. Absent when the theme has no badge descriptions yet. */
+  achievement_descriptions?: string[];
   generation_error?: ThemeImageGenerationError;
   updated_at: string;
 }

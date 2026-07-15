@@ -228,6 +228,18 @@ test('aggregate prompts define the two-board object layout, 8 expressions, and 2
   assert.match(achievements, /do not include unlock requirements/i);
 });
 
+test('achievement prompt injects per-badge appearance descriptions when provided', () => {
+  const names = Array.from({ length: 25 }, (_unused, index) => `Badge ${index + 1}`);
+  const descriptions = new Array(25).fill('');
+  descriptions[0] = 'a gold laurel wreath around a crossed hammer';
+  descriptions[24] = 'a shattered obsidian star';
+  const prompt = buildAchievementAtlasPrompt('industrial', 'Factory', names, 'magenta', descriptions);
+  // Cell with a description carries "<name> — <description>"; blank ones stay name-only.
+  assert.match(prompt, /Cell 1: Badge 1 — a gold laurel wreath around a crossed hammer/);
+  assert.match(prompt, /Cell 25: Badge 25 — a shattered obsidian star/);
+  assert.match(prompt, /Cell 2: Badge 2\n/);
+});
+
 test('object board 1 prompt emits explicit ranged-rack guidance for cell 1 and generic guidance elsewhere', () => {
   const specs = staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT);
   const rows = createObjectBoard1Rows([

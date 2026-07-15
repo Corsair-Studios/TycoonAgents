@@ -136,6 +136,7 @@ export const MSG = {
   THEME_ITEM_NAMES_RESULT: "THEME_ITEM_NAMES_RESULT",
   SET_THEME_ITEM_DESCRIPTIONS: "SET_THEME_ITEM_DESCRIPTIONS",
   THEME_ITEM_DESCRIPTIONS_RESULT: "THEME_ITEM_DESCRIPTIONS_RESULT",
+  RESET_THEME_BADGE_NAMES: "RESET_THEME_BADGE_NAMES",
   NORMALIZE_THEME_CHARACTER: "NORMALIZE_THEME_CHARACTER",
   THEME_CHARACTER_NORMALIZE_STATE: "THEME_CHARACTER_NORMALIZE_STATE",
   RETRY_THEME_IMAGE: "RETRY_THEME_IMAGE",
@@ -326,8 +327,10 @@ export const MSG_SCHEMAS = {
   // Batched description edit from the theme review screen's per-board
   // "Descriptions" editor — mirrors SET_THEME_ITEM_NAMES, but descriptions live
   // in plan.json (character_descriptions/object_descriptions/decor_descriptions/
-  // enemy_descriptions/crate_description/poof_description), never the manifest,
-  // and there is no 'badge' kind (badges have no visual-description field).
+  // enemy_descriptions/crate_description/poof_description/achievement_descriptions),
+  // never the manifest. 'badge' rows write plan.achievement_descriptions[idx]
+  // (positional, id `achievement_<index>`) — the badge's appearance field, kept
+  // separate from its display-name/title (see applyThemeItemDescriptionChanges).
   // description ALLOWS an empty string — that clears the row's description —
   // unlike name, which requires min(1). 'crate' and 'poof' are the single
   // required build-crate / build-completion-poof rows (object board 2) —
@@ -341,13 +344,23 @@ export const MSG_SCHEMAS = {
         .array(
           z
             .object({
-              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof']),
+              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof', 'badge']),
               id: z.string().min(1),
               description: z.string().max(400),
             })
             .passthrough(),
         )
         .min(1),
+    })
+    .passthrough(),
+
+  // Restore every badge's canonical default TITLE (buildDefaultBadges display_name),
+  // moving any current custom title into that badge's appearance-description field
+  // first (plan.achievement_descriptions) so the user's typed appearance text is
+  // preserved. Host shows a modal confirm before proceeding. Payload: theme_id.
+  RESET_THEME_BADGE_NAMES: z
+    .object({
+      theme_id: z.string().min(1),
     })
     .passthrough(),
 

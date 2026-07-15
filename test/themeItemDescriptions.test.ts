@@ -38,8 +38,10 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {
-  applyThemeItemDescriptionChanges, resyncDescriptionReviewItems, createReviewItems,
+  applyThemeItemDescriptionChanges, resyncDescriptionReviewItems, createReviewItems, applyBadgeNameReset,
 } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { buildDefaultBadges } = require('../src/extension/themeMigration') as typeof import('../src/extension/themeMigration');
 
 function testManifest(): ThemeManifest {
   return {
@@ -401,4 +403,116 @@ test('resyncDescriptionReviewItems is a no-op when no board carries any of the a
   );
 
   assert.deepEqual(refreshed, []);
+});
+
+// --- badge: POSITIONAL appearance descriptions (index === badge slot) --------
+// Unlike object/decor/rival (roster-id matched), a badge change carries id
+// `achievement_<index>` and writes plan.achievement_descriptions[index] — the
+// badge's appearance field, kept separate from its display-name/title.
+
+test('applyThemeItemDescriptionChanges writes plan.achievement_descriptions at the positional badge index', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  assert.equal(plan.achievement_descriptions, undefined);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'badge', id: 'achievement_0', description: '  A gold laurel wreath around a hammer.  ' },
+    { item_kind: 'badge', id: 'achievement_3', description: 'A shattered obsidian star.' },
+  ]);
+
+  assert.equal(result.applied.length, 2);
+  assert.equal(result.rejected.length, 0);
+  // index 0 set + padded up to index 3 (gaps filled with '').
+  assert.deepEqual(plan.achievement_descriptions, [
+    'A gold laurel wreath around a hammer.', '', '', 'A shattered obsidian star.',
+  ]);
+});
+
+test('applyThemeItemDescriptionChanges rejects a badge id that is malformed or out of range, without touching the plan', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'badge', id: 'achievement_25', description: 'Beyond the 25-slot board.' },
+    { item_kind: 'badge', id: 'achievement_x', description: 'Not a number.' },
+  ]);
+
+  assert.equal(result.applied.length, 0);
+  assert.equal(result.rejected.length, 2);
+  assert.deepEqual(result.rejected.map((r) => r.id).sort(), ['achievement_25', 'achievement_x']);
+  assert.equal(plan.achievement_descriptions, undefined);
+});
+
+test('resyncDescriptionReviewItems rebuilds the achievements board when a badge description changes, baking the text into its prompt', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+  const savedBoard = savedItems.find((item) => item.id === 'achievements')!;
+  assert.doesNotMatch(savedBoard.prompt, /laurel wreath/);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'badge', id: 'achievement_0', description: 'A gold laurel wreath around a hammer.' },
+  ]);
+  assert.equal(result.applied.length, 1);
+
+  const refreshed = resyncDescriptionReviewItems({ items: savedItems }, manifest, plan, result.applied);
+  assert.deepEqual(refreshed.map((item) => item.id), ['achievements']);
+  assert.match(refreshed[0].prompt, /Cell 1: First Build — A gold laurel wreath around a hammer\./);
+  assert.deepEqual(refreshed[0].achievement_descriptions, ['A gold laurel wreath around a hammer.']);
+
+  // Review progress survives the resync untouched.
+  assert.equal(refreshed[0].status, savedBoard.status);
+  assert.equal(refreshed[0].revision, savedBoard.revision);
+  assert.equal(refreshed[0].updated_at, savedBoard.updated_at);
+});
+
+// --- applyBadgeNameReset: restore canonical titles, migrate custom name -> desc
+
+test('applyBadgeNameReset restores canonical badge titles and migrates each custom title into its (empty) appearance description', () => {
+  const manifest = testManifest();
+  const badges = buildDefaultBadges();
+  manifest.badges = badges;
+  const plan = testPlan();
+  plan.achievements = badges.map((b) => b.display_name);
+
+  // build_1 canonical title is 'First Build', evict_5 is 'Defender' (READ from buildDefaultBadges).
+  assert.equal(badges[0].badge_id, 'build_1');
+  assert.equal(badges[0].display_name, 'First Build');
+  assert.equal(badges[5].badge_id, 'evict_5');
+  assert.equal(badges[5].display_name, 'Defender');
+
+  // The user overwrote two titles with appearance text; badge[5] ALSO already
+  // has a real appearance description that must be preserved (not clobbered).
+  manifest.badges[0].display_name = 'a gold laurel wreath around a hammer';
+  manifest.badges[5].display_name = 'a bronze riot shield with rivets';
+  plan.achievements[0] = 'a gold laurel wreath around a hammer';
+  plan.achievements[5] = 'a bronze riot shield with rivets';
+  plan.achievement_descriptions = [];
+  plan.achievement_descriptions[5] = 'existing appearance — DO NOT overwrite';
+
+  const applied = applyBadgeNameReset(manifest, plan);
+
+  assert.deepEqual(applied.map((c) => c.id).sort(), ['achievement_0', 'achievement_5']);
+  // Canonical titles restored on BOTH the manifest and plan.achievements.
+  assert.equal(manifest.badges[0].display_name, 'First Build');
+  assert.equal(manifest.badges[5].display_name, 'Defender');
+  assert.equal(plan.achievements[0], 'First Build');
+  assert.equal(plan.achievements[5], 'Defender');
+  // badge[0] had no description -> its custom title is migrated in.
+  assert.equal(plan.achievement_descriptions[0], 'a gold laurel wreath around a hammer');
+  // badge[5] had an existing description -> preserved, NOT the custom title.
+  assert.equal(plan.achievement_descriptions[5], 'existing appearance — DO NOT overwrite');
+  // An unchanged (canonical) badge is not in the applied set.
+  assert.ok(!applied.some((c) => c.id === 'achievement_1'));
+});
+
+test('applyBadgeNameReset is a no-op when every badge is already at its canonical title', () => {
+  const manifest = testManifest();
+  manifest.badges = buildDefaultBadges();
+  const plan = testPlan();
+  plan.achievements = manifest.badges.map((b) => b.display_name);
+
+  const applied = applyBadgeNameReset(manifest, plan);
+  assert.equal(applied.length, 0);
+  assert.equal(plan.achievement_descriptions, undefined);
 });

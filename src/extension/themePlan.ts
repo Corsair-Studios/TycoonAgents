@@ -165,6 +165,17 @@ export interface ThemePlan {
   enemy_descriptions?: string[];
   expressions: string[];
   achievements: string[];
+  /**
+   * Optional per-achievement/badge concrete visual-appearance spec. Unlike the
+   * name-filtered object/decor/enemy description arrays, this is POSITIONAL:
+   * index i aligns to achievement/badge slot i (0..THEME_ACHIEVEMENT_COUNT-1),
+   * matching plan.achievements[i] / manifest.badges[i]. Threaded into
+   * buildAchievementAtlasPrompt so a badge's ART is driven by this appearance
+   * text instead of overloading its display name/title. Introduced so the badge
+   * NAME can stay a clean title while appearance lives in its own field.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  achievement_descriptions?: string[];
 }
 
 /**
@@ -237,7 +248,24 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
       normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
     ),
     achievements: normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge'),
+    achievement_descriptions: normalizeAchievementDescriptions(input.achievement_descriptions),
   };
+}
+
+/**
+ * Achievement/badge descriptions are POSITIONAL (index === badge slot), not
+ * name-filtered like object/decor/enemy descriptions — so align them 1:1 by
+ * index, padding/truncating to THEME_ACHIEVEMENT_COUNT. Returns undefined when
+ * there is no description data at all (callers fall back to name-only prompts).
+ */
+function normalizeAchievementDescriptions(rawExtra: unknown): string[] | undefined {
+  if (!Array.isArray(rawExtra) || rawExtra.length === 0) return undefined;
+  const out: string[] = [];
+  for (let i = 0; i < THEME_ACHIEVEMENT_COUNT; i += 1) {
+    const value = rawExtra[i];
+    out.push(typeof value === 'string' ? value.trim() : '');
+  }
+  return out;
 }
 
 /**

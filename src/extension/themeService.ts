@@ -77,6 +77,7 @@ import type { ThemeImageRetryMode } from './themeImageRetry';
 import {
   ATLAS_CLIPS,
   normalizeThemePlan,
+  THEME_ACHIEVEMENT_COUNT,
   THEME_OBJECT_COUNT,
   themePlanCreativeDirection,
   themePlanToManifest,
@@ -845,6 +846,7 @@ export function refreshSavedReviewItemMetadata(
     ...(expected.rival_rows !== undefined ? { rival_rows: expected.rival_rows } : {}),
     ...(expected.decor_rows !== undefined ? { decor_rows: expected.decor_rows } : {}),
     ...(expected.achievement_names !== undefined ? { achievement_names: expected.achievement_names } : {}),
+    ...(expected.achievement_descriptions !== undefined ? { achievement_descriptions: expected.achievement_descriptions } : {}),
     ...(expected.expression_names !== undefined ? { expression_names: expected.expression_names } : {}),
   };
 }
@@ -1159,15 +1161,95 @@ export async function renameThemeItemsBatch(
   return { manifest, frames, result };
 }
 
-/** One row of the theme-review "Descriptions" editor's batched Apply. Unlike
- * ThemeItemNameChange, there is no 'badge' kind (badges have no visual
- * description field) and 'character' IS included (unlike the Names editor,
- * which intentionally leaves character boards to RENAME_THEME_CHARACTER).
- * 'crate' and 'poof' address the single required build-crate / build-poof
- * rows (object board 2) — description-only, id is not looked up against any
- * roster (there is exactly one of each per theme). */
+/**
+ * Restore every badge's canonical default TITLE (buildDefaultBadges
+ * display_name, matched by badge_id) while PRESERVING any custom title the user
+ * typed: before overwriting a changed title, if that badge has no appearance
+ * description yet, the current custom title is moved into
+ * plan.achievement_descriptions[idx] so it still drives the badge ART
+ * (buildAchievementAtlasPrompt). This fixes the failure mode where a user typed
+ * appearance text into the badge NAME (which both titled the badge AND drew its
+ * art), breaking the titles. Reuses the rename path's persistence + resync
+ * (writeThemeFiles + resyncRenamedBoardPrompts) so the achievement board
+ * prompt/review refresh exactly as a batched badge rename would. Returns the
+ * loaded manifest/frames plus the count of badges reset.
+ */
+/**
+ * Pure core of resetThemeBadgeNames: mutates `manifest` (badge display_names)
+ * and `plan` (achievements + achievement_descriptions) in place, restoring every
+ * badge whose title drifted from its canonical default (buildDefaultBadges,
+ * matched by badge_id) while PRESERVING the custom title by moving it into that
+ * badge's appearance description — but only when the description is empty, so an
+ * existing appearance spec is never clobbered. Side-effect-free (no IO) so it's
+ * directly unit-testable. Returns the applied badge name changes (id
+ * `achievement_<index>`) for the caller's resync; an empty array means every
+ * badge was already at its canonical title (nothing to persist). Exported for
+ * unit testing.
+ */
+export function applyBadgeNameReset(
+  manifest: ThemeManifest,
+  plan: ThemePlan,
+): ThemeItemNameChange[] {
+  const canonicalByBadgeId = new Map(buildDefaultBadges().map((badge) => [badge.badge_id, badge.display_name]));
+  const applied: ThemeItemNameChange[] = [];
+  const badges = manifest.badges ?? [];
+  for (let idx = 0; idx < badges.length; idx += 1) {
+    const badge = badges[idx];
+    if (!badge) continue;
+    const canonical = canonicalByBadgeId.get(badge.badge_id);
+    // Only reset badges the user actually renamed away from their canonical title.
+    if (!canonical || badge.display_name === canonical) continue;
+    // Preserve the user's typed appearance text: only backfill the description
+    // when it's empty, so a real description already present is never clobbered.
+    const existing = (plan.achievement_descriptions?.[idx] ?? '').trim();
+    if (!existing) {
+      plan.achievement_descriptions = setPlanDescriptionAt(plan.achievement_descriptions, idx, badge.display_name);
+    }
+    badge.display_name = canonical;
+    if (idx < plan.achievements.length) plan.achievements[idx] = canonical;
+    applied.push({ item_kind: 'badge', id: `achievement_${idx}`, name: canonical });
+  }
+  return applied;
+}
+
+export async function resetThemeBadgeNames(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]>; changed: number }> {
+  if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
+
+  const loadedTheme = await loadTheme(globalStorageUri, themeId);
+  if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be updated.');
+  const { manifest, frames } = loadedTheme;
+
+  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
+    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  if (!savedPlan) throw new Error('This theme has no saved plan — badge names require plan.json.');
+  const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+  if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
+
+  const applied = applyBadgeNameReset(manifest, plan);
+
+  if (applied.length) {
+    // Persist the plan (migrated appearance text + canonical achievements) BEFORE
+    // the resync, which reloads plan.json from disk to rebuild the board prompt.
+    await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+    await writeThemeFiles(globalStorageUri, manifest, frames);
+    await resyncRenamedBoardPrompts(globalStorageUri, themeId, manifest, applied);
+  }
+  return { manifest, frames, changed: applied.length };
+}
+
+/** One row of the theme-review "Descriptions" editor's batched Apply.
+ * 'character' IS included (unlike the Names editor, which intentionally leaves
+ * character boards to RENAME_THEME_CHARACTER). 'crate' and 'poof' address the
+ * single required build-crate / build-poof rows (object board 2) —
+ * description-only, id is not looked up against any roster (there is exactly one
+ * of each per theme). 'badge' writes plan.achievement_descriptions[idx]
+ * (positional, id `achievement_<index>`) — the badge's appearance field, kept
+ * separate from its display-name/title. */
 export interface ThemeItemDescriptionChange {
-  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof';
+  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof' | 'badge';
   id: string;
   description: string;
 }
@@ -1249,6 +1331,18 @@ export function applyThemeItemDescriptionChanges(
         continue;
       }
       plan.character_descriptions = setPlanDescriptionAt(plan.character_descriptions, agent.slot_id, description);
+    } else if (change.item_kind === 'badge') {
+      // Badge/achievement descriptions are POSITIONAL: rowId is
+      // `achievement_<index>` (see themeReviewDescriptionRows), aligning to
+      // plan.achievement_descriptions[idx] / plan.achievements[idx]. Mirror the
+      // object branch: pad the array to the badge index and set it.
+      const badgeMatch = /^achievement_(\d+)$/.exec(change.id);
+      const badgeIndex = badgeMatch ? Number(badgeMatch[1]) : -1;
+      if (badgeIndex < 0 || badgeIndex >= THEME_ACHIEVEMENT_COUNT) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown badge "${change.id}".` });
+        continue;
+      }
+      plan.achievement_descriptions = setPlanDescriptionAt(plan.achievement_descriptions, badgeIndex, description);
     } else if (change.item_kind === 'crate') {
       // Single field, not an indexed array — exactly one crate per theme.
       plan.crate_description = description;
@@ -1284,6 +1378,10 @@ export function resyncDescriptionReviewItems(
   // crate/poof descriptions are single plan fields (not row-indexed), so they
   // always affect the fixed 'objects_02' board rather than a specific row id.
   const crateOrPoofChanged = applied.some((change) => change.item_kind === 'crate' || change.item_kind === 'poof');
+  // Badge descriptions are positional plan fields (achievement_<index>), so any
+  // badge change affects the single fixed 'achievements' board rather than a
+  // roster-matched row id.
+  const badgeChanged = applied.some((change) => change.item_kind === 'badge');
 
   const affectedBoardIds = new Set<string>();
   for (const item of document.items) {
@@ -1300,6 +1398,8 @@ export function resyncDescriptionReviewItems(
     )) {
       affectedBoardIds.add(item.id);
     } else if (item.kind === 'character_atlas' && affectedIds.has(item.id)) {
+      affectedBoardIds.add(item.id);
+    } else if (item.kind === 'achievement_atlas' && badgeChanged) {
       affectedBoardIds.add(item.id);
     }
   }
@@ -2609,10 +2709,22 @@ export function createReviewItems(
       label: '25 achievement badges',
       kind: 'achievement_atlas',
       status: 'pending',
-      prompt: buildAchievementAtlasPrompt(creativeDirection, plan.display_name, plan.achievements, backgroundMode),
+      prompt: buildAchievementAtlasPrompt(
+        creativeDirection,
+        plan.display_name,
+        plan.achievements,
+        backgroundMode,
+        plan.achievement_descriptions,
+      ),
       revision: 0,
       frame_keys: plan.achievements.map((_name, index) => `achievement_${index}`),
       achievement_names: plan.achievements,
+      // Positional (index === badge slot) appearance text for the review UI's
+      // Descriptions editor; may be absent (name-only prompt) — normalized to
+      // a full-length array so each badge row always resolves cleanly.
+      achievement_descriptions: plan.achievement_descriptions
+        ? plan.achievements.map((_n, index) => plan.achievement_descriptions?.[index] ?? '')
+        : undefined,
     },
   ];
 }

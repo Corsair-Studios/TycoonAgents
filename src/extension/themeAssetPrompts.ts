@@ -932,9 +932,11 @@ export function buildAchievementAtlasPrompt(
   themeName: string,
   achievements: string[],
   background: BoardBackgroundMode = 'magenta',
+  descriptions?: string[],
 ): string {
   const cells = achievements.slice(0, 25).map((achievement, index) =>
-    `Cell ${index + 1}: ${achievement}`,
+    `Cell ${index + 1}: ${achievement}`
+      + (descriptions?.[index] ? ` — ${descriptions[index]}` : ''),
   );
   return [
     `Create one achievement-badge sprite sheet for the "${themeName}" theme.`,

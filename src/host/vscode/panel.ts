@@ -54,6 +54,7 @@ import {
   regenerateThemeBoard,
   renameThemeCharacter,
   renameThemeItemsBatch,
+  resetThemeBadgeNames,
   replaceThemeBackground,
   resliceThemeImageFromRaw,
   retryThemeImage,
@@ -1013,6 +1014,42 @@ export class TycoonPanel {
             void this._panel.webview.postMessage({
               type: MSG.THEME_ITEM_DESCRIPTIONS_RESULT,
               payload: { ok: false, theme_id: themeId, board_id: boardId, error: errorMessage(err) },
+            });
+          }
+        } else if (message.type === MSG.RESET_THEME_BADGE_NAMES) {
+          const parsedReset = MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse((message as any).payload);
+          if (!parsedReset.success) return;
+          const themeId = parsedReset.data.theme_id;
+          if (!/^[a-z0-9_]+$/.test(themeId)) return;
+          // VS Code webviews cannot reliably display window.confirm — keep the
+          // gate host-side so the user always sees a native modal before badge
+          // titles are rewritten. Post a fresh review afterward either way so
+          // the webview's transient "Resetting…" button state clears.
+          const answer = await vscode.window.showWarningMessage(
+            "Reset all badge names to their defaults?",
+            {
+              modal: true,
+              detail: "This restores every badge's default title. Any custom title you typed is moved into that badge's appearance description (so the badge art keeps it) — nothing you wrote is lost.",
+            },
+            "Reset names",
+          );
+          if (answer !== "Reset names") {
+            await this._postThemeImageReview(themeId);
+            return;
+          }
+          try {
+            const { manifest, frames, changed } = await resetThemeBadgeNames(this._globalStorageUri, themeId);
+            await this._postThemeImageReview(themeId);
+            if (changed > 0) {
+              void this._panel.webview.postMessage({
+                type: MSG.THEME_INITIALIZED,
+                payload: await this._buildThemeInitPayload(manifest, frames, true),
+              });
+            }
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_ITEM_NAMES_RESULT,
+              payload: { ok: false, theme_id: themeId, board_id: "achievements", error: errorMessage(err) },
             });
           }
         } else if (message.type === MSG.NORMALIZE_THEME_CHARACTER) {

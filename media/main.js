@@ -2572,6 +2572,27 @@
           };
         });
     }
+    if (item.kind === "achievement_atlas" && Array.isArray(item.achievement_names)) {
+      // Badge APPEARANCE descriptions — positional, rowId achievement_<index>,
+      // item_kind "badge" (see applyThemeItemDescriptionChanges' badge branch).
+      // These share rowIds with the badge NAME rows (themeReviewNameRows), so
+      // themeReviewNamesDescriptionsRows merges each badge's name input and this
+      // description textarea into one block. Kept separate from the name/title so
+      // a user's appearance text no longer has to be crammed into the title.
+      // Label matches the name rows (Badge N — <event>) via badgeEventTitle.
+      const badges = Array.isArray(themeBadges) ? themeBadges : [];
+      const descriptions = Array.isArray(item.achievement_descriptions) ? item.achievement_descriptions : [];
+      return item.achievement_names.map((name, index) => {
+        const bd = badges[index] || null;
+        const eventTitle = bd ? badgeEventTitle(bd) : null;
+        return {
+          rowId: "achievement_" + index,
+          itemKind: "badge",
+          label: "Badge " + (index + 1) + (eventTitle ? " — " + eventTitle : ""),
+          original: descriptions[index] || "",
+        };
+      });
+    }
     return [];
   }
 
@@ -2785,6 +2806,29 @@
       }
     });
     details.appendChild(applyBtn);
+    // Badge board only: restore canonical default badge TITLES, moving any custom
+    // title the user typed into the badge's appearance description (host-side —
+    // see resetThemeBadgeNames). The host shows a native modal confirm (webview
+    // confirm() is a no-op) and reposts the review, which rebuilds this card and
+    // clears the transient "Resetting…" state — so no separate result handler is
+    // needed here.
+    if (item.kind === "achievement_atlas") {
+      const resetBtn = document.createElement("button");
+      resetBtn.className = "skill-btn theme-review-reset-badge-names";
+      resetBtn.type = "button";
+      resetBtn.textContent = "Reset names to default";
+      resetBtn.title = "Restore every badge's default title. Any custom title you typed is moved into that badge's appearance description so the art keeps it.";
+      resetBtn.disabled = inputsDisabled;
+      resetBtn.addEventListener("click", () => {
+        resetBtn.disabled = true;
+        resetBtn.textContent = "Resetting…";
+        vscode.postMessage({
+          type: "RESET_THEME_BADGE_NAMES",
+          payload: { theme_id: reviewThemeId },
+        });
+      });
+      details.appendChild(resetBtn);
+    }
     details.appendChild(statusEl);
     section.appendChild(details);
     return section;
