@@ -2493,8 +2493,12 @@ async function processObjectAtlas(
       // jagged nearest-neighbor upscaling when the image model draws an object
       // small in its cell.
       noUpscale: true,
+      // Buildable-object boards resize with bicubic (smooth) instead of
+      // nearest-neighbor; the black-background recolor below prevents magenta
+      // bleed into the smoothed edges.
+      smoothResize: true,
     });
-    const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
+    const output = await optimizeSpriteBoardCanvas(generated, 4, 4, { resample: 'bicubic' });
     return { output, spritePackage };
   }
   if (rows.length !== OBJECT_BOARD1_STATIC_COUNT) {
@@ -2512,8 +2516,12 @@ async function processObjectAtlas(
     // jagged nearest-neighbor upscaling when the image model draws an object
     // small in its cell.
     noUpscale: true,
+    // Buildable-object boards resize with bicubic (smooth) instead of
+    // nearest-neighbor; the black-background recolor below prevents magenta
+    // bleed into the smoothed edges.
+    smoothResize: true,
   });
-  const output = await optimizeSpriteBoardCanvas(generated, 4, 4);
+  const output = await optimizeSpriteBoardCanvas(generated, 4, 4, { resample: 'bicubic' });
   return { output, spritePackage };
 }
 

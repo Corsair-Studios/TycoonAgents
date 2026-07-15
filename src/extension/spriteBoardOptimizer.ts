@@ -1,4 +1,5 @@
 import Jimp from 'jimp';
+import { replaceChromaMagentaWithBlack } from './slicer';
 
 /** Strict decimal-kilobyte ceiling so boards remain below 200 KB everywhere. */
 export const MAX_SPRITE_BOARD_BYTES = 200_000;
@@ -8,19 +9,39 @@ export const SPRITE_BOARD_CANVAS_SIZE = 512;
 
 const POSTERIZE_LEVELS = [256, 128, 64, 32, 16];
 
+/**
+ * Resample mode for sprite-board resizing. 'nearest' (default) keeps the
+ * magenta chroma-key exact and avoids halos -- used by every board type.
+ * 'bicubic' is for buildable-object boards only: smoother resizing, paired
+ * with a black-recolor of the magenta background so bicubic blending has no
+ * magenta source pixels to bleed into opaque edges.
+ */
+export type SpriteBoardResample = 'nearest' | 'bicubic';
+
+export interface SpriteBoardResizeOptions {
+  resample?: SpriteBoardResample;
+}
+
+function resizeModeFor(resample: SpriteBoardResample): string {
+  return resample === 'bicubic' ? Jimp.RESIZE_BICUBIC : Jimp.RESIZE_NEAREST_NEIGHBOR;
+}
+
 /** Resize a retained review canvas to exact pixel dimensions without re-slicing it. */
 export async function resizeSpriteBoardCanvas(
   imageBuffer: Buffer,
   width: number,
   height: number,
+  options: SpriteBoardResizeOptions = {},
 ): Promise<Buffer> {
   if (!Number.isInteger(width) || width <= 0
       || !Number.isInteger(height) || height <= 0) {
     throw new Error('Sprite board canvas dimensions must be positive integers.');
   }
+  const resample = options.resample ?? 'nearest';
   const image = await Jimp.read(imageBuffer);
   if (image.bitmap.width !== width || image.bitmap.height !== height) {
-    image.resize(width, height, Jimp.RESIZE_NEAREST_NEIGHBOR);
+    if (resample === 'bicubic') replaceChromaMagentaWithBlack(image);
+    image.resize(width, height, resizeModeFor(resample));
   }
   return image
     .deflateLevel(9)
@@ -39,17 +60,20 @@ export async function optimizeSpriteBoardCanvas(
   imageBuffer: Buffer,
   gridColumns: number,
   gridRows: number,
+  options: SpriteBoardResizeOptions = {},
 ): Promise<Buffer> {
   const optimized = await optimizeSpriteBoard(
     imageBuffer,
     undefined,
     gridColumns,
     gridRows,
+    options,
   );
   return resizeSpriteBoardCanvas(
     optimized,
     SPRITE_BOARD_CANVAS_SIZE,
     SPRITE_BOARD_CANVAS_SIZE,
+    options,
   );
 }
 
@@ -66,6 +90,7 @@ export async function optimizeSpriteBoard(
   maxBytes = MAX_SPRITE_BOARD_BYTES,
   gridColumns = 5,
   gridRows = 4,
+  options: SpriteBoardResizeOptions = {},
 ): Promise<Buffer> {
   if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
     throw new Error('Sprite board byte limit must be a positive integer.');
@@ -74,8 +99,10 @@ export async function optimizeSpriteBoard(
       || !Number.isInteger(gridRows) || gridRows <= 0) {
     throw new Error('Sprite board grid dimensions must be positive integers.');
   }
+  const resample = options.resample ?? 'nearest';
   const image = await Jimp.read(imageBuffer);
-  resizeToInitialBounds(image, gridColumns, gridRows);
+  if (resample === 'bicubic') replaceChromaMagentaWithBlack(image);
+  resizeToInitialBounds(image, gridColumns, gridRows, resample);
 
   while (true) {
     let smallestCandidate: Buffer | undefined;
@@ -111,7 +138,7 @@ export async function optimizeSpriteBoard(
       throw new Error(`Could not compress sprite board below ${maxBytes} bytes.`);
     }
 
-    image.resize(nextWidth, nextHeight, Jimp.RESIZE_NEAREST_NEIGHBOR);
+    image.resize(nextWidth, nextHeight, resizeModeFor(resample));
   }
 }
 
@@ -119,6 +146,7 @@ function resizeToInitialBounds(
   image: Jimp,
   gridColumns: number,
   gridRows: number,
+  resample: SpriteBoardResample = 'nearest',
 ): void {
   const scale = Math.min(
     1,
@@ -129,7 +157,7 @@ function resizeToInitialBounds(
   const height = alignToGrid(Math.floor(image.bitmap.height * scale), gridRows);
 
   if (width !== image.bitmap.width || height !== image.bitmap.height) {
-    image.resize(width, height, Jimp.RESIZE_NEAREST_NEIGHBOR);
+    image.resize(width, height, resizeModeFor(resample));
   }
 }
 

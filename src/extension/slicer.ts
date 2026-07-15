@@ -97,6 +97,17 @@ export interface AtlasGrid {
    * content. Per-cell caps (maxContentExtent, 128px) are unaffected.
    */
   noUpscale?: boolean;
+  /**
+   * Buildable-object boards ONLY. When true, cell resizing uses bicubic
+   * (smooth) interpolation instead of nearest-neighbor, and any transparent
+   * background pixel has its RGB neutralized to black immediately beforehand
+   * (see neutralizeTransparentToBlack) so bicubic blending can't pull leftover
+   * chroma-magenta color into opaque edge pixels. Reduced interior crispness
+   * is an accepted tradeoff for smoother object silhouettes; characters,
+   * rivals, decor, environment, expression, and achievement boards must never
+   * set this.
+   */
+  smoothResize?: boolean;
   /** Reassemble normalized slots into a reviewable magenta-backed sprite board. */
   rebuildBoard?: boolean;
   /** Keep the rebuilt review canvas square while preserving the requested grid. */
@@ -346,7 +357,12 @@ export async function sliceAndNormalizeAtlas(
       const cropH = Math.min(bh, cellInfo.cell.bitmap.height - cropY);
       const content = cellInfo.cell.clone().crop(cropX, cropY, cropW, cropH);
       if (resizedWidth !== bw || resizedHeight !== bh) {
-        content.resize(resizedWidth, resizedHeight, Jimp.RESIZE_NEAREST_NEIGHBOR);
+        if (grid.smoothResize) {
+          neutralizeTransparentToBlack(content);
+          content.resize(resizedWidth, resizedHeight, Jimp.RESIZE_BICUBIC);
+        } else {
+          content.resize(resizedWidth, resizedHeight, Jimp.RESIZE_NEAREST_NEIGHBOR);
+        }
       }
       const centerOfMassOffset = (cellInfo.sumX / cellInfo.count - cellInfo.minX) * scale;
       const destX = groupBounds
@@ -584,6 +600,42 @@ function isChromaMagenta(r: number, g: number, b: number): boolean {
     && r - g >= 120
     && b - g >= 120
     && Math.abs(r - b) <= 80;
+}
+
+/**
+ * Sets RGB to black for every fully-transparent (alpha === 0) pixel, leaving
+ * alpha and every opaque/partial-alpha pixel's RGB untouched. Used to strip
+ * leftover chroma-magenta color out of already-keyed-transparent background
+ * pixels before a bicubic resize, so blending can't pull magenta into the
+ * silhouette edge (bicubic samples RGB regardless of alpha).
+ */
+export function neutralizeTransparentToBlack(image: Jimp): void {
+  const data = image.bitmap.data;
+  image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (_x: number, _y: number, idx: number) {
+    if (data[idx + 3] === 0) {
+      data[idx] = 0;
+      data[idx + 1] = 0;
+      data[idx + 2] = 0;
+    }
+  });
+}
+
+/**
+ * Sets RGB to black for every pixel whose color passes the strict
+ * isChromaMagenta test, regardless of alpha (opaque magenta becomes opaque
+ * black; transparent magenta becomes transparent black). Alpha is always left
+ * as-is. Used to recolor the magenta board background before any resize so a
+ * later bicubic pass has no magenta source pixels to blend from.
+ */
+export function replaceChromaMagentaWithBlack(image: Jimp): void {
+  const data = image.bitmap.data;
+  image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (_x: number, _y: number, idx: number) {
+    if (isChromaMagenta(data[idx], data[idx + 1], data[idx + 2])) {
+      data[idx] = 0;
+      data[idx + 1] = 0;
+      data[idx + 2] = 0;
+    }
+  });
 }
 
 /** Per-side inset, in pixels, of a detected uniform outer frame. */
