@@ -215,7 +215,9 @@ test('aggregate prompts define the two-board object layout, 8 expressions, and 2
   assert.match(expressions, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
   assert.match(expressions, /4-column by 2-row grid of 8 equal cells/i);
   assert.match(expressions, /Cell 8: Expression 8/);
-  assert.match(expressions, /Cell 8 \(last cell of the grid\) is the "dazed \/ hit" icon/i);
+  assert.match(expressions, /Cell 8 is "Dazed \/ hit"/i);
+  // A user-supplied per-cell description is authoritative, not overridden by generic-emote rules.
+  assert.match(expressions, /render that cell EXACTLY as described and treat the description as authoritative/i);
 
   const achievements = buildAchievementAtlasPrompt(
     'industrial',
