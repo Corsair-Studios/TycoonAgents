@@ -42,6 +42,7 @@ export async function resizeSpriteBoardCanvas(
   if (image.bitmap.width !== width || image.bitmap.height !== height) {
     if (resample === 'bicubic') replaceChromaMagentaWithBlack(image);
     image.resize(width, height, resizeModeFor(resample));
+    if (resample === 'bicubic') replaceChromaMagentaWithBlack(image);
   }
   return image
     .deflateLevel(9)

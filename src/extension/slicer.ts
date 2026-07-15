@@ -358,8 +358,10 @@ export async function sliceAndNormalizeAtlas(
       const content = cellInfo.cell.clone().crop(cropX, cropY, cropW, cropH);
       if (resizedWidth !== bw || resizedHeight !== bh) {
         if (grid.smoothResize) {
+          stripLooseMagentaToTransparent(content);
           neutralizeTransparentToBlack(content);
           content.resize(resizedWidth, resizedHeight, Jimp.RESIZE_BICUBIC);
+          stripLooseMagentaToTransparent(content);
         } else {
           content.resize(resizedWidth, resizedHeight, Jimp.RESIZE_NEAREST_NEIGHBOR);
         }
@@ -603,6 +605,19 @@ function isChromaMagenta(r: number, g: number, b: number): boolean {
 }
 
 /**
+ * Looser magenta-background test than isChromaMagenta: catches shaded/dark
+ * magenta (e.g. (34,0,34), (153,0,136), (186,6,146)) the strict test misses
+ * because it has no R/B brightness floor — only requires green to be the
+ * clear minority channel. RED-SAFE: red objects have r-b >= 50, and this
+ * requires r-b <= 45, so the two are disjoint against real red-object pixels.
+ * Grays/blacks/blues are excluded because they fail the (r-g)>=25/(b-g)>=25
+ * green-minority checks.
+ */
+export function isMagentaBackgroundLoose(r: number, g: number, b: number): boolean {
+  return (r - g) >= 25 && (b - g) >= 25 && (r - b) <= 45 && (b - r) <= 90;
+}
+
+/**
  * Sets RGB to black for every fully-transparent (alpha === 0) pixel, leaving
  * alpha and every opaque/partial-alpha pixel's RGB untouched. Used to strip
  * leftover chroma-magenta color out of already-keyed-transparent background
@@ -621,19 +636,40 @@ export function neutralizeTransparentToBlack(image: Jimp): void {
 }
 
 /**
- * Sets RGB to black for every pixel whose color passes the strict
- * isChromaMagenta test, regardless of alpha (opaque magenta becomes opaque
- * black; transparent magenta becomes transparent black). Alpha is always left
- * as-is. Used to recolor the magenta board background before any resize so a
- * later bicubic pass has no magenta source pixels to blend from.
+ * Sets RGB to black for every pixel whose color passes the loose
+ * isMagentaBackgroundLoose test, regardless of alpha (opaque magenta becomes
+ * opaque black; transparent magenta becomes transparent black). Alpha is
+ * always left as-is. Used to recolor the magenta board background —
+ * including shaded/dark magenta the strict test misses — before any resize
+ * so a later bicubic pass has no magenta source pixels to blend from.
  */
 export function replaceChromaMagentaWithBlack(image: Jimp): void {
   const data = image.bitmap.data;
   image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (_x: number, _y: number, idx: number) {
-    if (isChromaMagenta(data[idx], data[idx + 1], data[idx + 2])) {
+    if (isMagentaBackgroundLoose(data[idx], data[idx + 1], data[idx + 2])) {
       data[idx] = 0;
       data[idx + 1] = 0;
       data[idx + 2] = 0;
+    }
+  });
+}
+
+/**
+ * Sets alpha=0 and RGB=0 for every pixel whose color passes the loose
+ * isMagentaBackgroundLoose test — turning shaded/dark magenta background
+ * (which the strict isChromaMagenta test misses) into transparent black in
+ * one scan. Used on object-board cell content, before neutralizeTransparentToBlack
+ * and a bicubic resize, so no leftover magenta shading can bloom into purple
+ * pools at sprite edges. All other pixels are left untouched.
+ */
+export function stripLooseMagentaToTransparent(image: Jimp): void {
+  const data = image.bitmap.data;
+  image.scan(0, 0, image.bitmap.width, image.bitmap.height, function (_x: number, _y: number, idx: number) {
+    if (isMagentaBackgroundLoose(data[idx], data[idx + 1], data[idx + 2])) {
+      data[idx] = 0;
+      data[idx + 1] = 0;
+      data[idx + 2] = 0;
+      data[idx + 3] = 0;
     }
   });
 }
