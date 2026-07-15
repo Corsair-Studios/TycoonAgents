@@ -10270,7 +10270,7 @@
     const by = cy - spriteSize - 11; // above head, like an HP bar
     ctx.save();
     ctx.globalAlpha = Math.min(1, timeLeft * 3); // brief fade-out tail
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillStyle = exprIndex === 7 ? "rgba(0,0,0,0.92)" : "rgba(255,255,255,0.92)";
     const pad = 2, bw = bs + pad * 2, bh = bs + pad * 2, br = 5;
     const rx = bx - bw / 2, ry = by - bh / 2;
     ctx.beginPath();
