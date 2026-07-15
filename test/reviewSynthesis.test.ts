@@ -40,7 +40,7 @@ const {
   createReviewItems, objectRowsForItem, decorRowsForItem, buildReplacementPrompt,
   applyObjectBoardFrames, removeStaleBoardFrameKeys, mergeResumedReviewItems,
   boardBackgroundModeForProvider, resyncRenamedReviewItems, applyThemeItemNameChanges,
-  refreshSavedReviewItemMetadata,
+  refreshSavedReviewItemMetadata, mergeExpectedReviewItems,
 } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -991,4 +991,100 @@ test('refreshSavedReviewItemMetadata: refreshes achievement_names from expected 
   assert.equal(merged.status, 'accepted');
   assert.equal(merged.revision, 7);
   assert.equal(merged.updated_at, '2026-05-05T05:05:05.000Z');
+});
+
+// --- mergeExpectedReviewItems: the display-time merge that getThemeImageReview
+// applies when a plan exists. It returns EXACTLY the current contract's boards
+// (from createReviewItems). A saved board that matches an expected id keeps its
+// generation state (via refreshSavedReviewItemMetadata); an expected board with
+// no saved counterpart becomes a pending placeholder; and a saved board whose
+// id is NOT in the current contract (an orphan from a superseded board
+// contract) is DROPPED so no stale review card lingers. ---
+
+test('mergeExpectedReviewItems: drops an ORPHAN saved board that is not in the current contract while keeping every current board', () => {
+  const manifest = realThemedObjectManifest();
+  const plan = minimalPlan();
+  const expectedItems = createReviewItems(plan, manifest, plan.creative_direction);
+
+  // Saved document = every current-contract board (accepted, with generation
+  // state) PLUS two orphans from superseded contracts: a legacy animated-objects
+  // board and an old emote board that the v3 contract no longer emits.
+  const savedItems = [
+    ...savedReviewDocumentItems(manifest, plan),
+    {
+      id: 'animated_objects', filename: 'animated_objects.png', label: 'Animated objects 11-12 + build effects',
+      kind: 'object_atlas' as const, status: 'accepted' as const, prompt: 'ORPHAN PROMPT', revision: 9,
+      frame_keys: ['object_old_anim'], updated_at: '2026-06-06T06:06:06.000Z',
+    },
+    {
+      id: 'emote_icons', filename: 'emotes_atlas.png', label: 'Animated emotes', kind: 'emote_atlas' as const,
+      status: 'accepted' as const, prompt: 'ORPHAN EMOTE', revision: 4, frame_keys: [],
+      updated_at: '2026-06-07T07:07:07.000Z',
+    },
+  ];
+
+  const merged = mergeExpectedReviewItems(expectedItems, savedItems);
+
+  // Neither orphan survives.
+  assert.ok(!merged.some((item) => item.id === 'animated_objects'), 'stale animated_objects orphan must be dropped');
+  assert.ok(!merged.some((item) => item.id === 'emote_icons'), 'stale emote_icons orphan must be dropped');
+
+  // The result is EXACTLY the current contract's board ids, in order.
+  assert.deepEqual(merged.map((item) => item.id), expectedItems.map((item) => item.id));
+
+  // All current-contract boards are present, including the v3 object boards.
+  assert.ok(merged.some((item) => item.id === 'objects_01'));
+  assert.ok(merged.some((item) => item.id === 'objects_02'));
+  assert.ok(merged.some((item) => item.kind === 'character_atlas'));
+  assert.ok(merged.some((item) => item.kind === 'rival_atlas'));
+  assert.ok(merged.some((item) => item.id === 'environment'));
+  assert.ok(merged.some((item) => item.id === 'background_decor'));
+  assert.ok(merged.some((item) => item.kind === 'expression_atlas'));
+  assert.ok(merged.some((item) => item.kind === 'achievement_atlas'));
+});
+
+test('mergeExpectedReviewItems: preserves the matched saved boards’ generation state (status/revision/updated_at)', () => {
+  const manifest = realThemedObjectManifest();
+  const plan = minimalPlan();
+  const expectedItems = createReviewItems(plan, manifest, plan.creative_direction);
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+
+  const merged = mergeExpectedReviewItems(expectedItems, savedItems);
+
+  const savedBoard2 = savedItems.find((item) => item.id === 'objects_02')!;
+  const mergedBoard2 = merged.find((item) => item.id === 'objects_02')!;
+  assert.equal(mergedBoard2.status, savedBoard2.status);
+  assert.equal(mergedBoard2.revision, savedBoard2.revision);
+  assert.equal(mergedBoard2.updated_at, savedBoard2.updated_at);
+  assert.equal(mergedBoard2.prompt, savedBoard2.prompt);
+});
+
+test('mergeExpectedReviewItems: a saved doc containing ONLY current-contract items is returned unchanged (ids/order)', () => {
+  const manifest = realThemedObjectManifest();
+  const plan = minimalPlan();
+  const expectedItems = createReviewItems(plan, manifest, plan.creative_direction);
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+
+  const merged = mergeExpectedReviewItems(expectedItems, savedItems);
+  assert.deepEqual(merged.map((item) => item.id), savedItems.map((item) => item.id));
+});
+
+test('mergeExpectedReviewItems: an expected board with no saved counterpart becomes a pending placeholder (epoch updated_at)', () => {
+  const manifest = realThemedObjectManifest();
+  const plan = minimalPlan();
+  const expectedItems = createReviewItems(plan, manifest, plan.creative_direction);
+
+  // Saved doc has generated only object board 1 — every other expected board is
+  // brand-new and must appear as a pending placeholder.
+  const savedItems = savedReviewDocumentItems(manifest, plan).filter((item) => item.id === 'objects_01');
+
+  const merged = mergeExpectedReviewItems(expectedItems, savedItems);
+  assert.deepEqual(merged.map((item) => item.id), expectedItems.map((item) => item.id));
+
+  const board1 = merged.find((item) => item.id === 'objects_01')!;
+  assert.equal(board1.status, 'accepted', 'the one generated board keeps its saved state');
+
+  const board2 = merged.find((item) => item.id === 'objects_02')!;
+  assert.equal(board2.status, 'pending');
+  assert.equal(board2.updated_at, new Date(0).toISOString());
 });

@@ -853,6 +853,29 @@ export function refreshSavedReviewItemMetadata(
   };
 }
 
+/**
+ * Merge the freshly-synthesized `expected` board set (the CURRENT contract's
+ * boards from createReviewItems) with the saved review items. Each expected
+ * board keeps its saved generation state when a saved counterpart exists (via
+ * refreshSavedReviewItemMetadata, which refreshes structural metadata without
+ * downgrading status/revision/prompt), otherwise it becomes a pending
+ * placeholder. Saved items whose id is NOT in the expected set are DROPPED:
+ * they are orphans left over from a superseded board contract (e.g. an old
+ * animated-objects board replaced by the v3 objects_02) and must never surface
+ * as a stale review card.
+ */
+export function mergeExpectedReviewItems(
+  expectedItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>>,
+  savedItems: ThemeImageReviewItem[],
+): ThemeImageReviewItem[] {
+  return expectedItems.map((expected) => {
+    const saved = savedItems.find((candidate) => candidate.id === expected.id);
+    return saved
+      ? refreshSavedReviewItemMetadata(saved, expected)
+      : { ...expected, updated_at: new Date(0).toISOString() };
+  });
+}
+
 export async function getThemeImageReview(
   globalStorageUri: vscode.Uri,
   themeId: string,
@@ -891,14 +914,16 @@ export async function getThemeImageReview(
     }
   }
 
-  // Augment the saved review items with the FULL expected item set for this
+  // Replace the saved review items with the FULL expected item set for this
   // theme's plan, so boards that were never generated still show up as
-  // pending "placeholder" cards instead of being silently absent. This is
+  // pending "placeholder" cards instead of being silently absent, AND boards
+  // from a superseded contract no longer surface as stale cards. This is
   // display-time only: a saved item's generation STATE is preserved (never
   // downgraded to pending), but its per-slot row/name metadata is refreshed
   // from the current manifest/plan (see refreshSavedReviewItemMetadata) so the
   // Names editor reflects the live board shape; the on-disk review document is
-  // left untouched.
+  // left untouched. Only runs when a plan exists (so `expected` can be
+  // synthesized) — plan-less legacy themes keep their saved items unchanged.
   let items = document?.items ?? [];
   if (manifest) {
     try {
@@ -910,15 +935,11 @@ export async function getThemeImageReview(
         const creativeDirection = themePlanCreativeDirection(plan);
         const expectedItems = createReviewItems(plan, manifest, creativeDirection);
         const savedItems = document?.items ?? [];
-        const expectedIds = new Set(expectedItems.map((expected) => expected.id));
-        const mergedExpected: ThemeImageReviewItem[] = expectedItems.map((expected) => {
-          const saved = savedItems.find((candidate) => candidate.id === expected.id);
-          return saved
-            ? refreshSavedReviewItemMetadata(saved, expected)
-            : { ...expected, updated_at: new Date(0).toISOString() };
-        });
-        const extraSaved = savedItems.filter((candidate) => !expectedIds.has(candidate.id));
-        items = [...mergedExpected, ...extraSaved];
+        // Show EXACTLY the current contract's boards. Saved boards whose id is
+        // not in the current contract are dropped as orphans from a superseded
+        // board contract, so no stale review card (e.g. an old animated-objects
+        // board) lingers after the board layout changes.
+        items = mergeExpectedReviewItems(expectedItems, savedItems);
       }
     } catch {
       // No usable saved plan for this theme (e.g. a very old theme, or a

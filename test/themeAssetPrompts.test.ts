@@ -215,7 +215,10 @@ test('aggregate prompts define the two-board object layout, 8 expressions, and 2
   assert.match(expressions, /outer image canvas is one perfect SQUARE \(1:1 aspect ratio\)/i);
   assert.match(expressions, /4-column by 2-row grid of 8 equal cells/i);
   assert.match(expressions, /Cell 8: Expression 8/);
-  assert.match(expressions, /Cell 8 is "Dazed \/ hit"/i);
+  assert.match(expressions, /Cell 8 \("Dazed \/ hit"\)/i);
+  // A user description on Cell 8 must be followed instead of forcing the default stars motif.
+  assert.match(expressions, /do NOT fall back to stars or a swirl/i);
+  assert.match(expressions, /When a description IS given, follow that description instead/i);
   // A user-supplied per-cell description is authoritative for the icon's style/theme flavor.
   assert.match(expressions, /authoritative for the icon's STYLE and theme flavor/i);
   // ...but icons must never become faces/characters (they render very small).
