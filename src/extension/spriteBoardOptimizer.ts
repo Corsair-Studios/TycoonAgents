@@ -1,5 +1,5 @@
 import Jimp from 'jimp';
-import { replaceChromaMagentaWithBlack } from './slicer';
+import { stripLooseMagentaToTransparent } from './slicer';
 
 /** Strict decimal-kilobyte ceiling so boards remain below 200 KB everywhere. */
 export const MAX_SPRITE_BOARD_BYTES = 200_000;
@@ -13,8 +13,9 @@ const POSTERIZE_LEVELS = [256, 128, 64, 32, 16];
  * Resample mode for sprite-board resizing. 'nearest' (default) keeps the
  * magenta chroma-key exact and avoids halos -- used by every board type.
  * 'bicubic' is for buildable-object boards only: smoother resizing, paired
- * with a black-recolor of the magenta background so bicubic blending has no
- * magenta source pixels to bleed into opaque edges.
+ * with stripping the magenta background to transparent black (alpha 0, rgb 0)
+ * so bicubic blending has no opaque magenta source pixels to bleed into edges
+ * and the board stays keyable (transparent-backed, never opaque black).
  */
 export type SpriteBoardResample = 'nearest' | 'bicubic';
 
@@ -40,9 +41,9 @@ export async function resizeSpriteBoardCanvas(
   const resample = options.resample ?? 'nearest';
   const image = await Jimp.read(imageBuffer);
   if (image.bitmap.width !== width || image.bitmap.height !== height) {
-    if (resample === 'bicubic') replaceChromaMagentaWithBlack(image);
+    if (resample === 'bicubic') stripLooseMagentaToTransparent(image);
     image.resize(width, height, resizeModeFor(resample));
-    if (resample === 'bicubic') replaceChromaMagentaWithBlack(image);
+    if (resample === 'bicubic') stripLooseMagentaToTransparent(image);
   }
   return image
     .deflateLevel(9)
@@ -102,7 +103,7 @@ export async function optimizeSpriteBoard(
   }
   const resample = options.resample ?? 'nearest';
   const image = await Jimp.read(imageBuffer);
-  if (resample === 'bicubic') replaceChromaMagentaWithBlack(image);
+  if (resample === 'bicubic') stripLooseMagentaToTransparent(image);
   resizeToInitialBounds(image, gridColumns, gridRows, resample);
 
   while (true) {

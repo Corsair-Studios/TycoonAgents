@@ -9,6 +9,7 @@ import {
   optimizeSpriteBoardCanvas,
   resizeSpriteBoardCanvas,
 } from '../src/extension/spriteBoardOptimizer';
+import { isMagentaBackgroundLoose } from '../src/extension/slicer';
 
 test('optimizeSpriteBoard produces a valid grid-aligned PNG below 200 KB', async () => {
   const source = new Jimp(800, 640, 0xff00ffff);
@@ -69,4 +70,66 @@ test('optimizeSpriteBoardCanvas retains aggregate boards at exactly 512x512', as
     assert.equal(decoded.bitmap.width, 512);
     assert.equal(decoded.bitmap.height, 512);
   }
+});
+
+// Regression guard: buildable-object boards ('bicubic' resample) must strip
+// their magenta background to TRANSPARENT (alpha 0), never leave it as
+// opaque black -- an opaque-black object board renders a black box behind
+// every object in-game. 'nearest' (the default, used by every other board
+// type) is untouched by this fix and keeps its prior behavior.
+
+function magentaBoardWithContent(): Jimp {
+  const source = new Jimp(1024, 1024, 0xff00ffff); // magenta background
+  // Opaque non-magenta content well inside one interior cell (4x4 grid ->
+  // 256px cells), clear of every board edge/corner so the corners stay
+  // pure background all the way through resize/compression.
+  source.scan(280, 280, 64, 64, function (_x, _y, idx) {
+    this.bitmap.data[idx] = 40;
+    this.bitmap.data[idx + 1] = 160;
+    this.bitmap.data[idx + 2] = 40;
+    this.bitmap.data[idx + 3] = 255;
+  });
+  return source;
+}
+
+test('optimizeSpriteBoardCanvas (bicubic/object-board mode) strips the magenta background to TRANSPARENT, never opaque black', async () => {
+  const input = await magentaBoardWithContent().getBufferAsync(Jimp.MIME_PNG);
+
+  const output = await optimizeSpriteBoardCanvas(input, 4, 4, { resample: 'bicubic' });
+  const decoded = await Jimp.read(output);
+  assert.equal(decoded.bitmap.width, 512);
+  assert.equal(decoded.bitmap.height, 512);
+
+  const w = decoded.bitmap.width;
+  const h = decoded.bitmap.height;
+  const corners: Array<[number, number]> = [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]];
+  for (const [x, y] of corners) {
+    const { a } = Jimp.intToRGBA(decoded.getPixelColor(x, y));
+    assert.equal(
+      a,
+      0,
+      `corner (${x},${y}) must be TRANSPARENT (alpha 0) -- an opaque alpha (e.g. 255 for opaque black) `
+      + 'is exactly the regression that caused black boxes behind objects in-game',
+    );
+  }
+
+  let magentaish = 0;
+  decoded.scan(0, 0, w, h, function (_x, _y, idx) {
+    const r = this.bitmap.data[idx];
+    const g = this.bitmap.data[idx + 1];
+    const b = this.bitmap.data[idx + 2];
+    if (isMagentaBackgroundLoose(r, g, b)) magentaish++;
+  });
+  assert.equal(magentaish, 0, 'no output pixel should read as loose-magenta after the bicubic object-board strip');
+});
+
+test('optimizeSpriteBoardCanvas (default nearest mode) still returns a valid PNG buffer -- behavior for other board types unchanged', async () => {
+  const input = await magentaBoardWithContent().getBufferAsync(Jimp.MIME_PNG);
+
+  const output = await optimizeSpriteBoardCanvas(input, 4, 4);
+  assert.ok(Buffer.isBuffer(output));
+  assert.deepEqual([...output.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  const decoded = await Jimp.read(output);
+  assert.equal(decoded.bitmap.width, 512);
+  assert.equal(decoded.bitmap.height, 512);
 });

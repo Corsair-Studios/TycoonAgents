@@ -249,6 +249,20 @@ test('smoothResize (neutralize + bicubic downscale) produces no magenta-dominant
   });
 
   assert.equal(haloPixels, 0, 'no partial-alpha edge pixel should read as a magenta-dominant halo');
+
+  // Regression guard: the sliced frame's background must be TRANSPARENT
+  // (alpha 0), never opaque black -- an opaque-black object frame renders a
+  // black box behind the object in-game.
+  const corners: Array<[number, number]> = [
+    [0, 0],
+    [frame.bitmap.width - 1, 0],
+    [0, frame.bitmap.height - 1],
+    [frame.bitmap.width - 1, frame.bitmap.height - 1],
+  ];
+  for (const [cx, cy] of corners) {
+    const { a } = Jimp.intToRGBA(frame.getPixelColor(cx, cy));
+    assert.equal(a, 0, `frame corner (${cx},${cy}) must be transparent, not an opaque black box behind the object`);
+  }
 });
 
 test('smoothResize e2e: a dark/shaded magenta background patch is stripped to transparent, not left as a purple pixel', async () => {
@@ -296,4 +310,16 @@ test('smoothResize e2e: a dark/shaded magenta background patch is stripped to tr
   });
 
   assert.equal(magentaish, 0, 'no pixel in the final frame should read as loose-magenta -- the dark patch must be gone, not left purple');
+
+  // Regression guard: transparent, not opaque black, behind the object.
+  const corners: Array<[number, number]> = [
+    [0, 0],
+    [frame.bitmap.width - 1, 0],
+    [0, frame.bitmap.height - 1],
+    [frame.bitmap.width - 1, frame.bitmap.height - 1],
+  ];
+  for (const [cx, cy] of corners) {
+    const { a } = Jimp.intToRGBA(frame.getPixelColor(cx, cy));
+    assert.equal(a, 0, `frame corner (${cx},${cy}) must be transparent, not an opaque black box behind the object`);
+  }
 });

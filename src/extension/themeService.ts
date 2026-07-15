@@ -1973,8 +1973,12 @@ async function runNonFatalBoardStep(
  * files. Shared by retryThemeImage (buffer from the image API) and
  * resliceThemeImageFromRaw (buffer read back from disk, no API call) so both
  * paths use IDENTICAL slicing + persist behavior. Row metadata is reconstructed
- * from the CURRENT manifest via the *RowsForItem helpers. Returns the normalized
- * output plus the frame keys the caller should record on the review item.
+ * from the CURRENT manifest via the *RowsForItem helpers. `persistRaw` (default
+ * true) controls whether the raw pre-slice atlas is (re)written; pass false when
+ * `buffer` IS the raw file already on disk (resliceThemeImageFromRaw) so re-slicing
+ * never overwrites the pristine raw source with a processed/downsized copy. Returns
+ * the normalized output plus the frame keys the caller should record on the review
+ * item.
  */
 async function applySlicedAtlasFromBuffer(
   globalStorageUri: vscode.Uri,
@@ -1984,6 +1988,7 @@ async function applySlicedAtlasFromBuffer(
   item: ThemeImageReviewItem,
   buffer: Buffer,
   signal?: AbortSignal,
+  persistRaw: boolean = true,
 ): Promise<{ output: Buffer; frameKeys: string[] }> {
   let output = buffer;
   let frameKeys = item.frame_keys;
@@ -2057,8 +2062,12 @@ async function applySlicedAtlasFromBuffer(
   await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
   await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(reviewDirectoryUri, item.filename), output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
-  // (Harmless on the re-slice path: it re-saves the same bytes we just read.)
-  await persistRawAtlas(globalStorageUri, themeId, item.filename, buffer);
+  // Skipped when re-slicing FROM that same raw file (persistRaw=false) — the buffer here
+  // is already the pristine raw source, and re-slicing must never overwrite it with a
+  // processed/downsized copy (see resliceThemeImageFromRaw).
+  if (persistRaw) {
+    await persistRawAtlas(globalStorageUri, themeId, item.filename, buffer);
+  }
   // Merge-safe write: retryThemeImage/resliceThemeImageFromRaw load frames.json
   // once at the START of this operation, then this function runs a slow
   // image-generation API call before reaching this write. If a DIFFERENT
@@ -2123,6 +2132,8 @@ export async function resliceThemeImageFromRaw(
     frames,
     item,
     rawBuffer,
+    undefined,
+    false,
   );
   await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
     ...item,
