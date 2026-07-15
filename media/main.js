@@ -11191,7 +11191,7 @@
               // Distances to each native edge; run out the nearest one.
               const dLeft = nearest.nx;
               const dRight = walkableNativeW - nearest.nx;
-              const dTop = nearest.ny;
+              const dTop = Infinity; // rivals must never flee up/through the ceiling — only left/right/down
               const dBottom = walkableNativeH - nearest.ny;
               const minEdge = Math.min(dLeft, dRight, dTop, dBottom);
               const FLEE_MARGIN = 120;
