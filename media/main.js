@@ -12132,19 +12132,22 @@
           ctx.drawImage(img, drawX, drawY, spriteSize, spriteSize);
         }
         ctx.restore();
-        // HP bar above the enemy.
-        const hpFrac = Math.max(0, Math.min(1, en.hp / en.maxHp));
-        const barW = Math.max(12, spriteSize * 0.4);
-        const barH = 4;
-        const barX = ecx - barW / 2;
-        const barY = ecy - spriteSize - 10;
-        ctx.fillStyle = "rgba(0,0,0,0.5)";
-        ctx.fillRect(barX, barY, barW, barH);
-        ctx.fillStyle = hpFrac > 0.4 ? "#ff4040" : "#ff9a3c";
-        ctx.fillRect(barX, barY, barW * hpFrac, barH);
-        ctx.strokeStyle = "rgba(255,255,255,0.4)";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(barX, barY, barW, barH);
+        // HP bar above the enemy. Skipped once the rival is defeated
+        // (fleeing) — an empty bar would overlap the injured bubble below.
+        if (!en.fleeing) {
+          const hpFrac = Math.max(0, Math.min(1, en.hp / en.maxHp));
+          const barW = Math.max(12, spriteSize * 0.4);
+          const barH = 4;
+          const barX = ecx - barW / 2;
+          const barY = ecy - spriteSize - 10;
+          ctx.fillStyle = "rgba(0,0,0,0.5)";
+          ctx.fillRect(barX, barY, barW, barH);
+          ctx.fillStyle = hpFrac > 0.4 ? "#ff4040" : "#ff9a3c";
+          ctx.fillRect(barX, barY, barW * hpFrac, barH);
+          ctx.strokeStyle = "rgba(255,255,255,0.4)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(barX, barY, barW, barH);
+        }
         // Expression bubble above the rival (e.g. dazed/hit on eviction),
         // via the same shared helper agents use. Fully guarded: rivals lacking
         // bubble fields (undefined) fail the >=0 / >0 checks inside and draw
