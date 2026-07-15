@@ -466,6 +466,68 @@ test('resyncDescriptionReviewItems rebuilds the achievements board when a badge 
   assert.equal(refreshed[0].updated_at, savedBoard.updated_at);
 });
 
+// --- expression: POSITIONAL appearance descriptions (index === cell) ---------
+// Like badges (and unlike object/decor/rival), an expression change carries id
+// `expression_<index>` and writes plan.expression_descriptions[index]. The
+// expression LABELS are fixed (FIXED_EXPRESSION_LABELS) and never edited — only
+// the per-cell appearance text lives here.
+
+test('applyThemeItemDescriptionChanges writes plan.expression_descriptions at the positional expression index', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  assert.equal(plan.expression_descriptions, undefined);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'expression', id: 'expression_0', description: '  A pulsing neon heart.  ' },
+    { item_kind: 'expression', id: 'expression_2', description: 'A jagged red rage bolt.' },
+  ]);
+
+  assert.equal(result.applied.length, 2);
+  assert.equal(result.rejected.length, 0);
+  // index 0 set + padded up to index 2 (gap filled with '').
+  assert.deepEqual(plan.expression_descriptions, [
+    'A pulsing neon heart.', '', 'A jagged red rage bolt.',
+  ]);
+});
+
+test('applyThemeItemDescriptionChanges rejects an expression id that is malformed or out of range, without touching the plan', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'expression', id: 'expression_8', description: 'Beyond the 8-cell board.' },
+    { item_kind: 'expression', id: 'expression_x', description: 'Not a number.' },
+  ]);
+
+  assert.equal(result.applied.length, 0);
+  assert.equal(result.rejected.length, 2);
+  assert.deepEqual(result.rejected.map((r) => r.id).sort(), ['expression_8', 'expression_x']);
+  assert.equal(plan.expression_descriptions, undefined);
+});
+
+test('resyncDescriptionReviewItems rebuilds the expressions board when an expression description changes, baking the text into its prompt', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+  const savedBoard = savedItems.find((item) => item.id === 'expressions')!;
+  assert.doesNotMatch(savedBoard.prompt, /neon heart/);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'expression', id: 'expression_0', description: 'A pulsing neon heart.' },
+  ]);
+  assert.equal(result.applied.length, 1);
+
+  const refreshed = resyncDescriptionReviewItems({ items: savedItems }, manifest, plan, result.applied);
+  assert.deepEqual(refreshed.map((item) => item.id), ['expressions']);
+  assert.match(refreshed[0].prompt, /Cell 1: happy — A pulsing neon heart\./);
+  assert.deepEqual(refreshed[0].expression_descriptions, ['A pulsing neon heart.', '']);
+
+  // Review progress survives the resync untouched.
+  assert.equal(refreshed[0].status, savedBoard.status);
+  assert.equal(refreshed[0].revision, savedBoard.revision);
+  assert.equal(refreshed[0].updated_at, savedBoard.updated_at);
+});
+
 // --- applyBadgeNameReset: restore canonical titles, migrate custom name -> desc
 
 test('applyBadgeNameReset restores canonical badge titles and migrates each custom title into its (empty) appearance description', () => {

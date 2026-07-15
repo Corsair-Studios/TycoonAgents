@@ -903,9 +903,11 @@ export function buildExpressionAtlasPrompt(
   themeName: string,
   expressions: string[],
   background: BoardBackgroundMode = 'magenta',
+  descriptions?: string[],
 ): string {
   const cells = expressions.slice(0, 8).map((expression, index) =>
-    `Cell ${index + 1}: ${expression}`,
+    `Cell ${index + 1}: ${expression}`
+      + (descriptions?.[index] ? ` — ${descriptions[index]}` : ''),
   );
   return [
     `Create one expression-icon sprite sheet for the "${themeName}" theme.`,

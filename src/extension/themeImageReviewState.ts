@@ -103,6 +103,10 @@ export interface ThemeImageReviewItem {
   decor_rows?: ThemeDecorBoardRow[];
   rival_rows?: ThemeRivalBoardRow[];
   expression_names?: string[];
+  /** Expression board only: positional (index === expression cell) appearance
+   * text from plan.expression_descriptions, for the review UI's Descriptions
+   * editor. Absent when the theme has no expression descriptions yet. */
+  expression_descriptions?: string[];
   achievement_names?: string[];
   /** Achievement/badge board only: positional (index === badge slot) appearance
    * text from plan.achievement_descriptions, for the review UI's Descriptions

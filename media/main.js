@@ -2572,6 +2572,34 @@
           };
         });
     }
+    if (item.kind === "expression_atlas") {
+      // Expression APPEARANCE descriptions — positional, rowId expression_<index>,
+      // item_kind "expression" (see applyThemeItemDescriptionChanges' expression
+      // branch). The 8 expression LABELS are FIXED semantic hooks (love, idea,
+      // anger, …) and are NOT editable — only the per-cell appearance text is.
+      // There is deliberately NO name row for expressions (themeReviewNameRows
+      // has no expression case), so this description-only row is unioned in as
+      // descRow with a read-only label. item.expression_names carries the fixed
+      // labels (plan.expressions === FIXED_EXPRESSION_LABELS); fall back to the
+      // hardcoded list if it's absent.
+      const FIXED_EXPRESSION_LABELS = [
+        "Love", "Idea / discovery spark", "Anger", "Team action / rally",
+        "Thumbs up", "Music", "Sleep / low-energy zzz", "Dazed / hit",
+      ];
+      const names = Array.isArray(item.expression_names) ? item.expression_names : [];
+      const descriptions = Array.isArray(item.expression_descriptions) ? item.expression_descriptions : [];
+      const rows = [];
+      for (let i = 0; i < 8; i += 1) {
+        const label = names[i] || FIXED_EXPRESSION_LABELS[i] || ("Expression " + (i + 1));
+        rows.push({
+          rowId: "expression_" + i,
+          itemKind: "expression",
+          label: "Expression " + (i + 1) + ": " + label,
+          original: descriptions[i] || "",
+        });
+      }
+      return rows;
+    }
     if (item.kind === "achievement_atlas" && Array.isArray(item.achievement_names)) {
       // Badge APPEARANCE descriptions — positional, rowId achievement_<index>,
       // item_kind "badge" (see applyThemeItemDescriptionChanges' badge branch).
@@ -2963,6 +2991,89 @@
     }
   }
 
+  // Tracks the single open review-board right-click menu so a second right-click
+  // (or any dismissal) always tears down the previous one first.
+  let themeReviewContextMenuEl = null;
+  let themeReviewContextMenuCleanup = null;
+
+  function closeThemeReviewContextMenu() {
+    if (themeReviewContextMenuCleanup) {
+      try { themeReviewContextMenuCleanup(); } catch (_e) { /* ignore */ }
+      themeReviewContextMenuCleanup = null;
+    }
+    if (themeReviewContextMenuEl && themeReviewContextMenuEl.parentNode) {
+      themeReviewContextMenuEl.parentNode.removeChild(themeReviewContextMenuEl);
+    }
+    themeReviewContextMenuEl = null;
+  }
+
+  /**
+   * Minimal one-item ("Open file location") right-click menu for a review board
+   * card. Positioned at the cursor, dismissed on outside click, Escape, scroll,
+   * or resize. Clicking the item posts REVEAL_THEME_IMAGE for the given board so
+   * the host reveals its saved image file in the OS explorer. Fully guarded —
+   * only opens for a card that carries an item id.
+   * @param {number} clientX
+   * @param {number} clientY
+   * @param {string} itemId
+   */
+  function openThemeReviewContextMenu(clientX, clientY, itemId) {
+    if (!itemId || !reviewThemeId) return;
+    closeThemeReviewContextMenu();
+    const menu = document.createElement("div");
+    menu.className = "theme-review-context-menu";
+    menu.style.cssText = "position:fixed;z-index:9999;min-width:150px;padding:4px;"
+      + "background:var(--vscode-menu-background,#252526);"
+      + "color:var(--vscode-menu-foreground,#ccc);"
+      + "border:1px solid var(--vscode-menu-border,rgba(255,255,255,0.15));"
+      + "border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.4);font-size:12px;";
+    const openItem = document.createElement("button");
+    openItem.type = "button";
+    openItem.textContent = "Open file location";
+    openItem.style.cssText = "display:block;width:100%;text-align:left;padding:5px 10px;"
+      + "background:transparent;border:none;color:inherit;cursor:pointer;border-radius:3px;font-size:12px;";
+    openItem.addEventListener("mouseenter", () => {
+      openItem.style.background = "var(--vscode-menu-selectionBackground,rgba(255,255,255,0.12))";
+    });
+    openItem.addEventListener("mouseleave", () => { openItem.style.background = "transparent"; });
+    openItem.addEventListener("click", () => {
+      closeThemeReviewContextMenu();
+      vscode.postMessage({
+        type: "REVEAL_THEME_IMAGE",
+        payload: { theme_id: reviewThemeId, item_id: itemId },
+      });
+    });
+    menu.appendChild(openItem);
+    document.body.appendChild(menu);
+    themeReviewContextMenuEl = menu;
+
+    // Clamp within the viewport so the menu never overflows off-screen.
+    const rect = menu.getBoundingClientRect();
+    const left = Math.min(clientX, Math.max(0, window.innerWidth - rect.width - 4));
+    const top = Math.min(clientY, Math.max(0, window.innerHeight - rect.height - 4));
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+
+    const onOutside = (event) => { if (!menu.contains(event.target)) closeThemeReviewContextMenu(); };
+    const onKey = (event) => { if (event.key === "Escape") closeThemeReviewContextMenu(); };
+    // Defer the outside-click binding a tick so the originating right-click's
+    // trailing events don't immediately dismiss the fresh menu.
+    setTimeout(() => {
+      document.addEventListener("mousedown", onOutside, true);
+      document.addEventListener("contextmenu", onOutside, true);
+    }, 0);
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("scroll", closeThemeReviewContextMenu, true);
+    window.addEventListener("resize", closeThemeReviewContextMenu, true);
+    themeReviewContextMenuCleanup = () => {
+      document.removeEventListener("mousedown", onOutside, true);
+      document.removeEventListener("contextmenu", onOutside, true);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("scroll", closeThemeReviewContextMenu, true);
+      window.removeEventListener("resize", closeThemeReviewContextMenu, true);
+    };
+  }
+
   function renderThemeImageReview(payload) {
     if (!themeImageReview || !themeImageReviewList) return;
     // Host updates can arrive while the user is editing a different card. Keep
@@ -3048,6 +3159,14 @@
         + (isCurrentReviewGate ? " theme-review-card--current" : "")
         + (item.generation_error ? " theme-review-card--blocked" : "");
       card.dataset.itemId = item.id;
+      // Right-click a board card → minimal "Open file location" menu that reveals
+      // this board's saved image file in the OS explorer (see openThemeReviewContextMenu).
+      if (item.id) {
+        card.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          openThemeReviewContextMenu(event.clientX, event.clientY, item.id);
+        });
+      }
 
       const preview = item.image_src ? document.createElement("button") : document.createElement("div");
       preview.className = "theme-review-preview" + (item.image_src ? "" : " theme-review-preview--missing");
@@ -3288,28 +3407,34 @@
       retryRow.className = "theme-review-retry-row";
       const mode = document.createElement("select");
       mode.className = "theme-review-mode";
-      const augmentOption = document.createElement("option");
-      augmentOption.value = "augment";
-      augmentOption.textContent = "Add notes to original prompt";
-      const replaceOption = document.createElement("option");
-      replaceOption.value = "replace";
-      replaceOption.textContent = "Replace creative direction";
+      // Only TWO retry modes are exposed now: 'retry' (regenerate from the saved
+      // names & descriptions, no free-text notes) and 'custom' (advanced: the
+      // user writes the entire prompt). The former 'augment'/'replace' notes
+      // modes were removed — the Names & descriptions editor above is the
+      // supported way to steer appearance. The BACKEND still handles every mode
+      // (selectThemeImageRetryPrompt); stale drafts are coerced below so a
+      // now-removed value can't break the select.
       const retryOption = document.createElement("option");
       retryOption.value = "retry";
-      retryOption.textContent = "No notes, just retry";
+      retryOption.textContent = "Regenerate (uses your names & descriptions)";
       retryOption.disabled = !item.prompt;
       const customOption = document.createElement("option");
       customOption.value = "custom";
-      customOption.textContent = "Full prompt (advanced) — use my notes verbatim";
-      mode.appendChild(augmentOption);
-      mode.appendChild(replaceOption);
+      customOption.textContent = "Advanced — write the full prompt myself";
       mode.appendChild(retryOption);
       mode.appendChild(customOption);
-      mode.value = "replace";
-      if (item.generation_error) mode.value = "replace";
-      if (savedDraft?.mode
-          && Array.from(mode.options).some((option) => option.value === savedDraft.mode && !option.disabled)) {
-        mode.value = savedDraft.mode;
+      // Default to retry; fall back to custom when there is no saved prompt to
+      // regenerate from, or when the image was blocked (custom lets the user
+      // rewrite the offending prompt).
+      mode.value = retryOption.disabled ? "custom" : "retry";
+      if (item.generation_error) mode.value = "custom";
+      // Coerce a stale draft mode saved under the removed 'augment'/'replace'
+      // options to 'retry' before matching, so it doesn't silently fail to apply.
+      let savedMode = savedDraft?.mode;
+      if (savedMode === "augment" || savedMode === "replace") savedMode = "retry";
+      if (savedMode
+          && Array.from(mode.options).some((option) => option.value === savedMode && !option.disabled)) {
+        mode.value = savedMode;
       }
       const retryBtn = document.createElement("button");
       retryBtn.className = "skill-btn theme-review-retry";
@@ -3358,19 +3483,17 @@
         });
       });
       const updateRetryMode = () => {
-        const retriesSavedPrompt = mode.value === "retry";
         const isCustomMode = mode.value === "custom";
-        feedback.disabled = retriesSavedPrompt;
-        if (retriesSavedPrompt) feedback.removeAttribute("aria-invalid");
+        // The notes/feedback box exists ONLY for custom (full-prompt) mode now.
+        // Retry regenerates from the saved names & descriptions and shows no
+        // notes box at all.
+        feedback.hidden = !isCustomMode;
+        feedback.disabled = !isCustomMode;
+        if (!isCustomMode) feedback.removeAttribute("aria-invalid");
         customModeWarning.hidden = !isCustomMode;
-        feedbackHint.hidden = isCustomMode;
-        if (mode.value === "augment") {
-          feedbackHint.textContent = "Your notes are ADDED to the theme's current prompt as revision notes — layout and art rules are kept.";
-        } else if (mode.value === "replace") {
-          feedbackHint.textContent = "Your notes REPLACE the theme's creative direction only — layout, grid, and art rules are kept.";
-        } else if (retriesSavedPrompt) {
-          feedbackHint.textContent = "No notes used — rebuilds from the current template, picking up any recent prompt fixes.";
-        }
+        // feedbackHint described the removed augment/replace notes modes; neither
+        // remaining mode needs it (retry = no notes, custom = warning covers it).
+        feedbackHint.hidden = true;
         const customEmpty = isCustomMode && !feedback.value.trim();
         customModeEmptyHint.hidden = !customEmpty;
         retryBtn.disabled = retryBtnBaseDisabled || customEmpty;

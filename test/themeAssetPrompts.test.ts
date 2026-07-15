@@ -240,6 +240,22 @@ test('achievement prompt injects per-badge appearance descriptions when provided
   assert.match(prompt, /Cell 2: Badge 2\n/);
 });
 
+test('expression prompt injects per-cell appearance descriptions when provided, name-only when absent', () => {
+  const names = Array.from({ length: 8 }, (_unused, index) => `Expression ${index + 1}`);
+  const descriptions = new Array(8).fill('');
+  descriptions[0] = 'a pulsing neon heart';
+  descriptions[7] = 'a cluster of swirling stars';
+  const prompt = buildExpressionAtlasPrompt('industrial', 'Factory', names, 'magenta', descriptions);
+  // Cell with a description carries "<label> — <description>"; blank ones stay label-only.
+  assert.match(prompt, /Cell 1: Expression 1 — a pulsing neon heart/);
+  assert.match(prompt, /Cell 8: Expression 8 — a cluster of swirling stars/);
+  assert.match(prompt, /Cell 2: Expression 2\n/);
+  // Byte-identical to the no-description prompt when descriptions is omitted.
+  const noDesc = buildExpressionAtlasPrompt('industrial', 'Factory', names, 'magenta');
+  const allBlank = buildExpressionAtlasPrompt('industrial', 'Factory', names, 'magenta', new Array(8).fill(''));
+  assert.equal(allBlank, noDesc);
+});
+
 test('object board 1 prompt emits explicit ranged-rack guidance for cell 1 and generic guidance elsewhere', () => {
   const specs = staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT);
   const rows = createObjectBoard1Rows([

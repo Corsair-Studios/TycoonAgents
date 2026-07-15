@@ -164,6 +164,16 @@ export interface ThemePlan {
    */
   enemy_descriptions?: string[];
   expressions: string[];
+  /**
+   * Optional per-expression concrete visual-appearance spec. Like
+   * `achievement_descriptions`, this is POSITIONAL: index i aligns to expression
+   * cell i (0..THEME_EXPRESSION_COUNT-1), matching plan.expressions[i] /
+   * FIXED_EXPRESSION_LABELS[i]. Threaded into buildExpressionAtlasPrompt so a
+   * cell's ART can be steered by appearance text while its LABEL stays a fixed
+   * semantic hook. Internal plan field only — NOT part of the immutable
+   * shared/types contract.
+   */
+  expression_descriptions?: string[];
   achievements: string[];
   /**
    * Optional per-achievement/badge concrete visual-appearance spec. Unlike the
@@ -247,6 +257,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     expressions: applyFixedExpressionLabels(
       normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
     ),
+    expression_descriptions: normalizePositionalDescriptions(input.expression_descriptions, THEME_EXPRESSION_COUNT),
     achievements: normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge'),
     achievement_descriptions: normalizeAchievementDescriptions(input.achievement_descriptions),
   };
@@ -259,9 +270,19 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
  * there is no description data at all (callers fall back to name-only prompts).
  */
 function normalizeAchievementDescriptions(rawExtra: unknown): string[] | undefined {
+  return normalizePositionalDescriptions(rawExtra, THEME_ACHIEVEMENT_COUNT);
+}
+
+/**
+ * Positional (index === slot) description normalizer shared by the badge and
+ * expression boards: pad/truncate `rawExtra` to exactly `count` entries, each a
+ * trimmed string ('' where absent). Returns undefined when there is no
+ * description data at all so callers fall back to name-only prompts.
+ */
+function normalizePositionalDescriptions(rawExtra: unknown, count: number): string[] | undefined {
   if (!Array.isArray(rawExtra) || rawExtra.length === 0) return undefined;
   const out: string[] = [];
-  for (let i = 0; i < THEME_ACHIEVEMENT_COUNT; i += 1) {
+  for (let i = 0; i < count; i += 1) {
     const value = rawExtra[i];
     out.push(typeof value === 'string' ? value.trim() : '');
   }

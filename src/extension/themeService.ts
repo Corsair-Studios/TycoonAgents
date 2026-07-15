@@ -78,6 +78,7 @@ import {
   ATLAS_CLIPS,
   normalizeThemePlan,
   THEME_ACHIEVEMENT_COUNT,
+  THEME_EXPRESSION_COUNT,
   THEME_OBJECT_COUNT,
   themePlanCreativeDirection,
   themePlanToManifest,
@@ -848,6 +849,7 @@ export function refreshSavedReviewItemMetadata(
     ...(expected.achievement_names !== undefined ? { achievement_names: expected.achievement_names } : {}),
     ...(expected.achievement_descriptions !== undefined ? { achievement_descriptions: expected.achievement_descriptions } : {}),
     ...(expected.expression_names !== undefined ? { expression_names: expected.expression_names } : {}),
+    ...(expected.expression_descriptions !== undefined ? { expression_descriptions: expected.expression_descriptions } : {}),
   };
 }
 
@@ -1249,7 +1251,7 @@ export async function resetThemeBadgeNames(
  * (positional, id `achievement_<index>`) — the badge's appearance field, kept
  * separate from its display-name/title. */
 export interface ThemeItemDescriptionChange {
-  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof' | 'badge';
+  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof' | 'badge' | 'expression';
   id: string;
   description: string;
 }
@@ -1343,6 +1345,20 @@ export function applyThemeItemDescriptionChanges(
         continue;
       }
       plan.achievement_descriptions = setPlanDescriptionAt(plan.achievement_descriptions, badgeIndex, description);
+    } else if (change.item_kind === 'expression') {
+      // Expression descriptions are POSITIONAL: rowId is `expression_<index>`
+      // (see themeReviewDescriptionRows), aligning to
+      // plan.expression_descriptions[idx] / plan.expressions[idx]. Mirror the
+      // badge branch: pad the array to the expression index and set it. The
+      // expression LABELS are fixed (FIXED_EXPRESSION_LABELS) and never edited;
+      // only the per-cell appearance text lives here.
+      const expressionMatch = /^expression_(\d+)$/.exec(change.id);
+      const expressionIndex = expressionMatch ? Number(expressionMatch[1]) : -1;
+      if (expressionIndex < 0 || expressionIndex >= THEME_EXPRESSION_COUNT) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: `Unknown expression "${change.id}".` });
+        continue;
+      }
+      plan.expression_descriptions = setPlanDescriptionAt(plan.expression_descriptions, expressionIndex, description);
     } else if (change.item_kind === 'crate') {
       // Single field, not an indexed array — exactly one crate per theme.
       plan.crate_description = description;
@@ -1382,6 +1398,10 @@ export function resyncDescriptionReviewItems(
   // badge change affects the single fixed 'achievements' board rather than a
   // roster-matched row id.
   const badgeChanged = applied.some((change) => change.item_kind === 'badge');
+  // Expression descriptions are positional plan fields (expression_<index>), so
+  // any expression change affects the single fixed 'expressions' board rather
+  // than a roster-matched row id (mirrors the badge/achievements case).
+  const expressionChanged = applied.some((change) => change.item_kind === 'expression');
 
   const affectedBoardIds = new Set<string>();
   for (const item of document.items) {
@@ -1400,6 +1420,8 @@ export function resyncDescriptionReviewItems(
     } else if (item.kind === 'character_atlas' && affectedIds.has(item.id)) {
       affectedBoardIds.add(item.id);
     } else if (item.kind === 'achievement_atlas' && badgeChanged) {
+      affectedBoardIds.add(item.id);
+    } else if (item.kind === 'expression_atlas' && expressionChanged) {
       affectedBoardIds.add(item.id);
     }
   }
@@ -2698,10 +2720,22 @@ export function createReviewItems(
       label: '8 expressions',
       kind: 'expression_atlas',
       status: 'pending',
-      prompt: buildExpressionAtlasPrompt(creativeDirection, plan.display_name, plan.expressions, backgroundMode),
+      prompt: buildExpressionAtlasPrompt(
+        creativeDirection,
+        plan.display_name,
+        plan.expressions,
+        backgroundMode,
+        plan.expression_descriptions,
+      ),
       revision: 0,
       frame_keys: plan.expressions.map((_name, index) => `expression_${index}`),
       expression_names: plan.expressions,
+      // Positional (index === expression cell) appearance text for the review
+      // UI's Descriptions editor; may be absent (name-only prompt) — normalized
+      // to a full-length array so each expression row always resolves cleanly.
+      expression_descriptions: plan.expression_descriptions
+        ? plan.expressions.map((_n, index) => plan.expression_descriptions?.[index] ?? '')
+        : undefined,
     },
     {
       id: 'achievements',

@@ -125,6 +125,7 @@ export const MSG = {
 
   // ---- theme image review / retry / reslice / normalize / rename ---------
   OPEN_THEME_IMAGES: "OPEN_THEME_IMAGES",
+  REVEAL_THEME_IMAGE: "REVEAL_THEME_IMAGE",
   GET_THEME_IMAGE_REVIEW: "GET_THEME_IMAGE_REVIEW",
   THEME_IMAGE_REVIEW: "THEME_IMAGE_REVIEW",
   SET_THEME_IMAGE_REVIEW_STATUS: "SET_THEME_IMAGE_REVIEW_STATUS",
@@ -255,6 +256,13 @@ export const MSG_SCHEMAS = {
     .object({ theme_id: z.string().min(1), item_id: z.string().min(1) })
     .passthrough(),
 
+  // Right-click "Open file location" on a review board — reveal its saved image
+  // file in the OS file explorer. Read-only (no mutation) but validated so a
+  // malformed payload is dropped rather than reaching the reveal call.
+  REVEAL_THEME_IMAGE: z
+    .object({ theme_id: z.string().min(1), item_id: z.string().min(1) })
+    .passthrough(),
+
   // ---- theme library: delete -----------------------------------------------
   DELETE_THEME: z.object({ theme_id: z.string().min(1) }).passthrough(),
 
@@ -344,7 +352,7 @@ export const MSG_SCHEMAS = {
         .array(
           z
             .object({
-              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof', 'badge']),
+              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof', 'badge', 'expression']),
               id: z.string().min(1),
               description: z.string().max(400),
             })

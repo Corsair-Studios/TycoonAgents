@@ -831,6 +831,46 @@ export class TycoonPanel {
               );
             }
           }
+        } else if (message.type === MSG.REVEAL_THEME_IMAGE) {
+          // Right-click "Open file location" on a review board — reveal its
+          // saved image file in the OS explorer. Fully guarded: a missing
+          // item/file surfaces an info message rather than throwing.
+          const parsedReveal = MSG_SCHEMAS.REVEAL_THEME_IMAGE.safeParse((message as any).payload);
+          if (!parsedReveal.success) return;
+          const themeId = parsedReveal.data.theme_id;
+          const itemId = parsedReveal.data.item_id;
+          if (!/^[a-z0-9_]+$/.test(themeId)) return;
+          try {
+            const review = await getThemeImageReview(this._globalStorageUri, themeId);
+            const entry = review.entries.find((candidate) => candidate.item.id === itemId);
+            const filename = entry?.item.filename;
+            if (!filename) {
+              void vscode.window.showInformationMessage(
+                "TycoonAgents: This board has no saved image file yet.",
+              );
+              return;
+            }
+            const imageUri = vscode.Uri.joinPath(
+              themeImagesDirectoryUri(this._globalStorageUri, themeId),
+              filename,
+            );
+            try {
+              await vscode.workspace.fs.stat(imageUri);
+            } catch {
+              void vscode.window.showInformationMessage(
+                "TycoonAgents: The image file for this board was not found on disk.",
+              );
+              return;
+            }
+            const nativePath = nativeWindowsUserDataPath(imageUri.scheme, imageUri.path);
+            const revealUri = nativePath ? vscode.Uri.file(nativePath) : imageUri;
+            await vscode.commands.executeCommand("revealFileInOS", revealUri);
+          } catch (err) {
+            console.error("TycoonAgents: Could not reveal theme image:", err);
+            void vscode.window.showInformationMessage(
+              "TycoonAgents could not open the file location for this board.",
+            );
+          }
         } else if (message.type === MSG.GET_THEME_IMAGE_REVIEW) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const themeId = payload?.theme_id ?? "";
