@@ -10289,8 +10289,19 @@
     ctx.closePath();
     ctx.fill();
     // Gentle vertical bob for the icon only (display-only).
-    const bob = Math.sin((performance.now ? performance.now() : Date.now()) / 180) * 1.4;
-    ctx.drawImage(bimg, bx - bs / 2, (by - bs / 2) - bob, bs, bs);
+    const t = performance.now ? performance.now() : Date.now();
+    const bob = Math.sin(t / 180) * 1.4;
+    if (exprIndex === 7) {
+      // Dazed/hit: slow spin ("seeing stars") around the icon's center.
+      const spin = t / 500;
+      ctx.save();
+      ctx.translate(bx, by - bob);
+      ctx.rotate(spin);
+      ctx.drawImage(bimg, -bs / 2, -bs / 2, bs, bs);
+      ctx.restore();
+    } else {
+      ctx.drawImage(bimg, bx - bs / 2, (by - bs / 2) - bob, bs, bs);
+    }
     ctx.restore();
   }
 
