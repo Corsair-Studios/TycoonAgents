@@ -912,15 +912,15 @@ export function buildExpressionAtlasPrompt(
   return [
     `Create one expression-icon sprite sheet for the "${themeName}" theme.`,
     boardContract(4, 2, background),
-    'Draw exactly one expression in each cell, in row-major order. Every cell must instantly READ as the emotion named for it, even at very small sizes:',
+    'Draw exactly one bold, simple ICON in each cell, in row-major order. Every cell must instantly READ as the emotion named for it, even at very small sizes:',
     ...cells,
-    'APPEARANCE — the user may supply art direction per cell: where a cell line has "— <description>" after its emotion, render that cell EXACTLY as described and treat the description as authoritative. It may be theme-specific, stylized, detailed, or feature a creature, object, symbol, or face if it calls for one — follow it, as long as the icon still unmistakably reads as that emotion. Where a cell has NO description, draw a clean, bold, universally-readable symbolic emote for that emotion (e.g. a heart for love, a spark or lightbulb for idea, a raised fist or scowl mark for anger, a music note for music, "zzz"-style marks for sleep).',
-    'Cell 8 is "Dazed / hit": if it has no description, default to the classic comic "seeing stars" motif (a small cluster of stars and/or a spiral above a point); if it has a description, follow that instead. Either way it must read as dazed/struck.',
-    'Whatever each cell depicts, draw it LARGE and centered to fill most of its cell, in a consistent art style that matches the theme.',
-    'Do NOT draw any speech bubble, balloon, callout, chat bubble, frame, border, panel, outline, or container around the expression — the app displays it inside its own bubble, so render ONLY the bare expression itself.',
+    'APPEARANCE — the user may supply art direction per cell: where a cell line has "— <description>" after its emotion, follow that description and treat it as authoritative for the icon\'s STYLE and theme flavor (e.g. a serpent-styled heart, a themed music note, a spiral of tiny skulls for dazed). It must still be a single, bold, instantly-readable symbolic ICON that clearly reads as that emotion. Where a cell has NO description, draw a clean, universally-readable symbolic emote for that emotion (e.g. a heart for love, a spark or lightbulb for idea, a raised fist or scowl mark for anger, a music note for music, "zzz"-style marks for sleep).',
+    'These are ICONS, NOT characters. Do NOT draw any face, head, eyes, mouth, hair, portrait, or full character in ANY cell — even if a description hints at one. Expression icons render very small, where a face or character will not read; keep every cell a bold, simple, high-contrast pictogram/symbol drawn LARGE and centered to fill most of its cell.',
+    'Cell 8 is "Dazed / hit": if it has no description, default to the classic comic "seeing stars" motif (a small cluster of stars and/or a spiral above a point); if it has a description, follow that style but keep it a bare stars/impact icon (still no head or face). Either way it must read as dazed/struck.',
+    'Do NOT draw any speech bubble, balloon, callout, chat bubble, frame, border, panel, outline, or container around the icon — the app displays it inside its own bubble, so render ONLY the bare icon itself.',
     background === 'transparent'
-      ? 'Bold, high-contrast art on a fully transparent background; centered in its cell.'
-      : 'Bold, high-contrast art on solid magenta; centered in its cell.',
+      ? 'Flat, bold, high-contrast icon art on a fully transparent background; centered in its cell.'
+      : 'Flat, bold, high-contrast icon art on solid magenta; centered in its cell.',
     'No words, letters, numbers, or punctuation glyphs.',
     '',
     `Creative direction: ${creativeDirection}`,
