@@ -29,8 +29,14 @@ import {
   readExecutionConfig,
   writeExecutionConfig,
   type DelegationMode,
+  type DoctrineRosterAgent,
 } from "./delegationDoctrine";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
+import {
+  detectForeignManagedBlocks,
+  detectLegacyOfficeAgentsBlock,
+  stripLegacyOfficeAgentsBlock,
+} from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
 import { computeEngineChips, mcpEntryForEngine, type EngineChip } from "./engineDetect";
@@ -424,6 +430,16 @@ export class TycoonPanel {
             this._handleAddGitignoreEntries();
           } else {
             console.error("TycoonAgents: addGitignoreEntries payload rejected:", parsedAddGitignore.error.message);
+          }
+        } else if (message.type === MSG.REMOVE_LEGACY_DOCTRINE) {
+          const parsedRemoveLegacyDoctrine = MSG_SCHEMAS.REMOVE_LEGACY_DOCTRINE.safeParse(message);
+          if (parsedRemoveLegacyDoctrine.success) {
+            this._handleRemoveLegacyDoctrine();
+          } else {
+            console.error(
+              "TycoonAgents: removeLegacyDoctrine payload rejected:",
+              parsedRemoveLegacyDoctrine.error.message
+            );
           }
         } else if (message.type === MSG.INSTALL_HOOKS) {
           // SET_DELEGATION_MODE and INSTALL_HOOKS share the same
@@ -3122,6 +3138,28 @@ export class TycoonPanel {
     // uefnDetected trigger, and renderSetupOptionals's UEFN section).
     const mcpConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
     const uefnBridgeSetUp = Boolean(this._uefnBridgeEntry(mcpConfig));
+    // Legacy predecessor-plugin (OfficeAgents) CLAUDE.md block detection —
+    // opt-in removal surfaced as a Setup Wizard Step-2 button (see
+    // legacyDoctrine.ts / MSG.REMOVE_LEGACY_DOCTRINE). Never auto-removed.
+    let legacyDoctrineBlock = false;
+    let legacyDoctrineLines = 0;
+    // Generic inform-only detector for OTHER tools'/plugins' managed
+    // CLAUDE.md blocks (see legacyDoctrine.ts detectForeignManagedBlocks) —
+    // never removed by us, just surfaced so the user sees everything
+    // inflating CLAUDE.md, not only the one namespace (officeagents) we know
+    // how to strip.
+    let foreignManagedBlocks: { namespace: string; lines: number }[] = [];
+    if (root !== "") {
+      try {
+        const claudeMdContent = fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8");
+        const legacy = detectLegacyOfficeAgentsBlock(claudeMdContent);
+        legacyDoctrineBlock = legacy.present;
+        legacyDoctrineLines = legacy.lineCount;
+        foreignManagedBlocks = detectForeignManagedBlocks(claudeMdContent);
+      } catch {
+        // No CLAUDE.md yet -> nothing to detect.
+      }
+    }
     void this._panel.webview.postMessage({
       type: MSG.INSTALL_STATE,
       installed,
@@ -3129,30 +3167,25 @@ export class TycoonPanel {
       uefnSignals: uefn.signals,
       uefnBridgeSetUp,
       engineChips,
+      legacyDoctrineBlock,
+      legacyDoctrineLines,
+      foreignManagedBlocks,
     });
   }
 
   /**
-   * Setup wizard Step 2 (Optionals): idempotently append TycoonAgents runtime
-   * state/log artifact paths to the workspace `.gitignore` (creating the file
-   * if absent). Opt-in only — fired when the user checks "Add tycoon logs to
-   * .gitignore" and clicks Done (see media/main.js renderSetupOptionals). The
-   * entry list is fixed here, not payload-driven, so the wizard can never be
-   * used to gitignore arbitrary paths. Never touches CLAUDE.md, .mcp.json,
-   * source, or committed skills — only the generated `.claude/tycoon/` state
-   * dir and the rolling session journal.
+   * Idempotently append `entries` (under `header`) to the ignore file at
+   * `filePath`, creating it if absent. Shared by `.gitignore` and
+   * `.p4ignore` writes — both use the same line-based ignore syntax, so one
+   * append routine covers both. Returns true iff at least one entry was
+   * actually written (false when everything was already present, or on
+   * write failure) so callers can gate one-time follow-up notices on a real
+   * write rather than a no-op re-run.
    */
-  private _handleAddGitignoreEntries(): void {
-    const root = this._projectRoot();
-    if (root === "") return;
-
-    const gitignorePath = path.join(root, ".gitignore");
-    const header = "# TycoonAgents runtime artifacts";
-    const entries = [".claude/tycoon/", ".claude/session-journal.json"];
-
+  private _appendIgnoreEntries(filePath: string, header: string, entries: string[]): boolean {
     let existing = "";
     try {
-      existing = fs.readFileSync(gitignorePath, "utf8");
+      existing = fs.readFileSync(filePath, "utf8");
     } catch {
       existing = "";
     }
@@ -3160,7 +3193,7 @@ export class TycoonPanel {
     const existingLines = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
     const missing = entries.filter((e) => !existingLines.has(e));
     if (missing.length === 0) {
-      return; // already fully present — idempotent no-op
+      return false; // already fully present — idempotent no-op
     }
 
     const blockLines = existingLines.has(header) ? missing : [header, ...missing];
@@ -3169,10 +3202,85 @@ export class TycoonPanel {
     const block = prefix + spacer + blockLines.join("\n") + "\n";
 
     try {
-      fs.appendFileSync(gitignorePath, block);
+      fs.appendFileSync(filePath, block);
+      return true;
     } catch {
       /* best-effort convenience action; no user-facing error surface wired for this optional step */
+      return false;
     }
+  }
+
+  /**
+   * Setup wizard Step 2 (Optionals): idempotently append TycoonAgents runtime
+   * state/log artifact paths to the workspace ignore file(s) (creating them
+   * if absent). Opt-in only — fired when the user checks "Add tycoon logs to
+   * ignore file" and clicks Done (see media/main.js renderSetupOptionals).
+   * The entry list is fixed here, not payload-driven, so the wizard can
+   * never be used to ignore arbitrary paths. Never touches CLAUDE.md,
+   * .mcp.json, source, or committed skills — only the generated
+   * `.claude/tycoon/` state dir and the rolling session journal.
+   *
+   * UEFN projects use Perforce, which does NOT honor `.gitignore` — it reads
+   * `.p4ignore` instead. So on a UEFN project (per {@link detectUefnProject})
+   * this writes BOTH `.gitignore` (some UEFN projects also use git) AND
+   * `.p4ignore` with the identical entries; on a non-UEFN project it writes
+   * only `.gitignore`. After a real `.p4ignore` write we surface a one-time
+   * note that Perforce only honors it once `P4IGNORE` is configured.
+   */
+  private _handleAddGitignoreEntries(): void {
+    const root = this._projectRoot();
+    if (root === "") return;
+
+    const header = "# TycoonAgents runtime artifacts";
+    const entries = [".claude/tycoon/", ".claude/session-journal.json"];
+
+    this._appendIgnoreEntries(path.join(root, ".gitignore"), header, entries);
+
+    const uefn = detectUefnProject(root);
+    if (uefn.detected) {
+      const wroteP4ignore = this._appendIgnoreEntries(path.join(root, ".p4ignore"), header, entries);
+      if (wroteP4ignore) {
+        vscode.window.showInformationMessage(
+          "TycoonAgents added .p4ignore entries for this UEFN/Perforce project. " +
+            "Perforce only honors .p4ignore once P4IGNORE is configured — run `p4 set P4IGNORE=.p4ignore` " +
+            "(or set the P4IGNORE environment variable) to enable it."
+        );
+      }
+    }
+  }
+
+  /**
+   * Strip the legacy OfficeAgents-managed block out of the workspace's
+   * CLAUDE.md (see legacyDoctrine.ts) — the user's explicit confirm-click
+   * from the Setup Wizard Step-2 "Remove legacy OfficeAgents config block"
+   * button, never an auto-delete on install. Idempotent: a no-op when the
+   * markers aren't present. Touches ONLY the delimited region (plus the
+   * seam blank-line collapse) — never deletes agent `.md` files. Re-runs
+   * `_handleCheckInstall` afterward so the webview re-renders with
+   * `legacyDoctrineBlock: false` (Setup Wizard Step-2), AND `_handleGetSettings`
+   * (same pattern MSG.REPAIR_HOOK uses) so the Settings screen's "Hook
+   * health" row — which reads `legacyDoctrineBlock` off the SETTINGS
+   * payload, not INSTALL_STATE — refreshes too and the Remove row
+   * disappears without a manual reload.
+   */
+  private _handleRemoveLegacyDoctrine(): void {
+    const root = this._projectRoot();
+    if (root === "") return;
+
+    const claudeMdPath = path.join(root, "CLAUDE.md");
+    try {
+      const existing = fs.readFileSync(claudeMdPath, "utf8");
+      const { content, removed } = stripLegacyOfficeAgentsBlock(existing);
+      if (removed) {
+        fs.writeFileSync(claudeMdPath, content);
+      }
+    } catch {
+      // No CLAUDE.md -> nothing to strip; fall through to re-check so the
+      // webview still settles.
+    }
+
+    this._handleCheckInstall();
+    this._handleGetSettings();
   }
 
   /** Coerce an untrusted `delegation_mode` message field to a valid mode, defaulting to "flat". */
@@ -3220,7 +3328,7 @@ export class TycoonPanel {
         existingClaudeMd = null;
       }
 
-      const updated = this._buildClaudeMdDoctrine(existingClaudeMd, delegation_mode, reviewEnabled ?? true);
+      const updated = this._buildClaudeMdDoctrine(existingClaudeMd, delegation_mode, reviewEnabled ?? true, root);
       if (existingClaudeMd !== null && updated === existingClaudeMd) return; // already current — no write, no notice
 
       fs.writeFileSync(claudeMdPath, updated);
@@ -3272,20 +3380,98 @@ export class TycoonPanel {
   }
 
   /**
+   * Build the "Specialist roster" rows for the CLAUDE.md delegation doctrine
+   * from the project's ACTUAL delegation targets, never a hardcoded list —
+   * this is the fix for AGENTS-CONFIG-REPORT.md Finding 3 (a hardcoded
+   * roster that assumes a fixed agent set) and, by construction, Finding 2
+   * (dangling agent names with no corresponding file).
+   *
+   * Source of truth:
+   * - The id set comes ONLY from `.claude/agents/*.md` files present (via
+   *   {@link loadAgentRoster}, reused rather than reimplemented) — every row
+   *   is keyed on a real FILE id, so a name can never dangle.
+   * - Each row's "Task types" column prefers the agent's routing pattern
+   *   from `.claude/tycoon/agent-keywords.json` (pipe-delimited keywords,
+   *   rendered comma-separated); falls back to the agent's `## Role`
+   *   description, then a generic placeholder, when no keywords entry
+   *   exists yet.
+   *
+   * The orchestrator, the fallback/`primary-agent`, and any `tier: lead` /
+   * `tier: reviewer` agent are excluded — those already have their own
+   * doctrine sections (Direct/Team-Leads framing, Review pass) rather than
+   * being a "delegate to X" roster row. Returns `[]` (triggering
+   * `renderDelegationDoctrine`'s hardcoded default) when the agents
+   * directory is missing/empty — a bare install still gets sensible
+   * defaults.
+   */
+  private _buildDoctrineRoster(root: string): DoctrineRosterAgent[] {
+    const agentsDir = path.join(root, ".claude", "agents");
+    const rosterFiles = loadAgentRoster(agentsDir);
+    if (rosterFiles.length === 0) return [];
+
+    const keywordsConfig = this._readKeywordsConfig(root);
+    const keywordAgents: Record<string, any> =
+      keywordsConfig && typeof keywordsConfig.agents === "object" && keywordsConfig.agents !== null
+        ? keywordsConfig.agents
+        : {};
+
+    const EXCLUDED_IDS = new Set(["orchestrator", "primary-agent"]);
+
+    const rows: DoctrineRosterAgent[] = [];
+    for (const agent of rosterFiles) {
+      if (EXCLUDED_IDS.has(agent.id)) continue;
+
+      let tier: string | undefined;
+      try {
+        tier = agentMarkdownTier(fs.readFileSync(path.join(agentsDir, `${agent.id}.md`), "utf8"));
+      } catch {
+        tier = undefined;
+      }
+      if (tier === "lead" || tier === "reviewer") continue;
+
+      const entry = keywordAgents[agent.id];
+      const pattern: string = entry && typeof entry.pattern === "string" ? entry.pattern.trim() : "";
+      const taskTypes =
+        pattern !== ""
+          ? pattern
+              .split("|")
+              .map((s: string) => s.trim())
+              .filter(Boolean)
+              .join(", ")
+          : agent.description ?? "General tasks";
+
+      rows.push({ id: agent.id, taskTypes });
+    }
+
+    return rows;
+  }
+
+  /**
    * Build the full managed CLAUDE.md doctrine content (delegation section +
    * code rules section) for a given mode/reviewEnabled, splicing into
    * `existingContent`. Shared by `_handleInstallHooks` (the reference write
    * path) and `_ensureDelegationDoctrineCurrent` (auto-heal) so both
    * produce IDENTICAL output for the same inputs — auto-heal never drifts
    * from what a fresh Install/Repair would write.
+   *
+   * `root` drives two project-aware pieces: the dynamic Specialist roster
+   * (see `_buildDoctrineRoster`) and, via `detectUefnProject`, whether the
+   * code-rules table renders the UEFN/Verse variant instead of the generic
+   * web/TS one (see `renderCodeRules`'s `uefn` param).
    */
   private _buildClaudeMdDoctrine(
     existingContent: string | null,
     mode: DelegationMode,
-    reviewEnabled: boolean
+    reviewEnabled: boolean,
+    root: string
   ): string {
-    const withDelegation = upsertDelegationSection(existingContent, renderDelegationDoctrine(mode, reviewEnabled));
-    return upsertCodeRulesSection(withDelegation, renderCodeRules());
+    const roster = this._buildDoctrineRoster(root);
+    const isUefn = detectUefnProject(root).detected;
+    const withDelegation = upsertDelegationSection(
+      existingContent,
+      renderDelegationDoctrine(mode, reviewEnabled, roster)
+    );
+    return upsertCodeRulesSection(withDelegation, renderCodeRules(isUefn));
   }
 
   private _handleInstallHooks(delegationMode: DelegationMode = "flat"): void {
@@ -3394,7 +3580,7 @@ export class TycoonPanel {
         } catch {
           existingClaudeMd = null;
         }
-        const updated = this._buildClaudeMdDoctrine(existingClaudeMd, delegationMode, reviewEnabled);
+        const updated = this._buildClaudeMdDoctrine(existingClaudeMd, delegationMode, reviewEnabled, root);
         fs.writeFileSync(claudeMdPath, updated);
       } catch (err) {
         claudeMdError = claudeMdError ?? String(err);
@@ -3579,7 +3765,10 @@ export class TycoonPanel {
       } catch {
         existingClaudeMd = null;
       }
-      const updated = upsertDelegationSection(existingClaudeMd, renderDelegationDoctrine(mode, reviewEnabled));
+      const updated = upsertDelegationSection(
+        existingClaudeMd,
+        renderDelegationDoctrine(mode, reviewEnabled, this._buildDoctrineRoster(root))
+      );
       fs.writeFileSync(claudeMdPath, updated);
     } catch (err) {
       claudeMdError = String(err);
@@ -3646,7 +3835,10 @@ export class TycoonPanel {
       } catch {
         existingClaudeMd = null;
       }
-      const updated = upsertDelegationSection(existingClaudeMd, renderDelegationDoctrine(mode, enabled));
+      const updated = upsertDelegationSection(
+        existingClaudeMd,
+        renderDelegationDoctrine(mode, enabled, this._buildDoctrineRoster(root))
+      );
       fs.writeFileSync(claudeMdPath, updated);
     } catch (err) {
       claudeMdError = String(err);
@@ -3798,6 +3990,26 @@ export class TycoonPanel {
     const delegation_mode = execCfg.delegation_mode;
     const reviewEnabled = execCfg.reviewEnabled ?? true;
 
+    // Legacy OfficeAgents block + generic foreign-managed-block detection —
+    // same read/compute _handleCheckInstall does, duplicated here (rather
+    // than shared) so the Settings screen (renderSettings' Hook health /
+    // Context budget sections) can surface both without depending on a
+    // CHECK_INSTALL round-trip having run first. See legacyDoctrine.ts.
+    let legacyDoctrineBlock = false;
+    let legacyDoctrineLines = 0;
+    let foreignManagedBlocks: { namespace: string; lines: number }[] = [];
+    if (root !== "") {
+      try {
+        const claudeMdContent = fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8");
+        const legacy = detectLegacyOfficeAgentsBlock(claudeMdContent);
+        legacyDoctrineBlock = legacy.present;
+        legacyDoctrineLines = legacy.lineCount;
+        foreignManagedBlocks = detectForeignManagedBlocks(claudeMdContent);
+      } catch {
+        // No CLAUDE.md yet -> nothing to detect.
+      }
+    }
+
     void this._panel.webview.postMessage({
       type: MSG.SETTINGS,
       payload: {
@@ -3817,6 +4029,9 @@ export class TycoonPanel {
         },
         hookHealth,
         contextBudget,
+        legacyDoctrineBlock,
+        legacyDoctrineLines,
+        foreignManagedBlocks,
       },
     });
   }

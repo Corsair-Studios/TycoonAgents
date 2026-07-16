@@ -55,9 +55,17 @@ export const MSG = {
   INSTALL_HOOKS: "installHooks",
   // Setup wizard Step 2 (Optionals): opt-in append of TycoonAgents runtime
   // state/log artifact paths (.claude/tycoon/, session journal) into the
-  // workspace .gitignore. No payload — the host owns the canonical entry
-  // list so the wizard can't be tricked into gitignoring arbitrary paths.
+  // workspace ignore file(s) — .gitignore always, plus .p4ignore too on a
+  // detected UEFN/Perforce project (see panel.ts _handleAddGitignoreEntries).
+  // No payload — the host owns the canonical entry list so the wizard can't
+  // be tricked into ignoring arbitrary paths.
   ADD_GITIGNORE: "addGitignoreEntries",
+  // Setup wizard Step 2 (Optionals): opt-in removal of the legacy
+  // OfficeAgents-managed block from CLAUDE.md (see legacyDoctrine.ts). No
+  // payload — the host detects/strips the marker-delimited region itself;
+  // this button is the user's explicit confirm, never an auto-delete on
+  // install. Re-posts INSTALL_STATE on completion so the webview updates.
+  REMOVE_LEGACY_DOCTRINE: "removeLegacyDoctrine",
   GET_SETTINGS: "getSettings",
   SETTINGS: "settings",
   SETTINGS_UPDATED: "settingsUpdated",
@@ -403,6 +411,10 @@ export const MSG_SCHEMAS = {
 
   // No required fields — host computes the fixed artifact-path list itself.
   ADD_GITIGNORE: z.object({}).passthrough(),
+
+  // No required fields — the host detects/strips the legacy OfficeAgents
+  // block itself; this message is purely the user's confirm-click trigger.
+  REMOVE_LEGACY_DOCTRINE: z.object({}).passthrough(),
 
   // `enabled` mirrors the projectPlanEnabled toggle so the webview always
   // knows whether to show the Project Plan section, even when `plan` is

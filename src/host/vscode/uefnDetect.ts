@@ -25,9 +25,9 @@ export function detectUefnProject(root: string): { detected: boolean; signals: s
       }
     }
 
-    // Check for *.uproject file in root
+    // Check for *.uproject or *.uefnproject file in root
     try {
-      if (fs.existsSync(root) && fs.readdirSync(root).some(f => f.endsWith(".uproject"))) {
+      if (fs.existsSync(root) && fs.readdirSync(root).some(f => f.endsWith(".uproject") || f.endsWith(".uefnproject"))) {
         signals.push("uproject");
       }
     } catch {

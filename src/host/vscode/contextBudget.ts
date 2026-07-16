@@ -32,10 +32,20 @@ export function gradeClaudeMd(tokens: number): BudgetGrade {
   return "high";
 }
 
-/** Grade a single agent file: ok <800, warn <1500, high >=1500. */
+/**
+ * Grade a single agent file: ok <1500, warn <4000, high >=4000.
+ *
+ * Agent files only load per sub-agent spawn (not every prompt, unlike
+ * CLAUDE.md), and a legitimately large REFERENCE/knowledge agent (e.g. a
+ * domain-expert agent with a big fact table) is correctly large by design —
+ * size alone should not read as "delete this". The ceiling is set well
+ * above an ordinary reference agent (~2-2.5k tokens lands in "warn", not
+ * "high") and matches CLAUDE.md's own "high" ceiling so "high" here means
+ * genuinely outsized, not just knowledge-dense.
+ */
 export function gradeAgent(tokens: number): BudgetGrade {
-  if (tokens < 800) return "ok";
-  if (tokens < 1500) return "warn";
+  if (tokens < 1500) return "ok";
+  if (tokens < 4000) return "warn";
   return "high";
 }
 

@@ -58,17 +58,48 @@ changed (file:line), verification result, open issues.
 A change is always verified by someone other than the agent that authored
 it, never self-certified by the agent that wrote it.`;
 
-/** Specialist roster shared by both modes (see .claude/agents/*.md). */
-const ROSTER_TABLE = `## Specialist roster
+/**
+ * One row of the "Specialist roster" table: a real delegation target for
+ * this project. `id` MUST be the agent's FILE id (the `.claude/agents/<id>.md`
+ * basename minus extension) — that's the only string the Task tool can
+ * actually route to, so a roster row keyed on anything else would be a
+ * dangling reference (see AGENTS-CONFIG-REPORT.md Finding 2: "Eight
+ * referenced agent names with no corresponding agent file on disk").
+ */
+export interface DoctrineRosterAgent {
+  id: string;
+  /** Task-routing description shown in the "Task types" column. */
+  taskTypes: string;
+}
 
-| Specialist | Task types |
-| --- | --- |
-| coding-specialist | Implementation, editing, bug fixes, refactoring |
-| testing-specialist | Test authoring, specs, coverage |
-| vscode-integration | VS Code extension API, webview, panel, lifecycle |
-| ux-ui-designer | Webview canvas scene, layout, CSS, animation |
-| workspace-monitor | Agent lifecycle/event monitoring, hook-record mapping |
-| search-retrieval | File searching, code lookup, grep/glob (runs on haiku) |`;
+/**
+ * Fallback roster used when no project-specific agent list is supplied to
+ * {@link renderDelegationDoctrine} (or the supplied list is empty) — e.g. a
+ * bare/fresh install with no `.claude/agents` directory yet. Mirrors the
+ * previous hardcoded table exactly so a bare install still gets sensible
+ * defaults.
+ */
+const DEFAULT_ROSTER_ROWS: DoctrineRosterAgent[] = [
+  { id: "coding-specialist", taskTypes: "Implementation, editing, bug fixes, refactoring" },
+  { id: "testing-specialist", taskTypes: "Test authoring, specs, coverage" },
+  { id: "vscode-integration", taskTypes: "VS Code extension API, webview, panel, lifecycle" },
+  { id: "ux-ui-designer", taskTypes: "Webview canvas scene, layout, CSS, animation" },
+  { id: "workspace-monitor", taskTypes: "Agent lifecycle/event monitoring, hook-record mapping" },
+  { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob (runs on haiku)" },
+];
+
+/**
+ * Render the "Specialist roster" table body. Pure — the caller (panel.ts's
+ * `_buildDoctrineRoster`) is responsible for reading `.claude/agents/*.md`
+ * and `.claude/tycoon/agent-keywords.json` off disk and supplying the
+ * resolved `agents` list; this function never touches fs/vscode. Falls back
+ * to {@link DEFAULT_ROSTER_ROWS} when `agents` is undefined or empty.
+ */
+function renderRosterTable(agents: DoctrineRosterAgent[] | undefined): string {
+  const rows = agents !== undefined && agents.length > 0 ? agents : DEFAULT_ROSTER_ROWS;
+  const lines = rows.map((a) => `| ${a.id} | ${a.taskTypes} |`);
+  return `## Specialist roster\n\n| Specialist | Task types |\n| --- | --- |\n${lines.join("\n")}`;
+}
 
 /** Direct-mode specific framing: the orchestrator briefs workers itself. */
 const DIRECT_SECTION = `## Direct delegation (current mode)
@@ -143,10 +174,19 @@ agent's pass as final acceptance.`;
  * `reviewEnabled` (default `true`, matching execution.json's default)
  * composes with either mode: when true, {@link REVIEW_SECTION} is appended
  * after the mode-specific section; when false, it's omitted entirely.
+ *
+ * `rosterAgents` (optional) supplies the project's ACTUAL delegation
+ * targets for the "Specialist roster" table instead of the hardcoded
+ * default (see {@link DEFAULT_ROSTER_ROWS}) — omit it, or pass `[]`, to get
+ * the default roster.
  */
-export function renderDelegationDoctrine(mode: DelegationMode, reviewEnabled = true): string {
+export function renderDelegationDoctrine(
+  mode: DelegationMode,
+  reviewEnabled = true,
+  rosterAgents?: DoctrineRosterAgent[]
+): string {
   const modeSection = mode === "team_leads" ? TEAM_LEADS_SECTION : DIRECT_SECTION;
-  const parts = [PREAMBLE, ROSTER_TABLE, modeSection];
+  const parts = [PREAMBLE, renderRosterTable(rosterAgents), modeSection];
   if (reviewEnabled) {
     parts.push(REVIEW_SECTION);
   }

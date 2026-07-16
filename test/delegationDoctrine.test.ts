@@ -17,6 +17,7 @@ import {
   upsertDelegationSection,
   readExecutionConfig,
   writeExecutionConfig,
+  type DoctrineRosterAgent,
 } from "../src/host/vscode/delegationDoctrine";
 
 function tmpRoot(): string {
@@ -149,6 +150,47 @@ test("the Review pass section describes a single review gate, not an unbounded l
   const out = renderDelegationDoctrine("flat", true);
   assert.ok(/single review gate/i.test(out), "must state it is a single gate");
   assert.ok(/not an open-ended loop|not.*unbounded/i.test(out), "must explicitly rule out an unbounded loop");
+});
+
+// ---------------------------------------------------------------------------
+// renderDelegationDoctrine: dynamic "Specialist roster" (project-aware,
+// derived from the caller-supplied agent list rather than a hardcoded table)
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine with a supplied roster renders exactly those agent ids, not the hardcoded defaults", () => {
+  const custom: DoctrineRosterAgent[] = [
+    { id: "verse-expert", taskTypes: "Verse device implementation" },
+    { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
+  ];
+  const out = renderDelegationDoctrine("flat", false, custom);
+  assert.ok(out.includes("| verse-expert | Verse device implementation |"), "must render the supplied verse-expert row");
+  assert.ok(out.includes("| uefn-auditor | Verse audit, lint |"), "must render the supplied uefn-auditor row");
+  // None of the hardcoded default roster ids should leak in when a real
+  // roster was supplied — that would reproduce the "dangling agent name"
+  // bug (AGENTS-CONFIG-REPORT.md Finding 2).
+  assert.equal(out.includes("coding-specialist"), false, "hardcoded default ids must not appear alongside a supplied roster");
+  assert.equal(out.includes("testing-specialist"), false, "hardcoded default ids must not appear alongside a supplied roster");
+});
+
+test("renderDelegationDoctrine falls back to the hardcoded default roster when no agents are supplied", () => {
+  const out = renderDelegationDoctrine("flat", false);
+  assert.ok(out.includes("| coding-specialist | Implementation, editing, bug fixes, refactoring |"));
+  assert.ok(out.includes("| search-retrieval |"));
+});
+
+test("renderDelegationDoctrine falls back to the hardcoded default roster when an empty agent list is supplied", () => {
+  const out = renderDelegationDoctrine("flat", false, []);
+  assert.ok(out.includes("| coding-specialist | Implementation, editing, bug fixes, refactoring |"));
+});
+
+test("renderDelegationDoctrine's roster table always has a Specialist/Task types header regardless of source", () => {
+  const withRoster = renderDelegationDoctrine("flat", false, [{ id: "solo-agent", taskTypes: "Everything" }]);
+  const withDefault = renderDelegationDoctrine("flat", false);
+  for (const out of [withRoster, withDefault]) {
+    assert.ok(out.includes("## Specialist roster"));
+    assert.ok(out.includes("| Specialist | Task types |"));
+    assert.ok(out.includes("| --- | --- |"));
+  }
 });
 
 // ---------------------------------------------------------------------------

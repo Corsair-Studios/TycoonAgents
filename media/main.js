@@ -1724,6 +1724,11 @@
   let setupStage = "not-installed";
   /** True only after the user clicks "Install hooks" in THIS webview session. */
   let justInstalled = false;
+  /** True once the user clicks "Remove legacy OfficeAgents config block" in
+   *  THIS webview session — lets renderSetupOptionals show a "✓ Removed
+   *  legacy block" confirmation instead of just silently dropping the row
+   *  once info.legacyDoctrineBlock flips to false. */
+  let legacyDoctrineRemovalRequested = false;
 
   /**
    * Show the full-bleed setup overlay; hide the live app view.
@@ -6694,7 +6699,7 @@
    * of whether UEFN is detected: confirmation -> optional gitignore ->
    * skill chips -> [UEFN card] -> advanced link -> Done.
    *
-   * @param {{engineChips?: Array<{id:string,label:string,state:string,detail:string}>, uefnDetected?: boolean, uefnSignals?: string[]}} info
+   * @param {{engineChips?: Array<{id:string,label:string,state:string,detail:string}>, uefnDetected?: boolean, uefnSignals?: string[], legacyDoctrineBlock?: boolean, legacyDoctrineLines?: number, foreignManagedBlocks?: Array<{namespace:string,lines:number}>}} info
    */
   function renderSetupOptionals(info) {
     const setupCard = document.getElementById("setup-card");
@@ -6729,9 +6734,66 @@
     gitignoreCheckbox.checked = false;
     gitignoreLabel.appendChild(gitignoreCheckbox);
     const gitignoreText = document.createElement("span");
-    gitignoreText.textContent = "Add tycoon logs to .gitignore";
+    // Project-neutral label: the host writes .gitignore always, and also
+    // .p4ignore on a detected UEFN/Perforce project (see panel.ts
+    // _handleAddGitignoreEntries) since Perforce never reads .gitignore.
+    gitignoreText.textContent =
+      info && info.uefnDetected
+        ? "Add tycoon logs to ignore file (.gitignore + .p4ignore for UEFN/Perforce)"
+        : "Add tycoon logs to ignore file";
     gitignoreLabel.appendChild(gitignoreText);
     top.appendChild(gitignoreLabel);
+
+    // ── Legacy OfficeAgents CLAUDE.md block removal (opt-in, safe) ────
+    // Only ever rendered when the host actually detected the marker-
+    // delimited `<!-- officeagents:begin -->...<!-- officeagents:end -->`
+    // block (see panel.ts _handleCheckInstall / legacyDoctrine.ts). This
+    // button IS the user's confirm — the host never auto-deletes it.
+    if (info && info.legacyDoctrineBlock) {
+      const legacyRow = document.createElement("div");
+      legacyRow.id = "setup-legacy-doctrine-row";
+      legacyRow.className = "setup-optionals-checkbox-row";
+      const legacyBtn = document.createElement("button");
+      legacyBtn.id = "setup-remove-legacy-btn";
+      legacyBtn.className = "skill-btn";
+      const lineNote =
+        typeof info.legacyDoctrineLines === "number" && info.legacyDoctrineLines > 0
+          ? " (" + info.legacyDoctrineLines + " lines)"
+          : "";
+      legacyBtn.textContent = "Remove legacy OfficeAgents config block from CLAUDE.md" + lineNote;
+      legacyBtn.addEventListener("click", function () {
+        legacyBtn.setAttribute("disabled", "");
+        legacyBtn.textContent = "Removing…";
+        legacyDoctrineRemovalRequested = true;
+        vscode.postMessage({ type: "removeLegacyDoctrine" });
+      });
+      legacyRow.appendChild(legacyBtn);
+      top.appendChild(legacyRow);
+    } else if (legacyDoctrineRemovalRequested) {
+      const legacyConfirm = document.createElement("p");
+      legacyConfirm.id = "setup-legacy-doctrine-confirm";
+      legacyConfirm.className = "setup-optionals-confirm";
+      legacyConfirm.textContent = "✓ Removed legacy block";
+      top.appendChild(legacyConfirm);
+    }
+
+    // ── Other tools' managed CLAUDE.md blocks (inform-only, no button) ──
+    // Generic sibling of the OfficeAgents row above: surfaces whatever OTHER
+    // plugin/tool config (a `<!-- <ns>:begin -->...<!-- <ns>:end -->` block,
+    // see legacyDoctrine.ts detectForeignManagedBlocks) is inflating this
+    // project's CLAUDE.md. Never removable from here — TycoonAgents doesn't
+    // know how to safely strip config it didn't write.
+    if (info && Array.isArray(info.foreignManagedBlocks) && info.foreignManagedBlocks.length > 0) {
+      const foreignNote = document.createElement("p");
+      foreignNote.id = "setup-foreign-blocks-note";
+      foreignNote.className = "setup-optionals-confirm settings-empty";
+      const parts = info.foreignManagedBlocks.map(function (b) {
+        return "`" + b.namespace + ":*`" + (b.lines ? " (~" + b.lines + " lines)" : "");
+      });
+      foreignNote.textContent =
+        "Other tools' managed config in CLAUDE.md: " + parts.join(", ") + ". TycoonAgents leaves these untouched.";
+      top.appendChild(foreignNote);
+    }
 
     const skillsHeading = document.createElement("div");
     skillsHeading.className = "setup-optionals-heading";
@@ -9520,6 +9582,47 @@
     const doctorResultsEl = document.createElement("div");
     doctorResultsEl.id = "doctor-results";
     hookSection.appendChild(doctorResultsEl);
+
+    // ── Legacy OfficeAgents CLAUDE.md block removal (Settings entry point) ──
+    // Same affordance as the Setup Wizard Step-2 row (renderSetupOptionals)
+    // for users who already had hooks installed before this feature shipped
+    // and so never see the wizard. Reuses the same "removeLegacyDoctrine"
+    // postMessage + the same legacyDoctrineRemovalRequested session flag —
+    // clicking Remove here re-triggers _handleGetSettings host-side, which
+    // reposts "settings" with legacyDoctrineBlock:false, so this row
+    // disappears (replaced by a "✓ Removed" line) on the next renderSettings()
+    // without any manual reload.
+    if (lastSettings.legacyDoctrineBlock) {
+      const legacyRow = document.createElement("div");
+      legacyRow.id = "settings-legacy-doctrine-row";
+      legacyRow.className = "settings-row";
+      const legacyText = document.createElement("span");
+      const lineNote =
+        typeof lastSettings.legacyDoctrineLines === "number" && lastSettings.legacyDoctrineLines > 0
+          ? " (" + lastSettings.legacyDoctrineLines + " lines)"
+          : "";
+      legacyText.textContent = "Legacy OfficeAgents config block detected in CLAUDE.md" + lineNote;
+      legacyRow.appendChild(legacyText);
+      const legacyBtn = document.createElement("button");
+      legacyBtn.id = "settings-remove-legacy-btn";
+      legacyBtn.className = "skill-btn settings-btn";
+      legacyBtn.textContent = "Remove";
+      legacyBtn.addEventListener("click", () => {
+        legacyBtn.disabled = true;
+        legacyBtn.textContent = "Removing…";
+        legacyDoctrineRemovalRequested = true;
+        vscode.postMessage({ type: "removeLegacyDoctrine" });
+      });
+      legacyRow.appendChild(legacyBtn);
+      hookSection.appendChild(legacyRow);
+    } else if (legacyDoctrineRemovalRequested) {
+      const legacyConfirm = document.createElement("p");
+      legacyConfirm.id = "settings-legacy-doctrine-confirm";
+      legacyConfirm.className = "settings-empty";
+      legacyConfirm.textContent = "✓ Removed legacy OfficeAgents config block";
+      hookSection.appendChild(legacyConfirm);
+    }
+
     setupConfigEl.appendChild(hookSection);
 
     // ── 1.5. Delegation style (Team Lead Mode, Phase 2) ──
@@ -10091,7 +10194,11 @@
       }
       budgetSection.appendChild(claudeRow);
 
-      // Agent file rows
+      // Agent file rows. Size alone is not a defect for an agent file — a
+      // legitimately large REFERENCE/knowledge agent (e.g. a domain-expert
+      // agent) is correctly large by design, so "warn"/"high" here read as
+      // informational, not as a "trim this" verdict — never single out a
+      // specific agent as bloat.
       const agentFiles = Array.isArray(cb.agents) ? cb.agents : [];
       for (const af of agentFiles) {
         const agentRow = document.createElement("div");
@@ -10105,6 +10212,9 @@
         agentRow.appendChild(budgetDot(af.grade));
         const agentText = document.createElement("span");
         agentText.textContent = af.name + ": ~" + formatK(af.tokens) + " tokens";
+        if (af.grade === "warn" || af.grade === "high") {
+          agentText.textContent += " (large — reference agents can be intentionally large)";
+        }
         agentRow.appendChild(agentText);
         budgetSection.appendChild(agentRow);
       }
@@ -10112,7 +10222,7 @@
       // Muted note
       const agentNote = document.createElement("p");
       agentNote.className = "settings-empty";
-      agentNote.textContent = "Agent files load per sub-agent spawn, not every prompt.";
+      agentNote.textContent = "Agent files load per sub-agent spawn, not every prompt. Size alone isn't a problem — a reference/knowledge agent is expected to be larger.";
       budgetSection.appendChild(agentNote);
 
       // Review for trimming button
@@ -10120,10 +10230,28 @@
       trimBtn.className = "skill-btn settings-btn";
       trimBtn.textContent = "Review for trimming";
       trimBtn.addEventListener("click", () => {
-        vscode.postMessage({ type: "copyPrompt", text: "Review CLAUDE.md and the agent definition files in .claude/agents/ for context bloat. CLAUDE.md is loaded into every prompt, so prioritize it: flag verbose, duplicated, or non-essential lines and propose a tighter rewrite that preserves every behavioral rule and the delegation routing. Then do the same for each .claude/agents/*.md (loaded per spawn). For each file give a before/after token estimate and the specific cuts." });
+        vscode.postMessage({ type: "copyPrompt", text: "Review CLAUDE.md and the agent definition files in .claude/agents/ for context that can be tightened. CLAUDE.md is loaded into every prompt, so prioritize it: flag verbose, duplicated, or non-essential lines and propose a tighter rewrite that preserves every behavioral rule and the delegation routing. Then look at each .claude/agents/*.md (loaded per spawn, not every prompt) — but only flag a file if it has genuine verbosity or duplication to cut; a large reference/knowledge agent (e.g. a domain-expert agent with a big fact table) can be intentionally large and should not be flagged just because of its size. For any file with real cuts available, give a before/after token estimate and the specific cuts." });
       });
       budgetSection.appendChild(trimBtn);
     }
+
+    // Other tools' managed CLAUDE.md blocks (inform-only, no button) — see
+    // legacyDoctrine.ts detectForeignManagedBlocks. Rendered regardless of
+    // whether `cb` (contextBudget) was available above, since it comes off
+    // a separate field on the same settings payload.
+    const foreignBlocks = Array.isArray(lastSettings.foreignManagedBlocks) ? lastSettings.foreignManagedBlocks : [];
+    if (foreignBlocks.length > 0) {
+      const foreignNote = document.createElement("p");
+      foreignNote.id = "settings-foreign-blocks-note";
+      foreignNote.className = "settings-empty";
+      const parts = foreignBlocks.map(function (b) {
+        return "`" + b.namespace + ":*`" + (b.lines ? " (~" + b.lines + " lines)" : "");
+      });
+      foreignNote.textContent =
+        "Other tools' managed config in CLAUDE.md: " + parts.join(", ") + ". TycoonAgents leaves these untouched.";
+      budgetSection.appendChild(foreignNote);
+    }
+
     setupConfigEl.appendChild(budgetSection);
 
     // ── 4. Design docs ──

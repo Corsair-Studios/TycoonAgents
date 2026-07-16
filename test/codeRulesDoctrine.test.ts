@@ -30,6 +30,47 @@ test("renderCodeRules returns a non-empty string with the expected heading and a
   assert.ok(out.includes("| Area | Path patterns | Standards |"), "must contain the table header row");
 });
 
+test("renderCodeRules() defaults to the generic web/TS table (uefn param omitted)", () => {
+  const out = renderCodeRules();
+  assert.ok(out.includes("Gameplay / systems logic"), "generic table must include the Gameplay/systems row");
+  assert.ok(out.includes("UI / HUD"), "generic table must include the UI/HUD row");
+  assert.ok(out.includes("package.json"), "generic table must reference package.json");
+});
+
+// ---------------------------------------------------------------------------
+// renderCodeRules(uefn): UEFN/Verse-aware table
+// ---------------------------------------------------------------------------
+
+test("renderCodeRules(true) keeps the Engine scripts (Verse) row", () => {
+  const out = renderCodeRules(true);
+  assert.ok(
+    out.includes("Engine scripts (GDScript / C# / Verse / Python)"),
+    "UEFN table must keep the existing Engine scripts row"
+  );
+  assert.ok(out.includes("`**/*.verse`"), "UEFN table must keep the Verse glob");
+});
+
+test("renderCodeRules(true) omits the web-only rows (Gameplay/systems, UI/HUD, package.json/tsconfig)", () => {
+  const out = renderCodeRules(true);
+  assert.equal(out.includes("Gameplay / systems logic"), false, "must drop the Gameplay/systems-logic row");
+  assert.equal(out.includes("UI / HUD"), false, "must drop the UI/HUD row");
+  assert.equal(out.includes("`**/*.tsx`"), false, "must drop the .tsx glob");
+  assert.equal(out.includes("`**/*.css`"), false, "must drop the .css glob");
+  assert.equal(out.includes("package.json"), false, "must drop the package.json pattern");
+  assert.equal(out.includes("tsconfig*.json"), false, "must drop the tsconfig*.json pattern");
+});
+
+test("renderCodeRules(true) keeps genuinely relevant rows: Tests, Assets/data, Config", () => {
+  const out = renderCodeRules(true);
+  assert.ok(out.includes("Tests"), "must keep the Tests row");
+  assert.ok(out.includes("Assets / data"), "must keep the Assets/data row");
+  assert.ok(out.includes("Config / build"), "must keep a Config/build row");
+});
+
+test("renderCodeRules(false) is identical to renderCodeRules() with no args", () => {
+  assert.equal(renderCodeRules(false), renderCodeRules());
+});
+
 // ---------------------------------------------------------------------------
 // upsertCodeRulesSection
 // ---------------------------------------------------------------------------

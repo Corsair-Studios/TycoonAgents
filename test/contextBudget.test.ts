@@ -53,20 +53,24 @@ test("gradeClaudeMd: 4000 -> high", () => {
 // gradeAgent
 // ---------------------------------------------------------------------------
 
-test("gradeAgent: 799 -> ok", () => {
-  assert.equal(gradeAgent(799), "ok");
+test("gradeAgent: 1499 -> ok", () => {
+  assert.equal(gradeAgent(1499), "ok");
 });
 
-test("gradeAgent: 800 -> warn", () => {
-  assert.equal(gradeAgent(800), "warn");
+test("gradeAgent: 1500 -> warn", () => {
+  assert.equal(gradeAgent(1500), "warn");
 });
 
-test("gradeAgent: 1499 -> warn", () => {
-  assert.equal(gradeAgent(1499), "warn");
+test("gradeAgent: a large reference agent (~2500 tokens) -> warn, not high", () => {
+  assert.equal(gradeAgent(2500), "warn");
 });
 
-test("gradeAgent: 1500 -> high", () => {
-  assert.equal(gradeAgent(1500), "high");
+test("gradeAgent: 3999 -> warn", () => {
+  assert.equal(gradeAgent(3999), "warn");
+});
+
+test("gradeAgent: 4000 -> high", () => {
+  assert.equal(gradeAgent(4000), "high");
 });
 
 // ---------------------------------------------------------------------------
@@ -92,18 +96,18 @@ test("buildContextBudget: claudeMd with >=4000 tokens (16000 chars) -> overall=h
 });
 
 test("buildContextBudget: null claudeMd, one high-grade agent -> overall=high", () => {
-  // 1500 tokens -> high grade: 1500 * 4 = 6000 chars
-  const highAgentContent = "a".repeat(6000);
+  // 4000 tokens -> high grade: 4000 * 4 = 16000 chars
+  const highAgentContent = "a".repeat(16000);
   const budget = buildContextBudget(null, [{ name: "heavy-agent.md", content: highAgentContent }]);
   assert.equal(budget.overall, "high");
   assert.equal(budget.agents[0].grade, "high");
 });
 
 test("buildContextBudget: null claudeMd, mixed agents (ok + warn) -> overall=warn", () => {
-  // ok agent: <800 tokens = <3200 chars
+  // ok agent: <1500 tokens = <6000 chars
   const okContent = "a".repeat(100);
-  // warn agent: >=800 and <1500 tokens = >=3200 and <6000 chars
-  const warnContent = "b".repeat(4000); // 4000 / 4 = 1000 tokens -> warn
+  // warn agent: >=1500 and <4000 tokens = >=6000 and <16000 chars
+  const warnContent = "b".repeat(8000); // 8000 / 4 = 2000 tokens -> warn
   const budget = buildContextBudget(null, [
     { name: "small-agent.md", content: okContent },
     { name: "medium-agent.md", content: warnContent },
@@ -114,8 +118,8 @@ test("buildContextBudget: null claudeMd, mixed agents (ok + warn) -> overall=war
 test("buildContextBudget: claudeMd (warn grade) + high-grade agent -> overall uses claudeMd grade (warn)", () => {
   // warn claudeMd: >=2000 and <4000 tokens = >=8000 and <16000 chars
   const warnClaudeMd = "c".repeat(10000); // 10000 / 4 = 2500 tokens -> warn
-  // high agent: >=1500 tokens = >=6000 chars
-  const highAgentContent = "d".repeat(6000); // 6000 / 4 = 1500 tokens -> high
+  // high agent: >=4000 tokens = >=16000 chars
+  const highAgentContent = "d".repeat(16000); // 16000 / 4 = 4000 tokens -> high
   const budget = buildContextBudget(warnClaudeMd, [{ name: "heavy-agent.md", content: highAgentContent }]);
   assert.equal(budget.overall, "warn", "overall must follow claudeMd grade, not worst agent grade");
   assert.equal(budget.claudeMd!.grade, "warn");
