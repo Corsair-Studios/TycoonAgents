@@ -59,6 +59,41 @@ body {
   display: block;
 }
 
+/* ── Play-area hover tooltip (character/object/rival names, no decor) ────
+   Created + positioned by media/main.js (stage-tooltip-el / showStageTooltip);
+   lives inside #stage-area (position:relative) so left/top are relative to
+   the stage, not the viewport. Never intercepts pointer input — it must not
+   itself become the hover target. */
+#stage-tooltip {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  max-width: 200px;
+  padding: 5px 9px;
+  background: rgba(18, 19, 22, 0.94);
+  /* var(--surface) w/ alpha */
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+#stage-tooltip[hidden] {
+  display: none;
+}
+
+.stage-tooltip-name {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.stage-tooltip-role {
+  color: var(--muted);
+  font-weight: 400;
+  margin-top: 1px;
+}
+
 /* ── Setup / install overlay (full-bleed onboarding screen) ──────── */
 #setup-view {
   position: absolute;

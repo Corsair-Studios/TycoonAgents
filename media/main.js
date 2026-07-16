@@ -3916,7 +3916,7 @@
     melee:     { frames: [10, 11],         fps: 12, loop: false, flippable: true },
     build:     { frames: [5, 6, 7, 8],     fps: 6,  loop: true,  flippable: true },
     tool_idle: { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
-    shoot:     { frames: [12, 13],         fps: 8,  loop: false, flippable: true,  pingpong: true },
+    shoot:     { frames: [12, 13],         fps: 3,  loop: true,  flippable: true,  pingpong: false },
     dance:     { frames: [17, 18, 19],     fps: 6,  loop: true,  flippable: false, pingpong: true },
     cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
     point:     { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
@@ -3957,16 +3957,18 @@
   const SMOKE_RISE_NATIVE = 26;     // how far (native px, pre-scale) a puff drifts up over one cycle
   const SMOKE_MAX_ALPHA = 0.55;     // peak opacity of a puff
   const SMOKE_FADEOUT = 0.4;        // s to fade the whole column out once the attack stops
-  // ── Extinguish (Phase 2) ─────────────────────────────────────────────────
-  // Cosmetic-only: an IDLE character routed to a smoking object plays the build
-  // clip there to force-clear the smoke. NO build/gameplay state change. See
-  // assignExtinguishers / updateExtinguishProgress and the movement-loop hooks.
-  const EXTINGUISH_BASE = 3.0;       // s to extinguish with ONE character
-  const EXTINGUISH_MIN = 1.0;        // floor (many characters)
-  const EXTINGUISH_MAX = 3.0;        // ceiling
-  const EXTINGUISH_PER_CHAR = 0.8;   // s shaved per extra character
-  const EXTINGUISH_MAX_ASSIGN = 3;   // max characters routed to one smoking object
-  const EXTINGUISH_SMOKE_MIN = 0.5;  // smoke intensity at/above which an object "needs" extinguishing
+  // ── Extinguish / Repair (Phase 2) ────────────────────────────────────────
+  // Damage is now PERSISTENT: once a built object has been attacked past
+  // SMOKE_ATTACK_DELAY it is marked `damaged` and keeps smoking (intensity
+  // held at 1, never auto-decays) until USER characters repair it. An IDLE,
+  // non-combat character routed to a smoking object plays the build clip
+  // there to accrue repair progress. NO build/gameplay state change beyond
+  // the smoke overlay itself. See assignExtinguishers / updateExtinguishProgress
+  // and the movement-loop hooks.
+  const REPAIR_BASE = 5.0;           // s to repair with ONE character
+  const REPAIR_MIN = 1.0;            // floor — repair time never drops below this, however many characters
+  const EXTINGUISH_MAX_ASSIGN = 5;   // max characters routed to one smoking object (5 -> REPAIR_MIN floor reachable)
+  const EXTINGUISH_SMOKE_MIN = 0.5;  // smoke intensity at/above which an object "needs" repairing
   const EXTINGUISH_ARRIVE_EPS = 24;  // native px: within this of the object counts as "at" it (gather, don't pile on center)
 
   /** Theme data set by THEME_INITIALIZED */
@@ -4111,9 +4113,13 @@
    * Cosmetic damage-smoke state per built object, keyed by object_id.
    * underAttack: seconds of continuous attack accumulated; intensity: 0..1
    * column opacity/scale factor; anim: seconds elapsed, drives the rising loop.
-   * Created lazily the first frame an object is under attack; deleted when the
-   * column has fully faded. Purely visual — never affects build/attack logic.
-   * @type {Record<string, {underAttack:number, intensity:number, anim:number}>}
+   * damaged: true once the object has taken a full SMOKE_ATTACK_DELAY of
+   * attack — while true, intensity is held at 1 and never auto-decays, so
+   * the object keeps smoking (even after the attacking rival leaves/dies)
+   * until repaired. Created lazily the first frame an object is under
+   * attack; deleted only on repair completion. Purely visual — never
+   * affects build/attack logic.
+   * @type {Record<string, {underAttack:number, intensity:number, anim:number, damaged?:boolean, extinguishProgress?:number}>}
    */
   const objectSmoke = {};
   /**
@@ -4697,6 +4703,21 @@
   let hoverSceneObjId = null;
   /** Last drawn background rect (canvas px) — lets mouse handlers map canvas<->native. */
   let lastBgX = 0, lastBgY = 0, lastBgW = 1, lastBgH = 1;
+  /**
+   * Play-mode hover-tooltip hit-list (Feature: hover tooltips). Rebuilt from
+   * scratch every render() frame — reset at the top of render(), then each
+   * hoverable sprite (character, buildable object, rival — decor is
+   * deliberately excluded) pushes its own on-screen hit box as it's drawn, so
+   * this always matches exactly what's currently painted. Each entry:
+   * { x0, y0, x1, y1 } canvas-px hit box, `yFront` (the sprite's foot y, used
+   * to pick the front-most sprite when boxes overlap), `kind`
+   * ("character"|"object"|"rival"), and `name` (+ `role` for characters).
+   * Consumed only by the play-mode mousemove/mouseleave listeners below
+   * (gated on !editStageMode) — edit-mode hit-testing uses the separate
+   * sceneObjectAt()/vertexAt() helpers and is unaffected.
+   * @type {Array<{x0:number,y0:number,x1:number,y1:number,yFront:number,kind:string,name:string,role?:string}>}
+   */
+  let hoverTargets = [];
   /** Character id selected in the per-character override control. */
   let editSelectedCharId = "";
   /** Buildable object_id selected in the per-object override control. */
@@ -5028,6 +5049,79 @@
     }
   });
 
+  // ── Play-mode hover tooltips (Feature: hover tooltips) ────────────────────
+  // Names a CHARACTER (+ its agent role), a built/in-progress buildable
+  // OBJECT, or a RIVAL on mouseover — decor is deliberately excluded. Reads
+  // hoverTargets, the per-frame hit-list built during render() (see its
+  // declaration near lastBgX above and the push sites in the depthList
+  // draw loop). Entirely separate from the edit-mode mousemove/mouseleave
+  // listeners above (each guards on editStageMode in the opposite
+  // direction), so neither interferes with the other.
+  const stageTooltipEl = document.createElement("div");
+  stageTooltipEl.id = "stage-tooltip";
+  stageTooltipEl.hidden = true;
+  (document.getElementById("stage-area") || canvas.parentElement || document.body).appendChild(stageTooltipEl);
+
+  function hideStageTooltip() {
+    stageTooltipEl.hidden = true;
+  }
+
+  /**
+   * Populate + position the hover tooltip near the cursor.
+   * @param {{kind:string, name:string, role?:string}} target
+   * @param {number} clientX @param {number} clientY viewport coords (e.clientX/Y)
+   */
+  function showStageTooltip(target, clientX, clientY) {
+    stageTooltipEl.innerHTML = "";
+    const nameEl = document.createElement("div");
+    nameEl.className = "stage-tooltip-name";
+    nameEl.textContent = target.name || "";
+    stageTooltipEl.appendChild(nameEl);
+    if (target.kind === "character") {
+      const roleEl = document.createElement("div");
+      roleEl.className = "stage-tooltip-role";
+      roleEl.textContent = target.role || "";
+      stageTooltipEl.appendChild(roleEl);
+    }
+    stageTooltipEl.hidden = false;
+
+    // Position relative to #stage-area (the tooltip's own offsetParent),
+    // offset from the cursor, then clamped so it never overflows the stage's
+    // right/bottom edge. clientX/clientY (not canvas px) are used here since
+    // the tooltip lives in normal CSS layout space, not canvas-internal
+    // resolution (which can differ from the canvas's on-screen CSS size).
+    const stageArea = stageTooltipEl.parentElement;
+    const rect = stageArea.getBoundingClientRect();
+    const OFFSET = 14;
+    let left = clientX - rect.left + OFFSET;
+    let top = clientY - rect.top + OFFSET;
+    const tw = stageTooltipEl.offsetWidth;
+    const th = stageTooltipEl.offsetHeight;
+    if (left + tw > rect.width) left = Math.max(0, clientX - rect.left - tw - OFFSET);
+    if (top + th > rect.height) top = Math.max(0, clientY - rect.top - th - OFFSET);
+    stageTooltipEl.style.left = `${left}px`;
+    stageTooltipEl.style.top = `${top}px`;
+  }
+
+  canvas.addEventListener("mousemove", (e) => {
+    // Edit-mode has its own mousemove handler above (and its own hover/drag
+    // hit-testing) — this listener is play-mode only.
+    if (editStageMode) return;
+    const [mx, my] = canvasMouse(e);
+    let best = null;
+    let bestFront = -Infinity;
+    for (let i = 0; i < hoverTargets.length; i++) {
+      const t = hoverTargets[i];
+      if (mx < t.x0 || mx > t.x1 || my < t.y0 || my > t.y1) continue;
+      // Front-most (largest yFront = closest to camera / last drawn) wins
+      // when hit boxes overlap.
+      if (t.yFront >= bestFront) { bestFront = t.yFront; best = t; }
+    }
+    if (best) showStageTooltip(best, e.clientX, e.clientY);
+    else hideStageTooltip();
+  });
+  canvas.addEventListener("mouseleave", () => hideStageTooltip());
+
   // ── Stage editor control panel (built lazily, toggled with edit mode) ─────
   let stageEditPanel = null;
   const stageEditEls = {};
@@ -5314,6 +5408,8 @@
     if (!themeLoaded) return;
     buildStageEditPanel();
     editStageMode = true;
+    // Play-mode-only hover tooltip must not linger once edit mode takes over.
+    hideStageTooltip();
     // No item is selected yet — F is a no-op until the user picks one.
     editFlipTargetKind = null;
     // Build the per-character override list strictly from the playable roster
@@ -6089,24 +6185,35 @@
         }
       }
       // 2. Under-attack objects: accumulate, then ramp intensity toward 1 once
-      //    past the delay. Lazily create the entry on first engaged frame.
+      //    past the delay. Lazily create the entry on first engaged frame. Once
+      //    the delay is crossed the object becomes PERSISTENTLY `damaged`:
+      //    intensity latches to 1 and stops ramping (no visual need to keep
+      //    animating it upward — it's already fully smoking).
       for (const oid of engaged) {
         let s = objectSmoke[oid];
-        if (!s) s = objectSmoke[oid] = { underAttack: 0, intensity: 0, anim: 0, extinguishProgress: 0 };
+        if (!s) s = objectSmoke[oid] = { underAttack: 0, intensity: 0, anim: 0, damaged: false, extinguishProgress: 0 };
         s.underAttack += delta;
         if (s.underAttack >= SMOKE_ATTACK_DELAY) {
-          s.intensity = Math.min(1, s.intensity + delta / SMOKE_FADEOUT);
+          if (!s.damaged) s.damaged = true;
+          s.intensity = 1;
         }
         s.anim += delta; // 4. advance the rising loop
       }
-      // 3. Not under attack this frame: reset and ramp intensity toward 0;
-      //    delete once fully faded. (Character extinguishing is handled
-      //    separately in updateExtinguishProgress, which force-clears the entry.)
+      // 3. Not under attack this frame: a `damaged` object stays smoking
+      //    PERSISTENTLY (no auto-decay/delete) until a repair completes in
+      //    updateExtinguishProgress — only its rising-loop anim still advances.
+      //    Undamaged objects (attack stopped before the delay elapsed) still
+      //    fade out and delete as before.
       for (const oid of Object.keys(objectSmoke)) {
         if (engaged.has(oid)) continue;
         const s = objectSmoke[oid];
         if (!s) { delete objectSmoke[oid]; continue; }
         s.underAttack = 0;
+        if (s.damaged) {
+          s.intensity = 1;      // held — repair (updateExtinguishProgress) is the only way to clear this
+          s.anim += delta;      // keep the column rising while it waits for repair
+          continue;
+        }
         s.intensity -= delta / SMOKE_FADEOUT;
         if (s.intensity <= 0) { delete objectSmoke[oid]; continue; }
         s.anim += delta; // keep the column rising while it fades out
@@ -6237,20 +6344,22 @@
         if (Math.sqrt(dx * dx + dy * dy) > EXTINGUISH_ARRIVE_EPS) continue;
         active[tid] = (active[tid] || 0) + 1;
       }
-      // 2. Accrue for objects with >=1 active extinguisher; force-clear on complete.
+      // 2. Accrue for objects with >=1 active repairer; force-clear on complete.
+      //    Duration is recomputed EVERY frame from the CURRENT count of arrived,
+      //    non-combat repairers (`k`, tallied fresh above), so progress rescales
+      //    live as characters join/leave: dur = max(REPAIR_MIN, REPAIR_BASE / k).
+      //    Floored at REPAIR_MIN regardless of k — never faster than 1s.
       for (const oid in objectSmoke) {
         const s = objectSmoke[oid];
         if (!s) continue;
         const k = active[oid] || 0;
-        if (k < 1) continue; // no accrual with zero extinguishers (progress holds)
-        let dur = EXTINGUISH_BASE - (k - 1) * EXTINGUISH_PER_CHAR;
-        if (dur < EXTINGUISH_MIN) dur = EXTINGUISH_MIN;
-        if (dur > EXTINGUISH_MAX) dur = EXTINGUISH_MAX;
-        if (!(dur > 0)) dur = EXTINGUISH_MIN;
+        if (k < 1) continue; // no accrual with zero repairers (progress holds)
+        const dur = Math.max(REPAIR_MIN, REPAIR_BASE / k);
         s.extinguishProgress = (s.extinguishProgress || 0) + delta / dur;
         if (s.extinguishProgress >= 1) {
-          // Force-clear: reset so a still-attacking rival must wait another
-          // SMOKE_ATTACK_DELAY to re-smoke; release every assigned character.
+          // Repair complete: clear the persistent damage flag and remove the
+          // smoke entry entirely; release every assigned character.
+          s.damaged = false;
           s.intensity = 0;
           s.underAttack = 0;
           s.extinguishProgress = 0;
@@ -6258,7 +6367,7 @@
             const ce = agentCharMap[aid];
             if (ce && ce.extinguishTargetId === oid) ce.extinguishTargetId = null;
           }
-          delete objectSmoke[oid]; // updateObjectSmoke recreates on re-attack
+          delete objectSmoke[oid]; // updateObjectSmoke recreates (undamaged) on re-attack
         }
       }
     } catch (e) { /* cosmetic only — never let extinguish accrual throw */ }
@@ -11196,6 +11305,8 @@
     lastFrameTime = timestamp;
 
     frame++;
+    // Hover-tooltip hit-list: rebuilt fresh this frame (see declaration).
+    hoverTargets = [];
     const w = canvas.width;
     const h = canvas.height;
 
@@ -12536,6 +12647,22 @@
         const canvasPt = nativeToCanvas(objectPlacement[item.obj.object_id].nx, objectPlacement[item.obj.object_id].ny, bgX, bgY, bgW, bgH);
         const tDepth = Math.max(0, Math.min(1, (item.ny - polyMinY) / polyRangeY));
         const depthScale = (0.8 + tDepth * 0.3) * themeOverallScale * sceneFitScale;
+        // Hover tooltip hit-box (Feature: hover tooltips) — built vs not
+        // mirrors buildState.builtIds exactly (not entry.phase, which still
+        // reads "active"/"poof" for a brief transitional window after the
+        // object is already counted as built). Box size mirrors
+        // drawBuildableObject's own baseSize (built art) / crateSize
+        // (crate/in-progress) formulas so the hit box matches what's drawn.
+        const hoverObjId = item.obj.object_id;
+        const hoverObjBuilt = buildState.builtIds.has(hoverObjId);
+        const hoverObjSize = Math.round(64 * depthScale * (hoverObjBuilt ? effectiveObjScale(hoverObjId) : themeObjectScale));
+        hoverTargets.push({
+          x0: canvasPt[0] - hoverObjSize / 2, y0: canvasPt[1] - hoverObjSize,
+          x1: canvasPt[0] + hoverObjSize / 2, y1: canvasPt[1],
+          yFront: canvasPt[1],
+          kind: "object",
+          name: hoverObjBuilt ? (item.obj.display_name || hoverObjId) : "Incomplete Object",
+        });
         drawBuildableObject(item.obj, item.entry, canvasPt[0], canvasPt[1], depthScale);
         return;
       }
@@ -12571,6 +12698,16 @@
         }
         const drawX = ecx - spriteSize / 2;
         const drawY = ecy - spriteSize;
+        // Hover tooltip hit-box (Feature: hover tooltips) — given name from
+        // manifest.roster_rivals (themeRivals), matched by en.rival_id;
+        // falls back to the raw id if the roster entry can't be found.
+        const hoverRivalInfo = themeRivals.find((r) => r && r.rival_id === en.rival_id);
+        hoverTargets.push({
+          x0: drawX, y0: drawY, x1: drawX + spriteSize, y1: drawY + spriteSize,
+          yFront: ecy,
+          kind: "rival",
+          name: (hoverRivalInfo && hoverRivalInfo.name) || en.rival_id,
+        });
         const clip = RIVAL_CLIPS[en.animState.action] || RIVAL_CLIPS.walk;
         // Enemies ALWAYS mirror to face their target/movement direction — not
         // gated on clip.flippable (mirrors the agent override so a non-flippable
@@ -12667,6 +12804,19 @@
           }
           const drawX = cx - spriteSize / 2 + seatNudge;
           const drawY = cy - spriteSize - seatRaise; // feet at cy, raised for chair scale
+
+          // Hover tooltip hit-box (Feature: hover tooltips) — flip-invariant:
+          // the mirrored draw path below (translate+scale(-1,1)) paints inside
+          // this exact same screen box, so the box doesn't need to branch on
+          // shouldFlip. Name/role mirror the metrics-panel tooltip convention
+          // (see the "Per-column tooltip" block above, ~displayName/describeRole).
+          hoverTargets.push({
+            x0: drawX, y0: drawY, x1: drawX + spriteSize, y1: drawY + spriteSize,
+            yFront: cy,
+            kind: "character",
+            name: agent.name || agent.id,
+            role: describeRole(agent.description) || agent.tier || "Agent",
+          });
 
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
           // Change 3: dancing agents flip regardless of the dance clip's

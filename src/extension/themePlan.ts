@@ -50,7 +50,7 @@ export const ATLAS_CLIPS: Record<ClipName, AtlasClip> = {
   melee: { frames: [10, 11], fps: 12, loop: false, flippable: true },
   build: { frames: [5, 6, 7, 8], fps: 6, loop: true, flippable: true },
   tool_idle: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
-  shoot: { frames: [12, 13], fps: 8, loop: false, flippable: true, pingpong: true },
+  shoot: { frames: [12, 13], fps: 3, loop: true, flippable: true, pingpong: false },
   dance: { frames: [17, 18, 19], fps: 6, loop: true, flippable: false, pingpong: true },
   cheer: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
   point: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
