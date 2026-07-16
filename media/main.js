@@ -8461,19 +8461,21 @@
 
   /**
    * Blended $ per MILLION tokens, keyed by model family. Derived from
-   * Anthropic's official per-million API token rates using a 3:1 input:output
-   * blend (agentic work is input-heavy), i.e. (3*input + output) / 4:
-   *   opus    $15 in / $75 out -> (3*15 + 75)/4 = $30
-   *   sonnet   $3 in / $15 out -> (3*3  + 15)/4 = $6
-   *   haiku    $1 in / $5  out -> (3*1  +  5)/4 = $2
+   * Anthropic's current published API token rates using a 3:1 input:output
+   * blend (agentic work is input-heavy), i.e. (3*input + output) / 4, taking
+   * the latest non-deprecated model per family:
+   *   opus   (4.8)  $5 in / $25 out  -> (3*5  + 25)/4 = $10
+   *   sonnet (5)    $2 in / $10 out  -> (3*2  + 10)/4 = $4   [intro rate thru 2026-08-31; standard $3/$15 -> $6 from 2026-09-01]
+   *   haiku  (4.5)  $1 in / $5  out  -> (3*1  +  5)/4 = $2
+   *   fable  (5)    $10 in / $50 out -> (3*10 + 50)/4 = $20
    * Only TOTAL tokens are tracked per agent (no input/output/cache split), so
    * treat this as a rough estimate — RATIOS between models matter more than
    * absolute accuracy. These are API rates and do NOT reflect Claude
-   * subscription (Max/Pro) billing. Update the rates/blend if Anthropic pricing
-   * changes. fable: estimate pending official rates. (rates confirmed ~2026-07)
+   * subscription (Max/Pro) billing. Run the /update-pricing skill to refresh
+   * from live rates. (rates confirmed ~2026-07)
    * @type {{opus:number, sonnet:number, haiku:number, fable:number}}
    */
-  const MODEL_PRICE_PER_MTOK = { opus: 30, sonnet: 6, haiku: 2, fable: 6 };
+  const MODEL_PRICE_PER_MTOK = { opus: 10, sonnet: 4, haiku: 2, fable: 20 };
 
   /**
    * Blended $/million-token price for a model id/family string, or null when
