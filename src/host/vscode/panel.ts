@@ -418,6 +418,13 @@ export class TycoonPanel {
           }
         } else if (message.type === MSG.CHECK_INSTALL) {
           this._handleCheckInstall();
+        } else if (message.type === MSG.ADD_GITIGNORE) {
+          const parsedAddGitignore = MSG_SCHEMAS.ADD_GITIGNORE.safeParse(message);
+          if (parsedAddGitignore.success) {
+            this._handleAddGitignoreEntries();
+          } else {
+            console.error("TycoonAgents: addGitignoreEntries payload rejected:", parsedAddGitignore.error.message);
+          }
         } else if (message.type === MSG.INSTALL_HOOKS) {
           // SET_DELEGATION_MODE and INSTALL_HOOKS share the same
           // { delegation_mode?: string } shape.
@@ -2206,6 +2213,18 @@ export class TycoonPanel {
     return {};
   }
 
+  /**
+   * Resolve the `uefn-bridge` server entry from a parsed `.mcp.json` config
+   * (top-level or nested under `mcpServers`) — the single source of truth
+   * both `_computeEngineStatus` (live engine ladder) and `_handleCheckInstall`
+   * (setup wizard's `uefnBridgeSetUp` flag) key off of, so the two paths can
+   * never disagree about whether UEFN setup already ran.
+   */
+  private _uefnBridgeEntry(mcpConfig: Record<string, unknown>): Record<string, unknown> | undefined {
+    const servers = (mcpConfig["mcpServers"] ?? mcpConfig) as Record<string, unknown>;
+    return servers["uefn-bridge"] as Record<string, unknown> | undefined;
+  }
+
   /** Post the MCP server catalog with per-entry installed status. */
   private _handleGetMcp(): void {
     let catalog;
@@ -3091,7 +3110,69 @@ export class TycoonPanel {
     const root = this._projectRoot();
     const installed = root !== "" && this._hooksInstalledForRoot(root);
     const uefn = root !== "" ? detectUefnProject(root) : { detected: false, signals: [], uefnInstalled: false };
-    void this._panel.webview.postMessage({ type: MSG.INSTALL_STATE, installed, uefnDetected: uefn.detected, uefnSignals: uefn.signals });
+    // Non-UEFN engine chips (godot/unity/unreal/roblox/blender) for the setup
+    // wizard's Optionals step to pre-check matching skill chips against. No
+    // .mcp.json probing here (unlike _computeEngineStatus's live ladder) —
+    // this only needs to know whether a project of that kind is present.
+    const engineChips = root !== "" ? computeEngineChips(root, null) : [];
+    // Whether UEFN setup already ran, per the SAME `.mcp.json` uefn-bridge
+    // entry _computeEngineStatus checks (via the shared _uefnBridgeEntry
+    // helper) — lets the setup wizard stop re-prompting "set up UEFN" once
+    // it's already done (see media/main.js's installState handler / the
+    // uefnDetected trigger, and renderSetupOptionals's UEFN section).
+    const mcpConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
+    const uefnBridgeSetUp = Boolean(this._uefnBridgeEntry(mcpConfig));
+    void this._panel.webview.postMessage({
+      type: MSG.INSTALL_STATE,
+      installed,
+      uefnDetected: uefn.detected,
+      uefnSignals: uefn.signals,
+      uefnBridgeSetUp,
+      engineChips,
+    });
+  }
+
+  /**
+   * Setup wizard Step 2 (Optionals): idempotently append TycoonAgents runtime
+   * state/log artifact paths to the workspace `.gitignore` (creating the file
+   * if absent). Opt-in only — fired when the user checks "Add tycoon logs to
+   * .gitignore" and clicks Done (see media/main.js renderSetupOptionals). The
+   * entry list is fixed here, not payload-driven, so the wizard can never be
+   * used to gitignore arbitrary paths. Never touches CLAUDE.md, .mcp.json,
+   * source, or committed skills — only the generated `.claude/tycoon/` state
+   * dir and the rolling session journal.
+   */
+  private _handleAddGitignoreEntries(): void {
+    const root = this._projectRoot();
+    if (root === "") return;
+
+    const gitignorePath = path.join(root, ".gitignore");
+    const header = "# TycoonAgents runtime artifacts";
+    const entries = [".claude/tycoon/", ".claude/session-journal.json"];
+
+    let existing = "";
+    try {
+      existing = fs.readFileSync(gitignorePath, "utf8");
+    } catch {
+      existing = "";
+    }
+
+    const existingLines = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+    const missing = entries.filter((e) => !existingLines.has(e));
+    if (missing.length === 0) {
+      return; // already fully present — idempotent no-op
+    }
+
+    const blockLines = existingLines.has(header) ? missing : [header, ...missing];
+    const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+    const spacer = existing.length > 0 ? "\n" : "";
+    const block = prefix + spacer + blockLines.join("\n") + "\n";
+
+    try {
+      fs.appendFileSync(gitignorePath, block);
+    } catch {
+      /* best-effort convenience action; no user-facing error surface wired for this optional step */
+    }
   }
 
   /** Coerce an untrusted `delegation_mode` message field to a valid mode, defaulting to "flat". */
@@ -4297,8 +4378,7 @@ export class TycoonPanel {
     }
     const otherChips = computeEngineChips(root, mcpConfig, (engineId) => this._engineProbeCache.get(engineId));
 
-    const servers = (mcpConfig["mcpServers"] ?? mcpConfig) as Record<string, unknown>;
-    const bridgeEntry = servers["uefn-bridge"] as Record<string, unknown> | undefined;
+    const bridgeEntry = this._uefnBridgeEntry(mcpConfig);
     if (!bridgeEntry) {
       return otherChips;
     }

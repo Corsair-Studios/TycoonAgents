@@ -53,6 +53,11 @@ export const MSG = {
   CHECK_INSTALL: "checkInstall",
   INSTALL_STATE: "installState",
   INSTALL_HOOKS: "installHooks",
+  // Setup wizard Step 2 (Optionals): opt-in append of TycoonAgents runtime
+  // state/log artifact paths (.claude/tycoon/, session journal) into the
+  // workspace .gitignore. No payload — the host owns the canonical entry
+  // list so the wizard can't be tricked into gitignoring arbitrary paths.
+  ADD_GITIGNORE: "addGitignoreEntries",
   GET_SETTINGS: "getSettings",
   SETTINGS: "settings",
   SETTINGS_UPDATED: "settingsUpdated",
@@ -395,6 +400,9 @@ export const MSG_SCHEMAS = {
     .passthrough(),
 
   REQUEST_PLAN: z.object({}).passthrough(),
+
+  // No required fields — host computes the fixed artifact-path list itself.
+  ADD_GITIGNORE: z.object({}).passthrough(),
 
   // `enabled` mirrors the projectPlanEnabled toggle so the webview always
   // knows whether to show the Project Plan section, even when `plan` is

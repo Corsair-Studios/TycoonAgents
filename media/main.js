@@ -1710,6 +1710,20 @@
 
   /** Tracks last uefnDetected state from checkInstall. */
   let lastUefnDetected = false;
+  /** Tracks last uefnBridgeSetUp state from checkInstall (the .mcp.json
+   *  uefn-bridge entry check panel.ts's _uefnBridgeEntry computes) — lets
+   *  the "set up UEFN" prompt stop reappearing once it's already done. */
+  let lastUefnBridgeSetUp = false;
+
+  // 2-step first-run setup wizard state. "not-installed" (Step 1, default) ->
+  // "optionals" (Step 2, entered only after a fresh install-hooks click in
+  // THIS session) -> "done" (user clicked "Done - set up a theme"). Kept
+  // separate from openedFromSettings/installed so a RETURNING session where
+  // hooks were already installed before the panel loaded goes straight to
+  // showMain() as before, instead of re-showing the wizard every reopen.
+  let setupStage = "not-installed";
+  /** True only after the user clicks "Install hooks" in THIS webview session. */
+  let justInstalled = false;
 
   /**
    * Show the full-bleed setup overlay; hide the live app view.
@@ -1799,12 +1813,38 @@
       } else {
         setupErrorEl.setAttribute("hidden", "");
       }
+    } else if (setupStage === "done") {
+      // A stray/duplicate installState push after the wizard was already
+      // dismissed (Done clicked) should not reopen it.
+      showMain();
+    } else if (justInstalled || setupStage === "optionals") {
+      // Step 2 (Optionals): STAY on the setup screen instead of switching to
+      // the main app immediately. This used to be an unconditional
+      // showMain(), which hid the whole screen before the UEFN card
+      // (renderUefnPrompt, appended into #setup-card) — or any other
+      // optional action — ever had a chance to render.
+      setupStage = "optionals";
+      showSetup();
+      setupStatusEl.textContent = "Hooks installed ✓";
+      installHooksBtn.setAttribute("hidden", "");
+      if (info && info.error) {
+        setupErrorEl.textContent = info.error;
+        setupErrorEl.removeAttribute("hidden");
+      } else {
+        setupErrorEl.setAttribute("hidden", "");
+      }
+      renderSetupOptionals(info);
     } else {
+      // Hooks were already installed before this webview session started
+      // (a returning user reopening the panel) — go straight to the main
+      // view, exactly like before this feature existed. The wizard only
+      // appears right after a live "Install hooks" click.
       showMain();
     }
   }
 
   installHooksBtn.addEventListener("click", () => {
+    justInstalled = true;
     const teamLeadsRadio = /** @type {HTMLInputElement|null} */ (
       document.getElementById("delegation-mode-team-leads")
     );
@@ -1824,6 +1864,12 @@
 
   menuSettingsBtn.addEventListener("click", () => {
     closeMenu();
+    // If the Step-2 Optionals wizard is still mounted (e.g. reached Settings
+    // via the hamburger menu instead of clicking through the wizard), remove
+    // it first so it doesn't stay visibly stacked on top of the Settings
+    // panel underneath. See removeSetupOptionalsNodes().
+    removeSetupOptionalsNodes();
+    setupStage = "done";
     openedFromSettings = true;
     showSetup();
     vscode.postMessage({ type: "checkInstall" });
@@ -6606,6 +6652,211 @@
     }
   }
 
+  /** Skill catalog ids offered as pre-install-optional chips. "unreal-engine"
+   *  is the real media/skills/catalog.json id; engine DETECTION (engineChips
+   *  from computeEngineChips) reports it as "unreal" — normalized below. */
+  var SETUP_SKILL_CHIPS = [
+    { id: "playwright", label: "Playwright" },
+    { id: "godot", label: "Godot" },
+    { id: "unity", label: "Unity" },
+    { id: "unreal-engine", label: "Unreal Engine" },
+    { id: "uefn", label: "UEFN" },
+  ];
+
+  /**
+   * Remove the Step-2 Optionals wizard's DOM (both card halves, the UEFN
+   * card, and the "already set up" confirmation line) if still mounted.
+   * Called before navigating to Settings — via the hamburger menu's
+   * Settings item or the wizard's own "Advanced tuning" link — so the
+   * wizard doesn't stay visibly stacked on top of the Settings panel
+   * underneath (#setup-config lives in the same #setup-card container).
+   * A no-op if the wizard was never rendered this session.
+   */
+  function removeSetupOptionalsNodes() {
+    ["setup-optionals-top", "setup-optionals-bottom", "uefn-prompt-card", "uefn-bridge-setup-confirm"].forEach(
+      function (id) {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      }
+    );
+  }
+
+  /**
+   * Render Setup Wizard Step 2 (Optionals) inside #setup-card, once hooks
+   * finish installing. Stays mounted (does NOT call showMain()) until the
+   * user clicks "Done - set up a theme". Idempotent: removes/rebuilds its
+   * own two card halves each call so a repeated installState push doesn't
+   * duplicate anything.
+   *
+   * Renders in two pieces (top: confirmation/gitignore/skill chips, bottom:
+   * advanced-tuning link/Done button) with the UEFN card (renderUefnPrompt)
+   * appended between them, so DOM order matches the wizard spec regardless
+   * of whether UEFN is detected: confirmation -> optional gitignore ->
+   * skill chips -> [UEFN card] -> advanced link -> Done.
+   *
+   * @param {{engineChips?: Array<{id:string,label:string,state:string,detail:string}>, uefnDetected?: boolean, uefnSignals?: string[]}} info
+   */
+  function renderSetupOptionals(info) {
+    const setupCard = document.getElementById("setup-card");
+    if (!setupCard) return;
+
+    const existingTop = document.getElementById("setup-optionals-top");
+    if (existingTop) existingTop.remove();
+    const existingBottom = document.getElementById("setup-optionals-bottom");
+    if (existingBottom) existingBottom.remove();
+
+    // ── Top half: confirmation, gitignore checkbox, skill chips ──────
+    const top = document.createElement("div");
+    top.id = "setup-optionals-top";
+    top.className = "setup-optionals-card";
+
+    const confirmEl = document.createElement("p");
+    confirmEl.className = "setup-optionals-confirm";
+    confirmEl.textContent = "Hooks installed ✓";
+    top.appendChild(confirmEl);
+
+    const optionalHeading = document.createElement("div");
+    optionalHeading.className = "setup-optionals-heading";
+    optionalHeading.textContent = "Optional setup";
+    top.appendChild(optionalHeading);
+
+    const gitignoreLabel = document.createElement("label");
+    gitignoreLabel.className = "setup-optionals-checkbox-row";
+    const gitignoreCheckbox = document.createElement("input");
+    gitignoreCheckbox.type = "checkbox";
+    gitignoreCheckbox.id = "setup-gitignore-checkbox";
+    // Opt-in only, unchecked by default (explicit user decision).
+    gitignoreCheckbox.checked = false;
+    gitignoreLabel.appendChild(gitignoreCheckbox);
+    const gitignoreText = document.createElement("span");
+    gitignoreText.textContent = "Add tycoon logs to .gitignore";
+    gitignoreLabel.appendChild(gitignoreText);
+    top.appendChild(gitignoreLabel);
+
+    const skillsHeading = document.createElement("div");
+    skillsHeading.className = "setup-optionals-heading";
+    skillsHeading.textContent = "Skills & packages";
+    top.appendChild(skillsHeading);
+
+    const chipsRow = document.createElement("div");
+    chipsRow.id = "setup-skill-chips";
+    chipsRow.className = "setup-skill-chips";
+
+    var detectedIds = {};
+    var chips = (info && info.engineChips) || [];
+    for (var ci = 0; ci < chips.length; ci++) {
+      var cid = chips[ci].id === "unreal" ? "unreal-engine" : chips[ci].id;
+      detectedIds[cid] = true;
+    }
+    if (info && info.uefnDetected) detectedIds["uefn"] = true;
+
+    SETUP_SKILL_CHIPS.forEach(function (def) {
+      const pill = document.createElement("div");
+      pill.className = "engine-chip setup-skill-chip";
+      pill.dataset.skillChipId = def.id;
+      pill.title = def.label;
+
+      const dot = document.createElement("span");
+      dot.className = "engine-chip-dot engine-chip-dot--setup";
+
+      const label = document.createElement("span");
+      label.className = "engine-chip-label";
+      label.textContent = def.label;
+
+      pill.appendChild(dot);
+      pill.appendChild(label);
+      if (detectedIds[def.id]) {
+        pill.classList.add("setup-skill-chip--checked");
+      }
+      // Selection state only — installed on "Done", not on click.
+      pill.addEventListener("click", function () {
+        pill.classList.toggle("setup-skill-chip--checked");
+      });
+      chipsRow.appendChild(pill);
+    });
+    top.appendChild(chipsRow);
+
+    setupCard.appendChild(top);
+
+    // ── UEFN card / already-set-up confirmation, appended between the two
+    //    halves so it lands after the skill chips and before the advanced
+    //    link/Done button. The outer installState handler skips its own
+    //    renderUefnPrompt call whenever this optionals path just ran (see
+    //    the "installState" message handler) so it's never rendered twice.
+    const existingUefnConfirm = document.getElementById("uefn-bridge-setup-confirm");
+    if (existingUefnConfirm) existingUefnConfirm.remove();
+    if (info && info.uefnDetected) {
+      if (info.uefnBridgeSetUp) {
+        // UEFN setup already ran (the .mcp.json uefn-bridge entry is
+        // present) — show a static confirmation instead of the redundant
+        // "Yes, set up UEFN" button.
+        const existingUefnCard = document.getElementById("uefn-prompt-card");
+        if (existingUefnCard) existingUefnCard.remove();
+        const confirm = document.createElement("p");
+        confirm.id = "uefn-bridge-setup-confirm";
+        confirm.className = "setup-optionals-confirm";
+        confirm.textContent = "✓ UEFN bridge already set up";
+        setupCard.appendChild(confirm);
+      } else {
+        renderUefnPrompt(info.uefnSignals || []);
+      }
+    } else {
+      const existingUefnCard = document.getElementById("uefn-prompt-card");
+      if (existingUefnCard) existingUefnCard.remove();
+    }
+
+    // ── Bottom half: advanced-tuning link, Done button ───────────────
+    const bottom = document.createElement("div");
+    bottom.id = "setup-optionals-bottom";
+    bottom.className = "setup-optionals-card";
+
+    const advancedLink = document.createElement("a");
+    advancedLink.href = "#";
+    advancedLink.className = "setup-optionals-advanced-link";
+    advancedLink.textContent = "Advanced tuning (models, keyword routing, plan, design docs) lives in Settings →";
+    advancedLink.addEventListener("click", function (e) {
+      e.preventDefault();
+      closeMenu();
+      // Leaving the wizard for Settings — remove the Step-2 Optionals nodes
+      // (this card, its sibling half, and the UEFN card/confirmation) so
+      // they don't stay visibly stacked on top of the Settings panel.
+      removeSetupOptionalsNodes();
+      // The user has moved past the wizard by choosing this link; mark it
+      // done so a later stray installState push (e.g. after Back) goes
+      // straight to showMain() instead of re-rendering the wizard.
+      setupStage = "done";
+      openedFromSettings = true;
+      showSetup();
+      vscode.postMessage({ type: "checkInstall" });
+      vscode.postMessage({ type: "getSettings" });
+    });
+    bottom.appendChild(advancedLink);
+
+    const doneBtn = document.createElement("button");
+    doneBtn.id = "setup-optionals-done-btn";
+    doneBtn.className = "skill-btn";
+    doneBtn.textContent = "Done — set up a theme";
+    doneBtn.addEventListener("click", function () {
+      const checkedChips = chipsRow.querySelectorAll(".setup-skill-chip--checked");
+      checkedChips.forEach(function (el) {
+        const id = el.dataset.skillChipId;
+        if (id) vscode.postMessage({ type: "installSkill", id });
+      });
+      if (gitignoreCheckbox.checked) {
+        vscode.postMessage({ type: "addGitignoreEntries" });
+      }
+      setupStage = "done";
+      showMain();
+      themePickerList.removeAttribute("hidden");
+      themeBuilderPanel.setAttribute("hidden", "");
+      openModal(themesModalEl, themesModalCloseBtn);
+      vscode.postMessage({ type: "LIST_THEMES" });
+    });
+    bottom.appendChild(doneBtn);
+
+    setupCard.appendChild(bottom);
+  }
+
   /**
    * Render the UEFN project detected card inside #setup-card.
    * Called when checkInstall response carries uefnDetected:true.
@@ -7469,8 +7720,31 @@
     } else if (msg && msg.type === "agentRemoved") {
       handleAgentRemoved(msg.id, msg.ok, msg.cancelled, msg.error);
     } else if (msg && msg.type === "installState") {
+      lastUefnBridgeSetUp = Boolean(msg.uefnBridgeSetUp);
       handleInstallState(msg);
-      if (msg.uefnDetected) {
+      // When handleInstallState just took (or continued in) the Step-2
+      // Optionals branch, renderSetupOptionals already handled the UEFN
+      // section inline (button or "already set up" line), in the correct
+      // DOM position (between the skill chips and the advanced-link/Done
+      // button). Skip the generic call here so the UEFN card isn't
+      // re-appended at the very end of #setup-card (which would both
+      // duplicate-render and misplace it).
+      // Mirrors handleInstallState's own branch predicate exactly (not just
+      // "installed && !openedFromSettings && !done") so this is true ONLY
+      // when renderSetupOptionals actually ran just now — a plain returning
+      // session (hooks pre-installed, never justInstalled, setupStage stuck
+      // at "not-installed") takes handleInstallState's final showMain()
+      // fallback instead, and must NOT suppress the fallback renderUefnPrompt
+      // call below.
+      var uefnHandledByOptionals =
+        msg &&
+        msg.installed === true &&
+        !openedFromSettings &&
+        setupStage !== "done" &&
+        (justInstalled || setupStage === "optionals");
+      // uefnBridgeSetUp: the .mcp.json uefn-bridge entry is already present
+      // (UEFN setup ran before) — don't keep re-prompting "set up UEFN".
+      if (msg.uefnDetected && !msg.uefnBridgeSetUp && !uefnHandledByOptionals) {
         lastUefnDetected = true;
         renderUefnPrompt(msg.uefnSignals || []);
       }
