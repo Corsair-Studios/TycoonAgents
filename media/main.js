@@ -8929,11 +8929,6 @@
       el.appendChild(row);
     }
 
-    const caption = document.createElement("div");
-    caption.className = "delegation-stats-caption";
-    caption.textContent = "Measured this workspace — not an estimate.";
-    el.appendChild(caption);
-
     const pricingCaption = document.createElement("div");
     pricingCaption.className = "delegation-stats-caption";
     pricingCaption.textContent =
