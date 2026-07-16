@@ -125,5 +125,20 @@
     "network": false,
     "dataNote": "Runs locally; bridges Claude to your open Blender session over a local socket (default port 9876). No external/network calls.",
     "config": { "command": "uvx", "args": ["blender-mcp"] }
+  },
+  {
+    "id": "dart",
+    "name": "Dart & Flutter",
+    "description": "Analyze and fix Dart & Flutter code, resolve symbols, fetch API docs, search pub.dev, manage pubspec.yaml dependencies, run tests, and format code — via Google's official dart mcp-server.",
+    "requiresEnv": [],
+    "note": "Provided by the Dart SDK — no separate install if `dart` (3.9+) is on your PATH. Experimental and evolving. Best used inside a Flutter/Dart project (a directory with pubspec.yaml). If your MCP client has trouble with workspace roots, add \"--force-roots-fallback\" to args.",
+    "docsUrl": "https://docs.flutter.dev/ai/mcp-server",
+    "thirdParty": true,
+    "vendor": "Google (Dart & Flutter)",
+    "package": "dart mcp-server (bundled with the Dart SDK 3.9+; run via `dart`)",
+    "homepage": "https://dart.dev",
+    "network": true,
+    "dataNote": "Runs locally against your project's Dart/Flutter source; contacts pub.dev when searching packages or fetching docs. Requires the Dart SDK (3.9+) on your PATH.",
+    "config": { "command": "dart", "args": ["mcp-server"] }
   }
 ]
