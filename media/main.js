@@ -3891,6 +3891,8 @@
     crate:       { frames: [0],          fps: 0,  loop: true, hold: true },
     poof:        { frames: [0, 1, 2, 3], fps: 12, loop: false },
   };
+  const OBJECT_ANIM_PROXIMITY_NATIVE = 64; // native px (533x751 space): an agent within this starts an animated object's loop
+  const OBJECT_ANIM_LINGER_SEC = 1.0;      // keep looping this long after the last agent leaves, then freeze to frame 0
 
   // ── Cosmetic damage-smoke overlay (Phase 1) ──────────────────────────────
   // Purely visual: a built object under sustained rival attack emits a rising,
@@ -4138,6 +4140,14 @@
    * occupant too low. Single tune-friendly constant.
    */
   const SEAT_RAISE_FRAC = 0.6;
+  /**
+   * Fraction of sprite height (feet→seat-contact point) used to compensate for
+   * CHARACTER scale (as opposed to SEAT_RAISE_FRAC, which compensates for
+   * CHAIR scale). Rescaling a character alone shifts its own seat-contact
+   * point without moving the chair, so a scaled-down character sinks into the
+   * seat and a scaled-up one floats above it. No-op at effectiveCharScale===1.
+   */
+  const SEAT_SCALE_CONTACT_FRAC = 0.4; // fraction of sprite height from feet to seat-contact; tune if seated chars sit slightly high/low
   /**
    * Horizontal canvas-px nudge applied to a seated character's draw position
    * for better chair alignment: shifted RIGHT when its seat is not flipped,
@@ -11011,7 +11021,31 @@
           }
         }
       } else if (entry.phase === "idle" && entry.animState) {
-        advanceObjectAnim(entry.animState, delta);
+        const objImg = themeImages["object_" + objId];
+        if (objImg && objImg.length > 1) {
+          // Animated object: only loop while an AGENT (never a rival) is close,
+          // plus a 1s linger after the last agent leaves; otherwise freeze frame 0.
+          const place = objectPlacement[objId];
+          let agentNear = false;
+          if (place) {
+            for (const agent of agentList) {
+              const ent = agentCharMap[agent.id];
+              if (!ent) continue;
+              const dx = place.nx - ent.nx, dy = place.ny - ent.ny;
+              if (dx * dx + dy * dy <= OBJECT_ANIM_PROXIMITY_NATIVE * OBJECT_ANIM_PROXIMITY_NATIVE) { agentNear = true; break; }
+            }
+          }
+          if (agentNear) entry.animNearTimer = OBJECT_ANIM_LINGER_SEC;
+          else entry.animNearTimer = Math.max(0, (entry.animNearTimer || 0) - delta);
+          if (entry.animNearTimer > 0) {
+            advanceObjectAnim(entry.animState, delta);
+          } else {
+            entry.animState.frameIndex = 0;
+            entry.animState.elapsed = 0;
+          }
+        } else {
+          advanceObjectAnim(entry.animState, delta); // static art: unchanged (holds frame 0 via modulo)
+        }
       }
     }
     // Resolve standoff target (native space) for active-build agents.
@@ -12231,6 +12265,10 @@
               // Fallback: approximate with the character's own depthScale.
               seatRaise = SEAT_RAISE_FRAC * (chairScale - 1) * 64 * depthScale;
             }
+            // Character-scale compensation: keep the seat-contact point on the chair
+            // regardless of how the character was rescaled. A scaled-DOWN character would
+            // otherwise sink below the seat; scaled-up would float. No-op at scale 1.0.
+            seatRaise += SEAT_SCALE_CONTACT_FRAC * 64 * depthScale * (1 - effectiveCharScale(charId));
           }
           const drawX = cx - spriteSize / 2 + seatNudge;
           const drawY = cy - spriteSize - seatRaise; // feet at cy, raised for chair scale
