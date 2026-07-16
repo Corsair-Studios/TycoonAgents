@@ -93,6 +93,7 @@ import {
 } from "../../extension/themeImageSettings";
 import { MSG, MSG_SCHEMAS } from "./messages";
 import { readPlan, writePlan, approvePhase, overrideTask } from "./projectPlan";
+import { buildDiagnosticReport, type DiagnosticReportInput } from "./diagnosticReport";
 
 /**
  * Persisted per-theme rebirth (prestige) state, stored host-side in
@@ -496,6 +497,16 @@ export class TycoonPanel {
             root !== "" ? readExecutionConfig(path.join(root, ".claude")).delegation_mode : "flat";
           this._handleInstallHooks(currentMode);
           this._handleGetSettings();
+        } else if (message.type === MSG.GENERATE_DIAGNOSTIC) {
+          const parsedGenerateDiagnostic = MSG_SCHEMAS.GENERATE_DIAGNOSTIC.safeParse(message);
+          if (parsedGenerateDiagnostic.success) {
+            await this._handleGenerateDiagnostic();
+          } else {
+            console.error(
+              "TycoonAgents: generateDiagnostic payload rejected:",
+              parsedGenerateDiagnostic.error.message
+            );
+          }
         } else if (message.type === MSG.RESET_METRICS) {
           void this._handleResetMetrics();
         } else if (message.type === MSG.GET_PACKS) {
@@ -4530,6 +4541,151 @@ export class TycoonPanel {
       });
     } catch (err) {
       void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: false, error: String(err) });
+    }
+  }
+
+  /**
+   * "Generate diagnostic report": gather every health signal this panel
+   * already computes elsewhere (hook health, delegation/review mode,
+   * doctrine health, context budget, roster consistency, engine/UEFN
+   * status), hand them to the PURE `buildDiagnosticReport` (diagnosticReport.ts)
+   * which returns a sanitized Markdown string, then write/open/copy it.
+   *
+   * NO network, NO runtime AI — this only reads state already on disk or in
+   * memory. The report itself is sanitized (absolute paths -> placeholders,
+   * obvious secrets redacted) by `buildDiagnosticReport`'s final `sanitize`
+   * pass; nothing here needs to scrub the Markdown a second time.
+   */
+  private async _handleGenerateDiagnostic(): Promise<void> {
+    const root = this._projectRoot();
+    if (root === "") {
+      void vscode.window.showWarningMessage("TycoonAgents: No project root — open a folder first.");
+      return;
+    }
+    try {
+      const agentsDir = path.join(root, ".claude", "agents");
+
+      // ---- environment -----------------------------------------------------
+      let extensionVersion: string | null = null;
+      try {
+        const pkgRaw = fs.readFileSync(path.join(this._extensionUri.fsPath, "package.json"), "utf8");
+        extensionVersion = JSON.parse(pkgRaw).version || null;
+      } catch {
+        extensionVersion = null;
+      }
+      const hostAppHost = (vscode.env as unknown as { appHost?: string }).appHost;
+
+      // ---- hook health --------------------------------------------------
+      let lastActivityAt: number | null = null;
+      try {
+        lastActivityAt = fs.statSync(path.join(root, ".claude", "tycoon", "activity.jsonl")).mtimeMs;
+      } catch {
+        lastActivityAt = null;
+      }
+      const { findings } = this._diagnoseHooks();
+      const issueCount = findings.filter((f) => f.severity !== "ok").length;
+
+      // ---- delegation + review -------------------------------------------
+      const execCfg = readExecutionConfig(path.join(root, ".claude"));
+
+      // ---- doctrine health (CLAUDE.md) ------------------------------------
+      let legacyDoctrineBlock = false;
+      let legacyDoctrineLines = 0;
+      let foreignManagedBlocks: { namespace: string; lines: number }[] = [];
+      let claudeMdContent: string | null = null;
+      try {
+        claudeMdContent = fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8");
+        const legacy = detectLegacyOfficeAgentsBlock(claudeMdContent);
+        legacyDoctrineBlock = legacy.present;
+        legacyDoctrineLines = legacy.lineCount;
+        foreignManagedBlocks = detectForeignManagedBlocks(claudeMdContent);
+      } catch {
+        claudeMdContent = null;
+      }
+
+      // ---- context budget ---------------------------------------------------
+      let contextBudget;
+      try {
+        const agentEntries: Array<{ name: string; content: string }> = [];
+        try {
+          const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+          for (const fname of agentFiles) {
+            try {
+              agentEntries.push({ name: fname, content: fs.readFileSync(path.join(agentsDir, fname), "utf8") });
+            } catch {
+              /* skip unreadable */
+            }
+          }
+        } catch {
+          /* agentsDir missing => empty */
+        }
+        contextBudget = buildContextBudget(claudeMdContent, agentEntries);
+      } catch {
+        contextBudget = buildContextBudget(null, []);
+      }
+
+      // ---- roster consistency: dangling keyword refs / keyword-less agents --
+      const rosterAgents = loadAgentRoster(agentsDir);
+      const agentIds = rosterAgents.map((a) => a.id);
+      const agentIdSet = new Set(agentIds);
+      const keywordsConfig = this._readKeywordsConfig(root);
+      const keywordAgents: Record<string, any> =
+        keywordsConfig && typeof keywordsConfig.agents === "object" && keywordsConfig.agents !== null
+          ? keywordsConfig.agents
+          : {};
+      const keywordIds = Object.keys(keywordAgents);
+      const danglingKeywordRefs = keywordIds.filter((id) => !agentIdSet.has(id));
+      const agentsWithNoKeywords = agentIds.filter((id) => {
+        const entry = keywordAgents[id];
+        const pattern = entry && typeof entry.pattern === "string" ? entry.pattern.trim() : "";
+        return pattern === "";
+      });
+
+      // ---- engines / UEFN / MCP servers --------------------------------------
+      const mcpConfig = this._readMcpConfig(path.join(root, ".mcp.json"));
+      const engineChips = computeEngineChips(root, mcpConfig, (engineId) => this._engineProbeCache.get(engineId));
+      const uefn = detectUefnProject(root);
+      const bridgeSetUp = Boolean(this._uefnBridgeEntry(mcpConfig));
+      const servers = (mcpConfig as any)?.mcpServers ?? mcpConfig;
+      const mcpServerIds = servers && typeof servers === "object" ? Object.keys(servers) : [];
+
+      const reportInput: DiagnosticReportInput = {
+        timestamp: new Date().toISOString(),
+        roots: { projectRoot: root, homeDir: os.homedir(), extensionDir: this._extensionUri.fsPath },
+        extensionVersion,
+        platform: process.platform,
+        hostAppName: vscode.env.appName,
+        hostAppHost,
+        hook: { installed: this._hookInstalled(root), lastActivityAt },
+        hookHealth: { healthy: issueCount === 0, issueCount },
+        delegation: { mode: execCfg.delegation_mode, reviewEnabled: execCfg.reviewEnabled ?? true },
+        doctrine: { legacyOfficeAgentsBlock: legacyDoctrineBlock, legacyOfficeAgentsLines: legacyDoctrineLines, foreignManagedBlocks },
+        contextBudget,
+        roster: { agentIds, keywordIds, danglingKeywordRefs, agentsWithNoKeywords },
+        engines: {
+          chips: engineChips,
+          uefn: { detected: uefn.detected, signals: uefn.signals, uefnInstalled: uefn.uefnInstalled, bridgeSetUp },
+          mcpServerIds,
+        },
+      };
+
+      const report = buildDiagnosticReport(reportInput);
+
+      const filenameSafeTimestamp = reportInput.timestamp.replace(/[:.]/g, "-");
+      const outDir = path.join(root, ".claude", "tycoon");
+      const outPath = path.join(outDir, `diagnostic-report-${filenameSafeTimestamp}.md`);
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(outPath, report, "utf8");
+
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(outPath));
+      await vscode.window.showTextDocument(doc, { preview: false });
+
+      await vscode.env.clipboard.writeText(report);
+      void vscode.window.showInformationMessage(
+        "Diagnostic report generated + copied to clipboard — review it, then send it to the maintainer."
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(`TycoonAgents: Could not generate diagnostic report: ${errorMessage(err)}`);
     }
   }
 

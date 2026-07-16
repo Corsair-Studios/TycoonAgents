@@ -10276,7 +10276,32 @@
     docsSection.appendChild(reviewBtn);
     setupConfigEl.appendChild(docsSection);
 
-    // ── 5. Danger zone ──
+    // ── 5. Report a bug / Diagnostics ──
+    // Sanitized Markdown snapshot of the health signals already computed
+    // above (hook health, delegation mode, doctrine health, context budget,
+    // roster consistency, engine/UEFN status) — see diagnosticReport.ts.
+    // Purely local: no network call, no runtime AI. The host writes the
+    // report, opens it for review, and copies it to the clipboard so the
+    // user can paste it wherever they report bugs.
+    const diagSection = buildSection("Report a bug / Diagnostics");
+    const diagDesc = document.createElement("p");
+    diagDesc.className = "settings-empty";
+    diagDesc.textContent = "Creates a sanitized report of your TycoonAgents setup you can send to the maintainer. Absolute paths and secrets are stripped — review before sharing.";
+    diagSection.appendChild(diagDesc);
+    const diagDeeperNote = document.createElement("p");
+    diagDeeperNote.className = "settings-empty";
+    diagDeeperNote.textContent = "For a deeper, reasoned analysis, run /tycoon-diagnose in Claude Code.";
+    diagSection.appendChild(diagDeeperNote);
+    const diagBtn = document.createElement("button");
+    diagBtn.className = "skill-btn settings-btn";
+    diagBtn.textContent = "Generate diagnostic report";
+    diagBtn.addEventListener("click", () => {
+      vscode.postMessage({ type: "generateDiagnostic" });
+    });
+    diagSection.appendChild(diagBtn);
+    setupConfigEl.appendChild(diagSection);
+
+    // ── 6. Danger zone ──
     const dangerSection = buildSection("Danger zone");
     dangerSection.classList.add("danger-section");
     const dangerRow = document.createElement("div");

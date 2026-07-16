@@ -84,6 +84,12 @@ export const MSG = {
   DOCTOR_REPORT: "doctorReport",
   APPLY_DOCTOR_FIX: "applyDoctorFix",
   DOCTOR_FIX_DONE: "doctorFixDone",
+  // "Generate diagnostic report" (bug-report): host gathers already-computed
+  // health signals, builds a SANITIZED Markdown report (diagnosticReport.ts),
+  // writes it to .claude/tycoon/, opens it for review, and copies it to the
+  // clipboard. No payload — purely a confirm-click trigger, same shape as
+  // REPAIR_HOOK/REMOVE_LEGACY_DOCTRINE. No network, no runtime AI.
+  GENERATE_DIAGNOSTIC: "generateDiagnostic",
 
   // ---- packs catalog -----------------------------------------------------
   GET_PACKS: "getPacks",
@@ -415,6 +421,10 @@ export const MSG_SCHEMAS = {
   // No required fields — the host detects/strips the legacy OfficeAgents
   // block itself; this message is purely the user's confirm-click trigger.
   REMOVE_LEGACY_DOCTRINE: z.object({}).passthrough(),
+
+  // No required fields — the host gathers every input itself; this message
+  // is purely the user's confirm-click trigger from Settings.
+  GENERATE_DIAGNOSTIC: z.object({}).passthrough(),
 
   // `enabled` mirrors the projectPlanEnabled toggle so the webview always
   // knows whether to show the Project Plan section, even when `plan` is
