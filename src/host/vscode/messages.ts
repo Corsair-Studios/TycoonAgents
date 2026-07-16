@@ -107,6 +107,8 @@ export const MSG = {
   COPY_PROMPT: "copyPrompt",
   DESIGN_DOC_ACTION: "designDocAction",
   DESIGN_DOC_DONE: "designDocDone",
+  PROJECT_PLAN_ACTION: "projectPlanAction",
+  PROJECT_PLAN_DONE: "projectPlanDone",
 
   // ---- engine / UEFN -------------------------------------------------------
   GET_ENGINE_STATUS: "getEngineStatus",

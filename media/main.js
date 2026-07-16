@@ -8092,6 +8092,8 @@
       el.appendChild(refreshEl);
     } else if (msg && msg.type === "designDocDone") {
       /* handled by host info message */
+    } else if (msg && msg.type === "projectPlanDone") {
+      /* handled by host info message */
     } else if (msg && msg.type === "PLAN_STATE") {
       // Optional "Project Plan" feature. `enabled` mirrors the Settings
       // toggle; `plan` is null when the feature is off, or on with no
@@ -8457,6 +8459,15 @@
       descEl.textContent = server.description;
 
       textBlock.appendChild(nameEl);
+
+      if (server.needsSetup) {
+        const setupBadge = document.createElement("span");
+        setupBadge.className = "mcp-setup-badge";
+        setupBadge.textContent = "Template — needs setup";
+        setupBadge.style.cssText = "margin-left:8px;font-size:11px;padding:1px 7px;border-radius:9px;background:rgba(224,168,0,0.18);color:#b8860b;border:1px solid rgba(224,168,0,0.4);vertical-align:middle;";
+        textBlock.appendChild(setupBadge);
+      }
+
       textBlock.appendChild(descEl);
 
       if (server.requiresEnv && server.requiresEnv.length) {
@@ -9876,6 +9887,13 @@
     planLabel.appendChild(planTextWrap);
     planRow.appendChild(planLabel);
     planSection.appendChild(planRow);
+    const planInstallBtn = document.createElement("button");
+    planInstallBtn.className = "skill-btn settings-btn";
+    planInstallBtn.textContent = "Install project-plan skill";
+    planInstallBtn.addEventListener("click", () => {
+      vscode.postMessage({ type: "projectPlanAction" });
+    });
+    planSection.appendChild(planInstallBtn);
     setupConfigEl.appendChild(planSection);
 
     // ── 2. Agents ──

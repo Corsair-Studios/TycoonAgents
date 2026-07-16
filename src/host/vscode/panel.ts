@@ -547,6 +547,8 @@ export class TycoonPanel {
           void this._handleApplyDoctorFix((message as any).removeForeign === true);
         } else if (message.type === MSG.DESIGN_DOC_ACTION) {
           await this._handleDesignDocAction((message as any).mode);
+        } else if (message.type === MSG.PROJECT_PLAN_ACTION) {
+          await this._handleInstallProjectPlanSkill();
         } else if (message.type === MSG.GET_THEME_IMAGE_SETTINGS) {
           const providers = await getThemeImageConfigurationStatus(this._secrets);
           void this._panel.webview.postMessage({
@@ -2212,6 +2214,7 @@ export class TycoonPanel {
     homepage?: string;
     network?: string;
     dataNote?: string;
+    needsSetup?: boolean;
     config: unknown;
   }> {
     const catalogPath = path.join(
@@ -2280,6 +2283,7 @@ export class TycoonPanel {
       homepage: e.homepage,
       network: e.network,
       dataNote: e.dataNote,
+      needsSetup: e.needsSetup,
     }));
     void this._panel.webview.postMessage({ type: MSG.MCP, servers });
   }
@@ -2961,6 +2965,30 @@ export class TycoonPanel {
       "Design-doc skill installed and the " + (mode === "review" ? "review" : "generate") + " prompt was copied to your clipboard — paste it into Claude Code to run it."
     );
     void this._panel.webview.postMessage({ type: MSG.DESIGN_DOC_DONE, mode, ok: true });
+  }
+
+  private async _handleInstallProjectPlanSkill(): Promise<void> {
+    const root = this._projectRoot();
+    if (!root) {
+      vscode.window.showWarningMessage("No project root — open a folder first.");
+      return;
+    }
+    const src = path.join(this._extensionUri.fsPath, "media", "skills", "project-plan");
+    const dest = path.join(root, ".claude", "skills", "project-plan");
+    try {
+      fs.mkdirSync(path.join(root, ".claude", "skills"), { recursive: true });
+      fs.cpSync(src, dest, { recursive: true });
+    } catch (e) {
+      vscode.window.showErrorMessage("Failed to install project-plan skill: " + String(e));
+      void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: false, error: String(e) });
+      return;
+    }
+    const prompt = "Use the project-plan skill (.claude/skills/project-plan) to decompose the design doc / goals for this project into an approvable plan of phases and tasks with human gate checkpoints.";
+    await vscode.env.clipboard.writeText(prompt);
+    vscode.window.showInformationMessage(
+      "Project-plan skill installed and its starter prompt was copied to your clipboard."
+    );
+    void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: true });
   }
 
   /**

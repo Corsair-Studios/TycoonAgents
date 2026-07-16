@@ -2,16 +2,17 @@
   {
     "id": "github",
     "name": "GitHub",
-    "description": "Read and manage repos, issues, and PRs from GitHub.",
-    "requiresEnv": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
-    "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+    "description": "Read and manage repos, issues, and PRs from GitHub — via GitHub's official hosted MCP server.",
+    "requiresEnv": [],
+    "note": "Official GitHub-hosted remote server — nothing to install locally. On first use Claude Code opens a browser to sign in to GitHub (OAuth); no token to manage. Works with any GitHub account.",
+    "docsUrl": "https://github.com/github/github-mcp-server",
     "thirdParty": true,
-    "vendor": "GitHub / Model Context Protocol",
-    "package": "@modelcontextprotocol/server-github (run via npx)",
-    "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+    "vendor": "GitHub",
+    "package": "GitHub-hosted remote MCP server (no local install)",
+    "homepage": "https://github.com/github/github-mcp-server",
     "network": true,
-    "dataNote": "Contacts the GitHub API (api.github.com); sends your repo data, issues/PRs, and access token.",
-    "config": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "" } }
+    "dataNote": "Connects to GitHub's hosted MCP server (api.githubcopilot.com) using your authorized GitHub account; the model can read and manage the repos, issues, and PRs you grant access to.",
+    "config": { "type": "http", "url": "https://api.githubcopilot.com/mcp/" }
   },
   {
     "id": "filesystem",
@@ -72,6 +73,7 @@
   },
   {
     "id": "roblox-studio",
+    "needsSetup": true,
     "name": "Roblox Studio",
     "description": "Connect an AI client to a live Roblox Studio session — explore the data model, write Luau, and run/test in play mode.",
     "requiresEnv": [],
