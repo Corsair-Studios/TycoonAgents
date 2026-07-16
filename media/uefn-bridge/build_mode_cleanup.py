@@ -3,11 +3,18 @@ Build-Mode Cleanup
 ====================
 WRITE tool. Bulk-sets a small set of actor-level "build mode" properties
 to a per-property Off/On target across ALL level actors (not just the
-current selection) — e.g. "Register with Structural Grid", "Forcibly
+current selection), EXCLUDING Fortnite Creative devices (buttons, accolades,
+analytics, etc.) — e.g. "Register with Structural Grid", "Forcibly
 Structurally Supported", "Structurally Support Overlapping Actors". Each
 property can independently be left untouched ("leave"), forced to its Off
 value, or forced to its On value. These are the internal property names
 discovered via property_inspector.py on BP_Blockout_Floor actors.
+
+Devices are skipped entirely (no get_editor_property/set_editor_property
+call is ever made on one) because these build-mode properties mean
+something different — and load-bearing — on a device (e.g. allow_interact
+gates whether a Button device can be interacted with at all). See
+_is_device / _DEVICE_CLASS_HINTS below.
 
 Safety model:
   - run(apply=False) is a STRICTLY read-only dry run: it never calls
@@ -105,6 +112,7 @@ def _empty_report(status, states=None):
         "actors_scanned": 0,
         "actors_with_props": 0,
         "actors_changed": 0,
+        "devices_skipped": 0,
         "per_property": {
             entry["name"]: {"state": states.get(entry["name"], _STATE_LEAVE), "have": 0, "changed": 0}
             for entry in _BUILD_MODE_PROPS
@@ -125,6 +133,54 @@ def _safe_class_name(actor):
         return actor.get_class().get_name()
     except Exception:
         return "<unknown>"
+
+
+# ---------------------------------------------------------------------------
+# Device exclusion — build-mode properties (register_with_structural_grid,
+# is_player_buildable, player_placed, allow_interact, etc.) must NEVER be
+# touched on Fortnite Creative devices (buttons, accolades, analytics, ...):
+# toggling them breaks device behavior. This mirrors device_audit.py's
+# _DEVICE_CLASS_HINTS / _is_device predicate, duplicated here (not imported)
+# so this module stays side-effect-free at import time.
+#
+# NOTE: unlike device_audit.py, "BuildingGameplayActor" is deliberately
+# DROPPED from the hint list here. This tool's whole purpose is to modify
+# buildable props/gallery actors, which are exactly what carry
+# is_player_buildable / player_placed / register_with_structural_grid. If
+# buildable props derive from BuildingGameplayActor (plausible given the
+# name), including that hint would wrongly skip the very actors this tool
+# must process. Creative devices reliably derive from FortCreativeDevice /
+# CreativeDevice, so "Device" / "FortCreativeDevice" / "CreativeDevice" are
+# sufficient to catch them without over-excluding buildables.
+_DEVICE_CLASS_HINTS = (
+    "Device",
+    "FortCreativeDevice",
+    "CreativeDevice",
+)
+
+
+def _is_device(actor):
+    """Return True if *actor* looks like a Creative device (see note above)."""
+    try:
+        cls = actor.get_class()
+    except Exception:
+        return False
+
+    current = cls
+    while current is not None:
+        try:
+            name = current.get_name()
+        except Exception:
+            break
+        for hint in _DEVICE_CLASS_HINTS:
+            if hint in name:
+                return True
+        try:
+            current = current.get_super_class()
+        except Exception:
+            break
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +214,14 @@ def run(apply=False, progress_cb=None, states=None):
     ~2000 actors so a caller (e.g. the Tk UI) can pump its event loop and
     show progress. Defaults to None so run() stays headless-importable.
 
+    Fortnite Creative devices (buttons, accolades, analytics, etc. — anything
+    whose class hierarchy looks like a Creative device) are ALWAYS excluded:
+    no build-mode property is ever read or written on them, even if a target
+    property happens to exist on the device class. See devices_skipped.
+
     Returns:
         {status, actors_scanned, actors_with_props, actors_changed,
+         devices_skipped,
          per_property: {prop: {state, have, changed}},
          per_class: {class: change_count},
          total_changes, applied, transaction_used, notes}
@@ -230,11 +292,22 @@ def _run_inner(apply, progress_cb, states):
     counters = {
         "actors_scanned": 0, "actors_with_props": 0, "actors_changed": 0,
         "total_changes": 0, "write_failures": 0, "modify_failures": 0,
+        "devices_skipped": 0,
     }
 
     def _scan(do_write):
         for actor in actors:
             counters["actors_scanned"] += 1
+
+            # Never read or write build-mode props on Creative devices —
+            # e.g. allow_interact means something completely different (and
+            # load-bearing) on a Button/Accolade/Analytics device than it
+            # does on a buildable prop. Skip BEFORE any editor-property
+            # access.
+            if _is_device(actor):
+                counters["devices_skipped"] += 1
+                continue
+
             actor_had_prop = False
             actor_changes = 0
 
@@ -329,9 +402,10 @@ def _run_inner(apply, progress_cb, states):
             pass
 
     print(
-        "build_mode_cleanup: scanned {} actors, {} had target props, "
-        "{} changes across {} actors (apply={}, transaction={})".format(
-            counters["actors_scanned"], counters["actors_with_props"],
+        "build_mode_cleanup: scanned {} actors ({} devices excluded), {} had "
+        "target props, {} changes across {} actors (apply={}, transaction={})".format(
+            counters["actors_scanned"], counters["devices_skipped"],
+            counters["actors_with_props"],
             counters["total_changes"], counters["actors_changed"],
             apply, transaction_used,
         )
@@ -342,6 +416,7 @@ def _run_inner(apply, progress_cb, states):
         "actors_scanned": counters["actors_scanned"],
         "actors_with_props": counters["actors_with_props"],
         "actors_changed": counters["actors_changed"],
+        "devices_skipped": counters["devices_skipped"],
         "per_property": per_property,
         "per_class": per_class,
         "total_changes": counters["total_changes"],
@@ -409,7 +484,9 @@ def _show_window():
     desc_text = (
         "Choose Off / Leave as is / On for each property below, then scan or apply "
         "across ALL level actors. Properties left as 'Leave as is' are never read or "
-        "written.\nDry Run is read-only. Apply writes in one undoable action (Ctrl+Z to undo)."
+        "written. Fortnite Creative devices (buttons, accolades, analytics, etc.) are "
+        "always excluded — never read or written.\nDry Run is read-only. Apply writes "
+        "in one undoable action (Ctrl+Z to undo)."
     )
     tk.Label(
         top_frame, text=desc_text, font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG,
@@ -703,10 +780,12 @@ def _show_window():
                 classes = result.get("per_class", {})
                 summary_label.config(
                     text="Scanned {} actors; {} would change across {} classes. "
+                    "Devices excluded (not modified): {}. "
                     "(Properties left as 'Leave as is' are not read or counted.)".format(
                         result.get("actors_scanned", 0),
                         result.get("total_changes", 0),
                         len(classes),
+                        result.get("devices_skipped", 0),
                     )
                 )
                 status_label.config(text="Dry run complete (read-only — nothing was written).", fg=_ACCENT_GREEN)
@@ -771,7 +850,10 @@ def _show_window():
                     root.update_idletasks()
                 except Exception:
                     pass
-                summary_label.config(text="Nothing to change — selected properties already match their target.")
+                summary_label.config(
+                    text="Nothing to change — selected properties already match their target. "
+                    "Devices excluded (not modified): {}.".format(precheck.get("devices_skipped", 0))
+                )
                 status_label.config(text="No apply needed.", fg=_ACCENT_GREEN)
                 return
 
@@ -780,11 +862,13 @@ def _show_window():
                 "Apply build-mode cleanup",
                 "This will change {} propert{} across {} actors ({} total value changes) "
                 "in one undoable action. Properties left as 'Leave as is' will not be touched. "
+                "Devices excluded (not modified): {}. "
                 "This can take several minutes for large levels — the editor may appear frozen "
                 "while it runs, and if UEFN cannot edit some assets it will show its own dialog. "
                 "Proceed?".format(
                     len(active_names), "y" if len(active_names) == 1 else "ies",
                     actors_changed, total_changes,
+                    precheck.get("devices_skipped", 0),
                 ),
             )
             if not proceed:
@@ -823,10 +907,12 @@ def _show_window():
                 pass
             classes = result.get("per_class", {})
             summary_label.config(
-                text="Scanned {} actors; {} changed across {} classes.".format(
+                text="Scanned {} actors; {} changed across {} classes. "
+                "Devices excluded (not modified): {}.".format(
                     result.get("actors_scanned", 0),
                     result.get("total_changes", 0),
                     len(classes),
+                    result.get("devices_skipped", 0),
                 )
             )
             notes = result.get("notes") or []
