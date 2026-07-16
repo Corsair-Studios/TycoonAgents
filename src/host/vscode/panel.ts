@@ -654,6 +654,11 @@ export class TycoonPanel {
             const themes = await listThemes(this._globalStorageUri);
             void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
             void this._panel.webview.postMessage({ type: MSG.THEME_IMPORT_RESULT, payload: imported });
+            // Activate the imported theme so the webview loads/applies its
+            // saved manifest.viewport (scales, anchors, nav polygon, flips,
+            // hidden, replaced background) instead of leaving the previously
+            // active theme on screen.
+            await this._activateTheme(imported.theme_id);
           } catch (err) {
             void this._panel.webview.postMessage({
               type: MSG.THEME_IMPORT_RESULT,
@@ -782,15 +787,7 @@ export class TycoonPanel {
             }
           }
 
-          const t = await loadTheme(this._globalStorageUri, targetThemeId);
-          if (t) {
-            void this._panel.webview.postMessage({
-              type: MSG.THEME_INITIALIZED,
-              payload: await this._buildThemeInitPayload(t.manifest, t.frames, false),
-            });
-          } else {
-            void this._panel.webview.postMessage({ type: MSG.THEME_GENERATION_ERROR, payload: { message: "Theme not found." } });
-          }
+          await this._activateTheme(targetThemeId);
         } else if (message.type === MSG.OPEN_THEME_IMAGES) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
           const themeId = payload?.theme_id ?? "";
@@ -1878,6 +1875,26 @@ export class TycoonPanel {
       rebirth_state: await this.getRebirthState(manifest?.theme_id),
       savedBuildProgress: await this.getBuildProgress(manifest?.theme_id),
     };
+  }
+
+  /**
+   * Loads `themeId` and posts THEME_INITIALIZED so the webview activates it
+   * (applying its saved manifest.viewport — scales, anchors, nav polygon,
+   * flips, hidden, replaced background). Posts THEME_GENERATION_ERROR and
+   * returns false if the theme can't be loaded. Shared by SELECT_THEME and
+   * the post-import activation in IMPORT_THEME.
+   */
+  private async _activateTheme(themeId: string): Promise<boolean> {
+    const t = await loadTheme(this._globalStorageUri, themeId);
+    if (t) {
+      void this._panel.webview.postMessage({
+        type: MSG.THEME_INITIALIZED,
+        payload: await this._buildThemeInitPayload(t.manifest, t.frames, false),
+      });
+      return true;
+    }
+    void this._panel.webview.postMessage({ type: MSG.THEME_GENERATION_ERROR, payload: { message: "Theme not found." } });
+    return false;
   }
 
   /** True iff a file/directory exists at `uri` (best-effort stat). */
