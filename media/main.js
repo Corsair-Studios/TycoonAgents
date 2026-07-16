@@ -9013,6 +9013,23 @@
     return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
   }
 
+  /**
+   * Concise role LABEL for the character hover tooltip (e.g. "orchestrator"
+   * → "Orchestrator", "primary-agent" → "Primary agent") — deliberately NOT
+   * describeRole()'s verbose sentence-fragment blurb. Title-cases the agent's
+   * identity: prefers agent.id (stable slugs like "coding-specialist"), falls
+   * back to agent.name, hyphens/underscores become spaces, only the first
+   * character is capitalized (matches the user's "Primary agent" example,
+   * not "Primary Agent").
+   * @param {{id?:string, name?:string}} agent
+   * @returns {string}
+   */
+  function agentRoleLabel(agent) {
+    const raw = (agent && (agent.id || agent.name)) || "";
+    const s = String(raw).replace(/[-_]+/g, " ").trim();
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Agent";
+  }
+
   // Latest known version per Claude model family. Update these when a newer model
   // ships. The runtime-resolved id auto-wins if it ever reports a HIGHER version
   // than this map (so a real upgrade is never masked), and bare auto-latest
@@ -12808,14 +12825,22 @@
           // Hover tooltip hit-box (Feature: hover tooltips) — flip-invariant:
           // the mirrored draw path below (translate+scale(-1,1)) paints inside
           // this exact same screen box, so the box doesn't need to branch on
-          // shouldFlip. Name/role mirror the metrics-panel tooltip convention
-          // (see the "Per-column tooltip" block above, ~displayName/describeRole).
+          // shouldFlip. Bold line = the THEMED character's given name (looked
+          // up from themeRosterAgents by slot, matching the "agent_" + slot_id
+          // key convention charId already uses, see ~line 7767); falls back to
+          // the technical agent name/id when the theme has no roster names.
+          // Regular line = a concise role LABEL (agentRoleLabel below) — NOT
+          // the verbose describeRole() blurb used elsewhere, which reads like
+          // a sentence fragment and is too long for this tooltip.
+          const rosterAgentInfo = Array.isArray(themeRosterAgents)
+            ? themeRosterAgents.find((a) => a && ("agent_" + a.slot_id) === charId)
+            : null;
           hoverTargets.push({
             x0: drawX, y0: drawY, x1: drawX + spriteSize, y1: drawY + spriteSize,
             yFront: cy,
             kind: "character",
-            name: agent.name || agent.id,
-            role: describeRole(agent.description) || agent.tier || "Agent",
+            name: (rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id,
+            role: agentRoleLabel(agent),
           });
 
           const clip = ATLAS_CLIPS[anim.action] || ATLAS_CLIPS.idle;
