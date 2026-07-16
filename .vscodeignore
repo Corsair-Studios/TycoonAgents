@@ -15,6 +15,8 @@ scale-references/**
 .claude/**
 CLAUDE.md
 HANDOFF.md
+AGENTS-CONFIG-REPORT.md
+RESET-FIX-STATUS.md
 **/*.ts
 tsconfig.json
 .gitignore
