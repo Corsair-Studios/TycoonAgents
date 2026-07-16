@@ -40,6 +40,9 @@ scale-references/
 CLAUDE.md
 nul
 
+# Local diagnostic/config reports (may reference project-specific details; not for distribution)
+AGENTS-CONFIG-REPORT.md
+
 # Local project MCP config (machine-specific paths)
 .mcp.json
 design-doc/*.mp4

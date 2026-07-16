@@ -150,9 +150,7 @@ test("buildDiagnosticReport: the final sanitize pass strips an absolute path emb
         agentsWithNoKeywords: [],
       },
       doctrine: {
-        legacyOfficeAgentsBlock: false,
-        legacyOfficeAgentsLines: 0,
-        foreignManagedBlocks: [],
+        foreignBlocks: [],
       },
     }),
   );
@@ -184,15 +182,23 @@ test("buildDiagnosticReport: hook/delegation/doctrine values render when present
       hookHealth: { healthy: false, issueCount: 2 },
       delegation: { mode: "team_leads", reviewEnabled: false },
       doctrine: {
-        legacyOfficeAgentsBlock: true,
-        legacyOfficeAgentsLines: 12,
-        foreignManagedBlocks: [{ namespace: "otheragents", lines: 5 }],
+        foreignBlocks: [{ namespace: "otheragents", lines: 5 }],
       },
     }),
   );
   assert.ok(report.includes("team_leads"));
   assert.ok(report.includes("disabled"));
   assert.ok(report.includes("2 issue(s) detected"));
-  assert.ok(report.includes("present (12 lines)"));
   assert.ok(report.includes("otheragents"));
+  assert.ok(report.includes("5 lines"));
+});
+
+test("buildDiagnosticReport: doctrine section shows 'none' when no foreign blocks are detected", () => {
+  const report = buildDiagnosticReport(
+    minimalInput({
+      doctrine: { foreignBlocks: [] },
+    }),
+  );
+  assert.ok(report.includes("Legacy/foreign managed blocks"));
+  assert.ok(report.includes("none"));
 });

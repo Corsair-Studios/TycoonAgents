@@ -32,11 +32,7 @@ import {
   type DoctrineRosterAgent,
 } from "./delegationDoctrine";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
-import {
-  detectForeignManagedBlocks,
-  detectLegacyOfficeAgentsBlock,
-  stripLegacyOfficeAgentsBlock,
-} from "./legacyDoctrine";
+import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
 import { computeEngineChips, mcpEntryForEngine, type EngineChip } from "./engineDetect";
@@ -432,14 +428,14 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: addGitignoreEntries payload rejected:", parsedAddGitignore.error.message);
           }
-        } else if (message.type === MSG.REMOVE_LEGACY_DOCTRINE) {
-          const parsedRemoveLegacyDoctrine = MSG_SCHEMAS.REMOVE_LEGACY_DOCTRINE.safeParse(message);
-          if (parsedRemoveLegacyDoctrine.success) {
-            this._handleRemoveLegacyDoctrine();
+        } else if (message.type === MSG.REMOVE_MANAGED_BLOCK) {
+          const parsedRemoveManagedBlock = MSG_SCHEMAS.REMOVE_MANAGED_BLOCK.safeParse(message);
+          if (parsedRemoveManagedBlock.success) {
+            this._handleRemoveManagedBlock(parsedRemoveManagedBlock.data.namespace);
           } else {
             console.error(
-              "TycoonAgents: removeLegacyDoctrine payload rejected:",
-              parsedRemoveLegacyDoctrine.error.message
+              "TycoonAgents: removeManagedBlock payload rejected:",
+              parsedRemoveManagedBlock.error.message
             );
           }
         } else if (message.type === MSG.INSTALL_HOOKS) {
@@ -3149,23 +3145,15 @@ export class TycoonPanel {
     // uefnDetected trigger, and renderSetupOptionals's UEFN section).
     const mcpConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
     const uefnBridgeSetUp = Boolean(this._uefnBridgeEntry(mcpConfig));
-    // Legacy predecessor-plugin (OfficeAgents) CLAUDE.md block detection —
-    // opt-in removal surfaced as a Setup Wizard Step-2 button (see
-    // legacyDoctrine.ts / MSG.REMOVE_LEGACY_DOCTRINE). Never auto-removed.
-    let legacyDoctrineBlock = false;
-    let legacyDoctrineLines = 0;
-    // Generic inform-only detector for OTHER tools'/plugins' managed
-    // CLAUDE.md blocks (see legacyDoctrine.ts detectForeignManagedBlocks) —
-    // never removed by us, just surfaced so the user sees everything
-    // inflating CLAUDE.md, not only the one namespace (officeagents) we know
-    // how to strip.
+    // Detect any non-tycoon managed CLAUDE.md block — legacy config carried
+    // over from a prior setup, or a currently-installed other tool's own
+    // block (see legacyDoctrine.ts detectForeignManagedBlocks). Every entry
+    // here is opt-in removable via the Setup Wizard Step-2 / Settings
+    // "Remove" row (MSG.REMOVE_MANAGED_BLOCK), never auto-removed.
     let foreignManagedBlocks: { namespace: string; lines: number }[] = [];
     if (root !== "") {
       try {
         const claudeMdContent = fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8");
-        const legacy = detectLegacyOfficeAgentsBlock(claudeMdContent);
-        legacyDoctrineBlock = legacy.present;
-        legacyDoctrineLines = legacy.lineCount;
         foreignManagedBlocks = detectForeignManagedBlocks(claudeMdContent);
       } catch {
         // No CLAUDE.md yet -> nothing to detect.
@@ -3178,8 +3166,6 @@ export class TycoonPanel {
       uefnSignals: uefn.signals,
       uefnBridgeSetUp,
       engineChips,
-      legacyDoctrineBlock,
-      legacyDoctrineLines,
       foreignManagedBlocks,
     });
   }
@@ -3261,27 +3247,28 @@ export class TycoonPanel {
   }
 
   /**
-   * Strip the legacy OfficeAgents-managed block out of the workspace's
+   * Strip the given `namespace`'s managed block out of the workspace's
    * CLAUDE.md (see legacyDoctrine.ts) — the user's explicit confirm-click
-   * from the Setup Wizard Step-2 "Remove legacy OfficeAgents config block"
-   * button, never an auto-delete on install. Idempotent: a no-op when the
-   * markers aren't present. Touches ONLY the delimited region (plus the
-   * seam blank-line collapse) — never deletes agent `.md` files. Re-runs
-   * `_handleCheckInstall` afterward so the webview re-renders with
-   * `legacyDoctrineBlock: false` (Setup Wizard Step-2), AND `_handleGetSettings`
-   * (same pattern MSG.REPAIR_HOOK uses) so the Settings screen's "Hook
-   * health" row — which reads `legacyDoctrineBlock` off the SETTINGS
-   * payload, not INSTALL_STATE — refreshes too and the Remove row
-   * disappears without a manual reload.
+   * on a "Remove legacy config block" row (Setup Wizard Step-2 or Settings),
+   * never an auto-delete on install. `namespace` must be one the user was
+   * actually shown (surfaced via detectForeignManagedBlocks), so this only
+   * ever removes a block the user saw and chose to remove. Idempotent: a
+   * no-op when that namespace's markers aren't present. Touches ONLY the
+   * delimited region (plus the seam blank-line collapse) — never deletes
+   * agent `.md` files. Re-runs `_handleCheckInstall` afterward so the
+   * webview re-renders with the block gone from `foreignManagedBlocks`
+   * (Setup Wizard Step-2), AND `_handleGetSettings` (same pattern
+   * MSG.REPAIR_HOOK uses) so the Settings screen's "Hook health" row
+   * refreshes too and the Remove row disappears without a manual reload.
    */
-  private _handleRemoveLegacyDoctrine(): void {
+  private _handleRemoveManagedBlock(namespace: string): void {
     const root = this._projectRoot();
     if (root === "") return;
 
     const claudeMdPath = path.join(root, "CLAUDE.md");
     try {
       const existing = fs.readFileSync(claudeMdPath, "utf8");
-      const { content, removed } = stripLegacyOfficeAgentsBlock(existing);
+      const { content, removed } = stripManagedBlock(existing, namespace);
       if (removed) {
         fs.writeFileSync(claudeMdPath, content);
       }
@@ -3393,9 +3380,9 @@ export class TycoonPanel {
   /**
    * Build the "Specialist roster" rows for the CLAUDE.md delegation doctrine
    * from the project's ACTUAL delegation targets, never a hardcoded list —
-   * this is the fix for AGENTS-CONFIG-REPORT.md Finding 3 (a hardcoded
-   * roster that assumes a fixed agent set) and, by construction, Finding 2
-   * (dangling agent names with no corresponding file).
+   * this avoids two failure modes: a hardcoded roster that assumes a fixed
+   * agent set a given project may not have, and, by construction, dangling
+   * agent names with no corresponding file.
    *
    * Source of truth:
    * - The id set comes ONLY from `.claude/agents/*.md` files present (via
@@ -4001,20 +3988,15 @@ export class TycoonPanel {
     const delegation_mode = execCfg.delegation_mode;
     const reviewEnabled = execCfg.reviewEnabled ?? true;
 
-    // Legacy OfficeAgents block + generic foreign-managed-block detection —
-    // same read/compute _handleCheckInstall does, duplicated here (rather
-    // than shared) so the Settings screen (renderSettings' Hook health /
-    // Context budget sections) can surface both without depending on a
-    // CHECK_INSTALL round-trip having run first. See legacyDoctrine.ts.
-    let legacyDoctrineBlock = false;
-    let legacyDoctrineLines = 0;
+    // Generic foreign-managed-block detection — same read/compute
+    // _handleCheckInstall does, duplicated here (rather than shared) so the
+    // Settings screen (renderSettings' Hook health / Context budget
+    // sections) can surface it without depending on a CHECK_INSTALL
+    // round-trip having run first. See legacyDoctrine.ts.
     let foreignManagedBlocks: { namespace: string; lines: number }[] = [];
     if (root !== "") {
       try {
         const claudeMdContent = fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8");
-        const legacy = detectLegacyOfficeAgentsBlock(claudeMdContent);
-        legacyDoctrineBlock = legacy.present;
-        legacyDoctrineLines = legacy.lineCount;
         foreignManagedBlocks = detectForeignManagedBlocks(claudeMdContent);
       } catch {
         // No CLAUDE.md yet -> nothing to detect.
@@ -4040,8 +4022,6 @@ export class TycoonPanel {
         },
         hookHealth,
         contextBudget,
-        legacyDoctrineBlock,
-        legacyDoctrineLines,
         foreignManagedBlocks,
       },
     });
@@ -4589,15 +4569,10 @@ export class TycoonPanel {
       const execCfg = readExecutionConfig(path.join(root, ".claude"));
 
       // ---- doctrine health (CLAUDE.md) ------------------------------------
-      let legacyDoctrineBlock = false;
-      let legacyDoctrineLines = 0;
       let foreignManagedBlocks: { namespace: string; lines: number }[] = [];
       let claudeMdContent: string | null = null;
       try {
         claudeMdContent = fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8");
-        const legacy = detectLegacyOfficeAgentsBlock(claudeMdContent);
-        legacyDoctrineBlock = legacy.present;
-        legacyDoctrineLines = legacy.lineCount;
         foreignManagedBlocks = detectForeignManagedBlocks(claudeMdContent);
       } catch {
         claudeMdContent = null;
@@ -4659,7 +4634,7 @@ export class TycoonPanel {
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         hookHealth: { healthy: issueCount === 0, issueCount },
         delegation: { mode: execCfg.delegation_mode, reviewEnabled: execCfg.reviewEnabled ?? true },
-        doctrine: { legacyOfficeAgentsBlock: legacyDoctrineBlock, legacyOfficeAgentsLines: legacyDoctrineLines, foreignManagedBlocks },
+        doctrine: { foreignBlocks: foreignManagedBlocks },
         contextBudget,
         roster: { agentIds, keywordIds, danglingKeywordRefs, agentsWithNoKeywords },
         engines: {

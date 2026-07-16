@@ -16,10 +16,10 @@ A deep, reasoned audit of **this project's own** generated Claude Code
 configuration — the files TycoonAgents (and any other generator) has written
 into `CLAUDE.md`, `.claude/agents/`, and related config. It finds
 inconsistencies, dangling references, duplication, and mis-fit templates, and
-writes them up as a Markdown report modeled on a real report a TycoonAgents
-user filed against their own project (`AGENTS-CONFIG-REPORT.md` in the
-TycoonAgents repo) — findings with severity, `file:line` evidence, root
-cause, and a recommended fix.
+writes them up as a Markdown report: a TL;DR, then per-finding sections
+(severity, `file:line` evidence, root cause, recommended fix), a
+verified-good section for anything checked and found consistent, and a
+closing priority-summary table (see Step 4 for the exact structure).
 
 **This is not the same thing as the in-app diagnostic button** in the
 TycoonAgents panel. That button runs deterministic, non-AI checks inside the
@@ -47,21 +47,21 @@ Keep this classification in mind for Step 1's coding-standards check.
 
 Read the project's `CLAUDE.md` in full, with line numbers, and check for:
 
-1. **Legacy `officeagents` block.** TycoonAgents' predecessor generator used
-   markers `<!-- officeagents:begin ... -->` / `<!-- officeagents:end -->`.
-   If present, flag it as a **legacy block that should have been migrated**
-   — TycoonAgents' own managed markers are `<!-- tycoon:delegation -->` /
-   `<!-- /tycoon:delegation -->` and `<!-- tycoon:coderules -->` /
-   `<!-- /tycoon:coderules -->`. An `officeagents` block surviving alongside
-   (or instead of) `tycoon:*` blocks means the migration didn't run cleanly
-   on this machine/checkout.
-2. **Foreign managed blocks.** Search for any `<!-- \w+:begin -->` /
-   `<!-- \w+:(begin|end) -->`-style marker whose namespace is neither
-   `tycoon` nor a marker you can identify as intentionally hand-authored.
-   Each one implies a *different generator* wrote into this file — note
-   which generators are present and whether their content contradicts each
-   other (e.g. two different delegation rosters).
-3. **Duplicated delegation rules.** Look for the same rule or sentence
+1. **Legacy or foreign managed blocks.** Search for any
+   `<!-- <ns>:begin ... --> ... <!-- <ns>:end -->`-style marker pair whose
+   namespace isn't `tycoon`. Each one is either legacy config carried over
+   from a prior setup (another Claude Code project's generator, or a
+   previous plugin entirely) or a currently-installed other tool's own
+   managed block — flag it as a **legacy/foreign block worth reviewing for
+   removal**. TycoonAgents' own managed markers are
+   `<!-- tycoon:delegation -->` / `<!-- /tycoon:delegation -->` and
+   `<!-- tycoon:coderules -->` / `<!-- /tycoon:coderules -->` — a
+   non-`tycoon` block surviving alongside (or instead of) those means either
+   a migration didn't run cleanly on this machine/checkout, or another tool
+   is actively writing into this same CLAUDE.md. Note which namespace(s) are
+   present and whether their content contradicts each other (e.g. two
+   different delegation rosters).
+2. **Duplicated delegation rules.** Look for the same rule or sentence
    appearing more than once — inside `CLAUDE.md` alone, and across
    `CLAUDE.md` + `.claude/agents/*.md`. Known repeat offenders to check by
    name: the "~40x cheaper" claim, the "NEVER use Grep or Glob directly"
@@ -71,18 +71,18 @@ Read the project's `CLAUDE.md` in full, with line numbers, and check for:
    which is fine and should stay) from *incidental* duplication (two
    generators independently restating the same rule in different blocks,
    which is bloat).
-4. **Dangling agent references.** Collect every agent id/name mentioned in
+3. **Dangling agent references.** Collect every agent id/name mentioned in
    any routing table or delegation prose in `CLAUDE.md` (e.g. a "Specialist
    roster" table's left column). For each one, check whether
    `.claude/agents/<name>.md` exists. List every reference with **no**
    matching file — these are routing targets that can never resolve.
-5. **Garbled or empty template output.** Look for: section headers
+4. **Garbled or empty template output.** Look for: section headers
    (`## ...`) immediately followed by another header or EOF with no body
    text between them (an unfilled template section); bullets that mix a
    first-person role description with a delegation instruction in one line,
    or nest bold markers incorrectly (`**...**...**`) — a sign a template
    variable got substituted into the wrong slot.
-6. **Off-domain coding-standards table.** If a coding-standards table (rows
+5. **Off-domain coding-standards table.** If a coding-standards table (rows
    keyed by path pattern, e.g. `src/game/**`, `**/*.tsx`, `**/*.css`,
    `package.json`, `tsconfig*.json`) exists in a `tycoon:coderules`-style
    block, cross-check its path patterns against Step 0's project type. Flag
@@ -141,8 +141,10 @@ that restates, verbatim, content explained in full later in the same file).
 
 ## Step 4 — Produce the report
 
-Write a single Markdown report, structured like this (mirror the shape of
-`AGENTS-CONFIG-REPORT.md` in the TycoonAgents repo, not its content):
+Write a single Markdown report, structured like this: a TL;DR, an
+Environment summary, one section per finding (title, severity, `file:line`
+evidence, root cause, recommended fix), a verified-good section, and a
+closing priority-summary table.
 
 ```
 # TycoonAgents Config Diagnosis — <project name>

@@ -167,7 +167,7 @@ test("renderDelegationDoctrine with a supplied roster renders exactly those agen
   assert.ok(out.includes("| uefn-auditor | Verse audit, lint |"), "must render the supplied uefn-auditor row");
   // None of the hardcoded default roster ids should leak in when a real
   // roster was supplied — that would reproduce the "dangling agent name"
-  // bug (AGENTS-CONFIG-REPORT.md Finding 2).
+  // bug (a roster row naming an agent with no corresponding file on disk).
   assert.equal(out.includes("coding-specialist"), false, "hardcoded default ids must not appear alongside a supplied roster");
   assert.equal(out.includes("testing-specialist"), false, "hardcoded default ids must not appear alongside a supplied roster");
 });

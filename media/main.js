@@ -1724,11 +1724,12 @@
   let setupStage = "not-installed";
   /** True only after the user clicks "Install hooks" in THIS webview session. */
   let justInstalled = false;
-  /** True once the user clicks "Remove legacy OfficeAgents config block" in
-   *  THIS webview session — lets renderSetupOptionals show a "✓ Removed
-   *  legacy block" confirmation instead of just silently dropping the row
-   *  once info.legacyDoctrineBlock flips to false. */
-  let legacyDoctrineRemovalRequested = false;
+  /** Namespaces the user has clicked "Remove" for (foreignManagedBlocks
+   *  entries) in THIS webview session — lets renderSetupOptionals/
+   *  renderSettings show a "✓ Removed legacy config block `ns:*`"
+   *  confirmation for that namespace instead of just silently dropping the
+   *  row once it flips out of info.foreignManagedBlocks. */
+  let managedBlockRemovalRequested = new Set();
 
   /**
    * Show the full-bleed setup overlay; hide the live app view.
@@ -6699,7 +6700,7 @@
    * of whether UEFN is detected: confirmation -> optional gitignore ->
    * skill chips -> [UEFN card] -> advanced link -> Done.
    *
-   * @param {{engineChips?: Array<{id:string,label:string,state:string,detail:string}>, uefnDetected?: boolean, uefnSignals?: string[], legacyDoctrineBlock?: boolean, legacyDoctrineLines?: number, foreignManagedBlocks?: Array<{namespace:string,lines:number}>}} info
+   * @param {{engineChips?: Array<{id:string,label:string,state:string,detail:string}>, uefnDetected?: boolean, uefnSignals?: string[], foreignManagedBlocks?: Array<{namespace:string,lines:number}>}} info
    */
   function renderSetupOptionals(info) {
     const setupCard = document.getElementById("setup-card");
@@ -6744,56 +6745,47 @@
     gitignoreLabel.appendChild(gitignoreText);
     top.appendChild(gitignoreLabel);
 
-    // ── Legacy OfficeAgents CLAUDE.md block removal (opt-in, safe) ────
-    // Only ever rendered when the host actually detected the marker-
-    // delimited `<!-- officeagents:begin -->...<!-- officeagents:end -->`
-    // block (see panel.ts _handleCheckInstall / legacyDoctrine.ts). This
-    // button IS the user's confirm — the host never auto-deletes it.
-    if (info && info.legacyDoctrineBlock) {
+    // ── Legacy/foreign managed CLAUDE.md block removal (opt-in, safe) ──
+    // One row per detected non-tycoon managed block — a
+    // `<!-- <ns>:begin -->...<!-- <ns>:end -->` region that is either
+    // legacy config carried over from a prior setup (another Claude Code
+    // project's generator, or a previous plugin) or a currently-installed
+    // other tool's own block (see panel.ts _handleCheckInstall /
+    // legacyDoctrine.ts detectForeignManagedBlocks). Each Remove button IS
+    // the user's confirm for THAT namespace — the host never auto-deletes
+    // any of these.
+    const wizardForeignBlocks = info && Array.isArray(info.foreignManagedBlocks) ? info.foreignManagedBlocks : [];
+    wizardForeignBlocks.forEach(function (block) {
+      const ns = block.namespace;
       const legacyRow = document.createElement("div");
-      legacyRow.id = "setup-legacy-doctrine-row";
+      legacyRow.id = "setup-managed-block-row-" + ns;
       legacyRow.className = "setup-optionals-checkbox-row";
       const legacyBtn = document.createElement("button");
-      legacyBtn.id = "setup-remove-legacy-btn";
+      legacyBtn.id = "setup-remove-managed-block-btn-" + ns;
       legacyBtn.className = "skill-btn";
-      const lineNote =
-        typeof info.legacyDoctrineLines === "number" && info.legacyDoctrineLines > 0
-          ? " (" + info.legacyDoctrineLines + " lines)"
-          : "";
-      legacyBtn.textContent = "Remove legacy OfficeAgents config block from CLAUDE.md" + lineNote;
+      const lineNote = typeof block.lines === "number" && block.lines > 0 ? " (" + block.lines + " lines)" : "";
+      legacyBtn.textContent = "Remove legacy config block `" + ns + ":*`" + lineNote + " from CLAUDE.md";
       legacyBtn.addEventListener("click", function () {
         legacyBtn.setAttribute("disabled", "");
         legacyBtn.textContent = "Removing…";
-        legacyDoctrineRemovalRequested = true;
-        vscode.postMessage({ type: "removeLegacyDoctrine" });
+        managedBlockRemovalRequested.add(ns);
+        vscode.postMessage({ type: "removeManagedBlock", namespace: ns });
       });
       legacyRow.appendChild(legacyBtn);
       top.appendChild(legacyRow);
-    } else if (legacyDoctrineRemovalRequested) {
-      const legacyConfirm = document.createElement("p");
-      legacyConfirm.id = "setup-legacy-doctrine-confirm";
-      legacyConfirm.className = "setup-optionals-confirm";
-      legacyConfirm.textContent = "✓ Removed legacy block";
-      top.appendChild(legacyConfirm);
-    }
-
-    // ── Other tools' managed CLAUDE.md blocks (inform-only, no button) ──
-    // Generic sibling of the OfficeAgents row above: surfaces whatever OTHER
-    // plugin/tool config (a `<!-- <ns>:begin -->...<!-- <ns>:end -->` block,
-    // see legacyDoctrine.ts detectForeignManagedBlocks) is inflating this
-    // project's CLAUDE.md. Never removable from here — TycoonAgents doesn't
-    // know how to safely strip config it didn't write.
-    if (info && Array.isArray(info.foreignManagedBlocks) && info.foreignManagedBlocks.length > 0) {
-      const foreignNote = document.createElement("p");
-      foreignNote.id = "setup-foreign-blocks-note";
-      foreignNote.className = "setup-optionals-confirm settings-empty";
-      const parts = info.foreignManagedBlocks.map(function (b) {
-        return "`" + b.namespace + ":*`" + (b.lines ? " (~" + b.lines + " lines)" : "");
+    });
+    managedBlockRemovalRequested.forEach(function (ns) {
+      const stillPresent = wizardForeignBlocks.some(function (b) {
+        return b.namespace === ns;
       });
-      foreignNote.textContent =
-        "Other tools' managed config in CLAUDE.md: " + parts.join(", ") + ". TycoonAgents leaves these untouched.";
-      top.appendChild(foreignNote);
-    }
+      if (!stillPresent) {
+        const legacyConfirm = document.createElement("p");
+        legacyConfirm.id = "setup-managed-block-confirm-" + ns;
+        legacyConfirm.className = "setup-optionals-confirm";
+        legacyConfirm.textContent = "✓ Removed legacy config block `" + ns + ":*`";
+        top.appendChild(legacyConfirm);
+      }
+    });
 
     const skillsHeading = document.createElement("div");
     skillsHeading.className = "setup-optionals-heading";
@@ -9583,45 +9575,53 @@
     doctorResultsEl.id = "doctor-results";
     hookSection.appendChild(doctorResultsEl);
 
-    // ── Legacy OfficeAgents CLAUDE.md block removal (Settings entry point) ──
-    // Same affordance as the Setup Wizard Step-2 row (renderSetupOptionals)
+    // ── Legacy/foreign managed CLAUDE.md block removal (Settings entry point) ──
+    // Same affordance as the Setup Wizard Step-2 rows (renderSetupOptionals)
     // for users who already had hooks installed before this feature shipped
-    // and so never see the wizard. Reuses the same "removeLegacyDoctrine"
-    // postMessage + the same legacyDoctrineRemovalRequested session flag —
-    // clicking Remove here re-triggers _handleGetSettings host-side, which
-    // reposts "settings" with legacyDoctrineBlock:false, so this row
-    // disappears (replaced by a "✓ Removed" line) on the next renderSettings()
-    // without any manual reload.
-    if (lastSettings.legacyDoctrineBlock) {
+    // and so never see the wizard. One row per detected non-tycoon managed
+    // block (legacy config carried over from a prior setup, or a
+    // currently-installed other tool's own block). Clicking Remove posts
+    // "removeManagedBlock" with that block's namespace, which re-triggers
+    // _handleGetSettings host-side, reposting "settings" with the block gone
+    // from foreignManagedBlocks, so the row disappears (replaced by a
+    // "✓ Removed" line) on the next renderSettings() without a manual reload.
+    const settingsForeignBlocks = Array.isArray(lastSettings.foreignManagedBlocks)
+      ? lastSettings.foreignManagedBlocks
+      : [];
+    settingsForeignBlocks.forEach(function (block) {
+      const ns = block.namespace;
       const legacyRow = document.createElement("div");
-      legacyRow.id = "settings-legacy-doctrine-row";
+      legacyRow.id = "settings-managed-block-row-" + ns;
       legacyRow.className = "settings-row";
       const legacyText = document.createElement("span");
-      const lineNote =
-        typeof lastSettings.legacyDoctrineLines === "number" && lastSettings.legacyDoctrineLines > 0
-          ? " (" + lastSettings.legacyDoctrineLines + " lines)"
-          : "";
-      legacyText.textContent = "Legacy OfficeAgents config block detected in CLAUDE.md" + lineNote;
+      const lineNote = typeof block.lines === "number" && block.lines > 0 ? " (" + block.lines + " lines)" : "";
+      legacyText.textContent = "Legacy config block `" + ns + ":*` detected in CLAUDE.md" + lineNote;
       legacyRow.appendChild(legacyText);
       const legacyBtn = document.createElement("button");
-      legacyBtn.id = "settings-remove-legacy-btn";
+      legacyBtn.id = "settings-remove-managed-block-btn-" + ns;
       legacyBtn.className = "skill-btn settings-btn";
       legacyBtn.textContent = "Remove";
       legacyBtn.addEventListener("click", () => {
         legacyBtn.disabled = true;
         legacyBtn.textContent = "Removing…";
-        legacyDoctrineRemovalRequested = true;
-        vscode.postMessage({ type: "removeLegacyDoctrine" });
+        managedBlockRemovalRequested.add(ns);
+        vscode.postMessage({ type: "removeManagedBlock", namespace: ns });
       });
       legacyRow.appendChild(legacyBtn);
       hookSection.appendChild(legacyRow);
-    } else if (legacyDoctrineRemovalRequested) {
-      const legacyConfirm = document.createElement("p");
-      legacyConfirm.id = "settings-legacy-doctrine-confirm";
-      legacyConfirm.className = "settings-empty";
-      legacyConfirm.textContent = "✓ Removed legacy OfficeAgents config block";
-      hookSection.appendChild(legacyConfirm);
-    }
+    });
+    managedBlockRemovalRequested.forEach(function (ns) {
+      const stillPresent = settingsForeignBlocks.some(function (b) {
+        return b.namespace === ns;
+      });
+      if (!stillPresent) {
+        const legacyConfirm = document.createElement("p");
+        legacyConfirm.id = "settings-managed-block-confirm-" + ns;
+        legacyConfirm.className = "settings-empty";
+        legacyConfirm.textContent = "✓ Removed legacy config block `" + ns + ":*`";
+        hookSection.appendChild(legacyConfirm);
+      }
+    });
 
     setupConfigEl.appendChild(hookSection);
 
@@ -10235,22 +10235,9 @@
       budgetSection.appendChild(trimBtn);
     }
 
-    // Other tools' managed CLAUDE.md blocks (inform-only, no button) — see
-    // legacyDoctrine.ts detectForeignManagedBlocks. Rendered regardless of
-    // whether `cb` (contextBudget) was available above, since it comes off
-    // a separate field on the same settings payload.
-    const foreignBlocks = Array.isArray(lastSettings.foreignManagedBlocks) ? lastSettings.foreignManagedBlocks : [];
-    if (foreignBlocks.length > 0) {
-      const foreignNote = document.createElement("p");
-      foreignNote.id = "settings-foreign-blocks-note";
-      foreignNote.className = "settings-empty";
-      const parts = foreignBlocks.map(function (b) {
-        return "`" + b.namespace + ":*`" + (b.lines ? " (~" + b.lines + " lines)" : "");
-      });
-      foreignNote.textContent =
-        "Other tools' managed config in CLAUDE.md: " + parts.join(", ") + ". TycoonAgents leaves these untouched.";
-      budgetSection.appendChild(foreignNote);
-    }
+    // Legacy/foreign managed CLAUDE.md blocks (see legacyDoctrine.ts
+    // detectForeignManagedBlocks) are surfaced with an actionable Remove
+    // row under "Hook health" above, not duplicated here.
 
     setupConfigEl.appendChild(budgetSection);
 

@@ -437,7 +437,7 @@ test("Skill spawn does NOT bump orchestrator taskCount", () => {
   // PreToolUse Skill → [WorkerSpawned] only — no trailing TaskCompleted.
   const state = fold([
     { event: "UserPromptSubmit", at: T },
-    { event: "PreToolUse", tool: "Skill", workerId: "office-ready-test", at: T + 100 },
+    { event: "PreToolUse", tool: "Skill", workerId: "generic-ready-test", at: T + 100 },
   ]);
   const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
   // orchestrator may or may not exist; if it does, taskCount must be 0.

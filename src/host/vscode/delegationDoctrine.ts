@@ -63,8 +63,9 @@ it, never self-certified by the agent that wrote it.`;
  * this project. `id` MUST be the agent's FILE id (the `.claude/agents/<id>.md`
  * basename minus extension) — that's the only string the Task tool can
  * actually route to, so a roster row keyed on anything else would be a
- * dangling reference (see AGENTS-CONFIG-REPORT.md Finding 2: "Eight
- * referenced agent names with no corresponding agent file on disk").
+ * dangling reference — a roster row naming an agent with no corresponding
+ * file on disk, which can never resolve when the orchestrator tries to
+ * delegate to it.
  */
 export interface DoctrineRosterAgent {
   id: string;

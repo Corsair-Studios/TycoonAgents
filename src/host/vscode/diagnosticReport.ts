@@ -173,9 +173,7 @@ export interface DiagnosticDelegation {
 }
 
 export interface DiagnosticDoctrine {
-  legacyOfficeAgentsBlock: boolean;
-  legacyOfficeAgentsLines: number;
-  foreignManagedBlocks: Array<{ namespace: string; lines: number }>;
+  foreignBlocks?: Array<{ namespace: string; lines: number }>;
 }
 
 export interface DiagnosticRoster {
@@ -318,20 +316,15 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
 
   const doctrineHealth = safeSection("Doctrine Health (CLAUDE.md)", () => {
     const doc = safeInput.doctrine;
-    if (!doc) return [line("Legacy OfficeAgents block", NA), line("Foreign managed blocks", NA)];
-    const rows: string[] = [
-      line(
-        "Legacy OfficeAgents block",
-        doc.legacyOfficeAgentsBlock ? `present (${doc.legacyOfficeAgentsLines} lines)` : "absent",
-      ),
-    ];
-    if (doc.foreignManagedBlocks && doc.foreignManagedBlocks.length > 0) {
-      rows.push(line("Foreign managed blocks", `${doc.foreignManagedBlocks.length} found`));
-      for (const block of doc.foreignManagedBlocks) {
-        rows.push(`  - \`${block.namespace}\`: ${block.lines} lines`);
+    if (!doc) return [line("Legacy/foreign managed blocks", NA)];
+    const rows: string[] = [];
+    if (doc.foreignBlocks && doc.foreignBlocks.length > 0) {
+      rows.push(line("Legacy/foreign managed blocks", `${doc.foreignBlocks.length} found`));
+      for (const block of doc.foreignBlocks) {
+        rows.push(`  - \`${block.namespace}:*\`: ${block.lines} lines`);
       }
     } else {
-      rows.push(line("Foreign managed blocks", "none"));
+      rows.push(line("Legacy/foreign managed blocks", "none"));
     }
     return rows;
   });

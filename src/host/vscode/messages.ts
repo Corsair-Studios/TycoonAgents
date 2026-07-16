@@ -60,12 +60,15 @@ export const MSG = {
   // No payload — the host owns the canonical entry list so the wizard can't
   // be tricked into ignoring arbitrary paths.
   ADD_GITIGNORE: "addGitignoreEntries",
-  // Setup wizard Step 2 (Optionals): opt-in removal of the legacy
-  // OfficeAgents-managed block from CLAUDE.md (see legacyDoctrine.ts). No
-  // payload — the host detects/strips the marker-delimited region itself;
-  // this button is the user's explicit confirm, never an auto-delete on
-  // install. Re-posts INSTALL_STATE on completion so the webview updates.
-  REMOVE_LEGACY_DOCTRINE: "removeLegacyDoctrine",
+  // Setup wizard Step 2 (Optionals) / Settings: opt-in removal of a legacy
+  // managed block from CLAUDE.md — config carried over from a prior setup
+  // (another Claude Code project's generator, or a previous plugin) or
+  // currently written by another tool (see legacyDoctrine.ts). Requires the
+  // `namespace` of the specific detected block to remove; the host strips
+  // only that marker-delimited region. This button is the user's explicit
+  // confirm, never an auto-delete on install. Re-posts INSTALL_STATE on
+  // completion so the webview updates.
+  REMOVE_MANAGED_BLOCK: "removeManagedBlock",
   GET_SETTINGS: "getSettings",
   SETTINGS: "settings",
   SETTINGS_UPDATED: "settingsUpdated",
@@ -88,7 +91,7 @@ export const MSG = {
   // health signals, builds a SANITIZED Markdown report (diagnosticReport.ts),
   // writes it to .claude/tycoon/, opens it for review, and copies it to the
   // clipboard. No payload — purely a confirm-click trigger, same shape as
-  // REPAIR_HOOK/REMOVE_LEGACY_DOCTRINE. No network, no runtime AI.
+  // REPAIR_HOOK/REMOVE_MANAGED_BLOCK. No network, no runtime AI.
   GENERATE_DIAGNOSTIC: "generateDiagnostic",
 
   // ---- packs catalog -----------------------------------------------------
@@ -418,9 +421,10 @@ export const MSG_SCHEMAS = {
   // No required fields — host computes the fixed artifact-path list itself.
   ADD_GITIGNORE: z.object({}).passthrough(),
 
-  // No required fields — the host detects/strips the legacy OfficeAgents
-  // block itself; this message is purely the user's confirm-click trigger.
-  REMOVE_LEGACY_DOCTRINE: z.object({}).passthrough(),
+  // `namespace` identifies WHICH detected managed block to strip — the host
+  // never guesses; this message is the user's confirm-click trigger for one
+  // specific block surfaced by detectForeignManagedBlocks.
+  REMOVE_MANAGED_BLOCK: z.object({ namespace: z.string().min(1) }).passthrough(),
 
   // No required fields — the host gathers every input itself; this message
   // is purely the user's confirm-click trigger from Settings.
