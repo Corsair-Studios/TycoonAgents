@@ -674,6 +674,25 @@ export function stripLooseMagentaToTransparent(image: Jimp): void {
   });
 }
 
+/**
+ * Flattens a (possibly transparent-backed) image onto an OPAQUE magenta
+ * (#FF00FF) canvas of the same dimensions, in place. Used as the FINAL step
+ * of the buildable-object review-board pipeline: the objects are smoothed on
+ * a transparent background first (stripLooseMagentaToTransparent + bicubic,
+ * which already removes chroma bleed/bloom), then composited over solid
+ * magenta so the review board matches every other board's magenta backdrop.
+ * Because the source's edges are already clean (no leftover magenta chroma
+ * to blend), Jimp's alpha-composite here only blends the thin, legitimate
+ * anti-aliased edge fringe over magenta -- not the purple halo bloom the
+ * old raw-magenta-background approach produced. Fully opaque source pixels
+ * are unaffected; fully transparent source pixels become opaque magenta.
+ */
+export function flattenOntoMagenta(image: Jimp): void {
+  const base = new Jimp(image.bitmap.width, image.bitmap.height, 0xff00ffff);
+  base.composite(image, 0, 0);
+  image.bitmap.data.set(base.bitmap.data);
+}
+
 /** Per-side inset, in pixels, of a detected uniform outer frame. */
 export interface OuterFrameInset {
   top: number;

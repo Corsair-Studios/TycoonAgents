@@ -1,5 +1,5 @@
 import Jimp from 'jimp';
-import { stripLooseMagentaToTransparent } from './slicer';
+import { flattenOntoMagenta, stripLooseMagentaToTransparent } from './slicer';
 
 /** Strict decimal-kilobyte ceiling so boards remain below 200 KB everywhere. */
 export const MAX_SPRITE_BOARD_BYTES = 200_000;
@@ -43,7 +43,17 @@ export async function resizeSpriteBoardCanvas(
   if (image.bitmap.width !== width || image.bitmap.height !== height) {
     if (resample === 'bicubic') stripLooseMagentaToTransparent(image);
     image.resize(width, height, resizeModeFor(resample));
-    if (resample === 'bicubic') stripLooseMagentaToTransparent(image);
+  }
+  if (resample === 'bicubic') {
+    // Runs regardless of whether a resize occurred above -- an object board
+    // already at the target size must still be stripped + flattened, or it
+    // would come out transparent instead of magenta-backed. Final step only:
+    // flatten the now-clean, transparent-backed object board onto an opaque
+    // magenta canvas so the review board matches every other board type.
+    // Object FRAMES (slicer.ts smoothResize path) are untouched -- they must
+    // stay transparent for in-game rendering.
+    stripLooseMagentaToTransparent(image);
+    flattenOntoMagenta(image);
   }
   return image
     .deflateLevel(9)

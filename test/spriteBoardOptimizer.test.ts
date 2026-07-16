@@ -72,11 +72,16 @@ test('optimizeSpriteBoardCanvas retains aggregate boards at exactly 512x512', as
   }
 });
 
-// Regression guard: buildable-object boards ('bicubic' resample) must strip
-// their magenta background to TRANSPARENT (alpha 0), never leave it as
-// opaque black -- an opaque-black object board renders a black box behind
-// every object in-game. 'nearest' (the default, used by every other board
-// type) is untouched by this fix and keeps its prior behavior.
+// Regression guard: buildable-object boards ('bicubic' resample) must
+// flatten back onto an OPAQUE MAGENTA background for the review board --
+// consistent with every other board type -- while smoothing the object
+// content on a transparent base first so bicubic resampling can't bloom
+// purple into the object's edges. The board must be neither transparent
+// (that broke re-slicing of a black-boxed board) nor opaque black (that
+// rendered a black box behind every object in-game). The in-game FRAMES
+// produced by the slicer's smoothResize remain transparent -- untouched
+// here. 'nearest' (the default, used by every other board type) is
+// untouched by this fix and keeps its prior behavior.
 
 function magentaBoardWithContent(): Jimp {
   const source = new Jimp(1024, 1024, 0xff00ffff); // magenta background
@@ -92,7 +97,7 @@ function magentaBoardWithContent(): Jimp {
   return source;
 }
 
-test('optimizeSpriteBoardCanvas (bicubic/object-board mode) strips the magenta background to TRANSPARENT, never opaque black', async () => {
+test('optimizeSpriteBoardCanvas (bicubic/object-board mode) flattens onto a magenta background (consistent review board), objects preserved', async () => {
   const input = await magentaBoardWithContent().getBufferAsync(Jimp.MIME_PNG);
 
   const output = await optimizeSpriteBoardCanvas(input, 4, 4, { resample: 'bicubic' });
@@ -104,23 +109,35 @@ test('optimizeSpriteBoardCanvas (bicubic/object-board mode) strips the magenta b
   const h = decoded.bitmap.height;
   const corners: Array<[number, number]> = [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]];
   for (const [x, y] of corners) {
-    const { a } = Jimp.intToRGBA(decoded.getPixelColor(x, y));
+    const { r, g, b, a } = Jimp.intToRGBA(decoded.getPixelColor(x, y));
     assert.equal(
       a,
-      0,
-      `corner (${x},${y}) must be TRANSPARENT (alpha 0) -- an opaque alpha (e.g. 255 for opaque black) `
-      + 'is exactly the regression that caused black boxes behind objects in-game',
+      255,
+      `corner (${x},${y}) must be OPAQUE (alpha 255) -- the review board is flattened onto magenta, `
+      + 'not left transparent (transparent corners are the earlier regression that broke re-slicing)',
+    );
+    assert.ok(
+      r >= 200 && g <= 60 && b >= 200,
+      `corner (${x},${y}) must read as magenta (r>=200,g<=60,b>=200), got r=${r} g=${g} b=${b} -- `
+      + 'opaque black is exactly the regression that caused black boxes behind objects in-game',
     );
   }
 
-  let magentaish = 0;
+  let survivingObjectPixel = false;
   decoded.scan(0, 0, w, h, function (_x, _y, idx) {
     const r = this.bitmap.data[idx];
     const g = this.bitmap.data[idx + 1];
     const b = this.bitmap.data[idx + 2];
-    if (isMagentaBackgroundLoose(r, g, b)) magentaish++;
+    const a = this.bitmap.data[idx + 3];
+    if (a === 255 && !isMagentaBackgroundLoose(r, g, b)) {
+      survivingObjectPixel = true;
+    }
   });
-  assert.equal(magentaish, 0, 'no output pixel should read as loose-magenta after the bicubic object-board strip');
+  assert.ok(
+    survivingObjectPixel,
+    'at least one opaque non-magenta pixel must survive the resample -- the drawn object content, '
+    + 'proving the board is not blank/all-magenta',
+  );
 });
 
 test('optimizeSpriteBoardCanvas (default nearest mode) still returns a valid PNG buffer -- behavior for other board types unchanged', async () => {
