@@ -8460,11 +8460,17 @@
   }
 
   /**
-   * Approximate BLENDED $ per MILLION tokens, keyed by model family. Only TOTAL
-   * tokens are available per agent (no input/output/cache split), so treat this
-   * as a rough estimate — RATIOS between models matter more than absolute
-   * accuracy. Update when model pricing changes. (~2026-07) [fable price is an
-   * estimate — update once known.]
+   * Blended $ per MILLION tokens, keyed by model family. Derived from
+   * Anthropic's official per-million API token rates using a 3:1 input:output
+   * blend (agentic work is input-heavy), i.e. (3*input + output) / 4:
+   *   opus    $15 in / $75 out -> (3*15 + 75)/4 = $30
+   *   sonnet   $3 in / $15 out -> (3*3  + 15)/4 = $6
+   *   haiku    $1 in / $5  out -> (3*1  +  5)/4 = $2
+   * Only TOTAL tokens are tracked per agent (no input/output/cache split), so
+   * treat this as a rough estimate — RATIOS between models matter more than
+   * absolute accuracy. These are API rates and do NOT reflect Claude
+   * subscription (Max/Pro) billing. Update the rates/blend if Anthropic pricing
+   * changes. fable: estimate pending official rates. (rates confirmed ~2026-07)
    * @type {{opus:number, sonnet:number, haiku:number, fable:number}}
    */
   const MODEL_PRICE_PER_MTOK = { opus: 30, sonnet: 6, haiku: 2, fable: 6 };
@@ -8919,6 +8925,12 @@
     caption.className = "delegation-stats-caption";
     caption.textContent = "Measured this workspace — not an estimate.";
     el.appendChild(caption);
+
+    const pricingCaption = document.createElement("div");
+    pricingCaption.className = "delegation-stats-caption";
+    pricingCaption.textContent =
+      "Dollar figures apply Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token; this is what the same work would cost via the API.";
+    el.appendChild(pricingCaption);
   }
 
   // Re-render once a second so any active agent's live time keeps advancing
