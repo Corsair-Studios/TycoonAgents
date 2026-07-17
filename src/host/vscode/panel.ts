@@ -21,7 +21,7 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -2655,11 +2655,33 @@ export class TycoonPanel {
       const disclosures = mcpCatalog.length > 0
         ? this._buildPackDisclosures(pack, mcpCatalog)
         : (Array.isArray(passedDisclosures) ? passedDisclosures : []);
-      const needsConfirm = (thirdParty || disclosures.length > 0) && disclosures.length > 0;
       const stagesPythonBridge = pack.mcp === "uefn-bridge" || pack.id === "uefn";
+
+      // UEFN-pack-only conflict gate: this pack ships its own Verse
+      // specialists (uefn-auditor, verse-expert) that route the same task
+      // keywords as the generic reviewer/coding-specialist agents. Leaving
+      // both installed means routing is ambiguous — or worse, Verse work
+      // silently lands on an agent with no Verse knowledge. Compute the
+      // conflict BEFORE the confirm modal so the user is warned up front;
+      // strictly gated on pack.id === "uefn" so no other pack is affected.
+      const uefnConflictIds: string[] = pack.id === "uefn"
+        ? conflictingUefnAgents(
+            UEFN_CONFLICT_AGENT_IDS.filter((cid) => fs.existsSync(path.join(root, ".claude", "agents", `${cid}.md`)))
+          )
+        : [];
+
+      const needsConfirm = ((thirdParty || disclosures.length > 0) && disclosures.length > 0) || uefnConflictIds.length > 0;
       if (needsConfirm) {
+        const conflictWarning = uefnConflictIds.length > 0
+          ? "\n\n" +
+            `WARNING: This project already has ${uefnConflictIds.map((cid) => `${cid}.md`).join(" and ")}. ` +
+            `Installing the UEFN pack will REMOVE ${uefnConflictIds.length > 1 ? "these agents" : "this agent"} ` +
+            `(backed up to ${uefnConflictIds.map((cid) => `${cid}.md.bak`).join(" and ")} first, nothing is lost) ` +
+            "and replace them with uefn-auditor (the Verse auditor) and verse-expert (the Verse coder), " +
+            "so task routing goes to the correct Verse-specialist agents instead of the generic ones."
+          : "";
         const answer = await vscode.window.showWarningMessage(
-          this._buildPackConfirmMessage(pack.name, disclosures, stagesPythonBridge),
+          this._buildPackConfirmMessage(pack.name, disclosures, stagesPythonBridge) + conflictWarning,
           { modal: true },
           "Install"
         );
@@ -2668,6 +2690,32 @@ export class TycoonPanel {
           this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, cancelled: true });
           return;
         }
+      }
+
+      // User confirmed (or no confirm was needed) - now safe to remove the
+      // conflicting generic agent files. Back up each to <id>.md.bak (never
+      // clobbering a prior backup) before deleting, so nothing is ever
+      // permanently lost. Per-file try/catch: one failure must not block the
+      // rest of the removals or abort the pack install itself. Re-seed the
+      // keyword table immediately after so the removed agents' phantom
+      // entries don't linger even for one panel reload.
+      if (uefnConflictIds.length > 0) {
+        for (const conflictId of uefnConflictIds) {
+          try {
+            const conflictPath = path.join(root, ".claude", "agents", `${conflictId}.md`);
+            if (fs.existsSync(conflictPath)) {
+              const backupPath = `${conflictPath}.bak`;
+              if (!fs.existsSync(backupPath)) {
+                fs.copyFileSync(conflictPath, backupPath);
+              }
+              fs.unlinkSync(conflictPath);
+            }
+          } catch {
+            /* best-effort: one conflicting agent's removal failure must not
+               block the rest of the removals or the pack install itself */
+          }
+        }
+        this._ensureAgentKeywordsSeeded();
       }
 
       const results: Record<string, any> = {};
@@ -3894,7 +3942,7 @@ export class TycoonPanel {
         // either base mode), but skipped for UEFN projects: the UEFN pack
         // brings its own uefn-auditor verification gate, and our reviewer
         // would conflict with it.
-        if (reviewEnabled && !detectUefnProject(root).detected) {
+        if (reviewEnabled && !detectUefnProject(root).detected && !this._isUefnPackInstalled(root)) {
           this._installReviewerAgent(root);
         }
       } catch (err) {
@@ -4061,6 +4109,35 @@ export class TycoonPanel {
   }
 
   /**
+   * True when the UEFN pack is installed in this project. There is no
+   * separate installed-packs registry in `.claude/tycoon/execution.json`
+   * (see `ExecutionConfig` in delegationDoctrine.ts — it only tracks
+   * `delegation_mode`/`reviewEnabled`), so the agent-file signal is
+   * authoritative: the UEFN pack's marker agent `uefn-auditor.md` exists on
+   * disk AND carries the `tycoon_pack: uefn` provenance marker
+   * `_handleInstallPack` stamps into every agent file it writes.
+   *
+   * WHY THIS EXISTS: `_installWorkerAgents` previously used only
+   * `detectUefnProject(root).detected` (Verse *content* in the project) to
+   * decide the worker roster. A project that just had its
+   * `coding-specialist.md` removed by the UEFN conflict gate (see
+   * `_handleInstallPack`) but has no Verse content on disk YET would fall
+   * back to `detected === false`, and `_installWorkerAgents` would silently
+   * re-create `coding-specialist.md` on the next panel load — undoing the
+   * conflict gate's removal. Consulting pack-installed state directly
+   * closes that gap.
+   */
+  private _isUefnPackInstalled(root: string): boolean {
+    try {
+      const markerPath = path.join(root, ".claude", "agents", "uefn-auditor.md");
+      if (!fs.existsSync(markerPath)) return false;
+      return agentMarkdownHasTycoonMarker(fs.readFileSync(markerPath, "utf8"));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Install the project-appropriate worker roster (see
    * `workerAgentsForProject`): always `search-retrieval`; for non-UEFN
    * projects also `coding-specialist` and `ux-ui-designer`. Unlike
@@ -4074,7 +4151,7 @@ export class TycoonPanel {
    */
   private _installWorkerAgents(root: string): void {
     try {
-      const isUefn = detectUefnProject(root).detected;
+      const isUefn = detectUefnProject(root).detected || this._isUefnPackInstalled(root);
       const agents = workerAgentsForProject(isUefn);
       const agentsDir = path.join(root, ".claude", "agents");
       for (const a of agents) {

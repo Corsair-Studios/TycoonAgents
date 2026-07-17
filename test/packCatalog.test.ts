@@ -14,6 +14,8 @@ import {
   LEAD_AGENTS,
   REVIEWER_AGENTS,
   workerAgentsForProject,
+  UEFN_CONFLICT_AGENT_IDS,
+  conflictingUefnAgents,
 } from "../src/host/vscode/packCatalog";
 import { parseAgentMarkdown } from "../src/providers/claude-code/agentRoster";
 
@@ -395,4 +397,45 @@ test("workerAgentsForProject returns the real REGULAR_AGENTS objects (not stubs/
       assert.deepEqual(returned, canonical, `${returned.id} must match its REGULAR_AGENTS entry field-for-field`);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// UEFN_CONFLICT_AGENT_IDS / conflictingUefnAgents — the UEFN pack install
+// conflict gate (panel.ts's _handleInstallPack) uses this pure helper to
+// decide which generic agents (reviewer, coding-specialist) must be warned
+// about and removed before the pack's own uefn-auditor/verse-expert agents
+// are written. ux-ui-designer is deliberately excluded (no competing UEFN
+// design agent), so it must never appear in the conflict set.
+// ---------------------------------------------------------------------------
+
+test("UEFN_CONFLICT_AGENT_IDS is exactly reviewer, coding-specialist, in that order", () => {
+  assert.deepEqual(UEFN_CONFLICT_AGENT_IDS, ["reviewer", "coding-specialist"]);
+});
+
+test("conflictingUefnAgents([]) returns an empty array", () => {
+  assert.deepEqual(conflictingUefnAgents([]), []);
+});
+
+test("conflictingUefnAgents(['reviewer']) returns ['reviewer']", () => {
+  assert.deepEqual(conflictingUefnAgents(["reviewer"]), ["reviewer"]);
+});
+
+test("conflictingUefnAgents(['coding-specialist']) returns ['coding-specialist']", () => {
+  assert.deepEqual(conflictingUefnAgents(["coding-specialist"]), ["coding-specialist"]);
+});
+
+test("conflictingUefnAgents preserves UEFN_CONFLICT_AGENT_IDS' canonical order regardless of input order", () => {
+  assert.deepEqual(
+    conflictingUefnAgents(["coding-specialist", "reviewer", "search-retrieval"]),
+    ["reviewer", "coding-specialist"]
+  );
+});
+
+test("conflictingUefnAgents ignores unrelated ids, including ux-ui-designer", () => {
+  assert.deepEqual(conflictingUefnAgents(["ux-ui-designer", "search-retrieval", "vscode-integration"]), []);
+});
+
+test("conflictingUefnAgents is pure — repeated calls with the same input return equal results", () => {
+  const input = ["coding-specialist", "reviewer"];
+  assert.deepEqual(conflictingUefnAgents(input), conflictingUefnAgents(input));
 });

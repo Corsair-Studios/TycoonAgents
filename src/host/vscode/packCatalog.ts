@@ -289,3 +289,31 @@ export function workerAgentsForProject(isUefn: boolean): PackAgent[] {
     .map((id) => REGULAR_AGENTS.find((a) => a.id === id))
     .filter((a): a is PackAgent => a !== undefined);
 }
+
+/**
+ * The generic worker agents that conflict with the UEFN pack's own
+ * Verse-specialist agents when both are installed on the same project:
+ * `reviewer` (generic code reviewer) would otherwise compete with
+ * `uefn-auditor` (the Verse auditor / verification gate) and
+ * `coding-specialist` (generic implementer) would compete with
+ * `verse-expert` (the Verse coder) — the same routing keywords pointing at
+ * two agents means task routing becomes ambiguous, and worse, could route
+ * Verse work to an agent with no Verse knowledge. Order here is canonical;
+ * {@link conflictingUefnAgents} preserves it regardless of input order.
+ * `ux-ui-designer` is deliberately NOT included — the UEFN pack has no
+ * competing design agent.
+ */
+export const UEFN_CONFLICT_AGENT_IDS: string[] = ["reviewer", "coding-specialist"];
+
+/**
+ * Pure intersection of `existingIds` with {@link UEFN_CONFLICT_AGENT_IDS},
+ * preserving `UEFN_CONFLICT_AGENT_IDS`' canonical order (not `existingIds`'
+ * order). Used by `_handleInstallPack` (panel.ts) to determine which
+ * generic agent files must be warned about — and, once the user confirms
+ * install, backed up and removed — before the UEFN pack's own agents
+ * (`uefn-auditor`, `verse-expert`) are written.
+ */
+export function conflictingUefnAgents(existingIds: string[]): string[] {
+  const existing = new Set(existingIds);
+  return UEFN_CONFLICT_AGENT_IDS.filter((id) => existing.has(id));
+}
