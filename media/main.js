@@ -7023,11 +7023,15 @@
     });
     bottom.appendChild(advancedLink);
 
-    const doneBtn = document.createElement("button");
-    doneBtn.id = "setup-optionals-done-btn";
-    doneBtn.className = "skill-btn";
-    doneBtn.textContent = "Done — set up a theme";
-    doneBtn.addEventListener("click", function () {
+    // Explicit finalize gate: the ONLY way the wizard leaves the setup
+    // screen after "Install hooks". The user must review/select the
+    // optionals above (gitignore, UEFN card, skill chips) and then click
+    // this button on purpose — there is no auto-dismiss on install.
+    const continueBtn = document.createElement("button");
+    continueBtn.id = "setup-optionals-done-btn";
+    continueBtn.className = "skill-btn setup-optionals-continue-btn";
+    continueBtn.textContent = "Continue to TycoonAgents";
+    continueBtn.addEventListener("click", function () {
       const checkedChips = chipsRow.querySelectorAll(".setup-skill-chip--checked");
       checkedChips.forEach(function (el) {
         const id = el.dataset.skillChipId;
@@ -7043,7 +7047,7 @@
       openModal(themesModalEl, themesModalCloseBtn);
       vscode.postMessage({ type: "LIST_THEMES" });
     });
-    bottom.appendChild(doneBtn);
+    bottom.appendChild(continueBtn);
 
     setupCard.appendChild(bottom);
   }

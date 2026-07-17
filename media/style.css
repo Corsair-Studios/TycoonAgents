@@ -420,6 +420,16 @@ body {
   color: var(--text);
 }
 
+/* Explicit finalize gate for the Step-2 Optionals wizard — the only exit
+   from the setup screen after "Install hooks". Sized/weighted like
+   #install-hooks-btn so it reads as the prominent confirmation action. */
+.setup-optionals-continue-btn {
+  align-self: stretch;
+  font-size: 13px;
+  padding: 9px 22px;
+  margin-top: 4px;
+}
+
 /* The settings sections are the internal scroll region so the card never
    exceeds the viewport and the Back button (last child) stays pinned. */
 #setup-config {
