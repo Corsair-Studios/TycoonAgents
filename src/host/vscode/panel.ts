@@ -21,7 +21,7 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
-import { buildAgentMarkdown, agentMarkdownTier, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
 import { seedMissingAgentKeywords, parseAgentKeywords, reconcileAgentKeywords } from "./agentKeywordDefaults";
 import {
   renderDelegationDoctrine,
@@ -2644,16 +2644,52 @@ export class TycoonPanel {
         }
       }
       const agents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
-      const agentResults: Array<{ id: string; status: "installed" | "exists" }> = [];
+      // Install (or refresh) every agent file this pack ships. Unlike the
+      // old "skip if it already exists" behavior, install now always ends
+      // with OUR current generated content on disk for a pack-owned agent:
+      //   - no file yet                              -> write ours, "created"
+      //   - file carries our tycoon_pack marker       -> overwrite in place,
+      //                                                  "refreshed" (or
+      //                                                  "unchanged" if the
+      //                                                  bytes already match)
+      //   - file exists but has no marker (legacy/foreign, e.g. an old
+      //     hand-authored or pre-marker agent file) -> back it up to
+      //     `<id>.md.bak` (never overwriting a prior backup) before writing
+      //     ours, "replaced-legacy". The original content is preserved on
+      //     disk, never deleted.
+      // Each file is handled in its own try/catch so one failure doesn't
+      // abort the rest of the loop.
+      const agentResults: Array<{ id: string; status: "created" | "refreshed" | "unchanged" | "replaced-legacy" | "error"; error?: string }> = [];
       let cfg = this._readKeywordsConfig(root);
       for (const a of agents) {
-        const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
-        if (fs.existsSync(agentPath)) {
-          agentResults.push({ id: a.id, status: "exists" });
-        } else {
-          fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
-          fs.writeFileSync(agentPath, buildAgentMarkdown(a));
-          agentResults.push({ id: a.id, status: "installed" });
+        try {
+          const agentsDir = path.join(root, ".claude", "agents");
+          const agentPath = path.join(agentsDir, `${a.id}.md`);
+          const generated = buildAgentMarkdown(a, pack.id);
+          if (!fs.existsSync(agentPath)) {
+            fs.mkdirSync(agentsDir, { recursive: true });
+            fs.writeFileSync(agentPath, generated);
+            agentResults.push({ id: a.id, status: "created" });
+          } else {
+            const existingContent = fs.readFileSync(agentPath, "utf8");
+            if (agentMarkdownHasTycoonMarker(existingContent)) {
+              if (existingContent === generated) {
+                agentResults.push({ id: a.id, status: "unchanged" });
+              } else {
+                fs.writeFileSync(agentPath, generated);
+                agentResults.push({ id: a.id, status: "refreshed" });
+              }
+            } else {
+              const backupPath = `${agentPath}.bak`;
+              if (!fs.existsSync(backupPath)) {
+                fs.writeFileSync(backupPath, existingContent);
+              }
+              fs.writeFileSync(agentPath, generated);
+              agentResults.push({ id: a.id, status: "replaced-legacy" });
+            }
+          }
+        } catch (e) {
+          agentResults.push({ id: a.id, status: "error", error: String(e) });
         }
         cfg = setKeywordPattern(cfg, a.id, a.keywords);
         this._runtime.ingest({ type: "WorkerRegistered", at: Date.now(), workerId: a.id, name: a.name, model: a.model, description: a.role });

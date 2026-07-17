@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildAgentMarkdown, agentMarkdownTier, REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS } from "../src/host/vscode/packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS } from "../src/host/vscode/packCatalog";
 import { parseAgentMarkdown } from "../src/providers/claude-code/agentRoster";
 
 const agent = {
@@ -188,4 +188,54 @@ test("agentMarkdownTier finds tier: lead regardless of position within the front
 test("agentMarkdownTier does not match a 'tier:' mention in the document body (outside frontmatter)", () => {
   const md = "---\nmodel: sonnet\n---\n\nThis agent has no tier: lead in the body.\n";
   assert.equal(agentMarkdownTier(md), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// tycoon_pack provenance marker — buildAgentMarkdown(agent, packId) and its
+// inverse agentMarkdownHasTycoonMarker. Used by _handleInstallPack (panel.ts)
+// to tell "ours, safe to refresh" apart from a legacy/foreign file that
+// happens to share the same agent id.
+// ---------------------------------------------------------------------------
+
+test("buildAgentMarkdown(agent, packId) emits a tycoon_pack frontmatter line and keeps model + body sections", () => {
+  const md = buildAgentMarkdown(agent, "uefn");
+  assert.ok(md.includes("tycoon_pack: uefn\n"), "must contain the tycoon_pack frontmatter line");
+  assert.ok(md.includes(`model: ${agent.model}\n`), "must still contain the model line");
+  assert.match(md, /^##\s+Keywords/m, "must still contain the ## Keywords section");
+  assert.match(md, /^##\s+Role\s*\n/m, "must still contain the ## Role section");
+});
+
+test("buildAgentMarkdown(agent, packId) places tycoon_pack after model (and after tier, if present)", () => {
+  const md = buildAgentMarkdown(agent, "uefn");
+  assert.ok(md.startsWith(`---\nmodel: ${agent.model}\ntycoon_pack: uefn\n---`), "tycoon_pack must follow model directly when there is no tier");
+});
+
+test("buildAgentMarkdown(agent) without packId is byte-identical to the prior no-marker output", () => {
+  const md = buildAgentMarkdown(agent);
+  assert.equal(md, `---\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n`);
+  assert.ok(!md.includes("tycoon_pack"), "no packId means no tycoon_pack line");
+});
+
+test("agentMarkdownHasTycoonMarker returns true for buildAgentMarkdown output with a packId (round-trip)", () => {
+  assert.equal(agentMarkdownHasTycoonMarker(buildAgentMarkdown(agent, "uefn")), true);
+  assert.equal(agentMarkdownHasTycoonMarker(buildAgentMarkdown(agent, "godot")), true);
+});
+
+test("agentMarkdownHasTycoonMarker returns false for buildAgentMarkdown output with no packId", () => {
+  assert.equal(agentMarkdownHasTycoonMarker(buildAgentMarkdown(agent)), false);
+});
+
+test("agentMarkdownHasTycoonMarker returns false for a hand-written legacy agent file with no marker", () => {
+  const legacy = "---\nmodel: sonnet\n---\n\n# Verse Auditor\n\nHand-written, not ours.\n";
+  assert.equal(agentMarkdownHasTycoonMarker(legacy), false);
+});
+
+test("agentMarkdownHasTycoonMarker returns false for an empty string", () => {
+  assert.equal(agentMarkdownHasTycoonMarker(""), false);
+});
+
+test("buildAgentMarkdown(agent, packId) is deterministic across repeated calls", () => {
+  const first = buildAgentMarkdown(agent, "uefn");
+  const second = buildAgentMarkdown(agent, "uefn");
+  assert.equal(first, second);
 });
