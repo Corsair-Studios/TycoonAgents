@@ -200,6 +200,17 @@ export class TycoonPanel {
   private _engineProbeCache: Map<string, boolean> = new Map();
   /** Engine ids with an in-flight probe fetch — guards against stacking probes across poll ticks. */
   private _engineProbeInFlight: Set<string> = new Set();
+  /**
+   * Watches `.claude/tycoon/plan.json` and `.claude/tycoon/execution.json`
+   * (for the `projectPlanEnabled` flag) so the Project Plan panel reflects
+   * on-disk edits LIVE — the `project-plan` skill rewrites plan.json
+   * continuously during execution, and the panel previously only requested
+   * plan state once at webview boot (see `_postPlanState`). `undefined`
+   * when there's no workspace root to scope a `RelativePattern` to.
+   */
+  private _planWatcher: vscode.FileSystemWatcher | undefined;
+  /** Coalesces bursts of rapid on-disk writes (the skill can rewrite plan.json many times in quick succession) into a single PLAN_STATE post. */
+  private _planWatcherDebounce: NodeJS.Timeout | undefined;
   private _themeGenerationActive = false;
   /**
    * theme_id of the theme most recently sent to the webview via
@@ -287,6 +298,11 @@ export class TycoonPanel {
     // Start the engine-status poller (fires immediately, then every 10 s).
     this._pollEngineStatus();
     this._enginePollInterval = setInterval(() => this._pollEngineStatus(), 10000);
+
+    // Watch plan.json + execution.json so the Project Plan section updates
+    // live as the project-plan skill rewrites plan.json during execution
+    // (see _postPlanState / _setupPlanWatcher doc comments).
+    this._setupPlanWatcher();
 
     // Handle messages from the webview
     this._panel.webview.onDidReceiveMessage(
@@ -1580,13 +1596,7 @@ export class TycoonPanel {
           // in execution.json (default OFF). Disabled/no-workspace both
           // resolve to a null plan (and enabled:false) so the webview can
           // no-op cleanly and hide the section.
-          const root = this._projectRoot();
-          if (root === "" || !readProjectPlanEnabled(root)) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
-            return;
-          }
-          const plan = readPlan(projectPlanFilePath(root));
-          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan });
+          this._postPlanState();
         } else if (message.type === MSG.APPROVE_PHASE) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
@@ -4970,6 +4980,65 @@ export class TycoonPanel {
     void this._panel.webview.postMessage({ type: MSG.ENGINE_STATUS, chips });
   }
 
+  /**
+   * Compute current Project Plan state (enabled flag + parsed plan, same
+   * rules as the opt-in gate everywhere else in this feature) and post it
+   * to the webview as PLAN_STATE. Shared by the REQUEST_PLAN handler (fires
+   * once at webview boot) and the plan file watcher (fires on every
+   * subsequent on-disk change), so both paths compute state identically.
+   */
+  private _postPlanState(): void {
+    const root = this._projectRoot();
+    if (root === "" || !readProjectPlanEnabled(root)) {
+      void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
+      return;
+    }
+    const plan = readPlan(projectPlanFilePath(root));
+    void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan });
+  }
+
+  /**
+   * Watch `.claude/tycoon/plan.json` and `.claude/tycoon/execution.json`
+   * (the `projectPlanEnabled` flag lives there) so the Project Plan section
+   * stays LIVE without requiring the panel to be reloaded. The project-plan
+   * skill rewrites plan.json continuously while executing; before this, the
+   * webview only ever requested plan state once at boot (MSG.REQUEST_PLAN),
+   * so any write after that point was invisible until reload.
+   *
+   * No-ops when there's no workspace root to scope a RelativePattern to —
+   * `_postPlanState` already resolves that case to enabled:false/null, and
+   * re-resolving root on every future workspace-folder change is out of
+   * scope for this fix (matches the rest of the Project Plan feature, which
+   * also snapshots root per-call rather than tracking folder changes).
+   */
+  private _setupPlanWatcher(): void {
+    const root = this._projectRoot();
+    if (root === "") return;
+
+    const pattern = new vscode.RelativePattern(root, ".claude/tycoon/{plan,execution}.json");
+    this._planWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+    // The skill can rewrite plan.json many times in quick succession during
+    // execution (per-task-completion writes); debounce to one PLAN_STATE
+    // post per burst instead of spamming the webview.
+    const scheduleRepost = (): void => {
+      if (this._planWatcherDebounce !== undefined) clearTimeout(this._planWatcherDebounce);
+      this._planWatcherDebounce = setTimeout(() => {
+        this._planWatcherDebounce = undefined;
+        this._postPlanState();
+      }, 150);
+    };
+
+    this._planWatcher.onDidChange(scheduleRepost, null, this._disposables);
+    this._planWatcher.onDidCreate(scheduleRepost, null, this._disposables);
+    // Deletion (e.g. plan.json removed) should also resolve cleanly back to
+    // the empty state rather than leaving the webview showing stale data;
+    // _postPlanState already reads via readPlan, which returns null for a
+    // missing file, so this reuses the same path.
+    this._planWatcher.onDidDelete(scheduleRepost, null, this._disposables);
+    this._disposables.push(this._planWatcher);
+  }
+
   public dispose(): void {
     TycoonPanel.currentPanel = undefined;
     this._themeGenerationAbortController?.abort();
@@ -4977,6 +5046,10 @@ export class TycoonPanel {
     if (this._enginePollInterval !== undefined) {
       clearInterval(this._enginePollInterval);
       this._enginePollInterval = undefined;
+    }
+    if (this._planWatcherDebounce !== undefined) {
+      clearTimeout(this._planWatcherDebounce);
+      this._planWatcherDebounce = undefined;
     }
     this._runtimeDisposable?.dispose();
     this._panel.dispose();
