@@ -214,7 +214,7 @@ def show_reference_finder():
     style.configure("RF.Treeview.Heading",
         background=_BG, foreground=_HEADER_FG,
         font=("Segoe UI", 9, "bold"), relief="flat")
-    style.map("RF.Treeview", background=[("selected", "#F6D9C9")])
+    style.map("RF.Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
     style.configure("Accent.TButton",
         background=_ACCENT_BLUE, foreground="#1A1A1A",
         font=("Segoe UI", 10, "bold"), padding=(12, 5), relief="flat")

@@ -470,7 +470,7 @@ def _show_window():
         background=_SECTION_BG, foreground=_HEADER_FG,
         borderwidth=0, font=("Segoe UI", 9, "bold"), relief="flat",
     )
-    style.map("Treeview", background=[("selected", "#F6D9C9")])
+    style.map("Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
 
     # -- Header --
     top_frame = tk.Frame(root, bg=_BG, padx=12, pady=8)

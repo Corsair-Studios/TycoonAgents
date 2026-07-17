@@ -484,7 +484,7 @@ def show_material_browser():
         font=("Segoe UI", 9, "bold"),
         relief="flat",
     )
-    style.map("Treeview", background=[("selected", "#F6D9C9")])
+    style.map("Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
 
     style.configure(
         "Dark.TCombobox",

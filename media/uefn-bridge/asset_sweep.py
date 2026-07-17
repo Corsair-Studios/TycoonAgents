@@ -381,7 +381,7 @@ def show_asset_sweep():
     style.configure("Sweep.Treeview.Heading",
                     background=_BG, foreground=_HEADER_FG,
                     font=("Segoe UI", 9, "bold"), relief="flat")
-    style.map("Sweep.Treeview", background=[("selected", "#F6D9C9")])
+    style.map("Sweep.Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
 
     style.configure("Dark.TCombobox",
                     fieldbackground=_ENTRY_BG, background=_ENTRY_BG,

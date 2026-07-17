@@ -204,7 +204,7 @@ def _show_mcp_info():
         background=_BG, foreground=_HEADER_FG,
         font=("Segoe UI", 9, "bold"), relief="flat",
     )
-    style.map("MCP.Treeview", background=[("selected", "#F6D9C9")])
+    style.map("MCP.Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
 
     tk.Label(
         win, text="MCP Bridge Commands",
@@ -564,7 +564,7 @@ def show_launcher():
     # the card (bottom-right peek) and only ITS place() offset ever changes;
     # the card's place() geometry is constant, so the tile never moves/resizes.
     _MAX_SHADOW = 4
-    _HOVER_SHADOW = 2
+    _HOVER_SHADOW = 0
     _SHADOW_COLOR = "#9A9182"
     _CARD_MIN_W = 190
     _CARD_MIN_H = 170
@@ -671,6 +671,7 @@ def show_launcher():
             def _enter(_event):
                 for w in (c, i, n, d):
                     w.configure(bg=_CARD_HOVER)
+                c.configure(highlightbackground=_CARD_HOVER)
                 hs[0] = True
                 sh.place_configure(x=_HOVER_SHADOW, y=_HOVER_SHADOW)
             return _enter
@@ -679,6 +680,7 @@ def show_launcher():
             def _leave(_event):
                 for w in (c, i, n, d):
                     w.configure(bg=_SECTION_BG)
+                c.configure(highlightbackground=_CARD_BORDER)
                 hs[0] = False
                 sh.place_configure(x=_MAX_SHADOW, y=_MAX_SHADOW)
             return _leave

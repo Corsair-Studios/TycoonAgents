@@ -268,7 +268,7 @@ def show_tips_viewer():
                     fieldbackground=_SECTION_BG, rowheight=22, font=("Segoe UI", 9))
     style.configure("Tips.Treeview.Heading", background=_BG, foreground=_HEADER_FG,
                     font=("Segoe UI", 9, "bold"), relief="flat")
-    style.map("Tips.Treeview", background=[("selected", "#F6D9C9")])
+    style.map("Tips.Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
     style.configure("TCombobox", fieldbackground=_SECTION_BG, background=_SECTION_BG,
                     foreground=_TEXT_FG)
 

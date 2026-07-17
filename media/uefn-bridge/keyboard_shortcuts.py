@@ -145,7 +145,7 @@ def show_keyboard_shortcuts():
     style.configure("KS.Treeview.Heading",
         background=_BG, foreground=_HEADER_FG,
         font=("Segoe UI", 9, "bold"), relief="flat")
-    style.map("KS.Treeview", background=[("selected", "#F6D9C9")])
+    style.map("KS.Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
 
     # Header
     header_frame = tk.Frame(root, bg=_BG, padx=16, pady=12)

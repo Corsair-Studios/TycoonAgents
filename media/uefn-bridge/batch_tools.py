@@ -279,7 +279,7 @@ def show_batch_ui():
         foreground=_HEADER_FG,
         font=("Segoe UI", 9, "bold"),
     )
-    style.map("Treeview", background=[("selected", "#F6D9C9")])
+    style.map("Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
 
     # Combobox styling for dark theme
     style.configure(

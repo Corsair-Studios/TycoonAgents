@@ -1002,7 +1002,7 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
         font=("Segoe UI", 9, "bold"),
         relief="flat",
     )
-    style.map("Treeview", background=[("selected", "#F6D9C9")])
+    style.map("Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
 
     # -- Actor lookup for double-click selection --
     actor_map = {}  # treeview item id -> unreal actor
