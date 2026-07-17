@@ -181,10 +181,24 @@ export interface DiagnosticRoster {
   agentIds: string[];
   /** Agent ids present as keys in `agent-keywords.json`'s `agents` map. */
   keywordIds: string[];
-  /** Keyword-map ids with no corresponding agent file — the dangling-reference bug class. */
+  /** Keyword-map ids with no corresponding agent file — the dangling-reference (phantom) bug class. */
   danglingKeywordRefs: string[];
-  /** Agent files with no keyword entry (or an empty pattern) — inert routing. */
+  /**
+   * Agent files with genuinely no way to route by keyword: the json pattern
+   * is empty/absent AND a reconcile has nothing to fill it with either (no
+   * body `## Keywords` section, no known default). Inert routing that needs
+   * a human to add keywords.
+   */
   agentsWithNoKeywords: string[];
+  /**
+   * Agent files whose json entry is missing/empty but whose body already
+   * declares `## Keywords` (or has a known default) — the next auto-heal
+   * (panel open with hooks installed) will fill these in automatically.
+   * Distinct from `agentsWithNoKeywords`: these are drift, not dead ends.
+   * Optional so older callers/fixtures built before this field existed
+   * still type-check; treated as `[]` when absent.
+   */
+  agentsPendingReconcile?: string[];
 }
 
 export interface DiagnosticEngineChip {
@@ -378,6 +392,17 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
       );
     } else {
       rows.push(line("Agents with no keywords", "none"));
+    }
+    const pendingReconcile = r.agentsPendingReconcile ?? [];
+    if (pendingReconcile.length > 0) {
+      rows.push(
+        line(
+          "Agents pending keyword reconcile",
+          `${pendingReconcile.length} — will auto-heal on next panel open: ${fmtList(pendingReconcile)}`,
+        ),
+      );
+    } else {
+      rows.push(line("Agents pending keyword reconcile", "none"));
     }
     return rows;
   });

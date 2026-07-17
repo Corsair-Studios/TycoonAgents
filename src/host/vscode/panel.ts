@@ -22,7 +22,7 @@ import {
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
 import { buildAgentMarkdown, agentMarkdownTier, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
-import { seedMissingAgentKeywords } from "./agentKeywordDefaults";
+import { seedMissingAgentKeywords, parseAgentKeywords, reconcileAgentKeywords } from "./agentKeywordDefaults";
 import {
   renderDelegationDoctrine,
   upsertDelegationSection,
@@ -3444,15 +3444,28 @@ export class TycoonPanel {
   }
 
   /**
-   * Auto-heal: backfill missing/empty `agent-keywords.json` entries for
-   * every currently-installed agent (`.claude/agents/*.md`) that has a
-   * known default (see `DEFAULT_AGENT_KEYWORDS`/`seedMissingAgentKeywords`
-   * in `./agentKeywordDefaults`). A project can end up with an agent's
-   * routing entry missing or empty for several reasons — hand-authored
-   * `.claude/agents/*.md` files added outside the pack-install flow, or a
-   * project upgraded from a version that predates a given built-in agent —
-   * and an empty entry renders as an inert `kw1|kw2|kw3` placeholder in the
-   * settings UI, silently disabling keyword routing for that agent.
+   * Auto-heal: non-destructively reconcile `agent-keywords.json` against
+   * the CURRENT `.claude/agents/*.md` roster on every panel open.
+   *
+   * Two problems this fixes, neither of which the old seed-only pass
+   * handled:
+   * - PHANTOMS: a config entry whose agent file was deleted/renamed stays
+   *   in the table forever, can still win a keyword match, and routes to a
+   *   file that no longer exists — a silent routing failure. Handled by
+   *   {@link reconcileAgentKeywords}, which drops any config id with no
+   *   matching agent file.
+   * - WRONG SEED SOURCE: a missing entry was previously always seeded from
+   *   the hardcoded `DEFAULT_AGENT_KEYWORDS` table, even when the agent's
+   *   own `.md` body already declares real keywords under
+   *   `## Keywords (for task routing)`. `reconcileAgentKeywords` now reads
+   *   that body via {@link parseAgentKeywords} and prefers it.
+   *
+   * `seedMissingAgentKeywords` still runs afterward, unchanged, to fill any
+   * entry that is PRESENT but EMPTY (its original job — e.g. an
+   * intentionally-blanked entry from an old install) using
+   * `DEFAULT_AGENT_KEYWORDS`. Reconcile deliberately never touches a
+   * present-but-empty entry (that would count as "overwriting an existing
+   * entry"), so the two passes are complementary, not overlapping.
    *
    * GATE: only runs when TycoonAgents hooks are already installed for this
    * project ({@link _hooksInstalledForRoot} — the same consent proxy
@@ -3469,16 +3482,40 @@ export class TycoonPanel {
       if (!this._hooksInstalledForRoot(root)) return;
 
       const agentsDir = path.join(root, ".claude", "agents");
-      const installedAgentIds = loadAgentRoster(agentsDir).map((a) => a.id);
-      if (installedAgentIds.length === 0) return;
+      let files: string[];
+      try {
+        files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+      } catch {
+        return; // no agents dir -> nothing to reconcile
+      }
+      if (files.length === 0) return;
 
-      const config = this._readKeywordsConfig(root);
-      const { config: updated, changed } = seedMissingAgentKeywords(config, installedAgentIds);
-      if (!changed) return;
+      const agents = files.map((file) => {
+        const id = file.replace(/\.md$/, "");
+        let content = "";
+        try {
+          content = fs.readFileSync(path.join(agentsDir, file), "utf8");
+        } catch {
+          content = "";
+        }
+        return { id, keywords: parseAgentKeywords(content) };
+      });
+
+      let cfg = this._readKeywordsConfig(root);
+      const { config: reconciled, dropped, added } = reconcileAgentKeywords(cfg, agents);
+      cfg = reconciled;
+
+      const { config: seeded, changed: seedChanged } = seedMissingAgentKeywords(
+        cfg,
+        agents.map((a) => a.id)
+      );
+      cfg = seeded;
+
+      if (dropped.length === 0 && added.length === 0 && !seedChanged) return;
 
       const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
       fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
-      fs.writeFileSync(keywordsPath, JSON.stringify(updated, null, 2));
+      fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }
@@ -4709,18 +4746,43 @@ export class TycoonPanel {
       // ---- roster consistency: dangling keyword refs / keyword-less agents --
       const rosterAgents = loadAgentRoster(agentsDir);
       const agentIds = rosterAgents.map((a) => a.id);
-      const agentIdSet = new Set(agentIds);
       const keywordsConfig = this._readKeywordsConfig(root);
       const keywordAgents: Record<string, any> =
         keywordsConfig && typeof keywordsConfig.agents === "object" && keywordsConfig.agents !== null
           ? keywordsConfig.agents
           : {};
       const keywordIds = Object.keys(keywordAgents);
-      const danglingKeywordRefs = keywordIds.filter((id) => !agentIdSet.has(id));
+      // Reuse the same pure reconcile logic `_ensureAgentKeywordsSeeded` writes
+      // with, in preview (read-only) form, so the diagnostic's drift report can
+      // never disagree with what a reconcile would actually do. `dropped` is
+      // every phantom config key with no matching agent file (bullet a);
+      // `added` is every agent file reconcile would give a fresh entry to,
+      // using its BODY `## Keywords` (via parseAgentKeywords) when declared,
+      // else DEFAULT_AGENT_KEYWORDS — this is what makes an empty json
+      // pattern NOT automatically "keyword-less" when the body already has a
+      // usable pattern pending its next auto-heal.
+      const reconcileAgents = rosterAgents.map((a) => {
+        let content = "";
+        try {
+          content = fs.readFileSync(path.join(agentsDir, `${a.id}.md`), "utf8");
+        } catch {
+          content = "";
+        }
+        return { id: a.id, keywords: parseAgentKeywords(content) };
+      });
+      const { dropped: danglingKeywordRefs, added: agentsPendingReconcile } = reconcileAgentKeywords(
+        keywordsConfig,
+        reconcileAgents
+      );
+      // Bullet (b): agent files with genuinely no way to route by keyword —
+      // json pattern is empty/absent AND reconcile has nothing to fill it
+      // with either (no body `## Keywords`, no known default).
       const agentsWithNoKeywords = agentIds.filter((id) => {
         const entry = keywordAgents[id];
         const pattern = entry && typeof entry.pattern === "string" ? entry.pattern.trim() : "";
-        return pattern === "";
+        if (pattern !== "") return false;
+        if (agentsPendingReconcile.includes(id)) return false; // reconcile would fix this
+        return true;
       });
 
       // ---- engines / UEFN / MCP servers --------------------------------------
@@ -4743,7 +4805,7 @@ export class TycoonPanel {
         delegation: { mode: execCfg.delegation_mode, reviewEnabled: execCfg.reviewEnabled ?? true },
         doctrine: { foreignBlocks: foreignManagedBlocks },
         contextBudget,
-        roster: { agentIds, keywordIds, danglingKeywordRefs, agentsWithNoKeywords },
+        roster: { agentIds, keywordIds, danglingKeywordRefs, agentsWithNoKeywords, agentsPendingReconcile },
         engines: {
           chips: engineChips,
           uefn: { detected: uefn.detected, signals: uefn.signals, uefnInstalled: uefn.uefnInstalled, bridgeSetUp },

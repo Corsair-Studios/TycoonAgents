@@ -7,6 +7,12 @@
 import { REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
 import { setKeywordPattern } from "./agentConfig";
 
+/** An agent id paired with its parsed body keywords (see {@link parseAgentKeywords}). */
+export interface ReconcileAgentInput {
+  id: string;
+  keywords: string | null;
+}
+
 function toKeywordMap(agents: PackAgent[]): Record<string, string> {
   const map: Record<string, string> = {};
   for (const a of agents) {
@@ -91,4 +97,122 @@ export function seedMissingAgentKeywords(
   }
 
   return { config: cfg, changed };
+}
+
+/**
+ * Extract the routing pattern declared in an agent .md's body
+ * `## Keywords (for task routing)` section (the exact header
+ * {@link buildAgentMarkdown} in `./packCatalog` emits), tolerant of a bare
+ * `## Keywords` header with no trailing "(for task routing)".
+ *
+ * Collects every non-empty line after the header up to (but not including)
+ * the next `##` heading or EOF, trims each, and joins them with a single
+ * space (buildAgentMarkdown always emits exactly one line, but this stays
+ * tolerant of a hand-wrapped multi-line pattern). Returns `null` when the
+ * header is absent or its body is empty/whitespace-only. Pure (no
+ * fs/vscode) — this is the single source of truth for "what keywords does
+ * this agent file itself declare", used both to seed a missing routing
+ * entry with the agent's REAL keywords (rather than a hardcoded default)
+ * and to judge routing drift in the diagnostic report.
+ */
+export function parseAgentKeywords(markdown: string): string | null {
+  const lines = markdown.split(/\r\n|\n/);
+  const headerIdx = lines.findIndex((l) => /^##\s*Keywords\b/i.test(l.trim()));
+  if (headerIdx === -1) {
+    return null;
+  }
+
+  const contentLines: string[] = [];
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (/^##\s/.test(trimmed)) {
+      break; // next section
+    }
+    if (trimmed === "") {
+      continue; // skip blank lines within the section
+    }
+    contentLines.push(trimmed);
+  }
+
+  const joined = contentLines.join(" ").trim();
+  return joined === "" ? null : joined;
+}
+
+/**
+ * Reconcile an agent-keywords config against the CURRENT set of installed
+ * agents, non-destructively:
+ *
+ * - DROP every config entry whose id has no matching agent in `agents`
+ *   (a phantom left behind by a deleted/renamed `.claude/agents/<id>.md` —
+ *   these can win a keyword match and route to a file that no longer
+ *   exists, a silent routing failure). Recorded in `dropped`.
+ * - ADD an entry for every agent id NOT already present in the config,
+ *   preferring that agent's own parsed body keywords
+ *   ({@link parseAgentKeywords}'s `keywords` field) over
+ *   `DEFAULT_AGENT_KEYWORDS[id]`, and skipping ids with neither. Recorded
+ *   in `added` (only ids that actually got a value).
+ * - NEVER overwrites an existing config entry, even an empty one — that's
+ *   `seedMissingAgentKeywords`'s job, and preserves a user's manual edits
+ *   (including a deliberately-blanked pattern) unconditionally.
+ *
+ * New entries use the exact same shape `setKeywordPattern` writes
+ * (`{ pattern }`), so a subsequent `setKeywordPattern` call on the same id
+ * behaves identically whether the entry came from reconcile or the
+ * settings UI.
+ *
+ * Deterministic and idempotent: existing keys keep their original
+ * insertion order (minus any dropped), newly-added keys are appended in
+ * `agents` order, and a config with no phantoms/gaps against `agents` is
+ * returned as-is (`dropped`/`added` both empty) — so
+ * `reconcileAgentKeywords(reconcileAgentKeywords(x, agents).config, agents)`
+ * always yields the same config with empty `dropped`/`added`. Pure (no
+ * fs/vscode).
+ */
+export function reconcileAgentKeywords(
+  config: Record<string, any>,
+  agents: ReconcileAgentInput[],
+  defaults: Record<string, string> = DEFAULT_AGENT_KEYWORDS
+): { config: Record<string, any>; dropped: string[]; added: string[] } {
+  const safeConfig: Record<string, any> =
+    config !== null && typeof config === "object" ? config : {};
+  const existingAgents: Record<string, any> =
+    typeof safeConfig.agents === "object" && safeConfig.agents !== null ? safeConfig.agents : {};
+
+  const agentIdSet = new Set(agents.map((a) => a.id));
+  const dropped: string[] = [];
+  const added: string[] = [];
+
+  // Preserve existing insertion order, dropping phantoms.
+  const nextAgents: Record<string, any> = {};
+  for (const id of Object.keys(existingAgents)) {
+    if (!agentIdSet.has(id)) {
+      dropped.push(id);
+      continue;
+    }
+    nextAgents[id] = existingAgents[id];
+  }
+
+  // Append entries for agents with no config entry at all, in agents[] order.
+  for (const agent of agents) {
+    if (Object.prototype.hasOwnProperty.call(nextAgents, agent.id)) {
+      continue; // never overwrite an existing entry (even an empty one)
+    }
+    const bodyKeywords = agent.keywords && agent.keywords.trim() !== "" ? agent.keywords.trim() : undefined;
+    const value = bodyKeywords ?? defaults[agent.id];
+    if (value === undefined || value.trim() === "") {
+      continue; // nothing to seed with -> leave absent
+    }
+    nextAgents[agent.id] = { pattern: value };
+    added.push(agent.id);
+  }
+
+  if (dropped.length === 0 && added.length === 0) {
+    return { config: safeConfig, dropped, added };
+  }
+
+  return {
+    config: { ...safeConfig, agents: nextAgents },
+    dropped,
+    added,
+  };
 }
