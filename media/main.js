@@ -9437,7 +9437,7 @@
     const pricingCaption = document.createElement("div");
     pricingCaption.className = "delegation-stats-caption";
     pricingCaption.textContent =
-      "Dollar figures apply Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token; this is what the same work would cost via the API.";
+      "Dollar figures apply Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token; this is what the same work would cost via the API. Rates are refreshed with each extension update.";
     el.appendChild(pricingCaption);
   }
 

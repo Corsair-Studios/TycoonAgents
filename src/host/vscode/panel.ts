@@ -540,7 +540,7 @@ export class TycoonPanel {
         } else if (message.type === MSG.GET_ENGINE_STATUS) {
           this._pollEngineStatus();
         } else if (message.type === MSG.SETUP_UEFN_PROJECT) {
-          this._handleSetupUefnProject();
+          void this._handleSetupUefnProject();
         } else if (message.type === MSG.RUN_DOCTOR) {
           this._handleRunDoctor();
         } else if (message.type === MSG.APPLY_DOCTOR_FIX) {
@@ -2355,7 +2355,7 @@ export class TycoonPanel {
       // Host-side confirmation gate for genuinely third-party servers. The
       // authoritative source is the catalog entry's thirdParty flag (not the
       // webview payload). window.confirm is unreliable in VS Code webviews, so
-      // we prompt here with a native modal â€” same pattern as pack install.
+      // we prompt here with a native modal - same pattern as pack install.
       if (entry.thirdParty) {
         const answer = await vscode.window.showWarningMessage(
           this._buildMcpConfirmMessage(entry),
@@ -2457,7 +2457,7 @@ export class TycoonPanel {
 
   /**
    * Build the third-party disclosure list for a pack from the MCP catalog.
-   * Only genuinely third-party MCP servers (thirdParty: true) are disclosed â€”
+   * Only genuinely third-party MCP servers (thirdParty: true) are disclosed -
    * bundled/local servers (e.g. uefn-bridge) must NOT trigger the confirm gate.
    * Shared by _handleGetPacks (display) and _handleInstallPack (host confirm).
    */
@@ -2524,15 +2524,18 @@ export class TycoonPanel {
   }
 
   /** Build the modal-confirm body listing a pack's third-party sources. */
-  private _buildPackConfirmMessage(packName: string, disclosures: any[]): string {
+  private _buildPackConfirmMessage(packName: string, disclosures: any[], stagesPythonBridge = false): string {
     const networked = disclosures.filter((d) => d && d.network);
     const lines: string[] = [];
     lines.push(`Install ${packName || "this pack"}?`);
     lines.push("");
     lines.push("This installs third-party software that runs on your machine:");
+    if (stagesPythonBridge) {
+      lines.push("It also stages the Python bridge into Content/Python - no manual Python setup needed.");
+    }
     for (const d of disclosures) {
-      const who = [d.label, d.vendor].filter(Boolean).join(" Â· ");
-      lines.push(`â€¢ ${who}${d.package ? ` â€” runs ${d.package}` : ""}`);
+      const who = [d.label, d.vendor].filter(Boolean).join(" - ");
+      lines.push(`- ${who}${d.package ? ` - runs ${d.package}` : ""}`);
       if (d.network) {
         lines.push(`    Sends data externally: ${d.dataNote || "contacts an external service."}`);
       } else if (d.dataNote) {
@@ -2547,11 +2550,25 @@ export class TycoonPanel {
     return lines.join("\n");
   }
 
+  /**
+   * Install a pack; when it provides the UEFN bridge, also auto-stages the
+   * Python side (see `_stageUefnBridgeAllTargets`) so the user never has to
+   * paste Python manually. Returns the staging result so `_handleSetupUefnProject`
+   * can reuse it for its own `uefnSetupDone` summary without staging twice;
+   * `undefined` when this pack didn't stage anything.
+   */
   private async _handleInstallPack(
     id: string,
     thirdParty = false,
     passedDisclosures?: any[]
-  ): Promise<void> {
+  ): Promise<{
+    bridgeStatus: "staged" | "exists";
+    engineFound: boolean;
+    locations: Array<{
+      label: string; dir: string;
+      staged: number; updated: number; unchanged: number; error?: string;
+    }>;
+  } | undefined> {
     try {
       const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
       const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
@@ -2568,7 +2585,7 @@ export class TycoonPanel {
 
       // Host-side confirmation gate for third-party packs. window.confirm is
       // unreliable inside VS Code webviews (can silently return false), so we
-      // confirm here with a native modal â€” same pattern as the Hook Doctor's
+      // confirm here with a native modal - same pattern as the Hook Doctor's
       // foreign-hook removal. Recompute disclosures authoritatively rather than
       // trusting the webview payload (defense-in-depth); fall back to passed
       // values if the catalog can't be loaded.
@@ -2578,14 +2595,15 @@ export class TycoonPanel {
         ? this._buildPackDisclosures(pack, mcpCatalog)
         : (Array.isArray(passedDisclosures) ? passedDisclosures : []);
       const needsConfirm = (thirdParty || disclosures.length > 0) && disclosures.length > 0;
+      const stagesPythonBridge = pack.mcp === "uefn-bridge" || pack.id === "uefn";
       if (needsConfirm) {
         const answer = await vscode.window.showWarningMessage(
-          this._buildPackConfirmMessage(pack.name, disclosures),
+          this._buildPackConfirmMessage(pack.name, disclosures, stagesPythonBridge),
           { modal: true },
           "Install"
         );
         if (answer !== "Install") {
-          // User dismissed the modal â€” clear the webview's "installingâ€¦" state.
+          // User dismissed the modal - clear the webview's "installing..." state.
           this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, cancelled: true });
           return;
         }
@@ -2644,9 +2662,32 @@ export class TycoonPanel {
       const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
       fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
       fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+
+      // Auto-stage the Python bridge when (and only when) this pack provides
+      // the UEFN bridge - never for godot/unity/other packs. Staging is an
+      // idempotent file copy (see _stageBridgeTo), so re-running install is
+      // safe. This is the single staging call site for pack installs;
+      // _handleSetupUefnProject reuses this method's return value instead of
+      // staging again.
+      let bridgeStaging:
+        | { bridgeStatus: "staged" | "exists"; engineFound: boolean; locations: Array<{ label: string; dir: string; staged: number; updated: number; unchanged: number; error?: string }> }
+        | undefined;
+      if (pack.mcp === "uefn-bridge" || pack.id === "uefn") {
+        try {
+          bridgeStaging = this._stageUefnBridgeAllTargets(root);
+          void vscode.window.showInformationMessage(
+            "UEFN bridge installed into Content/Python. Reopen your UEFN project in the editor to activate it."
+          );
+        } catch {
+          /* best-effort: pack install itself still succeeded even if staging failed */
+        }
+      }
+
       this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: true, results });
+      return bridgeStaging;
     } catch (e) {
       this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: String(e) });
+      return undefined;
     }
   }
 
@@ -2784,7 +2825,7 @@ export class TycoonPanel {
     }
   }
 
-  private _handleSetupUefnProject(): void {
+  private async _handleSetupUefnProject(): Promise<void> {
     try {
       const root = this._projectRoot();
       if (root === "") {
@@ -2792,7 +2833,7 @@ export class TycoonPanel {
         return;
       }
       // Install the uefn pack (reuses _handleInstallPack logic via _installPackById).
-      // We call _handleInstallPack directly; it posts packInstalled â€” but we also need
+      // We call _handleInstallPack directly; it posts packInstalled - but we also need
       // to handle the bridge staging and post uefnSetupDone. So we factor pack install
       // inline here to capture the result synchronously.
       const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
@@ -2803,45 +2844,18 @@ export class TycoonPanel {
         return;
       }
       // Reuse the existing pack-install logic by calling _handleInstallPack("uefn").
-      // That method posts its own packInstalled message; we additionally stage the bridge
-      // and post uefnSetupDone separately. UEFN is not third-party, so no confirm modal
-      // is shown and the install body runs synchronously; we don't await it here.
-      void this._handleInstallPack("uefn");
+      // That method posts its own packInstalled message AND stages the Python bridge
+      // into every location UEFN may load Python from (see _stageUefnBridgeAllTargets;
+      // CRUCIAL: UEFN loads the bridge from the Fortnite ENGINE install's
+      // FortniteGame/Content/Python, which wins on sys.path over the project's own
+      // Content/Python, so both are staged). We await it here (unlike a fire-and-forget
+      // call) specifically to reuse its staging result below, so we don't stage a
+      // second time. UEFN is not third-party, so no confirm modal is shown.
+      const staged = await this._handleInstallPack("uefn");
 
-      // Stage the Python bridge + Power Tools suite into every location UEFN
-      // may load Python from. CRUCIAL: UEFN loads the bridge from the Fortnite
-      // ENGINE install's FortniteGame/Content/Python — that copy wins on
-      // sys.path over the project's own Content/Python — so staging only the
-      // project folder has NO effect on the running tools. Stage into BOTH the
-      // project (harmless / future-proof) and every discovered Fortnite engine
-      // Python dir. Engine writes may fail without admin; that is non-fatal and
-      // reported per-location.
-      const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
-
-      const targets: Array<{ label: string; dir: string }> = [
-        { label: "project", dir: path.join(root, "Content", "Python") },
-      ];
-      for (const engineDir of this._findFortnitePythonDirs()) {
-        targets.push({ label: "engine", dir: engineDir });
-      }
-
-      const locations: Array<{
-        label: string; dir: string;
-        staged: number; updated: number; unchanged: number; error?: string;
-      }> = [];
-      let totalWritten = 0;
-      let engineFound = false;
-      for (const t of targets) {
-        if (t.label === "engine") engineFound = true;
-        try {
-          const r = this._stageBridgeTo(bridgeDir, t.dir);
-          locations.push({ label: t.label, dir: t.dir, ...r });
-          totalWritten += r.staged + r.updated;
-        } catch (e) {
-          locations.push({ label: t.label, dir: t.dir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
-        }
-      }
-      const bridgeStatus: "staged" | "exists" = totalWritten > 0 ? "staged" : "exists";
+      const bridgeStatus: "staged" | "exists" = staged?.bridgeStatus ?? "exists";
+      const engineFound = staged?.engineFound ?? false;
+      const locations = staged?.locations ?? [];
 
       void this._panel.webview.postMessage({
         type: MSG.UEFN_SETUP_DONE,
@@ -2939,6 +2953,67 @@ export class TycoonPanel {
     }
 
     return [...found];
+  }
+
+  /**
+   * Stage the Python bridge + Power Tools suite into every location UEFN may
+   * load Python from (the project's own Content/Python, plus every
+   * discovered Fortnite engine Python dir — see _findFortnitePythonDirs for
+   * why both are needed). Single source of truth for staging so it runs
+   * exactly once per user action: `_handleInstallPack` calls this when the
+   * installed pack provides the UEFN bridge (auto-stage on install), and
+   * `_handleSetupUefnProject` reuses `_handleInstallPack`'s result instead of
+   * staging a second time.
+   */
+  private _stageUefnBridgeAllTargets(root: string): {
+    bridgeStatus: "staged" | "exists";
+    engineFound: boolean;
+    locations: Array<{
+      label: string; dir: string;
+      staged: number; updated: number; unchanged: number; error?: string;
+    }>;
+  } {
+    const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+    const targets: Array<{ label: string; dir: string }> = [
+      { label: "project", dir: path.join(root, "Content", "Python") },
+    ];
+    for (const engineDir of this._findFortnitePythonDirs()) {
+      targets.push({ label: "engine", dir: engineDir });
+    }
+
+    const locations: Array<{
+      label: string; dir: string;
+      staged: number; updated: number; unchanged: number; error?: string;
+    }> = [];
+    let totalWritten = 0;
+    let engineFound = false;
+    for (const t of targets) {
+      if (t.label === "engine") engineFound = true;
+      try {
+        const r = this._stageBridgeTo(bridgeDir, t.dir);
+        locations.push({ label: t.label, dir: t.dir, ...r });
+        totalWritten += r.staged + r.updated;
+      } catch (e) {
+        locations.push({ label: t.label, dir: t.dir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
+      }
+    }
+    const bridgeStatus: "staged" | "exists" = totalWritten > 0 ? "staged" : "exists";
+    return { bridgeStatus, engineFound, locations };
+  }
+
+  /**
+   * Whether the Python bridge file is staged into the project's own
+   * Content/Python — the "project" target `_stageUefnBridgeAllTargets`
+   * always writes to. Used to harden `uefnBridgeSetUp` (see
+   * `_handleCheckInstall`) so a bare `.mcp.json` uefn-bridge entry, with no
+   * Python actually staged, is no longer reported as "set up".
+   */
+  private _uefnBridgePythonStaged(root: string): boolean {
+    try {
+      return fs.existsSync(path.join(root, "Content", "Python", "uefn_bridge.py"));
+    } catch {
+      return false;
+    }
   }
 
   private async _handleDesignDocAction(mode: string): Promise<void> {
@@ -3166,13 +3241,17 @@ export class TycoonPanel {
     // .mcp.json probing here (unlike _computeEngineStatus's live ladder) —
     // this only needs to know whether a project of that kind is present.
     const engineChips = root !== "" ? computeEngineChips(root, null) : [];
-    // Whether UEFN setup already ran, per the SAME `.mcp.json` uefn-bridge
-    // entry _computeEngineStatus checks (via the shared _uefnBridgeEntry
-    // helper) — lets the setup wizard stop re-prompting "set up UEFN" once
-    // it's already done (see media/main.js's installState handler / the
-    // uefnDetected trigger, and renderSetupOptionals's UEFN section).
+    // Whether UEFN setup already ran — requires BOTH the `.mcp.json`
+    // uefn-bridge entry (_uefnBridgeEntry, also used by _computeEngineStatus's
+    // live ladder) AND the Python bridge actually staged into the project's
+    // Content/Python (_uefnBridgePythonStaged). An mcp entry alone is not
+    // enough to call it "set up" — lets the setup wizard stop re-prompting
+    // "set up UEFN" only once it's genuinely done (see media/main.js's
+    // installState handler / the uefnDetected trigger, and
+    // renderSetupOptionals's UEFN section).
     const mcpConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
-    const uefnBridgeSetUp = Boolean(this._uefnBridgeEntry(mcpConfig));
+    const uefnBridgeSetUp =
+      root !== "" && Boolean(this._uefnBridgeEntry(mcpConfig)) && this._uefnBridgePythonStaged(root);
     // Detect any non-tycoon managed CLAUDE.md block — legacy config carried
     // over from a prior setup, or a currently-installed other tool's own
     // block (see legacyDoctrine.ts detectForeignManagedBlocks). Every entry
@@ -4772,13 +4851,13 @@ export class TycoonPanel {
 
     let chipState: "connected" | "offline" = "offline";
     let detail =
-      "UEFN bridge installed but not responding â€” open your UEFN project and start the Python bridge (Content/Python).";
+      "UEFN bridge installed. Reopen your UEFN project in the editor to activate it - it starts automatically on project load. Enable the Python Editor Script Plugin if prompted.";
     try {
       const heartbeatPath = path.join(bridgeDir, "heartbeat.json");
       const stat = fs.statSync(heartbeatPath);
       if (Date.now() - stat.mtimeMs < 15000) {
         chipState = "connected";
-        detail = "UEFN bridge connected â€” agents can use the uefn_* MCP tools.";
+        detail = "UEFN bridge connected - agents can use the uefn_* MCP tools.";
       }
     } catch {
       /* file missing or unreadable => offline */
