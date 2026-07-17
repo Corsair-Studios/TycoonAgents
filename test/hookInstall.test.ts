@@ -111,6 +111,81 @@ test("does not mutate input.hooks reference when hooks exist", () => {
 });
 
 // ---------------------------------------------------------------------------
+// mergeTycoonHooks: foreign-hook-shares-our-matcher idempotency bug
+// (the entry `list.find` masking bug — a third-party hook sharing our
+// matcher string, sitting BEFORE our own entry, used to hide our entry from
+// the old first-match-only check and cause a duplicate to be appended).
+// ---------------------------------------------------------------------------
+
+test("foreign hook sharing our empty matcher, ordered before ours, on Stop: no duplicate on merge, none added on re-merge", () => {
+  const input: Record<string, unknown> = {
+    hooks: {
+      Stop: [{ matcher: "", hooks: [{ type: "command", command: "node foreign-formatter.js" }] }],
+    },
+  };
+  const once = mergeTycoonHooks(input, cmd);
+  const stopOnce = (once.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>)["Stop"];
+  const oursOnce = stopOnce.filter((e) => e.hooks.some((h) => h.command.includes("tycoon-claude-hook.cjs")));
+  assert.equal(oursOnce.length, 1, "our hook must be added exactly once");
+  assert.ok(stopOnce.some((e) => e.hooks[0].command === "node foreign-formatter.js"), "foreign hook must be untouched");
+
+  const twice = mergeTycoonHooks(once, cmd);
+  const stopTwice = (twice.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>)["Stop"];
+  const oursTwice = stopTwice.filter((e) => e.hooks.some((h) => h.command.includes("tycoon-claude-hook.cjs")));
+  assert.equal(oursTwice.length, 1, "re-merge must not add another tycoon entry");
+  assert.equal(stopTwice.length, 2, "total entry count must stay stable across re-merge");
+});
+
+test("foreign hook sharing our PreToolUse Task|Agent|Skill matcher, ordered before ours: no duplicate on merge, none added on re-merge", () => {
+  const matcher = "Task|Agent|Skill";
+  const input: Record<string, unknown> = {
+    hooks: {
+      PreToolUse: [{ matcher, hooks: [{ type: "command", command: "node foreign-task-logger.js" }] }],
+    },
+  };
+  const once = mergeTycoonHooks(input, cmd);
+  const ptuOnce = (once.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>)["PreToolUse"];
+  const matchingOnce = ptuOnce.filter((e) => e.matcher === matcher);
+  const oursOnce = matchingOnce.filter((e) => e.hooks.some((h) => h.command.includes("tycoon-claude-hook.cjs")));
+  assert.equal(oursOnce.length, 1, "our hook must be added exactly once");
+  assert.ok(matchingOnce.some((e) => e.hooks[0].command === "node foreign-task-logger.js"), "foreign hook must be untouched");
+
+  const twice = mergeTycoonHooks(once, cmd);
+  const ptuTwice = (twice.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>)["PreToolUse"];
+  const matchingTwice = ptuTwice.filter((e) => e.matcher === matcher);
+  const oursTwice = matchingTwice.filter((e) => e.hooks.some((h) => h.command.includes("tycoon-claude-hook.cjs")));
+  assert.equal(oursTwice.length, 1, "re-merge must not add another tycoon entry");
+  assert.equal(matchingTwice.length, 2, "total matching-matcher entry count must stay stable across re-merge");
+});
+
+// ---------------------------------------------------------------------------
+// mergeTycoonHooks: secondary self-heal — collapse pre-existing duplicate
+// tycoon entries (leftovers from the old bug) down to exactly one.
+// ---------------------------------------------------------------------------
+
+test("collapses 3 pre-existing duplicate tycoon entries on one slot down to 1, preserving an unrelated hook on the same event", () => {
+  const input: Record<string, unknown> = {
+    hooks: {
+      Stop: [
+        { matcher: "", hooks: [{ type: "command", command: cmd }] },
+        { matcher: "", hooks: [{ type: "command", command: "node unrelated-other.js" }] },
+        { matcher: "", hooks: [{ type: "command", command: cmd }] },
+        { matcher: "", hooks: [{ type: "command", command: cmd }] },
+      ],
+    },
+  };
+  const result = mergeTycoonHooks(input, cmd);
+  const stop = (result.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>)["Stop"];
+  const ours = stop.filter((e) => e.hooks.every((h) => h.command.includes("tycoon-claude-hook.cjs")));
+  assert.equal(ours.length, 1, "duplicate tycoon entries must collapse to exactly 1");
+  assert.ok(
+    stop.some((e) => e.hooks.some((h) => h.command === "node unrelated-other.js")),
+    "unrelated hook entry must be preserved"
+  );
+  assert.equal(stop.length, 2, "total entries: 1 collapsed tycoon + 1 unrelated");
+});
+
+// ---------------------------------------------------------------------------
 // findLegacyHookCommands
 // ---------------------------------------------------------------------------
 

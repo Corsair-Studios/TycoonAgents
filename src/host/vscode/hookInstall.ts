@@ -27,11 +27,35 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   { event: "TaskCompleted", matcher: "" },
 ];
 
+/** True if `h` is a well-formed hook entry whose command references our own hook script. */
+function isOurHookCommand(h: unknown): boolean {
+  return (
+    h !== null &&
+    typeof h === "object" &&
+    typeof (h as { command?: unknown }).command === "string" &&
+    ((h as { command: string }).command).includes("tycoon-claude-hook.cjs")
+  );
+}
+
 /**
  * Pure merge of TycoonAgents hook entries into an existing Claude Code settings
  * object. Adds our hook for each event/matcher in TYCOON_HOOK_SLOTS without
  * dropping unrelated hooks and without duplicating an entry whose matcher
  * already references our hook. No fs/vscode usage, so this is unit-testable.
+ *
+ * Idempotency check scans ALL entries for a given (event, matcher) — not just
+ * the first — so a third-party hook entry that happens to share our matcher
+ * string (e.g. many foreign hooks registering on the empty "" matcher for
+ * Stop/SubagentStop/UserPromptSubmit/TaskCompleted) sitting before our own
+ * entry in that event's array can no longer mask our entry and cause a
+ * duplicate to be appended on every re-run.
+ *
+ * Also self-heals settings already bloated by that historical bug: for each
+ * slot's matcher, any PRE-EXISTING entries whose hooks are entirely ours
+ * (leftover duplicates) are collapsed down to at most one before the
+ * idempotency check runs. An entry is only ever touched here if EVERY hook
+ * inside it references our own script — an entry mixing in any third-party
+ * or unrelated hook is left completely alone.
  */
 export function mergeTycoonHooks(
   existing: Record<string, unknown>,
@@ -47,21 +71,41 @@ export function mergeTycoonHooks(
   }
 
   for (const slot of TYCOON_HOOK_SLOTS) {
-    const list = hooks[slot.event] ?? (hooks[slot.event] = []);
-    const matching = list.find(
-      (e) => e !== null && typeof e === "object" && e.matcher === slot.matcher
+    const rawList = hooks[slot.event] ?? (hooks[slot.event] = []);
+
+    // Heal: collapse duplicate pure-ours entries for this matcher (leftovers
+    // from the old idempotency bug) down to at most one.
+    let keptOneOurs = false;
+    const deduped: HookEntry[] = [];
+    for (const e of rawList) {
+      const isPureOurs =
+        e !== null &&
+        typeof e === "object" &&
+        e.matcher === slot.matcher &&
+        Array.isArray(e.hooks) &&
+        e.hooks.length > 0 &&
+        e.hooks.every((h) => isOurHookCommand(h));
+      if (isPureOurs) {
+        if (keptOneOurs) {
+          continue; // drop this duplicate — it's entirely our own hook
+        }
+        keptOneOurs = true;
+      }
+      deduped.push(e);
+    }
+    const list = deduped;
+    hooks[slot.event] = list;
+
+    // Idempotency: does ANY entry for this matcher already reference our hook?
+    const alreadyOurs = list.some(
+      (e) =>
+        e !== null &&
+        typeof e === "object" &&
+        e.matcher === slot.matcher &&
+        Array.isArray(e.hooks) &&
+        e.hooks.some((h) => isOurHookCommand(h))
     );
-    const referencesOurHook =
-      matching !== undefined &&
-      Array.isArray(matching.hooks) &&
-      matching.hooks.some(
-        (h) =>
-          h !== null &&
-          typeof h === "object" &&
-          typeof h.command === "string" &&
-          h.command.includes("tycoon-claude-hook.cjs")
-      );
-    if (referencesOurHook) {
+    if (alreadyOurs) {
       continue;
     }
     list.push({
