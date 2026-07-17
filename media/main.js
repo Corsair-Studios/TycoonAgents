@@ -4591,6 +4591,12 @@
   const ANGER_CHANCE = 0.05;
   /** Seconds an evicted rival shows the "dazed/hit" (expression 7) bubble as it flees. */
   const HURT_EXPR_SEC = 1.8;
+  /** Persistent lead "team active" bubble (expression 3): minimum on-screen
+   * time in ms, and how long (ms) of that floor is spent as the rainbow
+   * attention burst before settling to a solid pulsing green — see
+   * charEntry.teamActive/teamActiveSince and drawTeamBubble. */
+  const TEAM_BUBBLE_MIN_MS = 2000;
+  const TEAM_BUBBLE_BURST_MS = 2000;
 
   /** True while a conga line is snaking around the perimeter. */
   let congaActive = false;
@@ -10959,6 +10965,11 @@
    */
   function showExpression(entry, index, durationSec) {
     if (!entry || index < 0 || index > 7) return;
+    // Non-interruptible: while this entry's persistent lead "team active"
+    // bubble is showing (see drawTeamBubble), no other expression may
+    // preempt it. The team-completion thumbs-up (index 4) is called AFTER
+    // teamActive is cleared, so it is unaffected by this guard.
+    if (entry.teamActive) return;
     if ((entry.bubbleCooldown || 0) > 0) return; // shared per-agent rate limit
     const frames = themeImages && themeImages["expression_" + index];
     if (!frames || !frames[0]) return; // theme has no expression atlas -> no bubble
@@ -11021,6 +11032,70 @@
     } else {
       ctx.drawImage(bimg, bx - bs / 2, (by - bs / 2) - bob, bs, bs);
     }
+    ctx.restore();
+  }
+
+  /**
+   * Draw the PERSISTENT lead "team active" bubble (expression index 3) — a
+   * distinct, non-fading overlay drawn INSTEAD of drawExpressionBubble while
+   * charEntry.teamActive is true (see the LEAD trigger block above and
+   * showExpression's teamActive guard, which makes this bubble
+   * non-interruptible). Same bubble shape/tail geometry as
+   * drawExpressionBubble, but the background hue-cycles (rainbow) for the
+   * first TEAM_BUBBLE_BURST_MS of charEntry.teamActiveSince, then settles to
+   * a solid green with a gentle alpha pulse for as long as the team stays
+   * active. Fully guarded: no-op if the theme has no expression_3 atlas
+   * frame, or teamActive isn't set.
+   * @param {object} charEntry an agentCharMap entry (lead) with teamActive/teamActiveSince
+   * @param {number} cx sprite center x (canvas, un-flipped)
+   * @param {number} cy sprite baseline y (canvas, un-flipped)
+   * @param {number} spriteSize rendered sprite size (px)
+   */
+  function drawTeamBubble(charEntry, cx, cy, spriteSize) {
+    if (!charEntry || !charEntry.teamActive) return;
+    const bframes = themeImages["expression_3"];
+    const bimg = bframes && bframes[0];
+    if (!bimg || !bimg.complete || bimg.naturalWidth <= 0) return;
+    const t = performance.now ? performance.now() : Date.now();
+    const elapsed = t - (charEntry.teamActiveSince || t);
+    const bs = 20; // icon size, matches drawExpressionBubble
+    const bx = cx;
+    const by = cy - spriteSize - 11;
+    ctx.save();
+    if (elapsed < TEAM_BUBBLE_BURST_MS) {
+      // Attention burst: hue-cycle rainbow background.
+      const hue = (elapsed * 0.3) % 360;
+      ctx.fillStyle = `hsl(${hue}, 90%, 55%)`;
+      ctx.globalAlpha = 0.95;
+    } else {
+      // Settled: solid green background with a gentle alpha pulse (sine of
+      // the render clock) — distinct from the burst and from the normal
+      // white expression-bubble background.
+      const pulse = 0.85 + Math.sin(t / 260) * 0.12;
+      ctx.fillStyle = "rgba(38, 194, 108, 1)";
+      ctx.globalAlpha = pulse;
+    }
+    const pad = 2, bw = bs + pad * 2, bh = bs + pad * 2, br = 5;
+    const rx = bx - bw / 2, ry = by - bh / 2;
+    ctx.beginPath();
+    ctx.moveTo(rx + br, ry);
+    ctx.arcTo(rx + bw, ry, rx + bw, ry + bh, br);
+    ctx.arcTo(rx + bw, ry + bh, rx, ry + bh, br);
+    ctx.arcTo(rx, ry + bh, rx, ry, br);
+    ctx.arcTo(rx, ry, rx + bw, ry, br);
+    ctx.closePath();
+    ctx.fill();
+    // Little downward tail pointing toward the head (matches drawExpressionBubble).
+    ctx.beginPath();
+    ctx.moveTo(bx - 3, ry + bh - 1);
+    ctx.lineTo(bx + 3, ry + bh - 1);
+    ctx.lineTo(bx, ry + bh + 4);
+    ctx.closePath();
+    ctx.fill();
+    // Icon itself is always fully opaque (only the background pulses/cycles).
+    ctx.globalAlpha = 1;
+    const bob = Math.sin(t / 180) * 1.4;
+    ctx.drawImage(bimg, bx - bs / 2, (by - bs / 2) - bob, bs, bs);
     ctx.restore();
   }
 
@@ -11849,6 +11924,15 @@
           // played its "signal" emote for the CURRENT team; reset to false
           // when the team disbands so a reformed team signals again.
           teamSignaled: false,
+          // Persistent "team active" bubble state (lead only): true from the
+          // 0->=1 child-count edge until the count returns to 0 AND the
+          // TEAM_BUBBLE_MIN_MS floor has elapsed. teamActiveSince is the
+          // performance.now()/Date.now() timestamp the bubble started, used
+          // to drive the rainbow burst -> solid-green pulse in drawTeamBubble
+          // and to enforce the floor. While true, showExpression refuses to
+          // touch this entry's bubble (non-interruptible).
+          teamActive: false,
+          teamActiveSince: 0,
           // Edge-detect latch for the worker "just joined a team" bubble
           // (Part 3b): true while this agent is currently a child of a
           // visible lead, so the false→true transition fires once per join.
@@ -11916,19 +12000,30 @@
       // elsewhere, but here charEntry always exists (just created above).
       if (((agent && agent.tier) || "").toLowerCase() === "lead") {
         const leadTeamSize = leadChildCount[agent.id] || 0;
+        const teamNowMs = performance.now ? performance.now() : Date.now();
         if (leadTeamSize >= 1) {
+          // Persistent team bubble: latch on on the 0->=1 edge and hold while
+          // ANY active child exists (see drawTeamBubble for the render side).
+          if (!charEntry.teamActive) {
+            charEntry.teamActive = true;
+            charEntry.teamActiveSince = teamNowMs;
+          }
           const leadWorkerState = worker ? worker.state : null;
           const leadIsWalking = leadWorkerState === "walk" || leadWorkerState === "arrive" || leadWorkerState === "leave";
           if (!charEntry.teamSignaled && !charEntry.dancing && !charEntry.emoting && !leadIsWalking) {
             playEmote(charEntry, "signal", 1.4);
-            showExpression(charEntry, 3, 2.0);
             charEntry.teamSignaled = true;
           }
-        } else {
-          // Team just completed/disbanded (active children dropped to 0
-          // after having formed): payoff thumbs-up, once.
-          if (charEntry.teamSignaled) showExpression(charEntry, 4, 2.0);
-          charEntry.teamSignaled = false;
+        } else if (charEntry.teamActive) {
+          // Active children dropped to 0. Hold the bubble until the
+          // TEAM_BUBBLE_MIN_MS floor has elapsed (even if the team completed
+          // in well under that), THEN clear it and fire the thumbs-up payoff.
+          const elapsed = teamNowMs - charEntry.teamActiveSince;
+          if (elapsed >= TEAM_BUBBLE_MIN_MS) {
+            charEntry.teamActive = false;
+            charEntry.teamSignaled = false;
+            showExpression(charEntry, 4, 2.0);
+          }
         }
       }
 
@@ -13068,8 +13163,15 @@
           // Rare "expression" icon bubble above the head (display-only —
           // see showExpression / drawExpressionBubble). Drawn in un-flipped
           // canvas coords, same cx/cy/spriteSize as the sprite just drawn
-          // above. No-op when the theme has no expression atlas.
-          drawExpressionBubble(charEntry.bubbleExpr, charEntry.bubbleTimeLeft, cx, cy, spriteSize);
+          // above. No-op when the theme has no expression atlas. While this
+          // lead's persistent "team active" bubble is showing (teamActive),
+          // it takes priority over the normal expression bubble — see
+          // drawTeamBubble and showExpression's non-interruption guard.
+          if (charEntry.teamActive) {
+            drawTeamBubble(charEntry, cx, cy, spriteSize);
+          } else {
+            drawExpressionBubble(charEntry.bubbleExpr, charEntry.bubbleTimeLeft, cx, cy, spriteSize);
+          }
 
           // Label below feet — drawn in un-flipped canvas coords so it stays
           // centered directly under the agent regardless of facing direction.
