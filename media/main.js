@@ -3980,9 +3980,10 @@
   // and the movement-loop hooks.
   const REPAIR_BASE = 5.0;           // s to repair with ONE character
   const REPAIR_MIN = 1.0;            // floor — repair time never drops below this, however many characters
-  const EXTINGUISH_MAX_ASSIGN = 5;   // max characters routed to one smoking object (5 -> REPAIR_MIN floor reachable)
+  const EXTINGUISH_MAX_ASSIGN = 3;   // max characters routed to one smoking object
   const EXTINGUISH_SMOKE_MIN = 0.5;  // smoke intensity at/above which an object "needs" repairing
-  const EXTINGUISH_ARRIVE_EPS = 24;  // native px: within this of the object counts as "at" it (gather, don't pile on center)
+  const EXTINGUISH_ARRIVE_EPS = 24;  // native px: within this of a repairer's OWN stand spot counts as "arrived"
+  const EXTINGUISH_STAND_RADIUS = 28; // native px: ring radius around the object each repairer stands at (distinct per-slot spot, no pile-up)
 
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
@@ -6284,7 +6285,10 @@
         if (alpha <= 0) continue;
         ctx.save();
         ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-        ctx.drawImage(poofImg, cx - size / 2, cy - baseSize - riseY, size, size);
+        // Emission point is the object's visual CENTER (cy - baseSize/2), not
+        // its top edge: offset by half the puff sprite so the puff is
+        // vertically centered there before riseY animates it drifting upward.
+        ctx.drawImage(poofImg, cx - size / 2, cy - baseSize / 2 - size / 2 - riseY, size, size);
         ctx.restore();
       }
     } catch (e) { /* cosmetic only — one bad frame must not break render() */ }
@@ -6307,8 +6311,10 @@
         const s = objectSmoke[oid];
         if (s && s.intensity >= EXTINGUISH_SMOKE_MIN && objectPlacement[oid]) needy.add(oid);
       }
-      // 2. Release stale assignments; count survivors per object.
-      const assignedCount = {};
+      // 2. Release stale assignments; track which ring-slot indices survivors
+      //    already occupy per object, so a newly-assigned repairer never gets
+      //    handed the same stand spot as one already en route/arrived there.
+      const occupiedIdx = {};
       for (const aid in agentCharMap) {
         const ce = agentCharMap[aid];
         if (!ce) continue;
@@ -6316,16 +6322,25 @@
         if (tid == null) continue;
         if (!needy.has(tid) || ce.extinguishEligible === false) {
           ce.extinguishTargetId = null;
+          ce.extinguishStandIdx = -1;
           continue;
         }
-        assignedCount[tid] = (assignedCount[tid] || 0) + 1;
+        if (!occupiedIdx[tid]) occupiedIdx[tid] = new Set();
+        if (typeof ce.extinguishStandIdx === "number" && ce.extinguishStandIdx >= 0) {
+          occupiedIdx[tid].add(ce.extinguishStandIdx);
+        }
       }
-      // 3. Fill each needy object up to capacity with nearest unassigned eligible chars.
+      // 3. Fill each needy object up to capacity with nearest unassigned eligible
+      //    chars, handing each new assignee the lowest free ring-slot index
+      //    (0..EXTINGUISH_MAX_ASSIGN-1). The movement loop turns this index into
+      //    a distinct stand position around the object (see the extinguish-
+      //    destination block below), so repairers spread out instead of piling
+      //    on the exact same point.
       for (const oid of needy) {
         const p = objectPlacement[oid];
         if (!p) continue;
-        let count = assignedCount[oid] || 0;
-        while (count < EXTINGUISH_MAX_ASSIGN) {
+        const used = occupiedIdx[oid] || (occupiedIdx[oid] = new Set());
+        while (used.size < EXTINGUISH_MAX_ASSIGN) {
           let bestId = null, bestDist = Infinity;
           for (const aid in agentCharMap) {
             const ce = agentCharMap[aid];
@@ -6338,8 +6353,11 @@
             if (d < bestDist) { bestDist = d; bestId = aid; }
           }
           if (bestId == null) break;
+          let idx = 0;
+          while (used.has(idx)) idx++;
           agentCharMap[bestId].extinguishTargetId = oid;
-          count++;
+          agentCharMap[bestId].extinguishStandIdx = idx;
+          used.add(idx);
         }
       }
     } catch (e) { /* cosmetic only — never let extinguish assignment throw */ }
@@ -6368,7 +6386,12 @@
         const p = objectPlacement[tid];
         if (!p) continue;
         if (typeof ce.nx !== "number" || typeof ce.ny !== "number") continue;
-        const dx = p.nx - ce.nx, dy = p.ny - ce.ny;
+        // Measure against THIS repairer's own ring stand spot (set by the
+        // movement loop this same frame), not the raw object center — with
+        // distinct per-slot stand positions, arrival is per-spot.
+        const tx = (typeof ce.extinguishStandNx === "number") ? ce.extinguishStandNx : p.nx;
+        const ty = (typeof ce.extinguishStandNy === "number") ? ce.extinguishStandNy : p.ny;
+        const dx = tx - ce.nx, dy = ty - ce.ny;
         if (Math.sqrt(dx * dx + dy * dy) > EXTINGUISH_ARRIVE_EPS) continue;
         active[tid] = (active[tid] || 0) + 1;
       }
@@ -11767,6 +11790,16 @@
           // routed to (null = none); eligibility republished each frame below.
           extinguishTargetId: null,
           extinguishEligible: false,
+          // Ring-slot index (0..EXTINGUISH_MAX_ASSIGN-1, -1 = unassigned) this
+          // repairer occupies at its target object, assigned by
+          // assignExtinguishers and consumed by the movement loop to derive a
+          // distinct stand position (see EXTINGUISH_STAND_RADIUS).
+          extinguishStandIdx: -1,
+          // Resolved world-space stand spot for the current assignment,
+          // recomputed each frame by the movement loop; read cross-function by
+          // updateExtinguishProgress's per-repairer arrival tally.
+          extinguishStandNx: null,
+          extinguishStandNy: null,
         };
       }
       const charEntry = agentCharMap[agent.id];
@@ -12102,9 +12135,27 @@
       if (isExtinguishing) {
         const ep = objectPlacement[charEntry.extinguishTargetId];
         if (ep) {
-          const edx = ep.nx - charEntry.nx, edy = ep.ny - charEntry.ny;
+          // Distinct stand spot: a small ring around the object, one slot per
+          // assigned repairer (idx from assignExtinguishers), so up to
+          // EXTINGUISH_MAX_ASSIGN repairers settle at different points instead
+          // of piling on the object's exact center (which kept anti-overlap
+          // separation jostling them and isMoving never latching false).
+          const idx = (typeof charEntry.extinguishStandIdx === "number" && charEntry.extinguishStandIdx >= 0)
+            ? charEntry.extinguishStandIdx : 0;
+          const angle = (idx / EXTINGUISH_MAX_ASSIGN) * Math.PI * 2;
+          const standRaw = clampToPolygon(
+            ep.nx + Math.cos(angle) * EXTINGUISH_STAND_RADIUS,
+            ep.ny + Math.sin(angle) * EXTINGUISH_STAND_RADIUS,
+            walkablePolygon
+          );
+          charEntry.extinguishStandNx = standRaw[0];
+          charEntry.extinguishStandNy = standRaw[1];
+          const edx = charEntry.extinguishStandNx - charEntry.nx, edy = charEntry.extinguishStandNy - charEntry.ny;
           extinguishArrived = Math.sqrt(edx * edx + edy * edy) <= EXTINGUISH_ARRIVE_EPS;
         }
+      } else {
+        charEntry.extinguishStandNx = null;
+        charEntry.extinguishStandNy = null;
       }
 
       // ── Proximity "love" bubble (rare, requires a nearby idle-still agent) ──
@@ -12367,12 +12418,9 @@
       // decision (whose sit/wander branches are gated off for extinguishers)
       // so it has the final say on dest. Combat/build never coexist here
       // (isExtinguishing requires !isEngaging and an idle char never builds).
-      if (isExtinguishing) {
-        const ep = objectPlacement[charEntry.extinguishTargetId];
-        if (ep) {
-          if (extinguishArrived) { charEntry.destNx = charEntry.nx; charEntry.destNy = charEntry.ny; }
-          else { charEntry.destNx = ep.nx; charEntry.destNy = ep.ny; }
-        }
+      if (isExtinguishing && typeof charEntry.extinguishStandNx === "number") {
+        if (extinguishArrived) { charEntry.destNx = charEntry.nx; charEntry.destNy = charEntry.ny; }
+        else { charEntry.destNx = charEntry.extinguishStandNx; charEntry.destNy = charEntry.extinguishStandNy; }
       }
 
       // ── Step toward destination ────────────────────────────────────
