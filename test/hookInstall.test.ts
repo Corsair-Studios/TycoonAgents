@@ -20,7 +20,7 @@ import {
 
 const cmd = "node /path/tycoon-claude-hook.cjs";
 
-test("empty settings produces all 7 hook slots", () => {
+test("empty settings produces all 9 hook slots", () => {
   const result = mergeTycoonHooks({}, cmd);
   const hooks = result.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>>;
 
@@ -58,6 +58,16 @@ test("empty settings produces all 7 hook slots", () => {
   const tc = hooks["TaskCompleted"]?.find((e) => e.matcher === "");
   assert.ok(tc, "TaskCompleted entry must exist");
   assert.ok(tc!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
+
+  // TeammateIdle
+  const ti = hooks["TeammateIdle"]?.find((e) => e.matcher === "");
+  assert.ok(ti, "TeammateIdle entry must exist");
+  assert.ok(ti!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
+
+  // TaskCreated
+  const tcr = hooks["TaskCreated"]?.find((e) => e.matcher === "");
+  assert.ok(tcr, "TaskCreated entry must exist");
+  assert.ok(tcr!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
 });
 
 test("idempotency: running twice produces no duplicates", () => {
@@ -72,6 +82,8 @@ test("idempotency: running twice produces no duplicates", () => {
   assert.equal(hooks["SubagentStop"].length, 1);
   assert.equal(hooks["Stop"].length, 1);
   assert.equal(hooks["TaskCompleted"].length, 1);
+  assert.equal(hooks["TeammateIdle"].length, 1);
+  assert.equal(hooks["TaskCreated"].length, 1);
 });
 
 test("preserves unrelated hooks in PreToolUse", () => {

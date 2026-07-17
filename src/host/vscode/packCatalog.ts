@@ -46,11 +46,19 @@ export interface PackAgent {
  * `_handleInstallPack` (panel.ts) uses this marker via
  * {@link agentMarkdownHasTycoonMarker} to tell "ours, safe to refresh"
  * apart from "a legacy/foreign file that happens to share this id" before
- * overwriting an existing agent file. Omitted (undefined) for callers that
- * don't install through a pack (e.g. the core roster's lead/reviewer
- * install path), which keeps their output byte-identical to before this
- * marker existed. Frontmatter key order is fixed: `model`, then `tier` (if
- * any), then `tycoon_pack` (if any) — deterministic, no incidental churn.
+ * overwriting an existing agent file. Frontmatter key order is fixed:
+ * `name`, `description`, then `model`, then `tier` (if any), then
+ * `tycoon_pack` (if any) — deterministic, no incidental churn.
+ *
+ * `name` and `description` are REQUIRED by Claude Code to register a
+ * subagent (https://docs.claude.com/ ... subagents) — without them a
+ * generated `.claude/agents/<id>.md` file is never registered, so
+ * `subagent_type` can never spawn it. `name` is always `agent.id` (the
+ * kebab-case slug Claude Code requires — NOT `agent.name`, which is a
+ * Title Case display string like "Verse Expert"). `description` is
+ * `agent.role` (falling back to `agent.name` if `role` is ever empty),
+ * JSON-stringified so colons/quotes/newlines in free-text role prose can
+ * never break the YAML frontmatter block.
  */
 export function buildAgentMarkdown(agent: {
   id: string;
@@ -60,8 +68,11 @@ export function buildAgentMarkdown(agent: {
   keywords: string;
   tier?: "lead" | "reviewer";
 }, packId?: string): string {
+  const description = agent.role && agent.role.trim() !== "" ? agent.role : agent.name;
   return (
     "---\n" +
+    `name: ${agent.id}\n` +
+    `description: ${JSON.stringify(description)}\n` +
     `model: ${agent.model}\n` +
     (agent.tier ? `tier: ${agent.tier}\n` : "") +
     (packId ? `tycoon_pack: ${packId}\n` : "") +
@@ -228,7 +239,7 @@ export const LEAD_AGENTS: PackAgent[] = [
     tier: "lead",
     role:
       "Team lead for verification work — owns the testing-specialist and workspace-monitor workers. Decomposes test/verification assignments, briefs workers, cross-checks results against acceptance criteria written in docs/plan/*.md, and reports compressed results upward. Never certifies work produced by its own team without running the checks.",
-    keywords: "quality|verify|test plan|acceptance|audit",
+    keywords: "quality|verify|acceptance|audit",
   },
 ];
 
@@ -253,6 +264,6 @@ export const REVIEWER_AGENTS: PackAgent[] = [
     tier: "reviewer",
     role:
       "Reviews a specialist's COMPLETED work for a task — reads the diff, checks it against the task's intent and acceptance criteria, and flags bugs, regressions, or quality issues it finds. Returns either APPROVE or a concise list of required changes. Does not implement fixes itself; a required change goes back to the specialist that authored the work.",
-    keywords: "review|verify|approve|correctness|quality|regression",
+    keywords: "review|approve|correctness|regression",
   },
 ];

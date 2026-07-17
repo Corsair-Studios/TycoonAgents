@@ -17,9 +17,18 @@ const agent = {
   keywords: "playwright|browser|ui|qa|screenshot",
 };
 
-test("output starts with frontmatter containing the model", () => {
+test("output starts with frontmatter containing name, description, and model", () => {
   const md = buildAgentMarkdown(agent);
-  assert.ok(md.startsWith(`---\nmodel: ${agent.model}\n---`), "must start with frontmatter + model");
+  assert.ok(
+    md.startsWith(`---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---`),
+    "must start with frontmatter + name + description + model"
+  );
+});
+
+test("frontmatter name is the kebab-case id, not the Title Case display name", () => {
+  const md = buildAgentMarkdown(agent);
+  assert.ok(md.includes(`name: ${agent.id}\n`), "name: must equal agent.id");
+  assert.ok(!md.includes(`name: ${agent.name}\n`), "name: must NOT equal the Title Case display name");
 });
 
 test("output contains the H1 name heading", () => {
@@ -51,16 +60,22 @@ test("round-trips through parseAgentMarkdown to same model and name", () => {
   assert.equal(parsed.name, agent.name);
 });
 
-test("a regular agent (no tier) renders byte-identical frontmatter to before — no tier line", () => {
+test("a regular agent (no tier) renders full expected frontmatter — no tier line", () => {
   const md = buildAgentMarkdown(agent);
-  assert.equal(md, `---\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n`);
+  assert.equal(
+    md,
+    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n`
+  );
   assert.ok(!md.includes("tier:"), "regular agents must not emit a tier line");
 });
 
-test("a lead-tier agent emits a `tier: lead` frontmatter line", () => {
+test("a lead-tier agent emits a `tier: lead` frontmatter line after name/description/model", () => {
   const leadAgent = { ...agent, id: "some-lead", name: "Some Lead", tier: "lead" as const };
   const md = buildAgentMarkdown(leadAgent);
-  assert.ok(md.startsWith(`---\nmodel: ${leadAgent.model}\ntier: lead\n---`), "must emit tier: lead right after model");
+  assert.ok(
+    md.startsWith(`---\nname: ${leadAgent.id}\ndescription: ${JSON.stringify(leadAgent.role)}\nmodel: ${leadAgent.model}\ntier: lead\n---`),
+    "must emit tier: lead right after model"
+  );
 });
 
 test("LEAD_AGENTS contains exactly build-lead and quality-lead, both tier: lead, both sonnet", () => {
@@ -73,6 +88,21 @@ test("LEAD_AGENTS contains exactly build-lead and quality-lead, both tier: lead,
   }
   const names = LEAD_AGENTS.map((a) => a.name).sort();
   assert.deepEqual(names, ["Build Lead", "Quality Lead"]);
+});
+
+test("quality-lead and reviewer keywords are disjoint and drop the dead 'test plan' multi-word token", () => {
+  const qualityLead = LEAD_AGENTS.find((a) => a.id === "quality-lead");
+  const reviewer = REVIEWER_AGENTS.find((a) => a.id === "reviewer");
+  assert.ok(qualityLead, "quality-lead must exist in LEAD_AGENTS");
+  assert.ok(reviewer, "reviewer must exist in REVIEWER_AGENTS");
+  assert.equal(qualityLead!.keywords, "quality|verify|acceptance|audit");
+  assert.equal(reviewer!.keywords, "review|approve|correctness|regression");
+
+  const qualityLeadTokens = qualityLead!.keywords.split("|");
+  const reviewerTokens = reviewer!.keywords.split("|");
+  const overlap = qualityLeadTokens.filter((t) => reviewerTokens.includes(t));
+  assert.deepEqual(overlap, [], "quality-lead and reviewer keyword tokens must not overlap");
+  assert.ok(!qualityLeadTokens.includes("test plan"), "dead multi-word 'test plan' token must be removed");
 });
 
 test("REGULAR_AGENTS has exactly 8 entries, all without a tier, all unique ids/names", () => {
@@ -207,12 +237,18 @@ test("buildAgentMarkdown(agent, packId) emits a tycoon_pack frontmatter line and
 
 test("buildAgentMarkdown(agent, packId) places tycoon_pack after model (and after tier, if present)", () => {
   const md = buildAgentMarkdown(agent, "uefn");
-  assert.ok(md.startsWith(`---\nmodel: ${agent.model}\ntycoon_pack: uefn\n---`), "tycoon_pack must follow model directly when there is no tier");
+  assert.ok(
+    md.startsWith(`---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\ntycoon_pack: uefn\n---`),
+    "tycoon_pack must follow model directly when there is no tier"
+  );
 });
 
-test("buildAgentMarkdown(agent) without packId is byte-identical to the prior no-marker output", () => {
+test("buildAgentMarkdown(agent) without packId omits tycoon_pack but still has name/description/model", () => {
   const md = buildAgentMarkdown(agent);
-  assert.equal(md, `---\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n`);
+  assert.equal(
+    md,
+    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n`
+  );
   assert.ok(!md.includes("tycoon_pack"), "no packId means no tycoon_pack line");
 });
 
@@ -238,4 +274,69 @@ test("buildAgentMarkdown(agent, packId) is deterministic across repeated calls",
   const first = buildAgentMarkdown(agent, "uefn");
   const second = buildAgentMarkdown(agent, "uefn");
   assert.equal(first, second);
+});
+
+// ---------------------------------------------------------------------------
+// Claude Code subagent registration requires `name:` and `description:` in
+// frontmatter — without them a generated agent file never registers, so
+// `subagent_type` can never spawn it (the bug this fix addresses).
+// ---------------------------------------------------------------------------
+
+/** Minimal frontmatter-block parser: splits `key: value` lines between the
+ * two `---` fences into a map, so tests can assert on parsed keys instead
+ * of raw substring matches (guards against a key merely appearing in the
+ * body). Handles a JSON-double-quoted value (our `description:` encoding)
+ * by unescaping it back to the original string. */
+function parseFrontmatter(md: string): Record<string, string> {
+  const match = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  assert.ok(match, "content must have a --- frontmatter block");
+  const out: Record<string, string> = {};
+  for (const line of match![1].split(/\r?\n/)) {
+    const m = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const [, key, rawValue] = m;
+    out[key] = rawValue.startsWith('"') ? JSON.parse(rawValue) : rawValue;
+  }
+  return out;
+}
+
+test("a lead agent with a packId produces valid, parseable frontmatter with name (kebab id), description, and model", () => {
+  const leadAgent = LEAD_AGENTS[0];
+  const md = buildAgentMarkdown(leadAgent, "uefn");
+  const fm = parseFrontmatter(md);
+  assert.equal(fm.name, leadAgent.id, "name: must be the kebab-case id");
+  assert.notEqual(fm.name, leadAgent.name, "name: must not be the Title Case display name");
+  assert.equal(fm.description, leadAgent.role, "description: must round-trip the exact role text");
+  assert.equal(fm.model, leadAgent.model);
+  assert.equal(fm.tier, "lead");
+  assert.equal(fm.tycoon_pack, "uefn");
+});
+
+test("a core agent with no packId produces valid, parseable frontmatter with name (kebab id), description, and model", () => {
+  const coreAgent = REGULAR_AGENTS.find((a) => a.id === "coding-specialist")!;
+  const md = buildAgentMarkdown(coreAgent);
+  const fm = parseFrontmatter(md);
+  assert.equal(fm.name, coreAgent.id, "name: must be the kebab-case id");
+  assert.equal(fm.description, coreAgent.role, "description: must round-trip the exact role text");
+  assert.equal(fm.model, coreAgent.model);
+  assert.equal(fm.tier, undefined);
+  assert.equal(fm.tycoon_pack, undefined);
+});
+
+test("every REGULAR_AGENTS/LEAD_AGENTS/REVIEWER_AGENTS entry has a non-empty role and generates name === id in frontmatter", () => {
+  for (const a of [...REGULAR_AGENTS, ...LEAD_AGENTS, ...REVIEWER_AGENTS]) {
+    assert.ok(a.role && a.role.trim() !== "", `${a.id} must have a non-empty role`);
+    const fm = parseFrontmatter(buildAgentMarkdown(a));
+    assert.equal(fm.name, a.id, `${a.id}: name: must equal the agent's kebab-case id`);
+    assert.equal(fm.description, a.role, `${a.id}: description: must round-trip the role text`);
+  }
+});
+
+test("description is YAML-safe (JSON-quoted) even when role contains a colon and a double quote", () => {
+  const trickyAgent = { ...agent, id: "tricky-agent", role: 'Handles "special" cases: colons, quotes, and stuff.' };
+  const md = buildAgentMarkdown(trickyAgent);
+  const fm = parseFrontmatter(md);
+  assert.equal(fm.description, trickyAgent.role, "description must round-trip exactly despite colons/quotes");
+  // The raw frontmatter line itself must be a valid double-quoted YAML scalar.
+  assert.ok(md.includes(`description: ${JSON.stringify(trickyAgent.role)}\n`));
 });

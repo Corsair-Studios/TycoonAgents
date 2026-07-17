@@ -171,7 +171,7 @@ export function diagnose(input: DoctorInput): DoctorFinding[] {
       id: "hooks-missing",
       severity: "error",
       title: "Hook slots not wired",
-      detail: `${missingSlots.length} of 7 hook slots are not wired.`,
+      detail: `${missingSlots.length} of ${TYCOON_HOOK_SLOTS.length} hook slots are not wired.`,
       fixable: true,
       destructive: false,
     });
@@ -315,7 +315,7 @@ export function diagnose(input: DoctorInput): DoctorFinding[] {
       id: "hooks-healthy",
       severity: "ok",
       title: "Hooks are healthy",
-      detail: "All 7 hook slots are correctly wired.",
+      detail: `All ${TYCOON_HOOK_SLOTS.length} hook slots are correctly wired.`,
       fixable: false,
       destructive: false,
     });

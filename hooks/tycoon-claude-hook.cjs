@@ -472,6 +472,24 @@ function main(raw) {
 
   const at = Date.now();
 
+  // DIAGNOSTIC (Bug 4 verify-first): capture raw team-event payloads so the
+  // token-attribution fix can be built against real shapes. Purely observational
+  // — never alters activity tracking. Capped + fully guarded.
+  const TEAM_EVENTS = new Set(["TaskCreated", "TaskCompleted", "TeammateIdle"]);
+  if (TEAM_EVENTS.has(hookEvent)) {
+    try {
+      const samplesFile = path.join(tycoonDir, "hook-event-samples.jsonl");
+      // cap to avoid unbounded growth: only append while under N lines
+      let lineCount = 0;
+      try { lineCount = fs.readFileSync(samplesFile, "utf8").split("\n").filter(Boolean).length; } catch {}
+      if (lineCount < 300) {
+        fs.appendFileSync(samplesFile, JSON.stringify({ diagnostic: true, event: hookEvent, at: Date.now(), payload }) + "\n", "utf8");
+      }
+    } catch { /* never let diagnostics break the hook */ }
+    // these events have no other handler today — record and exit cleanly
+    process.exit(0);
+  }
+
   // -------------------------------------------------------------------------
   // SubagentStop: pop the matching agent off the stack and capture its tokens.
   // SubagentStop payloads usually omit tool_input/usage, so we fall back to

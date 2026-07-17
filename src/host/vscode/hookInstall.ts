@@ -25,6 +25,8 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   { event: "SubagentStop", matcher: "" },
   { event: "Stop", matcher: "" },
   { event: "TaskCompleted", matcher: "" },
+  { event: "TeammateIdle", matcher: "" },
+  { event: "TaskCreated", matcher: "" },
 ];
 
 /** True if `h` is a well-formed hook entry whose command references our own hook script. */

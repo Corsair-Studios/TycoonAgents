@@ -127,6 +127,39 @@ test("DEFAULT_AGENT_KEYWORDS covers every core roster + capability-pack agent id
   }
 });
 
+test("quality-lead and reviewer keyword patterns share no token (no silent-misroute overlap)", () => {
+  const splitTokens = (pattern: string) => pattern.split("|").map((t) => t.trim());
+  const qualityLeadTokens = splitTokens(DEFAULT_AGENT_KEYWORDS["quality-lead"]);
+  const reviewerTokens = splitTokens(DEFAULT_AGENT_KEYWORDS["reviewer"]);
+  const overlap = qualityLeadTokens.filter((t) => reviewerTokens.includes(t));
+  assert.deepEqual(overlap, [], "quality-lead and reviewer must share zero keyword tokens");
+});
+
+test("quality-lead pattern no longer contains the dead multi-word 'test plan' token", () => {
+  const tokens = DEFAULT_AGENT_KEYWORDS["quality-lead"].split("|").map((t) => t.trim());
+  assert.ok(
+    !tokens.includes("test plan"),
+    "'test plan' is a multi-word token the single-word matcher (words.has(kw)) can never match"
+  );
+  for (const t of tokens) {
+    assert.equal(t.includes(" "), false, `token "${t}" must be single-word for the keyword matcher to ever match it`);
+  }
+});
+
+test("quality-lead and reviewer keyword tokens introduce no collision with any other agent id", () => {
+  const splitTokens = (pattern: string) => pattern.split("|").map((t) => t.trim());
+  const qualityLeadTokens = new Set(splitTokens(DEFAULT_AGENT_KEYWORDS["quality-lead"]));
+  const reviewerTokens = new Set(splitTokens(DEFAULT_AGENT_KEYWORDS["reviewer"]));
+  for (const [id, pattern] of Object.entries(DEFAULT_AGENT_KEYWORDS)) {
+    if (id === "quality-lead" || id === "reviewer") continue;
+    const otherTokens = splitTokens(pattern);
+    for (const t of otherTokens) {
+      assert.equal(qualityLeadTokens.has(t), false, `quality-lead token "${t}" collides with agent "${id}"`);
+      assert.equal(reviewerTokens.has(t), false, `reviewer token "${t}" collides with agent "${id}"`);
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // parseAgentKeywords()
 // ---------------------------------------------------------------------------

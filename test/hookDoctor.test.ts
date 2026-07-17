@@ -200,7 +200,7 @@ test("findForeignHooks: null settings -> returns empty array", () => {
   assert.deepEqual(foreign, []);
 });
 
-test("diagnose: hooks-missing detail contains '7' (total slot count)", () => {
+test("diagnose: hooks-missing detail contains the total slot count", () => {
   const findings = diagnose({
     localSettings: null,
     sharedSettings: null,
@@ -209,7 +209,10 @@ test("diagnose: hooks-missing detail contains '7' (total slot count)", () => {
   });
   const f = findings.find((x: DoctorFinding) => x.id === "hooks-missing");
   assert.ok(f, "should contain hooks-missing finding");
-  assert.ok(f!.detail.includes("7"), 'detail must reference "7" (total slot count)');
+  assert.ok(
+    f!.detail.includes(String(TYCOON_HOOK_SLOTS.length)),
+    `detail must reference "${TYCOON_HOOK_SLOTS.length}" (total slot count)`
+  );
 });
 
 test("diagnose: duplicate Tycoon command in a slot -> hooks-duplicate warn", () => {

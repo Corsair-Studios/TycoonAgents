@@ -3821,21 +3821,57 @@ export class TycoonPanel {
   }
 
   /**
-   * Write a roster of `PackAgent` `.md` files (skipping any that already
-   * exist) and register their keyword routing in `agent-keywords.json`.
-   * Shared, mode-agnostic install path: `_installLeadAgents` applies it to
-   * `LEAD_AGENTS` (team_leads), `_installReviewerAgent` applies it to
-   * `REVIEWER_AGENTS` (the Review-pass toggle) — either can install
-   * regardless of the other's state. Idempotent: re-running when the
-   * files/entries already exist is a no-op.
+   * Write a roster of `PackAgent` `.md` files and register their keyword
+   * routing in `agent-keywords.json`. Shared, mode-agnostic install path:
+   * `_installLeadAgents` applies it to `LEAD_AGENTS` (team_leads),
+   * `_installReviewerAgent` applies it to `REVIEWER_AGENTS` (the
+   * Review-pass toggle) — either can install regardless of the other's
+   * state.
+   *
+   * Per agent:
+   *  - no existing file -> create it.
+   *  - existing file whose frontmatter `tier:` (via {@link
+   *    agentMarkdownTier}) matches `a.tier` -> it's OURS, safe to refresh
+   *    in place so fixes to `buildAgentMarkdown` (e.g. the `name`/
+   *    `description` frontmatter Claude Code requires to register a
+   *    subagent) reach a project that already has a stale copy on disk.
+   *    Only rewritten when the generated content actually differs, so a
+   *    reinstall/Repair on an already-current project is a no-op (no
+   *    churn).
+   *  - existing file whose tier does NOT match (absent, or a different
+   *    tier) -> a user's own file, or a foreign/legacy same-named agent;
+   *    left byte-untouched, mirroring `_removeAgentFiles`'s "never touch a
+   *    file we can't prove is ours" rule.
+   *
+   * Keyword routing is always (re)written for every agent in the roster,
+   * same as before.
    */
   private _installAgentFiles(root: string, agentsToInstall: PackAgent[]): void {
     let cfg = this._readKeywordsConfig(root);
     for (const a of agentsToInstall) {
       const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
-      if (!fs.existsSync(agentPath)) {
-        fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
-        fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+      try {
+        if (!fs.existsSync(agentPath)) {
+          fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
+          fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+        } else {
+          const existing = fs.readFileSync(agentPath, "utf8");
+          let existingTier: string | undefined;
+          try {
+            existingTier = agentMarkdownTier(existing);
+          } catch {
+            existingTier = undefined;
+          }
+          if (existingTier === a.tier) {
+            const desired = buildAgentMarkdown(a);
+            if (existing !== desired) {
+              fs.writeFileSync(agentPath, desired);
+            }
+          }
+          // else: foreign/legacy same-named file — never overwritten.
+        }
+      } catch {
+        /* best-effort per-file; keyword routing still proceeds below */
       }
       cfg = setKeywordPattern(cfg, a.id, a.keywords);
     }
