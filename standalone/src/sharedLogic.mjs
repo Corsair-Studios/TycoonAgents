@@ -15,6 +15,9 @@
 //   - src/providers/claude-code/mapHookRecord.ts
 //   - src/providers/claude-code/hookRecord.ts (types only)
 //   - src/providers/claude-code/agentRoster.ts (node fs/path only — not used here yet)
+//   - src/host/vscode/hookInstall.ts (imports only node `fs`/`path` — its only
+//     "vscode" mention is a code comment). mergeTycoonHooks/TYCOON_HOOK_SLOTS
+//     are reused in place here, not forked — see standalone/installHook.mjs.
 //
 // LAZY by design: the compiled modules are only require()'d the first time
 // one of the exported functions below is actually CALLED, not at import
@@ -41,6 +44,7 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const STATE_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'state.js');
 const MAP_HOOK_RECORD_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'claude-code', 'mapHookRecord.js');
+const HOOK_INSTALL_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'hookInstall.js');
 
 const require = createRequire(import.meta.url);
 
@@ -70,6 +74,14 @@ function mapHookRecordModule() {
     );
   }
   return _mapHookRecordModule;
+}
+
+let _hookInstallModule;
+function hookInstallModule() {
+  if (!_hookInstallModule) {
+    _hookInstallModule = requireCompiled(HOOK_INSTALL_JS, 'out/src/host/vscode/hookInstall.js');
+  }
+  return _hookInstallModule;
 }
 
 function assertFn(fn, name, sourceLabel) {
@@ -119,4 +131,34 @@ export function mapHookRecord(record) {
     'out/src/providers/claude-code/mapHookRecord.js',
   );
   return fn(record);
+}
+
+/** Pure merge of the TycoonAgents hook into an existing Claude Code settings
+ * object — the exact function `src/host/vscode/hookInstall.ts` exports,
+ * required lazily from its compiled output.
+ * @type {(existing: Record<string, unknown>, hookCommand: string) => Record<string, unknown>} */
+export function mergeTycoonHooks(existing, hookCommand) {
+  const fn = assertFn(
+    hookInstallModule().mergeTycoonHooks,
+    'mergeTycoonHooks',
+    'out/src/host/vscode/hookInstall.js',
+  );
+  return fn(existing, hookCommand);
+}
+
+/** The Claude Code hook events + matchers TycoonAgents wires up, read lazily
+ * from the compiled `hookInstall.js`'s `TYCOON_HOOK_SLOTS` — call this rather
+ * than caching the array yourself so a stale/missing `out/` still surfaces
+ * the actionable "run `npx tsc -p .`" error at first real use.
+ * @returns {ReadonlyArray<{event: string, matcher: string}>} */
+export function getTycoonHookSlots() {
+  const slots = hookInstallModule().TYCOON_HOOK_SLOTS;
+  if (!Array.isArray(slots)) {
+    throw new Error(
+      '[tycoonagents-standalone] sharedLogic: expected "TYCOON_HOOK_SLOTS" to be exported as an array from ' +
+        'out/src/host/vscode/hookInstall.js but it was not — the compiled output may be stale or the source ' +
+        'export was renamed. Run `npx tsc -p .` from the repo root and verify the export still exists.',
+    );
+  }
+  return slots;
 }

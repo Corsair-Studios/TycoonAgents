@@ -5,14 +5,14 @@
 // receives the same UserPromptSubmit/PreToolUse/SubagentStop/Stop/
 // TaskCompleted events the VS Code extension does.
 //
-// This intentionally MIRRORS src/host/vscode/hookInstall.ts's settings shape
-// and idempotency approach (same event/matcher slots, same "does an entry
-// already reference our hook by command substring" detection, same
-// leave-existing-entry-in-place behavior) WITHOUT importing that file —
-// hookInstall.ts is TypeScript, built as part of the VS Code extension, and
-// off-limits to edit for this task; duplicating the small, stable slot list
-// here keeps `standalone/` a fully independent build target (see
-// package.json description) with zero coupling to the extension's build.
+// TYCOON_HOOK_SLOTS and the settings-merge algorithm are NOT reimplemented
+// here — they're reused in place from src/host/vscode/hookInstall.ts (a
+// 100% vscode-free file: `fs`/`path` only) via sharedLogic.mjs's
+// createRequire bridge into the compiled `out/src/host/vscode/hookInstall.js`,
+// the same pattern sharedLogic.mjs already uses for state.js/mapHookRecord.js.
+// That means one settings-merge bug fix on the extension side now reaches
+// both hosts automatically instead of needing a hand-sync. See
+// PHASE5-SHARED-CORE-PROPOSAL.md Proposal A.
 //
 // ONE DELIBERATE DIVERGENCE from hookInstall.ts, required by this task's
 // brief: the VS Code extension COPIES tycoon-claude-hook.cjs into each
@@ -33,8 +33,35 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mergeTycoonHooks, getTycoonHookSlots } from './sharedLogic.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** Lazy read-only array view over `getSlots()`'s result: forwards every
+ * property/iteration access to the real array on first touch, then caches.
+ * Lets `TYCOON_HOOK_SLOTS` stay a plain importable array (so existing
+ * `TYCOON_HOOK_SLOTS.length`/iteration call sites don't change) while still
+ * honoring sharedLogic.mjs's "never require `out/` just from importing this
+ * module" contract — e.g. `cli.mjs watch` never touches the compiled
+ * hookInstall.js. */
+function lazyArray(getSlots) {
+  let cached;
+  const resolve = () => (cached ??= getSlots());
+  return new Proxy(/** @type {unknown[]} */ ([]), {
+    get(_target, prop, receiver) {
+      return Reflect.get(resolve(), prop, receiver);
+    },
+    has(_target, prop) {
+      return Reflect.has(resolve(), prop);
+    },
+    ownKeys() {
+      return Reflect.ownKeys(resolve());
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      return Reflect.getOwnPropertyDescriptor(resolve(), prop);
+    },
+  });
+}
 
 /** Thrown for any fatal, user-actionable install failure (bad target dir,
  * missing hook script, corrupt settings file). Callers should print
@@ -48,81 +75,35 @@ export class InstallHookError extends Error {
 }
 
 /**
- * The Claude Code hook events + matchers TycoonAgents wires up. Kept in sync
- * BY HAND with TYCOON_HOOK_SLOTS in src/host/vscode/hookInstall.ts (small,
- * stable list — see module header for why this isn't a shared import).
+ * The Claude Code hook events + matchers TycoonAgents wires up — the exact
+ * `TYCOON_HOOK_SLOTS` array from src/host/vscode/hookInstall.ts, reused via
+ * sharedLogic.mjs (not a hand-synced copy). Resolved lazily on first access.
  * @type {ReadonlyArray<{event: string, matcher: string}>}
  */
-export const TYCOON_HOOK_SLOTS = [
-  { event: 'UserPromptSubmit', matcher: '' },
-  { event: 'PreToolUse', matcher: 'Task|Agent|Skill' },
-  { event: 'PreToolUse', matcher: 'Read|Write|Edit|Grep|Glob|Bash' },
-  { event: 'PreToolUse', matcher: 'mcp__' },
-  { event: 'SubagentStop', matcher: '' },
-  { event: 'Stop', matcher: '' },
-  { event: 'TaskCompleted', matcher: '' },
-];
-
-/** Substring every generated hook command contains; also how an existing
- * entry is recognized as "already ours" regardless of exact path/quoting. */
-const HOOK_MARKER = 'tycoon-claude-hook.cjs';
+export const TYCOON_HOOK_SLOTS = lazyArray(getTycoonHookSlots);
 
 /**
- * Pure merge of the TycoonAgents hook into an existing Claude Code settings
- * object. Adds our hook for each event/matcher in TYCOON_HOOK_SLOTS without
- * dropping unrelated keys/hooks and without duplicating an entry that
- * already references our hook (matched by {@link HOOK_MARKER} substring, so
- * re-running after the hook script path changes still recognizes the old
- * entry rather than adding a second one — same behavior as hookInstall.ts).
- * No fs usage, so this is trivially unit-testable.
+ * Merges the TycoonAgents hook into an existing Claude Code settings object,
+ * via the shared, pure `mergeTycoonHooks` (src/host/vscode/hookInstall.ts,
+ * reused through sharedLogic.mjs — see module header). `mergeTycoonHooks`
+ * itself returns only the merged settings object (no `changed` flag), so
+ * `changed` is computed here by comparing the `hooks` section before/after —
+ * structurally equal (same keys, same order, same entries) iff every slot
+ * already referenced our hook, i.e. a no-op re-run. The CLI's "hook
+ * registered" vs "already registered (no changes)" messaging depends on this
+ * being accurate.
  *
  * @param {Record<string, unknown>} existing parsed settings object (or {}).
  * @param {string} hookCommand the command string to install, e.g.
  *   `node "/abs/path/to/tycoon-claude-hook.cjs"`.
  * @returns {{ settings: Record<string, unknown>, changed: boolean }}
- *   `changed` is false when every slot already referenced our hook, i.e. a
- *   no-op re-run.
  */
 export function mergeHookIntoSettings(existing, hookCommand) {
   const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
-  const result = { ...base };
-  const srcHooks =
-    base.hooks && typeof base.hooks === 'object' && !Array.isArray(base.hooks) ? base.hooks : {};
-  const hooks = {};
-  let changed = false;
-
-  for (const event of Object.keys(srcHooks)) {
-    const arr = srcHooks[event];
-    hooks[event] = Array.isArray(arr) ? arr.slice() : [];
-  }
-
-  for (const slot of TYCOON_HOOK_SLOTS) {
-    const list = hooks[slot.event] ?? (hooks[slot.event] = []);
-    const matching = list.find(
-      (e) => e !== null && typeof e === 'object' && e.matcher === slot.matcher,
-    );
-    const referencesOurHook =
-      matching !== undefined &&
-      Array.isArray(matching.hooks) &&
-      matching.hooks.some(
-        (h) =>
-          h !== null &&
-          typeof h === 'object' &&
-          typeof h.command === 'string' &&
-          h.command.includes(HOOK_MARKER),
-      );
-    if (referencesOurHook) {
-      continue;
-    }
-    list.push({
-      matcher: slot.matcher,
-      hooks: [{ type: 'command', command: hookCommand }],
-    });
-    changed = true;
-  }
-
-  result.hooks = hooks;
-  return { settings: result, changed };
+  const beforeHooksJson = JSON.stringify(base.hooks ?? {});
+  const settings = mergeTycoonHooks(base, hookCommand);
+  const afterHooksJson = JSON.stringify(settings.hooks ?? {});
+  return { settings, changed: beforeHooksJson !== afterHooksJson };
 }
 
 /** Absolute path to the repo's real hook script (never copied/forked). */
