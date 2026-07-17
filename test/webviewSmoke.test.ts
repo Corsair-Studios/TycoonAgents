@@ -702,7 +702,7 @@ const OBJ_SCALE_PX = {
   o2: 'data:obj-scale-fixture,o2',
 };
 
-function buildObjScaleThemePayload(objectScale: number, overrides: Record<string, number>, objectIds: string[]) {
+function buildObjScaleThemePayload(objectScale: number, overrides: Record<string, number>, objectIds: string[], rebirthCount = 0) {
   const buildable_objects = objectIds.map((id, i) => ({
     object_id: id,
     display_name: id,
@@ -739,6 +739,10 @@ function buildObjScaleThemePayload(objectScale: number, overrides: Record<string
       frames,
       badges: [],
       unlocked_badge_ids: [],
+      // Peeked by main.js (~7551) BEFORE buildSeededQueue runs to decide
+      // whether the first buildable (the "rack") is included in the queue.
+      // Default 0 preserves prior behavior for callers that omit this.
+      rebirth_state: { count: rebirthCount },
     },
   };
 }
@@ -858,6 +862,13 @@ test('crate size ignores the target object\'s per-object scale override', async 
   // so every frame draws the crate, never the final object art. Same
   // anchor_coord + canvas size across runs => identical depthScale, so crate
   // width is directly comparable between runs.
+  //
+  // This lone object is themeBuildables[0] — the "weapons rack" — which
+  // buildSeededQueue excludes from the buildable queue until the player's
+  // first rebirth (see main.js ~4468/7551). Seed rebirth_state.count = 1 so
+  // the rack is buildable and an active crate is actually drawn each frame;
+  // rebirth status is orthogonal to what this test asserts (crate ignores
+  // per-object override but tracks the global object-scale slider).
   const runs: Record<string, number> = {};
   for (const [label, objectScale, overrides] of [
     ['globalOnly', 2, {}],
@@ -865,7 +876,7 @@ test('crate size ignores the target object\'s per-object scale override', async 
     ['halfGlobal', 1, {}],
   ] as [string, number, Record<string, number>][]) {
     const h = await bootObjScaleHarness();
-    h.dispatch(buildObjScaleThemePayload(objectScale, overrides, ['o1']));
+    h.dispatch(buildObjScaleThemePayload(objectScale, overrides, ['o1'], 1));
     await h.flush();
     h.tick(3);
     assert.equal(h.errors.length, 0, `[${label}] threw: ${h.errors.map(String).join('; ')}`);

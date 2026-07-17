@@ -1278,6 +1278,16 @@
    */
   function doRebirth() {
     rebirthCount++;
+    // D3: the weapons rack (build_order 0 / rackObjectId) is withheld from
+    // buildQueue entirely until the player's first rebirth (see
+    // buildSeededQueue). Now that rebirthCount is >=1, append it onto the END
+    // of the CURRENT in-memory queue so it becomes buildable without
+    // disturbing any already-built object's queue position/progress.
+    // Idempotent — a no-op on every rebirth after the first, since indexOf
+    // finds it already queued.
+    if (rackObjectId && buildQueue.indexOf(rackObjectId) === -1) {
+      buildQueue.push(rackObjectId);
+    }
     rebirthBaseline = { built: buildBuiltCount, evicted: rivalsEvictedCount, tasks: (state.completedTasks || 0) };
     cycleObjectsBuilt = 0;
     cycleRivalsEvicted = 0;
@@ -1301,7 +1311,10 @@
         payload: { theme_id: currentBadgeThemeId },
       });
     }
-    if (rangedUnlocked === false && rebirthCount >= 1) rangedUnlocked = true; // D1: permanent ranged weapons from here on
+    // Ranged combat is deliberately NOT unlocked directly here — it unlocks
+    // ONLY via the build-latch (see ~computeBuildState/rangedUnlocked latch)
+    // once the rack is actually built, which the rebirth above just made
+    // possible by appending rackObjectId onto buildQueue.
     updateBadgeHud();
     renderBadgePanel();
     // Cosmetic celebration — must never break the rebirth itself.
@@ -1335,7 +1348,7 @@
       const head = el.querySelector(".rebirth-announce-head");
       const sub = el.querySelector(".rebirth-announce-sub");
       if (head) head.textContent = "REBIRTH ×" + count;
-      if (sub) sub.textContent = "Ranged weapons unlocked · Build speed +" + buildPct + "%";
+      if (sub) sub.textContent = "Weapons rack now buildable · Build speed +" + buildPct + "%";
       el.removeAttribute("hidden");
       // Reset + force reflow so the pop-in animation replays on repeat rebirths.
       el.classList.remove("is-visible");
@@ -4436,18 +4449,33 @@
    * Build a stable random permutation of themeBuildables' object_ids, seeded
    * by theme_id so the same theme always yields the same build order (no
    * reshuffling every frame/reload).
+   *
+   * D3: the weapons rack (build_order 0, i.e. buildables[0].object_id — same
+   * convention as rackObjectId) is ALWAYS excluded from the shuffle pool
+   * itself, then appended at the very END iff rebirthCount >= 1. Filtering it
+   * out BEFORE shuffling (rather than shuffling everything and removing it
+   * after) keeps the relative order of every OTHER object identical
+   * regardless of rebirthCount, so queue positions — and therefore
+   * buildBuiltCount's already-built prefix — stay stable across the
+   * pre→post-rebirth transition and any later reload (see doRebirth D3 /
+   * THEME_INITIALIZED's rebirth peek).
    * @param {Array<object>} buildables
    * @param {string} themeId
+   * @param {number} [rebirthCount] number of completed rebirths; the rack
+   *   stays out of the pool entirely while this is < 1.
    * @returns {string[]}
    */
-  function buildSeededQueue(buildables, themeId) {
-    const ids = buildables.map((o) => o.object_id);
+  function buildSeededQueue(buildables, themeId, rebirthCount) {
+    const rackId = buildables.length > 0 ? buildables[0].object_id : null;
+    const pool = rackId !== null ? buildables.filter((o) => o.object_id !== rackId) : buildables;
+    const ids = pool.map((o) => o.object_id);
     const rand = mulberry32(seededHash(String(themeId || "")));
     // Fisher-Yates shuffle using the seeded PRNG.
     for (let i = ids.length - 1; i > 0; i--) {
       const j = Math.floor(rand() * (i + 1));
       const tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
     }
+    if (rackId !== null && (rebirthCount || 0) >= 1) ids.push(rackId);
     return ids;
   }
 
@@ -7514,7 +7542,16 @@
         // ── Phase: one-at-a-time paced build queue (Change 1) ──────────
         // Stable random permutation seeded by theme_id — deterministic per
         // theme, doesn't reshuffle on re-render.
-        buildQueue = buildSeededQueue(themeBuildables, initializedThemeId);
+        // D3: peek the persisted rebirth count BEFORE building the queue (the
+        // full rebirth restore happens further below) so buildQueue already
+        // reflects the correct pre/post-first-rebirth composition — the rack
+        // must never appear in the queue while rebirthCount is still < 1 (see
+        // buildSeededQueue).
+        {
+          const _peekedRebirth = msg.payload.rebirth_state || (vscode.getState() || {}).rebirth;
+          const _peekedRebirthCount = (_peekedRebirth && typeof _peekedRebirth.count === "number") ? _peekedRebirth.count : 0;
+          buildQueue = buildSeededQueue(themeBuildables, initializedThemeId, _peekedRebirthCount);
+        }
         // Restore persisted build progress (host-provided) instead of always
         // starting a fresh reload/update at 0 — clamp to the queue length in
         // case the theme's buildable list shrank since the value was saved.
@@ -7601,12 +7638,15 @@
         // ── Ranged combat upgrade (reset per theme) ─────────────────────
         // Characters START in melee. Building the ranged weapon rack (the
         // buildable with build_order 0 → themeBuildables[0] after the sort)
-        // permanently unlocks ranged combat for the rest of the session.
-        // Because buildQueue is randomized, the rack may be built early,
-        // late, or never — that's intended. D1: once rebirthCount>=1, ranged
-        // combat is a permanent prestige bonus and applies from theme-load,
-        // regardless of whether the rack has been (re)built this cycle.
-        rangedUnlocked = rebirthCount >= 1;
+        // permanently unlocks ranged combat for the rest of the session — and
+        // ONLY building it unlocks ranged (see the build-latch near
+        // computeBuildState). D3: the rack itself isn't even buildable until
+        // rebirthCount>=1 (see buildSeededQueue/doRebirth), so always start
+        // this theme session with ranged locked; the per-frame latch re-syncs
+        // it to true on the very next frame if the restored buildState shows
+        // the rack already built (e.g. a reload after an earlier session's
+        // post-rebirth build).
+        rangedUnlocked = false;
         rackObjectId = themeBuildables.length > 0 ? themeBuildables[0].object_id : null;
         // Resolve a stable native placement per object. Generated anchor_coord
         // values are currently always [0.5,0.5] (degenerate/equal), so detect
@@ -9634,6 +9674,9 @@
       // zeroing these the built objects stay visible after Reset.
       buildBuiltCount = 0;
       buildCurrentProgress = 0;
+      // Ranged weapons must re-lock on Reset too — the weapons rack is a
+      // rebirthCount>=1 unlock, and rebirthCount was just zeroed above.
+      rangedUnlocked = false;
       // Purge the persisted blob so a reload can't rehydrate stale progress.
       try {
         const prev = vscode.getState() || {};
