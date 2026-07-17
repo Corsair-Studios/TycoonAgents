@@ -267,3 +267,25 @@ export const REVIEWER_AGENTS: PackAgent[] = [
     keywords: "review|approve|correctness|regression",
   },
 ];
+
+/**
+ * The project-appropriate worker roster to install, given whether the
+ * project is a UEFN project. `search-retrieval` is always included — it
+ * previously had no install path in any mode, so search/retrieval work
+ * silently fell back to the synthetic fallback agent. Non-UEFN projects
+ * additionally get `coding-specialist` and `ux-ui-designer`; UEFN projects
+ * get neither (a UEFN pack install brings its own `uefn-auditor` and
+ * `verse-expert`, and this file's `REVIEWER_AGENTS` reviewer would conflict
+ * with `uefn-auditor` as a verification gate, so it is likewise withheld —
+ * see `_handleInstallHooks` in panel.ts). Pure: reads only `REGULAR_AGENTS`.
+ * Preserves `REGULAR_AGENTS`' relative order (search-retrieval,
+ * coding-specialist, ux-ui-designer).
+ */
+export function workerAgentsForProject(isUefn: boolean): PackAgent[] {
+  const ids = isUefn
+    ? ["search-retrieval"]
+    : ["search-retrieval", "coding-specialist", "ux-ui-designer"];
+  return ids
+    .map((id) => REGULAR_AGENTS.find((a) => a.id === id))
+    .filter((a): a is PackAgent => a !== undefined);
+}

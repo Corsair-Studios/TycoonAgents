@@ -6,7 +6,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS } from "../src/host/vscode/packCatalog";
+import {
+  buildAgentMarkdown,
+  agentMarkdownTier,
+  agentMarkdownHasTycoonMarker,
+  REGULAR_AGENTS,
+  LEAD_AGENTS,
+  REVIEWER_AGENTS,
+  workerAgentsForProject,
+} from "../src/host/vscode/packCatalog";
 import { parseAgentMarkdown } from "../src/providers/claude-code/agentRoster";
 
 const agent = {
@@ -339,4 +347,52 @@ test("description is YAML-safe (JSON-quoted) even when role contains a colon and
   assert.equal(fm.description, trickyAgent.role, "description must round-trip exactly despite colons/quotes");
   // The raw frontmatter line itself must be a valid double-quoted YAML scalar.
   assert.ok(md.includes(`description: ${JSON.stringify(trickyAgent.role)}\n`));
+});
+
+// ---------------------------------------------------------------------------
+// workerAgentsForProject — trims the worker roster spawned by a project based
+// on whether it's a UEFN project (search-only) or a general project (search +
+// coding + design). Entries must be the real REGULAR_AGENTS objects, not
+// stubs, so model/keywords/role stay in sync with the roster of record.
+// ---------------------------------------------------------------------------
+
+test("workerAgentsForProject(true) returns exactly the search-retrieval agent", () => {
+  const result = workerAgentsForProject(true);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, "search-retrieval");
+});
+
+test("workerAgentsForProject(false) returns search-retrieval, coding-specialist, ux-ui-designer in that exact order", () => {
+  const result = workerAgentsForProject(false);
+  assert.equal(result.length, 3);
+  assert.deepEqual(
+    result.map((a) => a.id),
+    ["search-retrieval", "coding-specialist", "ux-ui-designer"]
+  );
+});
+
+test("workerAgentsForProject(true)'s search-retrieval entry carries model: haiku", () => {
+  const result = workerAgentsForProject(true);
+  assert.equal(result[0].model, "haiku");
+});
+
+test("workerAgentsForProject(false)'s entries carry the expected models (search-retrieval=haiku, others=sonnet)", () => {
+  const result = workerAgentsForProject(false);
+  const byId = new Map(result.map((a) => [a.id, a]));
+  assert.equal(byId.get("search-retrieval")!.model, "haiku");
+  assert.ok(byId.get("coding-specialist")!.model, "coding-specialist must have a truthy model");
+  assert.ok(byId.get("ux-ui-designer")!.model, "ux-ui-designer must have a truthy model");
+  assert.equal(byId.get("coding-specialist")!.model, "sonnet");
+  assert.equal(byId.get("ux-ui-designer")!.model, "sonnet");
+});
+
+test("workerAgentsForProject returns the real REGULAR_AGENTS objects (not stubs/clones)", () => {
+  for (const isUefn of [true, false]) {
+    const result = workerAgentsForProject(isUefn);
+    for (const returned of result) {
+      const canonical = REGULAR_AGENTS.find((a) => a.id === returned.id);
+      assert.ok(canonical, `${returned.id} must exist in REGULAR_AGENTS`);
+      assert.deepEqual(returned, canonical, `${returned.id} must match its REGULAR_AGENTS entry field-for-field`);
+    }
+  }
 });

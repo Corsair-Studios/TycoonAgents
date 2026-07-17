@@ -21,7 +21,7 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -293,6 +293,15 @@ export class TycoonPanel {
     // _ensureDelegationDoctrineCurrent doc comment) — fixes 0% delegation on
     // projects upgraded from a version that predates the doctrine.
     this._ensureDelegationDoctrineCurrent();
+
+    // Auto-heal a missing project-appropriate worker roster once per panel
+    // open (see _ensureWorkerAgentsInstalled doc comment) — fixes
+    // search-retrieval (and, for non-UEFN projects, coding-specialist +
+    // ux-ui-designer) never being installed, which left delegated work with
+    // no matching agent file to route to. Runs BEFORE
+    // _ensureAgentKeywordsSeeded so any newly created worker files get their
+    // keyword routing seeded in this same panel-load cycle.
+    this._ensureWorkerAgentsInstalled();
 
     // Auto-heal missing/empty agent-keywords.json entries once per panel
     // open (see _ensureAgentKeywordsSeeded doc comment) — fixes inert
@@ -3532,6 +3541,37 @@ export class TycoonPanel {
   }
 
   /**
+   * Auto-heal a missing project-appropriate worker roster once per panel
+   * open. Previously `search-retrieval` (and, for non-UEFN projects,
+   * `coding-specialist` + `ux-ui-designer`) had no install path outside a
+   * fresh `_handleInstallHooks` run, so a project that opted into
+   * TycoonAgents before this fix — or whose worker files were deleted —
+   * never got them, and delegated search/implementation work silently fell
+   * back to the synthetic fallback agent. Delegates the actual file-write
+   * decision to `_installWorkerAgents`, which is strictly create-if-absent
+   * (never overwrites a user's own or a UEFN pack's same-named agent).
+   *
+   * GATE: only runs when TycoonAgents hooks are already installed for this
+   * project ({@link _hooksInstalledForRoot} — the same consent proxy
+   * `_ensureAgentKeywordsSeeded` and `_ensureDelegationDoctrineCurrent`
+   * use), so a project that hasn't opted into TycoonAgents is never
+   * touched. Runs BEFORE `_ensureAgentKeywordsSeeded` in the constructor so
+   * any worker file created here gets its keyword routing seeded in the
+   * same panel-load cycle. Wrapped in try/catch so a failure here can never
+   * break panel construction/rendering.
+   */
+  private _ensureWorkerAgentsInstalled(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+      if (!this._hooksInstalledForRoot(root)) return;
+      this._installWorkerAgents(root);
+    } catch {
+      // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
    * Auto-heal: non-destructively reconcile `agent-keywords.json` against
    * the CURRENT `.claude/agents/*.md` roster on every panel open.
    *
@@ -3844,10 +3884,17 @@ export class TycoonPanel {
           this._installLeadAgents(root);
         }
 
+        // 7d2. Project-appropriate worker roster — always search-retrieval;
+        // for non-UEFN projects also coding-specialist + ux-ui-designer.
+        // Never overwrites an existing file (see _installWorkerAgents).
+        this._installWorkerAgents(root);
+
         // 7e. Reviewer agent file + keyword routing — installed by default,
         // regardless of delegation_mode (the Review pass composes with
-        // either base mode).
-        if (reviewEnabled) {
+        // either base mode), but skipped for UEFN projects: the UEFN pack
+        // brings its own uefn-auditor verification gate, and our reviewer
+        // would conflict with it.
+        if (reviewEnabled && !detectUefnProject(root).detected) {
           this._installReviewerAgent(root);
         }
       } catch (err) {
@@ -4011,6 +4058,39 @@ export class TycoonPanel {
    */
   private _removeLeadAgents(root: string): void {
     this._removeAgentFiles(root, LEAD_AGENTS, "lead");
+  }
+
+  /**
+   * Install the project-appropriate worker roster (see
+   * `workerAgentsForProject`): always `search-retrieval`; for non-UEFN
+   * projects also `coding-specialist` and `ux-ui-designer`. Unlike
+   * `_installAgentFiles` (which refreshes a file it recognizes as its own
+   * via a matching `tier:`), this is strictly create-if-absent — it NEVER
+   * overwrites an existing `.claude/agents/<id>.md`, whether that file is a
+   * user's own customization, a hand-authored dogfood copy, or a UEFN
+   * pack's same-named agent. Each file's create is independently
+   * try/caught so one failure never blocks the rest, and the method itself
+   * never throws.
+   */
+  private _installWorkerAgents(root: string): void {
+    try {
+      const isUefn = detectUefnProject(root).detected;
+      const agents = workerAgentsForProject(isUefn);
+      const agentsDir = path.join(root, ".claude", "agents");
+      for (const a of agents) {
+        try {
+          const agentPath = path.join(agentsDir, `${a.id}.md`);
+          if (!fs.existsSync(agentPath)) {
+            fs.mkdirSync(agentsDir, { recursive: true });
+            fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+          }
+        } catch {
+          /* best-effort per-file; never blocks the rest of the roster */
+        }
+      }
+    } catch {
+      /* best-effort roster install — this method must never throw. */
+    }
   }
 
   /**
