@@ -1,0 +1,247 @@
+// TycoonAgents standalone — unit tests for installHook.mjs (p3-t3).
+//
+// Covers: fresh install, idempotency (exactly one entry per slot on a
+// second run), non-destructive merge with unrelated existing settings,
+// corrupt settings.local.json producing a clean error without touching the
+// user's file, and the pure merge function's changed=false on a no-op pass.
+//
+// Everything runs against temp dirs created with fs.mkdtempSync — never the
+// real ~/.claude or this repo's own .claude/settings*.json.
+//
+// Node built-ins only (node:test, node:assert, node:fs, node:os, node:path).
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  installHook,
+  mergeHookIntoSettings,
+  defaultHookScriptPath,
+  InstallHookError,
+  TYCOON_HOOK_SLOTS,
+} from '../src/installHook.mjs';
+
+function mkTempDir(prefix = 'tycoon-standalone-installhook-') {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function readSettings(settingsPath) {
+  return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+}
+
+/** Counts how many hook command entries across the whole settings object
+ * equal `hookCommand` exactly — used to prove idempotency isn't just "the
+ * file didn't crash" but "there really is only one entry per slot". */
+function countHookCommand(settings, hookCommand) {
+  let count = 0;
+  const hooks = settings && settings.hooks;
+  if (!hooks || typeof hooks !== 'object') return count;
+  for (const event of Object.keys(hooks)) {
+    const entries = hooks[event];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const inner = entry && entry.hooks;
+      if (!Array.isArray(inner)) continue;
+      for (const h of inner) {
+        if (h && h.command === hookCommand) count++;
+      }
+    }
+  }
+  return count;
+}
+
+test('defaultHookScriptPath: resolves to the repo hooks/tycoon-claude-hook.cjs and it exists', () => {
+  const p = defaultHookScriptPath();
+  assert.ok(path.isAbsolute(p), 'must be an absolute path');
+  assert.ok(p.endsWith('tycoon-claude-hook.cjs'));
+  assert.ok(fs.existsSync(p), `expected hook script to exist at ${p}`);
+});
+
+test('installHook: fresh install into a project with no settings.local.json creates the entry', () => {
+  const dir = mkTempDir();
+  try {
+    const result = installHook(dir);
+    assert.equal(result.changed, true);
+    assert.ok(fs.existsSync(result.settingsPath));
+    const settings = readSettings(result.settingsPath);
+    assert.equal(countHookCommand(settings, result.hookCommand), TYCOON_HOOK_SLOTS.length);
+    // Sanity: it references the real repo hook script, not a copy.
+    assert.match(result.hookCommand, /tycoon-claude-hook\.cjs/);
+    assert.ok(fs.existsSync(defaultHookScriptPath()));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installHook: idempotent — running twice yields exactly one entry per slot, no error', () => {
+  const dir = mkTempDir();
+  try {
+    const first = installHook(dir);
+    assert.equal(first.changed, true);
+
+    const second = installHook(dir);
+    assert.equal(second.changed, false, 'second run should be a no-op');
+    assert.equal(second.settingsPath, first.settingsPath);
+
+    const settings = readSettings(second.settingsPath);
+    assert.equal(
+      countHookCommand(settings, second.hookCommand),
+      TYCOON_HOOK_SLOTS.length,
+      'must be exactly one entry per hook slot after two installs, not two',
+    );
+
+    // Run a third time for good measure.
+    const third = installHook(dir);
+    assert.equal(third.changed, false);
+    const settings3 = readSettings(third.settingsPath);
+    assert.equal(countHookCommand(settings3, third.hookCommand), TYCOON_HOOK_SLOTS.length);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installHook: preserves unrelated existing keys and unrelated hooks in settings.local.json', () => {
+  const dir = mkTempDir();
+  try {
+    const claudeDir = path.join(dir, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const settingsPath = path.join(claudeDir, 'settings.local.json');
+    const preexisting = {
+      someUnrelatedTopLevelKey: 'keep-me',
+      permissions: { allow: ['Bash(npm test)'] },
+      hooks: {
+        Stop: [
+          {
+            matcher: '',
+            hooks: [{ type: 'command', command: 'node "some-other-tool.cjs"' }],
+          },
+        ],
+      },
+    };
+    fs.writeFileSync(settingsPath, JSON.stringify(preexisting, null, 2), 'utf8');
+
+    const result = installHook(dir);
+    assert.equal(result.changed, true);
+
+    const settings = readSettings(result.settingsPath);
+    assert.equal(settings.someUnrelatedTopLevelKey, 'keep-me');
+    assert.deepEqual(settings.permissions, { allow: ['Bash(npm test)'] });
+
+    // The unrelated Stop hook is still there alongside ours. Note: a
+    // pre-existing entry that shares our matcher but does NOT yet reference
+    // our hook gets a SEPARATE sibling entry with the same matcher (mirrors
+    // hookInstall.ts's mergeTycoonHooks exactly — it never merges into an
+    // existing non-ours entry, it appends), so we scan every entry for that
+    // matcher rather than assuming a single one.
+    const stopEntries = settings.hooks.Stop.filter((e) => e.matcher === '');
+    const commands = stopEntries.flatMap((e) => e.hooks.map((h) => h.command));
+    assert.ok(commands.includes('node "some-other-tool.cjs"'), 'unrelated hook must survive');
+    assert.ok(
+      commands.some((c) => c.includes('tycoon-claude-hook.cjs')),
+      'our hook must be added',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installHook: corrupt settings.local.json throws a clear error and does NOT modify the file', () => {
+  const dir = mkTempDir();
+  try {
+    const claudeDir = path.join(dir, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const settingsPath = path.join(claudeDir, 'settings.local.json');
+    const corrupt = '{ "hooks": { this is not valid JSON';
+    fs.writeFileSync(settingsPath, corrupt, 'utf8');
+
+    assert.throws(
+      () => installHook(dir),
+      (err) => {
+        assert.ok(err instanceof InstallHookError, 'must throw InstallHookError');
+        assert.match(err.message, /not valid JSON|not a JSON object/i);
+        assert.ok(err.message.includes(settingsPath), 'message should name the offending file');
+        return true;
+      },
+    );
+
+    // The user's corrupt file must be left byte-for-byte untouched.
+    const after = fs.readFileSync(settingsPath, 'utf8');
+    assert.equal(after, corrupt);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installHook: settings.local.json that parses but is not a JSON object (e.g. an array) throws cleanly', () => {
+  const dir = mkTempDir();
+  try {
+    const claudeDir = path.join(dir, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const settingsPath = path.join(claudeDir, 'settings.local.json');
+    const original = '[1, 2, 3]';
+    fs.writeFileSync(settingsPath, original, 'utf8');
+
+    assert.throws(() => installHook(dir), InstallHookError);
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), original);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installHook: nonexistent target directory throws InstallHookError naming the path', () => {
+  const missing = path.join(os.tmpdir(), 'tycoon-standalone-installhook-missing-' + Date.now());
+  assert.throws(
+    () => installHook(missing),
+    (err) => {
+      assert.ok(err instanceof InstallHookError);
+      assert.ok(err.message.includes(missing));
+      return true;
+    },
+  );
+});
+
+test('installHook: a file instead of a directory throws InstallHookError', () => {
+  const dir = mkTempDir();
+  const filePath = path.join(dir, 'not-a-directory.txt');
+  fs.writeFileSync(filePath, 'hello', 'utf8');
+  try {
+    assert.throws(() => installHook(filePath), InstallHookError);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Pure mergeHookIntoSettings — no fs at all.
+// ---------------------------------------------------------------------------
+
+// Note: the command string here MUST include the literal marker
+// "tycoon-claude-hook.cjs" (same as production hookCommand values) since
+// that substring is exactly what mergeHookIntoSettings uses to recognize an
+// existing entry as "already ours" — see HOOK_MARKER in installHook.mjs.
+
+test('mergeHookIntoSettings: fresh {} produces one entry per slot and changed=true', () => {
+  const hookCommand = 'node "/abs/tycoon-claude-hook.cjs"';
+  const { settings, changed } = mergeHookIntoSettings({}, hookCommand);
+  assert.equal(changed, true);
+  assert.equal(countHookCommand(settings, hookCommand), TYCOON_HOOK_SLOTS.length);
+});
+
+test('mergeHookIntoSettings: applying twice in a row — second call is changed=false and identical output', () => {
+  const hookCommand = 'node "/abs/tycoon-claude-hook.cjs"';
+  const first = mergeHookIntoSettings({}, hookCommand);
+  assert.equal(first.changed, true);
+
+  const second = mergeHookIntoSettings(first.settings, hookCommand);
+  assert.equal(second.changed, false, 'merging an already-merged settings object must be a no-op');
+  assert.deepEqual(second.settings, first.settings);
+});
+
+test('mergeHookIntoSettings: does not mutate the input object', () => {
+  const input = { hooks: { Stop: [{ matcher: '', hooks: [] }] } };
+  const snapshot = JSON.parse(JSON.stringify(input));
+  mergeHookIntoSettings(input, 'node "/abs/tycoon-claude-hook.cjs"');
+  assert.deepEqual(input, snapshot, 'input settings object must not be mutated');
+});

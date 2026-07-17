@@ -11,6 +11,7 @@ out/**/*.test.js
 out/**/*.test.js.map
 docs/**
 design-doc/**
+standalone/**
 scale-references/**
 .claude/**
 CLAUDE.md
