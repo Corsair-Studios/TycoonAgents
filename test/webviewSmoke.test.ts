@@ -678,6 +678,85 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.equal(checked.value, 'team_leads', 'radio selection must reflect the payload mode');
       assertNoErrors('delegation-chooser-visibility');
     });
+
+    // ── Step 11: Archived Plans section (0.0.340+) ───────────────────────────
+    // PLAN_STATE now carries archivedPlans; the webview must render a
+    // titled, read-only section listing each entry when non-empty, and
+    // render NOTHING (no section at all) when the array is empty.
+    await t.test('11. archived plans: section renders on non-empty, absent on empty', async () => {
+      dispatch({
+        type: 'PLAN_STATE',
+        enabled: true,
+        plan: null,
+        archivedPlans: [
+          {
+            id: 'archived-1',
+            title: 'First <Plan> & "Co"',
+            phaseCount: 3,
+            taskCount: 10,
+            doneCount: 9,
+            skippedCount: 1,
+            archivedAt: Date.parse('2026-01-05T12:00:00Z'),
+          },
+          {
+            id: 'archived-2',
+            title: 'Second Plan',
+            phaseCount: 5,
+            taskCount: 16,
+            doneCount: 16,
+            skippedCount: 0,
+            archivedAt: Date.parse('2026-02-10T08:30:00Z'),
+          },
+        ],
+      });
+      tick(2);
+      await flush();
+      assertNoErrors('archived-plans-nonempty');
+
+      const body = doc.getElementById('project-plan-body');
+      assert.ok(body, 'project-plan-body should exist');
+      const section = body.querySelector('.plan-archived-section');
+      assert.ok(section, 'Archived Plans section should render when archivedPlans is non-empty');
+      const heading = section.querySelector('.plan-archived-heading');
+      assert.equal(heading && heading.textContent, 'Archived Plans');
+      const rows = section.querySelectorAll('.plan-archived-row');
+      assert.equal(rows.length, 2, 'both archived entries should render');
+      const titles = [...rows].map((r: any) => r.querySelector('.plan-archived-title').textContent);
+      assert.deepEqual(titles, ['First <Plan> & "Co"', 'Second Plan'], 'titles render via textContent (safe with < & " chars) in received order');
+      const metas = [...rows].map((r: any) => r.querySelector('.plan-archived-meta').textContent);
+      assert.ok(metas[0].includes('3 phases'), 'summary should include phase count');
+      assert.ok(metas[0].includes('10 tasks'), 'summary should include task count');
+      assert.ok(metas[0].includes('9 done'), 'summary should include done count');
+      assert.ok(metas[0].includes('1 skipped'), 'skipped clause included when skippedCount > 0');
+      assert.ok(!metas[1].includes('skipped'), 'skipped clause omitted when skippedCount === 0');
+      // No raw "<" survived into the DOM as markup — the row has exactly one
+      // child element carrying the title text, proving textContent (not
+      // innerHTML) was used.
+      assert.equal(rows[0].querySelector('.plan-archived-title').children.length, 0);
+
+      // Empty archivedPlans -> section must be entirely absent.
+      dispatch({ type: 'PLAN_STATE', enabled: true, plan: null, archivedPlans: [] });
+      tick(2);
+      await flush();
+      assertNoErrors('archived-plans-empty');
+      assert.equal(
+        doc.getElementById('project-plan-body').querySelector('.plan-archived-section'),
+        null,
+        'Archived Plans section must be absent when archivedPlans is empty'
+      );
+
+      // Defensive: a PLAN_STATE with archivedPlans omitted entirely (e.g. a
+      // standalone host) must default to [] and must not throw.
+      dispatch({ type: 'PLAN_STATE', enabled: true, plan: null });
+      tick(2);
+      await flush();
+      assertNoErrors('archived-plans-omitted-field');
+      assert.equal(
+        doc.getElementById('project-plan-body').querySelector('.plan-archived-section'),
+        null,
+        'Archived Plans section must be absent when archivedPlans is omitted from the message'
+      );
+    });
   } finally {
     process.removeListener('unhandledRejection', onRejection);
     dom.window.close();

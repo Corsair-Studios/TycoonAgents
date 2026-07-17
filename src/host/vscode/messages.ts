@@ -5,7 +5,7 @@
  */
 
 import { z } from "zod";
-import { ProjectPlanSchema } from "./projectPlan";
+import { ArchivedPlanSummarySchema, ProjectPlanSchema } from "./projectPlan";
 
 /**
  * Single source of truth for the webview<->host `message.type` wire strings
@@ -434,9 +434,17 @@ export const MSG_SCHEMAS = {
 
   // `enabled` mirrors the projectPlanEnabled toggle so the webview always
   // knows whether to show the Project Plan section, even when `plan` is
-  // null (feature off, or on with no plan.json yet).
+  // null (feature off, or on with no plan.json yet). `archivedPlans`
+  // (0.0.340+) lists every completed-and-approved plan snapshot archived
+  // under .claude/tycoon/plans/ — the webview only shows an "Archived
+  // Plans" section when this array is non-empty; always `[]`, never
+  // omitted, when disabled/no-root.
   PLAN_STATE: z
-    .object({ plan: ProjectPlanSchema.nullable(), enabled: z.boolean() })
+    .object({
+      plan: ProjectPlanSchema.nullable(),
+      enabled: z.boolean(),
+      archivedPlans: z.array(ArchivedPlanSummarySchema),
+    })
     .passthrough(),
 
   SET_PROJECT_PLAN_ENABLED: z.object({ enabled: z.boolean() }).passthrough(),

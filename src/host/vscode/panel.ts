@@ -88,7 +88,14 @@ import {
   saveThemeImageSettings,
 } from "../../extension/themeImageSettings";
 import { MSG, MSG_SCHEMAS } from "./messages";
-import { readPlan, writePlan, approvePhase, overrideTask } from "./projectPlan";
+import {
+  readPlan,
+  writePlan,
+  approvePhase,
+  overrideTask,
+  archivePlanIfComplete,
+  readArchivedPlans,
+} from "./projectPlan";
 import { buildDiagnosticReport, type DiagnosticReportInput } from "./diagnosticReport";
 
 /**
@@ -1600,7 +1607,7 @@ export class TycoonPanel {
         } else if (message.type === MSG.APPROVE_PHASE) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null, archivedPlans: [] });
             return;
           }
           const parsedApprovePhase = MSG_SCHEMAS.APPROVE_PHASE.safeParse(message);
@@ -1611,16 +1618,27 @@ export class TycoonPanel {
           const planPath = projectPlanFilePath(root);
           const currentPlan = readPlan(planPath);
           if (!currentPlan) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan: null });
+            void this._panel.webview.postMessage({
+              type: MSG.PLAN_STATE,
+              enabled: true,
+              plan: null,
+              archivedPlans: readArchivedPlans(root),
+            });
             return;
           }
           const updatedPlan = approvePhase(currentPlan, parsedApprovePhase.data.phaseId);
           writePlan(planPath, updatedPlan);
-          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan: updatedPlan });
+          archivePlanIfComplete(root, updatedPlan);
+          void this._panel.webview.postMessage({
+            type: MSG.PLAN_STATE,
+            enabled: true,
+            plan: updatedPlan,
+            archivedPlans: readArchivedPlans(root),
+          });
         } else if (message.type === MSG.OVERRIDE_TASK) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null, archivedPlans: [] });
             return;
           }
           const parsedOverrideTask = MSG_SCHEMAS.OVERRIDE_TASK.safeParse(message);
@@ -1631,7 +1649,12 @@ export class TycoonPanel {
           const planPath = projectPlanFilePath(root);
           const currentPlan = readPlan(planPath);
           if (!currentPlan) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan: null });
+            void this._panel.webview.postMessage({
+              type: MSG.PLAN_STATE,
+              enabled: true,
+              plan: null,
+              archivedPlans: readArchivedPlans(root),
+            });
             return;
           }
           const updatedPlan = overrideTask(
@@ -1640,7 +1663,13 @@ export class TycoonPanel {
             parsedOverrideTask.data.action
           );
           writePlan(planPath, updatedPlan);
-          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan: updatedPlan });
+          archivePlanIfComplete(root, updatedPlan);
+          void this._panel.webview.postMessage({
+            type: MSG.PLAN_STATE,
+            enabled: true,
+            plan: updatedPlan,
+            archivedPlans: readArchivedPlans(root),
+          });
         } else if (message.type === MSG.SET_PROJECT_PLAN_ENABLED) {
           // Settings-screen toggle: persist the opt-in flag, then re-post
           // PLAN_STATE with the fresh enabled value so the webview can show
@@ -1652,13 +1681,14 @@ export class TycoonPanel {
           }
           const root = this._projectRoot();
           if (root === "") {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
+            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null, archivedPlans: [] });
             return;
           }
           writeProjectPlanEnabled(root, parsedSetPlanEnabled.data.enabled);
           const enabled = readProjectPlanEnabled(root);
           const plan = enabled ? readPlan(projectPlanFilePath(root)) : null;
-          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled, plan });
+          const archivedPlans = enabled ? readArchivedPlans(root) : [];
+          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled, plan, archivedPlans });
         }
       },
       null,
@@ -4986,15 +5016,27 @@ export class TycoonPanel {
    * to the webview as PLAN_STATE. Shared by the REQUEST_PLAN handler (fires
    * once at webview boot) and the plan file watcher (fires on every
    * subsequent on-disk change), so both paths compute state identically.
+   *
+   * 0.0.340+: also auto-archives a snapshot when the plan is complete AND
+   * fully approved (see `archivePlanIfComplete` — idempotent, keyed by a
+   * content fingerprint so re-posting the same completed plan never creates
+   * duplicate archive files), then reads back every archived plan summary
+   * so the webview can render an "Archived Plans" section. Because this
+   * archiving happens INSIDE _postPlanState, the plan.json write that makes
+   * a plan complete-approved is picked up automatically via
+   * `_setupPlanWatcher`'s existing debounced repost — no separate watcher
+   * on plans/ is needed.
    */
   private _postPlanState(): void {
     const root = this._projectRoot();
     if (root === "" || !readProjectPlanEnabled(root)) {
-      void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null });
+      void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null, archivedPlans: [] });
       return;
     }
     const plan = readPlan(projectPlanFilePath(root));
-    void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan });
+    if (plan) archivePlanIfComplete(root, plan);
+    const archivedPlans = readArchivedPlans(root);
+    void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan, archivedPlans });
   }
 
   /**

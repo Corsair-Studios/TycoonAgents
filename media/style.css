@@ -2508,6 +2508,54 @@ tr.metrics-row--child td.col-name {
   gap: 8px;
 }
 
+/* Archived Plans (0.0.340+): read-only list of completed-and-approved plan
+   snapshots. Section is absent entirely (no DOM) when there are none — see
+   renderArchivedPlansSection in media/main.js — so no [hidden]/display rule
+   is needed here. */
+.plan-archived-section {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-archived-heading {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.plan-archived-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-archived-row {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.plan-archived-title {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.plan-archived-meta {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .plan-phase--locked {
   opacity: 0.6;
 }

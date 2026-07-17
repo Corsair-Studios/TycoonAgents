@@ -143,6 +143,8 @@
   let projectPlanEnabled = false;
   /** Last plan snapshot from PLAN_STATE.plan (null = feature off, or on with no plan.json yet). @type {null|{version:number,title:string,phases:Array<Object>,tasks:Array<Object>,currentPhaseId:(string|null),currentTaskId:(string|null)}} */
   let currentProjectPlan = null;
+  /** Completed-and-approved plans the host has archived (PLAN_STATE.archivedPlans, 0.0.340+), newest-first as sent — never re-sorted here. Always an array (host sends [] when disabled/no-root/none archived yet); defensively defaulted again on receipt in case a standalone host omits the field. @type {Array<{id:string,title:string,phaseCount:number,taskCount:number,doneCount:number,skippedCount:number,archivedAt:number}>} */
+  let currentArchivedPlans = [];
   /** Which tab is visible in the metrics panel: "metrics" (default) or "plan". Only meaningful while projectPlanEnabled is true. Restored from webview state so it survives reloads. */
   let activeMetricsTab = "metrics";
   /** Reference to the Settings screen's Project Plan checkbox, kept live so a PLAN_STATE update can sync its checked state without a full renderSettings() re-render. */
@@ -351,6 +353,7 @@
       empty.className = "plan-empty";
       empty.textContent = "No plan yet — generate one with the project-plan skill.";
       projectPlanBodyEl.appendChild(empty);
+      renderArchivedPlansSection();
       syncProjectPlanBodyHeight();
       return;
     }
@@ -446,7 +449,70 @@
       projectPlanBodyEl.appendChild(footer);
     }
 
+    renderArchivedPlansSection();
     syncProjectPlanBodyHeight();
+  }
+
+  /** Format an ArchivedPlanSummary.archivedAt (epoch ms, possibly fractional) as a compact local date + time string. Returns "" for a missing/invalid value so a malformed entry degrades to just its summary line instead of throwing or printing "Invalid Date". */
+  function formatArchivedPlanDate(archivedAt) {
+    const ms = typeof archivedAt === "number" ? archivedAt : Number(archivedAt);
+    if (!Number.isFinite(ms)) return "";
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return "";
+    const datePart = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const timePart = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return `${datePart} ${timePart}`;
+  }
+
+  /** Compact "N phases · N tasks · N done[ · N skipped]" summary for one archived plan entry. The skipped clause is omitted entirely when skippedCount is 0 (per spec — don't clutter the common all-done case). */
+  function formatArchivedPlanSummary(entry) {
+    const phaseCount = Number(entry.phaseCount) || 0;
+    const taskCount = Number(entry.taskCount) || 0;
+    const doneCount = Number(entry.doneCount) || 0;
+    const skippedCount = Number(entry.skippedCount) || 0;
+    let summary = `${phaseCount} phase${phaseCount === 1 ? "" : "s"} · ${taskCount} task${taskCount === 1 ? "" : "s"} · ${doneCount} done`;
+    if (skippedCount > 0) summary += ` · ${skippedCount} skipped`;
+    return summary;
+  }
+
+  /** Append the read-only "Archived Plans" section (PLAN_STATE.archivedPlans, 0.0.340+) to projectPlanBodyEl. Renders NOTHING (no heading, no container) when the list is empty, so the plan tab is visually unchanged for every project until its first plan is archived. Entries are rendered in the order received (host already sorts newest-first) — never re-sorted or reversed here. Must be called only from renderProjectPlanSection(), after projectPlanBodyEl.innerHTML has been cleared for this render pass and while projectPlanEnabled is true. */
+  function renderArchivedPlansSection() {
+    if (!projectPlanBodyEl) return;
+    const archived = Array.isArray(currentArchivedPlans) ? currentArchivedPlans : [];
+    if (archived.length === 0) return;
+
+    const section = document.createElement("div");
+    section.className = "plan-archived-section";
+
+    const heading = document.createElement("div");
+    heading.className = "plan-archived-heading";
+    heading.textContent = "Archived Plans";
+    section.appendChild(heading);
+
+    const list = document.createElement("div");
+    list.className = "plan-archived-list";
+    for (const entry of archived) {
+      if (!entry) continue;
+      const row = document.createElement("div");
+      row.className = "plan-archived-row";
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "plan-archived-title";
+      // textContent only — never innerHTML — so a title containing "<"/"&" can't break rendering.
+      titleEl.textContent = entry.title != null ? String(entry.title) : "Untitled plan";
+      row.appendChild(titleEl);
+
+      const metaEl = document.createElement("div");
+      metaEl.className = "plan-archived-meta";
+      const dateStr = formatArchivedPlanDate(entry.archivedAt);
+      const summaryStr = formatArchivedPlanSummary(entry);
+      metaEl.textContent = dateStr ? `${dateStr} · ${summaryStr}` : summaryStr;
+      row.appendChild(metaEl);
+
+      list.appendChild(row);
+    }
+    section.appendChild(list);
+    projectPlanBodyEl.appendChild(section);
   }
 
   /** Sync the Settings-screen checkbox (if currently rendered) to projectPlanEnabled. */
@@ -8167,6 +8233,7 @@
       // plan.json generated yet.
       projectPlanEnabled = Boolean(msg.enabled);
       currentProjectPlan = msg.plan || null;
+      currentArchivedPlans = Array.isArray(msg.archivedPlans) ? msg.archivedPlans : [];
       syncProjectPlanSettingsToggle();
       renderProjectPlanSection();
     }
