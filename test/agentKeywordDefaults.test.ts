@@ -11,6 +11,7 @@ import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
   reconcileAgentKeywords,
+  migrateSupersededKeywords,
   type ReconcileAgentInput,
 } from "../src/host/vscode/agentKeywordDefaults";
 
@@ -322,4 +323,78 @@ test("reconcileAgentKeywords added entry shape is exactly { pattern }", () => {
   const { config: out } = reconcileAgentKeywords(config, agents, {});
   assert.deepEqual(Object.keys(out.agents["new-agent"]), ["pattern"]);
   assert.equal(out.agents["new-agent"].pattern, "only|these|keywords");
+});
+
+// ---------------------------------------------------------------------------
+// migrateSupersededKeywords()
+// ---------------------------------------------------------------------------
+
+test("migrateSupersededKeywords bumps a known-prior quality-lead default forward to current", () => {
+  const config = {
+    agents: {
+      "quality-lead": { pattern: "quality|verify|test plan|acceptance|audit" },
+    },
+  };
+  const { config: out, changed } = migrateSupersededKeywords(config);
+  assert.equal(changed, true);
+  assert.equal(out.agents["quality-lead"].pattern, DEFAULT_AGENT_KEYWORDS["quality-lead"]);
+});
+
+test("migrateSupersededKeywords bumps a known-prior reviewer default forward to current", () => {
+  const config = {
+    agents: {
+      reviewer: { pattern: "review|verify|approve|correctness|quality|regression" },
+    },
+  };
+  const { config: out, changed } = migrateSupersededKeywords(config);
+  assert.equal(changed, true);
+  assert.equal(out.agents["reviewer"].pattern, DEFAULT_AGENT_KEYWORDS["reviewer"]);
+});
+
+test("migrateSupersededKeywords leaves a user's custom pattern untouched", () => {
+  const config = {
+    agents: {
+      "quality-lead": { pattern: "my-custom-quality-pattern" },
+      reviewer: { pattern: "my-custom-reviewer-pattern" },
+    },
+  };
+  const { config: out, changed } = migrateSupersededKeywords(config);
+  assert.equal(changed, false);
+  assert.equal(out.agents["quality-lead"].pattern, "my-custom-quality-pattern");
+  assert.equal(out.agents["reviewer"].pattern, "my-custom-reviewer-pattern");
+});
+
+test("migrateSupersededKeywords is a no-op when patterns are already current", () => {
+  const config = {
+    agents: {
+      "quality-lead": { pattern: DEFAULT_AGENT_KEYWORDS["quality-lead"] },
+      reviewer: { pattern: DEFAULT_AGENT_KEYWORDS["reviewer"] },
+    },
+  };
+  const { config: out, changed } = migrateSupersededKeywords(config);
+  assert.equal(changed, false);
+  assert.equal(out, config);
+});
+
+test("migrateSupersededKeywords is idempotent across a second pass", () => {
+  const config = {
+    agents: {
+      "quality-lead": { pattern: "quality|verify|test plan|acceptance|audit" },
+      reviewer: { pattern: "review|verify|approve|correctness|quality|regression" },
+    },
+  };
+  const first = migrateSupersededKeywords(config);
+  assert.equal(first.changed, true);
+
+  const second = migrateSupersededKeywords(first.config);
+  assert.equal(second.changed, false);
+  assert.deepEqual(second.config, first.config);
+});
+
+test("migrateSupersededKeywords ignores an id absent from the config and does not mutate the input", () => {
+  const config = { agents: { "coding-specialist": { pattern: "existing" } } };
+  const clonedBefore = structuredClone(config);
+  const { changed } = migrateSupersededKeywords(config);
+  assert.equal(changed, false);
+  assert.deepEqual(config, clonedBefore, "input must not be mutated");
 });

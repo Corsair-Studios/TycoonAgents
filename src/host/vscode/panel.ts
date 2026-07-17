@@ -22,7 +22,12 @@ import {
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
 import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
-import { seedMissingAgentKeywords, parseAgentKeywords, reconcileAgentKeywords } from "./agentKeywordDefaults";
+import {
+  seedMissingAgentKeywords,
+  parseAgentKeywords,
+  reconcileAgentKeywords,
+  migrateSupersededKeywords,
+} from "./agentKeywordDefaults";
 import {
   renderDelegationDoctrine,
   upsertDelegationSection,
@@ -294,6 +299,13 @@ export class TycoonPanel {
     // `kw1|kw2|kw3` placeholders on projects whose roster was never
     // registered for keyword routing.
     this._ensureAgentKeywordsSeeded();
+
+    // Auto-heal a stale on-disk hook script once per panel open (see
+    // _ensureHookScriptFresh doc comment) — fixes a project's
+    // tycoon-claude-hook.cjs never picking up an extension update because
+    // it previously only ever refreshed on an explicit "Install hooks"
+    // click.
+    this._ensureHookScriptFresh();
 
     this._update();
 
@@ -3587,11 +3599,69 @@ export class TycoonPanel {
       );
       cfg = seeded;
 
-      if (dropped.length === 0 && added.length === 0 && !seedChanged) return;
+      // Bump only PROVABLY-stale fossilized defaults (e.g. an older
+      // quality-lead/reviewer pattern) forward — never touches a user's
+      // customization (see migrateSupersededKeywords doc comment). Runs
+      // last so it only ever sees entries the reconcile/seed passes above
+      // left alone (both of those already refuse to overwrite anything).
+      const { config: migrated, changed: migrateChanged } = migrateSupersededKeywords(cfg);
+      cfg = migrated;
+
+      if (dropped.length === 0 && added.length === 0 && !seedChanged && !migrateChanged) return;
 
       const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
       fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
       fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+    } catch {
+      // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
+   * Auto-heal: refresh `.claude/tycoon/tycoon-claude-hook.cjs` from the
+   * extension's currently-bundled copy on every panel open.
+   *
+   * WHY: `_handleInstallHooks` (the only other writer of this file) only
+   * runs on an explicit "Install hooks"/"Repair" click — updating the
+   * extension itself never touches an already-installed project's on-disk
+   * hook script. A real project ended up running the current extension
+   * against a stale hook file missing newer code because of exactly this
+   * gap. This closes it the same way `_ensureDelegationDoctrineCurrent`
+   * closes the equivalent gap for CLAUDE.md.
+   *
+   * Rules:
+   * - Never creates the file — if `dest` doesn't already exist, the
+   *   project hasn't opted into TycoonAgents' hooks (or is mid-setup) and
+   *   is left untouched, same opt-in guarantee `_ensureAgentKeywordsSeeded`
+   *   preserves via `_hooksInstalledForRoot`.
+   * - Only overwrites when the bundled source differs from what's on
+   *   disk — an already-current file is left alone (no-op write, no
+   *   mtime churn). The hook script is a single opaque bundled file with
+   *   no supported user-editable region (unlike the CLAUDE.md doctrine
+   *   section, which is template-rendered/reconciled), so "differs from
+   *   bundled" is always treated as staleness to refresh forward.
+   * - Wrapped in try/catch so a failure here can never break panel
+   *   construction/rendering.
+   */
+  private _ensureHookScriptFresh(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+
+      const dest = path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs");
+      if (!fs.existsSync(dest)) return; // never auto-create — opt-in preserved
+
+      const src = vscode.Uri.joinPath(
+        this._extensionUri,
+        "hooks",
+        "tycoon-claude-hook.cjs"
+      ).fsPath;
+
+      const srcContent = fs.readFileSync(src, "utf8");
+      const destContent = fs.readFileSync(dest, "utf8");
+      if (srcContent === destContent) return; // already current
+
+      fs.writeFileSync(dest, srcContent);
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }

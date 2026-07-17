@@ -216,3 +216,92 @@ export function reconcileAgentKeywords(
     added,
   };
 }
+
+/**
+ * Known-prior default keyword patterns TycoonAgents used to ship, keyed by
+ * agent id, for ids whose `DEFAULT_AGENT_KEYWORDS` value has since changed.
+ * `reconcileAgentKeywords`/`seedMissingAgentKeywords` deliberately never
+ * overwrite an existing non-empty entry, so a project seeded under an older
+ * version stays pinned to a stale default forever — this table is the
+ * allowlist {@link migrateSupersededKeywords} uses to prove a value is a
+ * fossilized OLD default (safe to bump forward) rather than a user's own
+ * customization (never touched).
+ *
+ * Current known supersessions (both dropped a token that could never match
+ * — "test plan" is multi-word, the routing matcher only ever compares
+ * single words; "verify"/"quality" on `reviewer` collided with
+ * `quality-lead`'s tokens):
+ * - `quality-lead`: prior `"quality|verify|test plan|acceptance|audit"` ->
+ *   current `DEFAULT_AGENT_KEYWORDS["quality-lead"]`
+ *   (`"quality|verify|acceptance|audit"`, see `LEAD_AGENTS` in
+ *   `./packCatalog`).
+ * - `reviewer`: prior `"review|verify|approve|correctness|quality|regression"`
+ *   -> current `DEFAULT_AGENT_KEYWORDS["reviewer"]`
+ *   (`"review|approve|correctness|regression"`, see `REVIEWER_AGENTS` in
+ *   `./packCatalog`).
+ *
+ * Add a new entry here whenever a shipped default pattern changes, so an
+ * existing installed project can migrate forward instead of staying pinned
+ * to the value it happened to be seeded with.
+ */
+const SUPERSEDED_DEFAULT_KEYWORDS: Record<string, string[]> = {
+  "quality-lead": ["quality|verify|test plan|acceptance|audit"],
+  reviewer: ["review|verify|approve|correctness|quality|regression"],
+};
+
+/**
+ * Bump ONLY provably-stale default keyword patterns forward to the current
+ * default, for the small set of managed lead/reviewer agent ids in
+ * {@link SUPERSEDED_DEFAULT_KEYWORDS}. This exists because
+ * `reconcileAgentKeywords`/`seedMissingAgentKeywords` never overwrite an
+ * existing entry (by design — preserving a user's customization always
+ * wins), which means a project seeded under an older version keeps a
+ * fossilized default forever with no path forward.
+ *
+ * An id's entry is migrated only when its `pattern` is an EXACT match for
+ * one of that id's known prior defaults AND differs from the current
+ * default — any other value (a user's custom pattern, a pattern that's
+ * already current, or a pattern that doesn't match any known-prior value)
+ * is left completely untouched. Pure (no fs/vscode), deterministic, and
+ * idempotent: a second pass finds every migrated entry already equal to
+ * its current default and changes nothing.
+ *
+ * Returns the (possibly new) config object and a `changed` flag so callers
+ * can skip an unnecessary file write, matching the calling convention of
+ * `seedMissingAgentKeywords`/`reconcileAgentKeywords`.
+ */
+export function migrateSupersededKeywords(
+  config: Record<string, any>,
+  defaults: Record<string, string> = DEFAULT_AGENT_KEYWORDS
+): { config: Record<string, any>; changed: boolean } {
+  const safeConfig: Record<string, any> =
+    config !== null && typeof config === "object" ? config : {};
+  const existingAgents: Record<string, any> =
+    typeof safeConfig.agents === "object" && safeConfig.agents !== null ? safeConfig.agents : {};
+
+  let nextAgents = existingAgents;
+  let changed = false;
+
+  for (const id of Object.keys(SUPERSEDED_DEFAULT_KEYWORDS)) {
+    const entry = existingAgents[id];
+    if (!entry || typeof entry.pattern !== "string") continue;
+
+    const currentDefault = defaults[id];
+    if (currentDefault === undefined || entry.pattern === currentDefault) continue; // no default, or already current
+
+    const priorPatterns = SUPERSEDED_DEFAULT_KEYWORDS[id];
+    if (!priorPatterns.includes(entry.pattern)) continue; // not a known-prior default -> leave untouched (custom value)
+
+    if (nextAgents === existingAgents) {
+      nextAgents = { ...existingAgents };
+    }
+    nextAgents[id] = { ...entry, pattern: currentDefault };
+    changed = true;
+  }
+
+  if (!changed) {
+    return { config: safeConfig, changed: false };
+  }
+
+  return { config: { ...safeConfig, agents: nextAgents }, changed: true };
+}

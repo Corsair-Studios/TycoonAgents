@@ -10378,6 +10378,15 @@
         const hint = kws.length ? kws.join(", ") : "general tasks";
         lines.push(`• ${agent.name || agent.id} (${modelLabel}) → ${hint}`);
       }
+      const searchTerms = ["search", "find", "grep", "glob", "look", "where", "locate", "explore"];
+      const hasSearchAgent = agents.some((agent) => {
+        if (agent.id === "search-retrieval") return true;
+        const kwText = (agent.keywords || "").toLowerCase();
+        return searchTerms.some((term) => kwText.includes(term));
+      });
+      if (!hasSearchAgent) {
+        lines.push("• Search / find / grep → search-retrieval (Explore · Haiku, ~40x cheaper)");
+      }
       lines.push("");
       lines.push("Keep direct: reading known files, coordination, and talking to you.");
       const unconfiguredAgents = unconfiguredKeywordAgents();
