@@ -2795,6 +2795,19 @@ tr.metrics-row--child td.col-name {
   line-height: 1.5;
 }
 
+/* Advisory-only "may be stalled" note on an active task card, driven purely
+   by a deterministic last-activity timestamp (no AI). Warning tone, not an
+   error — the task's Retry/Skip/Approve buttons remain fully usable. */
+.plan-stall-note {
+  margin-top: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700);
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 10%, transparent);
+}
+
 .plan-task-actions {
   display: flex;
   gap: 6px;

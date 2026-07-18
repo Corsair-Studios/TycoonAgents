@@ -155,6 +155,10 @@
   let activeMetricsTab = "metrics";
   /** Reference to the Settings screen's Project Plan checkbox, kept live so a PLAN_STATE update can sync its checked state without a full renderSettings() re-render. */
   let projectPlanCheckboxEl = null;
+  /** Advisory-only threshold (ms): how long with no agent activity before the active task card shows a "may be stalled" note. Deterministic, no AI involved — purely a staleness signal off state.lastActivityAt. */
+  const STALL_MS = 5 * 60 * 1000;
+  /** Last computed isPlanStalled() result, used by the 1s ticker to re-render the plan section only when the stall state actually flips (not every tick). */
+  let lastPlanStallState = false;
 
   (function restoreActiveMetricsTab() {
     const saved = vscode.getState();
@@ -270,6 +274,21 @@
     return btn;
   }
 
+  /** Deterministic (no AI) advisory check: true only when the plan is on, readable, has an active task, and the host-reported state.lastActivityAt is older than STALL_MS. Guards every access so a malformed/older-host state can never throw. */
+  function isPlanStalled() {
+    try {
+      if (!projectPlanEnabled) return false;
+      if (currentPlanReadable === false) return false;
+      if (!currentProjectPlan || !Array.isArray(currentProjectPlan.tasks)) return false;
+      const hasActiveTask = currentProjectPlan.tasks.some((t) => t && t.status === "active");
+      if (!hasActiveTask) return false;
+      if (!state || typeof state.lastActivityAt !== "number") return false;
+      return Date.now() - state.lastActivityAt > STALL_MS;
+    } catch (_e) {
+      return false;
+    }
+  }
+
   /** Build one task card (title, status badge, verify attempts, collapsible detail/acceptance criteria, contextual action buttons). */
   function buildProjectPlanTaskCard(task) {
     const card = document.createElement("div");
@@ -321,6 +340,15 @@
         details.appendChild(ul);
       }
       card.appendChild(details);
+    }
+
+    if (task.status === "active" && isPlanStalled()) {
+      const stallNote = document.createElement("div");
+      stallNote.className = "plan-stall-note";
+      stallNote.textContent =
+        "⏸ No agent activity since " + new Date(state.lastActivityAt).toLocaleTimeString() +
+        " — this task may be stalled. Ask Claude to resume the plan.";
+      card.appendChild(stallNote);
     }
 
     const actions = document.createElement("div");
@@ -9609,6 +9637,16 @@
   setInterval(() => {
     if (lastMetrics.length && lastMetrics.some((a) => (a.status || "").toLowerCase() === "active")) {
       renderMetrics(lastMetrics);
+    }
+    // Advisory-only stall check: re-render the plan section when the
+    // isPlanStalled() verdict actually flips, so the note can appear/disappear
+    // without waiting for a new PLAN_STATE/state push.
+    if (projectPlanEnabled) {
+      const stalled = isPlanStalled();
+      if (stalled !== lastPlanStallState) {
+        lastPlanStallState = stalled;
+        renderProjectPlanSection();
+      }
     }
   }, 1000);
 

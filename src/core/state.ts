@@ -101,6 +101,8 @@ export interface MetricsWorldState {
   idleFreezeMs: number;
   /** Hard cap on any single active stretch in ms (default 900000 = 15 min). */
   sanityCapMs: number;
+  /** Most recent hook activity timestamp (epoch ms) across all agents, or null if none. */
+  lastActivityAt?: number | null;
 }
 
 /** Override map: workerId values that should not use the default title-case formatter. */
@@ -127,6 +129,7 @@ export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?
     _agentMetricsInternal: [],
     idleFreezeMs: limits?.idleFreezeMs ?? 180000,
     sanityCapMs: limits?.sanityCapMs ?? 900000,
+    lastActivityAt: null,
   };
 }
 
@@ -221,6 +224,14 @@ export function creditedElapsed(
 // Pure reducer: fold a normalized event into the world state.
 // NOTE: skeleton - mappings are intentionally minimal; tune per docs/DESIGN.md section 3.
 export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): MetricsWorldState {
+  // Refresh the top-level "most recent hook activity" timestamp before branching,
+  // so EVERY event type (not just the ones with agent-specific handling) keeps it
+  // current -- this is what a downstream "plan stalled" advisory reads. Every
+  // NormalizedEvent carries `at` (see core/events.ts), but guard defensively in
+  // case a future variant ever omits it.
+  if (typeof event.at === "number") {
+    state = { ...state, lastActivityAt: Math.max(state.lastActivityAt ?? 0, event.at) };
+  }
   switch (event.type) {
     case "SessionStart": {
       // The orchestrator (main session) is working for the whole turn — light it
@@ -616,11 +627,13 @@ export function computeStateFromRecords(
   filterSessionId?: string,
 ): MetricsWorldState {
   let state = initialWorldState();
+  let lastActivityAt: number | null = null;
   for (const record of records) {
     if (filterSessionId !== undefined && record.sessionId !== filterSessionId) continue;
+    if (lastActivityAt === null || record.at > lastActivityAt) lastActivityAt = record.at;
     for (const event of mapHookRecord(record)) {
       state = applyEvent(state, event);
     }
   }
-  return state;
+  return { ...state, lastActivityAt };
 }

@@ -852,6 +852,115 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       const taskCards = body.querySelectorAll('.plan-task-card');
       assert.equal(taskCards.length, 1, 'the readable plan\'s task card should render');
     });
+
+    // ── Step 13: plan-stall-note (0.0.346-ish) ──────────────────────────────
+    // isPlanStalled() (main.js) is true only when the plan is enabled+readable,
+    // has an active task, AND state.lastActivityAt is a stale number (older
+    // than STALL_MS = 5min). buildProjectPlanTaskCard appends a
+    // .plan-stall-note on the active task's card without removing its
+    // Retry/Skip actions. Each PLAN_STATE dispatch re-renders the section, so
+    // driving state -> PLAN_STATE (in that order) exercises the real path
+    // without needing to wait on the 1s re-render ticker.
+    await t.test('13. plan-stall-note: appears only when lastActivityAt is stale, never removes task actions', async () => {
+      const stallPlan = {
+        version: 1,
+        title: 'Stall Plan',
+        phases: [
+          { id: 'phase-s', num: 1, name: 'Phase S', goal: 'Get S done', gate: 'pending', taskIds: ['task-s'] },
+        ],
+        tasks: [
+          {
+            id: 'task-s',
+            phaseId: 'phase-s',
+            title: 'Task S',
+            detail: 'detail',
+            acceptanceCriteria: ['works'],
+            status: 'active',
+            verifyAttempts: 0,
+          },
+        ],
+        currentPhaseId: 'phase-s',
+        currentTaskId: 'task-s',
+      };
+
+      // 13a. Stale lastActivityAt (6 min ago, past the 5 min STALL_MS) + an
+      // active task -> the stall note renders, and Retry/Skip remain.
+      dispatch({
+        type: 'state',
+        state: {
+          sessionActive: true,
+          completedTasks: 0,
+          workers: {},
+          agentMetrics: [],
+          lastActivityAt: Date.now() - 6 * 60 * 1000,
+        },
+      });
+      dispatch({ type: 'PLAN_STATE', enabled: true, plan: stallPlan });
+      tick(2);
+      await flush();
+      assertNoErrors('plan-stall-stale');
+
+      const planBody = doc.getElementById('project-plan-body');
+      assert.ok(planBody, 'project-plan-body should exist');
+      const staleCard = planBody.querySelector('.plan-task-card[data-task-id="task-s"]');
+      assert.ok(staleCard, 'the active task card should render');
+      assert.ok(
+        staleCard.querySelector('.plan-stall-note'),
+        'a stale lastActivityAt with an active task should render a .plan-stall-note'
+      );
+      const staleActions = staleCard.querySelectorAll('.plan-task-actions button');
+      assert.ok(
+        staleActions.length > 0,
+        'the stall note must be additive: Retry/Skip actions must still be present'
+      );
+
+      // 13b. Recent lastActivityAt (now) + the same active plan -> no stall note.
+      dispatch({
+        type: 'state',
+        state: {
+          sessionActive: true,
+          completedTasks: 0,
+          workers: {},
+          agentMetrics: [],
+          lastActivityAt: Date.now(),
+        },
+      });
+      dispatch({ type: 'PLAN_STATE', enabled: true, plan: stallPlan });
+      tick(2);
+      await flush();
+      assertNoErrors('plan-stall-recent');
+      const recentCard = doc.getElementById('project-plan-body').querySelector('.plan-task-card[data-task-id="task-s"]');
+      assert.ok(recentCard, 'the active task card should still render');
+      assert.equal(
+        recentCard.querySelector('.plan-stall-note'),
+        null,
+        'a recent lastActivityAt must not render a stall note'
+      );
+
+      // 13c. lastActivityAt omitted entirely (undefined) + the same active
+      // plan -> no stall note (back-compat with a host/version that doesn't
+      // send it yet).
+      dispatch({
+        type: 'state',
+        state: {
+          sessionActive: true,
+          completedTasks: 0,
+          workers: {},
+          agentMetrics: [],
+        },
+      });
+      dispatch({ type: 'PLAN_STATE', enabled: true, plan: stallPlan });
+      tick(2);
+      await flush();
+      assertNoErrors('plan-stall-omitted');
+      const omittedCard = doc.getElementById('project-plan-body').querySelector('.plan-task-card[data-task-id="task-s"]');
+      assert.ok(omittedCard, 'the active task card should still render');
+      assert.equal(
+        omittedCard.querySelector('.plan-stall-note'),
+        null,
+        'an omitted lastActivityAt must not render a stall note (back-compat)'
+      );
+    });
   } finally {
     process.removeListener('unhandledRejection', onRejection);
     dom.window.close();
