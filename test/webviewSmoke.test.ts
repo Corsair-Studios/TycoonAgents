@@ -239,6 +239,88 @@ function buildThemePayload() {
   };
 }
 
+// ── Per-badge "unseen" dot fixture ──────────────────────────────────────────
+// A slimmed-down THEME_INITIALIZED payload (3 badges "a"/"b"/"c", one agent,
+// one rival, one buildable, no decor) parameterized by theme_id + which badge
+// ids are already unlocked — used to drive the baseline-then-diff dot logic
+// in main.js (badgeUnseenByTheme/badgeKnownByTheme, ~874-990, ~7924-7955)
+// across multiple loads of the same theme and across different themes.
+function buildBadgeDotThemePayload(themeId: string, unlockedIds: string[]) {
+  const manifest = {
+    theme_id: themeId,
+    viewport: {
+      native_width: 1280,
+      native_height: 720,
+      walkable_nav_polygon: [
+        [0.1, 0.6],
+        [0.9, 0.6],
+        [0.9, 0.95],
+        [0.1, 0.95],
+      ],
+      character_scale: 1,
+      object_scale: 1,
+      overall_scale: 1,
+      rival_scale: 1,
+      decor_scale: 1,
+      enemy_config: { spawn_interval_seconds: 45, count_mode: 'random' },
+      crate_asset: 'frames.json#crate',
+      poof_asset: 'frames.json#poof',
+      projectile_asset: 'frames.json#projectile',
+    },
+    roster_agents: [{ slot_id: 'a1', name: 'Alpha' }],
+    roster_rivals: [{ rival_id: 'r1', name: 'Rival One' }],
+    buildable_objects: [
+      { object_id: 'o1', display_name: 'Rack', build_order: 0, anchor_coord: [0.5, 0.5] },
+    ],
+    decor_objects: [],
+    badges: [
+      { badge_id: 'a', display_name: 'Alpha Badge', trigger_type: 'OBJECTS_BUILT', threshold: 1, icon_asset: 'frames.json#achievement_1' },
+      { badge_id: 'b', display_name: 'Bravo Badge', trigger_type: 'RIVALS_EVICTED', threshold: 1, icon_asset: 'frames.json#achievement_2' },
+      { badge_id: 'c', display_name: 'Charlie Badge', trigger_type: 'TASKS_COMPLETED', threshold: 1, icon_asset: 'frames.json#achievement_3' },
+    ],
+  };
+  const frames: Record<string, string[]> = {
+    environment_background: [PX],
+    agent_a1: frameArray(20),
+    rival_r1: frameArray(20),
+    object_o1: frameArray(4),
+    achievement_1: [PX],
+    achievement_2: [PX],
+    achievement_3: [PX],
+    crate: frameArray(2),
+    poof: frameArray(2),
+    projectile: [PX],
+  };
+  return {
+    type: 'THEME_INITIALIZED',
+    payload: {
+      theme_id: themeId,
+      manifest,
+      frames,
+      badges: manifest.badges,
+      unlocked_badge_ids: unlockedIds,
+      // Explicit, isolated rebirth_state — real hosts always scope rebirth
+      // progress per theme_id. Without this, main.js's THEME_INITIALIZED
+      // handler falls back to the single non-theme-scoped local
+      // vscode.getState().rebirth blob, which by this point in the boot
+      // sequence carries live gameplay counters (cycleObjectsBuilt/
+      // cycleRivalsEvicted) accumulated by earlier subtests against a
+      // DIFFERENT theme — leaking cross-theme and quietly auto-unlocking
+      // badges here that this fixture never intends to unlock.
+      rebirth_state: {
+        count: 0,
+        baseline: { built: 0, evicted: 0, tasks: 0 },
+        required: [],
+        unlocked: [],
+        cycleBuilt: 0,
+        cycleEvicted: 0,
+        rackInsertIndex: null,
+        rangedUnlocked: false,
+      },
+    },
+  };
+}
+
 // A representative state / agent-activity update.
 function buildStatePayload() {
   const agentMetrics = [
@@ -960,6 +1042,187 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
         null,
         'an omitted lastActivityAt must not render a stall note (back-compat)'
       );
+    });
+
+    // ── Step 14: per-achievement "unseen" red-dot (0.0.346+) ─────────────────
+    // badgeUnseenByTheme/badgeKnownByTheme (keyed by currentBadgeThemeId) drive
+    // a .badge-card-dot appended to an unlocked .badge-card whose badge_id is
+    // in the working set unseenBadgeIds. THEME_INITIALIZED baselines
+    // knownBadgeIds = unlockedBadgeIds on a theme's FIRST-ever load (so
+    // already-unlocked badges never retroactively grow a dot — main.js
+    // ~7924-7946); a SUBSEQUENT load of a KNOWN theme diffs the freshly-seeded
+    // unlocked ids against the saved baseline and adds newly-unlocked ids to
+    // unseenBadgeIds. Opening the badge menu (badge-hud-btn click, ~915-929)
+    // renders the panel FIRST (so dots earned since the last open are visible
+    // for this viewing) THEN clears unseenBadgeIds for currentBadgeThemeId —
+    // so dots show once, then are gone next open.
+    await t.test('14. per-badge unseen dot: baseline / new unlock / cleared-on-open / per-theme isolation', async () => {
+      const hudBtn = doc.getElementById('badge-hud-btn');
+      assert.ok(hudBtn, 'badge-hud-btn should exist');
+      const list = doc.getElementById('badge-list');
+      assert.ok(list, 'badge-list should exist');
+
+      function cardByName(name: string) {
+        return [...list.querySelectorAll('.badge-card')].find(
+          (c: any) => ((c.querySelector('.badge-card-name') || {}).textContent || '') === name
+        );
+      }
+
+      // 14a. Baseline: first-ever load of theme "t1" with 2 of its 3 badges
+      // already unlocked -> those badges must NOT retroactively show a dot.
+      dispatch(buildBadgeDotThemePayload('t1', ['a', 'b']));
+      tick(2);
+      await flush();
+      assertNoErrors('badge-dot-t1-baseline-load');
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.ok(list.children.length > 0, 'badge-list should render badge cards for t1');
+      assert.equal(
+        list.querySelectorAll('.badge-card-dot').length,
+        0,
+        'no retroactive dots on first load of already-unlocked badges'
+      );
+      assertNoErrors('badge-dot-t1-baseline-open');
+
+      // 14b. A subsequent load of the SAME known theme "t1" that newly
+      // unlocks badge "c" -> exactly one dot, on badge c's own card only.
+      dispatch(buildBadgeDotThemePayload('t1', ['a', 'b', 'c']));
+      tick(2);
+      await flush();
+      assertNoErrors('badge-dot-t1-new-unlock-load');
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      const dotsAfterUnlock = list.querySelectorAll('.badge-card-dot');
+      assert.equal(dotsAfterUnlock.length, 1, 'exactly one unseen dot for the newly unlocked badge');
+      const cardA = cardByName('Alpha Badge');
+      const cardB = cardByName('Bravo Badge');
+      const cardC = cardByName('Charlie Badge');
+      assert.ok(cardC, "badge c's card should render");
+      assert.ok(cardC!.querySelector('.badge-card-dot'), "the dot must be on badge c's own card");
+      assert.equal(cardA && cardA.querySelector('.badge-card-dot'), null, 'baseline badge a must not carry a dot');
+      assert.equal(cardB && cardB.querySelector('.badge-card-dot'), null, 'baseline badge b must not carry a dot');
+      assertNoErrors('badge-dot-t1-new-unlock-open');
+
+      // 14c. Cleared on open: the click above already rendered-then-cleared
+      // the unseen set (see the badge-hud click handler ordering). Re-opening
+      // (re-render via the same open path) must show zero dots now.
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.equal(
+        list.querySelectorAll('.badge-card-dot').length,
+        0,
+        'dots must be cleared after the viewing that showed them'
+      );
+      assertNoErrors('badge-dot-t1-cleared-on-open');
+
+      // 14d. Per-theme isolation: first-ever load of a DIFFERENT theme "t2"
+      // (one badge already unlocked) must show zero dots, and must not leak
+      // any unseen-dot state carried over from "t1".
+      dispatch(buildBadgeDotThemePayload('t2', ['a']));
+      tick(2);
+      await flush();
+      assertNoErrors('badge-dot-t2-baseline-load');
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.equal(
+        list.querySelectorAll('.badge-card-dot').length,
+        0,
+        't2 first load must show zero dots and must not inherit t1 unseen state'
+      );
+      assertNoErrors('badge-dot-t2-baseline-open');
+    });
+
+    // ── Step 15: per-badge dot survives a SHRINK then a re-earn (bugfix) ─────
+    // Reviewer-caught defect: the known/unseen reconciliation in
+    // updateBadgeHud() used to run ONLY inside the `count > badgeHudLastCount`
+    // growth guard (main.js ~957), so when unlockedBadgeIds SHRINKS —
+    // doRebirth() filters it down to rebirth_* ids (~1557), handleMetricsReset
+    // zeroes it (~9961) — knownBadgeIds stayed stale/oversized and a badge
+    // re-earned after the shrink never lit a dot again. Fixed by moving the
+    // reconciliation out of the growth guard so it runs on every call
+    // (~973-1001), resyncing knownBadgeIds DOWN too. Proven here via the REAL
+    // runtime rebirth path (not a THEME_INITIALIZED reload, which resyncs
+    // known on its own and would mask the defect): baseline-load t1 with
+    // a/b/c unlocked+seen, shrink via the actual Rebirth button flow, then
+    // re-earn "c" via the runtime TASKS_COMPLETED unlock path (a "state"
+    // message bumping completedTasks, picked up by updateBadgeUnlocks() every
+    // draw frame, ~13613).
+    await t.test('15. per-badge dot re-lights after a rebirth shrink + re-earn', async () => {
+      const hudBtn = doc.getElementById('badge-hud-btn');
+      assert.ok(hudBtn, 'badge-hud-btn should exist');
+      const list = doc.getElementById('badge-list');
+      assert.ok(list, 'badge-list should exist');
+
+      function cardByName(name: string) {
+        return [...list.querySelectorAll('.badge-card')].find(
+          (c: any) => ((c.querySelector('.badge-card-name') || {}).textContent || '') === name
+        );
+      }
+
+      // 15a. Baseline-load t1 with all three badges unlocked (already known
+      // from Step 14) and clear any dot by opening the menu once — a clean,
+      // fully-seen starting point.
+      dispatch(buildBadgeDotThemePayload('t1', ['a', 'b', 'c']));
+      tick(2);
+      await flush();
+      assertNoErrors('badge-shrink-t1-reload');
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.equal(
+        list.querySelectorAll('.badge-card-dot').length,
+        0,
+        'no dot before the shrink (a/b/c already known/seen)'
+      );
+
+      // 15b. SHRINK via the real runtime rebirth path (Rebirth -> Confirm).
+      // requiredRebirthBadgeIds always resolves to all of a/b/c here: t1's
+      // tier pool never matches this fixture's badge ids, so
+      // rollRebirthRequirement() falls back to the theme's full badge pool,
+      // and n = min(3, pool.length) = 3 picks all of them.
+      const panel = doc.getElementById('rebirth-panel');
+      assert.ok(panel, 'rebirth-panel should exist');
+      const rebirthBtn = panel.querySelector('.rebirth-btn:not([disabled])');
+      assert.ok(rebirthBtn, 'rebirth button should be enabled (a/b/c all unlocked)');
+      rebirthBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      const confirmBtn = [...panel.querySelectorAll('.rebirth-btn')].find(
+        (b: any) => (b.textContent || '').trim() === 'Confirm'
+      );
+      assert.ok(confirmBtn, 'Confirm button should appear after clicking Rebirth');
+      confirmBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      tick(5);
+      await flush();
+      assertNoErrors('badge-shrink-rebirth');
+      // None of a/b/c are "rebirth_"-prefixed, so doRebirth() wipes all three
+      // back to locked.
+      const cardCAfterShrink = cardByName('Charlie Badge');
+      assert.ok(cardCAfterShrink, "badge c's card should still render");
+      assert.ok(
+        cardCAfterShrink!.classList.contains('badge-card--locked'),
+        'badge c should be locked again after the rebirth shrink'
+      );
+
+      // 15c. RE-EARN "c" via the runtime unlock path: bump state.completedTasks
+      // past c's TASKS_COMPLETED threshold (1). updateBadgeUnlocks() runs every
+      // draw frame and calls updateBadgeHud() when it unlocks a badge.
+      dispatch({
+        type: 'state',
+        state: { sessionActive: true, completedTasks: 1, workers: {}, agentMetrics: [] },
+      });
+      tick(5);
+      await flush();
+      assertNoErrors('badge-shrink-reearn');
+
+      // 15d. Opening the menu again must show badge c unlocked WITH a dot —
+      // proof the fix resynced knownBadgeIds down on the shrink, so this
+      // re-earn is correctly treated as genuinely new (pre-fix, c would have
+      // stayed in the stale knownBadgeIds and never grown a dot again).
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      const cardCReearned = cardByName('Charlie Badge');
+      assert.ok(cardCReearned, "badge c's card should render");
+      assert.ok(
+        cardCReearned!.classList.contains('badge-card--unlocked'),
+        'badge c should be unlocked again after the re-earn'
+      );
+      assert.ok(
+        cardCReearned!.querySelector('.badge-card-dot'),
+        'badge c re-earned after a shrink must show its dot again (the reviewer-caught defect)'
+      );
+      assertNoErrors('badge-shrink-reearn-open');
     });
   } finally {
     process.removeListener('unhandledRejection', onRejection);

@@ -1255,12 +1255,31 @@ body {
 }
 
 .badge-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 12px 14px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.03);
+}
+
+/* Per-badge "new achievement" dot (media/main.js renderBadgePanel): same red
+   dot + pulse as the aggregate .badge-hud-dot, positioned at the card's
+   upper-right corner. Cleared (removed on next render) once the player opens
+   the badge panel — see the badge-hud click handler in media/main.js. */
+.badge-card-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff4d4f;
+  border: 1.5px solid #141418;
+  box-shadow: 0 0 4px 1px rgba(255, 77, 79, 0.85);
+  pointer-events: none;
+  animation: badgeHudDotPulse 1.6s ease-in-out infinite;
 }
 
 .badge-card--unlocked {

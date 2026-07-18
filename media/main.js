@@ -871,6 +871,32 @@
     vscode.setState({ ...prev, badgeHudUnseen: value });
   }
 
+  // ── Per-badge "new achievement" dots (theme-scoped) ───────────────────────
+  // Extends the single aggregate HUD dot above into a dot on each individual
+  // NEWLY-unlocked badge card inside the achievements panel, cleared once the
+  // player opens the panel (renderBadgePanel draws the dots for that final
+  // viewing first — see the badge-hud click handler below). Two maps, keyed
+  // by theme_id, persisted through the same vscode.getState()/setState() blob:
+  //   badgeUnseenByTheme[themeId] -> badge_ids unlocked but not yet viewed.
+  //   badgeKnownByTheme[themeId]  -> badge_ids already accounted for (the
+  //     baseline used to detect genuinely NEW unlocks vs. ones the player has
+  //     already earned/seen before this feature or in an earlier session —
+  //     see THEME_INITIALIZED, which seeds these on first load of a theme so
+  //     already-unlocked badges never retroactively grow a dot).
+  // unseenBadgeIds/knownBadgeIds are the WORKING sets for the theme currently
+  // on stage (currentBadgeThemeId, declared below alongside unlockedBadgeIds).
+  let badgeUnseenByTheme = (vscode.getState() || {}).badgeUnseenByTheme || {};
+  let badgeKnownByTheme = (vscode.getState() || {}).badgeKnownByTheme || {};
+  /** @type {Set<string>} */
+  let unseenBadgeIds = new Set();
+  /** @type {Set<string>} */
+  let knownBadgeIds = new Set();
+
+  function persistBadgePerBadgeState() {
+    const prev = vscode.getState() || {};
+    vscode.setState({ ...prev, badgeUnseenByTheme, badgeKnownByTheme });
+  }
+
   /** Light up the persistent dot for a genuinely new, not-yet-viewed unlock. */
   function setBadgeHudUnseen() {
     badgeHudUnseen = true;
@@ -889,7 +915,16 @@
   if (badgeHudBtn) {
     badgeHudBtn.addEventListener("click", () => {
       clearBadgeHudUnseen();
+      // Draw the panel FIRST (so the per-badge dots earned since the last
+      // open are actually visible for this viewing), THEN mark them seen —
+      // reordering this would clear unseenBadgeIds before renderBadgePanel
+      // reads it and the dots would never appear.
       renderBadgePanel();
+      if (currentBadgeThemeId) {
+        unseenBadgeIds = new Set();
+        badgeUnseenByTheme[currentBadgeThemeId] = [];
+        persistBadgePerBadgeState();
+      }
       if (badgeModalEl) openModal(badgeModalEl, badgeModalCloseEl || badgeHudBtn);
     });
   }
@@ -934,6 +969,35 @@
       // only ever lower the count) — light the persistent dot for a genuinely
       // new, not-yet-viewed unlock.
       setBadgeHudUnseen();
+    }
+    // Per-badge dots: reconcile on EVERY call, not just growth — a SHRINK of
+    // unlockedBadgeIds (doRebirth filters it down to rebirth_* ids;
+    // handleMetricsReset zeroes it entirely) must resync knownBadgeIds DOWN
+    // too. Previously this whole block lived inside the `count >
+    // badgeHudLastCount` guard above, so a shrink left knownBadgeIds stale
+    // and oversized — a badge re-earned after a rebirth/reset was already
+    // "known" and never lit a dot again. Anything in unlockedBadgeIds not yet
+    // in knownBadgeIds is a genuinely new unlock (see THEME_INITIALIZED for
+    // how knownBadgeIds is baselined so pre-existing unlocks never
+    // retroactively grow a dot); anything left in unseenBadgeIds that is no
+    // longer in unlockedBadgeIds is an orphan (its badge was wiped out from
+    // under it by a shrink) and is dropped so it can never render a dot for
+    // an id that isn't unlocked anymore.
+    if (currentBadgeThemeId) {
+      const newIds = [...unlockedBadgeIds].filter((id) => !knownBadgeIds.has(id));
+      for (const id of newIds) unseenBadgeIds.add(id);
+      const prevUnseenSize = unseenBadgeIds.size;
+      unseenBadgeIds = new Set([...unseenBadgeIds].filter((id) => unlockedBadgeIds.has(id)));
+      const orphanDropped = unseenBadgeIds.size !== prevUnseenSize;
+      const knownSizeChanged = knownBadgeIds.size !== unlockedBadgeIds.size;
+      knownBadgeIds = new Set(unlockedBadgeIds);
+      // Only persist when something actually changed — avoid a setState on
+      // every no-op render-loop tick.
+      if (newIds.length > 0 || orphanDropped || knownSizeChanged) {
+        badgeUnseenByTheme[currentBadgeThemeId] = [...unseenBadgeIds];
+        badgeKnownByTheme[currentBadgeThemeId] = [...knownBadgeIds];
+        persistBadgePerBadgeState();
+      }
     }
     badgeHudLastCount = count;
   }
@@ -1343,6 +1407,16 @@
         if (!unlocked) iconWrap.classList.add("badge-card-icon-silhouette");
       }
       card.appendChild(iconWrap);
+
+      // Per-badge "new achievement" dot: only for unlocked badges the player
+      // hasn't opened the panel to see yet (unseenBadgeIds, cleared by the
+      // badge-hud click handler AFTER this render so it's visible for this
+      // final viewing). Mirrors the HUD's aggregate dot visually.
+      if (unlocked && unseenBadgeIds.has(b.badge_id)) {
+        const dot = document.createElement("div");
+        dot.className = "badge-card-dot";
+        card.appendChild(dot);
+      }
 
       const info = document.createElement("div");
       info.className = "badge-card-info";
@@ -7858,6 +7932,38 @@
         currentBadgeThemeId = initializedThemeId || (manifest && manifest.theme_id) || null;
         const seededUnlockIds = Array.isArray(msg.payload?.unlocked_badge_ids) ? msg.payload.unlocked_badge_ids : [];
         unlockedBadgeIds = new Set(seededUnlockIds);
+        // ── Per-badge dots: baseline-then-diff, keyed by currentBadgeThemeId ──
+        // First time this theme has ever been loaded (no baseline on record):
+        // adopt the freshly-seeded unlocks as the baseline so already-earned
+        // badges never retroactively grow a dot; restore any unseen ids saved
+        // from a previous session (normally none, on a true first load).
+        // Otherwise: restore the persisted baseline/unseen sets, then diff
+        // against the freshly-seeded unlockedBadgeIds so anything unlocked
+        // while the webview was closed still lights a dot on next open.
+        if (currentBadgeThemeId) {
+          if (!Object.prototype.hasOwnProperty.call(badgeKnownByTheme, currentBadgeThemeId)) {
+            knownBadgeIds = new Set(unlockedBadgeIds);
+            const savedUnseen = badgeUnseenByTheme[currentBadgeThemeId];
+            unseenBadgeIds = new Set(Array.isArray(savedUnseen) ? savedUnseen : []);
+          } else {
+            const savedKnown = badgeKnownByTheme[currentBadgeThemeId];
+            const savedUnseen = badgeUnseenByTheme[currentBadgeThemeId];
+            knownBadgeIds = new Set(Array.isArray(savedKnown) ? savedKnown : []);
+            unseenBadgeIds = new Set(Array.isArray(savedUnseen) ? savedUnseen : []);
+            for (const id of unlockedBadgeIds) {
+              if (!knownBadgeIds.has(id)) unseenBadgeIds.add(id);
+            }
+            knownBadgeIds = new Set(unlockedBadgeIds);
+          }
+          badgeKnownByTheme[currentBadgeThemeId] = [...knownBadgeIds];
+          badgeUnseenByTheme[currentBadgeThemeId] = [...unseenBadgeIds];
+          persistBadgePerBadgeState();
+        } else {
+          // No theme id available — skip per-badge tracking gracefully rather
+          // than tagging dots under a null/undefined key.
+          knownBadgeIds = new Set();
+          unseenBadgeIds = new Set();
+        }
         // ── Rebirth: restore persisted prestige state. Independent of the
         // per-theme badge unlocks above — rebirth (count/baseline/requirement)
         // persists across theme switches and webview reloads. Source of truth is
@@ -9864,6 +9970,14 @@
       // left alone — it's the host-driven requirement definition, not
       // progress, and gets repopulated by the next host payload). ──────────
       unlockedBadgeIds = new Set();
+      // Also clear the per-badge dot-tracking working sets/maps (ALL themes —
+      // badgeKnownByTheme/badgeUnseenByTheme are keyed by theme_id, not just
+      // the current one) so a full Reset leaves no stale "known" baseline
+      // that would suppress a dot on a badge re-earned after Reset.
+      unseenBadgeIds = new Set();
+      knownBadgeIds = new Set();
+      badgeUnseenByTheme = {};
+      badgeKnownByTheme = {};
       cycleObjectsBuilt = 0;
       cycleRivalsEvicted = 0;
       cyclePeakActive = 0;
@@ -9888,6 +10002,8 @@
       try {
         const prev = vscode.getState() || {};
         delete prev.rebirth;
+        delete prev.badgeUnseenByTheme;
+        delete prev.badgeKnownByTheme;
         vscode.setState(prev);
       } catch (e) { /* best-effort */ }
       renderBadgePanel();
