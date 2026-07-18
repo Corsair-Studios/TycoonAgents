@@ -937,6 +937,36 @@ body {
   animation: badgeHudPopCentered 0.6s ease;
 }
 
+/* Persistent "new achievement" indicator: a small dot on the badge medal's
+   upper-right corner that stays lit (unlike the transient pop above) until
+   the player opens the badge panel. Toggled via the .has-unseen class on
+   #badge-hud-btn by updateBadgeHud()/the badge-hud click handler in
+   media/main.js; state is persisted through vscode.getState()/setState() so
+   it survives a reload. Hidden by default — only shown while unseen. */
+.badge-hud-dot {
+  display: none;
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ff4d4f;
+  border: 1.5px solid #141418;
+  box-shadow: 0 0 4px 1px rgba(255, 77, 79, 0.85);
+  pointer-events: none;
+  animation: badgeHudDotPulse 1.6s ease-in-out infinite;
+}
+
+.badge-hud.has-unseen .badge-hud-dot {
+  display: block;
+}
+
+@keyframes badgeHudDotPulse {
+  0%, 100% { box-shadow: 0 0 4px 1px rgba(255, 77, 79, 0.85); opacity: 1; }
+  50% { box-shadow: 0 0 8px 3px rgba(255, 77, 79, 0.55); opacity: 0.75; }
+}
+
 /* Engine connection chips — upper-left overlay, mirrors #menu-btn placement */
 #engine-chips {
   position: absolute;

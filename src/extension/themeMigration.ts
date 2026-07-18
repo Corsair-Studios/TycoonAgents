@@ -235,9 +235,9 @@ export function buildDefaultBadges(): ThemeBadge[] {
     {
       badge_id: 'crew_6',
       display_name: 'Full House',
-      description: 'Have 6 agents active at once.',
+      description: 'Have 4 agents active at once.',
       trigger_type: 'AGENTS_ACTIVE',
-      threshold: 6,
+      threshold: 4,
       icon_asset: 'frames.json#achievement_18',
     },
     {
@@ -335,6 +335,25 @@ export function upgradeThemeManifest(manifest: ThemeManifest): { manifest: Theme
       upgraded.badges = [...upgraded.badges, ...missing];
       changed.push(`Added ${missing.length} new default badges`);
     }
+  }
+
+  // crew_6 ("Full House") threshold lowered 6 -> 4: buildDefaultBadges() now
+  // returns the new value, but that only reaches NEWLY created themes — every
+  // manifest generated before this change baked the old threshold/description
+  // in as data. Patch it in place so existing themes pick up the lower bar
+  // too. badge_id deliberately stays 'crew_6' (unchanged, stable) even though
+  // the number no longer matches the id — it's an internal id used only for
+  // persisted unlock tracking (unlockedBadgeIds is keyed by badge_id, never by
+  // threshold), so this patch can neither orphan nor falsely grant an existing
+  // unlock. Only threshold/description are touched; display_name is left
+  // alone because it's user-renameable (see themeService's badge rename
+  // branch) and must not be clobbered. Idempotent: once threshold is already
+  // 4 this is a no-op, so a second upgrade pass reports no further change.
+  const crew6Badge = upgraded.badges.find((b) => b.badge_id === 'crew_6');
+  if (crew6Badge && crew6Badge.threshold !== 4) {
+    crew6Badge.threshold = 4;
+    crew6Badge.description = 'Have 4 agents active at once.';
+    changed.push("Patched crew_6 (Full House) threshold 6 -> 4");
   }
 
   if (Array.isArray(upgraded.buildable_objects)) {

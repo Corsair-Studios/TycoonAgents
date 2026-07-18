@@ -770,8 +770,38 @@
   const badgeModalCloseEl = /** @type {HTMLElement|null} */ (document.getElementById("badge-modal-close"));
   const badgeListEl       = /** @type {HTMLElement|null} */ (document.getElementById("badge-list"));
 
+  // Persistent "new achievement" indicator: unlike the transient 600ms pop
+  // above, this stays lit (CSS .has-unseen on badgeHudBtn, see style.css)
+  // until the player actually opens the badge panel. Persisted through the
+  // same vscode.getState()/setState() blob used elsewhere in this file (e.g.
+  // metricsHeight, rosterOrder) so an unlock earned right before closing the
+  // webview is still flagged as unseen on the next reload.
+  let badgeHudUnseen = !!((vscode.getState() || {}).badgeHudUnseen);
+  if (badgeHudBtn && badgeHudUnseen) badgeHudBtn.classList.add("has-unseen");
+
+  function persistBadgeHudUnseen(value) {
+    const prev = vscode.getState() || {};
+    vscode.setState({ ...prev, badgeHudUnseen: value });
+  }
+
+  /** Light up the persistent dot for a genuinely new, not-yet-viewed unlock. */
+  function setBadgeHudUnseen() {
+    badgeHudUnseen = true;
+    if (badgeHudBtn) badgeHudBtn.classList.add("has-unseen");
+    persistBadgeHudUnseen(true);
+  }
+
+  /** Clear the persistent dot — called when the player opens the badge panel. */
+  function clearBadgeHudUnseen() {
+    if (!badgeHudUnseen) return;
+    badgeHudUnseen = false;
+    if (badgeHudBtn) badgeHudBtn.classList.remove("has-unseen");
+    persistBadgeHudUnseen(false);
+  }
+
   if (badgeHudBtn) {
     badgeHudBtn.addEventListener("click", () => {
+      clearBadgeHudUnseen();
       renderBadgePanel();
       if (badgeModalEl) openModal(badgeModalEl, badgeModalCloseEl || badgeHudBtn);
     });
@@ -813,6 +843,10 @@
         badgeHudBtn.classList.remove("badge-hud-pop");
         badgeHudPopTimer = null;
       }, 650);
+      // Same guard as the pop above (skips first paint / rebirth resets, which
+      // only ever lower the count) — light the persistent dot for a genuinely
+      // new, not-yet-viewed unlock.
+      setBadgeHudUnseen();
     }
     badgeHudLastCount = count;
   }

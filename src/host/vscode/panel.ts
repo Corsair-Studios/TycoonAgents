@@ -5470,6 +5470,7 @@ export class TycoonPanel {
           </g>
         </svg>
         <span class="badge-hud-count">0</span>
+        <span class="badge-hud-dot" aria-hidden="true"></span>
       </button>
     </div>
 

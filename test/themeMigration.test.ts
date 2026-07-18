@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { upgradeThemeManifest } from '../src/extension/themeMigration';
+import { upgradeThemeManifest, buildDefaultBadges } from '../src/extension/themeMigration';
 import { THEME_OBJECT_COUNT } from '../src/extension/themePlan';
 import type { BuildableObject, ThemeManifest } from '../src/shared/types';
 
@@ -191,6 +191,57 @@ test('upgrades an existing 8-badge manifest (old default set) to the full 25, pr
   assert.ok(manifest.badges.some((b) => b.badge_id === 'rebirth_2'));
 
   assert.ok(changed.some((c) => c.includes('17 new default badges')));
+});
+
+test('buildDefaultBadges emits Full House (crew_6) at threshold 4 with the matching description', () => {
+  const crew6 = buildDefaultBadges().find((b) => b.badge_id === 'crew_6');
+  assert.ok(crew6, 'crew_6 badge must exist in the default roster');
+  assert.equal(crew6!.display_name, 'Full House');
+  assert.equal(crew6!.threshold, 4);
+  assert.equal(crew6!.description, 'Have 4 agents active at once.');
+  assert.equal(crew6!.trigger_type, 'AGENTS_ACTIVE');
+});
+
+test('an existing manifest carrying crew_6 at the old threshold 6 is migrated to 4, preserving unlock state', () => {
+  const legacyCrew6 = {
+    badge_id: 'crew_6',
+    display_name: 'Full House',
+    description: 'Have 6 agents active at once.',
+    trigger_type: 'AGENTS_ACTIVE' as const,
+    threshold: 6,
+    icon_asset: 'frames.json#achievement_18',
+  };
+  const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: [...OLD_EIGHT_BADGES, legacyCrew6] }));
+
+  const migrated = manifest.badges.find((b) => b.badge_id === 'crew_6');
+  assert.ok(migrated, 'crew_6 must still be present after migration');
+  assert.equal(migrated!.threshold, 4);
+  assert.equal(migrated!.description, 'Have 4 agents active at once.');
+  // badge_id and display_name are stable — unlock tracking (keyed by badge_id,
+  // stored outside the manifest entirely) is untouched by this patch.
+  assert.equal(migrated!.badge_id, 'crew_6');
+  assert.equal(migrated!.display_name, 'Full House');
+  assert.ok(changed.some((c) => c.includes('crew_6')));
+
+  // Idempotent: a second pass makes no further crew_6 change.
+  const second = upgradeThemeManifest(manifest);
+  assert.ok(!second.changed.some((c) => c.includes('crew_6')));
+  assert.equal(second.manifest.badges.find((b) => b.badge_id === 'crew_6')!.threshold, 4);
+});
+
+test('a manifest already carrying crew_6 at threshold 4 is left untouched by the migration', () => {
+  const currentCrew6 = {
+    badge_id: 'crew_6',
+    display_name: 'Full House',
+    description: 'Have 4 agents active at once.',
+    trigger_type: 'AGENTS_ACTIVE' as const,
+    threshold: 4,
+    icon_asset: 'frames.json#achievement_18',
+  };
+  const { manifest, changed } = upgradeThemeManifest(minimalManifest({ badges: [...OLD_EIGHT_BADGES, currentCrew6] }));
+
+  assert.ok(!changed.some((c) => c.includes('crew_6')));
+  assert.deepEqual(manifest.badges.find((b) => b.badge_id === 'crew_6'), currentCrew6);
 });
 
 test('all 25 default badge display_names are unique (guards name collisions)', () => {
