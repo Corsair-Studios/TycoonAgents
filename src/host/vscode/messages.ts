@@ -190,6 +190,10 @@ export const MSG = {
   REQUEST_PLAN: "REQUEST_PLAN",
   PLAN_STATE: "PLAN_STATE",
   SET_PROJECT_PLAN_ENABLED: "SET_PROJECT_PLAN_ENABLED",
+  // Inbound: user asks the host to restore plan.json from plan.json.bak
+  // after a corrupted-plan read (see readPlanSafe / _postPlanState in
+  // panel.ts). No-ops (and reposts current state) when no backup exists.
+  RESTORE_PLAN_BACKUP: "RESTORE_PLAN_BACKUP",
 } as const;
 
 /** Union of every wire string this module knows about (either direction). */
@@ -439,13 +443,26 @@ export const MSG_SCHEMAS = {
   // under .claude/tycoon/plans/ — the webview only shows an "Archived
   // Plans" section when this array is non-empty; always `[]`, never
   // omitted, when disabled/no-root.
+  //
+  // planReadable/planError/hasBackup are OPTIONAL additions for the
+  // corrupted-plan.json case (a dropped `},{` boundary between two task
+  // objects, etc — see readPlanSafe in projectPlan.ts): `planReadable`
+  // defaults true and is only ever `false` when plan.json exists but failed
+  // to parse/validate; `planError` carries a short message in that case;
+  // `hasBackup` reports whether `.claude/tycoon/plan.json.bak` exists so the
+  // webview can offer a restore action. Optional (not required) to stay
+  // backward compatible with any code constructing this payload literally.
   PLAN_STATE: z
     .object({
       plan: ProjectPlanSchema.nullable(),
       enabled: z.boolean(),
       archivedPlans: z.array(ArchivedPlanSummarySchema),
+      planReadable: z.boolean().optional(),
+      planError: z.string().optional(),
+      hasBackup: z.boolean().optional(),
     })
     .passthrough(),
 
   SET_PROJECT_PLAN_ENABLED: z.object({ enabled: z.boolean() }).passthrough(),
+  RESTORE_PLAN_BACKUP: z.object({}).passthrough(),
 } as const;

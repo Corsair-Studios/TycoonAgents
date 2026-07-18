@@ -145,6 +145,12 @@
   let currentProjectPlan = null;
   /** Completed-and-approved plans the host has archived (PLAN_STATE.archivedPlans, 0.0.340+), newest-first as sent — never re-sorted here. Always an array (host sends [] when disabled/no-root/none archived yet); defensively defaulted again on receipt in case a standalone host omits the field. @type {Array<{id:string,title:string,phaseCount:number,taskCount:number,doneCount:number,skippedCount:number,archivedAt:number}>} */
   let currentArchivedPlans = [];
+  /** Whether plan.json parsed successfully (from PLAN_STATE.planReadable). `undefined` from an older/standalone host means "readable" (back-compat), so this is never left as anything but a boolean. */
+  let currentPlanReadable = true;
+  /** Parse/read error message for a corrupt plan.json (PLAN_STATE.planError), shown in the corrupt-state card. Empty string when not applicable. */
+  let currentPlanError = "";
+  /** Whether the host found a restorable backup of plan.json (PLAN_STATE.hasBackup) to offer via the "Restore last good" button. */
+  let currentPlanHasBackup = false;
   /** Which tab is visible in the metrics panel: "metrics" (default) or "plan". Only meaningful while projectPlanEnabled is true. Restored from webview state so it survives reloads. */
   let activeMetricsTab = "metrics";
   /** Reference to the Settings screen's Project Plan checkbox, kept live so a PLAN_STATE update can sync its checked state without a full renderSettings() re-render. */
@@ -332,6 +338,48 @@
     return card;
   }
 
+  /** Build the corrupt-plan warning card shown instead of phase/task cards when currentPlanReadable is false. Never renders stale task cards from the last-known-good `currentProjectPlan` — a finished task frozen mid-render (e.g. "active" with Retry/Skip) would be misleading once the host can no longer confirm the file's real state. */
+  function buildProjectPlanCorruptCard() {
+    const card = document.createElement("div");
+    card.className = "plan-corrupt-card";
+
+    const heading = document.createElement("div");
+    heading.className = "plan-corrupt-heading";
+    heading.textContent = "⚠ Plan file unreadable";
+    card.appendChild(heading);
+
+    const body = document.createElement("p");
+    body.className = "plan-corrupt-body";
+    body.textContent = ".claude/tycoon/plan.json is corrupt and couldn't be parsed.";
+    card.appendChild(body);
+
+    if (currentPlanError) {
+      const errorP = document.createElement("p");
+      errorP.className = "plan-corrupt-error";
+      errorP.textContent = currentPlanError;
+      card.appendChild(errorP);
+    }
+
+    const guidance = document.createElement("p");
+    guidance.className = "plan-corrupt-guidance";
+    guidance.textContent = "Ask Claude to repair and resume the plan (the plan skill will rewrite the whole file), or restore the last good copy.";
+    card.appendChild(guidance);
+
+    if (currentPlanHasBackup) {
+      const restoreBtn = document.createElement("button");
+      restoreBtn.className = "skill-btn plan-corrupt-restore-btn";
+      restoreBtn.type = "button";
+      restoreBtn.textContent = "Restore last good";
+      restoreBtn.addEventListener("click", () => {
+        restoreBtn.disabled = true;
+        vscode.postMessage({ type: "RESTORE_PLAN_BACKUP" });
+      });
+      card.appendChild(restoreBtn);
+    }
+
+    return card;
+  }
+
   /** Rebuild the Project Plan tab content from (projectPlanEnabled, currentProjectPlan). Falls back to the Metrics tab and hides the tab bar entirely when the feature is off. */
   function renderProjectPlanSection() {
     if (!projectPlanBodyEl) return;
@@ -346,6 +394,17 @@
     }
     updateMetricsTabsUI();
     projectPlanBodyEl.innerHTML = "";
+
+    if (currentPlanReadable === false) {
+      // Corrupt/stalled state: render the warning card only. Do NOT fall
+      // through to the normal phase/task rendering below — currentProjectPlan
+      // still holds the last-known-good snapshot, and rendering it here would
+      // show stale task cards (e.g. a finished task frozen as "active" with
+      // live Retry/Skip buttons) as if they reflected the real file.
+      projectPlanBodyEl.appendChild(buildProjectPlanCorruptCard());
+      syncProjectPlanBodyHeight();
+      return;
+    }
 
     const plan = currentProjectPlan;
     if (!plan) {
@@ -8340,6 +8399,11 @@
       projectPlanEnabled = Boolean(msg.enabled);
       currentProjectPlan = msg.plan || null;
       currentArchivedPlans = Array.isArray(msg.archivedPlans) ? msg.archivedPlans : [];
+      // planReadable is new (corrupt-plan detection); undefined from an
+      // older/standalone host means "readable" for back-compat.
+      currentPlanReadable = msg.planReadable !== false;
+      currentPlanError = msg.planError || "";
+      currentPlanHasBackup = !!msg.hasBackup;
       syncProjectPlanSettingsToggle();
       renderProjectPlanSection();
     }

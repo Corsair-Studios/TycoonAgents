@@ -94,12 +94,13 @@ import {
 } from "../../extension/themeImageSettings";
 import { MSG, MSG_SCHEMAS } from "./messages";
 import {
-  readPlan,
+  readPlanSafe,
   writePlan,
   approvePhase,
   overrideTask,
   archivePlanIfComplete,
   readArchivedPlans,
+  projectPlanBackupFilePath,
 } from "./projectPlan";
 import { buildDiagnosticReport, type DiagnosticReportInput } from "./diagnosticReport";
 
@@ -1636,7 +1637,14 @@ export class TycoonPanel {
         } else if (message.type === MSG.APPROVE_PHASE) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null, archivedPlans: [] });
+            void this._panel.webview.postMessage({
+              type: MSG.PLAN_STATE,
+              enabled: false,
+              plan: null,
+              archivedPlans: [],
+              planReadable: true,
+              hasBackup: false,
+            });
             return;
           }
           const parsedApprovePhase = MSG_SCHEMAS.APPROVE_PHASE.safeParse(message);
@@ -1645,17 +1653,18 @@ export class TycoonPanel {
             return;
           }
           const planPath = projectPlanFilePath(root);
-          const currentPlan = readPlan(planPath);
-          if (!currentPlan) {
-            void this._panel.webview.postMessage({
-              type: MSG.PLAN_STATE,
-              enabled: true,
-              plan: null,
-              archivedPlans: readArchivedPlans(root),
-            });
+          const readApprovePhase = readPlanSafe(planPath);
+          if (readApprovePhase.status !== "ok") {
+            if (readApprovePhase.status === "corrupt") {
+              console.warn(
+                "TycoonAgents: APPROVE_PHASE aborted, plan.json is corrupt (left untouched):",
+                readApprovePhase.error
+              );
+            }
+            this._postPlanState();
             return;
           }
-          const updatedPlan = approvePhase(currentPlan, parsedApprovePhase.data.phaseId);
+          const updatedPlan = approvePhase(readApprovePhase.plan, parsedApprovePhase.data.phaseId);
           writePlan(planPath, updatedPlan);
           archivePlanIfComplete(root, updatedPlan);
           void this._panel.webview.postMessage({
@@ -1663,11 +1672,20 @@ export class TycoonPanel {
             enabled: true,
             plan: updatedPlan,
             archivedPlans: readArchivedPlans(root),
+            planReadable: true,
+            hasBackup: fs.existsSync(projectPlanBackupFilePath(root)),
           });
         } else if (message.type === MSG.OVERRIDE_TASK) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null, archivedPlans: [] });
+            void this._panel.webview.postMessage({
+              type: MSG.PLAN_STATE,
+              enabled: false,
+              plan: null,
+              archivedPlans: [],
+              planReadable: true,
+              hasBackup: false,
+            });
             return;
           }
           const parsedOverrideTask = MSG_SCHEMAS.OVERRIDE_TASK.safeParse(message);
@@ -1676,18 +1694,19 @@ export class TycoonPanel {
             return;
           }
           const planPath = projectPlanFilePath(root);
-          const currentPlan = readPlan(planPath);
-          if (!currentPlan) {
-            void this._panel.webview.postMessage({
-              type: MSG.PLAN_STATE,
-              enabled: true,
-              plan: null,
-              archivedPlans: readArchivedPlans(root),
-            });
+          const readOverrideTask = readPlanSafe(planPath);
+          if (readOverrideTask.status !== "ok") {
+            if (readOverrideTask.status === "corrupt") {
+              console.warn(
+                "TycoonAgents: OVERRIDE_TASK aborted, plan.json is corrupt (left untouched):",
+                readOverrideTask.error
+              );
+            }
+            this._postPlanState();
             return;
           }
           const updatedPlan = overrideTask(
-            currentPlan,
+            readOverrideTask.plan,
             parsedOverrideTask.data.taskId,
             parsedOverrideTask.data.action
           );
@@ -1698,6 +1717,8 @@ export class TycoonPanel {
             enabled: true,
             plan: updatedPlan,
             archivedPlans: readArchivedPlans(root),
+            planReadable: true,
+            hasBackup: fs.existsSync(projectPlanBackupFilePath(root)),
           });
         } else if (message.type === MSG.SET_PROJECT_PLAN_ENABLED) {
           // Settings-screen toggle: persist the opt-in flag, then re-post
@@ -1710,7 +1731,14 @@ export class TycoonPanel {
           }
           const root = this._projectRoot();
           if (root === "") {
-            void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null, archivedPlans: [] });
+            void this._panel.webview.postMessage({
+              type: MSG.PLAN_STATE,
+              enabled: false,
+              plan: null,
+              archivedPlans: [],
+              planReadable: true,
+              hasBackup: false,
+            });
             return;
           }
           writeProjectPlanEnabled(root, parsedSetPlanEnabled.data.enabled);
@@ -1721,10 +1749,29 @@ export class TycoonPanel {
             // explicit user action on the install button.
             this._installProjectPlanSkill(root);
           }
-          const enabled = readProjectPlanEnabled(root);
-          const plan = enabled ? readPlan(projectPlanFilePath(root)) : null;
-          const archivedPlans = enabled ? readArchivedPlans(root) : [];
-          void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled, plan, archivedPlans });
+          // _postPlanState recomputes enabled/plan/archivedPlans (plus
+          // planReadable/hasBackup) via readPlanSafe, so this reuses the same
+          // never-throws path instead of calling readPlan directly here.
+          this._postPlanState();
+        } else if (message.type === MSG.RESTORE_PLAN_BACKUP) {
+          // User-triggered recovery from a corrupted plan.json: copy
+          // plan.json.bak (last known-good read, see _postPlanState) back
+          // over plan.json, then repost fresh state. No-ops silently if
+          // there's no backup to restore from.
+          const root = this._projectRoot();
+          if (root === "") {
+            this._postPlanState();
+            return;
+          }
+          try {
+            const backupPath = projectPlanBackupFilePath(root);
+            if (fs.existsSync(backupPath)) {
+              fs.copyFileSync(backupPath, projectPlanFilePath(root));
+            }
+          } catch (err) {
+            console.error("TycoonAgents: RESTORE_PLAN_BACKUP failed:", err);
+          }
+          this._postPlanState();
         }
       },
       null,
@@ -5392,17 +5439,77 @@ export class TycoonPanel {
    * a plan complete-approved is picked up automatically via
    * `_setupPlanWatcher`'s existing debounced repost — no separate watcher
    * on plans/ is needed.
+   *
+   * Bug fix: this used to call the throwing `readPlan` with no try/catch, so
+   * a corrupted plan.json (e.g. a dropped `},{` boundary between two task
+   * objects — invalid JSON) threw UNCAUGHT here and the webview never
+   * received a fresh PLAN_STATE, leaving it rendering stale state
+   * indefinitely (a finished task frozen "active" forever). This now reads
+   * via `readPlanSafe`, which never throws:
+   *  - "ok": post `plan` as before, AND copy plan.json -> plan.json.bak as a
+   *    last-known-good backup (best-effort, only on a good read).
+   *  - "missing": post `plan: null`, `planReadable: true` — the normal
+   *    no-plan-yet state, not corruption.
+   *  - "corrupt": post `plan: null`, `planReadable: false`, `planError`, and
+   *    `hasBackup` so the webview can offer a restore (see
+   *    MSG.RESTORE_PLAN_BACKUP). plan.json itself is left untouched.
+   * The whole body is wrapped so a filesystem hiccup anywhere in here can
+   * never crash the panel.
    */
   private _postPlanState(): void {
-    const root = this._projectRoot();
-    if (root === "" || !readProjectPlanEnabled(root)) {
-      void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: false, plan: null, archivedPlans: [] });
-      return;
+    try {
+      const root = this._projectRoot();
+      if (root === "" || !readProjectPlanEnabled(root)) {
+        void this._panel.webview.postMessage({
+          type: MSG.PLAN_STATE,
+          enabled: false,
+          plan: null,
+          archivedPlans: [],
+          planReadable: true,
+          hasBackup: false,
+        });
+        return;
+      }
+
+      const planPath = projectPlanFilePath(root);
+      const backupPath = projectPlanBackupFilePath(root);
+      const result = readPlanSafe(planPath);
+
+      if (result.status === "ok") {
+        archivePlanIfComplete(root, result.plan);
+        try {
+          fs.copyFileSync(planPath, backupPath);
+        } catch (err) {
+          console.warn("TycoonAgents: failed to write plan.json.bak backup:", err);
+        }
+        const archivedPlans = readArchivedPlans(root);
+        void this._panel.webview.postMessage({
+          type: MSG.PLAN_STATE,
+          enabled: true,
+          plan: result.plan,
+          archivedPlans,
+          planReadable: true,
+          hasBackup: fs.existsSync(backupPath),
+        });
+        return;
+      }
+
+      if (result.status === "corrupt") {
+        console.warn("TycoonAgents: plan.json is corrupt, leaving it untouched:", result.error);
+      }
+      const archivedPlans = readArchivedPlans(root);
+      void this._panel.webview.postMessage({
+        type: MSG.PLAN_STATE,
+        enabled: true,
+        plan: null,
+        archivedPlans,
+        planReadable: result.status !== "corrupt",
+        ...(result.status === "corrupt" ? { planError: result.error } : {}),
+        hasBackup: fs.existsSync(backupPath),
+      });
+    } catch (err) {
+      console.error("TycoonAgents: _postPlanState failed unexpectedly:", err);
     }
-    const plan = readPlan(projectPlanFilePath(root));
-    if (plan) archivePlanIfComplete(root, plan);
-    const archivedPlans = readArchivedPlans(root);
-    void this._panel.webview.postMessage({ type: MSG.PLAN_STATE, enabled: true, plan, archivedPlans });
   }
 
   /**
@@ -5441,8 +5548,9 @@ export class TycoonPanel {
     this._planWatcher.onDidCreate(scheduleRepost, null, this._disposables);
     // Deletion (e.g. plan.json removed) should also resolve cleanly back to
     // the empty state rather than leaving the webview showing stale data;
-    // _postPlanState already reads via readPlan, which returns null for a
-    // missing file, so this reuses the same path.
+    // _postPlanState already reads via readPlanSafe, which resolves a
+    // missing file to {status:"missing"} (plan: null), so this reuses the
+    // same path.
     this._planWatcher.onDidDelete(scheduleRepost, null, this._disposables);
     this._disposables.push(this._planWatcher);
   }

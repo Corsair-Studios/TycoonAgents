@@ -2511,6 +2511,44 @@ tr.metrics-row--child td.col-name {
   padding: 8px 0;
 }
 
+/* Corrupt plan.json state (replaces phase/task cards entirely — see
+   buildProjectPlanCorruptCard/renderProjectPlanSection in media/main.js). */
+.plan-corrupt-card {
+  border: 1px solid var(--vscode-errorForeground, #f87171);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-corrupt-heading {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--vscode-errorForeground, #f87171);
+}
+
+.plan-corrupt-body,
+.plan-corrupt-guidance {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+}
+
+.plan-corrupt-error {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--vscode-editor-font-family, monospace);
+  margin: 0;
+  word-break: break-word;
+}
+
+.plan-corrupt-restore-btn {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
 /* Stats footer: phase-gate progress + task status breakdown */
 .plan-stats-footer {
   margin-top: 4px;

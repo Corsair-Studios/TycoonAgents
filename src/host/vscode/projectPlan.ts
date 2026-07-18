@@ -222,6 +222,11 @@ export function isPhaseComplete(plan: ProjectPlan, phaseId: string): boolean {
  * Read and validate a plan.json at `planPath`. Returns `null` if the file
  * does not exist. Throws if the file exists but fails JSON parsing or schema
  * validation.
+ *
+ * Prefer {@link readPlanSafe} at any call site that must not crash on a
+ * corrupted plan.json (e.g. a dropped `},{` boundary between two hand/skill-
+ * edited task objects) — this function is kept for callers that intentionally
+ * want the throw-on-invalid behavior.
  */
 export function readPlan(planPath: string): ProjectPlan | null {
   if (!fs.existsSync(planPath)) return null;
@@ -232,6 +237,41 @@ export function readPlan(planPath: string): ProjectPlan | null {
 /** Write `plan` to `planPath` as pretty-printed JSON. */
 export function writePlan(planPath: string, plan: ProjectPlan): void {
   fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
+}
+
+/** Result of {@link readPlanSafe}: a discriminated-by-`status` read outcome that never throws. */
+export type ReadPlanResult =
+  | { status: "ok"; plan: ProjectPlan }
+  | { status: "missing" }
+  | { status: "corrupt"; error: string };
+
+/**
+ * Non-throwing counterpart to {@link readPlan}. Reuses the same parse/
+ * validate logic, but wraps it so a corrupted plan.json (invalid JSON,
+ * truncated/merged objects, or a schema mismatch) can never propagate an
+ * uncaught exception into a caller like `_postPlanState` — instead it's
+ * reported as `{status:"corrupt"}` so the caller can surface it to the user
+ * and leave the on-disk file untouched.
+ *
+ * - Missing file -> `{status:"missing"}` (the normal no-plan-yet state).
+ * - Empty/malformed JSON or Zod-schema-invalid -> `{status:"corrupt", error}`.
+ * - Valid -> `{status:"ok", plan}`.
+ */
+export function readPlanSafe(filePath: string): ReadPlanResult {
+  try {
+    if (!fs.existsSync(filePath)) return { status: "missing" };
+    const raw = fs.readFileSync(filePath, "utf8");
+    if (raw.trim() === "") return { status: "corrupt", error: "plan.json is empty" };
+    const plan = parseProjectPlan(JSON.parse(raw));
+    return { status: "ok", plan };
+  } catch (err) {
+    return { status: "corrupt", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Backup path for a plan.json: `<planPath>.bak`, written on every good read (see `_postPlanState`). */
+export function projectPlanBackupFilePath(root: string): string {
+  return path.join(root, ".claude", "tycoon", "plan.json.bak");
 }
 
 // ============================================================================

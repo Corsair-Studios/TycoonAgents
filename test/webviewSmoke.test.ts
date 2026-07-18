@@ -760,6 +760,98 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
         'Archived Plans section must be absent when archivedPlans is omitted from the message'
       );
     });
+    // ── Step 12: corrupt-plan card (plan.json corruption fix) ───────────────
+    // PLAN_STATE now carries planReadable/planError/hasBackup. When
+    // planReadable === false, renderProjectPlanSection() must render
+    // .plan-corrupt-card INSTEAD OF any .plan-task-card — see main.js
+    // buildProjectPlanCorruptCard() (~342) and the currentPlanReadable===false
+    // branch in renderProjectPlanSection() (~398). The section is enabled the
+    // same way step 11 enables it: PLAN_STATE.enabled === true.
+    await t.test('12. corrupt plan.json: renders a corrupt card instead of task cards, with/without a restore button', async () => {
+      // 12a. Corrupt + a backup exists -> corrupt card + restore button, no task cards.
+      dispatch({
+        type: 'PLAN_STATE',
+        enabled: true,
+        plan: null,
+        planReadable: false,
+        planError: 'bad json',
+        hasBackup: true,
+      });
+      tick(2);
+      await flush();
+      assertNoErrors('plan-corrupt-with-backup');
+
+      const body = doc.getElementById('project-plan-body');
+      assert.ok(body, 'project-plan-body should exist');
+      const corruptCard = body.querySelector('.plan-corrupt-card');
+      assert.ok(corruptCard, '.plan-corrupt-card should render when planReadable is false');
+      const restoreBtn = corruptCard.querySelector('.plan-corrupt-restore-btn');
+      assert.ok(restoreBtn, 'a restore button should render when hasBackup is true');
+      assert.equal(body.querySelector('.plan-task-card'), null, 'no task card should render in the corrupt state');
+
+      restoreBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      const restoreMsg = [...posted].reverse().find((m: any) => m.type === 'RESTORE_PLAN_BACKUP');
+      assert.ok(restoreMsg, 'clicking Restore last good should post RESTORE_PLAN_BACKUP');
+      assertNoErrors('plan-corrupt-restore-click');
+
+      // 12b. Corrupt + no backup -> corrupt card, no restore button, still no task cards.
+      dispatch({
+        type: 'PLAN_STATE',
+        enabled: true,
+        plan: null,
+        planReadable: false,
+        planError: 'bad json',
+        hasBackup: false,
+      });
+      tick(2);
+      await flush();
+      assertNoErrors('plan-corrupt-no-backup');
+      const corruptCard2 = body.querySelector('.plan-corrupt-card');
+      assert.ok(corruptCard2, '.plan-corrupt-card should still render with hasBackup false');
+      assert.equal(
+        corruptCard2.querySelector('.plan-corrupt-restore-btn'),
+        null,
+        'no restore button should render when hasBackup is false'
+      );
+      assert.equal(body.querySelector('.plan-task-card'), null, 'no task card should render in the corrupt state');
+
+      // 12c. A normal readable plan (planReadable omitted, back-compat default
+      // true) with real phases/tasks -> corrupt card gone, task cards render.
+      dispatch({
+        type: 'PLAN_STATE',
+        enabled: true,
+        plan: {
+          version: 1,
+          title: 'Readable Plan',
+          phases: [
+            { id: 'phase-a', num: 1, name: 'Phase A', goal: 'Get A done', gate: 'pending', taskIds: ['task-1'] },
+          ],
+          tasks: [
+            {
+              id: 'task-1',
+              phaseId: 'phase-a',
+              title: 'Task One',
+              detail: 'detail',
+              acceptanceCriteria: ['works'],
+              status: 'active',
+              verifyAttempts: 0,
+            },
+          ],
+          currentPhaseId: 'phase-a',
+          currentTaskId: 'task-1',
+        },
+      });
+      tick(2);
+      await flush();
+      assertNoErrors('plan-readable-again');
+      assert.equal(
+        body.querySelector('.plan-corrupt-card'),
+        null,
+        'the corrupt card must be gone once the plan is readable again'
+      );
+      const taskCards = body.querySelectorAll('.plan-task-card');
+      assert.equal(taskCards.length, 1, 'the readable plan\'s task card should render');
+    });
   } finally {
     process.removeListener('unhandledRejection', onRejection);
     dom.window.close();

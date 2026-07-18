@@ -46,6 +46,8 @@ State lives at `.claude/tycoon/plan.json`, created if missing and re-read at the
 
 `phase.gate` is one of `pending` / `approved`. `task.status` is one of `pending` / `active` / `verifying` / `done` / `needs_fix` / `skipped`. The panel writes `gate` and `status` overrides; this skill writes everything else. Never hand-wave a field — write the whole object shape on every save, even if a value hasn't changed.
 
+**Hard rule — whole-file writes only.** ALWAYS write `.claude/tycoon/plan.json` by serializing the entire plan object in memory and writing the whole file with the Write tool. NEVER use incremental or partial text edits on `plan.json` — no Edit tool, no sed-style boundary edits, no hand-splicing a single field in place. A single dropped `},` / `{` boundary between two adjacent objects in the `tasks` array is enough to corrupt the JSON and freeze the panel on stale state (it will keep rendering the last frame it successfully read, including a finished task that still shows "active" with retry/skip controls). After every write, re-read the file and `JSON.parse` it to confirm it is valid before continuing; if the parse fails, rewrite the whole file again from the in-memory plan object — do not attempt to patch the broken text.
+
 ## 1. Decompose
 
 1. Read the source design doc end to end.
@@ -86,7 +88,7 @@ Repeat until no runnable task remains:
 5. When the agent reports back, set `status` to `"verifying"`, save, then check the result against every item in `acceptanceCriteria` yourself (read the changed files, run a build/test command, whatever the criteria call for — do not just trust the agent's summary).
 6. If all criteria pass: set `status` to `"done"`, save, move on.
 7. If any criterion fails: increment `verifyAttempts`. If `verifyAttempts <= 2`, set `status` back to `"pending"` (or `"active"` if retrying immediately) and re-delegate with the specific gap called out. If `verifyAttempts > 2`, set `status` to `"needs_fix"`, save, and move to the next runnable task rather than looping forever — surface the stuck task in your next message to the user.
-8. Save `.claude/tycoon/plan.json` after every single status transition, not just at the end of the loop, so the panel's visualization stays live.
+8. Save `.claude/tycoon/plan.json` after every single status transition, not just at the end of the loop, so the panel's visualization stays live. Every save is a full-object rewrite per the hard rule above — never an incremental edit.
 
 ## 3. Phase gate
 
