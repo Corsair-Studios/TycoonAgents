@@ -1303,6 +1303,10 @@
    * for metricsHeight/rosterOrder/etc — merges in, never drops existing keys.
    * cyclePeakActive is intentionally NOT persisted (brief C1: high-water mark
    * for the CURRENT session only).
+   * D4: also persists rackInsertIndex + rangedPermanentlyUnlocked (same blob,
+   * both webview-local and host-side) so the weapons-rack queue position and
+   * the permanent ranged-combat unlock both survive reloads and future
+   * rebirths, mirroring how rebirthCount/rebirthBaseline/etc already do.
    */
   function persistRebirth() {
     const prev = vscode.getState() || {};
@@ -1315,6 +1319,8 @@
         unlocked: [...unlockedBadgeIds],
         cycleBuilt: cycleObjectsBuilt,
         cycleEvicted: cycleRivalsEvicted,
+        rackInsertIndex: rackInsertIndex,
+        rangedUnlocked: rangedPermanentlyUnlocked,
       },
     });
     // Also persist host-side (per theme) so the rebirth requirement survives
@@ -1331,6 +1337,8 @@
             required: requiredRebirthBadgeIds,
             cycleBuilt: cycleObjectsBuilt,
             cycleEvicted: cycleRivalsEvicted,
+            rackInsertIndex: rackInsertIndex,
+            rangedUnlocked: rangedPermanentlyUnlocked,
           },
         },
       });
@@ -1378,15 +1386,19 @@
    */
   function doRebirth() {
     rebirthCount++;
-    // D3: the weapons rack (build_order 0 / rackObjectId) is withheld from
+    // D3/D4: the weapons rack (build_order 0 / rackObjectId) is withheld from
     // buildQueue entirely until the player's first rebirth (see
-    // buildSeededQueue). Now that rebirthCount is >=1, append it onto the END
-    // of the CURRENT in-memory queue so it becomes buildable without
-    // disturbing any already-built object's queue position/progress.
-    // Idempotent — a no-op on every rebirth after the first, since indexOf
-    // finds it already queued.
+    // buildSeededQueue). Now that rebirthCount is >=1, insert it immediately
+    // AFTER the current build position (buildBuiltCount + 1, clamped to the
+    // queue bounds) so the rack becomes the VERY NEXT build once the
+    // in-progress object finishes — not appended to the end. The chosen
+    // index is captured into rackInsertIndex and persisted (persistRebirth
+    // below) so buildSeededQueue reproduces the same position on every
+    // future reload. Idempotent — a no-op on every rebirth after the first,
+    // since indexOf finds it already queued (guards against double-insert).
     if (rackObjectId && buildQueue.indexOf(rackObjectId) === -1) {
-      buildQueue.push(rackObjectId);
+      rackInsertIndex = Math.max(0, Math.min(buildBuiltCount + 1, buildQueue.length));
+      buildQueue.splice(rackInsertIndex, 0, rackObjectId);
     }
     rebirthBaseline = { built: buildBuiltCount, evicted: rivalsEvictedCount, tasks: (state.completedTasks || 0) };
     cycleObjectsBuilt = 0;
@@ -4515,9 +4527,36 @@
   /**
    * Session-scoped latch: once the rack object is fully built, ALL characters
    * permanently switch from melee to ranged (shoot) combat for the rest of
-   * the session. Reset to false on every THEME_INITIALIZED (new theme load).
+   * the session. Seeded from rangedPermanentlyUnlocked at THEME_INITIALIZED
+   * (see below) so it starts true from boot once previously earned; the
+   * per-frame latch (~L11667) is a same-session fallback that still detects
+   * an already-built rack even without the persisted flag.
    */
   let rangedUnlocked = false;
+  /**
+   * D4: durable flag — once ranged combat is earned (rack built after the
+   * player's first rebirth), it stays unlocked PERMANENTLY, surviving
+   * reloads AND every future rebirth. Mirrors the existing rebirth
+   * persistence mechanism (persistRebirth: vscode.setState()'s `rebirth`
+   * blob + host-side SAVE_REBIRTH_STATE), and is restored at
+   * THEME_INITIALIZED alongside rebirthCount/rebirthBaseline/etc. Flips true
+   * once, at the ranged-unlock latch (~L11667); doRebirth() never resets it.
+   * @type {boolean}
+   */
+  let rangedPermanentlyUnlocked = false;
+  /**
+   * D4: the buildQueue index the weapons rack is inserted at — captured once
+   * (at the moment rebirthCount first becomes >=1, see doRebirth) as
+   * `buildBuiltCount + 1` so the rack becomes the very next build once the
+   * in-progress object finishes. Persisted alongside rebirthCount (same
+   * mechanism as rangedPermanentlyUnlocked above) so buildSeededQueue can
+   * reproduce the IDENTICAL index on every future reload — recomputing from
+   * the live, ever-growing buildBuiltCount on each load would keep relocating
+   * the rack forward instead of leaving it where it was actually queued.
+   * null until a rebirth has queued the rack.
+   * @type {number|null}
+   */
+  let rackInsertIndex = null;
 
   /**
    * Deterministic string hash → 32-bit int (for seeding the build queue
@@ -4553,20 +4592,28 @@
    *
    * D3: the weapons rack (build_order 0, i.e. buildables[0].object_id — same
    * convention as rackObjectId) is ALWAYS excluded from the shuffle pool
-   * itself, then appended at the very END iff rebirthCount >= 1. Filtering it
-   * out BEFORE shuffling (rather than shuffling everything and removing it
-   * after) keeps the relative order of every OTHER object identical
-   * regardless of rebirthCount, so queue positions — and therefore
+   * itself, then spliced back in at `rackInsertIndex` iff rebirthCount >= 1.
+   * Filtering it out BEFORE shuffling (rather than shuffling everything and
+   * removing it after) keeps the relative order of every OTHER object
+   * identical regardless of rebirthCount, so queue positions — and therefore
    * buildBuiltCount's already-built prefix — stay stable across the
    * pre→post-rebirth transition and any later reload (see doRebirth D3 /
    * THEME_INITIALIZED's rebirth peek).
+   * D4: rackInsertIndex is the PERSISTED index captured once at the moment
+   * of the first rebirth (doRebirth: buildBuiltCount + 1 at that time), so
+   * the rack lands at the same stable position on every reload instead of
+   * being recomputed from the live (ever-growing) buildBuiltCount. When
+   * absent (legacy saves with rebirthCount >= 1 predating this field), falls
+   * back to appending at the very end — the old behavior.
    * @param {Array<object>} buildables
    * @param {string} themeId
    * @param {number} [rebirthCount] number of completed rebirths; the rack
    *   stays out of the pool entirely while this is < 1.
+   * @param {number|null} [rackInsertIndex] persisted splice index for the
+   *   rack; null/undefined falls back to appending at the end.
    * @returns {string[]}
    */
-  function buildSeededQueue(buildables, themeId, rebirthCount) {
+  function buildSeededQueue(buildables, themeId, rebirthCount, rackInsertIndex) {
     const rackId = buildables.length > 0 ? buildables[0].object_id : null;
     const pool = rackId !== null ? buildables.filter((o) => o.object_id !== rackId) : buildables;
     const ids = pool.map((o) => o.object_id);
@@ -4576,7 +4623,12 @@
       const j = Math.floor(rand() * (i + 1));
       const tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
     }
-    if (rackId !== null && (rebirthCount || 0) >= 1) ids.push(rackId);
+    if (rackId !== null && (rebirthCount || 0) >= 1) {
+      const idx = (typeof rackInsertIndex === "number" && rackInsertIndex >= 0)
+        ? Math.max(0, Math.min(rackInsertIndex, ids.length))
+        : ids.length;
+      ids.splice(idx, 0, rackId);
+    }
     return ids;
   }
 
@@ -7683,7 +7735,12 @@
         {
           const _peekedRebirth = msg.payload.rebirth_state || (vscode.getState() || {}).rebirth;
           const _peekedRebirthCount = (_peekedRebirth && typeof _peekedRebirth.count === "number") ? _peekedRebirth.count : 0;
-          buildQueue = buildSeededQueue(themeBuildables, initializedThemeId, _peekedRebirthCount);
+          // D4: also peek the persisted rack-splice index so the rack lands
+          // at the SAME stable position it was queued at on the rebirth that
+          // introduced it (see buildSeededQueue/doRebirth) rather than being
+          // recomputed from the live buildBuiltCount on every reload.
+          const _peekedRackInsertIndex = (_peekedRebirth && typeof _peekedRebirth.rackInsertIndex === "number") ? _peekedRebirth.rackInsertIndex : null;
+          buildQueue = buildSeededQueue(themeBuildables, initializedThemeId, _peekedRebirthCount, _peekedRackInsertIndex);
         }
         // Restore persisted build progress (host-provided) instead of always
         // starting a fresh reload/update at 0 — clamp to the queue length in
@@ -7739,10 +7796,17 @@
           // saved state, or a theme with no prior cycle progress).
           cycleObjectsBuilt = typeof savedRebirth.cycleBuilt === "number" ? savedRebirth.cycleBuilt : 0;
           cycleRivalsEvicted = typeof savedRebirth.cycleEvicted === "number" ? savedRebirth.cycleEvicted : 0;
+          // D4: restore the rack's persisted queue position and the durable
+          // permanent-ranged-unlock flag. Both default to "not yet earned"
+          // when absent (legacy saves predating this field).
+          rackInsertIndex = typeof savedRebirth.rackInsertIndex === "number" ? savedRebirth.rackInsertIndex : null;
+          rangedPermanentlyUnlocked = savedRebirth.rangedUnlocked === true;
         } else {
           // No saved rebirth state for this theme — start the cycle counters fresh.
           cycleObjectsBuilt = 0;
           cycleRivalsEvicted = 0;
+          rackInsertIndex = null;
+          rangedPermanentlyUnlocked = false;
         }
         // buildBuiltCount/rivalsEvictedCount just restarted at 0 above for this
         // theme session (they're per-theme-session lifetime counters), so the
@@ -7768,18 +7832,20 @@
         // trigger a persistRebirth() call.
         persistRebirth();
         updateBadgeHud();
-        // ── Ranged combat upgrade (reset per theme) ─────────────────────
+        // ── Ranged combat upgrade ─────────────────────────────────────────
         // Characters START in melee. Building the ranged weapon rack (the
         // buildable with build_order 0 → themeBuildables[0] after the sort)
-        // permanently unlocks ranged combat for the rest of the session — and
-        // ONLY building it unlocks ranged (see the build-latch near
-        // computeBuildState). D3: the rack itself isn't even buildable until
-        // rebirthCount>=1 (see buildSeededQueue/doRebirth), so always start
-        // this theme session with ranged locked; the per-frame latch re-syncs
-        // it to true on the very next frame if the restored buildState shows
-        // the rack already built (e.g. a reload after an earlier session's
-        // post-rebirth build).
-        rangedUnlocked = false;
+        // permanently unlocks ranged combat — and ONLY building it unlocks
+        // ranged (see the build-latch near computeBuildState). D3: the rack
+        // itself isn't even buildable until rebirthCount>=1 (see
+        // buildSeededQueue/doRebirth). D4: once earned, the unlock is
+        // PERMANENT across reloads/rebirths (not just "for the session") —
+        // seed straight from the restored rangedPermanentlyUnlocked flag
+        // above so it's true from boot when previously earned; otherwise
+        // start locked and let the per-frame latch (~L11667) re-sync it to
+        // true on the very next frame if the restored buildState shows the
+        // rack already built (e.g. an older save predating this flag).
+        rangedUnlocked = rangedPermanentlyUnlocked;
         rackObjectId = themeBuildables.length > 0 ? themeBuildables[0].object_id : null;
         // Resolve a stable native placement per object. Generated anchor_coord
         // values are currently always [0.5,0.5] (degenerate/equal), so detect
@@ -9708,8 +9774,14 @@
       buildBuiltCount = 0;
       buildCurrentProgress = 0;
       // Ranged weapons must re-lock on Reset too — the weapons rack is a
-      // rebirthCount>=1 unlock, and rebirthCount was just zeroed above.
+      // rebirthCount>=1 unlock, and rebirthCount was just zeroed above. D4:
+      // this is a full data wipe (prev.rebirth is deleted below too), so the
+      // durable permanent-unlock flag and the rack's queued position are
+      // cleared along with it — unlike doRebirth(), which must never touch
+      // either.
       rangedUnlocked = false;
+      rangedPermanentlyUnlocked = false;
+      rackInsertIndex = null;
       // Purge the persisted blob so a reload can't rehydrate stale progress.
       try {
         const prev = vscode.getState() || {};
@@ -11663,9 +11735,16 @@
     const buildState = themeBuildables.length > 0 ? computeBuildState() : { builtIds: new Set(), activeId: null, activeProgress: 0 };
     // ── Ranged combat upgrade: unlock detection ──────────────────────────
     // Idempotent latch — once the rack object (build_order 0) is BUILT, all
-    // characters permanently switch to ranged combat for the session.
+    // characters permanently switch to ranged combat. D4: also durably latch
+    // rangedPermanentlyUnlocked + persist it (mirrors doRebirth's
+    // persistRebirth usage) the FIRST time this flips, so the unlock survives
+    // reloads and every future rebirth from here on — not just this session.
     if (!rangedUnlocked && rackObjectId && buildState.builtIds.has(rackObjectId)) {
       rangedUnlocked = true;
+      if (!rangedPermanentlyUnlocked) {
+        rangedPermanentlyUnlocked = true;
+        persistRebirth();
+      }
     }
     // Cosmetic damage-smoke (Phase 1): update once per frame here — AFTER enemy
     // targeting (advanceEnemies above) and buildState derivation, BEFORE the
