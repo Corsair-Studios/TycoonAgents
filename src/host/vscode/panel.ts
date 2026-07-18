@@ -115,6 +115,8 @@ interface RebirthPersist {
   /** DURABLE per-cycle badge counters (persist across reload; reset on rebirth). */
   cycleBuilt?: number;
   cycleEvicted?: number;
+  rackInsertIndex?: number;
+  rangedUnlocked?: boolean;
 }
 
 function getNonce(): string {
@@ -315,6 +317,12 @@ export class TycoonPanel {
     // it previously only ever refreshed on an explicit "Install hooks"
     // click.
     this._ensureHookScriptFresh();
+
+    // Auto-heal a stale on-disk project-plan skill once per panel open (see
+    // _ensureProjectPlanSkillFresh doc comment) — fixes the skill drifting
+    // out of date on a project where Project Plan is enabled but the skill
+    // was only ever copied once at install time.
+    this._ensureProjectPlanSkillFresh();
 
     this._update();
 
@@ -1706,6 +1714,13 @@ export class TycoonPanel {
             return;
           }
           writeProjectPlanEnabled(root, parsedSetPlanEnabled.data.enabled);
+          if (parsedSetPlanEnabled.data.enabled === true) {
+            // Enabling the checkbox implicitly (re)installs the skill so the
+            // feature is never left inert — best-effort, silent (no popup),
+            // since this is a side effect of flipping a toggle, not an
+            // explicit user action on the install button.
+            this._installProjectPlanSkill(root);
+          }
           const enabled = readProjectPlanEnabled(root);
           const plan = enabled ? readPlan(projectPlanFilePath(root)) : null;
           const archivedPlans = enabled ? readArchivedPlans(root) : [];
@@ -3187,20 +3202,88 @@ export class TycoonPanel {
     void this._panel.webview.postMessage({ type: MSG.DESIGN_DOC_DONE, mode, ok: true });
   }
 
+  /**
+   * Copy the shipped `media/skills/project-plan/` tree into
+   * `<root>/.claude/skills/project-plan`, creating any file that's absent
+   * and refreshing any file whose content differs from the shipped source
+   * (read-and-compare, never a blind overwrite) — this directory is 100%
+   * ours (unlike the tiered agent `.md` files), so no ownership/tier check
+   * is needed. Each file's copy is independently try/catched (logged via
+   * `console.error`) so one bad file never aborts the rest, and this method
+   * never throws outward — callers may run it as a best-effort side effect
+   * (e.g. from the checkbox handler) as well as from the explicit
+   * "Reinstall / Repair skill" button.
+   *
+   * Returns `true` iff the destination directory exists and is non-empty
+   * after the operation (used only for the button's success/failure UI
+   * feedback).
+   */
+  private _installProjectPlanSkill(root: string): boolean {
+    const src = path.join(this._extensionUri.fsPath, "media", "skills", "project-plan");
+    const dest = path.join(root, ".claude", "skills", "project-plan");
+
+    const copyRecursive = (srcDir: string, destDir: string): void => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(srcDir, { withFileTypes: true });
+      } catch (e) {
+        console.error("TycoonAgents: _installProjectPlanSkill failed to read", srcDir, e);
+        return;
+      }
+      for (const entry of entries) {
+        const srcPath = path.join(srcDir, entry.name);
+        const destPath = path.join(destDir, entry.name);
+        if (entry.isDirectory()) {
+          copyRecursive(srcPath, destPath);
+          continue;
+        }
+        try {
+          const srcContent = fs.readFileSync(srcPath, "utf8");
+          let destContent: string | undefined;
+          try {
+            destContent = fs.readFileSync(destPath, "utf8");
+          } catch {
+            destContent = undefined;
+          }
+          if (destContent === srcContent) continue; // already current
+          fs.mkdirSync(destDir, { recursive: true });
+          fs.writeFileSync(destPath, srcContent);
+        } catch (e) {
+          console.error("TycoonAgents: _installProjectPlanSkill failed to copy", srcPath, e);
+        }
+      }
+    };
+
+    try {
+      copyRecursive(src, dest);
+    } catch (e) {
+      console.error("TycoonAgents: _installProjectPlanSkill failed:", e);
+    }
+
+    try {
+      return fs.existsSync(dest) && fs.readdirSync(dest).length > 0;
+    } catch {
+      return false;
+    }
+  }
+
   private async _handleInstallProjectPlanSkill(): Promise<void> {
     const root = this._projectRoot();
     if (!root) {
       vscode.window.showWarningMessage("No project root — open a folder first.");
       return;
     }
-    const src = path.join(this._extensionUri.fsPath, "media", "skills", "project-plan");
-    const dest = path.join(root, ".claude", "skills", "project-plan");
+    let ok: boolean;
     try {
-      fs.mkdirSync(path.join(root, ".claude", "skills"), { recursive: true });
-      fs.cpSync(src, dest, { recursive: true });
+      ok = this._installProjectPlanSkill(root);
     } catch (e) {
       vscode.window.showErrorMessage("Failed to install project-plan skill: " + String(e));
       void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: false, error: String(e) });
+      return;
+    }
+    if (!ok) {
+      vscode.window.showErrorMessage("Failed to install project-plan skill: destination is empty after copy.");
+      void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: false, error: "destination empty after copy" });
       return;
     }
     const prompt = "Use the project-plan skill (.claude/skills/project-plan) to decompose the design doc / goals for this project into an approvable plan of phases and tasks with human gate checkpoints.";
@@ -3752,6 +3835,26 @@ export class TycoonPanel {
       fs.writeFileSync(dest, srcContent);
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
+   * Auto-heal a stale `.claude/skills/project-plan` directory once per panel
+   * open, but ONLY when the opt-in `projectPlanEnabled` flag is already set
+   * — mirrors `_ensureHookScriptFresh`'s "never auto-create, only refresh
+   * what's already opted in" posture, except here the skill directory MAY
+   * be created (via `_installProjectPlanSkill`) because enabling the
+   * checkbox is itself the opt-in signal; a project that never enabled
+   * Project Plan is left untouched.
+   */
+  private _ensureProjectPlanSkillFresh(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+      if (!readProjectPlanEnabled(root)) return;
+      this._installProjectPlanSkill(root);
+    } catch (e) {
+      console.error("TycoonAgents: _ensureProjectPlanSkillFresh failed:", e);
     }
   }
 

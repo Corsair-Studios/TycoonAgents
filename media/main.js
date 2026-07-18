@@ -10035,9 +10035,13 @@
     planLabel.appendChild(planTextWrap);
     planRow.appendChild(planLabel);
     planSection.appendChild(planRow);
+    const planInstallHint = document.createElement("p");
+    planInstallHint.className = "settings-empty";
+    planInstallHint.textContent = "Auto-installed and kept up to date whenever Project Plan is enabled above — use this only to repair a damaged install.";
+    planSection.appendChild(planInstallHint);
     const planInstallBtn = document.createElement("button");
     planInstallBtn.className = "skill-btn settings-btn";
-    planInstallBtn.textContent = "Install project-plan skill";
+    planInstallBtn.textContent = "Reinstall / Repair skill";
     planInstallBtn.addEventListener("click", () => {
       vscode.postMessage({ type: "projectPlanAction" });
     });
