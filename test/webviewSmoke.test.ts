@@ -578,8 +578,15 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('state-update');
     });
 
-    // ── Step 8: Team Lead Mode hierarchy telemetry (Phase 3) ────────────────────
-    await t.test('8. team rollup: lead row expands to nested workers, collapses to an aggregate', async () => {
+    // ── Step 8: Team Lead Mode hierarchy telemetry — FLAT rendering ─────────────
+    // The lead/worker nesting (expand/collapse rollup row) was intentionally
+    // retired: renderMetrics now renders every agent in state.agentMetrics as
+    // its own equal top-level row, in array order, regardless of tier/parentId
+    // (see main.js ~9385-9394). This asserts the new flat contract: leads AND
+    // workers all render as their own row, nobody is hidden inside a collapsed
+    // group, and none of the retired nesting markup (chevron/child-row/
+    // aggregate tag) is ever produced.
+    await t.test('8. flat metrics table: every agent (lead and worker) renders as its own top-level row', async () => {
       dispatch(buildTeamStatePayload());
       tick(5);
       await flush();
@@ -588,35 +595,31 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       const tbody = doc.getElementById('metrics-tbody');
       assert.ok(tbody, 'metrics-tbody should exist');
 
-      // Expanded by default: a chevron on the lead row, an indented worker row.
-      const chevron = tbody.querySelector('.team-chevron');
-      assert.ok(chevron, 'lead row should render a chevron when it has visible children');
-      assert.equal(chevron.getAttribute('aria-expanded'), 'true', 'default state is expanded');
-      const childRows = tbody.querySelectorAll('tr.metrics-row--child');
-      assert.equal(childRows.length, 2, 'both workers should render nested under the lead');
-      assert.equal(tbody.querySelector('.team-tag'), null, 'no aggregate tag while expanded');
+      // No retired nesting markup anywhere: no chevron, no indented child
+      // rows, no collapsed-aggregate tag.
+      assert.equal(tbody.querySelector('.team-chevron'), null, 'no chevron in the flat design');
+      assert.equal(tbody.querySelectorAll('tr.metrics-row--child').length, 0, 'no nested child rows in the flat design');
+      assert.equal(tbody.querySelector('.team-tag'), null, 'no aggregate tag in the flat design');
 
-      // Collapse: click the chevron.
-      chevron.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-      assertNoErrors('team-rollup-collapse-click');
+      // Every agentMetrics entry (orchestrator, build-lead, coding-specialist,
+      // ux-ui-designer) renders as its own top-level <tr>, in array order —
+      // nobody is hidden, nobody is merged into an aggregate.
+      const rows = [...tbody.querySelectorAll('tr')];
+      assert.equal(rows.length, 4, 'all 4 agents (lead + workers + orchestrator) should render as top-level rows');
+      const names = rows.map((r: any) => r.querySelector('td.col-name').textContent);
+      assert.deepEqual(
+        names,
+        ['Orchestrator', 'Build Lead', 'Coding Specialist', 'UX UI Designer'],
+        'rows preserve agentMetrics order with no grouping by lead'
+      );
 
-      const collapsedChevron = tbody.querySelector('.team-chevron');
-      assert.ok(collapsedChevron, 'chevron should still be present after collapsing');
-      assert.equal(collapsedChevron.getAttribute('aria-expanded'), 'false');
-      assert.equal(tbody.querySelectorAll('tr.metrics-row--child').length, 0, 'workers hidden while collapsed');
-      const tag = tbody.querySelector('.team-tag');
-      assert.ok(tag, 'collapsed lead row should carry a team-aggregate tag');
-
-      // Aggregate tokens column = lead(800) + coding-specialist(4000) + ux-ui-designer(1500) = 6300.
-      const leadRow = collapsedChevron.closest('tr');
-      const tokensCell = leadRow && leadRow.querySelector('td.col-tokens');
-      assert.ok(tokensCell, 'lead row should have a tokens cell');
-      assert.equal(tokensCell.textContent, '6.3k', 'collapsed row should show summed team tokens');
-
-      // Re-expand: state persists across a fresh render (webview-state-backed).
-      collapsedChevron.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-      assertNoErrors('team-rollup-reexpand-click');
-      assert.equal(tbody.querySelectorAll('tr.metrics-row--child').length, 2, 'workers reappear after re-expanding');
+      // The lead's own row shows only ITS OWN tokens (800), never a rollup
+      // sum of its team — rollup aggregation was retired along with nesting.
+      const leadRow = rows.find((r: any) => r.querySelector('td.col-name').textContent === 'Build Lead');
+      assert.ok(leadRow, 'Build Lead row should exist');
+      const leadTokensCell = leadRow.querySelector('td.col-tokens');
+      assert.ok(leadTokensCell, 'lead row should have a tokens cell');
+      assert.equal(leadTokensCell.textContent, '800', "lead row shows its own tokens only, no team rollup sum");
     });
 
     // ── Step 9: flat projects (no leads) render exactly as before ───────────────

@@ -9246,27 +9246,12 @@
   /** Last metrics array received, re-rendered on a timer so live time ticks. */
   let lastMetrics = [];
 
-  // ── Team rollup (Team Lead Mode Phase 3: hierarchy telemetry) ───────────
-  // Entries with tier === "lead" that have at least one visible child (a
-  // worker whose parentId points at them) render as an expand/collapse team
-  // row. Expand/collapse state is persisted per-lead-id in webview state,
-  // mirroring the metricsHeight/rosterOrder persistence above. Defaults to
-  // expanded so a first-time view shows individual rows.
-
-  /** @param {string} leadId */
-  function isTeamExpanded(leadId) {
-    const saved = vscode.getState() || {};
-    const map = saved.teamExpanded || {};
-    return map[leadId] !== false;
-  }
-
-  /** @param {string} leadId @param {boolean} expanded */
-  function setTeamExpanded(leadId, expanded) {
-    const prev = vscode.getState() || {};
-    const map = { ...(prev.teamExpanded || {}) };
-    map[leadId] = expanded;
-    vscode.setState({ ...prev, teamExpanded: map });
-  }
+  // Team Lead Mode Phase 3 previously nested workers under their lead
+  // (expand/collapse rollup row). Retired in favor of a flat per-agent list
+  // (see renderMetrics) because noisy parentId/tier data could hide a whole
+  // team's rows; the per-lead expand/collapse state and rollup aggregation
+  // that used to live here (isTeamExpanded/setTeamExpanded/aggregateTeam)
+  // were removed along with it.
 
   /** Live (in-progress-inclusive) active ms for one agent metric entry, capped as usual. */
   function liveMsFor(agent) {
@@ -9279,30 +9264,10 @@
   }
 
   /**
-   * Build a synthetic "team aggregate" row for a collapsed lead: sums
-   * tasks/MCP/tokens/live-time across the lead and its workers. Approximate
-   * (mirrors the hook's stack-based parent inference) but good enough for a
-   * rollup total — see docs/plan/team-lead-mode.md Phase 3.
-   */
-  function aggregateTeam(lead, children) {
-    const sum = (key) => children.reduce((s, c) => s + ((c && c[key]) || 0), 0);
-    const totalLiveMs = liveMsFor(lead) + children.reduce((s, c) => s + liveMsFor(c), 0);
-    return {
-      ...lead,
-      taskCount: (lead.taskCount || 0) + sum("taskCount"),
-      mcpCount: (lead.mcpCount || 0) + sum("mcpCount"),
-      tokens: (lead.tokens || 0) + sum("tokens"),
-      // Pre-baked total; workStartAt cleared so the row renderer doesn't add
-      // a second live segment on top of what liveMsFor() already counted.
-      activeMs: totalLiveMs,
-      workStartAt: null,
-    };
-  }
-
-  /**
-   * Render one metrics row. `opts.chevron` ("expanded"|"collapsed") marks a
-   * lead's team-rollup row; `opts.indent` marks a worker nested under an
-   * expanded lead; `opts.teamTag` labels a collapsed row as an aggregate.
+   * Render one metrics row. `opts` is kept (rather than dropping the param)
+   * so callers stay uniform; the lead/worker nesting opts it used to accept
+   * (chevron/indent/teamTag/leadId, Team Lead Mode Phase 3) were retired
+   * when the table moved to a flat per-agent list (see renderMetrics).
    */
   function buildMetricsRow(agent, maxUsdPerMin, opts) {
     opts = opts || {};
@@ -9310,47 +9275,15 @@
     const isActive = status === "active";
     const showActive = isMetricsAgentActive(agent);
     const row = document.createElement("tr");
-    const rowClasses = [];
-    if (opts.indent) rowClasses.push("metrics-row--child");
-    if (opts.chevron) rowClasses.push("metrics-row--lead");
-    if (rowClasses.length) row.className = rowClasses.join(" ");
 
     const displayName = agent.name || agent.id;
 
     const nameTd = document.createElement("td");
     nameTd.className = `col-name${showActive ? " name--active" : ""}`;
 
-    if (opts.chevron) {
-      const chevronBtn = document.createElement("button");
-      chevronBtn.type = "button";
-      chevronBtn.className = "team-chevron";
-      const expanded = opts.chevron === "expanded";
-      chevronBtn.setAttribute("aria-label", expanded ? "Collapse team" : "Expand team");
-      chevronBtn.setAttribute("aria-expanded", String(expanded));
-      chevronBtn.textContent = expanded ? "▾" : "▸"; // ▾ expanded / ▸ collapsed
-      chevronBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        setTeamExpanded(opts.leadId, !expanded);
-        renderMetrics(lastMetrics);
-      });
-      nameTd.appendChild(chevronBtn);
-    } else if (opts.indent) {
-      const spacer = document.createElement("span");
-      spacer.className = "metrics-row-indent";
-      nameTd.appendChild(spacer);
-    }
-
     const nameText = document.createElement("span");
     nameText.textContent = displayName;
     nameTd.appendChild(nameText);
-
-    if (opts.teamTag) {
-      const tag = document.createElement("span");
-      tag.className = "team-tag";
-      tag.textContent = "team";
-      tag.title = "Rolled-up total for this lead's team (lead + its workers, approximate — see docs/plan/team-lead-mode.md).";
-      nameTd.appendChild(tag);
-    }
 
     // Per-column tooltip: agent name + model + third-person role description.
     const role = describeRole(agent.description);
@@ -9449,49 +9382,15 @@
       return cost != null && mins > 0 ? cost / mins : 0;
     }));
 
-    // Group workers under a visible lead (tier === "lead"). Approximate —
-    // parentId comes from the hook's active-agent-stack inference and can
-    // misattribute concurrent spawns (docs/plan/team-lead-mode.md Phase 3).
-    const leadIds = new Set(metrics.filter((m) => ((m && m.tier) || "").toLowerCase() === "lead").map((m) => m.id));
-    const childrenByLead = new Map();
-    for (const m of metrics) {
-      if (m && m.parentId && leadIds.has(m.parentId)) {
-        if (!childrenByLead.has(m.parentId)) childrenByLead.set(m.parentId, []);
-        childrenByLead.get(m.parentId).push(m);
-      }
-    }
-    const nestedChildIds = new Set();
-    for (const arr of childrenByLead.values()) {
-      for (const c of arr) nestedChildIds.add(c.id);
-    }
-
-    // Rebuild rows
+    // Flat list: every agent (lead or worker) gets its own equal top-level
+    // row, in the existing sort order, no nesting/indentation/grouping. The
+    // hook's parentId/tier data is noisy enough (leads sometimes recorded as
+    // children of OTHER leads) that a lead→worker nesting pass could hide a
+    // whole team's rows; a flat list can't hide anyone. See
+    // docs/plan/team-lead-mode.md Phase 3 for the retired nesting approach.
     tbodyEl.innerHTML = "";
     for (const agent of metrics) {
-      // Rendered nested under its lead below — skip its top-level slot.
-      if (nestedChildIds.has(agent.id)) continue;
-
-      const children = leadIds.has(agent.id) ? (childrenByLead.get(agent.id) || []) : [];
-      if (children.length === 0) {
-        // Flat row: no children to roll up — identical to pre-Phase-3 rendering,
-        // including leads that haven't spawned anyone (yet) and any worker whose
-        // parentId doesn't match a currently-visible lead.
-        tbodyEl.appendChild(buildMetricsRow(agent, maxUsdPerMin, {}));
-        continue;
-      }
-
-      if (isTeamExpanded(agent.id)) {
-        tbodyEl.appendChild(buildMetricsRow(agent, maxUsdPerMin, { chevron: "expanded", leadId: agent.id }));
-        for (const child of children) {
-          tbodyEl.appendChild(buildMetricsRow(child, maxUsdPerMin, { indent: true }));
-        }
-      } else {
-        tbodyEl.appendChild(buildMetricsRow(
-          aggregateTeam(agent, children),
-          maxUsdPerMin,
-          { chevron: "collapsed", leadId: agent.id, teamTag: true },
-        ));
-      }
+      tbodyEl.appendChild(buildMetricsRow(agent, maxUsdPerMin, {}));
     }
   }
 
