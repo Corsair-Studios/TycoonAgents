@@ -240,12 +240,34 @@ function buildThemePayload() {
 }
 
 // ── Per-badge "unseen" dot fixture ──────────────────────────────────────────
-// A slimmed-down THEME_INITIALIZED payload (3 badges "a"/"b"/"c", one agent,
-// one rival, one buildable, no decor) parameterized by theme_id + which badge
-// ids are already unlocked — used to drive the baseline-then-diff dot logic
-// in main.js (badgeUnseenByTheme/badgeKnownByTheme, ~874-990, ~7924-7955)
-// across multiple loads of the same theme and across different themes.
-function buildBadgeDotThemePayload(themeId: string, unlockedIds: string[]) {
+// A slimmed-down THEME_INITIALIZED payload (3 badges, one agent, one rival,
+// one buildable, no decor) parameterized by theme_id + which badge ids are
+// already unlocked — used to drive the baseline-then-diff dot logic in
+// main.js (badgeUnseenByTheme/badgeKnownByTheme, ~874-990, ~7924-7955) across
+// multiple loads of the same theme and across different themes.
+//
+// `opts` is additive/backward-compatible: every existing call site (Step 14,
+// 15) omits it and gets the exact prior behavior (badge ids a/b/c, threshold
+// 1 on all three, a default zeroed rebirth_state). Step 16 uses it to (a)
+// give a second theme its OWN badge ids/names (proving no id/name reuse with
+// theme "rA"), (b) push the TASKS_COMPLETED badge's threshold well above any
+// leftover state.completedTasks from earlier subtests (rebirthBaseline.tasks
+// is intentionally NOT reset per-theme — see main.js ~8014 — so a threshold
+// of 1 there would spuriously auto-unlock from a prior subtest's counter),
+// and (c) pass an explicit rebirth_state (or null) instead of the default.
+function buildBadgeDotThemePayload(
+  themeId: string,
+  unlockedIds: string[],
+  opts: {
+    badgeIds?: [string, string, string];
+    badgeNames?: [string, string, string];
+    taskThreshold?: number;
+    rebirthState?: any;
+  } = {}
+) {
+  const ids = opts.badgeIds || ['a', 'b', 'c'];
+  const names = opts.badgeNames || ['Alpha Badge', 'Bravo Badge', 'Charlie Badge'];
+  const taskThreshold = typeof opts.taskThreshold === 'number' ? opts.taskThreshold : 1;
   const manifest = {
     theme_id: themeId,
     viewport: {
@@ -274,9 +296,9 @@ function buildBadgeDotThemePayload(themeId: string, unlockedIds: string[]) {
     ],
     decor_objects: [],
     badges: [
-      { badge_id: 'a', display_name: 'Alpha Badge', trigger_type: 'OBJECTS_BUILT', threshold: 1, icon_asset: 'frames.json#achievement_1' },
-      { badge_id: 'b', display_name: 'Bravo Badge', trigger_type: 'RIVALS_EVICTED', threshold: 1, icon_asset: 'frames.json#achievement_2' },
-      { badge_id: 'c', display_name: 'Charlie Badge', trigger_type: 'TASKS_COMPLETED', threshold: 1, icon_asset: 'frames.json#achievement_3' },
+      { badge_id: ids[0], display_name: names[0], trigger_type: 'OBJECTS_BUILT', threshold: 1, icon_asset: 'frames.json#achievement_1' },
+      { badge_id: ids[1], display_name: names[1], trigger_type: 'RIVALS_EVICTED', threshold: 1, icon_asset: 'frames.json#achievement_2' },
+      { badge_id: ids[2], display_name: names[2], trigger_type: 'TASKS_COMPLETED', threshold: taskThreshold, icon_asset: 'frames.json#achievement_3' },
     ],
   };
   const frames: Record<string, string[]> = {
@@ -291,6 +313,24 @@ function buildBadgeDotThemePayload(themeId: string, unlockedIds: string[]) {
     poof: frameArray(2),
     projectile: [PX],
   };
+  const rebirthState = opts.rebirthState !== undefined ? opts.rebirthState : {
+    // Explicit, isolated rebirth_state — real hosts always scope rebirth
+    // progress per theme_id. Without this, main.js's THEME_INITIALIZED
+    // handler falls back to the single non-theme-scoped local
+    // vscode.getState().rebirth blob, which by this point in the boot
+    // sequence carries live gameplay counters (cycleObjectsBuilt/
+    // cycleRivalsEvicted) accumulated by earlier subtests against a
+    // DIFFERENT theme — leaking cross-theme and quietly auto-unlocking
+    // badges here that this fixture never intends to unlock.
+    count: 0,
+    baseline: { built: 0, evicted: 0, tasks: 0 },
+    required: [],
+    unlocked: [],
+    cycleBuilt: 0,
+    cycleEvicted: 0,
+    rackInsertIndex: null,
+    rangedUnlocked: false,
+  };
   return {
     type: 'THEME_INITIALIZED',
     payload: {
@@ -299,24 +339,7 @@ function buildBadgeDotThemePayload(themeId: string, unlockedIds: string[]) {
       frames,
       badges: manifest.badges,
       unlocked_badge_ids: unlockedIds,
-      // Explicit, isolated rebirth_state — real hosts always scope rebirth
-      // progress per theme_id. Without this, main.js's THEME_INITIALIZED
-      // handler falls back to the single non-theme-scoped local
-      // vscode.getState().rebirth blob, which by this point in the boot
-      // sequence carries live gameplay counters (cycleObjectsBuilt/
-      // cycleRivalsEvicted) accumulated by earlier subtests against a
-      // DIFFERENT theme — leaking cross-theme and quietly auto-unlocking
-      // badges here that this fixture never intends to unlock.
-      rebirth_state: {
-        count: 0,
-        baseline: { built: 0, evicted: 0, tasks: 0 },
-        required: [],
-        unlocked: [],
-        cycleBuilt: 0,
-        cycleEvicted: 0,
-        rackInsertIndex: null,
-        rangedUnlocked: false,
-      },
+      rebirth_state: rebirthState,
     },
   };
 }
@@ -410,15 +433,7 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
 
   // ── Install stubbed globals on the context BEFORE running main.js ──────────
   const posted: any[] = [];
-  let stateStore: any = {
-    // Seed rebirth so the 3 required badges are already satisfied for step 5.
-    rebirth: {
-      count: 0,
-      baseline: { built: 0, evicted: 0, tasks: 0 },
-      required: [...BADGE_IDS],
-      unlocked: [...BADGE_IDS],
-    },
-  };
+  let stateStore: any = {};
   win.acquireVsCodeApi = () => ({
     postMessage: (mmm: any) => {
       posted.push(mmm);
@@ -494,6 +509,22 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
     win.dispatchEvent(new win.MessageEvent('message', { data }));
   }
 
+  // Rebirth count now lives SOLELY in the host-persisted SAVE_REBIRTH_STATE
+  // post (media/main.js persistRebirth(), ~1480) — the local unscoped
+  // vscode.getState().rebirth blob was removed. Read the count back from the
+  // most recent posted SAVE_REBIRTH_STATE message instead of local state.
+  function lastRebirthStateCount(): number {
+    for (let i = posted.length - 1; i >= 0; i--) {
+      const m = posted[i];
+      if (m && m.type === 'SAVE_REBIRTH_STATE') {
+        return (m.payload && m.payload.state && typeof m.payload.state.count === 'number')
+          ? m.payload.state.count
+          : 0;
+      }
+    }
+    return 0;
+  }
+
   try {
     // ── Step 1: Boot ─────────────────────────────────────────────────────────
     await t.test('1. boots without throwing', async () => {
@@ -529,11 +560,13 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
 
     // ── Step 5: Rebirth prestige ────────────────────────────────────────────────
     await t.test('5. rebirth: confirm flow fires celebration', () => {
-      const prevCount = (stateStore.rebirth && stateStore.rebirth.count) || 0;
+      const prevCount = lastRebirthStateCount();
       const panel = doc.getElementById('rebirth-panel');
       assert.ok(panel, 'rebirth-panel should have been created by renderBadgePanel');
       // Rebirth button is the enabled (not disabled) .rebirth-btn — required
-      // badges were seeded unlocked via getState().rebirth + unlocked_badge_ids.
+      // badges (rolled by rollRebirthRequirement() from themeBadges, since
+      // buildThemePayload() sends no rebirth_state) are all already unlocked
+      // via unlocked_badge_ids.
       const rebirthBtn = panel.querySelector('.rebirth-btn:not([disabled])');
       assert.ok(rebirthBtn, 'an enabled Rebirth button should be present (required badges unlocked)');
       rebirthBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
@@ -544,8 +577,10 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.ok(confirmBtn, 'Confirm button should appear after clicking Rebirth');
       confirmBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
       // doRebirth() -> celebrateRebirth(): confetti + #rebirth-announce append.
+      // doRebirth() also calls persistRebirth(), which posts the incremented
+      // count host-side via SAVE_REBIRTH_STATE — read it back from `posted`.
       tick(10);
-      const newCount = (stateStore.rebirth && stateStore.rebirth.count) || 0;
+      const newCount = lastRebirthStateCount();
       assert.equal(newCount, prevCount + 1, 'rebirth count should increment');
       assert.ok(doc.getElementById('rebirth-announce'), '#rebirth-announce should be appended');
       assertNoErrors('rebirth');
@@ -1223,6 +1258,129 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
         'badge c re-earned after a shrink must show its dot again (the reviewer-caught defect)'
       );
       assertNoErrors('badge-shrink-reearn-open');
+    });
+
+    // ── Step 16: rebirth count + badges scoped per-theme (no cross-theme leak) ─
+    // Regression coverage for the fix removing the unscoped
+    // vscode.getState().rebirth fallback (main.js persistRebirth()/
+    // THEME_INITIALIZED handler, ~1462-1501 / ~7965-8007): rebirth count and
+    // unlocked badges must come SOLELY from the HOST's per-theme
+    // rebirth_state/unlocked_badge_ids on each THEME_INITIALIZED, never carry
+    // over from a previously loaded theme. renderRebirthPanel() only repaints
+    // on the badges-menu OPEN (not on THEME_INITIALIZED itself), so every
+    // assertion below follows a badge-hud-btn click.
+    await t.test('16. rebirth count + badges scoped per-theme (no cross-theme leak)', async () => {
+      const hudBtn = doc.getElementById('badge-hud-btn');
+      assert.ok(hudBtn, 'badge-hud-btn should exist');
+      const list = doc.getElementById('badge-list');
+      assert.ok(list, 'badge-list should exist');
+      const rebirthPanel = doc.getElementById('rebirth-panel');
+      assert.ok(rebirthPanel, 'rebirth-panel should exist');
+
+      function cardByName(name: string) {
+        return [...list.querySelectorAll('.badge-card')].find(
+          (c: any) => ((c.querySelector('.badge-card-name') || {}).textContent || '') === name
+        );
+      }
+      // title.textContent is "Rebirth ×N" followed by an appended "ⓘ" info
+      // span (see renderRebirthPanel, ~1684-1693), so match by prefix.
+      function rebirthTitleStartsWith(prefix: string): boolean {
+        const title = rebirthPanel.querySelector('.rebirth-title');
+        return !!title && (title.textContent || '').indexOf(prefix) === 0;
+      }
+
+      // rA and rB deliberately SHARE badge id "s1" (position 3, a
+      // TASKS_COMPLETED trigger) — real themes all draw from ONE badge-id
+      // catalog (buildDefaultBadges), so a disjoint-id fixture would only
+      // ever exercise "renderBadgePanel skips ids absent from the current
+      // theme's own catalog," never the actual collision the leak produced:
+      // the SAME id showing unlocked in a theme that never unlocked it.
+      // threshold 1000 keeps it from spuriously auto-unlocking off leftover
+      // state.completedTasks (Step 15c left it at 1, and rebirthBaseline.tasks
+      // is deliberately NOT reset per theme — main.js ~8014).
+      const rAUnlocked = ['a', 'b', 's1'];
+      const rARebirthState = {
+        count: 3,
+        baseline: { built: 0, evicted: 0, tasks: 0 },
+        required: [],
+        unlocked: [],
+        cycleBuilt: 0,
+        cycleEvicted: 0,
+        rackInsertIndex: null,
+        rangedUnlocked: false,
+      };
+
+      // 16a. Load theme "rA": all 3 of its badges (incl. the shared "s1")
+      // unlocked, rebirth count 3.
+      dispatch(buildBadgeDotThemePayload('rA', rAUnlocked, {
+        badgeIds: ['a', 'b', 's1'],
+        badgeNames: ['Alpha Badge', 'Bravo Badge', 'Sierra Badge'],
+        taskThreshold: 1000,
+        rebirthState: rARebirthState,
+      }));
+      tick(2);
+      await flush();
+      assertNoErrors('rebirth-scope-rA-load');
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.ok(rebirthTitleStartsWith('Rebirth ×3'), 'rA rebirth title should reflect count 3');
+      const rACardA = cardByName('Alpha Badge');
+      const rACardB = cardByName('Bravo Badge');
+      const rACardS1 = cardByName('Sierra Badge');
+      assert.ok(rACardA && rACardA.classList.contains('badge-card--unlocked'), 'rA badge a should be unlocked');
+      assert.ok(rACardB && rACardB.classList.contains('badge-card--unlocked'), 'rA badge b should be unlocked');
+      assert.ok(rACardS1 && rACardS1.classList.contains('badge-card--unlocked'), 'rA badge s1 should be unlocked');
+      assertNoErrors('rebirth-scope-rA-open');
+
+      // 16b. Switch to a FRESH theme "rB": ids x/y are distinct from rA, but
+      // the 3rd badge id is the SAME "s1" as rA's — present in rB's catalog
+      // (so it renders) but absent from rB's own unlocked_badge_ids (so it
+      // must render LOCKED). This is the realistic same-id collision: before
+      // the fix, the unscoped vscode.getState().rebirth fallback would have
+      // carried rA's unlockedBadgeIds (incl. "s1") into rB, showing it
+      // unlocked here. taskThreshold 1000 keeps rB's own "s1" from
+      // spuriously auto-unlocking off leftover state.completedTasks.
+      dispatch(buildBadgeDotThemePayload('rB', ['x'], {
+        badgeIds: ['x', 'y', 's1'],
+        badgeNames: ['Xray Badge', 'Yankee Badge', 'Sierra Badge'],
+        taskThreshold: 1000,
+        rebirthState: null,
+      }));
+      tick(2);
+      await flush();
+      assertNoErrors('rebirth-scope-rB-load');
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.ok(rebirthTitleStartsWith('Rebirth ×0'), 'a fresh theme with rebirth_state: null must start at count 0');
+      assert.ok(!cardByName('Alpha Badge'), "rA's badge a must not appear in rB's badge list");
+      assert.ok(!cardByName('Bravo Badge'), "rA's badge b must not appear in rB's badge list");
+      const rBCardX = cardByName('Xray Badge');
+      assert.ok(rBCardX && rBCardX.classList.contains('badge-card--unlocked'), 'rB badge x should be unlocked (its own unlock)');
+      const rBCardS1 = cardByName('Sierra Badge');
+      assert.ok(rBCardS1, "shared badge id s1 should render in rB's badge list (same catalog id as rA)");
+      assert.ok(!rBCardS1.classList.contains('badge-card--unlocked'), 'rB badge s1 must NOT be unlocked — rA unlocking it must not leak into rB');
+      assert.ok(rBCardS1.classList.contains('badge-card--locked'), 'rB badge s1 should render as locked');
+      assertNoErrors('rebirth-scope-rB-open');
+
+      // 16c. Switch BACK to "rA" with its saved rebirth_state (count 3) and
+      // unlocked badges — both must be restored, proving rA's state was
+      // neither leaked into rB nor clobbered by it.
+      dispatch(buildBadgeDotThemePayload('rA', rAUnlocked, {
+        badgeIds: ['a', 'b', 's1'],
+        badgeNames: ['Alpha Badge', 'Bravo Badge', 'Sierra Badge'],
+        taskThreshold: 1000,
+        rebirthState: rARebirthState,
+      }));
+      tick(2);
+      await flush();
+      assertNoErrors('rebirth-scope-rA-restore-load');
+      hudBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.ok(rebirthTitleStartsWith('Rebirth ×3'), 'rA rebirth count 3 should be restored on switch-back');
+      const rACardA2 = cardByName('Alpha Badge');
+      const rACardB2 = cardByName('Bravo Badge');
+      const rACardS1_2 = cardByName('Sierra Badge');
+      assert.ok(rACardA2 && rACardA2.classList.contains('badge-card--unlocked'), 'rA badge a should be restored unlocked');
+      assert.ok(rACardB2 && rACardB2.classList.contains('badge-card--unlocked'), 'rA badge b should be restored unlocked');
+      assert.ok(rACardS1_2 && rACardS1_2.classList.contains('badge-card--unlocked'), 'rA badge s1 should be restored unlocked (rB must not have clobbered it)');
+      assertNoErrors('rebirth-scope-rA-restore-open');
     });
   } finally {
     process.removeListener('unhandledRejection', onRejection);

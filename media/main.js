@@ -1460,30 +1460,24 @@
   }
 
   /**
-   * Persist rebirth state into the SAME vscode getState()/setState() blob used
-   * for metricsHeight/rosterOrder/etc — merges in, never drops existing keys.
+   * Persist rebirth state HOST-SIDE, keyed by currentBadgeThemeId (per-theme,
+   * per-project — matches unlocked_badge_ids' scoping). Previously this also
+   * wrote an UNSCOPED `rebirth` blob into the webview's own vscode.setState()
+   * cache, shared across every theme in the workspace; that blob was read as a
+   * fallback in the THEME_INITIALIZED handler whenever a theme had no host
+   * rebirth_state yet (i.e. a FRESH theme), which leaked the previously
+   * loaded theme's rebirth count and unlocked badges into it. The host post
+   * below was already correctly per-theme, so the unscoped local write was
+   * dropped rather than fixed — nothing reads `getState().rebirth` anymore
+   * (see the one-time legacy purge near the top of this file, which still
+   * deletes any pre-existing blob from before this fix for migrating users).
    * cyclePeakActive is intentionally NOT persisted (brief C1: high-water mark
    * for the CURRENT session only).
-   * D4: also persists rackInsertIndex + rangedPermanentlyUnlocked (same blob,
-   * both webview-local and host-side) so the weapons-rack queue position and
-   * the permanent ranged-combat unlock both survive reloads and future
-   * rebirths, mirroring how rebirthCount/rebirthBaseline/etc already do.
+   * D4: also persists rackInsertIndex + rangedPermanentlyUnlocked so the
+   * weapons-rack queue position and the permanent ranged-combat unlock both
+   * survive reloads and future rebirths, mirroring rebirthCount/baseline/etc.
    */
   function persistRebirth() {
-    const prev = vscode.getState() || {};
-    vscode.setState({
-      ...prev,
-      rebirth: {
-        count: rebirthCount,
-        baseline: rebirthBaseline,
-        required: requiredRebirthBadgeIds,
-        unlocked: [...unlockedBadgeIds],
-        cycleBuilt: cycleObjectsBuilt,
-        cycleEvicted: cycleRivalsEvicted,
-        rackInsertIndex: rackInsertIndex,
-        rangedUnlocked: rangedPermanentlyUnlocked,
-      },
-    });
     // Also persist host-side (per theme) so the rebirth requirement survives
     // webview disposal/reload — vscode.setState() alone is lost on teardown,
     // which caused requiredRebirthBadgeIds to re-roll on every reload.
@@ -4624,8 +4618,8 @@
     return REBIRTH_TIER2_HARD;
   }
   // NOTE: rebirthCount/rebirthBaseline/requiredRebirthBadgeIds are restored
-  // from vscode.getState().rebirth inside the THEME_INITIALIZED handler
-  // (~line 4349), not here — requiredRebirthBadgeIds must be validated
+  // from the HOST's per-theme rebirth_state payload inside the
+  // THEME_INITIALIZED handler, not here — requiredRebirthBadgeIds must be validated
   // against the CURRENT theme's themeBadges (badge_ids aren't shared across
   // themes), which isn't populated until a theme actually loads. cyclePeakActive
   // is intentionally never restored (always starts at 0).
@@ -7894,7 +7888,11 @@
         // must never appear in the queue while rebirthCount is still < 1 (see
         // buildSeededQueue).
         {
-          const _peekedRebirth = msg.payload.rebirth_state || (vscode.getState() || {}).rebirth;
+          // Scoped to the HOST's per-theme rebirth_state only — a fresh theme's
+          // null must never fall back to the webview's local getState() cache
+          // (that blob is a separate per-workspace scratch value, no longer
+          // written with rebirth data; see persistRebirth's doc comment).
+          const _peekedRebirth = msg.payload.rebirth_state || null;
           const _peekedRebirthCount = (_peekedRebirth && typeof _peekedRebirth.count === "number") ? _peekedRebirth.count : 0;
           // D4: also peek the persisted rack-splice index so the rack lands
           // at the SAME stable position it was queued at on the rebirth that
@@ -7966,41 +7964,45 @@
         }
         // ── Rebirth: restore persisted prestige state. Independent of the
         // per-theme badge unlocks above — rebirth (count/baseline/requirement)
-        // persists across theme switches and webview reloads. Source of truth is
-        // now the HOST payload (rebirth_state, keyed by theme_id, survives webview
-        // disposal); fall back to the local vscode getState() cache when absent.
+        // persists across theme switches and webview reloads. Source of truth
+        // is SOLELY the HOST payload (rebirth_state, keyed by theme_id,
+        // survives webview disposal) — a fresh theme's null rebirth_state
+        // MUST fall through to defaults (savedRebirth = {}), never to the
+        // webview's local getState() cache: that cache is a single unscoped
+        // per-workspace value, so falling back to it here previously leaked
+        // the PREVIOUS theme's rebirth count and unlocked badges into a
+        // brand-new theme. persistRebirth() no longer even writes rebirth
+        // data into that local cache (see its doc comment).
         const hostRebirth = msg.payload.rebirth_state;
-        const savedRebirth = hostRebirth || (vscode.getState() || {}).rebirth;
-        if (savedRebirth && typeof savedRebirth === "object") {
-          rebirthCount = typeof savedRebirth.count === "number" ? savedRebirth.count : 0;
-          if (savedRebirth.baseline && typeof savedRebirth.baseline === "object") {
-            rebirthBaseline = {
-              built: savedRebirth.baseline.built || 0,
-              evicted: savedRebirth.baseline.evicted || 0,
-              tasks: savedRebirth.baseline.tasks || 0,
-            };
-          }
-          requiredRebirthBadgeIds = Array.isArray(savedRebirth.required) ? savedRebirth.required.slice() : [];
-          if (Array.isArray(savedRebirth.unlocked)) {
-            for (const id of savedRebirth.unlocked) unlockedBadgeIds.add(id);
-          }
-          // DURABLE per-cycle badge counters: RESTORE (don't reset) so earned-
-          // badge progress survives webview reload. Default 0 when absent (old
-          // saved state, or a theme with no prior cycle progress).
-          cycleObjectsBuilt = typeof savedRebirth.cycleBuilt === "number" ? savedRebirth.cycleBuilt : 0;
-          cycleRivalsEvicted = typeof savedRebirth.cycleEvicted === "number" ? savedRebirth.cycleEvicted : 0;
-          // D4: restore the rack's persisted queue position and the durable
-          // permanent-ranged-unlock flag. Both default to "not yet earned"
-          // when absent (legacy saves predating this field).
-          rackInsertIndex = typeof savedRebirth.rackInsertIndex === "number" ? savedRebirth.rackInsertIndex : null;
-          rangedPermanentlyUnlocked = savedRebirth.rangedUnlocked === true;
-        } else {
-          // No saved rebirth state for this theme — start the cycle counters fresh.
-          cycleObjectsBuilt = 0;
-          cycleRivalsEvicted = 0;
-          rackInsertIndex = null;
-          rangedPermanentlyUnlocked = false;
+        // savedRebirth is always an object here (hostRebirth's type is
+        // RebirthPersist | null host-side; falsy collapses to {}), so there's
+        // no remaining branch where it's a non-object — restoration below
+        // runs unconditionally. Badges are NOT restored here: unlocked ids
+        // come solely from msg.payload.unlocked_badge_ids (seeded above),
+        // never from rebirth_state — the host's RebirthPersist shape has no
+        // `unlocked` field (see src/host/vscode/panel.ts) and persistRebirth()
+        // below never sends one, so a rebirth-side badge fallback would be
+        // dead weight that could only reintroduce a leak path.
+        const savedRebirth = hostRebirth || {};
+        rebirthCount = typeof savedRebirth.count === "number" ? savedRebirth.count : 0;
+        if (savedRebirth.baseline && typeof savedRebirth.baseline === "object") {
+          rebirthBaseline = {
+            built: savedRebirth.baseline.built || 0,
+            evicted: savedRebirth.baseline.evicted || 0,
+            tasks: savedRebirth.baseline.tasks || 0,
+          };
         }
+        requiredRebirthBadgeIds = Array.isArray(savedRebirth.required) ? savedRebirth.required.slice() : [];
+        // DURABLE per-cycle badge counters: RESTORE (don't reset) so earned-
+        // badge progress survives webview reload. Default 0 when absent (old
+        // saved state, or a theme with no prior cycle progress).
+        cycleObjectsBuilt = typeof savedRebirth.cycleBuilt === "number" ? savedRebirth.cycleBuilt : 0;
+        cycleRivalsEvicted = typeof savedRebirth.cycleEvicted === "number" ? savedRebirth.cycleEvicted : 0;
+        // D4: restore the rack's persisted queue position and the durable
+        // permanent-ranged-unlock flag. Both default to "not yet earned"
+        // when absent (legacy saves predating this field).
+        rackInsertIndex = typeof savedRebirth.rackInsertIndex === "number" ? savedRebirth.rackInsertIndex : null;
+        rangedPermanentlyUnlocked = savedRebirth.rangedUnlocked === true;
         // buildBuiltCount/rivalsEvictedCount just restarted at 0 above for this
         // theme session (they're per-theme-session lifetime counters), so the
         // built/evicted baseline components must restart at 0 too — otherwise a
