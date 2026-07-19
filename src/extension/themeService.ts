@@ -1504,6 +1504,43 @@ export async function updateThemeItemDescriptionsBatch(
   return result;
 }
 
+/**
+ * Post-generation editor for the whole-theme creative-direction art seed
+ * (ThemePlan.creative_direction — the string themePlanCreativeDirection()
+ * threads into every board's image prompt). Loads the saved plan.json,
+ * overwrites creative_direction with the trimmed input, and writes the plan
+ * back. Unlike updateThemeItemDescriptionsBatch, no saved review-item prompt
+ * resync is needed: a retry/regenerate always rebuilds its prompt fresh from
+ * the CURRENT plan at retry time (see selectThemeImageRetryPrompt's
+ * freshBasePrompt in themeService.retryThemeImage), so every board picks up
+ * the new direction on its next retry automatically — this call never
+ * touches art that's already been generated.
+ */
+export async function updateThemeCreativeDirection(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  creativeDirection: string,
+): Promise<{ ok: boolean; creative_direction?: string; error?: string }> {
+  if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
+
+  const trimmed = creativeDirection.trim();
+  if (!trimmed) return { ok: false, error: 'Creative direction cannot be empty.' };
+
+  const loadedTheme = await loadTheme(globalStorageUri, themeId);
+  if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be updated.');
+  const { manifest } = loadedTheme;
+
+  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
+    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  if (!savedPlan) throw new Error('This theme has no saved plan — creative direction requires plan.json.');
+  const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+  if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
+
+  plan.creative_direction = trimmed;
+  await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+  return { ok: true, creative_direction: trimmed };
+}
+
 /** Regenerate one character board, then fit its frames to production scale. */
 export async function normalizeThemeCharacterAtlas(
   globalStorageUri: vscode.Uri,

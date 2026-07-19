@@ -161,6 +161,14 @@ export const MSG = {
   THEME_ITEM_NAMES_RESULT: "THEME_ITEM_NAMES_RESULT",
   SET_THEME_ITEM_DESCRIPTIONS: "SET_THEME_ITEM_DESCRIPTIONS",
   THEME_ITEM_DESCRIPTIONS_RESULT: "THEME_ITEM_DESCRIPTIONS_RESULT",
+  // Post-generation editor for the whole-theme art seed (ThemePlan.creative_direction —
+  // themePlanCreativeDirection() threads it into every board's image prompt). Unlike
+  // SET_THEME_ITEM_DESCRIPTIONS, this is a single string, not a per-row batch, and it
+  // lives in the theme review screen's background/environment board card. No resync of
+  // saved review prompts is needed on save — retries always rebuild the prompt fresh
+  // from the current plan at retry time (see selectThemeImageRetryPrompt's freshBasePrompt).
+  SET_THEME_CREATIVE_DIRECTION: "SET_THEME_CREATIVE_DIRECTION",
+  THEME_CREATIVE_DIRECTION_RESULT: "THEME_CREATIVE_DIRECTION_RESULT",
   RESET_THEME_BADGE_NAMES: "RESET_THEME_BADGE_NAMES",
   NORMALIZE_THEME_CHARACTER: "NORMALIZE_THEME_CHARACTER",
   THEME_CHARACTER_NORMALIZE_STATE: "THEME_CHARACTER_NORMALIZE_STATE",
@@ -387,6 +395,15 @@ export const MSG_SCHEMAS = {
             .passthrough(),
         )
         .min(1),
+    })
+    .passthrough(),
+
+  // Post-generation Creative Direction editor (theme review screen). A single
+  // trimmed string overwriting plan.creative_direction — see MSG.SET_THEME_CREATIVE_DIRECTION.
+  SET_THEME_CREATIVE_DIRECTION: z
+    .object({
+      theme_id: z.string().min(1),
+      creative_direction: z.string(),
     })
     .passthrough(),
 

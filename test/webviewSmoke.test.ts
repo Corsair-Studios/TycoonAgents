@@ -2451,3 +2451,96 @@ test('theme-plan generation form: an empty decor name blocks generation with a 9
     h.win.close();
   }
 });
+
+// ── Creative Direction editor (post-generation) + removed "Advanced" mode UI ──
+// New in this release: buildThemeReviewCreativeDirectionSection renders once,
+// on the environment/background board card, sourced from THEME_IMAGE_REVIEW's
+// new `creative_direction` field (see src/host/vscode/panel.ts's
+// THEME_IMAGE_REVIEW payload + themeService.updateThemeCreativeDirection).
+// Saving posts SET_THEME_CREATIVE_DIRECTION, handled by
+// applyThemeCreativeDirectionResult on the THEME_CREATIVE_DIRECTION_RESULT
+// reply. At the same time, the per-board "Advanced — write the full prompt
+// myself" custom-mode <select> plus the read-only "View generation prompt" /
+// "Copy prompt" block were removed from the retry row entirely — the single
+// Retry/Generate button now computes mode itself (retry/augment, or 'custom'
+// only for a blocked item's recovery flow).
+test('THEME_IMAGE_REVIEW: renders the Creative Direction editor prefilled from the payload, and the removed Advanced/mode-select UI is gone', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const items = [
+      {
+        id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+        status: 'pending', prompt: 'A base environment prompt.', revision: 0, frame_keys: [], updated_at: '',
+      },
+      {
+        id: 'objects_01', filename: 'objects_01.png', label: 'Objects 1', kind: 'object_atlas',
+        status: 'pending', prompt: 'A base objects prompt.', revision: 0, frame_keys: [], updated_at: '',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'a moody neon skyline over a rain-slicked outpost',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_IMAGE_REVIEW threw: ${h.errors.map(String).join('; ')}`);
+
+    const list = h.doc.getElementById('theme-image-review-list');
+    assert.ok(list, 'theme-image-review-list should exist');
+
+    // (1) Creative Direction editor renders, prefilled from the payload.
+    const textarea = list.querySelector('.theme-review-creative-direction-input');
+    assert.ok(textarea, 'Creative Direction textarea should render on the environment board card');
+    assert.equal(textarea.value, 'a moody neon skyline over a rain-slicked outpost');
+    const saveBtn = list.querySelector('.theme-review-creative-direction-save');
+    assert.ok(saveBtn, 'Save creative direction button should render');
+
+    // Only ONE Creative Direction editor across all cards — it renders exactly
+    // once (on the environment card), never once per board.
+    assert.equal(
+      list.querySelectorAll('.theme-review-creative-direction-input').length,
+      1,
+      'exactly one Creative Direction editor should render, not one per board'
+    );
+
+    // Saving posts SET_THEME_CREATIVE_DIRECTION with the theme id + trimmed text.
+    saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    const posted = [...h.posted].reverse().find((m: any) => m.type === 'SET_THEME_CREATIVE_DIRECTION');
+    assert.ok(posted, 'clicking Save should post SET_THEME_CREATIVE_DIRECTION');
+    // Compare fields individually rather than via assert.deepEqual on the
+    // whole object: `posted` is a message object constructed inside the
+    // jsdom vm context (a different V8 realm), whose Object.prototype is not
+    // reference-equal to this file's — deepStrictEqual's prototype check
+    // fails on that even when every own-property value is identical.
+    assert.equal(posted.payload.theme_id, 'smoke_theme');
+    assert.equal(posted.payload.creative_direction, 'a moody neon skyline over a rain-slicked outpost');
+    assert.equal(Object.keys(posted.payload).length, 2, 'payload should carry only theme_id + creative_direction');
+
+    // The THEME_CREATIVE_DIRECTION_RESULT reply re-enables the editor and
+    // shows a confirmation, without throwing.
+    h.dispatch({
+      type: 'THEME_CREATIVE_DIRECTION_RESULT',
+      payload: { ok: true, theme_id: 'smoke_theme', creative_direction: 'a moody neon skyline over a rain-slicked outpost' },
+    });
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_CREATIVE_DIRECTION_RESULT threw: ${h.errors.map(String).join('; ')}`);
+    assert.equal(saveBtn.disabled, false, 'Save button should re-enable after the result reply');
+
+    // (2) The removed "Advanced — write the full prompt myself" mode UI is gone.
+    const listText = list.textContent || '';
+    assert.doesNotMatch(listText, /write the full prompt myself/i);
+    assert.doesNotMatch(listText, /View generation prompt/i);
+    assert.doesNotMatch(listText, /Copy prompt/i);
+    assert.equal(list.querySelectorAll('select').length, 0, 'no <select> (the removed per-board mode dropdown) should render in the review list');
+
+    assert.equal(h.errors.length, 0, `errors after the full flow: ${h.errors.map(String).join('; ')}`);
+  } finally {
+    h.win.close();
+  }
+});

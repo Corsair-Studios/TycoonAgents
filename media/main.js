@@ -1960,6 +1960,10 @@
   let themeProviderConfigured = { gemini: false, openai: false };
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
+  /** True while a SET_THEME_CREATIVE_DIRECTION save is in flight. Whole-theme
+   * (not per-item, unlike themeReviewBusyItems) since there is exactly one
+   * Creative Direction editor per theme — see buildThemeReviewCreativeDirectionSection. */
+  let themeReviewCreativeDirectionBusy = false;
   /** Per-item Set of {"names","descriptions"} outstanding replies for the
    * merged "Names & descriptions" editor's single Apply click — see
    * buildThemeReviewNamesDescriptionsSection. */
@@ -2830,12 +2834,11 @@
         }
         drafts.set(itemId, {
           feedback: card.querySelector(".theme-review-feedback")?.value || "",
-          mode: card.querySelector(".theme-review-mode")?.value || "",
           characterName: card.querySelector(".theme-review-name-input")?.value || "",
-          promptOpen: Boolean(card.querySelector(".theme-review-prompt")?.open),
           // Single merged section now — namesOpen drives the one <details>
           // (the old, separate descriptionsOpen flag is retired).
           namesOpen: Boolean(card.querySelector(".theme-review-names-descriptions-details")?.open),
+          creativeDirectionOpen: Boolean(card.querySelector(".theme-review-creative-direction-details")?.open),
           names,
           descriptions,
         });
@@ -3399,6 +3402,107 @@
     return section;
   }
 
+  /**
+   * Builds the post-generation "Creative Direction" editor: a single,
+   * whole-theme textarea for ThemePlan.creative_direction (the art seed
+   * themePlanCreativeDirection() threads into EVERY board's image prompt).
+   * Rendered once — only on the environment/background board card, the one
+   * per-theme card — not once per row like buildThemeReviewNamesDescriptionsSection.
+   * Posts SET_THEME_CREATIVE_DIRECTION on Save; the reply (THEME_CREATIVE_DIRECTION_RESULT)
+   * is handled by applyThemeCreativeDirectionResult. Saving re-grounds any board
+   * regenerated/retried from now on — it never touches already-generated art.
+   * @param {string} themeId
+   * @param {string|undefined} currentDirection the plan's current creative_direction (THEME_IMAGE_REVIEW payload)
+   * @param {{creativeDirectionOpen?: boolean}|undefined} savedDraft
+   * @param {boolean} busy true while a previous Save for this theme is in flight
+   */
+  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, savedDraft, busy) {
+    const section = document.createElement("div");
+    section.className = "theme-review-names-descriptions theme-review-creative-direction";
+    const details = document.createElement("details");
+    details.className = "theme-review-creative-direction-details";
+    details.open = Boolean(savedDraft?.creativeDirectionOpen);
+    const summary = document.createElement("summary");
+    summary.textContent = "Creative direction";
+    details.appendChild(summary);
+
+    const textarea = document.createElement("textarea");
+    textarea.className = "theme-review-creative-direction-input";
+    textarea.rows = 4;
+    textarea.value = currentDirection || "";
+    textarea.dataset.original = currentDirection || "";
+    textarea.disabled = busy;
+    details.appendChild(textarea);
+
+    const warning = document.createElement("div");
+    warning.className = "theme-review-feedback-hint theme-review-custom-warning";
+    warning.textContent = "Rewrites the creative direction for the whole theme. This re-grounds any board you regenerate or retry from now on — it does NOT change art you've already generated until you regenerate it.";
+    details.appendChild(warning);
+
+    const statusEl = document.createElement("div");
+    statusEl.className = "theme-review-names-descriptions-status theme-review-creative-direction-status";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "skill-btn theme-review-creative-direction-save";
+    saveBtn.textContent = busy ? "Saving…" : "Save creative direction";
+    saveBtn.disabled = busy;
+    saveBtn.addEventListener("click", () => {
+      const value = textarea.value.trim();
+      if (!value) {
+        statusEl.textContent = "Creative direction cannot be empty.";
+        statusEl.classList.add("theme-review-error");
+        return;
+      }
+      themeReviewCreativeDirectionBusy = true;
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+      textarea.disabled = true;
+      statusEl.textContent = "";
+      statusEl.classList.remove("theme-review-error");
+      vscode.postMessage({
+        type: "SET_THEME_CREATIVE_DIRECTION",
+        payload: { theme_id: themeId, creative_direction: value },
+      });
+    });
+    details.appendChild(saveBtn);
+    details.appendChild(statusEl);
+    section.appendChild(details);
+    return section;
+  }
+
+  /** Handles a THEME_CREATIVE_DIRECTION_RESULT reply: re-enables the editor and
+   * shows a brief saved/failed confirmation. There is exactly one Creative
+   * Direction editor per theme (on the environment board card), so this simply
+   * finds it by class rather than matching a per-item id like the names/
+   * descriptions handlers above. */
+  function applyThemeCreativeDirectionResult(payload) {
+    themeReviewCreativeDirectionBusy = false;
+    if (!themeImageReviewList) return;
+    const textarea = themeImageReviewList.querySelector(".theme-review-creative-direction-input");
+    if (!textarea) return;
+    const saveBtn = themeImageReviewList.querySelector(".theme-review-creative-direction-save");
+    const statusEl = themeImageReviewList.querySelector(".theme-review-creative-direction-status");
+    textarea.disabled = false;
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Save creative direction";
+    }
+    if (statusEl) {
+      if (payload.ok) {
+        if (payload.creative_direction !== undefined) {
+          textarea.value = payload.creative_direction;
+          textarea.dataset.original = payload.creative_direction;
+        }
+        statusEl.textContent = "Creative direction saved ✓";
+        statusEl.classList.remove("theme-review-error");
+      } else {
+        statusEl.textContent = "Save failed: " + (payload.error || "Unknown error.");
+        statusEl.classList.add("theme-review-error");
+      }
+    }
+  }
+
   /** Re-enables every name/description input plus the shared Apply button for
    * one merged editor once ALL pending SET_THEME_ITEM_NAMES/
    * SET_THEME_ITEM_DESCRIPTIONS replies for that board have settled. Called
@@ -3910,23 +4014,27 @@
       feedback.rows = 3;
       feedback.placeholder = item.generation_error
         ? "Replace the blocked creative direction with neutral, non-graphic visual instructions."
-        : "Write a revised prompt or describe exactly what should change for this item.";
+        : "Optional: describe what should change. Leave blank to just reroll.";
       const savedDraft = reviewUiState.drafts.get(item.id);
       if (savedDraft) feedback.value = savedDraft.feedback;
+      // Guided notes are APPENDED as revision notes on top of the freshly-rebuilt
+      // structured prompt (mode 'augment' — selectThemeImageRetryPrompt), never
+      // sent as the entire prompt. Hidden for blocked items, whose notes DO fully
+      // replace the flagged prompt (see blockedEmptyHint below), where this
+      // reassurance would be misleading.
       const feedbackHint = document.createElement("div");
       feedbackHint.className = "theme-review-feedback-hint";
-      feedbackHint.textContent = "Notes only — don't paste a full prompt; layout and art rules are added automatically.";
-      // Custom mode bypasses the template + sanitizer entirely — the notes ARE
-      // the prompt, so the user is on the hook for grid/background/isolation
-      // rules the template would otherwise guarantee. Shown only in custom mode.
-      const customModeWarning = document.createElement("div");
-      customModeWarning.className = "theme-review-feedback-hint theme-review-custom-warning";
-      customModeWarning.textContent = "Advanced: your notes become the ENTIRE prompt. You must keep the theme's grid (columns×rows), the magenta background, one subject per cell, and no grid lines — or slicing will fail. Tip: Copy the current prompt below and edit it.";
-      customModeWarning.hidden = true;
-      const customModeEmptyHint = document.createElement("div");
-      customModeEmptyHint.className = "theme-review-feedback-hint theme-review-custom-warning";
-      customModeEmptyHint.textContent = "Custom mode needs a prompt.";
-      customModeEmptyHint.hidden = true;
+      feedbackHint.textContent = "Notes only — don't paste a full prompt; layout and art rules are added automatically. Leave blank to reroll unchanged.";
+      feedbackHint.hidden = Boolean(item.generation_error);
+      // Blocked items are the one narrow recovery case where notes DO become the
+      // entire replacement prompt (mode 'custom') — the previous prompt was
+      // flagged, so there is no safe structured base left to append onto.
+      // Required (non-empty) only for this path; normal retry/augment notes stay
+      // optional. No other UI path can trigger 'custom'.
+      const blockedEmptyHint = document.createElement("div");
+      blockedEmptyHint.className = "theme-review-feedback-hint theme-review-custom-warning";
+      blockedEmptyHint.textContent = "Add replacement notes for this blocked image before retrying.";
+      blockedEmptyHint.hidden = true;
       // Object/decor/rival board rows are always drawn from the manifest's
       // buildable_objects / decor_objects / roster_rivals display names, and
       // per-item visual descriptions (0.0.265) replace the manual "retry with
@@ -3940,39 +4048,28 @@
         themeReviewBusyItems.get(item.id) === "names_descriptions",
         Boolean(payload.generation_active && !isCurrentReviewGate),
       );
+      // Whole-theme creative-direction editor: only the environment/background
+      // board is the single per-theme card (every other kind is per-row), so
+      // this renders exactly once instead of repeating on every board card.
+      const creativeDirectionSection = item.kind === "environment"
+        ? buildThemeReviewCreativeDirectionSection(
+            reviewThemeId,
+            payload.creative_direction,
+            savedDraft,
+            themeReviewCreativeDirectionBusy,
+          )
+        : null;
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
-      const mode = document.createElement("select");
-      mode.className = "theme-review-mode";
-      // Only TWO retry modes are exposed now: 'retry' (regenerate from the saved
-      // names & descriptions, no free-text notes) and 'custom' (advanced: the
-      // user writes the entire prompt). The former 'augment'/'replace' notes
-      // modes were removed — the Names & descriptions editor above is the
-      // supported way to steer appearance. The BACKEND still handles every mode
-      // (selectThemeImageRetryPrompt); stale drafts are coerced below so a
-      // now-removed value can't break the select.
-      const retryOption = document.createElement("option");
-      retryOption.value = "retry";
-      retryOption.textContent = "Regenerate (uses your names & descriptions)";
-      retryOption.disabled = !item.prompt;
-      const customOption = document.createElement("option");
-      customOption.value = "custom";
-      customOption.textContent = "Advanced — write the full prompt myself";
-      mode.appendChild(retryOption);
-      mode.appendChild(customOption);
-      // Default to retry; fall back to custom when there is no saved prompt to
-      // regenerate from, or when the image was blocked (custom lets the user
-      // rewrite the offending prompt).
-      mode.value = retryOption.disabled ? "custom" : "retry";
-      if (item.generation_error) mode.value = "custom";
-      // Coerce a stale draft mode saved under the removed 'augment'/'replace'
-      // options to 'retry' before matching, so it doesn't silently fail to apply.
-      let savedMode = savedDraft?.mode;
-      if (savedMode === "augment" || savedMode === "replace") savedMode = "retry";
-      if (savedMode
-          && Array.from(mode.options).some((option) => option.value === savedMode && !option.disabled)) {
-        mode.value = savedMode;
-      }
+      // Single retry action — no mode dropdown. 'retry' rebuilds the structured
+      // prompt fresh from the current plan (names & descriptions); when the user
+      // types notes they are APPENDED as revision notes on top of that same
+      // fresh structured prompt ('augment' — selectThemeImageRetryPrompt), never
+      // sent as the whole prompt. The one exception is a blocked image
+      // (item.generation_error), whose notes fully replace the flagged prompt
+      // ('custom') since there's no safe structured base left to append onto —
+      // see the effectiveMode computation in the click handler below. No other
+      // path can reach 'custom'.
       const retryBtn = document.createElement("button");
       retryBtn.className = "skill-btn theme-review-retry";
       const retryIdleText = item.image_src || item.generation_error ? "Retry image" : "Generate image";
@@ -3995,7 +4092,12 @@
           : "Generate a replacement using the notes above.";
       retryBtn.addEventListener("click", () => {
         const notes = feedback.value.trim();
-        if (mode.value !== "retry" && !notes) {
+        // Blocked items always fully replace the flagged prompt ('custom');
+        // otherwise notes present -> 'augment' (appended onto the freshly-
+        // rebuilt structured prompt), notes empty -> plain re-roll ('retry').
+        // No UI path here can ever send 'custom' for a normal (non-blocked) item.
+        const effectiveMode = item.generation_error ? "custom" : (notes ? "augment" : "retry");
+        if (effectiveMode !== "retry" && !notes) {
           feedback.focus();
           feedback.setAttribute("aria-invalid", "true");
           return;
@@ -4013,31 +4115,22 @@
             theme_id: reviewThemeId,
             item_id: item.id,
             feedback: notes,
-            mode: mode.value,
+            mode: effectiveMode,
             image_provider: selectedThemeImageProvider(),
             character_name: characterNameInput ? characterNameInput.value.trim() : undefined,
           },
         });
       });
-      const updateRetryMode = () => {
-        const isCustomMode = mode.value === "custom";
-        // The notes/feedback box exists ONLY for custom (full-prompt) mode now.
-        // Retry regenerates from the saved names & descriptions and shows no
-        // notes box at all.
-        feedback.hidden = !isCustomMode;
-        feedback.disabled = !isCustomMode;
-        if (!isCustomMode) feedback.removeAttribute("aria-invalid");
-        customModeWarning.hidden = !isCustomMode;
-        // feedbackHint described the removed augment/replace notes modes; neither
-        // remaining mode needs it (retry = no notes, custom = warning covers it).
-        feedbackHint.hidden = true;
-        const customEmpty = isCustomMode && !feedback.value.trim();
-        customModeEmptyHint.hidden = !customEmpty;
-        retryBtn.disabled = retryBtnBaseDisabled || customEmpty;
+      const updateFeedbackState = () => {
+        // Only a blocked item requires non-empty notes before it can be retried
+        // (its notes fully replace the flagged prompt); normal retry/augment
+        // notes stay optional.
+        const blockedNeedsNotes = Boolean(item.generation_error) && !feedback.value.trim();
+        blockedEmptyHint.hidden = !blockedNeedsNotes;
+        retryBtn.disabled = retryBtnBaseDisabled || blockedNeedsNotes;
       };
-      mode.addEventListener("change", updateRetryMode);
-      feedback.addEventListener("input", updateRetryMode);
-      updateRetryMode();
+      feedback.addEventListener("input", updateFeedbackState);
+      updateFeedbackState();
       // Re-slice re-runs slicing on the saved raw atlas with no image-API cost.
       // Only available when the theme saved its original atlas (older themes did not).
       let resliceBtn = null;
@@ -4068,64 +4161,22 @@
       const persistedRetryWarning = themeReviewRetryWarnings.get(item.id) || "";
       retryWarning.textContent = persistedRetryWarning;
       retryWarning.hidden = !persistedRetryWarning;
-      retryRow.appendChild(mode);
       retryRow.appendChild(retryBtn);
       if (resliceBtn) retryRow.appendChild(resliceBtn);
-
-      const promptDetails = document.createElement("details");
-      promptDetails.className = "theme-review-prompt";
-      promptDetails.open = Boolean(savedDraft?.promptOpen);
-      const promptSummary = document.createElement("summary");
-      promptSummary.textContent = "View generation prompt";
-      // Prefer the prompt a retry would build RIGHT NOW (current template +
-      // manifest + plan) over the stale prompt saved at original generation
-      // (item.prompt), so View/Copy reflect any prompt-template changes that
-      // shipped since this image was first generated. Falls back to the
-      // saved prompt when the fresh one couldn't be computed (e.g. legacy
-      // theme with no plan.json).
-      const displayPrompt = item.currentPrompt || item.prompt;
-      const promptText = document.createElement("pre");
-      promptText.textContent = displayPrompt || "Legacy image — no original prompt was saved.";
-      promptDetails.appendChild(promptSummary);
-      promptDetails.appendChild(promptText);
-
-      // Lets the user grab the exact assembled prompt as a starting point for
-      // custom mode (or any other manual edit), without retyping it by hand.
-      const copyPromptBtn = document.createElement("button");
-      copyPromptBtn.type = "button";
-      copyPromptBtn.className = "skill-btn theme-review-copy-prompt";
-      copyPromptBtn.dataset.idleText = "Copy prompt";
-      copyPromptBtn.textContent = "Copy prompt";
-      copyPromptBtn.disabled = !displayPrompt;
-      copyPromptBtn.title = displayPrompt
-        ? "Copy the exact assembled prompt to the clipboard."
-        : "No prompt was saved for this image.";
-      copyPromptBtn.addEventListener("click", () => {
-        if (!displayPrompt || !navigator.clipboard?.writeText) return;
-        navigator.clipboard.writeText(displayPrompt).then(() => {
-          copyPromptBtn.textContent = "Copied!";
-          setTimeout(() => { copyPromptBtn.textContent = copyPromptBtn.dataset.idleText; }, 1500);
-        }).catch(() => {});
-      });
-      const promptRow = document.createElement("div");
-      promptRow.className = "theme-review-prompt-row";
-      promptRow.appendChild(promptDetails);
-      promptRow.appendChild(copyPromptBtn);
 
       body.appendChild(heading);
       body.appendChild(meta);
       if (generationError) body.appendChild(generationError);
       if (nameRow) body.appendChild(nameRow);
       if (namesDescriptionsSection) body.appendChild(namesDescriptionsSection);
+      if (creativeDirectionSection) body.appendChild(creativeDirectionSection);
       body.appendChild(decisionRow);
       body.appendChild(feedback);
       body.appendChild(feedbackHint);
-      body.appendChild(customModeWarning);
-      body.appendChild(customModeEmptyHint);
+      body.appendChild(blockedEmptyHint);
       body.appendChild(retryRow);
       body.appendChild(retryStatus);
       body.appendChild(retryWarning);
-      body.appendChild(promptRow);
       card.appendChild(preview);
       card.appendChild(body);
       themeImageReviewList.appendChild(card);
@@ -8488,6 +8539,8 @@
       applyThemeItemNamesResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_ITEM_DESCRIPTIONS_RESULT") {
       applyThemeItemDescriptionsResult(msg.payload || {});
+    } else if (msg && msg.type === "THEME_CREATIVE_DIRECTION_RESULT") {
+      applyThemeCreativeDirectionResult(msg.payload || {});
     } else if (msg && msg.type === "BACKGROUND_REPLACE_RESULT") {
       const ok = msg.payload && msg.payload.ok;
       const cancelled = msg.payload && msg.payload.cancelled;

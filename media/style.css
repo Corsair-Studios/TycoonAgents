@@ -3906,20 +3906,40 @@ button.theme-review-preview:focus-visible::after {
   color: var(--vscode-testing-iconFailed, #f85149);
 }
 
-/* Collapsible — mirrors the .theme-review-prompt <details> summary styling.
-   Collapsed by default; the flex column keeps the hint, grid, Apply button,
-   and status stacked once expanded. */
-.theme-review-names-descriptions-details {
+/* Collapsible — collapsed by default; the flex column keeps the hint, grid,
+   Apply button, and status stacked once expanded. Also used by the whole-theme
+   Creative Direction editor (.theme-review-creative-direction-details). */
+.theme-review-names-descriptions-details,
+.theme-review-creative-direction-details {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.theme-review-names-descriptions-details > summary {
+.theme-review-names-descriptions-details > summary,
+.theme-review-creative-direction-details > summary {
   cursor: pointer;
   color: var(--vscode-textLink-foreground, #4daafc);
   font-size: 11px;
   margin-bottom: 2px;
+}
+
+.theme-review-creative-direction-input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  color: var(--vscode-input-foreground, var(--text));
+  background: var(--vscode-input-background, #171a1f);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 4px;
+}
+
+.theme-review-creative-direction-save {
+  align-self: flex-start;
 }
 
 .theme-review-description-input {
@@ -3936,8 +3956,7 @@ button.theme-review-preview:focus-visible::after {
   border-radius: 4px;
 }
 
-.theme-review-feedback,
-.theme-review-mode {
+.theme-review-feedback {
   min-width: 0;
   padding: 7px 9px;
   color: var(--vscode-input-foreground, var(--text));
@@ -3970,39 +3989,6 @@ button.theme-review-preview:focus-visible::after {
 
 .theme-review-custom-warning[hidden] {
   display: none;
-}
-
-.theme-review-prompt-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.theme-review-prompt-row .theme-review-prompt {
-  flex: 1;
-  min-width: 0;
-}
-
-.theme-review-copy-prompt {
-  flex: 0 0 auto;
-}
-
-.theme-review-mode {
-  flex: 1;
-}
-
-.theme-review-prompt summary {
-  cursor: pointer;
-  color: var(--vscode-textLink-foreground, #4daafc);
-  font-size: 11px;
-}
-
-.theme-review-prompt pre {
-  max-height: 180px;
-  overflow: auto;
-  white-space: pre-wrap;
-  color: var(--vscode-descriptionForeground, var(--muted));
-  font: 10px/1.45 var(--vscode-editor-font-family, monospace);
 }
 
 .theme-review-empty {

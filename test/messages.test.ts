@@ -27,6 +27,7 @@ test('media/main.js still uses a representative sample of MSG wire strings', () 
     ['SAVE_STAGE_TUNING', MSG.SAVE_STAGE_TUNING],
     ['setAgentModel', MSG.SET_AGENT_MODEL],
     ['SET_THEME_ITEM_NAMES', MSG.SET_THEME_ITEM_NAMES],
+    ['SET_THEME_CREATIVE_DIRECTION', MSG.SET_THEME_CREATIVE_DIRECTION],
   ];
   for (const [label, wire] of spotChecks) {
     assert.ok(
@@ -179,4 +180,65 @@ test('SET_THEME_ITEM_DESCRIPTIONS schema: unknown item_kind still fails', () => 
 test('RESET_THEME_BADGE_NAMES schema: valid payload passes, missing theme_id fails', () => {
   assert.equal(MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse({ theme_id: 'cobra_command' }).success, true);
   assert.equal(MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse({}).success, false);
+});
+
+// --- SET_THEME_CREATIVE_DIRECTION / THEME_CREATIVE_DIRECTION_RESULT ---------
+// Post-generation "Creative Direction" editor (see themeService.
+// updateThemeCreativeDirection). MSG_SCHEMAS only validates MUTATING inbound
+// messages (see the module's own doc comment) — THEME_CREATIVE_DIRECTION_RESULT
+// is an outbound host->webview reply, so like every other *_RESULT message in
+// this file (e.g. THEME_ITEM_DESCRIPTIONS_RESULT) it has no schema entry;
+// it's covered here only as a wire-string/uniqueness check.
+
+test('SET_THEME_CREATIVE_DIRECTION schema: valid payload passes', () => {
+  const result = MSG_SCHEMAS.SET_THEME_CREATIVE_DIRECTION.safeParse({
+    theme_id: 'cobra_command',
+    creative_direction: 'a grizzled space pirate with a cybernetic eye',
+  });
+  assert.equal(result.success, true);
+});
+
+test('SET_THEME_CREATIVE_DIRECTION schema: an empty creative_direction string still passes (emptiness is rejected by themeService, not the wire schema)', () => {
+  const result = MSG_SCHEMAS.SET_THEME_CREATIVE_DIRECTION.safeParse({
+    theme_id: 'cobra_command',
+    creative_direction: '',
+  });
+  assert.equal(result.success, true);
+});
+
+test('SET_THEME_CREATIVE_DIRECTION schema: missing theme_id fails', () => {
+  const result = MSG_SCHEMAS.SET_THEME_CREATIVE_DIRECTION.safeParse({
+    creative_direction: 'a grizzled space pirate',
+  });
+  assert.equal(result.success, false);
+});
+
+test('SET_THEME_CREATIVE_DIRECTION schema: missing creative_direction fails', () => {
+  const result = MSG_SCHEMAS.SET_THEME_CREATIVE_DIRECTION.safeParse({ theme_id: 'cobra_command' });
+  assert.equal(result.success, false);
+});
+
+test('SET_THEME_CREATIVE_DIRECTION schema: non-string creative_direction fails', () => {
+  const result = MSG_SCHEMAS.SET_THEME_CREATIVE_DIRECTION.safeParse({
+    theme_id: 'cobra_command',
+    creative_direction: 42,
+  });
+  assert.equal(result.success, false);
+});
+
+test('SET_THEME_CREATIVE_DIRECTION schema: extra fields are tolerated (passthrough)', () => {
+  const result = MSG_SCHEMAS.SET_THEME_CREATIVE_DIRECTION.safeParse({
+    theme_id: 'cobra_command',
+    creative_direction: 'a grizzled space pirate',
+    futureField: 'ignored-by-older-hosts',
+  });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal((result.data as Record<string, unknown>)['futureField'], 'ignored-by-older-hosts');
+  }
+});
+
+test('MSG carries both the SET_THEME_CREATIVE_DIRECTION request and THEME_CREATIVE_DIRECTION_RESULT reply wire strings', () => {
+  assert.equal(MSG.SET_THEME_CREATIVE_DIRECTION, 'SET_THEME_CREATIVE_DIRECTION');
+  assert.equal(MSG.THEME_CREATIVE_DIRECTION_RESULT, 'THEME_CREATIVE_DIRECTION_RESULT');
 });

@@ -67,6 +67,7 @@ import {
   retryThemeImage,
   resumeThemeGeneration,
   saveThemeTuning,
+  updateThemeCreativeDirection,
   updateThemeImageReviewStatus,
   updateThemeItemDescriptionsBatch,
   upgradeInstalledThemes,
@@ -1138,6 +1139,26 @@ export class TycoonPanel {
               payload: { ok: false, theme_id: themeId, board_id: boardId, error: errorMessage(err) },
             });
           }
+        } else if (message.type === MSG.SET_THEME_CREATIVE_DIRECTION) {
+          const parsedDirection = MSG_SCHEMAS.SET_THEME_CREATIVE_DIRECTION.safeParse((message as any).payload);
+          if (!parsedDirection.success) return;
+          const { theme_id: themeId, creative_direction: creativeDirection } = parsedDirection.data;
+          if (!/^[a-z0-9_]+$/.test(themeId)) return;
+          try {
+            const result = await updateThemeCreativeDirection(this._globalStorageUri, themeId, creativeDirection);
+            // No review resync here — retries always rebuild their prompt fresh
+            // from the current plan at retry time, so there is no saved review
+            // item to refresh (contrast SET_THEME_ITEM_DESCRIPTIONS above).
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_CREATIVE_DIRECTION_RESULT,
+              payload: { ...result, theme_id: themeId },
+            });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_CREATIVE_DIRECTION_RESULT,
+              payload: { ok: false, theme_id: themeId, error: errorMessage(err) },
+            });
+          }
         } else if (message.type === MSG.RESET_THEME_BADGE_NAMES) {
           const parsedReset = MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse((message as any).payload);
           if (!parsedReset.success) return;
@@ -2118,6 +2139,11 @@ export class TycoonPanel {
           waiting_for_review_item_id: this._themeGenerationReviewGate?.themeId === themeId
             ? this._themeGenerationReviewGate.itemId
             : undefined,
+          // Prefills the post-generation "Creative Direction" editor on the
+          // environment/background board card (see buildThemeReviewCreativeDirectionSection
+          // in media/main.js). Sourced from the same currentPlan this function
+          // already loads for currentPrompt, so it's always the freshest saved value.
+          creative_direction: currentPlan?.creative_direction,
           items,
         },
       });
