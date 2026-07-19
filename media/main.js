@@ -1918,6 +1918,7 @@
   const themePlanObjectsSlots = /** @type {HTMLElement} */ (document.getElementById("theme-plan-objects-slots"));
   const themePlanCrateDesc  = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-crate-desc"));
   const themePlanPoofDesc   = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-poof-desc"));
+  const themePlanProjectileDesc = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-projectile-desc"));
   const themePlanExpressionsSlots = /** @type {HTMLElement} */ (document.getElementById("theme-plan-expressions-slots"));
   const themePlanAchievementsSlots = /** @type {HTMLElement} */ (document.getElementById("theme-plan-achievements-slots"));
   const themePlanValidation = /** @type {HTMLElement} */ (document.getElementById("theme-plan-validation"));
@@ -2438,9 +2439,13 @@
       lockedNote: (index) => (index === 0
         ? "Building this unlocks ranged weapons — rename/redescribe freely, but slot 1 always stays the weapons rack."
         : null),
+      contextLine: (index) => (index >= THEME_PLAN_OBJECT_COUNT - 2
+        ? "Animated — this object gets a 4-frame idle loop, so make it motion-friendly (blinking lights, a spinning part, etc.)"
+        : null),
     });
     if (themePlanCrateDesc) themePlanCrateDesc.value = plan.crate_description || "";
     if (themePlanPoofDesc) themePlanPoofDesc.value = plan.poof_description || "";
+    if (themePlanProjectileDesc) themePlanProjectileDesc.value = plan.projectile_description || "";
     renderPlanSlotsWithDesc(themePlanExpressionsSlots, THEME_PLAN_FIXED_EXPRESSION_LABELS, plan.expression_descriptions || [], {
       count: THEME_PLAN_EXPRESSION_COUNT,
       groupName: "expressions",
@@ -2548,6 +2553,7 @@
       object_descriptions: objectSlots.descriptions,
       crate_description: themePlanCrateDesc ? themePlanCrateDesc.value.trim() : "",
       poof_description: themePlanPoofDesc ? themePlanPoofDesc.value.trim() : "",
+      projectile_description: themePlanProjectileDesc ? themePlanProjectileDesc.value.trim() : (currentThemePlan.projectile_description || undefined),
       expressions: THEME_PLAN_FIXED_EXPRESSION_LABELS.slice(),
       expression_descriptions: expressionSlots.descriptions,
       achievements,

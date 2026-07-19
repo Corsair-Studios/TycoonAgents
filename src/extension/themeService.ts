@@ -2859,7 +2859,9 @@ function createDecorReviewItem(
     label: 'Background decor',
     kind: 'background_decor_atlas',
     status: 'pending',
-    prompt: buildBackgroundDecorPrompt(creativeDirection, plan.display_name, rows, backgroundMode),
+    prompt: buildBackgroundDecorPrompt(
+      creativeDirection, plan.display_name, rows, backgroundMode, plan.projectile_description,
+    ),
     revision: 0,
     frame_keys: decorBoardFrameKeys(rows),
     decor_rows: rows.flat(),
@@ -3384,7 +3386,7 @@ export function buildReplacementPrompt(
   plan?: Pick<ThemePlan,
     | 'expressions' | 'achievements' | 'objects' | 'object_motion_hints'
     | 'character_descriptions' | 'object_descriptions' | 'decor_descriptions' | 'enemy_descriptions'
-    | 'crate_description' | 'poof_description'
+    | 'crate_description' | 'poof_description' | 'projectile_description'
   >,
   backgroundMode: BoardBackgroundMode = 'magenta',
   // DISPLAY-ONLY opt-in. When true, the object board rebuilds its rows from the
@@ -3426,7 +3428,9 @@ export function buildReplacementPrompt(
     // decorRowsForItem) so a decor roster change regenerates the correct board
     // instead of reusing stale saved decor_rows.
     const rows = decorRowsToBoard(decorRowsForItem(item, manifest, plan?.decor_descriptions));
-    return buildBackgroundDecorPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
+    return buildBackgroundDecorPrompt(
+      creativeDirection, manifest.display_name, rows, backgroundMode, plan?.projectile_description,
+    );
   }
   if (item.kind === 'expression_atlas') {
     // Prefer the CURRENT plan's expression names over the item's saved names,

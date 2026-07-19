@@ -645,3 +645,24 @@ test('buildBackgroundDecorPrompt appends visual descriptions to seat and animate
   assert.doesNotMatch(baseline, /A weathered oak stool/);
   assert.doesNotMatch(baseline, /A slow-turning ceiling fan/);
 });
+
+test('buildBackgroundDecorPrompt appends an Appearance line to the projectile row when projectileDescription is supplied, byte-identical without it', () => {
+  const rows = createDecorBoardRows(decorSpecs());
+  const baseline = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', rows);
+  const omittedParam = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', rows, 'magenta');
+  const explicitUndefined = buildBackgroundDecorPrompt('cozy tavern', 'Tavern', rows, 'magenta', undefined);
+  assert.equal(omittedParam, baseline);
+  assert.equal(explicitUndefined, baseline);
+  assert.doesNotMatch(baseline, /Appearance — depict this exact design/);
+  // Row 4 (the projectile FX) is present regardless of whether a description was supplied.
+  assert.match(baseline, /Row 4 \(Cells 13-16\): the themed RANGED-WEAPON-FIRE projectile/i);
+
+  const described = buildBackgroundDecorPrompt(
+    'cozy tavern', 'Tavern', rows, 'magenta',
+    'a crackling blue energy bolt with a trailing spark tail',
+  );
+  assert.match(described, /Appearance — depict this exact design: a crackling blue energy bolt with a trailing spark tail/);
+  assert.match(described, /Row 4 \(Cells 13-16\): the themed RANGED-WEAPON-FIRE projectile/i);
+  assert.doesNotMatch(baseline, /a crackling blue energy bolt/);
+  assert.notEqual(described, baseline);
+});

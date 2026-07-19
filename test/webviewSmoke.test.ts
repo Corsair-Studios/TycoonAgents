@@ -2074,6 +2074,36 @@ test('theme-plan generation form: renders 21/8/25 per-slot rows, expression name
     const objRow20Note = objectRows[20].querySelector('.theme-plan-slot-note');
     assert.equal(objRow20Note, null, 'the last object slot should NOT show a locked note');
   } finally {
+    h.win.close();
+  }
+});
+
+test('theme-plan generation form: objects editor shows an Animated context line on the LAST 2 object slots only', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan());
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const objectsContainer = h.doc.getElementById('theme-plan-objects-slots');
+    const objectRows = objectsContainer.querySelectorAll('.theme-plan-slot-row');
+    assert.equal(objectRows.length, 21, 'objects should render 21 per-slot rows');
+
+    // THEME_PLAN_OBJECT_COUNT - 2 = index 19: the last two slots (19 and 20 of
+    // 21) get the 4-frame idle-loop call-out; an early slot (index 5) must not.
+    const row5Ctx = objectRows[5].querySelector('.theme-plan-slot-context');
+    assert.equal(row5Ctx, null, 'an early object slot (index 5) should NOT show the Animated context line');
+
+    const row19Ctx = objectRows[19].querySelector('.theme-plan-slot-context');
+    const row20Ctx = objectRows[20].querySelector('.theme-plan-slot-context');
+    assert.ok(row19Ctx, 'object slot index 19 (the 20th of 21) should show a context line');
+    assert.ok(row20Ctx, 'object slot index 20 (the last of 21) should show a context line');
+    assert.match(row19Ctx.textContent || '', /Animated/i, 'slot 19 context should mention "Animated"');
+    assert.match(row20Ctx.textContent || '', /Animated/i, 'slot 20 context should mention "Animated"');
+    assert.match(row19Ctx.textContent || '', /4-frame idle loop/i, 'slot 19 context should mention the 4-frame idle loop');
+    assert.match(row20Ctx.textContent || '', /4-frame idle loop/i, 'slot 20 context should mention the 4-frame idle loop');
+  } finally {
     // try/finally (not a trailing call) so a failed assertion above still
     // closes the jsdom window — main.js schedules a real (unstubbed)
     // window.setInterval for the project-plan re-render ticker, and an
@@ -2148,6 +2178,44 @@ test('theme-plan generation form: collectEditedThemePlan (via Start generation) 
 
     assert.equal(plan.crate_description, 'Edited crate description', 'edited crate description should round-trip');
     assert.equal(plan.poof_description, 'Edited poof description', 'edited poof description should round-trip');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('theme-plan generation form: projectile description field renders from plan.projectile_description and an edit round-trips via Start generation without dropping other fields', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan({ projectile_description: 'A crackling blue energy bolt' }));
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const projectileField = h.doc.getElementById('theme-plan-projectile-desc') as any;
+    assert.ok(projectileField, 'theme-plan-projectile-desc should exist');
+    assert.equal(
+      projectileField.value,
+      'A crackling blue energy bolt',
+      'projectile description field should populate from plan.projectile_description'
+    );
+
+    projectileField.value = 'Edited projectile description';
+
+    const startBtn = h.doc.getElementById('theme-start-generation-btn');
+    assert.ok(startBtn, 'theme-start-generation-btn should exist');
+    startBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    assert.equal(h.errors.length, 0, `Start-generation click threw: ${h.errors.map(String).join('; ')}`);
+
+    const genMsg = [...h.posted].reverse().find((m: any) => m.type === 'GENERATE_THEME');
+    assert.ok(genMsg, 'a valid plan should post GENERATE_THEME');
+    const plan = genMsg.payload.plan;
+    assert.equal(plan.projectile_description, 'Edited projectile description', 'edited projectile description should round-trip');
+    // Sibling single-string fields and full-count arrays must not be dropped
+    // by the collectEditedThemePlan spread/override.
+    assert.equal(plan.crate_description, 'A glowing seed pod crate', 'crate description should be unaffected');
+    assert.equal(plan.poof_description, 'A puff of spores', 'poof description should be unaffected');
+    assert.equal(plan.objects.length, 21, 'objects should still have 21 entries');
+    assert.equal(plan.object_descriptions.length, 21, 'object_descriptions should still have 21 entries');
   } finally {
     h.win.close();
   }

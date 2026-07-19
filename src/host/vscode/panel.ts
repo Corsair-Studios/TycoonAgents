@@ -5911,6 +5911,10 @@ export class TycoonPanel {
               <span>Poof effect <small>fixed object &middot; appearance only</small></span>
               <textarea id="theme-plan-poof-desc" rows="2" placeholder="Appearance / description (optional)"></textarea>
             </label>
+            <label class="theme-plan-field theme-plan-field--sub">
+              <span>Ranged projectile <small>fixed object &middot; appearance only &middot; animates muzzle &rarr; flight &rarr; impact &rarr; blast</small></span>
+              <textarea id="theme-plan-projectile-desc" rows="2" placeholder="Appearance / description for the ranged combat projectile (optional)"></textarea>
+            </label>
           </fieldset>
           <fieldset class="theme-plan-group">
             <legend>Decor <span>9 items &middot; 1 sprite board</span></legend>

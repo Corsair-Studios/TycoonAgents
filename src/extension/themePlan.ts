@@ -142,6 +142,16 @@ export interface ThemePlan {
    * Internal plan field only — NOT part of the immutable shared/types contract.
    */
   poof_description?: string;
+  /**
+   * Optional concrete visual-appearance spec for the single ranged-combat
+   * PROJECTILE FX (background decor board row 4 — see buildBackgroundDecorPrompt).
+   * A single string, not an array — see `crate_description` for the shape/intent;
+   * the projectile is likewise REQUIRED for every theme (never removed, since
+   * ranged combat always fires it) and never renamed, only its appearance is
+   * editable. Its 4 frames are muzzle-fire, in-flight, hit, and blast.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  projectile_description?: string;
   decor: string[];
   /**
    * Optional per-decor concrete visual-appearance spec (same length/order as
@@ -249,6 +259,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     object_descriptions: objectDescriptions,
     crate_description: cleanValue(input.crate_description) || undefined,
     poof_description: cleanValue(input.poof_description) || undefined,
+    projectile_description: cleanValue(input.projectile_description) || undefined,
     decor,
     decor_descriptions: alignDescriptions(input.decor, input.decor_descriptions, decor),
     enemies,

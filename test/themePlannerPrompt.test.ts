@@ -82,6 +82,17 @@ test('buildThemePlanningPrompt still requests every other *_descriptions field p
   assert.match(prompt, /"poof_description"/);
 });
 
+test('buildThemePlanningPrompt requests projectile_description as the single ranged-combat projectile appearance spec', () => {
+  const prompt = buildThemePlanningPrompt('arctic research base');
+  assert.match(prompt, /"projectile_description"/);
+  assert.match(prompt, /projectile/i);
+  assert.match(prompt, /ranged-combat projectile/i);
+  // Called out as a single string, not a per-slot array, and its 4-frame
+  // launch/flight/hit/blast animation contract is spelled out for the planner.
+  assert.match(prompt, /single string \(not an array\)/i);
+  assert.match(prompt, /4-frame sequence/i);
+});
+
 test('buildThemePlanningPrompt enforces non-empty, exact-count descriptions', () => {
   const prompt = buildThemePlanningPrompt('haunted carnival');
   assert.match(prompt, /non-empty/i);

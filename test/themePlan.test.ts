@@ -448,3 +448,21 @@ test('a plan JSON that omits every *_descriptions array entirely never throws an
   assert.equal(plan.expression_descriptions, undefined);
   assert.equal(plan.achievement_descriptions, undefined);
 });
+
+// --- Single-string projectile_description (mirrors crate_description /
+// poof_description: a single string, not a per-slot array, since there is
+// exactly one ranged-combat projectile FX per theme) -------------------------
+
+test('projectile_description is trimmed/cleaned when supplied, and undefined when absent or blank', () => {
+  const withDescription = normalizeThemePlan({
+    display_name: 'Neon Harbor',
+    projectile_description: '  a blue laser bolt  ',
+  });
+  assert.equal(withDescription.projectile_description, 'a blue laser bolt');
+
+  const absent = normalizeThemePlan({ display_name: 'Neon Harbor' });
+  assert.equal(absent.projectile_description, undefined);
+
+  const blank = normalizeThemePlan({ display_name: 'Neon Harbor', projectile_description: '   ' });
+  assert.equal(blank.projectile_description, undefined);
+});

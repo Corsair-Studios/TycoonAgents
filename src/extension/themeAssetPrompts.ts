@@ -835,6 +835,10 @@ export function buildBackgroundDecorPrompt(
   themeName: string,
   rows: ThemeDecorBoardRow[][],
   background: BoardBackgroundMode = 'magenta',
+  // Optional single-string appearance spec for the row-4 projectile FX
+  // (plan.projectile_description — see themePlan.ts). Absent/undefined leaves
+  // the row's prompt text byte-identical to before this parameter existed.
+  projectileDescription?: string,
 ): string {
   if (rows.length !== 4) throw new Error('Background decor boards require exactly four rows.');
   const [seatRow, staticRow, animRow3, projectileRow] = rows;
@@ -876,7 +880,8 @@ export function buildBackgroundDecorPrompt(
     'This is an inanimate object. The subject\'s width must be identical in every frame of the row — the leftmost and rightmost pixels of the subject stay in the same columns across all frames. Permitted animation is limited STRICTLY to lights and subtle highlights: emissive elements, glows, screens, and indicator lights may brighten, dim, flicker, or shift color, and existing highlights may subtly change brightness or hue. NOTHING structural moves — no rotating, tilting, wobbling, breathing, sliding, or resizing of the object or ANY of its parts, internal or external; the shape, outline, silhouette, position, footprint, and every structural pixel are pixel-identical in every frame. A subject whose width grows or shrinks between frames is an incorrect result.',
     '',
     'Row 4 (Cells 13-16): the themed RANGED-WEAPON-FIRE projectile shown as FOUR sequential ONE-SHOT frames left to right (a launch-to-impact sequence, NOT a loop).',
-    `  Match this theme's ranged weapon: a bullet/tracer, an energy laser bolt, a plasma blast, an arrow/bolt, a rocket, or whatever fits "${themeName}".`,
+    `  Match this theme's ranged weapon: a bullet/tracer, an energy laser bolt, a plasma blast, an arrow/bolt, a rocket, or whatever fits "${themeName}".`
+      + (projectileDescription ? ` Appearance — depict this exact design: ${projectileDescription}` : ''),
     '  Cell 13: the SHOT / MUZZLE FIRE at launch — a bright muzzle flash or launch burst with the projectile just emerging.',
     `  Cell 14: the projectile IN FLIGHT — the bolt/bullet/arrow travelling through empty ${spaceWord} space with a motion trail.`,
     '  Cell 15: the projectile HITTING THE TARGET — the moment of contact/impact (sparks or a flash at the strike point).',
