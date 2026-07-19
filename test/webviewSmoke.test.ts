@@ -1482,8 +1482,11 @@ async function bootObjScaleHarness() {
   stage.width = 1066;
   stage.height = 760;
 
+  const posted: any[] = [];
   win.acquireVsCodeApi = () => ({
-    postMessage: () => {},
+    postMessage: (m: any) => {
+      posted.push(m);
+    },
     getState: () => ({}),
     setState: () => {},
   });
@@ -1535,7 +1538,7 @@ async function bootObjScaleHarness() {
   }
 
   await flush();
-  return { win, doc, dispatch, tick, flush, drawLog, errors };
+  return { win, doc, dispatch, tick, flush, drawLog, errors, posted };
 }
 
 // Last drawImage call whose image src matches `src`, or undefined. main.js
@@ -1809,4 +1812,216 @@ test('H-hidden decor is not drawn in normal play (non-destructive hide)', async 
     'a hidden decor must not be drawn during normal play'
   );
   h.win.close();
+});
+
+// ── Theme-plan generation form: per-slot name+description editors ──────────
+// The Objects/Expressions/Achievement-badges fields on the theme-GENERATION
+// form (pre-generation) changed from free-text comma textareas to per-slot
+// name+description editors (renderPlanSlotsWithDesc, main.js ~2339), wired
+// into renderThemePlan (~2399-2428) for objects (21 rows, slot 0 carries a
+// weapons-rack lockedNote), expressions (8 rows, nameReadOnly, labels from
+// THEME_PLAN_FIXED_EXPRESSION_LABELS ~2316), and achievements (25 rows). The
+// render entry point is the "THEME_PLAN_READY" message handler (~7733-7738),
+// which calls renderThemePlan(msg.payload.plan) — same as a real host
+// response to PLAN_THEME. collectEditedThemePlan() (~2460) has no exported
+// hook, so it's exercised indirectly via the real UI path: clicking
+// #theme-start-generation-btn (~2542) calls it and, on success, posts
+// GENERATE_THEME with the collected plan; on a thrown validation error it
+// writes the message into #theme-plan-validation and posts nothing — mirrors
+// how this file already asserts on posted SAVE_STAGE_TUNING/RESTORE_PLAN_
+// BACKUP messages rather than reaching into main.js's private closures.
+//
+// bootObjScaleHarness() is reused here (not the giant Step 1-16 boot above):
+// its scanElementIds()/tagForId() skeleton already stubs every id main.js
+// calls getElementById() on, including all the theme-plan-* containers and
+// the crate/poof textareas, so no bespoke DOM injection is needed.
+const THEME_PLAN_EXPRESSION_LABELS = [
+  'Love', 'Idea / discovery spark', 'Anger', 'Team action / rally',
+  'Thumbs up', 'Music', 'Sleep / low-energy zzz', 'Dazed / hit',
+];
+
+function buildFullThemePlan(overrides: Record<string, any> = {}) {
+  const base = {
+    display_name: 'Neon Grove',
+    creative_direction: 'Solarpunk playground with glowing flora',
+    environment: 'A bioluminescent greenhouse city',
+    characters: Array.from({ length: 16 }, (_, i) => `Char ${i + 1}`),
+    enemies: Array.from({ length: 4 }, (_, i) => `Enemy ${i + 1}`),
+    objects: Array.from({ length: 21 }, (_, i) => `Object ${i + 1}`),
+    object_descriptions: Array.from({ length: 21 }, (_, i) => `Object ${i + 1} appearance`),
+    crate_description: 'A glowing seed pod crate',
+    poof_description: 'A puff of spores',
+    expressions: THEME_PLAN_EXPRESSION_LABELS.slice(),
+    expression_descriptions: Array.from({ length: 8 }, (_, i) => `Expression ${i + 1} appearance`),
+    achievements: Array.from({ length: 25 }, (_, i) => `Achievement ${i + 1}`),
+    achievement_descriptions: Array.from({ length: 25 }, (_, i) => `Achievement ${i + 1} appearance`),
+  };
+  return { ...base, ...overrides };
+}
+
+function dispatchThemePlanReady(h: any, plan: Record<string, any>) {
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { plan } });
+}
+
+test('theme-plan generation form: renders 21/8/25 per-slot rows, expression names read-only, object slot 0 carries the locked note', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan());
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const objectsContainer = h.doc.getElementById('theme-plan-objects-slots');
+    const expressionsContainer = h.doc.getElementById('theme-plan-expressions-slots');
+    const achievementsContainer = h.doc.getElementById('theme-plan-achievements-slots');
+    assert.ok(objectsContainer, 'theme-plan-objects-slots should exist');
+    assert.ok(expressionsContainer, 'theme-plan-expressions-slots should exist');
+    assert.ok(achievementsContainer, 'theme-plan-achievements-slots should exist');
+
+    const objectRows = objectsContainer.querySelectorAll('.theme-plan-slot-row');
+    const expressionRows = expressionsContainer.querySelectorAll('.theme-plan-slot-row');
+    const achievementRows = achievementsContainer.querySelectorAll('.theme-plan-slot-row');
+    assert.equal(objectRows.length, 21, 'objects should render 21 per-slot rows');
+    assert.equal(expressionRows.length, 8, 'expressions should render 8 per-slot rows');
+    assert.equal(achievementRows.length, 25, 'achievements should render 25 per-slot rows');
+
+    // Expression rows are name-READ-ONLY: renderPlanSlotsWithDesc's
+    // nameReadOnly branch renders a plain <span class="theme-plan-slot-
+    // name-readonly"> with NO data-plan-field attribute at all (only the
+    // editable <input> branch sets data-plan-field="name") — so the
+    // read-only element is found by its class, not by [data-plan-field].
+    const expr0Name = expressionRows[0].querySelector('.theme-plan-slot-name-readonly');
+    assert.ok(expr0Name, 'expression row 0 should show a read-only name span');
+    assert.equal(expr0Name.tagName, 'SPAN', 'expression slot name should render as a read-only span');
+    assert.equal(expr0Name.textContent, 'Love', 'expression slot 0 should show the fixed label "Love"');
+    assert.equal(
+      expressionRows[0].querySelector('input[data-plan-field="name"]'),
+      null,
+      'no editable name input should exist anywhere in a read-only expression row'
+    );
+
+    // Object slot 0 (index 0) shows the weapons-rack locked note; other slots don't.
+    const objRow0Note = objectRows[0].querySelector('.theme-plan-slot-note');
+    assert.ok(objRow0Note, 'object slot 0 should show a locked note');
+    assert.match(objRow0Note.textContent || '', /weapons rack/i, 'object slot 0 note should mention the weapons rack');
+    const objRow1Note = objectRows[1].querySelector('.theme-plan-slot-note');
+    assert.equal(objRow1Note, null, 'object slot 1 should NOT show a locked note');
+    const objRow20Note = objectRows[20].querySelector('.theme-plan-slot-note');
+    assert.equal(objRow20Note, null, 'the last object slot should NOT show a locked note');
+  } finally {
+    // try/finally (not a trailing call) so a failed assertion above still
+    // closes the jsdom window — main.js schedules a real (unstubbed)
+    // window.setInterval for the project-plan re-render ticker, and an
+    // unclosed window leaves it firing forever, hanging the whole `node
+    // --test` process well past this one test's failure.
+    h.win.close();
+  }
+});
+
+test('theme-plan generation form: collectEditedThemePlan (via Start generation) round-trips edited slots and posts full-count arrays', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan());
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const objectsContainer = h.doc.getElementById('theme-plan-objects-slots');
+    const achievementsContainer = h.doc.getElementById('theme-plan-achievements-slots');
+    const expressionsContainer = h.doc.getElementById('theme-plan-expressions-slots');
+
+    // Edit a couple of rows in each per-slot editor plus the crate/poof
+    // textareas, then read them back out of the posted GENERATE_THEME payload
+    // to prove collectPlanSlotsWithDesc/collectEditedThemePlan read live DOM
+    // state at the right index, not just the original THEME_PLAN_READY values.
+    const objRow5 = objectsContainer.querySelectorAll('.theme-plan-slot-row')[5];
+    (objRow5.querySelector('input[data-plan-field="name"]') as any).value = 'Edited Object Six';
+    (objRow5.querySelector('[data-plan-field="desc"]') as any).value = 'Edited object six appearance';
+
+    const achRow10 = achievementsContainer.querySelectorAll('.theme-plan-slot-row')[10];
+    (achRow10.querySelector('input[data-plan-field="name"]') as any).value = 'Edited Achievement Eleven';
+    (achRow10.querySelector('[data-plan-field="desc"]') as any).value = 'Edited achievement eleven appearance';
+
+    const exprRow2Desc = expressionsContainer.querySelectorAll('.theme-plan-slot-row')[2].querySelector('[data-plan-field="desc"]');
+    (exprRow2Desc as any).value = 'Edited expression three appearance';
+
+    (h.doc.getElementById('theme-plan-crate-desc') as any).value = 'Edited crate description';
+    (h.doc.getElementById('theme-plan-poof-desc') as any).value = 'Edited poof description';
+
+    const startBtn = h.doc.getElementById('theme-start-generation-btn');
+    assert.ok(startBtn, 'theme-start-generation-btn should exist');
+    startBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    assert.equal(h.errors.length, 0, `Start-generation click threw: ${h.errors.map(String).join('; ')}`);
+
+    const genMsg = [...h.posted].reverse().find((m: any) => m.type === 'GENERATE_THEME');
+    assert.ok(genMsg, 'a valid plan should post GENERATE_THEME');
+    const plan = genMsg.payload.plan;
+
+    assert.equal(plan.objects.length, 21, 'collected objects should have 21 entries');
+    assert.equal(plan.object_descriptions.length, 21, 'collected object_descriptions should have 21 entries');
+    assert.equal(plan.objects[5], 'Edited Object Six', 'edited object name should round-trip at its index');
+    assert.equal(plan.object_descriptions[5], 'Edited object six appearance', 'edited object description should round-trip at its index');
+
+    // plan.expressions is built inside main.js's own vm-executed realm
+    // (THEME_PLAN_FIXED_EXPRESSION_LABELS.slice()), so it's a different
+    // Array constructor/prototype than an array literal in this test file —
+    // assert.deepEqual (this file imports 'node:assert/strict', where
+    // deepEqual aliases to deepStrictEqual) fails on that prototype mismatch
+    // even though the string contents are identical. Compare length + each
+    // primitive element instead, which is realm-agnostic.
+    assert.equal(plan.expressions.length, 8, 'expressions must always have 8 entries');
+    THEME_PLAN_EXPRESSION_LABELS.forEach((label, i) => {
+      assert.equal(plan.expressions[i], label, `expressions[${i}] must always be the fixed label "${label}"`);
+    });
+    assert.equal(plan.expression_descriptions.length, 8, 'collected expression_descriptions should have 8 entries');
+    assert.equal(plan.expression_descriptions[2], 'Edited expression three appearance', 'edited expression description should round-trip at its index');
+
+    assert.equal(plan.achievements.length, 25, 'collected achievements should have 25 entries');
+    assert.equal(plan.achievement_descriptions.length, 25, 'collected achievement_descriptions should have 25 entries');
+    assert.equal(plan.achievements[10], 'Edited Achievement Eleven', 'edited achievement name should round-trip at its index');
+    assert.equal(plan.achievement_descriptions[10], 'Edited achievement eleven appearance', 'edited achievement description should round-trip at its index');
+
+    assert.equal(plan.crate_description, 'Edited crate description', 'edited crate description should round-trip');
+    assert.equal(plan.poof_description, 'Edited poof description', 'edited poof description should round-trip');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('theme-plan generation form: an empty object name blocks generation with the current 21-count error, not the stale 13/16 count', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan());
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const objectsContainer = h.doc.getElementById('theme-plan-objects-slots');
+    const objRow3 = objectsContainer.querySelectorAll('.theme-plan-slot-row')[3];
+    (objRow3.querySelector('input[data-plan-field="name"]') as any).value = '';
+
+    const generateCountBefore = h.posted.filter((m: any) => m.type === 'GENERATE_THEME').length;
+    const startBtn = h.doc.getElementById('theme-start-generation-btn');
+    assert.ok(startBtn, 'theme-start-generation-btn should exist');
+    startBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    assert.equal(h.errors.length, 0, `Start-generation click threw: ${h.errors.map(String).join('; ')}`);
+
+    const generateCountAfter = h.posted.filter((m: any) => m.type === 'GENERATE_THEME').length;
+    assert.equal(generateCountAfter, generateCountBefore, 'no GENERATE_THEME should be posted when an object name is empty');
+
+    const validationEl = h.doc.getElementById('theme-plan-validation');
+    assert.ok(validationEl, 'theme-plan-validation should exist');
+    assert.match(
+      validationEl.textContent || '',
+      /Objects needs all 21 named slots \(currently 20\)/,
+      'validation message should use the current 21-slot count'
+    );
+    assert.doesNotMatch(
+      validationEl.textContent || '',
+      /\b(13|16)\b/,
+      'validation message must not show the stale comma-count 13/16 figures'
+    );
+  } finally {
+    h.win.close();
+  }
 });

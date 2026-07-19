@@ -582,18 +582,28 @@ function buildHostHtml() {
             <legend>Enemies <span>4 individual enemy rows &middot; 1 sprite board</span></legend>
             <div id="theme-plan-enemies" class="theme-plan-slot-grid"></div>
           </fieldset>
-          <label class="theme-plan-field">
-            <span>Objects <small>21 objects, comma separated · 2 sprite sheets</small></span>
-            <textarea id="theme-plan-objects" rows="3"></textarea>
-          </label>
-          <label class="theme-plan-field">
-            <span>Expressions <small>7 expressions, comma separated · 1 sprite sheet</small></span>
-            <textarea id="theme-plan-expressions" rows="3"></textarea>
-          </label>
-          <label class="theme-plan-field">
-            <span>Achievement badges <small>25 designs, comma separated · 1 sprite sheet</small></span>
-            <textarea id="theme-plan-achievements" rows="3"></textarea>
-          </label>
+          <fieldset class="theme-plan-group">
+            <legend>Objects <span>21 objects &middot; 2 sprite sheets</span></legend>
+            <div id="theme-plan-objects-slots" class="theme-plan-slots"></div>
+            <label class="theme-plan-field theme-plan-field--sub">
+              <span>Crate <small>fixed object &middot; appearance only</small></span>
+              <textarea id="theme-plan-crate-desc" rows="2" placeholder="Appearance / description (optional)"></textarea>
+            </label>
+            <label class="theme-plan-field theme-plan-field--sub">
+              <span>Poof effect <small>fixed object &middot; appearance only</small></span>
+              <textarea id="theme-plan-poof-desc" rows="2" placeholder="Appearance / description (optional)"></textarea>
+            </label>
+          </fieldset>
+          <fieldset class="theme-plan-group">
+            <legend>Expressions <span>8 fixed slots &middot; 1 sprite sheet</span></legend>
+            <p class="theme-plan-group-note">Expression slots are fixed (gameplay maps events by position) &mdash; you can restyle each one's look, not its meaning.</p>
+            <div id="theme-plan-expressions-slots" class="theme-plan-slots"></div>
+          </fieldset>
+          <fieldset class="theme-plan-group">
+            <legend>Achievement badges <span>25 designs &middot; 1 sprite sheet</span></legend>
+            <p class="theme-plan-group-note">Each badge's unlock trigger and threshold are fixed per slot &mdash; you can rename and restyle, but not change what unlocks it.</p>
+            <div id="theme-plan-achievements-slots" class="theme-plan-slots"></div>
+          </fieldset>
           <div class="theme-plan-footer">
             <div id="theme-plan-validation" class="theme-plan-validation" role="status"></div>
             <button id="theme-start-generation-btn" class="skill-btn">Generate images</button>

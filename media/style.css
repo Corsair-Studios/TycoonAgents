@@ -3342,6 +3342,63 @@ td.col-status {
   text-align: right;
 }
 
+/* Per-slot name + appearance-description editor for the theme-plan
+   GENERATION form (objects/expressions/achievements) — renderPlanSlotsWithDesc
+   in main.js. Mirrors the shape of the post-generation review editor's
+   .theme-review-names-descriptions-row without sharing its DOM. */
+.theme-plan-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.theme-plan-slot-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px solid var(--vscode-panel-border, var(--border));
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.theme-plan-slot-name-readonly {
+  padding: 7px 9px;
+  color: var(--vscode-descriptionForeground, var(--muted));
+  font-style: italic;
+}
+
+.theme-plan-slot-desc {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  color: var(--vscode-input-foreground, var(--text));
+  background: var(--vscode-input-background, #171a1f);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.theme-plan-slot-note,
+.theme-plan-slot-context {
+  color: var(--vscode-descriptionForeground, var(--muted));
+  font-size: 11px;
+  font-style: italic;
+}
+
+.theme-plan-group-note {
+  margin: 0 0 8px;
+  color: var(--vscode-descriptionForeground, var(--muted));
+  font-size: 11px;
+}
+
+.theme-plan-field--sub {
+  margin-top: 10px;
+}
+
 .theme-plan-validation {
   color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground, #f85149));
   font-size: 11px;

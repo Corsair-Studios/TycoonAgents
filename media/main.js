@@ -1914,9 +1914,11 @@
   const themePlanCharacters = /** @type {HTMLElement} */ (document.getElementById("theme-plan-characters"));
   const themePlanEnvironment = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-environment"));
   const themePlanEnemies    = /** @type {HTMLElement} */ (document.getElementById("theme-plan-enemies"));
-  const themePlanObjects    = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-objects"));
-  const themePlanExpressions = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-expressions"));
-  const themePlanAchievements = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-achievements"));
+  const themePlanObjectsSlots = /** @type {HTMLElement} */ (document.getElementById("theme-plan-objects-slots"));
+  const themePlanCrateDesc  = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-crate-desc"));
+  const themePlanPoofDesc   = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-poof-desc"));
+  const themePlanExpressionsSlots = /** @type {HTMLElement} */ (document.getElementById("theme-plan-expressions-slots"));
+  const themePlanAchievementsSlots = /** @type {HTMLElement} */ (document.getElementById("theme-plan-achievements-slots"));
   const themePlanValidation = /** @type {HTMLElement} */ (document.getElementById("theme-plan-validation"));
   const themePauseForReview = /** @type {HTMLInputElement} */ (document.getElementById("theme-pause-for-review"));
   const themeStartGenerationBtn = /** @type {HTMLButtonElement} */ (document.getElementById("theme-start-generation-btn"));
@@ -2305,16 +2307,120 @@
     });
   }
 
+  // Fixed expression slot labels for the theme-plan generation form. Mirrors
+  // the identical local const inside themeReviewDescriptionRows (used by the
+  // POST-generation review editor) — kept as a separate small const here
+  // rather than hoisting/sharing, since the two editors are otherwise
+  // unrelated code paths and this list is small & effectively immutable
+  // (gameplay maps expression events by slot position, see themePlan.ts).
+  const THEME_PLAN_FIXED_EXPRESSION_LABELS = [
+    "Love", "Idea / discovery spark", "Anger", "Team action / rally",
+    "Thumbs up", "Music", "Sleep / low-energy zzz", "Dazed / hit",
+  ];
+
+  const THEME_PLAN_OBJECT_COUNT = 21;
+  const THEME_PLAN_EXPRESSION_COUNT = 8;
+  const THEME_PLAN_ACHIEVEMENT_COUNT = 25;
+
+  /**
+   * Renders `opts.count` per-slot rows into `container`, each with a 2-digit
+   * index, a name (editable input, or read-only text when opts.nameReadOnly),
+   * and an appearance/description textarea. Used by the theme-plan GENERATION
+   * form (pre-generation) for objects/expressions/achievements, mirroring the
+   * name+description block shape the POST-generation review editor already
+   * uses (see themeReviewNamesDescriptionsRows) without sharing its DOM —
+   * that editor works off per-atlas review items, this one off the flat
+   * ThemePlan arrays.
+   * @param {HTMLElement} container
+   * @param {string[]} names
+   * @param {string[]} descriptions
+   * @param {{count:number, groupName:string, nameReadOnly?:boolean, lockedNote?:(index:number)=>(string|null), contextLine?:(index:number)=>(string|null)}} opts
+   */
+  function renderPlanSlotsWithDesc(container, names, descriptions, opts) {
+    if (!container) return;
+    container.innerHTML = "";
+    const count = opts.count;
+    const groupName = opts.groupName;
+    for (let index = 0; index < count; index += 1) {
+      const row = document.createElement("div");
+      row.className = "theme-plan-slot-row";
+
+      const nameLine = document.createElement("label");
+      nameLine.className = "theme-plan-slot";
+      const number = document.createElement("span");
+      number.textContent = String(index + 1).padStart(2, "0");
+      nameLine.appendChild(number);
+      if (opts.nameReadOnly) {
+        const nameText = document.createElement("span");
+        nameText.className = "theme-plan-slot-name-readonly";
+        nameText.textContent = (names && names[index]) || "";
+        nameLine.appendChild(nameText);
+      } else {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = (names && names[index]) || "";
+        input.dataset.planGroup = groupName;
+        input.dataset.planIndex = String(index);
+        input.dataset.planField = "name";
+        nameLine.appendChild(input);
+      }
+      row.appendChild(nameLine);
+
+      const desc = document.createElement("textarea");
+      desc.className = "theme-plan-slot-desc";
+      desc.rows = 2;
+      desc.placeholder = "Appearance / description (optional)";
+      desc.value = (descriptions && descriptions[index]) || "";
+      desc.dataset.planGroup = groupName;
+      desc.dataset.planIndex = String(index);
+      desc.dataset.planField = "desc";
+      row.appendChild(desc);
+
+      const note = typeof opts.lockedNote === "function" ? opts.lockedNote(index) : null;
+      if (note) {
+        const noteEl = document.createElement("div");
+        noteEl.className = "theme-plan-slot-note";
+        noteEl.textContent = note;
+        row.appendChild(noteEl);
+      }
+
+      const ctx = typeof opts.contextLine === "function" ? opts.contextLine(index) : null;
+      if (ctx) {
+        const ctxEl = document.createElement("div");
+        ctxEl.className = "theme-plan-slot-context";
+        ctxEl.textContent = ctx;
+        row.appendChild(ctxEl);
+      }
+
+      container.appendChild(row);
+    }
+  }
+
   function renderThemePlan(plan) {
     currentThemePlan = plan;
     if (themePlanName) themePlanName.value = plan.display_name || "";
     if (themePlanDirection) themePlanDirection.value = plan.creative_direction || "";
     if (themePlanEnvironment) themePlanEnvironment.value = plan.environment || "";
-    if (themePlanObjects) themePlanObjects.value = (plan.objects || []).join(", ");
-    if (themePlanExpressions) themePlanExpressions.value = (plan.expressions || []).join(", ");
-    if (themePlanAchievements) themePlanAchievements.value = (plan.achievements || []).join(", ");
     renderPlanSlots(themePlanCharacters, plan.characters || [], "characters");
     renderPlanSlots(themePlanEnemies, plan.enemies || [], "enemies");
+    renderPlanSlotsWithDesc(themePlanObjectsSlots, plan.objects || [], plan.object_descriptions || [], {
+      count: THEME_PLAN_OBJECT_COUNT,
+      groupName: "objects",
+      lockedNote: (index) => (index === 0
+        ? "Building this unlocks ranged weapons — rename/redescribe freely, but slot 1 always stays the weapons rack."
+        : null),
+    });
+    if (themePlanCrateDesc) themePlanCrateDesc.value = plan.crate_description || "";
+    if (themePlanPoofDesc) themePlanPoofDesc.value = plan.poof_description || "";
+    renderPlanSlotsWithDesc(themePlanExpressionsSlots, THEME_PLAN_FIXED_EXPRESSION_LABELS, plan.expression_descriptions || [], {
+      count: THEME_PLAN_EXPRESSION_COUNT,
+      groupName: "expressions",
+      nameReadOnly: true,
+    });
+    renderPlanSlotsWithDesc(themePlanAchievementsSlots, plan.achievements || [], plan.achievement_descriptions || [], {
+      count: THEME_PLAN_ACHIEVEMENT_COUNT,
+      groupName: "achievements",
+    });
     if (themePlanValidation) themePlanValidation.textContent = "";
     if (themePlanEditor) themePlanEditor.removeAttribute("hidden");
     if (themeImageReview) themeImageReview.setAttribute("hidden", "");
@@ -2327,10 +2433,28 @@
       : [];
   }
 
-  function collectCommaList(input, expected, label) {
-    const values = input ? input.value.split(",").map((value) => value.trim()).filter(Boolean) : [];
-    if (values.length !== expected) throw new Error(`${label} needs exactly ${expected} comma-separated entries (currently ${values.length}).`);
-    return values;
+  /**
+   * Collects per-slot name+description pairs rendered by
+   * renderPlanSlotsWithDesc. Reads name/desc by data-plan-field rather than
+   * DOM position so it works whether or not a name input is present
+   * (nameReadOnly groups have no name input — see collectEditedThemePlan's
+   * expressions handling, which ignores the `names` return and only uses
+   * `descriptions`).
+   * @param {HTMLElement} container
+   * @returns {{names: string[], descriptions: string[]}}
+   */
+  function collectPlanSlotsWithDesc(container) {
+    const names = [];
+    const descriptions = [];
+    if (!container) return { names, descriptions };
+    const rows = Array.from(container.querySelectorAll(".theme-plan-slot-row"));
+    rows.forEach((row) => {
+      const nameInput = row.querySelector('[data-plan-field="name"]');
+      names.push(nameInput ? nameInput.value.trim() : "");
+      const descInput = row.querySelector('[data-plan-field="desc"]');
+      descriptions.push(descInput ? descInput.value.trim() : "");
+    });
+    return { names, descriptions };
   }
 
   function collectEditedThemePlan() {
@@ -2342,6 +2466,23 @@
     const creativeDirection = themePlanDirection ? themePlanDirection.value.trim() : "";
     const environment = themePlanEnvironment ? themePlanEnvironment.value.trim() : "";
     if (!displayName || !creativeDirection || !environment) throw new Error("Theme name, creative direction, and environment are required.");
+
+    const objectSlots = collectPlanSlotsWithDesc(themePlanObjectsSlots);
+    const objects = objectSlots.names;
+    const objectFilled = objects.filter(Boolean).length;
+    if (objects.length !== THEME_PLAN_OBJECT_COUNT || objectFilled !== THEME_PLAN_OBJECT_COUNT) {
+      throw new Error(`Objects needs all ${THEME_PLAN_OBJECT_COUNT} named slots (currently ${objectFilled}).`);
+    }
+
+    const achievementSlots = collectPlanSlotsWithDesc(themePlanAchievementsSlots);
+    const achievements = achievementSlots.names;
+    const achievementFilled = achievements.filter(Boolean).length;
+    if (achievements.length !== THEME_PLAN_ACHIEVEMENT_COUNT || achievementFilled !== THEME_PLAN_ACHIEVEMENT_COUNT) {
+      throw new Error(`Achievement badges needs all ${THEME_PLAN_ACHIEVEMENT_COUNT} named slots (currently ${achievementFilled}).`);
+    }
+
+    const expressionSlots = collectPlanSlotsWithDesc(themePlanExpressionsSlots);
+
     return {
       ...currentThemePlan,
       theme_id: "",
@@ -2350,9 +2491,14 @@
       characters,
       environment,
       enemies,
-      objects: collectCommaList(themePlanObjects, 13, "Objects"),
-      expressions: collectCommaList(themePlanExpressions, 16, "Expressions"),
-      achievements: collectCommaList(themePlanAchievements, 25, "Achievement badges"),
+      objects,
+      object_descriptions: objectSlots.descriptions,
+      crate_description: themePlanCrateDesc ? themePlanCrateDesc.value.trim() : "",
+      poof_description: themePlanPoofDesc ? themePlanPoofDesc.value.trim() : "",
+      expressions: THEME_PLAN_FIXED_EXPRESSION_LABELS.slice(),
+      expression_descriptions: expressionSlots.descriptions,
+      achievements,
+      achievement_descriptions: achievementSlots.descriptions,
     };
   }
 
