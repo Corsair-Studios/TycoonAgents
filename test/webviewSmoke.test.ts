@@ -1382,6 +1382,166 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.ok(rACardS1_2 && rACardS1_2.classList.contains('badge-card--unlocked'), 'rA badge s1 should be restored unlocked (rB must not have clobbered it)');
       assertNoErrors('rebirth-scope-rA-restore-open');
     });
+    // ── Step 17: rebirth tier pool sliding window (badge-gate difficulty ramp) ─
+    // rebirthTierPool(count) (main.js ~4837) selects a SLIDING-WINDOW pool for
+    // rollRebirthRequirement() based on rebirthCount: EARLY (count<=2), MID
+    // (count<=5), LATE (count>=6) — each tier is its OWN bounded pool, so the
+    // easiest badges drop out as rebirthCount climbs instead of accumulating.
+    // rebirthTierPool/REBIRTH_TIER_* live inside main.js's bare `(function(){
+    // ... })()` IIFE with no exported hook (confirmed: no window.__TEST__ or
+    // similar), so this drives the OBSERVABLE behavior instead: dispatch
+    // THEME_INITIALIZED with rebirth_state.count set and required: [] (always
+    // invalid, since length 0 fails requiredStillValid -> the restore path
+    // calls rollRebirthRequirement() unconditionally, main.js ~8243-8245),
+    // then read the freshly picked ids back from the SAVE_REBIRTH_STATE
+    // message persistRebirth() posts synchronously right after (~1480-1501,
+    // invoked at ~8250). dispatch()'s message handler has no awaits before
+    // that post, so no flush() is needed between rolls.
+    //
+    // Picks are random (Math.random, deliberately unstubbed) so each count is
+    // rolled many times and the UNION of everything ever picked is checked:
+    // forbidden ids can structurally never appear (rollRebirthRequirement
+    // only samples from the tier pool intersected with themeBadges), and
+    // allowed ids are near-certain (odds of total non-appearance are ~1e-13
+    // or smaller at ITER=120 for every pool size used here) to show up at
+    // least once across the sample.
+    await t.test('17. rebirth tier pool: sliding window gates badges by rebirthCount', async () => {
+      const ALL_BADGE_IDS = [
+        'build_1', 'build_3', 'build_6', 'build_10', 'build_13',
+        'evict_1', 'evict_5', 'evict_10', 'evict_20', 'evict_35', 'evict_50', 'evict_75', 'evict_100',
+        'task_1', 'task_10', 'task_50', 'task_150', 'task_500',
+        'crew_3', 'crew_6',
+        'reborn_builder',
+        'rebirth_1', 'rebirth_2', 'rebirth_3', 'rebirth_5',
+      ];
+
+      function buildTierThemePayload(themeId: string, count: number) {
+        const manifest = {
+          theme_id: themeId,
+          viewport: {
+            native_width: 1280,
+            native_height: 720,
+            walkable_nav_polygon: [[0.1, 0.6], [0.9, 0.6], [0.9, 0.95], [0.1, 0.95]],
+            character_scale: 1, object_scale: 1, overall_scale: 1, rival_scale: 1, decor_scale: 1,
+            enemy_config: { spawn_interval_seconds: 45, count_mode: 'random' },
+            crate_asset: 'frames.json#crate', poof_asset: 'frames.json#poof', projectile_asset: 'frames.json#projectile',
+          },
+          roster_agents: [{ slot_id: 'a1', name: 'Alpha' }],
+          roster_rivals: [{ rival_id: 'r1', name: 'Rival One' }],
+          buildable_objects: [{ object_id: 'o1', display_name: 'Rack', build_order: 0, anchor_coord: [0.5, 0.5] }],
+          decor_objects: [],
+          badges: ALL_BADGE_IDS.map((id) => ({
+            badge_id: id, display_name: id, trigger_type: 'OBJECTS_BUILT', threshold: 1,
+            icon_asset: 'frames.json#achievement_1',
+          })),
+        };
+        const frames: Record<string, string[]> = {
+          environment_background: [PX],
+          agent_a1: frameArray(4),
+          rival_r1: frameArray(4),
+          object_o1: frameArray(4),
+          achievement_1: [PX],
+          crate: frameArray(2),
+          poof: frameArray(2),
+          projectile: [PX],
+        };
+        return {
+          type: 'THEME_INITIALIZED',
+          payload: {
+            theme_id: themeId,
+            manifest,
+            frames,
+            badges: manifest.badges,
+            unlocked_badge_ids: [],
+            rebirth_state: {
+              count,
+              baseline: { built: 0, evicted: 0, tasks: 0 },
+              required: [], // always invalid -> forces a reroll on every dispatch
+              unlocked: [],
+              cycleBuilt: 0,
+              cycleEvicted: 0,
+              rackInsertIndex: null,
+              rangedUnlocked: false,
+            },
+          },
+        };
+      }
+
+      function lastRequiredIds(): string[] {
+        for (let i = posted.length - 1; i >= 0; i--) {
+          const m = posted[i];
+          if (m && m.type === 'SAVE_REBIRTH_STATE') {
+            return Array.isArray(m.payload?.state?.required) ? m.payload.state.required.slice() : [];
+          }
+        }
+        return [];
+      }
+
+      const ITER = 120;
+
+      // Roll `iterations` times at the given rebirthCount and return the
+      // union of every badge id ever picked.
+      async function rollUnion(themeId: string, count: number, iterations: number): Promise<Set<string>> {
+        const union = new Set<string>();
+        for (let i = 0; i < iterations; i++) {
+          dispatch(buildTierThemePayload(themeId, count));
+          for (const id of lastRequiredIds()) union.add(id);
+        }
+        tick(2);
+        await flush();
+        assertNoErrors(`rebirth-tier-pool-${themeId}-${count}`);
+        return union;
+      }
+
+      function assertPool(union: Set<string>, label: string, included: string[], excluded: string[]) {
+        for (const id of included) {
+          assert.ok(union.has(id), `${label}: expected ${id} to be drawable (seen across ${ITER} rolls)`);
+        }
+        for (const id of excluded) {
+          assert.ok(!union.has(id), `${label}: ${id} must never be drawn`);
+        }
+      }
+
+      const REBIRTH_MILESTONE_IDS = ['rebirth_1', 'rebirth_2', 'rebirth_3', 'rebirth_5'];
+
+      // ── EARLY: rebirthCount 0 and 2 (gates rebirths 1-3) ────────────────────
+      for (const count of [0, 2]) {
+        const union = await rollUnion('tier_early', count, ITER);
+        assertPool(union, `EARLY(count=${count})`,
+          ['build_10', 'evict_75', 'task_50'],
+          ['build_13', 'evict_100', 'task_150', 'task_500', 'reborn_builder', ...REBIRTH_MILESTONE_IDS]
+        );
+      }
+
+      // ── MID: rebirthCount 3 and 5 (gates rebirths 4-6) — the sliding window
+      // drops the easiest EARLY badges as it climbs.
+      for (const count of [3, 5]) {
+        const union = await rollUnion('tier_mid', count, ITER);
+        assertPool(union, `MID(count=${count})`,
+          ['evict_100', 'task_150'],
+          [
+            'task_500',
+            'build_1', 'build_3', 'evict_1', 'evict_5', 'evict_10', 'task_1', 'task_10',
+            ...REBIRTH_MILESTONE_IDS,
+          ]
+        );
+      }
+
+      // ── LATE: rebirthCount 6 and 20 (gates rebirths 7+) — only the hardest
+      // per-cycle badges remain.
+      for (const count of [6, 20]) {
+        const union = await rollUnion('tier_late', count, ITER);
+        assertPool(union, `LATE(count=${count})`,
+          ['task_500'],
+          [
+            'build_1', 'build_3', 'build_6',
+            'evict_1', 'evict_5', 'evict_10', 'evict_20', 'evict_35',
+            'task_1', 'task_10', 'task_50',
+            ...REBIRTH_MILESTONE_IDS,
+          ]
+        );
+      }
+    });
   } finally {
     process.removeListener('unhandledRejection', onRejection);
     dom.window.close();

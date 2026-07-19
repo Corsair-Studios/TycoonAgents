@@ -4794,27 +4794,50 @@
   /**
    * Tiered rebirth-gate pools, selected by rebirthCount at roll time (see
    * rollRebirthRequirement()) so each successive Rebirth demands a harder set
-   * of badges. Thresholds are checked against buildDefaultBadges() (themeMigration.ts):
-   *   Tier 0 (rebirthCount === 0, i.e. rolling the FIRST rebirth's requirement):
-   *     the easiest badges — build_3/6 (3/6 objects), evict_5/10 (5/10 evictions),
-   *     task_10 (10 tasks), crew_3 (3 agents active).
-   *   Tier 1 (rebirthCount === 1): mid-range — build_10/13, evict_20/35,
-   *     task_50, crew_6.
-   *   Tier 2+ (rebirthCount >= 2): the hardest per-cycle badges — evict_50/75/100,
-   *     task_150/500. (No harder AGENTS_ACTIVE badge exists beyond crew_6, which
-   *     is already used at tier 1, so tier 2 draws only from evict_/task_.)
+   * of badges. Thresholds are checked against buildDefaultBadges() (themeMigration.ts).
+   *
+   * SLIDING WINDOW, not a cumulative union: each tier is its own bounded pool,
+   * so the easiest badges drop OUT as rebirthCount climbs instead of piling up
+   * forever. This replaces an earlier 3-tier scheme whose top tier included
+   * task_500 ("Unstoppable", 500 tasks) starting at rebirthCount >= 2 — that
+   * walled players at their 2nd rebirth on an extreme badge far too early.
+   *
+   *   EARLY (rebirthCount 0,1,2 — gates rebirths 1-3): capped at build<=10,
+   *     evict<=75, task<=50, crew_3/6. Easy-to-mid badges only.
+   *   MID (rebirthCount 3,4,5 — gates rebirths 4-6): build_6..13, evict_20..100,
+   *     task_50/150, crew_6, reborn_builder. Drops build_1/evict_1/evict_5/
+   *     evict_10/task_1/crew_3 — trivial by this point.
+   *   LATE (rebirthCount >= 6 — gates rebirths 7+): build_10/13, evict_50..100,
+   *     task_150/500, reborn_builder. Only the hardest per-cycle badges remain;
+   *     task_500 first appears here, once players have the throughput for it.
+   *
    * rebirth_* badges are NEVER included in any tier: they're permanent
    * (rebirthCount-gated, never wiped) so putting one in a requirement pool
    * would make it trivially/permanently satisfied after the first Rebirth.
    */
-  const REBIRTH_TIER0_EASY = ["build_3", "build_6", "evict_5", "evict_10", "task_10", "crew_3"];
-  const REBIRTH_TIER1_MEDIUM = ["build_10", "build_13", "evict_20", "evict_35", "task_50", "crew_6"];
-  const REBIRTH_TIER2_HARD = ["evict_50", "evict_75", "evict_100", "task_150", "task_500"];
+  const REBIRTH_TIER_EARLY = [
+    "build_1", "build_3", "build_6", "build_10",
+    "evict_1", "evict_5", "evict_10", "evict_20", "evict_35", "evict_50", "evict_75",
+    "task_1", "task_10", "task_50",
+    "crew_3", "crew_6",
+  ];
+  const REBIRTH_TIER_MID = [
+    "build_6", "build_10", "build_13",
+    "evict_20", "evict_35", "evict_50", "evict_75", "evict_100",
+    "task_50", "task_150",
+    "crew_6", "reborn_builder",
+  ];
+  const REBIRTH_TIER_LATE = [
+    "build_10", "build_13",
+    "evict_50", "evict_75", "evict_100",
+    "task_150", "task_500",
+    "reborn_builder",
+  ];
   /** Pick the tier pool to draw the next requirement from, based on rebirthCount. */
   function rebirthTierPool(count) {
-    if (count <= 0) return REBIRTH_TIER0_EASY;
-    if (count === 1) return REBIRTH_TIER1_MEDIUM;
-    return REBIRTH_TIER2_HARD;
+    if (count <= 2) return REBIRTH_TIER_EARLY;
+    if (count <= 5) return REBIRTH_TIER_MID;
+    return REBIRTH_TIER_LATE;
   }
   // NOTE: rebirthCount/rebirthBaseline/requiredRebirthBadgeIds are restored
   // from the HOST's per-theme rebirth_state payload inside the
