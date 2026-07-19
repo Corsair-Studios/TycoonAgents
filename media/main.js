@@ -1914,6 +1914,7 @@
   const themePlanCharacters = /** @type {HTMLElement} */ (document.getElementById("theme-plan-characters"));
   const themePlanEnvironment = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-environment"));
   const themePlanEnemies    = /** @type {HTMLElement} */ (document.getElementById("theme-plan-enemies"));
+  const themePlanDecorSlots = /** @type {HTMLElement} */ (document.getElementById("theme-plan-decor-slots"));
   const themePlanObjectsSlots = /** @type {HTMLElement} */ (document.getElementById("theme-plan-objects-slots"));
   const themePlanCrateDesc  = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-crate-desc"));
   const themePlanPoofDesc   = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-poof-desc"));
@@ -2288,25 +2289,6 @@
     });
   }
 
-  function renderPlanSlots(container, values, groupName) {
-    if (!container) return;
-    container.innerHTML = "";
-    values.forEach((value, index) => {
-      const label = document.createElement("label");
-      label.className = "theme-plan-slot";
-      const number = document.createElement("span");
-      number.textContent = String(index + 1).padStart(2, "0");
-      const input = document.createElement("input");
-      input.type = "text";
-      input.value = value;
-      input.dataset.planGroup = groupName;
-      input.dataset.planIndex = String(index);
-      label.appendChild(number);
-      label.appendChild(input);
-      container.appendChild(label);
-    });
-  }
-
   // Fixed expression slot labels for the theme-plan generation form. Mirrors
   // the identical local const inside themeReviewDescriptionRows (used by the
   // POST-generation review editor) — kept as a separate small const here
@@ -2321,6 +2303,13 @@
   const THEME_PLAN_OBJECT_COUNT = 21;
   const THEME_PLAN_EXPRESSION_COUNT = 8;
   const THEME_PLAN_ACHIEVEMENT_COUNT = 25;
+  const THEME_PLAN_CHARACTER_COUNT = 16;
+  const THEME_PLAN_ENEMY_COUNT = 4;
+  // Mirrors DECOR_BOARD_LAYOUT in src/extension/themePlan.ts: 4 sittable
+  // seats (slot 0 = leader's throne) + 4 static props + 1 animated item.
+  const THEME_PLAN_DECOR_COUNT = 9;
+  const THEME_PLAN_DECOR_SEAT_COUNT = 4;
+  const THEME_PLAN_DECOR_STATIC_COUNT = 4;
 
   /**
    * Renders `opts.count` per-slot rows into `container`, each with a 2-digit
@@ -2334,7 +2323,7 @@
    * @param {HTMLElement} container
    * @param {string[]} names
    * @param {string[]} descriptions
-   * @param {{count:number, groupName:string, nameReadOnly?:boolean, lockedNote?:(index:number)=>(string|null), contextLine?:(index:number)=>(string|null)}} opts
+   * @param {{count:number, groupName:string, nameReadOnly?:boolean, lockedNote?:(index:number)=>(string|null), contextLine?:(index:number)=>(string|null), renderRowExtra?:(rowEl:HTMLElement, index:number)=>void}} opts
    */
   function renderPlanSlotsWithDesc(container, names, descriptions, opts) {
     if (!container) return;
@@ -2392,6 +2381,10 @@
         row.appendChild(ctxEl);
       }
 
+      if (typeof opts.renderRowExtra === "function") {
+        opts.renderRowExtra(row, index);
+      }
+
       container.appendChild(row);
     }
   }
@@ -2401,8 +2394,44 @@
     if (themePlanName) themePlanName.value = plan.display_name || "";
     if (themePlanDirection) themePlanDirection.value = plan.creative_direction || "";
     if (themePlanEnvironment) themePlanEnvironment.value = plan.environment || "";
-    renderPlanSlots(themePlanCharacters, plan.characters || [], "characters");
-    renderPlanSlots(themePlanEnemies, plan.enemies || [], "enemies");
+    renderPlanSlotsWithDesc(themePlanCharacters, plan.characters || [], plan.character_descriptions || [], {
+      count: THEME_PLAN_CHARACTER_COUNT,
+      groupName: "characters",
+      contextLine: (index) => (index === 0 ? "Leader (orchestrator)" : null),
+    });
+    renderPlanSlotsWithDesc(themePlanEnemies, plan.enemies || [], plan.enemy_descriptions || [], {
+      count: THEME_PLAN_ENEMY_COUNT,
+      groupName: "enemies",
+      renderRowExtra: (rowEl, index) => {
+        const currentStyle = (plan.enemy_attack_styles && plan.enemy_attack_styles[index]) || "melee";
+        const select = document.createElement("select");
+        select.className = "theme-plan-slot-attack";
+        select.dataset.planGroup = "enemies";
+        select.dataset.planIndex = String(index);
+        select.dataset.planField = "attack";
+        const meleeOpt = document.createElement("option");
+        meleeOpt.value = "melee";
+        meleeOpt.textContent = "Melee";
+        const rangedOpt = document.createElement("option");
+        rangedOpt.value = "ranged";
+        rangedOpt.textContent = "Ranged";
+        select.appendChild(meleeOpt);
+        select.appendChild(rangedOpt);
+        select.value = currentStyle === "ranged" ? "ranged" : "melee";
+        rowEl.appendChild(select);
+      },
+    });
+    renderPlanSlotsWithDesc(themePlanDecorSlots, plan.decor || [], plan.decor_descriptions || [], {
+      count: THEME_PLAN_DECOR_COUNT,
+      groupName: "decor",
+      contextLine: (index) => {
+        if (index < THEME_PLAN_DECOR_SEAT_COUNT) {
+          return index === 0 ? "Seat 1 — Leader's throne (sittable)" : `Seat ${index + 1} (sittable)`;
+        }
+        if (index < THEME_PLAN_DECOR_SEAT_COUNT + THEME_PLAN_DECOR_STATIC_COUNT) return "Static decor";
+        return "Animated decor";
+      },
+    });
     renderPlanSlotsWithDesc(themePlanObjectsSlots, plan.objects || [], plan.object_descriptions || [], {
       count: THEME_PLAN_OBJECT_COUNT,
       groupName: "objects",
@@ -2427,12 +2456,6 @@
     if (themeBuilderRoot) themeBuilderRoot.setAttribute("hidden", "");
   }
 
-  function collectPlanSlots(container) {
-    return container
-      ? Array.from(container.querySelectorAll("input")).map((input) => input.value.trim()).filter(Boolean)
-      : [];
-  }
-
   /**
    * Collects per-slot name+description pairs rendered by
    * renderPlanSlotsWithDesc. Reads name/desc by data-plan-field rather than
@@ -2440,28 +2463,53 @@
    * (nameReadOnly groups have no name input — see collectEditedThemePlan's
    * expressions handling, which ignores the `names` return and only uses
    * `descriptions`).
+   * Also collects an optional per-row attack-style selector (`[data-plan-field="attack"]`,
+   * appended via opts.renderRowExtra) into `attackStyles`; entries are `undefined`
+   * when a row has no such selector, so groups that don't use renderRowExtra
+   * (objects/expressions/achievements) are unaffected.
    * @param {HTMLElement} container
-   * @returns {{names: string[], descriptions: string[]}}
+   * @returns {{names: string[], descriptions: string[], attackStyles: (string|undefined)[]}}
    */
   function collectPlanSlotsWithDesc(container) {
     const names = [];
     const descriptions = [];
-    if (!container) return { names, descriptions };
+    const attackStyles = [];
+    if (!container) return { names, descriptions, attackStyles };
     const rows = Array.from(container.querySelectorAll(".theme-plan-slot-row"));
     rows.forEach((row) => {
       const nameInput = row.querySelector('[data-plan-field="name"]');
       names.push(nameInput ? nameInput.value.trim() : "");
       const descInput = row.querySelector('[data-plan-field="desc"]');
       descriptions.push(descInput ? descInput.value.trim() : "");
+      const attackInput = row.querySelector('[data-plan-field="attack"]');
+      attackStyles.push(attackInput ? attackInput.value : undefined);
     });
-    return { names, descriptions };
+    return { names, descriptions, attackStyles };
   }
 
   function collectEditedThemePlan() {
-    const characters = collectPlanSlots(themePlanCharacters);
-    const enemies = collectPlanSlots(themePlanEnemies);
-    if (characters.length !== 16) throw new Error(`Characters needs all 16 filled slots (currently ${characters.length}).`);
-    if (enemies.length !== 4) throw new Error(`Enemies needs all 4 filled slots (currently ${enemies.length}).`);
+    const characterSlots = collectPlanSlotsWithDesc(themePlanCharacters);
+    const characters = characterSlots.names;
+    const characterFilled = characters.filter(Boolean).length;
+    if (characters.length !== THEME_PLAN_CHARACTER_COUNT || characterFilled !== THEME_PLAN_CHARACTER_COUNT) {
+      throw new Error(`Characters needs all ${THEME_PLAN_CHARACTER_COUNT} filled slots (currently ${characterFilled}).`);
+    }
+
+    const enemySlots = collectPlanSlotsWithDesc(themePlanEnemies);
+    const enemies = enemySlots.names;
+    const enemyFilled = enemies.filter(Boolean).length;
+    if (enemies.length !== THEME_PLAN_ENEMY_COUNT || enemyFilled !== THEME_PLAN_ENEMY_COUNT) {
+      throw new Error(`Enemies needs all ${THEME_PLAN_ENEMY_COUNT} filled slots (currently ${enemyFilled}).`);
+    }
+    const enemyAttackStyles = enemySlots.attackStyles.map((style) => (style === "ranged" ? "ranged" : "melee"));
+
+    const decorSlots = collectPlanSlotsWithDesc(themePlanDecorSlots);
+    const decor = decorSlots.names;
+    const decorFilled = decor.filter(Boolean).length;
+    if (decor.length !== THEME_PLAN_DECOR_COUNT || decorFilled !== THEME_PLAN_DECOR_COUNT) {
+      throw new Error(`Decor needs all ${THEME_PLAN_DECOR_COUNT} named slots (currently ${decorFilled}).`);
+    }
+
     const displayName = themePlanName ? themePlanName.value.trim() : "";
     const creativeDirection = themePlanDirection ? themePlanDirection.value.trim() : "";
     const environment = themePlanEnvironment ? themePlanEnvironment.value.trim() : "";
@@ -2489,8 +2537,13 @@
       display_name: displayName,
       creative_direction: creativeDirection,
       characters,
+      character_descriptions: characterSlots.descriptions,
       environment,
       enemies,
+      enemy_descriptions: enemySlots.descriptions,
+      enemy_attack_styles: enemyAttackStyles,
+      decor,
+      decor_descriptions: decorSlots.descriptions,
       objects,
       object_descriptions: objectSlots.descriptions,
       crate_description: themePlanCrateDesc ? themePlanCrateDesc.value.trim() : "",

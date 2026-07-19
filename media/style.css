@@ -3319,16 +3319,6 @@ td.col-status {
   border-radius: 6px;
 }
 
-.theme-plan-slot-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.theme-plan-slot-grid--characters {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
 .theme-plan-slot {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
@@ -3380,6 +3370,19 @@ td.col-status {
   font: inherit;
   font-size: 12px;
   resize: vertical;
+}
+
+.theme-plan-slot-attack {
+  box-sizing: border-box;
+  width: auto;
+  align-self: flex-start;
+  padding: 5px 8px;
+  color: var(--vscode-input-foreground, var(--text));
+  background: var(--vscode-input-background, #171a1f);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11px;
 }
 
 .theme-plan-slot-note,
@@ -4032,10 +4035,6 @@ button.theme-review-preview:focus-visible::after {
     flex-direction: column;
   }
 
-  .theme-plan-slot-grid,
-  .theme-plan-slot-grid--characters {
-    grid-template-columns: 1fr;
-  }
 }
 
 #theme-builder-root {

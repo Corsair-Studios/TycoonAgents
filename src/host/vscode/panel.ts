@@ -5897,7 +5897,7 @@ export class TycoonPanel {
           </label>
           <fieldset class="theme-plan-group">
             <legend>Characters <span>16 individual sprite boards</span></legend>
-            <div id="theme-plan-characters" class="theme-plan-slot-grid theme-plan-slot-grid--characters"></div>
+            <div id="theme-plan-characters" class="theme-plan-slots"></div>
           </fieldset>
           <label class="theme-plan-field">
             <span>Environment <small>1 image</small></span>
@@ -5905,7 +5905,7 @@ export class TycoonPanel {
           </label>
           <fieldset class="theme-plan-group">
             <legend>Enemies <span>4 individual enemy rows &middot; 1 sprite board</span></legend>
-            <div id="theme-plan-enemies" class="theme-plan-slot-grid"></div>
+            <div id="theme-plan-enemies" class="theme-plan-slots"></div>
           </fieldset>
           <fieldset class="theme-plan-group">
             <legend>Objects <span>21 objects &middot; 2 sprite sheets</span></legend>
@@ -5918,6 +5918,11 @@ export class TycoonPanel {
               <span>Poof effect <small>fixed object &middot; appearance only</small></span>
               <textarea id="theme-plan-poof-desc" rows="2" placeholder="Appearance / description (optional)"></textarea>
             </label>
+          </fieldset>
+          <fieldset class="theme-plan-group">
+            <legend>Decor <span>9 items &middot; 1 sprite board</span></legend>
+            <p class="theme-plan-group-note">Decor: slots 1-4 are sittable seats (seat 1 is the leader's throne), 5-8 are static props, 9 is animated.</p>
+            <div id="theme-plan-decor-slots" class="theme-plan-slots"></div>
           </fieldset>
           <fieldset class="theme-plan-group">
             <legend>Expressions <span>8 fixed slots &middot; 1 sprite sheet</span></legend>

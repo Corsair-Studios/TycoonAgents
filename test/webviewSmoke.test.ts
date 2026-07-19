@@ -1846,7 +1846,12 @@ function buildFullThemePlan(overrides: Record<string, any> = {}) {
     creative_direction: 'Solarpunk playground with glowing flora',
     environment: 'A bioluminescent greenhouse city',
     characters: Array.from({ length: 16 }, (_, i) => `Char ${i + 1}`),
+    character_descriptions: Array.from({ length: 16 }, (_, i) => `Char ${i + 1} appearance`),
     enemies: Array.from({ length: 4 }, (_, i) => `Enemy ${i + 1}`),
+    enemy_descriptions: Array.from({ length: 4 }, (_, i) => `Enemy ${i + 1} appearance`),
+    enemy_attack_styles: Array.from({ length: 4 }, () => 'melee'),
+    decor: Array.from({ length: 9 }, (_, i) => `Decor ${i + 1}`),
+    decor_descriptions: Array.from({ length: 9 }, (_, i) => `Decor ${i + 1} appearance`),
     objects: Array.from({ length: 21 }, (_, i) => `Object ${i + 1}`),
     object_descriptions: Array.from({ length: 21 }, (_, i) => `Object ${i + 1} appearance`),
     crate_description: 'A glowing seed pod crate',
@@ -2020,6 +2025,199 @@ test('theme-plan generation form: an empty object name blocks generation with th
       validationEl.textContent || '',
       /\b(13|16)\b/,
       'validation message must not show the stale comma-count 13/16 figures'
+    );
+  } finally {
+    h.win.close();
+  }
+});
+
+// ── Theme-plan generation form: characters/enemies/decor parity ────────────
+// Follow-up to the objects/expressions/achievements editors above: the same
+// renderPlanSlotsWithDesc/collectPlanSlotsWithDesc machinery now also drives
+// characters (16, editable name+desc), enemies (4, editable name+desc plus a
+// melee/ranged attack-style <select>), and decor (9, editable name+desc,
+// brand-new container #theme-plan-decor-slots — main.js ~1917/2443).
+
+test('theme-plan generation form: characters/enemies/decor render 16/4/9 per-slot rows with attack-style + context-line parity', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan({
+      enemy_attack_styles: ['melee', 'melee', 'ranged', 'melee'],
+    }));
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const charactersContainer = h.doc.getElementById('theme-plan-characters');
+    const enemiesContainer = h.doc.getElementById('theme-plan-enemies');
+    const decorContainer = h.doc.getElementById('theme-plan-decor-slots');
+    assert.ok(charactersContainer, 'theme-plan-characters should exist');
+    assert.ok(enemiesContainer, 'theme-plan-enemies should exist');
+    assert.ok(decorContainer, 'theme-plan-decor-slots should exist');
+
+    const characterRows = charactersContainer.querySelectorAll('.theme-plan-slot-row');
+    const enemyRows = enemiesContainer.querySelectorAll('.theme-plan-slot-row');
+    const decorRows = decorContainer.querySelectorAll('.theme-plan-slot-row');
+    assert.equal(characterRows.length, 16, 'characters should render 16 per-slot rows');
+    assert.equal(enemyRows.length, 4, 'enemies should render 4 per-slot rows');
+    assert.equal(decorRows.length, 9, 'decor should render 9 per-slot rows');
+
+    characterRows.forEach((row: Element, i: number) => {
+      const nameInput = row.querySelector('input[data-plan-field="name"]');
+      const descTextarea = row.querySelector('textarea[data-plan-field="desc"]');
+      assert.ok(nameInput, `character row ${i} should have a name input`);
+      assert.ok(descTextarea, `character row ${i} should have a desc textarea`);
+    });
+
+    enemyRows.forEach((row: Element, i: number) => {
+      const attackSelect = row.querySelector('select[data-plan-field="attack"]') as any;
+      assert.ok(attackSelect, `enemy row ${i} should have an attack select`);
+      const expected = i === 2 ? 'ranged' : 'melee';
+      assert.equal(attackSelect.value, expected, `enemy row ${i} attack select should preselect "${expected}"`);
+    });
+
+    // Slot 0 is the leader's throne, 1-3 are the remaining seats, 4-7 are
+    // static decor, and 8 is the single animated item (THEME_PLAN_DECOR_
+    // SEAT_COUNT=4 / STATIC_COUNT=4, main.js ~2443-2453).
+    const decor0Ctx = decorRows[0].querySelector('.theme-plan-slot-context');
+    assert.ok(decor0Ctx, 'decor slot 0 should show a context line');
+    assert.match(decor0Ctx.textContent || '', /Seat/, 'decor slot 0 context should mention "Seat"');
+    assert.match(decor0Ctx.textContent || '', /Leader/, 'decor slot 0 context should mention "Leader"');
+    const decor4Ctx = decorRows[4].querySelector('.theme-plan-slot-context');
+    assert.ok(decor4Ctx, 'decor slot 4 should show a context line');
+    assert.match(decor4Ctx.textContent || '', /Static decor/, 'decor slot 4 (first static) context should read "Static decor"');
+    const decor8Ctx = decorRows[8].querySelector('.theme-plan-slot-context');
+    assert.ok(decor8Ctx, 'decor slot 8 should show a context line');
+    assert.match(decor8Ctx.textContent || '', /Animated/, 'decor slot 8 (last, animated) context should mention "Animated"');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('theme-plan generation form: characters/enemies/decor round-trip via Start generation without dropping other plan fields', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan({ object_motion_hints: ['drift-slow', 'bob'] }));
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const charactersContainer = h.doc.getElementById('theme-plan-characters');
+    const enemiesContainer = h.doc.getElementById('theme-plan-enemies');
+    const decorContainer = h.doc.getElementById('theme-plan-decor-slots');
+
+    const charRow7 = charactersContainer.querySelectorAll('.theme-plan-slot-row')[7];
+    (charRow7.querySelector('input[data-plan-field="name"]') as any).value = 'Edited Character Eight';
+    (charRow7.querySelector('[data-plan-field="desc"]') as any).value = 'Edited character eight appearance';
+
+    const enemyRow1 = enemiesContainer.querySelectorAll('.theme-plan-slot-row')[1];
+    (enemyRow1.querySelector('input[data-plan-field="name"]') as any).value = 'Edited Enemy Two';
+    (enemyRow1.querySelector('[data-plan-field="desc"]') as any).value = 'Edited enemy two appearance';
+    const enemyAttackSelect = enemyRow1.querySelector('select[data-plan-field="attack"]') as any;
+    enemyAttackSelect.value = 'ranged';
+    enemyAttackSelect.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+
+    const decorRow4 = decorContainer.querySelectorAll('.theme-plan-slot-row')[4];
+    (decorRow4.querySelector('input[data-plan-field="name"]') as any).value = 'Edited Decor Five';
+    (decorRow4.querySelector('[data-plan-field="desc"]') as any).value = 'Edited decor five appearance';
+
+    const startBtn = h.doc.getElementById('theme-start-generation-btn');
+    assert.ok(startBtn, 'theme-start-generation-btn should exist');
+    startBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    assert.equal(h.errors.length, 0, `Start-generation click threw: ${h.errors.map(String).join('; ')}`);
+
+    const genMsg = [...h.posted].reverse().find((m: any) => m.type === 'GENERATE_THEME');
+    assert.ok(genMsg, 'a valid plan should post GENERATE_THEME');
+    const plan = genMsg.payload.plan;
+
+    assert.equal(plan.characters.length, 16, 'collected characters should have 16 entries');
+    assert.equal(plan.character_descriptions.length, 16, 'collected character_descriptions should have 16 entries');
+    assert.equal(plan.characters[7], 'Edited Character Eight', 'edited character name should round-trip at its index');
+    assert.equal(plan.character_descriptions[7], 'Edited character eight appearance', 'edited character description should round-trip at its index');
+
+    assert.equal(plan.enemies.length, 4, 'collected enemies should have 4 entries');
+    assert.equal(plan.enemy_descriptions.length, 4, 'collected enemy_descriptions should have 4 entries');
+    assert.equal(plan.enemy_attack_styles.length, 4, 'collected enemy_attack_styles should have 4 entries');
+    assert.equal(plan.enemies[1], 'Edited Enemy Two', 'edited enemy name should round-trip at its index');
+    assert.equal(plan.enemy_descriptions[1], 'Edited enemy two appearance', 'edited enemy description should round-trip at its index');
+    assert.equal(plan.enemy_attack_styles[1], 'ranged', 'edited enemy attack style should round-trip at its index');
+
+    assert.equal(plan.decor.length, 9, 'collected decor should have 9 entries');
+    assert.equal(plan.decor_descriptions.length, 9, 'collected decor_descriptions should have 9 entries');
+    assert.equal(plan.decor[4], 'Edited Decor Five', 'edited decor name should round-trip at its index');
+    assert.equal(plan.decor_descriptions[4], 'Edited decor five appearance', 'edited decor description should round-trip at its index');
+
+    // collectEditedThemePlan spreads ...currentThemePlan before overriding
+    // only the fields it explicitly collects (main.js ~2559-2580), so an
+    // unrelated pre-existing plan field, and an untouched form field like
+    // environment, must survive the round-trip rather than being dropped.
+    assert.deepEqual(plan.object_motion_hints, ['drift-slow', 'bob'], 'unrelated pre-existing plan fields must not be dropped');
+    assert.equal(plan.environment, 'A bioluminescent greenhouse city', 'environment field must survive the round-trip');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('theme-plan generation form: an empty character name blocks generation with a 16-count error', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan());
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const charactersContainer = h.doc.getElementById('theme-plan-characters');
+    const charRow9 = charactersContainer.querySelectorAll('.theme-plan-slot-row')[9];
+    (charRow9.querySelector('input[data-plan-field="name"]') as any).value = '';
+
+    const generateCountBefore = h.posted.filter((m: any) => m.type === 'GENERATE_THEME').length;
+    const startBtn = h.doc.getElementById('theme-start-generation-btn');
+    assert.ok(startBtn, 'theme-start-generation-btn should exist');
+    startBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    assert.equal(h.errors.length, 0, `Start-generation click threw: ${h.errors.map(String).join('; ')}`);
+
+    const generateCountAfter = h.posted.filter((m: any) => m.type === 'GENERATE_THEME').length;
+    assert.equal(generateCountAfter, generateCountBefore, 'no GENERATE_THEME should be posted when a character name is empty');
+
+    const validationEl = h.doc.getElementById('theme-plan-validation');
+    assert.ok(validationEl, 'theme-plan-validation should exist');
+    assert.match(
+      validationEl.textContent || '',
+      /Characters needs all 16 filled slots \(currently 15\)/,
+      'validation message should use the 16-slot character count'
+    );
+  } finally {
+    h.win.close();
+  }
+});
+
+test('theme-plan generation form: an empty decor name blocks generation with a 9-count error', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchThemePlanReady(h, buildFullThemePlan());
+    h.tick(1);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_PLAN_READY threw: ${h.errors.map(String).join('; ')}`);
+
+    const decorContainer = h.doc.getElementById('theme-plan-decor-slots');
+    const decorRow2 = decorContainer.querySelectorAll('.theme-plan-slot-row')[2];
+    (decorRow2.querySelector('input[data-plan-field="name"]') as any).value = '';
+
+    const generateCountBefore = h.posted.filter((m: any) => m.type === 'GENERATE_THEME').length;
+    const startBtn = h.doc.getElementById('theme-start-generation-btn');
+    assert.ok(startBtn, 'theme-start-generation-btn should exist');
+    startBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    assert.equal(h.errors.length, 0, `Start-generation click threw: ${h.errors.map(String).join('; ')}`);
+
+    const generateCountAfter = h.posted.filter((m: any) => m.type === 'GENERATE_THEME').length;
+    assert.equal(generateCountAfter, generateCountBefore, 'no GENERATE_THEME should be posted when a decor name is empty');
+
+    const validationEl = h.doc.getElementById('theme-plan-validation');
+    assert.ok(validationEl, 'theme-plan-validation should exist');
+    assert.match(
+      validationEl.textContent || '',
+      /Decor needs all 9 named slots \(currently 8\)/,
+      'validation message should use the 9-slot decor count'
     );
   } finally {
     h.win.close();
