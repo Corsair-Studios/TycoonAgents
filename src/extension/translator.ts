@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import type { ThemeManifest } from '../shared/types';
 import type { ThemeImageGenerationOptions } from './imageClient';
 import {
+  FIXED_EXPRESSION_LABELS,
   normalizeThemePlan,
   themePlanCreativeDirection,
   themePlanToManifest,
@@ -28,28 +29,26 @@ interface PlannerModelOutput {
   enemy_attack_styles?: unknown;
   enemy_descriptions?: unknown;
   expressions?: unknown;
+  expression_descriptions?: unknown;
   achievements?: unknown;
+  achievement_descriptions?: unknown;
 }
 
 /**
- * Expand a short theme request into the complete, editable pre-generation
- * plan shown in the Theme Builder.
+ * Build the provider-neutral theme-planning prompt (same text sent to both
+ * OpenAI and Gemini). Extracted to a pure function so it's unit-testable
+ * without a network call.
  */
-export async function expandThemePlan(
-  rawUserInput: string,
-  options: ThemeImageGenerationOptions = {},
-): Promise<ThemePlan> {
-  const { provider, apiKey } = resolvePlannerSettings(options);
-  if (!apiKey) {
-    const label = provider === 'openai' ? 'OpenAI' : 'Google Gemini';
-    throw new Error(`${label} API key is required. Add one in Themes > Theme Builder.`);
-  }
+export function buildThemePlanningPrompt(userPrompt: string): string {
+  const expressionLabelList = FIXED_EXPRESSION_LABELS
+    .map((label, i) => `${i + 1}. ${label}`)
+    .join(', ');
 
-  const planningPrompt = [
+  return [
     'You are planning a cohesive visual asset pack for a tycoon game.',
     'Return STRICT JSON only: no markdown, comments, commentary, or extra keys.',
     '',
-    `Requested theme: ${rawUserInput}`,
+    `Requested theme: ${userPrompt}`,
     '',
     'Use what you know about the requested theme to fill every value with a specific, visually distinct suggestion.',
     'Return exactly this JSON shape and exact array lengths:',
@@ -69,17 +68,35 @@ export async function expandThemePlan(
     '  "enemies": ["4 named enemy designs"],',
     '  "enemy_attack_styles": [<one of "melee" or "ranged" for EACH enemy, SAME ORDER as "enemies"; "ranged" if that enemy fights primarily with a gun, bow, thrown weapon, or energy/projectile weapon at a distance; "melee" if it fights hand-to-hand or with a close-contact weapon (fists, claws, blade, club, spear)>],',
     '  "enemy_descriptions": ["4 concrete visual-appearance specs, one per enemy in the same order"],',
-    '  "expressions": ["7 short, visually distinct expression names"],',
-    '  "achievements": ["25 short achievement badge design names"]',
+    `  "expression_descriptions": ["EXACTLY 8 concrete visual-appearance specs, one per FIXED expression slot IN THIS EXACT ORDER: ${expressionLabelList}. These slot NAMES/MEANINGS are fixed and MUST NOT be renamed or reordered — only describe how each emotion is RENDERED in this theme's art style (pose, expression, colors, effects)."],`,
+    '  "achievements": ["25 short achievement badge design names"],',
+    '  "achievement_descriptions": ["25 concrete visual-appearance specs, one per achievement badge in the same order as \\"achievements\\" — the badge\'s icon/emblem look, not its unlock rule"]',
     '}',
     '',
     'Achievements are visual concepts only; do not define unlock rules yet.',
     '',
-    'Every "*_descriptions" array is a concise (1-2 sentence) CONCRETE visual spec for the matching named entry at the same index: overall silhouette/form, primary + accent colors, key materials/finish, and 1-2 signature identifying features.',
+    'Every "*_descriptions" array is a concise (1-2 sentence) CONCRETE visual spec for the matching entry at the same index: overall silhouette/form, primary + accent colors, key materials/finish, and 1-2 signature identifying features. Every entry in every "*_descriptions" array is REQUIRED and must be a non-empty, concrete spec — never leave a slot blank, and return exactly the required count for each array.',
     '"crate_description" and "poof_description" are the same kind of concise CONCRETE visual spec, but each is a single string (not an array) — there is exactly one build crate and one build-completion poof effect per theme.',
     'Each description must be consistent with "creative_direction" and coherent across the whole set (shared palette, materials, and art language).',
     'If the named item corresponds to a recognizable, well-known design (a famous character, vehicle, building, weapon, logo, etc.), describe THAT specific design faithfully — accuracy over generic invention is the whole point of these fields.',
   ].join('\n');
+}
+
+/**
+ * Expand a short theme request into the complete, editable pre-generation
+ * plan shown in the Theme Builder.
+ */
+export async function expandThemePlan(
+  rawUserInput: string,
+  options: ThemeImageGenerationOptions = {},
+): Promise<ThemePlan> {
+  const { provider, apiKey } = resolvePlannerSettings(options);
+  if (!apiKey) {
+    const label = provider === 'openai' ? 'OpenAI' : 'Google Gemini';
+    throw new Error(`${label} API key is required. Add one in Themes > Theme Builder.`);
+  }
+
+  const planningPrompt = buildThemePlanningPrompt(rawUserInput);
 
   const response = provider === 'openai'
     ? await fetch('https://api.openai.com/v1/chat/completions', {
@@ -148,7 +165,13 @@ export async function expandThemePlan(
       ? model.enemy_descriptions as string[]
       : undefined,
     expressions: Array.isArray(model.expressions) ? model.expressions as string[] : [],
+    expression_descriptions: Array.isArray(model.expression_descriptions)
+      ? model.expression_descriptions as string[]
+      : undefined,
     achievements: Array.isArray(model.achievements) ? model.achievements as string[] : [],
+    achievement_descriptions: Array.isArray(model.achievement_descriptions)
+      ? model.achievement_descriptions as string[]
+      : undefined,
   }, rawUserInput);
 }
 
