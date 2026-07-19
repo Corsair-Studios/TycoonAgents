@@ -3417,9 +3417,16 @@ td.col-status {
   cursor: pointer;
 }
 
-.theme-generation-approval-toggle--top {
-  margin-bottom: 14px;
+.theme-generation-approval-toggle--footer {
+  margin-bottom: 0;
+  padding: 8px 10px;
   background: rgba(255, 255, 255, 0.025);
+}
+
+.theme-plan-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 
 .theme-generation-approval-toggle input {
@@ -4030,7 +4037,8 @@ button.theme-review-preview:focus-visible::after {
   }
 
   .theme-plan-header,
-  .theme-plan-footer {
+  .theme-plan-footer,
+  .theme-plan-footer-actions {
     align-items: stretch;
     flex-direction: column;
   }

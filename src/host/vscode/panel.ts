@@ -5865,13 +5865,6 @@ export class TycoonPanel {
           </div>
           <div id="theme-api-key-status" class="theme-api-key-status" role="status"></div>
         </div>
-        <label class="theme-generation-approval-toggle theme-generation-approval-toggle--top" for="theme-pause-for-review">
-          <input id="theme-pause-for-review" type="checkbox" checked />
-          <span>
-            Pause after each image for approval
-            <small>Change this any time. Turning it off resumes a paused generation.</small>
-          </span>
-        </label>
         <p class="theme-generation-approval-warning" style="margin: 6px 0 0; padding: 8px 10px; border-left: 3px solid #d9a441; background: rgba(217, 164, 65, 0.12); border-radius: 4px; font-size: 12px; line-height: 1.4;">
           &#9888; AI image generation isn't perfect &mdash; expect to regenerate some images and do a little manual cleanup (use Retry, Upload, or edit the prompt).
         </p>
@@ -5936,7 +5929,16 @@ export class TycoonPanel {
           </fieldset>
           <div class="theme-plan-footer">
             <div id="theme-plan-validation" class="theme-plan-validation" role="status"></div>
-            <button id="theme-start-generation-btn" class="skill-btn">Generate images</button>
+            <div class="theme-plan-footer-actions">
+              <label class="theme-generation-approval-toggle theme-generation-approval-toggle--footer" for="theme-pause-for-review">
+                <input id="theme-pause-for-review" type="checkbox" checked />
+                <span>
+                  Pause after each image for approval
+                  <small>Change this any time. Turning it off resumes a paused generation.</small>
+                </span>
+              </label>
+              <button id="theme-start-generation-btn" class="skill-btn">Generate images</button>
+            </div>
           </div>
         </section>
         <div id="theme-build-status" style="margin-bottom: 12px; font-style: italic; min-height: 20px; color: var(--vscode-descriptionForeground);"></div>

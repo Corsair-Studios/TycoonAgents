@@ -99,6 +99,30 @@ test('buildThemePlanningPrompt does not request editable expression NAMES (label
 
 // --- normalizeThemePlan: expression_descriptions / achievement_descriptions -
 
+test('buildThemePlanningPrompt requests expression_descriptions as standalone symbolic ICONS, not a character/face/body', () => {
+  const prompt = buildThemePlanningPrompt('pirate cove');
+  assert.match(prompt, /\bICON\b/i);
+  assert.match(prompt, /NOT a character, face, head, or body/i);
+  // At least one concrete icon example is present.
+  assert.match(prompt, /heart/i);
+  assert.match(prompt, /thumbs/i);
+  // Must not instruct the model to draw a character's pose or facial expression.
+  assert.doesNotMatch(prompt, /depict a character's (pose|face)/i);
+});
+
+test('buildThemePlanningPrompt demands EXACTLY 21 objects, never fewer', () => {
+  const prompt = buildThemePlanningPrompt('robot repair yard');
+  const lines = prompt.split('\n');
+  const objectsLine = lines.find((line) => line.includes('"objects":'));
+  const motionHintsLine = lines.find((line) => line.includes('"object_motion_hints":'));
+  const descriptionsLine = lines.find((line) => line.includes('"object_descriptions":'));
+  for (const line of [objectsLine, motionHintsLine, descriptionsLine]) {
+    assert.ok(line, 'expected the line to be present in the prompt');
+    assert.match(line as string, /EXACTLY 21/);
+    assert.match(line as string, /never fewer/i);
+  }
+});
+
 test('normalizeThemePlan aligns full-length expression_descriptions(8) and achievement_descriptions(25) by index', () => {
   const expressionDescriptions = Array.from({ length: 8 }, (_, i) => `Expression appearance ${i + 1}`);
   const achievementDescriptions = Array.from({ length: 25 }, (_, i) => `Achievement appearance ${i + 1}`);

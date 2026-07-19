@@ -460,7 +460,12 @@ function reserveRangedWeaponRackSlot(
   const hasRack = looksLikeRangedWeaponRack(first);
   const rack = hasRack ? first : `${displayName} Ranged Weapon Rack`;
   const rackHint = hasRack ? paired[0]?.hint ?? '' : '';
-  const rackDescription = hasRack ? paired[0]?.description ?? '' : '';
+  // The auto-coerced default rack (planner didn't supply one) still needs a
+  // concrete, non-empty visual spec — otherwise the rack slot would render
+  // description-less even though it's a mandatory, load-bearing slot.
+  const rackDescription = hasRack
+    ? paired[0]?.description ?? ''
+    : buildDefaultRackDescription(displayName);
   const rest = hasRack ? paired.slice(1) : paired;
 
   const restNames = normalizeNames(rest.map((entry) => entry.name), THEME_OBJECT_COUNT - 1, 'Object');
@@ -472,12 +477,29 @@ function reserveRangedWeaponRackSlot(
   const descriptionsAligned = [rackDescription, ...rest.map((entry) => entry.description)].slice(0, THEME_OBJECT_COUNT);
   while (descriptionsAligned.length < objects.length) descriptionsAligned.push('');
   const hasAnyHint = hints.some((hint) => hint.length > 0);
-  const hasAnyDescription = descriptionsAligned.some((description) => description.length > 0);
+  // Every one of the 21 final slots (including any planner-padded fallback-named
+  // slot) must end with a NON-EMPTY description so the per-slot editor never shows
+  // a blank object: fill any still-empty slot with a concise deterministic fallback
+  // derived from that slot's own object name.
+  const filledDescriptions = descriptionsAligned.map((description, index) => (
+    description.length > 0 ? description : `${objects[index]}, styled to match the theme.`
+  ));
   return {
     objects,
     objectMotionHints: hasAnyHint ? hints : undefined,
-    objectDescriptions: hasAnyDescription ? descriptionsAligned : undefined,
+    objectDescriptions: filledDescriptions,
   };
+}
+
+/**
+ * Concrete, non-empty default visual spec for the ranged-weapon rack when the
+ * planner didn't supply one that already reads as a rack (see
+ * looksLikeRangedWeaponRack). Keeps the rack slot (0) from ever rendering
+ * description-less, without a network round-trip.
+ */
+function buildDefaultRackDescription(displayName: string): string {
+  return `A wall-mounted rack or stand displaying a set of ${displayName}-themed ranged weapons, `
+    + "built and finished to match the pack's overall art style, materials, and color palette.";
 }
 
 /** Heuristic: does a name describe a rack/rack-like store of RANGED weapons? */

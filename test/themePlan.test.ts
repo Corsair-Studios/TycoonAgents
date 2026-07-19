@@ -326,20 +326,29 @@ test('decor_descriptions align to the 9-slot decor board and pad missing slots w
 });
 
 test('object_descriptions stay aligned to objects across ranged-weapon-rack slot-0 coercion', () => {
-  // Planner had no rack: slot 0 is coerced to the themed default and gets no
-  // planner description; the planner's own objects shift down and keep their descriptions.
+  // Planner had no rack: slot 0 is coerced to the themed default and gets a
+  // non-empty fallback description (not the planner's); the planner's own
+  // objects shift down and keep their own descriptions.
   const coerced = normalizeThemePlan({
     display_name: 'Neon Harbor',
     objects: ['Console', 'Crane', 'Generator'],
     object_descriptions: ['a flickering terminal', 'a yellow gantry crane', 'a humming reactor core'],
   });
   assert.equal(coerced.objects[0], 'Neon Harbor Ranged Weapon Rack');
-  assert.equal(coerced.object_descriptions?.[0], ''); // coerced rack has no planner description
+  // Coerced rack has no planner description, so it gets the deterministic
+  // default rack description — never empty.
+  assert.match(coerced.object_descriptions?.[0] ?? '', /rack|stand/i);
+  assert.match(coerced.object_descriptions?.[0] ?? '', /ranged/i);
   assert.equal(coerced.objects[1], 'Console');
   assert.equal(coerced.object_descriptions?.[1], 'a flickering terminal');
   assert.equal(coerced.objects[2], 'Crane');
   assert.equal(coerced.object_descriptions?.[2], 'a yellow gantry crane');
   assert.equal(coerced.object_descriptions?.length, 21);
+  // Every one of the 21 slots is non-empty, including the padded fallback
+  // slots beyond what the planner supplied.
+  for (const description of coerced.object_descriptions ?? []) {
+    assert.ok(description.length > 0);
+  }
 
   // Planner already supplied a rack: its own description stays on slot 0.
   const kept = normalizeThemePlan({
@@ -352,9 +361,55 @@ test('object_descriptions stay aligned to objects across ranged-weapon-rack slot
   assert.equal(kept.objects[1], 'Control Tower');
   assert.equal(kept.object_descriptions?.[1], 'a tall radar tower');
 
-  // No descriptions supplied at all -> field omitted, never throws.
+  // No descriptions supplied at all -> field is now ALWAYS a defined,
+  // 21-length array of non-empty fallback descriptions (never undefined).
   const none = normalizeThemePlan({ display_name: 'Neon Harbor', objects: ['Console'] });
-  assert.equal(none.object_descriptions, undefined);
+  assert.equal(none.object_descriptions?.length, 21);
+  for (const description of none.object_descriptions ?? []) {
+    assert.ok(description.length > 0);
+  }
+});
+
+test('object_descriptions: undercount (20 names + 20 descriptions) still yields 21 non-empty entries', () => {
+  const objectNames = Array.from({ length: 20 }, (_, i) => `Object ${i + 1}`);
+  const objectDescriptions = objectNames.map((name) => `${name} description`);
+  const plan = normalizeThemePlan({
+    display_name: 'Undercount Theme',
+    objects: objectNames,
+    object_descriptions: objectDescriptions,
+  });
+  assert.equal(plan.objects.length, 21);
+  assert.equal(plan.object_descriptions?.length, 21);
+  for (const description of plan.object_descriptions ?? []) {
+    assert.ok(description.length > 0);
+  }
+});
+
+test('object_descriptions: first object is not a rack and no descriptions supplied -> coerced rack slot 0 gets non-empty default rack wording', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Frost Peak',
+    objects: ['Bench', 'Lantern'],
+  });
+  assert.equal(plan.objects[0], 'Frost Peak Ranged Weapon Rack');
+  const rackDescription = plan.object_descriptions?.[0] ?? '';
+  assert.ok(rackDescription.length > 0);
+  assert.match(rackDescription, /rack|stand/i);
+  assert.match(rackDescription, /ranged/i);
+});
+
+test('object_descriptions: a normal full 21+21 supply passes through unchanged at each index (no fallback clobbering)', () => {
+  const objectNames = ['Themed Ranged Weapon Rack', ...Array.from({ length: 20 }, (_, i) => `Object ${i + 1}`)];
+  const objectDescriptions = objectNames.map((name) => `${name} real description`);
+  const plan = normalizeThemePlan({
+    display_name: 'Full Supply Theme',
+    objects: objectNames,
+    object_descriptions: objectDescriptions,
+  });
+  assert.equal(plan.objects.length, 21);
+  assert.equal(plan.object_descriptions?.length, 21);
+  plan.object_descriptions?.forEach((description, index) => {
+    assert.equal(description, objectDescriptions[index]);
+  });
 });
 
 test('enemy_descriptions stay paired to their own enemy across blank-name filtering, and omit when absent', () => {
@@ -373,7 +428,7 @@ test('enemy_descriptions stay paired to their own enemy across blank-name filter
   assert.equal(none.enemy_descriptions, undefined);
 });
 
-test('a plan JSON that omits every *_descriptions array entirely never throws and leaves each field undefined', () => {
+test('a plan JSON that omits every *_descriptions array entirely never throws and leaves each field undefined, except object_descriptions which always defaults to 21 non-empty fallbacks', () => {
   const plan = normalizeThemePlan({
     display_name: 'No Descriptions Anywhere',
     characters: ['A'],
@@ -382,7 +437,14 @@ test('a plan JSON that omits every *_descriptions array entirely never throws an
     enemies: ['Grunt'],
   });
   assert.equal(plan.character_descriptions, undefined);
-  assert.equal(plan.object_descriptions, undefined);
+  // object_descriptions is the exception: reserveRangedWeaponRackSlot always
+  // fills all 21 slots with a non-empty fallback, so this is never undefined.
+  assert.equal(plan.object_descriptions?.length, 21);
+  for (const description of plan.object_descriptions ?? []) {
+    assert.ok(description.length > 0);
+  }
   assert.equal(plan.decor_descriptions, undefined);
   assert.equal(plan.enemy_descriptions, undefined);
+  assert.equal(plan.expression_descriptions, undefined);
+  assert.equal(plan.achievement_descriptions, undefined);
 });
