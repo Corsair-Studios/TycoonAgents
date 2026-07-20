@@ -3962,25 +3962,57 @@ export function mergeOwnedFrames(
   return merged;
 }
 
-async function writeThemeFiles(
+/**
+ * Per-theme_id async serialization queue backing writeThemeFiles' critical
+ * section (see that function's doc comment for the race this closes: two
+ * concurrent board retries for the SAME theme can each read a frames.json
+ * snapshot before the other has written, so the second write silently
+ * reverts the first). Chaining onto the tail promise per key gives strict
+ * FIFO exclusivity per theme_id while leaving different themes fully
+ * parallel. The tail is settle-guarded (its own .then swallows rejection)
+ * so a failed write does not wedge the queue for subsequent callers, and the
+ * map entry is deleted once the chain drains back to empty so it never
+ * leaks entries for themes that are no longer being written.
+ */
+const themeWriteQueues = new Map<string, Promise<unknown>>();
+
+function runExclusivePerTheme<T>(themeId: string, task: () => Promise<T>): Promise<T> {
+  const tail = themeWriteQueues.get(themeId) ?? Promise.resolve();
+  const result = tail.then(() => task(), () => task());
+  const newTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  themeWriteQueues.set(themeId, newTail);
+  newTail.then(() => {
+    if (themeWriteQueues.get(themeId) === newTail) {
+      themeWriteQueues.delete(themeId);
+    }
+  });
+  return result;
+}
+
+export async function writeThemeFiles(
   globalStorageUri: vscode.Uri,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
   ownedFrameKeys?: readonly string[],
 ): Promise<void> {
-  const store = resolveThemeFileStore(globalStorageUri);
-  await store.mkdirp(themeDirectoryPath(manifest.theme_id));
-  await store.writeFile(themeManifestPath(manifest.theme_id), jsonBuffer(manifest));
+  return runExclusivePerTheme(manifest.theme_id, async () => {
+    const store = resolveThemeFileStore(globalStorageUri);
+    await store.mkdirp(themeDirectoryPath(manifest.theme_id));
+    await store.writeFile(themeManifestPath(manifest.theme_id), jsonBuffer(manifest));
 
-  let framesToWrite = frames;
-  if (ownedFrameKeys) {
-    const onDiskFrames = await readJson<Record<string, string[]>>(
-      store,
-      themeFramesPath(manifest.theme_id),
-    );
-    framesToWrite = mergeOwnedFrames(onDiskFrames, frames, ownedFrameKeys);
-  }
-  await store.writeFile(themeFramesPath(manifest.theme_id), jsonBuffer(framesToWrite));
+    let framesToWrite = frames;
+    if (ownedFrameKeys) {
+      const onDiskFrames = await readJson<Record<string, string[]>>(
+        store,
+        themeFramesPath(manifest.theme_id),
+      );
+      framesToWrite = mergeOwnedFrames(onDiskFrames, frames, ownedFrameKeys);
+    }
+    await store.writeFile(themeFramesPath(manifest.theme_id), jsonBuffer(framesToWrite));
+  });
 }
 
 async function saveReviewImage(
