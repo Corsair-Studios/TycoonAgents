@@ -105,6 +105,42 @@ test("DELEGATION_MODES contains exactly flat and team_leads (enum unchanged by t
 });
 
 // ---------------------------------------------------------------------------
+// renderDelegationDoctrine: hard "MUST NOT explore/edit yourself" mandate +
+// review-vs-explore disambiguation (shared PREAMBLE, so present in both modes)
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine states the MUST-NOT-explore-yourself mandate and the ~40x cost line, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(out.includes("What you MUST NOT do yourself"), `mode=${mode} must include the MUST-NOT heading`);
+    assert.ok(/search-retrieval agent/i.test(out), `mode=${mode} must route exploration to search-retrieval`);
+    assert.ok(/40x the cost/i.test(out), `mode=${mode} must state the ~40x expensive-model cost`);
+    assert.ok(
+      /even when the final deliverable is only documentation or markdown/i.test(out),
+      `mode=${mode} must cover doc-only deliverables explicitly`
+    );
+  }
+});
+
+test("renderDelegationDoctrine disambiguates 'reviewing your team's results' from exploring the codebase yourself, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(
+      /reviewing your team's results/i.test(out),
+      `mode=${mode} must define "reviewing your team's results"`
+    );
+    assert.ok(
+      /does not mean exploring or reading the codebase yourself/i.test(out),
+      `mode=${mode} must explicitly rule out self-exploration as "review"`
+    );
+    assert.ok(
+      /describe, document, review, or audit a project/i.test(out),
+      `mode=${mode} must call out describe/document/review/audit as delegation-first`
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // renderDelegationDoctrine: "flat" renders as "Direct" (display-only rename;
 // the enum string stays "flat" — existing execution.json files are untouched)
 // ---------------------------------------------------------------------------

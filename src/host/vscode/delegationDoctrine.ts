@@ -45,6 +45,25 @@ Delegate implementation work to specialist agents via the Task tool rather
 than doing it inline. Search tasks (file/code lookup, grep/glob) always go to
 Explore agents running on the haiku model.
 
+### What you MUST NOT do yourself — delegate it
+
+- Exploring, searching, reading across multiple files, auditing, or
+  DESCRIBING the codebase (grep/glob, or reading several files to understand
+  how the project works) — delegate to the search-retrieval agent (Explore,
+  haiku). This applies EVEN WHEN the final deliverable is only documentation
+  or markdown: understanding the code well enough to write about it is
+  search/retrieval work. Doing it yourself runs that exploration on the
+  expensive model (roughly 40x the cost) and hides the work from the
+  visualization.
+- Editing or creating files, including docs and markdown — delegate to the
+  appropriate specialist.
+
+"Reviewing your team's results" means VERIFYING a specialist's completed
+work against the task — it does NOT mean exploring or reading the codebase
+yourself. A request to describe, document, review, or audit a project
+STARTS by delegating the exploration to search-retrieval; you synthesize
+the findings afterward.
+
 Brief every delegated agent precisely:
 - Exact file paths (not glob patterns)
 - Key symbol names (functions, classes, variables relevant to the task)
