@@ -400,6 +400,33 @@ function buildTeamStatePayload() {
   };
 }
 
+// A state payload where a NON-orchestrator agent is first in agentMetrics
+// and "orchestrator" is second — exercises the orchIdx > 0 branch of the
+// scene-local reorder guard in media/main.js's render loop (~12181-12186):
+//   const orchIdx = agentList.findIndex((a) => a && a.id === "orchestrator");
+//   if (orchIdx > 0) { sceneAgentList = [agentList[orchIdx], ...] }
+// Every other fixture in this file either omits "orchestrator" entirely or
+// (buildTeamStatePayload) puts it at index 0, so orchIdx is always <= 0
+// elsewhere and the rebuild branch itself is otherwise never hit by a render
+// tick. Minimal: just the two ids needed to make orchIdx === 1.
+function buildOrchestratorNotFirstStatePayload() {
+  const agentMetrics = [
+    { id: 'build-lead', name: 'Build Lead', status: 'active', model: 'opus', tier: 'lead', tokens: 800, activeMs: 40000 },
+    { id: 'orchestrator', name: 'Orchestrator', status: 'idle', tokens: 500, activeMs: 30000 },
+  ];
+  return {
+    type: 'state',
+    state: {
+      sessionActive: true,
+      completedTasks: 4,
+      idleFreezeMs: 180000,
+      sanityCapMs: 900000,
+      workers: {},
+      agentMetrics,
+    },
+  };
+}
+
 test('media/main.js boots + drives without throwing in a jsdom runtime', async (t) => {
   const src = readFileSync(MAIN_JS_PATH, 'utf8');
 
@@ -749,6 +776,23 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.equal(tbody.querySelectorAll('.team-chevron').length, 0, 'no chevrons without any tier:lead entries');
       assert.equal(tbody.querySelectorAll('.team-tag').length, 0, 'no team tags without any tier:lead entries');
       assertNoErrors('flat-state-unchanged');
+    });
+
+    // ── Step 9b: scene reorder — orchestrator NOT first in agentMetrics ────────
+    // Guards the scene-local reorder in media/main.js's render loop
+    // (~12181-12186): when "orchestrator" is present but not at index 0, the
+    // draw path rebuilds sceneAgentList with it moved to the front. That
+    // branch (orchIdx > 0) is otherwise never exercised by a render tick in
+    // this file, so this is a smoke check only — it does not (and cannot,
+    // canvas output isn't inspectable) assert which avatar/seat each agent
+    // gets, only that the reorder + everything downstream of it in the draw
+    // loop (enemy spawn/conga update, agentCharMap pruning, per-agent
+    // placement) completes without throwing.
+    await t.test('9b. scene render does not throw when orchestrator is not first in agentMetrics', async () => {
+      dispatch(buildOrchestratorNotFirstStatePayload());
+      tick(10);
+      await flush();
+      assertNoErrors('scene-orchestrator-not-first');
     });
 
     // ── Step 10: pre-install delegation chooser visibility (Phase 2 bugfix) ──────

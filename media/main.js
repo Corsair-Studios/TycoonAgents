@@ -11663,20 +11663,27 @@
 
   /**
    * True iff charEntry is the current "leader" — the FIRST agent in this
-   * frame's agentList (idx === 0). agentMetrics (the source agentList is
-   * built from) is append-only and never trimmed within a session, so
-   * agentMetrics[0] is provably the stable orchestrator entry; idx === 0
-   * still resolves to charIds[0] (rosterOrder[0]'s costume) via the same
-   * costume-cycling formula the draw and projectile-shooter code use:
-   * charIds[idx % charIds.length] (see ~11480 and ~10707), so a roster
-   * drag-reorder still moves the throne's costume immediately (charIds is
-   * rebuilt from the live rosterOrder every render() call) — only the
-   * agent-selection half changed, from "idx % charIds.length === 0" (which
-   * matched every idx that's a multiple of charIds.length once agentList
-   * outgrew the costume count, producing multiple simultaneous leaders) to
-   * "idx === 0" (exactly one leader, always the orchestrator).
+   * frame's SCENE list (idx === 0). idx is computed against sceneAgentList
+   * (see render(), built from agentList/state.agentMetrics right before the
+   * per-agent loop), NOT the raw agentMetrics order: agentMetrics is
+   * append-only, first-seen-by-hook order, and while the orchestrator is
+   * USUALLY recorded first (landing at agentMetrics[0] naturally), a
+   * reused/misinstalled project can record a spawned lead (e.g. build-lead)
+   * first instead. sceneAgentList corrects for that by moving whichever
+   * entry has id === "orchestrator" to index 0 (identity-based, not
+   * position-based), so idx === 0 here is always the orchestrator when one
+   * is present in the roster. idx === 0 still resolves to charIds[0]
+   * (rosterOrder[0]'s costume) via the same costume-cycling formula the draw
+   * and projectile-shooter code use: charIds[idx % charIds.length] (see
+   * ~11480 and ~10707), so a roster drag-reorder still moves the throne's
+   * costume immediately (charIds is rebuilt from the live rosterOrder every
+   * render() call) — only the agent-selection half changed, from
+   * "idx % charIds.length === 0" (which matched every idx that's a multiple
+   * of charIds.length once the list outgrew the costume count, producing
+   * multiple simultaneous leaders) to "idx === 0" (exactly one leader,
+   * always the orchestrator).
    * @param {object} charEntry an agentCharMap entry
-   * @param {number} idx the entry's index in this frame's agentList
+   * @param {number} idx the entry's index in this frame's sceneAgentList
    * @param {string[]} charIds this frame's resolved roster/costume id list
    */
   function isLeaderEntry(charEntry, idx, charIds) {
@@ -12161,20 +12168,35 @@
     // Derive the agent list from the metrics table (same source as renderMetrics).
     // While loading, use an empty list so no placeholder/half-loaded sprites show.
     const agentList = loadingActive ? [] : (Array.isArray(state.agentMetrics) ? state.agentMetrics : []);
-    lastAgentList = agentList; // expose to off-loop debug hotkeys
+    // Scene-local reorder: the leader/throne slot and charIds[0]'s avatar are
+    // assigned POSITIONALLY (idx === 0 / idx % charIds.length) from whichever
+    // list index 0 happens to be. agentList/agentMetrics is append-only,
+    // first-seen-by-hook order — normally the orchestrator is recorded first
+    // by UserPromptSubmit and lands at index 0, but in a reused/misinstalled
+    // project a spawned lead (e.g. build-lead) can be recorded first instead,
+    // stealing the throne and the orchestrator's avatar slot. Pin the
+    // orchestrator to index 0 BY IDENTITY for the SCENE only — the metrics
+    // panel keeps reading agentMetrics/agentList directly and is untouched.
+    // No-op when the orchestrator is already first (the normal case).
+    let sceneAgentList = agentList;
+    const orchIdx = agentList.findIndex((a) => a && a.id === "orchestrator");
+    if (orchIdx > 0) {
+      sceneAgentList = [agentList[orchIdx], ...agentList.slice(0, orchIdx), ...agentList.slice(orchIdx + 1)];
+    }
+    lastAgentList = sceneAgentList; // expose to off-loop debug hotkeys (conga leader = orchestrator)
 
     // Rebirth (B2): track the high-water mark of concurrently-ACTIVE agents
     // this cycle, using the same isMetricsAgentActive() source of truth as
     // the metrics table/canvas (see its definition for why). Feeds the
     // AGENTS_ACTIVE badge trigger in updateBadgeUnlocks().
     let liveActiveAgentCount = 0;
-    for (const a of agentList) {
+    for (const a of sceneAgentList) {
       if (isMetricsAgentActive(a)) liveActiveAgentCount++;
     }
     cyclePeakActive = Math.max(cyclePeakActive, liveActiveAgentCount);
 
     // Prune stale entries from agentCharMap (agents no longer in metrics).
-    const agentIds = new Set(agentList.map((a) => a.id));
+    const agentIds = new Set(sceneAgentList.map((a) => a.id));
     for (const id of Object.keys(agentCharMap)) {
       if (!agentIds.has(id)) delete agentCharMap[id];
     }
@@ -12209,9 +12231,9 @@
     // Computed BEFORE the build-state block so updateBuildProgress() can gate
     // on enemiesAlive (enemy presence preempts/pauses building — Change 1).
     if (!loadingActive && themeLoaded) {
-      updateEnemySpawning(delta, agentList);
+      updateEnemySpawning(delta, sceneAgentList);
       advanceEnemies(delta);
-      updateConga(delta, agentList);
+      updateConga(delta, sceneAgentList);
     }
     // Change C: advance live projectiles. t runs 0→1 over PROJECTILE_FLIGHT_SEC,
     // then lingers on the blast for PROJECTILE_BLAST_HOLD before removal. Drawn
@@ -12327,7 +12349,7 @@
           const place = objectPlacement[objId];
           let agentNear = false;
           if (place) {
-            for (const agent of agentList) {
+            for (const agent of sceneAgentList) {
               const ent = agentCharMap[agent.id];
               if (!ent) continue;
               const dx = place.nx - ent.nx, dy = place.ny - ent.ny;
@@ -12383,7 +12405,7 @@
     // worker "you just joined a lead's team" regardless of active-count
     // bookkeeping above. Built from the same agentList pass.
     const leadIds = new Set();
-    for (const m of agentList) {
+    for (const m of sceneAgentList) {
       if (m && m.parentId && isMetricsAgentActive(m)) {
         leadChildCount[m.parentId] = (leadChildCount[m.parentId] || 0) + 1;
       }
@@ -12392,7 +12414,7 @@
       }
     }
 
-    agentList.forEach((agent, idx) => {
+    sceneAgentList.forEach((agent, idx) => {
       // Look up a live worker (if one exists) for this agent.
       const worker = state.workers[agent.id] || null;
 
@@ -13326,7 +13348,7 @@
     // pinned to their seat) and never push a neighbor out of the way.
     {
       const sepList = [];
-      for (const agent of agentList) {
+      for (const agent of sceneAgentList) {
         const ent = agentCharMap[agent.id];
         if (ent && ent.sitSeatId == null && ent.settled) sepList.push(ent);
       }
@@ -13401,7 +13423,7 @@
     // agents/objects correctly too.
     /** @type {Array<{kind:'agent', agent:object, ny:number}|{kind:'object', obj:object, entry:object, ny:number}|{kind:'enemy', enemy:object, ny:number}>} */
     const depthList = [];
-    for (const agent of agentList) {
+    for (const agent of sceneAgentList) {
       const entA = agentCharMap[agent.id];
       depthList.push({ kind: "agent", agent, ny: entA ? entA.ny : 0 });
     }
@@ -13575,7 +13597,7 @@
       }
 
       const agent = item.agent;
-      const idx = agentList.indexOf(agent);
+      const idx = sceneAgentList.indexOf(agent);
       const charEntry = agentCharMap[agent.id];
       if (!charEntry) return;
 
