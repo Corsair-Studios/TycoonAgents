@@ -15,18 +15,44 @@ const STAGE_POLYGON: Array<[number, number]> = [
 /**
  * Pixels this close (in any direction) to the silhouette boundary are erased
  * even if they lie inside the polygon, to remove sub-pixel anti-aliased
- * fringe the provider may leave behind along the edge.
+ * fringe the provider may leave behind along the edge. This is the
+ * color-agnostic primary fix: a guaranteed trim of the immediate boundary
+ * fringe on every edge, regardless of what color it blended to. Outside the
+ * polygon is already transparent, and the environment prompt already tells
+ * the art to bleed slightly past the edge, so a slightly thicker margin
+ * here is harmless.
  */
-const EDGE_ERODE_PX = 3;
+const EDGE_ERODE_PX = 6;
 
 /**
  * Width of the boundary band (in pixels, measured inward from the
- * silhouette edge) within which near-cyan pixels are treated as an
+ * silhouette edge) within which cyan-biased pixels are treated as an
  * unwanted outline artifact and erased. Kept narrow so legitimate
- * cyan/teal art deeper in the interior (e.g. a blue fountain) is not
- * erased.
+ * cyan/teal art deeper in the interior (e.g. a blue fountain at the
+ * center, ~250px from any edge) is not erased.
  */
-const CYAN_EDGE_BAND_PX = 14;
+const CYAN_EDGE_BAND_PX = 18;
+
+/**
+ * Cyan-bias thresholds used within CYAN_EDGE_BAND_PX to key out the light
+ * outline left where the tan floor blends into the cyan (#00FFFF) exterior
+ * guide color through the bicubic resize. Pure cyan is (0,255,255); the
+ * blend lightens toward tan by lifting R while G and B stay high and close
+ * to each other. So a pixel is treated as cyan-biased when both G and B are
+ * high AND R sits well below both AND G/B are close together:
+ *   - G >= CYAN_MIN_GB && B >= CYAN_MIN_GB
+ *   - R <= G - CYAN_R_MARGIN && R <= B - CYAN_R_MARGIN
+ *   - |G - B| <= CYAN_GB_MAX_DELTA
+ * This catches pure cyan (0,255,255) and floor/cyan blends like
+ * (105,217,197), but spares warm tan floor (R high, e.g. (200,175,140) -
+ * fails the R margin check), grey stone (R close to G/B - fails the R
+ * margin check), and pale blue SKY along the top edges, which is
+ * blue-dominant with a much higher R (e.g. (180,205,235): R=180 is not
+ * <= G-50=155, so it is spared).
+ */
+const CYAN_MIN_GB = 160;
+const CYAN_R_MARGIN = 50;
+const CYAN_GB_MAX_DELTA = 45;
 
 /**
  * Produces an opaque, high-contrast guide so image models cannot silently
@@ -67,7 +93,13 @@ export async function normalizeEnvironmentImage(imageBuffer: Buffer): Promise<Bu
       const r = this.bitmap.data[idx];
       const g = this.bitmap.data[idx + 1];
       const b = this.bitmap.data[idx + 2];
-      if (r <= 60 && g >= 180 && b >= 180) {
+      const isCyanBiased =
+        g >= CYAN_MIN_GB &&
+        b >= CYAN_MIN_GB &&
+        r <= g - CYAN_R_MARGIN &&
+        r <= b - CYAN_R_MARGIN &&
+        Math.abs(g - b) <= CYAN_GB_MAX_DELTA;
+      if (isCyanBiased) {
         this.bitmap.data[idx + 3] = 0;
       }
     }
