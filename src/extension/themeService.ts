@@ -1629,7 +1629,8 @@ export async function generateTheme(
       : requestedPlan,
     typeof requestedPlan === 'string' ? requestedPlan : requestedPlan.display_name,
   );
-  const themeId = plan.theme_id;
+  const themeId = await resolveUniqueNewThemeId(globalStorageUri, plan.theme_id);
+  plan.theme_id = themeId;
   const creativeDirection = themePlanCreativeDirection(plan);
   const suggestedManifest = themePlanToManifest(plan);
   const manifest: ThemeManifest = {
@@ -4046,6 +4047,43 @@ function toSafeFileStem(value: string): string {
 
 function isThemeId(value: string): boolean {
   return /^[a-z0-9_]+$/.test(value);
+}
+
+/**
+ * Ensures a brand-new theme never collides with an existing theme's storage
+ * folder / per-theme progress key. `theme_id` is a plain slug of the display
+ * name (toSafeThemeId, no dedup), so two themes with similar names — or a
+ * fresh "Start generation" that happens to reuse a prior name — would
+ * otherwise resolve to the SAME `themes/<theme_id>/` directory and the same
+ * `${projectScopeKey}|<theme_id>` progress key, silently overwriting the
+ * older theme's manifest/frames and leaking its rebirth/badge/build state.
+ *
+ * Only called from the CREATE-a-new-theme path (generateTheme). Regenerating
+ * an existing theme in place goes through resumeThemeGeneration with an
+ * already-known theme_id and never calls this — so an intentional in-place
+ * regeneration is never renamed/orphaned by this check.
+ *
+ * Mirrors the numeric-suffix dedup style of `uniqueIds()` in themePlan.ts:
+ * append _2, _3, ... to the base slug until no existing theme folder matches.
+ */
+export async function resolveUniqueNewThemeId(globalStorageUri: vscode.Uri, baseThemeId: string): Promise<string> {
+  const existing = new Set<string>();
+  try {
+    const entries = await vscode.workspace.fs.readDirectory(themesDirectoryUri(globalStorageUri));
+    for (const [name, kind] of entries) {
+      if (kind === vscode.FileType.Directory) existing.add(name);
+    }
+  } catch {
+    // The themes directory doesn't exist yet (first-ever theme) — nothing to collide with.
+  }
+  if (!existing.has(baseThemeId)) return baseThemeId;
+  let suffix = 2;
+  let candidate = `${baseThemeId}_${suffix}`;
+  while (existing.has(candidate)) {
+    suffix += 1;
+    candidate = `${baseThemeId}_${suffix}`;
+  }
+  return candidate;
 }
 
 function defaultNames(label: string, count: number): string[] {
