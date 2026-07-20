@@ -145,6 +145,16 @@ test('createReviewItems does not throw for a legacy manifest with off-count riva
   assert.ok(result.some((item) => item.kind === 'achievement_atlas'));
 });
 
+test('createReviewItems returns the environment item FIRST (environment now generates before agents/other boards)', () => {
+  const manifest = legacyManifest();
+  const plan = minimalPlan();
+  const result = createReviewItems(plan, manifest, plan.creative_direction);
+
+  assert.ok(result.length > 0, 'expected at least one review item');
+  assert.equal(result[0].id, 'environment');
+  assert.equal(result[0].kind, 'environment');
+});
+
 // --- Regression: regeneration must prefer the CURRENT manifest/plan over stale
 // saved review-item metadata (mirrors the already-fixed rivalRowsForItem). ---
 

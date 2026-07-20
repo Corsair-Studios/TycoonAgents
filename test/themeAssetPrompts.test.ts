@@ -159,6 +159,27 @@ test('environment prompt treats the reference as an opaque geometry guide', () =
   assert.match(prompt, /No characters/i);
 });
 
+test('environment prompt bans floor clutter (empty-floor rule) and any silhouette outline (no-boundary-line rule), with theme + creative direction interpolated', () => {
+  const prompt = buildEnvironmentPrompt('neon cyberpunk', 'Night Grid');
+
+  // CRITICAL — keep the floor empty.
+  assert.match(prompt, /CRITICAL — keep the floor empty/i);
+  assert.match(prompt, /RESERVED WALKABLE AREA/i);
+  assert.match(prompt, /MUST be completely empty/i);
+  assert.match(prompt, /fountains/i);
+  assert.match(prompt, /lamp posts/i);
+  assert.match(prompt, /ONLY along the REAR wall.*far left and right perimeter/i);
+
+  // CRITICAL — no boundary line.
+  assert.match(prompt, /CRITICAL — no boundary line/i);
+  assert.match(prompt, /outline, border, rim/i);
+  assert.match(prompt, /zero cyan or light-blue pixels/i);
+
+  // themeName + creativeDirection are still interpolated.
+  assert.match(prompt, /"Night Grid" theme\./);
+  assert.match(prompt, /Creative direction: neon cyberpunk$/);
+});
+
 function staticObjectSpecs(count: number) {
   return Array.from({ length: count }, (_unused, index) => ({
     object_id: `object_${index + 1}`,

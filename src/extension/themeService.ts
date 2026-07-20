@@ -1746,6 +1746,20 @@ async function continueThemeGeneration(
   const themeId = plan.theme_id;
   const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
 
+  const environmentBoardIds = new Set(buildBoardItems(plan, manifest, 'environment').map((candidate) => candidate.id));
+  const environmentItem = reviewItems.find((item) => environmentBoardIds.has(item.id))!;
+  await runNonFatalBoardStep(environmentItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
+    generateOrResumeThemeItem(
+      globalStorageUri, themeId, plan.display_name, environmentItem, manifest, frames,
+      onProgress, isCancelled, onReviewReady, waitForReview,
+      () => generateEnvironmentAsset(
+        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
+        environmentItem, imageGenerationOptions, onProgress,
+      ),
+    ),
+  );
+
+  throwIfCancelled(isCancelled);
   const agentBoardIds = new Set(buildBoardItems(plan, manifest, 'agents').map((candidate) => candidate.id));
   const agentItems = reviewItems.filter((item) => agentBoardIds.has(item.id));
 
@@ -1791,20 +1805,6 @@ async function continueThemeGeneration(
       ),
     );
   }
-
-  throwIfCancelled(isCancelled);
-  const environmentBoardIds = new Set(buildBoardItems(plan, manifest, 'environment').map((candidate) => candidate.id));
-  const environmentItem = reviewItems.find((item) => environmentBoardIds.has(item.id))!;
-  await runNonFatalBoardStep(environmentItem.label, onProgress, isCancelled, imageGenerationOptions?.signal, () =>
-    generateOrResumeThemeItem(
-      globalStorageUri, themeId, plan.display_name, environmentItem, manifest, frames,
-      onProgress, isCancelled, onReviewReady, waitForReview,
-      () => generateEnvironmentAsset(
-        globalStorageUri, reviewDirectoryUri, plan, manifest, frames,
-        environmentItem, imageGenerationOptions, onProgress,
-      ),
-    ),
-  );
 
   throwIfCancelled(isCancelled);
   const decorBoardIds = new Set(buildBoardItems(plan, manifest, 'decor').map((candidate) => candidate.id));
@@ -2785,8 +2785,6 @@ export function createReviewItems(
     objectItems = [];
   }
   return [
-    ...characterItems,
-    ...enemyItems,
     {
       id: 'environment',
       filename: 'environment.png',
@@ -2797,6 +2795,8 @@ export function createReviewItems(
       revision: 0,
       frame_keys: ['environment_background'],
     },
+    ...characterItems,
+    ...enemyItems,
     createDecorReviewItem(plan, manifest, creativeDirection, backgroundMode),
     ...objectItems,
     {
