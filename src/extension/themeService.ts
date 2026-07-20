@@ -68,8 +68,9 @@ import type {
   ThemeRivalBoardRow,
 } from './themeImageReviewState';
 import { isThemeGenerationItemComplete } from './themeGenerationState';
-import { createThemeArchive, parseThemeArchive } from './themeArchive';
+import { parseThemeArchive } from './themeArchive';
 import type { ThemeArchiveContents } from './themeArchive';
+import { exportThemeArchiveFromStore, importThemeArchiveToStore } from './themeArchiveOps';
 import { summarizeThemeApproval } from './themeApproval';
 import type { ThemeApprovalSummary } from './themeApproval';
 import { selectThemeImageRetryPrompt } from './themeImageRetry';
@@ -394,102 +395,33 @@ export async function deleteTheme(globalStorageUri: vscode.Uri, themeId: string)
   }
 }
 
-/** Package a saved theme and all of its retained assets into a portable zip. */
+/**
+ * Package a saved theme and all of its retained assets into a portable zip.
+ * Thin wrapper: resolve this extension's ThemeFileStore and delegate the
+ * actual (vscode-free) logic to themeArchiveOps.ts, which the standalone
+ * host also calls directly via its own fs-backed store.
+ */
 export async function exportThemeArchive(globalStorageUri: vscode.Uri, themeId: string): Promise<Uint8Array> {
-  if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
-  const approval = await getThemeApprovalSummary(globalStorageUri, themeId);
-  if (!approval.export_ready) {
-    throw new Error(`Approve all theme images before exporting (${approval.accepted}/${approval.total} approved).`);
-  }
-
   const store = resolveThemeFileStore(globalStorageUri);
-  const files = new Map<string, Uint8Array>();
-  await collectDirectoryFiles(store, themeDirectoryPath(themeId), '', files);
-
-  // Normalize themes written by releases that predate per-theme directories.
-  if (!files.has('manifest.json') || !files.has('frames.json')) {
-    files.clear();
-    const loaded = await loadTheme(globalStorageUri, themeId);
-    if (!loaded) throw new Error('Theme not found.');
-    files.set('manifest.json', jsonBuffer(loaded.manifest));
-    files.set('frames.json', jsonBuffer(loaded.frames));
-    await addFileIfPresent(store, files, 'plan.json', legacyPlanPath(themeId));
-    await addFileIfPresent(store, files, 'review.json', legacyReviewPath(themeId));
-    await addFileIfPresent(store, files, 'review.json', legacyImageReviewPath(themeId));
-    await collectDirectoryFiles(store, legacyImagesDirectoryPath(themeId), 'images', files);
-  }
-
-  return createThemeArchive(files);
+  return exportThemeArchiveFromStore(store, themeId);
 }
 
 export function readThemeArchive(data: Uint8Array): ThemeArchiveContents {
   return parseThemeArchive(data);
 }
 
-/** Validate and install a theme archive. Existing themes require explicit replacement. */
+/**
+ * Validate and install a theme archive. Existing themes require explicit
+ * replacement. Thin wrapper: resolve this extension's ThemeFileStore and
+ * delegate the actual (vscode-free) logic to themeArchiveOps.ts.
+ */
 export async function importThemeArchive(
   globalStorageUri: vscode.Uri,
   data: Uint8Array | ThemeArchiveContents,
   replace = false,
 ): Promise<{ theme_id: string; display_name: string; replaced: boolean }> {
-  const archive = data instanceof Uint8Array ? parseThemeArchive(data) : data;
   const store = resolveThemeFileStore(globalStorageUri);
-  const themesPath = themesDirectoryPath();
-  const targetPath = themeDirectoryPath(archive.themeId);
-  const nonce = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const stagingPath = joinThemePath(themesPath, `.import_${archive.themeId}_${nonce}`);
-  const backupPath = joinThemePath(themesPath, `.backup_${archive.themeId}_${nonce}`);
-  await store.mkdirp(themesPath);
-
-  const targetExists = await store.exists(targetPath);
-  if (targetExists && !replace) throw new Error(`A theme with ID "${archive.themeId}" already exists.`);
-
-  let backupCreated = false;
-  try {
-    for (const [relativePath, bytes] of archive.files) {
-      const segments = relativePath.split('/');
-      const filePath = joinThemePath(stagingPath, ...segments);
-      if (segments.length > 1) {
-        await store.mkdirp(joinThemePath(stagingPath, ...segments.slice(0, -1)));
-      }
-      await store.writeFile(filePath, bytes);
-    }
-
-    if (targetExists) {
-      await store.rename(targetPath, backupPath, { overwrite: false });
-      backupCreated = true;
-    }
-    await store.rename(stagingPath, targetPath, { overwrite: false });
-    if (backupCreated) {
-      try {
-        await store.remove(backupPath, { recursive: true });
-        backupCreated = false;
-      } catch (error) {
-        console.warn(`TycoonAgents: Imported ${archive.themeId}, but could not remove its backup:`, error);
-      }
-    }
-  } catch (error) {
-    if (backupCreated && !(await store.exists(targetPath))) {
-      try {
-        await store.rename(backupPath, targetPath, { overwrite: false });
-        backupCreated = false;
-      } catch {
-        // Preserve the backup directory for manual recovery if rollback itself fails.
-      }
-    }
-    try {
-      await store.remove(stagingPath, { recursive: true });
-    } catch {
-      // The staging directory may already have been renamed.
-    }
-    throw error;
-  }
-
-  return {
-    theme_id: archive.themeId,
-    display_name: archive.displayName,
-    replaced: targetExists,
-  };
+  return importThemeArchiveToStore(store, data, replace);
 }
 
 function logThemeIntegrityIssues(themeId: string, manifest: ThemeManifest, frames: Record<string, string[]>): void {
@@ -4035,45 +3967,6 @@ async function listReviewImageUris(
     .filter((entry) => entry.isFile && /\.(?:png|jpe?g|webp)$/i.test(entry.name))
     .map((entry) => vscode.Uri.joinPath(directoryUri, entry.name))
     .sort((a, b) => a.path.localeCompare(b.path));
-}
-
-async function collectDirectoryFiles(
-  store: ThemeFileStore,
-  directoryPath: string,
-  relativeDirectory: string,
-  files: Map<string, Uint8Array>,
-): Promise<void> {
-  let entries: ThemeFileStoreEntry[];
-  try {
-    entries = await store.readdir(directoryPath);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-    if (relativePath === 'images/raw' || relativePath.startsWith('images/raw/')) {
-      continue;
-    }
-    const path = `${directoryPath}/${entry.name}`;
-    if (entry.isDirectory) {
-      await collectDirectoryFiles(store, path, relativePath, files);
-    } else if (entry.isFile) {
-      files.set(relativePath, await store.readFile(path));
-    }
-  }
-}
-
-async function addFileIfPresent(
-  store: ThemeFileStore,
-  files: Map<string, Uint8Array>,
-  path: string,
-  relativePath: string,
-): Promise<void> {
-  try {
-    files.set(path, await store.readFile(relativePath));
-  } catch {
-    // Optional legacy sidecar is absent.
-  }
 }
 
 async function getThemeDiskSize(globalStorageUri: vscode.Uri, themeId: string): Promise<number> {

@@ -51,7 +51,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createStateFeed } from './stateFeed.mjs';
 import { resolveProjectRoots, ProjectRootError } from './projectRoots.mjs';
 import { createDefaultAppData } from './appData.mjs';
-import { createFsThemeFileStore, themeImagesDirectoryPath } from './themeFileStoreFs.mjs';
+import {
+  createFsThemeFileStore,
+  themeImagesDirectoryPath,
+  themeManifestPath,
+  legacyManifestPath,
+} from './themeFileStoreFs.mjs';
 import {
   MSG_WIRE as THEME_MSG_WIRE,
   handleListThemes,
@@ -59,6 +64,7 @@ import {
   handleDeleteTheme,
   handleGetThemeImageReview,
 } from './themeMessages.mjs';
+import { exportThemeArchiveFromStore, importThemeArchiveToStore } from './themeArchive.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -249,6 +255,126 @@ function serveThemeImageFile(themeId, rawFilename, res) {
       'Cache-Control': 'no-cache',
     });
     res.end(data);
+  });
+}
+
+// ── Theme export/import routes (pB-t2) ──────────────────────────────────────
+// Reuses the SAME vscode-free archive logic the VS Code extension's Export/
+// Import commands use (src/extension/themeArchiveOps.ts, moved out of
+// themeService.ts for exactly this reuse — see themeArchive.mjs's module
+// header) — no duplicated zip code, same 0.0.371 `images/raw/` exclusion,
+// same export-readiness (all images approved) gate. `themeStore` is the same
+// module-level fs-backed store handleBrowserMessage()/serveThemeImageFile()
+// already use (set by startServer() below).
+
+// GET /theme-export/<theme_id> streams a portable .zip download.
+async function serveThemeExport(themeId, res) {
+  if (!themeStore || !/^[a-z0-9_]+$/.test(themeId || '')) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+    return;
+  }
+  // Explicit existence check BEFORE calling exportThemeArchiveFromStore:
+  // that function (mirroring the VS Code extension's original behavior
+  // exactly) checks export-readiness (all images approved) before it ever
+  // notices the theme doesn't exist, so a wholly missing theme_id would
+  // otherwise surface as a 400 "Approve all theme images..." rather than a
+  // 404 - this pre-check keeps the "theme dir doesn't exist -> 404"
+  // contract without changing that shared, behavior-identical logic.
+  //
+  // Checks BOTH the modern per-theme-directory manifest (themes/<id>/
+  // manifest.json) and the legacy pre-per-theme-directory flat sidecar
+  // (<id>_manifest.json at the store root — see themeFileStore.ts's
+  // legacyManifestPath, ~line 117) because exportThemeArchiveFromStore's own
+  // legacy-normalize fallback (themeArchiveOps.ts's loadThemeFromStore) can
+  // still export a theme that only has the legacy manifest — a dir-only
+  // check would wrongly 404 that theme even though the archive op would
+  // have handled it.
+  let exists;
+  try {
+    const [hasModern, hasLegacy] = await Promise.all([
+      themeStore.exists(themeManifestPath(themeId)),
+      themeStore.exists(legacyManifestPath(themeId)),
+    ]);
+    exists = hasModern || hasLegacy;
+  } catch {
+    exists = false;
+  }
+  if (!exists) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+    return;
+  }
+  exportThemeArchiveFromStore(themeStore, themeId)
+    .then((bytes) => {
+      const safeId = themeId.replace(/[^a-z0-9_]/g, '_');
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${safeId}.zip"`,
+        'Content-Length': bytes.length,
+      });
+      res.end(Buffer.from(bytes));
+    })
+    .catch((err) => {
+      const message = String(err?.message ?? err);
+      const notFound = /theme not found/i.test(message);
+      res.writeHead(notFound ? 404 : 400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(message);
+    });
+}
+
+// 100 MB cap on the raw POST /theme-import body (theme archives are small —
+// generated art PNGs, not video — this only exists to stop an unbounded
+// buffer accumulation from an oversized/malicious upload).
+const MAX_THEME_IMPORT_BYTES = 100 * 1024 * 1024;
+
+// POST /theme-import reads the RAW request body as the archive bytes
+// themselves — there is no vscode open-file dialog in the standalone, the
+// browser client posts the .zip's contents directly as the request body —
+// and installs it (never replacing an existing theme; the client is
+// expected to re-request with an explicit replace flow in a later task if
+// that UX is added).
+function handleThemeImport(req, res) {
+  if (!themeStore) {
+    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'Theme store not configured yet.' }));
+    return;
+  }
+  const chunks = [];
+  let totalBytes = 0;
+  let aborted = false;
+  req.on('data', (chunk) => {
+    if (aborted) return;
+    totalBytes += chunk.length;
+    if (totalBytes > MAX_THEME_IMPORT_BYTES) {
+      aborted = true;
+      res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({ error: `Import body exceeds the ${MAX_THEME_IMPORT_BYTES}-byte limit.` }),
+        () => req.destroy(),
+      );
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on('error', (err) => {
+    if (aborted) return;
+    aborted = true;
+    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: String(err?.message ?? err) }));
+  });
+  req.on('end', () => {
+    if (aborted) return;
+    const body = Buffer.concat(chunks);
+    importThemeArchiveToStore(themeStore, new Uint8Array(body), false)
+      .then((result) => {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(result));
+      })
+      .catch((err) => {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: String(err?.message ?? err) }));
+      });
   });
 }
 
@@ -792,6 +918,17 @@ function requestListener(req, res) {
     const themeId = decodeURIComponent(rest.slice(0, slashIndex));
     const filename = rest.slice(slashIndex + 1);
     serveThemeImageFile(themeId, filename, res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname.startsWith('/theme-export/')) {
+    const themeId = decodeURIComponent(pathname.slice('/theme-export/'.length));
+    serveThemeExport(themeId, res);
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/theme-import') {
+    handleThemeImport(req, res);
     return;
   }
 

@@ -107,6 +107,9 @@ export function themeImagesDirectoryPath(themeId) {
 export function themeRawImagesDirectoryPath(themeId) {
   return themeFileStoreModule().themeRawImagesDirectoryPath(themeId);
 }
+export function legacyManifestPath(themeId) {
+  return themeFileStoreModule().legacyManifestPath(themeId);
+}
 
 // ── Errors ───────────────────────────────────────────────────────────────
 
