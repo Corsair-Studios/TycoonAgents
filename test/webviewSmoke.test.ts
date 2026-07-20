@@ -2454,16 +2454,19 @@ test('theme-plan generation form: an empty decor name blocks generation with a 9
 
 // ── Creative Direction editor (post-generation) + removed "Advanced" mode UI ──
 // New in this release: buildThemeReviewCreativeDirectionSection renders once,
-// on the environment/background board card, sourced from THEME_IMAGE_REVIEW's
-// new `creative_direction` field (see src/host/vscode/panel.ts's
-// THEME_IMAGE_REVIEW payload + themeService.updateThemeCreativeDirection).
-// Saving posts SET_THEME_CREATIVE_DIRECTION, handled by
-// applyThemeCreativeDirectionResult on the THEME_CREATIVE_DIRECTION_RESULT
-// reply. At the same time, the per-board "Advanced — write the full prompt
-// myself" custom-mode <select> plus the read-only "View generation prompt" /
-// "Copy prompt" block were removed from the retry row entirely — the single
-// Retry/Generate button now computes mode itself (retry/augment, or 'custom'
-// only for a blocked item's recovery flow).
+// as a dedicated ALWAYS-VISIBLE panel at the TOP of the review list — the
+// first child of #theme-image-review-list, appended before any board card —
+// sourced from THEME_IMAGE_REVIEW's `creative_direction` field (see
+// src/host/vscode/panel.ts's THEME_IMAGE_REVIEW payload +
+// themeService.updateThemeCreativeDirection). It is no longer nested inside
+// the environment/background board card. Saving posts
+// SET_THEME_CREATIVE_DIRECTION, handled by applyThemeCreativeDirectionResult
+// on the THEME_CREATIVE_DIRECTION_RESULT reply. At the same time, the
+// per-board "Advanced — write the full prompt myself" custom-mode <select>
+// plus the read-only "View generation prompt" / "Copy prompt" block were
+// removed from the retry row entirely — the single Retry/Generate button now
+// computes mode itself (retry/augment, or 'custom' only for a blocked item's
+// recovery flow).
 test('THEME_IMAGE_REVIEW: renders the Creative Direction editor prefilled from the payload, and the removed Advanced/mode-select UI is gone', async () => {
   const h = await bootObjScaleHarness();
   try {
@@ -2493,15 +2496,26 @@ test('THEME_IMAGE_REVIEW: renders the Creative Direction editor prefilled from t
     const list = h.doc.getElementById('theme-image-review-list');
     assert.ok(list, 'theme-image-review-list should exist');
 
-    // (1) Creative Direction editor renders, prefilled from the payload.
+    // (1) Creative Direction editor renders as a dedicated panel at the TOP
+    // of the review list — the first child, before any board card — and is
+    // prefilled from the payload.
+    const firstChild = list.firstElementChild;
+    assert.ok(firstChild, 'theme-image-review-list should have a first child');
+    assert.ok(
+      firstChild.classList.contains('theme-review-creative-direction-panel'),
+      'the Creative Direction panel should be the first child of theme-image-review-list'
+    );
     const textarea = list.querySelector('.theme-review-creative-direction-input');
-    assert.ok(textarea, 'Creative Direction textarea should render on the environment board card');
+    assert.ok(textarea, 'Creative Direction textarea should render at the top of the review list');
     assert.equal(textarea.value, 'a moody neon skyline over a rain-slicked outpost');
+    // It must be immediately visible, not tucked inside a collapsed
+    // <details> — unlike the old environment-card placement.
+    assert.equal(textarea.closest('details'), null, 'the Creative Direction editor should not be nested inside a collapsible <details>');
     const saveBtn = list.querySelector('.theme-review-creative-direction-save');
     assert.ok(saveBtn, 'Save creative direction button should render');
 
-    // Only ONE Creative Direction editor across all cards — it renders exactly
-    // once (on the environment card), never once per board.
+    // Only ONE Creative Direction editor across the whole list — it renders
+    // exactly once regardless of item count/kind, never once per board.
     assert.equal(
       list.querySelectorAll('.theme-review-creative-direction-input').length,
       1,

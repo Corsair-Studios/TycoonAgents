@@ -2836,9 +2836,11 @@
           feedback: card.querySelector(".theme-review-feedback")?.value || "",
           characterName: card.querySelector(".theme-review-name-input")?.value || "",
           // Single merged section now — namesOpen drives the one <details>
-          // (the old, separate descriptionsOpen flag is retired).
+          // (the old, separate descriptionsOpen flag is retired). The Creative
+          // Direction section moved out of per-item cards entirely (0.0.362 —
+          // now a single always-visible panel at the top of the review), so
+          // there is no per-card open/closed state left to capture for it.
           namesOpen: Boolean(card.querySelector(".theme-review-names-descriptions-details")?.open),
-          creativeDirectionOpen: Boolean(card.querySelector(".theme-review-creative-direction-details")?.open),
           names,
           descriptions,
         });
@@ -3403,28 +3405,30 @@
   }
 
   /**
-   * Builds the post-generation "Creative Direction" editor: a single,
+   * Builds the post-generation "Creative Direction" panel: a single,
    * whole-theme textarea for ThemePlan.creative_direction (the art seed
    * themePlanCreativeDirection() threads into EVERY board's image prompt).
-   * Rendered once — only on the environment/background board card, the one
-   * per-theme card — not once per row like buildThemeReviewNamesDescriptionsSection.
+   * Rendered exactly once, as a dedicated section at the TOP of the theme
+   * review — above every board card — rather than nested inside the
+   * environment/background card, so the theme's original/current creative
+   * direction is immediately visible instead of hidden behind a click.
+   * Always visible (no collapsible <details>): a heading, the prefilled
+   * textarea, the warning, and Save.
    * Posts SET_THEME_CREATIVE_DIRECTION on Save; the reply (THEME_CREATIVE_DIRECTION_RESULT)
    * is handled by applyThemeCreativeDirectionResult. Saving re-grounds any board
    * regenerated/retried from now on — it never touches already-generated art.
    * @param {string} themeId
    * @param {string|undefined} currentDirection the plan's current creative_direction (THEME_IMAGE_REVIEW payload)
-   * @param {{creativeDirectionOpen?: boolean}|undefined} savedDraft
    * @param {boolean} busy true while a previous Save for this theme is in flight
    */
-  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, savedDraft, busy) {
+  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, busy) {
     const section = document.createElement("div");
-    section.className = "theme-review-names-descriptions theme-review-creative-direction";
-    const details = document.createElement("details");
-    details.className = "theme-review-creative-direction-details";
-    details.open = Boolean(savedDraft?.creativeDirectionOpen);
-    const summary = document.createElement("summary");
-    summary.textContent = "Creative direction";
-    details.appendChild(summary);
+    section.className = "theme-review-names-descriptions theme-review-creative-direction-panel";
+
+    const heading = document.createElement("h3");
+    heading.className = "theme-review-creative-direction-heading";
+    heading.textContent = "Creative direction";
+    section.appendChild(heading);
 
     const textarea = document.createElement("textarea");
     textarea.className = "theme-review-creative-direction-input";
@@ -3432,12 +3436,12 @@
     textarea.value = currentDirection || "";
     textarea.dataset.original = currentDirection || "";
     textarea.disabled = busy;
-    details.appendChild(textarea);
+    section.appendChild(textarea);
 
     const warning = document.createElement("div");
     warning.className = "theme-review-feedback-hint theme-review-custom-warning";
     warning.textContent = "Rewrites the creative direction for the whole theme. This re-grounds any board you regenerate or retry from now on — it does NOT change art you've already generated until you regenerate it.";
-    details.appendChild(warning);
+    section.appendChild(warning);
 
     const statusEl = document.createElement("div");
     statusEl.className = "theme-review-names-descriptions-status theme-review-creative-direction-status";
@@ -3465,17 +3469,16 @@
         payload: { theme_id: themeId, creative_direction: value },
       });
     });
-    details.appendChild(saveBtn);
-    details.appendChild(statusEl);
-    section.appendChild(details);
+    section.appendChild(saveBtn);
+    section.appendChild(statusEl);
     return section;
   }
 
   /** Handles a THEME_CREATIVE_DIRECTION_RESULT reply: re-enables the editor and
    * shows a brief saved/failed confirmation. There is exactly one Creative
-   * Direction editor per theme (on the environment board card), so this simply
-   * finds it by class rather than matching a per-item id like the names/
-   * descriptions handlers above. */
+   * Direction section per theme (the dedicated panel at the top of the theme
+   * review, above every board card), so this simply finds it by class rather
+   * than matching a per-item id like the names/descriptions handlers above. */
   function applyThemeCreativeDirectionResult(payload) {
     themeReviewCreativeDirectionBusy = false;
     if (!themeImageReviewList) return;
@@ -3733,6 +3736,19 @@
       themeImageReviewList.appendChild(error);
       return;
     }
+
+    // Dedicated Creative Direction section: a single, always-visible panel at
+    // the TOP of the review, above every board card. Rendered exactly once per
+    // render pass regardless of item count/kind (even with zero items or no
+    // environment board) since the list is fully rebuilt from scratch above —
+    // prepending it fresh here can never duplicate it.
+    themeImageReviewList.appendChild(
+      buildThemeReviewCreativeDirectionSection(
+        reviewThemeId,
+        payload.creative_direction,
+        themeReviewCreativeDirectionBusy,
+      ),
+    );
 
     const items = Array.isArray(payload.items) ? payload.items : [];
     const waitingForReviewItemId = payload.waiting_for_review_item_id || "";
@@ -4048,17 +4064,6 @@
         themeReviewBusyItems.get(item.id) === "names_descriptions",
         Boolean(payload.generation_active && !isCurrentReviewGate),
       );
-      // Whole-theme creative-direction editor: only the environment/background
-      // board is the single per-theme card (every other kind is per-row), so
-      // this renders exactly once instead of repeating on every board card.
-      const creativeDirectionSection = item.kind === "environment"
-        ? buildThemeReviewCreativeDirectionSection(
-            reviewThemeId,
-            payload.creative_direction,
-            savedDraft,
-            themeReviewCreativeDirectionBusy,
-          )
-        : null;
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
       // Single retry action — no mode dropdown. 'retry' rebuilds the structured
@@ -4169,7 +4174,6 @@
       if (generationError) body.appendChild(generationError);
       if (nameRow) body.appendChild(nameRow);
       if (namesDescriptionsSection) body.appendChild(namesDescriptionsSection);
-      if (creativeDirectionSection) body.appendChild(creativeDirectionSection);
       body.appendChild(decisionRow);
       body.appendChild(feedback);
       body.appendChild(feedbackHint);

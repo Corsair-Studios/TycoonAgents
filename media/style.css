@@ -3907,21 +3907,34 @@ button.theme-review-preview:focus-visible::after {
 }
 
 /* Collapsible — collapsed by default; the flex column keeps the hint, grid,
-   Apply button, and status stacked once expanded. Also used by the whole-theme
-   Creative Direction editor (.theme-review-creative-direction-details). */
-.theme-review-names-descriptions-details,
-.theme-review-creative-direction-details {
+   Apply button, and status stacked once expanded. */
+.theme-review-names-descriptions-details {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.theme-review-names-descriptions-details > summary,
-.theme-review-creative-direction-details > summary {
+.theme-review-names-descriptions-details > summary {
   cursor: pointer;
   color: var(--vscode-textLink-foreground, #4daafc);
   font-size: 11px;
   margin-bottom: 2px;
+}
+
+/* Whole-theme Creative Direction panel — a dedicated, always-visible section
+   (no <details>/collapse) rendered once at the TOP of the theme review, above
+   every board card, so the theme's original/current creative direction is
+   immediately visible rather than tucked behind a click. Reuses the boxed
+   .theme-review-names-descriptions layout (border/padding/flex column). */
+.theme-review-creative-direction-panel {
+  margin-bottom: 4px;
+}
+
+.theme-review-creative-direction-heading {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--vscode-foreground, var(--text));
 }
 
 .theme-review-creative-direction-input {
