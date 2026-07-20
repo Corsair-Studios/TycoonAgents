@@ -5336,7 +5336,7 @@
   let dragObjectId = null;
   /** Type of the dragged scene object: "buildable" | "decor" | null. */
   let dragObjectType = null;
-  /** Type of the scene object currently under the cursor (hover, not drag): "buildable" | "decor" | null. Drives the cursor style only (F-flip targets the click/dropdown SELECTION — see editFlipTargetKind — not hover). */
+  /** Type of the scene object currently under the cursor (hover, not drag): "buildable" | "decor" | null. Drives the cursor style AND is the F-flip hotkey's primary target (see the keydown handler) so hover+F works without a prior click/dropdown selection. */
   let hoverSceneObjType = null;
   /** Id of the scene object currently under the cursor (hover, not drag), or null. */
   let hoverSceneObjId = null;
@@ -5555,7 +5555,10 @@
   canvas.addEventListener("mousedown", (e) => {
     if (!editStageMode) return;
     const [mx, my] = canvasMouse(e);
-    const vi = vertexAt(mx, my, 11);
+    // A boundary vertex is only grabbable while the boundary overlay is
+    // actually shown (showBoundaryPolygon) — otherwise it's invisible but was
+    // still draggable, letting the user blindly drag the walkable polygon.
+    const vi = showBoundaryPolygon ? vertexAt(mx, my, 11) : -1;
     if (vi >= 0) { dragVertexIndex = vi; e.preventDefault(); return; }
     // Otherwise start dragging a buildable/decor object under the cursor.
     const hit = sceneObjectAt(mx, my, 20);
@@ -5582,7 +5585,9 @@
   canvas.addEventListener("mousemove", (e) => {
     if (!editStageMode) return;
     const [mx, my] = canvasMouse(e);
-    if (dragVertexIndex >= 0) {
+    // Defensive: if visibility is toggled off mid-drag, stop moving the
+    // vertex (mirrors the mousedown pickup gate above).
+    if (dragVertexIndex >= 0 && showBoundaryPolygon) {
       const [nx, ny] = canvasToNative(mx, my);
       walkablePolygon[dragVertexIndex] = [
         Math.max(0, Math.min(walkableNativeW, nx)),
@@ -6237,19 +6242,28 @@
   // Escape exits the stage editor.
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && editStageMode) exitEditStage();
-    // F flips the CURRENT Edit-Stage selection horizontally — the same
-    // buildable/decor "current item" the per-object/per-decor scale sliders
-    // act on (editSelectedObjId/editSelectedDecorId, tracked via
-    // editFlipTargetKind), including one that's mid-drag. Never hijacks F
-    // outside edit mode, off a text input (mirrors the debug-hotkey guard
-    // below), or when nothing is selected.
+    // F flips an Edit-Stage buildable/decor horizontally. Target priority:
+    // (1) the object currently being dragged, (2) the object under the
+    // cursor right now (hoverSceneObjType/hoverSceneObjId — kept live by the
+    // mousemove handler above via sceneObjectAt, the same hit-test the click
+    // handler uses), (3) the last explicit click/dropdown selection
+    // (editFlipTargetKind + editSelectedObjId/editSelectedDecorId). This
+    // makes hover+F always work instead of requiring a prior click. Never
+    // hijacks F outside edit mode, off a text input (mirrors the debug-hotkey
+    // guard below), or when nothing is dragged/hovered/selected.
     if ((e.key === "f" || e.key === "F") && editStageMode) {
       const t = e.target;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
-      const kind = dragObjectId ? dragObjectType : editFlipTargetKind;
+      const kind = dragObjectId
+        ? dragObjectType
+        : hoverSceneObjType
+          ? hoverSceneObjType
+          : editFlipTargetKind;
       const id = dragObjectId
         ? dragObjectId
-        : kind === "buildable" ? editSelectedObjId : kind === "decor" ? editSelectedDecorId : null;
+        : hoverSceneObjType
+          ? hoverSceneObjId
+          : kind === "buildable" ? editSelectedObjId : kind === "decor" ? editSelectedDecorId : null;
       if (kind === "buildable" && id) {
         if (themeObjFlipOverrides[id]) delete themeObjFlipOverrides[id];
         else themeObjFlipOverrides[id] = true;
