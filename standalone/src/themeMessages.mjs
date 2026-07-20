@@ -119,6 +119,25 @@ export const MSG_WIRE = {
   SET_THEME_IMAGE_REVIEW_STATUS: 'SET_THEME_IMAGE_REVIEW_STATUS',
   SET_THEME_PAUSE_FOR_REVIEW: 'SET_THEME_PAUSE_FOR_REVIEW',
   CANCEL_THEME_GENERATION: 'CANCEL_THEME_GENERATION',
+
+  // ── Theme review-EDITOR + recovery messages (project-plan task pC-t2) —
+  // see standalone/src/themeGenerationMessages.mjs (theme editor handlers)
+  // and standalone/src/projectPlanMessages.mjs (RESTORE_PLAN_BACKUP/PLAN_STATE,
+  // an unrelated Project Plan phase/task feature that happens to share the
+  // "recovery message" label — see that module's header for why it lives
+  // separately from the theme handlers despite being dispatched here). ─────
+  SET_THEME_ITEM_NAMES: 'SET_THEME_ITEM_NAMES',
+  THEME_ITEM_NAMES_RESULT: 'THEME_ITEM_NAMES_RESULT',
+  SET_THEME_ITEM_DESCRIPTIONS: 'SET_THEME_ITEM_DESCRIPTIONS',
+  THEME_ITEM_DESCRIPTIONS_RESULT: 'THEME_ITEM_DESCRIPTIONS_RESULT',
+  SET_THEME_CREATIVE_DIRECTION: 'SET_THEME_CREATIVE_DIRECTION',
+  THEME_CREATIVE_DIRECTION_RESULT: 'THEME_CREATIVE_DIRECTION_RESULT',
+  RENAME_THEME_CHARACTER: 'RENAME_THEME_CHARACTER',
+  THEME_CHARACTER_RENAME_STATE: 'THEME_CHARACTER_RENAME_STATE',
+  APPROVE_ALL_THEME_IMAGES: 'APPROVE_ALL_THEME_IMAGES',
+  THEME_APPROVE_ALL_RESULT: 'THEME_APPROVE_ALL_RESULT',
+  RESTORE_PLAN_BACKUP: 'RESTORE_PLAN_BACKUP',
+  PLAN_STATE: 'PLAN_STATE',
 };
 
 /** Mirrors src/extension/themeService.ts's isThemeId exactly. */

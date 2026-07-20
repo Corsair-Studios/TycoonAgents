@@ -75,7 +75,13 @@ import {
   handleSetThemeImageReviewStatus,
   handleSetThemePauseForReview,
   handleCancelThemeGeneration,
+  handleSetThemeItemNames,
+  handleSetThemeItemDescriptions,
+  handleSetThemeCreativeDirection,
+  handleRenameThemeCharacter,
+  handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
+import { handleRestorePlanBackup } from './projectPlanMessages.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -168,6 +174,15 @@ function writeSseEvent(res, eventName, data) {
 // dropped rather than throwing.
 let themeStore;
 
+// `primaryProjectRoot` is set by startServer() below to the resolved primary
+// project root (`primary.root` — see the MULTI-DIR SEMANTICS comment on
+// startServer()), the standalone's analog of panel.ts's `_projectRoot()`.
+// Used ONLY by the Project Plan (phase/task) RESTORE_PLAN_BACKUP handler
+// (projectPlanMessages.mjs) — an unrelated feature to theme generation that
+// happens to be dispatched from this same switch (see that module's header
+// for why). Never touched by any theme handler.
+let primaryProjectRoot;
+
 // `themeImageConfigGetter` is set by startServer() below to a closure over
 // THAT call's own `env`/`appData` (never raw process.env — see
 // getThemeImageConfig()'s doc comment), so the five theme GENERATION message
@@ -252,6 +267,42 @@ function handleBrowserMessage(msg) {
       break;
     case THEME_MSG_WIRE.CANCEL_THEME_GENERATION:
       handleCancelThemeGeneration(broadcast);
+      break;
+    // ── Theme review-EDITOR + recovery messages (pC-t2) ─────────────────
+    case THEME_MSG_WIRE.SET_THEME_ITEM_NAMES:
+      handleSetThemeItemNames(themeStore, broadcast, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] SET_THEME_ITEM_NAMES failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.SET_THEME_ITEM_DESCRIPTIONS:
+      handleSetThemeItemDescriptions(themeStore, broadcast, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] SET_THEME_ITEM_DESCRIPTIONS failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.SET_THEME_CREATIVE_DIRECTION:
+      handleSetThemeCreativeDirection(themeStore, broadcast, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] SET_THEME_CREATIVE_DIRECTION failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.RENAME_THEME_CHARACTER:
+      handleRenameThemeCharacter(themeStore, broadcast, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] RENAME_THEME_CHARACTER failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.APPROVE_ALL_THEME_IMAGES:
+      handleApproveAllThemeImages(themeStore, broadcast, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] APPROVE_ALL_THEME_IMAGES failed:', err);
+      });
+      break;
+    // RESTORE_PLAN_BACKUP is the unrelated Project Plan (phase/task) feature
+    // (see projectPlanMessages.mjs's header) — synchronous, no theme store
+    // involved, keyed off primaryProjectRoot instead of a theme_id payload.
+    case THEME_MSG_WIRE.RESTORE_PLAN_BACKUP:
+      try {
+        handleRestorePlanBackup(primaryProjectRoot, broadcast);
+      } catch (err) {
+        console.error('[tycoonagents-standalone] RESTORE_PLAN_BACKUP failed:', err);
+      }
       break;
     default:
       console.log('[tycoonagents-standalone] /message (unhandled):', JSON.stringify(msg));
@@ -1206,6 +1257,13 @@ export async function startServer({
 } = {}) {
   const { roots } = resolveProjectRoots({ argv, env, cwd });
   const [primary, ...secondary] = roots;
+
+  // Set here (not just captured in the closure below) so a fresh
+  // startServer() call (e.g. a test harness spinning up multiple server
+  // instances in the same process) always points RESTORE_PLAN_BACKUP at the
+  // CURRENT call's primary root, never a stale prior instance's — same
+  // posture as themeStore/themeImagesRootDir below.
+  primaryProjectRoot = primary.root;
 
   const server = createStandaloneServer();
 

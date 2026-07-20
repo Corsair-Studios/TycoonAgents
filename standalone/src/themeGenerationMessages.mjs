@@ -45,7 +45,7 @@
 // on).
 
 import * as genBridge from './themeGenerationBridge.mjs';
-import { MSG_WIRE, handleGetThemeImageReview } from './themeMessages.mjs';
+import { MSG_WIRE, handleGetThemeImageReview, listThemesFromStore } from './themeMessages.mjs';
 
 // ── Module-level generation state (single in-flight generation, mirrors
 // panel.ts's per-panel-instance fields — see module header) ────────────────
@@ -536,6 +536,187 @@ export function handleCancelThemeGeneration(broadcast) {
   if (themeGenerationActive && controller && !controller.signal.aborted) {
     controller.abort();
     broadcast('message', { type: MSG_WIRE.THEME_GENERATION_PROGRESS, payload: { message: 'Stopping generation...' } });
+  }
+}
+
+// ── Theme review-EDITOR handlers (project-plan task pC-t2) ─────────────────
+// Each mirrors panel.ts's matching `message.type === MSG.*` branch EXACTLY —
+// same themeService.ts call, same outbound wire message type(s)/shape(s) —
+// substituting broadcast('message', {...}) for
+// `this._panel.webview.postMessage(...)`. RENAME_THEME_CHARACTER reuses this
+// module's existing gate state (themeGenerationActive/
+// themeGenerationReviewGate/themeGenerationGateRetryActive — see the module
+// header) the same way handleRetryThemeImage/handleNormalizeThemeCharacter
+// already do, since a rename can also target the character currently
+// waiting for review during an active generation.
+// RESTORE_PLAN_BACKUP is NOT here — despite being grouped with these as a
+// "recovery" message in the task brief, it is the unrelated Project Plan
+// (phase/task) feature's MSG.RESTORE_PLAN_BACKUP (confirmed by reading
+// panel.ts: it operates on `.claude/tycoon/plan.json`/`.bak` via
+// projectPlanFilePath/projectPlanBackupFilePath, not on any theme's
+// plan.json under the theme store) — see standalone/src/projectPlanMessages.mjs.
+
+/** Mirrors panel.ts's MSG.SET_THEME_ITEM_NAMES branch. */
+export async function handleSetThemeItemNames(store, broadcast, payload) {
+  const themeId = payload?.theme_id ?? '';
+  const boardId = payload?.board_id ?? '';
+  if (!/^[a-z0-9_]+$/.test(themeId)) return;
+  const changes = Array.isArray(payload?.changes) ? payload.changes : [];
+  try {
+    const { manifest, frames, result } = await genBridge.renameThemeItemsBatch(store, themeId, changes);
+    if (result.applied.length) {
+      // renameThemeItemsBatch also resyncs the affected boards' saved
+      // review-item prompt/rows — post the refreshed review BEFORE the
+      // result message below (same ordering as panel.ts).
+      await handleGetThemeImageReview(store, broadcast, themeId);
+    }
+    broadcast('message', {
+      type: MSG_WIRE.THEME_ITEM_NAMES_RESULT,
+      payload: {
+        ok: result.rejected.length === 0,
+        theme_id: themeId,
+        board_id: boardId,
+        applied: result.applied,
+        rejected: result.rejected,
+      },
+    });
+    if (result.applied.length) {
+      broadcast('message', {
+        type: MSG_WIRE.THEME_INITIALIZED,
+        payload: buildThemeInitPayload(manifest, frames, true),
+      });
+    }
+  } catch (err) {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_ITEM_NAMES_RESULT,
+      payload: { ok: false, theme_id: themeId, board_id: boardId, error: String(err?.message ?? err) },
+    });
+  }
+}
+
+/** Mirrors panel.ts's MSG.SET_THEME_ITEM_DESCRIPTIONS branch. `item_kind` includes
+ * 'crate'/'poof'/'projectile'/'badge'/'expression' (single/positional plan fields) in
+ * addition to 'object'/'decor'/'character'/'rival' — see
+ * applyThemeItemDescriptionChanges in themeService.ts. No THEME_INITIALIZED repost
+ * here (descriptions never touch the manifest, only plan.json). */
+export async function handleSetThemeItemDescriptions(store, broadcast, payload) {
+  const themeId = payload?.theme_id ?? '';
+  const boardId = payload?.board_id ?? '';
+  if (!/^[a-z0-9_]+$/.test(themeId)) return;
+  const changes = Array.isArray(payload?.changes) ? payload.changes : [];
+  try {
+    const result = await genBridge.updateThemeItemDescriptionsBatch(store, themeId, changes);
+    if (result.applied.length) {
+      await handleGetThemeImageReview(store, broadcast, themeId);
+    }
+    broadcast('message', {
+      type: MSG_WIRE.THEME_ITEM_DESCRIPTIONS_RESULT,
+      payload: {
+        ok: result.rejected.length === 0,
+        theme_id: themeId,
+        board_id: boardId,
+        applied: result.applied,
+        rejected: result.rejected,
+      },
+    });
+  } catch (err) {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_ITEM_DESCRIPTIONS_RESULT,
+      payload: { ok: false, theme_id: themeId, board_id: boardId, error: String(err?.message ?? err) },
+    });
+  }
+}
+
+/** Mirrors panel.ts's MSG.SET_THEME_CREATIVE_DIRECTION branch. No review resync —
+ * retries always rebuild their prompt fresh from the current plan at retry time. */
+export async function handleSetThemeCreativeDirection(store, broadcast, payload) {
+  const themeId = payload?.theme_id ?? '';
+  if (!/^[a-z0-9_]+$/.test(themeId)) return;
+  const creativeDirection = payload?.creative_direction ?? '';
+  try {
+    const result = await genBridge.updateThemeCreativeDirection(store, themeId, creativeDirection);
+    broadcast('message', {
+      type: MSG_WIRE.THEME_CREATIVE_DIRECTION_RESULT,
+      payload: { ...result, theme_id: themeId },
+    });
+  } catch (err) {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_CREATIVE_DIRECTION_RESULT,
+      payload: { ok: false, theme_id: themeId, error: String(err?.message ?? err) },
+    });
+  }
+}
+
+/** Mirrors panel.ts's MSG.RENAME_THEME_CHARACTER branch, including the
+ * gate/busy-state dance shared with handleRetryThemeImage. */
+export async function handleRenameThemeCharacter(store, broadcast, payload) {
+  const themeId = payload?.theme_id ?? '';
+  const itemId = payload?.item_id ?? '';
+  if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
+
+  const activeGate = themeGenerationReviewGate;
+  const renamingActiveGate =
+    themeGenerationActive && activeGate?.themeId === themeId && activeGate.itemId === itemId;
+  if (themeGenerationActive && !renamingActiveGate) {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_CHARACTER_RENAME_STATE,
+      payload: { item_id: itemId, error: 'Only the character currently waiting for review can be renamed.' },
+    });
+    return;
+  }
+  if (renamingActiveGate && themeGenerationGateRetryActive) return;
+  if (renamingActiveGate) themeGenerationGateRetryActive = true;
+
+  try {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_CHARACTER_RENAME_STATE,
+      payload: { item_id: itemId, busy: true, message: 'Saving character name...' },
+    });
+    const result = await genBridge.renameThemeCharacter(store, themeId, itemId, payload?.name ?? '');
+    if (
+      renamingActiveGate &&
+      themeGenerationReviewGate?.themeId === themeId &&
+      themeGenerationReviewGate.itemId === itemId
+    ) {
+      themeGenerationReviewGate.replacement = result;
+    }
+    await handleGetThemeImageReview(store, broadcast, themeId);
+    broadcast('message', {
+      type: MSG_WIRE.THEME_CHARACTER_RENAME_STATE,
+      payload: { item_id: itemId, busy: false, message: 'Character name saved.' },
+    });
+    if (!renamingActiveGate) {
+      broadcast('message', {
+        type: MSG_WIRE.THEME_INITIALIZED,
+        payload: buildThemeInitPayload(result.manifest, result.frames, true),
+      });
+    }
+  } catch (err) {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_CHARACTER_RENAME_STATE,
+      payload: { item_id: itemId, busy: false, error: String(err?.message ?? err) },
+    });
+  } finally {
+    if (renamingActiveGate) themeGenerationGateRetryActive = false;
+  }
+}
+
+/** Mirrors panel.ts's MSG.APPROVE_ALL_THEME_IMAGES branch. */
+export async function handleApproveAllThemeImages(store, broadcast, payload) {
+  const themeId = payload?.theme_id ?? '';
+  try {
+    if (themeGenerationActive) {
+      throw new Error('Wait for theme generation to finish before approving all images.');
+    }
+    await genBridge.approveAllThemeImages(store, themeId);
+    await handleGetThemeImageReview(store, broadcast, themeId);
+    const themes = await listThemesFromStore(store);
+    broadcast('message', { type: MSG_WIRE.THEMES_LIST, payload: { themes } });
+  } catch (err) {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_APPROVE_ALL_RESULT,
+      payload: { theme_id: themeId, error: String(err?.message ?? err) },
+    });
   }
 }
 

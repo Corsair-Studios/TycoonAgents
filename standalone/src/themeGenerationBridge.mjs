@@ -177,6 +177,36 @@ export function renameThemeCharacter(storageRoot, themeId, itemId, requestedName
   return themeServiceModule().renameThemeCharacter(storageRoot, themeId, itemId, requestedName);
 }
 
+// ── Review-EDITOR + recovery entry points (project-plan task pC-t2) ────────
+// Same thin lazily-bound pass-through posture as every export above — these
+// back panel.ts's SET_THEME_ITEM_NAMES / SET_THEME_ITEM_DESCRIPTIONS /
+// SET_THEME_CREATIVE_DIRECTION / APPROVE_ALL_THEME_IMAGES handlers (see
+// standalone/src/themeGenerationMessages.mjs for the callers that mirror
+// panel.ts's exact outbound wire shapes).
+
+/** Batched rename from the theme review screen's "Names" editor. `changes`
+ * is an array of `{ item_kind, id, name }` rows. */
+export function renameThemeItemsBatch(storageRoot, themeId, changes) {
+  return themeServiceModule().renameThemeItemsBatch(storageRoot, themeId, changes);
+}
+
+/** Batched description edit from the theme review screen's "Descriptions"
+ * editor. `changes` is an array of `{ item_kind, id, description }` rows —
+ * item_kind includes 'projectile' (single plan field, no manifest lookup). */
+export function updateThemeItemDescriptionsBatch(storageRoot, themeId, changes) {
+  return themeServiceModule().updateThemeItemDescriptionsBatch(storageRoot, themeId, changes);
+}
+
+/** Post-generation Creative Direction editor — overwrites plan.creative_direction. */
+export function updateThemeCreativeDirection(storageRoot, themeId, creativeDirection) {
+  return themeServiceModule().updateThemeCreativeDirection(storageRoot, themeId, creativeDirection);
+}
+
+/** Approves every reviewable image at once; throws if any image is still missing. */
+export function approveAllThemeImages(storageRoot, themeId) {
+  return themeServiceModule().approveAllThemeImages(storageRoot, themeId);
+}
+
 /** Pure text helper (no store, no I/O) — see panel.ts's RETRY_THEME_IMAGE
  * handler for the same call, guarding against a pasted full generation
  * prompt landing in the retry-notes box for 'augment'/'replace' modes. */
