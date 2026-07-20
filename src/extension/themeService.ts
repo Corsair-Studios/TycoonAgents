@@ -2365,6 +2365,42 @@ async function generateOrResumeThemeItem(
     return;
   }
 
+  // Recover frames by RE-SLICING the raw atlas already saved to disk, instead
+  // of burning an AI call — e.g. a board that was ACCEPTED in review but whose
+  // sliced frames.json entry was lost to a failed/raced persist. The art is
+  // unchanged, so this must NOT touch item.status (an accepted board must stay
+  // accepted). Only boards that support re-slicing and actually have a raw
+  // image on disk take this path; anything else falls through to AI
+  // generation exactly as before, including on any re-slice failure.
+  if (RESLICEABLE_ATLAS_KINDS.has(item.kind)) {
+    try {
+      const rawPath = `${themeRawImagesDirectoryPath(themeId)}/${item.filename}`;
+      if (await generateOrResumeStore.exists(rawPath)) {
+        const rawBuffer = Buffer.from(await generateOrResumeStore.readFile(rawPath));
+        const { frameKeys } = await applySlicedAtlasFromBuffer(
+          globalStorageUri,
+          themeId,
+          manifest,
+          frames,
+          item as ThemeImageReviewItem,
+          rawBuffer,
+          undefined,
+          false,
+        );
+        await upsertThemeImageReviewItem(globalStorageUri, themeId, displayName, {
+          ...item,
+          frame_keys: frameKeys,
+          updated_at: new Date().toISOString(),
+        });
+        onProgress(`${item.label} frames recovered from the saved original — no regeneration needed.`);
+        return;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      onProgress(`${item.label} could not be re-sliced from its saved original (${message}); regenerating instead.`);
+    }
+  }
+
   await generateAndReviewThemeItem(
     globalStorageUri,
     themeId,
