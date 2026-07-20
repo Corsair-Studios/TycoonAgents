@@ -188,6 +188,14 @@ test('environment prompt bans floor clutter (empty-floor rule) and any silhouett
   assert.match(prompt, /outline, border, rim/i);
   assert.match(prompt, /zero cyan or light-blue pixels/i);
 
+  // CRITICAL — bare NEAR (front-left/front-right) corners of the hexagonal stage.
+  assert.match(prompt, /NEAR corners/);
+  assert.match(prompt, /bare stone/i);
+  assert.match(prompt, /front point/i);
+  assert.match(prompt, /front-left and front-right/i);
+  assert.match(prompt, /COMPLETELY EMPTY walkable ground/i);
+  assert.match(prompt, /REAR wall/);
+
   // themeName + creativeDirection are still interpolated.
   assert.match(prompt, /"Night Grid" theme\./);
   assert.match(prompt, /Creative direction: neon cyberpunk$/);
