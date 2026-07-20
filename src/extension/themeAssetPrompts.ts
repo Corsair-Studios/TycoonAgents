@@ -656,6 +656,7 @@ export function buildEnvironmentPrompt(
 ): string {
   return [
     `Create a single isometric game-stage environment for the "${themeName}" theme.`,
+    'CAMERA — match the object and decor sprites EXACTLY: a classic 2:1 pixel-art isometric view. Vertical structures (walls, towers, posts, doors) stay perfectly vertical; all horizontal surfaces — especially the open ground/floor, plus ledges and wall tops — recede along a shallow 2:1 diagonal of about 25 degrees, with the viewer looking down at about 30 degrees. The open floor MUST read as a single flat 2:1 isometric plane at exactly this angle. ISOMETRIC DIRECTION — identical to the objects: the ground baseline rises from lower-LEFT to upper-RIGHT (the floor\'s left side sits lower on the canvas than its right side, about a 25-degree tilt), so objects standing on the floor sit flush and share the floor\'s angle. Do not use a steeper 3D/architectural perspective, a head-on flat elevation, or any other camera — only this 2:1 isometric.',
     'The attached image is an OPAQUE GEOMETRY GUIDE, not an art-style reference.',
     'Preserve its portrait aspect ratio and exact outer hexagonal stage silhouette.',
     'The cyan region means OUTSIDE THE ASSET and must remain flat solid cyan (#00FFFF).',

@@ -162,6 +162,13 @@ test('environment prompt treats the reference as an opaque geometry guide', () =
 test('environment prompt bans floor clutter (empty-floor rule) and any silhouette outline (no-boundary-line rule), with theme + creative direction interpolated', () => {
   const prompt = buildEnvironmentPrompt('neon cyberpunk', 'Night Grid');
 
+  // CAMERA — pins the environment's isometric angle to match the object/decor sprites.
+  assert.match(prompt, /CAMERA — match the object and decor sprites EXACTLY/i);
+  assert.match(prompt, /2:1 pixel-art isometric/i);
+  assert.match(prompt, /about 25 degrees/i);
+  assert.match(prompt, /about 30 degrees/i);
+  assert.match(prompt, /lower-LEFT to upper-RIGHT/i);
+
   // CRITICAL — keep the floor empty.
   assert.match(prompt, /CRITICAL — keep the floor empty/i);
   assert.match(prompt, /RESERVED WALKABLE AREA/i);
@@ -274,6 +281,17 @@ test('object board prompts carry the no-overhang cell-containment rule on both b
     assert.match(prompt, /never touch or cross any cell edge/i);
     assert.match(prompt, /extend into a neighboring cell/i);
     assert.match(prompt, /draw it SMALLER to fit/i);
+  }
+});
+
+test('environment and object board prompts share the same isometric camera angle tokens (no silent drift)', () => {
+  const environment = buildEnvironmentPrompt('industrial', 'Factory');
+  const objects = buildObjectAtlasPrompt('industrial', 'Factory', createObjectBoard1Rows(staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT)));
+
+  for (const prompt of [environment, objects]) {
+    assert.ok(prompt.includes('2:1'), 'expected "2:1" isometric ratio in prompt');
+    assert.ok(prompt.includes('25 degrees'), 'expected "25 degrees" ground-recede angle in prompt');
+    assert.ok(prompt.includes('30 degrees'), 'expected "30 degrees" viewer-down angle in prompt');
   }
 });
 
