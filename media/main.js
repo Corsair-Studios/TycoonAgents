@@ -3098,6 +3098,12 @@
           rows.push({ rowId: row.decor_id, itemKind: "decor", label: "Animated decor", original: row.visual_description || "" });
         }
       }
+      // The ranged-weapon-fire projectile FX (row 4, four frames) is describe-only —
+      // like crate/poof on the object board, it has no display_name and is never
+      // renamed or removed (see themeReviewNameRows, which omits 'projectile' from
+      // SET_THEME_ITEM_NAMES' item_kind enum). Its appearance lives in the single
+      // plan.projectile_description field, not a decor row id.
+      rows.push({ rowId: "projectile", itemKind: "projectile", label: "Ranged projectile (required)", original: item.projectile_description || "" });
       return rows;
     }
     if (item.kind === "rival_atlas" && Array.isArray(item.rival_rows)) {

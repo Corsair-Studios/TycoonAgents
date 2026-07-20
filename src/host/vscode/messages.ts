@@ -376,10 +376,10 @@ export const MSG_SCHEMAS = {
   // (positional, id `achievement_<index>`) — the badge's appearance field, kept
   // separate from its display-name/title (see applyThemeItemDescriptionChanges).
   // description ALLOWS an empty string — that clears the row's description —
-  // unlike name, which requires min(1). 'crate' and 'poof' are the single
-  // required build-crate / build-completion-poof rows (object board 2) —
-  // description-only, deliberately absent from SET_THEME_ITEM_NAMES since
-  // neither is ever renamed or removed.
+  // unlike name, which requires min(1). 'crate', 'poof', and 'projectile' are
+  // single required rows (crate/poof on object board 2, projectile on the
+  // background decor board) — description-only, deliberately absent from
+  // SET_THEME_ITEM_NAMES since none of the three is ever renamed or removed.
   SET_THEME_ITEM_DESCRIPTIONS: z
     .object({
       theme_id: z.string().min(1),
@@ -388,7 +388,7 @@ export const MSG_SCHEMAS = {
         .array(
           z
             .object({
-              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof', 'badge', 'expression']),
+              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof', 'projectile', 'badge', 'expression']),
               id: z.string().min(1),
               description: z.string().max(400),
             })

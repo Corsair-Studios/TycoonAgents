@@ -160,6 +160,29 @@ test('SET_THEME_ITEM_DESCRIPTIONS schema: accepts crate/poof item_kind, includin
   assert.equal(result.success, true);
 });
 
+test('SET_THEME_ITEM_DESCRIPTIONS schema: accepts projectile item_kind, including an empty (clearing) description', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'background_decor',
+    changes: [{ item_kind: 'projectile', id: 'projectile', description: 'A crackling blue energy bolt.' }],
+  });
+  assert.equal(result.success, true);
+  const clearResult = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'background_decor',
+    changes: [{ item_kind: 'projectile', id: 'projectile', description: '' }],
+  });
+  assert.equal(clearResult.success, true);
+});
+
+test('SET_THEME_ITEM_NAMES schema: projectile item_kind fails (never renameable)', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_NAMES.safeParse({
+    theme_id: 'cobra_command',
+    changes: [{ item_kind: 'projectile', id: 'projectile', name: 'Bolt' }],
+  });
+  assert.equal(result.success, false);
+});
+
 test('SET_THEME_ITEM_DESCRIPTIONS schema: accepts badge item_kind (positional achievement descriptions)', () => {
   const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
     theme_id: 'cobra_command',

@@ -1272,7 +1272,7 @@ export async function resetThemeBadgeNames(
  * (positional, id `achievement_<index>`) — the badge's appearance field, kept
  * separate from its display-name/title. */
 export interface ThemeItemDescriptionChange {
-  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof' | 'badge' | 'expression';
+  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof' | 'projectile' | 'badge' | 'expression';
   id: string;
   description: string;
 }
@@ -1386,6 +1386,11 @@ export function applyThemeItemDescriptionChanges(
     } else if (change.item_kind === 'poof') {
       // Single field, not an indexed array — exactly one poof per theme.
       plan.poof_description = description;
+    } else if (change.item_kind === 'projectile') {
+      // Single field, not an indexed array — exactly one ranged-combat projectile
+      // per theme (background decor board, row 4 — see ThemeDecorBoardRow's
+      // `projectile` kind, which carries no decor_id).
+      plan.projectile_description = description;
     } else {
       const unknownKind = (change as { item_kind: string }).item_kind;
       rejected.push({ item_kind: unknownKind, id: change.id, reason: `Unknown item kind "${unknownKind}".` });
@@ -1415,6 +1420,12 @@ export function resyncDescriptionReviewItems(
   // crate/poof descriptions are single plan fields (not row-indexed), so they
   // always affect the fixed 'objects_02' board rather than a specific row id.
   const crateOrPoofChanged = applied.some((change) => change.item_kind === 'crate' || change.item_kind === 'poof');
+  // Projectile description is likewise a single plan field (plan.projectile_description),
+  // not a row-indexed one — the `projectile` decor row carries no decor_id (see
+  // ThemeDecorBoardRow) so it can never match affectedIds by id below. Mirrors
+  // crateOrPoofChanged: any projectile change always affects the single
+  // 'background_decor' board.
+  const projectileChanged = applied.some((change) => change.item_kind === 'projectile');
   // Badge descriptions are positional plan fields (achievement_<index>), so any
   // badge change affects the single fixed 'achievements' board rather than a
   // roster-matched row id.
@@ -1430,9 +1441,9 @@ export function resyncDescriptionReviewItems(
       (row) => (row.kind === 'object_static' || row.kind === 'object_anim') && affectedIds.has(row.object_id),
     ) || (crateOrPoofChanged && item.id === 'objects_02'))) {
       affectedBoardIds.add(item.id);
-    } else if (item.kind === 'background_decor_atlas' && item.decor_rows?.some(
+    } else if (item.kind === 'background_decor_atlas' && ((item.decor_rows?.some(
       (row) => row.kind !== 'projectile' && affectedIds.has(row.decor_id),
-    )) {
+    )) || (projectileChanged && item.id === 'background_decor'))) {
       affectedBoardIds.add(item.id);
     } else if (item.kind === 'rival_atlas' && item.rival_rows?.some(
       (row) => affectedIds.has(row.rival_id) || affectedIds.has(`rival_${row.rival_id}`),
@@ -2902,6 +2913,7 @@ function createDecorReviewItem(
     revision: 0,
     frame_keys: decorBoardFrameKeys(rows),
     decor_rows: rows.flat(),
+    projectile_description: (plan.projectile_description ?? '').trim() || undefined,
   };
 }
 

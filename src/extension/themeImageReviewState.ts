@@ -98,6 +98,8 @@ export interface ThemeImageReviewItem {
   crate_description?: string;
   /** Object board 2 (objects_02) only: current plan.poof_description text, for the review UI's Descriptions editor. Required (poof is never renamed/removed), but may be blank. */
   poof_description?: string;
+  /** Background decor board only: current plan.projectile_description text, for the review UI's Descriptions editor. Required (the ranged projectile is never renamed/removed — see ThemeDecorBoardRow's `projectile` kind, which has no decor_id), but may be blank. */
+  projectile_description?: string;
   object_specs?: Array<{ object_id: string; display_name: string }>;
   object_rows?: ThemeObjectBoardRow[];
   decor_rows?: ThemeDecorBoardRow[];

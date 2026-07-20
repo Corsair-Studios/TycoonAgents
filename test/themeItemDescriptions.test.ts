@@ -293,6 +293,75 @@ test('applyThemeItemDescriptionChanges still rejects a truly unknown item_kind a
   assert.equal(plan.crate_description, 'Supply crate.');
 });
 
+// --- projectile: single required, description-only plan field, on the ---
+// --- background_decor board (not objects_02 like crate/poof) -----------------
+// Like 'crate'/'poof', 'projectile' is NOT indexed into a roster array — there
+// is exactly one ranged-combat projectile per theme, so
+// applyThemeItemDescriptionChanges writes plan.projectile_description
+// directly, with no manifest id lookup. Unlike crate/poof (which live on
+// object board 2), the projectile is row 4 of the background_decor board (see
+// ThemeDecorBoardRow's `projectile` kind, which carries no decor_id).
+
+test('applyThemeItemDescriptionChanges writes plan.projectile_description for the projectile kind, leaving other plan fields intact', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  assert.equal(plan.projectile_description, undefined);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'projectile', id: 'projectile', description: 'A crackling blue energy bolt.' },
+  ]);
+
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.rejected.length, 0);
+  assert.equal(plan.projectile_description, 'A crackling blue energy bolt.');
+  // Sibling single-string fields are untouched.
+  assert.equal(plan.crate_description, undefined);
+  assert.equal(plan.poof_description, undefined);
+});
+
+test('applyThemeItemDescriptionChanges trims whitespace and clears the projectile description on an empty value', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+
+  const trimmed = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'projectile', id: 'projectile', description: '   A crackling blue energy bolt.   ' },
+  ]);
+  assert.equal(trimmed.applied.length, 1);
+  assert.equal(trimmed.applied[0].description, 'A crackling blue energy bolt.');
+  assert.equal(plan.projectile_description, 'A crackling blue energy bolt.');
+
+  const cleared = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'projectile', id: 'projectile', description: '   ' },
+  ]);
+  assert.equal(cleared.applied.length, 1);
+  assert.equal(cleared.rejected.length, 0);
+  assert.equal(cleared.applied[0].description, '');
+  assert.equal(plan.projectile_description, '');
+});
+
+test('resyncDescriptionReviewItems rebuilds the background_decor board when the projectile description changes, with the new text baked into its prompt', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+  const savedBoard = savedItems.find((item) => item.id === 'background_decor')!;
+  assert.doesNotMatch(savedBoard.prompt, /crackling blue energy bolt/);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'projectile', id: 'projectile', description: 'A crackling blue energy bolt.' },
+  ]);
+  assert.equal(result.applied.length, 1);
+
+  const refreshed = resyncDescriptionReviewItems({ items: savedItems }, manifest, plan, result.applied);
+  assert.deepEqual(refreshed.map((item) => item.id), ['background_decor']);
+  assert.match(refreshed[0].prompt, /crackling blue energy bolt/);
+  assert.equal(refreshed[0].projectile_description, 'A crackling blue energy bolt.');
+
+  // Review progress survives the resync untouched.
+  assert.equal(refreshed[0].status, savedBoard.status);
+  assert.equal(refreshed[0].revision, savedBoard.revision);
+  assert.equal(refreshed[0].updated_at, savedBoard.updated_at);
+});
+
 test('resyncDescriptionReviewItems rebuilds the objects_02 board when the crate or poof description changes, with the new text baked into its prompt', () => {
   const manifest = testManifest();
   const plan = testPlan();

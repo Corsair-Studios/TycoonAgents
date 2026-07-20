@@ -2558,3 +2558,79 @@ test('THEME_IMAGE_REVIEW: renders the Creative Direction editor prefilled from t
     h.win.close();
   }
 });
+
+// ── Review "Names & descriptions" editor: projectile description row ────────
+// New: the background_decor board's post-generation review editor
+// (themeReviewDescriptionRows in media/main.js) now carries a describe-only
+// "Ranged projectile (required)" row — like crate/poof on object board 2, it
+// has no decor_id and is never renamed, only described (plan.projectile_description,
+// see applyThemeItemDescriptionChanges' 'projectile' branch in
+// src/extension/themeService.ts). This exercises the actual DOM row build
+// (buildThemeReviewNamesDescriptionsSection) rather than just the pure
+// row-builder, since no existing test yet drives that editor's rendering.
+test('THEME_IMAGE_REVIEW: background_decor board renders a prefilled "Ranged projectile" description row, and editing + Apply posts SET_THEME_ITEM_DESCRIPTIONS with an item_kind:"projectile" change', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const items = [
+      {
+        id: 'background_decor', filename: 'background_decor.png', label: 'Background decor', kind: 'background_decor_atlas',
+        status: 'pending', prompt: 'A base decor prompt.', revision: 0, frame_keys: [], updated_at: '',
+        decor_rows: [],
+        projectile_description: 'A crackling blue energy bolt',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'a moody neon skyline over a rain-slicked outpost',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_IMAGE_REVIEW threw: ${h.errors.map(String).join('; ')}`);
+
+    const list = h.doc.getElementById('theme-image-review-list');
+    assert.ok(list, 'theme-image-review-list should exist');
+
+    // (1) The row renders, labeled "Ranged projectile (required)", prefilled
+    // from item.projectile_description.
+    const textarea = list.querySelector('textarea[data-item-kind="projectile"]');
+    assert.ok(textarea, 'a description textarea for item_kind "projectile" should render');
+    assert.equal(textarea.dataset.rowId, 'projectile');
+    assert.equal(textarea.value, 'A crackling blue energy bolt', 'the textarea should be prefilled from item.projectile_description');
+    const rowEl = textarea.closest('.theme-review-names-descriptions-row');
+    assert.ok(rowEl, 'the textarea should sit inside a names-descriptions row');
+    const labelEl = rowEl.querySelector('.theme-review-names-descriptions-label');
+    assert.ok(labelEl, 'the row should have a label');
+    assert.equal(labelEl.textContent, 'Ranged projectile (required)');
+
+    // (2) Editing the textarea and clicking Apply posts SET_THEME_ITEM_DESCRIPTIONS
+    // with a change entry for item_kind "projectile".
+    textarea.value = 'A rewritten violet plasma bolt.';
+    textarea.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+    const applyBtn = list.querySelector('.theme-review-names-descriptions-apply');
+    assert.ok(applyBtn, 'the Apply button should render');
+    assert.equal(applyBtn.disabled, false, 'Apply should be enabled once the projectile description is dirty');
+    applyBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+    const posted = [...h.posted].reverse().find((m: any) => m.type === 'SET_THEME_ITEM_DESCRIPTIONS');
+    assert.ok(posted, 'clicking Apply should post SET_THEME_ITEM_DESCRIPTIONS');
+    // Per-field asserts (not deepEqual) — posted is constructed inside the
+    // jsdom vm realm, whose Object/Array prototypes are not reference-equal
+    // to this file's, so deepStrictEqual's prototype check fails spuriously.
+    assert.equal(posted.payload.theme_id, 'smoke_theme');
+    assert.equal(posted.payload.board_id, 'background_decor');
+    const change = posted.payload.changes.find((c: any) => c.item_kind === 'projectile');
+    assert.ok(change, 'the posted changes should include a projectile entry');
+    assert.equal(change.id, 'projectile');
+    assert.equal(change.description, 'A rewritten violet plasma bolt.');
+
+    assert.equal(h.errors.length, 0, `errors after the full flow: ${h.errors.map(String).join('; ')}`);
+  } finally {
+    h.win.close();
+  }
+});
