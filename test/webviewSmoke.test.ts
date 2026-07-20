@@ -575,6 +575,30 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('render-30-frames');
     });
 
+    // ── Step 3b: document.hidden pauses + resumes the render loop ──────────────
+    // render() (media/main.js ~12178-12201) early-returns before any
+    // simulation/draw work when document.hidden is true, but still calls
+    // requestAnimationFrame(render) so the rAF chain keeps re-scheduling
+    // itself and resumes on its own once the tab/panel becomes visible again
+    // (wasHiddenLastFrame flag + lastFrameTime baseline reset on the first
+    // visible frame back). jsdom's Document.prototype.hidden is a configurable
+    // accessor, so an own-property override on `doc` shadows it cleanly and is
+    // restored the same way afterward.
+    await t.test('3b. document.hidden pauses the render loop and resumes cleanly when visible again', () => {
+      Object.defineProperty(doc, 'hidden', { configurable: true, get: () => true });
+      try {
+        tick(5);
+        assertNoErrors('render-hidden-pause');
+        assert.ok(rafQueue.length > 0, 'render() must keep re-scheduling itself while hidden (no missed rAF chain)');
+      } finally {
+        Object.defineProperty(doc, 'hidden', { configurable: true, get: () => false });
+      }
+      // Resume path: first visible frame resets the delta-time baseline, then
+      // normal frames should render without throwing.
+      tick(10);
+      assertNoErrors('render-resume-after-hidden');
+    });
+
     // ── Step 4: Badge dialog ────────────────────────────────────────────────────
     await t.test('4. badge dialog opens + renders badges', () => {
       const btn = doc.getElementById('badge-hud-btn');

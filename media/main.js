@@ -6841,6 +6841,17 @@
   function updateObjectSmoke(delta, builtIds) {
     try {
       if (!Number.isFinite(delta) || delta < 0) delta = 0;
+      // Perf early-out: with no active enemies (nothing new can start
+      // smoking) and no existing smoke entries (nothing left to fade), the
+      // whole function is a no-op — skip the per-frame Set/Object.keys work
+      // below. A `for...in` presence check avoids allocating an array just to
+      // test emptiness. Still runs whenever smoke exists (to fade it) or
+      // enemies are present (to spawn/ramp it).
+      if (!Array.isArray(activeEnemies) || activeEnemies.length === 0) {
+        let hasSmoke = false;
+        for (const _oid in objectSmoke) { hasSmoke = true; break; }
+        if (!hasSmoke) return;
+      }
       // 1. Built objIds engaged by a live, non-fleeing rival (same signal as
       //    the raid-targeting block: targetKind === 'object' + truthy
       //    targetObjId + not fleeing + membership in the already-built set).
@@ -7284,6 +7295,49 @@
 
   let frame = 0;
   let lastFrameTime = 0;
+  // Set true the frame we skip work while hidden; render() checks this on the
+  // next visible frame to reset the delta baseline instead of clamping a
+  // (still-huge, but now safely small) jump computed from a stale timestamp.
+  let wasHiddenLastFrame = false;
+
+  // Pre-rendered active-agent glow dots (perf: change 3). shadowBlur rasterizes
+  // a blur live on every draw call; instead we bake the blurred dot once per
+  // distinct (quantized) radius into an offscreen canvas and drawImage it each
+  // frame. Keyed by radius since depthScale (camera-distance perspective)
+  // makes the dot size vary continuously per agent — see getActiveGlowCanvas.
+  /** @type {Map<number, {canvas: HTMLCanvasElement, pad: number}>} */
+  const activeGlowCache = new Map();
+  const ACTIVE_GLOW_COLOR = "#39ff14";
+  const ACTIVE_GLOW_BLUR = 5;
+  /**
+   * Return an offscreen canvas containing the active-indicator glow dot
+   * pre-rendered with the exact same shadowColor/shadowBlur/fillStyle as the
+   * original live-drawn dot, sized with enough padding that the blur is never
+   * clipped. Cached per quantized radius so it is computed once and reused.
+   * @param {number} radius
+   */
+  function getActiveGlowCanvas(radius) {
+    const key = Math.round(radius * 10) / 10; // 0.1px buckets — visually identical to live draw
+    let entry = activeGlowCache.get(key);
+    if (entry) return entry;
+    const pad = Math.ceil(key + ACTIVE_GLOW_BLUR * 2 + 2);
+    const size = pad * 2;
+    const off = document.createElement("canvas");
+    off.width = size;
+    off.height = size;
+    const octx = off.getContext("2d");
+    octx.save();
+    octx.shadowColor = ACTIVE_GLOW_COLOR;
+    octx.shadowBlur = ACTIVE_GLOW_BLUR;
+    octx.fillStyle = ACTIVE_GLOW_COLOR;
+    octx.beginPath();
+    octx.arc(pad, pad, key, 0, Math.PI * 2);
+    octx.fill();
+    octx.restore();
+    entry = { canvas: off, pad: pad };
+    activeGlowCache.set(key, entry);
+    return entry;
+  }
 
   // ── Rebirth confetti particle system ──────────────────────────────────────
   // Populated by spawnConfetti() (fired from the Rebirth celebration) and
@@ -12122,6 +12176,26 @@
   }
 
   function render(timestamp) {
+    // Pause when hidden (perf: change 1): skip the whole per-agent simulation
+    // + draw while the webview tab/panel isn't visible, but keep scheduling
+    // the next frame so it resumes on its own the moment it becomes visible
+    // again — no missed rAF chain, no manual resume hook needed.
+    if (document.hidden) {
+      wasHiddenLastFrame = true;
+      requestAnimationFrame(render);
+      return;
+    }
+    // Coming back from a hidden period: `lastFrameTime` is stale (from
+    // whenever the last visible frame ran), so (timestamp - lastFrameTime)
+    // would be huge. The existing 0.1s clamp below already caps the delta
+    // used for animation math either way, but resetting the baseline here
+    // (instead of relying on the clamp alone) avoids treating this first
+    // frame as a real elapsed-time sample for anything that isn't delta-based
+    // (e.g. lastFrameTime itself staying a meaningful "previous frame" value).
+    if (wasHiddenLastFrame) {
+      wasHiddenLastFrame = false;
+      lastFrameTime = timestamp;
+    }
     // Delta time for animation advancement (capped at 100ms to avoid jumps on tab focus)
     const delta = lastFrameTime === 0 ? 0 : Math.min((timestamp - lastFrameTime) / 1000, 0.1);
     lastFrameTime = timestamp;
@@ -13897,31 +13971,45 @@
           // fit maxLabelW so long names ("VS Code Integration", "Search &
           // Retrieval") stack onto 2-3 centered lines instead of clipping.
           const maxLabelW = Math.max(72, spriteSize * 1.6);
-          const labelWords = label.split(/\s+/).filter(function (wd) { return wd.length > 0; });
-          const labelLines = [];
-          if (labelWords.length === 0) {
-            labelLines.push(label);
+          // Perf (change 2): the wrap + widest-line-width measurement below is
+          // identical every frame for a given (label, wrap width, font size) —
+          // cache it on the charEntry and only recompute when any of those
+          // three actually change. ctx.font is already set (above) to the same
+          // labelFont used at cache-store time, so measureText results match.
+          let labelLines, widestLineW;
+          const labelWrapKey = label + "|" + Math.round(maxLabelW) + "|" + labelFont;
+          const cachedWrap = charEntry._labelWrapCache;
+          if (cachedWrap && cachedWrap.key === labelWrapKey) {
+            labelLines = cachedWrap.lines;
+            widestLineW = cachedWrap.widestLineW;
           } else {
-            let curLine = labelWords[0];
-            for (let li = 1; li < labelWords.length; li++) {
-              const candidate = curLine + " " + labelWords[li];
-              if (ctx.measureText(candidate).width <= maxLabelW) {
-                curLine = candidate;
-              } else {
-                labelLines.push(curLine);
-                curLine = labelWords[li];
+            const labelWords = label.split(/\s+/).filter(function (wd) { return wd.length > 0; });
+            labelLines = [];
+            if (labelWords.length === 0) {
+              labelLines.push(label);
+            } else {
+              let curLine = labelWords[0];
+              for (let li = 1; li < labelWords.length; li++) {
+                const candidate = curLine + " " + labelWords[li];
+                if (ctx.measureText(candidate).width <= maxLabelW) {
+                  curLine = candidate;
+                } else {
+                  labelLines.push(curLine);
+                  curLine = labelWords[li];
+                }
               }
+              labelLines.push(curLine);
             }
-            labelLines.push(curLine);
+            // Widest line drives the active-light offset.
+            widestLineW = 0;
+            for (let li = 0; li < labelLines.length; li++) {
+              const lw = ctx.measureText(labelLines[li]).width;
+              if (lw > widestLineW) widestLineW = lw;
+            }
+            charEntry._labelWrapCache = { key: labelWrapKey, lines: labelLines, widestLineW: widestLineW };
           }
           const labelLineH = labelFont + 1;
           const labelY = cy + Math.round(14 * depthScale);
-          // Widest line drives the active-light offset.
-          let widestLineW = 0;
-          for (let li = 0; li < labelLines.length; li++) {
-            const lw = ctx.measureText(labelLines[li]).width;
-            if (lw > widestLineW) widestLineW = lw;
-          }
           for (let li = 0; li < labelLines.length; li++) {
             ctx.fillText(labelLines[li], cx, labelY + li * labelLineH);
           }
@@ -13934,14 +14022,12 @@
             const lightR = Math.max(2, 2.6 * depthScale);
             const lightX = cx - widestLineW / 2 - lightR - 3;
             const lightY = labelY - labelFont * 0.32; // vertical-center on first line
-            ctx.save();
-            ctx.shadowColor = "#39ff14";
-            ctx.shadowBlur = 5;
-            ctx.fillStyle = "#39ff14";
-            ctx.beginPath();
-            ctx.arc(lightX, lightY, lightR, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
+            // Perf (change 3): pre-rendered glow (see getActiveGlowCanvas) in
+            // place of a live shadowBlur rasterize every frame. The offscreen
+            // canvas is drawn centered on (lightX, lightY) via its `pad`
+            // offset, reproducing the exact same centered, alpha-correct dot.
+            const glow = getActiveGlowCanvas(lightR);
+            ctx.drawImage(glow.canvas, lightX - glow.pad, lightY - glow.pad);
           }
         } else if (img && !img.complete) {
           // Sprite frame still decoding — draw NOTHING (no stick figure, no
