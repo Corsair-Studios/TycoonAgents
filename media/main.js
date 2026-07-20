@@ -172,37 +172,16 @@
   }
 
   /**
-   * Measure #metrics-body's natural (content-hug) rendered height in px, even
-   * while it's the hidden tab. Briefly clears the `hidden` attribute to bring
-   * it back into flex layout (siblings size independently on the main axis in
-   * a column flex container, so this doesn't disturb the visible tab's own
-   * height), reads offsetHeight, then restores `hidden` — all synchronously,
-   * so the browser never paints the intermediate state (no visible flicker).
-   * @returns {number}
+   * No-op kept for its existing call sites (tab switch, plan re-render,
+   * resize-drag). Used to pixel-lock #project-plan-body's height to
+   * #metrics-body's natural (often much shorter) height on every call, which
+   * capped the plan list to a short scroll box and left dead space below it
+   * down to #metrics-panel's actual bottom edge — a layout bug. Fixed by
+   * letting CSS handle it instead: .project-plan-body is now flex:1
+   * min-height:0 (see media/style.css), so it stretches to fill whatever
+   * height #metrics-panel already has on its own, with no JS involved.
    */
-  function measureMetricsBodyHeight() {
-    if (!metricsBodyEl) return 0;
-    const wasHidden = metricsBodyEl.hidden;
-    if (wasHidden) metricsBodyEl.hidden = false;
-    const h = metricsBodyEl.offsetHeight;
-    if (wasHidden) metricsBodyEl.hidden = wasHidden;
-    return h;
-  }
-
-  /**
-   * Lock #project-plan-body's height to #metrics-body's current natural
-   * height so switching tabs never changes the panel's outer height. Content
-   * beyond that height scrolls internally (overflow-y:auto in CSS). Call on
-   * tab switch, on plan re-render, and while resize-dragging.
-   */
-  function syncProjectPlanBodyHeight() {
-    if (!metricsBodyEl || !projectPlanBodyEl) return;
-    const h = measureMetricsBodyHeight();
-    if (h > 0) {
-      projectPlanBodyEl.style.height = `${h}px`;
-      projectPlanBodyEl.style.minHeight = `${h}px`;
-    }
-  }
+  function syncProjectPlanBodyHeight() {}
 
   /** Reflect (activeMetricsTab, projectPlanEnabled) onto the tab bar + content visibility. The whole tab bar (not just the Plan tab) is hidden when the feature is off, per the gating requirement — no lone/empty tab bar. */
   function updateMetricsTabsUI() {

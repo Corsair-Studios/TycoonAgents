@@ -2509,11 +2509,21 @@ tr.metrics-row--child td.col-name {
 }
 
 /* ── Project Plan (optional feature) ─────────────────────────────── */
+/* Unlike #metrics-body (flex:0 0 auto, content-hug), this tab panel is a
+   flex:1 STRETCH region: it fills whatever height #metrics-panel already has
+   (its default content-hug height, or a user-dragged/saved height via
+   #resize-handle) instead of hugging its own — often much shorter — phase/
+   task list. min-height:0 lets it shrink below its content size so overflow
+   scrolls INSIDE this box rather than the box growing and leaving dead space
+   below it down to the panel's bottom edge. Bug fix: media/main.js's
+   syncProjectPlanBodyHeight() used to pixel-lock this element's height to
+   #metrics-body's (often much smaller) natural height on every tab switch/
+   render — that inline style was the actual cause of the dead space and has
+   been removed (function is now a no-op, kept for its existing call sites). */
 .project-plan-body {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
-  /* Same safety cap as #metrics-body — see its comment. */
-  max-height: calc(100vh - 52px);
   padding: 12px 16px 16px;
   display: flex;
   flex-direction: column;
