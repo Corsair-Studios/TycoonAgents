@@ -3935,6 +3935,9 @@ async function collectDirectoryFiles(
   }
   for (const [name, kind] of entries) {
     const relativePath = relativeDirectory ? `${relativeDirectory}/${name}` : name;
+    if (relativePath === 'images/raw' || relativePath.startsWith('images/raw/')) {
+      continue;
+    }
     const uri = vscode.Uri.joinPath(directoryUri, name);
     if (kind === vscode.FileType.Directory) {
       await collectDirectoryFiles(uri, relativePath, files);
