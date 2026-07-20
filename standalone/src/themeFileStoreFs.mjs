@@ -257,5 +257,34 @@ export function createFsThemeFileStore(rootDir) {
         throw normalizeMissingError(err);
       }
     },
+
+    // Optional ThemeFileHandle producer (project-plan task pC-t1 step 2) —
+    // mirrors themeFileStoreVscode.ts's createVscodeThemeFileStore.resolveHandle
+    // exactly, but returns a plain `{ path }` object instead of a vscode.Uri
+    // (there is no vscode.Uri on the standalone path). themeService.ts's own
+    // resolveFileHandle() only ever reads `.path` off whatever this returns
+    // (see themeFileStore.ts's ThemeFileHandle JSDoc — Uri-specific members
+    // like `.fsPath`/`.with()` are consumed only by the vscode-aware caller,
+    // panel.ts, which is never in the standalone's call path), so this
+    // narrower shape is sufficient for every vscode-free consumer
+    // (ensureThemeReviewImages/listReviewImageUris/persistRawAtlas in
+    // themeService.ts). resolveWithin-guarded like every other method here —
+    // a `../`-escaping relativePath throws rather than resolving outside root
+    // (resolveWithin still computes AND guards the path; only its returned
+    // separator is reformatted below).
+    //
+    // SEPARATOR CONTRACT: vscode.Uri.path is ALWAYS POSIX ('/'), on every OS.
+    // themeService.ts's basename() helper does `handle.path.split('/').pop()`
+    // — on Windows, path.join (inside resolveWithin) returns backslashes, so
+    // without normalizing here that split would return the WHOLE path
+    // instead of just the filename. Converting native separators to '/'
+    // keeps this handle's `.path` semantically identical to the vscode
+    // adapter's, on every platform. This is display/parsing-only: nothing in
+    // standalone/ does a native fs call with handle.path (all real I/O goes
+    // through this store's own readFile/writeFile/etc. with the ORIGINAL
+    // relativePath, never through a resolved handle).
+    resolveHandle(relativePath) {
+      return { path: resolveWithin(root, relativePath).split(path.sep).join('/') };
+    },
   };
 }

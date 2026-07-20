@@ -94,6 +94,31 @@ export const MSG_WIRE = {
   GET_THEME_IMAGE_REVIEW: 'GET_THEME_IMAGE_REVIEW',
   THEME_IMAGE_REVIEW: 'THEME_IMAGE_REVIEW',
   THEME_GENERATION_ERROR: 'THEME_GENERATION_ERROR',
+
+  // ── Theme GENERATION messages (project-plan task pC-t1 step 2) — added
+  // here (not a second MSG_WIRE object) so themeMessageContract.test.mjs's
+  // drift guard, which iterates every key of THIS export, automatically
+  // covers them too. See standalone/src/themeGenerationMessages.mjs for the
+  // handlers that use these. ──────────────────────────────────────────────
+  PLAN_THEME: 'PLAN_THEME',
+  THEME_PLAN_READY: 'THEME_PLAN_READY',
+  THEME_PLAN_ERROR: 'THEME_PLAN_ERROR',
+  GENERATE_THEME: 'GENERATE_THEME',
+  THEME_GENERATION_PROGRESS: 'THEME_GENERATION_PROGRESS',
+  THEME_REVIEW_READY: 'THEME_REVIEW_READY',
+  THEME_GENERATION_CANCELLED: 'THEME_GENERATION_CANCELLED',
+  RETRY_THEME_IMAGE: 'RETRY_THEME_IMAGE',
+  THEME_IMAGE_RETRY_STATE: 'THEME_IMAGE_RETRY_STATE',
+  RESLICE_THEME_IMAGE: 'RESLICE_THEME_IMAGE',
+  NORMALIZE_THEME_CHARACTER: 'NORMALIZE_THEME_CHARACTER',
+  THEME_CHARACTER_NORMALIZE_STATE: 'THEME_CHARACTER_NORMALIZE_STATE',
+  // Minimal support messages (not one of the 5 primary generation messages,
+  // but required for GENERATE_THEME's pause-for-review gate — the default
+  // UI state — to ever resolve instead of hanging forever; see
+  // themeGenerationMessages.mjs's module header):
+  SET_THEME_IMAGE_REVIEW_STATUS: 'SET_THEME_IMAGE_REVIEW_STATUS',
+  SET_THEME_PAUSE_FOR_REVIEW: 'SET_THEME_PAUSE_FOR_REVIEW',
+  CANCEL_THEME_GENERATION: 'CANCEL_THEME_GENERATION',
 };
 
 /** Mirrors src/extension/themeService.ts's isThemeId exactly. */

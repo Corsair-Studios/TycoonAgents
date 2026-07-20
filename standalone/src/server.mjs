@@ -65,6 +65,17 @@ import {
   handleGetThemeImageReview,
 } from './themeMessages.mjs';
 import { exportThemeArchiveFromStore, importThemeArchiveToStore } from './themeArchive.mjs';
+import { configureThemeFileStore } from './themeGenerationBridge.mjs';
+import {
+  handlePlanTheme,
+  handleGenerateTheme,
+  handleRetryThemeImage,
+  handleResliceThemeImage,
+  handleNormalizeThemeCharacter,
+  handleSetThemeImageReviewStatus,
+  handleSetThemePauseForReview,
+  handleCancelThemeGeneration,
+} from './themeGenerationMessages.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -157,6 +168,15 @@ function writeSseEvent(res, eventName, data) {
 // dropped rather than throwing.
 let themeStore;
 
+// `themeImageConfigGetter` is set by startServer() below to a closure over
+// THAT call's own `env`/`appData` (never raw process.env — see
+// getThemeImageConfig()'s doc comment), so the five theme GENERATION message
+// handlers (pC-t1 step 2) always resolve the CURRENT server instance's
+// provider/API-key config, mirroring themeStore's per-call-instance posture
+// above (both null out any stale prior startServer() call's config on a
+// fresh call, e.g. in tests).
+let themeImageConfigGetter;
+
 function handleBrowserMessage(msg) {
   if (!msg || typeof msg.type !== 'string') {
     console.log('[tycoonagents-standalone] /message: malformed payload, dropping:', JSON.stringify(msg));
@@ -187,6 +207,51 @@ function handleBrowserMessage(msg) {
       handleGetThemeImageReview(themeStore, broadcast, payload.theme_id).catch((err) => {
         console.error('[tycoonagents-standalone] GET_THEME_IMAGE_REVIEW failed:', err);
       });
+      break;
+    // ── Theme GENERATION messages (pC-t1 step 2) — drive the REAL
+    // themeService.ts pipeline via themeGenerationBridge.mjs. Fire-and-forget
+    // like every other case here: progress/results stream back over SSE
+    // (broadcast) rather than blocking this POST /message response, which is
+    // essential for GENERATE_THEME/RETRY_THEME_IMAGE/NORMALIZE_THEME_CHARACTER
+    // since those can run for a long time (real image-generation API calls).
+    case THEME_MSG_WIRE.PLAN_THEME:
+      handlePlanTheme(themeStore, broadcast, themeImageConfigGetter, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] PLAN_THEME failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.GENERATE_THEME:
+      handleGenerateTheme(themeStore, broadcast, themeImageConfigGetter, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] GENERATE_THEME failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.RETRY_THEME_IMAGE:
+      handleRetryThemeImage(themeStore, broadcast, themeImageConfigGetter, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] RETRY_THEME_IMAGE failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.RESLICE_THEME_IMAGE:
+      handleResliceThemeImage(themeStore, broadcast, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] RESLICE_THEME_IMAGE failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.NORMALIZE_THEME_CHARACTER:
+      handleNormalizeThemeCharacter(themeStore, broadcast, themeImageConfigGetter, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] NORMALIZE_THEME_CHARACTER failed:', err);
+      });
+      break;
+    // Minimal support messages the generation gate needs — see
+    // themeGenerationMessages.mjs's module header for why these are wired
+    // alongside the five primary generation messages above.
+    case THEME_MSG_WIRE.SET_THEME_IMAGE_REVIEW_STATUS:
+      handleSetThemeImageReviewStatus(themeStore, broadcast, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] SET_THEME_IMAGE_REVIEW_STATUS failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.SET_THEME_PAUSE_FOR_REVIEW:
+      handleSetThemePauseForReview(payload);
+      break;
+    case THEME_MSG_WIRE.CANCEL_THEME_GENERATION:
+      handleCancelThemeGeneration(broadcast);
       break;
     default:
       console.log('[tycoonagents-standalone] /message (unhandled):', JSON.stringify(msg));
@@ -1168,6 +1233,21 @@ export async function startServer({
   // CURRENT call's appData.dir, never a stale prior instance's.
   themeStore = createFsThemeFileStore(appData.dir);
   themeImagesRootDir = appData.dir;
+  themeImageConfigGetter = () => getThemeImageConfig({ env, appData });
+
+  // Theme GENERATION bridge wiring (pC-t1 step 2) — configure the REAL
+  // themeService.ts generation pipeline (out/src/extension/themeService.js,
+  // required lazily by themeGenerationBridge.mjs) to resolve ITS
+  // ThemeFileStore to this exact fs-backed `themeStore` instance, so
+  // planTheme/generateTheme/retryThemeImage/resliceThemeImageFromRaw/
+  // normalizeThemeCharacterAtlas below all read/write the same on-disk
+  // layout LIST_THEMES/SELECT_THEME/etc. above already use. Called on every
+  // startServer() call (not just once per process) so a second call in the
+  // same process — e.g. a test harness spinning up multiple server
+  // instances — always points generation at the CURRENT call's store, never
+  // a stale prior instance's (same posture as themeStore/themeImagesRootDir
+  // above).
+  configureThemeFileStore(themeStore);
 
   // MULTI-DIR SEMANTICS (documented per task brief — do not silently mix
   // projects' sessions into one board): the FIRST resolved target is the
