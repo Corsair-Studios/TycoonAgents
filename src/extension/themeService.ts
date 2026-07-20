@@ -424,6 +424,13 @@ export async function importThemeArchive(
   return importThemeArchiveToStore(store, data, replace);
 }
 
+// Console-only diagnostic fired on every loadTheme() call (a hot path used far
+// beyond the health-check button), so it intentionally does NOT load the
+// review document to gate "no frames" issues by acceptance status — that
+// would add an extra fs read to every theme load for a log-only path. The
+// user-facing RUN_THEME_HEALTH_CHECK handler (panel.ts) is the generation-aware
+// version and already passes acceptedFrameKeys from the loaded review doc; this
+// console path stays best-effort/ungated as before.
 function logThemeIntegrityIssues(themeId: string, manifest: ThemeManifest, frames: Record<string, string[]>): void {
   try {
     const issues = validateThemeIntegrity(manifest, frames);
@@ -913,6 +920,74 @@ export async function getThemeImageReview(
       };
     }),
   };
+}
+
+/**
+ * The set of frame keys whose owning board the user has ACCEPTED in review —
+ * for src/extension/themeHealth.ts's generation-aware `acceptedFrameKeys`
+ * gate (an accepted-but-frameless board must still be flagged; a
+ * still-pending one must not).
+ *
+ * Deliberately sources each accepted board's keys from the CURRENT plan's
+ * EXPECTED board contract (createReviewItems), NOT from the accepted item's
+ * own saved `frame_keys` field. Reason: mergeExpectedReviewItems's display
+ * merge (refreshSavedReviewItemMetadata) treats frame_keys as generation
+ * state and never overwrites it from `expected` — correct for its own
+ * purpose, but a LEGACY pre-review theme's inferred review item
+ * (inferLegacyReviewItem, themeImageReviewState.ts) persists frame_keys: []
+ * for every non-character board. If this function read the merged item's own
+ * frame_keys, an accepted legacy object/expression/badge board would
+ * contribute NO keys, permanently and silently suppressing its "no frames"
+ * issue — reintroducing the 0.0.384 accepted-but-frameless bug for exactly
+ * that population. Reading the EXPECTED keys instead is correct because they
+ * are what that board is defined to own right now, independent of whatever
+ * its saved item happened to persist historically.
+ *
+ * READ-ONLY: unlike getThemeImageReview, this never calls
+ * upsertThemeImageReviewItem — it must not persist anything as a side effect
+ * of a health check. No saved review document or no saved/normalizable plan
+ * (very old / plan-less themes) falls back to each accepted saved item's own
+ * frame_keys, mirroring getThemeImageReview's own no-plan fallback.
+ */
+export async function acceptedFrameKeysForHealthCheck(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+): Promise<Set<string>> {
+  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+  const savedItems = document?.items ?? [];
+  const savedFrameKeysFallback = () =>
+    new Set(
+      savedItems
+        .filter((item) => item.status === 'accepted')
+        .flatMap((item) => item.frame_keys ?? []),
+    );
+
+  const manifest = await loadThemeManifest(globalStorageUri, themeId);
+  if (!manifest) return savedFrameKeysFallback();
+
+  try {
+    const store = resolveThemeFileStore(globalStorageUri);
+    const savedPlan = (await readJson<ThemePlan>(store, themePlanPath(themeId)))
+      ?? (await readJson<ThemePlan>(store, legacyPlanPath(themeId)));
+    if (!savedPlan) return savedFrameKeysFallback();
+    const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+    if (plan.theme_id !== themeId) return savedFrameKeysFallback();
+
+    const creativeDirection = themePlanCreativeDirection(plan);
+    const expectedItems = createReviewItems(plan, manifest, creativeDirection);
+    const expectedById = new Map(expectedItems.map((item) => [item.id, item]));
+    const merged = mergeExpectedReviewItems(expectedItems, savedItems);
+
+    const keys = new Set<string>();
+    for (const item of merged) {
+      if (item.status !== 'accepted') continue;
+      const expected = expectedById.get(item.id);
+      for (const key of expected?.frame_keys ?? item.frame_keys ?? []) keys.add(key);
+    }
+    return keys;
+  } catch {
+    return savedFrameKeysFallback();
+  }
 }
 
 export async function updateThemeImageReviewStatus(

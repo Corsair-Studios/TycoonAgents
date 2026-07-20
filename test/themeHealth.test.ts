@@ -308,6 +308,81 @@ test('a missing badge icon is flagged as a warning naming the badge, driven by m
   assert.match(issues[0].message, /First Build/);
 });
 
+// ----------------------------------------------------------------------------
+// Generation-aware gating: acceptedFrameKeys option
+// ----------------------------------------------------------------------------
+
+test('mid-generation: with acceptedFrameKeys supplied, missing frames for keys NOT in the set produce no missing_frames issues', () => {
+  // Simulates running the health check while most boards are still pending —
+  // nothing has been accepted yet, so acceptedFrameKeys is empty. Every
+  // roster/fixed-family/expression/badge entity is missing its frames, but
+  // none of that should be flagged as an error/warning since none of it is
+  // expected to be complete yet.
+  const manifest = minimalManifest({
+    roster_agents: [{ slot_id: 1, name: 'Alice', atlas_asset: 'frames.json#agent_1', preferred_idle_pose: 'pose_down' }],
+    roster_rivals: [{ rival_id: 'roadblock', name: 'Roadblock', atlas_asset: 'frames.json#rival_roadblock' }],
+    buildable_objects: [
+      {
+        build_order: 1,
+        object_id: 'crate1',
+        display_name: 'Crate',
+        sprite_asset: 'frames.json#object_crate1',
+        anchor_coord: [0, 0],
+        exclusion_radius: 10,
+        work_units_required: 5,
+      },
+    ],
+    viewport: {
+      native_width: 533,
+      native_height: 751,
+      background_asset: 'frames.json#environment',
+      walkable_nav_polygon: [[0, 0], [1, 0], [1, 1], [1, 1], [0, 1], [0, 1]],
+      projectile_asset: 'frames.json#projectile',
+    },
+  });
+  // No frames at all yet (nothing generated), and nothing accepted.
+  const frames: Record<string, string[]> = {};
+
+  const issues = validateThemeIntegrity(manifest, frames, { acceptedFrameKeys: new Set() });
+  const missing = issues.filter((i) => i.kind === 'missing_frames');
+  assert.deepEqual(missing, []);
+});
+
+test('accepted-but-frameless regression guard: a key in acceptedFrameKeys that is still missing its frames STILL errors', () => {
+  // The 0.0.384 bug class: a board's review item is 'accepted' (so its owned
+  // frame_keys land in acceptedFrameKeys) but frames.json never got the
+  // frames written. This must NOT be suppressed by the gating.
+  const manifest = minimalManifest({
+    roster_rivals: [
+      { rival_id: 'roadblock', name: 'Roadblock', atlas_asset: 'frames.json#rival_roadblock' },
+    ],
+  });
+  const frames = { ...baseFrames() }; // rival_roadblock intentionally absent
+
+  const issues = validateThemeIntegrity(manifest, frames, {
+    acceptedFrameKeys: new Set(['rival_roadblock']),
+  });
+  const missing = issues.filter((i) => i.kind === 'missing_frames');
+  assert.equal(missing.length, 1);
+  assert.equal(missing[0].severity, 'error');
+  assert.equal(missing[0].key, 'rival_roadblock');
+});
+
+test('gating only suppresses missing_frames; empty_frames still flags regardless of acceptedFrameKeys', () => {
+  const manifest = minimalManifest({
+    roster_rivals: [{ rival_id: 'roadblock', name: 'Roadblock', atlas_asset: 'frames.json#rival_roadblock' }],
+  });
+  const frames = {
+    ...baseFrames(),
+    rival_roadblock: [], // present but empty — a different failure mode than "never generated"
+  };
+
+  const issues = validateThemeIntegrity(manifest, frames, { acceptedFrameKeys: new Set() });
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].kind, 'empty_frames');
+  assert.equal(issues[0].key, 'rival_roadblock');
+});
+
 test('an achievement_ frame with no matching badge is flagged as an orphan warning', () => {
   // Only one badge declared, but frames carries a second achievement_ key —
   // reliable because manifest.badges is the authoritative expected set.

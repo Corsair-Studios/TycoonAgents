@@ -3705,6 +3705,13 @@
 
   function renderThemeImageReview(payload) {
     if (!themeImageReview || !themeImageReviewList) return;
+    // Clear/hide any stale health-check results from a previous manual click
+    // so they don't linger over a new generation/review render — the health
+    // panel is re-populated only by an explicit RUN_THEME_HEALTH_CHECK.
+    if (themeHealthResults) {
+      themeHealthResults.hidden = true;
+      themeHealthResults.textContent = "";
+    }
     // Host updates can arrive while the user is editing a different card. Keep
     // those local drafts and the review position instead of treating every
     // update as a brand-new panel.

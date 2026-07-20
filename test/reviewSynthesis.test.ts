@@ -2,6 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ThemeManifest } from '../src/shared/types';
 import type { ThemePlan } from '../src/extension/themePlan';
+// themeHealth.ts has zero vscode dependency (pure data validation), so a plain
+// top-level import is safe here even though the rest of this file's
+// themeService.ts imports must go through the vscode-stubbed require below.
+import { validateThemeIntegrity } from '../src/extension/themeHealth';
 
 // themeService.ts does `import * as vscode from 'vscode'` at module scope (needed by
 // other exports); createReviewItems itself never touches the vscode API, but Node
@@ -1097,4 +1101,84 @@ test('mergeExpectedReviewItems: an expected board with no saved counterpart beco
   const board2 = merged.find((item) => item.id === 'objects_02')!;
   assert.equal(board2.status, 'pending');
   assert.equal(board2.updated_at, new Date(0).toISOString());
+});
+
+// --- Regression: themeHealth.ts's generation-aware acceptedFrameKeys gate
+// (see src/extension/themeService.ts's acceptedFrameKeysForHealthCheck) must
+// source an accepted board's keys from the EXPECTED plan contract
+// (createReviewItems), not the saved item's own frame_keys field —
+// mergeExpectedReviewItems/refreshSavedReviewItemMetadata never refreshes
+// frame_keys (it is generation state, like status/revision), and a LEGACY
+// pre-review theme's inferred review item (inferLegacyReviewItem) persists
+// frame_keys: [] for every non-character board. Reading the saved field
+// instead of the expected one would silently and permanently suppress a
+// genuinely accepted-but-frameless legacy object/expression/badge board —
+// reintroducing the 0.0.384 bug for exactly that population. ---
+
+test('acceptedFrameKeys gating: a legacy-inferred accepted achievement board (saved frame_keys: []) still flags missing badge icons via the EXPECTED plan frame_keys', () => {
+  const manifest = badge20Manifest();
+  const plan = plan20();
+  const expectedItems = createReviewItems(plan, manifest, plan.creative_direction);
+
+  // Mirrors the real on-disk shape: inferLegacyReviewItem synthesized this
+  // item with frame_keys: [], and the user later accepted it via the review UI.
+  const savedItems = [
+    {
+      id: 'achievements', filename: 'achievements.png', label: 'Achievement badges',
+      kind: 'achievement_atlas' as const, status: 'accepted' as const, prompt: '',
+      revision: 0, frame_keys: [] as string[], updated_at: new Date(0).toISOString(),
+    },
+  ];
+
+  const merged = mergeExpectedReviewItems(expectedItems, savedItems);
+  const achievementsItem = merged.find((item) => item.id === 'achievements')!;
+  assert.equal(achievementsItem.status, 'accepted');
+  // Confirms the premise this test guards: the merge does NOT refresh frame_keys.
+  assert.deepEqual(achievementsItem.frame_keys, []);
+
+  // acceptedFrameKeysForHealthCheck's algorithm: for each accepted merged
+  // item, union the EXPECTED item's frame_keys (looked up by id) — not the
+  // item's own (possibly stale/empty) frame_keys.
+  const expectedById = new Map(expectedItems.map((item) => [item.id, item]));
+  const acceptedFrameKeys = new Set<string>();
+  for (const item of merged) {
+    if (item.status !== 'accepted') continue;
+    const expected = expectedById.get(item.id);
+    for (const key of expected?.frame_keys ?? item.frame_keys ?? []) acceptedFrameKeys.add(key);
+  }
+  assert.ok(acceptedFrameKeys.has('achievement_3'), 'expected frame_keys must supply achievement_3 even though the saved item carried none');
+
+  // frames.json genuinely never got the badge icons written — the real
+  // 0.0.384 accepted-but-frameless shape — so this must still be flagged.
+  const frames: Record<string, string[]> = {};
+  for (let i = 0; i < 8; i++) frames[`expression_${i}`] = ['data:img']; // keep expressions quiet
+  // achievement_* intentionally absent from frames.
+
+  const issues = validateThemeIntegrity(manifest, frames, { acceptedFrameKeys });
+  const missingBadges = issues.filter((i) => i.kind === 'missing_frames' && i.entity === 'Badge icon');
+  assert.equal(missingBadges.length, 20, 'every accepted badge icon key is missing and must be flagged');
+  assert.ok(missingBadges.some((i) => i.key === 'achievement_3'));
+});
+
+test('acceptedFrameKeys gating: mid-generation (every board still pending) suppresses every missing_frames issue', () => {
+  const manifest = badge20Manifest();
+  const plan = plan20();
+  const expectedItems = createReviewItems(plan, manifest, plan.creative_direction);
+
+  // No saved review document at all yet — every expected board is a pending placeholder.
+  const merged = mergeExpectedReviewItems(expectedItems, []);
+  assert.ok(merged.every((item) => item.status === 'pending'));
+
+  const expectedById = new Map(expectedItems.map((item) => [item.id, item]));
+  const acceptedFrameKeys = new Set<string>();
+  for (const item of merged) {
+    if (item.status !== 'accepted') continue;
+    const expected = expectedById.get(item.id);
+    for (const key of expected?.frame_keys ?? item.frame_keys ?? []) acceptedFrameKeys.add(key);
+  }
+  assert.equal(acceptedFrameKeys.size, 0);
+
+  const frames: Record<string, string[]> = {}; // nothing generated yet
+  const issues = validateThemeIntegrity(manifest, frames, { acceptedFrameKeys });
+  assert.deepEqual(issues.filter((i) => i.kind === 'missing_frames'), []);
 });

@@ -87,12 +87,38 @@ const FIXED_ASSET_FAMILIES: FixedAssetFamily[] = [
   },
 ];
 
+export interface ThemeIntegrityValidationOptions {
+  /**
+   * The set of frame keys whose owning board is EXPECTED to be complete —
+   * i.e. its theme-image-review item has status 'accepted' (see
+   * themeImageReviewState.ts's ThemeImageReviewItem.frame_keys, which is
+   * exactly the set of frame keys a board owns). When provided, a
+   * "no frames" (kind 'missing_frames') issue is only emitted for a key in
+   * this set; keys outside it belong to a board that is still
+   * pending/rejected/never-reviewed and a missing frame there is expected,
+   * not a bug, so the issue is suppressed. An accepted board that is still
+   * missing its frames DOES get flagged (the 0.0.384 accepted-but-frameless
+   * regression this health check exists to catch).
+   *
+   * When omitted (the default), every "no frames" issue is emitted
+   * unconditionally — the original, generation-unaware behavior. This keeps
+   * every existing caller/test byte-for-byte compatible.
+   */
+  acceptedFrameKeys?: ReadonlySet<string>;
+}
+
 export function validateThemeIntegrity(
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
+  options?: ThemeIntegrityValidationOptions,
 ): ThemeIntegrityIssue[] {
   const issues: ThemeIntegrityIssue[] = [];
   const framesRecord = frames ?? {};
+  const acceptedFrameKeys = options?.acceptedFrameKeys;
+  // No acceptedFrameKeys set => generation-unaware legacy behavior (always
+  // flag). With a set, a "no frames" issue only fires for a key whose owning
+  // board is accepted — everything else is presumed still in progress.
+  const isExpectedComplete = (key: string): boolean => !acceptedFrameKeys || acceptedFrameKeys.has(key);
 
   // Tracks every frames key that is accounted for by a roster entry (or one of
   // the fixed families below), so the orphan pass can skip them.
@@ -111,13 +137,15 @@ export function validateThemeIntegrity(
       claimedKeys.add(key);
       const value = framesRecord[key];
       if (value === undefined) {
-        issues.push({
-          severity: 'error',
-          kind: 'missing_frames',
-          entity,
-          key,
-          message: `${entity} "${label}" (${key}) has no frames — will render as a placeholder`,
-        });
+        if (isExpectedComplete(key)) {
+          issues.push({
+            severity: 'error',
+            kind: 'missing_frames',
+            entity,
+            key,
+            message: `${entity} "${label}" (${key}) has no frames — will render as a placeholder`,
+          });
+        }
       } else if (Array.isArray(value) && value.length === 0) {
         issues.push({
           severity: 'warning',
@@ -157,13 +185,15 @@ export function validateThemeIntegrity(
     claimedKeys.add(key);
     const value = framesRecord[key];
     if (value === undefined) {
-      issues.push({
-        severity: 'error',
-        kind: 'missing_frames',
-        entity: family.entity,
-        key,
-        message: `${family.entity} (${key}) has no frames — ${family.impact}`,
-      });
+      if (isExpectedComplete(key)) {
+        issues.push({
+          severity: 'error',
+          kind: 'missing_frames',
+          entity: family.entity,
+          key,
+          message: `${family.entity} (${key}) has no frames — ${family.impact}`,
+        });
+      }
     } else if (Array.isArray(value) && value.length === 0) {
       issues.push({
         severity: 'error',
@@ -185,13 +215,15 @@ export function validateThemeIntegrity(
     claimedKeys.add(key);
     const value = framesRecord[key];
     if (value === undefined) {
-      issues.push({
-        severity: 'warning',
-        kind: 'missing_frames',
-        entity: 'Expression',
-        key,
-        message: `Expression frame "${key}" has no frames — that emote will not play`,
-      });
+      if (isExpectedComplete(key)) {
+        issues.push({
+          severity: 'warning',
+          kind: 'missing_frames',
+          entity: 'Expression',
+          key,
+          message: `Expression frame "${key}" has no frames — that emote will not play`,
+        });
+      }
     } else if (Array.isArray(value) && value.length === 0) {
       issues.push({
         severity: 'warning',
@@ -213,13 +245,15 @@ export function validateThemeIntegrity(
     claimedKeys.add(key);
     const value = framesRecord[key];
     if (value === undefined) {
-      issues.push({
-        severity: 'warning',
-        kind: 'missing_frames',
-        entity: 'Badge icon',
-        key,
-        message: `Badge icon "${badge.display_name}" (${key}) has no frames`,
-      });
+      if (isExpectedComplete(key)) {
+        issues.push({
+          severity: 'warning',
+          kind: 'missing_frames',
+          entity: 'Badge icon',
+          key,
+          message: `Badge icon "${badge.display_name}" (${key}) has no frames`,
+        });
+      }
     } else if (Array.isArray(value) && value.length === 0) {
       issues.push({
         severity: 'warning',

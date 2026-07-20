@@ -52,6 +52,7 @@ import {
   getThemeImageReview,
   importThemeArchive,
   listThemes,
+  acceptedFrameKeysForHealthCheck,
   loadCurrentThemePlan,
   loadTheme,
   loadLatestTheme,
@@ -1666,7 +1667,20 @@ export class TycoonPanel {
             if (!themeId) throw new Error("No theme was specified for the health check.");
             const t = await loadTheme(this._globalStorageUri, themeId);
             if (!t) throw new Error("Theme not found.");
-            const issues = validateThemeIntegrity(t.manifest, t.frames);
+            // Generation-aware gating: a "no frames" issue should only fire for a
+            // board the user has actually ACCEPTED in review — a board still
+            // pending/rejected mid-generation legitimately has no frames yet.
+            // acceptedFrameKeysForHealthCheck (themeService.ts) sources each
+            // accepted board's keys from the CURRENT plan's EXPECTED board
+            // contract rather than the accepted item's own saved frame_keys field:
+            // a legacy pre-review theme's inferred review item persists
+            // frame_keys: [] for every non-character board, so reading the saved
+            // field would silently exclude accepted object/expression/badge
+            // boards from the set and reintroduce the 0.0.384
+            // accepted-but-frameless bug for exactly that population. It is
+            // read-only (never persists anything) as a health-check side effect.
+            const acceptedFrameKeys = await acceptedFrameKeysForHealthCheck(this._globalStorageUri, themeId);
+            const issues = validateThemeIntegrity(t.manifest, t.frames, { acceptedFrameKeys });
             void this._panel.webview.postMessage({
               type: MSG.THEME_HEALTH_CHECK_RESULT,
               payload: { theme_id: themeId, issues },
