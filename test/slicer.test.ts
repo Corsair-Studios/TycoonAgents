@@ -1216,3 +1216,169 @@ test('removeStrayVerticalRowRuns never clears a gap-separated region that is not
   assert.equal(greenPixels, 40 * 16, 'the large secondary region survives despite being gap-separated');
   assert.equal(bluePixels, 40 * 60, 'the dominant figure survives fully');
 });
+
+// --- removeStrayColumnRuns (the COLUMN mirror of removeStrayVerticalRowRuns
+// above — drop a leaked adjacent-column fragment without inflating the
+// cell's real object width). Unlike the row pass, this one is opt-in via
+// AtlasGrid.removeHorizontalStrayColumns (buildable-object boards only), so
+// every grid below sets that flag explicitly except the gating test, which
+// proves the pass stays off for grids that don't request it (character/rival/
+// decor boards).
+//
+// A 1x1 grid keeps the row/column boundary-spill passes (row>0 / col>0 only)
+// out of the picture, exactly as the row-run tests above do.
+
+const objectGrid = { columns: 1, rows: 1, removeHorizontalStrayColumns: true };
+
+test('removeStrayColumnRuns is a no-op for a cell with a single contiguous content run', async () => {
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  // A single solid object block: x 30..69 (40 wide), y 10..69 (60 tall).
+  atlas.scan(30, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, objectGrid);
+  const frame = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+  let minX = Infinity;
+  let maxX = -1;
+  let opaqueCount = 0;
+  frame.scan(0, 0, 128, 128, function (x, _y, idx) {
+    if (this.bitmap.data[idx + 3] === 0) return;
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    opaqueCount++;
+  });
+
+  // Zero or one content run is a documented early-return no-op: the entire
+  // 40x60 object survives untouched, with its full drawn width intact (even
+  // with the flag on).
+  assert.equal(opaqueCount, 40 * 60);
+  assert.equal(maxX - minX + 1, 40);
+});
+
+test('removeStrayColumnRuns clears a small, separated stray fragment without inflating the object width', async () => {
+  const cellSize = 100;
+  const buildAtlas = (includeFragment: boolean) => {
+    const atlas = new Jimp(cellSize, cellSize, 0xff00ffff);
+    // Main object: x 30..69 (40 wide), y 10..69 (60 tall) = 2400px area.
+    atlas.scan(30, 10, 40, 60, function (_x, _y, idx) {
+      this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+    });
+    if (includeFragment) {
+      // A stray fragment leaked from the adjacent grid column: x 73..77 (5
+      // wide), y 20..29 (10 tall) = 50px area (<25% of the object's 2400px),
+      // separated from the object by a 3-column empty gap (x 70..72) --
+      // meets both STRAY_RUN_MAX_AREA_RATIO and STRAY_RUN_MIN_GAP_COLS.
+      atlas.scan(73, 20, 5, 10, function (_x, _y, idx) {
+        this.bitmap.data.writeUInt32BE(SVR_RED, idx);
+      });
+    }
+    return atlas.getBufferAsync(Jimp.MIME_PNG);
+  };
+
+  const [withFragment, withoutFragment] = await Promise.all([
+    sliceAndNormalizeAtlas(await buildAtlas(true), {}, objectGrid),
+    sliceAndNormalizeAtlas(await buildAtlas(false), {}, objectGrid),
+  ]);
+
+  // removeStrayColumnRuns runs before the bounding-box scan, so the cell WITH
+  // the fragment must produce the exact same normalized frame -- including
+  // the same width-driven scale -- as the cell WITHOUT it: proof the object
+  // is neither widened, shrunk, nor miscentered (the reported "too wide /
+  // encroaching on neighbors" bug) by the stray fragment's presence.
+  assert.equal(withFragment.slots[0].data, withoutFragment.slots[0].data);
+  assert.deepEqual(withFragment.slots[0].meta, withoutFragment.slots[0].meta);
+
+  const frame = await Jimp.read(Buffer.from(withFragment.slots[0].data.split(',')[1], 'base64'));
+  let redPixels = 0;
+  let bluePixels = 0;
+  frame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === SVR_RED) redPixels++;
+    if (color === SVR_BLUE) bluePixels++;
+  });
+  assert.equal(redPixels, 0, 'the stray fragment is fully cleared');
+  assert.equal(bluePixels, 40 * 60, 'the full object survives at native size');
+});
+
+test('removeStrayColumnRuns preserves a legitimately wide object part sharing the main run (handle/arm within the merge-gap tolerance)', async () => {
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  // Main object: x 30..69 (40 wide), y 10..69 (60 tall).
+  atlas.scan(30, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+  });
+  // A handle/arm extension: x 71..75, separated from the object by only a
+  // 1-column gap (x 70) -- within MERGE_GAP_COLS(2), so it merges into the
+  // SAME run as the object and must never be evaluated for removal.
+  atlas.scan(71, 20, 5, 10, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_GREEN, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, objectGrid);
+  const frame = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+  let greenPixels = 0;
+  let bluePixels = 0;
+  frame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === SVR_GREEN) greenPixels++;
+    if (color === SVR_BLUE) bluePixels++;
+  });
+  assert.equal(greenPixels, 5 * 10, 'the handle/arm extension survives fully');
+  assert.equal(bluePixels, 40 * 60, 'the main object survives fully');
+});
+
+test('removeStrayColumnRuns never clears a gap-separated region that is not small relative to the dominant run (guard)', async () => {
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  // Dominant object: x 10..49 (40 wide), y 10..49 (40 tall) = 1600px area.
+  atlas.scan(10, 10, 40, 40, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+  });
+  // A second region separated by a 3-column gap (meets
+  // STRAY_RUN_MIN_GAP_COLS), sharing the dominant's y-range (10..49) so the
+  // union content bbox stays centered and well within the 128px output
+  // frame. Its 640px area is above STRAY_RUN_MAX_AREA_RATIO(0.25) of the
+  // dominant's 1600px, so the "isSmall" condition fails and it must be
+  // preserved even though it is separated.
+  atlas.scan(53, 10, 16, 40, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_GREEN, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, objectGrid);
+  const frame = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+  let greenPixels = 0;
+  let bluePixels = 0;
+  frame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === SVR_GREEN) greenPixels++;
+    if (color === SVR_BLUE) bluePixels++;
+  });
+  assert.equal(greenPixels, 16 * 40, 'the large secondary region survives despite being gap-separated');
+  assert.equal(bluePixels, 40 * 40, 'the dominant object survives fully');
+});
+
+test('removeStrayColumnRuns is gated: without removeHorizontalStrayColumns a separated horizontal fragment survives untouched', async () => {
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  atlas.scan(30, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+  });
+  // Identical geometry to the "clears a small, separated stray fragment"
+  // case above, but this grid omits removeHorizontalStrayColumns -- the flag
+  // that gates the pass to buildable-object boards only. Character/rival/
+  // decor grids never set it, so the pass must not run and the fragment
+  // must survive exactly as drawn.
+  atlas.scan(73, 20, 5, 10, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_RED, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, { columns: 1, rows: 1 });
+  const frame = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+  let redPixels = 0;
+  let bluePixels = 0;
+  frame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === SVR_RED) redPixels++;
+    if (color === SVR_BLUE) bluePixels++;
+  });
+  assert.equal(redPixels, 5 * 10, 'the fragment survives because the column pass is gated off for this grid');
+  assert.equal(bluePixels, 40 * 60, 'the main object survives fully');
+});

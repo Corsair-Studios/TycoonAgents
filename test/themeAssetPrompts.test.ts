@@ -263,6 +263,20 @@ test('aggregate prompts define the two-board object layout, 8 expressions, and 2
   assert.match(achievements, /do not include unlock requirements/i);
 });
 
+test('object board prompts carry the no-overhang cell-containment rule on both boards (encroachment fix)', () => {
+  const board1 = buildObjectAtlasPrompt('industrial', 'Factory', createObjectBoard1Rows(staticObjectSpecs(OBJECT_BOARD1_STATIC_COUNT)));
+  const board2 = buildObjectAtlasPrompt(
+    'industrial',
+    'Factory',
+    createObjectBoard2Rows(animatedObjectSpecs(OBJECT_ANIMATED_COUNT), board2StaticObjectSpecs(OBJECT_BOARD2_STATIC_COUNT)),
+  );
+  for (const prompt of [board1, board2]) {
+    assert.match(prompt, /never touch or cross any cell edge/i);
+    assert.match(prompt, /extend into a neighboring cell/i);
+    assert.match(prompt, /draw it SMALLER to fit/i);
+  }
+});
+
 test('achievement prompt injects per-badge appearance descriptions when provided', () => {
   const names = Array.from({ length: 25 }, (_unused, index) => `Badge ${index + 1}`);
   const descriptions = new Array(25).fill('');

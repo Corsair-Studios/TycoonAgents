@@ -112,6 +112,16 @@ export interface AtlasGrid {
   rebuildBoard?: boolean;
   /** Keep the rebuilt review canvas square while preserving the requested grid. */
   squareReviewBoard?: boolean;
+  /**
+   * Buildable-object boards ONLY. When true, runs removeStrayColumnRuns per
+   * cell (the column mirror of removeStrayVerticalRowRuns) to clear a stray
+   * fragment from the LEFT or RIGHT neighbor column that survives
+   * removeColumnBoundarySpill's connectivity/size gating, so it never widens
+   * the per-cell bbox and pushes the object into the neighbor cell.
+   * Characters/rivals/decor must never set this — their width is already
+   * handled via clipWidthOverflow / per-clip normalization.
+   */
+  removeHorizontalStrayColumns?: boolean;
 }
 
 /** One sliced-and-cleaned grid cell, plus its opaque-content bounds. */
@@ -221,6 +231,9 @@ export async function sliceAndNormalizeAtlas(
         removeColumnBoundarySpill(cell, cells[slot_id - 1].cell);
       }
       removeStrayVerticalRowRuns(cell);
+      if (grid.removeHorizontalStrayColumns) {
+        removeStrayColumnRuns(cell);
+      }
 
       let minX = Infinity;
       let maxX = -1;
@@ -1265,6 +1278,85 @@ function removeStrayVerticalRowRuns(cell: Jimp): void {
     const isSeparated = gap >= STRAY_RUN_MIN_GAP_ROWS;
     if (isSmall && isSeparated) {
       cell.scan(0, run.start, width, run.end - run.start + 1, function (_x: number, _y: number, idx: number) {
+        cell.bitmap.data[idx + 3] = 0;
+      });
+    }
+  }
+}
+
+/**
+ * The COLUMN mirror of removeStrayVerticalRowRuns above. A stray fragment
+ * from the LEFT or RIGHT neighbor column can bleed across a cell's
+ * left/right boundary and survive magenta keying/defringing/despilling and
+ * removeColumnBoundarySpill (which only removes LEFT-neighbor spill and is
+ * gated by connectivity/size). When that happens the fragment is
+ * disconnected from the main subject but still opaque, so the later union
+ * bbox scan (which has no fragment filtering) folds it in, inflating the
+ * bbox width and causing the object to render too wide and encroach into
+ * the neighboring cell.
+ *
+ * Opt-in via AtlasGrid.removeHorizontalStrayColumns (buildable-object boards
+ * only) — mirrors removeStrayVerticalRowRuns's row logic exactly, swapping
+ * rows for columns.
+ */
+const MERGE_GAP_COLS = 2;
+const STRAY_RUN_MIN_GAP_COLS = 3;
+
+function removeStrayColumnRuns(cell: Jimp): void {
+  const width = cell.bitmap.width;
+  const height = cell.bitmap.height;
+  const colCount = new Array(width).fill(0);
+  cell.scan(0, 0, width, height, function (x: number, _y: number, idx: number) {
+    if (cell.bitmap.data[idx + 3] !== 0) colCount[x] += 1;
+  });
+
+  interface Run { start: number; end: number; area: number }
+
+  // Raw contiguous non-empty column runs.
+  const rawRuns: Run[] = [];
+  let x = 0;
+  while (x < width) {
+    if (colCount[x] === 0) { x++; continue; }
+    const start = x;
+    let area = 0;
+    while (x < width && colCount[x] > 0) { area += colCount[x]; x++; }
+    rawRuns.push({ start, end: x - 1, area });
+  }
+  // Zero or one content run: nothing to disambiguate, leave the cell untouched
+  // (byte-identical no-op for the common single-subject case).
+  if (rawRuns.length <= 1) return;
+
+  // Merge runs separated only by a small internal empty-column gap so a thin
+  // keying seam inside the object's own body is never treated as a split.
+  const runs: Run[] = [{ ...rawRuns[0] }];
+  for (let i = 1; i < rawRuns.length; i++) {
+    const prev = runs[runs.length - 1];
+    const next = rawRuns[i];
+    const gap = next.start - prev.end - 1;
+    if (gap <= MERGE_GAP_COLS) {
+      prev.end = next.end;
+      prev.area += next.area;
+    } else {
+      runs.push({ ...next });
+    }
+  }
+  // Merging collapsed everything into one run: still a no-op.
+  if (runs.length <= 1) return;
+
+  let dominant = runs[0];
+  for (const run of runs) {
+    if (run.area > dominant.area) dominant = run;
+  }
+
+  for (const run of runs) {
+    if (run === dominant) continue;
+    const gap = run.end < dominant.start
+      ? dominant.start - run.end - 1
+      : run.start - dominant.end - 1;
+    const isSmall = run.area < dominant.area * STRAY_RUN_MAX_AREA_RATIO;
+    const isSeparated = gap >= STRAY_RUN_MIN_GAP_COLS;
+    if (isSmall && isSeparated) {
+      cell.scan(run.start, 0, run.end - run.start + 1, height, function (_x: number, _y: number, idx: number) {
         cell.bitmap.data[idx + 3] = 0;
       });
     }

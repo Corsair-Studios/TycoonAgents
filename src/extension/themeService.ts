@@ -2556,6 +2556,10 @@ async function processObjectAtlas(
       // nearest-neighbor; the black-background recolor below prevents magenta
       // bleed into the smoothed edges.
       smoothResize: true,
+      // Object boards only: clear a stray fragment leaked in from the LEFT or
+      // RIGHT neighbor cell so it never widens the per-cell bbox and pushes
+      // the object into the neighboring cell.
+      removeHorizontalStrayColumns: true,
     });
     const output = await optimizeSpriteBoardCanvas(generated, 4, 4, { resample: 'bicubic' });
     return { output, spritePackage };
@@ -2579,6 +2583,10 @@ async function processObjectAtlas(
     // nearest-neighbor; the black-background recolor below prevents magenta
     // bleed into the smoothed edges.
     smoothResize: true,
+    // Object boards only: clear a stray fragment leaked in from the LEFT or
+    // RIGHT neighbor cell so it never widens the per-cell bbox and pushes
+    // the object into the neighboring cell.
+    removeHorizontalStrayColumns: true,
   });
   const output = await optimizeSpriteBoardCanvas(generated, 4, 4, { resample: 'bicubic' });
   return { output, spritePackage };

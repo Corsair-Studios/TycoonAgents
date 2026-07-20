@@ -695,6 +695,7 @@ function objectRowAnimationConstraintLines(rowLabel: string): string[] {
 /** Shared object sizing/placement/camera guidance reused by both object boards. */
 function objectSizingAndCameraLines(): string[] {
   return [
+    'Keep every object fully inside its own cell with clear empty margin on ALL FOUR sides — top, bottom, left, and right. No object may touch or cross any cell edge or extend into a neighboring cell. If an object would be too wide to fit with left/right margin, draw it SMALLER to fit — never let it span into the adjacent cell. Keep objects at a consistent, uniform size.',
     'Center each object with its lowest contact point just above the cell bottom, leaving a clear strip of empty background (about 5% of the cell height) beneath it — the object must never touch the cell\'s bottom edge, or its base will be sliced off flat. Preserve relative scale across the whole board.',
     'Size every object to a strict height budget: it fills about 75% of its cell\'s height — a subject taller than 80% of its cell height is an incorrect result.',
     'When the board is complete, a continuous visible strip of empty background must separate every row and every column — check the finished image for an unbroken gutter along EVERY horizontal row boundary; any subject touching that gutter is drawn too large and is an incorrect result.',
