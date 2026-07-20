@@ -1081,3 +1081,138 @@ test('noUpscale:true clamps board scale to 1 so small content stays at native si
   // tolerance covers nearest-neighbor rounding, nothing more.
   assert.ok(height <= NU_NATIVE_HEIGHT + 1, `expected no enlargement (<=${NU_NATIVE_HEIGHT + 1}px), got ${height}`);
 });
+
+// --- removeStrayVerticalRowRuns (drop a leaked adjacent-row fragment without
+// squishing the cell's real subject) ----------------------------------------
+//
+// A 1x1 grid (columns:1, rows:1) is used throughout so the row/column
+// boundary-spill passes (which only run for row>0 / col>0) stay out of the
+// picture, isolating removeStrayVerticalRowRuns exactly as the existing
+// feet-anchor tests above do for their own pass.
+
+const SVR_BLUE = 0x1950a0ff;  // main figure
+const SVR_RED = 0xc82828ff;   // stray fragment: small + separated -> cleared
+const SVR_GREEN = 0x2ecc40ff; // legit same-run or large gap-separated content
+
+test('removeStrayVerticalRowRuns is a no-op for a cell with a single contiguous content run', async () => {
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  // A single solid figure block: rows 10..69 (60 tall), x 30..69 (40 wide).
+  atlas.scan(30, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, { columns: 1, rows: 1 });
+  const frame = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+  let minY = Infinity;
+  let maxY = -1;
+  let opaqueCount = 0;
+  frame.scan(0, 0, 128, 128, function (_x, y, idx) {
+    if (this.bitmap.data[idx + 3] === 0) return;
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+    opaqueCount++;
+  });
+
+  // Zero or one content run is a documented early-return no-op: the entire
+  // 40x60 figure survives untouched, with its full drawn height intact.
+  assert.equal(opaqueCount, 40 * 60);
+  assert.equal(maxY - minY + 1, 60);
+});
+
+test('removeStrayVerticalRowRuns clears a small, separated stray fragment without squishing the main figure', async () => {
+  const cellSize = 100;
+  const buildAtlas = (includeFragment: boolean) => {
+    const atlas = new Jimp(cellSize, cellSize, 0xff00ffff);
+    // Main figure: rows 10..69 (60 tall), x 30..69 (40 wide) = 2400px area.
+    atlas.scan(30, 10, 40, 60, function (_x, _y, idx) {
+      this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+    });
+    if (includeFragment) {
+      // A stray fragment leaked from the adjacent grid row: rows 73..77 (5
+      // tall), x 40..49 (10 wide) = 50px area (<25% of the figure's 2400px),
+      // separated from the figure by a 3-row empty gap (rows 70..72) -- meets
+      // both STRAY_RUN_MAX_AREA_RATIO and STRAY_RUN_MIN_GAP_ROWS.
+      atlas.scan(40, 73, 10, 5, function (_x, _y, idx) {
+        this.bitmap.data.writeUInt32BE(SVR_RED, idx);
+      });
+    }
+    return atlas.getBufferAsync(Jimp.MIME_PNG);
+  };
+
+  const [withFragment, withoutFragment] = await Promise.all([
+    sliceAndNormalizeAtlas(await buildAtlas(true), {}, { columns: 1, rows: 1 }),
+    sliceAndNormalizeAtlas(await buildAtlas(false), {}, { columns: 1, rows: 1 }),
+  ]);
+
+  // removeStrayVerticalRowRuns runs before the bounding-box scan, so the cell
+  // WITH the fragment must produce the exact same normalized frame as the
+  // cell WITHOUT it -- proof the main figure is neither squished nor
+  // otherwise distorted by the stray fragment's presence.
+  assert.equal(withFragment.slots[0].data, withoutFragment.slots[0].data);
+  assert.deepEqual(withFragment.slots[0].meta, withoutFragment.slots[0].meta);
+
+  const frame = await Jimp.read(Buffer.from(withFragment.slots[0].data.split(',')[1], 'base64'));
+  let redPixels = 0;
+  let bluePixels = 0;
+  frame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === SVR_RED) redPixels++;
+    if (color === SVR_BLUE) bluePixels++;
+  });
+  assert.equal(redPixels, 0, 'the stray fragment is fully cleared');
+  assert.equal(bluePixels, 40 * 60, 'the full main figure survives at native size');
+});
+
+test('removeStrayVerticalRowRuns preserves content sharing the main figure\'s row-run (feet/staff within the merge-gap tolerance)', async () => {
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  // Main figure: rows 10..69 (60 tall), x 30..69 (40 wide).
+  atlas.scan(30, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+  });
+  // A held staff/feet extension: rows 71..75, separated from the figure by
+  // only a 1-row gap (row 70) -- within MERGE_GAP_ROWS(2), so it merges into
+  // the SAME run as the figure and must never be evaluated for removal.
+  atlas.scan(40, 71, 10, 5, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_GREEN, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, { columns: 1, rows: 1 });
+  const frame = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+  let greenPixels = 0;
+  let bluePixels = 0;
+  frame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === SVR_GREEN) greenPixels++;
+    if (color === SVR_BLUE) bluePixels++;
+  });
+  assert.equal(greenPixels, 10 * 5, 'the staff/feet extension survives fully');
+  assert.equal(bluePixels, 40 * 60, 'the main figure survives fully');
+});
+
+test('removeStrayVerticalRowRuns never clears a gap-separated region that is not small relative to the dominant run (guard)', async () => {
+  const atlas = new Jimp(100, 100, 0xff00ffff);
+  // Dominant figure: rows 10..69 (60 tall), x 10..49 (40 wide) = 2400px area.
+  atlas.scan(10, 10, 40, 60, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_BLUE, idx);
+  });
+  // A second region separated by a 3-row gap (meets STRAY_RUN_MIN_GAP_ROWS),
+  // sharing the dominant's x-range (10..49) so the union content bbox stays
+  // centered and well within the 128px output frame. Its 640px area is above
+  // STRAY_RUN_MAX_AREA_RATIO(0.25) of the dominant's 2400px, so the "isSmall"
+  // condition fails and it must be preserved even though it is separated.
+  atlas.scan(10, 73, 40, 16, function (_x, _y, idx) {
+    this.bitmap.data.writeUInt32BE(SVR_GREEN, idx);
+  });
+
+  const result = await sliceAndNormalizeAtlas(await atlas.getBufferAsync(Jimp.MIME_PNG), {}, { columns: 1, rows: 1 });
+  const frame = await Jimp.read(Buffer.from(result.slots[0].data.split(',')[1], 'base64'));
+  let greenPixels = 0;
+  let bluePixels = 0;
+  frame.scan(0, 0, 128, 128, function (_x, _y, idx) {
+    const color = this.bitmap.data.readUInt32BE(idx);
+    if (color === SVR_GREEN) greenPixels++;
+    if (color === SVR_BLUE) bluePixels++;
+  });
+  assert.equal(greenPixels, 40 * 16, 'the large secondary region survives despite being gap-separated');
+  assert.equal(bluePixels, 40 * 60, 'the dominant figure survives fully');
+});

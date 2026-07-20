@@ -220,6 +220,7 @@ export async function sliceAndNormalizeAtlas(
       if (col > 0) {
         removeColumnBoundarySpill(cell, cells[slot_id - 1].cell);
       }
+      removeStrayVerticalRowRuns(cell);
 
       let minX = Infinity;
       let maxX = -1;
@@ -1182,4 +1183,90 @@ function removeColumnBoundarySpill(cell: Jimp, leftNeighbor: Jimp): void {
   // Never erase the primary subject if it happens to touch the cell's left edge.
   if (queue.length * 2 >= opaqueCount) return;
   for (const offset of queue) cell.bitmap.data[offset * 4 + 3] = 0;
+}
+
+/**
+ * A stray fragment from the ROW ABOVE or ROW BELOW can bleed across a cell's
+ * top/bottom boundary and survive magenta keying/defringing/despilling and
+ * reclaimRowBoundarySpill (which only handles the specific case of a
+ * boundary-CONNECTED overflow continuing from the cell above). When that
+ * happens the fragment is disconnected from the main subject but still
+ * opaque, so the later union bbox scan (which has no fragment filtering)
+ * folds it in, inflating the bbox height and causing the whole cell to be
+ * scaled down (a visible vertical "squish") to fit content that isn't
+ * actually part of the subject.
+ *
+ * This sits between the shared boundary-cleanup passes above (magenta
+ * keying/defringe/despill/reclaim) and the bbox scan below. It rescans the
+ * cell's per-row opaque-pixel counts, groups rows into vertically contiguous
+ * "runs" (merging runs split by only a tiny internal gap so a 1-2px keying
+ * seam inside the body never fragments the figure), and clears any run that
+ * is BOTH small relative to the dominant (main-subject) run AND clearly
+ * separated from it by a run of empty rows. Content sharing the subject's own
+ * row span (feet, a held staff, a mid-height effect) is always in the SAME
+ * run as the body and is never touched.
+ */
+const MERGE_GAP_ROWS = 2;
+const STRAY_RUN_MAX_AREA_RATIO = 0.25;
+const STRAY_RUN_MIN_GAP_ROWS = 3;
+
+function removeStrayVerticalRowRuns(cell: Jimp): void {
+  const width = cell.bitmap.width;
+  const height = cell.bitmap.height;
+  const rowCount = new Array(height).fill(0);
+  cell.scan(0, 0, width, height, function (_x: number, y: number, idx: number) {
+    if (cell.bitmap.data[idx + 3] !== 0) rowCount[y] += 1;
+  });
+
+  interface Run { start: number; end: number; area: number }
+
+  // Raw contiguous non-empty row runs.
+  const rawRuns: Run[] = [];
+  let y = 0;
+  while (y < height) {
+    if (rowCount[y] === 0) { y++; continue; }
+    const start = y;
+    let area = 0;
+    while (y < height && rowCount[y] > 0) { area += rowCount[y]; y++; }
+    rawRuns.push({ start, end: y - 1, area });
+  }
+  // Zero or one content run: nothing to disambiguate, leave the cell untouched
+  // (byte-identical no-op for the common single-subject case).
+  if (rawRuns.length <= 1) return;
+
+  // Merge runs separated only by a small internal empty-row gap so a thin
+  // keying seam inside the figure's own body is never treated as a split.
+  const runs: Run[] = [{ ...rawRuns[0] }];
+  for (let i = 1; i < rawRuns.length; i++) {
+    const prev = runs[runs.length - 1];
+    const next = rawRuns[i];
+    const gap = next.start - prev.end - 1;
+    if (gap <= MERGE_GAP_ROWS) {
+      prev.end = next.end;
+      prev.area += next.area;
+    } else {
+      runs.push({ ...next });
+    }
+  }
+  // Merging collapsed everything into one run: still a no-op.
+  if (runs.length <= 1) return;
+
+  let dominant = runs[0];
+  for (const run of runs) {
+    if (run.area > dominant.area) dominant = run;
+  }
+
+  for (const run of runs) {
+    if (run === dominant) continue;
+    const gap = run.end < dominant.start
+      ? dominant.start - run.end - 1
+      : run.start - dominant.end - 1;
+    const isSmall = run.area < dominant.area * STRAY_RUN_MAX_AREA_RATIO;
+    const isSeparated = gap >= STRAY_RUN_MIN_GAP_ROWS;
+    if (isSmall && isSeparated) {
+      cell.scan(0, run.start, width, run.end - run.start + 1, function (_x: number, _y: number, idx: number) {
+        cell.bitmap.data[idx + 3] = 0;
+      });
+    }
+  }
 }
