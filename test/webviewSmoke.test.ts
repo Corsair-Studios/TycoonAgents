@@ -795,6 +795,30 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('scene-orchestrator-not-first');
     });
 
+    // ── Step 9c: dazed-on-damage cosmetic state machine (uncommitted) ──────────
+    // Guards the new "dazed on damage" fields/consts in media/main.js:
+    // charEntry.dazePhase / dazeTimeLeft / dazeReentryCd (~12551-12558) and
+    // DAZE_EXPR_INDEX / DAZE_SEATED_RECOVER_SEC / DAZE_SAFETY_MAX_SEC /
+    // DAZE_REENTRY_COOLDOWN_SEC (~5322-5328). The per-frame bookkeeping
+    // (reentry-cd decay ~12580, the isActive-drops-daze override ~12581-
+    // 12584, the extinguish/wander gating on dazePhase ~13011/13193) runs for
+    // every rendered agent every frame regardless of whether a hit/daze
+    // trigger has actually fired, so driving many render ticks with a mix of
+    // active + idle agents (theme + roster already loaded since step 2)
+    // exercises that bookkeeping continuously. media/main.js is not
+    // typechecked (see main-js-not-typechecked-runtime-scope-risk), so this
+    // is the guard against an out-of-scope identifier in the new code
+    // surfacing as a thrown ReferenceError. Cannot assert the actual dazed
+    // visual state — canvas output isn't inspectable and triggering a real
+    // hit needs enemies/combat RNG — so this is a smoke check only, mirroring
+    // 9b's scope.
+    await t.test('9c. render loop with active+idle agents does not throw with dazed-on-damage bookkeeping running', async () => {
+      dispatch(buildStatePayload());
+      tick(40);
+      await flush();
+      assertNoErrors('dazed-bookkeeping-render');
+    });
+
     // ── Step 10: pre-install delegation chooser visibility (Phase 2 bugfix) ──────
     // The install-screen #delegation-mode-group must be hidden on every
     // installState path EXCEPT installed === false (fresh install), and the

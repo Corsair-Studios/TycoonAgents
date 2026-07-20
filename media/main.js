@@ -5310,6 +5310,23 @@
   /** Duration (seconds) the block/flinch pose holds before returning to the normal engage clip. */
   const HIT_REACT_HOLD_SEC = 0.4;
 
+  /**
+   * Cosmetic "dazed on damage" state machine tunables. When an IDLE agent
+   * takes a combat hit (see the hit-react block above), it becomes dazed:
+   * shows the dazed expression bubble, stops fighting, and retreats to an
+   * available seat; charEntry.dazePhase drives it (null | "retreat" |
+   * "seated"). Purely cosmetic — never touches damage/eviction outcomes.
+   * An ACTIVE agent instantly drops/never enters daze (see the isActive
+   * override in the per-agent loop).
+   */
+  const DAZE_EXPR_INDEX = 7;
+  /** Seconds a dazed agent stays seated before recovering to normal idle. */
+  const DAZE_SEATED_RECOVER_SEC = 3;
+  /** Safety cap (seconds): if no seat ever opens up while retreating, give up and recover in place. */
+  const DAZE_SAFETY_MAX_SEC = 10;
+  /** Post-recovery immunity window (seconds) before the same agent can be dazed again. */
+  const DAZE_REENTRY_COOLDOWN_SEC = 4;
+
   // ── Stage editor (live polygon + scale tuning) ───────────────────────────
   /** True while the "Edit Stage" overlay is active. */
   let editStageMode = false;
@@ -12531,6 +12548,14 @@
           // updateExtinguishProgress's per-repairer arrival tally.
           extinguishStandNx: null,
           extinguishStandNy: null,
+          // Cosmetic "dazed on damage" state (see DAZE_* tunables above).
+          // dazePhase: null (not dazed) | "retreat" (seeking/walking to a
+          // seat) | "seated" (holding the recovery countdown).
+          dazePhase: null,
+          dazeTimeLeft: 0,
+          // Post-recovery immunity window so a just-recovered agent doesn't
+          // instantly re-daze off the next stray hit.
+          dazeReentryCd: 0,
         };
       }
       const charEntry = agentCharMap[agent.id];
@@ -12542,6 +12567,24 @@
       // NOT influence this; it's still used elsewhere below for animation.
       const isActive = isMetricsAgentActive(agent);
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
+
+      // ── Dazed-on-damage: reentry-cooldown decay + ACTIVE override ────
+      // Decays unconditionally every frame (not just while dazed) so a
+      // just-recovered agent's immunity window keeps counting down even
+      // while it's off doing something else. ACTIVE always wins, instantly:
+      // an agent that goes/stays active drops the daze the moment it's
+      // noticed here — frees the seat if it had claimed/reached one and
+      // clears the dazed bubble — so the rest of this frame's isEngaging/
+      // isBuilding/idleAndStill logic below runs exactly as if it had never
+      // been dazed. See DAZE_* consts and the retreat/seated block below.
+      if (charEntry.dazeReentryCd > 0) charEntry.dazeReentryCd = Math.max(0, charEntry.dazeReentryCd - delta);
+      if (isActive && charEntry.dazePhase != null) {
+        freeAgentSeat(charEntry);
+        charEntry.dazePhase = null;
+        charEntry.dazeTimeLeft = 0;
+        charEntry.bubbleExpr = -1;
+        charEntry.bubbleTimeLeft = 0;
+      }
 
       // Leader throne (Feature: leader-throne): recomputed every frame from
       // the live charIds/rosterOrder — see isLeaderEntry's doc. Reused below
@@ -12647,7 +12690,10 @@
       let isEngaging = false;
       let engageInRange = false;
       // A celebrating (dancing) agent pauses combat for the dance's duration.
-      if (!inConga && !charEntry.dancing && enemiesAlive) {
+      // A dazed agent (dazePhase != null) also sits out combat entirely —
+      // "stop fighting" is part of the dazed-on-damage cosmetic state
+      // machine (see DAZE_* consts); it resumes once daze clears.
+      if (!inConga && !charEntry.dancing && enemiesAlive && charEntry.dazePhase == null) {
         let nearestEnemy = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
           if (en.fleeing) continue; // Change 2: fleeing enemies are not threats
@@ -12717,6 +12763,19 @@
               playEmote(charEntry, "block", HIT_REACT_HOLD_SEC);
               charEntry.hitReactCooldown = HIT_REACT_COOLDOWN_MIN + Math.random() * (HIT_REACT_COOLDOWN_MAX - HIT_REACT_COOLDOWN_MIN);
               showExpression(charEntry, 7, 1.2);
+              // ── Dazed-on-damage TRIGGER (cosmetic only) ──────────────
+              // Only an IDLE agent (never active — see the ACTIVE override
+              // near isActive above) that isn't already dazed and isn't in
+              // its post-recovery immunity window enters the daze state
+              // machine. Repeated hits while already dazed are ignored
+              // (dazePhase != null short-circuits here every subsequent
+              // frame). Defensively free any seat it might already hold
+              // (shouldn't normally happen mid-engage) before retreating.
+              if (!isActive && charEntry.dazePhase == null && (charEntry.dazeReentryCd || 0) <= 0) {
+                if (charEntry.sitSeatId != null) freeAgentSeat(charEntry);
+                charEntry.dazePhase = "retreat";
+                charEntry.dazeTimeLeft = DAZE_SAFETY_MAX_SEC;
+              }
             }
             // Change C: ranged agents fire a projectile at the enemy on a
             // throttled cadence (target position snapshotted at fire time).
@@ -12861,12 +12920,95 @@
       const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga;
       charEntry.idleStill = idleAndStill;
 
+      // ── Dazed-on-damage: retreat/seated phases (cosmetic) ───────────────
+      // Only reached while !isActive (the ACTIVE override near isActive
+      // above clears dazePhase before this point whenever the agent is/
+      // becomes active), so this never fights with build/engage logic.
+      // Movement itself is handed off to the EXISTING "Sitting" maintenance
+      // block further below (walk-to-seat/arrival/hold) once a seat is
+      // claimed here via charEntry.sitSeatId — this block only claims the
+      // seat and owns the daze timers/phase transitions.
+      if (charEntry.dazePhase === "retreat") {
+        if (charEntry.sitSeatId == null) {
+          // Seat-seek: mirrors the normal idle sit-decision's throne-
+          // reservation rule (leaderSeatId/isLeader — a dazed non-leader
+          // never takes the throne), but unconditional (no SIT_CHANCE roll)
+          // and retried every frame until a seat is free or the safety
+          // timer below gives up.
+          let dazeFreeSeatId = null;
+          const dazeThroneId = leaderSeatId();
+          if (isLeader && dazeThroneId != null && seatOccupancy[dazeThroneId] == null) {
+            seatOccupancy[dazeThroneId] = charEntry.__id;
+            dazeFreeSeatId = dazeThroneId;
+          }
+          if (dazeFreeSeatId == null) {
+            for (const d of themeDecor) {
+              const sid = d.decor_id;
+              if (sid === dazeThroneId && !isLeader) continue;
+              const p = sid != null ? decorPlacement[sid] : null;
+              if (p && p.sittable && seatOccupancy[sid] == null && !themeDecorHidden.has(sid)) {
+                seatOccupancy[sid] = charEntry.__id;
+                dazeFreeSeatId = sid;
+                break;
+              }
+            }
+          }
+          if (dazeFreeSeatId != null) {
+            charEntry.sitSeatId = dazeFreeSeatId;
+            charEntry.sitting = false; // en route — the sitting-maintenance block below walks it there
+            const seat = decorPlacement[dazeFreeSeatId];
+            charEntry.destNx = seat.sitNx;
+            charEntry.destNy = seat.sitNy;
+          }
+        } else if (charEntry.sitting) {
+          // Arrived (the sitting-maintenance block below latched sitting=
+          // true on a prior frame) — hand off from "retreat" to "seated"
+          // and start the short cosmetic recovery countdown.
+          charEntry.dazePhase = "seated";
+          charEntry.dazeTimeLeft = DAZE_SEATED_RECOVER_SEC;
+        }
+        if (charEntry.dazePhase === "retreat") {
+          charEntry.dazeTimeLeft -= delta;
+          if (charEntry.dazeTimeLeft <= 0) {
+            // Safety cap: no seat ever opened up — give up and recover in
+            // place rather than dazing forever. Leaves sitSeatId untouched
+            // (null if none was ever found, or a still-en-route claim) so
+            // normal idle logic just takes over from wherever it is.
+            charEntry.dazePhase = null;
+            charEntry.dazeReentryCd = DAZE_REENTRY_COOLDOWN_SEC;
+            charEntry.bubbleExpr = -1;
+            charEntry.bubbleTimeLeft = 0;
+          }
+        }
+      } else if (charEntry.dazePhase === "seated") {
+        charEntry.dazeTimeLeft -= delta;
+        if (charEntry.dazeTimeLeft <= 0) {
+          // Recovered: clear daze state only — leave sitSeatId/sitting alone
+          // so the existing sit-maintenance block below keeps owning the
+          // seat and stands the agent up normally on its own timer (may
+          // "stand and leave the seat normally", per spec).
+          charEntry.dazePhase = null;
+          charEntry.dazeReentryCd = DAZE_REENTRY_COOLDOWN_SEC;
+          charEntry.bubbleExpr = -1;
+          charEntry.bubbleTimeLeft = 0;
+        }
+      }
+      // Keep the dazed bubble visible continuously through retreat + seated,
+      // bypassing showExpression's shared BUBBLE_COOLDOWN_SEC/teamActive
+      // guards (this is a stronger, state-driven override, not a rare
+      // one-shot bubble) — and stop it the instant daze clears (either
+      // recovery path just above, or the ACTIVE override near isActive).
+      if (charEntry.dazePhase != null) {
+        charEntry.bubbleExpr = DAZE_EXPR_INDEX;
+        charEntry.bubbleTimeLeft = Math.max(charEntry.bubbleTimeLeft || 0, 1.0);
+      }
+
       // ── Extinguish eligibility + intent (Phase 2, cosmetic) ────────────
       // Publish eligibility (read by assignExtinguishers next frame — a 1-frame
       // lag is fine here). Then derive this-frame intent: an idle char with a
       // still-smoking assigned object that isn't fighting a rival (combat always
       // wins). extinguishArrived latches once within EXTINGUISH_ARRIVE_EPS of it.
-      charEntry.extinguishEligible = idleAndStill && (charEntry.sitSeatId == null) && !isEngaging;
+      charEntry.extinguishEligible = idleAndStill && (charEntry.sitSeatId == null) && !isEngaging && charEntry.dazePhase == null;
       const isExtinguishing = !!(
         charEntry.extinguishTargetId &&
         objectSmoke[charEntry.extinguishTargetId] &&
@@ -13048,7 +13190,7 @@
       // Dancing agents hold position (no wander). Conga members are driven
       // by updateConga's destination assignment above.
       if (!inConga) charEntry.wanderTimer -= delta;
-      if (!inConga && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.wanderTimer <= 0) {
+      if (!inConga && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.dazePhase == null && charEntry.wanderTimer <= 0) {
         // At this idle wander-decision point, an eligible idle agent may
         // instead start dancing (rare) or go sit on a free seat (rare).
         // Otherwise pick a new destination.
