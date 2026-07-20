@@ -499,9 +499,12 @@ function handleThemeImport(req, res) {
 // DOM scaffold (element ids) media/main.js's getElementById calls expect, so
 // the unmodified script drives identically outside VS Code. Asset URIs point
 // at the /media/* static route (served in place from the repo's media/ dir,
-// never copied). theme-builder.js is intentionally NOT included yet — it is
-// out of scope for this task (main.js does not require it to boot; see
-// test/webviewSmoke.test.ts, which boots main.js alone).
+// never copied). theme-builder.js is included AFTER main.js (pD-t1), matching
+// panel.ts's load order; main.js does not require it to boot on its own (see
+// test/webviewSmoke.test.ts, which boots main.js alone). theme-builder.js's
+// own top-level `acquireVsCodeApi()` call (media/theme-builder.js:92) is safe
+// here because the shim below returns a singleton on every call — see the
+// acquireVsCodeApi() note a few lines down.
 //
 // acquireVsCodeApi(): the REAL shim (p1-t3) so media/main.js's top-level
 // `const vscode = acquireVsCodeApi();` (media/main.js:11) works identically
@@ -999,6 +1002,7 @@ function buildHostHtml() {
   </div>
 
   <script src="/media/main.js"></script>
+  <script src="/media/theme-builder.js"></script>
 </body>
 </html>`;
 }
