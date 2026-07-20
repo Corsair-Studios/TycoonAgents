@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { resolveThemeFileStore } from './themeFileStoreVscode';
+import { themeRawImagesDirectoryPath } from './themeFileStore';
 
 export const THEMES_DIRECTORY_NAME = 'themes';
 
@@ -47,7 +49,8 @@ export async function saveRawAtlas(
   name: string,
   buffer: Buffer,
 ): Promise<void> {
-  const rawDirectoryUri = themeRawImagesDirectoryUri(globalStorageUri, themeId);
-  await vscode.workspace.fs.createDirectory(rawDirectoryUri);
-  await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(rawDirectoryUri, name), buffer);
+  const store = resolveThemeFileStore(globalStorageUri);
+  const rawDirectoryPath = themeRawImagesDirectoryPath(themeId);
+  await store.mkdirp(rawDirectoryPath);
+  await store.writeFile(`${rawDirectoryPath}/${name}`, buffer);
 }

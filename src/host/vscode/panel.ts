@@ -86,6 +86,7 @@ import type {
 } from "../../extension/themeService";
 import type { ThemeManifest } from "../../shared/types";
 import { themeImagesDirectoryUri, themeRawImagesDirectoryUri } from "../../extension/themeStorage";
+import { configureThemeFileStore, createVscodeThemeFileStore } from "../../extension/themeFileStoreVscode";
 import { validateThemeIntegrity } from "../../extension/themeHealth";
 import {
   getConfiguredThemeImageProvider,
@@ -292,6 +293,13 @@ export class TycoonPanel {
     this._runtime = runtime;
     this._globalStorageUri = globalStorageUri;
     this._secrets = secrets;
+
+    // Inject the vscode-backed ThemeFileStore (project-plan task pA-t1) once,
+    // so themeStorage.ts/themeService.ts do all theme file I/O through it
+    // instead of calling vscode.workspace.fs directly. Constructed here (the
+    // one place globalStorageUri is first resolved) and reused for the life
+    // of this panel.
+    configureThemeFileStore(createVscodeThemeFileStore(globalStorageUri));
 
     // Auto-heal the CLAUDE.md delegation doctrine once per panel open (see
     // _ensureDelegationDoctrineCurrent doc comment) — fixes 0% delegation on

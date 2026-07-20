@@ -87,15 +87,27 @@ import {
 } from './themePlan';
 import type { ThemePlan } from './themePlan';
 import {
-  themeDirectoryUri,
-  themeFramesUri,
   themeImagesDirectoryUri,
-  themeManifestUri,
-  themePlanUri,
-  themesDirectoryUri,
   saveRawAtlas,
-  themeRawImagesDirectoryUri,
 } from './themeStorage';
+import { resolveThemeFileStore } from './themeFileStoreVscode';
+import type { ThemeFileStore, ThemeFileStoreEntry } from './themeFileStore';
+import {
+  themeDirectoryPath,
+  themeFramesPath,
+  themeImagesDirectoryPath,
+  themeManifestPath,
+  themePlanPath,
+  themeRawImagesDirectoryPath,
+  themesDirectoryPath,
+  legacyFramesPath,
+  legacyImageReviewPath,
+  legacyImagesDirectoryPath,
+  legacyManifestPath,
+  legacyPlanPath,
+  legacyReviewPath,
+  joinThemePath,
+} from './themeFileStore';
 
 /**
  * Best-effort persist of the RAW pre-slice atlas buffer alongside its normalized
@@ -197,13 +209,14 @@ export async function planTheme(
 export async function listThemes(
   globalStorageUri: vscode.Uri,
 ): Promise<Array<{ theme_id: string; display_name: string; size_bytes: number } & ThemeApprovalSummary>> {
+  const store = resolveThemeFileStore(globalStorageUri);
   const results = new Map<string, { theme_id: string; display_name: string }>();
   try {
-    const entries = await vscode.workspace.fs.readDirectory(themesDirectoryUri(globalStorageUri));
-    for (const [themeId, kind] of entries) {
-      if (kind !== vscode.FileType.Directory || !isThemeId(themeId)) continue;
-      const manifest = await readJson<Partial<ThemeManifest>>(themeManifestUri(globalStorageUri, themeId));
-      if (manifest) results.set(themeId, { theme_id: themeId, display_name: manifest.display_name ?? themeId });
+    const entries = await store.readdir(themesDirectoryPath());
+    for (const entry of entries) {
+      if (!entry.isDirectory || !isThemeId(entry.name)) continue;
+      const manifest = await readJson<Partial<ThemeManifest>>(store, themeManifestPath(entry.name));
+      if (manifest) results.set(entry.name, { theme_id: entry.name, display_name: manifest.display_name ?? entry.name });
     }
   } catch {
     // The themes directory is created on first generation.
@@ -211,12 +224,12 @@ export async function listThemes(
 
   // Preserve access to themes produced by versions that used flat storage.
   try {
-    const entries = await vscode.workspace.fs.readDirectory(globalStorageUri);
-    for (const [name, kind] of entries) {
-      if (kind !== vscode.FileType.File || !name.endsWith('_manifest.json')) continue;
-      const themeId = name.replace(/_manifest\.json$/, '');
+    const entries = await store.readdir('');
+    for (const entry of entries) {
+      if (!entry.isFile || !entry.name.endsWith('_manifest.json')) continue;
+      const themeId = entry.name.replace(/_manifest\.json$/, '');
       if (results.has(themeId)) continue;
-      const manifest = await readJson<Partial<ThemeManifest>>(vscode.Uri.joinPath(globalStorageUri, name));
+      const manifest = await readJson<Partial<ThemeManifest>>(store, entry.name);
       if (manifest) results.set(themeId, { theme_id: themeId, display_name: manifest.display_name ?? themeId });
     }
   } catch {
@@ -255,36 +268,35 @@ export async function upgradeInstalledThemes(
   globalStorageUri: vscode.Uri,
 ): Promise<ThemeUpgradeResult[]> {
   const results: ThemeUpgradeResult[] = [];
+  const store = resolveThemeFileStore(globalStorageUri);
 
-  let entries: [string, vscode.FileType][] = [];
+  let entries: ThemeFileStoreEntry[] = [];
   try {
-    entries = await vscode.workspace.fs.readDirectory(themesDirectoryUri(globalStorageUri));
+    entries = await store.readdir(themesDirectoryPath());
   } catch {
     // The themes directory is created on first generation; nothing to upgrade.
     return results;
   }
 
-  for (const [themeId, kind] of entries) {
-    if (kind !== vscode.FileType.Directory || !isThemeId(themeId)) continue;
+  for (const entry of entries) {
+    if (!entry.isDirectory || !isThemeId(entry.name)) continue;
+    const themeId = entry.name;
     try {
-      const manifestUri = themeManifestUri(globalStorageUri, themeId);
-      const raw = await vscode.workspace.fs.readFile(manifestUri);
+      const manifestPath = themeManifestPath(themeId);
+      const raw = await store.readFile(manifestPath);
       const manifest = JSON.parse(Buffer.from(raw).toString('utf8')) as ThemeManifest;
       const { manifest: upgraded, changed } = upgradeThemeManifest(manifest);
       results.push({ theme_id: themeId, changed });
 
       if (changed.length > 0) {
-        const backupUri = vscode.Uri.joinPath(
-          themeDirectoryUri(globalStorageUri, themeId),
-          `manifest.json.${Date.now()}.bak`,
-        );
+        const backupPath = joinThemePath(themeDirectoryPath(themeId), `manifest.json.${Date.now()}.bak`);
         try {
           // Never clobber an existing backup with the same name.
-          await vscode.workspace.fs.stat(backupUri);
+          await store.stat(backupPath);
         } catch {
-          await vscode.workspace.fs.writeFile(backupUri, Buffer.from(raw));
+          await store.writeFile(backupPath, Buffer.from(raw));
         }
-        await vscode.workspace.fs.writeFile(manifestUri, jsonBuffer(upgraded));
+        await store.writeFile(manifestPath, jsonBuffer(upgraded));
       }
     } catch (error) {
       console.error(`[TycoonAgents] Failed to upgrade theme "${themeId}":`, error);
@@ -307,7 +319,12 @@ export async function seedBundledThemes(
     const existing = await listThemes(globalStorageUri);
     if (existing.length > 0) return;
 
-    await vscode.workspace.fs.createDirectory(globalStorageUri);
+    // Bundled seed themes are read from the extension's own shipped resources
+    // (extensionUri), a different root than the theme storage this refactor
+    // scopes to — that read stays a direct vscode call. The WRITE side (into
+    // theme storage, legacy flat naming) goes through the store.
+    const store = resolveThemeFileStore(globalStorageUri);
+    await store.mkdirp('');
 
     const bundledThemesUri = vscode.Uri.joinPath(extensionUri, 'media', 'themes');
     let entries: Array<[string, vscode.FileType]>;
@@ -320,23 +337,21 @@ export async function seedBundledThemes(
     for (const [name, kind] of entries) {
       if (kind !== vscode.FileType.Directory) continue;
       const themeDirUri = vscode.Uri.joinPath(bundledThemesUri, name);
-      const manifest = await readJson<Partial<ThemeManifest>>(
-        vscode.Uri.joinPath(themeDirUri, 'manifest.json'),
-      );
+      let manifest: Partial<ThemeManifest> | undefined;
+      try {
+        const manifestBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(themeDirUri, 'manifest.json'));
+        manifest = JSON.parse(Buffer.from(manifestBytes).toString('utf8')) as Partial<ThemeManifest>;
+      } catch {
+        continue;
+      }
       if (!manifest?.theme_id) continue;
 
       try {
         const framesBytes = await vscode.workspace.fs.readFile(
           vscode.Uri.joinPath(themeDirUri, 'frames.json'),
         );
-        await vscode.workspace.fs.writeFile(
-          vscode.Uri.joinPath(globalStorageUri, `${manifest.theme_id}_manifest.json`),
-          jsonBuffer(manifest),
-        );
-        await vscode.workspace.fs.writeFile(
-          vscode.Uri.joinPath(globalStorageUri, `${manifest.theme_id}_frames.json`),
-          framesBytes,
-        );
+        await store.writeFile(legacyManifestPath(manifest.theme_id), jsonBuffer(manifest));
+        await store.writeFile(legacyFramesPath(manifest.theme_id), framesBytes);
       } catch (error) {
         console.warn(`TycoonAgents: Could not seed bundled theme "${name}":`, error);
       }
@@ -358,20 +373,21 @@ export async function getThemeApprovalSummary(
 /** Delete a saved theme, including sidecars created by legacy releases. */
 export async function deleteTheme(globalStorageUri: vscode.Uri, themeId: string): Promise<void> {
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
+  const store = resolveThemeFileStore(globalStorageUri);
 
-  const targets: Array<{ uri: vscode.Uri; recursive: boolean }> = [
-    { uri: themeDirectoryUri(globalStorageUri, themeId), recursive: true },
-    { uri: vscode.Uri.joinPath(globalStorageUri, `${themeId}_manifest.json`), recursive: false },
-    { uri: vscode.Uri.joinPath(globalStorageUri, `${themeId}_frames.json`), recursive: false },
-    { uri: vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`), recursive: false },
-    { uri: vscode.Uri.joinPath(globalStorageUri, `${themeId}_review.json`), recursive: false },
-    { uri: vscode.Uri.joinPath(globalStorageUri, `${themeId}_image_review.json`), recursive: false },
-    { uri: vscode.Uri.joinPath(globalStorageUri, `${themeId}_images`), recursive: true },
+  const targets: Array<{ path: string; recursive: boolean }> = [
+    { path: themeDirectoryPath(themeId), recursive: true },
+    { path: legacyManifestPath(themeId), recursive: false },
+    { path: legacyFramesPath(themeId), recursive: false },
+    { path: legacyPlanPath(themeId), recursive: false },
+    { path: legacyReviewPath(themeId), recursive: false },
+    { path: legacyImageReviewPath(themeId), recursive: false },
+    { path: legacyImagesDirectoryPath(themeId), recursive: true },
   ];
 
   for (const target of targets) {
     try {
-      await vscode.workspace.fs.delete(target.uri, { recursive: target.recursive, useTrash: false });
+      await store.remove(target.path, { recursive: target.recursive });
     } catch (error) {
       if ((error as { code?: string } | undefined)?.code !== 'FileNotFound') throw error;
     }
@@ -386,8 +402,9 @@ export async function exportThemeArchive(globalStorageUri: vscode.Uri, themeId: 
     throw new Error(`Approve all theme images before exporting (${approval.accepted}/${approval.total} approved).`);
   }
 
+  const store = resolveThemeFileStore(globalStorageUri);
   const files = new Map<string, Uint8Array>();
-  await collectDirectoryFiles(themeDirectoryUri(globalStorageUri, themeId), '', files);
+  await collectDirectoryFiles(store, themeDirectoryPath(themeId), '', files);
 
   // Normalize themes written by releases that predate per-theme directories.
   if (!files.has('manifest.json') || !files.has('frames.json')) {
@@ -396,10 +413,10 @@ export async function exportThemeArchive(globalStorageUri: vscode.Uri, themeId: 
     if (!loaded) throw new Error('Theme not found.');
     files.set('manifest.json', jsonBuffer(loaded.manifest));
     files.set('frames.json', jsonBuffer(loaded.frames));
-    await addFileIfPresent(files, 'plan.json', vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`));
-    await addFileIfPresent(files, 'review.json', vscode.Uri.joinPath(globalStorageUri, `${themeId}_review.json`));
-    await addFileIfPresent(files, 'review.json', vscode.Uri.joinPath(globalStorageUri, `${themeId}_image_review.json`));
-    await collectDirectoryFiles(vscode.Uri.joinPath(globalStorageUri, `${themeId}_images`), 'images', files);
+    await addFileIfPresent(store, files, 'plan.json', legacyPlanPath(themeId));
+    await addFileIfPresent(store, files, 'review.json', legacyReviewPath(themeId));
+    await addFileIfPresent(store, files, 'review.json', legacyImageReviewPath(themeId));
+    await collectDirectoryFiles(store, legacyImagesDirectoryPath(themeId), 'images', files);
   }
 
   return createThemeArchive(files);
@@ -416,51 +433,52 @@ export async function importThemeArchive(
   replace = false,
 ): Promise<{ theme_id: string; display_name: string; replaced: boolean }> {
   const archive = data instanceof Uint8Array ? parseThemeArchive(data) : data;
-  const themesUri = themesDirectoryUri(globalStorageUri);
-  const targetUri = themeDirectoryUri(globalStorageUri, archive.themeId);
+  const store = resolveThemeFileStore(globalStorageUri);
+  const themesPath = themesDirectoryPath();
+  const targetPath = themeDirectoryPath(archive.themeId);
   const nonce = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const stagingUri = vscode.Uri.joinPath(themesUri, `.import_${archive.themeId}_${nonce}`);
-  const backupUri = vscode.Uri.joinPath(themesUri, `.backup_${archive.themeId}_${nonce}`);
-  await vscode.workspace.fs.createDirectory(themesUri);
+  const stagingPath = joinThemePath(themesPath, `.import_${archive.themeId}_${nonce}`);
+  const backupPath = joinThemePath(themesPath, `.backup_${archive.themeId}_${nonce}`);
+  await store.mkdirp(themesPath);
 
-  const targetExists = await uriExists(targetUri);
+  const targetExists = await store.exists(targetPath);
   if (targetExists && !replace) throw new Error(`A theme with ID "${archive.themeId}" already exists.`);
 
   let backupCreated = false;
   try {
     for (const [relativePath, bytes] of archive.files) {
       const segments = relativePath.split('/');
-      const fileUri = vscode.Uri.joinPath(stagingUri, ...segments);
+      const filePath = joinThemePath(stagingPath, ...segments);
       if (segments.length > 1) {
-        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(stagingUri, ...segments.slice(0, -1)));
+        await store.mkdirp(joinThemePath(stagingPath, ...segments.slice(0, -1)));
       }
-      await vscode.workspace.fs.writeFile(fileUri, bytes);
+      await store.writeFile(filePath, bytes);
     }
 
     if (targetExists) {
-      await vscode.workspace.fs.rename(targetUri, backupUri, { overwrite: false });
+      await store.rename(targetPath, backupPath, { overwrite: false });
       backupCreated = true;
     }
-    await vscode.workspace.fs.rename(stagingUri, targetUri, { overwrite: false });
+    await store.rename(stagingPath, targetPath, { overwrite: false });
     if (backupCreated) {
       try {
-        await vscode.workspace.fs.delete(backupUri, { recursive: true, useTrash: false });
+        await store.remove(backupPath, { recursive: true });
         backupCreated = false;
       } catch (error) {
         console.warn(`TycoonAgents: Imported ${archive.themeId}, but could not remove its backup:`, error);
       }
     }
   } catch (error) {
-    if (backupCreated && !(await uriExists(targetUri))) {
+    if (backupCreated && !(await store.exists(targetPath))) {
       try {
-        await vscode.workspace.fs.rename(backupUri, targetUri, { overwrite: false });
+        await store.rename(backupPath, targetPath, { overwrite: false });
         backupCreated = false;
       } catch {
         // Preserve the backup directory for manual recovery if rollback itself fails.
       }
     }
     try {
-      await vscode.workspace.fs.delete(stagingUri, { recursive: true, useTrash: false });
+      await store.remove(stagingPath, { recursive: true });
     } catch {
       // The staging directory may already have been renamed.
     }
@@ -490,20 +508,17 @@ export async function loadTheme(
   globalStorageUri: vscode.Uri,
   themeId: string,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
-  const modernManifest = await readJson<ThemeManifest>(themeManifestUri(globalStorageUri, themeId));
-  const modernFrames = await readJson<Record<string, string[]>>(themeFramesUri(globalStorageUri, themeId));
+  const store = resolveThemeFileStore(globalStorageUri);
+  const modernManifest = await readJson<ThemeManifest>(store, themeManifestPath(themeId));
+  const modernFrames = await readJson<Record<string, string[]>>(store, themeFramesPath(themeId));
   if (modernManifest && modernFrames) {
     const { manifest: upgradedModern } = upgradeThemeManifest(modernManifest);
     logThemeIntegrityIssues(themeId, upgradedModern, modernFrames);
     return { manifest: upgradedModern, frames: modernFrames };
   }
 
-  const legacyManifest = await readJson<ThemeManifest>(
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_manifest.json`),
-  );
-  const legacyFrames = await readJson<Record<string, string[]>>(
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_frames.json`),
-  );
+  const legacyManifest = await readJson<ThemeManifest>(store, legacyManifestPath(themeId));
+  const legacyFrames = await readJson<Record<string, string[]>>(store, legacyFramesPath(themeId));
   if (legacyManifest && legacyFrames) {
     const { manifest: upgradedLegacy } = upgradeThemeManifest(legacyManifest);
     logThemeIntegrityIssues(themeId, upgradedLegacy, legacyFrames);
@@ -702,9 +717,10 @@ export async function uploadThemeImage(
     }
 
     if (item && document) {
-      const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
-      await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
-      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(reviewDirectoryUri, item.filename), output);
+      const store = resolveThemeFileStore(globalStorageUri);
+      const reviewDirectoryPath = themeImagesDirectoryPath(themeId);
+      await store.mkdirp(reviewDirectoryPath);
+      await store.writeFile(`${reviewDirectoryPath}/${item.filename}`, output);
       // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
       await persistRawAtlas(globalStorageUri, themeId, item.filename, buffer);
       await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
@@ -736,18 +752,17 @@ export async function uploadThemeImage(
 export async function loadLatestTheme(
   globalStorageUri: vscode.Uri,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
+  const store = resolveThemeFileStore(globalStorageUri);
   const themes = await listThemes(globalStorageUri);
   let newestId: string | undefined;
   let newestMtime = -1;
   for (const theme of themes) {
     let mtime = 0;
     try {
-      mtime = (await vscode.workspace.fs.stat(themeManifestUri(globalStorageUri, theme.theme_id))).mtime;
+      mtime = (await store.stat(themeManifestPath(theme.theme_id))).mtimeMs;
     } catch {
       try {
-        mtime = (await vscode.workspace.fs.stat(
-          vscode.Uri.joinPath(globalStorageUri, `${theme.theme_id}_manifest.json`),
-        )).mtime;
+        mtime = (await store.stat(legacyManifestPath(theme.theme_id))).mtimeMs;
       } catch {
         continue;
       }
@@ -764,8 +779,9 @@ async function loadThemeManifest(
   globalStorageUri: vscode.Uri,
   themeId: string,
 ): Promise<ThemeManifest | undefined> {
-  return (await readJson<ThemeManifest>(themeManifestUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemeManifest>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_manifest.json`)));
+  const store = resolveThemeFileStore(globalStorageUri);
+  return (await readJson<ThemeManifest>(store, themeManifestPath(themeId)))
+    ?? (await readJson<ThemeManifest>(store, legacyManifestPath(themeId)));
 }
 
 /**
@@ -794,14 +810,17 @@ export async function ensureThemeReviewImages(
   globalStorageUri: vscode.Uri,
   themeId: string,
 ): Promise<ThemeReviewImages> {
+  const store = resolveThemeFileStore(globalStorageUri);
   const directoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
-  await vscode.workspace.fs.createDirectory(directoryUri);
-  const existingImages = await listReviewImageUris(directoryUri);
+  const directoryPath = themeImagesDirectoryPath(themeId);
+  await store.mkdirp(directoryPath);
+  const existingImages = await listReviewImageUris(store, directoryUri, directoryPath);
   if (existingImages.length > 0) return { directoryUri, imageUris: existingImages, recovered: false };
 
   const legacyDirectoryUri = vscode.Uri.joinPath(globalStorageUri, `${themeId}_images`);
+  const legacyDirectoryPath = legacyImagesDirectoryPath(themeId);
   try {
-    const legacyImages = await listReviewImageUris(legacyDirectoryUri);
+    const legacyImages = await listReviewImageUris(store, legacyDirectoryUri, legacyDirectoryPath);
     if (legacyImages.length > 0) {
       return { directoryUri: legacyDirectoryUri, imageUris: legacyImages, recovered: false };
     }
@@ -814,13 +833,13 @@ export async function ensureThemeReviewImages(
     try {
       const recoveredFiles = await recoverReviewImages(loaded.frames);
       for (const file of recoveredFiles) {
-        await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(directoryUri, file.filename), file.data);
+        await store.writeFile(`${directoryPath}/${file.filename}`, file.data);
       }
     } catch (err) {
       console.warn(`TycoonAgents: Could not recover review images for ${themeId}:`, err);
     }
   }
-  return { directoryUri, imageUris: await listReviewImageUris(directoryUri), recovered: true };
+  return { directoryUri, imageUris: await listReviewImageUris(store, directoryUri, directoryPath), recovered: true };
 }
 
 /**
@@ -927,8 +946,9 @@ export async function getThemeImageReview(
   let items = document?.items ?? [];
   if (manifest) {
     try {
-      const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-        ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+      const store = resolveThemeFileStore(globalStorageUri);
+      const savedPlan = (await readJson<ThemePlan>(store, themePlanPath(themeId)))
+        ?? (await readJson<ThemePlan>(store, legacyPlanPath(themeId)));
       if (savedPlan) {
         const plan = normalizeThemePlan(savedPlan, manifest.display_name);
         if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
@@ -1009,8 +1029,9 @@ export async function renameThemeCharacter(
   item.subject = characterName;
   item.prompt = renameCharacterInPrompt(item.prompt, previousName, characterName);
 
-  const plan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const renameStore = resolveThemeFileStore(globalStorageUri);
+  const plan = (await readJson<ThemePlan>(renameStore, themePlanPath(themeId)))
+    ?? (await readJson<ThemePlan>(renameStore, legacyPlanPath(themeId)));
   if (plan) {
     if (agent && Array.isArray(plan.characters)) {
       plan.characters[agent.slot_id] = characterName;
@@ -1018,7 +1039,7 @@ export async function renameThemeCharacter(
       const rivalIndex = manifest.roster_rivals.indexOf(rival);
       if (rivalIndex >= 0) plan.enemies[rivalIndex] = characterName;
     }
-    await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+    await renameStore.writeFile(themePlanPath(themeId), jsonBuffer(plan));
   }
   if (!item.prompt) {
     const direction = plan
@@ -1245,8 +1266,9 @@ export async function resetThemeBadgeNames(
   if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be updated.');
   const { manifest, frames } = loadedTheme;
 
-  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const badgeStore = resolveThemeFileStore(globalStorageUri);
+  const savedPlan = (await readJson<ThemePlan>(badgeStore, themePlanPath(themeId)))
+    ?? (await readJson<ThemePlan>(badgeStore, legacyPlanPath(themeId)));
   if (!savedPlan) throw new Error('This theme has no saved plan — badge names require plan.json.');
   const plan = normalizeThemePlan(savedPlan, manifest.display_name);
   if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
@@ -1256,7 +1278,7 @@ export async function resetThemeBadgeNames(
   if (applied.length) {
     // Persist the plan (migrated appearance text + canonical achievements) BEFORE
     // the resync, which reloads plan.json from disk to rebuild the board prompt.
-    await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+    await badgeStore.writeFile(themePlanPath(themeId), jsonBuffer(plan));
     await writeThemeFiles(globalStorageUri, manifest, frames);
     await resyncRenamedBoardPrompts(globalStorageUri, themeId, manifest, applied);
   }
@@ -1491,15 +1513,16 @@ export async function updateThemeItemDescriptionsBatch(
   if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be updated.');
   const { manifest } = loadedTheme;
 
-  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const descriptionsStore = resolveThemeFileStore(globalStorageUri);
+  const savedPlan = (await readJson<ThemePlan>(descriptionsStore, themePlanPath(themeId)))
+    ?? (await readJson<ThemePlan>(descriptionsStore, legacyPlanPath(themeId)));
   if (!savedPlan) throw new Error('This theme has no saved plan — descriptions require plan.json.');
   const plan = normalizeThemePlan(savedPlan, manifest.display_name);
   if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
 
   const result = applyThemeItemDescriptionChanges(manifest, plan, changes);
   if (result.applied.length) {
-    await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+    await descriptionsStore.writeFile(themePlanPath(themeId), jsonBuffer(plan));
     try {
       const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
       if (document) {
@@ -1541,14 +1564,15 @@ export async function updateThemeCreativeDirection(
   if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be updated.');
   const { manifest } = loadedTheme;
 
-  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const creativeDirectionStore = resolveThemeFileStore(globalStorageUri);
+  const savedPlan = (await readJson<ThemePlan>(creativeDirectionStore, themePlanPath(themeId)))
+    ?? (await readJson<ThemePlan>(creativeDirectionStore, legacyPlanPath(themeId)));
   if (!savedPlan) throw new Error('This theme has no saved plan — creative direction requires plan.json.');
   const plan = normalizeThemePlan(savedPlan, manifest.display_name);
   if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
 
   plan.creative_direction = trimmed;
-  await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+  await creativeDirectionStore.writeFile(themePlanPath(themeId), jsonBuffer(plan));
   return { ok: true, creative_direction: trimmed };
 }
 
@@ -1646,11 +1670,10 @@ export async function generateTheme(
     badges: buildDefaultBadges(),
   };
   const frames: Record<string, string[]> = {};
-  const directoryUri = themeDirectoryUri(globalStorageUri, themeId);
-  const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
-  await vscode.workspace.fs.createDirectory(directoryUri);
-  await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
-  await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+  const generateStore = resolveThemeFileStore(globalStorageUri);
+  await generateStore.mkdirp(themeDirectoryPath(themeId));
+  await generateStore.mkdirp(themeImagesDirectoryPath(themeId));
+  await generateStore.writeFile(themePlanPath(themeId), jsonBuffer(plan));
 
   // Regenerating an existing theme must not wipe out Stage Editor viewport
   // tuning the user already dialed in. A missing old manifest (brand-new
@@ -1700,8 +1723,9 @@ export async function resumeThemeGeneration(
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
   onProgress('Loading interrupted generation...');
 
-  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const resumeStore = resolveThemeFileStore(globalStorageUri);
+  const savedPlan = (await readJson<ThemePlan>(resumeStore, themePlanPath(themeId)))
+    ?? (await readJson<ThemePlan>(resumeStore, legacyPlanPath(themeId)));
   const loadedTheme = await loadTheme(globalStorageUri, themeId);
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
   if (!savedPlan || !loadedTheme || !document) {
@@ -1905,8 +1929,9 @@ export async function regenerateThemeBoard(
 ): Promise<void> {
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
 
-  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const regenerateStore = resolveThemeFileStore(globalStorageUri);
+  const savedPlan = (await readJson<ThemePlan>(regenerateStore, themePlanPath(themeId)))
+    ?? (await readJson<ThemePlan>(regenerateStore, legacyPlanPath(themeId)));
   if (!savedPlan) {
     throw new Error(`No saved plan was found for theme "${themeId}". Regenerate the full theme first.`);
   }
@@ -1923,7 +1948,11 @@ export async function regenerateThemeBoard(
   }
   if (!items.length) throw new Error(`No regenerable images were found for board "${board}".`);
 
-  await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
+  // `reviewDirectoryUri` is accepted for call-site compatibility (panel.ts
+  // already computes and passes it); the actual I/O below goes through the
+  // injected ThemeFileStore using a path derived from `themeId` instead.
+  void reviewDirectoryUri;
+  await regenerateStore.mkdirp(themeImagesDirectoryPath(themeId));
 
   for (let index = 0; index < items.length; index++) {
     throwIfCancelled(undefined, options?.signal);
@@ -2107,9 +2136,10 @@ async function applySlicedAtlasFromBuffer(
   }
 
   throwIfCancelled(undefined, signal);
-  const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
-  await vscode.workspace.fs.createDirectory(reviewDirectoryUri);
-  await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(reviewDirectoryUri, item.filename), output);
+  const applySliceStore = resolveThemeFileStore(globalStorageUri);
+  const reviewDirectoryPath = themeImagesDirectoryPath(themeId);
+  await applySliceStore.mkdirp(reviewDirectoryPath);
+  await applySliceStore.writeFile(`${reviewDirectoryPath}/${item.filename}`, output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   // Skipped when re-slicing FROM that same raw file (persistRaw=false) — the buffer here
   // is already the pristine raw source, and re-slicing must never overwrite it with a
@@ -2164,14 +2194,15 @@ export async function resliceThemeImageFromRaw(
   const loadedTheme = await loadTheme(globalStorageUri, themeId);
   if (!loadedTheme) return { ok: false, reason: 'The saved theme is incomplete and cannot be re-sliced yet.' };
 
-  const rawUri = vscode.Uri.joinPath(themeRawImagesDirectoryUri(globalStorageUri, themeId), item.filename);
-  if (!(await uriExists(rawUri))) {
+  const resliceStore = resolveThemeFileStore(globalStorageUri);
+  const rawPath = `${themeRawImagesDirectoryPath(themeId)}/${item.filename}`;
+  if (!(await resliceStore.exists(rawPath))) {
     return {
       ok: false,
       reason: 'No saved original to re-slice — regenerate this board once to enable re-slicing',
     };
   }
-  const rawBuffer = Buffer.from(await vscode.workspace.fs.readFile(rawUri));
+  const rawBuffer = Buffer.from(await resliceStore.readFile(rawPath));
 
   const { manifest, frames } = loadedTheme;
   const { frameKeys } = await applySlicedAtlasFromBuffer(
@@ -2209,8 +2240,9 @@ export async function loadCurrentThemePlan(
   themeId: string,
   displayNameFallback: string,
 ): Promise<ThemePlan | undefined> {
-  const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-    ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+  const currentPlanStore = resolveThemeFileStore(globalStorageUri);
+  const savedPlan = (await readJson<ThemePlan>(currentPlanStore, themePlanPath(themeId)))
+    ?? (await readJson<ThemePlan>(currentPlanStore, legacyPlanPath(themeId)));
   const normalizedPlan = savedPlan ? normalizeThemePlan(savedPlan, displayNameFallback) : undefined;
   return normalizedPlan?.theme_id === themeId ? normalizedPlan : undefined;
 }
@@ -2311,8 +2343,9 @@ async function generateOrResumeThemeItem(
   generate: () => Promise<void>,
 ): Promise<void> {
   throwIfCancelled(isCancelled);
-  const imageUri = vscode.Uri.joinPath(themeImagesDirectoryUri(globalStorageUri, themeId), item.filename);
-  const complete = isThemeGenerationItemComplete(item, await uriExists(imageUri), frames);
+  const generateOrResumeStore = resolveThemeFileStore(globalStorageUri);
+  const imagePath = `${themeImagesDirectoryPath(themeId)}/${item.filename}`;
+  const complete = isThemeGenerationItemComplete(item, await generateOrResumeStore.exists(imagePath), frames);
   throwIfCancelled(isCancelled);
 
   // Completed items are the checkpoint. Resume advances directly to the first
@@ -2941,7 +2974,7 @@ async function generateAgentAsset(
   throwIfCancelled(undefined, options?.signal);
   const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
   throwIfCancelled(undefined, options?.signal);
-  await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
@@ -2966,7 +2999,7 @@ async function generateEnvironmentAsset(
   throwIfCancelled(undefined, options?.signal);
   const output = await normalizeEnvironmentImage(generated);
   throwIfCancelled(undefined, options?.signal);
-  await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, output);
   // Keep the raw pre-slice image so this board can be re-processed later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   frames.environment_background = [dataUri(output)];
@@ -2991,7 +3024,7 @@ async function generateDecorAsset(
   const rows = decorRowsForItem(item, manifest);
   const decorAtlas = await processDecorAtlas(generated, manifest);
   throwIfCancelled(undefined, options?.signal);
-  await saveReviewImage(reviewDirectoryUri, item.filename, decorAtlas.output);
+  await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, decorAtlas.output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
@@ -3018,7 +3051,7 @@ async function generateRivalAsset(
   const rows = rivalRowsForItem(item, manifest);
   const rivalAtlas = await processRivalAtlas(generated, manifest, rows);
   throwIfCancelled(undefined, options?.signal);
-  await saveReviewImage(reviewDirectoryUri, item.filename, rivalAtlas.output);
+  await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, rivalAtlas.output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
@@ -3285,8 +3318,9 @@ async function resyncRenamedBoardPrompts(
   try {
     const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
     if (!document) return;
-    const savedPlan = (await readJson<ThemePlan>(themePlanUri(globalStorageUri, themeId)))
-      ?? (await readJson<ThemePlan>(vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`)));
+    const resyncStore = resolveThemeFileStore(globalStorageUri);
+    const savedPlan = (await readJson<ThemePlan>(resyncStore, themePlanPath(themeId)))
+      ?? (await readJson<ThemePlan>(resyncStore, legacyPlanPath(themeId)));
     if (!savedPlan) return;
     const plan = normalizeThemePlan(savedPlan, manifest.display_name);
     if (plan.theme_id !== themeId) return;
@@ -3306,7 +3340,7 @@ async function resyncRenamedBoardPrompts(
         }
       }
       if (planChanged) {
-        await vscode.workspace.fs.writeFile(themePlanUri(globalStorageUri, themeId), jsonBuffer(plan));
+        await resyncStore.writeFile(themePlanPath(themeId), jsonBuffer(plan));
       }
     }
 
@@ -3357,7 +3391,7 @@ async function generateObjectAsset(
   if (!item.object_rows?.length) throw new Error(`${item.label} is missing object-board row metadata.`);
   const objectAtlas = await processObjectAtlas(generated, manifest, item.object_rows);
   throwIfCancelled(undefined, options?.signal);
-  await saveReviewImage(reviewDirectoryUri, item.filename, objectAtlas.output);
+  await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, objectAtlas.output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   throwIfCancelled(undefined, options?.signal);
@@ -3386,7 +3420,7 @@ async function generateExpressionAsset(
   throwIfCancelled(undefined, options?.signal);
   const output = await optimizeSpriteBoardCanvas(generated, 4, 2);
   throwIfCancelled(undefined, options?.signal);
-  await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 2 });
@@ -3411,7 +3445,7 @@ async function generateAchievementAsset(
   throwIfCancelled(undefined, options?.signal);
   const output = await optimizeSpriteBoardCanvas(generated, 5, 5);
   throwIfCancelled(undefined, options?.signal);
-  await saveReviewImage(reviewDirectoryUri, item.filename, output);
+  await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 5, rows: 5 });
@@ -3898,97 +3932,107 @@ async function writeThemeFiles(
   frames: Record<string, string[]>,
   ownedFrameKeys?: readonly string[],
 ): Promise<void> {
-  await vscode.workspace.fs.createDirectory(themeDirectoryUri(globalStorageUri, manifest.theme_id));
-  await vscode.workspace.fs.writeFile(themeManifestUri(globalStorageUri, manifest.theme_id), jsonBuffer(manifest));
+  const store = resolveThemeFileStore(globalStorageUri);
+  await store.mkdirp(themeDirectoryPath(manifest.theme_id));
+  await store.writeFile(themeManifestPath(manifest.theme_id), jsonBuffer(manifest));
 
   let framesToWrite = frames;
   if (ownedFrameKeys) {
     const onDiskFrames = await readJson<Record<string, string[]>>(
-      themeFramesUri(globalStorageUri, manifest.theme_id),
+      store,
+      themeFramesPath(manifest.theme_id),
     );
     framesToWrite = mergeOwnedFrames(onDiskFrames, frames, ownedFrameKeys);
   }
-  await vscode.workspace.fs.writeFile(themeFramesUri(globalStorageUri, manifest.theme_id), jsonBuffer(framesToWrite));
+  await store.writeFile(themeFramesPath(manifest.theme_id), jsonBuffer(framesToWrite));
 }
 
-async function saveReviewImage(directoryUri: vscode.Uri, filename: string, data: Buffer): Promise<void> {
-  await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(directoryUri, filename), data);
+async function saveReviewImage(
+  globalStorageUri: vscode.Uri,
+  themeId: string,
+  filename: string,
+  data: Buffer,
+): Promise<void> {
+  const store = resolveThemeFileStore(globalStorageUri);
+  await store.writeFile(`${themeImagesDirectoryPath(themeId)}/${filename}`, data);
 }
 
-async function listReviewImageUris(directoryUri: vscode.Uri): Promise<vscode.Uri[]> {
-  const entries = await vscode.workspace.fs.readDirectory(directoryUri);
+async function listReviewImageUris(
+  store: ThemeFileStore,
+  directoryUri: vscode.Uri,
+  directoryPath: string,
+): Promise<vscode.Uri[]> {
+  const entries = await store.readdir(directoryPath);
   return entries
-    .filter(([name, kind]) => kind === vscode.FileType.File && /\.(?:png|jpe?g|webp)$/i.test(name))
-    .map(([name]) => vscode.Uri.joinPath(directoryUri, name))
+    .filter((entry) => entry.isFile && /\.(?:png|jpe?g|webp)$/i.test(entry.name))
+    .map((entry) => vscode.Uri.joinPath(directoryUri, entry.name))
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 
 async function collectDirectoryFiles(
-  directoryUri: vscode.Uri,
+  store: ThemeFileStore,
+  directoryPath: string,
   relativeDirectory: string,
   files: Map<string, Uint8Array>,
 ): Promise<void> {
-  let entries: [string, vscode.FileType][];
+  let entries: ThemeFileStoreEntry[];
   try {
-    entries = await vscode.workspace.fs.readDirectory(directoryUri);
+    entries = await store.readdir(directoryPath);
   } catch {
     return;
   }
-  for (const [name, kind] of entries) {
-    const relativePath = relativeDirectory ? `${relativeDirectory}/${name}` : name;
+  for (const entry of entries) {
+    const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
     if (relativePath === 'images/raw' || relativePath.startsWith('images/raw/')) {
       continue;
     }
-    const uri = vscode.Uri.joinPath(directoryUri, name);
-    if (kind === vscode.FileType.Directory) {
-      await collectDirectoryFiles(uri, relativePath, files);
-    } else if (kind === vscode.FileType.File) {
-      files.set(relativePath, await vscode.workspace.fs.readFile(uri));
+    const path = `${directoryPath}/${entry.name}`;
+    if (entry.isDirectory) {
+      await collectDirectoryFiles(store, path, relativePath, files);
+    } else if (entry.isFile) {
+      files.set(relativePath, await store.readFile(path));
     }
   }
 }
 
-async function addFileIfPresent(files: Map<string, Uint8Array>, path: string, uri: vscode.Uri): Promise<void> {
+async function addFileIfPresent(
+  store: ThemeFileStore,
+  files: Map<string, Uint8Array>,
+  path: string,
+  relativePath: string,
+): Promise<void> {
   try {
-    files.set(path, await vscode.workspace.fs.readFile(uri));
+    files.set(path, await store.readFile(relativePath));
   } catch {
     // Optional legacy sidecar is absent.
   }
 }
 
 async function getThemeDiskSize(globalStorageUri: vscode.Uri, themeId: string): Promise<number> {
+  const store = resolveThemeFileStore(globalStorageUri);
   const targets = [
-    themeDirectoryUri(globalStorageUri, themeId),
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_manifest.json`),
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_frames.json`),
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_plan.json`),
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_review.json`),
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_image_review.json`),
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_images`),
+    themeDirectoryPath(themeId),
+    legacyManifestPath(themeId),
+    legacyFramesPath(themeId),
+    legacyPlanPath(themeId),
+    legacyReviewPath(themeId),
+    legacyImageReviewPath(themeId),
+    legacyImagesDirectoryPath(themeId),
   ];
-  const sizes = await Promise.all(targets.map(diskUsage));
+  const sizes = await Promise.all(targets.map((path) => diskUsage(store, path)));
   return sizes.reduce((total, size) => total + size, 0);
 }
 
-async function diskUsage(uri: vscode.Uri): Promise<number> {
+async function diskUsage(store: ThemeFileStore, path: string): Promise<number> {
   try {
-    const stat = await vscode.workspace.fs.stat(uri);
-    if (stat.type === vscode.FileType.File) return stat.size;
-    if (stat.type !== vscode.FileType.Directory) return 0;
-    const entries = await vscode.workspace.fs.readDirectory(uri);
-    const sizes = await Promise.all(entries.map(([name]) => diskUsage(vscode.Uri.joinPath(uri, name))));
+    const stat = await store.stat(path);
+    if (stat.isFile) return stat.size;
+    if (!stat.isDirectory) return 0;
+    const entries = await store.readdir(path);
+    const sizes = await Promise.all(entries.map((entry) => diskUsage(store, `${path}/${entry.name}`)));
     return sizes.reduce((total, size) => total + size, 0);
   } catch {
     return 0;
-  }
-}
-
-async function uriExists(uri: vscode.Uri): Promise<boolean> {
-  try {
-    await vscode.workspace.fs.stat(uri);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -4016,9 +4060,9 @@ function matchLegacyCharacter(item: ThemeImageReviewItem, filename: string, mani
   }
 }
 
-async function readJson<T>(uri: vscode.Uri): Promise<T | undefined> {
+async function readJson<T>(store: ThemeFileStore, relativePath: string): Promise<T | undefined> {
   try {
-    const bytes = await vscode.workspace.fs.readFile(uri);
+    const bytes = await store.readFile(relativePath);
     return JSON.parse(Buffer.from(bytes).toString('utf8')) as T;
   } catch {
     return undefined;
@@ -4069,9 +4113,10 @@ function isThemeId(value: string): boolean {
 export async function resolveUniqueNewThemeId(globalStorageUri: vscode.Uri, baseThemeId: string): Promise<string> {
   const existing = new Set<string>();
   try {
-    const entries = await vscode.workspace.fs.readDirectory(themesDirectoryUri(globalStorageUri));
-    for (const [name, kind] of entries) {
-      if (kind === vscode.FileType.Directory) existing.add(name);
+    const store = resolveThemeFileStore(globalStorageUri);
+    const entries = await store.readdir(themesDirectoryPath());
+    for (const entry of entries) {
+      if (entry.isDirectory) existing.add(entry.name);
     }
   } catch {
     // The themes directory doesn't exist yet (first-ever theme) — nothing to collide with.
