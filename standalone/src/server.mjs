@@ -51,6 +51,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createStateFeed } from './stateFeed.mjs';
 import { resolveProjectRoots, ProjectRootError } from './projectRoots.mjs';
 import { createDefaultAppData } from './appData.mjs';
+import { createFsThemeFileStore, themeImagesDirectoryPath } from './themeFileStoreFs.mjs';
+import {
+  MSG_WIRE as THEME_MSG_WIRE,
+  handleListThemes,
+  handleSelectTheme,
+  handleDeleteTheme,
+  handleGetThemeImageReview,
+} from './themeMessages.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -128,11 +136,55 @@ function writeSseEvent(res, eventName, data) {
 }
 
 // ── /message dispatch hook point ────────────────────────────────────────────
-// For now this just logs; a later task wires this into the same message
-// handling the VS Code extension host does (src/host/vscode/panel.ts's
-// webview.onDidReceiveMessage).
+// Dispatches the 4 non-AI theme messages (project-plan task pB-t1) — see
+// themeMessages.mjs's module header for why those are REIMPLEMENTED against
+// the vscode-free ThemeFileStore rather than importing themeService.ts
+// directly (themeService.ts/themeStorage.ts/themeImageReviewState.ts all
+// `import vscode` at load time). Everything else still just logs; later
+// tasks wire in the remaining (AI-touching) message handling
+// src/host/vscode/panel.ts's webview.onDidReceiveMessage does.
+//
+// `themeStore` is set by startServer() below (rooted at that call's
+// appData.dir — see the pB-t1 CRITICAL note on startServer()'s theme-store
+// wiring). A message that arrives before any startServer() call has run
+// (should not happen in practice; only a defensive guard) is logged and
+// dropped rather than throwing.
+let themeStore;
+
 function handleBrowserMessage(msg) {
-  console.log('[tycoonagents-standalone] /message:', JSON.stringify(msg));
+  if (!msg || typeof msg.type !== 'string') {
+    console.log('[tycoonagents-standalone] /message: malformed payload, dropping:', JSON.stringify(msg));
+    return;
+  }
+  if (!themeStore) {
+    console.log('[tycoonagents-standalone] /message:', JSON.stringify(msg), '(no theme store configured yet)');
+    return;
+  }
+  const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+  switch (msg.type) {
+    case THEME_MSG_WIRE.LIST_THEMES:
+      handleListThemes(themeStore, broadcast).catch((err) => {
+        console.error('[tycoonagents-standalone] LIST_THEMES failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.SELECT_THEME:
+      handleSelectTheme(themeStore, broadcast, payload.theme_id).catch((err) => {
+        console.error('[tycoonagents-standalone] SELECT_THEME failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.DELETE_THEME:
+      handleDeleteTheme(themeStore, broadcast, payload.theme_id).catch((err) => {
+        console.error('[tycoonagents-standalone] DELETE_THEME failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.GET_THEME_IMAGE_REVIEW:
+      handleGetThemeImageReview(themeStore, broadcast, payload.theme_id).catch((err) => {
+        console.error('[tycoonagents-standalone] GET_THEME_IMAGE_REVIEW failed:', err);
+      });
+      break;
+    default:
+      console.log('[tycoonagents-standalone] /message (unhandled):', JSON.stringify(msg));
+  }
 }
 
 // ── Static file serving (media/ in place, path-traversal guarded) ──────────
@@ -155,6 +207,46 @@ function serveMediaFile(reqPath, res) {
     res.writeHead(200, {
       'Content-Type': mimeFor(resolved),
       'Content-Length': data.length,
+    });
+    res.end(data);
+  });
+}
+
+// ── Theme image static route (pB-t1) ────────────────────────────────────────
+// GET /theme-images/<theme_id>/<filename> serves a generated review image
+// straight off disk — the standalone analog of the VS Code extension's
+// `webview.asWebviewUri()` conversion in panel.ts's _postThemeImageReview()
+// (which can't be used here: there is no webview origin to rewrite into).
+// Rooted at `themeImagesRootDir` (== the active startServer() call's
+// appData.dir — see that function's theme-store wiring), guarded against
+// path traversal the same way serveMediaFile() guards /media/<path>.
+let themeImagesRootDir;
+
+function serveThemeImageFile(themeId, rawFilename, res) {
+  if (!themeImagesRootDir || !/^[a-z0-9_]+$/.test(themeId || '')) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+    return;
+  }
+  const imagesDir = path.join(themeImagesRootDir, ...themeImagesDirectoryPath(themeId).split('/'));
+  const decoded = decodeURIComponent(rawFilename);
+  const resolved = path.resolve(imagesDir, `.${path.sep}${decoded}`);
+  const relative = path.relative(imagesDir, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Forbidden');
+    return;
+  }
+  fs.readFile(resolved, (err, data) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not found');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': mimeFor(resolved),
+      'Content-Length': data.length,
+      'Cache-Control': 'no-cache',
     });
     res.end(data);
   });
@@ -689,6 +781,20 @@ function requestListener(req, res) {
     return;
   }
 
+  if (req.method === 'GET' && pathname.startsWith('/theme-images/')) {
+    const rest = pathname.slice('/theme-images/'.length);
+    const slashIndex = rest.indexOf('/');
+    if (slashIndex === -1) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not found');
+      return;
+    }
+    const themeId = decodeURIComponent(rest.slice(0, slashIndex));
+    const filename = rest.slice(slashIndex + 1);
+    serveThemeImageFile(themeId, filename, res);
+    return;
+  }
+
   if (req.method === 'GET' && pathname === '/events') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -910,6 +1016,21 @@ export async function startServer({
   const themeDataDir = path.join(appData.dir, 'themes');
   console.log(`[tycoonagents-standalone] app data dir: ${appData.dir}`);
   console.log(`[tycoonagents-standalone] theme data dir: ${themeDataDir}`);
+
+  // Theme file store (pB-t1) — CRITICAL: rooted at appData.dir, NOT
+  // themeDataDir. themeImagesDirectoryPath()/themeManifestPath()/etc. (see
+  // themeFileStoreFs.mjs, re-exported from the compiled
+  // out/src/extension/themeFileStore.js) already return paths PREFIXED with
+  // 'themes/' — rooting the store at themeDataDir (which is itself
+  // `${appData.dir}/themes`) would double-nest every theme under
+  // themes/themes/<id>/... This module-level `themeStore` var is what
+  // handleBrowserMessage() (LIST_THEMES/SELECT_THEME/DELETE_THEME/
+  // GET_THEME_IMAGE_REVIEW dispatch) and serveThemeImageFile() (the
+  // /theme-images/<id>/<file> static route) both read from — set here so a
+  // later startServer() call (e.g. in tests) always points both at the
+  // CURRENT call's appData.dir, never a stale prior instance's.
+  themeStore = createFsThemeFileStore(appData.dir);
+  themeImagesRootDir = appData.dir;
 
   // MULTI-DIR SEMANTICS (documented per task brief — do not silently mix
   // projects' sessions into one board): the FIRST resolved target is the
