@@ -87,7 +87,8 @@ import type {
 } from "../../extension/themeService";
 import type { ThemeManifest } from "../../shared/types";
 import { themeImagesDirectoryUri, themeRawImagesDirectoryUri } from "../../extension/themeStorage";
-import { configureThemeFileStore, createVscodeThemeFileStore } from "../../extension/themeFileStoreVscode";
+import { configureThemeFileStore } from "../../extension/themeFileStore";
+import { createVscodeThemeFileStore } from "../../extension/themeFileStoreVscode";
 import { validateThemeIntegrity } from "../../extension/themeHealth";
 import {
   getConfiguredThemeImageProvider,
@@ -934,15 +935,19 @@ export class TycoonPanel {
               // Reveal a real image so Explorer opens its containing folder.
               // On desktop Windows, normalize vscode-userdata explicitly to
               // avoid handing the custom URI scheme to the OS protocol picker.
-              const imageUri = reviewImages.imageUris[0];
+              // themeService.ts's ThemeFileHandle is a narrower structural type
+              // (pC-t1 vscode decoupling); the extension's configured
+              // ThemeFileStore always hands back real vscode.Uri instances.
+              const imageUri = reviewImages.imageUris[0] as unknown as vscode.Uri;
               const nativePath = nativeWindowsUserDataPath(imageUri.scheme, imageUri.path);
               const revealUri = nativePath ? vscode.Uri.file(nativePath) : imageUri;
               await vscode.commands.executeCommand("revealFileInOS", revealUri);
             } catch (err) {
               console.error("TycoonAgents: Could not reveal generated images:", err);
-              const displayPath = reviewImages.directoryUri.scheme === "file"
-                ? reviewImages.directoryUri.fsPath
-                : reviewImages.directoryUri.toString(true);
+              const directoryUri = reviewImages.directoryUri as unknown as vscode.Uri;
+              const displayPath = directoryUri.scheme === "file"
+                ? directoryUri.fsPath
+                : directoryUri.toString(true);
               void vscode.window.showErrorMessage(
                 `TycoonAgents could not open the folder. Images are saved at: ${displayPath}`,
               );
@@ -2171,7 +2176,11 @@ export class TycoonPanel {
             : await this._uriExists(vscode.Uri.joinPath(rawDirectoryUri, item.filename)),
           image_src: imageUri
             ? this._panel.webview.asWebviewUri(
-                imageUri.with({ query: `revision=${item.revision}&updated=${encodeURIComponent(item.updated_at)}` }),
+                // See the ThemeFileHandle note above: the extension's store
+                // always hands back real vscode.Uri instances here.
+                (imageUri as unknown as vscode.Uri).with({
+                  query: `revision=${item.revision}&updated=${encodeURIComponent(item.updated_at)}`,
+                }),
               ).toString()
             : "",
         };

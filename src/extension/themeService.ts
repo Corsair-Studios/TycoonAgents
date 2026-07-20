@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 import type {
   AgentConfig,
   BuildableObject,
@@ -87,12 +86,8 @@ import {
   uniqueIds,
 } from './themePlan';
 import type { ThemePlan } from './themePlan';
-import {
-  themeImagesDirectoryUri,
-  saveRawAtlas,
-} from './themeStorage';
-import { resolveThemeFileStore } from './themeFileStoreVscode';
-import type { ThemeFileStore, ThemeFileStoreEntry } from './themeFileStore';
+import { resolveThemeFileStore } from './themeFileStore';
+import type { ThemeFileHandle, ThemeFileStore, ThemeFileStoreEntry, ThemeStorageRoot } from './themeFileStore';
 import {
   themeDirectoryPath,
   themeFramesPath,
@@ -116,27 +111,34 @@ import {
  * must NEVER break generation, so we only log a `[raw-atlas]` warning.
  */
 async function persistRawAtlas(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   filename: string,
   generated: Buffer,
 ): Promise<void> {
   try {
-    await saveRawAtlas(globalStorageUri, themeId, filename, generated);
+    // Inlined from the former themeStorage.ts saveRawAtlas: WRITE-ONLY, no
+    // consumer yet — enables a future "re-slice without re-paying the image
+    // API" path. Kept local so themeService.ts doesn't need to import
+    // themeStorage.ts (which imports the VS Code editor API at module scope).
+    const store = resolveThemeFileStore(globalStorageUri);
+    const rawDirectoryPath = themeRawImagesDirectoryPath(themeId);
+    await store.mkdirp(rawDirectoryPath);
+    await store.writeFile(`${rawDirectoryPath}/${filename}`, generated);
   } catch (err) {
     console.warn('TycoonAgents [raw-atlas]: failed to persist raw atlas', filename, err);
   }
 }
 
 export interface ThemeReviewImages {
-  directoryUri: vscode.Uri;
-  imageUris: vscode.Uri[];
+  directoryUri: ThemeFileHandle;
+  imageUris: ThemeFileHandle[];
   recovered: boolean;
 }
 
 export interface ThemeImageReviewEntry {
   item: ThemeImageReviewItem;
-  imageUri?: vscode.Uri;
+  imageUri?: ThemeFileHandle;
   generated: boolean;
 }
 
@@ -208,7 +210,7 @@ export async function planTheme(
 }
 
 export async function listThemes(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
 ): Promise<Array<{ theme_id: string; display_name: string; size_bytes: number } & ThemeApprovalSummary>> {
   const store = resolveThemeFileStore(globalStorageUri);
   const results = new Map<string, { theme_id: string; display_name: string }>();
@@ -266,7 +268,7 @@ export interface ThemeUpgradeResult {
  * manifest never aborts the scan of the remaining themes.
  */
 export async function upgradeInstalledThemes(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
 ): Promise<ThemeUpgradeResult[]> {
   const results: ThemeUpgradeResult[] = [];
   const store = resolveThemeFileStore(globalStorageUri);
@@ -307,63 +309,14 @@ export async function upgradeInstalledThemes(
   return results;
 }
 
-/**
- * Seed bundled starter themes into global storage on first run, so a freshly
- * installed plugin has at least one theme available out-of-box. Never
- * overwrites existing user themes. Best-effort: failures are swallowed.
- */
-export async function seedBundledThemes(
-  extensionUri: vscode.Uri,
-  globalStorageUri: vscode.Uri,
-): Promise<void> {
-  try {
-    const existing = await listThemes(globalStorageUri);
-    if (existing.length > 0) return;
-
-    // Bundled seed themes are read from the extension's own shipped resources
-    // (extensionUri), a different root than the theme storage this refactor
-    // scopes to — that read stays a direct vscode call. The WRITE side (into
-    // theme storage, legacy flat naming) goes through the store.
-    const store = resolveThemeFileStore(globalStorageUri);
-    await store.mkdirp('');
-
-    const bundledThemesUri = vscode.Uri.joinPath(extensionUri, 'media', 'themes');
-    let entries: Array<[string, vscode.FileType]>;
-    try {
-      entries = await vscode.workspace.fs.readDirectory(bundledThemesUri);
-    } catch {
-      return;
-    }
-
-    for (const [name, kind] of entries) {
-      if (kind !== vscode.FileType.Directory) continue;
-      const themeDirUri = vscode.Uri.joinPath(bundledThemesUri, name);
-      let manifest: Partial<ThemeManifest> | undefined;
-      try {
-        const manifestBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(themeDirUri, 'manifest.json'));
-        manifest = JSON.parse(Buffer.from(manifestBytes).toString('utf8')) as Partial<ThemeManifest>;
-      } catch {
-        continue;
-      }
-      if (!manifest?.theme_id) continue;
-
-      try {
-        const framesBytes = await vscode.workspace.fs.readFile(
-          vscode.Uri.joinPath(themeDirUri, 'frames.json'),
-        );
-        await store.writeFile(legacyManifestPath(manifest.theme_id), jsonBuffer(manifest));
-        await store.writeFile(legacyFramesPath(manifest.theme_id), framesBytes);
-      } catch (error) {
-        console.warn(`TycoonAgents: Could not seed bundled theme "${name}":`, error);
-      }
-    }
-  } catch (error) {
-    console.warn('TycoonAgents: Could not seed bundled themes:', error);
-  }
-}
+// seedBundledThemes was relocated to src/host/vscode/bundledThemeSeeds.ts
+// (project-plan task pC-t1) — it's the only themeService caller that needed
+// a second (extensionUri) editor-Uri root and raw editor filesystem reads of
+// the extension's shipped media/themes/* assets, outside the ThemeFileStore
+// abstraction. See extension.ts for its (unchanged) call site.
 
 export async function getThemeApprovalSummary(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<ThemeApprovalSummary> {
   if (!isThemeId(themeId)) return summarizeThemeApproval(undefined);
@@ -372,7 +325,7 @@ export async function getThemeApprovalSummary(
 }
 
 /** Delete a saved theme, including sidecars created by legacy releases. */
-export async function deleteTheme(globalStorageUri: vscode.Uri, themeId: string): Promise<void> {
+export async function deleteTheme(globalStorageUri: ThemeStorageRoot, themeId: string): Promise<void> {
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
   const store = resolveThemeFileStore(globalStorageUri);
 
@@ -398,10 +351,10 @@ export async function deleteTheme(globalStorageUri: vscode.Uri, themeId: string)
 /**
  * Package a saved theme and all of its retained assets into a portable zip.
  * Thin wrapper: resolve this extension's ThemeFileStore and delegate the
- * actual (vscode-free) logic to themeArchiveOps.ts, which the standalone
+ * actual (host-framework-free) logic to themeArchiveOps.ts, which the standalone
  * host also calls directly via its own fs-backed store.
  */
-export async function exportThemeArchive(globalStorageUri: vscode.Uri, themeId: string): Promise<Uint8Array> {
+export async function exportThemeArchive(globalStorageUri: ThemeStorageRoot, themeId: string): Promise<Uint8Array> {
   const store = resolveThemeFileStore(globalStorageUri);
   return exportThemeArchiveFromStore(store, themeId);
 }
@@ -413,10 +366,10 @@ export function readThemeArchive(data: Uint8Array): ThemeArchiveContents {
 /**
  * Validate and install a theme archive. Existing themes require explicit
  * replacement. Thin wrapper: resolve this extension's ThemeFileStore and
- * delegate the actual (vscode-free) logic to themeArchiveOps.ts.
+ * delegate the actual (host-framework-free) logic to themeArchiveOps.ts.
  */
 export async function importThemeArchive(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   data: Uint8Array | ThemeArchiveContents,
   replace = false,
 ): Promise<{ theme_id: string; display_name: string; replaced: boolean }> {
@@ -444,7 +397,7 @@ function logThemeIntegrityIssues(themeId: string, manifest: ThemeManifest, frame
 }
 
 export async function loadTheme(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
   const store = resolveThemeFileStore(globalStorageUri);
@@ -467,7 +420,7 @@ export async function loadTheme(
 }
 
 export async function saveThemeTuning(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   tuning: {
     theme_id: string;
     walkable_nav_polygon: [number, number][];
@@ -575,7 +528,7 @@ export async function saveThemeTuning(
 }
 
 export async function replaceThemeBackground(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   imageBytes: Uint8Array,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
@@ -600,7 +553,7 @@ export async function replaceThemeBackground(
  * as a single image (background/object/badge/etc.).
  */
 export async function uploadThemeImage(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   imageBytes: Uint8Array,
@@ -689,7 +642,7 @@ export async function uploadThemeImage(
  * Used to auto-populate a freshly opened surface with the latest theme.
  */
 export async function loadLatestTheme(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
   const store = resolveThemeFileStore(globalStorageUri);
   const themes = await listThemes(globalStorageUri);
@@ -715,7 +668,7 @@ export async function loadLatestTheme(
 }
 
 async function loadThemeManifest(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<ThemeManifest | undefined> {
   const store = resolveThemeFileStore(globalStorageUri);
@@ -744,24 +697,42 @@ function preserveViewportTuning(newViewport: ViewportConfig, oldViewport: Viewpo
   newViewport.enemy_config = oldViewport.enemy_config ?? newViewport.enemy_config;
 }
 
+/**
+ * Resolve a ThemeFileHandle for `relativePath` via the store's optional
+ * `resolveHandle`. Every store the real extension ever configures
+ * (createVscodeThemeFileStore) implements this; only asserted non-null here
+ * because ThemeFileStore's interface keeps it optional for implementations
+ * (e.g. a future standalone adapter) that have no such consumer.
+ */
+function resolveFileHandle(store: ThemeFileStore, relativePath: string): ThemeFileHandle {
+  if (!store.resolveHandle) {
+    throw new Error('TycoonAgents: the active ThemeFileStore does not support resolveHandle().');
+  }
+  return store.resolveHandle(relativePath);
+}
+
 /** Return retained originals, reconstructing legacy review boards if needed. */
 export async function ensureThemeReviewImages(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<ThemeReviewImages> {
   const store = resolveThemeFileStore(globalStorageUri);
-  const directoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
   const directoryPath = themeImagesDirectoryPath(themeId);
   await store.mkdirp(directoryPath);
-  const existingImages = await listReviewImageUris(store, directoryUri, directoryPath);
-  if (existingImages.length > 0) return { directoryUri, imageUris: existingImages, recovered: false };
+  const existingImages = await listReviewImageUris(store, directoryPath);
+  if (existingImages.length > 0) {
+    return { directoryUri: resolveFileHandle(store, directoryPath), imageUris: existingImages, recovered: false };
+  }
 
-  const legacyDirectoryUri = vscode.Uri.joinPath(globalStorageUri, `${themeId}_images`);
   const legacyDirectoryPath = legacyImagesDirectoryPath(themeId);
   try {
-    const legacyImages = await listReviewImageUris(store, legacyDirectoryUri, legacyDirectoryPath);
+    const legacyImages = await listReviewImageUris(store, legacyDirectoryPath);
     if (legacyImages.length > 0) {
-      return { directoryUri: legacyDirectoryUri, imageUris: legacyImages, recovered: false };
+      return {
+        directoryUri: resolveFileHandle(store, legacyDirectoryPath),
+        imageUris: legacyImages,
+        recovered: false,
+      };
     }
   } catch {
     // No legacy review directory.
@@ -778,7 +749,11 @@ export async function ensureThemeReviewImages(
       console.warn(`TycoonAgents: Could not recover review images for ${themeId}:`, err);
     }
   }
-  return { directoryUri, imageUris: await listReviewImageUris(store, directoryUri, directoryPath), recovered: true };
+  return {
+    directoryUri: resolveFileHandle(store, directoryPath),
+    imageUris: await listReviewImageUris(store, directoryPath),
+    recovered: true,
+  };
 }
 
 /**
@@ -835,7 +810,7 @@ export function mergeExpectedReviewItems(
 }
 
 export async function getThemeImageReview(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<ThemeImageReview> {
   const reviewImages = await ensureThemeReviewImages(globalStorageUri, themeId);
@@ -950,7 +925,7 @@ export async function getThemeImageReview(
  * frame_keys, mirroring getThemeImageReview's own no-plan fallback.
  */
 export async function acceptedFrameKeysForHealthCheck(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<Set<string>> {
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
@@ -991,7 +966,7 @@ export async function acceptedFrameKeysForHealthCheck(
 }
 
 export async function updateThemeImageReviewStatus(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   status: ThemeImageReviewStatus,
@@ -1001,7 +976,7 @@ export async function updateThemeImageReviewStatus(
 
 /** Rename one agent or rival without changing its stable frame key. */
 export async function renameThemeCharacter(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   requestedName: string,
@@ -1083,7 +1058,7 @@ export interface ThemeItemNameChangeResult {
  * `manifest` in place, applying every valid change and collecting the rest as
  * rejections (unknown id, empty/whitespace name, name over 60 chars) without
  * touching the manifest for those. Kept manifest-only and side-effect-free
- * (no vscode/file IO) so it's directly unit-testable — mirrors the
+ * (no VS Code/file IO) so it's directly unit-testable — mirrors the
  * "manifest wins" policy objectRowsForItem/decorRowsForItem/rivalRowsForItem
  * already enforce for board regeneration prompts: every regenerate mode
  * (including 'retry'/'augment', as of the retryThemeImage fresh-base rebuild —
@@ -1188,7 +1163,7 @@ export function applyThemeItemNameChanges(
  * boards.
  */
 export async function renameThemeItemsBatch(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   changes: ThemeItemNameChange[],
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]>; result: ThemeItemNameChangeResult }> {
@@ -1264,7 +1239,7 @@ export function applyBadgeNameReset(
 }
 
 export async function resetThemeBadgeNames(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]>; changed: number }> {
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
@@ -1509,7 +1484,7 @@ export function resyncDescriptionReviewItems(
  * decor/character/rival renames.
  */
 export async function updateThemeItemDescriptionsBatch(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   changes: ThemeItemDescriptionChange[],
 ): Promise<ThemeItemDescriptionChangeResult> {
@@ -1558,7 +1533,7 @@ export async function updateThemeItemDescriptionsBatch(
  * touches art that's already been generated.
  */
 export async function updateThemeCreativeDirection(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   creativeDirection: string,
 ): Promise<{ ok: boolean; creative_direction?: string; error?: string }> {
@@ -1585,7 +1560,7 @@ export async function updateThemeCreativeDirection(
 
 /** Regenerate one character board, then fit its frames to production scale. */
 export async function normalizeThemeCharacterAtlas(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   imageGenerationOptions: ThemeImageGenerationOptions,
@@ -1629,7 +1604,7 @@ export async function normalizeThemeCharacterAtlas(
 }
 
 export async function approveAllThemeImages(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<ThemeImageReviewDocument> {
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
@@ -1645,7 +1620,7 @@ export async function approveAllThemeImages(
 }
 
 export async function generateTheme(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   requestedPlan: ThemePlan | string,
   onProgress: (message: string) => void,
   isCancelled?: () => boolean,
@@ -1719,7 +1694,7 @@ export async function generateTheme(
 
 /** Continue an interrupted theme without replacing images and decisions already on disk. */
 export async function resumeThemeGeneration(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   onProgress: (message: string) => void,
   isCancelled?: () => boolean,
@@ -1775,7 +1750,7 @@ export async function resumeThemeGeneration(
 }
 
 async function continueThemeGeneration(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   plan: ThemePlan,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -1787,7 +1762,10 @@ async function continueThemeGeneration(
   waitForReview?: WaitForThemeImageReview,
 ): Promise<ThemeGenerationResult> {
   const themeId = plan.theme_id;
-  const reviewDirectoryUri = themeImagesDirectoryUri(globalStorageUri, themeId);
+  // `reviewDirectoryUri` is a vestigial pass-through param kept only for
+  // call-site compatibility (see the comment on its receiving functions
+  // below) — no editor Uri needs to be constructed here anymore.
+  const reviewDirectoryUri: ThemeStorageRoot = themeImagesDirectoryPath(themeId);
 
   const environmentBoardIds = new Set(buildBoardItems(plan, manifest, 'environment').map((candidate) => candidate.id));
   const environmentItem = reviewItems.find((item) => environmentBoardIds.has(item.id))!;
@@ -1926,8 +1904,8 @@ async function continueThemeGeneration(
  * 3-attack row layout) without requiring a full theme regen.
  */
 export async function regenerateThemeBoard(
-  globalStorageUri: vscode.Uri,
-  reviewDirectoryUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
+  reviewDirectoryUri: ThemeStorageRoot,
   themeId: string,
   board: BoardKind,
   options: ThemeImageGenerationOptions | undefined,
@@ -2066,7 +2044,7 @@ async function runNonFatalBoardStep(
  * item.
  */
 async function applySlicedAtlasFromBuffer(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -2188,7 +2166,7 @@ const RESLICEABLE_ATLAS_KINDS: ReadonlySet<ThemeImageKind> = new Set([
  * `reason` the caller can surface to the user on failure.
  */
 export async function resliceThemeImageFromRaw(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
 ): Promise<{ ok: true; manifest: ThemeManifest; frames: Record<string, string[]> } | { ok: false; reason: string }> {
@@ -2243,7 +2221,7 @@ export async function resliceThemeImageFromRaw(
  * back to the item's stale saved prompt.
  */
 export async function loadCurrentThemePlan(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   displayNameFallback: string,
 ): Promise<ThemePlan | undefined> {
@@ -2255,7 +2233,7 @@ export async function loadCurrentThemePlan(
 }
 
 export async function retryThemeImage(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   feedback: string,
@@ -2337,7 +2315,7 @@ export async function retryThemeImage(
 }
 
 async function generateOrResumeThemeItem(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   displayName: string,
   item: Omit<ThemeImageReviewItem, 'updated_at'> & { updated_at?: string },
@@ -2423,7 +2401,7 @@ async function generateOrResumeThemeItem(
 }
 
 async function generateAndReviewThemeItem(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   displayName: string,
   item: Omit<ThemeImageReviewItem, 'updated_at'>,
@@ -2467,7 +2445,7 @@ async function generateAndReviewThemeItem(
 }
 
 async function recordUserCorrectableGenerationError(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   error: unknown,
@@ -3004,8 +2982,8 @@ function createDecorReviewItem(
 
 /** Generates one character sprite board (an "agents" board item). */
 async function generateAgentAsset(
-  globalStorageUri: vscode.Uri,
-  reviewDirectoryUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
+  reviewDirectoryUri: ThemeStorageRoot,
   plan: ThemePlan,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -3028,8 +3006,8 @@ async function generateAgentAsset(
 }
 
 async function generateEnvironmentAsset(
-  globalStorageUri: vscode.Uri,
-  reviewDirectoryUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
+  reviewDirectoryUri: ThemeStorageRoot,
   plan: ThemePlan,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -3052,8 +3030,8 @@ async function generateEnvironmentAsset(
 }
 
 async function generateDecorAsset(
-  globalStorageUri: vscode.Uri,
-  reviewDirectoryUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
+  reviewDirectoryUri: ThemeStorageRoot,
   plan: ThemePlan,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -3078,8 +3056,8 @@ async function generateDecorAsset(
 }
 
 async function generateRivalAsset(
-  globalStorageUri: vscode.Uri,
-  reviewDirectoryUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
+  reviewDirectoryUri: ThemeStorageRoot,
   plan: ThemePlan,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -3352,7 +3330,7 @@ export function resyncRenamedReviewItems(
  * regenerate/resume still self-heals via mergeResumedReviewItems.
  */
 async function resyncRenamedBoardPrompts(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   manifest: ThemeManifest,
   applied: ThemeItemNameChange[],
@@ -3408,7 +3386,7 @@ async function resyncRenamedBoardPrompts(
  * if the item has no prior persisted record (first-ever generation).
  */
 async function persistedFrameKeysFor(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
 ): Promise<string[] | undefined> {
@@ -3417,8 +3395,8 @@ async function persistedFrameKeysFor(
 }
 
 async function generateObjectAsset(
-  globalStorageUri: vscode.Uri,
-  reviewDirectoryUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
+  reviewDirectoryUri: ThemeStorageRoot,
   plan: ThemePlan,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -3449,8 +3427,8 @@ async function generateObjectAsset(
 }
 
 async function generateExpressionAsset(
-  globalStorageUri: vscode.Uri,
-  reviewDirectoryUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
+  reviewDirectoryUri: ThemeStorageRoot,
   plan: ThemePlan,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -3474,8 +3452,8 @@ async function generateExpressionAsset(
 }
 
 async function generateAchievementAsset(
-  globalStorageUri: vscode.Uri,
-  reviewDirectoryUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
+  reviewDirectoryUri: ThemeStorageRoot,
   plan: ThemePlan,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
@@ -3914,7 +3892,7 @@ function applyLegacyEmoteFrames(
 }
 
 async function markGenerated(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   displayName: string,
   item: Omit<ThemeImageReviewItem, 'updated_at'>,
@@ -3949,7 +3927,7 @@ async function markGenerated(
 /**
  * Pure merge step behind writeThemeFiles' merge-safe frames.json write (see
  * that function's doc comment for the full race it closes). Exported so the
- * merge algorithm itself can be unit-tested without mocking the vscode
+ * merge algorithm itself can be unit-tested without mocking the VS Code
  * filesystem API: given whatever is CURRENTLY on disk plus this operation's
  * in-memory `frames` and the keys it owns, returns the object that should be
  * written — every non-owned key comes from disk, every owned key comes from
@@ -4000,7 +3978,7 @@ function runExclusivePerTheme<T>(themeId: string, task: () => Promise<T>): Promi
 }
 
 export async function writeThemeFiles(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   manifest: ThemeManifest,
   frames: Record<string, string[]>,
   ownedFrameKeys?: readonly string[],
@@ -4023,7 +4001,7 @@ export async function writeThemeFiles(
 }
 
 async function saveReviewImage(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   filename: string,
   data: Buffer,
@@ -4034,17 +4012,16 @@ async function saveReviewImage(
 
 async function listReviewImageUris(
   store: ThemeFileStore,
-  directoryUri: vscode.Uri,
   directoryPath: string,
-): Promise<vscode.Uri[]> {
+): Promise<ThemeFileHandle[]> {
   const entries = await store.readdir(directoryPath);
   return entries
     .filter((entry) => entry.isFile && /\.(?:png|jpe?g|webp)$/i.test(entry.name))
-    .map((entry) => vscode.Uri.joinPath(directoryUri, entry.name))
+    .map((entry) => resolveFileHandle(store, `${directoryPath}/${entry.name}`))
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 
-async function getThemeDiskSize(globalStorageUri: vscode.Uri, themeId: string): Promise<number> {
+async function getThemeDiskSize(globalStorageUri: ThemeStorageRoot, themeId: string): Promise<number> {
   const store = resolveThemeFileStore(globalStorageUri);
   const targets = [
     themeDirectoryPath(themeId),
@@ -4109,7 +4086,7 @@ function throwIfCancelled(isCancelled?: () => boolean, signal?: AbortSignal): vo
   if (isCancelled?.() || signal?.aborted) throw new Error('Generation cancelled by user');
 }
 
-function basename(uri: vscode.Uri): string {
+function basename(uri: ThemeFileHandle): string {
   return uri.path.split('/').pop() ?? '';
 }
 
@@ -4146,7 +4123,7 @@ function isThemeId(value: string): boolean {
  * Mirrors the numeric-suffix dedup style of `uniqueIds()` in themePlan.ts:
  * append _2, _3, ... to the base slug until no existing theme folder matches.
  */
-export async function resolveUniqueNewThemeId(globalStorageUri: vscode.Uri, baseThemeId: string): Promise<string> {
+export async function resolveUniqueNewThemeId(globalStorageUri: ThemeStorageRoot, baseThemeId: string): Promise<string> {
   const existing = new Set<string>();
   try {
     const store = resolveThemeFileStore(globalStorageUri);

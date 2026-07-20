@@ -12,7 +12,8 @@ import { runDemo } from "./demo";
 import { ClaudeCodeProvider } from "../../providers/claude-code/claudeCodeProvider";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { activate as activateTheater, deactivate as deactivateTheater } from "../../extension/main";
-import { seedBundledThemes, upgradeInstalledThemes } from "../../extension/themeService";
+import { upgradeInstalledThemes } from "../../extension/themeService";
+import { seedBundledThemes } from "./bundledThemeSeeds";
 import { resolveProjectRoot } from "./progressScope";
 
 let provider: ClaudeCodeProvider | undefined;

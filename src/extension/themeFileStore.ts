@@ -67,6 +67,85 @@ export interface ThemeFileStore {
   exists(relativePath: string): Promise<boolean>;
   stat(relativePath: string): Promise<ThemeFileStoreStat>;
   rename(fromRelativePath: string, toRelativePath: string, options?: ThemeFileStoreRenameOptions): Promise<void>;
+  /**
+   * Optional: produce an opaque `ThemeFileHandle` for `relativePath`, for a
+   * caller that needs to convert a stored file's location into something it
+   * can hand to a display/reveal API outside this store's own read/write
+   * surface (e.g. the extension's `webview.asWebviewUri` or "reveal in OS").
+   * Implementations with no such consumer may omit this.
+   */
+  resolveHandle?(relativePath: string): ThemeFileHandle;
+}
+
+/**
+ * Opaque root value identifying WHERE a ThemeFileStore should read/write.
+ * The extension passes its real `vscode.Uri` globalStorageUri here; once a
+ * store has been explicitly configured via `configureThemeFileStore`,
+ * `resolveThemeFileStore` below ignores this value entirely and returns the
+ * configured store — so its concrete shape is intentionally opaque here,
+ * keeping this module (and themeService.ts, which imports only this getter)
+ * free of any load-time 'vscode' dependency (project-plan task pC-t1: make
+ * themeService.ts require-able from a bare Node process). A caller that
+ * never configures a store (a defensive extension-side fallback, or an
+ * existing unit test that stubs the 'vscode' module and exercises
+ * themeService.ts functions directly) gets a lazily-constructed
+ * vscode-backed adapter rooted at this value — which then DOES need to
+ * actually be a `vscode.Uri`.
+ */
+export type ThemeStorageRoot = unknown;
+
+/**
+ * Opaque location handle a ThemeFileStore can produce for a relative path via
+ * its optional `resolveHandle`. themeService.ts itself only ever reads
+ * `.path` off one of these (POSIX-style, to sort or extract a filename);
+ * anything Uri-specific (`.scheme`, `.fsPath`, `.with()`, ...) is consumed
+ * downstream by a vscode-aware caller (panel.ts), which knows the
+ * extension's adapter's handles are real `vscode.Uri` instances under this
+ * narrower structural type.
+ */
+export interface ThemeFileHandle {
+  readonly path: string;
+}
+
+let configuredStore: ThemeFileStore | undefined;
+
+/**
+ * Inject the ThemeFileStore that themeService.ts (and themeStorage.ts)
+ * should use for ALL theme file I/O from now on. The extension host
+ * (panel.ts) calls this exactly once, right after it resolves its
+ * `globalStorageUri`, constructing the store via `createVscodeThemeFileStore`
+ * (themeFileStoreVscode.ts).
+ */
+export function configureThemeFileStore(store: ThemeFileStore): void {
+  configuredStore = store;
+}
+
+/** Test-only escape hatch: clear an explicitly configured store. */
+export function resetThemeFileStoreForTests(): void {
+  configuredStore = undefined;
+}
+
+/**
+ * Resolve the ThemeFileStore a call carrying `root` should use. Prefers the
+ * store injected via `configureThemeFileStore`. If none has been configured,
+ * lazily `require`s the vscode-backed adapter (themeFileStoreVscode.ts,
+ * which imports the real 'vscode' module) and constructs one rooted at
+ * `root`. The `require` is deliberately INSIDE this function body — never at
+ * module scope — so this module never touches 'vscode' at load time,
+ * preserving the pre-existing fallback behavior (the real extension always
+ * configures a store at activation, so this path rarely runs in production;
+ * existing unit tests that stub 'vscode' and call themeService.ts functions
+ * directly without configuring a store rely on it every time).
+ */
+export function resolveThemeFileStore(root: ThemeStorageRoot): ThemeFileStore {
+  if (configuredStore) return configuredStore;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createVscodeThemeFileStore } = require('./themeFileStoreVscode') as typeof import('./themeFileStoreVscode');
+  // The vscode-backed adapter requires `root` to actually be a vscode.Uri;
+  // this module stays vscode-free, so it cannot express that constraint in
+  // the type system here.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return createVscodeThemeFileStore(root as any);
 }
 
 /** Root directory (relative to a ThemeFileStore) all per-theme folders live under. */

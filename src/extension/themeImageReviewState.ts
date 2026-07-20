@@ -1,5 +1,10 @@
-import * as vscode from 'vscode';
-import { themeDirectoryUri, themeReviewUri } from './themeStorage';
+import {
+  legacyImageReviewPath,
+  resolveThemeFileStore,
+  themeDirectoryPath,
+  themeReviewPath,
+  type ThemeStorageRoot,
+} from './themeFileStore';
 import { withoutRedundantBuildableObjectsItem } from './themeGenerationState';
 
 export type ThemeImageKind =
@@ -126,7 +131,7 @@ export interface ThemeImageReviewDocument {
 }
 
 export async function initializeThemeImageReviewDocument(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   displayName: string,
   items: Array<Omit<ThemeImageReviewItem, 'updated_at'> & { updated_at?: string }>,
@@ -143,16 +148,17 @@ export async function initializeThemeImageReviewDocument(
 }
 
 export async function loadThemeImageReviewDocument(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<ThemeImageReviewDocument | undefined> {
+  const store = resolveThemeFileStore(globalStorageUri);
   const candidates = [
-    themeReviewUri(globalStorageUri, themeId),
-    vscode.Uri.joinPath(globalStorageUri, `${themeId}_image_review.json`),
+    themeReviewPath(themeId),
+    legacyImageReviewPath(themeId),
   ];
-  for (const uri of candidates) {
+  for (const relativePath of candidates) {
     try {
-      const bytes = await vscode.workspace.fs.readFile(uri);
+      const bytes = await store.readFile(relativePath);
       const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as ThemeImageReviewDocument;
       if (parsed?.version === 1 && parsed.theme_id === themeId && Array.isArray(parsed.items)) {
         parsed.items = withoutRedundantBuildableObjectsItem(parsed.items);
@@ -166,7 +172,7 @@ export async function loadThemeImageReviewDocument(
 }
 
 export async function upsertThemeImageReviewItem(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   displayName: string,
   item: Omit<ThemeImageReviewItem, 'updated_at'> & { updated_at?: string },
@@ -190,7 +196,7 @@ export async function upsertThemeImageReviewItem(
 }
 
 export async function setThemeImageReviewStatus(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   status: ThemeImageReviewStatus,
@@ -206,7 +212,7 @@ export async function setThemeImageReviewStatus(
 }
 
 export async function setThemeImageGenerationError(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   generationError: ThemeImageGenerationError,
@@ -223,7 +229,7 @@ export async function setThemeImageGenerationError(
 }
 
 export async function acceptAllThemeImageReviewItems(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<ThemeImageReviewDocument | undefined> {
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
@@ -292,12 +298,13 @@ function humanize(value: string): string {
 }
 
 async function writeReviewDocument(
-  globalStorageUri: vscode.Uri,
+  globalStorageUri: ThemeStorageRoot,
   document: ThemeImageReviewDocument,
 ): Promise<void> {
-  await vscode.workspace.fs.createDirectory(themeDirectoryUri(globalStorageUri, document.theme_id));
-  await vscode.workspace.fs.writeFile(
-    themeReviewUri(globalStorageUri, document.theme_id),
+  const store = resolveThemeFileStore(globalStorageUri);
+  await store.mkdirp(themeDirectoryPath(document.theme_id));
+  await store.writeFile(
+    themeReviewPath(document.theme_id),
     Buffer.from(JSON.stringify(document, null, 2)),
   );
 }

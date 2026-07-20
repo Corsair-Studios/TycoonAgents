@@ -1,7 +1,6 @@
 // Transport intentionally uses Node's built-in fetch so theme planning stays
 // provider-neutral and does not add another runtime SDK dependency.
 
-import * as vscode from 'vscode';
 import type { ThemeManifest } from '../shared/types';
 import type { ThemeImageGenerationOptions } from './imageClient';
 import {
@@ -201,16 +200,32 @@ export async function expandThemePrompt(
   };
 }
 
+/**
+ * Resolve which image provider/API key to use for a planning call.
+ *
+ * Pre-pC-t1 this fell back to reading `tycoonagents.themeImageProvider` /
+ * `openaiApiKey` / `geminiApiKey` straight out of the VS Code settings API
+ * when `options` didn't carry an explicit value. That was the only reason
+ * this module needed a load-time editor-API import. It is DEAD CODE for
+ * every real call path today: the extension host (panel.ts) always resolves
+ * provider/apiKey
+ * itself first — via `resolveThemeImageSettings` in themeImageSettings.ts,
+ * which already checks the SAME settings keys (plus SecretStorage, checked
+ * first) — and passes them in explicitly before calling `planTheme` /
+ * `generateTheme`. So dropping the VS Code settings read here changes
+ * nothing in practice; the env-var fallback (unaffected by VS Code) is kept.
+ * Flagged as a behavior note in case some future caller invoked
+ * `expandThemePlan`/`planTheme` with no explicit provider/apiKey while
+ * relying purely on raw VS Code settings outside `resolveThemeImageSettings`.
+ */
 function resolvePlannerSettings(options: ThemeImageGenerationOptions): {
   provider: 'gemini' | 'openai';
   apiKey?: string;
 } {
-  const config = vscode.workspace.getConfiguration('tycoonagents');
-  const provider = options.provider
-    ?? (config.get<string>('themeImageProvider', 'openai') === 'gemini' ? 'gemini' : 'openai');
+  const provider = options.provider ?? 'openai';
   const apiKey = options.apiKey || (provider === 'openai'
-    ? config.get<string>('openaiApiKey') || process.env.OPENAI_API_KEY
-    : config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+    ? process.env.OPENAI_API_KEY
+    : process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
   return { provider, apiKey };
 }
 

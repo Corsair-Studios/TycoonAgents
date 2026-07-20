@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
-import { resolveThemeFileStore } from './themeFileStoreVscode';
-import { themeRawImagesDirectoryPath } from './themeFileStore';
+import { resolveThemeFileStore, themeRawImagesDirectoryPath } from './themeFileStore';
 
 export const THEMES_DIRECTORY_NAME = 'themes';
 

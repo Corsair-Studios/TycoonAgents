@@ -6,6 +6,7 @@
 
 import * as vscode from 'vscode';
 import type {
+  ThemeFileHandle,
   ThemeFileStore,
   ThemeFileStoreEntry,
   ThemeFileStoreRemoveOptions,
@@ -76,39 +77,16 @@ export function createVscodeThemeFileStore(root: vscode.Uri): ThemeFileStore {
         overwrite: options?.overwrite ?? false,
       });
     },
+    resolveHandle(relativePath): ThemeFileHandle {
+      return resolve(relativePath);
+    },
   };
 }
 
-let configuredStore: ThemeFileStore | undefined;
-
-/**
- * Inject the ThemeFileStore that themeStorage.ts/themeService.ts should use
- * for ALL theme file I/O from now on. The extension host (panel.ts) calls
- * this exactly once, right after it resolves its `globalStorageUri`,
- * constructing the store via `createVscodeThemeFileStore` above.
- *
- * Until this is called (e.g. in the existing unit tests, which exercise
- * themeService.ts functions directly against a temp directory + a stubbed
- * 'vscode' module), `resolveThemeFileStore` transparently falls back to
- * constructing a fresh vscode-backed adapter per call from whatever
- * `globalStorageUri` that call was given — preserving prior behavior with
- * zero call-site changes.
- */
-export function configureThemeFileStore(store: ThemeFileStore): void {
-  configuredStore = store;
-}
-
-/** Test-only escape hatch: clear an explicitly configured store. */
-export function resetThemeFileStoreForTests(): void {
-  configuredStore = undefined;
-}
-
-/**
- * Resolve the ThemeFileStore themeStorage.ts/themeService.ts should use for
- * a call carrying `globalStorageUri`. Prefers the store injected via
- * `configureThemeFileStore`; falls back to a fresh vscode-backed adapter
- * rooted at `globalStorageUri` otherwise.
- */
-export function resolveThemeFileStore(globalStorageUri: vscode.Uri): ThemeFileStore {
-  return configuredStore ?? createVscodeThemeFileStore(globalStorageUri);
-}
+// The configured-store registry (`configureThemeFileStore` /
+// `resolveThemeFileStore` / `resetThemeFileStoreForTests`) now lives in
+// themeFileStore.ts (vscode-free), so themeService.ts can import the
+// resolver without pulling in 'vscode' at load time (project-plan task
+// pC-t1). This module keeps ONLY the vscode adapter construction above;
+// themeFileStore.ts's resolveThemeFileStore lazily `require`s this module by
+// name when it needs to build the default fallback adapter.
