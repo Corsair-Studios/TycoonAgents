@@ -200,6 +200,31 @@ function writeProjectPlanEnabled(root: string, enabled: boolean): void {
   fs.writeFileSync(configPath, JSON.stringify({ ...existing, projectPlanEnabled: enabled }, null, 2));
 }
 
+/**
+ * Seed the opt-in `projectPlanEnabled` flag at fresh-install/repair time,
+ * mirroring the `reviewEnabled` default-on-install precedent in
+ * `_handleInstallHooks`: Project Plan is ON by default for a project that
+ * has never explicitly chosen a value, but an existing EXPLICIT choice
+ * (true or false, e.g. a user who unchecked it) is always preserved.
+ *
+ * Distinguishes "key absent" from "key present and false" by inspecting
+ * the raw parsed JSON directly — `readProjectPlanEnabled` can't make that
+ * distinction, since it coerces both cases to `false`.
+ */
+export function seedProjectPlanEnabledDefault(root: string): void {
+  const configPath = projectPlanExecutionConfigPath(root);
+  let priorExplicit: boolean | undefined;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (parsed !== null && typeof parsed === "object" && "projectPlanEnabled" in parsed) {
+      priorExplicit = parsed.projectPlanEnabled === true;
+    }
+  } catch {
+    /* missing/invalid file => no prior explicit value */
+  }
+  writeProjectPlanEnabled(root, priorExplicit !== undefined ? priorExplicit : true);
+}
+
 /** Singleton webview panel that renders the TycoonAgents visualization. */
 export class TycoonPanel {
   public static currentPanel: TycoonPanel | undefined;
@@ -4108,6 +4133,14 @@ export class TycoonPanel {
       try {
         // 7a. Persist the chosen mode + the default Review-pass state.
         writeExecutionConfig(claudeDir, { delegation_mode: delegationMode, reviewEnabled });
+
+        // 7a2. Optional "Project Plan" feature is on by default for a
+        // fresh install/repair — same precedent as reviewEnabled above —
+        // but an existing user's explicit prior choice (on OR off) is
+        // preserved. Runs after writeExecutionConfig (that write already
+        // merges rather than overwrites execution.json, but this ordering
+        // keeps the two writes independent regardless).
+        seedProjectPlanEnabledDefault(root);
 
         // 7c/7d. Lead agent files + keyword routing — only written for
         // team_leads. Flat mode leaves any previously-installed lead files

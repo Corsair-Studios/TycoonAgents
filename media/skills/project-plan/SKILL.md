@@ -9,7 +9,7 @@ Turn a design doc into a **plan** — an ordered list of phases, each holding a 
 
 ## Precondition
 
-Only run this workflow when the user has explicitly turned on the optional **Project Plan** feature (via the TycoonAgents panel, or by asking you to plan/execute a project directly). If the feature is off and the user hasn't asked for it by name, do not create or modify `.claude/tycoon/plan.json` — treat this skill as inactive.
+Only run this workflow when the optional **Project Plan** feature is turned on — it defaults ON for fresh installs/repairs but stays toggleable in Settings, so an explicit prior choice (including off) is preserved across reinstalls. However it got enabled — on by default, or a user turning it on via the TycoonAgents panel, or by asking you to plan/execute a project directly — that's the gate. If the feature is off and the user hasn't asked for it by name, do not create or modify `.claude/tycoon/plan.json` — treat this skill as inactive.
 
 ## Inputs
 
