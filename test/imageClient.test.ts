@@ -7,40 +7,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-// imageClient.ts does `import * as vscode from 'vscode'` at module scope
-// (needed for the extension-settings fallback path); the watchdog tests below
-// always pass an explicit provider + apiKey so that path is never exercised,
-// but Node can't resolve the 'vscode' module outside the real extension host.
-// Stub the module loader so this file's require chain resolves under plain
-// `node --test` — same pattern used in test/reviewSynthesis.test.ts.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const NodeModule = require('module');
-const originalLoad = NodeModule._load;
-function makeVscodeStub(): unknown {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handler: ProxyHandler<any> = {
-    get(target, prop) {
-      if (prop === '__esModule') return true;
-      if (!(prop in target)) {
-        target[prop] = new Proxy(function stub() {}, handler);
-      }
-      return target[prop];
-    },
-    apply() {
-      return new Proxy({}, handler);
-    },
-    construct() {
-      return new Proxy({}, handler);
-    },
-  };
-  return new Proxy({}, handler);
-}
-const vscodeStub = makeVscodeStub();
-NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain: boolean) {
-  if (request === 'vscode') return vscodeStub;
-  return originalLoad.call(this, request, parent, isMain);
-};
-
+// imageClient.ts is vscode-free (provider + API key are resolved by the
+// caller and passed in via ThemeImageGenerationOptions/ThemeImageConfig), so
+// it can be required directly under plain `node --test` with no module stub.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { generateThemeImage } = require('../src/extension/imageClient') as typeof import('../src/extension/imageClient');
 

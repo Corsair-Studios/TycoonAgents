@@ -4,10 +4,24 @@
  * Uses the global fetch available in Node 18+ (same pattern as translator.ts).
  */
 
-import * as vscode from 'vscode';
 import { findGeminiInlineImage, summarizeGeminiImageResponse } from './geminiImageResponse';
 import { parseOpenAIImageError } from './imageGenerationError';
 import type { ThemeImageProvider } from './themeImageSettings';
+
+/**
+ * Vscode-free settings used to resolve a provider + API key when the caller's
+ * {@link ThemeImageGenerationOptions} doesn't already specify one. Hosts (the
+ * VS Code extension, the standalone app) build this from their own secret
+ * storage / settings and pass it into {@link generateThemeImage} — imageClient
+ * itself never reads secrets or extension configuration directly, so it has
+ * no dependency on the 'vscode' module and can run in either host.
+ */
+export interface ThemeImageConfig {
+  /** Default provider when options.provider is not set. Defaults to 'openai'. */
+  provider?: ThemeImageProvider;
+  openaiApiKey?: string;
+  geminiApiKey?: string;
+}
 
 export interface ThemeImageGenerationOptions {
   provider?: ThemeImageProvider;
@@ -85,19 +99,22 @@ function withWatchdog(
 
 /**
  * Generate a theme image using the configured AI image provider.
- * Uses the explicitly selected provider and falls back to extension settings
- * or environment variables for backwards compatibility.
+ * Uses the explicitly selected provider (options.provider) and falls back to
+ * the caller-supplied {@link ThemeImageConfig} or environment variables for
+ * backwards compatibility. Callers (the VS Code extension host via
+ * vscode.secrets/settings, the standalone host via its own store) are
+ * responsible for resolving secrets and passing them in — this function
+ * never reads them itself.
  */
 export async function generateThemeImage(
   prompt: string,
   options: ThemeImageGenerationOptions = {},
+  config: ThemeImageConfig = {},
 ): Promise<Buffer> {
-  const config = vscode.workspace.getConfiguration('tycoonagents');
-  const provider = options.provider
-    ?? (config.get<string>('themeImageProvider', 'openai') === 'gemini' ? 'gemini' : 'openai');
+  const provider = options.provider ?? config.provider ?? 'openai';
   const apiKey = options.apiKey || (provider === 'openai'
-    ? config.get<string>('openaiApiKey') || process.env.OPENAI_API_KEY
-    : config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+    ? config.openaiApiKey || process.env.OPENAI_API_KEY
+    : config.geminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
 
   if (!apiKey) {
     const label = provider === 'openai' ? 'OpenAI' : 'Google Gemini';
