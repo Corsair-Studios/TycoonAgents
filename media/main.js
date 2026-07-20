@@ -5079,6 +5079,14 @@
   // ── Phase 2b: enemy / EVICT mode state ───────────────────────────────────
   /** Seconds between enemy spawn waves (manifest.viewport.enemy_config.spawn_interval_seconds). */
   let enemySpawnIntervalSec = 45;
+  /** Formats a spawn-interval second count as "45s" or "20m" / "20m 30s" for the stage editor label. */
+  function formatEnemySpawnInterval(sec) {
+    const total = Math.round(sec);
+    if (total < 60) return total + "s";
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return s === 0 ? m + "m" : m + "m " + s + "s";
+  }
   /** 'all' = every rival spawns each wave; 'random' = a random 1..N subset. */
   let enemyCountMode = "random";
   /** Rival roster from manifest.roster_rivals: [{rival_id, name, atlas_asset}]. */
@@ -5824,8 +5832,8 @@
         '</div>' +
         '<div class="se-section">' +
           '<div class="se-section-title">Enemies</div>' +
-          '<div class="se-row"><span class="se-label">Spawn interval (s)</span><span class="se-value"><span id="se-ei-val">45</span></span></div>' +
-          '<input id="se-ei" class="se-range" type="range" min="10" max="180" step="5" value="45">' +
+          '<div class="se-row"><span class="se-label">Spawn interval</span><span class="se-value"><span id="se-ei-val">45s</span></span></div>' +
+          '<input id="se-ei" class="se-range" type="range" min="10" max="1200" step="5" value="45">' +
           '<div class="se-sublabel">Enemy count mode</div>' +
           '<select id="se-ecm" class="se-select"><option value="random">random</option><option value="all">all</option></select>' +
         '</div>' +
@@ -5980,7 +5988,7 @@
     }
     stageEditEls.ei.addEventListener("input", () => {
       enemySpawnIntervalSec = parseFloat(stageEditEls.ei.value) || 45;
-      stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
+      stageEditEls.eiVal.textContent = formatEnemySpawnInterval(enemySpawnIntervalSec);
     });
     stageEditEls.ecm.addEventListener("change", () => {
       enemyCountMode = stageEditEls.ecm.value === "all" ? "all" : "random";
@@ -6072,7 +6080,7 @@
     stageEditEls.ov.value = String(themeOverallScale);
     stageEditEls.ovVal.textContent = themeOverallScale.toFixed(2);
     stageEditEls.ei.value = String(enemySpawnIntervalSec);
-    stageEditEls.eiVal.textContent = String(Math.round(enemySpawnIntervalSec));
+    stageEditEls.eiVal.textContent = formatEnemySpawnInterval(enemySpawnIntervalSec);
     stageEditEls.ecm.value = enemyCountMode;
     syncOverrideSlider();
     // Per-object override list: every buildable object from the loaded theme.
