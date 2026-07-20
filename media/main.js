@@ -6292,18 +6292,28 @@
       }
     }
     // H toggles the non-destructive HIDE state of the CURRENT Edit-Stage
-    // selection — same "current item" targeting as F-flip above, but
+    // target — same drag→hover→selection priority as F-flip above, but
     // decor-only (buildable objects are gameplay progression, not hideable
     // in v1 — see toggleDecorHidden). Mirrors the F handler's guards exactly.
     if ((e.key === "h" || e.key === "H") && editStageMode) {
       const t = e.target;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
-      // Decor is the only hideable kind, so H acts on the current decor
-      // selection directly. It must NOT depend on editFlipTargetKind (null
-      // until the decor dropdown changes) — that gap made H a no-op on entry.
-      // Mirrors the Hide button, which gates on editSelectedDecorId.
-      const id = (dragObjectId && dragObjectType === "decor") ? dragObjectId : editSelectedDecorId;
-      if (id) {
+      // Same target resolution as F (drag > hover > last explicit
+      // selection), except H has no editFlipTargetKind fallback since decor
+      // is the only hideable kind — falling through to "decor" lets the
+      // last dropdown selection (editSelectedDecorId) still work when
+      // nothing is being dragged or hovered.
+      const kind = dragObjectId
+        ? dragObjectType
+        : hoverSceneObjType
+          ? hoverSceneObjType
+          : "decor";
+      const id = dragObjectId
+        ? dragObjectId
+        : hoverSceneObjType
+          ? hoverSceneObjId
+          : editSelectedDecorId;
+      if (kind === "decor" && id) {
         toggleDecorHidden(id);
         syncDecorHideButton();
         refreshDecorDropdownLabels();

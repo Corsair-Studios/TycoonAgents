@@ -2066,6 +2066,139 @@ test('H-hidden decor is not drawn in normal play (non-destructive hide)', async 
   h.win.close();
 });
 
+// ── H hides only DECOR via true canvas hover/drag targeting: buildable is a
+// no-op ──────────────────────────────────────────────────────────────────
+// The Edit-Stage H handler's target resolution (main.js ~6298-6321) is
+// dragObjectId/dragObjectType (top priority) -> hoverSceneObjType/Id -> a
+// HARDCODED "decor" fallback (unlike F, H has NO editFlipTargetKind branch —
+// see the code comment there). That means the #se-obj/#se-decor dropdown
+// steps above (6b/6c) can only ever drive H's decor-fallback tier; they can
+// never make H resolve kind==="buildable". Reaching the buildable branch (and
+// proving it's a no-op) requires the real DRAG tier: dragObjectId/
+// dragObjectType, set directly by the canvas mousedown hit-test
+// (sceneObjectAt), mirroring the F-flip step's fixture/postMessage/keydown
+// pattern but driving the target through the canvas instead of a select.
+//
+// The fixture places o1 (buildable) and d1 (decor) at distinct anchor_coord
+// positions, each paired with a decoy at a different anchor so
+// themeBuildables/themeDecor don't trip the "all anchors equal -> auto
+// slot-home" branch (main.js ~8462-8481 / ~8498-8524), which would otherwise
+// replace the literal anchor_coord placement with an unpredictable
+// auto-distributed slot. The walkable polygon is the (normalized) near-full
+// canvas, so clampToPolygon/clampToSceneBounds are no-ops and each object's
+// native position is exactly anchor_coord * walkableNativeW/H; nativeToCanvas
+// then simplifies to bgX + anchor_coord[0]*bgW (walkableNativeW cancels).
+// bgW/bgH are the fake 64x64 background image (sceneFitScale clamps to 1 on
+// this harness's 1066x760 canvas), so bgX = floor((1066-64)/2) = 501.
+test('H hides a dragged decor via true hover/drag targeting, but is a no-op while dragging a buildable', async () => {
+  const h = await bootObjScaleHarness();
+  h.dispatch({
+    type: 'THEME_INITIALIZED',
+    payload: {
+      theme_id: 'h_target_fixture',
+      manifest: {
+        theme_id: 'h_target_fixture',
+        viewport: {
+          native_width: 1280,
+          native_height: 720,
+          walkable_nav_polygon: [[0.02, 0.02], [0.98, 0.02], [0.98, 0.98], [0.02, 0.98]],
+          crate_asset: 'frames.json#crate',
+          poof_asset: 'frames.json#poof',
+        },
+        roster_agents: [],
+        roster_rivals: [],
+        buildable_objects: [
+          { object_id: 'o1', display_name: 'Rack', build_order: 0, anchor_coord: [0.15, 0.5] },
+          { object_id: 'o1b', display_name: 'Decoy', build_order: 1, anchor_coord: [0.5, 0.15] },
+        ],
+        decor_objects: [
+          { decor_id: 'd1', display_name: 'Statue', anchor_coord: [0.85, 0.5] },
+          { decor_id: 'd1b', display_name: 'Decoy', anchor_coord: [0.5, 0.85] },
+        ],
+        badges: [],
+      },
+      frames: {
+        environment_background: ['data:h-target-fixture,bg'],
+        crate: ['data:h-target-fixture,crate', 'data:h-target-fixture,crate'],
+        poof: ['data:h-target-fixture,crate', 'data:h-target-fixture,crate'],
+        object_o1: ['data:h-target-fixture,o1'],
+        object_o1b: ['data:h-target-fixture,o1b'],
+        decor_d1: ['data:h-target-fixture,d1'],
+        decor_d1b: ['data:h-target-fixture,d1b'],
+      },
+      badges: [],
+      unlocked_badge_ids: [],
+      rebirth_state: { count: 1 },
+    },
+  });
+  await h.flush();
+  h.tick(3);
+  assert.equal(h.errors.length, 0, `boot threw: ${h.errors.map(String).join('; ')}`);
+
+  const editBtn = h.doc.getElementById('menu-edit-stage');
+  assert.ok(editBtn, 'menu-edit-stage should have been injected');
+  editBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  h.tick(1);
+
+  const canvasEl = h.doc.getElementById('stage');
+  const bgX = 501, bgY = 0, bgW = 64, bgH = 64;
+  const buildableXY = [bgX + 0.15 * bgW, bgY + 0.5 * bgH]; // o1's exact drawn center
+  const decorXY = [bgX + 0.85 * bgW, bgY + 0.5 * bgH]; // d1's exact drawn center
+
+  // Drag o1 (buildable) and press H mid-drag: dragObjectId/dragObjectType
+  // resolve kind==="buildable", which the H handler only ever acts on
+  // `if (kind === "decor" && id)` — so this must be a strict no-op.
+  canvasEl.dispatchEvent(
+    new h.win.MouseEvent('mousedown', { bubbles: true, clientX: buildableXY[0], clientY: buildableXY[1] })
+  );
+  h.win.dispatchEvent(new h.win.KeyboardEvent('keydown', { key: 'h', bubbles: true, cancelable: true }));
+  h.win.dispatchEvent(new h.win.MouseEvent('mouseup', { bubbles: true }));
+
+  const saveBtn = h.doc.getElementById('se-save');
+  assert.ok(saveBtn, 'se-save button should exist');
+  saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const afterBuildable = [...h.posted].reverse().find((m: any) => m.type === 'SAVE_STAGE_TUNING');
+  assert.ok(afterBuildable, 'a SAVE_STAGE_TUNING message should have been posted');
+  assert.ok(
+    !Array.isArray(afterBuildable.payload.decor_hidden) || afterBuildable.payload.decor_hidden.length === 0,
+    'H while dragging a buildable must not hide anything'
+  );
+
+  // Now drag d1 (decor) and press H mid-drag: dragObjectType/dragObjectId
+  // resolve kind==="decor", so this DOES hide it.
+  canvasEl.dispatchEvent(
+    new h.win.MouseEvent('mousedown', { bubbles: true, clientX: decorXY[0], clientY: decorXY[1] })
+  );
+  h.win.dispatchEvent(new h.win.KeyboardEvent('keydown', { key: 'h', bubbles: true, cancelable: true }));
+  h.win.dispatchEvent(new h.win.MouseEvent('mouseup', { bubbles: true }));
+
+  saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const afterDecor = [...h.posted].reverse().find((m: any) => m.type === 'SAVE_STAGE_TUNING');
+  assert.ok(afterDecor, 'a second SAVE_STAGE_TUNING message should have been posted');
+  assert.ok(
+    Array.isArray(afterDecor.payload.decor_hidden) && afterDecor.payload.decor_hidden.includes('d1'),
+    'H while dragging decor d1 should hide it'
+  );
+
+  // Press H again on the same drag/target -> un-hides it (mirrors 6c's undo
+  // check), proving the toggle and the observable both work symmetrically.
+  canvasEl.dispatchEvent(
+    new h.win.MouseEvent('mousedown', { bubbles: true, clientX: decorXY[0], clientY: decorXY[1] })
+  );
+  h.win.dispatchEvent(new h.win.KeyboardEvent('keydown', { key: 'h', bubbles: true, cancelable: true }));
+  h.win.dispatchEvent(new h.win.MouseEvent('mouseup', { bubbles: true }));
+  saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const afterUnhide = [...h.posted].reverse().find((m: any) => m.type === 'SAVE_STAGE_TUNING');
+  assert.ok(afterUnhide, 'a third SAVE_STAGE_TUNING message should have been posted');
+  assert.ok(
+    !Array.isArray(afterUnhide.payload.decor_hidden) || !afterUnhide.payload.decor_hidden.includes('d1'),
+    'pressing H again on d1 should un-hide it'
+  );
+
+  assert.equal(h.errors.length, 0, `hover/drag H-hotkey path threw: ${h.errors.map(String).join('; ')}`);
+  h.win.close();
+});
+
 // ── Theme-plan generation form: per-slot name+description editors ──────────
 // The Objects/Expressions/Achievement-badges fields on the theme-GENERATION
 // form (pre-generation) changed from free-text comma textareas to per-slot
