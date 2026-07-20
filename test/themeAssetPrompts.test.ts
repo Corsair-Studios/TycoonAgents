@@ -170,6 +170,12 @@ test('environment prompt bans floor clutter (empty-floor rule) and any silhouett
   assert.match(prompt, /lamp posts/i);
   assert.match(prompt, /ONLY along the REAR wall.*far left and right perimeter/i);
 
+  // CRITICAL — no overhang into the floor.
+  assert.match(prompt, /CRITICAL — no overhang into the floor/i);
+  assert.match(prompt, /CLEAR MARGIN on all sides/i);
+  assert.match(prompt, /must NOT overhang, lean, spill, drape/i);
+  assert.match(prompt, /open floor must be a clean, unobstructed edge/i);
+
   // CRITICAL — no boundary line.
   assert.match(prompt, /CRITICAL — no boundary line/i);
   assert.match(prompt, /outline, border, rim/i);

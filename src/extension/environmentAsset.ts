@@ -22,7 +22,7 @@ const STAGE_POLYGON: Array<[number, number]> = [
  * the art to bleed slightly past the edge, so a slightly thicker margin
  * here is harmless.
  */
-const EDGE_ERODE_PX = 6;
+const EDGE_ERODE_PX = 10;
 
 /**
  * Width of the boundary band (in pixels, measured inward from the
@@ -31,7 +31,7 @@ const EDGE_ERODE_PX = 6;
  * cyan/teal art deeper in the interior (e.g. a blue fountain at the
  * center, ~250px from any edge) is not erased.
  */
-const CYAN_EDGE_BAND_PX = 18;
+const CYAN_EDGE_BAND_PX = 24;
 
 /**
  * Cyan-bias thresholds used within CYAN_EDGE_BAND_PX to key out the light
@@ -45,14 +45,29 @@ const CYAN_EDGE_BAND_PX = 18;
  *   - |G - B| <= CYAN_GB_MAX_DELTA
  * This catches pure cyan (0,255,255) and floor/cyan blends like
  * (105,217,197), but spares warm tan floor (R high, e.g. (200,175,140) -
- * fails the R margin check), grey stone (R close to G/B - fails the R
- * margin check), and pale blue SKY along the top edges, which is
- * blue-dominant with a much higher R (e.g. (180,205,235): R=180 is not
- * <= G-50=155, so it is spared).
+ * fails the R margin check) and grey stone (R close to G/B - fails the R
+ * margin check).
+ *
+ * The BOTTOM edges of the silhouette produce a brighter floor+cyan blend
+ * than the original near-pure-cyan estimate assumed (the bright tan floor
+ * lifts R further than expected while G/B stay high and close together,
+ * e.g. (150,205,200)), which slipped past the original stricter margins.
+ * The relaxed CYAN_MIN_GB/CYAN_R_MARGIN below still clear that blend
+ * (150<=205-35=170 and 150<=200-35=165) and warm tan floor stays spared
+ * (200,175,140: fails both the B>=150 and R<=G-35 checks) — but relaxing
+ * R_MARGIN alone is not enough to keep pale blue SKY near the top edges
+ * safe, since saturated azure sky (e.g. (160,200,230)) also satisfies the
+ * R margin check. The distinguishing signal is G vs. B: true cyan/floor
+ * blends are G≈B (green and blue channels close together), while sky is
+ * blue-DOMINANT (B noticeably greater than G). CYAN_GB_MAX_DELTA is kept
+ * tight at 20 specifically to gate on this: the bottom blend (150,205,200)
+ * has |G-B|=5<=20 and is still cleared, pure cyan (0,255,255) has
+ * |G-B|=0<=20 and is cleared, but azure sky (160,200,230) has |G-B|=30>20
+ * and (155,195,225) has |G-B|=30>20 — both spared.
  */
-const CYAN_MIN_GB = 160;
-const CYAN_R_MARGIN = 50;
-const CYAN_GB_MAX_DELTA = 45;
+const CYAN_MIN_GB = 150;
+const CYAN_R_MARGIN = 35;
+const CYAN_GB_MAX_DELTA = 20;
 
 /**
  * Produces an opaque, high-contrast guide so image models cannot silently
