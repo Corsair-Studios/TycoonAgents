@@ -69,12 +69,53 @@ argument parsing or browser auto-open.
 | `TYCOON_STANDALONE_PROJECT_ROOT` | Comma-separated project director(y/ies) to watch, used when no CLI directory argument is given. | current working directory |
 | `TYCOON_STANDALONE_DATA_DIR` | Overrides the OS-default app-data directory (`appData.mjs`). | per-OS (see below) |
 | `TYCOON_STANDALONE_NO_OPEN` | Set to `1` to suppress the `watch` command's automatic browser launch. | unset (browser opens) |
+| `TYCOON_OPENAI_API_KEY` | OpenAI (GPT Image) API key for theme image generation. | unset |
+| `TYCOON_GEMINI_API_KEY` | Google Gemini API key for theme image generation. | unset |
+| `TYCOON_THEME_IMAGE_PROVIDER` | Which provider to use: `openai` or `gemini`. | `openai` |
 
 `TYCOON_STANDALONE_DATA_DIR`'s per-OS default (when unset): `%APPDATA%\TycoonAgents`
 on Windows, `~/Library/Application Support/TycoonAgents` on macOS, and
 `$XDG_DATA_HOME/tycoonagents` (else `~/.local/share/tycoonagents`) elsewhere.
+`server.mjs` resolves a `themes/` subdirectory under this app-data dir at
+startup (`startServer()`'s returned `themeDataDir`) — the root a later task's
+theme storage adapter will read/write generated theme manifests and images
+from/to.
 
 Precedence for project targets: explicit CLI directory argument(s) > `TYCOON_STANDALONE_PROJECT_ROOT` > current working directory. See `src/projectRoots.mjs`.
+
+### Theme image generation — API keys
+
+The standalone has no OS keychain, so unlike the VS Code extension (which
+stores theme-image API keys in `vscode.SecretStorage`, backed by the OS
+keychain), the standalone reads them from **plain environment variables**:
+
+| Variable | Purpose |
+| --- | --- |
+| `TYCOON_OPENAI_API_KEY` | API key for the `openai` provider (GPT Image). |
+| `TYCOON_GEMINI_API_KEY` | API key for the `gemini` provider (Google Gemini). |
+| `TYCOON_THEME_IMAGE_PROVIDER` | `openai` or `gemini` — which provider is active. Defaults to `openai`. |
+
+```sh
+TYCOON_OPENAI_API_KEY=sk-... TYCOON_THEME_IMAGE_PROVIDER=openai node src/cli.mjs watch <path-to-project>
+```
+
+`server.mjs` exports `getThemeImageConfig()`, which resolves these into the
+same `{ provider, openaiApiKey?, geminiApiKey? }` shape the extension's
+`src/extension/imageClient.ts` (`ThemeImageConfig`) expects, so a later task
+can pass it straight into theme image generation unchanged. Environment
+variables are currently the **only** source: `getThemeImageConfig()` also
+accepts an optional appData reader so a persisted `{ provider }` could act as
+a fallback in the future, but no writer exists yet — nothing persists a
+provider choice today, so it does not yet survive a restart without
+re-exporting the env var. An explicit `TYCOON_THEME_IMAGE_PROVIDER` always
+wins over that (currently empty) fallback.
+
+**Security note:** this is a deliberate step-down from the VS Code
+extension's OS-keychain-backed storage. Environment variables are visible to
+other processes on the same machine/user account and are not encrypted at
+rest. Do not commit them to shell history/dotfiles you share, and prefer a
+short-lived shell export or a local `.env`-style loader you keep out of
+version control over hardcoding a key anywhere in this repo.
 
 ## Architecture
 
@@ -107,7 +148,9 @@ and the VS Code extension always render identically.
 Done:
 - `install-hook` / `watch` CLI, SSE-driven live state updates, browser
   auto-open, multi-directory watch, per-OS app-data path resolution
-  (`appData.mjs`).
+  (`appData.mjs`, now wired into `server.mjs` at startup — resolves the app
+  data dir and a `themeDataDir` under it), and env-var-sourced theme image
+  provider/API-key config (`getThemeImageConfig()`).
 
 Deliberately deferred / not done — do not assume these work:
 
@@ -123,10 +166,11 @@ Deliberately deferred / not done — do not assume these work:
   standalone's state feed does not read or apply this file yet, so a
   project with saved time adjustments will show slightly different
   (uncorrected) active times here than in the VS Code panel.
-- **`appData.mjs` is unwired.** The per-OS app-data directory module exists
-  and is unit-tested, but nothing in `server.mjs`/`stateFeed.mjs` calls it
-  yet — there is currently no durable host-side state persisted by the
-  standalone (equivalent to the VS Code extension's `globalStorage`).
+- **No theme storage adapter yet.** `server.mjs` resolves `themeDataDir`
+  (an app-data-rooted `themes/` directory) and `getThemeImageConfig()` at
+  startup, but nothing yet reads/writes actual theme manifests or images
+  there, or calls the image-generation client with this config — that is a
+  later task.
 - **Multi-directory watching is primary-only.** When `watch` is given more
   than one directory, only the *first* drives the rendered board (its state
   is broadcast to the browser). Additional directories are watched for real

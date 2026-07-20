@@ -50,6 +50,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createStateFeed } from './stateFeed.mjs';
 import { resolveProjectRoots, ProjectRootError } from './projectRoots.mjs';
+import { createDefaultAppData } from './appData.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -756,6 +757,77 @@ export function createStandaloneServer() {
 // for multiple), then a default. See projectRoots.mjs for the full
 // rationale and the pure resolveProjectRoots() this delegates to.
 
+// ── App data + theme image config (pA-t3) ───────────────────────────────────
+// Wires appData.mjs (previously unwired — see its module header) into the
+// server: resolves the OS-appropriate persistent app-data directory
+// (honoring TYCOON_STANDALONE_DATA_DIR) and derives a `themes/` subdirectory
+// under it — the root a LATER task's theme storage adapter will read/write
+// generated theme manifests/images from/to. This task only resolves and
+// exposes that path (via startServer()'s returned `appData`/`themeDataDir`);
+// it does not create any theme files itself.
+//
+// getThemeImageConfig() is the standalone analog of the VS Code extension's
+// resolveThemeImageSettings()/getThemeImageConfigurationStatus() (see
+// src/extension/themeImageSettings.ts) and matches
+// src/extension/imageClient.ts's ThemeImageConfig shape EXACTLY —
+// { provider?: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string }
+// — so a later task can pass this straight into generateThemeImage()'s
+// `config` parameter unchanged. The extension stores its provider/keys in
+// vscode.SecretStorage (OS keychain); the standalone has no keychain, so
+// this reads plain environment variables instead (documented as a security
+// step-down in README.md). Only the PROVIDER selection may optionally be
+// persisted via appData (never the API keys themselves — keys stay
+// env-only, never written to disk here) so a user's provider choice
+// survives a restart even without re-exporting the env var; an explicit env
+// var always wins over any persisted value.
+const THEME_IMAGE_PROVIDER_FILE = 'themeImageProvider.json';
+
+function normalizeThemeImageProvider(value) {
+  // Mirrors src/extension/themeImageSettings.ts's normalizeThemeImageProvider
+  // exactly: only the literal 'gemini' selects Gemini, everything else
+  // (including undefined/unset) defaults to 'openai'.
+  return value === 'gemini' ? 'gemini' : 'openai';
+}
+
+/**
+ * Resolves the standalone's theme image provider/API-key config from
+ * environment variables (optionally falling back to an appData-persisted
+ * provider choice). Env vars always take precedence.
+ *
+ * @param {object} [opts]
+ * @param {Record<string, string | undefined>} [opts.env] defaults to
+ *   `process.env`.
+ * @param {{ readJson: (name: string, fallback?: unknown) => unknown }} [opts.appData]
+ *   optional — when provided, a persisted `{ provider }` is consulted as the
+ *   fallback when `TYCOON_THEME_IMAGE_PROVIDER` is unset.
+ * @returns {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string }}
+ */
+export function getThemeImageConfig({ env = process.env, appData } = {}) {
+  let persistedProvider;
+  if (appData && typeof appData.readJson === 'function') {
+    const stored = appData.readJson(THEME_IMAGE_PROVIDER_FILE, null);
+    if (stored && typeof stored.provider === 'string') {
+      persistedProvider = stored.provider;
+    }
+  }
+
+  const envProvider =
+    typeof env.TYCOON_THEME_IMAGE_PROVIDER === 'string' && env.TYCOON_THEME_IMAGE_PROVIDER.trim() !== ''
+      ? env.TYCOON_THEME_IMAGE_PROVIDER.trim()
+      : undefined;
+
+  /** @type {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string }} */
+  const config = { provider: normalizeThemeImageProvider(envProvider ?? persistedProvider) };
+
+  if (typeof env.TYCOON_OPENAI_API_KEY === 'string' && env.TYCOON_OPENAI_API_KEY.trim() !== '') {
+    config.openaiApiKey = env.TYCOON_OPENAI_API_KEY.trim();
+  }
+  if (typeof env.TYCOON_GEMINI_API_KEY === 'string' && env.TYCOON_GEMINI_API_KEY.trim() !== '') {
+    config.geminiApiKey = env.TYCOON_GEMINI_API_KEY.trim();
+  }
+  return config;
+}
+
 /** Thrown when the server cannot bind its port (e.g. EADDRINUSE). Callers
  * should print `.message` and exit non-zero — never let this surface as a
  * raw Node stack trace. */
@@ -791,7 +863,10 @@ export class ServerStartError extends Error {
  *   resolveProjectRoots(). Defaults to `process.argv.slice(2)`.
  * @param {Record<string, string | undefined>} [opts.env] defaults to
  *   `process.env`; forwarded to resolveProjectRoots() and consulted for
- *   TYCOON_STANDALONE_PORT / TYCOON_STANDALONE_HOST.
+ *   TYCOON_STANDALONE_PORT / TYCOON_STANDALONE_HOST, and (pA-t3) for the
+ *   appData dir override (TYCOON_STANDALONE_DATA_DIR, via appData.mjs) and
+ *   theme image provider/keys (TYCOON_THEME_IMAGE_PROVIDER,
+ *   TYCOON_OPENAI_API_KEY, TYCOON_GEMINI_API_KEY, via getThemeImageConfig()).
  * @param {string} opts.cwd base for relative-path resolution and the
  *   cwd-tier default target (see resolveProjectRoots()). Required — callers
  *   must be explicit (see module header above).
@@ -805,6 +880,9 @@ export class ServerStartError extends Error {
  *   primary: object,
  *   secondary: object[],
  *   close: () => Promise<void>,
+ *   appData: ReturnType<typeof createDefaultAppData>,
+ *   themeDataDir: string,
+ *   getThemeImageConfig: () => ReturnType<typeof getThemeImageConfig>,
  * }>}
  * @throws {ProjectRootError} on a missing/invalid project directory (see
  *   resolveProjectRoots()) — thrown synchronously but this is an async
@@ -822,6 +900,16 @@ export async function startServer({
   const [primary, ...secondary] = roots;
 
   const server = createStandaloneServer();
+
+  // App data + theme config (pA-t3) — see the section comment above
+  // getThemeImageConfig() for the full contract. Resolved from the SAME
+  // `env` this call already threads through (not raw process.env), so tests
+  // that pass a fake env (TYCOON_STANDALONE_DATA_DIR, TYCOON_OPENAI_API_KEY,
+  // etc.) get an isolated, deterministic app-data dir and config.
+  const appData = createDefaultAppData({ env });
+  const themeDataDir = path.join(appData.dir, 'themes');
+  console.log(`[tycoonagents-standalone] app data dir: ${appData.dir}`);
+  console.log(`[tycoonagents-standalone] theme data dir: ${themeDataDir}`);
 
   // MULTI-DIR SEMANTICS (documented per task brief — do not silently mix
   // projects' sessions into one board): the FIRST resolved target is the
@@ -930,7 +1018,18 @@ export async function startServer({
     });
   }
 
-  return { server, url, port: boundPort, host, primary, secondary, close };
+  return {
+    server,
+    url,
+    port: boundPort,
+    host,
+    primary,
+    secondary,
+    close,
+    appData,
+    themeDataDir,
+    getThemeImageConfig: () => getThemeImageConfig({ env, appData }),
+  };
 }
 
 function main() {
