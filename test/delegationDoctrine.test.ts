@@ -165,7 +165,14 @@ test("renderDelegationDoctrine('team_leads') references Direct mode, not Flat mo
 test("renderDelegationDoctrine defaults reviewEnabled to true (2nd arg omitted) and includes the Review pass section", () => {
   const out = renderDelegationDoctrine("flat");
   assert.ok(out.includes("## Review pass (enabled)"), "review section must be present by default");
-  assert.ok(out.includes("reviewer"), "must mention the reviewer agent");
+  // DEFAULT_ROSTER_ROWS (the bare-install fallback) has neither `reviewer`
+  // nor `uefn-auditor` (both are deliberately excluded from the Specialist
+  // roster table), so the section must fall back to the generic phrase
+  // rather than hardcoding an agent id absent from the roster.
+  assert.ok(
+    out.includes("the review agent"),
+    "must fall back to the generic review-agent phrase when neither reviewer nor uefn-auditor is in the roster"
+  );
 });
 
 test("renderDelegationDoctrine(mode, true) includes the Review pass section for both base modes", () => {
@@ -186,6 +193,89 @@ test("the Review pass section describes a single review gate, not an unbounded l
   const out = renderDelegationDoctrine("flat", true);
   assert.ok(/single review gate/i.test(out), "must state it is a single gate");
   assert.ok(/not an open-ended loop|not.*unbounded/i.test(out), "must explicitly rule out an unbounded loop");
+});
+
+// ---------------------------------------------------------------------------
+// renderDelegationDoctrine: roster-accurate Review-pass agent naming (mirrors
+// resolveEditId's coding-specialist/verse-expert pattern for the review
+// agent: `reviewer` on a normal roster, `uefn-auditor` on a UEFN-shaped
+// roster, a generic phrase when neither is installed). Every case must also
+// preserve the HUMAN "the user is the final reviewer" phrase untouched.
+// ---------------------------------------------------------------------------
+
+test("Review pass section names uefn-auditor (not a 'reviewer' agent) on a UEFN-shaped roster, and preserves the human 'final reviewer' phrase", () => {
+  const uefnRoster: DoctrineRosterAgent[] = [
+    { id: "verse-expert", taskTypes: "Verse device implementation" },
+    { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
+    { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
+  ];
+  const out = renderDelegationDoctrine("flat", true, uefnRoster);
+  assert.ok(out.includes("uefn-auditor"), "review section must name uefn-auditor on a UEFN roster");
+
+  // "The user is the final reviewer" legitimately contains the substring
+  // "reviewer" (it refers to the HUMAN) -> strip that exact phrase out
+  // before asserting no "reviewer" AGENT reference remains.
+  const withoutHumanPhrase = out.replace(/The user is the final reviewer/i, "");
+  assert.equal(
+    /\breviewer\b/i.test(withoutHumanPhrase),
+    false,
+    "must not name a 'reviewer' agent when only uefn-auditor is installed"
+  );
+  assert.ok(/the user is the final reviewer/i.test(out), "the human 'final reviewer' phrase must survive untouched");
+});
+
+// NOTE: in PRODUCTION, panel.ts's `_buildDoctrineRoster` deliberately
+// excludes `tier: "reviewer"` rows (see its doc comment) — so `reviewer`
+// NEVER appears in `rosterAgents` even when reviewer.md is installed on a
+// non-UEFN project. A test that puts a synthetic `{ id: "reviewer" }` row
+// into `rosterAgents` and expects it to be named exercises a roster shape
+// production can never produce, and would mask the real regression (see
+// panel.ts's `_resolveReviewAgentId`, which reads the FULL installed agent
+// set — before that tier exclusion — and is threaded through as
+// `renderDelegationDoctrine`'s explicit `reviewAgentId` argument below).
+
+test("Review pass section names reviewer via the explicit reviewAgentId argument (production path: reviewer installed on a non-UEFN project), and preserves the human 'final reviewer' phrase", () => {
+  const roster: DoctrineRosterAgent[] = [
+    { id: "coding-specialist", taskTypes: "Implementation, editing, bug fixes, refactoring" },
+    { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
+  ];
+  const out = renderDelegationDoctrine("flat", true, roster, "reviewer");
+  assert.ok(/the `reviewer` agent/i.test(out), "review section must name reviewer when reviewAgentId='reviewer'");
+  assert.ok(/the user is the final reviewer/i.test(out), "the human 'final reviewer' phrase must survive untouched");
+});
+
+test("Review pass section names uefn-auditor via the explicit reviewAgentId argument (production path: UEFN project), and preserves the human 'final reviewer' phrase", () => {
+  const roster: DoctrineRosterAgent[] = [
+    { id: "verse-expert", taskTypes: "Verse device implementation" },
+    { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
+  ];
+  const out = renderDelegationDoctrine("flat", true, roster, "uefn-auditor");
+  assert.ok(/the `uefn-auditor` agent/i.test(out), "review section must name uefn-auditor when reviewAgentId='uefn-auditor'");
+  assert.ok(/the user is the final reviewer/i.test(out), "the human 'final reviewer' phrase must survive untouched");
+});
+
+test("Review pass section falls back to a generic phrase (never a dangling id) when reviewAgentId is omitted and rosterAgents has neither reviewer nor uefn-auditor", () => {
+  const roster: DoctrineRosterAgent[] = [
+    { id: "coding-specialist", taskTypes: "Implementation, editing, bug fixes, refactoring" },
+    { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
+  ];
+  const out = renderDelegationDoctrine("flat", true, roster);
+  assert.ok(out.includes("the review agent"), "must fall back to the generic phrase");
+  assert.equal(
+    /`reviewer`|`uefn-auditor`/i.test(out),
+    false,
+    "must not name an agent id absent from the roster"
+  );
+  assert.ok(/the user is the final reviewer/i.test(out), "the human 'final reviewer' phrase must survive untouched");
+});
+
+test("Review pass section: an explicit reviewAgentId wins over resolveReviewId's own rosterAgents-based guess", () => {
+  // rosterAgents alone would resolve to uefn-auditor (present in rows), but
+  // the caller's direct reviewAgentId ("reviewer") must take priority.
+  const roster: DoctrineRosterAgent[] = [{ id: "uefn-auditor", taskTypes: "Verse audit, lint" }];
+  const out = renderDelegationDoctrine("flat", true, roster, "reviewer");
+  assert.ok(/the `reviewer` agent/i.test(out), "explicit reviewAgentId must win over the roster-derived guess");
+  assert.equal(out.includes("`uefn-auditor`"), false, "must not also name uefn-auditor when reviewAgentId overrides it");
 });
 
 // ---------------------------------------------------------------------------

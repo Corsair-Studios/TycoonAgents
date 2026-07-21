@@ -22,7 +22,8 @@ export interface ExecutionConfig {
   /**
    * Optional "Review pass" toggle (composes with either delegation_mode):
    * before the orchestrator reports a specialist's task as done, it routes
-   * the change to the `reviewer` agent for a correctness/quality pass.
+   * the change to the review agent (`reviewer`, or `uefn-auditor` on a UEFN
+   * roster) for a correctness/quality pass.
    * Defaults to `true` when the key is absent from execution.json (on by
    * default) — see {@link readExecutionConfig}.
    */
@@ -126,6 +127,19 @@ function renderRosterTable(agents: DoctrineRosterAgent[] | undefined): string {
 function resolveEditId(rows: DoctrineRosterAgent[]): string | undefined {
   const rowFor = (id: string) => rows.find((r) => r.id === id);
   return (rowFor("coding-specialist") ?? rowFor("verse-expert"))?.id;
+}
+
+/**
+ * Resolve the roster's review-pass agent id: `reviewer` when present, else
+ * `uefn-auditor` when present (the UEFN roster's "Verse Auditor", which
+ * REPLACES `reviewer` on a UEFN project), else `undefined` when neither is
+ * installed. Mirrors {@link resolveEditId}'s pattern so
+ * {@link renderReviewSection} never hardcodes `reviewer` regardless of what's
+ * actually installed for this project.
+ */
+function resolveReviewId(rows: DoctrineRosterAgent[]): string | undefined {
+  const rowFor = (id: string) => rows.find((r) => r.id === id);
+  return (rowFor("reviewer") ?? rowFor("uefn-auditor"))?.id;
 }
 
 function renderPreamble(rosterAgents: DoctrineRosterAgent[] | undefined): string {
@@ -285,25 +299,56 @@ and go straight from the orchestrator to the worker, same as Direct mode.`;
  * Optional "Review pass" framing (composes with either base mode — appended
  * regardless of whether the orchestrator is briefing workers directly or
  * routing through team leads). A SINGLE review gate: one round of
- * reviewer-requested fixes, never an unbounded approve/reject loop.
+ * review-requested fixes, never an unbounded approve/reject loop. A function
+ * (not a static string) so the review-agent references can name the
+ * project's actual review target (`reviewer` or, on a UEFN roster,
+ * `uefn-auditor`) instead of hardcoding `reviewer` regardless of what's
+ * actually installed — mirrors {@link renderTeamLeadsSection}'s use of
+ * {@link resolveEditId}.
+ *
+ * `reviewAgentId`, when supplied, wins outright — it's the caller's
+ * (panel.ts's) direct read of the FULL installed agent set, computed BEFORE
+ * `_buildDoctrineRoster`'s tier-based exclusion strips `reviewer`/lead rows
+ * out of `rosterAgents` (that exclusion is intentional: those agents get
+ * their own doctrine sections rather than a "delegate to X" roster row, but
+ * it also means `rosterAgents` alone can never prove `reviewer` is
+ * installed). When `reviewAgentId` is omitted (e.g. a caller with no better
+ * source, or a unit test), this falls back to {@link resolveReviewId} against
+ * `rosterAgents` — which only ever succeeds for `uefn-auditor` in practice,
+ * since `reviewer` is always tier-excluded from that same array. Absent
+ * both, renders a generic "the review agent" phrase — never a hardcoded id
+ * missing from the roster.
+ *
+ * NOTE: "The user is the final reviewer" refers to the HUMAN, not the
+ * review agent, and is intentionally left untouched by this substitution.
  */
-const REVIEW_SECTION = `## Review pass (enabled)
+function renderReviewSection(
+  rosterAgents: DoctrineRosterAgent[] | undefined,
+  reviewAgentId?: string
+): string {
+  const reviewId = reviewAgentId ?? resolveReviewId(resolveRosterRows(rosterAgents));
+  const reviewAgentPhrase = reviewId ? `the \`${reviewId}\` agent` : "the review agent";
+  const reviewAgentPhraseCap = reviewId ? `The \`${reviewId}\` agent's` : "The review agent's";
+  const reviewAgentPossessive = reviewId ? `the \`${reviewId}\` agent's` : "the review agent's";
+
+  return `## Review pass (enabled)
 
 Before the orchestrator reports a specialist's task as done, it routes the
-change to the \`reviewer\` agent for a correctness and quality pass: read the
+change to ${reviewAgentPhrase} for a correctness and quality pass: read the
 diff, check it against the task's intent and acceptance criteria, and flag
 bugs, regressions, or quality issues.
 
-If the reviewer requires changes, the orchestrator sends them back to the
-original specialist to fix, then re-checks with the reviewer once more. This
+If ${reviewAgentPhrase} requires changes, the orchestrator sends them back to the
+original specialist to fix, then re-checks with ${reviewAgentPhrase} once more. This
 is a single review gate, not an open-ended loop — after that one round of
 fixes the orchestrator reports the outcome rather than cycling further.
 
-The reviewer's pass is a quality assist, not a sign-off: it catches bugs and
+${reviewAgentPhraseCap} pass is a quality assist, not a sign-off: it catches bugs and
 regressions BEFORE the change reaches the user, so the human reviews cleaner
 work. The user is the final reviewer — the orchestrator surfaces the
-reviewed change for the user to approve and never treats the reviewer
-agent's pass as final acceptance.`;
+reviewed change for the user to approve and never treats ${reviewAgentPossessive}
+pass as final acceptance.`;
+}
 
 /**
  * Render the CLAUDE.md section body for a delegation mode. Pure (no
@@ -320,16 +365,24 @@ agent's pass as final acceptance.`;
  * default (see {@link DEFAULT_ROSTER_ROWS}) — omit it, or pass `[]`, to get
  * the default roster. Also threaded into {@link renderPreamble} so the
  * PREAMBLE's prose never names an agent id absent from this same roster.
+ *
+ * `reviewAgentId` (optional) is the caller's direct read of which review
+ * agent is actually installed (`reviewer` or `uefn-auditor`) — see
+ * {@link renderReviewSection}'s doc comment for why this can't reliably be
+ * derived from `rosterAgents` alone (that array has `reviewer` tier-excluded
+ * by `panel.ts`'s `_buildDoctrineRoster`). Only affects output when
+ * `reviewEnabled` is true; ignored otherwise.
  */
 export function renderDelegationDoctrine(
   mode: DelegationMode,
   reviewEnabled = true,
-  rosterAgents?: DoctrineRosterAgent[]
+  rosterAgents?: DoctrineRosterAgent[],
+  reviewAgentId?: string
 ): string {
   const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents) : DIRECT_SECTION;
   const parts = [renderPreamble(rosterAgents), renderRosterTable(rosterAgents), modeSection];
   if (reviewEnabled) {
-    parts.push(REVIEW_SECTION);
+    parts.push(renderReviewSection(rosterAgents, reviewAgentId));
   }
   return parts.join("\n\n");
 }

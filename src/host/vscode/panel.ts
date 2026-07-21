@@ -4062,6 +4062,28 @@ export class TycoonPanel {
   }
 
   /**
+   * Resolve which agent actually covers the "Review pass" doctrine section:
+   * `reviewer` when its `.md` file is installed, else `uefn-auditor` when
+   * installed (a UEFN project's Verse Auditor), else `undefined` when
+   * neither is present. MUST be computed from the FULL installed agent set
+   * (via {@link loadAgentRoster}, same as `_buildDoctrineRoster`) rather than
+   * from `_buildDoctrineRoster`'s own `rows` output — that output has
+   * `tier: "reviewer"` agents deliberately excluded (see its doc comment),
+   * so `reviewer` can never be proven installed from `rows` alone. Passed as
+   * `renderDelegationDoctrine`'s `reviewAgentId` argument so the "Review
+   * pass" section names the real installed agent instead of falling back to
+   * a generic phrase whenever `reviewer` is installed on a non-UEFN project.
+   */
+  private _resolveReviewAgentId(root: string): string | undefined {
+    const agentsDir = path.join(root, ".claude", "agents");
+    const rosterFiles = loadAgentRoster(agentsDir);
+    const hasId = (id: string) => rosterFiles.some((a) => a.id === id);
+    if (hasId("reviewer")) return "reviewer";
+    if (hasId("uefn-auditor")) return "uefn-auditor";
+    return undefined;
+  }
+
+  /**
    * Build the full managed CLAUDE.md doctrine content (delegation section +
    * code rules section) for a given mode/reviewEnabled, splicing into
    * `existingContent`. Shared by `_handleInstallHooks` (the reference write
@@ -4082,9 +4104,10 @@ export class TycoonPanel {
   ): string {
     const roster = this._buildDoctrineRoster(root);
     const isUefn = detectUefnProject(root).detected;
+    const reviewAgentId = this._resolveReviewAgentId(root);
     const withDelegation = upsertDelegationSection(
       existingContent,
-      renderDelegationDoctrine(mode, reviewEnabled, roster)
+      renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId)
     );
     return upsertCodeRulesSection(withDelegation, renderCodeRules(isUefn));
   }
@@ -4501,7 +4524,7 @@ export class TycoonPanel {
       }
       const updated = upsertDelegationSection(
         existingClaudeMd,
-        renderDelegationDoctrine(mode, reviewEnabled, this._buildDoctrineRoster(root))
+        renderDelegationDoctrine(mode, reviewEnabled, this._buildDoctrineRoster(root), this._resolveReviewAgentId(root))
       );
       fs.writeFileSync(claudeMdPath, updated);
     } catch (err) {
@@ -4571,7 +4594,7 @@ export class TycoonPanel {
       }
       const updated = upsertDelegationSection(
         existingClaudeMd,
-        renderDelegationDoctrine(mode, enabled, this._buildDoctrineRoster(root))
+        renderDelegationDoctrine(mode, enabled, this._buildDoctrineRoster(root), this._resolveReviewAgentId(root))
       );
       fs.writeFileSync(claudeMdPath, updated);
     } catch (err) {
