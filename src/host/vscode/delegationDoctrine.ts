@@ -341,7 +341,10 @@ bugs, regressions, or quality issues.
 If ${reviewAgentPhrase} requires changes, the orchestrator sends them back to the
 original specialist to fix, then re-checks with ${reviewAgentPhrase} once more. This
 is a single review gate, not an open-ended loop — after that one round of
-fixes the orchestrator reports the outcome rather than cycling further.
+fixes the orchestrator reports the outcome rather than cycling further. The
+review stays a single pass, not a fan-out: ${reviewAgentPhrase} must not spawn
+further sub-agents, and the orchestrator does not start the review while
+writers touching the same files are still in flight.
 
 ${reviewAgentPhraseCap} pass is a quality assist, not a sign-off: it catches bugs and
 regressions BEFORE the change reaches the user, so the human reviews cleaner
@@ -349,6 +352,27 @@ work. The user is the final reviewer — the orchestrator surfaces the
 reviewed change for the user to approve and never treats ${reviewAgentPossessive}
 pass as final acceptance.`;
 }
+
+/**
+ * Orchestrator-side verification discipline, always included in the doctrine
+ * (independent of the review gate). Mitigates a Claude Code Task-tool
+ * limitation: sub-agents don't block on nested children and can return
+ * premature "running in the background" narration with no writes,
+ * task-notifications aren't de-duplicated, and there is no file locking
+ * between an original and a resumed sub-agent editing the same file.
+ */
+const VERIFICATION_SECTION = `## A "completed" notification is not proof — verify on disk
+
+A sub-agent reporting done — or "running in the background", or narration with
+no concrete file:line changes — does NOT mean the work landed. Before recording
+a task as done, the orchestrator READS the changed files on disk itself; if
+nothing changed, it treats the task as failed and re-dispatches it.
+
+The orchestrator re-reads a file from disk immediately before verifying or
+building on it — a resumed or background sub-agent may have edited it after its
+first report, so cached content can be stale. File ownership stays DISJOINT
+across concurrent workers (the harness does not lock files); the orchestrator
+never runs two writers on the same file at once.`;
 
 /**
  * Render the CLAUDE.md section body for a delegation mode. Pure (no
@@ -380,7 +404,7 @@ export function renderDelegationDoctrine(
   reviewAgentId?: string
 ): string {
   const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents) : DIRECT_SECTION;
-  const parts = [renderPreamble(rosterAgents), renderRosterTable(rosterAgents), modeSection];
+  const parts = [renderPreamble(rosterAgents), renderRosterTable(rosterAgents), modeSection, VERIFICATION_SECTION];
   if (reviewEnabled) {
     parts.push(renderReviewSection(rosterAgents, reviewAgentId));
   }

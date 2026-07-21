@@ -13,6 +13,8 @@ import {
   buildAgentMarkdown,
   agentMarkdownTier,
   agentMarkdownHasTycoonMarker,
+  WORKING_DISCIPLINE_BODY,
+  resyncAgentDisciplineSection,
   REGULAR_AGENTS,
   LEAD_AGENTS,
   REVIEWER_AGENTS,
@@ -78,7 +80,7 @@ test("a regular agent (no tier) renders full expected frontmatter — no tier li
   const md = buildAgentMarkdown(agent);
   assert.equal(
     md,
-    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n`
+    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n\n## Working discipline\n${WORKING_DISCIPLINE_BODY}\n`
   );
   assert.ok(!md.includes("tier:"), "regular agents must not emit a tier line");
 });
@@ -261,7 +263,7 @@ test("buildAgentMarkdown(agent) without packId omits tycoon_pack but still has n
   const md = buildAgentMarkdown(agent);
   assert.equal(
     md,
-    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n`
+    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n\n## Working discipline\n${WORKING_DISCIPLINE_BODY}\n`
   );
   assert.ok(!md.includes("tycoon_pack"), "no packId means no tycoon_pack line");
 });
@@ -288,6 +290,35 @@ test("buildAgentMarkdown(agent, packId) is deterministic across repeated calls",
   const first = buildAgentMarkdown(agent, "uefn");
   const second = buildAgentMarkdown(agent, "uefn");
   assert.equal(first, second);
+});
+
+test("buildAgentMarkdown appends the Working discipline section for a non-orchestrator agent", () => {
+  const md = buildAgentMarkdown(agent);
+  assert.ok(md.includes("## Working discipline\n"), "a worker gets a Working discipline section");
+  assert.ok(md.includes(WORKING_DISCIPLINE_BODY), "section carries the canonical discipline body");
+  assert.ok(md.trimEnd().endsWith(WORKING_DISCIPLINE_BODY), "discipline is the trailing section");
+});
+
+test("buildAgentMarkdown omits the Working discipline section for the orchestrator", () => {
+  const orch = { ...agent, id: "orchestrator", name: "Orchestrator" };
+  const md = buildAgentMarkdown(orch);
+  assert.ok(!md.includes("## Working discipline"), "the orchestrator delegates — it carries no leaf-worker discipline");
+});
+
+test("resyncAgentDisciplineSection inserts the section when absent, then is idempotent", () => {
+  const legacy = `---\nname: ${agent.id}\ndescription: "x"\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n`;
+  const inserted = resyncAgentDisciplineSection(legacy);
+  assert.ok(inserted.includes("## Working discipline\n"), "section is appended when missing");
+  assert.ok(inserted.endsWith(`## Working discipline\n${WORKING_DISCIPLINE_BODY}\n`), "appended as the trailing section");
+  assert.equal(resyncAgentDisciplineSection(inserted), inserted, "a second resync is a no-op");
+});
+
+test("resyncAgentDisciplineSection refreshes a stale discipline body", () => {
+  const stale = `# ${agent.name}\n\n## Working discipline\n- old outdated bullet\n`;
+  const fixed = resyncAgentDisciplineSection(stale);
+  assert.ok(!fixed.includes("old outdated bullet"), "stale body is replaced");
+  assert.ok(fixed.includes(WORKING_DISCIPLINE_BODY), "canonical body is written");
+  assert.equal(resyncAgentDisciplineSection(fixed), fixed, "idempotent after refresh");
 });
 
 // ---------------------------------------------------------------------------

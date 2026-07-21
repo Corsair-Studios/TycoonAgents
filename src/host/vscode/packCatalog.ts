@@ -60,6 +60,22 @@ export interface PackAgent {
  * JSON-stringified so colons/quotes/newlines in free-text role prose can
  * never break the YAML frontmatter block.
  */
+
+/**
+ * The `## Working discipline` body appended to every NON-orchestrator agent's
+ * generated markdown. Reinforces that workers/reviewers are LEAVES: they do
+ * the work themselves, never spawn nested Task sub-agents (which the Claude
+ * Code harness does not make block on their children — a nested spawn returns
+ * premature "I'll report when it's done" narration with no writes), and never
+ * return that narration as a result. Shared with
+ * {@link resyncAgentDisciplineSection} so fresh installs and on-load resyncs
+ * stay byte-identical.
+ */
+export const WORKING_DISCIPLINE_BODY =
+  "- You are a LEAF: do the assigned task YOURSELF — reads, searches, and edits — with your own tools. Do NOT spawn Task or sub-agents; there is no delegation below you.\n" +
+  "- BLOCK until the work is actually finished. Never end with a \"running in the background\", \"I'll report when it's done\", or \"waiting for another agent\" message — that is not a valid result. Return only once the files are written and verified.\n" +
+  "- Report the concrete outcome in under 250 words: what changed (file:line), how you verified it, and any open issues.";
+
 export function buildAgentMarkdown(agent: {
   id: string;
   name: string;
@@ -84,7 +100,13 @@ export function buildAgentMarkdown(agent: {
     `${agent.role}\n` +
     "\n" +
     "## Keywords (for task routing)\n" +
-    `${agent.keywords}\n`
+    `${agent.keywords}\n` +
+    // Leaf-worker discipline on every agent EXCEPT the orchestrator (the only
+    // agent that is meant to delegate). Kept as the trailing section so the
+    // on-load resync can find/append it deterministically.
+    (agent.id !== "orchestrator"
+      ? "\n## Working discipline\n" + WORKING_DISCIPLINE_BODY + "\n"
+      : "")
   );
 }
 
@@ -218,6 +240,31 @@ export function resyncAgentRoleSection(content: string, newRole: string): string
   }
 
   return content.slice(0, bodyStart) + newRole + rest.slice(bodyEnd);
+}
+
+/**
+ * Ensure a managed worker agent file carries the current `## Working
+ * discipline` section (see {@link WORKING_DISCIPLINE_BODY}). This section is
+ * the LAST section by construction, so it spans from its heading to end of
+ * file. Behavior:
+ *  - present and current → returns the input content unchanged (idempotent);
+ *  - present but stale → replaces heading→EOF with the canonical section;
+ *  - ABSENT (file installed before the section existed) → appends it with the
+ *    usual blank-line separator.
+ * Never returns null — a missing section is added, not a reason to skip.
+ * Only ever call this for NON-orchestrator agents (the orchestrator delegates
+ * and must not carry leaf-worker discipline).
+ */
+export function resyncAgentDisciplineSection(content: string): string {
+  const heading = "## Working discipline\n";
+  const canonical = heading + WORKING_DISCIPLINE_BODY + "\n";
+  const headingIdx = content.indexOf(heading);
+  if (headingIdx === -1) {
+    const base = content.endsWith("\n") ? content : content + "\n";
+    return base + "\n" + canonical;
+  }
+  const updated = content.slice(0, headingIdx) + canonical;
+  return updated === content ? content : updated;
 }
 
 /**

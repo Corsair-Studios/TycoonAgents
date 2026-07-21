@@ -21,7 +21,7 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -3985,9 +3985,16 @@ export class TycoonPanel {
           }
           const managed = agentMarkdownHasTycoonMarker(content) || workerAgentFingerprintMatches(content, a);
           if (!managed) continue; // never touch a file we can't positively identify as ours
-          const updated = resyncAgentRoleSection(content, a.role);
-          if (updated === null || updated === content) continue; // unrecognized shape or already current
-          fs.writeFileSync(agentPath, updated);
+          const roleUpdated = resyncAgentRoleSection(content, a.role);
+          let next = roleUpdated === null ? content : roleUpdated;
+          // Workers/reviewers are LEAVES — keep the "## Working discipline"
+          // section current too (added/updated in the same read-modify-write).
+          // The orchestrator is the only delegator, so it never carries it.
+          if (a.id !== "orchestrator") {
+            next = resyncAgentDisciplineSection(next);
+          }
+          if (next === content) continue; // already current (or unrecognized shape with nothing to change)
+          fs.writeFileSync(agentPath, next);
         } catch {
           /* best-effort per-file; never blocks the rest of the roster */
         }

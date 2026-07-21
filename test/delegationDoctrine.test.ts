@@ -104,6 +104,23 @@ test("DELEGATION_MODES contains exactly flat and team_leads (enum unchanged by t
   assert.deepEqual([...DELEGATION_MODES], ["flat", "team_leads"]);
 });
 
+test("renderDelegationDoctrine always includes the verify-on-disk section, with or without the review gate", () => {
+  for (const reviewEnabled of [true, false]) {
+    const out = renderDelegationDoctrine("flat", reviewEnabled);
+    assert.ok(out.includes("is not proof"), "verify-on-disk section present");
+    assert.ok(out.includes("re-reads a file from disk"), "re-read-before-trust guidance present");
+    assert.ok(out.includes("DISJOINT"), "disjoint file-ownership guidance present");
+  }
+});
+
+test("renderDelegationDoctrine caps the review fan-out when the review gate is enabled", () => {
+  const withReview = renderDelegationDoctrine("flat", true);
+  assert.ok(withReview.includes("not a fan-out"), "review-cap phrasing present");
+  assert.ok(withReview.includes("must not spawn"), "no-nested-spawn guidance present");
+  const noReview = renderDelegationDoctrine("flat", false);
+  assert.ok(!noReview.includes("not a fan-out"), "review-cap text only appears with the review gate");
+});
+
 // ---------------------------------------------------------------------------
 // renderDelegationDoctrine: hard "MUST NOT explore/edit yourself" mandate +
 // review-vs-explore disambiguation (shared PREAMBLE, so present in both modes)
