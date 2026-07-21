@@ -230,6 +230,70 @@ test("renderDelegationDoctrine's roster table always has a Specialist/Task types
 });
 
 // ---------------------------------------------------------------------------
+// renderDelegationDoctrine: aggressive delegation hardening — NEVER/ALWAYS
+// edit + search mandates, the narrow known-path read carve-out, the
+// MANDATORY DELEGATION RULES checklist, and the Fallback Rule. Shared
+// PREAMBLE, so asserted for BOTH modes.
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine states the NEVER-edit and NEVER-search-yourself bold mandates, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(
+      /\*\*NEVER Edit or Write files directly.*ALWAYS delegate to coding-specialist\.\*\*/i.test(out),
+      `mode=${mode} must state the bold NEVER-edit mandate naming coding-specialist`
+    );
+    assert.ok(
+      /\*\*NEVER grep, glob, search, or read across multiple files.*ALWAYS delegate to search-retrieval \(Haiku\)\.\*\*/i.test(out),
+      `mode=${mode} must state the bold NEVER-search mandate naming search-retrieval (Haiku)`
+    );
+  }
+});
+
+test("renderDelegationDoctrine states the narrow known-path-read carve-out and preserves the allowed-direct actions, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(
+      /single, specific, already-known\s*file path/i.test(out),
+      `mode=${mode} must describe the narrow one-file-lookup carve-out`
+    );
+    assert.ok(
+      /talking to the user, making\s*high-level architectural decisions, coordinating agents, and VERIFYING work/i.test(out),
+      `mode=${mode} must still explicitly allow talking to the user, high-level decisions, coordination, and verification`
+    );
+  }
+});
+
+test("renderDelegationDoctrine states the MANDATORY DELEGATION RULES checklist and the Fallback Rule, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(out.includes("### MANDATORY DELEGATION RULES"), `mode=${mode} must include the checklist heading`);
+    assert.ok(/1\. Any file edit or creation.*coding-specialist\./i.test(out), `mode=${mode} checklist item 1 must route edits to coding-specialist`);
+    assert.ok(/2\. Any search, grep, glob, or multi-file\/exploratory read.*search-retrieval \(Haiku\)\./i.test(out), `mode=${mode} checklist item 2 must route search to search-retrieval`);
+    assert.ok(out.includes("### The Fallback Rule"), `mode=${mode} must include the Fallback Rule heading`);
+    assert.ok(
+      /delegate it to\s*the Fallback Agent \(Sonnet\) — do NOT do it yourself on the orchestrator/i.test(out),
+      `mode=${mode} must instruct routing keyword-unmatched work to the Fallback Agent instead of the orchestrator`
+    );
+  }
+});
+
+test("renderDelegationDoctrine's MANDATORY DELEGATION RULES checklist omits coding-specialist by name when the supplied roster doesn't include it (no dangling agent reference)", () => {
+  const custom: DoctrineRosterAgent[] = [
+    { id: "verse-expert", taskTypes: "Verse device implementation" },
+    { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
+  ];
+  const out = renderDelegationDoctrine("flat", false, custom);
+  assert.equal(out.includes("coding-specialist"), false, "coding-specialist must not be named when absent from the supplied roster");
+  assert.ok(
+    out.includes("the appropriate specialist (see the roster below)"),
+    "must fall back to a generic phrase instead of a dangling agent name"
+  );
+  // search-retrieval is always safe to name (installed for every project type).
+  assert.ok(out.includes("search-retrieval (Haiku)"), "search-retrieval is project-agnostic and may always be named");
+});
+
+// ---------------------------------------------------------------------------
 // execution config round-trip
 // ---------------------------------------------------------------------------
 

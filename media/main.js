@@ -11007,6 +11007,9 @@
         lines.push("• Search / find / grep → search-retrieval (Explore · Haiku, ~40x cheaper)");
       }
       lines.push("");
+      lines.push("Task doesn't match any specialist's keywords? Route it to the Fallback Agent (Sonnet) — do not do it yourself on the orchestrator.");
+      lines.push("Reminder: any file edit/write → coding-specialist. Anything past a single known-path read (multi-file, exploring, auditing) → search-retrieval (Haiku).");
+      lines.push("");
       lines.push("Keep direct: reading known files, coordination, and talking to you.");
       const unconfiguredAgents = unconfiguredKeywordAgents();
       if (unconfiguredAgents.length > 0) {

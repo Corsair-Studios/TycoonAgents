@@ -335,8 +335,9 @@ export class TycoonPanel {
 
     // Auto-heal a missing project-appropriate worker roster once per panel
     // open (see _ensureWorkerAgentsInstalled doc comment) — fixes
-    // search-retrieval (and, for non-UEFN projects, coding-specialist +
-    // ux-ui-designer) never being installed, which left delegated work with
+    // search-retrieval, primary-agent (the Fallback Agent), and (for
+    // non-UEFN projects) coding-specialist + ux-ui-designer never being
+    // installed, which left delegated work (and keyword-unmatched work) with
     // no matching agent file to route to. Runs BEFORE
     // _ensureAgentKeywordsSeeded so any newly created worker files get their
     // keyword routing seeded in this same panel-load cycle.
@@ -3802,14 +3803,20 @@ export class TycoonPanel {
 
   /**
    * Auto-heal a missing project-appropriate worker roster once per panel
-   * open. Previously `search-retrieval` (and, for non-UEFN projects,
-   * `coding-specialist` + `ux-ui-designer`) had no install path outside a
-   * fresh `_handleInstallHooks` run, so a project that opted into
-   * TycoonAgents before this fix — or whose worker files were deleted —
-   * never got them, and delegated search/implementation work silently fell
-   * back to the synthetic fallback agent. Delegates the actual file-write
-   * decision to `_installWorkerAgents`, which is strictly create-if-absent
-   * (never overwrites a user's own or a UEFN pack's same-named agent).
+   * open. Previously `search-retrieval`, `primary-agent` (the Fallback
+   * Agent), and (for non-UEFN projects) `coding-specialist` +
+   * `ux-ui-designer` had no install path outside a fresh
+   * `_handleInstallHooks` run, so a project that opted into TycoonAgents
+   * before this fix — or whose worker files were deleted — never got them,
+   * and delegated search/implementation work (and keyword-unmatched work,
+   * absent a real `primary-agent.md`) silently fell back to the
+   * orchestrator doing it directly. This is the self-heal rail for a
+   * project installed at an EARLIER version (e.g. one with only
+   * coding-specialist/reviewer/search-retrieval/ux-ui-designer on disk and
+   * no Fallback Agent) — it runs every panel open, not just on a fresh
+   * install. Delegates the actual file-write decision to
+   * `_installWorkerAgents`, which is strictly create-if-absent (never
+   * overwrites a user's own or a UEFN pack's same-named agent).
    *
    * GATE: only runs when TycoonAgents hooks are already installed for this
    * project ({@link _hooksInstalledForRoot} — the same consent proxy
@@ -4379,8 +4386,14 @@ export class TycoonPanel {
 
   /**
    * Install the project-appropriate worker roster (see
-   * `workerAgentsForProject`): always `search-retrieval`; for non-UEFN
-   * projects also `coding-specialist` and `ux-ui-designer`. Unlike
+   * `workerAgentsForProject`): always `search-retrieval` and `primary-agent`
+   * (the Fallback Agent — the id must match the `fallback_agent` default,
+   * see `_readKeywordsConfig`'s fallback return value); for non-UEFN projects also
+   * `coding-specialist` and `ux-ui-designer`. Called both from
+   * `_ensureWorkerAgentsInstalled` (panel-open auto-heal, gated on
+   * `_hooksInstalledForRoot`) and from `_handleInstallHooks` (explicit
+   * Install/Repair), so both a fresh install and an upgraded older project
+   * end up with the Fallback Agent on disk. Unlike
    * `_installAgentFiles` (which refreshes a file it recognizes as its own
    * via a matching `tier:`), this is strictly create-if-absent — it NEVER
    * overwrites an existing `.claude/agents/<id>.md`, whether that file is a

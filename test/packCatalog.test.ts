@@ -6,6 +6,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   buildAgentMarkdown,
   agentMarkdownTier,
@@ -16,6 +19,7 @@ import {
   workerAgentsForProject,
   UEFN_CONFLICT_AGENT_IDS,
   conflictingUefnAgents,
+  type PackAgent,
 } from "../src/host/vscode/packCatalog";
 import { parseAgentMarkdown } from "../src/providers/claude-code/agentRoster";
 
@@ -358,19 +362,32 @@ test("description is YAML-safe (JSON-quoted) even when role contains a colon and
 // stubs, so model/keywords/role stay in sync with the roster of record.
 // ---------------------------------------------------------------------------
 
-test("workerAgentsForProject(true) returns exactly the search-retrieval agent", () => {
+test("workerAgentsForProject(true) returns exactly search-retrieval and primary-agent (the Fallback Agent)", () => {
   const result = workerAgentsForProject(true);
-  assert.equal(result.length, 1);
-  assert.equal(result[0].id, "search-retrieval");
-});
-
-test("workerAgentsForProject(false) returns search-retrieval, coding-specialist, ux-ui-designer in that exact order", () => {
-  const result = workerAgentsForProject(false);
-  assert.equal(result.length, 3);
+  assert.equal(result.length, 2);
   assert.deepEqual(
     result.map((a) => a.id),
-    ["search-retrieval", "coding-specialist", "ux-ui-designer"]
+    ["search-retrieval", "primary-agent"]
   );
+});
+
+test("workerAgentsForProject(false) returns search-retrieval, primary-agent, coding-specialist, ux-ui-designer in that exact order", () => {
+  const result = workerAgentsForProject(false);
+  assert.equal(result.length, 4);
+  assert.deepEqual(
+    result.map((a) => a.id),
+    ["search-retrieval", "primary-agent", "coding-specialist", "ux-ui-designer"]
+  );
+});
+
+test("workerAgentsForProject includes primary-agent (the Fallback Agent) for BOTH UEFN and non-UEFN projects, matching search-retrieval's project-agnostic install", () => {
+  for (const isUefn of [true, false]) {
+    const result = workerAgentsForProject(isUefn);
+    assert.ok(
+      result.some((a) => a.id === "primary-agent"),
+      `isUefn=${isUefn} must include primary-agent`
+    );
+  }
 });
 
 test("workerAgentsForProject(true)'s search-retrieval entry carries model: haiku", () => {
@@ -396,6 +413,77 @@ test("workerAgentsForProject returns the real REGULAR_AGENTS objects (not stubs/
       assert.ok(canonical, `${returned.id} must exist in REGULAR_AGENTS`);
       assert.deepEqual(returned, canonical, `${returned.id} must match its REGULAR_AGENTS entry field-for-field`);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fallback Agent (primary-agent) install semantics: create-if-absent, never
+// overwrite. Mirrors panel.ts's `_installWorkerAgents` write loop exactly
+// (existsSync -> write; else leave untouched) since that private method
+// isn't independently exported/testable — this proves the exact algorithm
+// panel.ts runs, applied to the now-updated `workerAgentsForProject` roster,
+// both creates a missing primary-agent.md AND never clobbers a
+// user-customized one. This is the auto-heal rail that self-heals a project
+// installed at an earlier version (e.g. one with no Fallback Agent on disk)
+// on every panel open, gated on hooks-installed, same as the doctrine and
+// keyword auto-heal rails.
+// ---------------------------------------------------------------------------
+
+/** Mirrors panel.ts's `_installWorkerAgents` per-file write loop exactly. */
+function simulateInstallWorkerAgents(agentsDir: string, agents: PackAgent[]): void {
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const a of agents) {
+    const agentPath = path.join(agentsDir, `${a.id}.md`);
+    if (!fs.existsSync(agentPath)) {
+      fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+    }
+    // else: never overwritten — strictly create-if-absent.
+  }
+}
+
+test("simulated _installWorkerAgents creates a missing primary-agent.md (Fallback Agent) for a non-UEFN project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "workerAgents-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    simulateInstallWorkerAgents(agentsDir, workerAgentsForProject(false));
+    const primaryAgentPath = path.join(agentsDir, "primary-agent.md");
+    assert.ok(fs.existsSync(primaryAgentPath), "primary-agent.md must be created when absent");
+    const content = fs.readFileSync(primaryAgentPath, "utf8");
+    const expected = REGULAR_AGENTS.find((a) => a.id === "primary-agent")!;
+    assert.equal(content, buildAgentMarkdown(expected), "created content must match buildAgentMarkdown output");
+    assert.ok(/model:\s*sonnet/.test(content), "Fallback Agent must be seeded on the sonnet model");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("simulated _installWorkerAgents NEVER overwrites an existing primary-agent.md, even a user-customized one", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "workerAgents-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const customized = "---\nname: primary-agent\ndescription: \"my own customization\"\nmodel: opus\n---\n\n# Mine\n";
+    fs.writeFileSync(path.join(agentsDir, "primary-agent.md"), customized);
+
+    simulateInstallWorkerAgents(agentsDir, workerAgentsForProject(false));
+
+    const content = fs.readFileSync(path.join(agentsDir, "primary-agent.md"), "utf8");
+    assert.equal(content, customized, "an existing primary-agent.md must be left byte-for-byte untouched");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("simulated _installWorkerAgents creates primary-agent.md for a UEFN project too (project-agnostic like search-retrieval)", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "workerAgents-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    simulateInstallWorkerAgents(agentsDir, workerAgentsForProject(true));
+    assert.ok(fs.existsSync(path.join(agentsDir, "primary-agent.md")), "primary-agent.md must be created for UEFN projects too");
+    assert.ok(fs.existsSync(path.join(agentsDir, "search-retrieval.md")), "search-retrieval.md must still be created");
+    assert.equal(fs.existsSync(path.join(agentsDir, "coding-specialist.md")), false, "coding-specialist must NOT be installed for UEFN projects");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -270,21 +270,24 @@ export const REVIEWER_AGENTS: PackAgent[] = [
 
 /**
  * The project-appropriate worker roster to install, given whether the
- * project is a UEFN project. `search-retrieval` is always included — it
- * previously had no install path in any mode, so search/retrieval work
- * silently fell back to the synthetic fallback agent. Non-UEFN projects
+ * project is a UEFN project. `search-retrieval` and `primary-agent` (the
+ * Fallback Agent) are ALWAYS included, in every project type — both are
+ * project-agnostic: search/retrieval work and keyword-unmatched catch-all
+ * work exist regardless of tech stack. Prior to this, `primary-agent` had no
+ * install path at all despite being the documented default
+ * `fallback_agent` (see `_defaultAgentRoutingConfig` in panel.ts), so
+ * keyword-unmatched tasks had no real agent file to route to and silently
+ * fell back to the orchestrator doing the work itself. Non-UEFN projects
  * additionally get `coding-specialist` and `ux-ui-designer`; UEFN projects
  * get neither (a UEFN pack install brings its own `uefn-auditor` and
  * `verse-expert`, and this file's `REVIEWER_AGENTS` reviewer would conflict
  * with `uefn-auditor` as a verification gate, so it is likewise withheld —
  * see `_handleInstallHooks` in panel.ts). Pure: reads only `REGULAR_AGENTS`.
- * Preserves `REGULAR_AGENTS`' relative order (search-retrieval,
- * coding-specialist, ux-ui-designer).
  */
 export function workerAgentsForProject(isUefn: boolean): PackAgent[] {
   const ids = isUefn
-    ? ["search-retrieval"]
-    : ["search-retrieval", "coding-specialist", "ux-ui-designer"];
+    ? ["search-retrieval", "primary-agent"]
+    : ["search-retrieval", "primary-agent", "coding-specialist", "ux-ui-designer"];
   return ids
     .map((id) => REGULAR_AGENTS.find((a) => a.id === id))
     .filter((a): a is PackAgent => a !== undefined);

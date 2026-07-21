@@ -34,50 +34,6 @@ export const DELEGATION_SECTION_START = "<!-- tycoon:delegation -->";
 export const DELEGATION_SECTION_END = "<!-- /tycoon:delegation -->";
 
 /**
- * Instructions shared by both delegation modes: delegate implementation via
- * the Task tool, route search to Explore/haiku agents, brief precisely, cap
- * reports at 250 words, and never let a change be verified by the agent that
- * authored it.
- */
-const PREAMBLE = `## Delegation
-
-Delegate implementation work to specialist agents via the Task tool rather
-than doing it inline. Search tasks (file/code lookup, grep/glob) always go to
-Explore agents running on the haiku model.
-
-### What you MUST NOT do yourself — delegate it
-
-- Exploring, searching, reading across multiple files, auditing, or
-  DESCRIBING the codebase (grep/glob, or reading several files to understand
-  how the project works) — delegate to the search-retrieval agent (Explore,
-  haiku). This applies EVEN WHEN the final deliverable is only documentation
-  or markdown: understanding the code well enough to write about it is
-  search/retrieval work. Doing it yourself runs that exploration on the
-  expensive model (roughly 40x the cost) and hides the work from the
-  visualization.
-- Editing or creating files, including docs and markdown — delegate to the
-  appropriate specialist.
-
-"Reviewing your team's results" means VERIFYING a specialist's completed
-work against the task — it does NOT mean exploring or reading the codebase
-yourself. A request to describe, document, review, or audit a project
-STARTS by delegating the exploration to search-retrieval; you synthesize
-the findings afterward.
-
-Brief every delegated agent precisely:
-- Exact file paths (not glob patterns)
-- Key symbol names (functions, classes, variables relevant to the task)
-- Decisions already made (architecture, patterns established, approaches
-  ruled out)
-- Success criteria (what "done" looks like)
-
-Require every delegated agent to report back in under 250 words: what
-changed (file:line), verification result, open issues.
-
-A change is always verified by someone other than the agent that authored
-it, never self-certified by the agent that wrote it.`;
-
-/**
  * One row of the "Specialist roster" table: a real delegation target for
  * this project. `id` MUST be the agent's FILE id (the `.claude/agents/<id>.md`
  * basename minus extension) — that's the only string the Task tool can
@@ -109,6 +65,18 @@ const DEFAULT_ROSTER_ROWS: DoctrineRosterAgent[] = [
 ];
 
 /**
+ * Resolve the effective roster rows for a render call: the caller-supplied
+ * `agents` when non-empty, else {@link DEFAULT_ROSTER_ROWS}. Shared by
+ * {@link renderRosterTable} (the visible table) and {@link renderPreamble}
+ * (which names specific agents in prose) so both always agree on which ids
+ * actually exist for this render — never naming an agent in prose that the
+ * table itself doesn't list.
+ */
+function resolveRosterRows(agents: DoctrineRosterAgent[] | undefined): DoctrineRosterAgent[] {
+  return agents !== undefined && agents.length > 0 ? agents : DEFAULT_ROSTER_ROWS;
+}
+
+/**
  * Render the "Specialist roster" table body. Pure — the caller (panel.ts's
  * `_buildDoctrineRoster`) is responsible for reading `.claude/agents/*.md`
  * and `.claude/tycoon/agent-keywords.json` off disk and supplying the
@@ -116,9 +84,135 @@ const DEFAULT_ROSTER_ROWS: DoctrineRosterAgent[] = [
  * to {@link DEFAULT_ROSTER_ROWS} when `agents` is undefined or empty.
  */
 function renderRosterTable(agents: DoctrineRosterAgent[] | undefined): string {
-  const rows = agents !== undefined && agents.length > 0 ? agents : DEFAULT_ROSTER_ROWS;
+  const rows = resolveRosterRows(agents);
   const lines = rows.map((a) => `| ${a.id} | ${a.taskTypes} |`);
   return `## Specialist roster\n\n| Specialist | Task types |\n| --- | --- |\n${lines.join("\n")}`;
+}
+
+/**
+ * Render the PREAMBLE shared by both delegation modes: a hard, non-optional
+ * NEVER/ALWAYS mandate against direct edits and direct multi-file
+ * exploration, a narrow one-file-lookup read exception, a MANDATORY
+ * DELEGATION RULES checklist, the Fallback Rule (route keyword-unmatched
+ * work to the Fallback Agent instead of doing it on the orchestrator),
+ * briefing requirements, a 250-word report cap, and the
+ * never-self-certified verification rule.
+ *
+ * `rosterAgents` is threaded through from {@link renderDelegationDoctrine}
+ * so this text can never name an agent id absent from this render's actual
+ * roster (the same dangling-reference hazard {@link DoctrineRosterAgent}'s
+ * doc comment describes): `coding-specialist` and the
+ * testing/ux/vscode/workspace specialists are only named by id when
+ * {@link resolveRosterRows} shows them actually present (a UEFN project
+ * withholds `coding-specialist`, for example) — anything absent falls back
+ * to a generic phrase pointing at the roster table below instead.
+ * `search-retrieval` is the one specialist id always named directly: it is
+ * installed for every project type (see `workerAgentsForProject` in
+ * `./packCatalog`), so naming it can never dangle.
+ */
+function renderPreamble(rosterAgents: DoctrineRosterAgent[] | undefined): string {
+  const rows = resolveRosterRows(rosterAgents);
+  const rowFor = (id: string) => rows.find((r) => r.id === id);
+
+  const editId = rowFor("coding-specialist")?.id;
+  const editTarget = editId ?? "the appropriate specialist (see the roster below)";
+
+  const checklist: string[] = [];
+  checklist.push(
+    editId
+      ? `Any file edit or creation, including docs and markdown → ${editId}.`
+      : "Any file edit or creation, including docs and markdown → the appropriate specialist (see the roster below)."
+  );
+  checklist.push("Any search, grep, glob, or multi-file/exploratory read → search-retrieval (Haiku).");
+  for (const id of ["testing-specialist", "ux-ui-designer", "vscode-integration", "workspace-monitor"]) {
+    const row = rowFor(id);
+    if (row) checklist.push(`${row.taskTypes} → ${row.id}.`);
+  }
+  checklist.push(
+    "Anything that does not clearly match a specialist's keywords → the Fallback Agent, per the rule below — never yourself."
+  );
+  const checklistBody = checklist.map((line, i) => `${i + 1}. ${line}`).join("\n");
+
+  return `## Delegation
+
+Delegate implementation work to specialist agents via the Task tool rather
+than doing it inline. Search tasks (file/code lookup, grep/glob) always go to
+Explore agents running on the haiku model. This is MANDATORY, not a
+preference — the orchestrator coordinates work, it does not do the work.
+
+**NEVER Edit or Write files directly — ALWAYS delegate to ${editTarget}.**
+
+**NEVER grep, glob, search, or read across multiple files to understand the
+code yourself — ALWAYS delegate to search-retrieval (Haiku).**
+
+### The one narrow exception: a trivial known-path read
+
+The ONLY reads you may do directly are a SINGLE, specific, already-known
+file path that is a one-second lookup — nothing to figure out, nothing to
+correlate across files. Anything deeper — multiple files, understanding how
+something works, auditing, exploring, or any read you'd have to stop and
+think about — MUST go to search-retrieval instead. search-retrieval runs on
+Haiku, the cheapest model available, so pushing even "quick" digging there
+instead of doing it yourself is close to free by comparison.
+
+Still explicitly fine to do directly: talking to the user, making
+high-level architectural decisions, coordinating agents, and VERIFYING work
+a specialist already finished.
+
+### What you MUST NOT do yourself — delegate it
+
+- Exploring, searching, reading across multiple files, auditing, or
+  DESCRIBING the codebase (grep/glob, or reading several files to understand
+  how the project works) — delegate to the search-retrieval agent (Explore,
+  haiku). This applies EVEN WHEN the final deliverable is only documentation
+  or markdown: understanding the code well enough to write about it is
+  search/retrieval work. Doing it yourself runs that exploration on the
+  expensive model (roughly 40x the cost) and hides the work from the
+  visualization.
+- Editing or creating files, including docs and markdown — delegate to the
+  appropriate specialist.
+
+"Reviewing your team's results" means VERIFYING a specialist's completed
+work against the task — it does NOT mean exploring or reading the codebase
+yourself. A request to describe, document, review, or audit a project
+STARTS by delegating the exploration to search-retrieval; you synthesize
+the findings afterward.
+
+### MANDATORY DELEGATION RULES
+
+You MUST delegate:
+
+${checklistBody}
+
+### The Fallback Rule
+
+When a task does not clearly match any specialist's keywords, delegate it to
+the Fallback Agent (Sonnet) — do NOT do it yourself on the orchestrator. The
+Fallback Agent's presence in the work log is also a signal to refine keyword
+routing, but in the meantime it still runs on a model roughly a fifth the
+cost of the orchestrator's, so routing unmatched work there saves real
+credits and keeps every task visible in the delegation visualization. Doing
+unmatched work yourself — on the most expensive model in the system — is the
+single most expensive mistake you can make here.
+
+Brief every delegated agent precisely:
+- Exact file paths (not glob patterns)
+- Key symbol names (functions, classes, variables relevant to the task)
+- Decisions already made (architecture, patterns established, approaches
+  ruled out)
+- Success criteria (what "done" looks like)
+
+Require every delegated agent to report back in under 250 words: what
+changed (file:line), verification result, open issues.
+
+A change is always verified by someone other than the agent that authored
+it, never self-certified by the agent that wrote it.
+
+### When in doubt, delegate
+
+Doing work directly runs it on the orchestrator's expensive model instead of
+a cheap specialist, and hides the work from the delegation visualization —
+defeating the point of the system either way. When in doubt, delegate.`;
 }
 
 /** Direct-mode specific framing: the orchestrator briefs workers itself. */
@@ -198,7 +292,8 @@ agent's pass as final acceptance.`;
  * `rosterAgents` (optional) supplies the project's ACTUAL delegation
  * targets for the "Specialist roster" table instead of the hardcoded
  * default (see {@link DEFAULT_ROSTER_ROWS}) — omit it, or pass `[]`, to get
- * the default roster.
+ * the default roster. Also threaded into {@link renderPreamble} so the
+ * PREAMBLE's prose never names an agent id absent from this same roster.
  */
 export function renderDelegationDoctrine(
   mode: DelegationMode,
@@ -206,7 +301,7 @@ export function renderDelegationDoctrine(
   rosterAgents?: DoctrineRosterAgent[]
 ): string {
   const modeSection = mode === "team_leads" ? TEAM_LEADS_SECTION : DIRECT_SECTION;
-  const parts = [PREAMBLE, renderRosterTable(rosterAgents), modeSection];
+  const parts = [renderPreamble(rosterAgents), renderRosterTable(rosterAgents), modeSection];
   if (reviewEnabled) {
     parts.push(REVIEW_SECTION);
   }
