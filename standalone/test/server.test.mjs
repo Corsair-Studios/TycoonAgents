@@ -186,7 +186,7 @@ test('startServer: resolves appData + themeDataDir honoring TYCOON_STANDALONE_DA
     // Config shape matches ThemeImageConfig; no keys set -> defaults to
     // provider only, no key properties present.
     const config = runtime.getThemeImageConfig();
-    assert.deepEqual(config, { provider: 'openai' });
+    assert.deepEqual(config, { provider: 'openai', geminiModel: '', openaiModel: '' });
   } finally {
     await runtime.close();
     fs.rmSync(dataDir, { recursive: true, force: true });
@@ -213,6 +213,8 @@ test('startServer: getThemeImageConfig() picks up TYCOON_OPENAI_API_KEY / TYCOON
       provider: 'gemini',
       openaiApiKey: 'sk-test-openai',
       geminiApiKey: 'test-gemini-key',
+      geminiModel: '',
+      openaiModel: '',
     });
   } finally {
     await runtime.close();
@@ -221,23 +223,27 @@ test('startServer: getThemeImageConfig() picks up TYCOON_OPENAI_API_KEY / TYCOON
 });
 
 test('getThemeImageConfig: standalone unit calls (no server) default provider to openai, omit unset keys', () => {
-  assert.deepEqual(getThemeImageConfig({ env: {} }), { provider: 'openai' });
-  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_THEME_IMAGE_PROVIDER: 'gemini' } }), { provider: 'gemini' });
+  assert.deepEqual(getThemeImageConfig({ env: {} }), { provider: 'openai', geminiModel: '', openaiModel: '' });
+  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_THEME_IMAGE_PROVIDER: 'gemini' } }), { provider: 'gemini', geminiModel: '', openaiModel: '' });
   // Unrecognized provider values fall back to 'openai', same as the
   // extension's normalizeThemeImageProvider().
-  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_THEME_IMAGE_PROVIDER: 'bogus' } }), { provider: 'openai' });
+  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_THEME_IMAGE_PROVIDER: 'bogus' } }), { provider: 'openai', geminiModel: '', openaiModel: '' });
   assert.deepEqual(getThemeImageConfig({ env: { TYCOON_OPENAI_API_KEY: 'abc' } }), {
     provider: 'openai',
     openaiApiKey: 'abc',
+    geminiModel: '',
+    openaiModel: '',
   });
 });
 
 test('getThemeImageConfig: env overrides an appData-persisted provider', () => {
   const fakeAppData = { readJson: () => ({ provider: 'gemini' }) };
   // No env provider set -> falls back to the persisted 'gemini'.
-  assert.deepEqual(getThemeImageConfig({ env: {}, appData: fakeAppData }), { provider: 'gemini' });
+  assert.deepEqual(getThemeImageConfig({ env: {}, appData: fakeAppData }), { provider: 'gemini', geminiModel: '', openaiModel: '' });
   // Explicit env provider always wins over the persisted value.
   assert.deepEqual(getThemeImageConfig({ env: { TYCOON_THEME_IMAGE_PROVIDER: 'openai' }, appData: fakeAppData }), {
     provider: 'openai',
+    geminiModel: '',
+    openaiModel: '',
   });
 });

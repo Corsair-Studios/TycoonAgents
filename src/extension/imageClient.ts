@@ -6,6 +6,7 @@
 
 import { findGeminiInlineImage, summarizeGeminiImageResponse } from './geminiImageResponse';
 import { parseOpenAIImageError } from './imageGenerationError';
+import { resolveImageModel } from './imageModels';
 import type { ThemeImageProvider } from './themeImageSettings';
 
 /**
@@ -21,11 +22,25 @@ export interface ThemeImageConfig {
   provider?: ThemeImageProvider;
   openaiApiKey?: string;
   geminiApiKey?: string;
+  /**
+   * Model override to use when options.model is not set. Empty/unset means
+   * "use the latest recommended model" — see imageModels.ts for the
+   * per-provider model lists and the default-resolution rule.
+   */
+  geminiModel?: string;
+  openaiModel?: string;
 }
 
 export interface ThemeImageGenerationOptions {
   provider?: ThemeImageProvider;
   apiKey?: string;
+  /**
+   * Model id override, e.g. 'gemini-3-pro-image' or 'gpt-image-1-mini'. Takes
+   * precedence over {@link ThemeImageConfig.geminiModel}/`openaiModel`. Empty/
+   * unset falls back to the config-level override, then the latest
+   * recommended model for the resolved provider — see imageModels.ts.
+   */
+  model?: string;
   aspectRatio?: '1:1' | '3:4';
   /** Cancels the in-flight provider request when a theme generation is stopped. */
   signal?: AbortSignal;
@@ -121,17 +136,23 @@ export async function generateThemeImage(
     throw new Error(`No ${label} API key found. Add one in Themes > Theme Builder.`);
   }
 
+  const model = resolveImageModel(
+    provider,
+    options.model || (provider === 'gemini' ? config.geminiModel : config.openaiModel),
+  );
+
   return provider === 'openai'
-    ? generateWithOpenAI(prompt, apiKey, options)
-    : generateWithImagen3(prompt, apiKey, options);
+    ? generateWithOpenAI(prompt, apiKey, options, model)
+    : generateWithImagen3(prompt, apiKey, options, model);
 }
 
 async function generateWithImagen3(
   prompt: string,
   apiKey: string,
   options: ThemeImageGenerationOptions,
+  model: string,
 ): Promise<Buffer> {
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const body = {
     contents: [
       {
@@ -214,6 +235,7 @@ async function generateWithOpenAI(
   prompt: string,
   apiKey: string,
   options: ThemeImageGenerationOptions,
+  model: string,
 ): Promise<Buffer> {
   const hasReferences = (options.referenceImages?.length ?? 0) > 0;
   const url = hasReferences
@@ -221,7 +243,7 @@ async function generateWithOpenAI(
     : 'https://api.openai.com/v1/images/generations';
   const size = options.aspectRatio === '3:4' ? '1024x1440' : '1024x1024';
   const body = {
-    model: 'gpt-image-2',
+    model,
     prompt,
     n: 1,
     size,

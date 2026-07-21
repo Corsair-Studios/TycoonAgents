@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { resolveImageModel } from './imageModels';
 
 export type ThemeImageProvider = 'gemini' | 'openai';
 
@@ -6,6 +7,8 @@ export interface ResolvedThemeImageSettings {
   provider: ThemeImageProvider;
   apiKey: string | undefined;
   configured: boolean;
+  /** Resolved model id to request — the user's override, or the latest default. */
+  model: string;
 }
 
 const SECRET_KEYS: Record<ThemeImageProvider, string> = {
@@ -13,6 +16,18 @@ const SECRET_KEYS: Record<ThemeImageProvider, string> = {
   openai: 'tycoonagents.themeImage.openaiApiKey',
 };
 const PROVIDER_STORAGE_KEY = 'tycoonagents.themeImage.provider';
+
+/**
+ * Settings key per provider holding the user's model override. Empty/unset
+ * means "always use the latest recommended model" — see imageModels.ts.
+ * Mirrors the flat `tycoonagents.geminiApiKey` / `tycoonagents.openaiApiKey`
+ * naming already used for the API key settings (not namespaced under
+ * `themeImage.`, despite the secret-storage keys above being namespaced).
+ */
+const MODEL_SETTING_KEYS: Record<ThemeImageProvider, string> = {
+  gemini: 'geminiModel',
+  openai: 'openaiModel',
+};
 
 export function normalizeThemeImageProvider(value: unknown): ThemeImageProvider {
   return value === 'gemini' ? 'gemini' : 'openai';
@@ -38,7 +53,20 @@ export async function resolveThemeImageSettings(
     ? await getConfiguredThemeImageProvider(secrets)
     : normalizeThemeImageProvider(requestedProvider);
   const apiKey = await resolveThemeImageApiKey(secrets, provider);
-  return { provider, apiKey, configured: Boolean(apiKey) };
+  const model = resolveThemeImageModel(provider);
+  return { provider, apiKey, configured: Boolean(apiKey), model };
+}
+
+/**
+ * Resolve the configured model override for a provider, falling back to the
+ * latest recommended model (see imageModels.ts) when unset/blank. No secret
+ * storage involved — model ids aren't sensitive, so this reads straight from
+ * VS Code settings.
+ */
+export function resolveThemeImageModel(provider: ThemeImageProvider): string {
+  const config = vscode.workspace.getConfiguration('tycoonagents');
+  const stored = config.get<string>(MODEL_SETTING_KEYS[provider]);
+  return resolveImageModel(provider, stored);
 }
 
 export async function getThemeImageConfigurationStatus(

@@ -48,6 +48,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import { createStateFeed } from './stateFeed.mjs';
 import { resolveProjectRoots, ProjectRootError } from './projectRoots.mjs';
 import { createDefaultAppData } from './appData.mjs';
@@ -92,6 +93,33 @@ const MEDIA_DIR = path.join(REPO_ROOT, 'media');
 
 const PORT = Number(process.env.TYCOON_STANDALONE_PORT) || 4173;
 const HOST = process.env.TYCOON_STANDALONE_HOST || '127.0.0.1';
+
+// ── Image-model catalog bridge (out/src/extension/imageModels.js) ──────────
+// src/extension/imageModels.ts is the single source of truth for which
+// image-generation models exist per provider (IMAGE_MODELS) — the standalone
+// GET/SAVE_THEME_IMAGE_SETTINGS handlers below reuse it unchanged rather than
+// duplicating the model catalog. It's runtime-dependency-free (`import type`
+// only), so it's safe to `require()` here. Same lazy-createRequire posture as
+// themeGenerationBridge.mjs: importing this module never touches `out/` or
+// throws — only the FIRST handler call that actually needs IMAGE_MODELS pays
+// the require() cost and the missing-build error.
+const requireCompiledModule = createRequire(import.meta.url);
+const IMAGE_MODELS_JS = path.join(REPO_ROOT, 'out', 'src', 'extension', 'imageModels.js');
+
+let _imageModelsModule;
+function imageModelsModule() {
+  if (!_imageModelsModule) {
+    if (!fs.existsSync(IMAGE_MODELS_JS)) {
+      throw new Error(
+        `[tycoonagents-standalone] imageModels: out/src/extension/imageModels.js not found at ${IMAGE_MODELS_JS}. ` +
+          'The compiled `out/` directory is missing or stale — run `npx tsc -p .` from the repo root first, then ' +
+          'restart the standalone server.',
+      );
+    }
+    _imageModelsModule = requireCompiledModule(IMAGE_MODELS_JS);
+  }
+  return _imageModelsModule;
+}
 
 // ── MIME map (media/ only ships a handful of extensions today) ─────────────
 const MIME_TYPES = {
@@ -191,6 +219,15 @@ let primaryProjectRoot;
 // above (both null out any stale prior startServer() call's config on a
 // fresh call, e.g. in tests).
 let themeImageConfigGetter;
+
+// `themeImageAppData` is set by startServer() below to THAT call's own
+// appData handle (same instance getThemeImageConfig() reads through
+// themeImageConfigGetter above) — write access is needed separately from the
+// read-only getter so GET/SAVE_THEME_IMAGE_SETTINGS (below) can persist the
+// user's provider/model choice without threading appData through every
+// call site. Same per-call-instance posture as the other module-level
+// theme-image state: a fresh startServer() call always overwrites this.
+let themeImageAppData;
 
 function handleBrowserMessage(msg) {
   if (!msg || typeof msg.type !== 'string') {
@@ -303,6 +340,19 @@ function handleBrowserMessage(msg) {
       } catch (err) {
         console.error('[tycoonagents-standalone] RESTORE_PLAN_BACKUP failed:', err);
       }
+      break;
+    // GET/SAVE_THEME_IMAGE_SETTINGS + the THEME_IMAGE_SETTINGS reply are not
+    // in THEME_MSG_WIRE (themeMessages.mjs is out of scope for this change) —
+    // the literal strings below match src/host/vscode/messages.ts's MSG.*
+    // values exactly (verified: MSG.GET_THEME_IMAGE_SETTINGS ===
+    // "GET_THEME_IMAGE_SETTINGS", etc.), which is what media/main.js sends.
+    // See handleGetThemeImageSettings/handleSaveThemeImageSettings below
+    // (defined near getThemeImageConfig(), which they reuse).
+    case 'GET_THEME_IMAGE_SETTINGS':
+      handleGetThemeImageSettings(broadcast);
+      break;
+    case 'SAVE_THEME_IMAGE_SETTINGS':
+      handleSaveThemeImageSettings(broadcast, payload);
       break;
     default:
       console.log('[tycoonagents-standalone] /message (unhandled):', JSON.stringify(msg));
@@ -1048,6 +1098,10 @@ function buildHostHtml() {
               <option value="gemini">Google Gemini</option>
             </select>
           </div>
+          <div class="theme-image-settings-row">
+            <label for="theme-image-model">Model</label>
+            <select id="theme-image-model"></select>
+          </div>
           <div class="theme-image-settings-row theme-api-key-row">
             <label for="theme-api-key-input" id="theme-api-key-label">Google Gemini API key</label>
             <input
@@ -1328,6 +1382,14 @@ export function createStandaloneServer() {
 // var always wins over any persisted value.
 const THEME_IMAGE_PROVIDER_FILE = 'themeImageProvider.json';
 
+// Sibling of THEME_IMAGE_PROVIDER_FILE — persists the user's per-provider
+// model override (`{ gemini?: string, openai?: string }`, empty/absent means
+// "latest") the same way, following the SAME appData read/modify/write
+// pattern. See imageModels.ts (out/src/extension/imageModels.js, bridged via
+// imageModelsModule() above) for the model catalog and "empty = latest"
+// resolution rule these ids feed into.
+const THEME_IMAGE_MODELS_FILE = 'themeImageModels.json';
+
 function normalizeThemeImageProvider(value) {
   // Mirrors src/extension/themeImageSettings.ts's normalizeThemeImageProvider
   // exactly: only the literal 'gemini' selects Gemini, everything else
@@ -1336,24 +1398,32 @@ function normalizeThemeImageProvider(value) {
 }
 
 /**
- * Resolves the standalone's theme image provider/API-key config from
- * environment variables (optionally falling back to an appData-persisted
- * provider choice). Env vars always take precedence.
+ * Resolves the standalone's theme image provider/API-key/model config from
+ * environment variables (optionally falling back to appData-persisted
+ * choices). Env vars always take precedence over the persisted provider;
+ * for the per-provider model override, a persisted value wins over its env
+ * fallback (TYCOON_GEMINI_MODEL/TYCOON_OPENAI_MODEL) since the model picker
+ * (unlike the provider/keys) has no other env-only path to change it.
  *
  * @param {object} [opts]
  * @param {Record<string, string | undefined>} [opts.env] defaults to
  *   `process.env`.
  * @param {{ readJson: (name: string, fallback?: unknown) => unknown }} [opts.appData]
- *   optional — when provided, a persisted `{ provider }` is consulted as the
- *   fallback when `TYCOON_THEME_IMAGE_PROVIDER` is unset.
- * @returns {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string }}
+ *   optional — when provided, a persisted `{ provider }` / `{ gemini, openai }`
+ *   is consulted as the fallback when the corresponding env var is unset.
+ * @returns {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string, geminiModel: string, openaiModel: string }}
  */
 export function getThemeImageConfig({ env = process.env, appData } = {}) {
   let persistedProvider;
+  let persistedModels;
   if (appData && typeof appData.readJson === 'function') {
     const stored = appData.readJson(THEME_IMAGE_PROVIDER_FILE, null);
     if (stored && typeof stored.provider === 'string') {
       persistedProvider = stored.provider;
+    }
+    const storedModels = appData.readJson(THEME_IMAGE_MODELS_FILE, null);
+    if (storedModels && typeof storedModels === 'object') {
+      persistedModels = storedModels;
     }
   }
 
@@ -1362,7 +1432,7 @@ export function getThemeImageConfig({ env = process.env, appData } = {}) {
       ? env.TYCOON_THEME_IMAGE_PROVIDER.trim()
       : undefined;
 
-  /** @type {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string }} */
+  /** @type {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string, geminiModel: string, openaiModel: string }} */
   const config = { provider: normalizeThemeImageProvider(envProvider ?? persistedProvider) };
 
   if (typeof env.TYCOON_OPENAI_API_KEY === 'string' && env.TYCOON_OPENAI_API_KEY.trim() !== '') {
@@ -1371,7 +1441,107 @@ export function getThemeImageConfig({ env = process.env, appData } = {}) {
   if (typeof env.TYCOON_GEMINI_API_KEY === 'string' && env.TYCOON_GEMINI_API_KEY.trim() !== '') {
     config.geminiApiKey = env.TYCOON_GEMINI_API_KEY.trim();
   }
+
+  // Model override resolution: persisted appData wins, else the env var,
+  // else '' (empty = latest — resolveImageModel/generateThemeImage handle
+  // the fallback, nothing here needs to know the actual default id).
+  const persistedGeminiModel =
+    persistedModels && typeof persistedModels.gemini === 'string' ? persistedModels.gemini.trim() : '';
+  const persistedOpenaiModel =
+    persistedModels && typeof persistedModels.openai === 'string' ? persistedModels.openai.trim() : '';
+  const envGeminiModel = typeof env.TYCOON_GEMINI_MODEL === 'string' ? env.TYCOON_GEMINI_MODEL.trim() : '';
+  const envOpenaiModel = typeof env.TYCOON_OPENAI_MODEL === 'string' ? env.TYCOON_OPENAI_MODEL.trim() : '';
+  config.geminiModel = persistedGeminiModel || envGeminiModel || '';
+  config.openaiModel = persistedOpenaiModel || envOpenaiModel || '';
+
   return config;
+}
+
+/**
+ * GET_THEME_IMAGE_SETTINGS — replies with the standalone analog of the VS
+ * Code extension's getThemeImageConfigurationStatus()/getConfiguredThemeImageProvider()
+ * combined payload (see src/host/vscode/panel.ts's GET_THEME_IMAGE_SETTINGS
+ * branch, which this mirrors field-for-field): current provider, per-provider
+ * `configured` (whether an API key is available — env-only in the
+ * standalone, there is no keychain), the IMAGE_MODELS catalog, and the
+ * user's saved per-provider model override.
+ *
+ * @param {(eventName: string, data: object) => void} broadcastFn
+ */
+function handleGetThemeImageSettings(broadcastFn) {
+  try {
+    const config = themeImageConfigGetter ? themeImageConfigGetter() : getThemeImageConfig({});
+    broadcastFn('message', {
+      type: 'THEME_IMAGE_SETTINGS',
+      payload: {
+        provider: config.provider,
+        providers: {
+          gemini: { configured: Boolean(config.geminiApiKey) },
+          openai: { configured: Boolean(config.openaiApiKey) },
+        },
+        models: imageModelsModule().IMAGE_MODELS,
+        selectedModels: {
+          gemini: config.geminiModel || '',
+          openai: config.openaiModel || '',
+        },
+      },
+    });
+  } catch (err) {
+    console.error('[tycoonagents-standalone] GET_THEME_IMAGE_SETTINGS failed:', err);
+    broadcastFn('message', { type: 'THEME_IMAGE_SETTINGS', payload: { error: String(err?.message ?? err) } });
+  }
+}
+
+/**
+ * SAVE_THEME_IMAGE_SETTINGS — persists the provider selection and the
+ * chosen model for that provider to appData (themeImageProvider.json /
+ * themeImageModels.json), following the exact read/modify/write pattern
+ * getThemeImageConfig() already reads back through. API keys are NEVER
+ * persisted here (unchanged posture — see the section comment above
+ * THEME_IMAGE_PROVIDER_FILE): the standalone has no keychain, so
+ * `payload.api_key` is intentionally ignored; keys stay env-only
+ * (TYCOON_OPENAI_API_KEY/TYCOON_GEMINI_API_KEY).
+ *
+ * @param {(eventName: string, data: object) => void} broadcastFn
+ * @param {{ provider?: unknown, api_key?: unknown, model?: unknown }} payload
+ */
+function handleSaveThemeImageSettings(broadcastFn, payload) {
+  try {
+    const provider = normalizeThemeImageProvider(payload && payload.provider);
+    if (themeImageAppData && typeof themeImageAppData.writeJson === 'function') {
+      themeImageAppData.writeJson(THEME_IMAGE_PROVIDER_FILE, { provider });
+
+      const modelValue = payload && typeof payload.model === 'string' ? payload.model.trim() : '';
+      const existingModels = themeImageAppData.readJson(THEME_IMAGE_MODELS_FILE, {}) || {};
+      const nextModels = {
+        gemini: typeof existingModels.gemini === 'string' ? existingModels.gemini : '',
+        openai: typeof existingModels.openai === 'string' ? existingModels.openai : '',
+      };
+      nextModels[provider] = modelValue;
+      themeImageAppData.writeJson(THEME_IMAGE_MODELS_FILE, nextModels);
+    }
+
+    const config = themeImageConfigGetter ? themeImageConfigGetter() : getThemeImageConfig({});
+    broadcastFn('message', {
+      type: 'THEME_IMAGE_SETTINGS',
+      payload: {
+        provider: config.provider,
+        providers: {
+          gemini: { configured: Boolean(config.geminiApiKey) },
+          openai: { configured: Boolean(config.openaiApiKey) },
+        },
+        saved: true,
+        models: imageModelsModule().IMAGE_MODELS,
+        selectedModels: {
+          gemini: config.geminiModel || '',
+          openai: config.openaiModel || '',
+        },
+      },
+    });
+  } catch (err) {
+    console.error('[tycoonagents-standalone] SAVE_THEME_IMAGE_SETTINGS failed:', err);
+    broadcastFn('message', { type: 'THEME_IMAGE_SETTINGS', payload: { error: String(err?.message ?? err) } });
+  }
 }
 
 /** Thrown when the server cannot bind its port (e.g. EADDRINUSE). Callers
@@ -1479,6 +1649,7 @@ export async function startServer({
   themeStore = createFsThemeFileStore(appData.dir);
   themeImagesRootDir = appData.dir;
   themeImageConfigGetter = () => getThemeImageConfig({ env, appData });
+  themeImageAppData = appData;
 
   // Theme GENERATION bridge wiring (pC-t1 step 2) — configure the REAL
   // themeService.ts generation pipeline (out/src/extension/themeService.js,

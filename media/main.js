@@ -1907,6 +1907,7 @@
   const themeBuildActions   = /** @type {HTMLElement} */ (document.getElementById("theme-build-actions"));
   const themeReviewImagesBtn = /** @type {HTMLElement} */ (document.getElementById("theme-review-images-btn"));
   const themeImageProvider  = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-provider"));
+  const themeImageModelEl   = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-model"));
   const themeApiKeyInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-api-key-input"));
   const themeApiKeyLabel    = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-label"));
   const themeApiKeySave     = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-save"));
@@ -1937,6 +1938,10 @@
   let themeGenerationStopping = false;
   let themeImageSettingsLoaded = false;
   let themeProviderConfigured = { gemini: false, openai: false };
+  /** @type {{gemini: Array<{id:string,label:string,note?:string}>, openai: Array<{id:string,label:string,note?:string}>}} */
+  let themeImageModels = { gemini: [], openai: [] };
+  /** @type {{gemini: string, openai: string}} Saved model id per provider ('' = Latest). */
+  let themeImageSelectedModels = { gemini: "", openai: "" };
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
   /** True while a SET_THEME_CREATIVE_DIRECTION save is in flight. Whole-theme
@@ -2228,8 +2233,31 @@
     }
   }
 
+  /**
+   * Rebuild the #theme-image-model options for the given provider from the
+   * last-received IMAGE_MODELS list, then select the saved override (or
+   * "Latest" when unset). textContent-safe: uses the Option constructor, no
+   * innerHTML with server/config-derived data.
+   * @param {string} provider
+   */
+  function populateModelSelect(provider) {
+    if (!themeImageModelEl) return;
+    themeImageModelEl.textContent = "";
+    themeImageModelEl.appendChild(new Option("Latest (recommended)", ""));
+    const options = themeImageModels[provider] || [];
+    for (const model of options) {
+      if (!model || !model.id) continue;
+      const text = model.note ? model.label + " — " + model.note : model.label;
+      themeImageModelEl.appendChild(new Option(text, model.id));
+    }
+    themeImageModelEl.value = themeImageSelectedModels[provider] || "";
+  }
+
   if (themeImageProvider) {
-    themeImageProvider.addEventListener("change", () => updateThemeApiKeyUi("", false));
+    themeImageProvider.addEventListener("change", () => {
+      updateThemeApiKeyUi("", false);
+      populateModelSelect(selectedThemeImageProvider());
+    });
   }
 
   if (themeApiKeySave) {
@@ -2244,7 +2272,7 @@
       themeApiKeySave.textContent = "Saving...";
       vscode.postMessage({
         type: 'SAVE_THEME_IMAGE_SETTINGS',
-        payload: { provider, api_key: apiKey },
+        payload: { provider, api_key: apiKey, model: themeImageModelEl ? themeImageModelEl.value : "" },
       });
     });
   }
@@ -7879,9 +7907,22 @@
           gemini: Boolean(payload.providers?.gemini?.configured),
           openai: Boolean(payload.providers?.openai?.configured),
         };
+        if (payload.models && typeof payload.models === "object") {
+          themeImageModels = {
+            gemini: Array.isArray(payload.models.gemini) ? payload.models.gemini : [],
+            openai: Array.isArray(payload.models.openai) ? payload.models.openai : [],
+          };
+        }
+        if (payload.selectedModels && typeof payload.selectedModels === "object") {
+          themeImageSelectedModels = {
+            gemini: typeof payload.selectedModels.gemini === "string" ? payload.selectedModels.gemini : "",
+            openai: typeof payload.selectedModels.openai === "string" ? payload.selectedModels.openai : "",
+          };
+        }
         if (themeImageProvider && (payload.provider === "gemini" || payload.provider === "openai")) {
           themeImageProvider.value = payload.provider;
         }
+        populateModelSelect(selectedThemeImageProvider());
         if (themeApiKeyInput) themeApiKeyInput.value = "";
         if (themeApiKeySave) {
           themeApiKeySave.removeAttribute("disabled");

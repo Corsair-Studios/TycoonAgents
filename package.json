@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.409",
+  "version": "0.0.410",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
@@ -89,6 +89,16 @@
           "type": "string",
           "default": "",
           "description": "Fallback OpenAI API key. Prefer the secure field in Themes > Theme Builder."
+        },
+        "tycoonagents.geminiModel": {
+          "type": "string",
+          "default": "",
+          "description": "Image model override for Google Gemini. Leave blank to always use the latest recommended model."
+        },
+        "tycoonagents.openaiModel": {
+          "type": "string",
+          "default": "",
+          "description": "Image model override for OpenAI. Leave blank to always use the latest recommended model."
         }
       }
     }

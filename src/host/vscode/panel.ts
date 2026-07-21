@@ -96,6 +96,7 @@ import {
   resolveThemeImageSettings,
   saveThemeImageSettings,
 } from "../../extension/themeImageSettings";
+import { IMAGE_MODELS } from "../../extension/imageModels";
 import { MSG, MSG_SCHEMAS } from "./messages";
 import {
   readPlanSafe,
@@ -641,22 +642,51 @@ export class TycoonPanel {
           await this._handleInstallProjectPlanSkill();
         } else if (message.type === MSG.GET_THEME_IMAGE_SETTINGS) {
           const providers = await getThemeImageConfigurationStatus(this._secrets);
+          const imageConfig = vscode.workspace.getConfiguration("tycoonagents");
           void this._panel.webview.postMessage({
             type: MSG.THEME_IMAGE_SETTINGS,
-            payload: { provider: await getConfiguredThemeImageProvider(this._secrets), providers },
+            payload: {
+              provider: await getConfiguredThemeImageProvider(this._secrets),
+              providers,
+              models: IMAGE_MODELS,
+              selectedModels: {
+                gemini: imageConfig.get<string>("geminiModel") ?? "",
+                openai: imageConfig.get<string>("openaiModel") ?? "",
+              },
+            },
           });
         } else if (message.type === MSG.SAVE_THEME_IMAGE_SETTINGS) {
-          const payload = (message as any).payload as { provider?: string; api_key?: string } | undefined;
+          const payload = (message as any).payload as { provider?: string; api_key?: string; model?: string } | undefined;
           try {
             const provider = await saveThemeImageSettings(
               this._secrets,
               payload?.provider,
               payload?.api_key,
             );
+            const modelConfigKey = provider === "gemini" ? "geminiModel" : "openaiModel";
+            const modelValue = typeof payload?.model === "string" ? payload.model.trim() : "";
+            const modelConfig = vscode.workspace.getConfiguration("tycoonagents");
+            if (modelConfig.inspect<string>(modelConfigKey)) {
+              try {
+                await modelConfig.update(modelConfigKey, modelValue, vscode.ConfigurationTarget.Global);
+              } catch (err) {
+                console.warn(`TycoonAgents: Could not save ${modelConfigKey} to User Settings:`, err);
+              }
+            }
             const providers = await getThemeImageConfigurationStatus(this._secrets);
+            const refreshedConfig = vscode.workspace.getConfiguration("tycoonagents");
             void this._panel.webview.postMessage({
               type: MSG.THEME_IMAGE_SETTINGS,
-              payload: { provider, providers, saved: true },
+              payload: {
+                provider,
+                providers,
+                saved: true,
+                models: IMAGE_MODELS,
+                selectedModels: {
+                  gemini: refreshedConfig.get<string>("geminiModel") ?? "",
+                  openai: refreshedConfig.get<string>("openaiModel") ?? "",
+                },
+              },
             });
           } catch (err) {
             void this._panel.webview.postMessage({
@@ -1274,6 +1304,7 @@ export class TycoonPanel {
               {
                 provider: imageSettings.provider,
                 apiKey: imageSettings.apiKey,
+                model: imageSettings.model,
                 signal: normalizingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
               },
               (message) => void this._panel.webview.postMessage({
@@ -1390,6 +1421,7 @@ export class TycoonPanel {
               {
                 provider: imageSettings.provider,
                 apiKey: imageSettings.apiKey,
+                model: imageSettings.model,
                 signal: retryingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
               },
               (message) => void this._panel.webview.postMessage({
@@ -1492,6 +1524,7 @@ export class TycoonPanel {
             const plan = await planTheme(prompt, {
               provider: imageSettings.provider,
               apiKey: imageSettings.apiKey,
+              model: imageSettings.model,
             });
             void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_READY, payload: { plan } });
           } catch (err) {
@@ -1560,6 +1593,7 @@ export class TycoonPanel {
             const imageOptions = {
               provider: imageSettings.provider,
               apiKey: imageSettings.apiKey,
+              model: imageSettings.model,
               signal: abortController.signal,
             };
             const waitForReview = async (themeId: string, itemId: string, reviewOptions?: ThemeImageReviewWaitOptions) => (
@@ -1643,6 +1677,7 @@ export class TycoonPanel {
             const imageOptions = {
               provider: imageSettings.provider,
               apiKey: imageSettings.apiKey,
+              model: imageSettings.model,
             };
             await regenerateThemeBoard(
               this._globalStorageUri,
@@ -5977,6 +6012,10 @@ export class TycoonPanel {
               <option value="openai">OpenAI (GPT Image 2)</option>
               <option value="gemini">Google Gemini</option>
             </select>
+          </div>
+          <div class="theme-image-settings-row">
+            <label for="theme-image-model">Model</label>
+            <select id="theme-image-model"></select>
           </div>
           <div class="theme-image-settings-row theme-api-key-row">
             <label for="theme-api-key-input" id="theme-api-key-label">Google Gemini API key</label>
