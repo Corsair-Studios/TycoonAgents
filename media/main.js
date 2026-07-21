@@ -9708,6 +9708,27 @@
   }
 
   /**
+   * Resolve the roster's edit/implementation target label from the installed
+   * agents list (`lastSettings.agents`), mirroring the resolution
+   * delegationDoctrine.ts's renderPreamble/renderTeamLeadsSection use:
+   * prefer "coding-specialist" when it's actually installed, else
+   * "verse-expert" when installed (the UEFN roster's Verse-writing
+   * implementer, which REPLACES coding-specialist on a UEFN project), else a
+   * generic phrase when neither is present. Shared by the Delegation Health
+   * panel's edit-count row and the copyable delegation tip so neither one
+   * independently hardcodes an agent id that might not be on this project's
+   * roster.
+   * @param {Array<{id?: string}>} agents
+   * @returns {string}
+   */
+  function resolveEditTargetLabel(agents) {
+    const list = agents || [];
+    if (list.some((agent) => agent.id === "coding-specialist")) return "coding-specialist";
+    if (list.some((agent) => agent.id === "verse-expert")) return "verse-expert";
+    return "your coding/implementation agent";
+  }
+
+  /**
    * Format milliseconds as "Xm Ys".
    * @param {number} ms
    * @returns {string}
@@ -10921,7 +10942,7 @@
     const editRow = document.createElement("div");
     editRow.className = "settings-row";
     const editSpan = document.createElement("span");
-    editSpan.textContent = `Direct edits: ${leakEdits} — delegate to coding-specialist (Sonnet)`;
+    editSpan.textContent = `Direct edits: ${leakEdits} — delegate to ${resolveEditTargetLabel(agents)}`;
     editRow.appendChild(editSpan);
     dhSection.appendChild(editRow);
 
@@ -10952,6 +10973,16 @@
     // the tip honest to the actual project + session instead of a fixed
     // 2-agent hardcoded string.
     function buildDelegationTip() {
+      // Resolve the roster's edit/implementation target the same way the
+      // Delegation Health panel's edit row and the generated delegation
+      // doctrine do (resolveEditTargetLabel above; mirrors
+      // delegationDoctrine.ts's renderPreamble/renderTeamLeadsSection):
+      // prefer coding-specialist when it's actually installed, else
+      // verse-expert (the UEFN roster's Verse-writing implementer, which
+      // REPLACES coding-specialist on a UEFN project), else a generic
+      // phrase — never a hardcoded id that might not be installed on this
+      // project's roster.
+      const editTargetLabel = resolveEditTargetLabel(agents);
       const leakTotal = leakSearches + leakEdits;
       const totalActions = leakDelegations + leakTotal;
       const ratio = totalActions > 0 ? leakDelegations / totalActions : 0;
@@ -10966,7 +10997,7 @@
         lines.push(`Extension: ${extensionVersion}`);
       }
       if (leakEdits > 0) {
-        lines.push(`• ${leakEdits} direct edit${leakEdits === 1 ? "" : "s"} → send these to coding-specialist.`);
+        lines.push(`• ${leakEdits} direct edit${leakEdits === 1 ? "" : "s"} → send these to ${editTargetLabel}.`);
       }
       if (leakSearches > 0) {
         lines.push(`• ${leakSearches} direct search${leakSearches === 1 ? "" : "es"} → send these to search-retrieval (Haiku, ~40x cheaper).`);
@@ -11008,7 +11039,7 @@
       }
       lines.push("");
       lines.push("Task doesn't match any specialist's keywords? Route it to the Fallback Agent (Sonnet) — do not do it yourself on the orchestrator.");
-      lines.push("Reminder: any file edit/write → coding-specialist. Anything past a single known-path read (multi-file, exploring, auditing) → search-retrieval (Haiku).");
+      lines.push(`Reminder: any file edit/write → ${editTargetLabel}. Anything past a single known-path read (multi-file, exploring, auditing) → search-retrieval (Haiku).`);
       lines.push("");
       lines.push("Keep direct: reading known files, coordination, and talking to you.");
       const unconfiguredAgents = unconfiguredKeywordAgents();

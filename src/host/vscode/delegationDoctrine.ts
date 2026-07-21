@@ -103,18 +103,36 @@ function renderRosterTable(agents: DoctrineRosterAgent[] | undefined): string {
  * roster (the same dangling-reference hazard {@link DoctrineRosterAgent}'s
  * doc comment describes): `coding-specialist` and the
  * testing/ux/vscode/workspace specialists are only named by id when
- * {@link resolveRosterRows} shows them actually present (a UEFN project
- * withholds `coding-specialist`, for example) — anything absent falls back
- * to a generic phrase pointing at the roster table below instead.
+ * {@link resolveRosterRows} shows them actually present — anything absent
+ * falls back to a generic phrase pointing at the roster table below instead.
+ * The edit/implementation target specifically resolves to `coding-specialist`
+ * when present, else `verse-expert` when present (a UEFN roster withholds
+ * `coding-specialist` and installs `verse-expert` as its Verse-writing
+ * implementer instead — see `workerAgentsForProject`/`UEFN_CONFLICT_AGENT_IDS`
+ * in `./packCatalog`), else the generic phrase when neither is present.
  * `search-retrieval` is the one specialist id always named directly: it is
  * installed for every project type (see `workerAgentsForProject` in
  * `./packCatalog`), so naming it can never dangle.
  */
+/**
+ * Resolve the roster's edit/implementation target id: `coding-specialist`
+ * when present, else `verse-expert` when present (the UEFN roster's
+ * Verse-writing implementer, which REPLACES coding-specialist on a UEFN
+ * project), else `undefined` when neither is installed. Shared by
+ * {@link renderPreamble} and {@link renderTeamLeadsSection} so both name the
+ * same agent (or fall back to the same generic phrasing) instead of one of
+ * them independently hardcoding `coding-specialist`.
+ */
+function resolveEditId(rows: DoctrineRosterAgent[]): string | undefined {
+  const rowFor = (id: string) => rows.find((r) => r.id === id);
+  return (rowFor("coding-specialist") ?? rowFor("verse-expert"))?.id;
+}
+
 function renderPreamble(rosterAgents: DoctrineRosterAgent[] | undefined): string {
   const rows = resolveRosterRows(rosterAgents);
   const rowFor = (id: string) => rows.find((r) => r.id === id);
 
-  const editId = rowFor("coding-specialist")?.id;
+  const editId = resolveEditId(rows);
   const editTarget = editId ?? "the appropriate specialist (see the roster below)";
 
   const checklist: string[] = [];
@@ -224,15 +242,22 @@ intermediate layer between the orchestrator and the worker doing the task.`;
 /**
  * Team-Leads-mode specific framing: large multi-feature work routes through
  * persistent lead agents that own decomposition, briefing, verification, and
- * upward reporting for their domain.
+ * upward reporting for their domain. A function (not a static string) so the
+ * build-lead line can name the roster's actual edit/implementation target
+ * (`coding-specialist` or, on a UEFN roster, `verse-expert`) via the same
+ * {@link resolveEditId} resolution {@link renderPreamble} uses, instead of
+ * hardcoding `coding-specialist` regardless of what's actually installed.
  */
-const TEAM_LEADS_SECTION = `## Team Leads delegation (current mode)
+function renderTeamLeadsSection(rosterAgents: DoctrineRosterAgent[] | undefined): string {
+  const editId = resolveEditId(resolveRosterRows(rosterAgents));
+  const buildLeadTarget = editId ?? "appropriate specialist (see the roster below)";
+  return `## Team Leads delegation (current mode)
 
 Everything in Direct delegation still applies. Additionally, for large
 multi-feature work — roughly 3+ tasks in a domain — route through a team
 lead instead of briefing workers directly:
 
-- **build-lead** owns the coding-specialist, ux-ui-designer, and
+- **build-lead** owns the ${buildLeadTarget}, ux-ui-designer, and
   vscode-integration workers.
 - **quality-lead** owns the testing-specialist and workspace-monitor
   workers.
@@ -254,6 +279,7 @@ it.
 
 Small tasks (below the roughly-3-task threshold) skip team leads entirely
 and go straight from the orchestrator to the worker, same as Direct mode.`;
+}
 
 /**
  * Optional "Review pass" framing (composes with either base mode — appended
@@ -300,7 +326,7 @@ export function renderDelegationDoctrine(
   reviewEnabled = true,
   rosterAgents?: DoctrineRosterAgent[]
 ): string {
-  const modeSection = mode === "team_leads" ? TEAM_LEADS_SECTION : DIRECT_SECTION;
+  const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents) : DIRECT_SECTION;
   const parts = [renderPreamble(rosterAgents), renderRosterTable(rosterAgents), modeSection];
   if (reviewEnabled) {
     parts.push(REVIEW_SECTION);

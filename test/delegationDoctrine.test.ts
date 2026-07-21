@@ -285,12 +285,84 @@ test("renderDelegationDoctrine's MANDATORY DELEGATION RULES checklist omits codi
   ];
   const out = renderDelegationDoctrine("flat", false, custom);
   assert.equal(out.includes("coding-specialist"), false, "coding-specialist must not be named when absent from the supplied roster");
-  assert.ok(
-    out.includes("the appropriate specialist (see the roster below)"),
-    "must fall back to a generic phrase instead of a dangling agent name"
-  );
+  // A UEFN roster names verse-expert (its Verse-writing implementer) as the
+  // edit target rather than falling back to a generic phrase.
+  assert.ok(out.includes("verse-expert"), "must name verse-expert as the edit target on a UEFN-shaped roster");
   // search-retrieval is always safe to name (installed for every project type).
   assert.ok(out.includes("search-retrieval (Haiku)"), "search-retrieval is project-agnostic and may always be named");
+});
+
+test("renderDelegationDoctrine names coding-specialist for edits on a non-UEFN roster (coding-specialist present)", () => {
+  const custom: DoctrineRosterAgent[] = [
+    { id: "coding-specialist", taskTypes: "Implementation, editing, bug fixes, refactoring" },
+    { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
+  ];
+  const out = renderDelegationDoctrine("flat", false, custom).replace(/\s+/g, " ");
+  assert.ok(
+    /\*\*NEVER Edit or Write files directly.*ALWAYS delegate to coding-specialist\.\*\*/i.test(out),
+    "NEVER-edit mandate must name coding-specialist"
+  );
+  assert.ok(
+    /1\. Any file edit or creation.*coding-specialist\./i.test(out),
+    "checklist item 1 must route edits to coding-specialist"
+  );
+  assert.equal(out.includes("verse-expert"), false, "verse-expert must not be named when absent from the supplied roster");
+});
+
+test("renderDelegationDoctrine names verse-expert (not coding-specialist, not generic) for edits on a UEFN-shaped roster (verse-expert present, coding-specialist absent)", () => {
+  const custom: DoctrineRosterAgent[] = [
+    { id: "verse-expert", taskTypes: "Verse device implementation" },
+    { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
+    { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
+  ];
+  const out = renderDelegationDoctrine("flat", false, custom).replace(/\s+/g, " ");
+  assert.ok(
+    /\*\*NEVER Edit or Write files directly.*ALWAYS delegate to verse-expert\.\*\*/i.test(out),
+    "NEVER-edit mandate must name verse-expert on a UEFN roster"
+  );
+  assert.ok(
+    /1\. Any file edit or creation.*verse-expert\./i.test(out),
+    "checklist item 1 must route edits to verse-expert on a UEFN roster"
+  );
+  assert.equal(out.includes("coding-specialist"), false, "coding-specialist must not be named when absent from the supplied roster");
+  assert.equal(
+    out.includes("the appropriate specialist (see the roster below)"),
+    false,
+    "must not fall back to the generic phrase when verse-expert is present"
+  );
+});
+
+test("renderDelegationDoctrine('team_leads') names verse-expert (not coding-specialist) in the build-lead line on a UEFN-shaped roster", () => {
+  const custom: DoctrineRosterAgent[] = [
+    { id: "verse-expert", taskTypes: "Verse device implementation" },
+    { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
+    { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
+  ];
+  const out = renderDelegationDoctrine("team_leads", false, custom).replace(/\s+/g, " ");
+  assert.ok(
+    /\*\*build-lead\*\* owns the verse-expert, ux-ui-designer, and vscode-integration workers\./i.test(out),
+    "build-lead line must name verse-expert on a UEFN roster"
+  );
+  assert.equal(out.includes("coding-specialist"), false, "coding-specialist must not be named anywhere when absent from the supplied roster");
+});
+
+test("renderDelegationDoctrine('team_leads') still names coding-specialist in the build-lead line on the default/non-UEFN roster", () => {
+  const out = renderDelegationDoctrine("team_leads", false).replace(/\s+/g, " ");
+  assert.ok(
+    /\*\*build-lead\*\* owns the coding-specialist, ux-ui-designer, and vscode-integration workers\./i.test(out),
+    "build-lead line must still name coding-specialist on the default roster"
+  );
+});
+
+test("renderDelegationDoctrine falls back to the generic edit-target phrase when neither coding-specialist nor verse-expert is present", () => {
+  const custom: DoctrineRosterAgent[] = [{ id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" }];
+  const out = renderDelegationDoctrine("flat", false, custom).replace(/\s+/g, " ");
+  assert.ok(
+    /\*\*NEVER Edit or Write files directly.*ALWAYS delegate to the appropriate specialist \(see the roster below\)\.\*\*/i.test(out),
+    "must fall back to the generic edit-target phrase when neither implementer id is present"
+  );
+  assert.equal(out.includes("coding-specialist"), false);
+  assert.equal(out.includes("verse-expert"), false);
 });
 
 // ---------------------------------------------------------------------------
