@@ -1597,7 +1597,7 @@
       const head = el.querySelector(".rebirth-announce-head");
       const sub = el.querySelector(".rebirth-announce-sub");
       if (head) head.textContent = "REBIRTH ×" + count;
-      if (sub) sub.textContent = "Weapons rack now buildable · Build speed +" + buildPct + "%";
+      if (sub) sub.textContent = (count === 1 ? "Weapons rack now buildable · " : "") + "Build speed +" + buildPct + "%";
       el.removeAttribute("hidden");
       // Reset + force reflow so the pop-in animation replays on repeat rebirths.
       el.classList.remove("is-visible");
