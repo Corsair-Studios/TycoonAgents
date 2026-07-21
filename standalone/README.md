@@ -77,9 +77,9 @@ argument parsing or browser auto-open.
 on Windows, `~/Library/Application Support/TycoonAgents` on macOS, and
 `$XDG_DATA_HOME/tycoonagents` (else `~/.local/share/tycoonagents`) elsewhere.
 `server.mjs` resolves a `themes/` subdirectory under this app-data dir at
-startup (`startServer()`'s returned `themeDataDir`) — the root a later task's
-theme storage adapter will read/write generated theme manifests and images
-from/to.
+startup (`startServer()`'s returned `themeDataDir`) — the root the theme
+file store reads/writes generated theme manifests and images from/to (see
+"Running the theme host end to end" below).
 
 Precedence for project targets: explicit CLI directory argument(s) > `TYCOON_STANDALONE_PROJECT_ROOT` > current working directory. See `src/projectRoots.mjs`.
 
@@ -101,8 +101,10 @@ TYCOON_OPENAI_API_KEY=sk-... TYCOON_THEME_IMAGE_PROVIDER=openai node src/cli.mjs
 
 `server.mjs` exports `getThemeImageConfig()`, which resolves these into the
 same `{ provider, openaiApiKey?, geminiApiKey? }` shape the extension's
-`src/extension/imageClient.ts` (`ThemeImageConfig`) expects, so a later task
-can pass it straight into theme image generation unchanged. Environment
+`src/extension/imageClient.ts` (`ThemeImageConfig`) expects, and passes it
+straight into theme image generation unchanged (see
+`standalone/src/themeGenerationMessages.mjs`'s `buildImageOptions()`).
+Environment
 variables are currently the **only** source: `getThemeImageConfig()` also
 accepts an optional appData reader so a persisted `{ provider }` could act as
 a fallback in the future, but no writer exists yet — nothing persists a
@@ -116,6 +118,53 @@ other processes on the same machine/user account and are not encrypted at
 rest. Do not commit them to shell history/dotfiles you share, and prefer a
 short-lived shell export or a local `.env`-style loader you keep out of
 version control over hardcoding a key anywhere in this repo.
+
+## Running the theme host end to end
+
+The Theme Builder (plan a theme, generate its art with an image provider,
+review/edit, and export/import) is served from the SAME browser tab as the
+live agent visualization — it is not a separate process or port.
+
+1. **Build `out/` first** (see Prerequisites above — the theme-generation
+   pipeline is required, not just optional, for this flow):
+
+   ```sh
+   npx tsc -p .
+   ```
+
+   Without this step the server starts fine, but any theme PLAN/GENERATE
+   request fails fast with an actionable "run `npx tsc -p .`" error (see
+   `standalone/src/themeGenerationBridge.mjs` / `themeArchive.mjs`).
+
+2. **Set an image-provider API key** (see the table above) and start the
+   server, e.g.:
+
+   ```sh
+   TYCOON_OPENAI_API_KEY=sk-... node src/cli.mjs watch <path-to-project>
+   ```
+
+3. **Open the browser tab** the CLI auto-launches (or the printed URL if you
+   passed `--no-open`), click the **Themes** menu button, then the
+   **Theme Builder** tab. From there:
+   - **Plan** a theme from a text prompt.
+   - **Generate** the plan's art (each board is generated against the
+     configured provider — mocked in tests, real network calls here).
+   - **Review/Edit** — rename items, edit per-item descriptions, edit the
+     whole-theme creative direction, and approve individual boards or
+     **Approve All**.
+   - **Export** downloads the approved theme as a `.zip` straight to your
+     browser's downloads (a `GET /theme-export/<theme_id>` request under the
+     hood — see Architecture below); export requires every board to be
+     approved first, same as the VS Code extension.
+   - **Import .zip** re-uploads a previously exported (or hand-authored)
+     theme archive via a file picker, POSTed as raw bytes to
+     `POST /theme-import`.
+
+This is the same webview code path as the VS Code extension — `media/main.js`
+is served unmodified — so the Theme Builder UI behaves identically in both
+hosts; only the API-key source (env vars here vs. VS Code `SecretStorage`)
+and the export/import transport (browser download/upload here vs. a native
+save/open dialog) differ, both by necessity of running outside VS Code.
 
 ## Architecture
 
@@ -151,6 +200,15 @@ Done:
   (`appData.mjs`, now wired into `server.mjs` at startup — resolves the app
   data dir and a `themeDataDir` under it), and env-var-sourced theme image
   provider/API-key config (`getThemeImageConfig()`).
+- **Full theme host** (Phases A-D): a filesystem-backed `ThemeFileStore`
+  rooted at `themeDataDir`; the same plan/generate/retry/reslice/normalize
+  pipeline the VS Code extension uses, driven via a `createRequire` bridge
+  into the compiled `out/src/extension/themeService.js` (no
+  reimplementation, no `vscode` import); the review-editor messages (rename,
+  per-item description, whole-theme creative direction, approve/approve-all);
+  and export/import (`GET /theme-export/<id>`, `POST /theme-import`) — see
+  "Running the theme host end to end" above. All served through the
+  unmodified `media/main.js` Theme Builder tab.
 
 Deliberately deferred / not done — do not assume these work:
 
@@ -166,11 +224,6 @@ Deliberately deferred / not done — do not assume these work:
   standalone's state feed does not read or apply this file yet, so a
   project with saved time adjustments will show slightly different
   (uncorrected) active times here than in the VS Code panel.
-- **No theme storage adapter yet.** `server.mjs` resolves `themeDataDir`
-  (an app-data-rooted `themes/` directory) and `getThemeImageConfig()` at
-  startup, but nothing yet reads/writes actual theme manifests or images
-  there, or calls the image-generation client with this config — that is a
-  later task.
 - **Multi-directory watching is primary-only.** When `watch` is given more
   than one directory, only the *first* drives the rendered board (its state
   is broadcast to the browser). Additional directories are watched for real

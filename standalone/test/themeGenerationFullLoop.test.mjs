@@ -1,10 +1,15 @@
 // TycoonAgents standalone — end-to-end authoring-loop coverage for the theme
-// GENERATION handlers (project-plan task pC-t3): PLAN -> GENERATE -> EDIT ->
-// APPROVE, driven against the REAL themeService.ts pipeline (via
-// themeGenerationBridge.mjs's createRequire out/ bridge — same posture as
-// themeEditorMessages.test.mjs / themeMessages.test.mjs) with a MOCKED image
-// (and planning-LLM) provider so the test is deterministic and makes zero
-// real network calls.
+// GENERATION handlers (project-plan tasks pC-t3, extended by pD-t3 with the
+// EXPORT step): PLAN -> GENERATE -> EDIT -> APPROVE -> EXPORT, driven
+// against the REAL themeService.ts pipeline (via themeGenerationBridge.mjs's
+// createRequire out/ bridge — same posture as themeEditorMessages.test.mjs /
+// themeMessages.test.mjs) with a MOCKED image (and planning-LLM) provider so
+// the test is deterministic and makes zero real network calls. The EXPORT
+// step (pD-t3) reuses this exact fixture rather than re-running a second
+// 23-image generation, and additionally proves the exported archive excludes
+// images/raw/ (the 0.0.371 rule) by calling exportThemeArchiveFromStore()
+// directly and parsing the resulting zip with the same parseThemeArchive()
+// themeExportImportHttp.test.mjs uses for the HTTP-layer route.
 //
 // WHY A MOCKED FETCH IS SAFE HERE: generateTheme's real pipeline always
 // pads a requested plan up to the fixed per-theme counts (16 characters, 4
@@ -57,6 +62,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import Jimp from 'jimp';
 import {
   createFsThemeFileStore,
@@ -65,8 +72,10 @@ import {
   themePlanPath,
   themeReviewPath,
   themeImagesDirectoryPath,
+  themeRawImagesDirectoryPath,
 } from '../src/themeFileStoreFs.mjs';
 import { configureThemeFileStore } from '../src/themeGenerationBridge.mjs';
+import { exportThemeArchiveFromStore } from '../src/themeArchive.mjs';
 import {
   handlePlanTheme,
   handleGenerateTheme,
@@ -74,6 +83,18 @@ import {
   handleApproveAllThemeImages,
   resetThemeGenerationStateForTests,
 } from '../src/themeGenerationMessages.mjs';
+
+// parseThemeArchive is the same compiled-out/ zip reader
+// themeExportImportHttp.test.mjs uses to independently verify exported zip
+// bytes — pulled in directly here (rather than re-exported through
+// themeArchive.mjs, which only wraps the export/import bridge functions
+// themselves) so the EXPORT step below can assert on the archive's actual
+// entry list, not just that export "didn't throw".
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const require = createRequire(import.meta.url);
+const { parseThemeArchive } = require(path.join(REPO_ROOT, 'out', 'src', 'extension', 'themeArchive.js'));
 
 function mkTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-fullloop-'));
@@ -135,7 +156,7 @@ function getThemeImageConfig() {
   return { provider: 'openai', openaiApiKey: 'test-key', geminiApiKey: undefined };
 }
 
-test('full authoring loop: PLAN -> GENERATE (mocked provider) -> EDIT (creative direction) -> APPROVE ALL', async (t) => {
+test('full authoring loop: PLAN -> GENERATE (mocked provider) -> EDIT (creative direction) -> APPROVE ALL -> EXPORT', async (t) => {
   const root = mkTempRoot();
   resetThemeGenerationStateForTests();
   const store = createFsThemeFileStore(root);
@@ -268,4 +289,40 @@ test('full authoring loop: PLAN -> GENERATE (mocked provider) -> EDIT (creative 
   for (const item of reviewAfterApprove.items) {
     assert.equal(item.status, 'accepted', `item ${item.id} should be accepted on disk`);
   }
+
+  // ── 5. EXPORT ────────────────────────────────────────────────────────────
+  // exportThemeArchiveFromStore() (standalone/src/themeArchive.mjs, the same
+  // bridge into out/src/extension/themeArchiveOps.js the real
+  // GET /theme-export/<id> HTTP route uses — see
+  // themeExportImportHttp.test.mjs for the HTTP-layer coverage of that
+  // route) requires every review item to be accepted first, which is exactly
+  // the state APPROVE ALL just produced above.
+  //
+  // First confirm raw atlas files actually exist on disk (persistRawAtlas
+  // runs once per generated board during GENERATE), so the raw-exclusion
+  // assertion below is checking a real subtraction, not a vacuous one.
+  const rawDir = themeRawImagesDirectoryPath(themeId);
+  const rawEntries = await store.readdir(rawDir).catch(() => []);
+  assert.ok(
+    rawEntries.some((entry) => entry.isFile),
+    'raw atlas files exist on disk pre-export (persisted once per generated board), so the exclusion check below is non-vacuous',
+  );
+
+  const archiveBytes = await exportThemeArchiveFromStore(store, themeId);
+  assert.ok(archiveBytes instanceof Uint8Array && archiveBytes.length > 0, 'export produced a non-empty archive');
+
+  const archive = parseThemeArchive(archiveBytes);
+  assert.equal(archive.themeId, themeId, 'archive is tagged with the exported theme_id');
+  const archivePaths = [...archive.files.keys()];
+  assert.ok(archivePaths.includes('manifest.json'), 'archive contains manifest.json');
+  assert.ok(archivePaths.includes('frames.json'), 'archive contains frames.json');
+  assert.ok(archivePaths.includes('plan.json'), 'archive contains plan.json');
+  assert.ok(
+    archivePaths.some((p) => p.startsWith('images/') && !p.startsWith('images/raw/')),
+    'archive contains at least one non-raw generated board image',
+  );
+  assert.ok(
+    archivePaths.every((p) => p !== 'images/raw' && !p.startsWith('images/raw/')),
+    `exported archive must exclude images/raw/* (0.0.371 rule); got: ${JSON.stringify(archivePaths)}`,
+  );
 });
