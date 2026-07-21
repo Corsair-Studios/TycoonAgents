@@ -132,11 +132,14 @@
   const projectPlanBodyEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-body"));
 
   // The #metrics-table "Tokens/min" column header (static HTML in panel.ts) now
-  // shows an estimated $/min burn rate instead — relabel it from here so the
-  // header stays in sync without touching panel.ts.
+  // shows a TOTAL estimated cost per agent instead — relabel it from here so
+  // the header stays in sync without touching panel.ts. (A per-minute $/min
+  // "rate" was tried before this and dropped: a fast/cheap model like Haiku
+  // burns tokens quickly and so shows a HIGH rate for CHEAP work — the
+  // opposite of what the number should communicate.)
   (function relabelMetricsStatusColumnHeader() {
     const th = document.querySelector("#metrics-table thead th:nth-child(2)");
-    if (th) th.textContent = "Est. $/min";
+    if (th) th.textContent = "Est. Cost";
   })();
 
   /** Whether the user's project has the optional Project Plan feature turned on (from PLAN_STATE.enabled). Default false so nothing new shows unless the host confirms it's on. */
@@ -9936,7 +9939,7 @@
    * (chevron/indent/teamTag/leadId, Team Lead Mode Phase 3) were retired
    * when the table moved to a flat per-agent list (see renderMetrics).
    */
-  function buildMetricsRow(agent, maxUsdPerMin, opts) {
+  function buildMetricsRow(agent, maxCostUSD, opts) {
     opts = opts || {};
     const status = (agent.status || "idle").toLowerCase();
     const isActive = status === "active";
@@ -9965,22 +9968,23 @@
     nameTd.title = nameTitle;
     row.appendChild(nameTd);
 
-    // Status bar: green while active, gray while idle. Width encodes an
-    // ESTIMATED $/min burn rate (estCostUSD(tokens, model) / active minutes),
-    // normalized to the agent with the highest rate. This is a rough blended
-    // estimate (total tokens only, no input/output split) — ratios matter more
-    // than absolute accuracy. Active agents always show a visible green sliver
-    // so "working" is never invisible.
-    const mins = (agent.activeMs || 0) / 60000;
+    // Status bar: green while active, gray while idle. Width encodes the
+    // agent's TOTAL estimated cost (estCostUSD(tokens, model)), normalized to
+    // the agent with the highest total. This is a rough blended estimate
+    // (total tokens only, no input/output split) — ratios matter more than
+    // absolute accuracy. A per-minute rate was deliberately NOT used here: a
+    // fast/cheap model (e.g. Haiku) burns tokens quickly and so would show a
+    // HIGH rate for CHEAP work, rewarding slow expensive models instead of
+    // reflecting actual spend. Active agents always show a visible green
+    // sliver so "working" is never invisible.
     const costUSD = estCostUSD(agent.tokens, agent.model);
-    const usdPerMin = costUSD != null && mins > 0 ? costUSD / mins : null;
-    const rawPct = usdPerMin !== null
-      ? Math.round(Math.min(usdPerMin / maxUsdPerMin, 1) * 100)
+    const rawPct = costUSD !== null
+      ? Math.round(Math.min(costUSD / maxCostUSD, 1) * 100)
       : 0;
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Estimated cost rate ($/min of active time) — a rough blended estimate from total tokens × approx. model price (no input/output split available; not a billed figure). The bar is scaled to the priciest agent.";
+    statusTd.title = "Estimated total cost — a rough blended estimate from total tokens × approx. model price (no input/output split available; not a billed figure). The bar is scaled to the costliest agent.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -9988,7 +9992,7 @@
     fill.style.width = `${fillPct}%`;
     const label = document.createElement("span");
     label.className = "status-bar-label";
-    label.textContent = showActive ? "active" : (usdPerMin !== null ? `${fmtUSD(usdPerMin, false)}/min` : "—");
+    label.textContent = showActive ? "active" : (costUSD !== null ? fmtUSD(costUSD, false) : "—");
     track.appendChild(fill);
     track.appendChild(label);
     statusTd.appendChild(track);
@@ -10040,14 +10044,10 @@
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // Estimated $/min burn rate of active time per agent (rough blended
-    // estimate — see estCostUSD). Used to scale the status bar; unpriced
-    // agents (unknown model) don't participate.
-    const maxUsdPerMin = Math.max(0.0001, ...metrics.map(a => {
-      const mins = (a.activeMs || 0) / 60000;
-      const cost = estCostUSD(a.tokens, a.model);
-      return cost != null && mins > 0 ? cost / mins : 0;
-    }));
+    // Total estimated cost per agent (rough blended estimate — see
+    // estCostUSD). Used to scale the status bar; unpriced agents (unknown
+    // model) don't participate.
+    const maxCostUSD = Math.max(0.0001, ...metrics.map(a => estCostUSD(a.tokens, a.model) || 0));
 
     // Flat list: every agent (lead or worker) gets its own equal top-level
     // row, in the existing sort order, no nesting/indentation/grouping. The
@@ -10057,12 +10057,38 @@
     // docs/plan/team-lead-mode.md Phase 3 for the retired nesting approach.
     tbodyEl.innerHTML = "";
     for (const agent of metrics) {
-      tbodyEl.appendChild(buildMetricsRow(agent, maxUsdPerMin, {}));
+      tbodyEl.appendChild(buildMetricsRow(agent, maxCostUSD, {}));
     }
   }
 
   /** Display label for a delegation mode id (the "flat" enum value renders as "Direct"). */
   const DELEGATION_MODE_LABEL = { flat: "Direct", team_leads: "Team Leads" };
+
+  /**
+   * Session-wide delegation savings: compares what delegated (non-
+   * orchestrator) work actually cost at its assigned models against what the
+   * same token volume would have cost had it all run on the orchestrator's
+   * own model instead. Only non-orchestrator agents with tokens>0 AND a
+   * known model price participate — an unpriced or idle agent never shows up
+   * as $0 on either side of the comparison.
+   * @returns {{actualUSD:number, ifOrchestratorUSD:number, savedUSD:number}|null} null when there's no delegated work to compare.
+   */
+  function computeDelegationSavings() {
+    const orch = lastMetrics.find((a) => a && a.id === "orchestrator");
+    const orchPrice = (orch && modelPricePerMtok(orch.model)) || MODEL_PRICE_PER_MTOK.opus;
+    const delegated = lastMetrics.filter(
+      (a) => a && a.id !== "orchestrator" && a.tokens > 0 && modelPricePerMtok(a.model) != null
+    );
+    if (delegated.length === 0) return null;
+    let actualUSD = 0;
+    let ifOrchestratorUSD = 0;
+    for (const a of delegated) {
+      const c = estCostUSD(a.tokens, a.model);
+      if (c != null) actualUSD += c;
+      ifOrchestratorUSD += (a.tokens / 1e6) * orchPrice;
+    }
+    return { actualUSD, ifOrchestratorUSD, savedUSD: ifOrchestratorUSD - actualUSD };
+  }
 
   /**
    * Render the "Delegation stats" section (Team Lead Mode Phase 4:
@@ -10090,6 +10116,28 @@
     heading.textContent = "Delegation stats";
     el.appendChild(heading);
 
+    // Session savings headline: what delegating to cheaper/faster models
+    // saved vs. running the same delegated work on the orchestrator's own
+    // model. A $0/negative "savings" is never shown as a win — it's omitted
+    // instead, since delegation isn't always cheaper (e.g. everything routed
+    // to an equally- or more-expensive model).
+    const savings = computeDelegationSavings();
+    if (!savings) {
+      // No new CSS class added (media/main.js only) — reuse the existing
+      // "detail" text style, which is already theme-aware via CSS vars.
+      const savingsEl = document.createElement("div");
+      savingsEl.className = "delegation-stats-detail";
+      savingsEl.textContent = "No delegated work yet — nothing to compare.";
+      el.appendChild(savingsEl);
+    } else if (savings.savedUSD > 0) {
+      const savingsEl = document.createElement("div");
+      savingsEl.className = "delegation-stats-detail";
+      savingsEl.textContent =
+        `Delegation saved ${fmtUSD(savings.savedUSD)} this session — that work on the orchestrator's model ` +
+        `would run ${fmtUSD(savings.ifOrchestratorUSD)} vs ${fmtUSD(savings.actualUSD)} on the assigned models.`;
+      el.appendChild(savingsEl);
+    }
+
     for (const m of rows) {
       const label = DELEGATION_MODE_LABEL[m.mode] || m.mode;
       const tokensPerTask = m.completedTasks > 0 ? Math.round(m.totalTokens / m.completedTasks) : 0;
@@ -10111,23 +10159,14 @@
       // activeMs is the mode's total active time summed across its agents;
       // unlike wallClockMs it persists after agents stop (workStartAt nulls
       // on stop), so throughput keeps showing post-run instead of "—".
+      // (A per-mode $/min burn rate used to be appended here too — dropped
+      // for the same reason as the table's rate column: it rewarded slow
+      // expensive models over fast cheap ones. Total cost is covered by the
+      // session savings headline above instead.)
       const modeTokPerSec = (typeof m.activeMs === "number" && m.activeMs > 0)
         ? m.totalTokens / (m.activeMs / 1000)
         : 0;
-      // Estimated $/min burn rate for this mode: sum estCostUSD(tokens, model)
-      // across the mode's agents (unpriced models excluded, not treated as $0),
-      // divided by the same activeMs basis as the tok/s figure above — mirrors
-      // resolveMode() in core/state.ts (delegationMode === "team_leads" wins,
-      // everything else buckets as "flat").
-      const modeAgents = lastMetrics.filter((a) => a && ((a.delegationMode === "team_leads" ? "team_leads" : "flat") === m.mode));
-      const modeCostUSD = modeAgents.reduce((sum, a) => {
-        const c = estCostUSD(a.tokens, a.model);
-        return c != null ? sum + c : sum;
-      }, 0);
-      const modeUsdPerMin = (typeof m.activeMs === "number" && m.activeMs > 0 && modeCostUSD > 0)
-        ? modeCostUSD / (m.activeMs / 60000)
-        : null;
-      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"} · ${modeUsdPerMin != null ? fmtUSD(modeUsdPerMin) + "/min" : "—"}`;
+      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"}`;
       detail.textContent = text;
       row.appendChild(detail);
 
@@ -10137,7 +10176,7 @@
     const pricingCaption = document.createElement("div");
     pricingCaption.className = "delegation-stats-caption";
     pricingCaption.textContent =
-      "Dollar figures apply Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token; this is what the same work would cost via the API. Rates are refreshed with each extension update.";
+      "Dollar figures apply Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token; this is what the same work would cost via the API. Figures use each agent's total token count only (no input/output split). Rates are refreshed with each extension update.";
     el.appendChild(pricingCaption);
   }
 
