@@ -513,7 +513,20 @@ function handleThemeImport(req, res) {
 //                              are swallowed + logged, never thrown, so a
 //                              transient hiccup can't kill main.js's render
 //                              loop (main.js calls postMessage from inside
-//                              its rAF loop in several places).
+//                              its rAF loop in several places). TWO types
+//                              are special-cased instead of being POSTed
+//                              (the server has no /message handler for
+//                              either): EXPORT_THEME triggers a browser
+//                              download of the pB-t2 GET /theme-export/<id>
+//                              route, IMPORT_THEME opens a hidden file input
+//                              and POSTs the chosen file's raw bytes to the
+//                              pB-t2 POST /theme-import route (pD-t2); both
+//                              then synthesize the matching
+//                              THEME_EXPORT_RESULT/THEME_IMPORT_RESULT via
+//                              deliverSyntheticMessage() below using the
+//                              exact same window-'message'-event mechanism
+//                              real SSE pushes use, so main.js needs no
+//                              changes to react to either.
 //   - getState()/setState(s) -> window.localStorage, single JSON key, so
 //                              webview state survives a real page reload
 //                              exactly like VS Code's webview state does.
@@ -593,6 +606,176 @@ function buildHostHtml() {
         }
       }
 
+      // Synthesizes an inbound host->webview message the exact same way
+      // connectEvents() below turns a real SSE push into one: a window
+      // 'message' event whose event.data is { type, payload }, matching what
+      // media/main.js's window.addEventListener("message", e => ...)
+      // listener (media/main.js:7175) already expects from a real VS Code
+      // webview.postMessage(). Used by the EXPORT_THEME/IMPORT_THEME
+      // special-cases below to deliver THEME_EXPORT_RESULT/
+      // THEME_IMPORT_RESULT without a server round-trip (pD-t2).
+      function deliverSyntheticMessage(type, payload) {
+        window.dispatchEvent(new MessageEvent('message', { data: { type: type, payload: payload || {} } }));
+      }
+
+      // EXPORT_THEME (pD-t2): there is no vscode save-dialog in the
+      // standalone, so exporting is a browser download of the pB-t2
+      // GET /theme-export/<theme_id> route (which already sets
+      // Content-Disposition: attachment). A transient off-DOM <a download>
+      // click is the most reliable cross-browser way to start that download
+      // without navigating the page away. main.js only needs the
+      // THEME_EXPORT_RESULT that follows to re-enable the Export button and
+      // show status (media/main.js:7904) - it does not care how the bytes
+      // actually reached the browser.
+      function triggerThemeExport(themeId) {
+        if (!themeId) {
+          deliverSyntheticMessage('THEME_EXPORT_RESULT', { theme_id: themeId, error: 'No theme selected to export.' });
+          return;
+        }
+        try {
+          var link = document.createElement('a');
+          link.href = '/theme-export/' + encodeURIComponent(themeId);
+          link.download = themeId + '.zip';
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          deliverSyntheticMessage('THEME_EXPORT_RESULT', { theme_id: themeId, display_name: themeId });
+        } catch (err) {
+          console.error('[tycoonagents-standalone] EXPORT_THEME failed:', err);
+          deliverSyntheticMessage('THEME_EXPORT_RESULT', { theme_id: themeId, error: String((err && err.message) || err) });
+        }
+      }
+
+      // IMPORT_THEME (pD-t2): there is no vscode open-dialog in the
+      // standalone, so a hidden <input type="file"> stands in for it. The
+      // chosen file's raw bytes are POSTed as the request body to the pB-t2
+      // POST /theme-import route (which expects the RAW archive bytes, not a
+      // multipart form - see handleThemeImport above). Cancel detection uses
+      // the standard window-'focus'-after-dialog-closes trick (there is no
+      // native file-input cancel event): if 'change' has not already fired
+      // and settled things shortly after focus returns, we treat it as a
+      // cancel - this mirrors what main.js's IMPORT_THEME button expects
+      // (payload.cancelled, media/main.js:7942).
+      function triggerThemeImport() {
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.zip,application/zip';
+        input.style.display = 'none';
+        var settled = false;
+        var focusTimer = null;
+
+        // Detaches the focus-based cancel watcher (listener + its pending
+        // grace timer, if any). Called the instant a real file is chosen
+        // (synchronously, before the async upload starts) so a slow
+        // fetch/unzip can never let the timer fire underneath it; also
+        // called on the genuine-cancel and true-cancel paths below.
+        function removeFocusWatcher() {
+          window.removeEventListener('focus', onFocus);
+          if (focusTimer !== null) {
+            clearTimeout(focusTimer);
+            focusTimer = null;
+          }
+        }
+
+        function removeInput() {
+          if (input.parentNode) input.parentNode.removeChild(input);
+        }
+
+        function onFocus() {
+          // Give a just-fired 'change' event a chance to settle() first.
+          focusTimer = setTimeout(function () {
+            focusTimer = null;
+            if (settled) return;
+            settled = true;
+            removeFocusWatcher();
+            removeInput();
+            deliverSyntheticMessage('THEME_IMPORT_RESULT', { cancelled: true });
+          }, 300);
+        }
+
+        input.addEventListener('change', function () {
+          var file = input.files && input.files[0];
+          if (!file) {
+            // True dialog cancel: no file was ever selected.
+            if (settled) return;
+            settled = true;
+            removeFocusWatcher();
+            removeInput();
+            deliverSyntheticMessage('THEME_IMPORT_RESULT', { cancelled: true });
+            return;
+          }
+          // A real file was chosen: settle SYNCHRONOUSLY, before the async
+          // upload starts, and detach the focus watcher right away. A real
+          // import's fetch (network + server unzip/write) easily exceeds
+          // the 300ms cancel grace period; without this the focus timer
+          // would fire first, deliver a spurious {cancelled:true}, and the
+          // eventual real result would be silently swallowed by an
+          // early-return settled guard. The upload's own result is
+          // delivered unconditionally below - settled is already true and
+          // is not re-checked, so exactly one message goes out per pick.
+          settled = true;
+          removeFocusWatcher();
+          file.arrayBuffer()
+            .then(function (buf) {
+              return fetch('/theme-import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/zip' },
+                body: buf,
+              });
+            })
+            .then(function (res) {
+              return res.json().then(function (data) {
+                return { ok: res.ok, data: data };
+              });
+            })
+            .then(function (result) {
+              removeInput();
+              if (result.ok && !(result.data && result.data.error)) {
+                deliverSyntheticMessage('THEME_IMPORT_RESULT', {
+                  display_name: result.data && result.data.display_name,
+                  replaced: result.data && result.data.replaced,
+                });
+                // Refresh the theme list through the normal channel so the
+                // imported theme appears - the standalone's LIST_THEMES
+                // handler broadcasts THEMES_LIST, which main.js already
+                // renders (media/main.js's THEMES_LIST listener).
+                postToServer({ type: 'LIST_THEMES' });
+              } else {
+                deliverSyntheticMessage('THEME_IMPORT_RESULT', {
+                  error: (result.data && result.data.error) || 'Import failed.',
+                });
+              }
+            })
+            .catch(function (err) {
+              removeInput();
+              console.error('[tycoonagents-standalone] IMPORT_THEME failed:', err);
+              deliverSyntheticMessage('THEME_IMPORT_RESULT', { error: String((err && err.message) || err) });
+            });
+        });
+
+        window.addEventListener('focus', onFocus);
+        document.body.appendChild(input);
+        input.click();
+      }
+
+      // postMessage entry point used by the acquireVsCodeApi() singleton
+      // below: EXPORT_THEME/IMPORT_THEME are special-cased into the browser
+      // download/file-pick flows above (the server has no /message handler
+      // for either - the pB-t2 routes are plain HTTP, not postMessage
+      // dispatch); everything else goes to the server exactly as before.
+      function dispatchPostMessage(message) {
+        if (message && message.type === 'EXPORT_THEME') {
+          triggerThemeExport(message.payload && message.payload.theme_id);
+          return;
+        }
+        if (message && message.type === 'IMPORT_THEME') {
+          triggerThemeImport();
+          return;
+        }
+        postToServer(message);
+      }
+
       function connectEvents() {
         // Server -> browser pushes ride SSE and are re-dispatched as window
         // 'message' events so media/main.js's existing
@@ -622,7 +805,7 @@ function buildHostHtml() {
         // returning the same instance on any further call is equivalent.
         if (apiSingleton) return apiSingleton;
         apiSingleton = {
-          postMessage: postToServer,
+          postMessage: dispatchPostMessage,
           getState: readState,
           setState: writeState,
         };
