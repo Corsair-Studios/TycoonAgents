@@ -132,11 +132,11 @@
   const projectPlanBodyEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-body"));
 
   // The #metrics-table "Tokens/min" column header (static HTML in panel.ts) now
-  // shows an estimated $/min burn rate instead — relabel it from here so the
-  // header stays in sync without touching panel.ts.
+  // shows a dimensionless cost-ratio-vs-orchestrator lens instead — relabel it
+  // from here so the header stays in sync without touching panel.ts.
   (function relabelMetricsStatusColumnHeader() {
     const th = document.querySelector("#metrics-table thead th:nth-child(2)");
-    if (th) th.textContent = "Est. $/min";
+    if (th) th.textContent = "vs. orch.";
   })();
 
   /** Whether the user's project has the optional Project Plan feature turned on (from PLAN_STATE.enabled). Default false so nothing new shows unless the host confirms it's on. */
@@ -9825,6 +9825,32 @@
   }
 
   /**
+   * Format a dimensionless price ratio for the "×cheaper/×pricier" cost lens,
+   * e.g. 5 -> "5", 2.5 -> "2.5". One decimal place, trimmed when it's a whole
+   * number.
+   * @param {number} r
+   * @returns {string}
+   */
+  function fmtRatio(r) {
+    const n = Math.round(r * 10) / 10;
+    return Number.isInteger(n) ? String(n) : n.toFixed(1);
+  }
+
+  /**
+   * Resolve the orchestrator's blended $/Mtok price from a metrics array,
+   * falling back to opus (10) when no orchestrator entry is found or its
+   * model is unpriced. Shared by the per-agent "vs. orch." column and the
+   * delegation-stats savings headline.
+   * @param {Array<{id?:string, model?:string}>|undefined} metrics
+   * @returns {number}
+   */
+  function resolveOrchestratorPrice(metrics) {
+    const orch = Array.isArray(metrics) ? metrics.find((a) => a && a.id === "orchestrator") : null;
+    const price = orch ? modelPricePerMtok(orch.model) : null;
+    return price != null ? price : MODEL_PRICE_PER_MTOK.opus;
+  }
+
+  /**
    * Conjugate a verb into its third-person singular form.
    * @param {string} verb
    * @returns {string}
@@ -9936,7 +9962,7 @@
    * (chevron/indent/teamTag/leadId, Team Lead Mode Phase 3) were retired
    * when the table moved to a flat per-agent list (see renderMetrics).
    */
-  function buildMetricsRow(agent, maxUsdPerMin, opts) {
+  function buildMetricsRow(agent, maxBlendedCost, opts) {
     opts = opts || {};
     const status = (agent.status || "idle").toLowerCase();
     const isActive = status === "active";
@@ -9965,22 +9991,23 @@
     nameTd.title = nameTitle;
     row.appendChild(nameTd);
 
-    // Status bar: green while active, gray while idle. Width encodes an
-    // ESTIMATED $/min burn rate (estCostUSD(tokens, model) / active minutes),
-    // normalized to the agent with the highest rate. This is a rough blended
-    // estimate (total tokens only, no input/output split) — ratios matter more
-    // than absolute accuracy. Active agents always show a visible green sliver
-    // so "working" is never invisible.
-    const mins = (agent.activeMs || 0) / 60000;
-    const costUSD = estCostUSD(agent.tokens, agent.model);
-    const usdPerMin = costUSD != null && mins > 0 ? costUSD / mins : null;
-    const rawPct = usdPerMin !== null
-      ? Math.round(Math.min(usdPerMin / maxUsdPerMin, 1) * 100)
+    // Status bar: green while active, gray while idle. Width encodes this
+    // agent's TOTAL estimated blended cost, normalized to the agent with the
+    // highest total cost — a dimensionless share, not a dollar rate (dollar
+    // rates reward slow expensive models: a fast Haiku agent showed the
+    // HIGHEST $/min while being the cheapest). Label is a ratio vs. the
+    // orchestrator's own model price ("Nx cheaper"/"Nx pricier"/"same cost"),
+    // never an absolute $ figure — subscription billing makes $/token
+    // meaningless to the user. Active agents always show a visible green
+    // sliver so "working" is never invisible.
+    const cost = estCostUSD(agent.tokens, agent.model);
+    const rawPct = cost !== null && maxBlendedCost > 0
+      ? Math.round(Math.min(cost / maxBlendedCost, 1) * 100)
       : 0;
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Estimated cost rate ($/min of active time) — a rough blended estimate from total tokens × approx. model price (no input/output split available; not a billed figure). The bar is scaled to the priciest agent.";
+    statusTd.title = "Cost vs. the orchestrator's model — a dimensionless ratio from total tokens × approx. model price (no input/output split available; not a billed figure, and not applicable to subscription billing). The bar is scaled to the priciest agent's total cost.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -9988,7 +10015,22 @@
     fill.style.width = `${fillPct}%`;
     const label = document.createElement("span");
     label.className = "status-bar-label";
-    label.textContent = showActive ? "active" : (usdPerMin !== null ? `${fmtUSD(usdPerMin, false)}/min` : "—");
+    let vsOrchText;
+    if (agent.id === "orchestrator") {
+      vsOrchText = "baseline";
+    } else {
+      const agentPrice = modelPricePerMtok(agent.model);
+      const orchestratorPrice = opts.orchestratorPrice;
+      if (agentPrice != null && agent.tokens > 0 && orchestratorPrice != null) {
+        const ratio = orchestratorPrice / agentPrice;
+        if (ratio >= 1.05) vsOrchText = `${fmtRatio(ratio)}× cheaper`;
+        else if (ratio <= 0.95) vsOrchText = `${fmtRatio(1 / ratio)}× pricier`;
+        else vsOrchText = "same cost";
+      } else {
+        vsOrchText = "—";
+      }
+    }
+    label.textContent = showActive ? "active" : vsOrchText;
     track.appendChild(fill);
     track.appendChild(label);
     statusTd.appendChild(track);
@@ -10040,14 +10082,14 @@
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // Estimated $/min burn rate of active time per agent (rough blended
-    // estimate — see estCostUSD). Used to scale the status bar; unpriced
-    // agents (unknown model) don't participate.
-    const maxUsdPerMin = Math.max(0.0001, ...metrics.map(a => {
-      const mins = (a.activeMs || 0) / 60000;
+    // TOTAL estimated blended cost per agent (rough estimate — see
+    // estCostUSD). Used to scale the status bar as a cost-share, not a rate;
+    // unpriced agents (unknown model) don't participate.
+    const maxBlendedCost = Math.max(0.0001, ...metrics.map(a => {
       const cost = estCostUSD(a.tokens, a.model);
-      return cost != null && mins > 0 ? cost / mins : 0;
+      return cost != null ? cost : 0;
     }));
+    const orchestratorPrice = resolveOrchestratorPrice(metrics);
 
     // Flat list: every agent (lead or worker) gets its own equal top-level
     // row, in the existing sort order, no nesting/indentation/grouping. The
@@ -10057,7 +10099,7 @@
     // docs/plan/team-lead-mode.md Phase 3 for the retired nesting approach.
     tbodyEl.innerHTML = "";
     for (const agent of metrics) {
-      tbodyEl.appendChild(buildMetricsRow(agent, maxUsdPerMin, {}));
+      tbodyEl.appendChild(buildMetricsRow(agent, maxBlendedCost, { orchestratorPrice }));
     }
   }
 
@@ -10090,6 +10132,34 @@
     heading.textContent = "Delegation stats";
     el.appendChild(heading);
 
+    // Session-wide savings headline: how much cheaper the DELEGATED work
+    // (every non-orchestrator agent) was than if the orchestrator's own
+    // model had done all of it. Dimensionless (%) — no absolute $ figures,
+    // since the user is on a subscription where per-token dollars don't
+    // apply. Omitted entirely when there's no priced delegated work, or when
+    // delegating wasn't actually cheaper (never shown as a zero/negative
+    // "saving").
+    const orchestratorPrice = resolveOrchestratorPrice(lastMetrics);
+    const orchEntry = lastMetrics.find((a) => a && a.id === "orchestrator");
+    const orchLabel = (orchEntry && orchEntry.model && prettyModel(orchEntry.model).split(" ")[0]) || "the orchestrator";
+    const delegatedAgents = lastMetrics.filter((a) => a && a.id !== "orchestrator");
+    let actual = 0;
+    let counterfactual = 0;
+    for (const a of delegatedAgents) {
+      if (!(a.tokens > 0)) continue;
+      const cost = estCostUSD(a.tokens, a.model);
+      if (cost == null) continue;
+      actual += cost;
+      counterfactual += (a.tokens / 1e6) * orchestratorPrice;
+    }
+    if (counterfactual > 0 && actual > 0 && actual < counterfactual) {
+      const savedPct = Math.round((1 - actual / counterfactual) * 100);
+      const savings = document.createElement("div");
+      savings.className = "delegation-stats-heading";
+      savings.textContent = `Delegating this work avoided ~${savedPct}% of the cost of running it all on ${orchLabel}.`;
+      el.appendChild(savings);
+    }
+
     for (const m of rows) {
       const label = DELEGATION_MODE_LABEL[m.mode] || m.mode;
       const tokensPerTask = m.completedTasks > 0 ? Math.round(m.totalTokens / m.completedTasks) : 0;
@@ -10114,20 +10184,7 @@
       const modeTokPerSec = (typeof m.activeMs === "number" && m.activeMs > 0)
         ? m.totalTokens / (m.activeMs / 1000)
         : 0;
-      // Estimated $/min burn rate for this mode: sum estCostUSD(tokens, model)
-      // across the mode's agents (unpriced models excluded, not treated as $0),
-      // divided by the same activeMs basis as the tok/s figure above — mirrors
-      // resolveMode() in core/state.ts (delegationMode === "team_leads" wins,
-      // everything else buckets as "flat").
-      const modeAgents = lastMetrics.filter((a) => a && ((a.delegationMode === "team_leads" ? "team_leads" : "flat") === m.mode));
-      const modeCostUSD = modeAgents.reduce((sum, a) => {
-        const c = estCostUSD(a.tokens, a.model);
-        return c != null ? sum + c : sum;
-      }, 0);
-      const modeUsdPerMin = (typeof m.activeMs === "number" && m.activeMs > 0 && modeCostUSD > 0)
-        ? modeCostUSD / (m.activeMs / 60000)
-        : null;
-      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"} · ${modeUsdPerMin != null ? fmtUSD(modeUsdPerMin) + "/min" : "—"}`;
+      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"}`;
       detail.textContent = text;
       row.appendChild(detail);
 
@@ -10137,7 +10194,7 @@
     const pricingCaption = document.createElement("div");
     pricingCaption.className = "delegation-stats-caption";
     pricingCaption.textContent =
-      "Dollar figures apply Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token; this is what the same work would cost via the API. Rates are refreshed with each extension update.";
+      "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token.";
     el.appendChild(pricingCaption);
   }
 
@@ -10738,18 +10795,32 @@
       // Stats from matched metrics
       const stats = document.createElement("div");
       stats.className = "agent-stats";
-      const mins = m && m.activeMs ? m.activeMs / 60000 : 0;
-      // Rough estimated $/min burn rate (see estCostUSD) — falls back to the
-      // settings-configured agent.model if the metrics record has none yet.
-      const chipCostUSD = m ? estCostUSD(m.tokens, m.model || agent.model) : null;
-      const chipUsdPerMin = chipCostUSD != null && mins > 0 ? chipCostUSD / mins : null;
+      // Dimensionless cost-ratio badge vs. the orchestrator's own model price
+      // (same lens as the metrics table's "vs. orch." column) — falls back to
+      // the settings-configured agent.model if the metrics record has none yet.
       const chip = (label, value) => {
         const c = document.createElement("span");
         c.className = "stat-chip";
         c.textContent = `${label} ${value}`;
         return c;
       };
-      stats.appendChild(chip("~$/min", fmtUSD(chipUsdPerMin)));
+      let chipVsOrchText;
+      if (agent.isOrchestrator) {
+        chipVsOrchText = "baseline";
+      } else {
+        const chipModel = m ? (m.model || agent.model) : agent.model;
+        const chipAgentPrice = modelPricePerMtok(chipModel);
+        if (chipAgentPrice != null && m && m.tokens > 0) {
+          const chipOrchestratorPrice = resolveOrchestratorPrice(lastMetrics);
+          const ratio = chipOrchestratorPrice / chipAgentPrice;
+          if (ratio >= 1.05) chipVsOrchText = `${fmtRatio(ratio)}× cheaper`;
+          else if (ratio <= 0.95) chipVsOrchText = `${fmtRatio(1 / ratio)}× pricier`;
+          else chipVsOrchText = "same cost";
+        } else {
+          chipVsOrchText = "—";
+        }
+      }
+      stats.appendChild(chip("vs. orch.", chipVsOrchText));
       stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
       stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));
       row.appendChild(stats);
