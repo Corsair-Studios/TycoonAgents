@@ -140,6 +140,87 @@ export function agentMarkdownTier(content: string): string | undefined {
 }
 
 /**
+ * Secondary "is this file ours" signal for regular worker agents installed
+ * before buildAgentMarkdown was passed a packId (so they predate the
+ * tycoon_pack marker). Considers a file a positive match for `agent` only
+ * if its frontmatter `model:` line equals `agent.model` AND its
+ * `## Keywords (for task routing)` section body equals `agent.keywords`
+ * exactly — keywords are a distinctive pipe-delimited fingerprint a user
+ * is very unlikely to have hand-authored identically, so this is safe
+ * without requiring the marker. Used only as a fallback alongside
+ * agentMarkdownHasTycoonMarker, never as the sole signal for anything
+ * destructive beyond a Role-section text swap.
+ */
+export function workerAgentFingerprintMatches(content: string, agent: PackAgent): boolean {
+  const lines = content.split(/\r\n|\n/);
+  if (lines.length === 0 || lines[0] !== "---") {
+    return false;
+  }
+  let modelMatches = false;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "---") {
+      break;
+    }
+    const match = /^\s*model\s*:\s*(\S+)\s*$/.exec(lines[i]);
+    if (match) {
+      modelMatches = match[1] === agent.model;
+      break;
+    }
+  }
+  if (!modelMatches) {
+    return false;
+  }
+
+  const heading = "## Keywords (for task routing)\n";
+  const headingIdx = content.indexOf(heading);
+  if (headingIdx === -1) {
+    return false;
+  }
+  const rest = content.slice(headingIdx + heading.length);
+  const lineEnd = rest.indexOf("\n");
+  const keywordsLine = lineEnd === -1 ? rest : rest.slice(0, lineEnd);
+  return keywordsLine.trim() === agent.keywords;
+}
+
+/**
+ * Surgically replace the `## Role` section body in an agent markdown file
+ * with `newRole`, preserving frontmatter and every other section
+ * byte-for-byte. Returns the updated content, or the input content
+ * unchanged if the current Role text already equals newRole, or `null` if
+ * no `## Role\n...\n\n##` section shape is found (never touch a file whose
+ * shape we don't recognize). Inverse-adjacent to buildAgentMarkdown's exact
+ * output shape: `"## Role\n" + role + "\n\n" + "## Keywords ..."`.
+ */
+export function resyncAgentRoleSection(content: string, newRole: string): string | null {
+  const heading = "## Role\n";
+  const headingIdx = content.indexOf(heading);
+  if (headingIdx === -1) {
+    return null;
+  }
+  const bodyStart = headingIdx + heading.length;
+  const rest = content.slice(bodyStart);
+
+  const blankLineIdx = rest.indexOf("\n\n");
+  const nextHeadingMatch = /\n## /.exec(rest);
+  const nextHeadingIdx = nextHeadingMatch ? nextHeadingMatch.index : -1;
+
+  let bodyEnd = rest.length;
+  if (blankLineIdx !== -1) {
+    bodyEnd = blankLineIdx;
+  }
+  if (nextHeadingIdx !== -1 && nextHeadingIdx < bodyEnd) {
+    bodyEnd = nextHeadingIdx;
+  }
+
+  const currentBody = rest.slice(0, bodyEnd);
+  if (currentBody === newRole) {
+    return content;
+  }
+
+  return content.slice(0, bodyStart) + newRole + rest.slice(bodyEnd);
+}
+
+/**
  * The 8 regular worker agents that make up TycoonAgents' core roster
  * (mirrors the hand-authored `.claude/agents/*.md` files in this repo).
  * Consumers that iterate a catalog for install/discovery should use this
@@ -175,7 +256,7 @@ export const REGULAR_AGENTS: PackAgent[] = [
     name: "Coding Specialist",
     model: "sonnet",
     role:
-      "Handles core implementation for TycoonAgents — TypeScript in src/core/ (events, state, provider abstraction), src/providers/ (provider adapters), and non-VS-Code logic in src/host/. Writes clean, focused, tested code.",
+      "Handles code implementation — writing, editing, refactoring, and fixing bugs. Produces clean, focused, tested changes.",
     keywords: "implement|code|fix|bug|refactor|create",
   },
   {
@@ -183,7 +264,7 @@ export const REGULAR_AGENTS: PackAgent[] = [
     name: "Testing Specialist",
     model: "haiku",
     role:
-      "Writes and maintains tests for TycoonAgents (the test/ suite, e.g. mapHookRecord.test.ts, providerState.test.ts) and keeps coverage meaningful.",
+      "Writes and maintains the test suite — specs, coverage, and fixtures — keeping tests deterministic and meaningful.",
     keywords: "test|spec|vitest|jest|coverage|unit",
   },
   {
@@ -191,7 +272,7 @@ export const REGULAR_AGENTS: PackAgent[] = [
     name: "VS Code Integration",
     model: "sonnet",
     role:
-      "Owns VS Code extension specifics for TycoonAgents — activation/lifecycle, the webview panel, message passing, commands, and settings (src/host/vscode/ and the extension manifest in package.json).",
+      "Handles VS Code extension specifics — activation and lifecycle, the webview panel, message passing, commands, and settings.",
     keywords: "vscode|extension|webview|panel|lifecycle",
   },
   {
@@ -199,7 +280,7 @@ export const REGULAR_AGENTS: PackAgent[] = [
     name: "UX/UI Designer",
     model: "sonnet",
     role:
-      "Designs and implements the visual layer of TycoonAgents' webview — the build-site scene rendered in media/ (main.js canvas renderer, style.css): layout, animation, and how agent activity reads at a glance.",
+      "Designs and implements the visual layer — scene, layout, styling, and animation — so activity reads clearly at a glance.",
     keywords: "ux|ui|design|canvas|layout|css|animation",
   },
   {
@@ -207,7 +288,7 @@ export const REGULAR_AGENTS: PackAgent[] = [
     name: "Workspace Monitor",
     model: "haiku",
     role:
-      "Owns the agent-activity domain for TycoonAgents: turning Claude Code (and other provider) hook events into normalized agent states the renderer can show. Centered on src/core/events.ts, src/core/state.ts, and src/providers/claude-code/.",
+      "Turns provider hook events into normalized agent states for the visualization — the agent-activity and lifecycle-tracking specialist.",
     keywords: "monitor|lifecycle|event|hook|activity|track",
   },
 ];

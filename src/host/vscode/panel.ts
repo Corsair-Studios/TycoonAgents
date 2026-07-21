@@ -21,7 +21,7 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -277,6 +277,14 @@ export class TycoonPanel {
     accept(): void;
     cancel(): void;
   } | undefined;
+  /**
+   * Cache of agent id -> authoritative `model:` string parsed from
+   * `.claude/agents/*.md` frontmatter via `loadAgentRoster`. Populated
+   * lazily by `_getRosterModelMap` and invalidated whenever the on-disk
+   * roster can change (worker-agent install, agent removal, metrics reset)
+   * so a stale model never gets stamped onto outgoing state.
+   */
+  private _rosterModelCache: Map<string, string> | undefined;
 
   public static createOrShow(
     extensionUri: vscode.Uri,
@@ -367,7 +375,7 @@ export class TycoonPanel {
 
     // Subscribe to runtime state changes
     this._runtimeDisposable = runtime.onChange((state) => {
-      void this._panel.webview.postMessage({ type: MSG.STATE, state: this._applyTimeAdjustments(state) });
+      void this._panel.webview.postMessage({ type: MSG.STATE, state: this._stampRosterModels(this._applyTimeAdjustments(state)) });
     });
 
     // Start the engine-status poller (fires immediately, then every 10 s).
@@ -399,7 +407,7 @@ export class TycoonPanel {
         }>;
       }) => {
         if (message.type === MSG.READY) {
-          void this._panel.webview.postMessage({ type: MSG.STATE, state: this._applyTimeAdjustments(runtime.getState()) });
+          void this._panel.webview.postMessage({ type: MSG.STATE, state: this._stampRosterModels(this._applyTimeAdjustments(runtime.getState())) });
           // Auto-load the latest theme so the main panel shows the real
           // characters + environment on open (mirrors the Theater view).
           void (async () => {
@@ -3492,6 +3500,60 @@ export class TycoonPanel {
    * Returns a shallow-cloned state with `activeMs` offsets applied to matching agents.
    * Tolerant: missing file, invalid JSON, or non-object => no adjustment.
    */
+  /**
+   * Build (and cache) the authoritative agent id -> model map from
+   * `.claude/agents/*.md` frontmatter via `loadAgentRoster`. This is the
+   * single source of truth for "what model does this agent run" — outgoing
+   * metrics state must be stamped from here rather than trusting whatever
+   * model string a hook event happened to report (the hook has no roster
+   * access and previously fabricated a "sonnet" fallback for unrecognized
+   * agent ids). Returns an empty, uncached map when there's no resolvable
+   * project root so a later call retries once a root becomes available.
+   */
+  private _getRosterModelMap(): Map<string, string> {
+    if (this._rosterModelCache) {
+      return this._rosterModelCache;
+    }
+    const root = this._projectRoot();
+    if (root === "") {
+      return new Map();
+    }
+    const map = new Map<string, string>();
+    for (const agent of loadAgentRoster(path.join(root, ".claude", "agents"))) {
+      if (agent.model) {
+        map.set(agent.id, agent.model);
+      }
+    }
+    this._rosterModelCache = map;
+    return map;
+  }
+
+  /**
+   * Overwrite each `agentMetrics` entry's `model` field with the
+   * authoritative roster value from `_getRosterModelMap`, so the metrics
+   * panel's tooltip and "vs. orch." badge always reflect what
+   * `.claude/agents/<id>.md` actually declares rather than a value a hook
+   * event may have fabricated. Never mutates `state` or its nested arrays —
+   * only entries whose model actually changes are cloned; entries with no
+   * roster match keep the same object reference.
+   */
+  private _stampRosterModels(state: any): any {
+    if (state === null || typeof state !== "object" || !Array.isArray(state.agentMetrics)) {
+      return { ...state };
+    }
+    const map = this._getRosterModelMap();
+    return {
+      ...state,
+      agentMetrics: state.agentMetrics.map((m: any) => {
+        if (m === null || typeof m !== "object" || typeof m.id !== "string") {
+          return m;
+        }
+        const rm = map.get(m.id);
+        return rm ? { ...m, model: rm } : m;
+      }),
+    };
+  }
+
   private _applyTimeAdjustments(state: any): any {
     try {
       const root = this._projectRoot();
@@ -3863,13 +3925,75 @@ export class TycoonPanel {
    * break panel construction/rendering.
    */
   private _ensureWorkerAgentsInstalled(): void {
+    // The on-disk roster may change below (new worker files created,
+    // role-text resynced) — drop the cached model map so the next stamp
+    // rereads it rather than serving stale/missing entries.
+    this._rosterModelCache = undefined;
     try {
       const root = this._projectRoot();
       if (root === "") return;
       if (!this._hooksInstalledForRoot(root)) return;
       this._installWorkerAgents(root);
+      this._ensureWorkerAgentRoleTextCurrent(root);
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
+   * Auto-heal: resync the `## Role` section text of already-installed
+   * worker agent files against the CURRENT `role:` strings in
+   * `packCatalog.ts`'s `REGULAR_AGENTS`/`workerAgentsForProject`. Editing
+   * `role:` there only affects markdown generated from that point forward —
+   * `_installWorkerAgents` is strictly create-if-absent (see its doc
+   * comment), so an edited role string never reaches a `.claude/agents/*.md`
+   * file that already exists on disk. Without this, a role-text fix in
+   * source ships in the VSIX but silently never applies to any project that
+   * installed TycoonAgents before that release.
+   *
+   * IDENTIFYING "OURS": most already-installed worker files predate
+   * `buildAgentMarkdown` ever being passed a `packId` (that only started
+   * with `_installWorkerAgents`'s "worker" packId, added alongside this
+   * method), so they carry no `tycoon_pack` marker. `agentMarkdownHasTycoonMarker`
+   * alone would therefore only ever match brand-new files, missing exactly
+   * the existing-user files this method exists to fix — so a file is also
+   * treated as ours when `workerAgentFingerprintMatches` matches on
+   * `model:` + the exact `## Keywords (for task routing)` body, a
+   * fingerprint a user is very unlikely to have hand-authored identically.
+   *
+   * Like `_ensureDelegationDoctrineCurrent`, this is idempotent and
+   * best-effort: gated on `_hooksInstalledForRoot` as the consent proxy,
+   * writes only when `resyncAgentRoleSection` returns genuinely different
+   * content, skips files that don't exist yet (creation is
+   * `_installWorkerAgents`'s job) or whose Role-section shape isn't
+   * recognized, and is wrapped in try/catch per-file and overall so a
+   * failure here can never break panel construction/rendering.
+   */
+  private _ensureWorkerAgentRoleTextCurrent(root: string): void {
+    try {
+      const isUefn = detectUefnProject(root).detected || this._isUefnPackInstalled(root);
+      const agents = workerAgentsForProject(isUefn);
+      const agentsDir = path.join(root, ".claude", "agents");
+      for (const a of agents) {
+        try {
+          const agentPath = path.join(agentsDir, `${a.id}.md`);
+          let content: string;
+          try {
+            content = fs.readFileSync(agentPath, "utf8");
+          } catch {
+            continue; // not installed yet — _installWorkerAgents handles creation
+          }
+          const managed = agentMarkdownHasTycoonMarker(content) || workerAgentFingerprintMatches(content, a);
+          if (!managed) continue; // never touch a file we can't positively identify as ours
+          const updated = resyncAgentRoleSection(content, a.role);
+          if (updated === null || updated === content) continue; // unrecognized shape or already current
+          fs.writeFileSync(agentPath, updated);
+        } catch {
+          /* best-effort per-file; never blocks the rest of the roster */
+        }
+      }
+    } catch {
+      /* best-effort auto-heal — must never break the panel. */
     }
   }
 
@@ -4470,7 +4594,7 @@ export class TycoonPanel {
           const agentPath = path.join(agentsDir, `${a.id}.md`);
           if (!fs.existsSync(agentPath)) {
             fs.mkdirSync(agentsDir, { recursive: true });
-            fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+            fs.writeFileSync(agentPath, buildAgentMarkdown(a, "worker"));
           }
         } catch {
           /* best-effort per-file; never blocks the rest of the roster */
@@ -4875,6 +4999,9 @@ export class TycoonPanel {
    * `_handleRemovePack`.
    */
   private async _handleRemoveAgent(id: string): Promise<void> {
+    // Removing an agent file changes the on-disk roster the model cache is
+    // built from — invalidate so the next stamp rereads it.
+    this._rosterModelCache = undefined;
     if (!isSafeAgentId(id)) {
       void this._panel.webview.postMessage({
         type: MSG.AGENT_REMOVED,
@@ -5006,6 +5133,9 @@ export class TycoonPanel {
     // Confirmation now happens in-panel (webview modal) before this message
     // is ever sent — see showResetConfirmModal() in media/main.js. By the
     // time we get here the reset is already user-approved; run it directly.
+    // A metrics reset can precede/accompany roster changes elsewhere in a
+    // session — invalidate the cached model map defensively.
+    this._rosterModelCache = undefined;
     const themeId = this._currentThemeId;
     try {
       const root = this._projectRoot();

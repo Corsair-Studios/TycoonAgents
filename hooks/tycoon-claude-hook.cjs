@@ -113,7 +113,7 @@ function resolveModel(rawModel, agentId) {
   if (rawModel) {
     return SHORTHAND_MODEL[rawModel.toLowerCase()] || rawModel;
   }
-  return MODEL_DEFAULTS[agentId] || "claude-sonnet-4-6";
+  return MODEL_DEFAULTS[agentId];
 }
 
 // ---------------------------------------------------------------------------
