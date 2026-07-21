@@ -1624,6 +1624,18 @@
       const pct = Math.round((Math.pow(1.2, rebirthCount) - 1) * 100);
       showRebirthAnnouncement(rebirthCount, pct);
     } catch (_e) { /* noop */ }
+    try {
+      // Every on-scene agent dances for exactly REBIRTH_DANCE_SECONDS,
+      // regardless of current activity — reuses startAgentDance (which
+      // frees any seat first) then pins the duration to the fixed rebirth
+      // length instead of its usual randomized 2-3s range.
+      for (const id in agentCharMap) {
+        const ce = agentCharMap[id];
+        if (!ce) continue;
+        startAgentDance(ce);
+        ce.danceTimeLeft = REBIRTH_DANCE_SECONDS;
+      }
+    } catch (_e) { /* noop */ }
   }
 
   /**
@@ -5115,6 +5127,8 @@
   const DANCE_CHANCE = 0.06;
   /** How long (seconds) a solo dance lasts — randomized 2–3s per dance. */
   const DANCE_SECONDS_MIN = 2, DANCE_SECONDS_MAX = 3;
+  /** Fixed duration (seconds) every on-scene agent dances for on a REBIRTH. */
+  const REBIRTH_DANCE_SECONDS = 3.0;
   /** Seconds between dance-frame swaps (manual frame mixer). */
   const DANCE_FRAME_SWAP = 0.35;
   /** Chance, per idle wander-decision, that an idle agent throws in a rare playful "point" emote. */
