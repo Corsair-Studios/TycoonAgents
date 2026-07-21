@@ -348,6 +348,13 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
         ? upsertMetric(afterChild, ORCHESTRATOR_ID, (m) => ({
             ...m,
             delegations: m.delegations + 1,
+            // Keep the orchestrator "alive" when it delegates. This liveness
+            // previously rode on a spawn-time TaskCompleted for the
+            // orchestrator, which was removed to stop double-counting tasks
+            // (see mapHookRecord's Task/Agent branch).
+            status: "active" as const,
+            workStartAt: m.workStartAt ?? event.at,
+            lastActivityAt: event.at,
           }))
         : afterChild;
       return {

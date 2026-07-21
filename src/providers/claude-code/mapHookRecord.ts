@@ -79,7 +79,14 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
     case "PreToolUse": {
       if (!record.tool) return [];
       if (record.tool === "Task" || record.tool === "Agent") {
-        // Spawn credit always goes to orchestrator (v1 simplification).
+        // A delegation spawns the worker and credits the orchestrator with a
+        // DELEGATION, not a completed task. The orchestrator's `delegations`
+        // counter is incremented by the WorkerSpawned reducer; emitting a
+        // TaskCompleted for the orchestrator here would double-count the unit
+        // (once at spawn for the orchestrator, once at the worker's
+        // SubagentStop) and wrongly credit the orchestrator with completing
+        // work it delegated away. The worker earns its TaskCompleted when it
+        // actually finishes (SubagentStop).
         return [
           {
             type: "WorkerSpawned",
@@ -92,7 +99,6 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
             ...(record.tier !== undefined ? { tier: record.tier } : {}),
             ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
           },
-          { type: "TaskCompleted", at: record.at, workerId: "orchestrator" },
         ];
       }
       if (record.tool === "Skill") {

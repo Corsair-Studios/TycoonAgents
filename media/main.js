@@ -10093,8 +10093,17 @@
 
     const tasksTd = document.createElement("td");
     tasksTd.className = "col-tasks";
-    tasksTd.title = "Tasks — number of Task-tool delegations routed to this agent.";
-    tasksTd.textContent = String(agent.taskCount ?? 0);
+    if (agent.id === "orchestrator") {
+      // The orchestrator delegates rather than completing work itself, so its
+      // Tasks cell shows how many tasks it handed off (its `delegations`),
+      // marked with a distinct color + asterisk so users hover for the detail.
+      tasksTd.textContent = String(agent.delegations ?? 0) + "*";
+      tasksTd.style.color = "var(--vscode-textLink-foreground, #4aa3ff)";
+      tasksTd.title = "* Tasks the orchestrator DELEGATED to other agents — it coordinates rather than completing work itself. (Every other row shows tasks that agent actually completed.)";
+    } else {
+      tasksTd.textContent = String(agent.taskCount ?? 0);
+      tasksTd.title = "Tasks completed by this agent — work it actually finished, not tasks merely routed to it.";
+    }
     row.appendChild(tasksTd);
 
     const mcpTd = document.createElement("td");

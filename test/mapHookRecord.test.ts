@@ -109,11 +109,12 @@ test("SubagentStop without tokens emits WorkerStopped with no tokens field", () 
 // PreToolUse Task/Agent → [WorkerSpawned, TaskCompleted{workerId:"orchestrator"}]
 // ---------------------------------------------------------------------------
 
-test("PreToolUse Task -> array of length 2", () => {
+test("PreToolUse Task -> [WorkerSpawned] only (no orchestrator TaskCompleted — delegations are counted in the reducer)", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-1", at: T };
   const events = mapHookRecord(record);
   assert.ok(Array.isArray(events));
-  assert.equal(events.length, 2);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "WorkerSpawned");
 });
 
 test("PreToolUse Task -> WorkerSpawned FIRST with role 'Task'", () => {
@@ -126,28 +127,22 @@ test("PreToolUse Task -> WorkerSpawned FIRST with role 'Task'", () => {
   }
 });
 
-test("PreToolUse Task -> trailing TaskCompleted with workerId 'orchestrator'", () => {
+test("PreToolUse Task -> emits NO TaskCompleted (the orchestrator is not credited with completing delegated work)", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "sess-1", at: T };
   const events = mapHookRecord(record);
-  assert.equal(events[1].type, "TaskCompleted");
-  if (events[1].type === "TaskCompleted") {
-    assert.equal(events[1].workerId, "orchestrator");
-  }
+  assert.ok(!events.some((e) => e.type === "TaskCompleted"), "a delegation must not emit a TaskCompleted");
 });
 
-test("PreToolUse Agent -> array of length 2 with WorkerSpawned then TaskCompleted", () => {
+test("PreToolUse Agent -> [WorkerSpawned] only with role 'Agent' (no orchestrator TaskCompleted)", () => {
   const record: HookRecord = { event: "PreToolUse", tool: "Agent", at: T };
   const events = mapHookRecord(record);
   assert.ok(Array.isArray(events));
-  assert.equal(events.length, 2);
+  assert.equal(events.length, 1);
   assert.equal(events[0].type, "WorkerSpawned");
-  assert.equal(events[1].type, "TaskCompleted");
   if (events[0].type === "WorkerSpawned") {
     assert.equal(events[0].role, "Agent");
   }
-  if (events[1].type === "TaskCompleted") {
-    assert.equal(events[1].workerId, "orchestrator");
-  }
+  assert.ok(!events.some((e) => e.type === "TaskCompleted"));
 });
 
 // ---------------------------------------------------------------------------

@@ -421,16 +421,20 @@ test("Stop maps to SessionStop carrying tokens and model", () => {
 // New contract: task-count tracking via mapped events through applyEvent
 // ---------------------------------------------------------------------------
 
-test("Task spawn (via hook) bumps orchestrator taskCount to 1", () => {
-  // PreToolUse Task → [WorkerSpawned, TaskCompleted{workerId:"orchestrator"}]
-  // The trailing TaskCompleted must increment orchestrator.taskCount.
+test("Task spawn (via hook) bumps orchestrator delegations to 1, NOT taskCount, and keeps it active", () => {
+  // PreToolUse Task → [WorkerSpawned] only. The orchestrator is credited with a
+  // DELEGATION (not a completed task); its taskCount stays 0 (delegated work is
+  // completed BY the worker at SubagentStop), and it stays "active" so it does
+  // not look idle after delegating.
   const state = fold([
     { event: "UserPromptSubmit", at: T },
     { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", at: T + 100 },
   ]);
   const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
   assert.ok(orch, "orchestrator metric must exist");
-  assert.equal(orch!.taskCount, 1, "orchestrator taskCount should be 1 after spawning one Task");
+  assert.equal(orch!.delegations, 1, "orchestrator delegations should be 1 after spawning one Task");
+  assert.equal(orch!.taskCount, 0, "orchestrator must NOT be credited with completing delegated work");
+  assert.equal(orch!.status, "active", "orchestrator stays active after delegating");
 });
 
 test("Skill spawn does NOT bump orchestrator taskCount", () => {
