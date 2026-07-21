@@ -309,7 +309,7 @@ export const REGULAR_AGENTS: PackAgent[] = [
   {
     id: "testing-specialist",
     name: "Testing Specialist",
-    model: "haiku",
+    model: "sonnet",
     role:
       "Writes and maintains the test suite — specs, coverage, and fixtures — keeping tests deterministic and meaningful.",
     keywords: "test|spec|vitest|jest|coverage|unit",
@@ -333,7 +333,7 @@ export const REGULAR_AGENTS: PackAgent[] = [
   {
     id: "workspace-monitor",
     name: "Workspace Monitor",
-    model: "haiku",
+    model: "sonnet",
     role:
       "Turns provider hook events into normalized agent states for the visualization — the agent-activity and lifecycle-tracking specialist.",
     keywords: "monitor|lifecycle|event|hook|activity|track",

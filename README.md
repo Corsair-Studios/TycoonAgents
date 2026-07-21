@@ -17,10 +17,10 @@ The roster the extension seeds (all model tiers are configurable):
 | **orchestrator** | Opus | Coordinates and delegates; never implements directly |
 | **search-retrieval** | Haiku | File/code search, grep/glob, lookups — the cheapest tier |
 | **coding-specialist** | Sonnet | Implementation, edits, bug fixes, refactoring |
-| **testing-specialist** | Haiku | Tests, specs, coverage |
+| **testing-specialist** | Sonnet | Tests, specs, coverage |
 | **ux-ui-designer** | Sonnet | Webview scene, layout, CSS, animation |
 | **vscode-integration** | Sonnet | Extension API, webview, panel, lifecycle |
-| **workspace-monitor** | Haiku | Agent lifecycle / hook-record mapping |
+| **workspace-monitor** | Sonnet | Agent lifecycle / hook-record mapping |
 | **Fallback agent** | Sonnet | Catch-all for work no specialist keyword matched — cheaper than letting Opus do it |
 
 The doctrine also builds in **verification discipline**: a "completed" notification is not proof, so the orchestrator reads changed files on disk before trusting a result, keeps concurrent workers on disjoint files, and treats workers as leaves that do the work themselves rather than re-delegating.
