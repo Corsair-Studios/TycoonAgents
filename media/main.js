@@ -10961,6 +10961,10 @@
           ? `Delegation this session: ${Math.round(ratio * 100)}% (${leakDelegations} delegated of ${totalActions} action${totalActions === 1 ? "" : "s"}).`
           : "Delegation this session: no delegatable activity yet."
       );
+      const extensionVersion = document.querySelector(".menu-version")?.textContent?.trim();
+      if (extensionVersion) {
+        lines.push(`Extension: ${extensionVersion}`);
+      }
       if (leakEdits > 0) {
         lines.push(`• ${leakEdits} direct edit${leakEdits === 1 ? "" : "s"} → send these to coding-specialist.`);
       }
