@@ -7,16 +7,33 @@ excessively deep paths, and stale (unmaintained) assets.
 
 Runs inside UEFN's embedded Python 3.11 (requires the ``unreal`` module).
 
-Provides three interfaces:
+Provides these interfaces:
   1. **_get_project_root()**   — walk up from __file__ to find .uefnproject root
-  2. **_get_content_dir()**    — Content/ sibling of the Python/ script dir
+  2. **_resolve_scan_root()**  — location-independent, self-validating Content
+                                 dir resolution (see below)
   3. **scan_health()**         — disk scan; returns structured results dict
   4. **show_health_scanner()** — Tkinter UI with flat issue list and live filter
+
+Scan-root resolution (``_resolve_scan_root``)
+----------------------------------------------
+UEFN COPIES the project's ``Content/Python`` into the embedded engine
+install (``.../FortniteGame/Content/Python/``) and EXECUTES scripts FROM
+THERE. That means plain ``__file__``-anchored filesystem walkup is not
+reliably sufficient to find the user's real island project — depending on
+which copy of this script is currently running, the walkup either
+correctly fails (the install tree has no ``.uefnproject``) or, if a naive
+fallback is trusted unconditionally, resolves to the FortniteGame install
+tree and maps every real island asset to a "ghost". ``_resolve_scan_root``
+tries several candidates (filesystem walkup, an unreal-API asset anchor,
+default project locations, the validated ``unreal.Paths`` resolver) and
+only trusts a candidate once it is validated against real registry assets
+found on disk.
 
 Usage:
     from health_scanner import scan_health, show_health_scanner
 """
 
+import glob
 import os
 import re
 import subprocess
@@ -161,26 +178,17 @@ def _resolve_unreal_content_dir():
         return None
 
 
-def _get_content_dir():
+def _walkup_content_dir():
     """
-    Return the Content directory of the user's UEFN island project.
+    Candidate 1 (kept from 0.0.424): filesystem walkup from this script's
+    ``__file__`` location (same bounded pattern as ``_get_project_root()``)
+    to the first ancestor directory containing a ``*.uefnproject`` file,
+    returning its ``Content`` subdirectory.
 
-    PRIMARY: filesystem walkup from this script's ``__file__`` location
-    (same bounded pattern as ``_get_project_root()``) to the first ancestor
-    directory containing a ``*.uefnproject`` file — the staged bridge
-    scripts always live under that project's ``Content/Python/``, so this
-    is authoritative regardless of what UEFN's embedded engine has open.
-
-    SECONDARY (only when no ``.uefnproject`` is found by the walkup): the
-    live UEFN session's ``unreal.Paths.project_content_dir()``, validated
-    against a ``.uefnproject`` file — because in UEFN that API actually
-    resolves to the EMBEDDED ENGINE's project (FortniteGame in the game
-    install tree), not the user's island project, so an unvalidated result
-    would silently scan the wrong tree (0.0.418 regression).
-
-    FINAL: legacy two-dirs-up fallback so this never crashes outside UEFN.
-
-    Layout assumed: ``<project_root>/Content/Python/<this_file>``
+    Returns ``None`` if no ``.uefnproject`` is found by the walkup, or the
+    found root has no sibling ``Content`` directory — either way the
+    caller moves on to the next candidate rather than trusting this blindly
+    (see module docstring re: the engine-copy execution mode).
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     candidate = script_dir
@@ -198,21 +206,279 @@ def _get_content_dir():
             break
         candidate = parent
 
-    if found_root:
-        content_candidate = os.path.join(candidate, "Content")
-        if os.path.isdir(content_candidate):
-            return content_candidate
-        # .uefnproject found but no sibling Content/ — fall through to the
-        # legacy fallback below (skip the unreal secondary; we already
-        # located the real project root, it just lacks a Content dir).
-    else:
-        # No .uefnproject found by the walkup — try the validated unreal
-        # secondary before the legacy fallback.
-        unreal_content_dir = _resolve_unreal_content_dir()
-        if unreal_content_dir:
-            return unreal_content_dir
+    if not found_root:
+        return None
+    content_candidate = os.path.join(candidate, "Content")
+    return content_candidate if os.path.isdir(content_candidate) else None
 
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def _detect_project_prefix():
+    """
+    Detect the current island's Asset Registry prefix (e.g. ``/StarWars/``)
+    from a live level actor's path. Returns ``None`` (not ``/Game/``) when
+    unreal isn't available or no actor can be inspected — callers must
+    treat that as "prefix unknown", since a wrong default would corrupt
+    scan-root candidate discovery and validation below.
+    """
+    if not _HAS_UNREAL:
+        return None
+    try:
+        subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        actors = subsystem.get_all_level_actors()
+        if actors:
+            parts = actors[0].get_path_name().split("/")
+            if len(parts) >= 2 and parts[1]:
+                return "/" + parts[1] + "/"
+    except Exception:
+        pass
+    return None
+
+
+def _get_island_sample_packages(project_prefix, limit=25):
+    """
+    Enumerate up to ``limit`` package names under ``project_prefix`` from
+    the Asset Registry — used both as validation-gate samples and as the
+    source packages for the asset-anchored candidate. Returns ``[]`` on any
+    failure or when ``unreal``/the prefix is unavailable; callers must
+    treat that as "no samples available", not an error.
+    """
+    if not _HAS_UNREAL or not project_prefix:
+        return []
+    try:
+        registry = unreal.AssetRegistryHelpers.get_asset_registry()
+        assets = registry.get_assets_by_path(project_prefix, recursive=True)
+        return [str(a.package_name) for a in assets[:limit]]
+    except Exception:
+        return []
+
+
+def _derive_content_root_from_asset_path(pkg, disk_path):
+    """
+    Given an island package path like ``/StarWars/ArudoStuff/Anim/X`` and
+    its real on-disk file (e.g.
+    ``.../StarWars/Content/ArudoStuff/Anim/X.uasset``), strip the
+    package-relative tail to recover ``.../StarWars/Content``.
+
+    Returns ``None`` if ``disk_path`` doesn't end with the expected tail
+    (e.g. an unexpected layout), so the caller skips this sample.
+    """
+    if not pkg or not disk_path:
+        return None
+    parts = pkg.strip("/").split("/")
+    if len(parts) < 2:
+        return None
+    rel_parts = parts[1:]  # drop the island-name segment
+    ext = os.path.splitext(disk_path)[1] or ".uasset"
+    tail = "/".join(rel_parts) + ext
+    norm_disk = disk_path.replace("\\", "/")
+    if not norm_disk.lower().endswith(tail.lower()):
+        return None
+    content_root = norm_disk[: -len(tail)].rstrip("/")
+    return os.path.normpath(content_root) if content_root else None
+
+
+def _resolve_content_dir_via_asset_anchor(sample_pkgs):
+    """
+    Candidate 2 (NEW) — authoritative when running engine-side. Because
+    UEFN copies the project's Content/Python into the embedded FortniteGame
+    install and executes scripts FROM THERE (see module docstring),
+    ``__file__`` anchoring can resolve into the install tree instead of the
+    user's real project. This candidate instead asks Unreal directly where
+    ONE island asset actually lives on disk and derives the Content root
+    from that real path — it cannot be fooled by where the running .py
+    file happens to be staged.
+
+    Tries, in order, per sample package: (a)
+    ``unreal.PackageName.long_package_name_to_filename``, then (b)
+    ``unreal.load_asset``/``EditorAssetLibrary.load_asset`` followed by
+    ``unreal.SystemLibrary.get_system_path``. Every API is guarded with
+    hasattr/getattr so a missing method on a given UE build just skips to
+    the next attempt/sample rather than raising. Returns ``None`` if no
+    sample package resolves to a usable path.
+    """
+    if not _HAS_UNREAL or not sample_pkgs:
+        return None
+    for pkg in sample_pkgs[:5]:
+        pkg = str(pkg)
+        disk_path = None
+
+        # 2a: PackageName.long_package_name_to_filename
+        try:
+            package_name_cls = getattr(unreal, "PackageName", None)
+            fn = getattr(package_name_cls, "long_package_name_to_filename", None)
+            if fn is not None:
+                disk_path = fn(pkg, ".uasset")
+        except Exception:
+            disk_path = None
+
+        # 2b: load_asset (module-level or EditorAssetLibrary) + get_system_path
+        if not disk_path:
+            try:
+                asset = None
+                loader = getattr(unreal, "load_asset", None)
+                if loader is not None:
+                    asset = loader(pkg)
+                if asset is None:
+                    eal = getattr(unreal, "EditorAssetLibrary", None)
+                    if eal is not None and hasattr(eal, "load_asset"):
+                        asset = eal.load_asset(pkg)
+                if asset is not None:
+                    sysapi = getattr(unreal, "SystemLibrary", None)
+                    if sysapi is not None and hasattr(sysapi, "get_system_path"):
+                        disk_path = sysapi.get_system_path(asset)
+            except Exception:
+                disk_path = None
+
+        if not disk_path:
+            continue
+
+        try:
+            if hasattr(unreal, "Paths"):
+                disk_path = unreal.Paths.convert_relative_path_to_full(disk_path)
+        except Exception:
+            pass
+
+        content_root = _derive_content_root_from_asset_path(pkg, disk_path)
+        if content_root and os.path.isdir(content_root):
+            return content_root
+    return None
+
+
+def _default_location_content_dirs(project_prefix):
+    """
+    Candidate 3 (NEW) — probe conventional UEFN project locations for a
+    project named after the island prefix (e.g. ``/StarWars/`` ->
+    ``StarWars``): ``~/Documents/Fortnite Projects/<Name>``,
+    ``~/OneDrive/Documents/Fortnite Projects/<Name>``, and any
+    ``~/OneDrive*/Documents/Fortnite Projects/<Name>`` match (OneDrive can
+    redirect Documents under a tenant-specific folder name). Only ever a
+    starting guess — the validation gate still decides the winner — so
+    each probe is pre-filtered here to dirs that actually contain a
+    ``*.uefnproject`` file and a ``Content`` subdirectory.
+    """
+    if not project_prefix:
+        return []
+    project_name = project_prefix.strip("/")
+    if not project_name:
+        return []
+
+    home = os.path.expanduser("~")
+    probes = [
+        os.path.join(home, "Documents", "Fortnite Projects", project_name),
+        os.path.join(home, "OneDrive", "Documents", "Fortnite Projects", project_name),
+    ]
+    try:
+        probes.extend(glob.glob(os.path.join(home, "OneDrive*", "Documents", "Fortnite Projects", project_name)))
+    except Exception:
+        pass
+
+    results = []
+    seen = set()
+    for proj_dir in probes:
+        norm = os.path.normpath(proj_dir)
+        if norm in seen or not os.path.isdir(norm):
+            continue
+        seen.add(norm)
+        try:
+            has_uefnproject = any(entry.endswith(".uefnproject") for entry in os.listdir(norm))
+        except Exception:
+            has_uefnproject = False
+        content_sub = os.path.join(norm, "Content")
+        if has_uefnproject and os.path.isdir(content_sub):
+            results.append(content_sub)
+    return results
+
+
+def _validate_content_dir(content_dir, project_prefix, sample_pkgs):
+    """
+    VALIDATION GATE applied uniformly to EVERY candidate (walkup, asset-
+    anchor, default-location, and the legacy validated-unreal resolver
+    alike) — none of them wins by default.
+
+    Stats up to 25 island-prefix registry assets against the candidate:
+    passes as soon as one resolves to a real ``.uasset``/``.umap`` on disk
+    (island projects always have assets on disk, so a wrong tree — e.g.
+    the FortniteGame install — will match zero of them). Falls back to a
+    lighter ``.uefnproject``-presence check on the project dir when no
+    registry samples are available (e.g. running outside a live UEFN
+    session).
+    """
+    if not content_dir or not os.path.isdir(content_dir):
+        return False
+
+    if sample_pkgs and project_prefix:
+        for pkg in sample_pkgs[:25]:
+            pkg = str(pkg)
+            if not pkg.startswith(project_prefix):
+                continue
+            relative = pkg[len(project_prefix):]
+            if not relative:
+                continue
+            base_path = os.path.join(content_dir, *relative.split("/"))
+            if os.path.isfile(base_path + ".uasset") or os.path.isfile(base_path + ".umap"):
+                return True
+        return False
+
+    # No registry samples available — lighter gate: the project dir (one
+    # level up from Content) must contain a *.uefnproject file.
+    project_dir = os.path.dirname(content_dir) if os.path.basename(content_dir) == "Content" else content_dir
+    try:
+        return any(entry.endswith(".uefnproject") for entry in os.listdir(project_dir))
+    except Exception:
+        return False
+
+
+def _resolve_scan_root():
+    """
+    Resolve the UEFN island project's Content directory via a CHAIN of
+    candidates, each passed through the uniform validation gate; the first
+    candidate that PASSES wins (see module docstring for why plain
+    ``__file__`` walkup alone is not reliably sufficient).
+
+    Chain order: (1) ``.uefnproject`` walkup, (2) asset-anchored unreal-API
+    discovery, (3) default project-location search, (4) the legacy
+    validated ``unreal.Paths`` resolver.
+
+    Returns
+    -------
+    tuple(content_dir, verified, source_label)
+        ``content_dir``  — best available Content directory path (never
+                            ``None``)
+        ``verified``     — ``True`` iff some candidate passed the
+                            validation gate
+        ``source_label`` — which candidate won, or
+                            ``"legacy fallback (unverified)"``
+
+    If NO candidate validates, the legacy two-dirs-up fallback is returned
+    ONLY as a best-guess display value — callers MUST NOT run ghost-asset
+    checks against an unverified root (see ``scan_health()``).
+    """
+    project_prefix = _detect_project_prefix()
+    sample_pkgs = _get_island_sample_packages(project_prefix)
+
+    candidates = []
+
+    walkup = _walkup_content_dir()
+    if walkup:
+        candidates.append((walkup, "uefnproject walkup"))
+
+    anchored = _resolve_content_dir_via_asset_anchor(sample_pkgs)
+    if anchored:
+        candidates.append((anchored, "asset-anchored (unreal API)"))
+
+    for guess in _default_location_content_dirs(project_prefix):
+        candidates.append((guess, "default-location guess"))
+
+    unreal_dir = _resolve_unreal_content_dir()
+    if unreal_dir:
+        candidates.append((unreal_dir, "unreal API (validated .uefnproject)"))
+
+    for path, label in candidates:
+        if _validate_content_dir(path, project_prefix, sample_pkgs):
+            return path, True, label
+
+    legacy = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return legacy, False, "legacy fallback (unverified)"
 
 
 # ---------------------------------------------------------------------------
@@ -271,16 +537,18 @@ def scan_health():
         ``by_extension`` — dict mapping extension to ``{"count": int, "size_mb": float}``
     """
     project_root = _get_project_root()
-    content_dir  = _get_content_dir()
+    content_dir, root_verified, root_source = _resolve_scan_root()
 
     if _HAS_UNREAL:
         unreal.log(f"health_scanner: project_root = {project_root}")
-        unreal.log(f"health_scanner: content_dir  = {content_dir}")
+        unreal.log(f"health_scanner: content_dir  = {content_dir}  (verified={root_verified}, source={root_source})")
 
     if not os.path.isdir(content_dir):
         return {
             "project_root": project_root,
             "content_dir":  content_dir,
+            "scan_root_verified": root_verified,
+            "scan_root_source":   root_source,
             "total_files":  0,
             "total_size_mb": 0.0,
             "issues": [],
@@ -291,6 +559,21 @@ def scan_health():
     total_files   = 0
     total_bytes   = 0
     by_extension  = {}
+
+    # If no scan-root candidate could be validated against real assets on
+    # disk, surface that honestly instead of silently trusting the legacy
+    # best-guess (see _resolve_scan_root() and the Ghost Asset check below,
+    # which is skipped entirely in this case to avoid false positives).
+    if not root_verified:
+        issues.append({
+            "severity":   "warning",
+            "category":   "Scan Root",
+            "file_name":  "-",
+            "file_path":  content_dir,
+            "detail":     f"Project disk root could not be verified (best guess: {content_dir}) — "
+                          f"ghost-asset checks skipped to avoid false positives.",
+            "size_bytes": 0,
+        })
 
     # First pass: collect all base filenames to detect duplicates
     # Maps lowercase base filename -> list of full paths
@@ -509,55 +792,64 @@ def scan_health():
         #   or in iostore
         # errors at load time and are usually caused by a deletion that
         # wasn't synced, or an OneDrive/version-control partial sync.
+        #
+        # SKIPPED ENTIRELY when the scan root could not be validated (see
+        # _resolve_scan_root()): comparing registry entries to disk paths
+        # under an unverified/wrong content_dir (e.g. the FortniteGame
+        # install tree) would flag every real user asset as a false ghost —
+        # the Scan Root warning row already told the user why.
         # -------------------------------------------------------------------
-        try:
-            unreal.log("health_scanner: Checking for ghost assets (registry entries with no file on disk)...")
-            seen_ghost = set()
-            ghost_count = 0
-            for asset_data in all_registry_assets:
-                pkg = str(asset_data.package_name)
-                if not pkg.startswith(project_prefix):
-                    continue
-                if pkg in seen_ghost:
-                    continue
+        if not root_verified:
+            unreal.log("health_scanner: Skipping ghost asset check — scan root unverified.")
+        else:
+            try:
+                unreal.log("health_scanner: Checking for ghost assets (registry entries with no file on disk)...")
+                seen_ghost = set()
+                ghost_count = 0
+                for asset_data in all_registry_assets:
+                    pkg = str(asset_data.package_name)
+                    if not pkg.startswith(project_prefix):
+                        continue
+                    if pkg in seen_ghost:
+                        continue
 
-                # Skip Verse virtual packages — compiled symbols under /_Verse/
-                # have Asset Registry entries but no .uasset on disk.
-                if "/_Verse" in pkg or "\\_Verse" in pkg:
-                    continue
+                    # Skip Verse virtual packages — compiled symbols under /_Verse/
+                    # have Asset Registry entries but no .uasset on disk.
+                    if "/_Verse" in pkg or "\\_Verse" in pkg:
+                        continue
 
-                # Skip world partition sub-packages — __ExternalActors__ and
-                # __ExternalObjects__ are synthetic packages that don't map to
-                # individual .uasset files.
-                if "__ExternalActors__" in pkg or "__ExternalObjects__" in pkg:
-                    continue
+                    # Skip world partition sub-packages — __ExternalActors__ and
+                    # __ExternalObjects__ are synthetic packages that don't map to
+                    # individual .uasset files.
+                    if "__ExternalActors__" in pkg or "__ExternalObjects__" in pkg:
+                        continue
 
-                # Translate the registry path to a disk path and check both
-                # .uasset (normal assets) and .umap (level/map files).
-                relative = pkg[len(project_prefix):]            # strip mount prefix
-                base_path = os.path.join(content_dir, *relative.split("/"))
-                if os.path.isfile(base_path + ".uasset") or os.path.isfile(base_path + ".umap"):
-                    continue  # exists on disk in some form
+                    # Translate the registry path to a disk path and check both
+                    # .uasset (normal assets) and .umap (level/map files).
+                    relative = pkg[len(project_prefix):]            # strip mount prefix
+                    base_path = os.path.join(content_dir, *relative.split("/"))
+                    if os.path.isfile(base_path + ".uasset") or os.path.isfile(base_path + ".umap"):
+                        continue  # exists on disk in some form
 
-                # Neither extension found → ghost asset
-                seen_ghost.add(pkg)
-                ghost_count += 1
-                asset_name = str(asset_data.asset_name)
-                disk_path = base_path + ".uasset"   # report the .uasset path for clarity
-                issues.append({
-                    "severity":   "error",
-                    "category":   "Ghost Asset",
-                    "file_name":  asset_name,
-                    "file_path":  disk_path,
-                    "detail":     f"Asset Registry entry exists but file is missing from disk. Referenced as {pkg}",
-                    "size_bytes": 0,
-                })
+                    # Neither extension found → ghost asset
+                    seen_ghost.add(pkg)
+                    ghost_count += 1
+                    asset_name = str(asset_data.asset_name)
+                    disk_path = base_path + ".uasset"   # report the .uasset path for clarity
+                    issues.append({
+                        "severity":   "error",
+                        "category":   "Ghost Asset",
+                        "file_name":  asset_name,
+                        "file_path":  disk_path,
+                        "detail":     f"Asset Registry entry exists but file is missing from disk. Referenced as {pkg}",
+                        "size_bytes": 0,
+                    })
 
-            unreal.log(f"health_scanner: Ghost asset check complete — {ghost_count} ghost asset(s) found")
+                unreal.log(f"health_scanner: Ghost asset check complete — {ghost_count} ghost asset(s) found")
 
-        except Exception as e:
-            if _HAS_UNREAL:
-                unreal.log_warning(f"health_scanner: Ghost asset check failed — {e}")
+            except Exception as e:
+                if _HAS_UNREAL:
+                    unreal.log_warning(f"health_scanner: Ghost asset check failed — {e}")
 
     # -----------------------------------------------------------------------
     # Build summary
@@ -581,6 +873,8 @@ def scan_health():
     return {
         "project_root":  project_root,
         "content_dir":   content_dir,
+        "scan_root_verified": root_verified,
+        "scan_root_source":   root_source,
         "total_files":   total_files,
         "total_size_mb": total_size_mb,
         "issues": issues,
@@ -804,6 +1098,16 @@ def show_health_scanner():
     )
     count_label.pack(side="left")
 
+    root_label_var = tk.StringVar(value="")
+    root_label = tk.Label(
+        footer_frame,
+        textvariable=root_label_var,
+        font=("Segoe UI", 8),
+        fg=_TEXT_DIM,
+        bg=_SECTION_BG,
+    )
+    root_label.pack(side="left", padx=(14, 0))
+
     social_label = tk.Label(
         footer_frame,
         text="@thetrashbyrd",
@@ -889,6 +1193,11 @@ def show_health_scanner():
             f"  —  {total_f} files scanned ({total_mb} MB)"
         )
 
+        if result.get("scan_root_verified"):
+            root_label_var.set(f"Scan root: {result.get('content_dir', '')}")
+        else:
+            root_label_var.set("Scan root: unverified — ghost checks skipped")
+
     # ------------------------------------------------------------------
     # Scan — run health check and cache results
     # ------------------------------------------------------------------
@@ -949,6 +1258,7 @@ def show_health_scanner():
         "Duplicate Name": "Same filename exists in multiple folders — can cause\nambiguous imports or asset reference conflicts.",
         "Missing Reference": "Asset is referenced by a project material or VFX but\nno longer exists in the registry. Usually caused by\nEpic removing or renaming assets in a Fortnite update.",
         "Ghost Asset": "Asset Registry has an entry for this asset but the .uasset\nfile is missing from disk. Usually caused by a deletion that\nwasn't synced, or an OneDrive/version-control sync failure.",
+        "Scan Root": "No scan-root candidate could be verified against real assets\non disk (see the 'Scan root' label below). Ghost-asset checks\nare skipped this run to avoid false positives.",
     }
 
     _tip_win = [None]
