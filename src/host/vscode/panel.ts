@@ -3414,6 +3414,20 @@ export class TycoonPanel {
       }
     }
 
+    // Best-effort push for an OLD Fortnite engine-side bridge copy that
+    // predates the bridge's own version-stamp self-sync (see
+    // `_findFortniteEngineBridgeDir` / `_refreshEngineBridgeCopy`). Purely
+    // additive on top of the staging above and must never affect it.
+    try {
+      const engineBridgeDir = this._findFortniteEngineBridgeDir();
+      if (engineBridgeDir) {
+        const refreshResult = this._refreshEngineBridgeCopy(engineBridgeDir);
+        console.log(`TycoonAgents: engine bridge copy refresh (${engineBridgeDir}) -> ${refreshResult}`);
+      }
+    } catch (e) {
+      console.warn("TycoonAgents: engine bridge copy refresh failed:", e);
+    }
+
     const bridgeStatus: "staged" | "exists" = totalWritten > 0 ? "staged" : "exists";
     return { bridgeStatus, engineFound, locations };
   }
@@ -3521,6 +3535,128 @@ export class TycoonPanel {
       return staged !== shipped;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Discover a Fortnite engine-side `FortniteGame/Content/Python` directory
+   * that ALREADY holds a bridge copy (`uefn_bridge.py` present) — i.e. an
+   * OLD engine-side copy from before the bridge gained its own version-stamp
+   * self-sync, worth a best-effort refresh push (see
+   * `_refreshEngineBridgeCopy`). Resolves the Fortnite install via the Epic
+   * Games Launcher manifests (`<PROGRAMDATA>/Epic/EpicGamesLauncher/Data/
+   * Manifests/*.item`), matching the manifest whose `DisplayName`/`AppName`
+   * indicates Fortnite (`DisplayName === "Fortnite"` is the normal case).
+   * Deliberately narrower than `_findFortnitePythonDirs` (which stages into
+   * every discovered engine dir, creating it if absent): this only ever
+   * returns a dir that DEMONSTRABLY already has a bridge staged, since the
+   * whole point is refreshing an existing old copy, not creating a new one.
+   * Every failure — missing PROGRAMDATA, unreadable manifests dir, malformed
+   * per-file JSON — resolves to `null` rather than throwing; this is
+   * best-effort discovery only.
+   *
+   * @param programDataRoot Override for `process.env.PROGRAMDATA` (tests only).
+   */
+  private _findFortniteEngineBridgeDir(programDataRoot?: string): string | null {
+    try {
+      const programData = programDataRoot ?? process.env.PROGRAMDATA ?? "C:\\ProgramData";
+      if (!programData) return null;
+      const manifestsDir = path.join(programData, "Epic", "EpicGamesLauncher", "Data", "Manifests");
+      if (!fs.existsSync(manifestsDir)) return null;
+      for (const f of fs.readdirSync(manifestsDir)) {
+        if (!f.toLowerCase().endsWith(".item")) continue;
+        try {
+          const m = JSON.parse(fs.readFileSync(path.join(manifestsDir, f), "utf8"));
+          const displayName = String(m.DisplayName || "");
+          const appName = String(m.AppName || "");
+          const isFortnite = displayName === "Fortnite" || /fortnite/i.test(`${displayName} ${appName}`);
+          if (!isFortnite) continue;
+          const installLocation = String(m.InstallLocation || "");
+          if (!installLocation) continue;
+          const pythonDir = path.join(installLocation, "FortniteGame", "Content", "Python");
+          if (fs.existsSync(pythonDir) && fs.existsSync(path.join(pythonDir, "uefn_bridge.py"))) {
+            return pythonDir;
+          }
+        } catch {
+          /* skip malformed manifest */
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Best-effort refresh push for an OLD Fortnite engine-side bridge copy
+   * (`bridgeDir`, as returned by `_findFortniteEngineBridgeDir`) that
+   * predates the bridge's own version-stamp self-sync. Compares the engine
+   * copy's `bridge_version.py` stamp against the shipped
+   * `media/uefn-bridge/bridge_version.py` (trimmed content, same comparison
+   * `_uefnBridgeStale` uses); if they already match, nothing is rewritten
+   * and this returns `"current"`. Otherwise every shipped bridge file is
+   * copied into `bridgeDir`, overwriting same-named files and adding new
+   * ones — the same file set `_stageBridgeTo` copies (every `.py` +
+   * `trashbyrd_40x40.png`, excluding `uefn-server.mjs`, `__pycache__`,
+   * `.pyc`/`.pyo`). This NEVER deletes or touches any file outside that
+   * shipped set — the engine dir holds UEFN's own/legacy files that must be
+   * left alone. Per-file copy failures are skipped rather than aborting the
+   * whole refresh (returns `"unavailable"` only if the `bridge_version.py`
+   * stamp itself never lands). The outer operation is fully try/caught so a
+   * failure here can never break the staging flow that calls it.
+   */
+  private _refreshEngineBridgeCopy(bridgeDir: string): "updated" | "current" | "unavailable" {
+    try {
+      const shippedDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+      const shippedStampPath = path.join(shippedDir, "bridge_version.py");
+      const engineStampPath = path.join(bridgeDir, "bridge_version.py");
+
+      let shippedStamp: string;
+      try {
+        shippedStamp = fs.readFileSync(shippedStampPath, "utf8").trim();
+      } catch {
+        return "unavailable";
+      }
+
+      try {
+        const engineStamp = fs.readFileSync(engineStampPath, "utf8").trim();
+        if (engineStamp === shippedStamp) return "current";
+      } catch {
+        /* missing/unreadable engine stamp -- treat as stale, fall through to copy */
+      }
+
+      let names: string[];
+      try {
+        // Same exclusion filter as `_stageBridgeTo`: every `.py` +
+        // `trashbyrd_40x40.png` in the shipped dir, skipping the Node MCP
+        // server, pycache, and compiled Python artifacts.
+        names = fs.readdirSync(shippedDir).filter((name) => {
+          if (name === "uefn-server.mjs") return false;
+          if (name === "__pycache__") return false;
+          if (name.endsWith(".pyc") || name.endsWith(".pyo")) return false;
+          try {
+            return fs.statSync(path.join(shippedDir, name)).isFile();
+          } catch {
+            return false;
+          }
+        });
+      } catch {
+        return "unavailable";
+      }
+
+      let stampLanded = false;
+      for (const name of names) {
+        try {
+          fs.copyFileSync(path.join(shippedDir, name), path.join(bridgeDir, name));
+          if (name === "bridge_version.py") stampLanded = true;
+        } catch {
+          /* best-effort -- skip this file, keep going */
+        }
+      }
+
+      return stampLanded ? "updated" : "unavailable";
+    } catch {
+      return "unavailable";
     }
   }
 

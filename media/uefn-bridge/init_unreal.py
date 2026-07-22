@@ -1,9 +1,148 @@
 """
 init_unreal.py — Auto-runs when UEFN opens the project.
 
+0. Self-syncs this bridge copy from the newest project copy on disk (see
+   below) so a stale engine-side copy can't survive.
 1. Starts the UEFN bridge (file-based IPC) so the MCP server can connect.
 2. Registers "Trashbyrd's Power Tools" and "Device Audit" entries in Tools menu.
 """
+
+# ── 0. Self-sync from the newest project copy (BEFORE any bridge import) ───
+# WHY THIS EXISTS: UEFN executes the bridge from an ENGINE-SIDE copy
+# (...\FortniteGame\Content\Python\) that does NOT reliably pick up a newer
+# copy the extension re-staged into the user's project Content\Python —
+# confirmed stale on a real machine even after a full PC reboot. The engine
+# dir IS writable by the bridge itself (tools already write logs there), so
+# on every load we check whether a newer project copy exists on disk and, if
+# so, copy it over ourselves — self-healing with no manual "reinstall" step.
+#
+# WHY REGISTRY-FREE: this runs at plugin-load time, before UEFN's Asset
+# Registry is guaranteed ready, so we can't ask Unreal where the project
+# lives (the asset-anchored trick health_scanner/asset_usage use later, once
+# the registry is up). Instead we glob the well-known default install
+# locations directly.
+#
+# WHY BEFORE ANY OTHER IMPORT: everything below this block — uefn_bridge,
+# menu wiring, uefn_launcher on demand — must load the FRESHLY COPIED code
+# in THIS SAME editor session. If sync ran after other bridge modules had
+# already imported, Python's sys.modules cache would keep serving the stale
+# versions for the rest of the session regardless of what's now on disk.
+#
+# WHY "NEWEST" WINS: the bridge is project-agnostic — the same engine-side
+# copy serves whichever UEFN project happens to be open — so if more than
+# one project on this machine carries the bridge, the newest stamp is the
+# most recent extension install/update and is what should be running.
+try:
+    import glob as _sync_glob
+    import os as _sync_os
+    import re as _sync_re
+    import shutil as _sync_shutil
+
+    def _read_stamp(_dir):
+        """Parse BRIDGE_VERSION = "X.Y.Z" out of <_dir>/bridge_version.py via
+        regex on the raw file text — never imported: an import would poison
+        sys.modules with a copy we might be about to overwrite or discard,
+        and would require the dir to already be on sys.path. Returns a
+        comparable (int, int, int) tuple; any failure (file missing, bad
+        format, non-numeric parts) yields (0, 0, 0) — oldest possible, so an
+        unparseable candidate never wins over a real stamp.
+        """
+        try:
+            with open(
+                _sync_os.path.join(_dir, "bridge_version.py"), "r", encoding="utf-8"
+            ) as _f:
+                _text = _f.read()
+            _m = _sync_re.search(
+                r'BRIDGE_VERSION\s*=\s*["\']([0-9]+)\.([0-9]+)\.([0-9]+)["\']',
+                _text,
+            )
+            return tuple(int(_g) for _g in _m.groups()) if _m else (0, 0, 0)
+        except Exception:
+            return (0, 0, 0)
+
+    _this_dir = _sync_os.path.dirname(_sync_os.path.abspath(__file__))
+    _own_stamp = _read_stamp(_this_dir)
+
+    # Candidate project Python dirs: default Documents location, and the
+    # OneDrive-redirected variant (OneDrive*, since the folder name varies
+    # per tenant, e.g. "OneDrive - Company" or "OneDrive"). A candidate only
+    # counts if its project dir (3 levels up from .../Content/Python) holds
+    # a *.uefnproject — otherwise we'd copy from any folder that merely
+    # happens to be named right — and if it actually ships a stamp file.
+    _home = _sync_os.path.expanduser("~")
+    _patterns = [
+        _sync_os.path.join(
+            _home, "Documents", "Fortnite Projects", "*", "Content", "Python"
+        ),
+        _sync_os.path.join(
+            _home, "OneDrive*", "Documents", "Fortnite Projects", "*", "Content", "Python"
+        ),
+    ]
+    _candidates = []
+    for _pattern in _patterns:
+        for _py_dir in _sync_glob.glob(_pattern):
+            try:
+                _project_dir = _sync_os.path.dirname(_sync_os.path.dirname(_py_dir))
+                if not _sync_glob.glob(
+                    _sync_os.path.join(_project_dir, "*.uefnproject")
+                ):
+                    continue
+                if not _sync_os.path.isfile(
+                    _sync_os.path.join(_py_dir, "bridge_version.py")
+                ):
+                    continue
+                _candidates.append((_read_stamp(_py_dir), _py_dir))
+            except Exception:
+                continue
+
+    _sync_msg = "Trashbyrd: bridge self-sync — no project copy found, staying on v{}.{}.{}".format(
+        *_own_stamp
+    )
+    if _candidates:
+        _candidates.sort(key=lambda _c: _c[0])
+        _newest_stamp, _newest_dir = _candidates[-1]
+        if _newest_stamp > _own_stamp:
+            _copied, _failed = 0, 0
+            for _name in _sync_os.listdir(_newest_dir):
+                if _name == "uefn-server.mjs":
+                    continue
+                if not (_name.endswith(".py") or _name == "trashbyrd_40x40.png"):
+                    continue
+                try:
+                    _src = _sync_os.path.join(_newest_dir, _name)
+                    if _sync_os.path.isfile(_src):
+                        _sync_shutil.copyfile(_src, _sync_os.path.join(_this_dir, _name))
+                        _copied += 1
+                except Exception:
+                    _failed += 1
+            _sync_msg = (
+                "Trashbyrd: bridge self-sync — updated v{}.{}.{} -> v{}.{}.{} "
+                "({} copied, {} failed) from {}"
+            ).format(*(_own_stamp + _newest_stamp + (_copied, _failed, _newest_dir)))
+        else:
+            _sync_msg = (
+                "Trashbyrd: bridge self-sync — v{}.{}.{} already current "
+                "(newest project copy v{}.{}.{})"
+            ).format(*(_own_stamp + _newest_stamp))
+
+    print(_sync_msg)
+    try:
+        import unreal as _sync_unreal
+        _sync_unreal.log(_sync_msg)
+    except Exception:
+        pass
+except Exception as _sync_exc:
+    try:
+        print(f"Trashbyrd: bridge self-sync failed, startup continues unaffected — {_sync_exc}")
+    except Exception:
+        pass
+    try:
+        import unreal as _sync_unreal_fail
+        _sync_unreal_fail.log_warning(
+            f"Trashbyrd: bridge self-sync failed, startup continues unaffected — {_sync_exc}"
+        )
+    except Exception:
+        pass
 
 import unreal
 
