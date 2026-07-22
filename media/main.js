@@ -10053,7 +10053,7 @@
    * (chevron/indent/teamTag/leadId, Team Lead Mode Phase 3) were retired
    * when the table moved to a flat per-agent list (see renderMetrics).
    */
-  function buildMetricsRow(agent, maxBlendedCost, opts) {
+  function buildMetricsRow(agent, maxAgentTokens, opts) {
     opts = opts || {};
     const status = (agent.status || "idle").toLowerCase();
     const isActive = status === "active";
@@ -10083,22 +10083,22 @@
     row.appendChild(nameTd);
 
     // Status bar: green while active, gray while idle. Width encodes this
-    // agent's TOTAL estimated blended cost, normalized to the agent with the
-    // highest total cost — a dimensionless share, not a dollar rate (dollar
-    // rates reward slow expensive models: a fast Haiku agent showed the
-    // HIGHEST $/min while being the cheapest). Label is a ratio vs. the
-    // orchestrator's own model price ("Nx cheaper"/"Nx pricier"/"same cost"),
-    // never an absolute $ figure — subscription billing makes $/token
-    // meaningless to the user. Active agents always show a visible green
-    // sliver so "working" is never invisible.
-    const cost = estCostUSD(agent.tokens, agent.model);
-    const rawPct = cost !== null && maxBlendedCost > 0
-      ? Math.round(Math.min(cost / maxBlendedCost, 1) * 100)
+    // agent's TOTAL tokens spent, normalized to the agent with the highest
+    // token total — a dimensionless share of tokens, not cost (cost is
+    // carried entirely by the "Nx cheaper" badge below; a cost-scaled bar
+    // made the orchestrator — priciest per token — dwarf every worker's bar
+    // even when workers did most of the actual token-weighted work). Label
+    // is a ratio vs. the orchestrator's own model price ("Nx cheaper"/"Nx
+    // pricier"/"same cost"), never an absolute $ figure — subscription
+    // billing makes $/token meaningless to the user. Active agents always
+    // show a visible green sliver so "working" is never invisible.
+    const rawPct = maxAgentTokens > 0
+      ? Math.round(Math.min((agent.tokens ?? 0) / maxAgentTokens, 1) * 100)
       : 0;
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Cost vs. the orchestrator's model — a dimensionless ratio from total tokens × approx. model price (no input/output split available; not a billed figure, and not applicable to subscription billing). The bar is scaled to the priciest agent's total cost.";
+    statusTd.title = "Bar = tokens this agent has used, relative to the highest-token agent. Badge = how much cheaper this agent's model is per token than the orchestrator's.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -10182,13 +10182,10 @@
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // TOTAL estimated blended cost per agent (rough estimate — see
-    // estCostUSD). Used to scale the status bar as a cost-share, not a rate;
-    // unpriced agents (unknown model) don't participate.
-    const maxBlendedCost = Math.max(0.0001, ...metrics.map(a => {
-      const cost = estCostUSD(a.tokens, a.model);
-      return cost != null ? cost : 0;
-    }));
+    // Highest total token count across agents. Used to scale the status bar
+    // as a token-share, not a cost-share — cost is carried by the "Nx
+    // cheaper" badge instead (see buildMetricsRow).
+    const maxAgentTokens = Math.max(1, ...metrics.map(a => (a && typeof a.tokens === "number") ? a.tokens : 0));
     const orchestratorPrice = resolveOrchestratorPrice(metrics);
 
     // Flat list: every agent (lead or worker) gets its own equal top-level
@@ -10199,7 +10196,7 @@
     // docs/plan/team-lead-mode.md Phase 3 for the retired nesting approach.
     tbodyEl.innerHTML = "";
     for (const agent of metrics) {
-      tbodyEl.appendChild(buildMetricsRow(agent, maxBlendedCost, { orchestratorPrice }));
+      tbodyEl.appendChild(buildMetricsRow(agent, maxAgentTokens, { orchestratorPrice }));
     }
   }
 
