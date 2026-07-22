@@ -87,16 +87,21 @@ def get_project_prefix():
 
 def _resolve_unreal_project_dir_with_content():
     """
-    Best-effort: ask the live UEFN session for the authoritative project
-    root via ``unreal.Paths.project_dir()``. This is correct even when this
-    script FILE is executing from a copy of the bridge that lives outside
-    the project (e.g. the Fortnite game install tree), because it asks
-    Unreal for the currently open project rather than deriving a path from
-    ``__file__``.
+    SECONDARY fallback only (see load_verse_source_text): ask the live UEFN
+    session for ``unreal.Paths.project_dir()``.
 
-    Returns a normalized full path only if it exists on disk AND contains
-    a ``Content`` subdirectory (matching the walkup fallback's contract);
-    otherwise returns ``None`` so the caller falls through to the walkup.
+    DEMOTED from primary (was preferred in 0.0.418): in UEFN this API
+    resolves to the EMBEDDED ENGINE's project — FortniteGame in the game
+    install tree — NOT the user's island project, which is only a mounted
+    plugin. Trusting it unconditionally scanned the game install and
+    reported every real user asset as a ghost. So the result is now
+    validated: only accepted if it exists on disk, contains a ``Content``
+    subdirectory (matching the walkup fallback's contract), AND contains a
+    ``*.uefnproject`` file (FortniteGame has a ``.uproject`` and never a
+    ``.uefnproject``).
+
+    Returns a normalized full path, or ``None`` so the caller falls through
+    to the legacy walkup.
     """
     try:
         import unreal
@@ -104,9 +109,11 @@ def _resolve_unreal_project_dir_with_content():
         if not raw:
             return None
         full = os.path.normpath(unreal.Paths.convert_relative_path_to_full(raw))
-        if os.path.isdir(full) and os.path.isdir(os.path.join(full, "Content")):
-            return full
-        return None
+        if not (os.path.isdir(full) and os.path.isdir(os.path.join(full, "Content"))):
+            return None
+        if not any(entry.endswith(".uefnproject") for entry in os.listdir(full)):
+            return None
+        return full
     except Exception:
         return None
 
@@ -120,7 +127,37 @@ def load_verse_source_text():
         return _verse_text_cache[0]
     text = ""
     try:
-        content_root = _resolve_unreal_project_dir_with_content()
+        # PRIMARY: filesystem walkup anchored at __file__ to the first
+        # ancestor containing a *.uefnproject file — the staged bridge
+        # scripts always live under that project's Content/Python/, so
+        # this is authoritative regardless of what UEFN's embedded engine
+        # has open (see _resolve_unreal_project_dir_with_content).
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate = script_dir
+        content_root = None
+        found_uefnproject = False
+        for _ in range(10):
+            try:
+                entries = os.listdir(candidate)
+            except Exception:
+                entries = []
+            if any(entry.endswith(".uefnproject") for entry in entries):
+                content_root = candidate
+                found_uefnproject = True
+                break
+            parent = os.path.dirname(candidate)
+            if parent == candidate:
+                break
+            candidate = parent
+
+        # SECONDARY: only when no .uefnproject was found by the walkup —
+        # the validated unreal API resolver.
+        if not found_uefnproject:
+            content_root = _resolve_unreal_project_dir_with_content()
+
+        # FINAL: legacy pure-filesystem fallback (walk up looking for a
+        # Content/ sibling instead of a .uefnproject file), byte-preserved
+        # so this never crashes outside UEFN.
         if not content_root:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             candidate = script_dir

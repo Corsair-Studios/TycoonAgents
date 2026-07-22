@@ -129,15 +129,21 @@ def _get_project_root():
 
 def _resolve_unreal_content_dir():
     """
-    Best-effort: ask the live UEFN session for the authoritative project
-    Content directory via ``unreal.Paths.project_content_dir()``. This is
-    correct even when this script FILE is executing from a copy of the
-    bridge that lives outside the project (e.g. the Fortnite game install
-    tree), because it asks Unreal for the currently open project rather
-    than deriving a path from ``__file__``.
+    SECONDARY fallback only (see _get_content_dir): ask the live UEFN
+    session for ``unreal.Paths.project_content_dir()``.
 
-    Returns a normalized full path, or ``None`` if ``unreal`` isn't
-    importable, the call fails, or it returns an empty/nonexistent path.
+    DEMOTED from primary (was preferred in 0.0.418): in UEFN this API
+    resolves to the EMBEDDED ENGINE's project — FortniteGame in the game
+    install tree (e.g. ``.../Fortnite/FortniteGame/Content``) — NOT the
+    user's island project, which is only a mounted plugin. Trusting it
+    unconditionally scanned the game install and reported every real user
+    asset as a ghost. So the result is now validated: only accepted if the
+    resolved project directory itself contains a ``*.uefnproject`` file
+    (FortniteGame has a ``.uproject`` and never a ``.uefnproject``).
+
+    Returns a normalized full Content path, or ``None`` if ``unreal`` isn't
+    importable, the call fails, the path doesn't exist, or it fails the
+    ``.uefnproject`` validation check.
     """
     try:
         import unreal
@@ -145,27 +151,67 @@ def _resolve_unreal_content_dir():
         if not raw:
             return None
         full = os.path.normpath(unreal.Paths.convert_relative_path_to_full(raw))
-        if os.path.isdir(full):
-            return full
-        return None
+        if not os.path.isdir(full):
+            return None
+        project_dir = os.path.dirname(full)
+        if not any(entry.endswith(".uefnproject") for entry in os.listdir(project_dir)):
+            return None
+        return full
     except Exception:
         return None
 
 
 def _get_content_dir():
     """
-    Return the Content directory (parent of the Python/ script directory).
+    Return the Content directory of the user's UEFN island project.
 
-    Prefers the live UEFN session's authoritative Content dir so the scan
-    targets the actually-open project rather than wherever this script
-    file happens to live on disk. Falls back to the script-relative
-    layout when ``unreal`` is unavailable or the query fails.
+    PRIMARY: filesystem walkup from this script's ``__file__`` location
+    (same bounded pattern as ``_get_project_root()``) to the first ancestor
+    directory containing a ``*.uefnproject`` file — the staged bridge
+    scripts always live under that project's ``Content/Python/``, so this
+    is authoritative regardless of what UEFN's embedded engine has open.
+
+    SECONDARY (only when no ``.uefnproject`` is found by the walkup): the
+    live UEFN session's ``unreal.Paths.project_content_dir()``, validated
+    against a ``.uefnproject`` file — because in UEFN that API actually
+    resolves to the EMBEDDED ENGINE's project (FortniteGame in the game
+    install tree), not the user's island project, so an unvalidated result
+    would silently scan the wrong tree (0.0.418 regression).
+
+    FINAL: legacy two-dirs-up fallback so this never crashes outside UEFN.
 
     Layout assumed: ``<project_root>/Content/Python/<this_file>``
     """
-    unreal_content_dir = _resolve_unreal_content_dir()
-    if unreal_content_dir:
-        return unreal_content_dir
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = script_dir
+    found_root = False
+    for _ in range(10):
+        try:
+            entries = os.listdir(candidate)
+        except Exception:
+            entries = []
+        if any(entry.endswith(".uefnproject") for entry in entries):
+            found_root = True
+            break
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            break
+        candidate = parent
+
+    if found_root:
+        content_candidate = os.path.join(candidate, "Content")
+        if os.path.isdir(content_candidate):
+            return content_candidate
+        # .uefnproject found but no sibling Content/ — fall through to the
+        # legacy fallback below (skip the unreal secondary; we already
+        # located the real project root, it just lacks a Content dir).
+    else:
+        # No .uefnproject found by the walkup — try the validated unreal
+        # secondary before the legacy fallback.
+        unreal_content_dir = _resolve_unreal_content_dir()
+        if unreal_content_dir:
+            return unreal_content_dir
+
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
