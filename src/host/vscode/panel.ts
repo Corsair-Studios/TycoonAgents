@@ -6053,7 +6053,7 @@ export class TycoonPanel {
           <thead>
             <tr>
               <th title="The agent doing the work. The orchestrator delegates; the specialists do the work.">Agent</th>
-              <th title="How much cheaper (or pricier) this agent's model is, per token, than the orchestrator's — e.g. 5× cheaper. A dimensionless ratio, not a bill. The bar behind it shows tokens used, relative to the highest-token agent.">Tokens/min</th>
+              <th title="How much cheaper (or pricier) this agent's model is, per token, than the orchestrator's — e.g. 5× cheaper. A dimensionless ratio, not a bill. The bar behind it shows tasks completed, relative to the agent with the most.">Tokens/min</th>
               <th class="col-tasks" title="Tasks completed BY this agent — work it actually finished, not tasks merely routed to it. The orchestrator's cell (marked *) shows the tasks it completed itself; hover it to see how many it dispatched to other agents.">Tasks</th>
               <th class="col-mcp" title="How many MCP tool calls this agent has made.">MCP</th>
               <th class="col-time" title="Active time this agent has spent working.">Time</th>

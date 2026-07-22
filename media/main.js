@@ -10053,7 +10053,7 @@
    * (chevron/indent/teamTag/leadId, Team Lead Mode Phase 3) were retired
    * when the table moved to a flat per-agent list (see renderMetrics).
    */
-  function buildMetricsRow(agent, maxAgentTokens, opts) {
+  function buildMetricsRow(agent, maxAgentTasks, opts) {
     opts = opts || {};
     const status = (agent.status || "idle").toLowerCase();
     const isActive = status === "active";
@@ -10083,22 +10083,24 @@
     row.appendChild(nameTd);
 
     // Status bar: green while active, gray while idle. Width encodes this
-    // agent's TOTAL tokens spent, normalized to the agent with the highest
-    // token total — a dimensionless share of tokens, not cost (cost is
-    // carried entirely by the "Nx cheaper" badge below; a cost-scaled bar
-    // made the orchestrator — priciest per token — dwarf every worker's bar
-    // even when workers did most of the actual token-weighted work). Label
-    // is a ratio vs. the orchestrator's own model price ("Nx cheaper"/"Nx
-    // pricier"/"same cost"), never an absolute $ figure — subscription
-    // billing makes $/token meaningless to the user. Active agents always
-    // show a visible green sliver so "working" is never invisible.
-    const rawPct = maxAgentTokens > 0
-      ? Math.round(Math.min((agent.tokens ?? 0) / maxAgentTokens, 1) * 100)
+    // agent's TASKS COMPLETED, normalized to the agent with the most
+    // completed tasks — a dimensionless share of work done, not tokens or
+    // cost (cost is carried entirely by the "Nx cheaper" badge below; both a
+    // cost-scaled and a token-scaled bar made the orchestrator — priciest
+    // per token and heaviest on tokens via coordination context — dwarf
+    // every worker's bar even though workers complete most of the actual
+    // tasks). Label is a ratio vs. the orchestrator's own model price ("Nx
+    // cheaper"/"Nx pricier"/"same cost"), never an absolute $ figure —
+    // subscription billing makes $/token meaningless to the user. Active
+    // agents always show a visible green sliver so "working" is never
+    // invisible.
+    const rawPct = maxAgentTasks > 0
+      ? Math.round(Math.min((agent.taskCount ?? 0) / maxAgentTasks, 1) * 100)
       : 0;
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Bar = tokens this agent has used, relative to the highest-token agent. Badge = how much cheaper this agent's model is per token than the orchestrator's.";
+    statusTd.title = "Bar = tasks completed by this agent, relative to the agent with the most. Badge = how much cheaper this agent's model is per token than the orchestrator's.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -10182,10 +10184,10 @@
     emptyEl.style.display = "none";
     tableEl.style.display = "";
 
-    // Highest total token count across agents. Used to scale the status bar
-    // as a token-share, not a cost-share — cost is carried by the "Nx
-    // cheaper" badge instead (see buildMetricsRow).
-    const maxAgentTokens = Math.max(1, ...metrics.map(a => (a && typeof a.tokens === "number") ? a.tokens : 0));
+    // Highest completed-task count across agents. Used to scale the status
+    // bar as a tasks-completed share, not tokens or cost — cost is carried
+    // by the "Nx cheaper" badge instead (see buildMetricsRow).
+    const maxAgentTasks = Math.max(1, ...metrics.map(a => (a && typeof a.taskCount === "number") ? a.taskCount : 0));
     const orchestratorPrice = resolveOrchestratorPrice(metrics);
 
     // Flat list: every agent (lead or worker) gets its own equal top-level
@@ -10196,7 +10198,7 @@
     // docs/plan/team-lead-mode.md Phase 3 for the retired nesting approach.
     tbodyEl.innerHTML = "";
     for (const agent of metrics) {
-      tbodyEl.appendChild(buildMetricsRow(agent, maxAgentTokens, { orchestratorPrice }));
+      tbodyEl.appendChild(buildMetricsRow(agent, maxAgentTasks, { orchestratorPrice }));
     }
   }
 
