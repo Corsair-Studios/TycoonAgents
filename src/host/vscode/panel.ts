@@ -228,6 +228,37 @@ export function seedProjectPlanEnabledDefault(root: string): void {
   writeProjectPlanEnabled(root, priorExplicit !== undefined ? priorExplicit : true);
 }
 
+/**
+ * Comprehensive list of Claude Code / dev-tool artifacts that must stay out
+ * of UEFN revision control on a UEFN project. UEFN's native Revision
+ * Control (URC) reads ONLY a root-level `.urcignore` — it does not honor
+ * `.gitignore`. Perforce (some UEFN projects still use `p4` directly) reads
+ * `.p4ignore`. Both files get this same comprehensive list so URC-native and
+ * URC-via-Perforce agree; `.gitignore` keeps its own minimal, separate list
+ * (see `_handleAddGitignoreEntries`) because non-UEFN git users often WANT
+ * to commit CLAUDE.md/.claude.
+ *
+ * UEFN projects nest a second Unreal project root under `Content/` (the
+ * Fortnite content folder is itself scanned/ignored independently by URC in
+ * some configurations), so every root-level pattern is duplicated with a
+ * `Content/` prefix to cover that nested root too.
+ */
+const UEFN_URC_IGNORE_ENTRIES: string[] = [
+  ".claude/",
+  "CLAUDE.md",
+  ".mcp.json",
+  "*.cjs",
+  ".agents/",
+  ".codex/",
+  "AGENTS.md",
+  "Content/.claude/",
+  "Content/CLAUDE.md",
+  "Content/.mcp.json",
+  "Content/.agents/",
+  "Content/.codex/",
+  "Content/AGENTS.md",
+];
+
 /** Singleton webview panel that renders the TycoonAgents visualization. */
 export class TycoonPanel {
   public static currentPanel: TycoonPanel | undefined;
@@ -3782,9 +3813,17 @@ export class TycoonPanel {
    * UEFN projects use Perforce, which does NOT honor `.gitignore` — it reads
    * `.p4ignore` instead. So on a UEFN project (per {@link detectUefnProject})
    * this writes BOTH `.gitignore` (some UEFN projects also use git) AND
-   * `.p4ignore` with the identical entries; on a non-UEFN project it writes
-   * only `.gitignore`. After a real `.p4ignore` write we surface a one-time
-   * note that Perforce only honors it once `P4IGNORE` is configured.
+   * `.p4ignore` with the identical minimal entries; on a non-UEFN project it
+   * writes only `.gitignore`. After a real `.p4ignore` write we surface a
+   * one-time note that Perforce only honors it once `P4IGNORE` is configured.
+   *
+   * UEFN projects ALSO get the comprehensive {@link UEFN_URC_IGNORE_ENTRIES}
+   * list written to BOTH `.urcignore` (UEFN's native Revision Control, which
+   * reads only the root `.urcignore` — never `.gitignore`) and `.p4ignore`
+   * (so URC-native and URC-via-Perforce agree). This comprehensive list is
+   * UEFN-only and separate from the minimal `.gitignore`/`.p4ignore` runtime
+   * entries above, since non-UEFN git users often WANT to commit
+   * CLAUDE.md/.claude.
    */
   private _handleAddGitignoreEntries(): void {
     const root = this._projectRoot();
@@ -3798,6 +3837,11 @@ export class TycoonPanel {
     const uefn = detectUefnProject(root);
     if (uefn.detected) {
       const wroteP4ignore = this._appendIgnoreEntries(path.join(root, ".p4ignore"), header, entries);
+
+      const urcHeader = "# TycoonAgents / Claude Code dev-tool artifacts (keep out of revision control)";
+      this._appendIgnoreEntries(path.join(root, ".urcignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
+      this._appendIgnoreEntries(path.join(root, ".p4ignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
+
       if (wroteP4ignore) {
         vscode.window.showInformationMessage(
           "TycoonAgents added .p4ignore entries for this UEFN/Perforce project. " +
