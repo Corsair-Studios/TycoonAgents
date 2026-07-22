@@ -57,15 +57,19 @@ function markAsUefnProject(root: string): void {
   fs.writeFileSync(path.join(root, "project.uproject"), "{}");
 }
 
-// `_handleAddGitignoreEntries` only calls `this._projectRoot()` and
-// `this._appendIgnoreEntries(...)` (plus the globally-stubbed
+// `_handleAddGitignoreEntries` calls `this._projectRoot()`,
+// `this._appendIgnoreEntries(...)`, and (for the UEFN branch)
+// `this._uefnEffectiveRoot(...)` (plus the globally-stubbed
 // `vscode.window.showInformationMessage`) — a minimal receiver carrying
-// those two bound members is enough to invoke the real method under test
-// without constructing a full TycoonPanel.
+// those bound members is enough to invoke the real method under test
+// without constructing a full TycoonPanel. None of these tmp roots are
+// named "Content", so `_uefnEffectiveRoot` is a no-op passthrough here —
+// its own behavior is covered by test/panelBridgeStaleness.test.ts.
 function callAddGitignoreEntries(root: string): void {
   const fakeThis = {
     _projectRoot: () => root,
     _appendIgnoreEntries: (TycoonPanel.prototype as any)._appendIgnoreEntries,
+    _uefnEffectiveRoot: (TycoonPanel.prototype as any)._uefnEffectiveRoot,
   };
   (TycoonPanel.prototype as any)._handleAddGitignoreEntries.call(fakeThis);
 }

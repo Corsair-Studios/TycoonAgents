@@ -3320,6 +3320,29 @@ export class TycoonPanel {
   }
 
   /**
+   * If `root` (the workspace folder) IS a UEFN project's `Content` dir
+   * itself (opened at the wrong level — parent holds the `.uefnproject`),
+   * every UEFN-filesystem path must anchor at the PARENT instead. Staging
+   * hardcodes `<root>/Content/Python`, so when `root` is already `Content`
+   * that lands at `Content/Content/Python` (a real bug hit in the field) and
+   * URC — which reads `.urcignore`/`.p4ignore` only at the true project
+   * root — never sees the ignore entries written under the wrong root.
+   * Returns `root` unchanged whenever the parent can't be confirmed (any
+   * `readdirSync` failure), so this only ever redirects when the UEFN
+   * project marker is actually found.
+   */
+  private _uefnEffectiveRoot(root: string): string {
+    if (path.basename(root).toLowerCase() !== "content") return root;
+    const parent = path.dirname(root);
+    try {
+      const hasUefnProjectMarker = fs.readdirSync(parent).some((entry) => entry.endsWith(".uefnproject"));
+      return hasUefnProjectMarker ? parent : root;
+    } catch {
+      return root;
+    }
+  }
+
+  /**
    * Stage the Python bridge + Power Tools suite into every location UEFN may
    * load Python from (the project's own Content/Python, plus every
    * discovered Fortnite engine Python dir — see _findFortnitePythonDirs for
@@ -3328,6 +3351,12 @@ export class TycoonPanel {
    * installed pack provides the UEFN bridge (auto-stage on install), and
    * `_handleSetupUefnProject` reuses `_handleInstallPack`'s result instead of
    * staging a second time.
+   *
+   * The project target is anchored via `_uefnEffectiveRoot` (see) — a
+   * workspace opened at the project's `Content/` dir must still stage into
+   * that project's `Content/Python`, not a doubled `Content/Content/Python`.
+   * After staging, `_healDuplicateUefnBridgeStaging` auto-repairs any
+   * bogus `Content/Content/Python` left behind by older installs.
    */
   private _stageUefnBridgeAllTargets(root: string): {
     bridgeStatus: "staged" | "exists";
@@ -3338,8 +3367,9 @@ export class TycoonPanel {
     }>;
   } {
     const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+    const effRoot = this._uefnEffectiveRoot(root);
     const targets: Array<{ label: string; dir: string }> = [
-      { label: "project", dir: path.join(root, "Content", "Python") },
+      { label: "project", dir: path.join(effRoot, "Content", "Python") },
     ];
     for (const engineDir of this._findFortnitePythonDirs()) {
       targets.push({ label: "engine", dir: engineDir });
@@ -3361,8 +3391,81 @@ export class TycoonPanel {
         locations.push({ label: t.label, dir: t.dir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
       }
     }
+
+    const projectLocation = locations.find((l) => l.label === "project");
+    if (projectLocation && !projectLocation.error) {
+      try {
+        this._healDuplicateUefnBridgeStaging(effRoot, bridgeDir);
+      } catch {
+        /* auto-heal is best-effort -- must never break staging */
+      }
+    }
+
     const bridgeStatus: "staged" | "exists" = totalWritten > 0 ? "staged" : "exists";
     return { bridgeStatus, engineFound, locations };
+  }
+
+  /**
+   * Auto-heal a known-bogus leftover from the double-Content staging bug
+   * (see `_uefnEffectiveRoot`): if `<effRoot>/Content/Content/Python`
+   * exists and holds `uefn_bridge.py`, delete ONLY the files there whose
+   * basenames match the bridge's own source file set (every `.py` +
+   * `trashbyrd_40x40.png` staged from `bridgeDir` -- the same set
+   * `_stageBridgeTo` copies, excluding `uefn-server.mjs`/`__pycache__`/
+   * `.pyc`/`.pyo`), then removes the emptied `Python` dir and its
+   * `Content` parent if they end up empty. Every fs op is try/caught so a
+   * failure here can never break staging, and nothing outside the known
+   * bridge file set -- e.g. a user's own file that happened to land there
+   * -- is ever touched or removed.
+   */
+  private _healDuplicateUefnBridgeStaging(effRoot: string, bridgeDir: string): void {
+    const dupPythonDir = path.join(effRoot, "Content", "Content", "Python");
+    try {
+      if (!fs.existsSync(path.join(dupPythonDir, "uefn_bridge.py"))) return;
+    } catch {
+      return;
+    }
+
+    let bridgeFileNames: string[];
+    try {
+      bridgeFileNames = fs.readdirSync(bridgeDir).filter((name) => {
+        if (name === "uefn-server.mjs") return false;
+        if (name === "__pycache__") return false;
+        if (name.endsWith(".pyc") || name.endsWith(".pyo")) return false;
+        try {
+          return fs.statSync(path.join(bridgeDir, name)).isFile();
+        } catch {
+          return false;
+        }
+      });
+    } catch {
+      return;
+    }
+
+    for (const name of bridgeFileNames) {
+      try {
+        fs.unlinkSync(path.join(dupPythonDir, name));
+      } catch {
+        /* best-effort -- leave file in place on failure */
+      }
+    }
+
+    try {
+      if (fs.readdirSync(dupPythonDir).length === 0) {
+        fs.rmdirSync(dupPythonDir);
+      }
+    } catch {
+      /* not empty (unrelated files remain) or inaccessible -- leave it */
+    }
+
+    const dupContentDir = path.join(effRoot, "Content", "Content");
+    try {
+      if (fs.readdirSync(dupContentDir).length === 0) {
+        fs.rmdirSync(dupContentDir);
+      }
+    } catch {
+      /* not empty or inaccessible -- leave it */
+    }
   }
 
   /**
@@ -3370,11 +3473,39 @@ export class TycoonPanel {
    * Content/Python — the "project" target `_stageUefnBridgeAllTargets`
    * always writes to. Used to harden `uefnBridgeSetUp` (see
    * `_handleCheckInstall`) so a bare `.mcp.json` uefn-bridge entry, with no
-   * Python actually staged, is no longer reported as "set up".
+   * Python actually staged, is no longer reported as "set up". Anchored via
+   * `_uefnEffectiveRoot` (see) so a workspace opened at the project's
+   * `Content/` dir is still checked at the right place.
    */
   private _uefnBridgePythonStaged(root: string): boolean {
     try {
-      return fs.existsSync(path.join(root, "Content", "Python", "uefn_bridge.py"));
+      const effRoot = this._uefnEffectiveRoot(root);
+      return fs.existsSync(path.join(effRoot, "Content", "Python", "uefn_bridge.py"));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * True when the staged bridge is STALE: both the staged
+   * `<effRoot>/Content/Python/bridge_version.py` stamp and the shipped
+   * `media/uefn-bridge/bridge_version.py` are readable, and their trimmed
+   * contents differ. Used to harden `uefnBridgeSetUp` (see
+   * `_handleCheckInstall`) beyond mere existence -- an old staged bridge
+   * from a prior VSIX version should nag reinstall rather than silently
+   * read as "set up". Returns false (not stale) whenever either file is
+   * missing or unreadable, so installs made before stamping existed (no
+   * staged `bridge_version.py` yet) fall back to the existence-only result
+   * instead of a false negative.
+   */
+  private _uefnBridgeStale(root: string): boolean {
+    try {
+      const effRoot = this._uefnEffectiveRoot(root);
+      const stagedPath = path.join(effRoot, "Content", "Python", "bridge_version.py");
+      const shippedPath = path.join(this._extensionUri.fsPath, "media", "uefn-bridge", "bridge_version.py");
+      const staged = fs.readFileSync(stagedPath, "utf8").trim();
+      const shipped = fs.readFileSync(shippedPath, "utf8").trim();
+      return staged !== shipped;
     } catch {
       return false;
     }
@@ -3727,17 +3858,22 @@ export class TycoonPanel {
     // .mcp.json probing here (unlike _computeEngineStatus's live ladder) —
     // this only needs to know whether a project of that kind is present.
     const engineChips = root !== "" ? computeEngineChips(root, null) : [];
-    // Whether UEFN setup already ran — requires BOTH the `.mcp.json`
-    // uefn-bridge entry (_uefnBridgeEntry, also used by _computeEngineStatus's
-    // live ladder) AND the Python bridge actually staged into the project's
-    // Content/Python (_uefnBridgePythonStaged). An mcp entry alone is not
-    // enough to call it "set up" — lets the setup wizard stop re-prompting
-    // "set up UEFN" only once it's genuinely done (see media/main.js's
-    // installState handler / the uefnDetected trigger, and
-    // renderSetupOptionals's UEFN section).
+    // Whether UEFN setup already ran — requires the `.mcp.json` uefn-bridge
+    // entry (_uefnBridgeEntry, also used by _computeEngineStatus's live
+    // ladder), the Python bridge actually staged into the project's
+    // Content/Python (_uefnBridgePythonStaged), AND that staged bridge not
+    // being stale against the shipped copy (_uefnBridgeStale). An mcp entry
+    // alone is not enough to call it "set up", and neither is a stale staged
+    // copy — lets the setup wizard stop re-prompting "set up UEFN" only once
+    // it's genuinely done and current (see media/main.js's installState
+    // handler / the uefnDetected trigger, and renderSetupOptionals's UEFN
+    // section).
     const mcpConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
     const uefnBridgeSetUp =
-      root !== "" && Boolean(this._uefnBridgeEntry(mcpConfig)) && this._uefnBridgePythonStaged(root);
+      root !== "" &&
+      Boolean(this._uefnBridgeEntry(mcpConfig)) &&
+      this._uefnBridgePythonStaged(root) &&
+      !this._uefnBridgeStale(root);
     // Detect any non-tycoon managed CLAUDE.md block — legacy config carried
     // over from a prior setup, or a currently-installed other tool's own
     // block (see legacyDoctrine.ts detectForeignManagedBlocks). Every entry
@@ -3836,11 +3972,15 @@ export class TycoonPanel {
 
     const uefn = detectUefnProject(root);
     if (uefn.detected) {
-      const wroteP4ignore = this._appendIgnoreEntries(path.join(root, ".p4ignore"), header, entries);
+      // URC/Perforce read .urcignore/.p4ignore only at the true project
+      // root — if this workspace is opened AT the project's Content/ dir,
+      // that root is the PARENT (see _uefnEffectiveRoot), not `root`.
+      const effRoot = this._uefnEffectiveRoot(root);
+      const wroteP4ignore = this._appendIgnoreEntries(path.join(effRoot, ".p4ignore"), header, entries);
 
       const urcHeader = "# TycoonAgents / Claude Code dev-tool artifacts (keep out of revision control)";
-      this._appendIgnoreEntries(path.join(root, ".urcignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
-      this._appendIgnoreEntries(path.join(root, ".p4ignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
+      this._appendIgnoreEntries(path.join(effRoot, ".urcignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
+      this._appendIgnoreEntries(path.join(effRoot, ".p4ignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
 
       if (wroteP4ignore) {
         vscode.window.showInformationMessage(

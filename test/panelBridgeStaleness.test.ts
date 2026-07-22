@@ -1,0 +1,247 @@
+/*
+ * TycoonAgents - https://x.com/thetrashbyrd
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
+ * Attribution header - optional; end users may remove it.
+ */
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+// panel.ts does `import * as vscode from "vscode"` at module scope. Stub the
+// module loader (same technique as test/panelUrcIgnore.test.ts) so this
+// file's require of panel.js resolves under plain `node --test`, and we
+// exercise the REAL production `_uefnEffectiveRoot` / `_uefnBridgeStale` /
+// `_healDuplicateUefnBridgeStaging` methods rather than reimplementations.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const NodeModule = require("module");
+const originalLoad = NodeModule._load;
+function makeVscodeStub(): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handler: ProxyHandler<any> = {
+    get(target, prop) {
+      if (prop === "__esModule") return true;
+      if (!(prop in target)) {
+        target[prop] = new Proxy(function stub() {}, handler);
+      }
+      return target[prop];
+    },
+    apply() {
+      return new Proxy({}, handler);
+    },
+    construct() {
+      return new Proxy({}, handler);
+    },
+  };
+  return new Proxy({}, handler);
+}
+const vscodeStub = makeVscodeStub();
+NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain: boolean) {
+  if (request === "vscode") return vscodeStub;
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { TycoonPanel } = require("../src/host/vscode/panel") as typeof import("../src/host/vscode/panel");
+
+function tmpDir(prefix: string): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+// `_uefnEffectiveRoot` only touches path/fs — no other `this` members — so a
+// bare receiver is enough to invoke the real method under test.
+function effectiveRoot(root: string): string {
+  return (TycoonPanel.prototype as any)._uefnEffectiveRoot.call({}, root);
+}
+
+// `_uefnBridgeStale` calls `this._uefnEffectiveRoot` and reads
+// `this._extensionUri.fsPath` — a minimal receiver carrying those two is
+// enough, mirroring test/panelProjectPlanSkillInstall.test.ts's pattern for
+// `_extensionUri`. `shippedRoot` stands in for the extension install dir; a
+// fake `media/uefn-bridge/bridge_version.py` is written under it by each
+// test — the REAL shipped file (owned by another worker) is never touched.
+function bridgeStale(root: string, shippedRoot: string): boolean {
+  const fakeThis = {
+    _extensionUri: { fsPath: shippedRoot },
+    _uefnEffectiveRoot: (TycoonPanel.prototype as any)._uefnEffectiveRoot,
+  };
+  return (TycoonPanel.prototype as any)._uefnBridgeStale.call(fakeThis, root);
+}
+
+// `_healDuplicateUefnBridgeStaging` only touches path/fs (`effRoot`,
+// `bridgeDir` args) — a bare receiver is enough.
+function healDuplicate(effRoot: string, bridgeDir: string): void {
+  (TycoonPanel.prototype as any)._healDuplicateUefnBridgeStaging.call({}, effRoot, bridgeDir);
+}
+
+function writeStamp(dir: string, contents: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "bridge_version.py"), contents);
+}
+
+// ---------------------------------------------------------------------------
+// FIX 1: _uefnEffectiveRoot
+// ---------------------------------------------------------------------------
+
+test("_uefnEffectiveRoot redirects to the parent when root is a Content dir with a sibling .uefnproject", () => {
+  const projectRoot = tmpDir("panelBridgeStaleness-eff-a-");
+  try {
+    fs.writeFileSync(path.join(projectRoot, "MyProject.uefnproject"), "");
+    const contentDir = path.join(projectRoot, "Content");
+    fs.mkdirSync(contentDir, { recursive: true });
+
+    assert.equal(effectiveRoot(contentDir), projectRoot);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("_uefnEffectiveRoot leaves a Content-named root unchanged when the parent has no .uefnproject", () => {
+  const projectRoot = tmpDir("panelBridgeStaleness-eff-b-");
+  try {
+    const contentDir = path.join(projectRoot, "Content");
+    fs.mkdirSync(contentDir, { recursive: true });
+
+    assert.equal(effectiveRoot(contentDir), contentDir);
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("_uefnEffectiveRoot leaves a normal (non-Content) root unchanged", () => {
+  const parentDir = tmpDir("panelBridgeStaleness-eff-c-");
+  try {
+    // Even with a sibling .uefnproject present, a root not named "Content"
+    // must never be redirected.
+    fs.writeFileSync(path.join(parentDir, "Unrelated.uefnproject"), "");
+    const root = path.join(parentDir, "SomeProjectFolder");
+    fs.mkdirSync(root, { recursive: true });
+
+    assert.equal(effectiveRoot(root), root);
+  } finally {
+    fs.rmSync(parentDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FIX 2: staleness detection
+// ---------------------------------------------------------------------------
+
+test("_uefnBridgeStale is false when the staged and shipped stamps match", () => {
+  const root = tmpDir("panelBridgeStaleness-stale-match-root-");
+  const shippedRoot = tmpDir("panelBridgeStaleness-stale-match-shipped-");
+  try {
+    const stamp = 'BRIDGE_VERSION = "1.2.3"';
+    writeStamp(path.join(root, "Content", "Python"), `# generated\n# do not edit\n\n${stamp}\n`);
+    writeStamp(path.join(shippedRoot, "media", "uefn-bridge"), `# generated\n# do not edit\n\n${stamp}\n`);
+
+    assert.equal(bridgeStale(root, shippedRoot), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(shippedRoot, { recursive: true, force: true });
+  }
+});
+
+test("_uefnBridgeStale is true when the staged and shipped stamps differ", () => {
+  const root = tmpDir("panelBridgeStaleness-stale-diff-root-");
+  const shippedRoot = tmpDir("panelBridgeStaleness-stale-diff-shipped-");
+  try {
+    writeStamp(path.join(root, "Content", "Python"), '# generated\n\nBRIDGE_VERSION = "1.2.3"\n');
+    writeStamp(path.join(shippedRoot, "media", "uefn-bridge"), '# generated\n\nBRIDGE_VERSION = "1.2.4"\n');
+
+    assert.equal(bridgeStale(root, shippedRoot), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(shippedRoot, { recursive: true, force: true });
+  }
+});
+
+test("_uefnBridgeStale falls back to false (not stale) when the staged stamp is missing", () => {
+  const root = tmpDir("panelBridgeStaleness-stale-missing-root-");
+  const shippedRoot = tmpDir("panelBridgeStaleness-stale-missing-shipped-");
+  try {
+    // No staged bridge_version.py at all -- pre-stamping install.
+    fs.mkdirSync(path.join(root, "Content", "Python"), { recursive: true });
+    writeStamp(path.join(shippedRoot, "media", "uefn-bridge"), '# generated\n\nBRIDGE_VERSION = "1.2.4"\n');
+
+    assert.equal(bridgeStale(root, shippedRoot), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(shippedRoot, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FIX 3: duplicate auto-heal
+// ---------------------------------------------------------------------------
+
+test("_healDuplicateUefnBridgeStaging deletes only bridge-owned files, preserving an unrelated file and leaving non-empty dirs in place", () => {
+  const effRoot = tmpDir("panelBridgeStaleness-heal-partial-root-");
+  const bridgeDir = tmpDir("panelBridgeStaleness-heal-partial-bridge-");
+  try {
+    // Source bridge file set (mirrors media/uefn-bridge/'s shape).
+    fs.writeFileSync(path.join(bridgeDir, "uefn_bridge.py"), "# bridge");
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "1.2.3"');
+    fs.writeFileSync(path.join(bridgeDir, "trashbyrd_40x40.png"), "fake-png-bytes");
+    fs.writeFileSync(path.join(bridgeDir, "uefn-server.mjs"), "// must NOT be deleted from dup dir either");
+
+    const dupPythonDir = path.join(effRoot, "Content", "Content", "Python");
+    fs.mkdirSync(dupPythonDir, { recursive: true });
+    fs.writeFileSync(path.join(dupPythonDir, "uefn_bridge.py"), "# stale bridge copy");
+    fs.writeFileSync(path.join(dupPythonDir, "bridge_version.py"), 'BRIDGE_VERSION = "1.2.3"');
+    fs.writeFileSync(path.join(dupPythonDir, "trashbyrd_40x40.png"), "fake-png-bytes");
+    fs.writeFileSync(path.join(dupPythonDir, "keep.txt"), "user file, must survive");
+
+    healDuplicate(effRoot, bridgeDir);
+
+    assert.ok(!fs.existsSync(path.join(dupPythonDir, "uefn_bridge.py")), "uefn_bridge.py must be deleted");
+    assert.ok(!fs.existsSync(path.join(dupPythonDir, "bridge_version.py")), "bridge_version.py must be deleted");
+    assert.ok(!fs.existsSync(path.join(dupPythonDir, "trashbyrd_40x40.png")), "trashbyrd_40x40.png must be deleted");
+    assert.ok(fs.existsSync(path.join(dupPythonDir, "keep.txt")), "keep.txt must be preserved");
+    assert.ok(fs.existsSync(dupPythonDir), "non-empty Python dir must be left in place");
+  } finally {
+    fs.rmSync(effRoot, { recursive: true, force: true });
+    fs.rmSync(bridgeDir, { recursive: true, force: true });
+  }
+});
+
+test("_healDuplicateUefnBridgeStaging removes the dup Python dir and its Content/Content parent when they end up empty", () => {
+  const effRoot = tmpDir("panelBridgeStaleness-heal-full-root-");
+  const bridgeDir = tmpDir("panelBridgeStaleness-heal-full-bridge-");
+  try {
+    fs.writeFileSync(path.join(bridgeDir, "uefn_bridge.py"), "# bridge");
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "1.2.3"');
+
+    const dupPythonDir = path.join(effRoot, "Content", "Content", "Python");
+    fs.mkdirSync(dupPythonDir, { recursive: true });
+    fs.writeFileSync(path.join(dupPythonDir, "uefn_bridge.py"), "# stale bridge copy");
+    fs.writeFileSync(path.join(dupPythonDir, "bridge_version.py"), 'BRIDGE_VERSION = "1.2.3"');
+
+    healDuplicate(effRoot, bridgeDir);
+
+    const dupContentDir = path.join(effRoot, "Content", "Content");
+    assert.ok(!fs.existsSync(dupPythonDir), "emptied Python dir must be removed");
+    assert.ok(!fs.existsSync(dupContentDir), "emptied Content/Content parent must be removed");
+    // The real Content dir itself (holding the removed Content/Content) must survive.
+    assert.ok(fs.existsSync(path.join(effRoot, "Content")), "the real Content dir must survive");
+  } finally {
+    fs.rmSync(effRoot, { recursive: true, force: true });
+    fs.rmSync(bridgeDir, { recursive: true, force: true });
+  }
+});
+
+test("_healDuplicateUefnBridgeStaging is a no-op when there is no duplicate staging location", () => {
+  const effRoot = tmpDir("panelBridgeStaleness-heal-noop-root-");
+  const bridgeDir = tmpDir("panelBridgeStaleness-heal-noop-bridge-");
+  try {
+    fs.writeFileSync(path.join(bridgeDir, "uefn_bridge.py"), "# bridge");
+    // No Content/Content/Python at all -- must not throw or create anything.
+    healDuplicate(effRoot, bridgeDir);
+    assert.ok(!fs.existsSync(path.join(effRoot, "Content", "Content")), "must not create a dup dir");
+  } finally {
+    fs.rmSync(effRoot, { recursive: true, force: true });
+    fs.rmSync(bridgeDir, { recursive: true, force: true });
+  }
+});

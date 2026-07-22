@@ -38,8 +38,13 @@ _CARD_HOVER = "#F15B29"
 _CARD_BORDER = "#B8B2A4"
 
 # Bridge version, shown in the launcher footer so users can tell a stale
-# cached copy apart from the current one.
-BRIDGE_VERSION = "0.0.289"
+# cached copy apart from the current one. Sourced from the generated
+# bridge_version.py (stamped by scripts/release.mjs on every version bump)
+# so this file never needs a hand-edit again.
+try:
+    from bridge_version import BRIDGE_VERSION
+except Exception:
+    BRIDGE_VERSION = "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +498,7 @@ def show_launcher():
     _win_height = 150 + _rows * 150
 
     root = tk.Tk()
-    root.title("Trashbyrd's Power Tools")
+    root.title("Trashbyrd's Power Tools v" + BRIDGE_VERSION)
     root.geometry("720x{}".format(_win_height))
     root.configure(bg=_BG)
     root.resizable(True, True)
