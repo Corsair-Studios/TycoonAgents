@@ -2399,11 +2399,25 @@ tr.metrics-row--child td.col-name {
   font-weight: 500;
 }
 
-/* Delegation stats (Team Lead Mode Phase 4: measurement) */
-#delegation-stats {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
+/* ── Delegation tab (promoted out of #metrics-body — Team Lead Mode Phase
+   4: measurement, expanded into its own full-width panel) ──────────────
+   Same flex:1 1 auto / min-height:0 / overflow-y:auto stretch pattern as
+   #metrics-body and .project-plan-body: fills whatever height
+   #metrics-panel already has and scrolls internally when its content
+   overflows, instead of hugging its own content height and leaving dead
+   space below it. */
+#delegation-stats.delegation-stats-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#delegation-stats[hidden] {
+  display: none;
 }
 
 .delegation-stats-heading {
@@ -2413,6 +2427,11 @@ tr.metrics-row--child td.col-name {
   text-transform: uppercase;
   color: var(--muted);
   margin-bottom: 6px;
+}
+
+.delegation-section {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .delegation-stats-row {
@@ -2441,6 +2460,138 @@ tr.metrics-row--child td.col-name {
   letter-spacing: 0.04em;
   color: var(--muted);
   opacity: 0.75;
+}
+
+/* Hero savings stat: the enlarged "avoided ~N%" headline. */
+.delegation-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 0 4px;
+}
+
+.delegation-hero-num {
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--status-active);
+  font-variant-numeric: tabular-nums;
+}
+
+.delegation-hero-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.delegation-hero-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Model-tier work-split bars */
+.delegation-tier-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+}
+
+.delegation-tier-name {
+  flex: 0 0 64px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.delegation-tier-bar-track {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 10px;
+  border-radius: 5px;
+  background: #27272A;
+  overflow: hidden;
+}
+
+.delegation-tier-bar-fill {
+  height: 100%;
+  border-radius: 5px;
+  background: var(--col-tokens);
+  transition: width 0.3s ease;
+}
+
+.delegation-tier-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Per-agent delegation table */
+.delegation-agent-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4px;
+}
+
+.delegation-agent-table thead th {
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.delegation-agent-table tbody tr {
+  border-bottom: 1px solid var(--border);
+}
+
+.delegation-agent-table tbody tr:hover {
+  background: var(--surface);
+}
+
+.delegation-agent-table tbody td {
+  padding: 7px 8px;
+  font-size: 12px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.delegation-agent-table tbody td.col-name {
+  color: var(--text);
+  font-weight: 600;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.delegation-agent-table tbody td.col-tasks {
+  color: var(--col-tasks);
+  font-variant-numeric: tabular-nums;
+}
+
+.delegation-agent-table tbody td.col-tokens {
+  color: var(--col-tokens);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Opus-leak meter (orchestrator direct tool use) */
+.delegation-leak-ok {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--status-active);
+}
+
+.delegation-leak-warn {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--status-error);
 }
 
 /* Empty state */

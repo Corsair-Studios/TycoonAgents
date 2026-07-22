@@ -6001,6 +6001,7 @@ export class TycoonPanel {
       <div id="metrics-tabs" class="metrics-tabs" role="tablist" hidden>
         <button id="metrics-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="true" aria-controls="metrics-body">Metrics</button>
         <button id="plan-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="project-plan-body">Project Plan</button>
+        <button id="delegation-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="delegation-stats">Delegation</button>
       </div>
       <div id="metrics-body">
         <div id="metrics-empty">No agents yet &mdash; start a session to see activity.</div>
@@ -6009,7 +6010,7 @@ export class TycoonPanel {
             <tr>
               <th title="The agent doing the work. The orchestrator delegates; the specialists do the work.">Agent</th>
               <th title="How much cheaper (or pricier) this agent's model is, per token, than the orchestrator's — e.g. 5× cheaper. A dimensionless ratio, not a bill.">Tokens/min</th>
-              <th class="col-tasks" title="Tasks completed BY this agent — work it actually finished, not tasks merely routed to it. The orchestrator's cell (marked *) shows how many tasks it delegated instead.">Tasks</th>
+              <th class="col-tasks" title="Tasks completed BY this agent — work it actually finished, not tasks merely routed to it. The orchestrator's cell (marked *) shows the tasks it completed itself; hover it to see how many it dispatched to other agents.">Tasks</th>
               <th class="col-mcp" title="How many MCP tool calls this agent has made.">MCP</th>
               <th class="col-time" title="Active time this agent has spent working.">Time</th>
               <th class="col-tokens" title="Total tokens this agent has used.">Tokens</th>
@@ -6017,11 +6018,13 @@ export class TycoonPanel {
           </thead>
           <tbody id="metrics-tbody"></tbody>
         </table>
-        <!-- Delegation stats (Team Lead Mode Phase 4: measurement) — populated
-             by renderDelegationStats() in media/main.js from state.modeStats.
-             Hidden by default; shown only when at least one mode has data. -->
-        <div id="delegation-stats" hidden></div>
       </div>
+      <!-- Delegation tab (full-width sibling tab panel, promoted out of
+           #metrics-body): populated by renderDelegationStats() in
+           media/main.js from state.modeStats + the last agentMetrics/
+           delegationHealth payloads. Hidden unless it is the active tab AND
+           has data (see updateMetricsTabsUI()/renderDelegationStats()). -->
+      <div id="delegation-stats" class="delegation-stats-body" hidden></div>
       <!-- Project Plan (optional feature, opt-in via Settings): tab content
            hosted next to Metrics inside the same panel. Hidden unless
            PLAN_STATE reports enabled:true; rebuilt by

@@ -130,6 +130,9 @@
   const metricsTabBtnEl = /** @type {HTMLElement} */ (document.getElementById("metrics-tab-btn"));
   const planTabBtnEl = /** @type {HTMLElement} */ (document.getElementById("plan-tab-btn"));
   const projectPlanBodyEl = /** @type {HTMLElement} */ (document.getElementById("project-plan-body"));
+  // Delegation tab (promoted out of #metrics-body into its own peer panel).
+  const delegationTabBtnEl = /** @type {HTMLElement} */ (document.getElementById("delegation-tab-btn"));
+  const delegationStatsBodyEl = /** @type {HTMLElement} */ (document.getElementById("delegation-stats"));
 
   // The #metrics-table "Tokens/min" column header (static HTML in panel.ts) now
   // shows a dimensionless cost-ratio-vs-orchestrator lens instead — relabel it
@@ -151,8 +154,10 @@
   let currentPlanError = "";
   /** Whether the host found a restorable backup of plan.json (PLAN_STATE.hasBackup) to offer via the "Restore last good" button. */
   let currentPlanHasBackup = false;
-  /** Which tab is visible in the metrics panel: "metrics" (default) or "plan". Only meaningful while projectPlanEnabled is true. Restored from webview state so it survives reloads. */
+  /** Which tab is visible in the metrics panel: "metrics" (default), "plan", or "delegation". The plan tab is only offered while projectPlanEnabled is true; the delegation tab only while delegationStatsHasData is true. Restored from webview state so it survives reloads. */
   let activeMetricsTab = "metrics";
+  /** Whether the Delegation tab currently has anything worth showing — set by renderDelegationStats() from state.modeStats + lastMetrics. Gates the Delegation tab button the same way projectPlanEnabled gates the Project Plan button, so the bar never offers an empty panel. */
+  let delegationStatsHasData = false;
   /** Reference to the Settings screen's Project Plan checkbox, kept live so a PLAN_STATE update can sync its checked state without a full renderSettings() re-render. */
   let projectPlanCheckboxEl = null;
   /** Advisory-only threshold (ms): how long with no agent activity before the active task card shows a "may be stalled" note. Deterministic, no AI involved — purely a staleness signal off state.lastActivityAt. */
@@ -162,7 +167,9 @@
 
   (function restoreActiveMetricsTab() {
     const saved = vscode.getState();
-    if (saved && saved.activeMetricsTab === "plan") activeMetricsTab = "plan";
+    if (saved && (saved.activeMetricsTab === "plan" || saved.activeMetricsTab === "delegation")) {
+      activeMetricsTab = saved.activeMetricsTab;
+    }
   })();
 
   /** Persist the active metrics tab into the same webview state blob used for metricsHeight/rosterOrder/teamExpanded/etc. */
@@ -183,32 +190,56 @@
    */
   function syncProjectPlanBodyHeight() {}
 
-  /** Reflect (activeMetricsTab, projectPlanEnabled) onto the tab bar + content visibility. The whole tab bar (not just the Plan tab) is hidden when the feature is off, per the gating requirement — no lone/empty tab bar. */
+  /**
+   * Reflect (activeMetricsTab, projectPlanEnabled, delegationStatsHasData)
+   * onto the tab bar + content visibility. The whole tab bar is hidden only
+   * when NEITHER the Plan nor the Delegation tab has anything to offer —
+   * per the gating requirement, never a lone/empty tab bar with just
+   * "Metrics" in it. When only one of the two optional tabs is available,
+   * the bar shows with that one button (its sibling button individually
+   * hidden) alongside Metrics.
+   */
   function updateMetricsTabsUI() {
-    if (!metricsTabsEl || !metricsBodyEl || !projectPlanBodyEl) return;
-    if (!projectPlanEnabled) {
+    if (!metricsTabsEl || !metricsBodyEl || !projectPlanBodyEl || !delegationStatsBodyEl) return;
+    const showPlanTab = projectPlanEnabled;
+    const showDelegationTab = delegationStatsHasData;
+    if (!showPlanTab && !showDelegationTab) {
       metricsTabsEl.hidden = true;
       metricsBodyEl.hidden = false;
       projectPlanBodyEl.hidden = true;
+      delegationStatsBodyEl.hidden = true;
       return;
     }
     metricsTabsEl.hidden = false;
+    if (planTabBtnEl) planTabBtnEl.hidden = !showPlanTab;
+    if (delegationTabBtnEl) delegationTabBtnEl.hidden = !showDelegationTab;
+    // Fall back to Metrics if the active tab points at a panel that just
+    // became unavailable (feature toggled off / data disappeared).
+    if (activeMetricsTab === "plan" && !showPlanTab) activeMetricsTab = "metrics";
+    if (activeMetricsTab === "delegation" && !showDelegationTab) activeMetricsTab = "metrics";
     const onPlan = activeMetricsTab === "plan";
-    metricsBodyEl.hidden = onPlan;
+    const onDelegation = activeMetricsTab === "delegation";
+    const onMetrics = !onPlan && !onDelegation;
+    metricsBodyEl.hidden = !onMetrics;
     projectPlanBodyEl.hidden = !onPlan;
+    delegationStatsBodyEl.hidden = !onDelegation;
     if (metricsTabBtnEl) {
-      metricsTabBtnEl.classList.toggle("metrics-tab-btn--active", !onPlan);
-      metricsTabBtnEl.setAttribute("aria-selected", String(!onPlan));
+      metricsTabBtnEl.classList.toggle("metrics-tab-btn--active", onMetrics);
+      metricsTabBtnEl.setAttribute("aria-selected", String(onMetrics));
     }
     if (planTabBtnEl) {
       planTabBtnEl.classList.toggle("metrics-tab-btn--active", onPlan);
       planTabBtnEl.setAttribute("aria-selected", String(onPlan));
     }
+    if (delegationTabBtnEl) {
+      delegationTabBtnEl.classList.toggle("metrics-tab-btn--active", onDelegation);
+      delegationTabBtnEl.setAttribute("aria-selected", String(onDelegation));
+    }
   }
 
   /** Switch the visible metrics-panel tab and persist the choice. */
   function setActiveMetricsTab(tab) {
-    activeMetricsTab = tab === "plan" ? "plan" : "metrics";
+    activeMetricsTab = tab === "plan" ? "plan" : tab === "delegation" ? "delegation" : "metrics";
     saveActiveMetricsTab();
     syncProjectPlanBodyHeight();
     updateMetricsTabsUI();
@@ -216,6 +247,7 @@
 
   if (metricsTabBtnEl) metricsTabBtnEl.addEventListener("click", () => setActiveMetricsTab("metrics"));
   if (planTabBtnEl) planTabBtnEl.addEventListener("click", () => setActiveMetricsTab("plan"));
+  if (delegationTabBtnEl) delegationTabBtnEl.addEventListener("click", () => setActiveMetricsTab("delegation"));
 
   // Paint the correct initial state before the first PLAN_STATE reply arrives
   // (projectPlanEnabled defaults false, so this just hides the tab bar).
@@ -8785,6 +8817,10 @@
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();
+      // The Delegation tab's "Orchestrator direct tool use" meter reads
+      // lastSettings.delegationHealth; re-render so it doesn't wait for the
+      // next "state" push to pick up a fresh settings payload.
+      renderDelegationStats(state.modeStats);
     } else if (msg && msg.type === "settingsUpdated") {
       handleSettingsUpdated(msg);
     } else if (msg && msg.type === "metricsReset") {
@@ -10099,7 +10135,7 @@
       // purely a hover cue that reveals its delegation count in the tooltip.
       tasksTd.textContent = String(agent.taskCount ?? 0) + "*";
       tasksTd.style.color = "var(--vscode-textLink-foreground, #4aa3ff)";
-      tasksTd.title = "Tasks the orchestrator completed itself (shown). It coordinates rather than doing the work — it has DELEGATED " + String(agent.delegations ?? 0) + " task(s) to other agents.";
+      tasksTd.title = "Tasks the orchestrator completed itself (shown). It coordinates rather than doing the work — it dispatched " + String(agent.delegations ?? 0) + " task(s) to other agents. Not every dispatched task posts a completion; some were abandoned or never finished, so this won't match the workers' completed totals.";
     } else {
       tasksTd.textContent = String(agent.taskCount ?? 0);
       tasksTd.title = "Tasks completed by this agent — work it actually finished, not tasks merely routed to it.";
@@ -10171,42 +10207,48 @@
   const DELEGATION_MODE_LABEL = { flat: "Direct", team_leads: "Team Leads" };
 
   /**
-   * Render the "Delegation stats" section (Team Lead Mode Phase 4:
-   * measurement) — one row per delegation mode that has recorded data, so the
-   * install screen's estimated "10-20% more tokens" claim can be checked
-   * against real numbers measured in this workspace.
+   * Render the Delegation tab's content (promoted out of #metrics-body into
+   * its own full-width peer tab panel; formerly "Delegation stats" — Team
+   * Lead Mode Phase 4: measurement). Top to bottom: a hero savings stat, a
+   * model-tier work-split breakdown, a per-agent delegation table, the
+   * original per-delegation-mode rows (kept, unchanged), and an
+   * "Orchestrator direct tool use" (opus-leak) meter. Also sets
+   * delegationStatsHasData, which gates whether the Delegation tab button is
+   * offered at all — see updateMetricsTabsUI().
    * @param {Array<{mode:string,completedTasks:number,totalTokens:number,activeMs:number,leadTokens:number,teamTokens:number,leadOverheadPct:number|null,wallClockMs?:number}>|undefined} modeStats
    */
   function renderDelegationStats(modeStats) {
-    const el = /** @type {HTMLElement} */ (document.getElementById("delegation-stats"));
+    const el = delegationStatsBodyEl;
     if (!el) return;
 
     const rows = Array.isArray(modeStats) ? modeStats.filter((m) => m && (m.completedTasks > 0 || m.totalTokens > 0)) : [];
-    if (rows.length === 0) {
-      el.hidden = true;
-      el.innerHTML = "";
+    const delegatedAgents = lastMetrics.filter((a) => a && a.id !== "orchestrator");
+    const hasAgentActivity = delegatedAgents.some((a) => (a.taskCount ?? 0) > 0 || (a.tokens ?? 0) > 0);
+    delegationStatsHasData = rows.length > 0 || hasAgentActivity;
+
+    el.innerHTML = "";
+    if (!delegationStatsHasData) {
+      // Nothing to show yet — bounce off this tab if it was active (mirrors
+      // renderProjectPlanSection()'s fallback), and let updateMetricsTabsUI()
+      // hide the button so the bar never offers an empty panel.
+      if (activeMetricsTab === "delegation") setActiveMetricsTab("metrics");
+      else updateMetricsTabsUI();
       return;
     }
-
-    el.hidden = false;
-    el.innerHTML = "";
 
     const heading = document.createElement("div");
     heading.className = "delegation-stats-heading";
     heading.textContent = "Delegation stats";
     el.appendChild(heading);
 
-    // Session-wide savings headline: how much cheaper the DELEGATED work
-    // (every non-orchestrator agent) was than if the orchestrator's own
-    // model had done all of it. Dimensionless (%) — no absolute $ figures,
-    // since the user is on a subscription where per-token dollars don't
-    // apply. Omitted entirely when there's no priced delegated work, or when
-    // delegating wasn't actually cheaper (never shown as a zero/negative
-    // "saving").
+    // ── 1. Hero savings ── how much cheaper the DELEGATED work (every
+    // non-orchestrator agent) was than if the orchestrator's own model had
+    // done all of it. Dimensionless (%) — no absolute $ figures, since the
+    // user is on a subscription where per-token dollars don't apply.
+    // Falls back to an explanatory line when there's no priced delegated
+    // work yet, or when delegating wasn't actually cheaper (never shown as
+    // a zero/negative "saving").
     const orchestratorPrice = resolveOrchestratorPrice(lastMetrics);
-    const orchEntry = lastMetrics.find((a) => a && a.id === "orchestrator");
-    const orchLabel = (orchEntry && orchEntry.model && prettyModel(orchEntry.model).split(" ")[0]) || "the orchestrator";
-    const delegatedAgents = lastMetrics.filter((a) => a && a.id !== "orchestrator");
     let actual = 0;
     let counterfactual = 0;
     for (const a of delegatedAgents) {
@@ -10216,43 +10258,258 @@
       actual += cost;
       counterfactual += (a.tokens / 1e6) * orchestratorPrice;
     }
+    const hero = document.createElement("div");
+    hero.className = "delegation-hero";
     if (counterfactual > 0 && actual > 0 && actual < counterfactual) {
       const savedPct = Math.round((1 - actual / counterfactual) * 100);
-      const savings = document.createElement("div");
-      savings.className = "delegation-stats-heading";
-      savings.textContent = `Delegating this work avoided ~${savedPct}% of the cost of running it all on ${orchLabel}.`;
-      el.appendChild(savings);
+      const heroNum = document.createElement("div");
+      heroNum.className = "delegation-hero-num";
+      heroNum.textContent = `~${savedPct}%`;
+      hero.appendChild(heroNum);
+      const heroLabel = document.createElement("div");
+      heroLabel.className = "delegation-hero-label";
+      heroLabel.textContent = "of token cost avoided by delegating";
+      hero.appendChild(heroLabel);
+      const heroSub = document.createElement("div");
+      heroSub.className = "delegation-hero-sub";
+      heroSub.textContent = "Work runs on cheaper specialist models instead of the orchestrator's Opus.";
+      hero.appendChild(heroSub);
+    } else {
+      const heroLabel = document.createElement("div");
+      heroLabel.className = "delegation-hero-label";
+      heroLabel.textContent = "Not enough priced delegated work yet to estimate savings.";
+      hero.appendChild(heroLabel);
+    }
+    el.appendChild(hero);
+
+    // ── Dispatched vs. completed reconciliation ── the orchestrator's
+    // delegations counter counts tasks DISPATCHED (spawned); a worker's
+    // taskCount only counts tasks that posted a completion. The difference is
+    // dispatched tasks that were abandoned or never finished, so the two
+    // totals intentionally don't match — surface it here rather than leave it
+    // looking like a miscount.
+    const orchestratorMetric = lastMetrics.find((a) => a && a.id === "orchestrator");
+    const dispatched = orchestratorMetric ? (orchestratorMetric.delegations ?? 0) : 0;
+    const completedByWorkers = delegatedAgents.reduce((sum, a) => sum + (a.taskCount ?? 0), 0);
+    const unfinished = Math.max(0, dispatched - completedByWorkers);
+    if (dispatched > 0) {
+      const reconSection = document.createElement("div");
+      reconSection.className = "delegation-section";
+      const reconHeading = document.createElement("div");
+      reconHeading.className = "delegation-stats-heading";
+      reconHeading.textContent = "Dispatched vs. completed";
+      reconSection.appendChild(reconHeading);
+      const reconLine = document.createElement("div");
+      reconLine.className = "delegation-stats-row";
+      reconLine.textContent = `${dispatched} dispatched → ${completedByWorkers} completed by workers → ${unfinished} unfinished`;
+      reconSection.appendChild(reconLine);
+      const reconSub = document.createElement("div");
+      reconSub.className = "delegation-stats-detail";
+      reconSub.textContent = "Unfinished = dispatched tasks that never posted a completion (abandoned or never finished) — not live work.";
+      reconSection.appendChild(reconSub);
+      el.appendChild(reconSection);
     }
 
-    for (const m of rows) {
-      const label = DELEGATION_MODE_LABEL[m.mode] || m.mode;
-      const tokensPerTask = m.completedTasks > 0 ? Math.round(m.totalTokens / m.completedTasks) : 0;
+    // ── 2. Model-tier work split ── aggregate every agent (including the
+    // orchestrator) by prettified model family, so it's visible at a glance
+    // that most tasks/tokens run on cheaper tiers rather than Opus.
+    const tierMap = new Map(); // family -> {tasks, tokens}
+    for (const a of lastMetrics) {
+      if (!a) continue;
+      const tasks = a.taskCount ?? 0;
+      const tokens = a.tokens ?? 0;
+      if (tasks === 0 && tokens === 0) continue;
+      const family = a.model ? prettyModel(a.model).split(" ")[0] : "Unknown";
+      const entry = tierMap.get(family) || { tasks: 0, tokens: 0 };
+      entry.tasks += tasks;
+      entry.tokens += tokens;
+      tierMap.set(family, entry);
+    }
+    if (tierMap.size > 0) {
+      const tierSection = document.createElement("div");
+      tierSection.className = "delegation-section";
+      const tierHeading = document.createElement("div");
+      tierHeading.className = "delegation-stats-heading";
+      tierHeading.textContent = "Work by model tier";
+      tierSection.appendChild(tierHeading);
 
-      const row = document.createElement("div");
-      row.className = "delegation-stats-row";
+      const totalTierTokens = Math.max(1, [...tierMap.values()].reduce((sum, v) => sum + v.tokens, 0));
+      const tierEntries = [...tierMap.entries()].sort((a, b) => b[1].tokens - a[1].tokens);
+      for (const [family, v] of tierEntries) {
+        const tierRow = document.createElement("div");
+        tierRow.className = "delegation-tier-row";
 
-      const nameEl = document.createElement("span");
-      nameEl.className = "delegation-stats-mode";
-      nameEl.textContent = label;
-      row.appendChild(nameEl);
+        const nameEl = document.createElement("span");
+        nameEl.className = "delegation-tier-name";
+        nameEl.textContent = family;
+        tierRow.appendChild(nameEl);
 
-      const detail = document.createElement("span");
-      detail.className = "delegation-stats-detail";
-      let text = `${m.completedTasks} task${m.completedTasks === 1 ? "" : "s"} · ${fmtTokens(m.totalTokens)} tokens · ${fmtTokens(tokensPerTask)}/task`;
-      if (m.mode === "team_leads" && m.leadOverheadPct !== null) {
-        text += ` · lead overhead ${m.leadOverheadPct.toFixed(1)}% of team tokens`;
+        const pct = Math.round((v.tokens / totalTierTokens) * 100);
+        const track = document.createElement("div");
+        track.className = "delegation-tier-bar-track";
+        const fill = document.createElement("div");
+        fill.className = "delegation-tier-bar-fill";
+        fill.style.width = `${v.tokens > 0 ? Math.max(pct, 2) : 0}%`;
+        track.appendChild(fill);
+        tierRow.appendChild(track);
+
+        const meta = document.createElement("span");
+        meta.className = "delegation-tier-meta";
+        meta.textContent = `${v.tasks} task${v.tasks === 1 ? "" : "s"} · ${fmtTokens(v.tokens)} tokens · ${pct}%`;
+        tierRow.appendChild(meta);
+
+        tierSection.appendChild(tierRow);
       }
-      // activeMs is the mode's total active time summed across its agents;
-      // unlike wallClockMs it persists after agents stop (workStartAt nulls
-      // on stop), so throughput keeps showing post-run instead of "—".
-      const modeTokPerSec = (typeof m.activeMs === "number" && m.activeMs > 0)
-        ? m.totalTokens / (m.activeMs / 1000)
-        : 0;
-      text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"}`;
-      detail.textContent = text;
-      row.appendChild(detail);
+      el.appendChild(tierSection);
+    }
 
-      el.appendChild(row);
+    // ── 3. Per-agent delegation table ── every non-orchestrator agent with
+    // any recorded tasks or tokens, sorted by tokens (falling back to
+    // tasks) descending. Cost share (%) uses the same estCostUSD/
+    // modelPricePerMtok cost lens as the Metrics table's "vs. orch." column.
+    const tableAgents = delegatedAgents
+      .filter((a) => (a.taskCount ?? 0) > 0 || (a.tokens ?? 0) > 0)
+      .slice()
+      .sort((a, b) => (b.tokens ?? 0) - (a.tokens ?? 0) || (b.taskCount ?? 0) - (a.taskCount ?? 0));
+    if (tableAgents.length > 0) {
+      const agentSection = document.createElement("div");
+      agentSection.className = "delegation-section";
+      const agentHeading = document.createElement("div");
+      agentHeading.className = "delegation-stats-heading";
+      agentHeading.textContent = "By agent";
+      agentSection.appendChild(agentHeading);
+
+      const totalCost = tableAgents.reduce((sum, a) => sum + (estCostUSD(a.tokens, a.model) ?? 0), 0);
+
+      const table = document.createElement("table");
+      table.className = "delegation-agent-table";
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const label of ["Agent", "Model", "Tasks", "Tokens", "Cost share"]) {
+        const th = document.createElement("th");
+        th.textContent = label;
+        headRow.appendChild(th);
+      }
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      for (const a of tableAgents) {
+        const tr = document.createElement("tr");
+
+        const nameTd = document.createElement("td");
+        nameTd.className = "col-name";
+        nameTd.textContent = a.name || a.id;
+        tr.appendChild(nameTd);
+
+        const modelTd = document.createElement("td");
+        modelTd.textContent = a.model ? prettyModel(a.model) : "—";
+        tr.appendChild(modelTd);
+
+        const tasksTd = document.createElement("td");
+        tasksTd.className = "col-tasks";
+        tasksTd.textContent = String(a.taskCount ?? 0);
+        tr.appendChild(tasksTd);
+
+        const tokensTd = document.createElement("td");
+        tokensTd.className = "col-tokens";
+        tokensTd.textContent = fmtTokens(a.tokens ?? 0);
+        tr.appendChild(tokensTd);
+
+        const shareTd = document.createElement("td");
+        const cost = estCostUSD(a.tokens, a.model);
+        shareTd.textContent = cost != null && totalCost > 0 ? `${Math.round((cost / totalCost) * 100)}%` : "—";
+        tr.appendChild(shareTd);
+
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      agentSection.appendChild(table);
+      el.appendChild(agentSection);
+    }
+
+    // ── 4. Per-delegation-mode rows (kept, unchanged from the original
+    // "Delegation stats" block) ──
+    if (rows.length > 0) {
+      const modeSection = document.createElement("div");
+      modeSection.className = "delegation-section";
+      const modeHeading = document.createElement("div");
+      modeHeading.className = "delegation-stats-heading";
+      modeHeading.textContent = "By delegation mode";
+      modeSection.appendChild(modeHeading);
+
+      for (const m of rows) {
+        const label = DELEGATION_MODE_LABEL[m.mode] || m.mode;
+        const tokensPerTask = m.completedTasks > 0 ? Math.round(m.totalTokens / m.completedTasks) : 0;
+
+        const row = document.createElement("div");
+        row.className = "delegation-stats-row";
+
+        const nameEl = document.createElement("span");
+        nameEl.className = "delegation-stats-mode";
+        nameEl.textContent = label;
+        row.appendChild(nameEl);
+
+        const detail = document.createElement("span");
+        detail.className = "delegation-stats-detail";
+        let text = `${m.completedTasks} task${m.completedTasks === 1 ? "" : "s"} · ${fmtTokens(m.totalTokens)} tokens · ${fmtTokens(tokensPerTask)}/task`;
+        if (m.mode === "team_leads" && m.leadOverheadPct !== null) {
+          text += ` · lead overhead ${m.leadOverheadPct.toFixed(1)}% of team tokens`;
+        }
+        // activeMs is the mode's total active time summed across its
+        // agents; unlike wallClockMs it persists after agents stop
+        // (workStartAt nulls on stop), so throughput keeps showing
+        // post-run instead of "—".
+        const modeTokPerSec = (typeof m.activeMs === "number" && m.activeMs > 0)
+          ? m.totalTokens / (m.activeMs / 1000)
+          : 0;
+        text += ` · Throughput: ${modeTokPerSec > 0 ? fmtTokensPerSec(modeTokPerSec) : "—"}`;
+        detail.textContent = text;
+        row.appendChild(detail);
+
+        modeSection.appendChild(row);
+      }
+      el.appendChild(modeSection);
+    }
+
+    // ── 5. Opus-leak meter ── the orchestrator's own direct tool use
+    // (Grep/Glob/Edit/Read bypassing delegation), from Settings'
+    // delegationHealth payload (lastSettings.delegationHealth — the same
+    // source the Settings > Delegation Health panel reads, see ~L10993).
+    // Prefers the current-session-scoped counts when available, else falls
+    // back to the cumulative since-last-reset counts. Omitted entirely
+    // (never printed as "undefined") if delegationHealth hasn't arrived yet.
+    const dh = (lastSettings && lastSettings.delegationHealth && typeof lastSettings.delegationHealth === "object")
+      ? lastSettings.delegationHealth
+      : null;
+    if (dh) {
+      const sess = (dh.session && typeof dh.session === "object") ? dh.session : null;
+      const src = sess || dh;
+      const searches = typeof src.directSearches === "number" ? src.directSearches : 0;
+      const reads = typeof src.directReads === "number" ? src.directReads : 0;
+      const edits = typeof src.directEdits === "number" ? src.directEdits : 0;
+      const total = searches + reads + edits;
+
+      const leakSection = document.createElement("div");
+      leakSection.className = "delegation-section";
+      const leakHeading = document.createElement("div");
+      leakHeading.className = "delegation-stats-heading";
+      leakHeading.textContent = "Orchestrator direct tool use";
+      leakSection.appendChild(leakHeading);
+
+      const leakLine = document.createElement("div");
+      leakLine.className = total === 0 ? "delegation-leak-ok" : "delegation-leak-warn";
+      leakLine.textContent = total === 0
+        ? "✓ 0 — all work delegated"
+        : `${total} direct tool use${total === 1 ? "" : "s"} ran on the orchestrator (Opus)`;
+      leakSection.appendChild(leakLine);
+
+      const leakDetail = document.createElement("div");
+      leakDetail.className = "delegation-stats-detail";
+      leakDetail.textContent = `${searches} search${searches === 1 ? "" : "es"} · ${reads} read${reads === 1 ? "" : "s"} · ${edits} edit${edits === 1 ? "" : "s"}`;
+      leakSection.appendChild(leakDetail);
+
+      el.appendChild(leakSection);
     }
 
     const pricingCaption = document.createElement("div");
@@ -10260,6 +10517,8 @@
     pricingCaption.textContent =
       "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token.";
     el.appendChild(pricingCaption);
+
+    updateMetricsTabsUI();
   }
 
   // Re-render once a second so any active agent's live time keeps advancing
