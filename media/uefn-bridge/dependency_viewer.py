@@ -185,6 +185,32 @@ def _asset_type_label(class_path_str):
     return str(class_path_str)
 
 
+def _resolve_unreal_project_dir_with_content():
+    """
+    Best-effort: ask the live UEFN session for the authoritative project
+    root via ``unreal.Paths.project_dir()``. This is correct even when this
+    script FILE is executing from a copy of the bridge that lives outside
+    the project (e.g. the Fortnite game install tree), because it asks
+    Unreal for the currently open project rather than deriving a path from
+    ``__file__``.
+
+    Returns a normalized full path only if it exists on disk AND contains
+    a ``Content`` subdirectory (matching the walkup fallback's contract);
+    otherwise returns ``None`` so the caller falls through to the walkup.
+    """
+    try:
+        import unreal
+        raw = unreal.Paths.project_dir()
+        if not raw:
+            return None
+        full = os.path.normpath(unreal.Paths.convert_relative_path_to_full(raw))
+        if os.path.isdir(full) and os.path.isdir(os.path.join(full, "Content")):
+            return full
+        return None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Core scan function
 # ---------------------------------------------------------------------------
@@ -322,18 +348,20 @@ def scan_dependencies(project_only=True):
     _verse_source_text = ""
     _VERSE_SKIP = {"Saved", "Intermediate", "__pycache__", ".uefn_bridge"}
     try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # Walk upward looking for a directory that contains a Content/ folder
-        candidate = script_dir
-        content_root = None
-        for _ in range(10):
-            if os.path.isdir(os.path.join(candidate, "Content")):
-                content_root = candidate
-                break
-            parent = os.path.dirname(candidate)
-            if parent == candidate:
-                break
-            candidate = parent
+        content_root = _resolve_unreal_project_dir_with_content()
+        if not content_root:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            # Walk upward looking for a directory that contains a Content/ folder
+            candidate = script_dir
+            content_root = None
+            for _ in range(10):
+                if os.path.isdir(os.path.join(candidate, "Content")):
+                    content_root = candidate
+                    break
+                parent = os.path.dirname(candidate)
+                if parent == candidate:
+                    break
+                candidate = parent
         if content_root:
             verse_chunks = []
             for dirpath, dirnames, filenames in os.walk(content_root):

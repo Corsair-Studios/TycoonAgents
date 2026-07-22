@@ -127,12 +127,45 @@ def _get_project_root():
     return os.path.dirname(os.path.dirname(script_dir))
 
 
+def _resolve_unreal_content_dir():
+    """
+    Best-effort: ask the live UEFN session for the authoritative project
+    Content directory via ``unreal.Paths.project_content_dir()``. This is
+    correct even when this script FILE is executing from a copy of the
+    bridge that lives outside the project (e.g. the Fortnite game install
+    tree), because it asks Unreal for the currently open project rather
+    than deriving a path from ``__file__``.
+
+    Returns a normalized full path, or ``None`` if ``unreal`` isn't
+    importable, the call fails, or it returns an empty/nonexistent path.
+    """
+    try:
+        import unreal
+        raw = unreal.Paths.project_content_dir()
+        if not raw:
+            return None
+        full = os.path.normpath(unreal.Paths.convert_relative_path_to_full(raw))
+        if os.path.isdir(full):
+            return full
+        return None
+    except Exception:
+        return None
+
+
 def _get_content_dir():
     """
     Return the Content directory (parent of the Python/ script directory).
 
+    Prefers the live UEFN session's authoritative Content dir so the scan
+    targets the actually-open project rather than wherever this script
+    file happens to live on disk. Falls back to the script-relative
+    layout when ``unreal`` is unavailable or the query fails.
+
     Layout assumed: ``<project_root>/Content/Python/<this_file>``
     """
+    unreal_content_dir = _resolve_unreal_content_dir()
+    if unreal_content_dir:
+        return unreal_content_dir
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 

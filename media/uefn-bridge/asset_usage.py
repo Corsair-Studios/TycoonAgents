@@ -85,6 +85,32 @@ def get_project_prefix():
     return "/Game/"
 
 
+def _resolve_unreal_project_dir_with_content():
+    """
+    Best-effort: ask the live UEFN session for the authoritative project
+    root via ``unreal.Paths.project_dir()``. This is correct even when this
+    script FILE is executing from a copy of the bridge that lives outside
+    the project (e.g. the Fortnite game install tree), because it asks
+    Unreal for the currently open project rather than deriving a path from
+    ``__file__``.
+
+    Returns a normalized full path only if it exists on disk AND contains
+    a ``Content`` subdirectory (matching the walkup fallback's contract);
+    otherwise returns ``None`` so the caller falls through to the walkup.
+    """
+    try:
+        import unreal
+        raw = unreal.Paths.project_dir()
+        if not raw:
+            return None
+        full = os.path.normpath(unreal.Paths.convert_relative_path_to_full(raw))
+        if os.path.isdir(full) and os.path.isdir(os.path.join(full, "Content")):
+            return full
+        return None
+    except Exception:
+        return None
+
+
 def load_verse_source_text():
     """Concatenated, lowercased text of every .verse file under the project's
     Content root (walks up from this script to find Content/). Cached per process.
@@ -94,17 +120,19 @@ def load_verse_source_text():
         return _verse_text_cache[0]
     text = ""
     try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        candidate = script_dir
-        content_root = None
-        for _ in range(10):
-            if os.path.isdir(os.path.join(candidate, "Content")):
-                content_root = candidate
-                break
-            parent = os.path.dirname(candidate)
-            if parent == candidate:
-                break
-            candidate = parent
+        content_root = _resolve_unreal_project_dir_with_content()
+        if not content_root:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            candidate = script_dir
+            content_root = None
+            for _ in range(10):
+                if os.path.isdir(os.path.join(candidate, "Content")):
+                    content_root = candidate
+                    break
+                parent = os.path.dirname(candidate)
+                if parent == candidate:
+                    break
+                candidate = parent
         if content_root:
             chunks = []
             for dirpath, dirnames, filenames in os.walk(content_root):
