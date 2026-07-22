@@ -110,6 +110,7 @@ Use an absolute path for `args`. On Windows use forward slashes. Do **not** add 
 | `uefn_select_actor` | Select a device/actor in the UEFN viewport | `actor_label` |
 | `uefn_run_audit` | Run full device audit, return JSON results | none |
 | `uefn_get_level_info` | Get level metadata (actor counts, device types) | none |
+| `uefn_list_assets` | List assets under a content-browser path via the Unreal Asset Registry (read-only, metadata only — no asset loads) | `path`, `recursive` (optional), `class_filter` (optional), `limit` (optional) |
 
 ## Usage Examples
 

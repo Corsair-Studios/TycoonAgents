@@ -350,6 +350,30 @@ server.registerTool(
   async (args) => bridgeTool("asset_sweep", compact({ project_only: args.project_only }))
 );
 
+server.registerTool(
+  "uefn_list_assets",
+  {
+    description:
+      "List assets under a content-browser path via the Unreal Asset Registry (read-only, metadata only — no asset loads).",
+    inputSchema: {
+      path: z.string().describe("Content-browser path to list, e.g. /Game/Athena/Items or /StarWars/..."),
+      recursive: z.boolean().optional().describe("Include assets in subfolders (default true)"),
+      class_filter: z.string().optional().describe("Case-insensitive substring filter on the asset's class name"),
+      limit: z.number().int().optional().describe("Maximum assets to return (default 500, max 2000)"),
+    },
+  },
+  async (args) =>
+    bridgeTool(
+      "list_assets",
+      compact({
+        path: args.path,
+        recursive: args.recursive,
+        class_filter: args.class_filter,
+        limit: args.limit,
+      })
+    )
+);
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 console.error(`[trashbyrd-uefn] Starting MCP server. Bridge dir: ${BRIDGE_DIR}`);

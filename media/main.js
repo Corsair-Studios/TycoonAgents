@@ -12536,37 +12536,60 @@
         // MELEE rivals never spawn a projectile — they still close in, enter
         // "attack" combat mode, and play the same attack clip as ranged
         // rivals; only the projectile visual is suppressed for them.
-        if (en.attackStyle === "ranged" && targetDist > ENEMY_ENGAGE_RANGE && en.shotCooldown <= 0) {
-          en.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
-          // Push the spawn origin toward the rival's leading (facing) edge so
-          // the shot reads as leaving the gun rather than the sprite's
-          // horizontal middle. Reproduce the SAME depth-scale/sprite-size
-          // formula the "kind === enemy" draw branch uses (spriteSize =
-          // 64 * depthScale * themeCharacterScale), then convert that
-          // canvas-px half-width into native space via the walkableNativeW/
-          // lastBgW ratio (the inverse of nativeToCanvas's scale factor;
-          // lastBgW is refreshed every frame before advanceEnemies() runs —
-          // see the render() call order). en.facingLeft is the same field
-          // the draw code mirrors on (facingLeft === true → sprite mirrored
-          // left), so the sign matches the visible flip exactly.
-          const enTDepth = Math.max(0, Math.min(1, (en.ny - enPolyMinY) / enPolyRangeY));
-          const enDepthScale = (0.8 + enTDepth * 0.3) * themeOverallScale;
-          const enHalfWidthPx = Math.round(64 * enDepthScale * themeCharacterScale * effectiveRivalScale(en.rival_id)) / 2;
-          const enHalfWidthNative = enHalfWidthPx * (walkableNativeW / lastBgW);
-          const enFacingSign = en.facingLeft ? -1 : 1;
-          const enMuzzleForward = enHalfWidthNative * PROJECTILE_MUZZLE_FRAC;
-          // Origin height (PROJECTILE_ORIGIN_HEIGHT_FRAC of the rival's own
-          // RENDERED sprite height, not a flat fraction of walkableNativeH).
-          // Reproduces the real draw-time depthScale — enDepthScale above
-          // omits sceneFitScale (it only feeds the X muzzle push, which is
-          // unaffected by it), so sceneFitScale is folded in separately here
-          // — then converts that canvas-px height into native space via the
-          // same lastBgH ratio the X conversion above uses for lastBgW.
-          const enFullDepthScale = enDepthScale * sceneFitScale;
-          const enSpriteHeightPx = Math.round(64 * enFullDepthScale * themeCharacterScale * effectiveRivalScale(en.rival_id));
-          const enSpriteHeightNative = enSpriteHeightPx * (walkableNativeH / lastBgH);
-          const enOriginNy = en.ny - PROJECTILE_ORIGIN_HEIGHT_FRAC * enSpriteHeightNative;
-          spawnProjectile(en.nx + enFacingSign * enMuzzleForward, enOriginNy, targetEnt.nx, targetEnt.ny);
+        if (en.attackStyle === "ranged" && targetDist > ENEMY_ENGAGE_RANGE) {
+          // Vertical alignment gate — mirrors the character ranged-shooter
+          // check (~13322-13324): only fire when the shot is near-horizontal
+          // (within MAX_SHOT_SLOPE grade). Previously rivals fired with no
+          // alignment check at all, so a ranged rival off-row from its target
+          // fired steeply up/down instead of near-horizontally like agents.
+          const enSdx = Math.abs(targetEnt.nx - en.nx);
+          const enSdy = Math.abs(targetEnt.ny - en.ny);
+          const enShotAligned = enSdy <= MAX_SHOT_SLOPE * Math.max(enSdx, 1);
+          if (!enShotAligned) {
+            // Misaligned — vertical-align toward the target's row instead of
+            // firing this frame, mirroring the agent-side destNy alignment
+            // nudge (~13274). Rivals have no destNx/destNy queue while in
+            // "attack" combat mode (they otherwise hold position), so step
+            // en.ny directly here; en.nx is left untouched (holds position
+            // horizontally, same as the agent side holding destNx).
+            const alignDy = targetEnt.ny - en.ny;
+            const alignStep = Math.min(ENEMY_WALK_SPEED * delta, Math.abs(alignDy));
+            en.ny += Math.sign(alignDy) * alignStep;
+            const enAlignClamped = clampToPolygon(en.nx, en.ny, walkablePolygon);
+            en.nx = enAlignClamped[0];
+            en.ny = enAlignClamped[1];
+          } else if (en.shotCooldown <= 0) {
+            en.shotCooldown = PROJECTILE_SPAWN_INTERVAL;
+            // Push the spawn origin toward the rival's leading (facing) edge so
+            // the shot reads as leaving the gun rather than the sprite's
+            // horizontal middle. Reproduce the SAME depth-scale/sprite-size
+            // formula the "kind === enemy" draw branch uses (spriteSize =
+            // 64 * depthScale * themeCharacterScale), then convert that
+            // canvas-px half-width into native space via the walkableNativeW/
+            // lastBgW ratio (the inverse of nativeToCanvas's scale factor;
+            // lastBgW is refreshed every frame before advanceEnemies() runs —
+            // see the render() call order). en.facingLeft is the same field
+            // the draw code mirrors on (facingLeft === true → sprite mirrored
+            // left), so the sign matches the visible flip exactly.
+            const enTDepth = Math.max(0, Math.min(1, (en.ny - enPolyMinY) / enPolyRangeY));
+            const enDepthScale = (0.8 + enTDepth * 0.3) * themeOverallScale;
+            const enHalfWidthPx = Math.round(64 * enDepthScale * themeCharacterScale * effectiveRivalScale(en.rival_id)) / 2;
+            const enHalfWidthNative = enHalfWidthPx * (walkableNativeW / lastBgW);
+            const enFacingSign = en.facingLeft ? -1 : 1;
+            const enMuzzleForward = enHalfWidthNative * PROJECTILE_MUZZLE_FRAC;
+            // Origin height (PROJECTILE_ORIGIN_HEIGHT_FRAC of the rival's own
+            // RENDERED sprite height, not a flat fraction of walkableNativeH).
+            // Reproduces the real draw-time depthScale — enDepthScale above
+            // omits sceneFitScale (it only feeds the X muzzle push, which is
+            // unaffected by it), so sceneFitScale is folded in separately here
+            // — then converts that canvas-px height into native space via the
+            // same lastBgH ratio the X conversion above uses for lastBgW.
+            const enFullDepthScale = enDepthScale * sceneFitScale;
+            const enSpriteHeightPx = Math.round(64 * enFullDepthScale * themeCharacterScale * effectiveRivalScale(en.rival_id));
+            const enSpriteHeightNative = enSpriteHeightPx * (walkableNativeH / lastBgH);
+            const enOriginNy = en.ny - PROJECTILE_ORIGIN_HEIGHT_FRAC * enSpriteHeightNative;
+            spawnProjectile(en.nx + enFacingSign * enMuzzleForward, enOriginNy, targetEnt.nx, targetEnt.ny);
+          }
         }
         if (en.attackCooldown <= 0) en.attackCooldown = ENEMY_ATTACK_INTERVAL;
       } else {

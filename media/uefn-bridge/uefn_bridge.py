@@ -524,6 +524,68 @@ def _handle_asset_sweep(params):
     return sweep_dead_assets(project_only=project_only)
 
 
+def _handle_list_assets(params):
+    """List assets under a content-browser path via the Asset Registry.
+
+    Read-only: uses ``get_assets_by_path`` to enumerate AssetData metadata
+    only — never loads assets, so this is safe on large projects.
+    """
+    path = params.get("path")
+    if not path:
+        raise ValueError("Missing required param: path")
+
+    recursive = params.get("recursive", True)
+    class_filter = params.get("class_filter")
+    limit = params.get("limit", 500)
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 500
+    limit = max(1, min(limit, 2000))
+
+    try:
+        registry = unreal.AssetRegistryHelpers.get_asset_registry()
+    except Exception as e:
+        raise RuntimeError(f"list_assets: could not get AssetRegistry: {e}") from e
+
+    try:
+        found = registry.get_assets_by_path(path, recursive=recursive)
+    except Exception as e:
+        raise RuntimeError(f"list_assets: get_assets_by_path failed for '{path}': {e}") from e
+
+    class_filter_lower = class_filter.lower() if class_filter else None
+
+    assets = []
+    total_found = 0
+    for asset_data in found:
+        try:
+            try:
+                class_name = str(asset_data.asset_class_path.asset_name)
+            except AttributeError:
+                class_name = str(asset_data.asset_class)
+
+            if class_filter_lower and class_filter_lower not in class_name.lower():
+                continue
+
+            total_found += 1
+            if len(assets) < limit:
+                assets.append({
+                    "name": str(asset_data.asset_name),
+                    "class": class_name,
+                    "package_path": str(asset_data.package_name),
+                })
+        except Exception:
+            continue
+
+    return {
+        "path": path,
+        "recursive": recursive,
+        "total_found": total_found,
+        "truncated": total_found > len(assets),
+        "assets": assets,
+    }
+
+
 # Method dispatch table
 _METHODS = {
     "status": _handle_status,
@@ -545,6 +607,7 @@ _METHODS = {
     "dependency_scan": _handle_dependency_scan,
     "health_scan": _handle_health_scan,
     "asset_sweep": _handle_asset_sweep,
+    "list_assets": _handle_list_assets,
 }
 
 
