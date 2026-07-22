@@ -10310,11 +10310,12 @@
       el.appendChild(reconSection);
     }
 
-    // ── 2. Model-tier work split ── aggregate every agent (including the
-    // orchestrator) by prettified model family, so it's visible at a glance
-    // that most tasks/tokens run on cheaper tiers rather than Opus.
+    // ── 2a. Delegated work by tier ── aggregate DELEGATED agents only
+    // (never the orchestrator) by prettified model family, so the bars stay
+    // in scope with the hero's "delegated work" savings figure above instead
+    // of being dwarfed by the orchestrator's token-heavy Opus coordination.
     const tierMap = new Map(); // family -> {tasks, tokens}
-    for (const a of lastMetrics) {
+    for (const a of delegatedAgents) {
       if (!a) continue;
       const tasks = a.taskCount ?? 0;
       const tokens = a.tokens ?? 0;
@@ -10330,7 +10331,7 @@
       tierSection.className = "delegation-section";
       const tierHeading = document.createElement("div");
       tierHeading.className = "delegation-stats-heading";
-      tierHeading.textContent = "Work by model tier";
+      tierHeading.textContent = "Delegated work by tier";
       tierSection.appendChild(tierHeading);
 
       const totalTierTokens = Math.max(1, [...tierMap.values()].reduce((sum, v) => sum + v.tokens, 0));
@@ -10361,6 +10362,35 @@
         tierSection.appendChild(tierRow);
       }
       el.appendChild(tierSection);
+    }
+
+    // ── 2b. Coordination (not delegated work) ── the orchestrator's own
+    // Opus usage, called out separately rather than folded into the tier
+    // bars above. It's typically the single biggest token bucket (it
+    // re-processes the whole conversation every turn) but it isn't
+    // delegated WORK, so it gets a labeled line instead of a competing bar.
+    const orch = lastMetrics.find((a) => a && a.id === "orchestrator");
+    if (orch && ((orch.tokens ?? 0) > 0 || (orch.taskCount ?? 0) > 0)) {
+      const coordSection = document.createElement("div");
+      coordSection.className = "delegation-section";
+      const coordHeading = document.createElement("div");
+      coordHeading.className = "delegation-stats-heading";
+      coordHeading.textContent = "Coordination (not delegated work)";
+      coordSection.appendChild(coordHeading);
+
+      const coordLine = document.createElement("div");
+      coordLine.className = "delegation-stats-row";
+      const orchTasks = orch.taskCount ?? 0;
+      coordLine.textContent = `${orch.model ? prettyModel(orch.model) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens(orch.tokens ?? 0)} tokens`;
+      coordSection.appendChild(coordLine);
+
+      const coordSub = document.createElement("div");
+      coordSub.className = "delegation-stats-detail";
+      coordSub.textContent =
+        "The orchestrator itself runs on Opus. Delegation lowers the cost of the WORK, not the coordinator — so this is the biggest single token bucket, and it is expected.";
+      coordSection.appendChild(coordSub);
+
+      el.appendChild(coordSection);
     }
 
     // ── 3. Per-agent delegation table ── every non-orchestrator agent with
