@@ -10094,12 +10094,12 @@
     const tasksTd = document.createElement("td");
     tasksTd.className = "col-tasks";
     if (agent.id === "orchestrator") {
-      // The orchestrator delegates rather than completing work itself, so its
-      // Tasks cell shows how many tasks it handed off (its `delegations`),
-      // marked with a distinct color + asterisk so users hover for the detail.
-      tasksTd.textContent = String(agent.delegations ?? 0) + "*";
+      // The orchestrator's cell shows tasks it actually completed itself, so
+      // it's comparable to every other row; the asterisk + distinct color are
+      // purely a hover cue that reveals its delegation count in the tooltip.
+      tasksTd.textContent = String(agent.taskCount ?? 0) + "*";
       tasksTd.style.color = "var(--vscode-textLink-foreground, #4aa3ff)";
-      tasksTd.title = "* Tasks the orchestrator DELEGATED to other agents — it coordinates rather than completing work itself. (Every other row shows tasks that agent actually completed.)";
+      tasksTd.title = "Tasks the orchestrator completed itself (shown). It coordinates rather than doing the work — it has DELEGATED " + String(agent.delegations ?? 0) + " task(s) to other agents.";
     } else {
       tasksTd.textContent = String(agent.taskCount ?? 0);
       tasksTd.title = "Tasks completed by this agent — work it actually finished, not tasks merely routed to it.";
