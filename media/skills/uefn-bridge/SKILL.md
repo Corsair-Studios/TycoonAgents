@@ -50,27 +50,11 @@ Use this precedence (mirrors the installer logic):
 3. Else if `<workspace>/Content/` exists — use `<workspace>/Content/Python/`.
 4. Otherwise create `<workspace>/Content/Python/`.
 
-### Step 4 — Copy the 16 bridge files
+### Step 4 — Copy the bridge files
 
-Copy these files from `<extensionFolder>/media/uefn-bridge/` into the Python directory determined above:
+Copy **every** Python file from `<extensionFolder>/media/uefn-bridge/` into the Python directory determined above, plus the icon `trashbyrd_40x40.png`. Do **not** copy `uefn-server.mjs` — that is the bundled MCP server (launched by Node via `.mcp.json`), not a UEFN Python tool.
 
-1. `init_unreal.py`
-2. `uefn_bridge.py`
-3. `device_audit.py`
-4. `batch_tools.py`
-5. `uefn_launcher.py`
-6. `texture_finder.py`
-7. `material_browser.py`
-8. `niagara_inspector.py`
-9. `dependency_viewer.py`
-10. `health_scanner.py`
-11. `keyboard_shortcuts.py`
-12. `level_stats.py`
-13. `reference_finder.py`
-14. `tips_viewer.py`
-15. `verse_snippets.py`
-16. `trashbyrd_40x40.png`
-17. `pt.py`
+This mirrors the extension's own installer, which stages the whole `media/uefn-bridge/` directory (minus the server bundle) into `Content/Python`, so the manual copy stays correct as tools are added or removed rather than drifting from a hardcoded list.
 
 Only overwrite a file if its content differs from the source (preserves user edits).
 
