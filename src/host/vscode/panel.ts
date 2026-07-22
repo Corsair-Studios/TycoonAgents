@@ -242,6 +242,15 @@ export function seedProjectPlanEnabledDefault(root: string): void {
  * Fortnite content folder is itself scanned/ignored independently by URC in
  * some configurations), so every root-level pattern is duplicated with a
  * `Content/` prefix to cover that nested root too.
+ *
+ * On top of the targeted names above, the list also carries broad extension
+ * globs (`*.json`, `*.md`, `*.jsonl`, `*.mjs`, and `*.cjs` above) — a real
+ * UEFN project's shipped assets are `.uasset`/`.umap`, so any loose
+ * json/md/jsonl/cjs/mjs file at the project root is a dev-tool artifact, not
+ * game content. URC reliably honors extension globs (and, being unanchored,
+ * they already match inside `Content/` too, so — like `*.cjs` — they need no
+ * separate `Content/`-prefixed duplicate); the targeted names remain as
+ * belt-and-braces for tools that write those exact filenames.
  */
 const UEFN_URC_IGNORE_ENTRIES: string[] = [
   ".claude/",
@@ -257,6 +266,10 @@ const UEFN_URC_IGNORE_ENTRIES: string[] = [
   "Content/.agents/",
   "Content/.codex/",
   "Content/AGENTS.md",
+  "*.json",
+  "*.md",
+  "*.jsonl",
+  "*.mjs",
 ];
 
 /** Singleton webview panel that renders the TycoonAgents visualization. */

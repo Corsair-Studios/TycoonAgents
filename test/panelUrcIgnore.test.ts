@@ -83,7 +83,19 @@ test("_handleAddGitignoreEntries creates .urcignore for a UEFN project with the 
     const urcPath = path.join(root, ".urcignore");
     assert.ok(fs.existsSync(urcPath), ".urcignore must be created");
     const urc = fs.readFileSync(urcPath, "utf8");
-    for (const entry of [".claude/", "CLAUDE.md", ".mcp.json", "*.cjs", ".agents/", ".codex/", "AGENTS.md"]) {
+    for (const entry of [
+      ".claude/",
+      "CLAUDE.md",
+      ".mcp.json",
+      "*.cjs",
+      ".agents/",
+      ".codex/",
+      "AGENTS.md",
+      "*.json",
+      "*.md",
+      "*.jsonl",
+      "*.mjs",
+    ]) {
       assert.ok(urc.includes(entry), `.urcignore must contain "${entry}"`);
     }
     // Content/-anchored duplicate (URC honors only the root .urcignore, but
@@ -93,7 +105,17 @@ test("_handleAddGitignoreEntries creates .urcignore for a UEFN project with the 
     // .p4ignore gets the same comprehensive list (URC-via-Perforce parity).
     const p4Path = path.join(root, ".p4ignore");
     const p4 = fs.readFileSync(p4Path, "utf8");
-    for (const entry of [".claude/", "CLAUDE.md", ".mcp.json", "*.cjs", "AGENTS.md"]) {
+    for (const entry of [
+      ".claude/",
+      "CLAUDE.md",
+      ".mcp.json",
+      "*.cjs",
+      "AGENTS.md",
+      "*.json",
+      "*.md",
+      "*.jsonl",
+      "*.mjs",
+    ]) {
       assert.ok(p4.includes(entry), `.p4ignore must contain "${entry}"`);
     }
   } finally {
