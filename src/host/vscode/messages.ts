@@ -105,6 +105,10 @@ export const MSG = {
   // ---- misc clipboard / doc actions --------------------------------------
   COPY_NUDGE: "copyNudge",
   COPY_PROMPT: "copyPrompt",
+  // Bottom-left "book" icon — opens the shipped static handbook
+  // (media/handbook/index.html) in the user's default OS browser via
+  // vscode.env.openExternal. No payload.
+  OPEN_HANDBOOK: "OPEN_HANDBOOK",
   DESIGN_DOC_ACTION: "designDocAction",
   DESIGN_DOC_DONE: "designDocDone",
   PROJECT_PLAN_ACTION: "projectPlanAction",

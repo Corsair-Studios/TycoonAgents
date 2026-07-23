@@ -219,6 +219,16 @@ export function isPhaseComplete(plan: ProjectPlan, phaseId: string): boolean {
 // ============================================================================
 
 /**
+ * Strip one leading UTF-8 BOM (U+FEFF) if present. Some editors/shells write
+ * plan.json with a BOM (e.g. PowerShell 5.1's `Out-File -Encoding utf8`);
+ * `JSON.parse` throws on a leading U+FEFF even though the JSON itself is
+ * otherwise valid, so both file readers below strip it before parsing.
+ */
+function stripBom(raw: string): string {
+  return raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+}
+
+/**
  * Read and validate a plan.json at `planPath`. Returns `null` if the file
  * does not exist. Throws if the file exists but fails JSON parsing or schema
  * validation.
@@ -230,7 +240,7 @@ export function isPhaseComplete(plan: ProjectPlan, phaseId: string): boolean {
  */
 export function readPlan(planPath: string): ProjectPlan | null {
   if (!fs.existsSync(planPath)) return null;
-  const raw = fs.readFileSync(planPath, "utf8");
+  const raw = stripBom(fs.readFileSync(planPath, "utf8"));
   return parseProjectPlan(JSON.parse(raw));
 }
 
@@ -260,7 +270,7 @@ export type ReadPlanResult =
 export function readPlanSafe(filePath: string): ReadPlanResult {
   try {
     if (!fs.existsSync(filePath)) return { status: "missing" };
-    const raw = fs.readFileSync(filePath, "utf8");
+    const raw = stripBom(fs.readFileSync(filePath, "utf8"));
     if (raw.trim() === "") return { status: "corrupt", error: "plan.json is empty" };
     const plan = parseProjectPlan(JSON.parse(raw));
     return { status: "ok", plan };

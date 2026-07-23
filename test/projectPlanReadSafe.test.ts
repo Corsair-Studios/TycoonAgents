@@ -205,6 +205,37 @@ test("readPlanSafe: a valid plan written by writePlan -> status ok, plan deep-eq
   });
 });
 
+test("readPlanSafe: BOM-prefixed valid plan (e.g. PowerShell Out-File -Encoding utf8) -> status ok, plan deep-equals", () => {
+  withTempDir((dir) => {
+    const planPath = path.join(dir, "plan.json");
+    const plan = makeFixturePlan();
+    fs.writeFileSync(planPath, "﻿" + JSON.stringify(plan, null, 2));
+
+    let result: ReturnType<typeof readPlanSafe> | undefined;
+    assert.doesNotThrow(() => {
+      result = readPlanSafe(planPath);
+    });
+    assert.equal(result?.status, "ok");
+    if (result?.status === "ok") {
+      assert.deepEqual(result.plan, plan);
+    }
+  });
+});
+
+test("readPlanSafe: BOM-prefixed invalid JSON -> status corrupt (BOM strip doesn't mask real corruption)", () => {
+  withTempDir((dir) => {
+    const planPath = path.join(dir, "plan.json");
+    const corrupted = dropTaskBoundary(makeFixturePlan());
+    fs.writeFileSync(planPath, "﻿" + corrupted);
+
+    let result: ReturnType<typeof readPlanSafe> | undefined;
+    assert.doesNotThrow(() => {
+      result = readPlanSafe(planPath);
+    });
+    assert.equal(result?.status, "corrupt");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // projectPlanBackupFilePath
 // ---------------------------------------------------------------------------

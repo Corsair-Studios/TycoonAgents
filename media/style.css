@@ -937,6 +937,44 @@ body {
   animation: badgeHudPopCentered 0.6s ease;
 }
 
+/* Handbook launcher: lower-left book icon, the visual counterweight to the
+   badge HUD medallion (lower-right). Built + wired entirely in media/main.js
+   (setupHandbookLauncher) since #stage-area has no other bottom-left
+   occupant to coordinate with (the old nav-polygon debug hint was removed).
+   Idle = subtle/translucent; hover = full opacity + slight lift/scale. */
+.handbook-hud {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: 34px;
+  height: 34px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(13, 16, 32, 0.55);
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  z-index: 10;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease,
+    transform 0.15s ease, opacity 0.15s ease;
+  opacity: 0.65;
+}
+
+.handbook-hud:hover,
+.handbook-hud:focus-visible {
+  opacity: 1;
+  color: #fff8e6;
+  background: rgba(13, 16, 32, 0.8);
+  border-color: rgba(255, 176, 32, 0.45);
+  transform: scale(1.08);
+}
+
+.handbook-hud-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
 /* Persistent "new achievement" indicator: a small dot on the badge medal's
    upper-right corner that stays lit (unlike the transient pop above) until
    the player opens the badge panel. Toggled via the .has-unseen class on

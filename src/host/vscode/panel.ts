@@ -680,6 +680,8 @@ export class TycoonPanel {
             await vscode.env.clipboard.writeText(t);
             vscode.window.showInformationMessage("Prompt copied — paste it into Claude Code to run it.");
           }
+        } else if (message.type === MSG.OPEN_HANDBOOK) {
+          void this._handleOpenHandbook();
         } else if (message.type === MSG.GET_ENGINE_STATUS) {
           this._pollEngineStatus();
         } else if (message.type === MSG.SETUP_UEFN_PROJECT) {
@@ -4138,6 +4140,24 @@ export class TycoonPanel {
             "(or set the P4IGNORE environment variable) to enable it."
         );
       }
+    }
+  }
+
+  /**
+   * Bottom-left "book" icon in the webview — opens the shipped user
+   * handbook (media/handbook/index.html, a static multi-page doc bundled
+   * inside the extension) in the user's default OS browser via
+   * `vscode.env.openExternal`. Resolved from `this._extensionUri` so it
+   * works from any install location; no payload. A failed/unsupported open
+   * is logged and swallowed rather than surfaced to the user, matching this
+   * file's other non-throwing handlers (e.g. `_handleAddGitignoreEntries`).
+   */
+  private async _handleOpenHandbook(): Promise<void> {
+    try {
+      const handbookUri = vscode.Uri.joinPath(this._extensionUri, "media", "handbook", "index.html");
+      await vscode.env.openExternal(handbookUri);
+    } catch (err) {
+      console.error("TycoonAgents: Could not open the handbook:", err);
     }
   }
 

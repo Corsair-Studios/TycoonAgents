@@ -122,6 +122,71 @@
     </p>
   </div>
 
+  <div class="section-head">
+    <div class="s-title">&sect; 3.6 &middot; Status chips</div>
+    <div class="s-caption">upper-left of the stage</div>
+  </div>
+  <p>
+    A row of small chips sits in the upper-left of the Theater stage,
+    alongside the agents themselves. Each chip represents an engine
+    integration &mdash; UEFN first, then the rest alphabetically (Blender,
+    Godot, Roblox, Unity, Unreal). They're informational only: hover a chip
+    to read its tooltip, but clicking it doesn't do anything.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">SCREENSHOT &mdash; the chip row in the upper-left of the stage (e.g. a UEFN chip glowing green beside a Godot chip in ready state).</div>
+  </div>
+
+  <p>
+    The <strong>UEFN chip</strong> appears once the UEFN bridge is
+    installed, and has two states:
+  </p>
+  <div class="ref-table">
+    <table>
+      <thead><tr><th>State</th><th>Color</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Connected</td><td>Green glow</td><td>Heartbeat received in the last 15 seconds &mdash; agents can use the <code>uefn_*</code> MCP tools.</td></tr>
+        <tr><td>Offline</td><td>Amber</td><td>No recent heartbeat. Reopen the UEFN project so the bridge auto-starts, and confirm the Python Editor Script Plugin is enabled.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    The <strong>engine chips</strong> (Godot, Unity, Unreal, Roblox,
+    Blender) appear when TycoonAgents detects that engine's project files
+    (for example <code>project.godot</code>, a <code>ProjectSettings/</code>
+    folder, a <code>*.uproject</code>, a <code>.rbxl</code> or
+    <code>default.project.json</code>, or a <code>.blend</code> file), OR
+    that engine's pack, skill, or agents are installed, OR an MCP entry for
+    it exists. Any one of those three triggers is enough for the chip to
+    show up. Each engine chip has five possible states:
+  </p>
+  <div class="ref-table">
+    <table>
+      <thead><tr><th>State</th><th>Color</th><th>Meaning</th><th>What to do</th></tr></thead>
+      <tbody>
+        <tr><td>Connected</td><td>Green glow</td><td>MCP probed and answering &mdash; live tools are available.</td><td>Nothing &mdash; ready to use.</td></tr>
+        <tr><td>Offline</td><td>Amber</td><td>MCP is configured but not responding.</td><td>Start the local MCP server.</td></tr>
+        <tr><td>Configured</td><td>Solid green</td><td>A stdio MCP entry is present but not yet started.</td><td>Start its server to enable live tools.</td></tr>
+        <tr><td>Ready</td><td>Cyan</td><td>The engine's pack or skill is installed, but no MCP is set up.</td><td>Nothing required &mdash; add an MCP entry for live tools.</td></tr>
+        <tr><td>Setup</td><td>Gray</td><td>A project for that engine was detected, but nothing is installed yet.</td><td>Install the engine's pack from the catalog.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout note">
+    <span class="callout-label">Not the same as</span>
+    <p>
+      The install wizard's Optionals step has its own row of chips
+      (Playwright, Godot, Unity, Unreal Engine, UEFN) &mdash; those are
+      toggleable and clicking one selects a skill to install. The status
+      chips described here are a different thing: read-only indicators on
+      the live stage, not selectable at all. See Chapter 02 for the wizard.
+    </p>
+  </div>
+
   <div class="nav-links">
     <div class="nav-prev"><a href="ch-02.html">&larr; Chapter 02</a></div>
     <div class="nav-index"><a href="index.html">Handbook Index</a></div>

@@ -950,6 +950,34 @@
     });
   }
 
+  // ── Handbook launcher (lower-left book icon) ──────────────────────────
+  // Always-visible DOM overlay pinned to the bottom-left of #stage-area —
+  // the visual counterweight to the badge HUD medallion in the bottom-right.
+  // Built entirely here (not in panel.ts) since nothing else currently
+  // occupies that corner (the old nav-polygon debug hint was removed — see
+  // the comment near walkable_nav_polygon below). Clicking it asks the host
+  // to open the handbook; the host-side OPEN_HANDBOOK handler is owned by a
+  // separate task.
+  (function setupHandbookLauncher() {
+    const stageAreaEl = document.getElementById("stage-area");
+    if (!stageAreaEl) return;
+    const btn = document.createElement("button");
+    btn.id = "handbook-hud-btn";
+    btn.className = "handbook-hud";
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Open the TycoonAgents Handbook");
+    btn.title = "Open the TycoonAgents Handbook";
+    btn.innerHTML =
+      '<svg class="handbook-hud-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+        '<path d="M12 5.7c-1.7-1.25-4.1-1.9-6.3-1.9-.66 0-1.2.55-1.2 1.2v11.7c0 .66.54 1.15 1.2 1.15 2.05 0 4.3.5 5.8 1.55.3.2.7.2 1 0 1.5-1.05 3.75-1.55 5.8-1.55.66 0 1.2-.49 1.2-1.15V5c0-.65-.54-1.2-1.2-1.2-2.2 0-4.6.65-6.3 1.9z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>' +
+        '<path d="M12 5.7v13.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>' +
+      '</svg>';
+    btn.addEventListener("click", () => {
+      vscode.postMessage({ type: "OPEN_HANDBOOK" });
+    });
+    stageAreaEl.appendChild(btn);
+  })();
+
   /**
    * Refresh the lower-right badge HUD button: visible only when the current
    * theme declares >=1 badge; count text = number unlocked so far.

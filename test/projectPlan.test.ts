@@ -285,3 +285,27 @@ test("readPlan on a missing path returns null", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("readPlan strips a leading UTF-8 BOM (e.g. PowerShell Out-File -Encoding utf8) and reads the plan", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "projectPlan-"));
+  try {
+    const planPath = path.join(dir, "plan.json");
+    const plan = makeFixturePlan();
+    fs.writeFileSync(planPath, "﻿" + JSON.stringify(plan, null, 2));
+    const readBack = readPlan(planPath);
+    assert.deepEqual(readBack, plan);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readPlan still throws on BOM-prefixed genuinely invalid JSON", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "projectPlan-"));
+  try {
+    const planPath = path.join(dir, "plan.json");
+    fs.writeFileSync(planPath, "﻿not valid json");
+    assert.throws(() => readPlan(planPath));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
