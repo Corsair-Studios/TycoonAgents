@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch. 03 &middot; Panel Tour</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+  <div class="crumb">TycoonAgents Handbook / Chapter 03 / Part I &middot; Getting Started &middot; v0.0.429</div>
+
+  <div class="chapter-num">03</div>
+  <h1>Panel Tour</h1>
+
+  <div class="lede">
+    <div class="lede-label">Orientation</div>
+    <div class="lede-intro">
+      The panel has four tabs and a menu. This chapter is a map of each
+      one, so the rest of the handbook can point at specific tabs without
+      re-explaining them.
+    </div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 3.1 &middot; Theater</div>
+    <div class="s-caption">the scene itself</div>
+  </div>
+  <p>
+    Theater is the default tab and the one most people leave open. Agents
+    appear on stage as characters that walk to build sites, hammer away
+    while a task is in progress, and emote when it completes. A HUD shows
+    badges you've earned and your current rebirth (prestige) level &mdash;
+    rebirthing resets progress in exchange for permanent milestones, and
+    it's driven entirely by real delegation activity, not anything
+    scripted.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Theater tab with agents mid-build and the badge HUD visible.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 3.2 &middot; Metrics</div>
+    <div class="s-caption">per-agent table</div>
+  </div>
+  <p>
+    Metrics lists every agent that has run in this workspace with a row
+    per agent: tasks completed, tokens used, and the model it ran on. Each
+    row also carries a <strong>"vs. orch."</strong> bar &mdash; tasks
+    completed relative to the busiest agent &mdash; paired with an
+    <strong>"Nx cheaper"</strong> badge that expresses how much less that
+    agent's model costs relative to the orchestrator's, without ever
+    showing a dollar figure. See Chapter 10 for how to read the cost lens
+    in full.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Metrics tab &mdash; per-agent table with vs. orch. bars.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 3.3 &middot; Delegation</div>
+    <div class="s-caption">where the work actually went</div>
+  </div>
+  <p>
+    Delegation zooms out to the whole session: a chart of delegated work
+    by model tier, a coordination line showing how much the orchestrator
+    itself is doing, and a dispatched-vs-completed reconciliation (the gap
+    between the two is normal &mdash; it reflects abandoned or unfinished
+    spawns, not a bug). Below that sits the same per-agent table as
+    Metrics, an Opus-leak meter flagging work that should have been
+    delegated but wasn't, and a savings headline like "avoided ~N%."
+    Chapter 10 covers all of these in depth.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Delegation tab &mdash; tier chart, reconciliation line, and savings headline.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 3.4 &middot; Project Plan</div>
+    <div class="s-caption">only when enabled</div>
+  </div>
+  <p>
+    Project Plan shows phases, tasks, and gates for larger bodies of work
+    tracked through the plan feature. This tab only appears when the
+    Project Plan feature is enabled for the workspace &mdash; it's on by
+    default for new installs, but existing projects that were set up
+    before it shipped stay off unless the feature is turned on explicitly.
+    Chapter 11 is the full reference.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Project Plan tab &mdash; phases and tasks with gate checkpoints.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 3.5 &middot; The menu</div>
+    <div class="s-caption">everything else</div>
+  </div>
+  <p>
+    A menu sits alongside the tabs with four entries:
+  </p>
+  <ul>
+    <li><strong>About</strong> &mdash; version and quick project info.</li>
+    <li><strong>Settings</strong> &mdash; the full settings surface (Chapter 09).</li>
+    <li><strong>Themes</strong> &mdash; switch active theme or open the Theme Maker (Part II).</li>
+    <li><strong>Troubleshoot &amp; Fix</strong> &mdash; runs diagnostics and offers repairs (Chapter 13).</li>
+  </ul>
+
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    <p>
+      If delegation looks like it isn't working &mdash; no agents ever appear
+      on stage &mdash; check the Delegation tab's Opus-leak meter first. It's
+      usually the fastest way to spot work that's quietly bypassing the
+      doctrine.
+    </p>
+  </div>
+
+  <div class="nav-links">
+    <div class="nav-prev"><a href="ch-02.html">&larr; Chapter 02</a></div>
+    <div class="nav-index"><a href="index.html">Handbook Index</a></div>
+    <div class="nav-next"><a href="ch-04.html">Chapter 04 &rarr;</a></div>
+  </div>
+</body>
+</html>

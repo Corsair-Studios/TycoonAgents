@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 11 — Project Plan · TycoonAgents Handbook</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+
+<p class="crumb">TycoonAgents Handbook / Chapter 11 / Part III · Reference · v0.0.429</p>
+
+<h1><span class="chapter-num">11</span>Project Plan</h1>
+
+<div class="lede">
+  <p class="label">Phases, gates, and human approval</p>
+  <p class="intro">Project Plan is an optional feature — on by default for new installs — that turns a design doc into a structured plan of phases and tasks, with a human approval gate before each phase and each task result. It's driven by the project-plan skill, so Claude does the decomposing; you do the approving.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 11.1 · How a plan is structured</span>
+  <span class="cap">phases → tasks → acceptance criteria</span>
+</div>
+<p>A plan is a set of <strong>phases</strong>, each holding a list of <strong>tasks</strong>. Every task carries its own acceptance criteria, so "done" has a concrete definition rather than being a judgment call in the moment.</p>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Project Plan tab — phases with gates and task badges.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 11.2 · Gates and task states</span>
+  <span class="cap">what the badges mean</span>
+</div>
+<div class="ref-table">
+<table>
+  <thead><tr><th>Badge / state</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>Phase gate — Pending</td><td>The phase hasn't been approved yet; work in it won't proceed.</td></tr>
+    <tr><td>Phase gate — Approved</td><td>You've approved the phase; its tasks can run.</td></tr>
+    <tr><td>Task — active</td><td>Currently being worked.</td></tr>
+    <tr><td>Task — verifying</td><td>Work is done and is being checked against its acceptance criteria.</td></tr>
+    <tr><td>Task — done</td><td>Verified and accepted.</td></tr>
+    <tr><td>Task — needs_fix</td><td>Verification found an issue; it needs another pass.</td></tr>
+    <tr><td>Task — skipped</td><td>Deliberately skipped, at your direction.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 11.3 · Approving and steering work</span>
+  <span class="cap">the buttons you'll actually use</span>
+</div>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p><strong>Approve phase.</strong> Unlocks that phase's tasks so work can start on them.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p><strong>Approve / Retry / Skip.</strong> Per-task actions on the task itself — approve a finished task, ask for a retry, or skip it outright.</p></div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 11.4 · When something looks stuck</span>
+  <span class="cap">stall indicator &amp; plan recovery</span>
+</div>
+<div class="callout warn">
+  <p class="callout-label">Warn</p>
+  <p>If an active task shows no hook activity for roughly five minutes, the panel flags it: <em>"this task may be stalled. Ask Claude to resume the plan."</em> This is a nudge, not an automatic action — you decide whether to resume it.</p>
+</div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>If <code>plan.json</code> ever gets corrupted, the panel offers <strong>Restore last good</strong>, which restores from <code>plan.json.bak</code> — a snapshot kept alongside the live plan file.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 11.5 · Archived Plans</span>
+  <span class="cap">read-only history</span>
+</div>
+<p>Completed plans move into an <strong>Archived Plans</strong> section — read-only, so you can look back at what a previous plan covered without it cluttering the active view.</p>
+
+<p class="nav-links">
+  <a class="prev" href="ch-10.html">&larr; Ch 10 · Metrics &amp; Delegation Tabs</a>
+  <a class="index" href="index.html">Index</a>
+  <a class="next" href="ch-12.html">Ch 12 · UEFN Power Tools &rarr;</a>
+</p>
+
+</body>
+</html>

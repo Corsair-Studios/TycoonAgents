@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 10 — Metrics &amp; Delegation Tabs · TycoonAgents Handbook</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+
+<p class="crumb">TycoonAgents Handbook / Chapter 10 / Part III · Reference · v0.0.429</p>
+
+<h1><span class="chapter-num">10</span>Metrics &amp; Delegation Tabs</h1>
+
+<div class="lede">
+  <p class="label">Reading the numbers</p>
+  <p class="intro">The Metrics tab tells you what each agent actually did; the Delegation tab tells you whether delegating was worth it. Neither is trying to give you a precise dollar figure — both are built around relative comparisons, so you can trust the shape of the story even without an exact cost model.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 10.1 · Metrics table</span>
+  <span class="cap">one row per agent</span>
+</div>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Metrics tab — the per-agent table.</p>
+</div>
+<div class="ref-table">
+<table>
+  <thead><tr><th>Column</th><th>What it shows</th></tr></thead>
+  <tbody>
+    <tr><td>Agent</td><td>The agent or orchestrator this row summarizes.</td></tr>
+    <tr><td>Model</td><td>Which model that agent is running on.</td></tr>
+    <tr><td>Tasks</td><td>Completed task count. The orchestrator's row is marked with an asterisk (*) and shows its own completed tasks — hover it to see the delegated count too.</td></tr>
+    <tr><td>Tokens</td><td>Total tokens consumed by that agent.</td></tr>
+    <tr><td>vs. orch.</td><td>A bar showing tasks completed relative to the busiest agent, plus a badge like "3x cheaper" or "2x pricier" derived from the model's price ratio to the orchestrator's model.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 10.2 · Delegation tab</span>
+  <span class="cap">was delegating worth it?</span>
+</div>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Delegation tab — savings headline and per-agent breakdown.</p>
+</div>
+
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div>
+      <p><strong>Savings headline.</strong> A line like "Delegating avoided ~N% of the cost of running it all on the orchestrator's model" — scoped only to the work that was actually delegated, not the orchestrator's own coordination overhead.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div>
+      <p><strong>Dispatched vs. completed.</strong> A reconciliation line comparing tasks the orchestrator dispatched against tasks that posted a completion. The gap is labeled "unfinished" — dispatched tasks that never reported back, whether abandoned or simply not yet done. It does not mean something is currently running.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">03</span>
+    <div>
+      <p><strong>Delegated work by tier.</strong> A breakdown of delegated work grouped by model tier.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">04</span>
+    <div>
+      <p><strong>Coordination (orchestrator).</strong> Shown as its own separate bucket — the orchestrator is expected to be the biggest single token consumer, since it's coordinating everything else.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">05</span>
+    <div>
+      <p><strong>Per-agent table.</strong> The same agents from the Metrics tab, viewed through the delegation-savings lens.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">06</span>
+    <div>
+      <p><strong>Opus-leak meter.</strong> Warns when the orchestrator has been doing searches or exploration directly instead of delegating them — the warning threshold is <code>tycoonagents.delegationWarnThreshold</code> (default 5).</p>
+    </div>
+  </div>
+</div>
+
+<div class="callout warn">
+  <p class="callout-label">Warn</p>
+  <p>If the Opus-leak meter keeps tripping, it usually means an agent's instructions aren't routing search work to a specialist — worth a look at Keyword routing in Settings (Chapter 9).</p>
+</div>
+
+<p>Both tabs share a <strong>Reset metrics</strong> button, which clears the counters for a fresh session without touching your themes or plan state.</p>
+
+<p class="nav-links">
+  <a class="prev" href="ch-09.html">&larr; Ch 09 · Settings Reference</a>
+  <a class="index" href="index.html">Index</a>
+  <a class="next" href="ch-11.html">Ch 11 · Project Plan &rarr;</a>
+</p>
+
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch. 05 &middot; Building a Theme</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+  <div class="crumb">TycoonAgents Handbook / Chapter 05 / Part II &middot; Theme Maker &middot; v0.0.429</div>
+
+  <div class="chapter-num">05</div>
+  <h1>Building a Theme</h1>
+
+  <div class="lede">
+    <div class="lede-label">The form</div>
+    <div class="lede-intro">
+      Before you generate anything, the Theme Builder form asks for every
+      piece that makes up a theme. This chapter is the field-by-field
+      contract &mdash; what each slot is, how many you need, and what makes a
+      good description.
+    </div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 5.1 &middot; Name and creative direction</div>
+    <div class="s-caption">the seed everything else follows</div>
+  </div>
+  <p>
+    Start with a <strong>theme name</strong> and a
+    <strong>creative direction</strong> textarea &mdash; a short paragraph
+    describing the overall look and feel (for example, a neon-city theme,
+    or a high-seas theme). This is the seed that every subsequent image
+    prompt draws from, so it's worth spending a minute getting it
+    specific. An <strong>environment description</strong> follows, covering
+    the background/stage setting your characters will be built into.
+  </p>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 5.2 &middot; Characters, rivals, objects, decor</div>
+    <div class="s-caption">the roster</div>
+  </div>
+  <table class="ref-table">
+    <thead>
+      <tr>
+        <th>Slot</th>
+        <th>Count</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Characters</td>
+        <td>16</td>
+        <td>Per-slot name + description each.</td>
+      </tr>
+      <tr>
+        <td>Rivals</td>
+        <td>4</td>
+        <td>Each has an attack style &mdash; melee or ranged &mdash; plus a description.</td>
+      </tr>
+      <tr>
+        <td>Objects</td>
+        <td>21 across 2 boards</td>
+        <td>19 static + 2 animated. Includes a crate, poof FX, and a projectile description.</td>
+      </tr>
+      <tr>
+        <td>Decor</td>
+        <td>9</td>
+        <td>Background/set-dressing pieces.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 5.3 &middot; Expressions</div>
+    <div class="s-caption">fixed labels, themed art</div>
+  </div>
+  <p>
+    Every theme has exactly <strong>8 expressions</strong>, and the labels
+    are fixed &mdash; you don't get to add or remove them, only re-skin their
+    art to match your theme:
+  </p>
+  <p>
+    Love &middot; Idea spark &middot; Anger &middot; Team rally &middot;
+    Thumbs up &middot; Music &middot; Sleep/zzz &middot; Dazed
+  </p>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 5.4 &middot; Badges</div>
+    <div class="s-caption">up to 25</div>
+  </div>
+  <p>
+    Up to <strong>25 achievement badges</strong> round out the form. Badge
+    names are editable, and their art is generated alongside everything
+    else in the pipeline (Chapter 06).
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">The Theme Builder form &mdash; characters, rivals, objects, decor, expressions, badges.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 5.5 &middot; Writing good descriptions</div>
+    <div class="s-caption">two habits that pay off</div>
+  </div>
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    <p>
+      Concrete visual descriptions beat vague ones. "A weathered dock
+      worker in a faded blue coat with a hook hand" generates far more
+      consistent art than "a worker" &mdash; every image prompt in the
+      pipeline consumes the exact per-item description you write here, so
+      specificity up front saves you retries later.
+    </p>
+  </div>
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    <p>
+      Describe characters in shoulder-height poses rather than full-body
+      extremes. Wide poses (arms fully outstretched, deep lunges) can clip
+      at the edges of the character board when it's sliced into frames.
+      Chapter 07 covers the details and how to recover if it happens
+      anyway.
+    </p>
+  </div>
+
+  <div class="nav-links">
+    <div class="nav-prev"><a href="ch-04.html">&larr; Chapter 04</a></div>
+    <div class="nav-index"><a href="index.html">Handbook Index</a></div>
+    <div class="nav-next"><a href="ch-06.html">Chapter 06 &rarr;</a></div>
+  </div>
+</body>
+</html>

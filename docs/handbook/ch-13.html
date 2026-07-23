@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 13 — Troubleshooting &amp; Diagnostics · TycoonAgents Handbook</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+
+<p class="crumb">TycoonAgents Handbook / Chapter 13 / Part III · Reference · v0.0.429</p>
+
+<h1><span class="chapter-num">13</span>Troubleshooting &amp; Diagnostics</h1>
+
+<div class="lede">
+  <p class="label">When something's not right</p>
+  <p class="intro">Most problems in TycoonAgents trace back to one of a handful of root causes — hooks, a missing theme selection, a stale bridge, or a metrics number that only looks wrong. This chapter is a quick-reference triage before you file a bug report.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 13.1 · Panel is empty, no agents show up</span>
+  <span class="cap">hooks aren't installed</span>
+</div>
+<p>The agent visualization is driven entirely by Claude Code hooks. If nothing appears, hooks likely aren't installed for this project, or your session hasn't picked up a recent install.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Open Settings → <strong>Hook health</strong> and use <strong>Troubleshoot → Fix</strong> to repair the install.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Restart your Claude Code session so it picks up the newly installed hooks.</p></div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 13.2 · Theme art isn't showing</span>
+  <span class="cap">selection or frames</span>
+</div>
+<p>Two likely causes: no theme is currently selected, or the theme is selected but some of its entities are missing frames.</p>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>Check the Theme Picker first to confirm a theme is active. If it is and art is still missing, see Chapter 7 for the health check and the Resume fix.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 13.3 · UEFN chip is gray</span>
+  <span class="cap">bridge not staged, or engine not restarted</span>
+</div>
+<p>A gray UEFN chip means the Power Tools bridge either hasn't been staged into your project yet, or UEFN hasn't been restarted since it was.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Revisit Setup and confirm the bridge staging step completed (Chapter 12).</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Restart UEFN so it picks up the bridge from <code>Content/Python</code>.</p></div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 13.4 · Metrics numbers look wrong</span>
+  <span class="cap">usually not a bug</span>
+</div>
+<p>A gap between "dispatched" and "completed" task counts is expected, not an error — it means some dispatched tasks never posted a completion (abandoned or simply unfinished), not that something is silently broken. See Chapter 10 for the full explanation.</p>
+
+<div class="section-head">
+  <span class="s-title">§ 13.5 · Reporting a bug</span>
+  <span class="cap">Report a bug / Diagnostics</span>
+</div>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Settings — Report a bug / Diagnostics section.</p>
+</div>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Open Settings → <strong>Report a bug / Diagnostics</strong> and choose <strong>Generate diagnostic report</strong>.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>The report is sanitized — absolute file paths and secrets are stripped before it's copied to your clipboard — and ready to paste wherever you're reporting the issue.</p></div>
+  </div>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>You can also run the <code>/tycoon-diagnose</code> skill directly from Claude Code for a deeper, AI-reasoned pass over your project's own configuration.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 13.6 · When all else fails</span>
+  <span class="cap">reinstall is safe</span>
+</div>
+<p>Reinstalling through the setup wizard is safe to reach for. Your state survives an update — build progress and earned badges persist on the host side, not in the webview — so a reinstall won't wipe your progress.</p>
+
+<p class="nav-links">
+  <a class="prev" href="ch-12.html">&larr; Ch 12 · UEFN Power Tools</a>
+  <a class="index" href="index.html">Index</a>
+  <span class="next-placeholder">End of handbook</span>
+</p>
+
+</body>
+</html>

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TycoonAgents Handbook</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+  <div class="crumb">TycoonAgents Handbook / v0.0.429</div>
+
+  <div class="hero">
+    <h1>TycoonAgents Handbook</h1>
+    <p class="tagline">
+      Everything you need to install TycoonAgents, wire up delegation, build a
+      theme, and read the panel like a pro — from first launch to
+      troubleshooting the deep stuff.
+    </p>
+  </div>
+
+  <h2 style="font-family: var(--font-display); margin-bottom: 0.75rem;">What is TycoonAgents?</h2>
+  <p>
+    TycoonAgents is a VS Code&#8209;compatible extension that turns your Claude
+    Code multi&#8209;agent delegation into a living tycoon scene. An
+    orchestrator agent hands work off to cheap specialist agents, hooks
+    record every dispatch and completion, and the panel renders those
+    agents as characters who walk the stage, build, emote, earn badges, and
+    even rebirth (prestige) as your project grows. The extension itself
+    makes <strong>zero runtime AI calls</strong> &mdash; it only observes
+    hooks and renders what already happened. The visuals are a
+    <em>theme</em>: an art skin you generate once with the built-in Theme
+    Maker, then the panel renders it forever, fully offline.
+  </p>
+  <p>
+    This handbook is split into three parts. Part I gets you installed and
+    oriented. Part II walks the Theme Maker end to end. Part III is a
+    reference for settings, the metrics/delegation tabs, the project plan
+    feature, UEFN Power Tools, and troubleshooting.
+  </p>
+
+  <div class="toc-part">Part I &middot; Getting Started</div>
+  <div class="chapter-grid">
+    <a class="chapter-card" href="ch-01.html">
+      <div class="cc-num">01</div>
+      <div>
+        <div class="cc-title">Welcome &amp; Concepts</div>
+        <div class="cc-desc">Orchestrators, specialists, hooks, and themes &mdash; the mental model.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-02.html">
+      <div class="cc-num">02</div>
+      <div>
+        <div class="cc-title">Installation &amp; First-Run Setup</div>
+        <div class="cc-desc">The two-step wizard: hooks, agent roster, and optional extras.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-03.html">
+      <div class="cc-num">03</div>
+      <div>
+        <div class="cc-title">Panel Tour</div>
+        <div class="cc-desc">Theater, Metrics, Delegation, Project Plan, and the menu.</div>
+      </div>
+    </a>
+  </div>
+
+  <div class="toc-part">Part II &middot; Theme Maker</div>
+  <div class="chapter-grid">
+    <a class="chapter-card" href="ch-04.html">
+      <div class="cc-num">04</div>
+      <div>
+        <div class="cc-title">API Keys &amp; Providers</div>
+        <div class="cc-desc">OpenAI GPT Image vs. Google Gemini image models, and where to get a key.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-05.html">
+      <div class="cc-num">05</div>
+      <div>
+        <div class="cc-title">Building a Theme</div>
+        <div class="cc-desc">The full form contract: characters, rivals, objects, decor, expressions, badges.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-06.html">
+      <div class="cc-num">06</div>
+      <div>
+        <div class="cc-title">Generation &amp; the Review Screen</div>
+        <div class="cc-desc">Pipeline order, pause-for-review, per-item retry, and resume.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-07.html">
+      <div class="cc-num">07</div>
+      <div>
+        <div class="cc-title">Theme Troubleshooting &amp; Redos</div>
+        <div class="cc-desc">Fixing bad generations without burning API spend.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-08.html">
+      <div class="cc-num">08</div>
+      <div>
+        <div class="cc-title">Themes: Shipped, Personal &amp; Community</div>
+        <div class="cc-desc">Where themes live, switching between them, sharing your own.</div>
+      </div>
+    </a>
+  </div>
+
+  <div class="toc-part">Part III &middot; Reference</div>
+  <div class="chapter-grid">
+    <a class="chapter-card" href="ch-09.html">
+      <div class="cc-num">09</div>
+      <div>
+        <div class="cc-title">Settings Reference</div>
+        <div class="cc-desc">Every tycoonagents.* setting, explained.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-10.html">
+      <div class="cc-num">10</div>
+      <div>
+        <div class="cc-title">Metrics &amp; Delegation Tabs</div>
+        <div class="cc-desc">Reading the cost lens without dollar signs.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-11.html">
+      <div class="cc-num">11</div>
+      <div>
+        <div class="cc-title">Project Plan</div>
+        <div class="cc-desc">Phases, tasks, and gates for larger bodies of work.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-12.html">
+      <div class="cc-num">12</div>
+      <div>
+        <div class="cc-title">UEFN Power Tools</div>
+        <div class="cc-desc">The Python bridge and MCP tools for UEFN projects.</div>
+      </div>
+    </a>
+    <a class="chapter-card" href="ch-13.html">
+      <div class="cc-num">13</div>
+      <div>
+        <div class="cc-title">Troubleshooting &amp; Diagnostics</div>
+        <div class="cc-desc">The sanitized diagnostic report and common fixes.</div>
+      </div>
+    </a>
+  </div>
+
+  <div class="nav-links">
+    <div class="nav-prev">&nbsp;</div>
+    <div class="nav-index">Handbook Index</div>
+    <div class="nav-next"><a href="ch-01.html">Chapter 01 &rarr;</a></div>
+  </div>
+</body>
+</html>

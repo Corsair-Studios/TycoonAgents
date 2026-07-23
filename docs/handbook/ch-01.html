@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch. 01 &middot; Welcome &amp; Concepts</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+  <div class="crumb">TycoonAgents Handbook / Chapter 01 / Part I &middot; Getting Started &middot; v0.0.429</div>
+
+  <div class="chapter-num">01</div>
+  <h1>Welcome &amp; Concepts</h1>
+
+  <div class="lede">
+    <div class="lede-label">Read this first</div>
+    <div class="lede-intro">
+      TycoonAgents watches your Claude Code multi-agent delegation and turns
+      it into a living tycoon scene &mdash; agents that walk, build, and earn
+      badges as your orchestrator hands off real work to specialists. This
+      chapter covers the four ideas you need before anything else in this
+      handbook will make sense.
+    </div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 1.1 &middot; What TycoonAgents actually does</div>
+    <div class="s-caption">the elevator pitch</div>
+  </div>
+  <p>
+    TycoonAgents is a VS Code&#8209;compatible extension. It does not run your
+    project, and it does not decide how your agents work. Instead, it sits
+    alongside Claude Code and <strong>observes</strong>: every time your
+    orchestrator dispatches a task to a specialist agent, and every time
+    that agent finishes, TycoonAgents' hooks record the event. The panel
+    then replays those events as a scene &mdash; each agent is a character on
+    a stage, walking to a build site, hammering away, and celebrating when
+    the task completes.
+  </p>
+  <p>
+    The important part: this is a <strong>visualization of work that is
+    already happening</strong>. TycoonAgents does not make your agents
+    faster or smarter, and it never calls an AI model itself at runtime. It
+    reads hook events and draws pictures. That's the whole contract.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Theater view with a theme active &mdash; agents on stage mid-build.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 1.2 &middot; Orchestrator vs. specialists</div>
+    <div class="s-caption">who does what</div>
+  </div>
+  <p>
+    Claude Code multi-agent work in this project follows a simple split:
+  </p>
+  <ul>
+    <li>
+      <strong>The orchestrator</strong> is the top-level agent you talk to.
+      It reads the task, makes high-level decisions, and coordinates &mdash;
+      but it does not do the implementation work itself.
+    </li>
+    <li>
+      <strong>Specialist agents</strong> are narrower workers (search,
+      coding, testing, UI, and so on) that the orchestrator delegates to.
+      Each one is scoped to a job it's good at, and many of them run on
+      cheaper models than the orchestrator.
+    </li>
+  </ul>
+  <p>
+    This split matters for cost as much as it matters for scene rendering:
+    routing routine work (searching a codebase, running a quick check) to a
+    small, cheap model instead of the expensive one doing the coordinating
+    is the whole reason the delegation pattern exists. TycoonAgents' Metrics
+    and Delegation tabs (Chapter 03, Chapter 10) exist specifically to make
+    that cost split visible.
+  </p>
+
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    <p>
+      In the scene, the orchestrator is always the leader character in the
+      first seat &mdash; easy to spot even in a crowded stage.
+    </p>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 1.3 &middot; The delegation doctrine</div>
+    <div class="s-caption">how routing gets enforced</div>
+  </div>
+  <p>
+    Delegation doesn't happen automatically just because specialist agents
+    exist &mdash; it happens because your project's <code>CLAUDE.md</code>
+    contains a <strong>delegation doctrine</strong>: instructions telling the
+    orchestrator which kinds of work must be routed to which specialist,
+    and forbidding it from doing that work directly. TycoonAgents installs
+    this doctrine for you during first-run setup (Chapter 02), and it's the
+    reason the scene has anything to show at all &mdash; no doctrine, no
+    delegation, no agents walking around.
+  </p>
+  <p>
+    Two doctrine modes are available at install time: a flat
+    <strong>Orchestrator mode</strong>, where one orchestrator dispatches
+    directly to every specialist, and a hierarchical <strong>Team Lead
+    mode</strong>, where work can fan out through an extra coordination
+    layer. Chapter 02 covers picking between them.
+  </p>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 1.4 &middot; Themes: generate once, render forever</div>
+    <div class="s-caption">where the art comes from</div>
+  </div>
+  <p>
+    Everything you see on stage &mdash; characters, buildings, badges,
+    backgrounds &mdash; comes from a <strong>theme</strong>: a bundle of
+    generated art matched to a creative direction you choose (a neon-city
+    theme, a high-seas theme, whatever fits your project or your mood). A
+    theme is built once, using the Theme Maker's image-generation pipeline
+    (Part II of this handbook), and stored locally. After that, the panel
+    never calls an image API again &mdash; it just renders the stored frames.
+    Generating art is the only part of TycoonAgents that talks to an
+    external AI provider, and it only happens when you explicitly ask it
+    to.
+  </p>
+
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      TycoonAgents ships with ready-to-use themes so you can see the scene
+      working before you generate anything yourself. Building your own
+      theme is optional, covered starting in Chapter 04.
+    </p>
+  </div>
+
+  <div class="nav-links">
+    <div class="nav-prev">&nbsp;</div>
+    <div class="nav-index"><a href="index.html">Handbook Index</a></div>
+    <div class="nav-next"><a href="ch-02.html">Chapter 02 &rarr;</a></div>
+  </div>
+</body>
+</html>

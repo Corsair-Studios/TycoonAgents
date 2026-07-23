@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 7 — Theme Troubleshooting &amp; Redos · TycoonAgents Handbook</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+
+<p class="crumb">TycoonAgents Handbook / Chapter 07 / Part II · Theme Maker · v0.0.429</p>
+
+<h1><span class="chapter-num">07</span>Theme Troubleshooting &amp; Redos</h1>
+
+<div class="lede">
+  <p class="label">When a board misbehaves</p>
+  <p class="intro">Generation runs a lot of image requests back to back, and every so often one of them comes back wrong — blocked, rate-limited, clipped, or just off-style. None of this means the run failed. Each item on a theme board can be retried on its own, so a bad frame costs you a redo, not a restart.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 7.1 · Moderation blocks</span>
+  <span class="cap">the provider says no</span>
+</div>
+<p>If an item comes back with the message below, the image provider's safety filter rejected the request outright — no image was produced and no retry will fix it without a change.</p>
+<pre>OpenAI blocked this image request. Revise the prompt or input images, then retry.</pre>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div>
+      <p><strong>Reword the item's description.</strong> Open the item's description editor and remove anything that could read as violence, gore, real celebrities, or branded/trademarked terms — even indirectly.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div>
+      <p><strong>Retry just that item.</strong> Use the item's own retry action on the review screen — you don't need to regenerate the whole board.</p>
+    </div>
+  </div>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>Moderation is judged per-request, not per-theme. A vivid description on one object rarely means the rest of the board is at risk.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 7.2 · Rate limits &amp; server errors</span>
+  <span class="cap">HTTP 429 / 5xx</span>
+</div>
+<p>A <code>429</code> (rate limited) or any <code>5xx</code> (provider-side server error) is treated as retryable — the request didn't fail because of anything you wrote.</p>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>Wait a moment and retry the item. If <code>429</code>s keep happening across many items in a row, it's usually your account's request-rate tier on the provider's side rather than anything in the theme — space retries out and give it a few minutes.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 7.3 · Bottom-row clipping on character boards</span>
+  <span class="cap">the last row of an atlas</span>
+</div>
+<p>Character sprite boards are sliced into rows and columns after the image comes back. Poses with raised arms or mid-jump silhouettes on the <strong>last row</strong> of the board can get their tops clipped by the slice line — this is a constraint of how the sheet is cut, not something you can toggle off.</p>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Example of a clipped top-row frame next to a corrected shoulder-height pose.</p>
+</div>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Edit the pose description for that character to describe a <strong>compact, shoulder-height</strong> pose instead of a full extension or jump.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Retry the character. The rest of the board's poses are unaffected.</p></div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 7.4 · Objects bleeding into neighbors</span>
+  <span class="cap">wide objects encroach adjacent cells</span>
+</div>
+<p>Object boards are also sliced into a fixed grid. An object described as unusually wide or sprawling can visually bleed past its own cell into the one next to it.</p>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>Retry with phrasing like "compact, centered, fits fully in frame" added to the object's description, then retry just that object.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 7.5 · Environment issues</span>
+  <span class="cap">stray outlines, cluttered floor</span>
+</div>
+<p>The environment is one background image generated from a stage guide. Two recurring issues: a stray outline color surviving into the final art, or clutter placed on the floor area characters actually walk on.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Edit the environment description to explicitly keep the walkable floor area empty and clear.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Regenerate the environment from the review screen.</p></div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 7.6 · "Roadblock" placeholders &amp; missing frames</span>
+  <span class="cap">the theme health check</span>
+</div>
+<p>Every theme is checked for entities whose frames are missing, empty, or orphaned — across agents, rivals, buildable objects, decor, expressions, badge icons, projectile FX, and poof FX. An entity that fails this check shows as a roadblock placeholder in the panel instead of its art.</p>
+<div class="ref-table">
+<table>
+  <thead><tr><th>Issue</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>missing_frames</td><td>The entity has no frames recorded at all</td></tr>
+    <tr><td>empty_frames</td><td>The entity has a frames array, but it's empty</td></tr>
+    <tr><td>orphan_frames</td><td>Frames exist on disk with no entity referencing them</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>The health check panel listing a roadblock entity.</p>
+</div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>A board can be marked accepted with no frames recorded — accepting a board and slicing its frames are decoupled steps. If you see this, use <strong>Resume</strong> on that board: it re-slices the raw image that's already on disk, at no additional API cost.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 7.7 · Style drift across boards</span>
+  <span class="cap">keeping a theme visually consistent</span>
+</div>
+<p>If later boards start looking off relative to earlier ones, don't rewrite each item's description by hand. Use the review screen's <strong>Creative Direction</strong> editor instead.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Open Creative Direction on the review screen and describe the style correction you want.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Save it. It re-grounds every <strong>future</strong> regeneration — it never touches art already generated.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">03</span>
+    <div><p>Retry the off-style items so they regenerate under the new direction.</p></div>
+  </div>
+</div>
+
+<p class="nav-links">
+  <a class="prev" href="ch-06.html">&larr; Ch 06 · Generation &amp; the Review Screen</a>
+  <a class="index" href="index.html">Index</a>
+  <a class="next" href="ch-08.html">Ch 08 · Themes: Shipped, Personal &amp; Community &rarr;</a>
+</p>
+
+</body>
+</html>

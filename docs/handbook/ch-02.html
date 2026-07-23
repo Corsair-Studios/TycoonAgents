@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch. 02 &middot; Installation &amp; First-Run Setup</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+  <div class="crumb">TycoonAgents Handbook / Chapter 02 / Part I &middot; Getting Started &middot; v0.0.429</div>
+
+  <div class="chapter-num">02</div>
+  <h1>Installation &amp; First-Run Setup</h1>
+
+  <div class="lede">
+    <div class="lede-label">Get running</div>
+    <div class="lede-intro">
+      Install the extension, let it open the panel, and walk through the
+      two-step setup wizard once. Everything here runs on first launch and
+      is skipped automatically after that.
+    </div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 2.1 &middot; Installing the extension</div>
+    <div class="s-caption">VSIX or marketplace</div>
+  </div>
+  <p>
+    Install TycoonAgents either from a <code>.vsix</code> file or from your
+    editor's extension marketplace, the same way you'd install any other
+    extension. Once it's active in a workspace, the panel opens
+    automatically &mdash; this is controlled by the
+    <code>tycoonagents.autoShow</code> setting, which defaults to
+    <code>true</code>. If you'd rather open it yourself, turn that setting
+    off in Settings (Chapter 09) and launch the panel from the command
+    palette or the activity bar icon.
+  </p>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 2.2 &middot; The first-run wizard</div>
+    <div class="s-caption">two steps, step 1 required</div>
+  </div>
+  <p>
+    The first time TycoonAgents opens in a workspace, it shows a short
+    setup wizard. Returning users &mdash; anyone who has already completed
+    it in this workspace &mdash; skip straight to the panel.
+  </p>
+
+  <h3>Step 1 &mdash; Install hooks (required)</h3>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">01</div>
+      <div class="step-body">
+        <p>
+          Choose a delegation mode: <strong>Orchestrator mode</strong> (flat
+          &mdash; one orchestrator dispatches directly to every specialist)
+          or <strong>Team Lead mode</strong> (hierarchical &mdash; adds a
+          coordination layer for larger teams of agents). If you're not
+          sure, Orchestrator mode is the simpler starting point.
+        </p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">02</div>
+      <div class="step-body">
+        <p>
+          Click through to write the delegation doctrine into your
+          project's <code>CLAUDE.md</code>. This is the instruction set
+          that tells the orchestrator which work must be routed to which
+          specialist &mdash; without it, nothing gets delegated and the stage
+          stays empty.
+        </p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">03</div>
+      <div class="step-body">
+        <p>
+          TycoonAgents creates the agent roster in <code>.claude/agents</code>
+          &mdash; one definition file per specialist, tuned to your project
+          type (see Chapter 03 for the full roster).
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">First-run wizard, Step 1 &mdash; delegation mode choice and hook install.</div>
+  </div>
+
+  <h3>Step 2 &mdash; Optional extras</h3>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">01</div>
+      <div class="step-body">
+        <p>
+          <strong>Ignore tycoon logs</strong> &mdash; adds TycoonAgents'
+          activity logs to your ignore files so they don't clutter version
+          control: <code>.gitignore</code> for Git projects, or
+          <code>.p4ignore</code> / <code>.urcignore</code> for UEFN
+          projects using Perforce or Unreal Revision Control.
+        </p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">02</div>
+      <div class="step-body">
+        <p>
+          <strong>Install skill chips</strong> &mdash; adds bundled Claude
+          Code skills relevant to your project.
+        </p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">03</div>
+      <div class="step-body">
+        <p>
+          <strong>UEFN detection card</strong> &mdash; if TycoonAgents
+          detects a UEFN project, a card offers "Yes, set up UEFN." Accepting
+          it stages the Python bridge into your project's
+          <code>Content/Python</code> folder and installs the Verse Expert
+          and UEFN Auditor specialist agents. See Chapter 12 for what the
+          bridge does.
+        </p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">04</div>
+      <div class="step-body">
+        <p>
+          <strong>Advanced tuning</strong> &mdash; a link straight to
+          Settings (Chapter 09) if you want to change parallel-agent limits
+          or other defaults before you start.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">First-run wizard, Step 2 &mdash; optional extras card.</div>
+  </div>
+
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      Step 2 is entirely optional and can be skipped. Step 1 is the only
+      part that's required to get delegation working at all.
+    </p>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 2.3 &middot; Returning users</div>
+    <div class="s-caption">no repeat prompts</div>
+  </div>
+  <p>
+    Once Step 1 has completed for a workspace, TycoonAgents won't show the
+    wizard again on future opens &mdash; the panel opens straight into the
+    Theater tab. If you want to revisit the wizard's choices later (switch
+    delegation modes, re-run UEFN setup, and so on), use the panel's
+    Settings menu rather than waiting for the wizard to reappear.
+  </p>
+
+  <div class="nav-links">
+    <div class="nav-prev"><a href="ch-01.html">&larr; Chapter 01</a></div>
+    <div class="nav-index"><a href="index.html">Handbook Index</a></div>
+    <div class="nav-next"><a href="ch-03.html">Chapter 03 &rarr;</a></div>
+  </div>
+</body>
+</html>

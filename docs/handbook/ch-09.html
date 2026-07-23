@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 9 — Settings Reference · TycoonAgents Handbook</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+
+<p class="crumb">TycoonAgents Handbook / Chapter 09 / Part III · Reference · v0.0.429</p>
+
+<h1><span class="chapter-num">09</span>Settings Reference</h1>
+
+<div class="lede">
+  <p class="label">Two layers of settings</p>
+  <p class="intro">TycoonAgents has editor-level settings (the ones your editor's Settings UI knows about) and an in-panel Settings tab with richer, live controls. This chapter lists both, so you know where to look for a given knob.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 9.1 · Editor settings</span>
+  <span class="cap">key · default · what it does</span>
+</div>
+<div class="ref-table">
+<table>
+  <thead><tr><th>Setting key</th><th>Default</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>tycoonagents.autoShow</code></td><td>true</td><td>Automatically opens the live agent panel when a workspace opens.</td></tr>
+    <tr><td><code>tycoonagents.idleFreezeMinutes</code></td><td>3</td><td>Freezes an agent's live time after this many minutes with no activity.</td></tr>
+    <tr><td><code>tycoonagents.sanityCapMinutes</code></td><td>15</td><td>Hard cap on any single active stretch, in minutes.</td></tr>
+    <tr><td><code>tycoonagents.delegationWarnThreshold</code></td><td>5</td><td>Warns in Delegation Health once the orchestrator's direct search count exceeds this in a session.</td></tr>
+    <tr><td><code>tycoonagents.themeImageProvider</code></td><td>openai</td><td>Which image provider to use — <code>openai</code> or <code>gemini</code>.</td></tr>
+    <tr><td><code>tycoonagents.geminiApiKey</code></td><td>&nbsp;</td><td>Fallback Gemini API key. Prefer the secure field in Themes &gt; Theme Builder.</td></tr>
+    <tr><td><code>tycoonagents.openaiApiKey</code></td><td>&nbsp;</td><td>Fallback OpenAI API key. Prefer the secure field in Themes &gt; Theme Builder.</td></tr>
+    <tr><td><code>tycoonagents.geminiModel</code></td><td>&nbsp;</td><td>Image model override for Gemini. Leave blank to always use the latest recommended model.</td></tr>
+    <tr><td><code>tycoonagents.openaiModel</code></td><td>&nbsp;</td><td>Image model override for OpenAI. Leave blank to always use the latest recommended model.</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>Leaving the model overrides blank isn't a placeholder — it's the recommended setting. TycoonAgents resolves to the newest supported model for your chosen provider automatically.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 9.2 · In-panel Settings tab</span>
+  <span class="cap">what each section controls</span>
+</div>
+
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div>
+      <p><strong>Hook health.</strong> Shows whether Claude Code's hooks are installed for this project, with buttons to install or repair them.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div>
+      <p><strong>Delegation style.</strong> Choose between <em>Direct</em> and <em>Team Leads</em> delegation modes, plus a separate <strong>Review pass</strong> checkbox (on by default) — when enabled, a second agent reviews each specialist's work before it's reported done.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">03</span>
+    <div>
+      <p><strong>Project Plan.</strong> Turns the optional phase/task planning feature on or off (see Chapter 11).</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">04</span>
+    <div>
+      <p><strong>Agents.</strong> Per-role model and agent choices — which model each specialist role runs on.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">05</span>
+    <div>
+      <p><strong>Keyword routing.</strong> The word lists that decide which specialist a task's description routes to.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">06</span>
+    <div>
+      <p><strong>Delegation Health.</strong> A live look at how well delegation is working for this session — see Chapter 10 for how to read it.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">07</span>
+    <div>
+      <p><strong>Context budget.</strong> Controls related to how much context gets passed between agents.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">08</span>
+    <div>
+      <p><strong>Report a bug / Diagnostics.</strong> Generates a sanitized diagnostic report you can share when something isn't working — see Chapter 13.</p>
+    </div>
+  </div>
+</div>
+
+<p class="nav-links">
+  <a class="prev" href="ch-08.html">&larr; Ch 08 · Themes: Shipped, Personal &amp; Community</a>
+  <a class="index" href="index.html">Index</a>
+  <a class="next" href="ch-10.html">Ch 10 · Metrics &amp; Delegation Tabs &rarr;</a>
+</p>
+
+</body>
+</html>

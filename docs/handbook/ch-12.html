@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 12 — UEFN Power Tools · TycoonAgents Handbook</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+
+<p class="crumb">TycoonAgents Handbook / Chapter 12 / Part III · Reference · v0.0.429</p>
+
+<h1><span class="chapter-num">12</span>UEFN Power Tools</h1>
+
+<div class="lede">
+  <p class="label">For Fortnite Creative projects</p>
+  <p class="intro">If your workspace is a UEFN (Unreal Editor for Fortnite) project, TycoonAgents adds a second layer on top of everything else: a bridge into the editor itself, so agents can inspect and audit your level, not just your source files.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 12.1 · Setup</span>
+  <span class="cap">detected automatically</span>
+</div>
+<p>The setup wizard detects a UEFN project on its own. When it does, it offers to:</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Stage the Python bridge into your project's <code>Content/Python</code> folder.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Install the <strong>Verse Expert</strong> and <strong>UEFN Auditor</strong> agents alongside your other specialists.</p></div>
+  </div>
+</div>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Setup screen — UEFN detected, bridge staging chip.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 12.2 · The Power Tools window</span>
+  <span class="cap">in-editor launcher</span>
+</div>
+<p>Once the bridge is staged, an in-editor launcher window becomes available inside UEFN itself. Its title bar shows the bridge's version, so you can tell at a glance whether it's current. From there you can reach:</p>
+<div class="ref-table">
+<table>
+  <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>Device audit</td><td>Reviews devices in your level for common configuration issues.</td></tr>
+    <tr><td>Project health scan</td><td>Checks the project for structural issues across its assets and Verse source.</td></tr>
+    <tr><td>Asset browsers</td><td>Browse and inspect assets in your project's content.</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>The Power Tools launcher window, version-stamped title.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 12.3 · What agents can do through it</span>
+  <span class="cap">MCP tools</span>
+</div>
+<p>Agents reach the live editor through a set of MCP tools built on the same bridge:</p>
+
+<div class="ref-table">
+<p class="group-label">Core &amp; status</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_status</code></td><td>Bridge connectivity check.</td></tr>
+    <tr><td><code>uefn_get_level_info</code></td><td>Returns summary information about the current level.</td></tr>
+    <tr><td><code>uefn_run_audit</code></td><td>Runs the device audit.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Devices &amp; properties</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_list_devices</code></td><td>Lists devices in the level.</td></tr>
+    <tr><td><code>uefn_get_property</code> / <code>uefn_set_property</code></td><td>Reads or writes a property on an actor or device.</td></tr>
+    <tr><td><code>uefn_select_actor</code></td><td>Selects an actor in the editor.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Batch operations</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_batch_set</code></td><td>Sets a property on a filtered set of actors.</td></tr>
+    <tr><td><code>uefn_batch_get</code></td><td>Reads a property from a filtered set of actors.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Asset browsing</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_list_assets</code></td><td>Lists assets under a content path.</td></tr>
+    <tr><td><code>uefn_inspect_asset</code></td><td><em>Experimental.</em> Loads and inspects a single asset's editor-exposed properties.</td></tr>
+    <tr><td><code>uefn_texture_find</code></td><td>Finds texture references in the project.</td></tr>
+    <tr><td><code>uefn_texture_summary</code></td><td>Gets a grouped texture usage summary.</td></tr>
+    <tr><td><code>uefn_texture_on_actor</code></td><td>Lists textures referenced by an actor.</td></tr>
+    <tr><td><code>uefn_material_browse</code></td><td>Browses project materials.</td></tr>
+    <tr><td><code>uefn_material_unused</code></td><td>Finds unused materials in the project.</td></tr>
+    <tr><td><code>uefn_niagara_browse</code></td><td>Browses Niagara particle systems.</td></tr>
+    <tr><td><code>uefn_niagara_usage</code></td><td>Shows Niagara particle system usage across the level.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Project health</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_health_scan</code></td><td>Runs a health scan on the project.</td></tr>
+    <tr><td><code>uefn_dependency_scan</code></td><td>Scans asset dependencies.</td></tr>
+    <tr><td><code>uefn_asset_sweep</code></td><td>Sweeps and reports on project assets.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 12.4 · Keeping the bridge current</span>
+  <span class="cap">self-updating, mostly</span>
+</div>
+<p>The bridge keeps itself up to date in two ways: the newest project-side copy wins automatically when a UEFN project loads, and the extension also refreshes engine-side copies each time the panel opens.</p>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>If the Power Tools window's title shows an older version than your installed extension, close and reopen the UEFN project — the self-sync runs at project load, before anything else.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 12.5 · Revision control hygiene</span>
+  <span class="cap">.urcignore</span>
+</div>
+<p>Setup also writes a <code>.urcignore</code> file so day-to-day dev artifacts (config, logs, and similar loose files) stay out of UEFN's Revision Control — only your actual project assets get tracked.</p>
+
+<p class="nav-links">
+  <a class="prev" href="ch-11.html">&larr; Ch 11 · Project Plan</a>
+  <a class="index" href="index.html">Index</a>
+  <a class="next" href="ch-13.html">Ch 13 · Troubleshooting &amp; Diagnostics &rarr;</a>
+</p>
+
+</body>
+</html>
