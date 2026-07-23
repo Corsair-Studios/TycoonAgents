@@ -504,4 +504,8 @@ pre code {
     display: block !important;
     padding: 0 1rem 0 0;
   }
+
+  .side-rail-toggle::details-content {
+    content-visibility: visible;
+  }
 }
