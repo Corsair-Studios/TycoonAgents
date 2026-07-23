@@ -374,6 +374,30 @@ server.registerTool(
     )
 );
 
+server.registerTool(
+  "uefn_inspect_asset",
+  {
+    description:
+      "EXPERIMENTAL: load a single asset by path and reflect its editor-property values via Python (read-only — loads but never saves or modifies). Use to probe whether an opaque asset type exposes data to editor Python that isn't otherwise reachable from Verse or export. Output shape depends on undocumented per-class Python exposure and may vary across asset types or engine versions.",
+    inputSchema: {
+      asset_path: z
+        .string()
+        .describe(
+          "Full object or package path, e.g. /YourProject/NPCCharDef_X or /YourProject/NPCCharDef_X.NPCCharDef_X"
+        ),
+      max_depth: z.number().int().optional().describe("Struct/array expansion depth (default 2, max 4)"),
+    },
+  },
+  async (args) =>
+    bridgeTool(
+      "inspect_asset",
+      compact({
+        asset_path: args.asset_path,
+        max_depth: args.max_depth,
+      })
+    )
+);
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 console.error(`[trashbyrd-uefn] Starting MCP server. Bridge dir: ${BRIDGE_DIR}`);

@@ -586,6 +586,141 @@ def _handle_list_assets(params):
     }
 
 
+def _inspect_value(value, depth, max_depth):
+    """Best-effort JSON-safe rendering of a reflected property value."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    # Unreal Name/Text/enums stringify usefully.
+    type_name = type(value).__name__
+    if depth >= max_depth:
+        return f"<{type_name}>"
+    try:
+        if isinstance(value, unreal.Array):
+            return [_inspect_value(v, depth + 1, max_depth) for v in list(value)[:32]]
+    except Exception:
+        pass
+    # Structs / objects: try to expand their editor properties one level.
+    try:
+        if isinstance(value, unreal.StructBase):
+            out = {"__struct": type_name}
+            for prop in _editor_property_names(value):
+                try:
+                    out[prop] = _inspect_value(
+                        value.get_editor_property(prop), depth + 1, max_depth
+                    )
+                except Exception as e:
+                    out[prop] = f"<unreadable: {e.__class__.__name__}>"
+            return out
+    except Exception:
+        pass
+    try:
+        if isinstance(value, unreal.Object):
+            # Reference another object by path rather than expanding it.
+            return {"__object": type_name, "path": value.get_path_name()}
+    except Exception:
+        pass
+    try:
+        return str(value)
+    except Exception:
+        return f"<{type_name}>"
+
+
+def _editor_property_names(obj):
+    """Enumerate candidate editor-property names for a UObject/struct.
+
+    The Python API has no official 'list all properties' call, so probe the
+    class's exposed attributes and keep those get_editor_property accepts.
+    """
+    names = []
+    seen = set()
+    for attr in dir(obj):
+        if attr.startswith("_") or attr in seen:
+            continue
+        seen.add(attr)
+        try:
+            obj.get_editor_property(attr)
+            names.append(attr)
+        except Exception:
+            continue
+        if len(names) >= 200:
+            break
+    return names
+
+
+def _handle_inspect_asset(params):
+    """EXPERIMENTAL: load an asset and reflect its editor properties.
+
+    Purpose: probe whether opaque asset types (e.g. NPC Character
+    Definitions) expose readable property values to editor Python even
+    though they are closed to Verse and export. Read-only — loads the asset
+    into memory but never modifies or saves anything.
+
+    params:
+      asset_path (required): full object or package path, e.g.
+        '/YourProject/NPCCharDef_Example' or
+        '/YourProject/NPCCharDef_Example.NPCCharDef_Example'
+      max_depth (optional, default 2, cap 4): struct expansion depth.
+    """
+    asset_path = params.get("asset_path")
+    if not asset_path:
+        raise ValueError("Missing required param: asset_path")
+
+    max_depth = params.get("max_depth", 2)
+    try:
+        max_depth = int(max_depth)
+    except (TypeError, ValueError):
+        max_depth = 2
+    max_depth = max(1, min(max_depth, 4))
+
+    load_error = None
+    asset = None
+    try:
+        asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+    except Exception as e:
+        load_error = f"{e.__class__.__name__}: {e}"
+
+    if asset is None and load_error is None:
+        load_error = "load_asset returned None (asset missing or class blocked)"
+
+    if asset is None:
+        # Also report whether the registry can at least see it, to
+        # distinguish 'wrong path' from 'load blocked'.
+        registry_sees_it = False
+        try:
+            registry = unreal.AssetRegistryHelpers.get_asset_registry()
+            ad = registry.get_asset_by_object_path(asset_path)
+            registry_sees_it = bool(ad and ad.is_valid())
+        except Exception:
+            pass
+        return {
+            "asset_path": asset_path,
+            "loaded": False,
+            "load_error": load_error,
+            "registry_sees_asset": registry_sees_it,
+        }
+
+    cls = asset.get_class()
+    prop_names = _editor_property_names(asset)
+    properties = {}
+    unreadable = []
+    for name in prop_names:
+        try:
+            properties[name] = _inspect_value(
+                asset.get_editor_property(name), 0, max_depth
+            )
+        except Exception as e:
+            unreadable.append({"name": name, "error": e.__class__.__name__})
+
+    return {
+        "asset_path": asset_path,
+        "loaded": True,
+        "class": str(cls.get_name()) if cls else None,
+        "property_count": len(properties),
+        "properties": properties,
+        "unreadable": unreadable,
+    }
+
+
 # Method dispatch table
 _METHODS = {
     "status": _handle_status,
@@ -608,6 +743,7 @@ _METHODS = {
     "health_scan": _handle_health_scan,
     "asset_sweep": _handle_asset_sweep,
     "list_assets": _handle_list_assets,
+    "inspect_asset": _handle_inspect_asset,
 }
 
 
