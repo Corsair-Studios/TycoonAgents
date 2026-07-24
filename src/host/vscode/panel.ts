@@ -95,6 +95,7 @@ import {
   getThemeImageConfigurationStatus,
   resolveThemeImageSettings,
   saveThemeImageSettings,
+  saveThemeImagePreference,
 } from "../../extension/themeImageSettings";
 import { IMAGE_MODELS } from "../../extension/imageModels";
 import { MSG, MSG_SCHEMAS } from "./messages";
@@ -747,6 +748,20 @@ export class TycoonPanel {
               type: MSG.THEME_IMAGE_SETTINGS,
               payload: { error: String(err) },
             });
+          }
+        } else if (message.type === MSG.SET_THEME_IMAGE_PREFERENCE) {
+          // Lightweight sibling of SAVE_THEME_IMAGE_SETTINGS fired on
+          // dropdown change: persists provider + model only, never the
+          // api_key, and swallows errors non-throwing (no reply needed —
+          // the webview already reflects the change locally).
+          const payload = (message as any).payload as { provider?: string; model?: string } | undefined;
+          try {
+            await saveThemeImagePreference(this._secrets, {
+              provider: payload?.provider,
+              model: payload?.model,
+            });
+          } catch (err) {
+            console.warn("TycoonAgents: Could not persist theme image preference:", err);
           }
         } else if (message.type === MSG.LIST_THEMES) {
           const themes = await listThemes(this._globalStorageUri);

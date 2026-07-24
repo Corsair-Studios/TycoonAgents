@@ -2329,6 +2329,25 @@
     themeImageProvider.addEventListener("change", () => {
       updateThemeApiKeyUi("", false);
       populateModelSelect(selectedThemeImageProvider());
+      vscode.postMessage({
+        type: 'SET_THEME_IMAGE_PREFERENCE',
+        payload: {
+          provider: selectedThemeImageProvider(),
+          model: themeImageModelEl ? themeImageModelEl.value : "",
+        },
+      });
+    });
+  }
+
+  if (themeImageModelEl) {
+    themeImageModelEl.addEventListener("change", () => {
+      vscode.postMessage({
+        type: 'SET_THEME_IMAGE_PREFERENCE',
+        payload: {
+          provider: selectedThemeImageProvider(),
+          model: themeImageModelEl.value,
+        },
+      });
     });
   }
 

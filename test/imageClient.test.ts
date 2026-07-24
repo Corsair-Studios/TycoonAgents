@@ -242,6 +242,30 @@ test('generateThemeImage (gemini) appends the no-text directive to the prompt se
   }
 });
 
+test('generateThemeImage (gemini) appends the edge/anti-fringe directive to the prompt sent to the API', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(
+      JSON.stringify({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: Buffer.from('fake-png').toString('base64') } }] } }],
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('Cell 1 — CONTACT: ready stance', {
+      provider: 'gemini',
+      apiKey: 'test-key',
+    });
+    const sentText: string = capturedBody.contents[0].parts[0].text;
+    assert.match(sentText, /soft dark fringe/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('generateThemeImage (openai) prompt is sent verbatim, with no Gemini no-text directive appended', async () => {
   const originalFetch = globalThis.fetch;
   let capturedBody: any;
@@ -258,6 +282,7 @@ test('generateThemeImage (openai) prompt is sent verbatim, with no Gemini no-tex
     });
     assert.equal(capturedBody.prompt, 'Cell 1 — CONTACT: ready stance');
     assert.doesNotMatch(capturedBody.prompt, /must never appear as visible pixels/);
+    assert.doesNotMatch(capturedBody.prompt, /soft dark fringe/);
   } finally {
     globalThis.fetch = originalFetch;
   }

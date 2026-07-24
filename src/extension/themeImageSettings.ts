@@ -113,6 +113,42 @@ export async function saveThemeImageSettings(
   return provider;
 }
 
+/**
+ * Persist only the provider + per-provider model override — never touches
+ * the API key secret. Used by the webview's provider/model dropdown
+ * `change` listeners so a selection survives closing/reopening the panel
+ * without requiring a Save click (which also carries the api_key field and
+ * would otherwise risk clobbering the stored key with a blank one).
+ */
+export async function saveThemeImagePreference(
+  secrets: vscode.SecretStorage,
+  { provider: providerValue, model: modelValue }: { provider: unknown; model: unknown },
+): Promise<ThemeImageProvider> {
+  const provider = normalizeThemeImageProvider(providerValue);
+  await secrets.store(PROVIDER_STORAGE_KEY, provider);
+
+  const config = vscode.workspace.getConfiguration('tycoonagents');
+  if (config.inspect<string>('themeImageProvider')) {
+    try {
+      await config.update('themeImageProvider', provider, vscode.ConfigurationTarget.Global);
+    } catch (err) {
+      console.warn('TycoonAgents: Could not mirror theme image provider to User Settings:', err);
+    }
+  }
+
+  const model = typeof modelValue === 'string' ? modelValue.trim() : '';
+  const modelConfigKey = MODEL_SETTING_KEYS[provider];
+  if (config.inspect<string>(modelConfigKey)) {
+    try {
+      await config.update(modelConfigKey, model, vscode.ConfigurationTarget.Global);
+    } catch (err) {
+      console.warn(`TycoonAgents: Could not save ${modelConfigKey} to User Settings:`, err);
+    }
+  }
+
+  return provider;
+}
+
 async function resolveThemeImageApiKey(
   secrets: vscode.SecretStorage,
   provider: ThemeImageProvider,

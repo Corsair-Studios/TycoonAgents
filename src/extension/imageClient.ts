@@ -156,6 +156,17 @@ export async function generateThemeImage(
 const GEMINI_NO_TEXT_DIRECTIVE =
   'CRITICAL OUTPUT RULE: Render ONLY the artwork. Do NOT draw any text, letters, words, numbers, labels, frame names, captions, annotations, callouts, titles, watermarks, or signage anywhere in the image, and do NOT place any text boxes, banners, or colored rectangles behind or beneath the art. The pose, animation, and frame names in the description above (for example words like CONTACT, PASSING, RECOVERY, ready stance, wind-up, forward swing, follow-through, walk cycle) are INSTRUCTIONS DESCRIBING WHAT TO DRAW — they must never appear as visible pixels. Every non-subject pixel must be flat solid #FF00FF magenta with nothing written on it.';
 
+/**
+ * Gemini ("Nano Banana") anti-aliases the boundary between the subject and
+ * the flat magenta background, leaving faint dark fringe/contour pixels
+ * around character outlines that survive magenta keying. OpenAI GPT Image
+ * does not do this, so this directive is appended ONLY to the prompt sent
+ * to Gemini — it must never reach the shared `prompt` variable or the
+ * OpenAI request body.
+ */
+const GEMINI_EDGE_DIRECTIVE =
+  'EDGE RULE: Use hard-edged pixel-art rendering. The boundary between any subject and the background must be a single crisp transition — each edge pixel is either fully subject-colored or fully flat #FF00FF magenta, with NO anti-aliasing, feathering, blur, gradient, glow, halo, drop shadow, or semi-transparent/dark contour pixels ringing the subject or its outline. Do NOT draw any soft dark fringe, outer glow, or shadow where the subject meets the magenta. The subject\'s own dark outline stroke is allowed, but it must have a hard edge directly against the flat magenta — never a blended or anti-aliased dark halo outside it. Every non-subject pixel is pure flat #FF00FF magenta.';
+
 async function generateWithImagen3(
   prompt: string,
   apiKey: string,
@@ -163,7 +174,7 @@ async function generateWithImagen3(
   model: string,
 ): Promise<Buffer> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-  const geminiPrompt = `${prompt}\n\n${GEMINI_NO_TEXT_DIRECTIVE}`;
+  const geminiPrompt = `${prompt}\n\n${GEMINI_NO_TEXT_DIRECTIVE}\n\n${GEMINI_EDGE_DIRECTIVE}`;
   const body = {
     contents: [
       {

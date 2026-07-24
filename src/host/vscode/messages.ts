@@ -124,6 +124,12 @@ export const MSG = {
   GET_THEME_IMAGE_SETTINGS: "GET_THEME_IMAGE_SETTINGS",
   SAVE_THEME_IMAGE_SETTINGS: "SAVE_THEME_IMAGE_SETTINGS",
   THEME_IMAGE_SETTINGS: "THEME_IMAGE_SETTINGS",
+  // Preference-only persistence (provider + model, no api_key) fired on
+  // dropdown `change` so a selection survives panel close/reopen without
+  // requiring a Save click. See saveThemeImagePreference in
+  // extension/themeImageSettings.ts. No reply message — the webview already
+  // reflects the change locally.
+  SET_THEME_IMAGE_PREFERENCE: "SET_THEME_IMAGE_PREFERENCE",
 
   // ---- theme library: list / export / upgrade / import / delete / select ---
   LIST_THEMES: "LIST_THEMES",
