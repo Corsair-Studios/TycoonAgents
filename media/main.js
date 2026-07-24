@@ -1594,6 +1594,27 @@
       rackInsertIndex = Math.max(0, Math.min(buildBuiltCount + 1, buildQueue.length));
       buildQueue.splice(rackInsertIndex, 0, rackObjectId);
     }
+    // p3-t1: turret-flagged objects are withheld from buildQueue until
+    // rebirthCount reaches TURRET_UNLOCK_REBIRTH (see buildSeededQueue). The
+    // instant that threshold is first crossed, PUSH every turret's
+    // object_id onto the END of the LIVE queue as an UNBUILT object so it
+    // turns buildable immediately, no reload needed. CRITICAL: this must
+    // append at the end (NOT splice at buildBuiltCount+1 like the rack) —
+    // buildSeededQueue always appends unlocked turrets at the very end of
+    // its returned queue (a position that never disturbs the non-turret
+    // built/unbuilt boundary on reload); splicing mid-queue here would put
+    // the live-crossed turret at a DIFFERENT index than a reload would
+    // recompute, corrupting buildBuiltCount's meaning the next time the
+    // theme loads. Gated to the exact crossing (===, not >=) so later
+    // rebirths don't re-run this walk; the indexOf guard also makes it
+    // safe/idempotent if it ever did (no double-insert/no double-append).
+    if (rebirthCount === TURRET_UNLOCK_REBIRTH) {
+      themeBuildables.forEach((obj) => {
+        if (obj.is_turret === true && buildQueue.indexOf(obj.object_id) === -1) {
+          buildQueue.push(obj.object_id);
+        }
+      });
+    }
     rebirthBaseline = { built: buildBuiltCount, evicted: rivalsEvictedCount, tasks: (state.completedTasks || 0) };
     cycleObjectsBuilt = 0;
     cycleRivalsEvicted = 0;
@@ -1779,6 +1800,18 @@
       reqList.appendChild(row);
     }
     panel.appendChild(reqList);
+
+    // Subtle upcoming-unlock hint: only while the theme actually has a
+    // turret object AND it isn't unlocked yet (rebirthCount reaching
+    // TURRET_UNLOCK_REBIRTH removes this — see buildSeededQueue/canBuild
+    // gating around line 5288). Purely additive; nothing renders for
+    // turret-less themes or once the turret is already unlocked.
+    if (turretObjectIds.size > 0 && rebirthCount < TURRET_UNLOCK_REBIRTH) {
+      const turretHint = document.createElement("div");
+      turretHint.className = "rebirth-bonus";
+      turretHint.textContent = `Reach Rebirth ${TURRET_UNLOCK_REBIRTH} to unlock a buildable defensive turret`;
+      panel.appendChild(turretHint);
+    }
 
     if (rebirthConfirmPending) {
       const confirm = document.createElement("div");
@@ -4681,6 +4714,10 @@
   // in the top-level init order, and this whole file is one IIFE evaluated
   // top-to-bottom, so referencing it here would hit the const TDZ.
   const TURRET_STAGGER_SEC = 0.5;       // seconds a struck rival stops attacking structures; tunable
+  // p3-t1: a turret-flagged object is withheld from buildQueue (see
+  // buildSeededQueue) until the player has completed this many rebirths, then
+  // appears automatically — no reload required (see doRebirth's live splice).
+  const TURRET_UNLOCK_REBIRTH = 2;      // rebirths required before a turret object becomes buildable; tunable
 
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
@@ -5243,14 +5280,33 @@
    * @param {Array<object>} buildables
    * @param {string} themeId
    * @param {number} [rebirthCount] number of completed rebirths; the rack
-   *   stays out of the pool entirely while this is < 1.
+   *   stays out of the pool entirely while this is < 1, and any is_turret
+   *   object is always excluded from the shuffle pool and appended at the
+   *   END of the returned queue only once this is >= TURRET_UNLOCK_REBIRTH
+   *   (p3-t1; see doRebirth for the live-append that adds a turret without a
+   *   reload the instant that threshold is first crossed).
    * @param {number|null} [rackInsertIndex] persisted splice index for the
    *   rack; null/undefined falls back to appending at the end.
    * @returns {string[]}
    */
   function buildSeededQueue(buildables, themeId, rebirthCount, rackInsertIndex) {
     const rackId = buildables.length > 0 ? buildables[0].object_id : null;
-    const pool = rackId !== null ? buildables.filter((o) => o.object_id !== rackId) : buildables;
+    let pool = rackId !== null ? buildables.filter((o) => o.object_id !== rackId) : buildables;
+    // p3-t1: turret-flagged objects are ALWAYS excluded from the shuffle pool
+    // itself (UNCONDITIONALLY — regardless of rebirthCount), same treatment
+    // as the rack above. CRITICAL: the seeded Fisher-Yates shuffle's
+    // permutation depends on the pool's length/contents, so filtering
+    // turrets CONDITIONALLY (only when locked) would make every OTHER
+    // object's shuffle order differ once a turret unlocks — scrambling
+    // buildBuiltCount's already-built prefix on the very next reload (bug
+    // caught in review). Keeping the pre-shuffle pool identical in every
+    // rebirth state keeps every non-turret object's position stable forever;
+    // turrets are appended back post-shuffle below, mirroring the rack's
+    // filter-then-splice-back pattern. Turret-less themes: no-op.
+    const turretIds = pool.filter((o) => o.is_turret === true).map((o) => o.object_id);
+    if (turretIds.length > 0) {
+      pool = pool.filter((o) => o.is_turret !== true);
+    }
     const ids = pool.map((o) => o.object_id);
     const rand = mulberry32(seededHash(String(themeId || "")));
     // Fisher-Yates shuffle using the seeded PRNG.
@@ -5263,6 +5319,15 @@
         ? Math.max(0, Math.min(rackInsertIndex, ids.length))
         : ids.length;
       ids.splice(idx, 0, rackId);
+    }
+    // p3-t1: once unlocked, turret(s) are appended at the very END of the
+    // queue (in build_order — buildables/pool is pre-sorted by the caller) —
+    // a trailing position that never disturbs the non-turret built/unbuilt
+    // boundary regardless of buildBuiltCount. Hidden entirely (not appended)
+    // while locked. MUST match doRebirth's live-crossing append exactly, so
+    // a live-added turret and a reload-recomputed queue agree on position.
+    if ((rebirthCount || 0) >= TURRET_UNLOCK_REBIRTH) {
+      for (const tid of turretIds) ids.push(tid);
     }
     return ids;
   }
