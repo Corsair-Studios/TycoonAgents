@@ -217,6 +217,52 @@ test('generateThemeImage: no apiKey in options or config or env throws a clear e
   }
 });
 
+test('generateThemeImage (gemini) appends the no-text directive to the prompt sent to the API', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(
+      JSON.stringify({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: Buffer.from('fake-png').toString('base64') } }] } }],
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('Cell 1 — CONTACT: ready stance', {
+      provider: 'gemini',
+      apiKey: 'test-key',
+    });
+    const sentText: string = capturedBody.contents[0].parts[0].text;
+    assert.ok(sentText.startsWith('Cell 1 — CONTACT: ready stance'));
+    assert.match(sentText, /must never appear as visible pixels/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage (openai) prompt is sent verbatim, with no Gemini no-text directive appended', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('Cell 1 — CONTACT: ready stance', {
+      provider: 'openai',
+      apiKey: 'test-key',
+    });
+    assert.equal(capturedBody.prompt, 'Cell 1 — CONTACT: ready stance');
+    assert.doesNotMatch(capturedBody.prompt, /must never appear as visible pixels/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('generateThemeImage watchdog timer does not fire after a request settles normally', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>

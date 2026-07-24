@@ -146,6 +146,16 @@ export async function generateThemeImage(
     : generateWithImagen3(prompt, apiKey, options, model);
 }
 
+/**
+ * Gemini ("Nano Banana") transcribes frame-label words from the prompt
+ * (e.g. "CONTACT", "ready stance", "forward swing") directly onto the
+ * generated sprite art as visible text. OpenAI GPT Image does not do this,
+ * so this directive is appended ONLY to the prompt sent to Gemini — it must
+ * never reach the shared `prompt` variable or the OpenAI request body.
+ */
+const GEMINI_NO_TEXT_DIRECTIVE =
+  'CRITICAL OUTPUT RULE: Render ONLY the artwork. Do NOT draw any text, letters, words, numbers, labels, frame names, captions, annotations, callouts, titles, watermarks, or signage anywhere in the image, and do NOT place any text boxes, banners, or colored rectangles behind or beneath the art. The pose, animation, and frame names in the description above (for example words like CONTACT, PASSING, RECOVERY, ready stance, wind-up, forward swing, follow-through, walk cycle) are INSTRUCTIONS DESCRIBING WHAT TO DRAW — they must never appear as visible pixels. Every non-subject pixel must be flat solid #FF00FF magenta with nothing written on it.';
+
 async function generateWithImagen3(
   prompt: string,
   apiKey: string,
@@ -153,11 +163,12 @@ async function generateWithImagen3(
   model: string,
 ): Promise<Buffer> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const geminiPrompt = `${prompt}\n\n${GEMINI_NO_TEXT_DIRECTIVE}`;
   const body = {
     contents: [
       {
         parts: [
-          { text: prompt },
+          { text: geminiPrompt },
           ...(options.referenceImages ?? []).map((image) => ({
             inline_data: {
               mime_type: image.mimeType,
