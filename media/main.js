@@ -14474,7 +14474,14 @@
           ctx.fillStyle = "#e0e0e0";
           ctx.font = `${labelFont}px monospace`;
           ctx.textAlign = "center";
-          const label = (agent.name || agent.id).slice(0, 24);
+          // Live-read the themed name from themeRosterAgents (same source/lookup
+          // as the hover tooltip above, via the already-computed rosterAgentInfo)
+          // rather than a value captured once — a RENAME_THEME_CHARACTER /
+          // SET_THEME_ITEM_NAMES re-post of THEME_INITIALIZED refreshes
+          // themeRosterAgents, so this label now updates the same frame instead
+          // of requiring a reload. Falls back to agent.name || agent.id when the
+          // theme has no roster name for this slot (non-themed-agent case).
+          const label = ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id).slice(0, 24);
           // Word-wrap: greedily pack whitespace-separated words into lines that
           // fit maxLabelW so long names ("VS Code Integration", "Search &
           // Retrieval") stack onto 2-3 centered lines instead of clipping.
