@@ -110,6 +110,18 @@ Use an absolute path for `args`. On Windows use forward slashes. Do **not** add 
 | `uefn_select_actor` | Select a device/actor in the UEFN viewport | `actor_label` |
 | `uefn_run_audit` | Run full device audit, return JSON results | none |
 | `uefn_get_level_info` | Get level metadata (actor counts, device types) | none |
+| `uefn_batch_set` | Set a property on a filtered set of actors | `property_name`, `value`, `filter_type` (optional), `filter_value` (optional), `dry_run` (optional) |
+| `uefn_batch_get` | Read a property from a filtered set of actors | `property_name`, `filter_type` (optional), `filter_value` (optional) |
+| `uefn_texture_find` | Find texture references in the project | `texture_name`, `match_mode` (optional), `project_only` (optional) |
+| `uefn_texture_summary` | Get a grouped texture usage summary | `texture_name`, `match_mode` (optional), `project_only` (optional) |
+| `uefn_texture_on_actor` | List textures referenced by an actor | `actor_label` |
+| `uefn_material_browse` | Browse project materials | `project_only` (optional) |
+| `uefn_material_unused` | Find unused materials in the project | `project_only` (optional) |
+| `uefn_niagara_browse` | Browse Niagara particle systems | `project_only` (optional) |
+| `uefn_niagara_usage` | Show Niagara particle system usage across the level | none |
+| `uefn_dependency_scan` | Scan asset dependencies | `project_only` (optional) |
+| `uefn_health_scan` | Run a health scan on the project | none |
+| `uefn_asset_sweep` | Sweep and report on project assets | `project_only` (optional) |
 | `uefn_list_assets` | List assets under a content-browser path via the Unreal Asset Registry (read-only, metadata only — no asset loads) | `path`, `recursive` (optional), `class_filter` (optional), `limit` (optional) |
 | `uefn_inspect_asset` | EXPERIMENTAL: load a single asset by path and reflect its editor-property values via Python (read-only — loads but never saves or modifies) | `asset_path`, `max_depth` (optional) |
 
