@@ -36,7 +36,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { applyThemeItemNameChanges } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+const { applyThemeItemNameChanges, applyThemeObjectTurretFlag } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 function testManifest(): ThemeManifest {
   return {
@@ -200,4 +200,52 @@ test('applyThemeItemNameChanges applies a mixed object + rival batch and reports
   assert.equal(result.rejected[0].reason, 'Unknown rival "ghost".');
   assert.equal(manifest.buildable_objects[0].display_name, 'Supply Crate');
   assert.equal(manifest.roster_rivals[0].name, 'Gung Ho');
+});
+
+// p2-t1: opt-in per-object is_turret flag (Phase 2 groundwork — marking only,
+// nothing auto-fires yet). Mirrors applyThemeItemNameChanges's manifest-only,
+// no-IO shape so it's directly unit-testable the same way.
+test('applyThemeObjectTurretFlag sets is_turret on the matching object only, leaving other fields untouched', () => {
+  const manifest = testManifest();
+  manifest.buildable_objects.push({
+    build_order: 1,
+    object_id: 'windmill_01',
+    display_name: 'Windmill 01',
+    sprite_asset: 'frames.json#object_windmill_01',
+    anchor_coord: [0.5, 0.5],
+    exclusion_radius: 32,
+    work_units_required: 100,
+    anim_fps: 5,
+    anim_loop: true,
+  });
+
+  const changed = applyThemeObjectTurretFlag(manifest, 'windmill_01', true);
+
+  assert.equal(changed, true);
+  assert.equal(manifest.buildable_objects[1].is_turret, true);
+  // Untouched: the other object, and every other field on the flipped object.
+  assert.equal(manifest.buildable_objects[0].is_turret, undefined);
+  assert.equal(manifest.buildable_objects[1].display_name, 'Windmill 01');
+  assert.equal(manifest.buildable_objects[1].anim_fps, 5);
+  assert.equal(manifest.buildable_objects[1].anim_loop, true);
+});
+
+test('applyThemeObjectTurretFlag can clear a previously-set flag back to false', () => {
+  const manifest = testManifest();
+  manifest.buildable_objects[0].is_turret = true;
+
+  const changed = applyThemeObjectTurretFlag(manifest, 'crate_01', false);
+
+  assert.equal(changed, true);
+  assert.equal(manifest.buildable_objects[0].is_turret, false);
+});
+
+test('applyThemeObjectTurretFlag is a no-op for an unknown object_id', () => {
+  const manifest = testManifest();
+
+  const changed = applyThemeObjectTurretFlag(manifest, 'no_such_object', true);
+
+  assert.equal(changed, false);
+  assert.equal(manifest.buildable_objects[0].is_turret, undefined);
+  assert.equal(manifest.buildable_objects[0].display_name, 'Crate 01');
 });

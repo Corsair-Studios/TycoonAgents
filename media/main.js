@@ -3401,6 +3401,35 @@
         rowEl.appendChild(textarea);
         descInputs.push(textarea);
       }
+      // Opt-in "Acts as turret" toggle — ONLY on animated buildable-object
+      // rows. Gated on the runtime frame-array truth (themeImages[...].length
+      // > 1), not manifest anim_fps (that's 5 on every object, static and
+      // animated alike, so it can't discriminate — see objectAnimParams
+      // above). Fires immediately on change (SET_THEME_OBJECT_TURRET), unlike
+      // names/descriptions which stage behind the shared Apply button, since
+      // it's always exactly one field on one row.
+      if (row.nameRow && row.nameRow.itemKind === "object") {
+        const turretObjectId = row.nameRow.rowId;
+        const isAnimatedObject = (themeImages["object_" + turretObjectId]?.length || 0) > 1;
+        if (isAnimatedObject) {
+          const turretLabel = document.createElement("label");
+          turretLabel.className = "theme-review-turret-toggle";
+          const turretCheckbox = document.createElement("input");
+          turretCheckbox.type = "checkbox";
+          const manifestObj = themeBuildables.find((obj) => obj.object_id === turretObjectId);
+          turretCheckbox.checked = !!(manifestObj && manifestObj.is_turret === true);
+          turretCheckbox.disabled = inputsDisabled;
+          turretCheckbox.addEventListener("change", () => {
+            vscode.postMessage({
+              type: "SET_THEME_OBJECT_TURRET",
+              payload: { theme_id: reviewThemeId, object_id: turretObjectId, is_turret: turretCheckbox.checked },
+            });
+          });
+          turretLabel.appendChild(turretCheckbox);
+          turretLabel.appendChild(document.createTextNode(" Acts as turret (auto-fires at attackers)"));
+          rowEl.appendChild(turretLabel);
+        }
+      }
       grid.appendChild(rowEl);
     }
     details.appendChild(grid);
@@ -4634,6 +4663,24 @@
   const EXTINGUISH_MAX_ASSIGN = 3;   // max characters routed to one smoking object
   const EXTINGUISH_ARRIVE_EPS = 24;  // native px: within this of a repairer's OWN stand spot counts as "arrived"
   const EXTINGUISH_STAND_RADIUS = 28; // native px: ring radius around the object each repairer stands at (distinct per-slot spot, no pile-up)
+  // ── Turret auto-fire (Plan p2-t2) ─────────────────────────────────────────
+  // A BUILT object the designer flagged is_turret (see turretObjectIds below)
+  // auto-targets the nearest in-range attacker and fires a cosmetic projectile
+  // via the existing spawnProjectile pipeline (~1 shot/sec). Purely additive:
+  // objects not in turretObjectIds, or themes without projectile art, never
+  // fire. The damaged-disable gate (p2-t4) is deliberately NOT implemented
+  // here. Damage-to-rival/repel (p2-t3, below) IS implemented: each shot
+  // reuses the same `hp` field agents drain (AGENT_DPS) and the same
+  // hp<=0 → fleeing eviction path (advanceEnemies), and briefly staggers the
+  // target so it stops ramping structure damage (updateObjectSmoke gate).
+  const TURRET_RANGE = 140;             // native px: same scale as ENEMY_RANGED_RANGE (120); tunable
+  const TURRET_FIRE_INTERVAL_MS = 1000; // ms between shots per turret (~1/sec); tunable
+  const TURRET_DAMAGE_FRACTION = 0.25;  // fraction of an agent's DPS a turret shot deals, amortized over its fire interval; tunable
+  // TURRET_HIT_DAMAGE (derived from AGENT_DPS) is declared further down,
+  // right after AGENT_DPS itself — AGENT_DPS isn't defined yet at this point
+  // in the top-level init order, and this whole file is one IIFE evaluated
+  // top-to-bottom, so referencing it here would hit the const TDZ.
+  const TURRET_STAGGER_SEC = 0.5;       // seconds a struck rival stops attacking structures; tunable
 
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
@@ -4802,6 +4849,26 @@
    * @type {Record<string, {fps:number, loop:boolean}>}
    */
   let objectAnimParams = {};
+  /**
+   * Object IDs the designer has marked as turrets (manifest
+   * buildable_objects[].is_turret === true), keyed by nothing else — a flat
+   * Set of object_id. Phase 2 groundwork: this Set is the ONLY thing a later
+   * auto-fire feature needs to read; nothing here fires anything yet. Reset
+   * and rebuilt every THEME_INITIALIZED alongside objectAnimParams above, so
+   * it never leaks a previous theme's (or a stale pre-repost) turret marks.
+   * @type {Set<string>}
+   */
+  let turretObjectIds = new Set();
+  /**
+   * Per-turret fire cooldown (Plan p2-t2), keyed by object_id, in the SAME ms
+   * unit as TURRET_FIRE_INTERVAL_MS. Decremented by delta*1000 each frame in
+   * the turret update pass; a turret fires only when its entry is <= 0 (or
+   * absent — treated as 0, so a freshly-built turret can fire immediately).
+   * Reset/cleared every THEME_INITIALIZED alongside turretObjectIds so a
+   * previous theme's cooldowns never leak.
+   * @type {Record<string, number>}
+   */
+  let turretCooldown = {};
   /** Stable per-object native placement, keyed by object_id: {nx, ny}. Computed once at THEME_INITIALIZED. */
   let objectPlacement = {};
   /** Generated (non-override) placement per object_id: {nx, ny} — used to revert a Stage-Editor move. */
@@ -5376,6 +5443,11 @@
   const ENEMY_MAX_HP = 100;
   /** Damage per second an engaged agent deals to its target enemy. */
   const AGENT_DPS = 40;
+  // Derived (Plan p2-t3, not hardcoded): a turret shot deals
+  // TURRET_DAMAGE_FRACTION (0.25) of an agent's DPS, amortized over the
+  // turret's own fire interval — 40 * 0.25 * (1000ms/1000) = 10 HP/shot.
+  // Stays anchored to AGENT_DPS/TURRET_FIRE_INTERVAL_MS if either is retuned.
+  const TURRET_HIT_DAMAGE = AGENT_DPS * TURRET_DAMAGE_FRACTION * (TURRET_FIRE_INTERVAL_MS / 1000);
   /** Native px distance at which an agent switches from walk to melee/shoot. */
   const ENEMY_ENGAGE_RANGE = 36;
   /**
@@ -7032,10 +7104,16 @@
       // 1. Built objIds engaged by a live, non-fleeing rival (same signal as
       //    the raid-targeting block: targetKind === 'object' + truthy
       //    targetObjId + not fleeing + membership in the already-built set).
+      //    p2-t3: a rival currently staggered by a turret hit (turretStaggerT
+      //    > 0) is excluded too — the struck rival briefly stops "attacking"
+      //    the structure for TURRET_STAGGER_SEC, which is the turret's repel
+      //    effect (this is the ONLY place structure-damage ramp is applied,
+      //    so gating it here is sufficient — no separate attack-apply site).
       const engaged = new Set();
       if (builtIds && builtIds.size > 0 && Array.isArray(activeEnemies)) {
         for (const en of activeEnemies) {
           if (!en || en.fleeing) continue;
+          if (en.turretStaggerT > 0) continue;
           if (en.targetKind !== "object") continue;
           const oid = en.targetObjId;
           if (!oid || !builtIds.has(oid)) continue;
@@ -7205,6 +7283,81 @@
         }
       }
     } catch (e) { /* cosmetic only — never let extinguish assignment throw */ }
+  }
+
+  /**
+   * Turret auto-fire (Plan p2-t2/p2-t3). Once per frame, for every object
+   * flagged is_turret (turretObjectIds) that is currently BUILT
+   * (builtIds.has) and whose theme has projectile art (themeHasProjectile):
+   * find the nearest live attacker (activeEnemies) within TURRET_RANGE and,
+   * if the turret's cooldown has elapsed, fire a cosmetic projectile at it
+   * via the existing spawnProjectile pipeline and reset the cooldown to
+   * TURRET_FIRE_INTERVAL_MS. No target in range, not built, or no projectile
+   * art → stays silent (cooldown is left to idle, so a turret can fire the
+   * instant a target enters range rather than waiting out a stale timer).
+   * p2-t3: a fired-upon target also takes TURRET_HIT_DAMAGE off the SAME
+   * `hp` field agents drain (reused hp<=0 → fleeing eviction path in
+   * advanceEnemies — no new death system) and gets a brief
+   * TURRET_STAGGER_SEC stagger (en.turretStaggerT, decremented in
+   * advanceEnemies) that suppresses its structure-attack ramp
+   * (updateObjectSmoke's `engaged` gate). No damaged-disable gate (p2-t4)
+   * yet. Fully guarded — never throws.
+   * @param {number} delta seconds since last frame
+   * @param {Set<string>} builtIds object_ids that are fully built this frame
+   */
+  function updateTurrets(delta, builtIds) {
+    if (turretObjectIds.size === 0 || !themeHasProjectile) return;
+    try {
+      const deltaMs = delta * 1000;
+      for (const objId of turretObjectIds) {
+        if (!builtIds.has(objId)) continue;
+        const place = objectPlacement[objId];
+        if (!place) continue;
+        // ── p2-t4: damaged turrets go silent ─────────────────────────────
+        // A turret is a built structure like any other, so it already rides
+        // updateObjectSmoke/updateExtinguishProgress's damage/repair loop
+        // (rivals can target it, it smokes, shows a health bar, agents
+        // repair it) with no new system needed here. The explicit rule:
+        // ANY damage (damage > 0) stops firing immediately; it stays silent
+        // through partial repair; it only resumes once damage is back to 0,
+        // which — per that teardown — deletes the objectSmoke[objId] entry.
+        // Read live every frame; no caching. Reset cooldown to 0 while
+        // disabled so the instant it's fully repaired it can fire right away
+        // instead of waiting out a stale cooldown.
+        const smoke = objectSmoke[objId];
+        if (smoke && (smoke.damage || 0) > 0) {
+          turretCooldown[objId] = 0;
+          continue;
+        }
+        // Decrement this turret's cooldown (clamped at 0 — never goes negative
+        // so a target-less turret is ready to fire the moment one appears).
+        const cd = Math.max(0, (turretCooldown[objId] || 0) - deltaMs);
+        turretCooldown[objId] = cd;
+        if (cd > 0) continue;
+        // Nearest live attacker within TURRET_RANGE (squared-distance compare,
+        // mirrors assignExtinguishers'/enemy-targeting nearest-search pattern).
+        let bestEnemy = null, bestDist = TURRET_RANGE * TURRET_RANGE;
+        for (const en of activeEnemies) {
+          if (!en || en.fleeing) continue;
+          if (typeof en.nx !== "number" || typeof en.ny !== "number") continue;
+          const dx = en.nx - place.nx, dy = en.ny - place.ny;
+          const d = dx * dx + dy * dy;
+          if (d < bestDist) { bestDist = d; bestEnemy = en; }
+        }
+        if (!bestEnemy) continue; // no target in range — stay silent, cooldown left at 0
+        spawnProjectile(place.nx, place.ny, bestEnemy.nx, bestEnemy.ny);
+        turretCooldown[objId] = TURRET_FIRE_INTERVAL_MS;
+        // ── p2-t3: the shot actually hits ────────────────────────────────
+        // Reuse the same hp field agents drain (AGENT_DPS); the existing
+        // hp<=0 → fleeing eviction check (advanceEnemies, ~L13634) reaps it
+        // next frame — no new death/disengage path is introduced here.
+        if (typeof bestEnemy.hp === "number") bestEnemy.hp -= TURRET_HIT_DAMAGE;
+        // Brief stagger: while turretStaggerT > 0 (decremented in
+        // advanceEnemies), updateObjectSmoke's `engaged` gate excludes this
+        // rival so it stops ramping structure damage — the visible "repel".
+        bestEnemy.turretStaggerT = TURRET_STAGGER_SEC;
+      }
+    } catch (e) { /* cosmetic only — never let turret auto-fire throw */ }
   }
 
   /**
@@ -8474,6 +8627,14 @@
             objectAnimParams[obj.object_id] = { fps: obj.anim_fps, loop: obj.anim_loop !== false };
           }
         });
+        // Designer-marked turret objects (opt-in, default off — see
+        // BuildableObject.is_turret). Rebuilt fresh every theme load/repost so
+        // a previous theme's marks (or a stale pre-repost value) never leak.
+        turretObjectIds = new Set();
+        themeBuildables.forEach((obj) => {
+          if (obj.is_turret === true) turretObjectIds.add(obj.object_id);
+        });
+        turretCooldown = {}; // clear stale per-turret cooldowns from any previous theme
         // Reset per-object runtime phase/anim state for the new theme.
         objectAnimMap = {};
         // ── Phase: one-at-a-time paced build queue (Change 1) ──────────
@@ -12492,6 +12653,52 @@
         if (en.bubbleTimeLeft <= 0) en.bubbleExpr = -1;
       }
       if (en.bubbleCooldown > 0) en.bubbleCooldown -= delta;
+      // p2-t3: turret-hit stagger countdown (repel). Decremented for every
+      // enemy every frame, including fleeing ones (harmless — a fleeing
+      // rival already skips the structure-attack gate below via en.fleeing).
+      // While turretStaggerT > 0, updateObjectSmoke's `engaged` check
+      // excludes this rival, so it stops ramping structure damage — the
+      // turret shot's "repel" effect.
+      if (en.turretStaggerT > 0) en.turretStaggerT -= delta;
+      // p2-t3: authoritative hp<=0 eviction, runs for EVERY enemy every
+      // frame — not just one an agent happens to have picked as `nearest`.
+      // The render-loop combat pass (~L13691) already evicts hp<=0 targets
+      // it is actively engaging, but a rival a TURRET is shooting may never
+      // be any agent's nearest pick, so its hp could run arbitrarily
+      // negative and it would never flee. Guarded on !en.fleeing so this can
+      // never double-fire against (or conflict with) the render-loop check —
+      // whichever site sees hp<=0 first flips fleeing=true, and the other's
+      // `!fleeing` guard then skips it. Replicates the SAME fields the
+      // render-loop eviction sets to start the flee-off-edge behavior
+      // (hp clamp, fleeing, targetAgentId clear, hit bubble, flee dest
+      // toward the nearest edge). Deliberately omits the victory-dance
+      // celebration block — that reads the specific charEntry who landed
+      // the killing blow, which doesn't exist in this per-enemy loop.
+      if (en.hp <= 0 && !en.fleeing) {
+        en.hp = 0;
+        en.fleeing = true;
+        en.targetAgentId = null;
+        showExpression(en, 7, HURT_EXPR_SEC);
+        const dLeft = en.nx;
+        const dRight = walkableNativeW - en.nx;
+        const dTop = Infinity; // rivals must never flee up/through the ceiling — only left/right/down
+        const dBottom = walkableNativeH - en.ny;
+        const minEdge = Math.min(dLeft, dRight, dTop, dBottom);
+        const FLEE_MARGIN = 120;
+        if (minEdge === dLeft) {
+          en.fleeDestNx = -FLEE_MARGIN;
+          en.fleeDestNy = en.ny;
+        } else if (minEdge === dRight) {
+          en.fleeDestNx = walkableNativeW + FLEE_MARGIN;
+          en.fleeDestNy = en.ny;
+        } else if (minEdge === dTop) {
+          en.fleeDestNx = en.nx;
+          en.fleeDestNy = -FLEE_MARGIN;
+        } else {
+          en.fleeDestNx = en.nx;
+          en.fleeDestNy = walkableNativeH + FLEE_MARGIN;
+        }
+      }
       if (en.fleeing) {
         // Change 2: defeated enemy runs off the nearest edge (a bit faster
         // than walk-in), using the walk clip, facing its travel direction.
@@ -13015,6 +13222,10 @@
     // Extinguish (Phase 2): route idle, eligible characters to smoking objects
     // BEFORE the movement loop so their dest override (below) can act this frame.
     assignExtinguishers();
+    // Turret auto-fire (Plan p2-t2): AFTER buildState is derived (needs
+    // builtIds) and AFTER activeEnemies targeting above, same phase as the
+    // other per-object update passes. Cosmetic-only for now (see doc comment).
+    updateTurrets(delta, buildState.builtIds);
     const activeBuildId = buildState.activeId;
     let activeBuildObj = null;
     for (const obj of themeBuildables) {

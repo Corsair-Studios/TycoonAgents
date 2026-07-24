@@ -88,6 +88,13 @@ export interface BuildableObject {
   work_units_required: number;
   anim_fps?: number;
   anim_loop?: boolean;
+  // Opt-in designer flag: marks this object as a turret once built. Absent/false
+  // for every existing theme (byte-for-byte unaffected). Phase 2 groundwork only
+  // — setting this does not make anything fire yet; it's a runtime signal for a
+  // later auto-fire feature to consume. Only meaningful on the 2 animated
+  // objects (see the review screen's "Acts as turret" checkbox), but the field
+  // itself carries no such restriction at the type level.
+  is_turret?: boolean;
 }
 
 export interface DecorObject {

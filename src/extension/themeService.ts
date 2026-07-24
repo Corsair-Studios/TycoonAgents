@@ -1188,6 +1188,56 @@ export async function renameThemeItemsBatch(
 }
 
 /**
+ * Pure core of SET_THEME_OBJECT_TURRET: flips ONE buildable object's
+ * manifest `is_turret` flag in place. Phase 2 groundwork only — this task
+ * (p2-t1) is opt-in MARKING; nothing auto-fires yet. Mirrors
+ * applyThemeItemNameChanges's shape (manifest-only, no IO, directly
+ * unit-testable) but for a single boolean field on a single object instead
+ * of a batched rename. An unknown object_id is a silent no-op (returns
+ * false) rather than throwing — matches the additive/opt-in contract: a
+ * stale/removed id from the webview should never crash the write path.
+ * Exported for unit testing.
+ */
+export function applyThemeObjectTurretFlag(
+  manifest: ThemeManifest,
+  objectId: string,
+  isTurret: boolean,
+): boolean {
+  const object = manifest.buildable_objects?.find((candidate) => candidate.object_id === objectId);
+  if (!object) return false;
+  object.is_turret = !!isTurret;
+  return true;
+}
+
+/**
+ * Thin IO wrapper around applyThemeObjectTurretFlag: loads the theme once,
+ * flips the flag, writes once. Backs the theme review screen's per-animated-
+ * object "Acts as turret" checkbox (SET_THEME_OBJECT_TURRET — see panel.ts).
+ * Unlike renameThemeItemsBatch this is single-object and not batched, and
+ * needs no resyncRenamedBoardPrompts: is_turret never appears in an image
+ * prompt, so no saved review prompt/rows go stale from this write.
+ */
+export async function setThemeObjectTurret(
+  globalStorageUri: ThemeStorageRoot,
+  themeId: string,
+  objectId: string,
+  isTurret: boolean,
+): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]>; changed: boolean }> {
+  if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
+  if (!objectId) throw new Error('Object ID is required.');
+
+  const loadedTheme = await loadTheme(globalStorageUri, themeId);
+  if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be updated.');
+  const { manifest, frames } = loadedTheme;
+
+  const changed = applyThemeObjectTurretFlag(manifest, objectId, isTurret);
+  if (changed) {
+    await writeThemeFiles(globalStorageUri, manifest, frames);
+  }
+  return { manifest, frames, changed };
+}
+
+/**
  * Restore every badge's canonical default TITLE (buildDefaultBadges
  * display_name, matched by badge_id) while PRESERVING any custom title the user
  * typed: before overwriting a changed title, if that badge has no appearance

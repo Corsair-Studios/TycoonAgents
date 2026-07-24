@@ -367,6 +367,10 @@ export function themePlanToManifest(plan: ThemePlan): Partial<ThemeManifest> {
     work_units_required: 100,
     anim_fps: 5,
     anim_loop: true,
+    // Opt-in Phase 2 groundwork: every newly-generated manifest carries this
+    // explicit default-off flag; the theme review screen's per-object toggle
+    // is the only thing that ever flips it to true.
+    is_turret: false,
   }));
   const decorObjects = buildDecorObjects(plan.decor);
   const viewport: ViewportConfig = {

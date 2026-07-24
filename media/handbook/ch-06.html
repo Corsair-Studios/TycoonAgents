@@ -153,6 +153,40 @@
     </p>
   </div>
 
+  <div class="section-head">
+    <div class="s-title">&sect; 6.5 &middot; Turrets (optional)</div>
+    <div class="s-caption">give one animated object teeth</div>
+  </div>
+  <p>
+    On the review screen's per-object editor, either of your theme's two
+    <strong>animated objects</strong> can be marked <strong>"Acts as
+    turret (auto-fires at attackers)"</strong>. This checkbox only appears
+    on animated object rows &mdash; static objects and decor don't get it.
+    Turning it on is entirely opt-in: a theme that never checks the box
+    behaves exactly as it does today.
+  </p>
+  <p>
+    A built turret auto-targets the nearest attacker in range and fires
+    roughly once per second, reusing the projectile art you already
+    described for that object &mdash; there's no separate turret sprite to
+    generate. Each shot deals about a quarter of a character's damage and
+    briefly staggers the target, interrupting whatever it was attacking. A
+    turret is also a normal structure in every other sense: it takes
+    damage, smokes when hurt, shows a health bar, and needs repairing like
+    anything else you build. While it's damaged, it stops firing entirely
+    and only resumes once fully repaired.
+  </p>
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    <p>
+      Turrets ride on the projectile description you already wrote for
+      that animated object (Chapter 05, &sect; 5.2), so there's nothing
+      extra to generate. If the object's projectile art was skipped or
+      never generated, marking it as a turret is harmless &mdash; it simply
+      won't fire.
+    </p>
+  </div>
+
   <div class="nav-links">
     <div class="nav-prev"><a href="ch-05.html">&larr; Chapter 05</a></div>
     <div class="nav-index"><a href="index.html">Handbook Index</a></div>

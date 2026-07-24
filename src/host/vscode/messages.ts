@@ -171,6 +171,13 @@ export const MSG = {
   THEME_ITEM_NAMES_RESULT: "THEME_ITEM_NAMES_RESULT",
   SET_THEME_ITEM_DESCRIPTIONS: "SET_THEME_ITEM_DESCRIPTIONS",
   THEME_ITEM_DESCRIPTIONS_RESULT: "THEME_ITEM_DESCRIPTIONS_RESULT",
+  // Single-object, non-batched sibling of SET_THEME_ITEM_NAMES: the theme
+  // review screen's per-animated-object "Acts as turret" checkbox (Phase 2
+  // groundwork — see BuildableObject.is_turret in shared/types.ts and
+  // applyThemeObjectTurretFlag in themeService.ts). No *_RESULT reply; the
+  // host reposts THEME_INITIALIZED on success so the webview's live
+  // turretObjectIds set refreshes.
+  SET_THEME_OBJECT_TURRET: "SET_THEME_OBJECT_TURRET",
   // Post-generation editor for the whole-theme art seed (ThemePlan.creative_direction —
   // themePlanCreativeDirection() threads it into every board's image prompt). Unlike
   // SET_THEME_ITEM_DESCRIPTIONS, this is a single string, not a per-row batch, and it
@@ -405,6 +412,19 @@ export const MSG_SCHEMAS = {
             .passthrough(),
         )
         .min(1),
+    })
+    .passthrough(),
+
+  // Theme review screen's per-animated-object "Acts as turret" checkbox.
+  // Single object, single boolean — deliberately NOT folded into
+  // SET_THEME_ITEM_NAMES/SET_THEME_ITEM_DESCRIPTIONS's batched-changes shape
+  // since it's always exactly one field on one row, fired immediately on
+  // checkbox change rather than staged behind an Apply button.
+  SET_THEME_OBJECT_TURRET: z
+    .object({
+      theme_id: z.string().min(1),
+      object_id: z.string().min(1),
+      is_turret: z.boolean(),
     })
     .passthrough(),
 

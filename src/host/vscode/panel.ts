@@ -63,6 +63,7 @@ import {
   renameThemeCharacter,
   renameThemeItemsBatch,
   resetThemeBadgeNames,
+  setThemeObjectTurret,
   replaceThemeBackground,
   resliceThemeImageFromRaw,
   retryThemeImage,
@@ -1277,6 +1278,36 @@ export class TycoonPanel {
               type: MSG.THEME_ITEM_DESCRIPTIONS_RESULT,
               payload: { ok: false, theme_id: themeId, board_id: boardId, error: errorMessage(err) },
             });
+          }
+        } else if (message.type === MSG.SET_THEME_OBJECT_TURRET) {
+          // Sibling of SET_THEME_ITEM_NAMES above, but single-field/single-object
+          // and fire-and-forget: no *_RESULT reply, no review resync (is_turret
+          // never appears in an image prompt). Non-throwing like every handler
+          // in this dispatcher — a failed write here must never crash the
+          // extension host, it's Phase 2 groundwork, not a critical path.
+          const parsedTurret = MSG_SCHEMAS.SET_THEME_OBJECT_TURRET.safeParse((message as any).payload);
+          if (!parsedTurret.success) return;
+          const payload = parsedTurret.data;
+          const themeId = payload.theme_id;
+          if (!/^[a-z0-9_]+$/.test(themeId)) return;
+          try {
+            const { manifest, frames, changed } = await setThemeObjectTurret(
+              this._globalStorageUri,
+              themeId,
+              payload.object_id,
+              payload.is_turret,
+            );
+            if (changed) {
+              // Repost so the webview's live turretObjectIds Set (rebuilt from
+              // the manifest at THEME_INITIALIZED, see media/main.js) refreshes
+              // immediately — that Set is the only thing Phase 2 needs to read.
+              void this._panel.webview.postMessage({
+                type: MSG.THEME_INITIALIZED,
+                payload: await this._buildThemeInitPayload(manifest, frames, true),
+              });
+            }
+          } catch (err) {
+            console.error("SET_THEME_OBJECT_TURRET failed:", errorMessage(err));
           }
         } else if (message.type === MSG.SET_THEME_CREATIVE_DIRECTION) {
           const parsedDirection = MSG_SCHEMAS.SET_THEME_CREATIVE_DIRECTION.safeParse((message as any).payload);

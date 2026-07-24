@@ -4091,6 +4091,18 @@ button.theme-review-preview:focus-visible::after {
   font-size: 12px;
 }
 
+.theme-review-turret-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.theme-review-turret-toggle input[type="checkbox"] {
+  margin: 0;
+}
+
 .theme-review-names-descriptions-apply {
   align-self: flex-start;
 }
