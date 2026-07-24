@@ -4678,7 +4678,12 @@
   // longer the attack continues, clamped at 1 (never destroyed/un-built —
   // see objectSmoke.damage). Persists (no auto-decay) once the attack
   // stops; only a completed repair (updateExtinguishProgress) clears it.
-  const STRUCTURE_DAMAGE_PER_SEC = 0.2;      // damage units/sec while actively attacked (~5s continuous attack to reach full damage=1)
+  // STRUCTURE_DAMAGE_PER_SEC (derived from BUILD_SECONDS_PER_OBJECT, plan
+  // p4-t1) is declared further down, right after BUILD_SECONDS_PER_OBJECT
+  // itself — that const isn't defined yet at this point in the top-level
+  // init order, and this whole file is one IIFE evaluated top-to-bottom, so
+  // referencing it here would hit the const TDZ (same pattern as
+  // TURRET_HIT_DAMAGE above).
   const SMOKE_DAMAGE_INTENSITY_FLOOR = 0.15; // min smoke intensity once `damaged` is true, so barely-damaged objects still smoke visibly
   // ── Extinguish / Repair (Plan p1-t4) ─────────────────────────────────────
   // Repair now acts DIRECTLY on the same graded `damage` value the attack
@@ -4688,11 +4693,9 @@
   // while updateObjectSmoke keeps ramping damage up on any frame the object
   // is still under attack; both run once per frame against the same field,
   // so a structure fought AND repaired simultaneously nets the difference.
-  // Deliberately less than STRUCTURE_DAMAGE_PER_SEC so ONE repairer slightly
-  // loses to ONE sustained attacker (damage creeps up) — it takes 2+
-  // repairers to out-heal a single attacker, which is the build-vs-repair
-  // tension this phase is going for.
-  const STRUCTURE_REPAIR_PER_SEC = 0.15; // damage units/sec removed PER active repairer
+  // STRUCTURE_REPAIR_PER_SEC (also derived from BUILD_SECONDS_PER_OBJECT,
+  // plan p4-t1) is declared alongside STRUCTURE_DAMAGE_PER_SEC further down
+  // for the same TDZ reason — see the note above.
   const EXTINGUISH_MAX_ASSIGN = 3;   // max characters routed to one smoking object
   const EXTINGUISH_ARRIVE_EPS = 24;  // native px: within this of a repairer's OWN stand spot counts as "arrived"
   const EXTINGUISH_STAND_RADIUS = 28; // native px: ring radius around the object each repairer stands at (distinct per-slot spot, no pile-up)
@@ -5154,6 +5157,19 @@
   const FIRST_BUILD_SECONDS = 360;
   /** Extra per-agent seconds added per object index — the gentle ramp slope. */
   const BUILD_SECONDS_PER_OBJECT = 60;
+  // ── Structure damage/repair rates (Plan p4-t1) ───────────────────────────
+  // Derived from BUILD_SECONDS_PER_OBJECT so the "un-build" bar (damage bar,
+  // drawn identically to the build-progress bar) reads at a deliberately
+  // slower pace than building — a single-character build fills the bar in
+  // BUILD_SECONDS_PER_OBJECT seconds; damage alone now takes ~2x that (a
+  // sustained attack ramps damage 0→1 in 2 * BUILD_SECONDS_PER_OBJECT
+  // seconds), while ONE repairer empties the same bar back out at full build
+  // speed (BUILD_SECONDS_PER_OBJECT seconds), letting a single defender
+  // out-pace a single attacker. Declared here (not with the rest of the
+  // STRUCTURE_* block above) to avoid the BUILD_SECONDS_PER_OBJECT TDZ — see
+  // the note left in that block.
+  const STRUCTURE_DAMAGE_PER_SEC = 0.5 / BUILD_SECONDS_PER_OBJECT; // ~0.00833/s — tunable, derived
+  const STRUCTURE_REPAIR_PER_SEC = 1 / BUILD_SECONDS_PER_OBJECT;   // ~0.0167/s per active repairer — tunable, derived
   /**
    * Per-frame count: number of ACTIVE agents currently AT the active build
    * target's standoff spot actually building it (clip "build", i.e.
@@ -7098,43 +7114,41 @@
     // function tail where those objects land. Fully guarded — never throws.
     try { drawObjectSmoke(objId, cx, cy, baseSize, ctx); } catch (e) {}
 
-    // ── Structure health bar (Plan p1-t3) ───────────────────────────────────
+    // ── Structure damage bar (Plan p4-t1) ────────────────────────────────────
     // Compact bar centered above a BUILT structure, shown ONLY while it is
-    // damaged (objectSmoke entry with damage>0). Fill = REMAINING health
-    // (1 - damage): full & green-ish when barely hurt, shrinking & reddening as
-    // damage → 1. Undamaged structures draw NOTHING (no clutter). Same style as
-    // the rival HP bar (~14363). Drawn in un-flipped canvas coords, OUTSIDE the
-    // optional sprite flip above, so it never mirrors; sized off baseSize (the
-    // object's on-screen size ≈ depthScale·objScale) so distant structures get a
-    // proportionally smaller bar. Reads the graded `damage` written by
-    // updateObjectSmoke — never recomputed here. Fully guarded — never throws.
+    // damaged (objectSmoke entry with damage>0). Deliberately drawn with the
+    // EXACT same visual as the build-progress/crate bar above (~7035-7048:
+    // rgba(0,0,0,0.55) track, #ffc107 amber fill, rgba(255,255,255,0.65)
+    // stroke, barH=6, barW=Math.max(24, size*0.9), barY clamped 14px above
+    // the sprite top) — the RTS "un-building" read: fill = REMAINING health
+    // (1 - damage), so a damaged structure's bar looks identical to a
+    // building crate's, just running in reverse as damage climbs and
+    // re-filling as it's repaired. Undamaged structures draw NOTHING (no
+    // clutter). Drawn in un-flipped canvas coords, OUTSIDE the optional
+    // sprite flip above, so it never mirrors; sized off baseSize (the
+    // object's on-screen size ≈ depthScale·objScale) so distant structures
+    // get a proportionally smaller bar, mirroring what this bar used before.
+    // Reads the graded `damage` written by updateObjectSmoke — never
+    // recomputed here. Fully guarded — never throws.
     try {
       const hs = objectSmoke[objId];
       const dmg = hs ? (hs.damage || 0) : 0;
       if (hs && dmg > 0) {
-        const HB_WIDTH_FRAC = 0.5;    // bar width as a fraction of on-screen sprite size
-        const HB_MIN_WIDTH = 14;      // px floor so tiny/distant structures stay legible
-        const HB_HEIGHT = 4;          // px bar thickness
-        const HB_GAP = 8;             // px gap above the sprite's top edge
-        const HB_HEALTHY_FRAC = 0.5;  // remaining health above this = green, below = warm/red
-        const HB_TRACK_FILL = "rgba(0,0,0,0.5)";
-        const HB_HEALTHY_FILL = "#57d977";
-        const HB_HURT_FILL = "#ff5a3c";
-        const HB_STROKE = "rgba(255,255,255,0.4)";
         const remaining = Math.max(0, Math.min(1, 1 - dmg));
-        const barW = Math.max(HB_MIN_WIDTH, baseSize * HB_WIDTH_FRAC);
+        const barW = Math.max(24, baseSize * 0.9);
+        const barH = 6;
         const barX = cx - barW / 2;
         // Sprite top edge is (cy - baseSize); sit the bar just above it, clamped
         // so it never clips off the top of the canvas (matches the crate bar).
-        const barY = Math.max(2, cy - baseSize - HB_GAP - HB_HEIGHT);
+        const barY = Math.max(2, cy - baseSize - 14);
         ctx.save();
-        ctx.fillStyle = HB_TRACK_FILL;
-        ctx.fillRect(barX, barY, barW, HB_HEIGHT);
-        ctx.fillStyle = remaining > HB_HEALTHY_FRAC ? HB_HEALTHY_FILL : HB_HURT_FILL;
-        ctx.fillRect(barX, barY, barW * remaining, HB_HEIGHT);
-        ctx.strokeStyle = HB_STROKE;
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(barX, barY, barW, barH);
+        ctx.fillStyle = "#ffc107";
+        ctx.fillRect(barX, barY, barW * remaining, barH);
+        ctx.strokeStyle = "rgba(255,255,255,0.65)";
         ctx.lineWidth = 1;
-        ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, HB_HEIGHT - 1);
+        ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
         ctx.restore();
       }
     } catch (e) { /* cosmetic only — one bad frame must not break render() */ }
@@ -7275,9 +7289,10 @@
   }
 
   /**
-   * Extinguish assignment pre-pass (Phase 2). Once per frame, AFTER
-   * updateObjectSmoke and BEFORE the character movement loop. Routes idle,
-   * eligible characters to smoking objects that still "need" extinguishing,
+   * Extinguish assignment pre-pass (Phase 2; p4-t2 widened eligibility to ANY
+   * agent, not just idle ones). Once per frame, AFTER updateObjectSmoke and
+   * BEFORE the character movement loop. Routes eligible characters (idle OR
+   * active/building) to smoking objects that still "need" extinguishing,
    * capped at EXTINGUISH_MAX_ASSIGN per object. Reads charEntry.extinguishEligible
    * (published by the movement loop last frame — a 1-frame lag is fine for a
    * cosmetic effect) and charEntry.nx/ny; writes only charEntry.extinguishTargetId.
@@ -12172,16 +12187,25 @@
    * Spawn one enemy wave from themeRivals per enemyCountMode, entering from a
    * random polygon edge point. No-op (never throws) if themeRivals is empty
    * or rival frames aren't available yet.
+   * @param {number} agentCount live sceneAgentList.length (incl. orchestrator)
+   *   at the moment the wave spawns. The wave is capped at
+   *   min(themeRivals.length, agentCount) so a raid can never field more
+   *   rivals than the player currently has agents to answer it (0 agents ->
+   *   0 rivals spawn). Read live per call, never cached, so growing the
+   *   roster raises the cap on the next wave.
    */
-  function spawnEnemyWave() {
+  function spawnEnemyWave(agentCount) {
     if (!themeRivals || themeRivals.length === 0) return;
+    const rivalMax = themeRivals.length;
+    const cap = Math.max(0, Math.min(rivalMax, agentCount || 0));
+    if (cap === 0) return;
     let toSpawn;
     if (enemyCountMode === "all") {
-      toSpawn = themeRivals.slice();
+      toSpawn = themeRivals.slice(0, cap);
     } else {
-      const n = 1 + Math.floor(Math.random() * themeRivals.length);
+      const n = 1 + Math.floor(Math.random() * rivalMax);
       const shuffled = themeRivals.slice().sort(() => Math.random() - 0.5);
-      toSpawn = shuffled.slice(0, n);
+      toSpawn = shuffled.slice(0, Math.min(n, cap));
     }
     const interior = randomInsidePoly(walkablePolygon);
     for (const rival of toSpawn) {
@@ -12239,7 +12263,7 @@
                : ((a.status || "idle").toLowerCase() === "active" || (a.status || "").toLowerCase() === "working");
     });
     if (enemySpawnElapsed >= enemySpawnIntervalSec && hasActiveAgent) {
-      spawnEnemyWave();
+      spawnEnemyWave(Array.isArray(agentList) ? agentList.length : 0);
       enemySpawnElapsed = 0;
     }
   }
@@ -13847,8 +13871,15 @@
       // active agents with no build target (nothing active yet, or all
       // built) are untouched — they keep the wander path exactly as before.
       // Suppressed entirely while engaging an enemy (Phase 2b preemption).
+      // p4-t2: repair outranks build. An agent already carrying a repair
+      // assignment (extinguishTargetId, set by assignExtinguishers earlier
+      // this same frame — see call order note there) must NOT also count as
+      // a builder this frame, even if it's active and standing over an
+      // active build placement. This is what makes an active agent DIVERT
+      // to repair when damage exists, and resume building once the repair
+      // assignment clears (extinguishTargetId back to null next frame).
       let isBuilding = false;
-      if (!inConga && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement) {
+      if (!inConga && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement && charEntry.extinguishTargetId == null) {
         // Once already settled (arrived + latched, see charEntry.settled) at
         // THIS same build target, freeze destNx/destNy — no per-frame
         // re-target — so a stationary builder never gets nudged back into
@@ -13965,12 +13996,16 @@
         charEntry.bubbleTimeLeft = Math.max(charEntry.bubbleTimeLeft || 0, 1.0);
       }
 
-      // ── Extinguish eligibility + intent (Phase 2, cosmetic) ────────────
+      // ── Extinguish eligibility + intent (p4-t2: any agent may repair) ───
       // Publish eligibility (read by assignExtinguishers next frame — a 1-frame
-      // lag is fine here). Then derive this-frame intent: an idle char with a
+      // lag is fine here). p4-t2 widens this from idle-only to ANY agent —
+      // active/building-capable agents are now repair-eligible too — keeping
+      // only the sensible exclusions: seated, dazed, engaging combat, conga,
+      // or mid-dance. (isActive/isBuilding are deliberately NOT checked here
+      // anymore.) Then derive this-frame intent: an eligible char with a
       // still-smoking assigned object that isn't fighting a rival (combat always
       // wins). extinguishArrived latches once within EXTINGUISH_ARRIVE_EPS of it.
-      charEntry.extinguishEligible = idleAndStill && (charEntry.sitSeatId == null) && !isEngaging && charEntry.dazePhase == null;
+      charEntry.extinguishEligible = !inConga && !isEngaging && !charEntry.dancing && (charEntry.sitSeatId == null) && charEntry.dazePhase == null;
       const isExtinguishing = !!(
         charEntry.extinguishTargetId &&
         objectSmoke[charEntry.extinguishTargetId] &&
@@ -14258,12 +14293,15 @@
         }
       }
 
-      // ── Extinguish destination override (Phase 2) ──────────────────
-      // An assigned idle char walks to its smoking object, then holds (gather
-      // around it, don't pile on the exact center). Runs AFTER the wander
-      // decision (whose sit/wander branches are gated off for extinguishers)
-      // so it has the final say on dest. Combat/build never coexist here
-      // (isExtinguishing requires !isEngaging and an idle char never builds).
+      // ── Extinguish destination override (Phase 2; p4-t2: any agent) ─────
+      // An assigned char (idle OR active) walks to its smoking object, then
+      // holds (gather around it, don't pile on the exact center). Runs AFTER
+      // the wander decision (whose sit/wander branches are gated off for
+      // extinguishers) so it has the final say on dest. Combat/build never
+      // coexist here: isExtinguishing requires !isEngaging, and isBuilding is
+      // forced false whenever extinguishTargetId is set (repair outranks
+      // build — see the isBuilding gate above), so an active repairer is
+      // routed here instead of the build-standoff branch.
       if (isExtinguishing && typeof charEntry.extinguishStandNx === "number") {
         if (extinguishArrived) { charEntry.destNx = charEntry.nx; charEntry.destNy = charEntry.ny; }
         else { charEntry.destNx = charEntry.extinguishStandNx; charEntry.destNy = charEntry.extinguishStandNy; }
