@@ -4608,18 +4608,30 @@
   const SMOKE_RISE_NATIVE = 26;     // how far (native px, pre-scale) a puff drifts up over one cycle
   const SMOKE_MAX_ALPHA = 0.55;     // peak opacity of a puff
   const SMOKE_FADEOUT = 0.4;        // s to fade the whole column out once the attack stops
-  // ── Extinguish / Repair (Phase 2) ────────────────────────────────────────
-  // Damage is now PERSISTENT: once a built object has been attacked past
-  // SMOKE_ATTACK_DELAY it is marked `damaged` and keeps smoking (intensity
-  // held at 1, never auto-decays) until USER characters repair it. An IDLE,
-  // non-combat character routed to a smoking object plays the build clip
-  // there to accrue repair progress. NO build/gameplay state change beyond
-  // the smoke overlay itself. See assignExtinguishers / updateExtinguishProgress
-  // and the movement-loop hooks.
-  const REPAIR_BASE = 5.0;           // s to repair with ONE character
-  const REPAIR_MIN = 1.0;            // floor — repair time never drops below this, however many characters
+  // ── Graded structural damage (Plan p1-t2) ────────────────────────────────
+  // Damage is a continuous 0..1 value that ramps while a structure is under
+  // sustained attack, instead of latching straight to "fully smoking" the
+  // moment SMOKE_ATTACK_DELAY elapses. Smoke intensity is DRIVEN by this
+  // value, so a freshly-damaged object smokes faintly and thickens the
+  // longer the attack continues, clamped at 1 (never destroyed/un-built —
+  // see objectSmoke.damage). Persists (no auto-decay) once the attack
+  // stops; only a completed repair (updateExtinguishProgress) clears it.
+  const STRUCTURE_DAMAGE_PER_SEC = 0.2;      // damage units/sec while actively attacked (~5s continuous attack to reach full damage=1)
+  const SMOKE_DAMAGE_INTENSITY_FLOOR = 0.15; // min smoke intensity once `damaged` is true, so barely-damaged objects still smoke visibly
+  // ── Extinguish / Repair (Plan p1-t4) ─────────────────────────────────────
+  // Repair now acts DIRECTLY on the same graded `damage` value the attack
+  // ramp writes (STRUCTURE_DAMAGE_PER_SEC, above) — extinguishing smoke and
+  // repairing damage are the same action. Each arrived, non-combat repairer
+  // reduces damage at STRUCTURE_REPAIR_PER_SEC/sec (updateExtinguishProgress),
+  // while updateObjectSmoke keeps ramping damage up on any frame the object
+  // is still under attack; both run once per frame against the same field,
+  // so a structure fought AND repaired simultaneously nets the difference.
+  // Deliberately less than STRUCTURE_DAMAGE_PER_SEC so ONE repairer slightly
+  // loses to ONE sustained attacker (damage creeps up) — it takes 2+
+  // repairers to out-heal a single attacker, which is the build-vs-repair
+  // tension this phase is going for.
+  const STRUCTURE_REPAIR_PER_SEC = 0.15; // damage units/sec removed PER active repairer
   const EXTINGUISH_MAX_ASSIGN = 3;   // max characters routed to one smoking object
-  const EXTINGUISH_SMOKE_MIN = 0.5;  // smoke intensity at/above which an object "needs" repairing
   const EXTINGUISH_ARRIVE_EPS = 24;  // native px: within this of a repairer's OWN stand spot counts as "arrived"
   const EXTINGUISH_STAND_RADIUS = 28; // native px: ring radius around the object each repairer stands at (distinct per-slot spot, no pile-up)
 
@@ -4764,14 +4776,21 @@
   /**
    * Cosmetic damage-smoke state per built object, keyed by object_id.
    * underAttack: seconds of continuous attack accumulated; intensity: 0..1
-   * column opacity/scale factor; anim: seconds elapsed, drives the rising loop.
-   * damaged: true once the object has taken a full SMOKE_ATTACK_DELAY of
-   * attack — while true, intensity is held at 1 and never auto-decays, so
-   * the object keeps smoking (even after the attacking rival leaves/dies)
-   * until repaired. Created lazily the first frame an object is under
-   * attack; deleted only on repair completion. Purely visual — never
-   * affects build/attack logic.
-   * @type {Record<string, {underAttack:number, intensity:number, anim:number, damaged?:boolean, extinguishProgress?:number}>}
+   * column opacity/scale factor (now DERIVED from `damage`, floored while
+   * damaged — see updateObjectSmoke); anim: seconds elapsed, drives the
+   * rising loop. damaged: true once the object has taken a full
+   * SMOKE_ATTACK_DELAY of attack. damage: 0..1 graded damage value that
+   * ramps by STRUCTURE_DAMAGE_PER_SEC per second while actively attacked,
+   * clamped to 1, and never auto-decays — so the object keeps smoking (even
+   * after the attacking rival leaves/dies), at a density proportional to
+   * accumulated damage, until repaired. Repair (updateExtinguishProgress)
+   * reduces this SAME field by STRUCTURE_REPAIR_PER_SEC per active repairer;
+   * the entry is deleted once damage reaches 0 — damage is the single
+   * source of truth for both smoke/health-bar display and repair
+   * completion. Created lazily the first frame an object is under attack;
+   * deleted only on repair completion. Purely visual — never affects
+   * build/attack logic.
+   * @type {Record<string, {underAttack:number, intensity:number, anim:number, damaged?:boolean, damage?:number}>}
    */
   const objectSmoke = {};
   /**
@@ -6941,6 +6960,47 @@
     // built (idle-phase) objects ever accrue a smoke entry, so this runs at the
     // function tail where those objects land. Fully guarded — never throws.
     try { drawObjectSmoke(objId, cx, cy, baseSize, ctx); } catch (e) {}
+
+    // ── Structure health bar (Plan p1-t3) ───────────────────────────────────
+    // Compact bar centered above a BUILT structure, shown ONLY while it is
+    // damaged (objectSmoke entry with damage>0). Fill = REMAINING health
+    // (1 - damage): full & green-ish when barely hurt, shrinking & reddening as
+    // damage → 1. Undamaged structures draw NOTHING (no clutter). Same style as
+    // the rival HP bar (~14363). Drawn in un-flipped canvas coords, OUTSIDE the
+    // optional sprite flip above, so it never mirrors; sized off baseSize (the
+    // object's on-screen size ≈ depthScale·objScale) so distant structures get a
+    // proportionally smaller bar. Reads the graded `damage` written by
+    // updateObjectSmoke — never recomputed here. Fully guarded — never throws.
+    try {
+      const hs = objectSmoke[objId];
+      const dmg = hs ? (hs.damage || 0) : 0;
+      if (hs && dmg > 0) {
+        const HB_WIDTH_FRAC = 0.5;    // bar width as a fraction of on-screen sprite size
+        const HB_MIN_WIDTH = 14;      // px floor so tiny/distant structures stay legible
+        const HB_HEIGHT = 4;          // px bar thickness
+        const HB_GAP = 8;             // px gap above the sprite's top edge
+        const HB_HEALTHY_FRAC = 0.5;  // remaining health above this = green, below = warm/red
+        const HB_TRACK_FILL = "rgba(0,0,0,0.5)";
+        const HB_HEALTHY_FILL = "#57d977";
+        const HB_HURT_FILL = "#ff5a3c";
+        const HB_STROKE = "rgba(255,255,255,0.4)";
+        const remaining = Math.max(0, Math.min(1, 1 - dmg));
+        const barW = Math.max(HB_MIN_WIDTH, baseSize * HB_WIDTH_FRAC);
+        const barX = cx - barW / 2;
+        // Sprite top edge is (cy - baseSize); sit the bar just above it, clamped
+        // so it never clips off the top of the canvas (matches the crate bar).
+        const barY = Math.max(2, cy - baseSize - HB_GAP - HB_HEIGHT);
+        ctx.save();
+        ctx.fillStyle = HB_TRACK_FILL;
+        ctx.fillRect(barX, barY, barW, HB_HEIGHT);
+        ctx.fillStyle = remaining > HB_HEALTHY_FRAC ? HB_HEALTHY_FILL : HB_HURT_FILL;
+        ctx.fillRect(barX, barY, barW * remaining, HB_HEIGHT);
+        ctx.strokeStyle = HB_STROKE;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, HB_HEIGHT - 1);
+        ctx.restore();
+      }
+    } catch (e) { /* cosmetic only — one bad frame must not break render() */ }
   }
 
   /**
@@ -6982,18 +7042,23 @@
           engaged.add(oid);
         }
       }
-      // 2. Under-attack objects: accumulate, then ramp intensity toward 1 once
-      //    past the delay. Lazily create the entry on first engaged frame. Once
-      //    the delay is crossed the object becomes PERSISTENTLY `damaged`:
-      //    intensity latches to 1 and stops ramping (no visual need to keep
-      //    animating it upward — it's already fully smoking).
+      // 2. Under-attack objects: accumulate, then once past the warm-up delay
+      //    ramp a GRADED `damage` value (0..1, +STRUCTURE_DAMAGE_PER_SEC per
+      //    second, clamped to 1 — never exceeds, object is never destroyed or
+      //    reverted to a crate) and derive intensity from it, floored at
+      //    SMOKE_DAMAGE_INTENSITY_FLOOR so a freshly-damaged object smokes
+      //    faintly and thickens the longer the attack continues (fade-in,
+      //    not a pop to full). Lazily create the entry on first engaged
+      //    frame. Once the delay is crossed the object becomes PERSISTENTLY
+      //    `damaged`.
       for (const oid of engaged) {
         let s = objectSmoke[oid];
-        if (!s) s = objectSmoke[oid] = { underAttack: 0, intensity: 0, anim: 0, damaged: false, extinguishProgress: 0 };
+        if (!s) s = objectSmoke[oid] = { underAttack: 0, intensity: 0, anim: 0, damaged: false, damage: 0 };
         s.underAttack += delta;
         if (s.underAttack >= SMOKE_ATTACK_DELAY) {
           if (!s.damaged) s.damaged = true;
-          s.intensity = 1;
+          s.damage = Math.min(1, (s.damage ?? 0) + STRUCTURE_DAMAGE_PER_SEC * delta);
+          s.intensity = Math.max(SMOKE_DAMAGE_INTENSITY_FLOOR, s.damage);
         }
         s.anim += delta; // 4. advance the rising loop
       }
@@ -7008,7 +7073,10 @@
         if (!s) { delete objectSmoke[oid]; continue; }
         s.underAttack = 0;
         if (s.damaged) {
-          s.intensity = 1;      // held — repair (updateExtinguishProgress) is the only way to clear this
+          // Damage PERSISTS when the attack stops (no auto-decay); intensity
+          // stays derived from the graded damage value (floored) — repair
+          // (updateExtinguishProgress) is the only way to clear this.
+          s.intensity = Math.max(SMOKE_DAMAGE_INTENSITY_FLOOR, s.damage ?? 0);
           s.anim += delta;      // keep the column rising while it waits for repair
           continue;
         }
@@ -7075,10 +7143,17 @@
   function assignExtinguishers() {
     try {
       // 1. Smoking objects that still need work (have a known placement).
+      //    Gate on `damage > 0` directly, NOT the derived `intensity` — since
+      //    p1-t2, intensity ramps gradually (floored, then == damage), so a
+      //    >=0.5 intensity threshold silently delayed dispatch until ~3s into
+      //    an attack even though the object was already visibly damaged from
+      //    the first tick. damage only starts accruing after SMOKE_ATTACK_DELAY
+      //    (0.5s) of continuous attack, which is already the natural delay —
+      //    no extra threshold needed.
       const needy = new Set();
       for (const oid in objectSmoke) {
         const s = objectSmoke[oid];
-        if (s && s.intensity >= EXTINGUISH_SMOKE_MIN && objectPlacement[oid]) needy.add(oid);
+        if (s && (s.damage || 0) > 0 && objectPlacement[oid]) needy.add(oid);
       }
       // 2. Release stale assignments; track which ring-slot indices survivors
       //    already occupy per object, so a newly-assigned repairer never gets
@@ -7133,12 +7208,16 @@
   }
 
   /**
-   * Extinguish progress accrual (Phase 2). Once per frame, AFTER the character
-   * movement loop (positions settled). Tallies ARRIVED, non-fighting characters
-   * per smoking object; more characters extinguish faster. On completion the
-   * object's smoke is force-cleared (entry deleted) and its characters released.
-   * Combat always wins: a character fighting a rival (combatTargetInstanceId set)
-   * does not count. Fully guarded — never throws.
+   * Extinguish/repair accrual (Plan p1-t4). Once per frame, AFTER the
+   * character movement loop (positions settled). Tallies ARRIVED,
+   * non-fighting characters per smoking object, then reduces that object's
+   * graded `damage` directly by STRUCTURE_REPAIR_PER_SEC per repairer —
+   * extinguishing smoke and repairing damage are the same action, so a
+   * structure still under attack can keep losing ground even while being
+   * worked on. On damage reaching 0 the object's smoke is force-cleared
+   * (entry deleted) and its characters released. Combat always wins: a
+   * character fighting a rival (combatTargetInstanceId set) does not count.
+   * Fully guarded — never throws.
    * @param {number} delta seconds since last frame
    */
   function updateExtinguishProgress(delta) {
@@ -7164,25 +7243,31 @@
         if (Math.sqrt(dx * dx + dy * dy) > EXTINGUISH_ARRIVE_EPS) continue;
         active[tid] = (active[tid] || 0) + 1;
       }
-      // 2. Accrue for objects with >=1 active repairer; force-clear on complete.
-      //    Duration is recomputed EVERY frame from the CURRENT count of arrived,
-      //    non-combat repairers (`k`, tallied fresh above), so progress rescales
-      //    live as characters join/leave: dur = max(REPAIR_MIN, REPAIR_BASE / k).
-      //    Floored at REPAIR_MIN regardless of k — never faster than 1s.
+      // 2. Reduce `damage` directly for objects with >=1 active repairer, at
+      //    STRUCTURE_REPAIR_PER_SEC PER repairer (`k`, tallied fresh above),
+      //    so healing scales live as characters join/leave. This runs in the
+      //    SAME frame as — and AFTER — updateObjectSmoke's attack ramp (see
+      //    the call sites: updateObjectSmoke then assignExtinguishers then,
+      //    once positions settle, this function), so a structure that is
+      //    simultaneously under attack and being repaired nets the two
+      //    per-frame deltas against the one shared `damage` field: this
+      //    function only ever subtracts from whatever updateObjectSmoke left
+      //    it at, never overwrites it wholesale, so there's no clobber/
+      //    double-clamp risk regardless of which side changed it first.
+      //    Force-complete once damage reaches 0.
       for (const oid in objectSmoke) {
         const s = objectSmoke[oid];
         if (!s) continue;
         const k = active[oid] || 0;
-        if (k < 1) continue; // no accrual with zero repairers (progress holds)
-        const dur = Math.max(REPAIR_MIN, REPAIR_BASE / k);
-        s.extinguishProgress = (s.extinguishProgress || 0) + delta / dur;
-        if (s.extinguishProgress >= 1) {
-          // Repair complete: clear the persistent damage flag and remove the
+        if (k < 1) continue; // no healing with zero repairers (damage holds/keeps ramping)
+        s.damage = Math.max(0, (s.damage || 0) - STRUCTURE_REPAIR_PER_SEC * k * delta);
+        if (s.damage <= 0) {
+          // Fully repaired: clear the persistent damage flag and remove the
           // smoke entry entirely; release every assigned character.
           s.damaged = false;
           s.intensity = 0;
           s.underAttack = 0;
-          s.extinguishProgress = 0;
+          s.damage = 0;
           for (const aid in agentCharMap) {
             const ce = agentCharMap[aid];
             if (ce && ce.extinguishTargetId === oid) ce.extinguishTargetId = null;
