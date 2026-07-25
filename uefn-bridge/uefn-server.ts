@@ -49,15 +49,29 @@ async function readBridgeToken(): Promise<string | undefined> {
 let requestChain: Promise<unknown> = Promise.resolve();
 let counter = 0;
 
-async function callBridge(method: string, params: Record<string, unknown>): Promise<unknown> {
+// Default poll-timeout budget for every bridge call. A handful of tools do
+// real, unavoidably slow work (e.g. uefn_moderation_scan's full asset-
+// registry sweep on a large project) and pass a larger `timeoutMs` at their
+// call site below — this default is unchanged for every other tool.
+const DEFAULT_BRIDGE_TIMEOUT_MS = 30_000;
+
+async function callBridge(
+  method: string,
+  params: Record<string, unknown>,
+  timeoutMs: number = DEFAULT_BRIDGE_TIMEOUT_MS
+): Promise<unknown> {
   // Queue behind any in-flight request
-  const result = requestChain.then(() => _callBridgeNow(method, params));
+  const result = requestChain.then(() => _callBridgeNow(method, params, timeoutMs));
   // Keep the chain alive even if this call errors
   requestChain = result.catch(() => undefined);
   return result;
 }
 
-async function _callBridgeNow(method: string, params: Record<string, unknown>): Promise<unknown> {
+async function _callBridgeNow(
+  method: string,
+  params: Record<string, unknown>,
+  timeoutMs: number = DEFAULT_BRIDGE_TIMEOUT_MS
+): Promise<unknown> {
   const id = `${Date.now()}_${++counter}`;
   const commandPath = path.join(BRIDGE_DIR, "command.json");
   const commandTmpPath = path.join(BRIDGE_DIR, `command_${id}.tmp`);
@@ -71,8 +85,9 @@ async function _callBridgeNow(method: string, params: Record<string, unknown>): 
   await fs.writeFile(commandTmpPath, payload, "utf8");
   await fs.rename(commandTmpPath, commandPath);
 
-  // Poll for response every 200ms, timeout at 30s
-  const deadline = Date.now() + 30_000;
+  // Poll for response every 200ms, timeout at `timeoutMs` (default 30s;
+  // callers doing known-slow work pass a larger budget — see call sites).
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 200));
     try {
@@ -95,7 +110,10 @@ async function _callBridgeNow(method: string, params: Record<string, unknown>): 
     }
   }
 
-  throw new TimeoutError(`Bridge timeout after 30s waiting for response_${id}.json`);
+  throw new TimeoutError(
+    `Bridge timeout after ${Math.round(timeoutMs / 1000)}s waiting for ` +
+      `response_${id}.json (method: ${method})`
+  );
 }
 
 class BridgeError extends Error {
@@ -682,6 +700,8 @@ server.registerTool(
   {
     description: `Predict what Fortnite/UEFN island moderation may flag BEFORE submission, so a creator can fix issues pre-emptively. This mirrors Epic's documented review pipeline, IN ORDER: (1) an automated pre-check that runs on publish against the island's title, thumbnail, and lobby background — Rule 1.13 "Keep It Authentic" plus a near-duplicate title/thumbnail check; (2) a METADATA & ASSET review covering island name, description, loading-screen text, thumbnail, lobby background, promotional screenshots, trailers, AND the underlying assets — a violation found at this stage SHORT-CIRCUITS the process, so the in-island gameplay review never even happens; (3) only if metadata/assets pass, an in-island gameplay review. Collector-only tool (no runtime AI in the shipped bridge) — this call returns raw structured evidence; YOU (the calling LLM) must do all the judgment and produce the report described below.
 
+TRANSPORT SAMPLING: on a large project the full result would be tens of MB, too large for this bridge to transport, so every returned LIST here is a representative SAMPLE (highest-risk entries — HLOD/external-actor assets, text_metadata Unicode hits — are prioritized to survive the sample first). Every COUNT field (total_registry_assets, project_asset_count, shared_game_mount_asset_count, unicode_risks.total_count, etc.) is exact and NEVER sampled. Base scale/severity judgments on the counts, and check the \`*_omitted_count\` fields and the \`notes\` array before assuming a short list means "nothing else found" — it may only mean the rest was sampled away for transport, not that it doesn't exist.
+
 THE SINGLE HIGHEST-VALUE SIGNAL is the \`hlod_or_imported_assets\` and \`asset_surfaces\` fields. Real creators are repeatedly flagged on ASSET INTERNAL NAMES and \`.uasset\`/HLOD package PATHS — not on anything visible in gameplay — and Epic never tells them which asset triggered it. This fires EVEN on Epic's own officially-provided, licensed assets: documented cases include a Star Wars AT-AT and a Star Wars lightsaber workbench flagged on accounts that had an active, valid brand tag for that IP, with appeals rejected. So being licensed does NOT exempt an asset from matching — treat every hit in these two fields as worth flagging prominently for human review, regardless of whether the brand is on the allowlist.
 
 RULE CATEGORIES to evaluate every surface against:
@@ -741,12 +761,17 @@ FINAL STEP — after you finish writing the report above, call \`uefn_moderation
   },
   async (args) => {
     try {
+      // A full asset-registry sweep on a large project (hundreds of
+      // thousands to low millions of assets) genuinely takes longer than
+      // the default 30s bridge budget — give this specific tool a much
+      // larger allowance rather than raising the default for every tool.
       const raw = await callBridge(
         "moderation_scan",
         compact({
           project_dir: args.project_dir,
           allowlist: args.allowlist,
-        })
+        }),
+        180_000
       );
       return ok(attachModerationHints(raw, args.allowlist));
     } catch (e) {

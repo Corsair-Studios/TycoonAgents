@@ -518,10 +518,28 @@ def _handle_health_scan(params):
     return scan_health()
 
 
+# Default per-list cap applied ONLY on the MCP path (see
+# _handle_moderation_scan below). A full registry sweep on a large project
+# (e.g. 1.2M+ assets) serializes to tens of MB, which drops the bridge's
+# stdio connection before the response is fully written — this bounds the
+# transported payload while keeping every top-level count exact/uncapped.
+# The in-process launcher path (moderation_scanner.show_moderation_scan)
+# calls run_moderation_scan() directly with max_items=None and is
+# unaffected.
+_MODERATION_SCAN_DEFAULT_MAX_ITEMS = 200
+
+
 def _handle_moderation_scan(params):
+    max_items = params.get("max_items", _MODERATION_SCAN_DEFAULT_MAX_ITEMS)
+    if max_items is not None:
+        try:
+            max_items = int(max_items)
+        except (TypeError, ValueError):
+            max_items = _MODERATION_SCAN_DEFAULT_MAX_ITEMS
     return run_moderation_scan(
         params.get("project_dir"),
         include_hashes=bool(params.get("include_hashes", False)),
+        max_items=max_items,
     )
 
 

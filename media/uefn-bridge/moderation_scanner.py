@@ -1567,7 +1567,64 @@ def hash_assets(project_dir):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run_moderation_scan(project_dir=None, include_hashes=False):
+def _is_hlod_or_external_entry(entry):
+    """True if an asset entry (from ``collect_asset_surfaces()``) is a HLOD
+    or generated External Actor/Object package — the two documented
+    high-risk classes for Rule 1.7. Used only to PRIORITIZE which entries
+    survive a ``max_items`` transport cap (see ``_cap_items_with_priority``
+    below); it never filters/drops anything on its own."""
+    try:
+        haystack = (
+            str(entry.get("package_path", "")) + " " + str(entry.get("package_name", ""))
+        ).upper()
+    except Exception:
+        return False
+    return (
+        "HLOD" in haystack
+        or "__EXTERNALACTORS__" in haystack
+        or "__EXTERNALOBJECTS__" in haystack
+    )
+
+
+def _cap_items_with_priority(items, max_items, is_priority=None):
+    """Bound a list to at most ``max_items`` entries for MCP transport,
+    honestly — never a silent drop.
+
+    Returns ``(capped_list, kept_count, omitted_count, full_count)``.
+
+    When ``max_items`` is None or the list already fits, the list is
+    returned unchanged (``omitted_count`` 0). Otherwise, when
+    ``is_priority(item)`` is given, entries it accepts are moved to the
+    front via a STABLE partition (each group keeps its own original
+    relative order) before slicing — so the highest-value entries (e.g.
+    HLOD/external-actor assets, or text_metadata Unicode hits) are the
+    ones that survive the cap, not whatever happened to enumerate first.
+    Without ``is_priority``, entries are kept in their existing order (a
+    plain positional sample).
+
+    Never raises — on any error, degrades to returning the input
+    unchanged rather than losing data."""
+    try:
+        items = list(items or [])
+    except Exception:
+        return items, 0, 0, 0
+    full_count = len(items)
+    if max_items is None or full_count <= max_items:
+        return items, full_count, 0, full_count
+    if is_priority is not None:
+        try:
+            priority = [it for it in items if is_priority(it)]
+            rest = [it for it in items if not is_priority(it)]
+            ordered = priority + rest
+        except Exception:
+            ordered = items
+    else:
+        ordered = items
+    capped = ordered[:max_items]
+    return capped, len(capped), full_count - len(capped), full_count
+
+
+def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
     """Orchestrate every collector and return one structured dict:
 
         {
@@ -1642,6 +1699,45 @@ def run_moderation_scan(project_dir=None, include_hashes=False):
     runs by default. Pass True to opt in (e.g. from the MCP path, which can
     afford the extra time and wants the future exact-match mechanism).
 
+    ``max_items`` (default None) — bounds every returned LIST to at most
+    this many entries, for transport over the MCP bridge (a full sweep on
+    a large project can produce a result whose serialized JSON is tens of
+    MB, which drops the stdio connection — see uefn_bridge.py's
+    ``_handle_moderation_scan``, the only caller that passes a non-None
+    value; ``show_moderation_scan()``'s in-process launcher path always
+    calls this with ``max_items=None`` and is completely unaffected).
+    When set, capping is HONEST per this module's existing doctrine: every
+    top-level COUNT (``total_registry_assets``, ``project_asset_count``,
+    ``shared_game_mount_asset_count``, ``unicode_risks.total_count``, etc.)
+    stays exact and uncapped — only list bodies are sampled, and each
+    capped list gets a matching ``<key>_omitted_count`` field (or, for
+    nested dicts, ``items_omitted_count``/``audio_omitted_count``)
+    recording exactly how many entries were left out. Capping also
+    PRIORITIZES which entries survive, via ``_cap_items_with_priority``:
+      * ``unicode_risks.items`` — ``text_metadata`` surface hits first
+        (those are what Fortnite's moderation metadata stage actually
+        reads), then every other surface.
+      * ``asset_surfaces`` / ``hlod_or_imported_assets`` — HLOD and
+        External Actor/Object entries first (the documented high-risk
+        class), then ordinary project assets.
+      * ``shared_game_mount_assets`` — capped against its TRUE total
+        (``shared_game_mount_asset_count``), combining with the cap
+        ``collect_asset_surfaces()`` already applies upstream.
+      * ``external_actor_assets``, ``verse_surfaces``, ``image_metadata``,
+        ``image_paths``, ``audio_surfaces.audio`` — plain positional
+        samples; the count is what matters there, not which entries.
+      * ``text_metadata.fields`` and ``redirectors.redirectors`` are NEVER
+        capped — both are typically tiny (2 and 5 entries on a real
+        1.2M-asset project) and are the most directly actionable evidence,
+        so sampling either away would hide exactly what a human/LLM needs
+        to act on.
+    When any list is actually sampled this way, ``result["truncated"]``
+    is set True, ``"sampled_for_transport"`` is added to
+    ``truncated_collectors``, and a prominent note is added stating the
+    payload was sampled for transport and that the counts remain
+    authoritative — callers must report counts confidently and never
+    imply every listed item was seen.
+
     Note: this dict deliberately has NO ``first_pass_hints`` key. The
     literal wordlist matching that used to live here now happens
     server-side in the MCP server (see the module docstring above) so this
@@ -1654,11 +1750,14 @@ def run_moderation_scan(project_dir=None, include_hashes=False):
 
     PHASE 2 (MCP wiring) NOTE: this function is the intended handler body —
     ``uefn_bridge.py``'s ``_handle_moderation_scan(params)`` wraps it,
-    passing through ``params.get("project_dir")`` and
-    ``params.get("include_hashes", False)``. This module never imports/
-    touches ``uefn_bridge.py`` — it's designed to be pulled in from there,
-    not the reverse. All collectors are side-effect-free (read-only) and
-    safe to call from any thread/tick context UEFN's bridge dispatch uses.
+    passing through ``params.get("project_dir")``,
+    ``params.get("include_hashes", False)``, and a sane default
+    ``max_items`` (200, overridable via ``params.get("max_items")``) so the
+    MCP path never returns an untransportable multi-ten-MB payload. This
+    module never imports/touches ``uefn_bridge.py`` — it's designed to be
+    pulled in from there, not the reverse. All collectors are side-effect-
+    free (read-only) and safe to call from any thread/tick context UEFN's
+    bridge dispatch uses.
 
     Never raises — every collector is individually guarded and any
     unexpected failure is recorded in ``notes`` rather than propagated.
@@ -1700,6 +1799,7 @@ def run_moderation_scan(project_dir=None, include_hashes=False):
         "project_asset_count": 0,
         "shared_game_mount_assets": [],
         "shared_game_mount_asset_count": 0,
+        "shared_game_mount_assets_omitted_count": 0,
         "verse_surfaces": [],
         "text_metadata": {},
         "image_metadata": [],
@@ -1729,6 +1829,9 @@ def run_moderation_scan(project_dir=None, include_hashes=False):
         result["project_asset_count"] = asset_result.get("project_asset_count", 0)
         result["shared_game_mount_assets"] = asset_result.get("shared_game_mount_assets", [])
         result["shared_game_mount_asset_count"] = asset_result.get("shared_game_mount_asset_count", 0)
+        result["shared_game_mount_assets_omitted_count"] = asset_result.get(
+            "shared_game_mount_assets_omitted_count", 0
+        )
         for n in asset_result.get("notes") or []:
             notes.append(f"asset surfaces: {n}")
         if not asset_result.get("available"):
@@ -1866,6 +1969,102 @@ def run_moderation_scan(project_dir=None, include_hashes=False):
             "hashing is slow and only a supplementary future exact-match "
             "mechanism; pass include_hashes=True to opt in)."
         )
+
+    # -----------------------------------------------------------------
+    # Transport bounding (MCP path only — max_items is None on the
+    # in-process launcher path, so this whole block is a no-op there).
+    # See run_moderation_scan()'s docstring for the full priority rules.
+    # Every top-level COUNT above is already exact and uncapped; only
+    # list BODIES are sampled here, each with an honest *_omitted_count.
+    # -----------------------------------------------------------------
+    if max_items is not None:
+        sample_notes = []
+
+        def _apply_cap(key, is_priority=None, true_total=None):
+            capped, kept, omitted, full = _cap_items_with_priority(
+                result.get(key), max_items, is_priority
+            )
+            result[key] = capped
+            base_full = true_total if true_total is not None else full
+            true_omitted = max(0, base_full - kept)
+            result[f"{key}_omitted_count"] = true_omitted
+            if true_omitted:
+                sample_notes.append(
+                    f"{key}: {kept} of {base_full} returned (max_items="
+                    f"{max_items}); see {key}_omitted_count for what was "
+                    "sampled away."
+                )
+
+        _apply_cap("asset_surfaces", is_priority=_is_hlod_or_external_entry)
+        _apply_cap("hlod_or_imported_assets", is_priority=_is_hlod_or_external_entry)
+        _apply_cap("external_actor_assets")
+        _apply_cap(
+            "shared_game_mount_assets",
+            true_total=result.get("shared_game_mount_asset_count"),
+        )
+        _apply_cap("verse_surfaces")
+        _apply_cap("image_metadata")
+        _apply_cap("image_paths")
+
+        # audio_surfaces / unicode_risks are nested dicts — cap their inner
+        # list field directly rather than the whole dict.
+        audio = result.get("audio_surfaces")
+        if isinstance(audio, dict) and isinstance(audio.get("audio"), list):
+            capped, kept, omitted, full = _cap_items_with_priority(audio["audio"], max_items)
+            audio["audio"] = capped
+            audio["audio_omitted_count"] = omitted
+            if omitted:
+                sample_notes.append(
+                    f"audio_surfaces.audio: {kept} of {full} returned "
+                    f"(max_items={max_items}); see audio_surfaces."
+                    "audio_omitted_count."
+                )
+
+        unicode_risks = result.get("unicode_risks")
+        if isinstance(unicode_risks, dict) and isinstance(unicode_risks.get("items"), list):
+            capped, kept, omitted, full = _cap_items_with_priority(
+                unicode_risks["items"], max_items,
+                is_priority=lambda it: (it or {}).get("surface") == "text_metadata",
+            )
+            unicode_risks["items"] = capped
+            # unicode_risks["total_count"] (set by collect_unicode_risks) is
+            # already the true, uncapped total — use it as the basis rather
+            # than `full` (which is only the count AFTER that collector's
+            # own _UNICODE_RISK_ITEM_CAP already ran).
+            prior_total = unicode_risks.get("total_count", full)
+            transport_omitted = max(0, prior_total - kept)
+            unicode_risks["items_omitted_count"] = transport_omitted
+            if transport_omitted:
+                sample_notes.append(
+                    f"unicode_risks.items: {kept} of {prior_total} returned "
+                    f"(max_items={max_items}, text_metadata hits prioritized "
+                    "first); see unicode_risks.total_count / "
+                    "unicode_risks.items_omitted_count."
+                )
+
+        # text_metadata.fields and redirectors.redirectors are deliberately
+        # NEVER capped here — both are typically tiny (2 and 5 entries on a
+        # real 1.2M-asset scan) and are the single most directly actionable
+        # evidence (the actual island name/description text, and proof
+        # that renamed/deleted content is still reachable) — sampling
+        # either away would hide exactly what a human/LLM needs to act on.
+
+        if sample_notes:
+            result["truncated"] = True
+            if "sampled_for_transport" not in truncated_collectors:
+                truncated_collectors.append("sampled_for_transport")
+            notes.append(
+                f"PAYLOAD SAMPLED FOR MCP TRANSPORT (max_items={max_items}): "
+                "the lists below are representative SAMPLES bounded for "
+                "bridge transport, not complete inventories. Every "
+                "top-level COUNT (total_registry_assets, "
+                "project_asset_count, shared_game_mount_asset_count, "
+                "unicode_risks.total_count, etc.) remains EXACT and "
+                "uncapped — report counts and scale judgments from those "
+                "counts with full confidence, but never imply every listed "
+                "item was individually seen."
+            )
+            notes.extend(sample_notes)
 
     return result
 
