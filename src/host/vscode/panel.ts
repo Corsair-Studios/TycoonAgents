@@ -3623,10 +3623,14 @@ export class TycoonPanel {
    * agree, gated behind the version comparison above.
    *
    * ENGINE copy: this method ALSO best-effort refreshes an EXISTING engine
-   * bridge copy via the guarded `_refreshEngineBridgeCopy` (see) —
-   * `_findFortniteEngineBridgeDir` only ever returns a dir that already
-   * contains `uefn_bridge.py`, so this never creates an engine install, only
-   * heals one that's already there. Critically, the engine refresh call is
+   * bridge copy by first discovering it via `_findFortniteEngineBridgeDir`
+   * and, only if found, passing THAT discovered dir into the guarded
+   * `_refreshEngineBridgeCopy` (see) — `_refreshEngineBridgeCopy` treats its
+   * argument as the engine-side dir to compare/copy into, so it must never
+   * be handed the shipped `media/uefn-bridge` dir. `_findFortniteEngineBridgeDir`
+   * only ever returns a dir that already contains `uefn_bridge.py`, so this
+   * never creates an engine install, only heals one that's already there.
+   * Critically, the engine refresh call is
    * NOT gated behind the project copy being stale: a user can already have
    * a CURRENT project copy (e.g. auto-updated on a previous panel open)
    * while the engine copy is still stuck on an old version — that's the
@@ -3684,8 +3688,12 @@ export class TycoonPanel {
       // Independent of project staleness above: a stuck engine copy can
       // exist even when the project copy is already current (see docstring).
       // Self-guarded — no-op if no existing engine copy is found or it's
-      // already current.
-      const engineResult = this._refreshEngineBridgeCopy(bridgeDir);
+      // already current. `_refreshEngineBridgeCopy` expects the ENGINE dir,
+      // not the shipped `bridgeDir` above, so discover it first.
+      const engineBridgeDir = this._findFortniteEngineBridgeDir();
+      const engineResult = engineBridgeDir
+        ? this._refreshEngineBridgeCopy(engineBridgeDir)
+        : "unavailable";
 
       if (projectUpdated || engineResult === "updated") {
         void vscode.window.showInformationMessage(

@@ -253,61 +253,94 @@ test("_healDuplicateUefnBridgeStaging is a no-op when there is no duplicate stag
 
 // `_autoUpdateUefnBridgeIfStale` reads/writes real fs paths (project
 // Content/Python + a fake extension dir standing in for media/uefn-bridge)
-// and calls two other prototype methods on `this`: the real `_stageBridgeTo`
-// (fs-only, safe to run for real against tmp dirs) and `_refreshEngineBridgeCopy`,
-// which we replace with a spy so the test asserts it was called without
-// needing a real Fortnite engine install on disk.
+// and calls three other prototype methods on `this`: the real
+// `_stageBridgeTo` (fs-only, safe to run for real against tmp dirs), and
+// `_findFortniteEngineBridgeDir` + `_refreshEngineBridgeCopy`, both replaced
+// with spies. This is the regression guard for the real bug found by reading
+// the code: `_refreshEngineBridgeCopy` treats its argument as the ENGINE
+// dir it reads/writes into, but the production code used to pass it the
+// SHIPPED `bridgeDir` directly -- comparing the shipped stamp to itself, so
+// it always returned "current" and the real Fortnite engine copy was never
+// found or updated. The fix discovers the engine dir via
+// `_findFortniteEngineBridgeDir` first and only calls `_refreshEngineBridgeCopy`
+// with THAT discovered dir -- `engineCalls` captures the exact arg received
+// so a regression back to passing the shipped dir fails the assertion below.
 async function autoUpdate(
   root: string,
   extensionRoot: string,
+  findEngineBridgeDir: () => string | null,
   refreshEngineBridgeCopy: (bridgeDir: string) => "updated" | "current" | "unavailable"
-): Promise<{ engineCalls: string[] }> {
+): Promise<{ engineCalls: string[]; findCalls: number }> {
   const engineCalls: string[] = [];
+  let findCalls = 0;
   const fakeThis = {
     _extensionUri: { fsPath: extensionRoot },
     _uefnEffectiveRoot: (TycoonPanel.prototype as any)._uefnEffectiveRoot,
     _stageBridgeTo: (TycoonPanel.prototype as any)._stageBridgeTo,
+    _findFortniteEngineBridgeDir: () => {
+      findCalls++;
+      return findEngineBridgeDir();
+    },
     _refreshEngineBridgeCopy: (bridgeDir: string) => {
       engineCalls.push(bridgeDir);
       return refreshEngineBridgeCopy(bridgeDir);
     },
   };
   await (TycoonPanel.prototype as any)._autoUpdateUefnBridgeIfStale.call(fakeThis, root);
-  return { engineCalls };
+  return { engineCalls, findCalls };
 }
 
-test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy even when the project copy is already current", async () => {
+test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the DISCOVERED engine dir, not the shipped bridgeDir, even when the project copy is already current", async () => {
   const root = tmpDir("panelBridgeStaleness-auto-engine-current-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-current-ext-");
+  const sentinelEngineDir = tmpDir("panelBridgeStaleness-auto-engine-current-engine-");
   try {
     const stamp = 'BRIDGE_VERSION = "1.2.3"';
     // Project copy already matches bundled -- no project-side staleness.
     writeStamp(path.join(root, "Content", "Python"), `${stamp}\n`);
     writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
 
-    const { engineCalls } = await autoUpdate(root, extensionRoot, () => "current");
+    const { engineCalls, findCalls } = await autoUpdate(
+      root,
+      extensionRoot,
+      () => sentinelEngineDir,
+      () => "current"
+    );
 
+    assert.equal(findCalls, 1, "_findFortniteEngineBridgeDir must be called to discover the engine dir");
     assert.equal(engineCalls.length, 1, "_refreshEngineBridgeCopy must be called even with a current project copy");
-    assert.equal(engineCalls[0], path.join(extensionRoot, "media", "uefn-bridge"));
+    // KEY REGRESSION ASSERTION: the arg passed must be the DISCOVERED engine
+    // dir, never the shipped media/uefn-bridge dir (extensionRoot's bridgeDir).
+    assert.equal(engineCalls[0], sentinelEngineDir);
+    assert.notEqual(engineCalls[0], path.join(extensionRoot, "media", "uefn-bridge"));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(sentinelEngineDir, { recursive: true, force: true });
   }
 });
 
-test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy when the project copy is stale too", async () => {
+test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the discovered engine dir when the project copy is stale too", async () => {
   const root = tmpDir("panelBridgeStaleness-auto-engine-stale-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-stale-ext-");
+  const sentinelEngineDir = tmpDir("panelBridgeStaleness-auto-engine-stale-engine-");
   try {
     writeStamp(path.join(root, "Content", "Python"), 'BRIDGE_VERSION = "1.2.3"\n');
     writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
 
-    const { engineCalls } = await autoUpdate(root, extensionRoot, () => "updated");
+    const { engineCalls } = await autoUpdate(
+      root,
+      extensionRoot,
+      () => sentinelEngineDir,
+      () => "updated"
+    );
 
     assert.equal(engineCalls.length, 1, "_refreshEngineBridgeCopy must still be called alongside a stale project copy");
+    assert.equal(engineCalls[0], sentinelEngineDir, "must pass the discovered engine dir, not the shipped bridgeDir");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(sentinelEngineDir, { recursive: true, force: true });
   }
 });
 
@@ -318,8 +351,42 @@ test("_autoUpdateUefnBridgeIfStale never calls _refreshEngineBridgeCopy when the
     // No Content/Python/bridge_version.py at all -- opt-in guard returns early.
     writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
 
-    const { engineCalls } = await autoUpdate(root, extensionRoot, () => "updated");
+    const { engineCalls, findCalls } = await autoUpdate(
+      root,
+      extensionRoot,
+      () => {
+        throw new Error("_findFortniteEngineBridgeDir must not be called when opt-in guard returns early");
+      },
+      () => "updated"
+    );
+    assert.equal(findCalls, 0, "opt-in guard must prevent any engine dir discovery");
     assert.equal(engineCalls.length, 0, "opt-in guard must prevent any engine refresh");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+test("_autoUpdateUefnBridgeIfStale treats a missing engine dir as unavailable: never calls _refreshEngineBridgeCopy and fires no engine-only toast", async () => {
+  const root = tmpDir("panelBridgeStaleness-auto-engine-missing-root-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-missing-ext-");
+  try {
+    const stamp = 'BRIDGE_VERSION = "1.2.3"';
+    // Project copy already current -- isolates the engine-only path.
+    writeStamp(path.join(root, "Content", "Python"), `${stamp}\n`);
+    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
+
+    const { engineCalls, findCalls } = await autoUpdate(
+      root,
+      extensionRoot,
+      () => null,
+      () => {
+        throw new Error("_refreshEngineBridgeCopy must not be called when no engine dir was found");
+      }
+    );
+
+    assert.equal(findCalls, 1, "_findFortniteEngineBridgeDir must still be attempted");
+    assert.equal(engineCalls.length, 0, "_refreshEngineBridgeCopy must not be called when discovery returns null");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
