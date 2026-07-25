@@ -7444,6 +7444,34 @@
         if (!bestEnemy) continue; // no target in range — stay silent, cooldown left at 0
         spawnProjectile(place.nx, place.ny, bestEnemy.nx, bestEnemy.ny);
         turretCooldown[objId] = TURRET_FIRE_INTERVAL_MS;
+        // ── Turret animation rule ──────────────────────────────────────────
+        // Non-turret animated objects animate on AGENT PROXIMITY (see the
+        // idle-phase branch in the main render loop). A turret is carved out
+        // of that behavior entirely: it must stay still while a character
+        // merely stands beside it, and animate ONLY when it actually fires.
+        // Signal that HERE, at the fire site, rather than inferring it from
+        // turretCooldown (which is reused for range-gating and would be a
+        // fragile proxy for "a shot just happened"). One full animation
+        // cycle per shot: reset the clip to frame 0 and arm a countdown
+        // (turretFireAnimT, consumed by the idle-phase branch below) sized
+        // to the clip's real duration — frames ÷ fps, mirroring
+        // advanceObjectAnim's own per-object fps override — clamped to the
+        // fire interval so a slow clip can never bleed into the next shot's
+        // rest window. Guarded: objectAnimMap[objId] may not exist yet (e.g.
+        // first frame after building) — just skip the visual signal, never throw.
+        const animEntry = objectAnimMap[objId];
+        if (animEntry && animEntry.animState) {
+          const s = animEntry.animState;
+          const clip = OBJECT_CLIPS[s.action] || OBJECT_CLIPS.object_idle;
+          const fps = (typeof s.fps === "number") ? s.fps : clip.fps;
+          const frameCount = clip.frames ? clip.frames.length : 1;
+          const cycleSec = (fps > 0 && frameCount > 1) ? (frameCount / fps) : 0;
+          animEntry.turretFireAnimT = Math.min(cycleSec, TURRET_FIRE_INTERVAL_MS / 1000);
+          s.frameIndex = 0;
+          s.elapsed = 0;
+          s.direction = 1;
+          s.completed = false;
+        }
         // ── p2-t3: the shot actually hits ────────────────────────────────
         // Reuse the same hp field agents drain (AGENT_DPS); the existing
         // hp<=0 → fleeing eviction check (advanceEnemies, ~L13634) reaps it
@@ -13410,6 +13438,10 @@
       }
       if (status === "unbuilt") {
         entry.phase = "unbuilt";
+        // Turret rule: clear any in-flight fire-animation countdown so a
+        // demolished/reset turret doesn't resume mid-cycle with stale timing
+        // once it's rebuilt and goes idle again.
+        entry.turretFireAnimT = 0;
       } else if (status === "active") {
         if (entry.phase === "unbuilt") {
           entry.phase = "active";
@@ -13451,7 +13483,33 @@
         }
       } else if (entry.phase === "idle" && entry.animState) {
         const objImg = themeImages["object_" + objId];
-        if (objImg && objImg.length > 1) {
+        const isAnimatedArt = objImg && objImg.length > 1;
+        // Turret rule: non-turret animated objects animate on AGENT
+        // PROXIMITY (unchanged below); an object flagged is_turret is carved
+        // out of that entirely and instead animates ONE FULL CYCLE PER SHOT,
+        // driven by the fire signal updateTurrets writes at its
+        // spawnProjectile call site (turretFireAnimT + reset frame/elapsed).
+        // No proximity check runs for turrets at all — standing next to one
+        // does nothing. turretObjectIds is read live here, so a turret that
+        // stops being flagged (theme swap) simply falls through to ordinary
+        // proximity behavior next frame, and a DAMAGED turret is naturally
+        // still: updateTurrets' smoke.damage>0 guard `continue`s before ever
+        // reaching the fire site, so it never arms turretFireAnimT.
+        if (turretObjectIds.has(objId)) {
+          if (isAnimatedArt) {
+            if ((entry.turretFireAnimT || 0) > 0) {
+              entry.turretFireAnimT -= delta;
+              advanceObjectAnim(entry.animState, delta);
+            } else {
+              entry.turretFireAnimT = 0;
+              // Rest on the first frame between shots.
+              entry.animState.frameIndex = 0;
+              entry.animState.elapsed = 0;
+            }
+          } else {
+            advanceObjectAnim(entry.animState, delta); // static art: unchanged (holds frame 0 via modulo)
+          }
+        } else if (isAnimatedArt) {
           // Animated object: only loop while an AGENT (never a rival) is close,
           // plus a 1s linger after the last agent leaves; otherwise freeze frame 0.
           const place = objectPlacement[objId];
