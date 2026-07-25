@@ -214,7 +214,7 @@ def _walkup_content_dir():
 
 def _detect_project_prefix():
     """
-    Detect the current island's Asset Registry prefix (e.g. ``/StarWars/``)
+    Detect the current island's Asset Registry prefix (e.g. ``/YourProject/``)
     from a live level actor's path. Returns ``None`` (not ``/Game/``) when
     unreal isn't available or no actor can be inspected — callers must
     treat that as "prefix unknown", since a wrong default would corrupt
@@ -254,10 +254,10 @@ def _get_island_sample_packages(project_prefix, limit=25):
 
 def _derive_content_root_from_asset_path(pkg, disk_path):
     """
-    Given an island package path like ``/StarWars/ArudoStuff/Anim/X`` and
+    Given an island package path like ``/YourProject/ArudoStuff/Anim/X`` and
     its real on-disk file (e.g.
-    ``.../StarWars/Content/ArudoStuff/Anim/X.uasset``), strip the
-    package-relative tail to recover ``.../StarWars/Content``.
+    ``.../YourProject/Content/ArudoStuff/Anim/X.uasset``), strip the
+    package-relative tail to recover ``.../YourProject/Content``.
 
     Returns ``None`` if ``disk_path`` doesn't end with the expected tail
     (e.g. an unexpected layout), so the caller skips this sample.
@@ -347,8 +347,8 @@ def _resolve_content_dir_via_asset_anchor(sample_pkgs):
 def _default_location_content_dirs(project_prefix):
     """
     Candidate 3 (NEW) — probe conventional UEFN project locations for a
-    project named after the island prefix (e.g. ``/StarWars/`` ->
-    ``StarWars``): ``~/Documents/Fortnite Projects/<Name>``,
+    project named after the island prefix (e.g. ``/YourProject/`` ->
+    ``YourProject``): ``~/Documents/Fortnite Projects/<Name>``,
     ``~/OneDrive/Documents/Fortnite Projects/<Name>``, and any
     ``~/OneDrive*/Documents/Fortnite Projects/<Name>`` match (OneDrive can
     redirect Documents under a tenant-specific folder name). Only ever a

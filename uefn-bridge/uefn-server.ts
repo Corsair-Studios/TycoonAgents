@@ -1,4 +1,4 @@
-// Vendored from Trashbyrd's Power Tools. Source for the bundled media/uefn-bridge/uefn-server.mjs.
+// Trashbyrd's UEFN Power Tools — MCP server (stdio transport) fronting the UEFN Python bridge.
 // Rebuild via `npm run bundle:uefn`.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -356,7 +356,7 @@ server.registerTool(
     description:
       "List assets under a content-browser path via the Unreal Asset Registry (read-only, metadata only — no asset loads).",
     inputSchema: {
-      path: z.string().describe("Content-browser path to list, e.g. /Game/Athena/Items or /StarWars/..."),
+      path: z.string().describe("Content-browser path to list, e.g. /Game/Athena/Items or /YourProject/..."),
       recursive: z.boolean().optional().describe("Include assets in subfolders (default true)"),
       class_filter: z.string().optional().describe("Case-insensitive substring filter on the asset's class name"),
       limit: z.number().int().optional().describe("Maximum assets to return (default 500, max 2000)"),

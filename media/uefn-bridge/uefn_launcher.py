@@ -160,19 +160,19 @@ _TOOLS = [
     {
         "icon": "\U0001f9f9",  # broom
         "name": "Dead Asset Sweep",
-        "description": "Find unreferenced assets across all types, estimate reclaimable size",
+        "description": "Find unreferenced assets, estimate reclaimable disk space",
         "action": "asset_sweep",
     },
     {
         "icon": "\U0001f50e",  # magnifying glass tilted right
         "name": "Property Inspector",
-        "description": "Dump a selected actor's editor properties to find internal names",
+        "description": "Dump a selected actor's properties to find internal names",
         "action": "property_inspector",
     },
     {
         "icon": "\U0001f9f1",  # bricks
         "name": "Build-Mode Cleanup",
-        "description": "Bulk-set build-mode props (structural grid, etc.) to False on all level actors.",
+        "description": "Clear build-mode flags (structural grid, etc.) on all level actors",
         "action": "build_mode_cleanup",
     },
 ]
@@ -495,7 +495,9 @@ def show_launcher():
 
     import math
     _rows = math.ceil(len(_TOOLS) / 3)
-    _win_height = 150 + _rows * 150
+    # Per-row cost tracks _CARD_MIN_H (below) + its grid pady (6+6) so the
+    # window is tall enough to show every row's card at full, unclipped height.
+    _win_height = 150 + _rows * 180
 
     root = tk.Tk()
     root.title("Trashbyrd's Power Tools v" + BRIDGE_VERSION)
@@ -572,7 +574,9 @@ def show_launcher():
     _HOVER_SHADOW = 0
     _SHADOW_COLOR = "#9A9182"
     _CARD_MIN_W = 190
-    _CARD_MIN_H = 170
+    # Tall enough for icon + title + a full 3-line description at the label's
+    # font/wraplength below, with no clipping against the fixed card height.
+    _CARD_MIN_H = 200
 
     for idx, tool in enumerate(_TOOLS):
         row = idx // 3
@@ -632,9 +636,13 @@ def show_launcher():
             font=("Segoe UI", 9),
             fg=_TEXT_DIM,
             bg=_SECTION_BG,
-            anchor="w",
+            anchor="nw",
             justify=tk.LEFT,
-            wraplength=140,
+            wraplength=150,
+            # Reserve exactly 3 text lines so every card's description area
+            # is the same height regardless of how many lines it actually
+            # wraps to -- consistent cards, nothing clipped.
+            height=3,
         )
         desc_label.pack(anchor="w", fill=tk.X, pady=(2, 0))
 

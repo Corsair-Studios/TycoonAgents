@@ -8,7 +8,7 @@
 // check:paths, check:webview — then `vsce package`), verify the .vsix,
 // `git add -A`, commit "Release x.y.z: ...", `git push origin main`.
 import { readFileSync, writeFileSync, existsSync, statSync, unlinkSync } from 'node:fs';
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -145,6 +145,17 @@ function main() {
       `\n[release] git push failed: ${err.message}\n` +
       '[release] The commit is local — push manually once resolved.\n',
     );
+  }
+
+  // Best-effort mirror of the UEFN Power Tools bridge into the standalone
+  // "Trashbyrd's UEFN Power Tools" repo, if a sync target is configured on
+  // this machine. Runs after the release push and must never fail the
+  // release itself — it's a no-op on any machine without a configured
+  // target (see scripts/sync-powertools.mjs).
+  try {
+    execFileSync('node', ['scripts/sync-powertools.mjs'], { stdio: 'inherit', cwd: ROOT });
+  } catch (err) {
+    console.warn(`[release] Power Tools sync skipped: ${err.message}`);
   }
 
   const sizeKb = (vsixSize / 1024).toFixed(1);

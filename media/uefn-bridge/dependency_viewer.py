@@ -258,10 +258,10 @@ def _walkup_project_root():
 
 def _derive_content_root_from_asset_path(pkg, disk_path):
     """
-    Given an island package path like ``/StarWars/ArudoStuff/Anim/X`` and
+    Given an island package path like ``/YourProject/ArudoStuff/Anim/X`` and
     its real on-disk file (e.g.
-    ``.../StarWars/Content/ArudoStuff/Anim/X.uasset``), strip the
-    package-relative tail to recover ``.../StarWars/Content``. Returns
+    ``.../YourProject/Content/ArudoStuff/Anim/X.uasset``), strip the
+    package-relative tail to recover ``.../YourProject/Content``. Returns
     ``None`` if ``disk_path`` doesn't end with the expected tail.
     """
     if not pkg or not disk_path:
@@ -345,7 +345,7 @@ def _resolve_project_root_via_asset_anchor(sample_pkgs):
 def _default_location_project_roots(project_prefix):
     """
     Candidate 3 (NEW) — probe conventional UEFN project locations for a
-    project named after the island prefix (``/StarWars/`` -> ``StarWars``):
+    project named after the island prefix (``/YourProject/`` -> ``YourProject``):
     ``~/Documents/Fortnite Projects/<Name>``,
     ``~/OneDrive/Documents/Fortnite Projects/<Name>``, and any
     ``~/OneDrive*/Documents/Fortnite Projects/<Name>`` match (OneDrive can

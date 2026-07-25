@@ -4709,9 +4709,9 @@
   // reuses the same `hp` field agents drain (AGENT_DPS) and the same
   // hp<=0 → fleeing eviction path (advanceEnemies), and briefly staggers the
   // target so it stops ramping structure damage (updateObjectSmoke gate).
-  const TURRET_RANGE = 140;             // native px: same scale as ENEMY_RANGED_RANGE (120); tunable
+  const TURRET_RANGE = 420;             // native px: 3x ENEMY_RANGED_RANGE (120), tripled from the original 140; tunable
   const TURRET_FIRE_INTERVAL_MS = 1000; // ms between shots per turret (~1/sec); tunable
-  const TURRET_DAMAGE_FRACTION = 0.25;  // fraction of an agent's DPS a turret shot deals, amortized over its fire interval; tunable
+  const TURRET_DAMAGE_FRACTION = 0.1;   // fraction of an agent's DPS a turret shot deals, amortized over its fire interval; tunable
   // TURRET_HIT_DAMAGE (derived from AGENT_DPS) is declared further down,
   // right after AGENT_DPS itself — AGENT_DPS isn't defined yet at this point
   // in the top-level init order, and this whole file is one IIFE evaluated
@@ -5525,8 +5525,8 @@
   /** Damage per second an engaged agent deals to its target enemy. */
   const AGENT_DPS = 40;
   // Derived (Plan p2-t3, not hardcoded): a turret shot deals
-  // TURRET_DAMAGE_FRACTION (0.25) of an agent's DPS, amortized over the
-  // turret's own fire interval — 40 * 0.25 * (1000ms/1000) = 10 HP/shot.
+  // TURRET_DAMAGE_FRACTION (0.1, one tenth) of an agent's DPS, amortized over
+  // the turret's own fire interval — 40 * 0.1 * (1000ms/1000) = 4 HP/shot.
   // Stays anchored to AGENT_DPS/TURRET_FIRE_INTERVAL_MS if either is retuned.
   const TURRET_HIT_DAMAGE = AGENT_DPS * TURRET_DAMAGE_FRACTION * (TURRET_FIRE_INTERVAL_MS / 1000);
   /** Native px distance at which an agent switches from walk to melee/shoot. */
