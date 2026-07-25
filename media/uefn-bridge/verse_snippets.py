@@ -9,6 +9,8 @@ Usage:
     show_verse_snippets()
 """
 
+import os
+import subprocess
 import webbrowser
 
 try:
@@ -31,6 +33,39 @@ _ACCENT_GREEN = "#2F8F3E"
 _ACCENT_BLUE = "#F15B29"
 _TEXT_FG     = "#2B2B2B"
 _TEXT_DIM    = "#57524C"
+
+
+# ---------------------------------------------------------------------------
+# Clipboard — Tk's clipboard API (clipboard_clear/clipboard_append/
+# clipboard_get/selection_own/selection_handle) is FORBIDDEN in this file.
+# Tk's clipboard needs this window to own the system CLIPBOARD selection and
+# then service selection-request events from ITS OWN Tk event loop, but this
+# window is pumped by UEFN's register_slate_post_tick_callback instead of
+# mainloop(), so nothing can service that request — Tcl/Tk aborts the whole
+# host process (crash: ucrtbase -> python311 -> _tkinter -> tcl86t (x5) ->
+# tk86t -> user32 ... Abort signal received). Use the helper below instead.
+# ---------------------------------------------------------------------------
+
+def _copy_text_to_system_clipboard(text):
+    """Best-effort OS clipboard copy that never touches Tk's clipboard API.
+    Pipes `text` to the Windows `clip` utility via subprocess (which owns and
+    services the clipboard in its own process). Returns True on success,
+    False if unavailable/failed — never raises."""
+    if os.name != "nt":
+        return False
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
+        proc = subprocess.run(
+            ["clip"], input=text.encode("utf-16-le"),
+            startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
 
 _SNIPPETS = [
     # Basics
@@ -277,10 +312,17 @@ def show_verse_snippets():
         code = _current_code[0]
         if not code:
             return
-        root.clipboard_clear()
-        root.clipboard_append(code)
-        copy_btn.configure(text="Copied!")
-        root.after(1500, lambda: copy_btn.configure(text="Copy to Clipboard"))
+        if _copy_text_to_system_clipboard(code):
+            copy_btn.configure(text="Copied!")
+            root.after(1500, lambda: copy_btn.configure(text="Copy to Clipboard"))
+        else:
+            # No-clipboard-API fallback: the code is already shown in
+            # code_text — just select all of it (tag ops work even while
+            # disabled) and point the user at Ctrl+C. Zero clipboard calls.
+            code_text.tag_add("sel", "1.0", "end")
+            code_text.focus_set()
+            copy_btn.configure(text="Selected — press Ctrl+C")
+            root.after(2500, lambda: copy_btn.configure(text="Copy to Clipboard"))
 
     copy_btn.configure(command=_copy)
 

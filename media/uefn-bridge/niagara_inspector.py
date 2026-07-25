@@ -17,6 +17,7 @@ Usage:
 """
 
 import os
+import subprocess
 import unreal
 import traceback
 import webbrowser
@@ -42,6 +43,65 @@ _TEXT_FG      = "#2B2B2B"
 _TEXT_DIM     = "#57524C"
 _ENTRY_BG     = "#FBFAF6"
 _ENTRY_FG     = "#1A1A1A"
+
+
+# ---------------------------------------------------------------------------
+# Clipboard — Tk's clipboard API (clipboard_clear/clipboard_append/
+# clipboard_get/selection_own/selection_handle) is FORBIDDEN in this file.
+# Tk's clipboard needs this window to own the system CLIPBOARD selection and
+# then service selection-request events from ITS OWN Tk event loop, but this
+# window is pumped by UEFN's register_slate_post_tick_callback instead of
+# mainloop(), so nothing can service that request — Tcl/Tk aborts the whole
+# host process (crash: ucrtbase -> python311 -> _tkinter -> tcl86t (x5) ->
+# tk86t -> user32 ... Abort signal received). Use the helpers below instead.
+# ---------------------------------------------------------------------------
+
+def _copy_text_to_system_clipboard(text):
+    """Best-effort OS clipboard copy that never touches Tk's clipboard API.
+    Pipes `text` to the Windows `clip` utility via subprocess (which owns and
+    services the clipboard in its own process). Returns True on success,
+    False if unavailable/failed — never raises."""
+    if os.name != "nt":
+        return False
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
+        proc = subprocess.run(
+            ["clip"], input=text.encode("utf-16-le"),
+            startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _show_copy_fallback_popup(root, text, title="Copy"):
+    """No-clipboard-API fallback: a tiny Toplevel with `text` pre-selected in
+    a single-line Entry so the user can press Ctrl+C themselves. Zero Tk
+    clipboard calls — cannot reproduce the crash described above."""
+    dlg = tk.Toplevel(root)
+    dlg.title(title)
+    dlg.configure(bg=_BG, padx=12, pady=12)
+    tk.Label(
+        dlg, text=(
+            "Clipboard copy is unavailable here — the text below is "
+            "pre-selected. Click inside it and press Ctrl+C to copy."
+        ),
+        font=("Segoe UI", 9, "bold"), fg=_HEADER_FG, bg=_BG,
+        wraplength=460, justify=tk.LEFT,
+    ).pack(fill=tk.X, pady=(0, 8))
+    entry = tk.Entry(dlg, font=("Consolas", 9), width=64)
+    entry.insert(0, text)
+    entry.pack(fill=tk.X)
+    entry.select_range(0, tk.END)
+    entry.focus_set()
+    tk.Button(
+        dlg, text="Close", font=("Segoe UI", 9), bg=_SECTION_BG, fg=_TEXT_FG,
+        relief="flat", padx=10, pady=4, command=dlg.destroy,
+    ).pack(pady=(8, 0))
+
 
 # UI state for the tick pump
 _tick_handle = [None]
@@ -884,10 +944,11 @@ def show_niagara_inspector():
         path = values[2]  # "Path" column (index 2)
         if not path:
             return
-        root.clipboard_clear()
-        root.clipboard_append(path)
-        status_var.set(f"Copied to clipboard: {path}")
-        unreal.log(f"niagara_inspector: Copied to clipboard — {path}")
+        if _copy_text_to_system_clipboard(path):
+            status_var.set(f"Copied to clipboard: {path}")
+            unreal.log(f"niagara_inspector: Copied to clipboard — {path}")
+        else:
+            _show_copy_fallback_popup(root, path, title="Copy asset path")
 
     tree.bind("<Double-1>", _on_double_click)
 

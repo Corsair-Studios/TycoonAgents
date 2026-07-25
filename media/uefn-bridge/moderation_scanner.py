@@ -57,6 +57,7 @@ import json
 import os
 import re
 import struct
+import subprocess
 import unicodedata
 import webbrowser
 import zlib
@@ -85,6 +86,93 @@ _HEADER_FG = "#1A1A1A"
 _ACCENT_BLUE = "#F15B29"
 _TEXT_FG = "#2B2B2B"
 _TEXT_DIM = "#57524C"
+
+
+# ---------------------------------------------------------------------------
+# Clipboard — Tk's clipboard API is FORBIDDEN in this file. Do not reintroduce
+# clipboard_clear() / clipboard_append() / clipboard_get() / selection_own() /
+# selection_handle() on any widget here.
+#
+# WHY: Tk's clipboard requires the window to take ownership of the system
+# CLIPBOARD selection and then service selection-request events from ITS OWN
+# Tk event loop. Every Power Tools window (this one included) is pumped by
+# UEFN's register_slate_post_tick_callback tick pump instead of running
+# mainloop(), so there is no owning event loop able to service a selection
+# request. That leaves Tcl/Tk unable to hand off the clipboard and it aborts
+# the whole host process (real crash stack: ucrtbase -> python311 ->
+# _tkinter -> tcl86t (x5) -> tk86t -> user32 ... Abort signal received) --
+# i.e. clicking "Copy prompt" used to crash UEFN itself, not just this
+# window. Use `_copy_text_to_system_clipboard` (subprocess, no Tk clipboard
+# involvement) and `_show_copy_fallback_dialog` (no clipboard API at all)
+# below instead.
+# ---------------------------------------------------------------------------
+
+def _copy_text_to_system_clipboard(text):
+    """Best-effort OS clipboard copy that never touches Tk's clipboard API.
+
+    Pipes `text` to the Windows `clip` console utility via subprocess; `clip`
+    owns and services the clipboard itself in its own separate process, so
+    this has nothing to do with Tk/Tcl and cannot reproduce the abort
+    described above. `startupinfo`/`CREATE_NO_WINDOW` keep the console
+    window hidden so nothing flashes over the editor.
+
+    Returns True on success, False if unavailable/failed (non-Windows, no
+    `clip` on PATH, timeout, etc.) — callers MUST have a no-clipboard
+    fallback for the False case (see `_show_copy_fallback_dialog`). Never
+    raises.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
+        proc = subprocess.run(
+            ["clip"],
+            input=text.encode("utf-16-le"),
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _show_copy_fallback_dialog(root, text, title="Copy this text"):
+    """No-clipboard-API fallback: a small Toplevel showing `text` pre-selected
+    in a ScrolledText widget so the user can press Ctrl+C themselves. Uses
+    zero Tk clipboard calls (no clipboard_get/selection_own either), so it
+    cannot reproduce the crash described above — it always works.
+    """
+    dlg = tk.Toplevel(root)
+    dlg.title(title)
+    dlg.configure(bg=_BG)
+    dlg.geometry("640x360")
+    tk.Label(
+        dlg,
+        text=(
+            "Clipboard copy is unavailable here — the text below is "
+            "pre-selected. Click inside it and press Ctrl+C to copy."
+        ),
+        font=("Segoe UI", 9, "bold"), fg=_HEADER_FG, bg=_BG,
+        wraplength=610, justify=tk.LEFT,
+    ).pack(fill=tk.X, padx=12, pady=(12, 6))
+
+    box = scrolledtext.ScrolledText(
+        dlg, wrap=tk.WORD, bg=_SECTION_BG, fg=_TEXT_FG,
+        insertbackground=_TEXT_FG, relief="flat", font=("Consolas", 9),
+    )
+    box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+    box.insert("1.0", text)
+    box.tag_add("sel", "1.0", "end")
+    box.focus_set()
+
+    tk.Button(
+        dlg, text="Close", font=("Segoe UI", 9), bg=_SECTION_BG, fg=_TEXT_FG,
+        relief="flat", padx=10, pady=4, command=dlg.destroy,
+    ).pack(pady=(0, 12))
+
 
 # Reuse (do not reinvent) health_scanner's validated scan-root resolution.
 # Guarded: health_scanner.py itself guards `import unreal`/`import tkinter`,
@@ -2098,18 +2186,21 @@ def show_moderation_scan():
             "(BLOCKER, WARN, KNOWN_RISK, INFO), with a short summary and "
             "actionable next steps for each finding."
         )
-        try:
-            root.clipboard_clear()
-            root.clipboard_append(prompt)
-        except Exception:
-            pass
+        # See the module-level comment above _copy_text_to_system_clipboard:
+        # Tk's own clipboard API must never be called from this window.
+        if _copy_text_to_system_clipboard(prompt):
+            copy_btn.configure(text="Copied!")
+            root.after(1500, lambda: copy_btn.configure(text="Copy prompt"))
+        else:
+            _show_copy_fallback_dialog(root, prompt, title="Copy prompt")
 
-    tk.Button(
+    copy_btn = tk.Button(
         actions_frame, text="Copy prompt", font=("Segoe UI", 9, "bold"),
         bg=_ACCENT_BLUE, fg="#FFFFFF", activebackground="#D24E1F",
         activeforeground="#FFFFFF", relief="flat", padx=10, pady=4,
         command=_copy_prompt,
-    ).pack(side=tk.LEFT)
+    )
+    copy_btn.pack(side=tk.LEFT)
 
     tk.Button(
         actions_frame, text="Refresh", font=("Segoe UI", 9),
