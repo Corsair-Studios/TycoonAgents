@@ -37,6 +37,7 @@ import {
   type DoctrineRosterAgent,
 } from "./delegationDoctrine";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
+import { parseBridgeVersion, isBridgeVersionNewer, isNumericVersion } from "../../shared/bridgeVersion";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { buildContextBudget } from "./contextBudget";
@@ -416,6 +417,13 @@ export class TycoonPanel {
     // out of date on a project where Project Plan is enabled but the skill
     // was only ever copied once at install time.
     this._ensureProjectPlanSkillFresh();
+
+    // Auto-heal a stale staged UEFN bridge once per panel open (see
+    // _autoUpdateUefnBridgeIfStale doc comment) — fixes updating the VSIX
+    // alone never refreshing a bridge already staged into a UEFN project's
+    // Content/Python; opt-in preserved (no-op when no bridge is staged).
+    // Fire-and-forget: must never delay panel construction/rendering.
+    void this._autoUpdateUefnBridgeIfStale(this._projectRoot());
 
     this._update();
 
@@ -3583,6 +3591,80 @@ export class TycoonPanel {
       return staged !== shipped;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Auto-heal a STALE staged UEFN bridge once per panel open, so updating
+   * the VSIX alone is enough to refresh the bridge already staged into a
+   * project's `Content/Python` — the user is no longer required to click
+   * "Install pack" / "Setup UEFN project" again after every extension
+   * update. Anchored via `_uefnEffectiveRoot` (see) so the SAME project
+   * target `_stageUefnBridgeAllTargets` writes to is the one read here —
+   * check and push always agree on where the bridge lives.
+   *
+   * Deliberately narrower than `_uefnBridgeStale` (any content diff counts
+   * as stale, used for the "set up" UI hint): this method only PUSHES when
+   * the bundled `BRIDGE_VERSION` is NUMERICALLY newer than the installed
+   * one (via `parseBridgeVersion`/`isBridgeVersionNewer`), so a user's local
+   * edits to the staged copy, or a shipped file that differs for unrelated
+   * reasons but isn't a version bump, don't trigger an unwanted overwrite.
+   * An installed stamp that fails to parse as a valid NUMERIC version (e.g.
+   * hand-edited/corrupted) is treated as stale rather than a dead-end that
+   * would silently block auto-update forever, provided the bundled stamp
+   * itself parses as valid.
+   *
+   * PROJECT-ONLY on purpose: unlike `_stageUefnBridgeAllTargets` (used by
+   * the explicit user-initiated Install-pack / Setup-UEFN flows), this
+   * automatic panel-load path must NOT reach into the user's Fortnite
+   * engine install — it stages ONLY the project's own
+   * `<effRoot>/Content/Python` via the same single-target `_stageBridgeTo`
+   * helper and the same project-target path `_stageUefnBridgeAllTargets`
+   * computes, so check and push still agree. The engine-side copy instead
+   * updates via `init_unreal.py`'s project→engine self-sync the next time
+   * the user reopens the UEFN project — which the toast below instructs.
+   *
+   * Rules:
+   * - Never creates a bridge copy — if the project has no installed
+   *   `<effRoot>/Content/Python/bridge_version.py`, the project never opted
+   *   into UEFN and this returns immediately (opt-in preserved, same
+   *   posture as `_ensureHookScriptFresh`).
+   * - Only re-stages when the bundled version is strictly newer than the
+   *   installed one (or the installed stamp is unparseable garbage);
+   *   equal or genuinely newer-or-older-but-valid installed versions are
+   *   left untouched (no toast either).
+   * - Shows exactly one informational toast on an actual update.
+   * - Wrapped in try/catch (console.warn on failure) so this can never
+   *   throw or block panel load.
+   */
+  private async _autoUpdateUefnBridgeIfStale(root: string): Promise<void> {
+    try {
+      if (root === "") return;
+      const effRoot = this._uefnEffectiveRoot(root);
+      const projectPyDest = path.join(effRoot, "Content", "Python");
+      const installedStampPath = path.join(projectPyDest, "bridge_version.py");
+      if (!fs.existsSync(installedStampPath)) return; // never auto-install -- opt-in preserved
+
+      const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+      const bundledStampPath = path.join(bridgeDir, "bridge_version.py");
+
+      const installedText = fs.readFileSync(installedStampPath, "utf8");
+      const bundledText = fs.readFileSync(bundledStampPath, "utf8");
+
+      const installedVersion = parseBridgeVersion(installedText);
+      const bundledVersion = parseBridgeVersion(bundledText);
+      if (!bundledVersion || !isNumericVersion(bundledVersion)) return;
+      if (!installedVersion) return;
+
+      const installedIsCorrupt = !isNumericVersion(installedVersion);
+      if (!installedIsCorrupt && !isBridgeVersionNewer(bundledVersion, installedVersion)) return;
+
+      this._stageBridgeTo(bridgeDir, projectPyDest);
+      void vscode.window.showInformationMessage(
+        `Trashbyrd's Power Tools updated to ${bundledVersion} — reopen your UEFN project in the editor to finish updating.`
+      );
+    } catch (e) {
+      console.warn("TycoonAgents: _autoUpdateUefnBridgeIfStale failed:", e);
     }
   }
 
