@@ -1901,6 +1901,48 @@ def _read_moderation_report():
     return data if isinstance(data, dict) else None
 
 
+def _moderation_allowlist_path():
+    """Path to moderation_allowlist.json, next to THIS script — same
+    directory-relative pattern as ``_moderation_report_path()`` above. A
+    per-project, per-user runtime artifact (the creator's own declared
+    "licensed IP" list), never staged/shipped — see the .gitignore /
+    .vscodeignore entries alongside moderation_report.json."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "moderation_allowlist.json")
+
+
+def _read_moderation_allowlist():
+    """Read the per-project Licensed IP allowlist previously saved via the
+    scan window's "Licensed IP" field. Shape on disk:
+    {"licensed_ip": ["...", "..."]}. Returns a list of non-empty, trimmed
+    strings (possibly empty) — NEVER raises. A missing, unreadable, or
+    corrupt file is treated as "no saved value yet" (empty list), exactly
+    like ``_read_moderation_report``'s handling of its own file."""
+    try:
+        with open(_moderation_allowlist_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            values = data.get("licensed_ip")
+            if isinstance(values, list):
+                return [str(v).strip() for v in values if str(v).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _write_moderation_allowlist(licensed_ip_list):
+    """Persist `licensed_ip_list` (already parsed/trimmed strings) to
+    moderation_allowlist.json next to this script. Best-effort convenience
+    save — NEVER raises; any failure (permissions, disk, etc.) is silently
+    swallowed rather than surfaced, since this window has no modal-dialog
+    mechanism to report it (see the tick-pump/no-mainloop constraint
+    documented above the clipboard helpers)."""
+    try:
+        with open(_moderation_allowlist_path(), "w", encoding="utf-8") as f:
+            json.dump({"licensed_ip": licensed_ip_list}, f, indent=2)
+    except Exception:
+        pass
+
+
 def _format_compact_summary(result):
     """Render a compact, COUNTS-ONLY summary of run_moderation_scan()'s
     dict — the "scanned N, excluded M engine assets" honesty line plus one
@@ -2290,14 +2332,46 @@ def show_moderation_scan():
     actions_frame = tk.Frame(root, bg=_BG, padx=16)
     actions_frame.pack(fill=tk.X, pady=(0, 8))
 
+    def _current_allowlist_for_prompt():
+        """Values to feed into the copied prompt right now: the entry's
+        LIVE text (so Copy works even if the user hasn't blurred/saved
+        yet), or [] while the placeholder suggestion is still showing —
+        the placeholder is never treated as a real, user-declared value."""
+        if _allowlist_placeholder_active[0]:
+            return []
+        raw = allowlist_var.get()
+        return [p.strip() for p in raw.split(",") if p.strip()]
+
     def _copy_prompt():
+        licensed = _current_allowlist_for_prompt()
+        if licensed:
+            licensed_line = (
+                "Licensed IP: " + ", ".join(licensed) + " — pass these as "
+                "the tool's `allowlist` parameter so matching assets/text "
+                "are grouped as \"expected licensed\" rather than "
+                "\"investigate\"."
+            )
+        else:
+            licensed_line = (
+                "Licensed IP (edit or delete this line): <franchises you "
+                "are licensed for> — pass as the tool's `allowlist` "
+                "parameter."
+            )
         prompt = (
             "Run the uefn_moderation_scan MCP tool for this UEFN project "
             f"(project path: {scan_root}), then review the collected asset, "
-            "Verse, text-metadata, image, and audio surfaces and report any "
-            "IP-ownership or authenticity risks, grouped by severity "
-            "(BLOCKER, WARN, KNOWN_RISK, INFO), with a short summary and "
-            "actionable next steps for each finding."
+            "Verse, text-metadata, image, and audio surfaces — prioritize "
+            "unicode_risks (especially by_surface.text_metadata's per-field "
+            "counts), hlod_or_imported_assets, external_actor_assets, "
+            "redirectors, and image_provenance as the highest-value "
+            "evidence — and report any IP-ownership or authenticity risks, "
+            "grouped by severity (BLOCKER, WARN, KNOWN_RISK, INFO), with a "
+            "short summary and actionable next steps for each finding.\n"
+            f"{licensed_line}\n"
+            "Finally, call uefn_moderation_report with the full report "
+            "text, a one-line summary, and per-severity counts (BLOCKER, "
+            "WARN, KNOWN_RISK, INFO) — this is what makes the results "
+            "appear in this window (click Refresh once it's done)."
         )
         # See the module-level comment above _copy_text_to_system_clipboard:
         # Tk's own clipboard API must never be called from this window.
@@ -2321,6 +2395,72 @@ def show_moderation_scan():
         activeforeground=_TEXT_FG, relief="flat", padx=10, pady=4,
         command=_render_report_section,
     ).pack(side=tk.LEFT, padx=(8, 0))
+
+    # --- Licensed IP (optional) — feeds the MCP tool's `allowlist` param ---
+    allowlist_frame = tk.Frame(root, bg=_BG, padx=16)
+    allowlist_frame.pack(fill=tk.X, pady=(0, 8))
+    tk.Label(
+        allowlist_frame, text="Licensed IP (optional):",
+        font=("Segoe UI", 9, "bold"), fg=_HEADER_FG, bg=_BG,
+    ).pack(anchor=tk.W)
+
+    allowlist_entry_row = tk.Frame(allowlist_frame, bg=_BG)
+    allowlist_entry_row.pack(fill=tk.X, pady=(2, 0))
+
+    allowlist_var = tk.StringVar()
+    allowlist_entry = tk.Entry(
+        allowlist_entry_row, textvariable=allowlist_var, font=("Segoe UI", 9),
+        bg=_SECTION_BG, fg=_TEXT_FG, insertbackground=_TEXT_FG, relief="flat",
+    )
+    allowlist_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+
+    tk.Label(
+        allowlist_entry_row,
+        text="  franchises you are licensed to use — comma separated",
+        font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
+    ).pack(side=tk.LEFT)
+
+    # Pre-seed SUGGESTION (never auto-saved as fact): on first open, if no
+    # value was ever saved, show the project's own resolved content mount
+    # name — the user's OWN project, not a shipped brand list — as
+    # placeholder/suggestion text the user can edit or ignore.
+    _saved_allowlist = _read_moderation_allowlist()
+    _project_mount_suggestion = (result.get("project_mount") or "").strip("/")
+    _allowlist_placeholder_active = [False]
+
+    def _apply_allowlist_placeholder():
+        if _saved_allowlist or allowlist_var.get().strip() or not _project_mount_suggestion:
+            return
+        _allowlist_placeholder_active[0] = True
+        allowlist_entry.configure(fg=_TEXT_DIM)
+        allowlist_var.set(_project_mount_suggestion)
+
+    if _saved_allowlist:
+        allowlist_var.set(", ".join(_saved_allowlist))
+    else:
+        _apply_allowlist_placeholder()
+
+    def _save_allowlist_field(_event=None):
+        # Never persist the placeholder suggestion itself as a saved fact.
+        if _allowlist_placeholder_active[0]:
+            return
+        raw = allowlist_var.get()
+        _write_moderation_allowlist([p.strip() for p in raw.split(",") if p.strip()])
+
+    def _on_allowlist_focus_in(_event=None):
+        if _allowlist_placeholder_active[0]:
+            _allowlist_placeholder_active[0] = False
+            allowlist_entry.configure(fg=_TEXT_FG)
+            allowlist_var.set("")
+
+    def _on_allowlist_focus_out(_event=None):
+        _save_allowlist_field()
+        if not allowlist_var.get().strip():
+            _apply_allowlist_placeholder()
+
+    allowlist_entry.bind("<FocusIn>", _on_allowlist_focus_in)
+    allowlist_entry.bind("<FocusOut>", _on_allowlist_focus_out)
+    allowlist_entry.bind("<Return>", _save_allowlist_field)
 
     # --- Compact summary (always shown, counts only — not a dump) ---
     # BUG FIX: this used to be a plain tk.Label with no wraplength. A Label
