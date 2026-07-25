@@ -3614,26 +3614,44 @@ export class TycoonPanel {
    * would silently block auto-update forever, provided the bundled stamp
    * itself parses as valid.
    *
-   * PROJECT-ONLY on purpose: unlike `_stageUefnBridgeAllTargets` (used by
-   * the explicit user-initiated Install-pack / Setup-UEFN flows), this
-   * automatic panel-load path must NOT reach into the user's Fortnite
-   * engine install — it stages ONLY the project's own
-   * `<effRoot>/Content/Python` via the same single-target `_stageBridgeTo`
-   * helper and the same project-target path `_stageUefnBridgeAllTargets`
-   * computes, so check and push still agree. The engine-side copy instead
-   * updates via `init_unreal.py`'s project→engine self-sync the next time
-   * the user reopens the UEFN project — which the toast below instructs.
+   * PROJECT copy: unlike `_stageUefnBridgeAllTargets` (used by the explicit
+   * user-initiated Install-pack / Setup-UEFN flows), this automatic
+   * panel-load path never CREATES a Fortnite engine install copy — it only
+   * ever pushes to the project's own `<effRoot>/Content/Python` via the
+   * same single-target `_stageBridgeTo` helper and the same project-target
+   * path `_stageUefnBridgeAllTargets` computes, so check and push still
+   * agree, gated behind the version comparison above.
+   *
+   * ENGINE copy: this method ALSO best-effort refreshes an EXISTING engine
+   * bridge copy via the guarded `_refreshEngineBridgeCopy` (see) —
+   * `_findFortniteEngineBridgeDir` only ever returns a dir that already
+   * contains `uefn_bridge.py`, so this never creates an engine install, only
+   * heals one that's already there. Critically, the engine refresh call is
+   * NOT gated behind the project copy being stale: a user can already have
+   * a CURRENT project copy (e.g. auto-updated on a previous panel open)
+   * while the engine copy is still stuck on an old version — that's the
+   * real stuck-user case (`init_unreal.py`'s project→engine self-sync only
+   * runs when the UEFN project is opened, so it can lag arbitrarily far
+   * behind a project copy that already self-healed). Calling
+   * `_refreshEngineBridgeCopy` unconditionally on every panel open is safe
+   * because it self-guards (returns `"unavailable"` with no engine copy
+   * found, `"current"` when the stamps already match, and never creates a
+   * directory).
    *
    * Rules:
-   * - Never creates a bridge copy — if the project has no installed
-   *   `<effRoot>/Content/Python/bridge_version.py`, the project never opted
-   *   into UEFN and this returns immediately (opt-in preserved, same
-   *   posture as `_ensureHookScriptFresh`).
-   * - Only re-stages when the bundled version is strictly newer than the
-   *   installed one (or the installed stamp is unparseable garbage);
-   *   equal or genuinely newer-or-older-but-valid installed versions are
-   *   left untouched (no toast either).
-   * - Shows exactly one informational toast on an actual update.
+   * - Never creates a bridge copy (project or engine) — if the project has
+   *   no installed `<effRoot>/Content/Python/bridge_version.py`, the
+   *   project never opted into UEFN and this returns immediately before
+   *   touching either copy (opt-in preserved, same posture as
+   *   `_ensureHookScriptFresh`).
+   * - Project copy only re-stages when the bundled version is strictly
+   *   newer than the installed one (or the installed stamp is unparseable
+   *   garbage); equal or genuinely newer-or-older-but-valid installed
+   *   versions are left untouched.
+   * - Engine copy refresh runs independently every call (see above) and is
+   *   itself a no-op unless a stale engine copy already exists.
+   * - Shows exactly one informational toast when EITHER copy actually
+   *   changed; no toast if neither did.
    * - Wrapped in try/catch (console.warn on failure) so this can never
    *   throw or block panel load.
    */
@@ -3657,12 +3675,23 @@ export class TycoonPanel {
       if (!installedVersion) return;
 
       const installedIsCorrupt = !isNumericVersion(installedVersion);
-      if (!installedIsCorrupt && !isBridgeVersionNewer(bundledVersion, installedVersion)) return;
+      let projectUpdated = false;
+      if (installedIsCorrupt || isBridgeVersionNewer(bundledVersion, installedVersion)) {
+        this._stageBridgeTo(bridgeDir, projectPyDest);
+        projectUpdated = true;
+      }
 
-      this._stageBridgeTo(bridgeDir, projectPyDest);
-      void vscode.window.showInformationMessage(
-        `Trashbyrd's Power Tools updated to ${bundledVersion} — reopen your UEFN project in the editor to finish updating.`
-      );
+      // Independent of project staleness above: a stuck engine copy can
+      // exist even when the project copy is already current (see docstring).
+      // Self-guarded — no-op if no existing engine copy is found or it's
+      // already current.
+      const engineResult = this._refreshEngineBridgeCopy(bridgeDir);
+
+      if (projectUpdated || engineResult === "updated") {
+        void vscode.window.showInformationMessage(
+          `Trashbyrd's Power Tools updated to ${bundledVersion} — reopen your UEFN project in the editor to finish updating.`
+        );
+      }
     } catch (e) {
       console.warn("TycoonAgents: _autoUpdateUefnBridgeIfStale failed:", e);
     }

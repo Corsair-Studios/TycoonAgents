@@ -245,3 +245,83 @@ test("_healDuplicateUefnBridgeStaging is a no-op when there is no duplicate stag
     fs.rmSync(bridgeDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// FIX 4: _autoUpdateUefnBridgeIfStale also refreshes an existing engine copy,
+// independent of whether the project copy was stale (0.0.444).
+// ---------------------------------------------------------------------------
+
+// `_autoUpdateUefnBridgeIfStale` reads/writes real fs paths (project
+// Content/Python + a fake extension dir standing in for media/uefn-bridge)
+// and calls two other prototype methods on `this`: the real `_stageBridgeTo`
+// (fs-only, safe to run for real against tmp dirs) and `_refreshEngineBridgeCopy`,
+// which we replace with a spy so the test asserts it was called without
+// needing a real Fortnite engine install on disk.
+async function autoUpdate(
+  root: string,
+  extensionRoot: string,
+  refreshEngineBridgeCopy: (bridgeDir: string) => "updated" | "current" | "unavailable"
+): Promise<{ engineCalls: string[] }> {
+  const engineCalls: string[] = [];
+  const fakeThis = {
+    _extensionUri: { fsPath: extensionRoot },
+    _uefnEffectiveRoot: (TycoonPanel.prototype as any)._uefnEffectiveRoot,
+    _stageBridgeTo: (TycoonPanel.prototype as any)._stageBridgeTo,
+    _refreshEngineBridgeCopy: (bridgeDir: string) => {
+      engineCalls.push(bridgeDir);
+      return refreshEngineBridgeCopy(bridgeDir);
+    },
+  };
+  await (TycoonPanel.prototype as any)._autoUpdateUefnBridgeIfStale.call(fakeThis, root);
+  return { engineCalls };
+}
+
+test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy even when the project copy is already current", async () => {
+  const root = tmpDir("panelBridgeStaleness-auto-engine-current-root-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-current-ext-");
+  try {
+    const stamp = 'BRIDGE_VERSION = "1.2.3"';
+    // Project copy already matches bundled -- no project-side staleness.
+    writeStamp(path.join(root, "Content", "Python"), `${stamp}\n`);
+    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
+
+    const { engineCalls } = await autoUpdate(root, extensionRoot, () => "current");
+
+    assert.equal(engineCalls.length, 1, "_refreshEngineBridgeCopy must be called even with a current project copy");
+    assert.equal(engineCalls[0], path.join(extensionRoot, "media", "uefn-bridge"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy when the project copy is stale too", async () => {
+  const root = tmpDir("panelBridgeStaleness-auto-engine-stale-root-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-stale-ext-");
+  try {
+    writeStamp(path.join(root, "Content", "Python"), 'BRIDGE_VERSION = "1.2.3"\n');
+    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
+
+    const { engineCalls } = await autoUpdate(root, extensionRoot, () => "updated");
+
+    assert.equal(engineCalls.length, 1, "_refreshEngineBridgeCopy must still be called alongside a stale project copy");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+test("_autoUpdateUefnBridgeIfStale never calls _refreshEngineBridgeCopy when the project never opted into UEFN", async () => {
+  const root = tmpDir("panelBridgeStaleness-auto-engine-noopt-root-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-noopt-ext-");
+  try {
+    // No Content/Python/bridge_version.py at all -- opt-in guard returns early.
+    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
+
+    const { engineCalls } = await autoUpdate(root, extensionRoot, () => "updated");
+    assert.equal(engineCalls.length, 0, "opt-in guard must prevent any engine refresh");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
