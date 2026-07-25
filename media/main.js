@@ -10573,6 +10573,22 @@
     for (const agent of metrics) {
       tbodyEl.appendChild(buildMetricsRow(agent, maxAgentTasks, { orchestratorPrice }));
     }
+
+    // Append the pricing disclaimer once, after the table. renderMetrics()
+    // only rebuilds #metrics-tbody (not the whole #metrics-body container),
+    // so guard by stable id to avoid stacking a duplicate caption on every
+    // re-render.
+    const metricsBodyEl = document.getElementById("metrics-body");
+    if (metricsBodyEl) {
+      const existingCaption = document.getElementById("metrics-stats-caption");
+      if (existingCaption) existingCaption.remove();
+      const pricingCaption = document.createElement("div");
+      pricingCaption.id = "metrics-stats-caption";
+      pricingCaption.className = "delegation-stats-caption";
+      pricingCaption.textContent =
+        "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token.";
+      metricsBodyEl.appendChild(pricingCaption);
+    }
   }
 
   /** Display label for a delegation mode id (the "flat" enum value renders as "Direct"). */

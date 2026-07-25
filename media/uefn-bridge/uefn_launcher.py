@@ -47,6 +47,44 @@ except Exception:
     BRIDGE_VERSION = "unknown"
 
 
+def _read_bridge_sync_status():
+    """Best-effort read of bridge_sync_status.json, written next to this
+    script by init_unreal.py's self-sync on every project load. Returns the
+    parsed dict, or None on any failure (missing file, bad JSON, wrong
+    shape) — never raises.
+    """
+    try:
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _status_path = os.path.join(_script_dir, "bridge_sync_status.json")
+        with open(_status_path, "r", encoding="utf-8") as _f:
+            return json.load(_f)
+    except Exception:
+        return None
+
+
+def _bridge_status_line():
+    """Build the footer's bridge-status text.
+
+    - marker present and updated==true -> "Bridge v{to} — updated from
+      {from} on load"
+    - marker present otherwise -> "Bridge v{version} — up to date"
+    - marker missing/unreadable/malformed -> bare "Bridge v{BRIDGE_VERSION}"
+      fallback
+    """
+    try:
+        _status = _read_bridge_sync_status()
+        if isinstance(_status, dict):
+            if _status.get("updated") and _status.get("to") and _status.get("from"):
+                return "Bridge v{} — updated from {} on load".format(
+                    _status["to"], _status["from"]
+                )
+            _ver = _status.get("version") or BRIDGE_VERSION
+            return "Bridge v{} — up to date".format(_ver)
+    except Exception:
+        pass
+    return "Bridge v" + str(BRIDGE_VERSION)
+
+
 # ---------------------------------------------------------------------------
 # Bridge status helpers
 # ---------------------------------------------------------------------------
@@ -710,10 +748,12 @@ def show_launcher():
     footer_frame = tk.Frame(root, bg=_SECTION_BG, padx=8, pady=2)
     footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
-    # Version label on the left (opposite the @thetrashbyrd link)
+    # Version / bridge-sync status label on the left (opposite the
+    # @thetrashbyrd link) — shows whether the engine-side copy was just
+    # self-synced from a newer project copy on this load.
     footer_version = tk.Label(
         footer_frame,
-        text="v" + BRIDGE_VERSION,
+        text=_bridge_status_line(),
         font=("Segoe UI", 8),
         fg=_TEXT_DIM,
         bg=_SECTION_BG,

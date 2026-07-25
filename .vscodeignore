@@ -36,3 +36,6 @@ eslint.config.mjs
 **/__pycache__/**
 **/*.pyc
 **/*.pyo
+
+# runtime-generated bridge self-sync status marker (never commit/ship)
+media/uefn-bridge/bridge_sync_status.json

@@ -63,25 +63,91 @@ try:
     _this_dir = _sync_os.path.dirname(_sync_os.path.abspath(__file__))
     _own_stamp = _read_stamp(_this_dir)
 
-    # Candidate project Python dirs: default Documents location, and the
-    # OneDrive-redirected variant (OneDrive*, since the folder name varies
-    # per tenant, e.g. "OneDrive - Company" or "OneDrive"). A candidate only
-    # counts if its project dir (3 levels up from .../Content/Python) holds
-    # a *.uefnproject — otherwise we'd copy from any folder that merely
-    # happens to be named right — and if it actually ships a stamp file.
+    # Candidate "Fortnite Projects" roots. Documents is frequently redirected
+    # (OneDrive Known Folder Move) so the plain ~\Documents path alone misses
+    # real projects — a real user was stuck on a stale engine copy because
+    # their project lived under
+    # C:\Users\<name>\OneDrive\Documents\Fortnite Projects\... and none of
+    # the old globs looked there. We gather roots from several independent
+    # signals (folder-name guess, OneDrive env vars, and the authoritative
+    # Windows "Personal" known folder from the registry) and dedupe — any
+    # one of them finding the real path is enough. A candidate only counts
+    # if its project dir (2 levels up from .../Content/Python: Content/Python
+    # -> Content -> project) holds a *.uefnproject — otherwise we'd copy
+    # from any folder that merely happens to be named right — and if it
+    # actually ships a stamp file.
     _home = _sync_os.path.expanduser("~")
-    _patterns = [
-        _sync_os.path.join(
-            _home, "Documents", "Fortnite Projects", "*", "Content", "Python"
-        ),
-        _sync_os.path.join(
-            _home, "OneDrive*", "Documents", "Fortnite Projects", "*", "Content", "Python"
-        ),
-    ]
+    _roots = []
+
+    def _add_root(_r):
+        try:
+            if _r and _r not in _roots:
+                _roots.append(_r)
+        except Exception:
+            pass
+
+    # 1. Default (non-redirected) Documents location.
+    _add_root(_sync_os.path.join(_home, "Documents", "Fortnite Projects"))
+
+    # 2. Explicit OneDrive-redirected variant (folder literally "OneDrive").
+    _add_root(_sync_os.path.join(_home, "OneDrive", "Documents", "Fortnite Projects"))
+
+    # 3. Wildcarded OneDrive variant — tenant-branded folder names like
+    #    "OneDrive - Company Name" (glob returns 0+ matches, safe to iterate).
+    try:
+        for _od_dir in _sync_glob.glob(
+            _sync_os.path.join(_home, "OneDrive*", "Documents", "Fortnite Projects")
+        ):
+            _add_root(_od_dir)
+    except Exception:
+        pass
+
+    # 4. OneDrive environment variables Windows sets for the signed-in
+    #    account(s) — authoritative when present, independent of folder name.
+    for _env_name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        try:
+            _env_val = _sync_os.environ.get(_env_name)
+            if _env_val:
+                _add_root(_sync_os.path.join(_env_val, "Documents", "Fortnite Projects"))
+        except Exception:
+            pass
+
+    # 5. The authoritative Windows "Personal" (Documents) known folder, read
+    #    straight from the registry — covers any redirection scheme (OneDrive
+    #    or otherwise) since this is what Explorer/file dialogs themselves
+    #    use. winreg is Windows-only stdlib; guarded end-to-end so this is a
+    #    no-op (never a crash) on any other platform or if the key is
+    #    missing/odd.
+    try:
+        import winreg as _sync_winreg
+        with _sync_winreg.OpenKey(
+            _sync_winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as _sync_key:
+            _personal_raw, _ = _sync_winreg.QueryValueEx(_sync_key, "Personal")
+        _personal = _sync_os.path.expandvars(_personal_raw)
+        if _personal:
+            _add_root(_sync_os.path.join(_personal, "Fortnite Projects"))
+    except Exception:
+        pass
+
     _candidates = []
-    for _pattern in _patterns:
-        for _py_dir in _sync_glob.glob(_pattern):
+    _seen_py_dirs = set()
+    for _root in _roots:
+        try:
+            _pattern = _sync_os.path.join(_root, "*", "Content", "Python")
+        except Exception:
+            continue
+        try:
+            _py_dirs = _sync_glob.glob(_pattern)
+        except Exception:
+            continue
+        for _py_dir in _py_dirs:
             try:
+                _py_dir_key = _sync_os.path.normcase(_sync_os.path.abspath(_py_dir))
+                if _py_dir_key in _seen_py_dirs:
+                    continue
+                _seen_py_dirs.add(_py_dir_key)
                 _project_dir = _sync_os.path.dirname(_sync_os.path.dirname(_py_dir))
                 if not _sync_glob.glob(
                     _sync_os.path.join(_project_dir, "*.uefnproject")
@@ -98,6 +164,10 @@ try:
     _sync_msg = "Trashbyrd: bridge self-sync — no project copy found, staying on v{}.{}.{}".format(
         *_own_stamp
     )
+    _sync_updated = False
+    _sync_from_stamp = None
+    _sync_to_stamp = None
+    _sync_result_stamp = _own_stamp
     if _candidates:
         _candidates.sort(key=lambda _c: _c[0])
         _newest_stamp, _newest_dir = _candidates[-1]
@@ -119,11 +189,36 @@ try:
                 "Trashbyrd: bridge self-sync — updated v{}.{}.{} -> v{}.{}.{} "
                 "({} copied, {} failed) from {}"
             ).format(*(_own_stamp + _newest_stamp + (_copied, _failed, _newest_dir)))
+            _sync_updated = True
+            _sync_from_stamp = _own_stamp
+            _sync_to_stamp = _newest_stamp
+            _sync_result_stamp = _newest_stamp
         else:
             _sync_msg = (
                 "Trashbyrd: bridge self-sync — v{}.{}.{} already current "
                 "(newest project copy v{}.{}.{})"
             ).format(*(_own_stamp + _newest_stamp))
+
+    # Best-effort status marker for uefn_launcher.py to display — never lets
+    # a write failure (permissions, disk, odd path) affect the sync itself.
+    try:
+        import json as _sync_json
+
+        def _stamp_str(_s):
+            return ".".join(str(_p) for _p in _s) if _s else None
+
+        _status_payload = {
+            "version": _stamp_str(_sync_result_stamp),
+            "updated": _sync_updated,
+            "from": _stamp_str(_sync_from_stamp),
+            "to": _stamp_str(_sync_to_stamp),
+        }
+        with open(
+            _sync_os.path.join(_this_dir, "bridge_sync_status.json"), "w", encoding="utf-8"
+        ) as _status_f:
+            _sync_json.dump(_status_payload, _status_f)
+    except Exception:
+        pass
 
     print(_sync_msg)
     try:
