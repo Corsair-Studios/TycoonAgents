@@ -2923,6 +2923,41 @@ export class TycoonPanel {
   }
 
   /**
+   * Install every Claude Code slash command a pack ships (a pack's optional
+   * `commands` catalog array — generic across ALL packs, not UEFN-specific;
+   * driven purely by whatever ids a pack's `commands` array lists). Mirrors
+   * the skills-install step immediately above it in `_handleInstallPack`:
+   * one file per id, copied from `media/commands/<id>.md` into
+   * `<root>/.claude/commands/<id>.md`, same idempotence (skip with status
+   * "exists" if the destination file is already there — never overwritten).
+   * Each id is handled in its own try/catch so one failure (e.g. a missing
+   * shipped source file) can't abort the rest of the commands, or the rest
+   * of the pack install that called this.
+   */
+  private _installPackCommands(
+    root: string,
+    packCommands: string[]
+  ): Array<{ id: string; status: "installed" | "exists" | "error"; error?: string }> {
+    const results: Array<{ id: string; status: "installed" | "exists" | "error"; error?: string }> = [];
+    for (const commandId of packCommands) {
+      try {
+        const target = path.join(root, ".claude", "commands", `${commandId}.md`);
+        if (fs.existsSync(target)) {
+          results.push({ id: commandId, status: "exists" });
+        } else {
+          const src = path.join(this._extensionUri.fsPath, "media", "commands", `${commandId}.md`);
+          fs.mkdirSync(path.join(root, ".claude", "commands"), { recursive: true });
+          fs.cpSync(src, target);
+          results.push({ id: commandId, status: "installed" });
+        }
+      } catch (e) {
+        results.push({ id: commandId, status: "error", error: String(e) });
+      }
+    }
+    return results;
+  }
+
+  /**
    * Install a pack; when it provides the UEFN bridge, also auto-stages the
    * Python side (see `_stageUefnBridgeAllTargets`) so the user never has to
    * paste Python manually. Returns the staging result so `_handleSetupUefnProject`
@@ -3046,6 +3081,10 @@ export class TycoonPanel {
         }
         results.skills = skillResults;
       }
+      const packCommands: string[] = Array.isArray(pack.commands) ? pack.commands : [];
+      if (packCommands.length > 0) {
+        results.commands = this._installPackCommands(root, packCommands);
+      }
       if (pack.mcp) {
         // Reuse the catalog loaded above; reload if the earlier (tolerant) load failed.
         const catalog = mcpCatalog.length > 0 ? mcpCatalog : this._loadMcpCatalog();
@@ -3148,14 +3187,14 @@ export class TycoonPanel {
   }
 
   /**
-   * Remove an installed pack: its skills, MCP server, and agent files.
-   * Mirrors `_handleInstallPack` but in reverse. Skills and the MCP server are
-   * SHARED components — before deleting one, we check whether ANOTHER pack in
-   * the catalog also lists that same id and still has any of its components
-   * installed; if so we SKIP the delete so we don't break that pack. Agents are
-   * pack-specific and are always removed (file + agent-keywords.json entry).
-   * Gated behind a native modal. Responds with
-   * `{ type:"packRemoved", id, ok, results:{skills, mcp, agents} }`.
+   * Remove an installed pack: its skills, commands, MCP server, and agent
+   * files. Mirrors `_handleInstallPack` but in reverse. Skills, commands, and
+   * the MCP server are SHARED components — before deleting one, we check
+   * whether ANOTHER pack in the catalog also lists that same id and still has
+   * any of its components installed; if so we SKIP the delete so we don't
+   * break that pack. Agents are pack-specific and are always removed (file +
+   * agent-keywords.json entry). Gated behind a native modal. Responds with
+   * `{ type:"packRemoved", id, ok, results:{skills, commands, mcp, agents} }`.
    */
   private async _handleRemovePack(id: string): Promise<void> {
     try {
@@ -3173,12 +3212,16 @@ export class TycoonPanel {
       }
 
       const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
+      const packCommands: string[] = Array.isArray(pack.commands) ? pack.commands : [];
       const packAgents: any[] = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
       const packMcp: string | undefined = pack.mcp || undefined;
 
       // Build the confirmation summary.
       const parts: string[] = [];
       parts.push(`${packSkills.length} ${packSkills.length === 1 ? "skill" : "skills"}`);
+      if (packCommands.length > 0) {
+        parts.push(`${packCommands.length} ${packCommands.length === 1 ? "command" : "commands"}`);
+      }
       if (packMcp) parts.push("1 MCP server");
       parts.push(`${packAgents.length} ${packAgents.length === 1 ? "agent" : "agents"}`);
       const answer = await vscode.window.showWarningMessage(
@@ -3196,13 +3239,17 @@ export class TycoonPanel {
       // pack "still installed" if any of its skills/mcp/agents exist on disk.
       const skillOnDisk = (sid: string): boolean =>
         fs.existsSync(path.join(root, ".claude", "skills", sid));
+      const commandOnDisk = (cid: string): boolean =>
+        fs.existsSync(path.join(root, ".claude", "commands", `${cid}.md`));
       const agentOnDisk = (aid: string): boolean =>
         fs.existsSync(path.join(root, ".claude", "agents", `${aid}.md`));
       const mcpConfigNow = (): Record<string, unknown> => this._readMcpConfig(path.join(root, ".mcp.json"));
       const packStillInstalled = (p: any): boolean => {
         const sk: string[] = Array.isArray(p.skills) ? p.skills : [];
+        const cm: string[] = Array.isArray(p.commands) ? p.commands : [];
         const ag: any[] = Array.isArray(p.agents) ? p.agents : (p.agent ? [p.agent] : []);
         if (sk.some((s) => skillOnDisk(s))) return true;
+        if (cm.some((c) => commandOnDisk(c))) return true;
         if (p.mcp && hasMcpServer(mcpConfigNow(), p.mcp)) return true;
         if (ag.some((a) => agentOnDisk(a.id))) return true;
         return false;
@@ -3229,6 +3276,25 @@ export class TycoonPanel {
         }
       }
       results.skills = skillResults;
+
+      // Commands (generic — driven by whatever ids the pack's `commands`
+      // array lists; mirrors the skills removal above exactly).
+      const commandResults: Array<{ id: string; status: "removed" | "kept-shared" | "absent" }> = [];
+      for (const commandId of packCommands) {
+        const target = path.join(root, ".claude", "commands", `${commandId}.md`);
+        if (!fs.existsSync(target)) {
+          commandResults.push({ id: commandId, status: "absent" });
+          continue;
+        }
+        const shared = sharedByOtherPack((p) => Array.isArray(p.commands) && p.commands.includes(commandId));
+        if (shared) {
+          commandResults.push({ id: commandId, status: "kept-shared" });
+        } else {
+          fs.rmSync(target, { force: true });
+          commandResults.push({ id: commandId, status: "removed" });
+        }
+      }
+      results.commands = commandResults;
 
       // MCP server.
       if (packMcp) {

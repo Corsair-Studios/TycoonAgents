@@ -4492,8 +4492,21 @@
       let modalDragId = null;
 
       for (const [rosterIdx, charId] of rosterOrder.entries()) {
+        // Order comes from rosterOrder (rebuilt synchronously in the
+        // THEME_INITIALIZED handler, ~line 9059-9068); thumbnails come from
+        // themeImages (populated by preloadThemeImages in that SAME handler,
+        // but each Image's .src is assigned asynchronously once its sprite
+        // decodes — see loadDefringedFrame). A correct render needs BOTH: the
+        // handler's immediate re-render can land before any sprite has
+        // finished loading, so thumbImg can be a real-but-not-yet-ready
+        // Image (truthy, .src === ""), which used to paint a blank/broken
+        // <img>. Require complete+naturalWidth so an unready sprite falls
+        // back to the initials placeholder instead; preloadThemeImages fires
+        // one follow-up re-render once every sprite for this theme has
+        // settled (see themeImagesLoadGen), which then swaps in the real art.
         const slots = themeImages[charId];
-        const thumbImg = slots && (slots[16] || slots[0]);
+        const candidate = slots && (slots[16] || slots[0]);
+        const thumbImg = candidate && candidate.complete && candidate.naturalWidth > 0 ? candidate : null;
 
         const thumb = document.createElement("div");
         thumb.className = "roster-thumb";
@@ -4728,6 +4741,10 @@
   let themeFramesRaw = {};
   /** @type {Record<string, HTMLImageElement[]>} preloaded Image objects per character */
   let themeImages = {};
+  /** Bumped on every preloadThemeImages() call; lets a stale settle-callback
+   *  from a superseded theme load detect it's no longer current and skip its
+   *  follow-up roster re-render (see preloadThemeImages/loadDefringedFrame). */
+  let themeImagesLoadGen = 0;
   /** @type {HTMLImageElement|null} background environment image */
   let themeBackgroundImg = null;
   /** @type {Record<string, {action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}>} */
@@ -7667,10 +7684,17 @@
    * its src to the cleaned data-URL so the STORED drawable stays a normal,
    * fully-loaded HTMLImageElement. On any failure we keep the raw frame.
    * @param {string} src
+   * @param {() => void} [onSettled] called once when `stored` finishes loading
+   *   or errors (i.e. once its .src assignment below actually settles) — used
+   *   by preloadThemeImages to know when a sprite is safe to render.
    * @returns {HTMLImageElement}
    */
-  function loadDefringedFrame(src) {
+  function loadDefringedFrame(src, onSettled) {
     const stored = new Image();
+    if (typeof onSettled === "function") {
+      stored.onload = onSettled;
+      stored.onerror = onSettled;
+    }
     const raw = new Image();
     raw.onload = () => {
       const cleanedUrl = defringeImageToDataURL(raw);
@@ -7689,6 +7713,28 @@
   function preloadThemeImages(rawFrames) {
     themeImages = {};
     themeBackgroundImg = null;
+    // Guards the settle callback below against a theme switch that starts a
+    // NEWER preloadThemeImages call before this one's sprites finish loading
+    // — a stale callback must not re-render the (by-then-superseded) roster.
+    const myGen = ++themeImagesLoadGen;
+    let pendingSprites = 0;
+    let settledSprites = 0;
+    // The THEME_INITIALIZED handler re-renders the themes list synchronously
+    // right after this call returns, so rosterOrder is current immediately —
+    // but every Image here is still mid-load (its .src is assigned inside
+    // loadDefringedFrame's async raw.onload/onerror), so that immediate
+    // render shows initials placeholders (see the readiness check at ~4494).
+    // Once every sprite for THIS theme has settled (loaded or errored), fire
+    // ONE follow-up re-render so the roster thumbnails swap in the real art
+    // — a single call rather than one per image, so it can't thrash.
+    function onSpriteSettled() {
+      settledSprites++;
+      if (settledSprites < pendingSprites) return;
+      if (myGen !== themeImagesLoadGen) return; // superseded by a later theme load
+      if (Array.isArray(lastThemesList)) {
+        renderThemesList(lastThemesList);
+      }
+    }
     // NOTE: environment_background is a full scene (not a chroma sprite), so it
     // is NEVER de-fringed — load it verbatim.
     const bgFrames = rawFrames["environment_background"];
@@ -7704,7 +7750,8 @@
       if (charId === "environment_background") continue;
       // All sprite frame keys (agents, rivals, objects, decor, crate, poof)
       // get the magenta edge-defringe.
-      themeImages[charId] = slots.map((src) => loadDefringedFrame(src));
+      pendingSprites += slots.length;
+      themeImages[charId] = slots.map((src) => loadDefringedFrame(src, onSpriteSettled));
     }
   }
 
@@ -9078,6 +9125,16 @@
         // theme (rendered from rosterOrder at ~line 4494) was one selection
         // behind until the user clicked again. Re-render now that rosterOrder
         // has just been rebuilt above so it reflects the newly selected theme.
+        //
+        // Order vs. thumbnails: the ORDER (rosterOrder, just rebuilt above) is
+        // ready immediately, but the THUMBNAILS (themeImages, populated by
+        // preloadThemeImages earlier in this handler) are NOT — each sprite
+        // finishes loading asynchronously. So this render can only guarantee
+        // correct ORDER; unready tiles fall back to an initials placeholder
+        // (readiness check at ~line 4494) instead of painting blank. Once
+        // every sprite for this theme has settled, preloadThemeImages' own
+        // onSpriteSettled callback fires exactly one more re-render to swap
+        // in the real thumbnails — see themeImagesLoadGen.
         if (Array.isArray(lastThemesList)) {
           renderThemesList(lastThemesList);
         }
