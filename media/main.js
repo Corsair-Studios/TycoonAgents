@@ -9071,6 +9071,16 @@
           rosterCollapsed = saved.rosterCollapsed;
         }
         buildRosterStrip();
+        // The theme-picker click handler (~line 4406-4410) renders the themes
+        // list SYNCHRONOUSLY on click, before this THEME_INITIALIZED response
+        // arrives — at that point rosterOrder still holds the PREVIOUS theme's
+        // order, so the "Character roster order" section under the selected
+        // theme (rendered from rosterOrder at ~line 4494) was one selection
+        // behind until the user clicked again. Re-render now that rosterOrder
+        // has just been rebuilt above so it reflects the newly selected theme.
+        if (Array.isArray(lastThemesList)) {
+          renderThemesList(lastThemesList);
+        }
       }
     } else if (msg && msg.type === "THEME_NONE") {
       // Host looked for a theme on "ready" and found none (fresh install) —

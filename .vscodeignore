@@ -39,3 +39,5 @@ eslint.config.mjs
 
 # runtime-generated bridge self-sync status marker (never commit/ship)
 media/uefn-bridge/bridge_sync_status.json
+# runtime-generated moderation report written by the bridge (never commit/ship)
+media/uefn-bridge/moderation_report.json

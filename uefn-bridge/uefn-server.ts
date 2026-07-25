@@ -188,6 +188,55 @@ const IP_BRAND_SEED_TERMS: string[] = [
   "attack on titan", "demon slayer", "hello kitty", "sanrio",
 ];
 
+// Exact media TITLES (film/TV/game/book/comic) of major franchises. Epic's
+// documented brand rules prohibit franchise TITLES in island title,
+// description, thumbnail, promotional imagery, videos, and in-island
+// transactions EVEN WHEN the underlying character/IP itself is authorized
+// for use. NON-EXHAUSTIVE SEED LIST — real franchise/title judgment is the
+// calling LLM's job, not this list's. Dual-use trap: some terms are BOTH a
+// character designation AND the exact title of a series/film, so a hit here
+// is a "check this" nudge, not proof of a violation — a documented creator
+// report describes "The Mandalorian" as simultaneously a character name and
+// the exact title of a TV series, a case the public rules don't clearly
+// resolve.
+const MEDIA_TITLE_SEED_TERMS: string[] = [
+  "the mandalorian", // dual-use: also a common character/role designation
+  "the last jedi", "the rise of skywalker", "the force awakens",
+  "revenge of the sith", "attack of the clones", "the phantom menace",
+  "a new hope", "the empire strikes back", "return of the jedi",
+  "rogue one", "the book of boba fett", "obi-wan kenobi", "andor",
+  "the clone wars", "rebels", "ahsoka",
+  "the avengers", "guardians of the galaxy", "spider-man: no way home",
+  "batman begins", "the dark knight", "teenage mutant ninja turtles",
+  "the walking dead", "stranger things",
+];
+
+// Wording that implies OFFICIAL ENDORSEMENT by a rights holder beyond an
+// authorized program's actual terms — a documented Rule 1.7 risk pattern
+// (e.g. "Official Star Wars roguelike", "Lucasfilm-approved", claims a
+// brand "brought to you" the island). NON-EXHAUSTIVE SEED LIST.
+const ENDORSEMENT_PHRASES: string[] = [
+  "official star wars", "officially licensed", "officially endorsed",
+  "approved by", "endorsed by", "lucasfilm-approved", "disney-approved",
+  "marvel-approved", "epic-approved", "the definitive", "brought to you by",
+  "disney's new", "in partnership with disney", "created by disney",
+  "created by lucasfilm",
+];
+
+// Text that reads like a manually-entered brand/legal DISCLAIMER. Some
+// publishing flows (e.g. Star Wars) supply the required disclaimer
+// AUTOMATICALLY — a creator manually typing an equivalent into the
+// description was a documented suspected trigger for a Rule 1.7 metadata
+// rejection. This does not mean disclaimers are bad; it means disclaimer-
+// shaped text found in the creator's OWN description (rather than injected
+// by the publishing flow itself) is worth a second look. NON-EXHAUSTIVE
+// SEED LIST.
+const DISCLAIMER_PATTERNS: string[] = [
+  "not affiliated with", "not endorsed by", "all rights reserved to",
+  "trademarks are the property of", "is a trademark of", "© disney",
+  "© lucasfilm", "used with permission", "all rights belong to",
+];
+
 interface ModerationHint {
   term: string;
   source: string;
@@ -330,6 +379,9 @@ function attachModerationHints(rawPayload: unknown, allowlist: string[] | undefi
     const surfaces = collectModerationTextSurfaces(record);
     const authenticityHits = matchModerationTerms(surfaces, AUTHENTICITY_BANNED_TERMS);
     const ipHits = matchModerationTerms(surfaces, IP_BRAND_SEED_TERMS);
+    const mediaTitleHits = matchModerationTerms(surfaces, MEDIA_TITLE_SEED_TERMS);
+    const endorsementHits = matchModerationTerms(surfaces, ENDORSEMENT_PHRASES);
+    const disclaimerHits = matchModerationTerms(surfaces, DISCLAIMER_PATTERNS);
 
     const allowlistLower = (allowlist ?? []).filter((s) => typeof s === "string").map((s) => s.toLowerCase());
     const expectedLicensed: ModerationHint[] = [];
@@ -352,6 +404,9 @@ function attachModerationHints(rawPayload: unknown, allowlist: string[] | undefi
       first_pass_hints: {
         authenticity_hits: authenticityHits,
         ip_seed_hits: ipHits,
+        media_title_hits: mediaTitleHits,
+        endorsement_hits: endorsementHits,
+        disclaimer_hits: disclaimerHits,
         expected_licensed: expectedLicensed,
         investigate,
         no_other_findings_candidate: noOtherFindingsCandidate,
@@ -639,13 +694,41 @@ RULE CATEGORIES to evaluate every surface against:
 
 \`image_metadata\`: embedded PNG text chunks / JPEG EXIF-IPTC fields (Author, Copyright, Title, Software, etc.). This is a BONUS check beyond anything Epic is known to scan — a third-party copyright or author string here is a strong signal the image was imported from elsewhere and is worth a closer look.
 
-\`first_pass_hints\` (authenticity_hits / ip_seed_hits): cheap, non-exhaustive literal wordlist matches only, meant to prioritize what to look at first. They are NOT a verdict — you must independently judge every surface (asset_surfaces, hlod_or_imported_assets, verse_surfaces, text_metadata, image_metadata) for IP and authenticity issues the wordlist wouldn't catch, and must also be willing to dismiss a wordlist hit that's clearly a false positive (e.g. "battle pass" as unrelated flavor text). \`first_pass_hints.no_other_findings_candidate\` is a boolean nudge (true when the wordlist first pass found licensed IP in \`expected_licensed\` but nothing in \`authenticity_hits\` or \`investigate\`) — it is only a hint toward the KNOWN-RISK case below, never a substitute for your own independent review of every surface.
+\`unicode_risks\` — TREAT AS HIGH PRIORITY. \`{available, items[], total_count, omitted_count, notes}\`, each item \`{surface, field_or_file, char, codepoint ("U+XXXX"), name, kind, context_snippet}\`. A structural, brand-neutral detector (no wordlist) that flags emoji, pictographs, ZWJ sequences, variation selectors, symbol-category characters, and unusual non-ASCII punctuation across EVERY text surface (text metadata field values, Verse strings/labels, asset display names, audio names) — it flags ANY such character, so use judgment about which are decorative versus meaningful before reporting. This directly matches a reproduced creator finding: an ordinary emoji in metadata caused a Rule 1.7 flag, and removing that one emoji caused a DIFFERENT emoji to get flagged next. If the rejection notice named the description/metadata, recommend stripping ALL emoji, decorative Unicode, trademark/registered symbols, styled bullets, and unusual punctuation as the FIRST controlled diagnostic pass — it is cheap, reversible, and matches the documented case exactly. Report the specific codepoints and the surface they were found in so the creator can remove them precisely.
+
+\`redirectors\`: ObjectRedirector assets found in the project — deleted or renamed content that is still reachable through the redirector. Renaming or deleting a flagged asset does NOT clear the underlying match if a redirector still points to it. Recommend "Fix Up Redirectors" and auditing soft references, HLODs, Sequencer, Niagara, and any generated/derived data that may still reference the original package.
+
+\`external_actor_assets\`: packages found under \`__ExternalActors__\` / \`__ExternalObjects__\` (generated actor/object packages, a byproduct of HLOD and world-partition generation). This exact class of generated asset was specifically implicated in repeated creator sanctions even on accounts with an active, valid brand tag for the licensed IP involved. Surface these alongside \`hlod_or_imported_assets\` in your KNOWN-RISK reasoning — treat a hit here with the same weight as an HLOD hit.
+
+\`text_field_lengths\`: per-field character counts for text metadata fields. The tool deliberately does NOT hardcode a platform character limit (limits change without notice). Note explicitly in your report that the text ACTUALLY SUBMITTED is the authoritative evidence for a length-related rejection, and that its length should be checked against the CURRENT publishing-portal limit — a longer planning/draft description in this field may differ from what was actually submitted.
+
+\`image_provenance\`: per image \`{file, has_provenance_fields, fields_present[]}\` — flags when an image carries embedded authoring-tool, creator, or copyright metadata fields. Presence of these fields is a signal the image may have come from an external tool or download rather than an in-editor capture. Combine this with the existing guidance that promotional images should be ORIGINAL captures from the editor, replay, or island — downloaded renders and externally-rendered extracted models are a risk even when the character is authorized.
+
+\`first_pass_hints\` (authenticity_hits / ip_seed_hits / media_title_hits / endorsement_hits / disclaimer_hits): cheap, non-exhaustive literal wordlist matches only, meant to prioritize what to look at first. \`media_title_hits\` flags exact franchise film/TV/game/book/comic titles found in any text surface (a real Rule 1.7 category even when the underlying character is authorized — see failure mode #2 below); \`endorsement_hits\` flags wording implying official endorsement/approval (#9 below); \`disclaimer_hits\` flags disclaimer-shaped text in the creator's own description, which is a documented trigger when the publishing flow already supplies the required disclaimer automatically (#3 below). They are NOT a verdict — you must independently judge every surface (asset_surfaces, hlod_or_imported_assets, verse_surfaces, text_metadata, image_metadata) for IP and authenticity issues the wordlists wouldn't catch, and must also be willing to dismiss a wordlist hit that's clearly a false positive (e.g. "battle pass" as unrelated flavor text). \`first_pass_hints.no_other_findings_candidate\` is a boolean nudge (true when the wordlist first pass found licensed IP in \`expected_licensed\` but nothing in \`authenticity_hits\` or \`investigate\`) — it is only a hint toward the KNOWN-RISK case below, never a substitute for your own independent review of every surface.
 
 REPORT FORMAT: group every finding by severity — BLOCKER (would very likely short-circuit metadata/asset review), WARN (real risk, judgment call), KNOWN-RISK (see below), INFO (worth knowing, low risk).
 
 KNOWN-RISK — licensed IP as the residual cause: emit this whenever licensed/allowlisted IP surfaces are present (\`expected_licensed\` non-empty, or your own review of \`asset_surfaces\`/\`hlod_or_imported_assets\` finds licensed models), and ESPECIALLY when the scan otherwise comes back clean of BLOCKER/WARN findings — \`first_pass_hints.no_other_findings_candidate: true\` is a hint toward this case. When nothing else was found, state plainly that the licensed IP assets are the most likely trigger. This is NOT a rule violation and NOT something the creator did wrong — it is a documented false-positive pattern in Epic's automated matcher, which has flagged Epic's own officially-provided licensed assets (e.g. a Star Wars AT-AT, a Star Wars lightsaber workbench) on accounts with an active, valid brand tag for that IP, with appeals rejected. Never phrase this as fault, and never tell the creator to remove content they are licensed to use. Model suggested wording (adapt, don't force verbatim): "No other violations found. Your licensed IP assets are the most likely trigger — Epic's automated matcher has flagged officially-provided licensed assets before, even with an active brand tag. This is a known false-positive pattern, not something you did wrong." Include these actionable next steps with every KNOWN-RISK finding: (1) inspect/rebuild the HLODs that contain the licensed models — HLOD \`.uasset\` files were the actual flagged targets in the documented cases, not the source assets themselves; (2) read the full REJECTION EMAIL, not just the in-app banner — the email has been confirmed to sometimes name the exact offending file (seen for copyrighted-audio rejections) when the in-app notice doesn't; (3) if appealing, explicitly cite the active brand tag / licensed-program participation; (4) list the specific licensed asset paths from \`expected_licensed\` and \`hlod_or_imported_assets\` so the creator has the exact strings Epic's matcher sees, since Epic won't disclose them.
 
-For every finding (any severity) give: the exact surface (file path / asset or package path / metadata field), the offending token or the reason it was flagged, which rule it maps to (1.7 or 1.13, or "automated pre-check"), and a concrete suggested fix or next step. Close the report with this caveat, stated plainly: this tool PREDICTS risk and cannot guarantee approval — Epic's moderation system is opaque, changes without notice, and has been documented flagging even its own officially licensed content.`,
+For every finding (any severity) give: the exact surface (file path / asset or package path / metadata field), the offending token or the reason it was flagged, which rule it maps to (1.7 or 1.13, or "automated pre-check"), and a concrete suggested fix or next step. Close the report with this caveat, stated plainly: this tool PREDICTS risk and cannot guarantee approval — Epic's moderation system is opaque, changes without notice, and has been documented flagging even its own officially licensed content.
+
+KNOWN RULE 1.7 FAILURE MODES — documented creator-reported patterns, distinct from the wordlists above. Check every surface against ALL of these even when no wordlist term matched; several are asset- or workflow-level, not text matches:
+1. Emoji / decorative Unicode in metadata — a reproduced creator finding: ordinary emoji (including check/cross symbols) on in-island text were flagged under 1.7, and removing one emoji caused a DIFFERENT emoji to get flagged next. Treat emoji, decorative Unicode, trademark symbols (™ ® ©), styled bullets, and unusual punctuation anywhere in title/description/loading-screen text as a real risk and a high-value first thing to strip out and retest. Data for this: \`unicode_risks\`.
+2. Exact media titles — film/TV/game/book/comic TITLES are prohibited in island title, description, thumbnail, promo imagery, videos, and in-island transactions, EVEN when the underlying character itself is authorized. Watch for dual-use terms that are simultaneously a character designation and a series title (e.g. "The Mandalorian") — flag these as plausible-but-unproven, not certain.
+3. Manually entered disclaimers — some publishing flows add the required brand disclaimer automatically; a creator manually typing an equivalent into the description was a documented suspected trigger. Flag disclaimer-shaped text (e.g. "not affiliated with", "is a trademark of") found in the creator's own description.
+4. HLOD and External Actor generated assets — officially-provided licensed assets have produced 1.7 findings ONLY AFTER being included in HLOD generation, and one creator reported roughly twenty sanctions tied to generated HLOD external-actor assets despite an active brand tag, with appeals denied. This reinforces the KNOWN-RISK guidance above — audit HLOD/generated/external-actor packages separately even when the rejection notice names the description. Data for this: \`hlod_or_imported_assets\` and \`external_actor_assets\`.
+5. Renaming does not clear a match — a renamed imported asset kept getting flagged. Moderation may inspect visible asset content, the ORIGINAL import metadata, references to the original package, brand configuration, derived data, or prior moderation history, not just the current file name. Recommend "Fix Up Redirectors" and auditing soft references, HLODs, Sequencer, and Niagara. Data for this: \`redirectors\`.
+6. Deleted content reachable via redirectors/soft references — deleting or replacing an asset (notably audio) can leave it still reachable through a redirector or soft reference; a licensed replacement audio track still produced a finding in one report. Data for this: \`redirectors\`.
+7. Promotional renders not captured in-editor — reusing an existing online/official promotional render, rather than an original capture from the UEFN editor, replay, or island, is a documented cause. Promotional images should be ORIGINAL captures; downloaded transparent renders, key art, and externally-rendered extracted models are a risk even when the character is authorized. Data for this: \`image_provenance\`.
+8. Replace ALL image fields together — replacing a single thumbnail repeatedly still failed in one report. Recommend replacing both A/B thumbnails, the lobby background, promotional screenshots, AND any trailer carrying the same imagery together, then generating a NEW private version and a NEW public release — not editing the same release in place.
+9. Logos and partner branding — an asset being supplied by Epic does not authorize every promotional use, scale, placement, or logo treatment. Official or similarly-styled logos and affiliate/parent entity names are prohibited even under an officially licensed program.
+10. Licensed-program participation does not bypass moderation — a partner-program island was still removed under 1.7 despite the creator believing they complied with the brand rules; the license is limited and conditional, not blanket immunity.
+11. Audio license scope — a commercial/subscription music license may permit video use but not grant interactive-game distribution or the sublicensing rights the platform requires. Attribution is not permission — check whether the license actually covers interactive distribution.
+12. Description length — a longer planning/draft description may exceed the live description character limit. The text ACTUALLY submitted and displayed in the release, not a longer draft document, is the authoritative evidence when diagnosing a rejection. Data for this: \`text_field_lengths\`.
+
+CONTROLLED RESUBMISSION — when advising next steps after a rejection, recommend a DISCIPLINED retry, not blind resubmission: change ONE category at a time, starting with whichever category the rejection notice actually named; preserve the exact text/assets that were submitted as evidence; after a correction, generate a NEW private version and a NEW public release rather than editing in place; document each attempt with screenshots of the description, disclaimer, promotional media, and moderation result. State explicitly that repeated Rule 1.7 enforcement has been reported to escalate to temporary loss of publishing/monetization privileges, so blind repeated resubmission is itself a risk, not a safe way to iterate. When appealing, recommend requesting identification of the exact phrase, file, package path, or promotional asset associated with the finding — Epic's notices frequently do not name it.
+
+FINAL STEP — after you finish writing the report above, call \`uefn_moderation_report\` (do not skip this) with the full formatted report text as \`report\`, a one-line overall verdict as \`summary\`, and a count of findings per severity as \`severity_counts\` (BLOCKER / WARN / KNOWN_RISK / INFO). This posts your finished analysis back into the UEFN editor so it renders inside the Power Tools "IP / Moderation Scan" window — the creator reads your results there without switching apps or scrolling this chat.`,
     inputSchema: {
       project_dir: z.string().optional().describe("Path to the UEFN project to scan; defaults to the live/resolved project root"),
       allowlist: z
@@ -672,6 +755,36 @@ For every finding (any severity) give: the exact surface (file path / asset or p
       return err(`Bridge error: ${String(e)}`);
     }
   }
+);
+
+server.registerTool(
+  "uefn_moderation_report",
+  {
+    description:
+      "Post the calling LLM's FINISHED moderation analysis back into the UEFN editor so it renders inside the Power Tools \"IP / Moderation Scan\" window — the creator reads the results there without switching apps. Call this AFTER completing the analysis from `uefn_moderation_scan`, not before: pass the full formatted report text (the same BLOCKER/WARN/KNOWN-RISK/INFO write-up you produced), a one-line overall summary/verdict, and a count of findings per severity. The bridge writes this to disk and stamps its own timestamp; nothing here is displayed until this tool is called.",
+    inputSchema: {
+      report: z.string().describe("Full formatted moderation report text (the complete analysis, grouped by severity)"),
+      summary: z.string().optional().describe("One-line overall verdict, e.g. '2 WARN, 1 KNOWN-RISK — review licensed-asset HLODs before publish'"),
+      severity_counts: z
+        .object({
+          BLOCKER: z.number().int().optional(),
+          WARN: z.number().int().optional(),
+          KNOWN_RISK: z.number().int().optional(),
+          INFO: z.number().int().optional(),
+        })
+        .optional()
+        .describe("Count of findings per severity in the report"),
+    },
+  },
+  async (args) =>
+    bridgeTool(
+      "moderation_report_save",
+      compact({
+        report: args.report,
+        summary: args.summary,
+        severity_counts: args.severity_counts,
+      })
+    )
 );
 
 // ── Start ─────────────────────────────────────────────────────────────────────

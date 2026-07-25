@@ -519,7 +519,118 @@ def _handle_health_scan(params):
 
 
 def _handle_moderation_scan(params):
-    return run_moderation_scan(params.get("project_dir"))
+    return run_moderation_scan(
+        params.get("project_dir"),
+        include_hashes=bool(params.get("include_hashes", False)),
+    )
+
+
+# Cap on stored report text so a runaway/malicious payload can't bloat
+# moderation_report.json without bound. Well above any realistic analysed
+# report length.
+_MODERATION_REPORT_MAX_CHARS = 200000
+
+_SEVERITY_KEYS = ("BLOCKER", "WARN", "KNOWN_RISK", "INFO")
+
+
+def _moderation_report_path():
+    """Path to moderation_report.json, next to this script (uefn_bridge.py)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "moderation_report.json")
+
+
+def _coerce_severity_counts(raw):
+    """Best-effort coercion of a client-supplied severity_counts dict.
+
+    Never raises: unknown/missing/non-numeric entries default to 0, and
+    unexpected shapes (non-dict) collapse to the all-zero default.
+    """
+    counts = {key: 0 for key in _SEVERITY_KEYS}
+    if not isinstance(raw, dict):
+        return counts
+    for key in _SEVERITY_KEYS:
+        value = raw.get(key)
+        try:
+            counts[key] = int(value)
+        except (TypeError, ValueError):
+            counts[key] = 0
+    return counts
+
+
+def _handle_moderation_report_save(params):
+    """Save the connected LLM's finished moderation-analysis report.
+
+    Writes moderation_report.json next to this script so the UEFN launcher
+    (which reads that file from the same bridge directory) can display the
+    creator's report without leaving the editor. Defensive by design: never
+    raises, always returns a small {"saved": ...} dict — a malformed request
+    from the MCP side should never take down the bridge or the tick loop.
+    """
+    try:
+        report = params.get("report")
+        if not isinstance(report, str) or not report.strip():
+            return {"saved": False, "error": "Missing or empty required param: report"}
+
+        truncated = False
+        if len(report) > _MODERATION_REPORT_MAX_CHARS:
+            report = report[:_MODERATION_REPORT_MAX_CHARS]
+            truncated = True
+            report += "\n\n[...truncated: report exceeded {} characters...]".format(
+                _MODERATION_REPORT_MAX_CHARS
+            )
+
+        summary = params.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            summary = "(no summary provided)"
+        summary = summary.strip()
+        if len(summary) > 500:
+            summary = summary[:500] + "..."
+
+        severity_counts = _coerce_severity_counts(params.get("severity_counts"))
+
+        generated_at = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        payload = {
+            "generated_at": generated_at,
+            "summary": summary,
+            "severity_counts": severity_counts,
+            "report": report,
+        }
+        if truncated:
+            payload["truncated"] = True
+
+        path = _moderation_report_path()
+        _write_json(path, payload)
+
+        return {"saved": True, "path": path, "generated_at": generated_at}
+    except Exception as e:
+        unreal.log_warning(
+            "uefn_bridge: moderation_report_save failed:\n" + traceback.format_exc()
+        )
+        return {"saved": False, "error": str(e)}
+
+
+def _handle_moderation_report_read(params):
+    """Read back the stored moderation_report.json, if any.
+
+    Guarded read used by the MCP side to confirm a save landed. Returns
+    {"exists": False} rather than raising when the file is missing or
+    unreadable.
+    """
+    try:
+        path = _moderation_report_path()
+        if not os.path.exists(path):
+            return {"exists": False}
+        data = _read_json(path)
+        if data is None:
+            return {"exists": False, "error": "moderation_report.json exists but could not be parsed"}
+        data = dict(data)
+        data["exists"] = True
+        return data
+    except Exception as e:
+        unreal.log_warning(
+            "uefn_bridge: moderation_report_read failed:\n" + traceback.format_exc()
+        )
+        return {"exists": False, "error": str(e)}
 
 
 def _handle_asset_sweep(params):
@@ -747,6 +858,8 @@ _METHODS = {
     "dependency_scan": _handle_dependency_scan,
     "health_scan": _handle_health_scan,
     "moderation_scan": _handle_moderation_scan,
+    "moderation_report_save": _handle_moderation_report_save,
+    "moderation_report_read": _handle_moderation_report_read,
     "asset_sweep": _handle_asset_sweep,
     "list_assets": _handle_list_assets,
     "inspect_asset": _handle_inspect_asset,
