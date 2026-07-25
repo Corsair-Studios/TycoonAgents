@@ -1920,6 +1920,24 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
             "omitted_count": 0, "notes": [f"collector failed: {e}"],
         }
 
+    # SCOPE CAVEAT (unconditional — real user misread this, see
+    # _format_compact_summary's matching caveat): every text-metadata
+    # finding above (text_metadata, unicode_risks.by_surface["text_metadata"],
+    # text_field_lengths) covers ONLY text stored in the PROJECT FILES on
+    # disk. The island title/description/loading-screen text a creator
+    # enters through the publishing portal at submission time is NOT
+    # present in the project on disk and is therefore NOT visible to this
+    # scan at all — it must be checked separately. An absence of findings
+    # in project-file text metadata is NOT evidence that the submitted
+    # text is clean.
+    notes.append(
+        "SCOPE: text-metadata findings above cover only text stored in the "
+        "PROJECT FILES on disk. The island title/description/loading-screen "
+        "text submitted through the publishing portal is entered separately "
+        "and is NOT visible to this scan — check it separately. An absence "
+        "of findings here is NOT evidence that the submitted text is clean."
+    )
+
     try:
         result["redirectors"] = collect_redirector_assets(scan_root)
         if not result["redirectors"].get("available"):
@@ -2239,6 +2257,28 @@ def _format_compact_summary(result):
             "audio_display_name": "audio display names",
         }
 
+        # SCOPE CAVEAT (matches the note run_moderation_scan always adds):
+        # "island metadata" here means only text_metadata FOUND IN THE
+        # PROJECT FILES on disk — never the island title/description/
+        # loading-screen text a creator submits through the publishing
+        # portal, which is entered separately and this scan cannot see at
+        # all. A real user misread "none in island metadata" as "my
+        # submitted description is clean" — it isn't evidence either way.
+        # Made most prominent when the metadata count is ZERO, since
+        # that's the case most likely to be misread as an all-clear.
+        _scope_caveat_prominent = (
+            "  SCOPE: 'island metadata' = text found in the PROJECT FILES "
+            "only. The title/description/loading-screen text you submit "
+            "through the publishing portal is entered separately and is "
+            "NOT visible to this scan — a zero here is NOT proof the "
+            "submitted text is clean. Check it separately."
+        )
+        _scope_caveat_plain = (
+            "  (SCOPE: covers project-file text metadata only — the "
+            "publishing-portal title/description/loading-screen text is "
+            "separate and not scanned here.)"
+        )
+
         if _meta_count:
             _fields_str = ", ".join(
                 f"{name}: {count}"
@@ -2248,14 +2288,17 @@ def _format_compact_summary(result):
                 f"Emoji / decorative-Unicode: {_meta_count} in island metadata "
                 f"({_fields_str})  <-- HIGHEST PRIORITY"
             )
+            lines.append(_scope_caveat_plain)
         elif _other_total:
             lines.append(
                 f"Emoji / decorative-Unicode: none in island metadata; "
                 f"{_other_total} in other surfaces — lower priority for the "
                 "metadata review stage"
             )
+            lines.append(_scope_caveat_prominent)
         else:
             lines.append("Emoji / decorative-Unicode: none found.")
+            lines.append(_scope_caveat_prominent)
 
         if _other_buckets:
             _parts = ", ".join(
@@ -2534,10 +2577,9 @@ def show_moderation_scan():
     def _current_allowlist_for_prompt():
         """Values to feed into the copied prompt right now: the entry's
         LIVE text (so Copy works even if the user hasn't blurred/saved
-        yet), or [] while the placeholder suggestion is still showing —
-        the placeholder is never treated as a real, user-declared value."""
-        if _allowlist_placeholder_active[0]:
-            return []
+        yet). No placeholder/suggestion exists any more — the field starts
+        empty unless a value was previously saved for this project, so
+        anything present here is a real, user-declared value."""
         raw = allowlist_var.get()
         return [p.strip() for p in raw.split(",") if p.strip()]
 
@@ -2615,50 +2657,33 @@ def show_moderation_scan():
 
     tk.Label(
         allowlist_entry_row,
-        text="  franchises you are licensed to use — comma separated",
+        text=(
+            "  franchises you are licensed to use — comma separated; "
+            "leave blank if none"
+        ),
         font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
     ).pack(side=tk.LEFT)
 
-    # Pre-seed SUGGESTION (never auto-saved as fact): on first open, if no
-    # value was ever saved, show the project's own resolved content mount
-    # name — the user's OWN project, not a shipped brand list — as
-    # placeholder/suggestion text the user can edit or ignore.
+    # NO pre-seed suggestion here, deliberately. This used to pre-fill from
+    # the project's own resolved content mount name, but a project's
+    # folder/mount name is not evidence of a license — pre-filling it reads
+    # as a claim (a real reviewer saw the pre-filled value and mistook it
+    # for a hardcoded example or a brand "detection", which is exactly the
+    # wrong impression). A WRONG allowlist entry is actively harmful: it
+    # groups assets as "expected licensed" that the creator may not
+    # actually be licensed for. An EMPTY field is the safe default —
+    # everything simply gets reported — so only a previously-SAVED value
+    # (this project's own moderation_allowlist.json beside the bridge)
+    # ever pre-fills this field. Do not re-add a mount-derived suggestion.
     _saved_allowlist = _read_moderation_allowlist()
-    _project_mount_suggestion = (result.get("project_mount") or "").strip("/")
-    _allowlist_placeholder_active = [False]
-
-    def _apply_allowlist_placeholder():
-        if _saved_allowlist or allowlist_var.get().strip() or not _project_mount_suggestion:
-            return
-        _allowlist_placeholder_active[0] = True
-        allowlist_entry.configure(fg=_TEXT_DIM)
-        allowlist_var.set(_project_mount_suggestion)
-
     if _saved_allowlist:
         allowlist_var.set(", ".join(_saved_allowlist))
-    else:
-        _apply_allowlist_placeholder()
 
     def _save_allowlist_field(_event=None):
-        # Never persist the placeholder suggestion itself as a saved fact.
-        if _allowlist_placeholder_active[0]:
-            return
         raw = allowlist_var.get()
         _write_moderation_allowlist([p.strip() for p in raw.split(",") if p.strip()])
 
-    def _on_allowlist_focus_in(_event=None):
-        if _allowlist_placeholder_active[0]:
-            _allowlist_placeholder_active[0] = False
-            allowlist_entry.configure(fg=_TEXT_FG)
-            allowlist_var.set("")
-
-    def _on_allowlist_focus_out(_event=None):
-        _save_allowlist_field()
-        if not allowlist_var.get().strip():
-            _apply_allowlist_placeholder()
-
-    allowlist_entry.bind("<FocusIn>", _on_allowlist_focus_in)
-    allowlist_entry.bind("<FocusOut>", _on_allowlist_focus_out)
+    allowlist_entry.bind("<FocusOut>", _save_allowlist_field)
     allowlist_entry.bind("<Return>", _save_allowlist_field)
 
     # --- Compact summary (always shown, counts only — not a dump) ---
