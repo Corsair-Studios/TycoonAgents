@@ -48,4 +48,13 @@ authoritative surface for available classes, devices, and APIs. UEFN project
 presence is confirmed via `.verse` files, a `.uproject`, or a `Content/Verse/`
 directory.
 
+## Common-errors pre-flight reference
+
+Before writing or auditing any Verse, read `verse-common-errors.md` in this
+skill folder. It's the required pre-flight reference: the non-existent APIs
+and idioms LLMs commonly hallucinate into Verse, the highest-value
+compile-error rules (`set` for mutation, `<suspends>`, failure contexts,
+effect specifiers, options), and a reminder that the digest files always
+override memorized signatures.
+
 Source: Trashbyrd's Power Tools (the Python bridge + `uefn-server.ts` wrapper).

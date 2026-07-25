@@ -45,6 +45,7 @@ from material_browser import browse_materials, find_unused_materials
 from niagara_inspector import browse_niagara, find_niagara_usage
 from dependency_viewer import scan_dependencies
 from health_scanner import scan_health
+from moderation_scanner import run_moderation_scan
 try:
     from asset_sweep import sweep_dead_assets
 except ImportError:
@@ -517,6 +518,10 @@ def _handle_health_scan(params):
     return scan_health()
 
 
+def _handle_moderation_scan(params):
+    return run_moderation_scan(params.get("project_dir"))
+
+
 def _handle_asset_sweep(params):
     if sweep_dead_assets is None:
         return {"error": "asset_sweep is not available in this build of the UEFN bridge"}
@@ -741,6 +746,7 @@ _METHODS = {
     "niagara_usage": _handle_niagara_usage,
     "dependency_scan": _handle_dependency_scan,
     "health_scan": _handle_health_scan,
+    "moderation_scan": _handle_moderation_scan,
     "asset_sweep": _handle_asset_sweep,
     "list_assets": _handle_list_assets,
     "inspect_asset": _handle_inspect_asset,

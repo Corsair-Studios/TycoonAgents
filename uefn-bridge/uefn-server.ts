@@ -138,6 +138,230 @@ function compact(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
 }
 
+// ── Moderation wordlists (SERVER-SIDE ONLY, BY DESIGN) ──────────────────────
+//
+// media/uefn-bridge/moderation_scanner.py is staged into the user's UEFN
+// project at Content/Python/ and IS checked into Unreal Revision Control
+// (the project's ignore rules cover *.json/*.md/*.jsonl/*.cjs/*.mjs but NOT
+// *.py) — a Python file full of literal franchise/brand names shipped into
+// a Fortnite project would itself be an IP-moderation flag risk, tripping
+// the very system it's meant to predict. These wordlists therefore live
+// here instead, in the extension-side MCP server, which is never staged
+// into a project. `uefn_moderation_scan` below computes `first_pass_hints`
+// over the raw surfaces the bridge collects, using these lists.
+
+// Cheap, deterministic first-pass hints only. Fortnite's documented
+// "Authenticity" rule (Rule 1.13) bans content whose primary purpose is
+// artificial engagement/reward farming rather than genuine gameplay. This
+// is a literal-token seed for a FIRST PASS — the calling LLM makes the
+// real call (context, intent, and false positives like "capture the flag"
+// containing no banned substrings, or "battle pass" used as flavor text in
+// an unrelated sense, are exactly what the LLM phase resolves).
+const AUTHENTICITY_BANNED_TERMS: string[] = [
+  // --- AFK / idle farming bait ---
+  "afk", "afk farm", "afk xp", "afk grind", "afk map", "afk pool",
+
+  // --- XP / progression farming bait ---
+  "xp farm", "xp grind", "xp glitch", "coin farm", "coin slide",
+  "coin drop", "coin grind",
+
+  // --- Real/in-game currency and monetary reward bait ---
+  "v-bucks", "vbucks", "free v-bucks", "free vbucks", "battle pass",
+  "free battle pass", "win real money", "real money", "cash prize",
+  "free robux", "free skin", "free skins", "free rewards",
+
+  // --- Generic "free reward" / scam-adjacent bait tokens ---
+  "click here", "subscribe to win", "redeem code", "code redeem",
+  "giveaway",
+];
+
+// SMALL, NON-EXHAUSTIVE seed list of common third-party franchises/brands.
+// This exists ONLY as a cheap first-pass hint — real IP/trademark judgment
+// (fair use, licensed collab, coincidental name, transformative parody,
+// etc.) is delegated to the calling LLM. Do NOT extend this into an
+// authoritative IP database; it is not one and is not meant to become one.
+const IP_BRAND_SEED_TERMS: string[] = [
+  "star wars", "marvel", "disney", "lego", "pokemon", "pokémon",
+  "ninja turtles", "teenage mutant ninja turtles", "cobra", "g.i. joe",
+  "dc comics", "batman", "spider-man", "harry potter", "nintendo",
+  "mario", "zelda", "minecraft", "roblox", "naruto", "dragon ball",
+  "attack on titan", "demon slayer", "hello kitty", "sanrio",
+];
+
+interface ModerationHint {
+  term: string;
+  source: string;
+  file: string;
+  ref: string;
+  text: string;
+}
+
+interface TextSurface {
+  text: string;
+  source: string;
+  file: string;
+  ref: string;
+}
+
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
+function asArray(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [];
+}
+
+function asStr(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+// Obvious literal matches only — no fuzzy/semantic matching; that nuance is
+// the connected LLM's job. Never throws.
+function matchModerationTerms(surfaces: TextSurface[], terms: string[]): ModerationHint[] {
+  const hits: ModerationHint[] = [];
+  const loweredTerms = terms.map((t) => t.toLowerCase());
+  for (const { text, source, file, ref } of surfaces) {
+    if (!text) continue;
+    const low = text.toLowerCase();
+    for (const term of loweredTerms) {
+      if (low.includes(term)) {
+        hits.push({ term, source, file, ref, text: text.slice(0, 200) });
+      }
+    }
+  }
+  return hits;
+}
+
+// Gathers every text-bearing surface the bridge returns (text_metadata,
+// verse_surfaces text, asset_surfaces display names/paths,
+// hlod_or_imported_assets, image_metadata field values, audio_surfaces).
+// Defensive throughout: any field may be missing or the wrong shape —
+// never throws, just skips what it can't read.
+function collectModerationTextSurfaces(payload: Record<string, unknown>): TextSurface[] {
+  const surfaces: TextSurface[] = [];
+
+  const collectAssetLike = (arr: unknown, sourcePrefix: string) => {
+    for (const raw of asArray(arr)) {
+      const a = asRecord(raw);
+      if (!a) continue;
+      const file = asStr(a.package_name);
+      const ref = asStr(a.object_path);
+      const displayName = asStr(a.display_name);
+      if (displayName) surfaces.push({ text: displayName, source: `${sourcePrefix}_display_name`, file, ref });
+      const packagePath = asStr(a.package_path);
+      if (packagePath) surfaces.push({ text: packagePath, source: `${sourcePrefix}_package_path`, file, ref });
+    }
+  };
+
+  collectAssetLike(payload.asset_surfaces, "asset");
+  collectAssetLike(payload.hlod_or_imported_assets, "hlod_or_imported");
+
+  for (const raw of asArray(payload.verse_surfaces)) {
+    const v = asRecord(raw);
+    if (!v) continue;
+    const text = asStr(v.text);
+    if (text) surfaces.push({ text, source: `verse_${asStr(v.kind)}`, file: asStr(v.file), ref: String(v.line ?? "") });
+  }
+
+  const textMetadata = asRecord(payload.text_metadata);
+  if (textMetadata) {
+    for (const raw of asArray(textMetadata.fields)) {
+      const f = asRecord(raw);
+      if (!f) continue;
+      const value = asStr(f.value);
+      if (value) surfaces.push({ text: value, source: "text_metadata", file: asStr(f.file), ref: asStr(f.key) });
+    }
+  }
+
+  for (const raw of asArray(payload.image_metadata)) {
+    const img = asRecord(raw);
+    if (!img) continue;
+    const file = asStr(img.file);
+    const fields = asRecord(img.fields);
+    if (!fields) continue;
+    for (const [key, val] of Object.entries(fields)) {
+      if (typeof val === "string" && val) {
+        surfaces.push({ text: val, source: "image_metadata", file, ref: key });
+      } else if (Array.isArray(val)) {
+        for (const item of val) {
+          if (typeof item === "string" && item) surfaces.push({ text: item, source: "image_metadata", file, ref: key });
+        }
+      }
+    }
+  }
+
+  const audioSurfaces = asRecord(payload.audio_surfaces);
+  if (audioSurfaces) {
+    for (const raw of asArray(audioSurfaces.audio)) {
+      const a = asRecord(raw);
+      if (!a) continue;
+      const displayName = asStr(a.display_name);
+      if (displayName) {
+        surfaces.push({ text: displayName, source: "audio_display_name", file: asStr(a.package_name), ref: asStr(a.package_path) });
+      }
+    }
+  }
+
+  return surfaces;
+}
+
+function isAllowlisted(term: string, allowlistLower: string[]): boolean {
+  return allowlistLower.some((entry) => entry && (term.includes(entry) || entry.includes(term)));
+}
+
+// Computes first_pass_hints server-side (see wordlist comment above) and
+// attaches it to the bridge's moderation_scan payload before it reaches the
+// LLM. Never throws — the bridge payload may be a string or an object, and
+// any field within it may be missing; on any failure this returns the raw
+// payload untouched rather than blocking the tool response.
+function attachModerationHints(rawPayload: unknown, allowlist: string[] | undefined): unknown {
+  try {
+    let payload: unknown = rawPayload;
+    if (typeof payload === "string") {
+      try {
+        payload = JSON.parse(payload);
+      } catch {
+        return rawPayload; // not JSON — leave untouched
+      }
+    }
+    const record = asRecord(payload);
+    if (!record) return rawPayload;
+
+    const surfaces = collectModerationTextSurfaces(record);
+    const authenticityHits = matchModerationTerms(surfaces, AUTHENTICITY_BANNED_TERMS);
+    const ipHits = matchModerationTerms(surfaces, IP_BRAND_SEED_TERMS);
+
+    const allowlistLower = (allowlist ?? []).filter((s) => typeof s === "string").map((s) => s.toLowerCase());
+    const expectedLicensed: ModerationHint[] = [];
+    const investigate: ModerationHint[] = [];
+    for (const hit of ipHits) {
+      if (isAllowlisted(hit.term, allowlistLower)) expectedLicensed.push(hit);
+      else investigate.push(hit);
+    }
+
+    // Cheap direct signal for the KNOWN-RISK residual-cause case: no other
+    // wordlist hits fired, but there IS licensed IP present. Doesn't mean
+    // the LLM's independent judgment found nothing else — just that the
+    // wordlist first pass didn't — but it's a useful nudge either way.
+    // Defensive: booleans-of-array-emptiness can't throw, but keep this
+    // inside the outer try/catch regardless.
+    const noOtherFindingsCandidate = investigate.length === 0 && authenticityHits.length === 0 && expectedLicensed.length > 0;
+
+    return {
+      ...record,
+      first_pass_hints: {
+        authenticity_hits: authenticityHits,
+        ip_seed_hits: ipHits,
+        expected_licensed: expectedLicensed,
+        investigate,
+        no_other_findings_candidate: noOtherFindingsCandidate,
+      },
+    };
+  } catch {
+    return rawPayload;
+  }
+}
+
 // ── Server setup ─────────────────────────────────────────────────────────────
 
 const server = new McpServer({
@@ -396,6 +620,58 @@ server.registerTool(
         max_depth: args.max_depth,
       })
     )
+);
+
+server.registerTool(
+  "uefn_moderation_scan",
+  {
+    description: `Predict what Fortnite/UEFN island moderation may flag BEFORE submission, so a creator can fix issues pre-emptively. This mirrors Epic's documented review pipeline, IN ORDER: (1) an automated pre-check that runs on publish against the island's title, thumbnail, and lobby background — Rule 1.13 "Keep It Authentic" plus a near-duplicate title/thumbnail check; (2) a METADATA & ASSET review covering island name, description, loading-screen text, thumbnail, lobby background, promotional screenshots, trailers, AND the underlying assets — a violation found at this stage SHORT-CIRCUITS the process, so the in-island gameplay review never even happens; (3) only if metadata/assets pass, an in-island gameplay review. Collector-only tool (no runtime AI in the shipped bridge) — this call returns raw structured evidence; YOU (the calling LLM) must do all the judgment and produce the report described below.
+
+THE SINGLE HIGHEST-VALUE SIGNAL is the \`hlod_or_imported_assets\` and \`asset_surfaces\` fields. Real creators are repeatedly flagged on ASSET INTERNAL NAMES and \`.uasset\`/HLOD package PATHS — not on anything visible in gameplay — and Epic never tells them which asset triggered it. This fires EVEN on Epic's own officially-provided, licensed assets: documented cases include a Star Wars AT-AT and a Star Wars lightsaber workbench flagged on accounts that had an active, valid brand tag for that IP, with appeals rejected. So being licensed does NOT exempt an asset from matching — treat every hit in these two fields as worth flagging prominently for human review, regardless of whether the brand is on the allowlist.
+
+RULE CATEGORIES to evaluate every surface against:
+- Section 1.7 "Respect IP Ownership" — third-party brands/franchises, Epic-owned IP used without authorization, key art, logos, product names, recognizable character names, in names/descriptions/text/asset paths/Verse strings.
+- Section 1.13 "Keep It Authentic" — banned reward-bait tokens (AFK, XP farm, coin farm, coin slide, V-Bucks, Battle Pass, real-money or reward bait language); island metadata (name/description/thumbnail) must accurately represent actual gameplay; community-confirmed additional red flags: arrow graphics or before/after stat comparison graphics in thumbnails, and real photographs of real people anywhere in metadata/promo imagery.
+
+\`allowlist\` (franchises/brands the CALLER is licensed for) changes how you REPORT a hit, not whether you report it: split IP hits into "expected licensed IP (still may be matched by Epic's automated system — report anyway)" versus "unexpected IP token — investigate, not covered by any stated license". Make explicit in your output that the allowlist reflects the creator's legal RIGHTS, not immunity from Epic's automated matcher.
+
+\`image_paths\`: the collector deliberately does NOT do pixel/perceptual analysis (no image libraries — stdlib-only bridge). If you have vision capability, visually inspect these image files yourself for logos, third-party brand marks, Epic key art, real photos of people, and arrow/before-after stat graphics in thumbnails — this tool cannot do that part for you.
+
+\`image_metadata\`: embedded PNG text chunks / JPEG EXIF-IPTC fields (Author, Copyright, Title, Software, etc.). This is a BONUS check beyond anything Epic is known to scan — a third-party copyright or author string here is a strong signal the image was imported from elsewhere and is worth a closer look.
+
+\`first_pass_hints\` (authenticity_hits / ip_seed_hits): cheap, non-exhaustive literal wordlist matches only, meant to prioritize what to look at first. They are NOT a verdict — you must independently judge every surface (asset_surfaces, hlod_or_imported_assets, verse_surfaces, text_metadata, image_metadata) for IP and authenticity issues the wordlist wouldn't catch, and must also be willing to dismiss a wordlist hit that's clearly a false positive (e.g. "battle pass" as unrelated flavor text). \`first_pass_hints.no_other_findings_candidate\` is a boolean nudge (true when the wordlist first pass found licensed IP in \`expected_licensed\` but nothing in \`authenticity_hits\` or \`investigate\`) — it is only a hint toward the KNOWN-RISK case below, never a substitute for your own independent review of every surface.
+
+REPORT FORMAT: group every finding by severity — BLOCKER (would very likely short-circuit metadata/asset review), WARN (real risk, judgment call), KNOWN-RISK (see below), INFO (worth knowing, low risk).
+
+KNOWN-RISK — licensed IP as the residual cause: emit this whenever licensed/allowlisted IP surfaces are present (\`expected_licensed\` non-empty, or your own review of \`asset_surfaces\`/\`hlod_or_imported_assets\` finds licensed models), and ESPECIALLY when the scan otherwise comes back clean of BLOCKER/WARN findings — \`first_pass_hints.no_other_findings_candidate: true\` is a hint toward this case. When nothing else was found, state plainly that the licensed IP assets are the most likely trigger. This is NOT a rule violation and NOT something the creator did wrong — it is a documented false-positive pattern in Epic's automated matcher, which has flagged Epic's own officially-provided licensed assets (e.g. a Star Wars AT-AT, a Star Wars lightsaber workbench) on accounts with an active, valid brand tag for that IP, with appeals rejected. Never phrase this as fault, and never tell the creator to remove content they are licensed to use. Model suggested wording (adapt, don't force verbatim): "No other violations found. Your licensed IP assets are the most likely trigger — Epic's automated matcher has flagged officially-provided licensed assets before, even with an active brand tag. This is a known false-positive pattern, not something you did wrong." Include these actionable next steps with every KNOWN-RISK finding: (1) inspect/rebuild the HLODs that contain the licensed models — HLOD \`.uasset\` files were the actual flagged targets in the documented cases, not the source assets themselves; (2) read the full REJECTION EMAIL, not just the in-app banner — the email has been confirmed to sometimes name the exact offending file (seen for copyrighted-audio rejections) when the in-app notice doesn't; (3) if appealing, explicitly cite the active brand tag / licensed-program participation; (4) list the specific licensed asset paths from \`expected_licensed\` and \`hlod_or_imported_assets\` so the creator has the exact strings Epic's matcher sees, since Epic won't disclose them.
+
+For every finding (any severity) give: the exact surface (file path / asset or package path / metadata field), the offending token or the reason it was flagged, which rule it maps to (1.7 or 1.13, or "automated pre-check"), and a concrete suggested fix or next step. Close the report with this caveat, stated plainly: this tool PREDICTS risk and cannot guarantee approval — Epic's moderation system is opaque, changes without notice, and has been documented flagging even its own officially licensed content.`,
+    inputSchema: {
+      project_dir: z.string().optional().describe("Path to the UEFN project to scan; defaults to the live/resolved project root"),
+      allowlist: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Franchises/brands the creator is LICENSED to use. Does not exempt matches from being reported — only changes how they're categorized (expected licensed IP vs. unexpected IP token)."
+        ),
+    },
+  },
+  async (args) => {
+    try {
+      const raw = await callBridge(
+        "moderation_scan",
+        compact({
+          project_dir: args.project_dir,
+          allowlist: args.allowlist,
+        })
+      );
+      return ok(attachModerationHints(raw, args.allowlist));
+    } catch (e) {
+      if (e instanceof BridgeError) return err(`Bridge error: ${e.message}`);
+      if (e instanceof TimeoutError) return err(`Bridge error: ${e.message}`);
+      return err(`Bridge error: ${String(e)}`);
+    }
+  }
 );
 
 // ── Start ─────────────────────────────────────────────────────────────────────

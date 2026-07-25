@@ -178,10 +178,10 @@ _TOOLS = [
         "action": "health_scanner",
     },
     {
-        "icon": "\u2328",  # keyboard
-        "name": "Shortcuts",
-        "description": "Common UEFN keyboard shortcuts and hotkeys",
-        "action": "keyboard_shortcuts",
+        "icon": "\u2696",  # scales of justice
+        "name": "IP / Moderation Scan",
+        "description": "Scans metadata & assets; AI assistant writes the full report",
+        "action": "moderation_scan",
     },
     {
         "icon": "\U0001f4ca",  # bar chart
@@ -451,24 +451,24 @@ def _launch_tool(action):
             if _HAS_TKINTER:
                 messagebox.showerror("Error", "Failed to launch Project Health:\n" + str(e))
 
-    elif action == "keyboard_shortcuts":
+    elif action == "moderation_scan":
         try:
             import importlib
-            import keyboard_shortcuts
-            importlib.reload(keyboard_shortcuts)
-            keyboard_shortcuts.show_keyboard_shortcuts()
+            import moderation_scanner
+            importlib.reload(moderation_scanner)
+            moderation_scanner.show_moderation_scan()
         except ModuleNotFoundError:
             msg = (
-                "keyboard_shortcuts.py is missing from your project's Content/Python/ folder.\n\n"
+                "moderation_scanner.py is missing from your project's Content/Python/ folder.\n\n"
                 "Re-run the /uefn-bridge install to sync all tool files."
             )
-            unreal.log_warning("uefn_launcher: keyboard_shortcuts module not found — " + msg)
+            unreal.log_warning("uefn_launcher: moderation_scanner module not found — " + msg)
             if _HAS_TKINTER:
                 messagebox.showerror("Missing Module", msg)
         except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch keyboard_shortcuts: " + str(e))
+            unreal.log_warning("uefn_launcher: Failed to launch moderation_scanner: " + str(e))
             if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Shortcuts:\n" + str(e))
+                messagebox.showerror("Error", "Failed to launch IP / Moderation Scan:\n" + str(e))
 
     elif action == "level_stats":
         try:

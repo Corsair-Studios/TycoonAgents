@@ -95,6 +95,9 @@ test("_handleAddGitignoreEntries creates .urcignore for a UEFN project with the 
       "*.md",
       "*.jsonl",
       "*.mjs",
+      "*.py",
+      "Content/Python/",
+      "Python/",
     ]) {
       assert.ok(urc.includes(entry), `.urcignore must contain "${entry}"`);
     }
@@ -115,6 +118,9 @@ test("_handleAddGitignoreEntries creates .urcignore for a UEFN project with the 
       "*.md",
       "*.jsonl",
       "*.mjs",
+      "*.py",
+      "Content/Python/",
+      "Python/",
     ]) {
       assert.ok(p4.includes(entry), `.p4ignore must contain "${entry}"`);
     }

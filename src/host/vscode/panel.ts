@@ -247,13 +247,24 @@ export function seedProjectPlanEnabledDefault(root: string): void {
  * `Content/` prefix to cover that nested root too.
  *
  * On top of the targeted names above, the list also carries broad extension
- * globs (`*.json`, `*.md`, `*.jsonl`, `*.mjs`, and `*.cjs` above) — a real
- * UEFN project's shipped assets are `.uasset`/`.umap`, so any loose
- * json/md/jsonl/cjs/mjs file at the project root is a dev-tool artifact, not
- * game content. URC reliably honors extension globs (and, being unanchored,
- * they already match inside `Content/` too, so — like `*.cjs` — they need no
- * separate `Content/`-prefixed duplicate); the targeted names remain as
- * belt-and-braces for tools that write those exact filenames.
+ * globs (`*.json`, `*.md`, `*.jsonl`, `*.mjs`, `*.cjs`, and `*.py` above) — a
+ * real UEFN project's shipped assets are `.uasset`/`.umap`, so any loose
+ * json/md/jsonl/cjs/mjs/py file at the project root is a dev-tool artifact,
+ * not game content. URC reliably honors extension globs (and, being
+ * unanchored, they already match inside `Content/` too, so — like `*.cjs` —
+ * they need no separate `Content/`-prefixed duplicate); the targeted names
+ * remain as belt-and-braces for tools that write those exact filenames.
+ *
+ * UEFN gameplay itself is authored in Verse, never Python — `Content/Python`
+ * holds the TycoonAgents UEFN Power Tools bridge (`media/uefn-bridge/*.py`),
+ * a per-developer editor-tooling install staged there by this extension, not
+ * game content. Each teammate installs their own copy from their own VSIX, the
+ * staged files bake in machine-specific paths, and shipping them into a
+ * Fortnite project's revision control carries needless island-moderation
+ * risk. `*.py` covers the bridge scripts themselves; `Content/Python/` and
+ * `Python/` (for workspace roots that already sit at `Content/`) catch the
+ * rest of the staged footprint that isn't a bare `.py` file — the launcher
+ * icon, `__pycache__/`, `.pyc`, and the runtime `bridge_sync_status.json`.
  */
 const UEFN_URC_IGNORE_ENTRIES: string[] = [
   ".claude/",
@@ -273,6 +284,9 @@ const UEFN_URC_IGNORE_ENTRIES: string[] = [
   "*.md",
   "*.jsonl",
   "*.mjs",
+  "*.py",
+  "Content/Python/",
+  "Python/",
 ];
 
 /** Singleton webview panel that renders the TycoonAgents visualization. */

@@ -124,6 +124,7 @@ Use an absolute path for `args`. On Windows use forward slashes. Do **not** add 
 | `uefn_asset_sweep` | Sweep and report on project assets | `project_only` (optional) |
 | `uefn_list_assets` | List assets under a content-browser path via the Unreal Asset Registry (read-only, metadata only — no asset loads) | `path`, `recursive` (optional), `class_filter` (optional), `limit` (optional) |
 | `uefn_inspect_asset` | EXPERIMENTAL: load a single asset by path and reflect its editor-property values via Python (read-only — loads but never saves or modifies) | `asset_path`, `max_depth` (optional) |
+| `uefn_moderation_scan` | Collect raw project surfaces (asset/HLOD names, Verse strings, island metadata, image metadata, audio) for an IP/authenticity pre-flight prediction; the calling LLM does the judgment and produces the report | `project_dir` (optional), `allowlist` (optional) |
 
 ## Usage Examples
 
