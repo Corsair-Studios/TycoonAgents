@@ -1,4 +1,4 @@
-<!-- version: 3.0.0 -->
+<!-- version: 4.0.0 -->
 # Verse Common Errors — Pre-Flight Reference
 
 ## Why this file exists
@@ -11,6 +11,19 @@ libraries and functions."
 
 **Prime directive: verify every API against the digest files before writing
 it. Never write an API from memory.**
+
+## How this file is sourced
+
+Every claim below is reconciled against Epic's official documentation
+(dev.epicgames.com/documentation/en-us/fortnite/) and the community-maintained
+**Book of Verse** (verselang.github.io/book) — Epic's own Verse topic pages
+now explicitly point readers to the Book of Verse as a deeper reference.
+Epic describes it as tracking "the head of the main development branch,"
+with the caveat that some of its content may predate an official Epic
+release. Anything neither source could confirm is listed under
+[Uncertain](#uncertain--verify-before-relying-on) rather than stated as fact.
+**The project's digest files override this file in every case** — see
+[Digest files = ground truth](#digest-files--ground-truth) below.
 
 ## TOP 5 MOST FREQUENT ERRORS — CHECK THESE FIRST
 
@@ -31,10 +44,10 @@ made them before considering a change done.**
 
 ### Syntax Errors
 - [`@editable` attribute](#9-editable-attribute) — single-line `@editable{ToolTip := X}`, not a multi-line block; `ToolTip` needs a `<localizes>` message, not a raw string
-- [Concurrency / spawn syntax](#7-concurrency) — `spawn{}` brace syntax, not `spawn:` block syntax
+- [Concurrency / spawn syntax](#7-concurrency) — `spawn{}` uses braces; `sync:`/`race:`/`rush:`/`branch:` use colon blocks
 - [Arrays and maps](#6-arrays-and-maps-indexing-is-failable) — `%` modulo does not exist, use `Mod[...]`
 - [String interpolation](#16-string-interpolation-not-concatenation) — `{var}`, not `+` concatenation
-- [Struct literals](#15-struct-literals-struct-scope-and-failable-struct-fields) — field init uses `=`, not `:=`
+- [Struct literals](#15-struct-literals-struct-scope-and-failable-struct-fields) — field init uses `:=`, not `=` (Epic: editable-properties-in-verse)
 
 ### Effect System Errors
 - [Failure contexts](#3-failure-contexts) — failable operations need a failure context
@@ -48,6 +61,7 @@ made them before considering a change done.**
 - [Event Subscribe vs Await](#event-subscribe-vs-await) — custom `event(T)` uses `Await()`, not `Subscribe()`
 - [No `ToString` for a custom enum](#no-tostring-overload-for-a-custom-enum) — define `ToString()` before using an enum in string interpolation
 - [`class<concrete>` instantiation at module level](#class-concrete-instantiation-at-module-level) — cannot instantiate outside a runtime context
+- [Incompatible parameter types](#18-incompatible-parameter-types) — a `tuple()` is not a substitute for the expected plain type (e.g. `agent`)
 
 ### Visibility / Access Errors
 - [Public member depends on a non-public type](#public-member-depends-on-a-non-public-type) — custom types used by public members must be `<public>`
@@ -60,13 +74,13 @@ made them before considering a change done.**
 ### Naming / Scope Errors
 - [Local variable name conflicts with a module name](#14-local-variable-name-conflicts-with-a-module-name) — avoid `VFX`/`SFX`/`UI`/`Assets`/`Materials`/`Textures` as variable names
 - [Unknown identifier — scope issues](#12-unknown-identifier-scope-issues) — declare variables before conditional use
-- [`pass` does not exist](#unknown-identifier-pass) — Python-ism, not valid Verse
-- [Reserved identifier `_`](#reserved-identifier-_) — no underscore placeholder in `for`/patterns
+- [`pass` does not exist](#unknown-identifier-pass) — Python-ism, not valid Verse (unconfirmed — see Uncertain)
+- [Reserved identifier `_`](#reserved-identifier-_) — no underscore placeholder in `for`/patterns; IS valid as a `case` wildcard
 
 ### Failable / Optional Handling
 - [Square brackets vs parentheses](#call-style-square-brackets-vs-parentheses) — `[]` for failable, `()` for always-succeed
 - [Failable conversions vs optional returns](#failable-conversions-vs-optional-returns) — the two look similar but need different handling
-- [Unsafe array access](#17-unsafe-array-access-patterns) — always bounds-check
+- [Unsafe array access](#17-unsafe-array-access-patterns) — `..` ranges are inclusive; iterate `0..Array.Length - 1`, or prefer `for (Element : Array)`
 
 ## Things that DO NOT EXIST in Verse
 
@@ -145,7 +159,9 @@ digest before writing them.
 
 ### Unknown identifier `pass`
 
-**Error message:** `Unknown identifier 'pass'.`
+**Error message:** `Unknown identifier 'pass'.` (community-reported; not
+independently confirmed against Epic's docs this pass — see
+[Uncertain](#uncertain--verify-before-relying-on).)
 
 `pass` is a Python keyword meaning "do nothing." Verse has no equivalent
 keyword, and — unlike Python — does not require a statement in every block,
@@ -164,18 +180,32 @@ if (SomeCondition?):
 ### Reserved identifier `_`
 
 **Error message:** `Cannot use reserved identifier '_' as definition name.`
+(Book of Verse §01 Expressions.)
 
-Unlike Python or Rust, Verse does not allow `_` as an "unused variable"
-placeholder in `for` loops or pattern matching.
+Unlike Python or Rust, Verse does not allow `_` as a general "unused
+variable" placeholder — for example, in `for` loops or destructuring, you
+cannot bind a value to `_` as a definition name.
 
 ```verse
-# WRONG — underscore is reserved
+# WRONG — underscore is reserved as a definition name:
 for (Index -> _ : MyArray):
     DoSomething(Index)
 
 # RIGHT — use a named variable even if unused
 for (Index -> Item : MyArray):
     DoSomething(Index)   # Item is unused, that's fine — Verse doesn't warn
+```
+
+**Exception: `_` IS valid as a wildcard pattern inside a `case` expression**
+(matching "anything else"), which is a different role than a definition
+name:
+
+```verse
+# RIGHT — '_' as a case wildcard, not a definition name:
+case (Value):
+    1 => DoA()
+    2 => DoB()
+    _ => DoDefault()
 ```
 
 ## Call style: square brackets vs parentheses
@@ -202,8 +232,34 @@ as a hard error, not a style choice.
 | `MakeUnitVector[Vec]` | `[]` | Can fail (zero-length vector) |
 | `GetPlayer[PlayerIndex]` | `[]` | Can fail (player not found) |
 
+**The general `[]`-failable / `()`-always-succeeds RULE is confirmed, and
+`Array[Index]` and `Mod[X, Y]` are individually confirmed against Epic's
+docs. The other individual per-function entries above (`Floor`, `Ceil`,
+`Round`, `Abs`, `Map[Key]`, `MakeUnitVector[]`, `GetPlayer[]`) are
+community-reported and were not independently verified this pass — check
+each against the digest before relying on it.**
+
 When in doubt, check the digest signature for `<decides>` — that decides the
 brackets, not convention.
+
+**Real compiler error strings for a bracket/parenthesis mismatch:**
+
+- `This call uses square brackets to call a function that does not have the 'decides' effect`
+- `This invocation calls a function that has the 'decides' effect, which is not allowed by its context`
+
+```verse
+# WRONG — Floor always succeeds; brackets wrongly imply it can fail:
+Result := Floor[Value / 10]
+
+# RIGHT — Floor uses parentheses:
+Result := Floor(Value / 10)
+
+# WRONG — Mod can fail; parentheses wrongly imply it always succeeds:
+Result := Mod(Value, 10)
+
+# RIGHT — Mod needs brackets plus a failure context/fallback:
+Result := Mod[Value, 10] or 0
+```
 
 ### The `or` fallback works only on assignment, not on `set`
 
@@ -274,6 +330,32 @@ if (Transform := MaybeTransform?):
 MaybePowerup := PlayerData.ActiveItem  # ActiveItem is ?player_item
 if (Powerup := MaybePowerup?):
     Powerup.OnUsed(Agent)
+```
+
+### The compile error when you skip the `?` on an optional-returning function
+
+**Error message:** `Expected an expression that can fail in the 'if' condition
+clause(3513)`
+
+This is the concrete error that motivates the distinction above: writing
+`if (X := F()):` where `F()` returns an optional (`?T`) rather than a
+`<decides>` function does not automatically unwrap it — the `if` condition
+needs something that can actually fail, and a plain binding to an optional
+value isn't that.
+
+```verse
+# WRONG — GetRandomDevice returns ?device_type, so the if never unwraps it:
+if (Device := GetRandomDevice(Source)):   # Error 3513
+    Device.Activate(Player.Player)
+
+# RIGHT — extract first, then unwrap the optional with '?':
+Device := GetRandomDevice(Source)
+if (Device?):
+    Device.Activate(Player.Player)
+
+# ALSO RIGHT — unwrap inline with '?':
+if (Device := GetRandomDevice(Source)?):
+    Device.Activate(Player.Player)
 ```
 
 ### How to tell the difference
@@ -396,6 +478,36 @@ constructor:
 MyDevice : ?creative_prop = false
 ```
 
+**`option{}` with no argument is commonly reported as invalid** — treat
+`false` as the reliable way to spell "empty optional" regardless (that part
+IS confirmed). Whether `option{}` with zero arguments specifically fails to
+compile was not independently confirmed against Epic's docs or the Book of
+Verse this pass — see [Uncertain](#uncertain--verify-before-relying-on).
+
+```verse
+# UNVERIFIED — option{} with no argument is commonly reported to fail:
+Empty : ?int = option{}
+
+# CONFIRMED RIGHT — false IS the empty option; use option{Value} only when you have a value
+Empty : ?int = false
+Full : ?int = option{42}
+```
+
+Device types can't be constructed with empty braces either — `creative_prop{}`
+is invalid; a device reference is either populated by the editor/engine or is
+the empty optional `false`.
+
+**Optional types can't have methods called on them directly — unwrap first:**
+
+```verse
+# WRONG — Play() called directly on an optional
+OptionalDevice.Play()
+
+# RIGHT — unwrap with '?' inside a failure context, then call the method
+if (Device := OptionalDevice?):
+    Device.Play()
+```
+
 See [Failable conversions vs optional returns](#failable-conversions-vs-optional-returns)
 above for the full rule on when a value can be extracted before unwrapping
 versus when it must stay inside the `if`.
@@ -418,12 +530,43 @@ if (First := Nums[0]):
 device objects:
 
 ```verse
+# WRONG — a device object is not a valid map key:
+var DeviceMap : [volume_device]state = map{}
+
+# RIGHT — key by a simple comparable type instead:
 var DeviceMap : [int]state = map{}
+# Track devices by index, alongside a parallel array of the devices
+# themselves (see the @editable parallel-arrays pattern below).
 ```
 
 **The `%` modulo operator does not exist.** Use `Mod[...]` (which is
 failable — see the bracket rule above). Integer division (`/`) also returns
-`rational`, not `int`, so it can't substitute for modulo either.
+`rational`, not `int`, so it can't substitute for modulo either — this trips
+up hand-rolled modulo via multiply-and-subtract:
+
+**Error message:** `No overload of operator'*' matches arguments
+(:rational,:type{N})`
+
+```verse
+# WRONG — '/' returns rational, not int; rational * int does not compile:
+DivisionResult : int = Counter / ArrayLength   # actually a rational!
+Result : int = Counter - (DivisionResult * ArrayLength)   # FAILS — the error above
+```
+
+```verse
+# RIGHT — use Mod[] instead of hand-rolling modulo:
+Index := Mod[Value, 10] or 0
+```
+
+**Why `Mod` uses brackets:** `Mod` is failable — modulo by zero would fail —
+so it must be called with `[]` and used in a failure context (see the
+bracket rule above), never plain `()`. (`%` does not exist; `Mod` is the
+official replacement — dev.epicgames.com/documentation/en-us/fortnite/
+verse-api/versedotorg/verse/mod.) The literal `<decides>` specifier text
+shown in some community write-ups of `Mod`'s declaration was not
+independently confirmed against Epic's API page this pass — the behavior
+(failable, bracket call) is confirmed regardless of the exact specifier
+spelling.
 
 ```verse
 # Ring-buffer pattern
@@ -436,23 +579,48 @@ else:
 
 ### 7. Concurrency
 
-- `spawn{}` — fire-and-forget task.
-- `sync{}` — run branches concurrently, wait for ALL.
-- `race{}` — run branches concurrently, first to finish wins, others cancel.
-- `branch{}` — run concurrently without waiting.
+- `spawn{...}` — fire-and-forget task. Takes a **brace** block.
+- `sync:` — run branches concurrently, wait for ALL. Takes a **colon**
+  block.
+- `race:` — run branches concurrently, first to finish wins, others cancel.
+  Takes a **colon** block.
+- `rush:` — run branches concurrently, resolves on the first branch to
+  fail (or succeeds if all do). Takes a **colon** block.
+- `branch:` — run concurrently without waiting. Takes a **colon** block.
 
-Epic's guidance prefers structured concurrency (`sync`/`race`/`branch`) over
-bare `spawn` where the control flow can be expressed structurally.
+(Book of Verse §14 Concurrency.) `spawn` is the odd one out: it takes a
+brace block, not a colon-indented block. The other four concurrency forms —
+`sync`, `race`, `rush`, `branch` — DO use colon-indented blocks, like `if`
+and `for`. Don't over-generalize the `spawn` brace rule onto them.
 
-`spawn` takes a brace block, not a colon-indented block:
+```verse
+# WRONG — spawn does not take a colon block:
+spawn:
+    MyFunction()
+
+# RIGHT — spawn takes a brace block:
+spawn{MyFunction()}
+
+# RIGHT — sync/race/rush/branch take colon blocks:
+sync:
+    TaskA()
+    TaskB()
+```
+
+**Multiple spawn calls** each get their own `spawn{}` block on a separate
+line — not a `spawn:` block per call, and not multiple calls crammed into one
+`spawn{}`:
 
 ```verse
 # WRONG
 spawn:
-    MyFunction()
+    Function1()
+spawn:
+    Function2()
 
 # RIGHT
-spawn{MyFunction()}
+spawn{Function1()}
+spawn{Function2()}
 ```
 
 A `no_rollback`-effect call is not allowed directly in some contexts — wrap
@@ -489,13 +657,21 @@ signature change) — don't assume a populated array stays populated; guard
 with a failure context before using entries.
 
 `@editable` only exposes simple types cleanly — model related per-entry data
-as **parallel arrays** rather than an array of structs/tuples:
+as **parallel arrays** rather than an array of structs/tuples. It also cannot
+take an array of a complex struct type:
 
 ```verse
+# WRONG — @editable can't expose an array of a complex struct:
+@editable
+ComplexConfigs : []my_config_struct = array{}
+
+# RIGHT — parallel arrays of simple types instead:
 @editable
 Volumes : []volume_device = array{}
 @editable
 SpawnTimes : []float = array{}
+@editable
+Cooldowns : []float = array{}
 ```
 
 **`ToolTip` needs single-line brace syntax, not a multi-line block.**
@@ -648,12 +824,22 @@ PlayEffects():void=
 
 ### 15. Struct literals, struct scope, and failable struct fields
 
-Struct field initialization uses `=`, not `:=`:
+**Struct field initialization uses `:=`, not `=`.** Epic's own example:
+`VectorOnes<public>:vector3 = vector3{X:=1.0, Y:=1.0, Z:=1.0}`
+(dev.epicgames.com/documentation/en-us/fortnite/editable-properties-in-verse);
+Book of Verse §03 Containers: `vector2{X := 100.0, Y := 250.0}`.
 
 ```verse
+# WRONG — struct literal fields do not use '=':
 var MyStruct : my_struct = my_struct{
     Field1 = value1,
     Field2 = value2
+}
+
+# RIGHT — struct literal fields use ':=':
+var MyStruct : my_struct = my_struct{
+    Field1 := value1,
+    Field2 := value2
 }
 ```
 
@@ -680,41 +866,119 @@ Arithmetic on `int` can fail (overflow), so `int + int` carries the
 ```verse
 # WRONG — failable arithmetic directly inside a struct literal:
 NewRecord := player_damage_record{
-    TotalDamage = ExistingRecord.TotalDamage + Damage  # Error! int + int can fail
-    HitCount = ExistingRecord.HitCount + 1              # Error!
+    TotalDamage := ExistingRecord.TotalDamage + Damage  # Error! int + int can fail
+    HitCount := ExistingRecord.HitCount + 1              # Error!
 }
 
 # RIGHT — compute the failable values first, then build the struct:
 NewTotalDamage := ExistingRecord.TotalDamage + Damage  # ':=' on its own line is a failure context
 NewHitCount := ExistingRecord.HitCount + 1
 NewRecord := player_damage_record{
-    TotalDamage = NewTotalDamage   # now just assigning a resolved value
-    HitCount = NewHitCount
+    TotalDamage := NewTotalDamage   # now just assigning a resolved value
+    HitCount := NewHitCount
 }
 ```
 
 ### 16. String interpolation, not concatenation
 
+**Confirmed:** string interpolation with `{Expr}` inside a string literal is
+the idiomatic way to build a string with embedded values.
+
+**Unverified this pass:** whether `+` concatenation on strings is entirely
+unsupported, and whether a bare `ToString()` free function doesn't exist —
+neither claim could be confirmed against Epic's docs or the Book of Verse
+(see [Uncertain](#uncertain--verify-before-relying-on)). Prefer
+interpolation regardless; it's the confirmed idiomatic form either way.
+
 ```verse
-# WRONG — '+' concatenation does not work on strings this way
+# REPORTED AS WRONG (unconfirmed) — '+' concatenation on strings:
 Print("Value is " + MyVariable)
 
-# RIGHT
+# REPORTED AS WRONG (unconfirmed) — bare ToString() call:
+Print("Value is " + ToString(MyVariable))
+
+# CONFIRMED RIGHT — interpolate directly:
 Print("Value is {MyVariable}")
+```
+
+**Multi-variable interpolation** works the same way with more than one
+placeholder:
+
+```verse
+Index : int = 5
+Name : string = "Test"
+Print("Item {Index} named {Name} is ready")
 ```
 
 ### 17. Unsafe array access patterns
 
-Even when a bound is already known, prefer the failure-context form over a
-manual length check — but if a manual check is used, still gate the access
-itself with `if`:
+**`..` ranges are inclusive on both ends — there is no exclusive range
+syntax** (Book of Verse §07 Control Flow: "The `..` operator is always
+inclusive."). That means `0..Array.Length` iterates ONE PAST the last valid
+index; the correct upper bound is `Array.Length - 1`.
 
 ```verse
+# WRONG — 0..Array.Length runs one index past the end of the array:
 for (Index := 0..Array.Length):
-    if (Index < Array.Length):
-        if (Element := Array[Index]):
-            # Use Element
+    if (Element := Array[Index]):
+        # Use Element
+
+# RIGHT — inclusive range needs the '- 1':
+for (Index := 0..Array.Length - 1):
+    if (Element := Array[Index]):
+        # Use Element
 ```
+
+**Prefer the idiomatic collection-iteration forms** over a manual counted
+range — they can't get the off-by-one wrong because there's no length
+arithmetic to write:
+
+```verse
+# RIGHT — idiomatic, no index math at all:
+for (Element : Array):
+    # Use Element
+
+# RIGHT — idiomatic, with a zero-based index:
+for (Index -> Element : Array):
+    # Use Index and Element
+```
+
+`Array[Index]` is still failable regardless of loop form — keep it inside a
+failure context (`if`) as shown above.
+
+### 18. Incompatible parameter types
+
+A function's parameter type must match exactly — passing a `tuple()` where
+the function expects a plain value (e.g. `agent`) is a compile error, not an
+implicit coercion.
+
+```verse
+# WRONG — Activate expects an agent, not a tuple:
+MyDevice.Activate((Agent,))
+
+# RIGHT — pass the agent value directly:
+MyDevice.Activate(Agent)
+```
+
+### 19. Randomness
+
+**`/Verse.org/Random` exists and is current** — confirmed against Epic's
+official API reference:
+
+```verse
+GetRandomInt<public><native>(Low:int, High:int)<transacts>:int
+```
+
+```verse
+using { /Verse.org/Random }
+
+RollDamage()<transacts>:int=
+    GetRandomInt(1, 6)
+```
+
+Do not fall back to a hand-rolled counter-based pseudo-random workaround —
+that pattern was sourced from older, unverified material and isn't needed;
+`GetRandomInt` is the real, current API.
 
 ## Visibility and access errors
 
@@ -724,8 +988,14 @@ for (Index := 0..Array.Length):
 Y, which is only accessible from subpaths...`
 
 When a `<public>` member (an event, function, etc.) uses a type that is not
-itself `<public>`, the compiler rejects it — external code could reach the
-member but not the type it depends on.
+itself `<public>`, the compiler is commonly reported to reject it —
+external code could reach the member but not the type it depends on. The
+`<public>` specifier **placement syntax** itself (`Name<public>:type`,
+`type_name<public> := struct<concrete>:`) is confirmed against Epic's docs.
+Whether this dependency specifically triggers a compile error was not
+independently confirmed this pass — see
+[Uncertain](#uncertain--verify-before-relying-on). Adding `<public>` to the
+dependency is a safe, low-cost fix regardless.
 
 ```verse
 # WRONG — public event uses a non-public enum:
@@ -862,7 +1132,12 @@ loop:
 **Error message:** `No overload of the function 'event' matches the provided
 arguments`
 
-Events take only **one** type parameter. Wrap multiple values in a `tuple`.
+Events are commonly reported to take only **one** type parameter — that
+specific restriction was not independently confirmed against Epic's docs or
+the Book of Verse this pass (see
+[Uncertain](#uncertain--verify-before-relying-on)). The `tuple` workaround
+below is a safe pattern either way: wrap multiple values in a `tuple` when
+you need an event to carry more than one payload value.
 
 ```verse
 # WRONG — events don't support multiple type parameters:
@@ -1022,13 +1297,26 @@ speculative execution and can be rolled back — most utility functions don't.
 **Error message:** `This invocation calls a function that has the
 'no_rollback' effect, which is not allowed by its context.`
 
-This is the precise, real-world version of a rule that's easy to
-over-generalize: it is **not** that compound `and`/`or` conditions are
-forbidden — Verse has real `and`/`or` operators. The actual trap is narrower:
-writing `if (SomeLogicValue = true):` makes the equality comparison itself a
-failable operation, which turns the `if` block into a failure context that
-then disallows ordinary `no_rollback` operations like `Print`, `spawn{}`, and
-`set` inside it.
+**Compound `and`/`or` conditions inside a single `if` ARE valid Verse** —
+this is not a rule that requires splitting them into nested `if`s. Epic's
+own example (§04 Operators, Book of Verse):
+
+```verse
+if (Level >= 10 and Score > 1000):
+    UnlockAchievement()
+```
+
+The narrower, real trap below is easy to over-generalize into "compound
+conditions are forbidden" — they are not. Writing `if (SomeLogicValue =
+true):` makes the equality comparison itself a failable operation, which
+turns the `if` block into a failure context that then disallows ordinary
+`no_rollback` operations like `Print`, `spawn{}`, and `set` inside it.
+
+> The `X?` idiom below (querying a `logic` value) is confirmed. That this
+> specific error string is what `if (X = true):` produces has not been
+> independently verified against Epic's docs — treat the exact error
+> attribution as a field report, and the `X?` fix as the safe default
+> regardless.
 
 ```verse
 # WRONG — no_rollback operations inside a failable comparison's if block:
@@ -1081,19 +1369,50 @@ used correctly before.
 ## Uncertain — verify before relying on
 
 These points are flagged from research that could not be independently
-verified. Treat them as leads to check against the digest or Epic's current
-docs, not as settled fact:
+verified against Epic's official documentation or the Book of Verse. Treat
+them as leads to check against the digest or Epic's current docs, not as
+settled fact. **The digest files override this file in every case.**
 
 - The exact on-disk digest path is commonly reported as under
   `%LOCALAPPDATA%\UnrealEditorFortnite\Saved\VerseProject\...`, but this has
   not been independently verified. Treat it as "typically under the UEFN
   data root" — the agents auto-detect the real location by search, so don't
   hardcode this path.
-- The precise placement syntax for access specifiers (`<public>`,
-  `<internal>`, `<protected>`, `<private>`) — confirm against the digest or
-  Epic's docs before relying on a specific ordering or position.
+- The exact ordering when MULTIPLE specifiers are combined on one
+  definition (e.g. `<public><native>` vs `<native><public>`) — the basic
+  single-specifier placement syntax (`Name<public>:type`,
+  `type_name<public> := struct<concrete>:`) IS confirmed; multi-specifier
+  ordering was not independently checked this pass.
 - Anything in this file ultimately sourced from unofficial third-party
-  community documentation rather than Epic's own documentation.
+  community documentation rather than Epic's own documentation or the Book
+  of Verse.
+- The individual per-function call-style entries in the
+  [call style table](#call-style-square-brackets-vs-parentheses) for
+  `Floor()`, `Ceil()`, `Round()`, `Abs()`, `Map[Key]`, `MakeUnitVector[]`,
+  and `GetPlayer[]` — community-reported, not individually confirmed. The
+  general `[]`/`()` rule and the `Array[Index]` / `Mod[X, Y]` entries ARE
+  confirmed.
+- `option{}` with no argument being invalid — no source confirmed or denied
+  this either way. `false` as the empty optional IS confirmed; use that
+  regardless.
+- The specific claim that `if (X = true):` produces a `no_rollback` error —
+  the underlying `X?` query-operator idiom is confirmed; this particular
+  error attribution is not.
+- `+` string concatenation being unsupported on strings, and a bare
+  `ToString()` free function not existing — string interpolation itself
+  (`"{Expr}"`) IS confirmed as the idiomatic form regardless.
+- `pass` not existing as a Verse identifier — consistent with the absence of
+  any keyword reference for it, but not explicitly stated as forbidden by
+  either source.
+- `event(T)` accepting only ONE type parameter — the `tuple(...)` workaround
+  pattern is safe to use regardless; the strict single-parameter limit
+  itself wasn't independently confirmed.
+- A public member depending on a non-public type being a hard compile
+  error — the `<public>` specifier PLACEMENT syntax is confirmed (see
+  above); this specific dependency-triggers-an-error rule is not.
+- The literal `<decides>` specifier text as it appears on `Mod`'s actual
+  declaration — `Mod`'s failable, bracket-call behavior IS confirmed via
+  Epic's API page regardless of the exact specifier spelling reported.
 
 ### Primary references
 
@@ -1102,3 +1421,7 @@ docs, not as settled fact:
 - https://dev.epicgames.com/documentation/en-us/fortnite/concurrency-overview-in-verse
 - https://dev.epicgames.com/documentation/en-us/fortnite/control-flow-in-verse
 - https://dev.epicgames.com/documentation/en-us/fortnite/editable-properties-in-verse
+- https://dev.epicgames.com/documentation/en-us/fortnite/verse-api/versedotorg/verse/mod
+- https://verselang.github.io/book (Book of Verse — Epic's topic pages defer
+  to this as tracking the head of the main development branch, with the
+  caveat that some content may predate an official release)
