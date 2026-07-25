@@ -14,7 +14,7 @@
 //      (gitignored; machine-local, never committed)
 // If neither resolves, or the resolved directory doesn't exist, this is a
 // clean no-op (exit 0).
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, statSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -89,6 +89,59 @@ function copyBridgeFiles(targetDir) {
   return copiedCount;
 }
 
+// Prune files from <target>/python/ that the mirror no longer owns (e.g. a
+// tool deleted from media/uefn-bridge/ since the last sync). This is scoped
+// deliberately narrowly:
+//   - Only names ending in .py, plus the single trashbyrd_40x40.png icon —
+//     the exact same two patterns copyBridgeFiles() writes. The target repo
+//     is NOT ours; it may contain a README, docs, or other files a maintainer
+//     added by hand, and this must never touch those.
+//   - Non-recursive, top-level of <target>/python/ only — directories are
+//     never removed or descended into.
+//   - Respects EXCLUDE_NAMES, same as the copy step.
+//   - Every delete is wrapped in try/catch: a failed prune logs and moves on,
+//     it must never throw (this script must never fail a release).
+function pruneStaleFiles(targetDir) {
+  const targetPythonDir = join(targetDir, 'python');
+  if (!existsSync(targetPythonDir)) return 0;
+
+  // Recompute the set of names the source currently owns, using the same
+  // filter as copyBridgeFiles().
+  const sourceEntries = readdirSync(BRIDGE_DIR, { withFileTypes: true });
+  const currentNames = new Set();
+  for (const entry of sourceEntries) {
+    if (!entry.isFile()) continue;
+    const name = entry.name;
+    if (EXCLUDE_NAMES.has(name)) continue;
+    const isPy = name.endsWith('.py');
+    const isIcon = name === 'trashbyrd_40x40.png';
+    if (!isPy && !isIcon) continue;
+    currentNames.add(name);
+  }
+
+  const targetEntries = readdirSync(targetPythonDir, { withFileTypes: true });
+  let prunedCount = 0;
+  for (const entry of targetEntries) {
+    if (!entry.isFile()) continue; // never recurse into / remove directories
+    const name = entry.name;
+    if (EXCLUDE_NAMES.has(name)) continue;
+    const isPy = name.endsWith('.py');
+    const isIcon = name === 'trashbyrd_40x40.png';
+    if (!isPy && !isIcon) continue; // not a file type the mirror manages
+    if (currentNames.has(name)) continue; // still present in source, keep it
+
+    try {
+      unlinkSync(join(targetPythonDir, name));
+      console.log(`[sync-powertools] Pruned stale file: ${name}`);
+      prunedCount += 1;
+    } catch (err) {
+      console.log(`[sync-powertools] Could not prune ${name} (non-fatal): ${err.message}`);
+    }
+  }
+
+  return prunedCount;
+}
+
 function syncGitIfPresent(targetDir, version) {
   const gitDir = join(targetDir, '.git');
   if (!existsSync(gitDir)) {
@@ -133,6 +186,9 @@ function main() {
   const version = readVersion();
   const copiedCount = copyBridgeFiles(targetDir);
   console.log(`[sync-powertools] Copied ${copiedCount} file(s) into ${targetDir}.`);
+
+  const prunedCount = pruneStaleFiles(targetDir);
+  console.log(`[sync-powertools] Pruned ${prunedCount} stale file(s) from ${targetDir}.`);
 
   syncGitIfPresent(targetDir, version);
 }

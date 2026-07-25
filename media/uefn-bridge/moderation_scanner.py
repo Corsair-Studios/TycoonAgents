@@ -2022,8 +2022,8 @@ def show_moderation_scan():
     ).pack(anchor=tk.W)
 
     # --- Analysed report / call-to-action (rebuilt on load and on Refresh) ---
-    report_frame = tk.Frame(root, bg=_BG, padx=16, pady=(4, 8))
-    report_frame.pack(fill=tk.BOTH, expand=False)
+    report_frame = tk.Frame(root, bg=_BG, padx=16)
+    report_frame.pack(fill=tk.BOTH, expand=False, pady=(4, 8))
 
     def _render_report_section():
         for child in report_frame.winfo_children():
@@ -2086,8 +2086,8 @@ def show_moderation_scan():
     _render_report_section()
 
     # --- Action buttons ---
-    actions_frame = tk.Frame(root, bg=_BG, padx=16, pady=(0, 8))
-    actions_frame.pack(fill=tk.X)
+    actions_frame = tk.Frame(root, bg=_BG, padx=16)
+    actions_frame.pack(fill=tk.X, pady=(0, 8))
 
     def _copy_prompt():
         prompt = (
@@ -2119,8 +2119,8 @@ def show_moderation_scan():
     ).pack(side=tk.LEFT, padx=(8, 0))
 
     # --- Compact summary (always shown, counts only — not a dump) ---
-    summary_frame = tk.Frame(root, bg=_BG, padx=16, pady=(0, 4))
-    summary_frame.pack(fill=tk.X)
+    summary_frame = tk.Frame(root, bg=_BG, padx=16)
+    summary_frame.pack(fill=tk.X, pady=(0, 4))
     tk.Label(
         summary_frame, text=_format_compact_summary(result),
         font=("Consolas", 9), fg=_TEXT_FG, bg=_BG, justify=tk.LEFT, anchor=tk.W,
