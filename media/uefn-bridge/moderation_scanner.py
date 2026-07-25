@@ -1196,6 +1196,26 @@ def _classify_unicode_char(ch):
     return None
 
 
+_FIELD_NAME_ARRAY_INDEX_RE = re.compile(r"\[\d+\]$")
+
+
+def _simplify_field_name(key_path):
+    """Collapse a JSON key path like ``"a.b[0].description"`` down to just
+    its last segment (``"description"``) for by-field-name tallying in
+    ``collect_unicode_risks`` — this is the granularity that matches how
+    moderation actually reports a violation (e.g. "the description"), not
+    the full nested key path. Falls back to the original path if it can't
+    be simplified. Never raises."""
+    if not key_path:
+        return key_path
+    try:
+        last = str(key_path).rsplit(".", 1)[-1]
+        last = _FIELD_NAME_ARRAY_INDEX_RE.sub("", last)
+        return last or str(key_path)
+    except Exception:
+        return key_path
+
+
 def collect_unicode_risks(text_metadata, verse_surfaces, asset_surfaces, audio_surfaces):
     """Scan every already-collected TEXT surface — text_metadata field
     values, verse_surfaces string/comment/label text, asset display names,
@@ -1207,18 +1227,42 @@ def collect_unicode_risks(text_metadata, verse_surfaces, asset_surfaces, audio_s
     Rule 1.7 case found ordinary emoji in metadata triggering a flag, with
     removing one emoji simply causing a DIFFERENT one to flag instead.
 
+    A single aggregate count is not actionable on its own — Fortnite's
+    TEXT-METADATA moderation review stage only reads island name/
+    description/etc, not Verse source code, asset names, or audio names,
+    so hits buried in thousands of Verse strings are far lower priority
+    than the handful (if any) sitting in the island description. Callers
+    (see ``_format_compact_summary``) should lead with the metadata
+    breakdown, not the raw total.
+
     Returns:
         {"available": True, "items": [...] (capped at
         _UNICODE_RISK_ITEM_CAP), "total_count": int (uncapped — every hit,
-        even past the cap), "omitted_count": int, "notes": [...]}
+        even past the cap), "omitted_count": int,
+        "by_surface": {surface: {"count": int, "fields": {field_name:
+        int}}}, "notes": [...]}
+
+    ``by_surface`` tallies EVERY hit (never capped by
+    _UNICODE_RISK_ITEM_CAP — it always reconciles with ``total_count``),
+    keyed by the same ``surface`` label used on each item
+    ("text_metadata" | "verse" | "asset_display_name" |
+    "audio_display_name"). Only the "text_metadata" bucket additionally
+    carries a ``"fields"`` sub-tally keyed by simplified field name (e.g.
+    "description", "island_name") — the other surfaces don't have a
+    field-name concept, so they report ``count`` only. This is purely
+    additive: ``items``/``total_count``/``omitted_count`` are unchanged so
+    nothing downstream breaks.
 
     Each item: {"surface": str, "field_or_file": str, "char": str,
     "codepoint": "U+XXXX", "name": str (unicodedata.name, "" if
     unavailable), "kind": str, "context_snippet": str}. Never raises —
     any per-surface failure is skipped, not fatal."""
-    result = {"available": True, "items": [], "total_count": 0, "omitted_count": 0, "notes": []}
+    result = {
+        "available": True, "items": [], "total_count": 0, "omitted_count": 0,
+        "by_surface": {}, "notes": [],
+    }
 
-    def _emit(surface, field_or_file, text):
+    def _emit(surface, field_or_file, text, field_name=None):
         if not text:
             return
         try:
@@ -1231,6 +1275,13 @@ def collect_unicode_risks(text_metadata, verse_surfaces, asset_surfaces, audio_s
                 if not kind:
                     continue
                 result["total_count"] += 1
+
+                bucket = result["by_surface"].setdefault(surface, {"count": 0})
+                bucket["count"] += 1
+                if field_name:
+                    fields_bucket = bucket.setdefault("fields", {})
+                    fields_bucket[field_name] = fields_bucket.get(field_name, 0) + 1
+
                 if len(result["items"]) >= _UNICODE_RISK_ITEM_CAP:
                     continue
                 try:
@@ -1253,7 +1304,11 @@ def collect_unicode_risks(text_metadata, verse_surfaces, asset_surfaces, audio_s
 
     try:
         for f in (text_metadata or {}).get("fields") or []:
-            _emit("text_metadata", f"{f.get('file', '')} :: {f.get('key', '')}", f.get("value", ""))
+            key_path = f.get("key", "")
+            _emit(
+                "text_metadata", f"{f.get('file', '')} :: {key_path}", f.get("value", ""),
+                field_name=_simplify_field_name(key_path),
+            )
     except Exception:
         pass
 
@@ -1880,6 +1935,7 @@ def _format_compact_summary(result):
 
         unicode_risks = result.get("unicode_risks") or {}
         unicode_total = unicode_risks.get("total_count", 0)
+        unicode_by_surface = unicode_risks.get("by_surface") or {}
         redirectors = result.get("redirectors") or {}
         redirectors_n = len(redirectors.get("redirectors") or [])
         external_actor_n = len(result.get("external_actor_assets") or [])
@@ -1919,7 +1975,64 @@ def _format_compact_summary(result):
         lines.append(f"Audio surfaces ({audio.get('source', '?')}): {audio_n}")
         lines.append(f"Asset hashes computed: {hashes_n}")
         lines.append("")
-        lines.append(f"Emoji / decorative-Unicode hits: {unicode_total}  <-- actionable")
+        # BY-SURFACE BREAKDOWN — a single aggregate count buries the handful
+        # of hits that actually matter: Fortnite's TEXT-METADATA moderation
+        # review stage only reads island name/description/etc, never Verse
+        # source, asset names, or audio names, so metadata hits are led
+        # with and flagged highest priority; a large Verse/asset/audio
+        # count is real but lower priority for that specific review stage.
+        _meta_bucket = unicode_by_surface.get("text_metadata") or {}
+        _meta_count = _meta_bucket.get("count", 0)
+        _meta_fields = _meta_bucket.get("fields") or {}
+        _other_buckets = sorted(
+            (
+                (surface, bucket) for surface, bucket in unicode_by_surface.items()
+                if surface != "text_metadata" and bucket.get("count")
+            ),
+            key=lambda kv: -kv[1].get("count", 0),
+        )
+        _other_total = sum(bucket.get("count", 0) for _s, bucket in _other_buckets)
+        _surface_labels = {
+            "verse": "Verse strings/comments/labels",
+            "asset_display_name": "asset display names",
+            "audio_display_name": "audio display names",
+        }
+
+        if _meta_count:
+            _fields_str = ", ".join(
+                f"{name}: {count}"
+                for name, count in sorted(_meta_fields.items(), key=lambda kv: -kv[1])
+            )
+            lines.append(
+                f"Emoji / decorative-Unicode: {_meta_count} in island metadata "
+                f"({_fields_str})  <-- HIGHEST PRIORITY"
+            )
+        elif _other_total:
+            lines.append(
+                f"Emoji / decorative-Unicode: none in island metadata; "
+                f"{_other_total} in other surfaces — lower priority for the "
+                "metadata review stage"
+            )
+        else:
+            lines.append("Emoji / decorative-Unicode: none found.")
+
+        if _other_buckets:
+            _parts = ", ".join(
+                f"{_surface_labels.get(surface, surface)}: {bucket.get('count', 0)}"
+                for surface, bucket in _other_buckets
+            )
+            lines.append(f"  Other surfaces (lower priority): {_parts}")
+
+        if unicode_total != _meta_count + _other_total:
+            # Defensive only — should always reconcile; a mismatch would
+            # mean a surface wasn't tallied into by_surface, a bug in
+            # collect_unicode_risks rather than a formatting choice.
+            lines.append(
+                f"  (unreconciled: total_count={unicode_total}, "
+                f"by_surface sum={_meta_count + _other_total} — see raw "
+                "unicode_risks data)"
+            )
+
         lines.append(f"Redirectors (renamed/deleted content still reachable): {redirectors_n}  <-- actionable")
         lines.append(f"Images with authoring-tool/creator/copyright metadata: {prov_flagged_n}")
 
@@ -2097,7 +2210,7 @@ def show_moderation_scan():
     root = tk.Toplevel(_master) if _master is not None else tk.Tk()
     root.title("Trashbyrd's IP / Moderation Pre-Flight Scan")
     root.geometry("900x700")
-    root.minsize(600, 440)
+    root.minsize(760, 480)
     root.configure(bg=_BG)
 
     header_frame = tk.Frame(root, bg=_BG, padx=16, pady=12)
@@ -2210,12 +2323,28 @@ def show_moderation_scan():
     ).pack(side=tk.LEFT, padx=(8, 0))
 
     # --- Compact summary (always shown, counts only — not a dump) ---
+    # BUG FIX: this used to be a plain tk.Label with no wraplength. A Label
+    # never wraps or scrolls on its own — a line longer than the window's
+    # current width is simply CLIPPED at the window edge with no
+    # indication anything was cut off. The NOTES lines (the honest
+    # caveats about caps/scope, e.g. "...omitted from the shared_game_mou")
+    # are exactly the long prose lines that got clipped, hiding the
+    # caveats they exist to surface. A ScrolledText with wrap=tk.WORD
+    # wraps every line instead — nothing is silently cut off — and its own
+    # scrollbar keeps the section from forcing the window to grow
+    # unbounded when there are many notes.
     summary_frame = tk.Frame(root, bg=_BG, padx=16)
     summary_frame.pack(fill=tk.X, pady=(0, 4))
-    tk.Label(
-        summary_frame, text=_format_compact_summary(result),
-        font=("Consolas", 9), fg=_TEXT_FG, bg=_BG, justify=tk.LEFT, anchor=tk.W,
-    ).pack(anchor=tk.W, fill=tk.X)
+    _summary_text = _format_compact_summary(result)
+    _summary_height = max(6, min(_summary_text.count("\n") + 1, 18))
+    summary_widget = scrolledtext.ScrolledText(
+        summary_frame, wrap=tk.WORD, bg=_BG, fg=_TEXT_FG,
+        insertbackground=_TEXT_FG, relief="flat", font=("Consolas", 9),
+        height=_summary_height, borderwidth=0, highlightthickness=0,
+    )
+    summary_widget.pack(fill=tk.BOTH, expand=True)
+    summary_widget.insert("1.0", _summary_text)
+    summary_widget.configure(state=tk.DISABLED)
 
     # --- Raw surfaces, collapsed by default ---
     raw_container = tk.Frame(root, bg=_BG, padx=16, pady=4)
