@@ -4634,10 +4634,12 @@
   })();
 
   // Evaluated ONCE at startup and cached (never per-frame): whether the OS
-  // reports a reduced-motion preference. Used exclusively by the disco-party
-  // easter egg (see updateDiscoParty / drawDiscoOverlay) to suppress the
-  // moving-lights overlay and the rare random trigger — a real photosensitivity
-  // safety gate, not a style preference.
+  // reports a reduced-motion preference. Used by the disco-party AND conga
+  // easter eggs' shared lighting/ball layer (see drawDiscoOverlay /
+  // drawDiscoBall, gated on partyVisualIntensity) to suppress the moving
+  // lights and ball for either party type, and by the disco party's own
+  // rare random trigger (updateDiscoParty) — a real photosensitivity safety
+  // gate, not a style preference.
   const prefersReducedMotion = (() => {
     try {
       return typeof window.matchMedia === "function" &&
@@ -5460,7 +5462,7 @@
   /** Chance per eligibility check that a conga starts (~once per ~10h). */
   const CONGA_CHANCE = 0.0015;
   /** How long (seconds) a conga run lasts. */
-  const CONGA_SECONDS = 25;
+  const CONGA_SECONDS = 27;
   /** Cooldown (seconds) after a conga ends before another may start. */
   const CONGA_COOLDOWN_SECONDS = 3600;
   /** Latest per-frame agent list, exposed so debug hotkeys can act off-loop. */
@@ -5487,18 +5489,28 @@
   let discoPartyActive = false;
   /** Seconds remaining in the current party. */
   let discoPartyTimeLeft = 0;
-  /** Wall-clock ms the current party started — drives the light animation phase. */
-  let discoPartyStartMs = 0;
-  /** Eased 0..1 lighting intensity (ease in/out ~DISCO_EASE_SECONDS; snapped
-   *  straight to 0 on the rival-cancel path — see cancelDiscoParty). Read by
-   *  drawDiscoOverlay each frame; a single cheap comparison when 0. */
-  let discoPartyIntensity = 0;
+  /** Wall-clock ms the CURRENT party (conga OR disco) started — drives the
+   *  shared lighting/ball animation phase (orbit angle, hue drift, ball spin
+   *  frame, ball drop-in position). Set by whichever party's start function
+   *  runs (startConga/startDiscoParty). */
+  let partyVisualStartMs = 0;
+  /** Eased 0..1 SHARED lighting/ball intensity, fed by whichever party type
+   *  is currently active (conga or disco — see updateConga/updateDiscoParty,
+   *  each of which writes this using the same ease-in/hold/ease-out formula).
+   *  Ease in/out ~DISCO_EASE_SECONDS on a natural start/end; snapped straight
+   *  to 0 on EITHER party's rival-cancel path (endConga/cancelDiscoParty).
+   *  Read by drawDiscoOverlay/drawDiscoBall each frame; a single cheap
+   *  comparison when 0. This is the LIGHTING layer only — character-animation
+   *  ownership (congaIndex/inConga vs dancing/danceTimeLeft) stays fully
+   *  separate per party type; see the mutual-exclusion checks in
+   *  updateConga/updateDiscoParty. */
+  let partyVisualIntensity = 0;
   /** Accumulator (seconds) toward the next rare-trigger eligibility check. */
   let discoCheckTimer = 0;
   /** Cooldown (seconds) remaining before another party may start. */
   let discoCooldown = 0;
-  /** Party duration (product spec: "about five seconds"). */
-  const DISCO_PARTY_SECONDS = 5;
+  /** Party duration (product spec: "about five seconds", +2s per follow-up ask). */
+  const DISCO_PARTY_SECONDS = 7;
   /** Ease-in/ease-out window for the lighting overlay (not used on the
    *  rival-cancel path, which snaps off immediately — see cancelDiscoParty). */
   const DISCO_EASE_SECONDS = 0.4;
@@ -5518,7 +5530,7 @@
   // Ships with the extension (media/sprites/disco_ball.png) rather than being
   // generated per-theme, so it lives outside themeImages/OBJECT_CLIPS. Its
   // drop-in/rest/retract/snap-away position is derived PURELY from
-  // discoPartyIntensity (declared above) — no separate ball-lifecycle state —
+  // partyVisualIntensity (declared above) — no separate ball-lifecycle state —
   // so it automatically inherits every existing rule for free: eased in/out
   // on the normal start/end path, and an instant snap on cancelDiscoParty's
   // rival-arrival path, without this file touching that reviewed function at
@@ -5550,9 +5562,12 @@
   const DISCO_BUBBLE_STAGGER_SEC = 0.12;
   /** Small per-agent jitter added on top of the stagger step. */
   const DISCO_BUBBLE_STAGGER_JITTER_SEC = 0.08;
-  /** Cap on the roster-order stagger so a large roster's bubbles don't spill
-   *  past the party's own DISCO_EASE_SECONDS drop-in window. */
-  const DISCO_BUBBLE_STAGGER_MAX_SEC = 1.2;
+  /** Cap on the roster-order stagger so a large roster's bubbles still all
+   *  fire early in the party rather than trailing into it. Scaled
+   *  proportionally to DISCO_PARTY_SECONDS (was 1.2s for a 5s party; now
+   *  1.2 * 7/5 for the 7s party) so the fraction of the party spent
+   *  popping bubbles stays the same as before. */
+  const DISCO_BUBBLE_STAGGER_MAX_SEC = 1.68;
 
   /**
    * Currently alive enemies. Each: {instance_id, rival_id, nx, ny, hp, maxHp,
@@ -12557,6 +12572,24 @@
   }
 
   /**
+   * Shared ease-in/hold/ease-out formula for the party visual layer
+   * (partyVisualIntensity), fed by whichever party type is currently active
+   * — updateConga and updateDiscoParty each call this against their own
+   * timeLeft/totalSeconds pair instead of keeping independent copies of the
+   * formula, so a future tuning change (e.g. DISCO_EASE_SECONDS) can never
+   * silently apply to only one party type. Pure function, no side effects.
+   * @param {number} timeLeft seconds remaining in the current party
+   * @param {number} totalSeconds the party's full duration
+   * @returns {number} clamped 0..1 eased intensity
+   */
+  function partyEaseIntensity(timeLeft, totalSeconds) {
+    const elapsed = totalSeconds - timeLeft;
+    const inT = Math.min(1, elapsed / DISCO_EASE_SECONDS);
+    const outT = Math.min(1, timeLeft / DISCO_EASE_SECONDS);
+    return Math.max(0, Math.min(inT, outT));
+  }
+
+  /**
    * Advance the ultra-rare conga-line easter egg. Called once per frame.
    * When idle, rolls a tiny chance each CONGA_CHECK_SECONDS to start a line;
    * while active, snakes agents around the perimeter and ends after
@@ -12581,6 +12614,16 @@
         return;
       }
       congaTimeLeft -= delta;
+      // Shared lighting/ball intensity — same partyEaseIntensity helper
+      // updateDiscoParty uses for discoPartyTimeLeft, applied here against
+      // congaTimeLeft/CONGA_SECONDS instead. Derived from congaTimeLeft
+      // (already ticking down by delta above) rather than a new timer, so
+      // there's nothing new to drift out of sync. On natural end this has
+      // already eased to ~0 by the time congaTimeLeft<=0 below fires
+      // endConga(); the rival-cancel branch above skips straight to
+      // endConga() before this ever runs, so it snaps instead of easing —
+      // see endConga's explicit zero-set.
+      partyVisualIntensity = partyEaseIntensity(congaTimeLeft, CONGA_SECONDS);
       // Synchronized stop-and-cheer: every CONGA_CHEER_INTERVAL seconds the whole
       // line pauses together and holds the cheer pose for CONGA_CHEER_HOLD seconds.
       congaCheerTimer -= delta;
@@ -12621,6 +12664,13 @@
     congaCheerTimer = 0;
     congaCheerHold = 0;
     congaCooldown = CONGA_COOLDOWN_SECONDS;
+    // Snap the shared lighting/ball intensity to 0. On a natural end this is
+    // redundant (the ease math above already drove it to ~0 by the time
+    // congaTimeLeft<=0), but on the rival-cancel path (called BEFORE any
+    // ease math runs this frame — see the activeEnemies branch above) this
+    // is the actual instant snap-off, matching cancelDiscoParty's rule that
+    // the abruptness on a rival arrival is the point.
+    partyVisualIntensity = 0;
     for (const id of Object.keys(agentCharMap)) {
       const e = agentCharMap[id];
       if (!e) continue;
@@ -12663,6 +12713,11 @@
     congaTimeLeft = CONGA_SECONDS;
     congaCheerTimer = CONGA_CHEER_INTERVAL;
     congaCheerHold = 0;
+    // Shared lighting/ball state (see partyVisualIntensity's declaration) —
+    // same start pattern startDiscoParty uses, so drawDiscoOverlay/
+    // drawDiscoBall pick up the conga for free with no code changes there.
+    partyVisualStartMs = nowMs();
+    partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateConga
     return true;
   }
 
@@ -12717,17 +12772,19 @@
    * — not even from the manual D-key trigger (chosen behavior; the D key
    * still triggers the dancing for those users, just not this overlay — see
    * the keydown handler's comment). This is deliberately unconditional on
-   * discoPartyIntensity so it can never be bypassed by a future call site.
+   * partyVisualIntensity so it can never be bypassed by a future call site.
+   * Shared between the disco party AND the conga line — whichever is active
+   * feeds this same value (see updateConga/updateDiscoParty).
    * @param {number} w canvas width
    * @param {number} h canvas height
    */
   function drawDiscoOverlay(w, h) {
-    if (discoPartyIntensity <= 0 || prefersReducedMotion) return;
+    if (partyVisualIntensity <= 0 || prefersReducedMotion) return;
     ensureDiscoGradients();
-    const t = (nowMs() - discoPartyStartMs) / 1000;
+    const t = (nowMs() - partyVisualStartMs) / 1000;
     ctx.save();
     ctx.globalCompositeOperation = "overlay";
-    ctx.globalAlpha = discoPartyIntensity * DISCO_LIGHT_MAX_ALPHA;
+    ctx.globalAlpha = partyVisualIntensity * DISCO_LIGHT_MAX_ALPHA;
     // Light 1: slow orbit.
     ctx.save();
     ctx.translate(
@@ -12752,7 +12809,7 @@
     const hue = (t * DISCO_HUE_SPEED) % 360;
     const washPulse = 0.5 + 0.5 * Math.sin(t * DISCO_WASH_PULSE_HZ * Math.PI * 2);
     ctx.globalCompositeOperation = "soft-light";
-    ctx.globalAlpha = discoPartyIntensity * (DISCO_WASH_ALPHA_BASE + washPulse * DISCO_WASH_ALPHA_RANGE);
+    ctx.globalAlpha = partyVisualIntensity * (DISCO_WASH_ALPHA_BASE + washPulse * DISCO_WASH_ALPHA_RANGE);
     ctx.fillStyle = `hsl(${hue}, 70%, 55%)`;
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
@@ -12771,18 +12828,21 @@
    * on party start, holds near the top-centre of the stage while spinning
    * (frame-cycled, not a canvas rotation), and leaves the same way it
    * arrived. Deliberately has NO party-lifecycle state of its own — position
-   * and alpha are both derived purely from discoPartyIntensity (declared
-   * with the rest of the disco-party state above), so it automatically
-   * matches every existing rule for free:
+   * and alpha are both derived purely from partyVisualIntensity (declared
+   * with the rest of the disco-party state above, but shared with the conga
+   * line — see updateConga), so it automatically matches every existing rule
+   * for free, for EITHER party type:
    *   - normal start/end: intensity eases over DISCO_EASE_SECONDS via
-   *     updateDiscoParty → the ball eases in/out in lock-step with the lights.
-   *   - rival-cancel: cancelDiscoParty snaps discoPartyIntensity straight to
-   *     0 (no ease) → the ball vanishes on the same frame, matching "the
-   *     abruptness is the point". Neither this function nor its caller
-   *     touches cancelDiscoParty/endDiscoParty/startDiscoParty's reviewed
-   *     lifecycle logic.
+   *     updateDiscoParty/updateConga → the ball eases in/out in lock-step
+   *     with the lights.
+   *   - rival-cancel: cancelDiscoParty/endConga snap partyVisualIntensity
+   *     straight to 0 (no ease) → the ball vanishes on the same frame,
+   *     matching "the abruptness is the point". Neither this function nor
+   *     its caller touches cancelDiscoParty/endDiscoParty/startDiscoParty/
+   *     endConga/startConga's reviewed lifecycle logic.
    * Guarded like drawDiscoOverlay: a single cheap comparison when inactive,
-   * and reduced-motion users get no ball at all (same as the lighting pass).
+   * and reduced-motion users get no ball at all (same as the lighting pass),
+   * for either party type.
    * Sprite-load failure degrades to a silent no-op — the party itself never
    * depends on this sprite.
    * @param {number} w canvas width @param {number} h canvas height
@@ -12791,20 +12851,20 @@
    *   the ball is positioned relative to this, never hardcoded pixels.
    */
   function drawDiscoBall(w, h, bgX, bgY, bgW, bgH) {
-    if (discoPartyIntensity <= 0 || prefersReducedMotion) return;
+    if (partyVisualIntensity <= 0 || prefersReducedMotion) return;
     if (!discoBallFrames || !discoBallFrames.length) return; // never loaded / failed — degrade silently
-    const fi = Math.floor(((nowMs() - discoPartyStartMs) / 1000) * DISCO_BALL_CLIP.fps) % DISCO_BALL_CLIP.frames.length;
+    const fi = Math.floor(((nowMs() - partyVisualStartMs) / 1000) * DISCO_BALL_CLIP.fps) % DISCO_BALL_CLIP.frames.length;
     const frame = discoBallFrames[DISCO_BALL_CLIP.frames[fi]];
     if (!frame || !frame.complete || frame.naturalWidth === 0) return;
     const size = bgW * DISCO_BALL_SIZE_FRAC;
     if (!(size > 0)) return;
     const restCy = bgY + bgH * DISCO_BALL_REST_Y_FRAC;
     const startCy = bgY - size; // fully above the background's top edge
-    const eased = easeOutCubic(Math.max(0, Math.min(1, discoPartyIntensity)));
+    const eased = easeOutCubic(Math.max(0, Math.min(1, partyVisualIntensity)));
     const cy = startCy + (restCy - startCy) * eased;
     const cx = bgX + bgW * 0.5;
     ctx.save();
-    ctx.globalAlpha = Math.max(0, Math.min(1, discoPartyIntensity));
+    ctx.globalAlpha = Math.max(0, Math.min(1, partyVisualIntensity));
     ctx.drawImage(frame, cx - size / 2, cy - size / 2, size, size);
     ctx.restore();
   }
@@ -12823,8 +12883,8 @@
   function startDiscoParty() {
     discoPartyActive = true;
     discoPartyTimeLeft = DISCO_PARTY_SECONDS;
-    discoPartyStartMs = nowMs();
-    discoPartyIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateDiscoParty
+    partyVisualStartMs = nowMs();
+    partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateDiscoParty
     // Slight per-character stagger for the music bubble (product ask: "show
     // the music emoji over their heads for a moment before they start
     // dancing... just like the conga line"), so the whole roster doesn't pop
@@ -12856,7 +12916,7 @@
   function endDiscoParty() {
     discoPartyActive = false;
     discoPartyTimeLeft = 0;
-    discoPartyIntensity = 0;
+    partyVisualIntensity = 0;
     discoCooldown = DISCO_COOLDOWN_SECONDS;
   }
 
@@ -12874,7 +12934,7 @@
   function cancelDiscoParty() {
     discoPartyActive = false;
     discoPartyTimeLeft = 0;
-    discoPartyIntensity = 0; // snap off, no ease-out
+    partyVisualIntensity = 0; // snap off, no ease-out
     discoCooldown = DISCO_COOLDOWN_SECONDS;
     for (const id of Object.keys(agentCharMap)) {
       const e = agentCharMap[id];
@@ -12944,11 +13004,9 @@
       }
       discoPartyTimeLeft -= delta;
       // Ease in over DISCO_EASE_SECONDS, hold, ease out over the same window
-      // as the party naturally winds down (min of the two ramps).
-      const elapsed = DISCO_PARTY_SECONDS - discoPartyTimeLeft;
-      const inT = Math.min(1, elapsed / DISCO_EASE_SECONDS);
-      const outT = Math.min(1, discoPartyTimeLeft / DISCO_EASE_SECONDS);
-      discoPartyIntensity = Math.max(0, Math.min(inT, outT));
+      // as the party naturally winds down (min of the two ramps) — shared
+      // with updateConga via partyEaseIntensity.
+      partyVisualIntensity = partyEaseIntensity(discoPartyTimeLeft, DISCO_PARTY_SECONDS);
       if (discoPartyTimeLeft <= 0) endDiscoParty();
       return;
     }
