@@ -5514,6 +5514,46 @@
    *  the 'c' conga hotkey precedent — see the keydown handler). */
   const DISCO_COOLDOWN_SECONDS = 180;
 
+  // ── Disco-ball sprite (bundled, theme-independent) ────────────────────────
+  // Ships with the extension (media/sprites/disco_ball.png) rather than being
+  // generated per-theme, so it lives outside themeImages/OBJECT_CLIPS. Its
+  // drop-in/rest/retract/snap-away position is derived PURELY from
+  // discoPartyIntensity (declared above) — no separate ball-lifecycle state —
+  // so it automatically inherits every existing rule for free: eased in/out
+  // on the normal start/end path, and an instant snap on cancelDiscoParty's
+  // rival-arrival path, without this file touching that reviewed function at
+  // all. See loadDiscoBallSprite/drawDiscoBall further down.
+  /** 4 keyed+sliced frames (see loadDiscoBallSprite), or null until loaded /
+   *  if loading ever fails — drawDiscoBall no-ops in that case; the party
+   *  (lights + dancing) never depends on this sprite existing.
+   *  @type {HTMLImageElement[] | null} */
+  let discoBallFrames = null;
+  /** Guards loadDiscoBallSprite so it only ever runs once. */
+  let discoBallLoadAttempted = false;
+  /** Spin-cycle clip for the ball sprite — same {frames,fps,loop} shape as
+   *  OBJECT_CLIPS (~4681), driven the same way drawObjectSmoke drives
+   *  OBJECT_CLIPS.poof: frame index = floor(elapsed*fps) mod frame count. A
+   *  slow continuous rotation, not a fast effect. */
+  const DISCO_BALL_CLIP = { frames: [0, 1, 2, 3], fps: 4, loop: true };
+  /** Ball diameter as a fraction of the drawn background width. */
+  const DISCO_BALL_SIZE_FRAC = 0.09;
+  /** Resting center-y as a fraction of background height — near the top. */
+  const DISCO_BALL_REST_Y_FRAC = 0.14;
+
+  // ── Disco-party music bubble (mirrors the conga line's, at CONGA's
+  // showExpression(e, 5, 1.8) call site — index 5 = "Music" in
+  // THEME_PLAN_FIXED_EXPRESSION_LABELS) ──────────────────────────────────
+  /** Same bubble duration the conga line uses, for visual consistency. */
+  const DISCO_BUBBLE_DURATION_SEC = 1.8;
+  /** Per-agent stagger step (roster order) so bubbles pop in a subtle wave
+   *  rather than all at once. */
+  const DISCO_BUBBLE_STAGGER_SEC = 0.12;
+  /** Small per-agent jitter added on top of the stagger step. */
+  const DISCO_BUBBLE_STAGGER_JITTER_SEC = 0.08;
+  /** Cap on the roster-order stagger so a large roster's bubbles don't spill
+   *  past the party's own DISCO_EASE_SECONDS drop-in window. */
+  const DISCO_BUBBLE_STAGGER_MAX_SEC = 1.2;
+
   /**
    * Currently alive enemies. Each: {instance_id, rival_id, nx, ny, hp, maxHp,
    * facingLeft, animState, targetAgentId}.
@@ -7785,6 +7825,68 @@
     raw.onerror = () => { stored.src = src; }; // fall back to the raw frame
     raw.src = src;
     return stored;
+  }
+
+  /**
+   * Load the bundled disco-ball sheet (media/sprites/disco_ball.png, a 2x2
+   * grid of 4 frames on a magenta chroma-key background — top-left,
+   * top-right, bottom-left, bottom-right) and produce 4 cached, keyed,
+   * de-fringed Image frames in discoBallFrames.
+   *
+   * Reuses defringeImageToDataURL AS-IS (same magenta-kill/edge-flood
+   * algorithm loadDefringedFrame uses for theme sprites) by running it over
+   * the WHOLE 256x256 sheet first — the chroma background between the 4
+   * quadrants gets killed in that single pass too, so slicing the already-
+   * cleaned sheet into 4 sub-canvases afterward needs no separate keying
+   * logic. Runs once (discoBallLoadAttempted guards re-entry); on ANY
+   * failure discoBallFrames stays null and drawDiscoBall silently no-ops —
+   * the party (lights + dancing) must never depend on this sprite.
+   */
+  function loadDiscoBallSprite() {
+    if (discoBallLoadAttempted) return;
+    discoBallLoadAttempted = true;
+    const uri = appEl && appEl.dataset ? appEl.dataset.discoBallUri : null;
+    if (!uri) return; // older host build without the injected URI — degrade silently
+    try {
+      const raw = new Image();
+      raw.onload = () => {
+        try {
+          const cleanedUrl = defringeImageToDataURL(raw);
+          const sheet = new Image();
+          sheet.onload = () => {
+            try {
+              const sw = sheet.naturalWidth, sh = sheet.naturalHeight;
+              if (!sw || !sh) return; // discoBallFrames stays null
+              const halfW = sw / 2, halfH = sh / 2;
+              const rects = [[0, 0], [halfW, 0], [0, halfH], [halfW, halfH]]; // TL,TR,BL,BR
+              const frames = [];
+              for (const [sx, sy] of rects) {
+                const cvs = document.createElement("canvas");
+                cvs.width = halfW;
+                cvs.height = halfH;
+                const cctx = cvs.getContext("2d");
+                if (!cctx) return; // discoBallFrames stays null — bail on any quadrant failure
+                cctx.drawImage(sheet, sx, sy, halfW, halfH, 0, 0, halfW, halfH);
+                const frameImg = new Image();
+                frameImg.src = cvs.toDataURL("image/png");
+                frames.push(frameImg);
+              }
+              discoBallFrames = frames;
+            } catch (_err) {
+              // discoBallFrames stays null
+            }
+          };
+          sheet.onerror = () => { /* discoBallFrames stays null */ };
+          sheet.src = cleanedUrl || raw.src;
+        } catch (_err) {
+          // discoBallFrames stays null
+        }
+      };
+      raw.onerror = () => { /* discoBallFrames stays null */ };
+      raw.src = uri;
+    } catch (_err) {
+      // discoBallFrames stays null — never let sprite loading throw at boot
+    }
   }
 
   /**
@@ -12548,7 +12650,11 @@
       const e = agentCharMap[id];
       if (!e) continue;
       e.congaIndex = order++;
-      showExpression(e, 5, 1.8); // music bubble, coincides with conga start
+      // force=true: a rare, deliberate whole-cast celebration (like the
+      // disco party) — must not be silently skipped just because this agent
+      // bubbled recently for an unrelated ambient reason, and must not block
+      // a re-press a few seconds later either (see showExpression's force doc).
+      showExpression(e, 5, 1.8, true); // music bubble, coincides with conga start
       e.dancing = false;
       e.danceTimeLeft = 0;
       freeAgentSeat(e);
@@ -12652,6 +12758,57 @@
     ctx.restore();
   }
 
+  /** Monotonic ease-out (no overshoot) — used for the disco ball's
+   *  drop-in/retract position so the reverse of "drop in" (party ending)
+   *  reads as a graceful rise-and-fade rather than a bounce-glitch.
+   *  @param {number} x 0..1 @returns {number} 0..1 */
+  function easeOutCubic(x) {
+    return 1 - Math.pow(1 - x, 3);
+  }
+
+  /**
+   * Draw the bundled disco-ball sprite: drops in from above the background
+   * on party start, holds near the top-centre of the stage while spinning
+   * (frame-cycled, not a canvas rotation), and leaves the same way it
+   * arrived. Deliberately has NO party-lifecycle state of its own — position
+   * and alpha are both derived purely from discoPartyIntensity (declared
+   * with the rest of the disco-party state above), so it automatically
+   * matches every existing rule for free:
+   *   - normal start/end: intensity eases over DISCO_EASE_SECONDS via
+   *     updateDiscoParty → the ball eases in/out in lock-step with the lights.
+   *   - rival-cancel: cancelDiscoParty snaps discoPartyIntensity straight to
+   *     0 (no ease) → the ball vanishes on the same frame, matching "the
+   *     abruptness is the point". Neither this function nor its caller
+   *     touches cancelDiscoParty/endDiscoParty/startDiscoParty's reviewed
+   *     lifecycle logic.
+   * Guarded like drawDiscoOverlay: a single cheap comparison when inactive,
+   * and reduced-motion users get no ball at all (same as the lighting pass).
+   * Sprite-load failure degrades to a silent no-op — the party itself never
+   * depends on this sprite.
+   * @param {number} w canvas width @param {number} h canvas height
+   * @param {number} bgX @param {number} bgY @param {number} bgW @param {number} bgH
+   *   drawn background rect (see the bgW/bgH block above the entity loop) —
+   *   the ball is positioned relative to this, never hardcoded pixels.
+   */
+  function drawDiscoBall(w, h, bgX, bgY, bgW, bgH) {
+    if (discoPartyIntensity <= 0 || prefersReducedMotion) return;
+    if (!discoBallFrames || !discoBallFrames.length) return; // never loaded / failed — degrade silently
+    const fi = Math.floor(((nowMs() - discoPartyStartMs) / 1000) * DISCO_BALL_CLIP.fps) % DISCO_BALL_CLIP.frames.length;
+    const frame = discoBallFrames[DISCO_BALL_CLIP.frames[fi]];
+    if (!frame || !frame.complete || frame.naturalWidth === 0) return;
+    const size = bgW * DISCO_BALL_SIZE_FRAC;
+    if (!(size > 0)) return;
+    const restCy = bgY + bgH * DISCO_BALL_REST_Y_FRAC;
+    const startCy = bgY - size; // fully above the background's top edge
+    const eased = easeOutCubic(Math.max(0, Math.min(1, discoPartyIntensity)));
+    const cy = startCy + (restCy - startCy) * eased;
+    const cx = bgX + bgW * 0.5;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, discoPartyIntensity));
+    ctx.drawImage(frame, cx - size / 2, cy - size / 2, size, size);
+    ctx.restore();
+  }
+
   /**
    * Start a disco party: every agentCharMap entry gets set dancing for
    * DISCO_PARTY_SECONDS via the EXISTING dance mechanism
@@ -12668,6 +12825,12 @@
     discoPartyTimeLeft = DISCO_PARTY_SECONDS;
     discoPartyStartMs = nowMs();
     discoPartyIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateDiscoParty
+    // Slight per-character stagger for the music bubble (product ask: "show
+    // the music emoji over their heads for a moment before they start
+    // dancing... just like the conga line"), so the whole roster doesn't pop
+    // the bubble on the exact same frame. Seeded here, consumed frame-by-frame
+    // by updateDiscoParty's active branch below.
+    let bubbleIdx = 0;
     for (const id of Object.keys(agentCharMap)) {
       const e = agentCharMap[id];
       if (!e) continue;
@@ -12676,6 +12839,9 @@
       e.danceTimeLeft = DISCO_PARTY_SECONDS;
       e.danceFrameTimer = 0;
       e.lastDanceIdx = -1;
+      e.discoBubbleDelay = Math.min(bubbleIdx * DISCO_BUBBLE_STAGGER_SEC, DISCO_BUBBLE_STAGGER_MAX_SEC) + Math.random() * DISCO_BUBBLE_STAGGER_JITTER_SEC;
+      e.discoBubbleFired = false;
+      bubbleIdx++;
     }
     return true;
   }
@@ -12753,6 +12919,29 @@
         cancelDiscoParty();
         return;
       }
+      // Staggered music bubble (see startDiscoParty's discoBubbleDelay seed).
+      // force=true: a rare, deliberate whole-cast celebration, same class of
+      // event as the conga line — the D-key can retrigger a party within
+      // seconds, and BUBBLE_COOLDOWN_SEC (60s, meant for ambient chatter
+      // spam) would otherwise silently swallow the bubble on the very next
+      // press. Bypasses the cooldown GATE only — does not set/reset it
+      // either (see showExpression's force doc), so this never suppresses a
+      // later legitimate ambient bubble.
+      for (const a of agentList) {
+        const e = agentCharMap[a.id];
+        if (!e || e.discoBubbleFired) continue;
+        // A mid-party joiner gets a fresh agentCharMap entry (default
+        // discoBubbleDelay: 0) but was never swept into e.dancing by
+        // startDiscoParty (that only ran once, at party start) — without
+        // this guard it would immediately pop a "music" bubble while
+        // standing still. The bubble is strictly a signal that THIS
+        // character is dancing, so require e.dancing here too; a joiner
+        // just waits out the rest of the party undancing and unbubbled.
+        if (!e.dancing) continue;
+        if ((e.discoBubbleDelay || 0) > 0) { e.discoBubbleDelay -= delta; continue; }
+        e.discoBubbleFired = true;
+        showExpression(e, 5, DISCO_BUBBLE_DURATION_SEC, true); // music bubble, coincides with disco-party start
+      }
       discoPartyTimeLeft -= delta;
       // Ease in over DISCO_EASE_SECONDS, hold, ease out over the same window
       // as the party naturally winds down (min of the two ramps).
@@ -12821,20 +13010,31 @@
    * @param {number} index 0..7 into the theme's expression atlas (0=love,
    *   1=idea, 2=anger, 3=team, 4=thumbs-up, 5=music, 6=sleep, 7=dazed/hit)
    * @param {number} durationSec how long (seconds) the bubble stays visible
+   * @param {boolean} [force=false] bypass BUBBLE_COOLDOWN_SEC. Reserved for
+   *   rare, deliberate, whole-cast celebrations (disco party / conga line) —
+   *   NOT for ambient ("ambient chatter") ones, which must keep their spam
+   *   protection. Every other call site omits this and is unaffected. A
+   *   forced bubble deliberately does NOT (re)start the cooldown either —
+   *   see the comment above the cooldown write below.
    */
-  function showExpression(entry, index, durationSec) {
+  function showExpression(entry, index, durationSec, force) {
     if (!entry || index < 0 || index > 7) return;
     // Non-interruptible: while this entry's persistent lead "team active"
     // bubble is showing (see drawTeamBubble), no other expression may
     // preempt it. The team-completion thumbs-up (index 4) is called AFTER
     // teamActive is cleared, so it is unaffected by this guard.
     if (entry.teamActive) return;
-    if ((entry.bubbleCooldown || 0) > 0) return; // shared per-agent rate limit
+    if (!force && (entry.bubbleCooldown || 0) > 0) return; // shared per-agent rate limit
     const frames = themeImages && themeImages["expression_" + index];
     if (!frames || !frames[0]) return; // theme has no expression atlas -> no bubble
     entry.bubbleExpr = index;
     entry.bubbleTimeLeft = durationSec;
-    entry.bubbleCooldown = BUBBLE_COOLDOWN_SEC;
+    // Non-forced (ambient) bubbles start the shared cooldown as before. A
+    // forced (party) bubble deliberately leaves bubbleCooldown untouched —
+    // it must not suppress a legitimate ambient bubble later, and repeatedly
+    // re-triggering the party (e.g. the D-key) must not be blocked by an
+    // earlier party's own forced bubble either.
+    if (!force) entry.bubbleCooldown = BUBBLE_COOLDOWN_SEC;
   }
 
   /**
@@ -13974,6 +14174,10 @@
           prevInTeam: false,
           // Conga-line state (assigned/cleared by updateConga).
           congaIndex: -1,
+          // Disco-party music-bubble stagger (seeded by startDiscoParty,
+          // consumed/fired by updateDiscoParty — see DISCO_BUBBLE_* above).
+          discoBubbleDelay: 0,
+          discoBubbleFired: false,
           // Sitting state (idle festivity, mirrors solo-dance system).
           sitting: false,
           sitSeatId: null,
@@ -15485,10 +15689,12 @@
       }
     }
 
-    // ── Disco party lighting overlay ──────────────────────────────────────
-    // Painted over everything drawn so far this frame (background, objects,
-    // decor, characters, enemies, projectiles) and BEFORE drawHUD, so the HUD
-    // text stays crisp. Single cheap comparison when no party is running.
+    // ── Disco ball + lighting overlay ───────────────────────────────────
+    // Ball drawn FIRST so the lighting wash composites over it too (same
+    // "everything drawn so far this frame" region as the lights), then the
+    // lighting overlay itself — both BEFORE drawHUD so the HUD text stays
+    // crisp. Single cheap comparison each when no party is running.
+    drawDiscoBall(w, h, bgX, bgY, bgW, bgH);
     drawDiscoOverlay(w, h);
 
     // (Nav-polygon debug overlay removed — the Stage Editor now shows/edits
@@ -15621,6 +15827,11 @@
 
     requestAnimationFrame(render);
   }
+
+  // Kick off the bundled disco-ball sprite load once at boot — independent
+  // of theme loading (this asset ships with the extension, not per-theme),
+  // async and non-blocking; drawDiscoBall degrades silently until it settles.
+  loadDiscoBallSprite();
 
   requestAnimationFrame(render);
 })();

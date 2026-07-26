@@ -6650,6 +6650,14 @@ export class TycoonPanel {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._extensionUri, "media", "main.js")
     );
+    // Bundled (theme-independent) disco-ball sprite for the disco-party
+    // easter egg — ships with the extension under media/sprites/, unlike
+    // theme art which is generated per-theme into globalStorage. Injected as
+    // a data attribute on #app (below) rather than a postMessage round-trip,
+    // matching how styleUri/scriptUri are plain HTML-injected URIs.
+    const discoBallUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, "media", "sprites", "disco_ball.png")
+    );
 
     const csp = [
       `default-src 'none'`,
@@ -6692,7 +6700,7 @@ export class TycoonPanel {
   <canvas id="stage"></canvas>
 
   <!-- App shell: stage on top, resize handle, metrics panel on bottom -->
-  <div id="app">
+  <div id="app" data-disco-ball-uri="${discoBallUri}">
 
     <!-- Stage area: placeholder for future characters / background -->
     <div id="stage-area">
