@@ -137,6 +137,41 @@ def _read_json(filepath):
         return None
 
 
+def _write_json_checked(filepath, data):
+    """Write *data* as JSON to *filepath* atomically, and VERIFY it landed.
+
+    Unlike ``_write_json`` (used for best-effort IPC responses/heartbeats,
+    where swallow-and-continue is the deliberate behaviour), this helper is
+    for callers where a swallowed failure that still reports success would
+    be worse than raising — e.g. the moderation report save path, which has
+    silently "succeeded" while writing nothing at least once before.
+
+    Returns ``(True, None)`` only after the file has been re-read back as
+    valid JSON. Returns ``(False, "<error>")`` on any failure. Never raises.
+    """
+    tmp_path = filepath + ".tmp"
+    try:
+        dirpath = os.path.dirname(filepath)
+        if dirpath:
+            os.makedirs(dirpath, exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, filepath)
+    except Exception as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return False, "{}: {}".format(type(e).__name__, e)
+
+    if not os.path.exists(filepath):
+        return False, "write reported success but file does not exist afterward"
+    verify = _read_json(filepath)
+    if verify is None:
+        return False, "write reported success but file did not re-read as valid JSON"
+    return True, None
+
+
 # ---------------------------------------------------------------------------
 # Heartbeat
 # ---------------------------------------------------------------------------
@@ -577,11 +612,19 @@ def _coerce_severity_counts(raw):
 def _handle_moderation_report_save(params):
     """Save the connected LLM's finished moderation-analysis report.
 
-    Writes moderation_report.json next to this script so the UEFN launcher
-    (which reads that file from the same bridge directory) can display the
-    creator's report without leaving the editor. Defensive by design: never
-    raises, always returns a small {"saved": ...} dict — a malformed request
-    from the MCP side should never take down the bridge or the tick loop.
+    Writes moderation_report.json to TWO locations: next to this script
+    (primary — where the UEFN launcher normally reads it from) and under
+    the bridge IPC temp dir from ``_get_bridge_dir()`` (fallback — always
+    writable by this process, unlike the primary location, which can sit
+    under a permission-protected engine-install path that ``init_unreal.py``
+    self-syncs these scripts into). Both writes are verified by re-reading
+    the file back as JSON; a swallowed exception must never be reported as
+    a successful save here — that previously left creators staring at "No
+    analysed report yet" with zero error surfaced anywhere but the Unreal
+    log. Defensive by design: never raises — a malformed request from the
+    MCP side should never take down the bridge or the tick loop — but
+    ``saved`` now reflects an actually-verified write, not just the absence
+    of an exception.
     """
     try:
         report = params.get("report")
@@ -616,34 +659,91 @@ def _handle_moderation_report_save(params):
         if truncated:
             payload["truncated"] = True
 
-        path = _moderation_report_path()
-        _write_json(path, payload)
+        primary_path = _moderation_report_path()
+        fallback_path = os.path.join(_get_bridge_dir(), "moderation_report.json")
 
-        return {"saved": True, "path": path, "generated_at": generated_at}
+        paths_written = []
+        paths_failed = []
+        seen = set()
+        for candidate in (primary_path, fallback_path):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            ok, error = _write_json_checked(candidate, payload)
+            if ok:
+                paths_written.append(candidate)
+            else:
+                paths_failed.append({"path": candidate, "error": error})
+
+        saved = len(paths_written) > 0
+
+        if not saved:
+            unreal.log_warning(
+                "uefn_bridge: moderation_report_save failed at ALL locations:\n"
+                + "\n".join(
+                    "{}: {}".format(f["path"], f["error"]) for f in paths_failed
+                )
+            )
+        elif paths_failed:
+            # Partial failure: at least one location is verified good, so the
+            # creator's report is not lost, but log the failed location so a
+            # broken primary path doesn't go unnoticed forever.
+            unreal.log_warning(
+                "uefn_bridge: moderation_report_save partially failed:\n"
+                + "\n".join(
+                    "{}: {}".format(f["path"], f["error"]) for f in paths_failed
+                )
+            )
+
+        return {
+            "saved": saved,
+            "paths_written": paths_written,
+            "paths_failed": paths_failed,
+            "generated_at": generated_at,
+        }
     except Exception as e:
         unreal.log_warning(
             "uefn_bridge: moderation_report_save failed:\n" + traceback.format_exc()
         )
-        return {"saved": False, "error": str(e)}
+        return {"saved": False, "paths_written": [], "paths_failed": [{"path": None, "error": str(e)}], "error": str(e)}
 
 
 def _handle_moderation_report_read(params):
     """Read back the stored moderation_report.json, if any.
 
-    Guarded read used by the MCP side to confirm a save landed. Returns
-    {"exists": False} rather than raising when the file is missing or
-    unreadable.
+    Guarded read used by the MCP side to confirm a save landed, and by the
+    UEFN launcher window to display the report. Mirrors the dual-location
+    write in ``_handle_moderation_report_save``: checks both the primary
+    (next to this script) and fallback (bridge IPC temp dir) locations and
+    returns whichever exists with the newest mtime, so a report that only
+    made it to the fallback (because the primary location was unwritable)
+    is still readable. Returns {"exists": False} rather than raising when
+    neither location is present or parsable.
     """
     try:
-        path = _moderation_report_path()
-        if not os.path.exists(path):
+        candidates = []
+        for path in (_moderation_report_path(), os.path.join(_get_bridge_dir(), "moderation_report.json")):
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            candidates.append((mtime, path))
+
+        if not candidates:
             return {"exists": False}
-        data = _read_json(path)
-        if data is None:
-            return {"exists": False, "error": "moderation_report.json exists but could not be parsed"}
-        data = dict(data)
-        data["exists"] = True
-        return data
+
+        candidates.sort(key=lambda pair: pair[0], reverse=True)
+
+        last_error = None
+        for _mtime, path in candidates:
+            data = _read_json(path)
+            if data is not None:
+                data = dict(data)
+                data["exists"] = True
+                return data
+            last_error = "{} exists but could not be parsed".format(path)
+
+        return {"exists": False, "error": last_error or "moderation_report.json exists but could not be parsed"}
     except Exception as e:
         unreal.log_warning(
             "uefn_bridge: moderation_report_read failed:\n" + traceback.format_exc()

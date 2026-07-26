@@ -58,6 +58,7 @@ import os
 import re
 import struct
 import subprocess
+import tempfile
 import unicodedata
 import webbrowser
 import zlib
@@ -435,6 +436,50 @@ def _resolve_project_mount(scan_root):
     return None, None, False
 
 
+# Cheap structural proxy for "UI icon/QR-code-shaped image": small AND
+# roughly square. Not itself a finding — only a suspect-selection signal for
+# extract_asset_thumbnails() (see run_moderation_scan).
+_UI_TEXTURE_SUSPECT_MAX_DIM = 512
+_UI_TEXTURE_SUSPECT_LIST_CAP = 200
+
+
+def _extract_import_source_info(asset_data):
+    """Best-effort read of the ``AssetImportData`` Asset Registry tag —
+    available WITHOUT loading the asset via
+    ``unreal.AssetData.get_tag_value("AssetImportData")`` (same
+    ``get_tag_value`` API the sibling ``asset_sweep.py`` already uses for
+    ``DiskSize``/``SizeX``/``SizeY``). UE stores this as a JSON array of
+    import records (one per source file an asset was (re-)imported from);
+    this returns only the FIRST record's ``RelativeFilename``/``FileMD5``/
+    ``Timestamp`` — the original import source is what matters for
+    provenance, not later re-imports.
+
+    Returns ``(source_path, file_md5, timestamp)`` — any element may be
+    None. All three are None if the asset was never imported (engine-
+    generated or created directly in-editor) or the tag can't be read/
+    parsed. Never raises."""
+    try:
+        raw = asset_data.get_tag_value("AssetImportData")
+    except Exception:
+        return None, None, None
+    if not raw:
+        return None, None, None
+    try:
+        records = json.loads(raw)
+    except Exception:
+        return None, None, None
+    if not isinstance(records, list) or not records:
+        return None, None, None
+    try:
+        first = records[0] or {}
+        source_path = (first.get("RelativeFilename") or "").strip() or None
+        file_md5 = (first.get("FileMD5") or "").strip() or None
+        timestamp = (first.get("Timestamp") or "").strip() or None
+        return source_path, file_md5, timestamp
+    except Exception:
+        return None, None, None
+
+
 def collect_asset_surfaces(scan_root=None):
     """Enumerate the FULL Asset Registry and PARTITION it into labelled
     buckets — never silently drop a bucket. Returns:
@@ -445,6 +490,9 @@ def collect_asset_surfaces(scan_root=None):
          "shared_game_mount_assets_omitted_count": int,
          "hlod_or_imported": [...],                   # union, both buckets
          "external_actor_or_object": [...],           # union, both buckets
+         "hlod_generated_count": int,                 # exact, uncapped, HLOD only
+         "import_source_records": [...],              # uncapped raw AssetImportData
+         "small_square_ui_texture_entries": [...],    # thumbnail-suspect signal
          "total_registry_assets": int,
          "project_asset_count": int,
          "shared_game_mount_asset_count": int,        # uncapped true count
@@ -507,6 +555,27 @@ def collect_asset_surfaces(scan_root=None):
         "project_mount": None,
         "project_mount_source": None,
         "project_mount_confirmed": False,
+        # Raw AssetImportData extraction, uncapped, computed over EVERY
+        # non-engine asset in BOTH buckets (same "before either bucket is
+        # capped" guarantee as HLOD/external-actor detection below) — see
+        # collect_import_provenance(), which classifies these. Only
+        # populated for assets that actually carry import data (most
+        # engine-authored/Blueprint/material assets won't).
+        "import_source_records": [],
+        # Exact, uncapped count of assets whose package path contains
+        # "HLOD" — auto-generated per streaming cell. Reported separately
+        # from hlod_or_imported (which also includes ordinary project
+        # assets) so a caller can always see the true HLOD volume even
+        # though HLOD entries are deprioritized in transport sampling (see
+        # run_moderation_scan's max_items handling).
+        "hlod_generated_count": 0,
+        # Small (<= _UI_TEXTURE_SUSPECT_MAX_DIM) roughly-square Texture2D
+        # assets — a cheap structural proxy for "UI icon/QR-code-shaped
+        # image" used only to seed extract_asset_thumbnails()'s suspect
+        # list. Defensively capped at 200 internally (thumbnail extraction
+        # itself is separately hard-capped much lower); this is a signal
+        # source, not a reported finding on its own.
+        "small_square_ui_texture_entries": [],
         "notes": [],
     }
     if not _HAS_UNREAL:
@@ -606,11 +675,50 @@ def collect_asset_surfaces(scan_root=None):
             is_external_actor_or_object = (
                 "__EXTERNALACTORS__" in haystack or "__EXTERNALOBJECTS__" in haystack
             )
+            if is_hlod:
+                result["hlod_generated_count"] += 1
 
             if is_hlod or is_project_owned:
                 result["hlod_or_imported"].append(entry)
             if is_external_actor_or_object:
                 result["external_actor_or_object"].append(entry)
+
+            # Raw AssetImportData extraction — uncapped, same "before either
+            # bucket is capped" guarantee as HLOD/external-actor above (see
+            # collect_import_provenance, which classifies these records).
+            if _HAS_UNREAL:
+                try:
+                    src_path, file_md5, timestamp = _extract_import_source_info(a)
+                except Exception:
+                    src_path = file_md5 = timestamp = None
+                if src_path:
+                    result["import_source_records"].append({
+                        "object_path": object_path,
+                        "display_name": display_name,
+                        "package_name": package_name,
+                        "source_path": src_path,
+                        "file_md5": file_md5 or "",
+                        "timestamp": timestamp or "",
+                    })
+
+                # Small/roughly-square Texture2D suspect signal (feeds
+                # extract_asset_thumbnails' suspect list only) — cheap tag
+                # reads restricted to Texture2D-classed assets so this
+                # doesn't add per-asset cost across the other ~48k entries.
+                if asset_class == "Texture2D" and len(result["small_square_ui_texture_entries"]) < _UI_TEXTURE_SUSPECT_LIST_CAP:
+                    try:
+                        size_x = a.get_tag_value("SizeX")
+                        size_y = a.get_tag_value("SizeY")
+                        if size_x and size_y:
+                            sx, sy = int(size_x), int(size_y)
+                            if (
+                                sx <= _UI_TEXTURE_SUSPECT_MAX_DIM
+                                and sy <= _UI_TEXTURE_SUSPECT_MAX_DIM
+                                and abs(sx - sy) <= max(4, int(0.1 * max(sx, sy)))
+                            ):
+                                result["small_square_ui_texture_entries"].append(entry)
+                    except Exception:
+                        pass
         except Exception:
             continue
 
@@ -1507,6 +1615,675 @@ def collect_image_provenance(images):
 
 
 # ---------------------------------------------------------------------------
+# 5f. External link / scannable-code risk detection — Rule 1.12 "Keep It on
+#     the Island" ("do not include external links anywhere on your island").
+#     A real island was REJECTED under this rule for a QR-code image asset
+#     whose name literally embedded a chat-platform name plus "_QR" (see
+#     ``_EXTERNAL_LINK_QR_TOKEN_RE`` below); this module's other detectors
+#     were built around Rule 1.7 (IP) / 1.13 (authenticity) and had ZERO
+#     Rule 1.12 coverage before this collector, so that scan reported 0
+#     BLOCKER and never surfaced it.
+#
+#     PURELY STRUCTURAL / BRAND-NEUTRAL, same hard rule as the rest of this
+#     module (see "No brand/product wordlists here" above): no platform or
+#     brand names, only regex shapes. The domain-shape detector uses an
+#     ALLOWLIST of common, generic top-level-domain strings (not a blacklist
+#     of code/asset suffixes) deliberately — the space of code-ish suffixes
+#     that could collide with a bare "label.tld" shape is unbounded (class
+#     names, component suffixes, etc.), but real TLDs are a small, known,
+#     brand-neutral set, so allowlisting them is what actually keeps this
+#     detector quiet on ordinary UEFN asset names.
+# ---------------------------------------------------------------------------
+
+# Common, generic top-level-domain strings (structural allowlist, not brand
+# names — ".com"/".io"/".gg" etc. are TLD shapes, not platform identifiers).
+# Deliberately conservative: this is what keeps "Foo.Foo" / "BP_Thing.BP_
+# Thing_C" / "Material.Instance" (UE's own "Package.AssetName" object-path
+# convention) from ever matching — none of those trailing segments happen to
+# be a real TLD.
+_COMMON_TLDS = (
+    "com", "net", "org", "io", "co", "gg", "me", "xyz", "biz", "info",
+    "link", "live", "site", "online", "click", "top", "work", "mobi",
+    "asia", "tel", "pro", "name", "fm", "ly", "sh", "ws", "cc", "to",
+    "tv", "us", "uk", "ca", "de", "fr", "ru", "cn", "jp", "app", "dev",
+)
+
+_DOMAIN_LABEL_RE_PART = r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+_DOMAIN_TLD_ALTERNATION = "|".join(_COMMON_TLDS)
+
+_EXTERNAL_LINK_URL_RE = re.compile(r'\bhttps?://[^\s"\'<>)]{3,300}', re.IGNORECASE)
+_EXTERNAL_LINK_WWW_RE = re.compile(
+    rf"\bwww\.{_DOMAIN_LABEL_RE_PART}(?:\.{_DOMAIN_LABEL_RE_PART})+(?:/[^\s\"'<>)]{{0,120}})?",
+    re.IGNORECASE,
+)
+# "label.tld[/path]" — TLD restricted to the allowlist above, and NOT
+# immediately followed by more label characters (so "co" can't match as a
+# prefix of "community"/"commercial", etc.).
+_EXTERNAL_LINK_DOMAIN_RE = re.compile(
+    rf"\b(?:{_DOMAIN_LABEL_RE_PART}\.)+(?:{_DOMAIN_TLD_ALTERNATION})"
+    rf"(?![a-zA-Z0-9-])(?:/[^\s\"'<>)]{{0,120}})?",
+    re.IGNORECASE,
+)
+# Short-link / invite shapes: literal "/invite/"|"/i/" path segments, or a
+# host+TLD immediately followed by a slug path.
+#
+# BUG FIX (false BLOCKER — review finding): this used to accept ANY 2-4
+# letter suffix before "/slug" instead of the curated _COMMON_TLDS
+# allowlist, so ordinary strings like "readme.md/section1" or
+# "logo.png/v2" matched as invite_path — and the TS-side guidance treats
+# invite_path as BLOCKER-tier. A false blocker is worse than a missed
+# detection: it trains the creator to distrust every correct finding this
+# tool produces. Now reuses the SAME curated TLD allowlist as the domain
+# rule below (deliberately narrower, per that same reasoning — a missed
+# short-link is still recoverable via the server-side platform wordlist
+# and the import_provenance signal; a false blocker is not).
+_EXTERNAL_LINK_INVITE_KEYWORD_RE = re.compile(
+    r'(?<![A-Za-z0-9_])/(?:invite|i)/[A-Za-z0-9_-]{2,40}', re.IGNORECASE
+)
+_EXTERNAL_LINK_SHORT_HOST_SLUG_RE = re.compile(
+    rf"\b{_DOMAIN_LABEL_RE_PART}\.(?:{_DOMAIN_TLD_ALTERNATION})/[A-Za-z0-9_-]{{2,24}}\b",
+    re.IGNORECASE,
+)
+# Belt-and-suspenders safety net (review finding): explicit denylist of
+# common file/code extensions, checked post-match against BOTH the domain
+# and short-host/slug matches below. _COMMON_TLDS is already curated to
+# contain none of these, so this should never actually trigger today — it
+# exists so a future edit that broadens _COMMON_TLDS without checking for
+# extension overlap fails safe (skips the match) instead of silently
+# reintroducing false blockers.
+#
+# FAIL-OPEN BY CONSTRUCTION (not an assert — review finding): the raw list
+# has _COMMON_TLDS subtracted out via a set difference, computed once at
+# import time, rather than asserted disjoint. An `assert` here would (1)
+# vanish entirely under `python -O`, silently dropping the guarantee, and
+# (2) if it ever DID fire, raise at MODULE IMPORT time — taking down this
+# whole scanner (and every tool that imports it) over one regex, exactly
+# the "tool fails to launch" failure mode a prior release already shipped
+# a fix for (the tkinter "bad screen distance" crash). A degraded detector
+# is acceptable in a pre-submission safety tool; a tool that won't launch
+# is not. The subtraction means a future accidental overlap can never make
+# a legitimate TLD undetectable (it's removed from the denylist, not left
+# to crash on) AND can never raise on import.
+_FILE_EXTENSION_DENYLIST_RAW = (
+    "md", "txt", "json", "xml", "yaml", "yml", "png", "jpg", "jpeg",
+    "gif", "bmp", "svg", "ico", "uasset", "umap", "verse", "py", "js",
+    "ts", "cs", "cpp", "h", "hpp", "lua", "ini", "cfg", "log", "dll",
+    "exe", "pak", "bin", "dat", "ttf", "otf", "fbx", "obj", "mat",
+    "anim", "blend", "uproject", "uplugin", "wav", "ogg", "mp3", "flac",
+    "aiff", "wma", "zip", "rar", "csv", "pdf", "doc", "docx",
+)
+_FILE_EXTENSION_DENYLIST = frozenset(_FILE_EXTENSION_DENYLIST_RAW) - frozenset(_COMMON_TLDS)
+
+
+def _domain_match_tld(matched_text):
+    """Extract the bare TLD-looking segment from a domain/short-host-slug
+    regex match (the alpha run right after the LAST '.' and before any
+    '/' or end) for the _FILE_EXTENSION_DENYLIST safety check. Never
+    raises; returns "" on any failure."""
+    try:
+        head = matched_text.split("/", 1)[0]
+        return head.rsplit(".", 1)[-1].lower()
+    except Exception:
+        return ""
+# "qr" as a whole word/delimiter-bounded segment — the negative lookaround
+# treats any non-alnum (including "_"/"-") as a boundary, so a name like
+# "<platform>_QR" or "QR_code" matches but "SQRT"/"QRcode" (mid-word) do not.
+_EXTERNAL_LINK_QR_TOKEN_RE = re.compile(r'(?<![A-Za-z0-9])QR(?![A-Za-z0-9])', re.IGNORECASE)
+_EXTERNAL_LINK_SCAN_ME_RE = re.compile(r'\bscan\s*me\b', re.IGNORECASE)
+# "@handle" — only ever scanned against text_metadata/verse text (see
+# collect_external_link_risks below), never asset paths, which routinely
+# contain "@" in unrelated engine-generated tokens.
+_EXTERNAL_LINK_HANDLE_RE = re.compile(r'(?<![A-Za-z0-9_])@[A-Za-z][A-Za-z0-9_]{1,31}\b')
+
+
+def _scan_text_for_external_link_risks(text, emit, allow_domain_like=True):
+    """Scan a single string for url/www/invite_path/domain/scannable_code
+    shapes and call ``emit(matched_text, kind)`` for each hit. Never raises.
+
+    url/www/invite_path/domain overlap heavily — a URL like
+    "https://example.com/x" also satisfies the bare domain shape, and a
+    "hostname.gg/abc123" invite-shaped link also satisfies it once "gg" is
+    on the TLD allowlist. Candidates are collected with a priority (url strongest,
+    domain weakest) and only the highest-priority, non-overlapping match per
+    span is kept, so the same offending text is never reported twice under
+    different kinds. scannable_code_token is an independent signal category
+    and is always checked regardless of overlap with the link-shaped group.
+
+    ``allow_domain_like=False`` skips invite_path/domain detection entirely
+    — used for UE's own "PackagePath.AssetName" object-path strings, which
+    structurally look exactly like a bare domain (see the "5f." section
+    docstring above) and would otherwise be the dominant false-positive
+    source. url/www/scannable_code_token are still checked on that surface
+    since those shapes don't collide with UE's path convention.
+    """
+    if not text:
+        return
+    try:
+        text = str(text)
+    except Exception:
+        return
+    try:
+        candidates = []
+        for m in _EXTERNAL_LINK_URL_RE.finditer(text):
+            candidates.append((m.start(), m.end(), "url", m.group(0), 0))
+        for m in _EXTERNAL_LINK_WWW_RE.finditer(text):
+            candidates.append((m.start(), m.end(), "www", m.group(0), 1))
+        if allow_domain_like:
+            for m in _EXTERNAL_LINK_INVITE_KEYWORD_RE.finditer(text):
+                candidates.append((m.start(), m.end(), "invite_path", m.group(0), 2))
+            for m in _EXTERNAL_LINK_SHORT_HOST_SLUG_RE.finditer(text):
+                if _domain_match_tld(m.group(0)) in _FILE_EXTENSION_DENYLIST:
+                    continue
+                candidates.append((m.start(), m.end(), "invite_path", m.group(0), 2))
+            for m in _EXTERNAL_LINK_DOMAIN_RE.finditer(text):
+                if _domain_match_tld(m.group(0)) in _FILE_EXTENSION_DENYLIST:
+                    continue
+                candidates.append((m.start(), m.end(), "domain", m.group(0), 3))
+        candidates.sort(key=lambda c: (c[4], -(c[1] - c[0]), c[0]))
+        accepted = []
+        for s, e, kind, txt, _priority in candidates:
+            if any(not (e <= a_s or s >= a_e) for a_s, a_e, _k, _t in accepted):
+                continue
+            accepted.append((s, e, kind, txt))
+        for _s, _e, kind, txt in accepted:
+            emit(txt, kind)
+
+        for m in _EXTERNAL_LINK_QR_TOKEN_RE.finditer(text):
+            emit(m.group(0), "scannable_code_token")
+        for m in _EXTERNAL_LINK_SCAN_ME_RE.finditer(text):
+            emit(m.group(0), "scannable_code_token")
+    except Exception:
+        pass
+
+
+def collect_external_link_risks(asset_surfaces, verse_surfaces, text_metadata, image_paths, audio_surfaces):
+    """Scan every already-collected TEXT surface — asset display names and
+    package/object paths (``asset_surfaces``, from ``collect_asset_surfaces``'s
+    ``project_assets``), Verse string/comment/label text (``verse_surfaces``),
+    text metadata field values (``text_metadata``, from
+    ``collect_text_metadata``), image file names (``image_paths``, from
+    ``collect_image_metadata``), and audio display names (``audio_surfaces``,
+    from ``collect_audio_surfaces``) — for Rule 1.12 "Keep It on the Island"
+    (external link) risk shapes: bare URLs, "www." hosts, bare domain-shaped
+    tokens, short-link/invite paths, "QR"/"scan me" scannable-code tokens,
+    and "@handle" tokens (the last only in text_metadata/verse text — see
+    ``_EXTERNAL_LINK_HANDLE_RE``'s comment). Does NOT re-walk the
+    filesystem; every surface here is reused from collectors that already
+    ran earlier in ``run_moderation_scan``.
+
+    Returns:
+        {"total_count": int (exact, NEVER capped/sampled — see
+         run_moderation_scan's max_items handling, which explicitly exempts
+         this collector's items the same way it already exempts
+         text_metadata.fields and redirectors.redirectors),
+         "items": [{"surface": "asset_name"|"asset_path"|"verse"|
+                     "text_metadata"|"image_filename"|"audio_name",
+                    "location": str, "text": str (truncated to 300 chars),
+                    "kind": "url"|"www"|"domain"|"invite_path"|
+                            "scannable_code_token"|"handle"}, ...],
+         "by_surface": {surface: count, ...},
+         "note": str}
+
+    ``note`` is an unconditional, honest vision caveat (see below) — never
+    omitted, and never implied-clean by an empty ``items`` list. Never
+    raises; any per-surface failure is skipped, not fatal.
+    """
+    result = {"total_count": 0, "items": [], "by_surface": {}, "note": ""}
+
+    def _emit(surface, location, text, kind):
+        try:
+            result["total_count"] += 1
+            result["by_surface"][surface] = result["by_surface"].get(surface, 0) + 1
+            result["items"].append({
+                "surface": surface,
+                "location": str(location)[:500],
+                "text": str(text)[:300],
+                "kind": kind,
+            })
+        except Exception:
+            pass
+
+    try:
+        for a in asset_surfaces or []:
+            path = a.get("object_path") or a.get("package_name", "")
+            _scan_text_for_external_link_risks(
+                a.get("display_name", ""),
+                lambda t, k, _loc=path: _emit("asset_name", _loc, t, k),
+                allow_domain_like=True,
+            )
+            # object_path/package_path is UE's own "Package.AssetName"
+            # convention — structurally a false-positive magnet for
+            # domain/invite_path shapes (see the "5f." section docstring),
+            # so those two kinds are skipped here; url/www/QR are still safe.
+            _scan_text_for_external_link_risks(
+                path,
+                lambda t, k, _loc=path: _emit("asset_path", _loc, t, k),
+                allow_domain_like=False,
+            )
+    except Exception:
+        pass
+
+    try:
+        for s in verse_surfaces or []:
+            loc = f"{s.get('file', '')}:{s.get('line', '')}"
+            text = s.get("text", "")
+            _scan_text_for_external_link_risks(
+                text, lambda t, k, _loc=loc: _emit("verse", _loc, t, k), allow_domain_like=True,
+            )
+            for m in _EXTERNAL_LINK_HANDLE_RE.finditer(str(text or "")):
+                _emit("verse", loc, m.group(0), "handle")
+    except Exception:
+        pass
+
+    try:
+        for f in (text_metadata or {}).get("fields") or []:
+            loc = f"{f.get('file', '')} :: {f.get('key', '')}"
+            value = f.get("value", "")
+            _scan_text_for_external_link_risks(
+                value, lambda t, k, _loc=loc: _emit("text_metadata", _loc, t, k), allow_domain_like=True,
+            )
+            for m in _EXTERNAL_LINK_HANDLE_RE.finditer(str(value or "")):
+                _emit("text_metadata", loc, m.group(0), "handle")
+    except Exception:
+        pass
+
+    try:
+        for p in image_paths or []:
+            fn = os.path.basename(str(p))
+            _scan_text_for_external_link_risks(
+                fn, lambda t, k, _loc=p: _emit("image_filename", _loc, t, k), allow_domain_like=True,
+            )
+    except Exception:
+        pass
+
+    try:
+        for a in (audio_surfaces or {}).get("audio") or []:
+            loc = a.get("package_name") or a.get("package_path", "")
+            _scan_text_for_external_link_risks(
+                a.get("display_name", ""),
+                lambda t, k, _loc=loc: _emit("audio_name", _loc, t, k),
+                allow_domain_like=True,
+            )
+    except Exception:
+        pass
+
+    result["note"] = (
+        "This scanner is stdlib-only and still cannot decode an arbitrary "
+        "image's PIXELS at scale — it cannot read a QR code or URL baked "
+        "into a large scene texture or billboard, only filenames and "
+        "embedded text metadata (see collect_image_metadata). For the "
+        "SUSPECT assets identified elsewhere in this scan (import_provenance "
+        "external_user_dir/outside_project hits, this collector's own hits, "
+        "and small square UI-shaped textures), run_moderation_scan now also "
+        "extracts each one's embedded editor thumbnail JPEG (see "
+        "extract_asset_thumbnails) and adds it to image_paths — the "
+        "connected assistant's VISION can inspect those directly. That "
+        "coverage is narrow and targeted (hard-capped, never a full-registry "
+        "walk), so an EMPTY items list here is STILL NOT proof the island "
+        "has no external links (Rule 1.12 'Keep It on the Island') — only "
+        "that none were found in the surfaces this scan can read as text, "
+        "plus whatever the extracted suspect thumbnails show visually."
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 5g. Import provenance — Rule 1.7/1.12's strongest predictor: an asset
+#     IMPORTED FROM OUTSIDE the project tree, especially a user-profile
+#     Downloads/Desktop/Temp folder. The real case this was built from: a
+#     QR-code image asset whose AssetImportData recorded a source path many
+#     directories above the project, ending in a Downloads folder — this
+#     module previously never looked at import provenance at all.
+#
+#     PURELY STRUCTURAL / BRAND-NEUTRAL: classification below is regex/
+#     substring shape matching on the RECORDED SOURCE PATH (a user-profile
+#     folder segment, or "how far outside the project tree the path
+#     reaches") — never a brand/platform name.
+# ---------------------------------------------------------------------------
+
+_IMPORT_SOURCE_USER_DIR_MARKERS = ("/downloads/", "/desktop/", "/temp/", "/tmp/", "appdata")
+# A relative RelativeFilename path (as recorded by UE, e.g. "../../Content/
+# Textures/Foo.png") that climbs this many "../" levels or more almost
+# certainly started somewhere far outside the project tree entirely — a
+# shallow climb is a normal project-relative import.
+_IMPORT_SOURCE_DEEP_CLIMB_THRESHOLD = 3
+
+
+def _classify_import_source_path(source_path, project_dir):
+    """Brand-neutral, structural classification of a single asset's
+    recorded import source path (``AssetImportData``'s ``RelativeFilename``,
+    which is typically relative to the imported .uasset's own location on
+    disk and can walk many directories upward via ``../`` segments — the
+    real example this was built from: a path ending in
+    ``.../Users/<name>/Downloads/<name>.png``).
+
+    Returns one of:
+      * "external_user_dir" — TOP PRIORITY: a user-profile download/
+        desktop/temp/appdata folder segment appears anywhere in the path.
+        Checked FIRST, before any project-tree resolution, since this is
+        the single strongest predictor regardless of anything else.
+      * "outside_project" — an absolute path that does not resolve inside
+        ``project_dir``, or a relative path climbing
+        ``_IMPORT_SOURCE_DEEP_CLIMB_THRESHOLD`` or more ``../`` levels.
+      * "in_project" — resolves inside ``project_dir``, or a shallow
+        relative climb.
+      * "unknown" — no source path given at all (engine-generated asset or
+        one created directly in-editor, never imported from a file).
+
+    Never raises."""
+    if not source_path:
+        return "unknown"
+    try:
+        p = str(source_path).replace("\\", "/")
+        p_lower = p.lower()
+        for marker in _IMPORT_SOURCE_USER_DIR_MARKERS:
+            if marker in p_lower:
+                return "external_user_dir"
+
+        if os.path.isabs(p):
+            if project_dir:
+                try:
+                    proj_norm = os.path.normpath(str(project_dir)).replace("\\", "/").lower()
+                    abs_norm = os.path.normpath(p).replace("\\", "/").lower()
+                    if abs_norm.startswith(proj_norm):
+                        return "in_project"
+                except Exception:
+                    pass
+            return "outside_project"
+
+        up_count = p.split("/").count("..")
+        return "outside_project" if up_count >= _IMPORT_SOURCE_DEEP_CLIMB_THRESHOLD else "in_project"
+    except Exception:
+        return "unknown"
+
+
+def collect_import_provenance(import_source_records, project_dir, total_non_engine_assets=None):
+    """Classify the raw ``AssetImportData`` records already extracted by
+    ``collect_asset_surfaces`` (its uncapped ``import_source_records`` —
+    every non-engine asset in BOTH the project and shared-mount buckets
+    that actually carried import data, gathered before either bucket's
+    detail list was capped, mirroring the existing HLOD/external-actor
+    pattern). Does not touch ``unreal`` itself — pure classification over
+    already-collected data, same house style as ``collect_unicode_risks``/
+    ``collect_external_link_risks``.
+
+    Returns:
+        {"total_imported_assets": int (count of records classified, i.e.
+         assets that had ANY import data — NOT the full registry count),
+         "items": [{"object_path", "display_name", "source_path",
+                    "classification": "external_user_dir"|"outside_project",
+                    "file_md5", "timestamp"}, ...]  # external_user_dir /
+                    outside_project ONLY — NEVER capped or sampled (see
+                    run_moderation_scan's max_items handling, which
+                    explicitly exempts this the same way it already exempts
+                    text_metadata.fields/redirectors.redirectors/
+                    external_link_risks.items),
+         "by_classification": {"external_user_dir": int, "outside_project":
+                    int, "in_project": int, "unknown": int (only present
+                    when total_non_engine_assets is given — see below)},
+         "note": str}
+
+    ``in_project``/``unknown`` classifications are counted in
+    ``by_classification`` only — never listed individually in ``items``,
+    since they're low-interest (in_project) or not evidence of anything
+    (unknown just means no import data). ``total_non_engine_assets``, when
+    given, lets ``unknown`` be computed honestly as "every non-engine asset
+    that did NOT appear in import_source_records at all" rather than being
+    silently omitted from the tally.
+
+    Never raises; any per-record failure is skipped, not fatal."""
+    result = {"total_imported_assets": 0, "items": [], "by_classification": {}, "note": ""}
+    try:
+        for rec in import_source_records or []:
+            try:
+                src = rec.get("source_path", "")
+                classification = _classify_import_source_path(src, project_dir)
+                result["total_imported_assets"] += 1
+                result["by_classification"][classification] = (
+                    result["by_classification"].get(classification, 0) + 1
+                )
+                if classification in ("external_user_dir", "outside_project"):
+                    result["items"].append({
+                        "object_path": rec.get("object_path", ""),
+                        "display_name": rec.get("display_name", ""),
+                        "source_path": src,
+                        "classification": classification,
+                        "file_md5": rec.get("file_md5", ""),
+                        "timestamp": rec.get("timestamp", ""),
+                    })
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    if total_non_engine_assets is not None:
+        try:
+            unknown = max(0, int(total_non_engine_assets) - result["total_imported_assets"])
+            if unknown:
+                result["by_classification"]["unknown"] = unknown
+        except Exception:
+            pass
+
+    result["note"] = (
+        "An asset imported from OUTSIDE the project tree — especially a "
+        "user-profile Downloads/Desktop/Temp/AppData folder — is the "
+        "strongest available predictor of both Rule 1.7 (IP) and Rule 1.12 "
+        "(external link) risk this scanner has: the real case this "
+        "detector was built from was a QR-code image imported straight "
+        "from a Downloads folder. source_path values below may contain the "
+        "creator's OWN OS username — this is the creator's own machine and "
+        "this report goes to their own connected assistant, so it is kept "
+        "as-is, not redacted. Only external_user_dir/outside_project hits "
+        "are listed individually in items (NEVER capped or sampled); "
+        "in_project/unknown assets are counted only, see by_classification."
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 5h. Embedded thumbnail extraction — closes the "cannot decode pixels"
+#     vision gap for a SMALL, TARGETED suspect set (never a full-registry
+#     walk). UE stores a JPEG-encoded editor thumbnail inside every
+#     .uasset's binary payload; this reads it with plain byte-span search
+#     (stdlib only, no Pillow, no actual JPEG decoding) so the connected
+#     LLM's own vision can inspect the extracted image directly.
+# ---------------------------------------------------------------------------
+
+_JPEG_SOI = b"\xff\xd8\xff"
+_JPEG_EOI = b"\xff\xd9"
+_THUMBNAIL_MIN_BYTES = 1024               # 1 KB — smaller is not a real thumbnail
+_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024    # 2 MB — larger is implausible for a thumbnail
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+# BUG FIX (unbounded per-file read): extract_asset_thumbnails' suspects
+# include import_provenance hits, which can be ANY asset class — an
+# imported mesh/audio/video asset can be very large, and a naive whole-file
+# read could spike memory inside the editor process even though the number
+# of ATTEMPTS is already hard-capped at max_thumbnails. Two bounds fix this:
+_THUMBNAIL_SOURCE_MAX_FILE_BYTES = 200 * 1024 * 1024
+# ^ Hard ceiling — a suspect .uasset larger than this is skipped ENTIRELY
+# (no read at all, not even the bounded tail window below); counted via
+# "skipped_too_large" so the omission is visible, never silent.
+_THUMBNAIL_TAIL_WINDOW_BYTES = 8 * 1024 * 1024
+# ^ The ONLY window actually read from disk for files at or under the hard
+# ceiling: UE appends the embedded editor thumbnail near the END of a
+# .uasset's binary payload (see _extract_last_jpeg_span), so seeking to the
+# tail and reading only this window is sufficient — it's 4x
+# _THUMBNAIL_MAX_BYTES (the largest a real thumbnail is expected to be), so
+# a genuine trailing thumbnail is never truncated by this window.
+
+
+def _extract_last_jpeg_span(data):
+    """Find the LAST embedded JPEG (SOI ``\\xff\\xd8\\xff`` ... EOI
+    ``\\xff\\xd9``) byte span in ``data``. UE appends the editor thumbnail
+    near the end of a .uasset's binary payload, and a .uasset can
+    coincidentally contain earlier JPEG-marker-shaped byte runs inside
+    compressed texture/mesh data, so searching from the END for the last
+    EOI, then the last SOI before it, is the reliable way to land on the
+    actual thumbnail rather than a false byte-run elsewhere in the file.
+
+    stdlib-only — does not decode or validate the JPEG beyond finding its
+    markers and a plausible size. Returns the raw byte span, or None if no
+    span was found or its size fails the sanity check (too small to be a
+    real thumbnail, or implausibly large). Never raises."""
+    try:
+        eoi = data.rfind(_JPEG_EOI)
+        if eoi == -1:
+            return None
+        soi = data.rfind(_JPEG_SOI, 0, eoi)
+        if soi == -1:
+            return None
+        span = data[soi:eoi + 2]
+        if len(span) < _THUMBNAIL_MIN_BYTES or len(span) > _THUMBNAIL_MAX_BYTES:
+            return None
+        return span
+    except Exception:
+        return None
+
+
+def _package_name_to_uasset_path(package_name, project_dir, mount_prefix):
+    """Best-effort mapping of a UE package name (e.g.
+    ``"/MyIsland/UI/ScoreBoard/some_asset"``) to its .uasset file on disk,
+    using the same mount-prefix-to-``Content/`` convention every other
+    filesystem collector in this module assumes. Returns None if inputs are
+    missing or the mapping fails. Never raises — callers must still check
+    the result exists on disk (a package can be a redirector, memory-only,
+    or simply moved)."""
+    if not package_name or not project_dir:
+        return None
+    try:
+        rel = str(package_name)
+        if mount_prefix and rel.startswith(mount_prefix):
+            rel = rel[len(mount_prefix):]
+        else:
+            rel = rel.lstrip("/")
+        rel = rel.replace("/", os.sep)
+        return os.path.join(str(project_dir), "Content", rel + ".uasset")
+    except Exception:
+        return None
+
+
+def extract_asset_thumbnails(suspect_entries, out_dir, max_thumbnails=40,
+                              project_dir=None, mount_prefix=None):
+    """Given ``suspect_entries`` (asset-surface-shaped dicts with at least
+    ``object_path``/``package_name``/``display_name``), resolve each one's
+    .uasset on disk and extract its embedded editor JPEG thumbnail (see
+    ``_extract_last_jpeg_span``) into ``out_dir``. Callers pass ONLY their
+    highest-suspicion subset — ``import_provenance``'s external_user_dir/
+    outside_project hits, ``external_link_risks`` hits, and small
+    roughly-square UI-shaped textures (see
+    ``collect_asset_surfaces``'s ``small_square_ui_texture_entries``) — this
+    function itself does no registry walking and is HARD-CAPPED at
+    ``max_thumbnails`` (default 40): it must never process the full
+    registry.
+
+    ``project_dir``/``mount_prefix`` default to the live-resolved scan root
+    and project mount (via ``_resolve_project_dir``/``_resolve_project_mount``)
+    when not given, so this also works called standalone.
+
+    BOUNDED READ (BUG FIX — unbounded per-file read): suspects can be ANY
+    asset class, including an imported mesh/audio/video asset that happens
+    to be very large, so this never reads a whole file into memory. A file
+    over ``_THUMBNAIL_SOURCE_MAX_FILE_BYTES`` (200 MB) is skipped entirely
+    (counted via ``skipped_too_large``, never silently); otherwise only the
+    last ``_THUMBNAIL_TAIL_WINDOW_BYTES`` (8 MB) of the file is read via a
+    seek-from-end, since UE appends the embedded thumbnail near the file's
+    end and 8 MB comfortably exceeds any real thumbnail's max plausible
+    size (``_THUMBNAIL_MAX_BYTES``, 2 MB).
+
+    Returns {"written_paths": [...], "attempted": int, "extracted": int,
+    "skipped_not_found": int, "skipped_too_large": int, "skipped_no_jpeg":
+    int, "suspects_not_extracted": int, "notes": [...]}. Never raises — a
+    single unreadable/unresolvable/oversized/undersized asset is skipped,
+    not fatal."""
+    result = {
+        "written_paths": [], "attempted": 0, "extracted": 0,
+        "skipped_not_found": 0, "skipped_too_large": 0, "skipped_no_jpeg": 0,
+        "suspects_not_extracted": 0, "notes": [],
+    }
+    entries = list(suspect_entries or [])
+    if len(entries) > max_thumbnails:
+        result["suspects_not_extracted"] = len(entries) - max_thumbnails
+        entries = entries[:max_thumbnails]
+
+    if project_dir is None or mount_prefix is None:
+        try:
+            resolved_dir, _verified, _source = _resolve_project_dir()
+        except Exception:
+            resolved_dir = None
+        try:
+            resolved_mount, _msource, _mconfirmed = _resolve_project_mount(project_dir or resolved_dir)
+        except Exception:
+            resolved_mount = None
+        project_dir = project_dir or resolved_dir
+        mount_prefix = mount_prefix or resolved_mount
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except Exception as e:
+        result["notes"].append(f"could not create thumbnail output dir: {e}")
+        return result
+
+    for entry in entries:
+        result["attempted"] += 1
+        try:
+            package_name = entry.get("package_name") or (entry.get("object_path", "") or "").split(".")[0]
+        except Exception:
+            package_name = None
+        uasset_path = _package_name_to_uasset_path(package_name, project_dir, mount_prefix)
+        if not uasset_path or not os.path.isfile(uasset_path):
+            result["skipped_not_found"] += 1
+            continue
+        try:
+            file_size = os.path.getsize(uasset_path)
+        except Exception:
+            result["skipped_not_found"] += 1
+            continue
+        if file_size > _THUMBNAIL_SOURCE_MAX_FILE_BYTES:
+            result["skipped_too_large"] += 1
+            continue
+        try:
+            with open(uasset_path, "rb") as f:
+                if file_size > _THUMBNAIL_TAIL_WINDOW_BYTES:
+                    # Bounded tail read only — never the whole file (see
+                    # _THUMBNAIL_TAIL_WINDOW_BYTES's docstring above).
+                    f.seek(-_THUMBNAIL_TAIL_WINDOW_BYTES, os.SEEK_END)
+                data = f.read()
+        except Exception:
+            result["skipped_not_found"] += 1
+            continue
+        span = _extract_last_jpeg_span(data)
+        if not span:
+            result["skipped_no_jpeg"] += 1
+            continue
+        try:
+            safe_name = _SAFE_FILENAME_RE.sub("_", entry.get("display_name") or os.path.basename(uasset_path))
+            out_path = os.path.join(out_dir, f"{safe_name}_thumb.jpg")
+            with open(out_path, "wb") as wf:
+                wf.write(span)
+            result["written_paths"].append(out_path)
+            result["extracted"] += 1
+        except Exception:
+            continue
+
+    note = (
+        f"Extracted {result['extracted']} of {result['attempted']} attempted "
+        f"suspect thumbnail(s) ({result['skipped_not_found']} asset file not "
+        f"found/unreadable on disk, {result['skipped_too_large']} skipped for "
+        f"exceeding the {_THUMBNAIL_SOURCE_MAX_FILE_BYTES // (1024 * 1024)}MB "
+        f"size ceiling, {result['skipped_no_jpeg']} had no valid-sized "
+        "embedded JPEG in the read window)."
+    )
+    if result["suspects_not_extracted"]:
+        note += (
+            f" {result['suspects_not_extracted']} additional suspect(s) were "
+            f"NOT attempted (hard-capped at {max_thumbnails})."
+        )
+    result["notes"].append(note)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 6. Asset hashing — mechanism for future exact-match against known-IP hashes
 # ---------------------------------------------------------------------------
 
@@ -1569,10 +2346,19 @@ def hash_assets(project_dir):
 
 def _is_hlod_or_external_entry(entry):
     """True if an asset entry (from ``collect_asset_surfaces()``) is a HLOD
-    or generated External Actor/Object package — the two documented
-    high-risk classes for Rule 1.7. Used only to PRIORITIZE which entries
-    survive a ``max_items`` transport cap (see ``_cap_items_with_priority``
-    below); it never filters/drops anything on its own."""
+    or generated External Actor/Object package — both AUTO-GENERATED per
+    streaming cell, not human-authored/imported content. Used only to
+    DEMOTE such entries to the back of a ``max_items`` transport cap (see
+    ``_asset_cap_priority_tier``/``_cap_items_with_priority`` below); it
+    never filters/drops anything on its own.
+
+    BUG FIX (priority inversion): earlier versions of this module
+    PRIORITIZED these entries INTO the sample. On a real 48,412-asset
+    project only ~200 items survived the cap and exactly ONE name was
+    legible, because HLOD proxies are bulk engine-generated noise per
+    streaming cell that crowded out every human-made asset name. HLOD/
+    external-actor entries are now DEMOTED to last — see
+    ``_asset_cap_priority_tier``."""
     try:
         haystack = (
             str(entry.get("package_path", "")) + " " + str(entry.get("package_name", ""))
@@ -1586,21 +2372,60 @@ def _is_hlod_or_external_entry(entry):
     )
 
 
-def _cap_items_with_priority(items, max_items, is_priority=None):
+def _make_asset_cap_priority_tier_fn(import_risk_object_paths, external_link_asset_locations):
+    """Build a ``priority_key`` function (lower tier number = kept FIRST
+    under a ``max_items`` cap) for asset-surface entries, replacing the
+    old binary "HLOD first" priority with a 4-tier "human-authored/
+    imported first, engine-generated last" ordering:
+
+      0 = ``import_provenance`` hit (external_user_dir/outside_project) —
+          the strongest signal this scanner has, always first.
+      1 = ``external_link_risks`` hit on this same asset.
+      2 = ordinary project-mount asset with no auto-generated marker.
+      3 = DEMOTED — auto-generated HLOD proxy or External Actor/Object
+          package (see ``_is_hlod_or_external_entry``'s docstring for why).
+
+    ``import_risk_object_paths``/``external_link_asset_locations`` are sets
+    of ``object_path`` strings built from ``result["import_provenance"]
+    ["items"]``/``result["external_link_risks"]["items"]`` — both already
+    computed earlier in ``run_moderation_scan`` by the time this runs.
+    Never raises (falls back to tier 2 on any lookup failure)."""
+    def _tier(entry):
+        try:
+            obj_path = entry.get("object_path") or entry.get("package_name", "")
+        except Exception:
+            return 2
+        try:
+            if obj_path in import_risk_object_paths:
+                return 0
+            if obj_path in external_link_asset_locations:
+                return 1
+            if _is_hlod_or_external_entry(entry):
+                return 3
+        except Exception:
+            return 2
+        return 2
+    return _tier
+
+
+def _cap_items_with_priority(items, max_items, is_priority=None, priority_key=None):
     """Bound a list to at most ``max_items`` entries for MCP transport,
     honestly — never a silent drop.
 
     Returns ``(capped_list, kept_count, omitted_count, full_count)``.
 
     When ``max_items`` is None or the list already fits, the list is
-    returned unchanged (``omitted_count`` 0). Otherwise, when
-    ``is_priority(item)`` is given, entries it accepts are moved to the
-    front via a STABLE partition (each group keeps its own original
-    relative order) before slicing — so the highest-value entries (e.g.
-    HLOD/external-actor assets, or text_metadata Unicode hits) are the
-    ones that survive the cap, not whatever happened to enumerate first.
-    Without ``is_priority``, entries are kept in their existing order (a
-    plain positional sample).
+    returned unchanged (``omitted_count`` 0). Otherwise:
+      * ``priority_key(item)`` (preferred when given) — a function
+        returning an int TIER, lower = kept first. Items are stably sorted
+        by tier (``sorted()`` is stable, so original relative order is
+        preserved within each tier) before slicing — supports more than
+        two priority levels (see ``_make_asset_cap_priority_tier_fn``).
+      * ``is_priority(item)`` — legacy binary form: entries it accepts move
+        to the front via a stable partition. Ignored if ``priority_key`` is
+        also given.
+      * Neither — entries are kept in their existing order (a plain
+        positional sample).
 
     Never raises — on any error, degrades to returning the input
     unchanged rather than losing data."""
@@ -1611,7 +2436,12 @@ def _cap_items_with_priority(items, max_items, is_priority=None):
     full_count = len(items)
     if max_items is None or full_count <= max_items:
         return items, full_count, 0, full_count
-    if is_priority is not None:
+    if priority_key is not None:
+        try:
+            ordered = sorted(items, key=priority_key)
+        except Exception:
+            ordered = items
+    elif is_priority is not None:
         try:
             priority = [it for it in items if is_priority(it)]
             rest = [it for it in items if not is_priority(it)]
@@ -1652,6 +2482,10 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
           "external_actor_assets": [...],   # __ExternalActors__/__ExternalObjects__
           "text_field_lengths": {...},      # per-field character lengths
           "image_provenance": {...},        # authoring-tool/creator/copyright signal
+          "external_link_risks": {...},     # Rule 1.12 "Keep It on the Island" hits
+          "import_provenance": {...},       # AssetImportData source-path risk (1.7/1.12)
+          "hlod_generated_count": int,      # exact, uncapped HLOD-only count
+          "extracted_thumbnails": {...},    # embedded-JPEG extraction for suspect assets
           "notes": [...],
           "truncated": bool,
           "truncated_collectors": [str, ...],
@@ -1680,6 +2514,35 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
     ``collect_unicode_risks``, ``collect_redirector_assets``, the
     External Actor/Object detection inside ``collect_asset_surfaces``,
     ``collect_text_field_lengths``, and ``collect_image_provenance``.
+
+    ``external_link_risks`` is a SIXTH, separately-motivated deterministic
+    BRAND-NEUTRAL detection covering Rule 1.12 "Keep It on the Island" (no
+    external links anywhere on the island) rather than Rule 1.7 — a real
+    island was rejected under 1.12 for a QR-code image asset whose name
+    literally embedded a chat-platform name plus "_QR", which this module's
+    other detectors had zero coverage for. See
+    ``collect_external_link_risks``'s own docstring,
+    including its unconditional "cannot decode image pixels" vision caveat
+    (``external_link_risks["note"]``) — an empty ``items`` list there is
+    NEVER evidence of "no external links found".
+
+    ``import_provenance`` is a SEVENTH detection, and the single strongest
+    predictor either rule has: WHERE an asset was imported FROM (its
+    ``AssetImportData`` source path), not just what it's named. The exact
+    real asset that motivated ``external_link_risks`` also had a recorded
+    import source path many directories above the project, ending in a
+    user-profile Downloads folder — see ``collect_import_provenance``'s own
+    docstring. ``hlod_generated_count`` is the exact, uncapped count of
+    auto-generated HLOD proxy assets (see ``_is_hlod_or_external_entry``'s
+    docstring for why these are deprioritized, not hidden, in transport
+    sampling below). ``extracted_thumbnails`` records the outcome of
+    extracting embedded editor JPEG thumbnails (see
+    ``extract_asset_thumbnails``) for the highest-suspicion assets —
+    ``import_provenance``/``external_link_risks`` hits plus small square
+    UI-shaped textures — and the extracted file paths are also appended
+    into this dict's own ``image_paths`` so a connected LLM's vision can
+    inspect them directly; this is a narrow, hard-capped addition, not a
+    claim that every image on the island has now been visually reviewed.
 
     ``truncated`` (BUG FIX — truncation semantics) is True iff a collector
     whose CONTENT SIGNAL matters got capped: Verse strings, text metadata,
@@ -1717,20 +2580,44 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
       * ``unicode_risks.items`` — ``text_metadata`` surface hits first
         (those are what Fortnite's moderation metadata stage actually
         reads), then every other surface.
-      * ``asset_surfaces`` / ``hlod_or_imported_assets`` — HLOD and
-        External Actor/Object entries first (the documented high-risk
-        class), then ordinary project assets.
-      * ``shared_game_mount_assets`` — capped against its TRUE total
-        (``shared_game_mount_asset_count``), combining with the cap
-        ``collect_asset_surfaces()`` already applies upstream.
-      * ``external_actor_assets``, ``verse_surfaces``, ``image_metadata``,
-        ``image_paths``, ``audio_surfaces.audio`` — plain positional
-        samples; the count is what matters there, not which entries.
-      * ``text_metadata.fields`` and ``redirectors.redirectors`` are NEVER
-        capped — both are typically tiny (2 and 5 entries on a real
-        1.2M-asset project) and are the most directly actionable evidence,
-        so sampling either away would hide exactly what a human/LLM needs
-        to act on.
+      * ``asset_surfaces`` / ``hlod_or_imported_assets`` — a 4-TIER
+        priority (BUG FIX — priority inversion, see
+        ``_is_hlod_or_external_entry``'s docstring): (0) ``import_provenance``
+        hits, (1) ``external_link_risks`` hits, (2) ordinary project assets
+        with no auto-generated marker, (3) DEMOTED — HLOD proxies and
+        External Actor/Object packages. The OLD behavior put HLOD first,
+        which is exactly backwards: HLOD is engine-generated bulk noise per
+        streaming cell, and on the real 48,412-asset project that motivated
+        this fix, only ~200 items survived the old cap and exactly ONE name
+        was legible — every human-authored asset had been crowded out.
+      * ``shared_game_mount_assets`` — SCOPED BEHIND project_assets (BUG
+        FIX — sampling scope, per the user's explicit "scan only what I
+        control" request): its effective budget is
+        ``max(0, max_items - <asset_surfaces entries actually kept>)``, so
+        the shared/base mount only spends whatever sample budget the
+        project's own assets didn't use. Capped against its TRUE total
+        (``shared_game_mount_asset_count``) either way — the reconciliation
+        total (project + shared + engine == total_registry_assets) still
+        balances; only which BODIES are returned changes.
+      * ``external_actor_assets`` uses the SAME 4-tier priority as
+        ``asset_surfaces``/``hlod_or_imported_assets`` above (it's still an
+        asset-surface-shaped list, just pre-filtered to External Actor/
+        Object packages). ``verse_surfaces``, ``image_metadata``,
+        ``audio_surfaces.audio`` are plain positional samples; the count is
+        what matters there, not which entries. ``image_paths`` prioritizes
+        newly-extracted suspect thumbnails (see below) so a cap can't drop
+        the very images added to close the vision gap.
+      * ``text_metadata.fields``, ``redirectors.redirectors``,
+        ``external_link_risks.items``, and ``import_provenance.items`` are
+        NEVER capped — all four are typically tiny (2, 5, a small handful,
+        and dozens at most, respectively — import_provenance's items are
+        already filtered down to just external_user_dir/outside_project
+        hits before this point) and are the most directly actionable
+        evidence, so sampling any of them away would hide exactly what a
+        human/LLM needs to act on. Only ~200 of 48,412 assets survived
+        sampling on the real project that motivated these fixes, so any of
+        these being sampled would have missed the offending asset entirely
+        — every hit must reach the assistant.
     When any list is actually sampled this way, ``result["truncated"]``
     is set True, ``"sampled_for_transport"`` is added to
     ``truncated_collectors``, and a prominent note is added stating the
@@ -1811,11 +2698,16 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
         "external_actor_assets": [],
         "text_field_lengths": {},
         "image_provenance": {},
+        "external_link_risks": {},
+        "import_provenance": {},
+        "hlod_generated_count": 0,
+        "extracted_thumbnails": {},
         "notes": notes,
         "truncated": truncated,
         "truncated_collectors": truncated_collectors,
     }
 
+    asset_result = {}
     try:
         asset_result = collect_asset_surfaces(scan_root)
         result["asset_surfaces"] = asset_result.get("project_assets", [])
@@ -1832,6 +2724,17 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
         result["shared_game_mount_assets_omitted_count"] = asset_result.get(
             "shared_game_mount_assets_omitted_count", 0
         )
+        result["hlod_generated_count"] = asset_result.get("hlod_generated_count", 0)
+        if result["hlod_generated_count"]:
+            notes.append(
+                f"{result['hlod_generated_count']} HLOD proxy asset(s) detected — "
+                "these are AUTO-GENERATED per streaming cell, so a large count is "
+                "EXPECTED and is NOT itself a finding. They are deprioritized "
+                "(not hidden — see hlod_generated_count for the exact, uncapped "
+                "count) in any max_items transport sampling below, since bulk "
+                "engine-generated entries would otherwise crowd out human-"
+                "authored/imported assets in a capped sample."
+            )
         for n in asset_result.get("notes") or []:
             notes.append(f"asset surfaces: {n}")
         if not asset_result.get("available"):
@@ -1961,6 +2864,107 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
         notes.append(f"collect_image_provenance failed: {e}")
         result["image_provenance"] = {"images": [], "notes": [f"collector failed: {e}"]}
 
+    try:
+        result["external_link_risks"] = collect_external_link_risks(
+            result.get("asset_surfaces"),
+            result.get("verse_surfaces"),
+            result.get("text_metadata"),
+            result.get("image_paths"),
+            result.get("audio_surfaces"),
+        )
+        _link_hits = result["external_link_risks"].get("total_count") or 0
+        if _link_hits:
+            notes.append(
+                f"RULE 1.12 'KEEP IT ON THE ISLAND': {_link_hits} external-link/"
+                "scannable-code risk hit(s) found — see external_link_risks "
+                "(never sampled/capped, see max_items handling above)."
+            )
+        else:
+            notes.append(
+                "external_link_risks: no structural hits found in the scanned "
+                "surfaces — see external_link_risks.note: this scanner cannot "
+                "decode image pixels, so a QR code or URL embedded in a "
+                "texture with an innocuous filename is invisible to it. A "
+                "zero here is NOT proof the island has no external links."
+            )
+    except Exception as e:
+        notes.append(f"collect_external_link_risks failed: {e}")
+        result["external_link_risks"] = {
+            "total_count": 0, "items": [], "by_surface": {},
+            "note": f"collector failed: {e}",
+        }
+
+    try:
+        result["import_provenance"] = collect_import_provenance(
+            asset_result.get("import_source_records"),
+            scan_root,
+            total_non_engine_assets=(
+                asset_result.get("project_asset_count", 0)
+                + asset_result.get("shared_game_mount_asset_count", 0)
+            ),
+        )
+        _import_risk_hits = len(result["import_provenance"].get("items") or [])
+        if _import_risk_hits:
+            notes.append(
+                f"IMPORT PROVENANCE: {_import_risk_hits} asset(s) imported from "
+                "OUTSIDE the project tree (see import_provenance.items, never "
+                "sampled/capped) — the strongest available predictor of Rule "
+                "1.7/1.12 risk this scanner has."
+            )
+    except Exception as e:
+        notes.append(f"collect_import_provenance failed: {e}")
+        result["import_provenance"] = {
+            "total_imported_assets": 0, "items": [], "by_classification": {},
+            "note": f"collector failed: {e}",
+        }
+
+    # Embedded-thumbnail extraction — narrow, hard-capped suspect set only
+    # (import_provenance/external_link_risks hits + small square UI-shaped
+    # textures), never a full-registry walk. See extract_asset_thumbnails.
+    try:
+        _suspect_entries = []
+        _suspect_seen_keys = set()
+
+        def _add_suspect(entry_like):
+            try:
+                key = (
+                    entry_like.get("object_path")
+                    or entry_like.get("package_name")
+                    or entry_like.get("location")
+                )
+            except Exception:
+                key = None
+            if not key or key in _suspect_seen_keys:
+                return
+            _suspect_seen_keys.add(key)
+            _suspect_entries.append(entry_like)
+
+        for _it in result["import_provenance"].get("items") or []:
+            _add_suspect(_it)
+        for _it in result["external_link_risks"].get("items") or []:
+            if _it.get("surface") in ("asset_name", "asset_path"):
+                _loc = _it.get("location", "")
+                _add_suspect({"object_path": _loc, "package_name": _loc, "display_name": _loc})
+        for _it in asset_result.get("small_square_ui_texture_entries") or []:
+            _add_suspect(_it)
+
+        _thumb_out_dir = os.path.join(os.path.dirname(_moderation_report_path()), "moderation_thumbnails")
+        result["extracted_thumbnails"] = extract_asset_thumbnails(
+            _suspect_entries, _thumb_out_dir, max_thumbnails=40,
+            project_dir=scan_root, mount_prefix=asset_result.get("project_mount"),
+        )
+        _new_thumb_paths = result["extracted_thumbnails"].get("written_paths") or []
+        if _new_thumb_paths:
+            result["image_paths"] = list(result.get("image_paths") or []) + _new_thumb_paths
+            notes.append(
+                f"Extracted {len(_new_thumb_paths)} embedded thumbnail(s) from "
+                "suspect assets into image_paths for visual inspection — see "
+                "extracted_thumbnails."
+            )
+    except Exception as e:
+        notes.append(f"extract_asset_thumbnails failed: {e}")
+        result["extracted_thumbnails"] = {"written_paths": [], "notes": [f"failed: {e}"]}
+
     if include_hashes:
         try:
             asset_hashes, hash_truncated = hash_assets(scan_root)
@@ -1998,9 +3002,9 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
     if max_items is not None:
         sample_notes = []
 
-        def _apply_cap(key, is_priority=None, true_total=None):
+        def _apply_cap(key, is_priority=None, priority_key=None, true_total=None):
             capped, kept, omitted, full = _cap_items_with_priority(
-                result.get(key), max_items, is_priority
+                result.get(key), max_items, is_priority, priority_key
             )
             result[key] = capped
             base_full = true_total if true_total is not None else full
@@ -2012,17 +3016,60 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
                     f"{max_items}); see {key}_omitted_count for what was "
                     "sampled away."
                 )
+            return kept
 
-        _apply_cap("asset_surfaces", is_priority=_is_hlod_or_external_entry)
-        _apply_cap("hlod_or_imported_assets", is_priority=_is_hlod_or_external_entry)
-        _apply_cap("external_actor_assets")
-        _apply_cap(
-            "shared_game_mount_assets",
-            true_total=result.get("shared_game_mount_asset_count"),
+        # 4-tier priority (BUG FIX — priority inversion, see
+        # _is_hlod_or_external_entry's docstring): import_provenance hits,
+        # then external_link_risks hits, then ordinary project assets,
+        # HLOD/External-Actor entries demoted to last.
+        _import_risk_object_paths = {
+            it.get("object_path", "") for it in (result.get("import_provenance") or {}).get("items") or []
+        }
+        _external_link_asset_locations = {
+            it.get("location", "") for it in (result.get("external_link_risks") or {}).get("items") or []
+            if it.get("surface") in ("asset_name", "asset_path")
+        }
+        _asset_tier_fn = _make_asset_cap_priority_tier_fn(
+            _import_risk_object_paths, _external_link_asset_locations
         )
+
+        _kept_project_assets = _apply_cap("asset_surfaces", priority_key=_asset_tier_fn)
+        _apply_cap("hlod_or_imported_assets", priority_key=_asset_tier_fn)
+        _apply_cap("external_actor_assets", priority_key=_asset_tier_fn)
+
+        # SCOPE FIX: shared/base-mount assets only get whatever sample
+        # budget the project's own assets (asset_surfaces) didn't use — the
+        # user explicitly asked to scan what they control first. Counts
+        # still reconcile against the TRUE total either way.
+        _shared_budget = max(0, max_items - _kept_project_assets)
+        _shared_capped, _shared_kept, _shared_omitted_ignored, _shared_full = _cap_items_with_priority(
+            result.get("shared_game_mount_assets"), _shared_budget, priority_key=_asset_tier_fn,
+        )
+        result["shared_game_mount_assets"] = _shared_capped
+        _shared_true_total = result.get("shared_game_mount_asset_count", _shared_full)
+        _shared_true_omitted = max(0, _shared_true_total - _shared_kept)
+        result["shared_game_mount_assets_omitted_count"] = _shared_true_omitted
+        if _shared_true_omitted:
+            sample_notes.append(
+                f"shared_game_mount_assets: {_shared_kept} of {_shared_true_total} "
+                f"returned (max_items={max_items}, budget shared with — and spent "
+                "AFTER — project assets: project's own content is prioritized "
+                "first); see shared_game_mount_assets_omitted_count."
+            )
+
         _apply_cap("verse_surfaces")
         _apply_cap("image_metadata")
-        _apply_cap("image_paths")
+
+        # image_paths — prioritize the just-extracted suspect thumbnails
+        # (see extract_asset_thumbnails above) so a transport cap can never
+        # silently drop the very images added to close the vision gap.
+        _extracted_thumb_paths = set(
+            (result.get("extracted_thumbnails") or {}).get("written_paths") or []
+        )
+        _apply_cap(
+            "image_paths",
+            priority_key=(lambda p: 0 if p in _extracted_thumb_paths else 1) if _extracted_thumb_paths else None,
+        )
 
         # audio_surfaces / unicode_risks are nested dicts — cap their inner
         # list field directly rather than the whole dict.
@@ -2060,12 +3107,19 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
                     "unicode_risks.items_omitted_count."
                 )
 
-        # text_metadata.fields and redirectors.redirectors are deliberately
-        # NEVER capped here — both are typically tiny (2 and 5 entries on a
-        # real 1.2M-asset scan) and are the single most directly actionable
-        # evidence (the actual island name/description text, and proof
-        # that renamed/deleted content is still reachable) — sampling
-        # either away would hide exactly what a human/LLM needs to act on.
+        # text_metadata.fields, redirectors.redirectors,
+        # external_link_risks.items, and import_provenance.items are
+        # deliberately NEVER capped here — all four are typically tiny and
+        # are the single most directly actionable evidence (the actual
+        # island name/description text, proof that renamed/deleted content
+        # is still reachable, Rule 1.12 "Keep It on the Island" hits like a
+        # QR-code asset name, and Rule 1.7/1.12's single strongest
+        # predictor — an asset imported from outside the project tree) —
+        # sampling any of them away would hide exactly what a human/LLM
+        # needs to act on. See run_moderation_scan's docstring: only ~200 of
+        # 48,412 assets survived sampling on the real project that
+        # motivated these fixes, so a sampled list would have missed the
+        # offending asset entirely.
 
         if sample_notes:
             result["truncated"] = True
@@ -2094,28 +3148,117 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
 # ---------------------------------------------------------------------------
 
 def _moderation_report_path():
-    """Path to moderation_report.json, next to THIS script. Matches
-    ``uefn_bridge.py``'s own ``_moderation_report_path()`` — both scripts
-    live side by side in Content/Python (see module docstring) — but is
-    reimplemented locally rather than imported, since this module
-    deliberately never imports ``uefn_bridge.py`` (see run_moderation_scan's
-    docstring: "designed to be pulled in from there, not the reverse")."""
+    """Path to moderation_report.json, next to THIS script (the PRIMARY
+    location). Matches ``uefn_bridge.py``'s own ``_moderation_report_path()``
+    — both scripts live side by side in Content/Python (see module
+    docstring) — but is reimplemented locally rather than imported, since
+    this module deliberately never imports ``uefn_bridge.py`` (see
+    run_moderation_scan's docstring: "designed to be pulled in from there,
+    not the reverse"). This path can sit under a permission-protected
+    engine-install path that ``init_unreal.py`` self-syncs these scripts
+    into — see ``_bridge_ipc_dir()``'s docstring for the FALLBACK location
+    ``_handle_moderation_report_save`` also writes to for exactly that
+    reason."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "moderation_report.json")
+
+
+def _bridge_ipc_dir():
+    """The bridge IPC temp directory — the FALLBACK location a report can
+    land in when the primary (``_moderation_report_path()``) is
+    unwritable. Mirrors ``uefn_bridge.py``'s ``_get_bridge_dir()``
+    derivation EXACTLY (env var override, else ``<temp>/uefn_bridge``) —
+    reimplemented locally for the same "never imports uefn_bridge.py"
+    reason as ``_moderation_report_path()`` above. A divergent derivation
+    here would recreate the exact silent-failure class of bug this dual-
+    location read was added to fix (reader looking in a different place
+    than the writer actually wrote). Deliberately does NOT create the
+    directory (unlike ``_get_bridge_dir()``) — this is a READ-side helper,
+    and creating a directory has no purpose when there is nothing to read
+    from it. Never raises."""
+    try:
+        return os.environ.get("UEFN_BRIDGE_DIR") or os.path.join(
+            tempfile.gettempdir(), "uefn_bridge"
+        )
+    except Exception:
+        return os.path.join(tempfile.gettempdir(), "uefn_bridge")
+
+
+def _moderation_report_locations():
+    """Every location ``_read_moderation_report()`` checks, as
+    ``[(label, path), ...]`` — deduplicated (primary and fallback can
+    coincide if ``UEFN_BRIDGE_DIR`` happens to equal this script's own
+    directory). Exposed separately from ``_read_moderation_report()`` so
+    the launcher window's "no report yet" state can show the user exactly
+    where this scan looked, rather than a dead-end message — the whole
+    point of this diagnosability pass. Never raises."""
+    try:
+        primary = _moderation_report_path()
+        fallback = os.path.join(_bridge_ipc_dir(), "moderation_report.json")
+        locations = [("primary — next to this script", primary)]
+        if fallback != primary:
+            locations.append(("fallback — bridge IPC temp dir", fallback))
+        return locations
+    except Exception:
+        return []
 
 
 def _read_moderation_report():
     """Read the analysed moderation_report.json written by the connected
     LLM. Shape: {"generated_at": str, "summary": str, "severity_counts":
     {"BLOCKER": int, "WARN": int, "KNOWN_RISK": int, "INFO": int},
-    "report": str}. Returns the parsed dict, or None if the file is
-    missing, unreadable, or not a JSON object — never raises. A missing/
-    corrupt file simply means "no analysed report yet", not an error."""
+    "report": str}.
+
+    DUAL-LOCATION READ (matches ``_handle_moderation_report_save``'s dual-
+    location WRITE in ``uefn_bridge.py``): checks BOTH
+    ``_moderation_report_path()`` (primary) and ``_bridge_ipc_dir()``'s
+    ``moderation_report.json`` (fallback) and returns whichever exists,
+    PARSES as valid JSON, and has the NEWEST mtime. A file that exists but
+    fails to parse does NOT shadow a valid file at the other location —
+    candidates are tried newest-mtime-first and a parse failure falls
+    through to the next one, rather than returning nothing. This closes a
+    real silent-failure bug: a report that only made it to the fallback
+    location (because the primary sat under a permission-protected engine-
+    install path) was previously invisible to this reader forever, through
+    repeated Refresh clicks.
+
+    Returns the parsed dict — with ``_source_path``/``_source_label``/
+    ``_source_mtime`` injected for the window to display where the report
+    came from — or None if no location has a valid, parsable report. Never
+    raises. A missing/corrupt-everywhere result simply means "no analysed
+    report yet", not an error; callers should show
+    ``_moderation_report_locations()`` in that case (see
+    ``show_moderation_scan``'s report section) rather than a dead end."""
+    candidates = []
     try:
-        with open(_moderation_report_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
+        for label, path in _moderation_report_locations():
+            try:
+                mtime = os.path.getmtime(path)
+            except Exception:
+                continue
+            candidates.append((mtime, label, path))
     except Exception:
         return None
-    return data if isinstance(data, dict) else None
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    for mtime, label, path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            # Exists but unparseable — fall through to the next candidate
+            # rather than shadowing a potentially-valid one elsewhere.
+            continue
+        if isinstance(data, dict):
+            data = dict(data)
+            data["_source_path"] = path
+            data["_source_label"] = label
+            data["_source_mtime"] = mtime
+            return data
+
+    return None
 
 
 def _moderation_allowlist_path():
@@ -2202,6 +3345,13 @@ def _format_compact_summary(result):
         prov_flagged_n = sum(
             1 for i in (image_prov.get("images") or []) if i.get("has_provenance_fields")
         )
+        link_risks = result.get("external_link_risks") or {}
+        link_risks_n = link_risks.get("total_count", len(link_risks.get("items") or []))
+        import_prov = result.get("import_provenance") or {}
+        import_risk_n = len(import_prov.get("items") or [])
+        hlod_generated_n = result.get("hlod_generated_count", 0)
+        thumbs = result.get("extracted_thumbnails") or {}
+        thumbs_extracted_n = thumbs.get("extracted", 0)
 
         # PARTITION counts — reconcile: project + shared + engine == total.
         if project_mount:
@@ -2227,7 +3377,29 @@ def _format_compact_summary(result):
                 "layout."
             )
         lines.append(f"HLOD / possibly-imported assets: {hlod_imported}")
+        lines.append(
+            f"  of which {hlod_generated_n} are auto-generated HLOD proxies "
+            "(expected to be large — NOT itself a finding; deprioritized, "
+            "never hidden, in any transport-sampled list)."
+        )
         lines.append(f"External Actor/Object generated packages: {external_actor_n}")
+        if import_risk_n:
+            lines.append(
+                f"Import provenance — imported from OUTSIDE the project tree: "
+                f"{import_risk_n}  <-- STRONGEST SIGNAL, uncapped (see "
+                "import_provenance)"
+            )
+        else:
+            lines.append(
+                "Import provenance — imported from OUTSIDE the project tree: "
+                "0 found (see import_provenance.note)."
+            )
+        if thumbs_extracted_n:
+            lines.append(
+                f"Suspect-asset embedded thumbnails extracted for vision review: "
+                f"{thumbs_extracted_n} (appended to image_paths; see "
+                "extracted_thumbnails)"
+            )
         lines.append(f"Verse string/comment/label surfaces: {verse_n}")
         lines.append(f"Text metadata fields (island name/description/etc.): {text_fields_n}")
         lines.append(f"Images with embedded text metadata: {images_n} (of {total_images} scanned)")
@@ -2319,6 +3491,18 @@ def _format_compact_summary(result):
 
         lines.append(f"Redirectors (renamed/deleted content still reachable): {redirectors_n}  <-- actionable")
         lines.append(f"Images with authoring-tool/creator/copyright metadata: {prov_flagged_n}")
+        if link_risks_n:
+            lines.append(
+                f"External link / scannable-code risks (Rule 1.12 'Keep It on "
+                f"the Island'): {link_risks_n}  <-- CHECK THIS, uncapped"
+            )
+        else:
+            lines.append(
+                "External link / scannable-code risks (Rule 1.12 'Keep It on "
+                "the Island'): 0 found — NOT proof-of-clean, see note below "
+                "(this scan cannot read QR codes/URLs baked into texture "
+                "pixels)."
+            )
 
         truncated = bool(result.get("truncated"))
         truncated_collectors = result.get("truncated_collectors") or []
@@ -2439,6 +3623,45 @@ def _format_raw_surfaces(result):
             ],
             lambda i: f"{i.get('file', '')}: fields present = {', '.join(i.get('fields_present') or [])}",
         )
+        link_risks = result.get("external_link_risks") or {}
+        _add_list(
+            "External link / scannable-code risks (Rule 1.12 'Keep It on the "
+            "Island') — HIGH-VALUE signal, never capped/sampled",
+            link_risks.get("items") or [],
+            lambda r: (
+                f"[{r.get('kind', '')}] {r.get('text', '')!r}  in {r.get('surface', '')} "
+                f":: {r.get('location', '')}"
+            ),
+        )
+        if link_risks.get("note"):
+            lines.append(f"  Note: {link_risks['note']}")
+            lines.append("")
+
+        import_prov = result.get("import_provenance") or {}
+        _add_list(
+            "Import provenance — imported from OUTSIDE the project tree "
+            "(Rule 1.7/1.12 strongest signal) — never capped/sampled",
+            import_prov.get("items") or [],
+            lambda r: (
+                f"[{r.get('classification', '')}] {r.get('source_path', '')}  "
+                f"-> {r.get('object_path', '')}  [{r.get('display_name', '')}]"
+            ),
+        )
+        if import_prov.get("note"):
+            lines.append(f"  Note: {import_prov['note']}")
+            lines.append("")
+
+        thumbs = result.get("extracted_thumbnails") or {}
+        _add_list(
+            "Extracted suspect-asset thumbnails (embedded editor JPEG, for "
+            "vision review — also appended to image_paths)",
+            thumbs.get("written_paths") or [],
+            lambda p: str(p),
+        )
+        for n in thumbs.get("notes") or []:
+            lines.append(f"  Note: {n}")
+        if thumbs.get("notes"):
+            lines.append("")
     except Exception as e:
         lines.append(f"(raw surfaces formatting error: {e})")
 
@@ -2522,6 +3745,19 @@ def show_moderation_scan():
                 text=f"Analysed report — {report_data.get('generated_at', '?')}",
                 font=("Segoe UI", 11, "bold"), fg=_HEADER_FG, bg=_BG,
             ).pack(anchor=tk.W)
+
+            # Subtle source caption (diagnosability) — where this report was
+            # actually read from, since it can be the primary OR fallback
+            # location (see _read_moderation_report's docstring). Small,
+            # dim, never a redesign of the existing layout.
+            _source_label = report_data.get("_source_label")
+            if _source_label:
+                tk.Label(
+                    report_frame,
+                    text=f"(read from {_source_label}: {report_data.get('_source_path', '?')})",
+                    font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
+                ).pack(anchor=tk.W)
+
             tk.Label(
                 report_frame,
                 text=(
@@ -2568,6 +3804,22 @@ def show_moderation_scan():
                 justify=tk.LEFT, wraplength=850,
             ).pack(anchor=tk.W, pady=(4, 0))
 
+            # Diagnosability (this follow-up's whole point): show exactly
+            # where this window looked, so a report stuck at an unwritable
+            # primary location — previously an invisible dead end through
+            # repeated Refresh clicks — is something the user can act on.
+            _locations = _moderation_report_locations()
+            if _locations:
+                _locations_text = "\n".join(
+                    f"  • {label}: {path}" for label, path in _locations
+                )
+                tk.Label(
+                    cta,
+                    text="Checked locations (none had a valid report):\n" + _locations_text,
+                    font=("Consolas", 8), fg=_TEXT_DIM, bg=_SECTION_BG,
+                    justify=tk.LEFT, wraplength=850,
+                ).pack(anchor=tk.W, pady=(8, 0))
+
     _render_report_section()
 
     # --- Action buttons ---
@@ -2602,12 +3854,25 @@ def show_moderation_scan():
             "Run the uefn_moderation_scan MCP tool for this UEFN project "
             f"(project path: {scan_root}), then review the collected asset, "
             "Verse, text-metadata, image, and audio surfaces — prioritize "
+            "import_provenance (never sampled/capped — an asset imported "
+            "from OUTSIDE the project, especially a Downloads/Desktop/Temp "
+            "folder, is the single strongest predictor this scan has; treat "
+            "any item as a likely BLOCKER), external_link_risks (Rule 1.12 "
+            "'Keep It on the Island' — never sampled/capped; treat any hit, "
+            "especially kind=scannable_code_token or url, as a likely "
+            "BLOCKER, and read its `note` field even when empty since this "
+            "scan cannot decode most images' pixels), extracted_thumbnails "
+            "(embedded editor thumbnails pulled for the highest-suspicion "
+            "assets — actually LOOK at these images if any were extracted), "
             "unicode_risks (especially by_surface.text_metadata's per-field "
-            "counts), hlod_or_imported_assets, external_actor_assets, "
-            "redirectors, and image_provenance as the highest-value "
-            "evidence — and report any IP-ownership or authenticity risks, "
-            "grouped by severity (BLOCKER, WARN, KNOWN_RISK, INFO), with a "
-            "short summary and actionable next steps for each finding.\n"
+            "counts), hlod_or_imported_assets (note hlod_generated_count is "
+            "usually large and NOT itself a finding — the auto-generated "
+            "HLOD entries are deprioritized in the list, not hidden), "
+            "external_actor_assets, redirectors, and image_provenance as the "
+            "highest-value evidence — and report any IP-ownership, "
+            "authenticity, or external-link risks, grouped by severity "
+            "(BLOCKER, WARN, KNOWN_RISK, INFO), with a short summary and "
+            "actionable next steps for each finding.\n"
             f"{licensed_line}\n"
             "Finally, call uefn_moderation_report with the full report "
             "text, a one-line summary, and per-severity counts (BLOCKER, "
