@@ -4633,6 +4633,20 @@
     }
   })();
 
+  // Evaluated ONCE at startup and cached (never per-frame): whether the OS
+  // reports a reduced-motion preference. Used exclusively by the disco-party
+  // easter egg (see updateDiscoParty / drawDiscoOverlay) to suppress the
+  // moving-lights overlay and the rare random trigger — a real photosensitivity
+  // safety gate, not a style preference.
+  const prefersReducedMotion = (() => {
+    try {
+      return typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (e) {
+      return false;
+    }
+  })();
+
   // ── Theme character rendering ────────────────────────────────────────────
   // ATLAS_CLIPS mirrors src/extension/themePlan.ts exactly — keep in sync.
   const ATLAS_CLIPS = {
@@ -5461,6 +5475,45 @@
   let congaCheerTimer = 0;
   /** Remaining hold time for the current synchronized conga cheer (>0 = holding). */
   let congaCheerHold = 0;
+
+  // ── Disco party easter egg ────────────────────────────────────────────────
+  // All party state lives together so the rival-arrival cancel path
+  // (cancelDiscoParty) is trivially correct: one function zeroes everything
+  // in one place, nothing scattered to miss. Characters dance via the
+  // EXISTING dance mechanism (charEntry.dancing/danceTimeLeft) — see
+  // startDiscoParty; this block only tracks the party itself and the
+  // full-scene lighting overlay's eased intensity.
+  /** True while the disco party is active. */
+  let discoPartyActive = false;
+  /** Seconds remaining in the current party. */
+  let discoPartyTimeLeft = 0;
+  /** Wall-clock ms the current party started — drives the light animation phase. */
+  let discoPartyStartMs = 0;
+  /** Eased 0..1 lighting intensity (ease in/out ~DISCO_EASE_SECONDS; snapped
+   *  straight to 0 on the rival-cancel path — see cancelDiscoParty). Read by
+   *  drawDiscoOverlay each frame; a single cheap comparison when 0. */
+  let discoPartyIntensity = 0;
+  /** Accumulator (seconds) toward the next rare-trigger eligibility check. */
+  let discoCheckTimer = 0;
+  /** Cooldown (seconds) remaining before another party may start. */
+  let discoCooldown = 0;
+  /** Party duration (product spec: "about five seconds"). */
+  const DISCO_PARTY_SECONDS = 5;
+  /** Ease-in/ease-out window for the lighting overlay (not used on the
+   *  rival-cancel path, which snaps off immediately — see cancelDiscoParty). */
+  const DISCO_EASE_SECONDS = 0.4;
+  /** Seconds between random-trigger eligibility rolls. */
+  const DISCO_CHECK_SECONDS = 20;
+  /** Chance per eligibility check that a party starts. Mean interval ≈
+   *  DISCO_CHECK_SECONDS / DISCO_CHANCE ≈ 500s (~8 min) of continuous
+   *  visible runtime — "on the order of once per several minutes", per spec.
+   *  Time-based (not a per-frame roll) so the rate is frame-rate independent. */
+  const DISCO_CHANCE = 0.04;
+  /** Minimum cooldown (seconds) after a party ends before another may start
+   *  via the random trigger (the D-key debug trigger ignores this, mirroring
+   *  the 'c' conga hotkey precedent — see the keydown handler). */
+  const DISCO_COOLDOWN_SECONDS = 180;
+
   /**
    * Currently alive enemies. Each: {instance_id, rival_id, nx, ny, hp, maxHp,
    * facingLeft, animState, targetAgentId}.
@@ -12413,6 +12466,18 @@
     if (congaCooldown > 0) congaCooldown = Math.max(0, congaCooldown - delta);
 
     if (congaActive) {
+      // Rivals end the conga immediately — same product rule as the disco
+      // party ("if rivals arrive, the party is over"), and a conga IS a
+      // party. Checked first, before any timer/cheer math, and BEFORE the
+      // per-character loop runs later this same frame, so the live-derived
+      // `inConga` (congaActive && congaIndex>=0) already reads false by the
+      // time that frame's combat gate (!inConga && !dancing) is evaluated —
+      // agents re-engage on the same frame the rival appears. Mirrors
+      // cancelDiscoParty's ordering exactly.
+      if (activeEnemies.length > 0) {
+        endConga();
+        return;
+      }
       congaTimeLeft -= delta;
       // Synchronized stop-and-cheer: every CONGA_CHEER_INTERVAL seconds the whole
       // line pauses together and holds the cheer pose for CONGA_CHEER_HOLD seconds.
@@ -12424,33 +12489,46 @@
       if (congaCheerHold > 0) {
         congaCheerHold = Math.max(0, congaCheerHold - delta);
       }
-      if (congaTimeLeft <= 0) {
-        // End the conga: cooldown + clear per-agent assignments.
-        congaActive = false;
-        congaTimeLeft = 0;
-        congaCheerTimer = 0;
-        congaCheerHold = 0;
-        congaCooldown = CONGA_COOLDOWN_SECONDS;
-        for (const id of Object.keys(agentCharMap)) {
-          const e = agentCharMap[id];
-          e.congaIndex = -1;
-          e.dancing = false;
-          e.danceTimeLeft = 0;
-        }
-        congaOrder = [];
-        congaWaypoints = [];
-        congaWaypointIdx = 0;
-      }
+      if (congaTimeLeft <= 0) endConga();
       return;
     }
 
     congaCheckTimer += delta;
     if (congaCheckTimer < CONGA_CHECK_SECONDS) return;
     congaCheckTimer = 0;
-    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0) return;
+    // A conga and a disco party must never own character animation state
+    // simultaneously (see updateDiscoParty's symmetric discoPartyActive
+    // block, and its belt-and-braces congaActive check in the active branch).
+    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0 || discoPartyActive) return;
     if (Math.random() >= CONGA_CHANCE) return;
 
     startConga(agentList);
+  }
+
+  /**
+   * End the conga line — shared by the natural end-of-run path (timer
+   * elapsed) and the rival-arrival cancel path above. Clears EVERY
+   * congaIndex write site (the natural-end block used to do this inline;
+   * factored out here so both paths use the identical, audited clear) so
+   * the live-derived `inConga` can never see a stale index survive into a
+   * future conga, and resets the shared line state + cooldown.
+   */
+  function endConga() {
+    congaActive = false;
+    congaTimeLeft = 0;
+    congaCheerTimer = 0;
+    congaCheerHold = 0;
+    congaCooldown = CONGA_COOLDOWN_SECONDS;
+    for (const id of Object.keys(agentCharMap)) {
+      const e = agentCharMap[id];
+      if (!e) continue;
+      e.congaIndex = -1;
+      e.dancing = false;
+      e.danceTimeLeft = 0;
+    }
+    congaOrder = [];
+    congaWaypoints = [];
+    congaWaypointIdx = 0;
   }
 
   /**
@@ -12480,6 +12558,224 @@
     congaCheerTimer = CONGA_CHEER_INTERVAL;
     congaCheerHold = 0;
     return true;
+  }
+
+  // ── Disco party easter egg ────────────────────────────────────────────────
+
+  /** Radial gradients for the two moving disco lights, built ONCE (lazily,
+   *  on first actual paint — see ensureDiscoGradients) and centered at their
+   *  own local (0,0) origin with a fixed DISCO_LIGHT_RADIUS reach. Movement
+   *  is achieved by translating the canvas before painting each one, NOT by
+   *  recreating the gradient — so drawDiscoOverlay never allocates a
+   *  gradient inside the render loop. @type {CanvasGradient|null} */
+  let discoGradientA = null;
+  /** @type {CanvasGradient|null} */
+  let discoGradientB = null;
+  /** Reach (px) of each disco light gradient before it fades to transparent. */
+  const DISCO_LIGHT_RADIUS = 340;
+  /** Peak alpha of each moving light at full party intensity. */
+  const DISCO_LIGHT_MAX_ALPHA = 0.55;
+  /** Angular speed (rad/s) of the light orbit — slow drift, not a strobe. */
+  const DISCO_ORBIT_SPEED = 0.4;
+  /** Hue-wash rotation speed (deg/s) — a ~12s period, smooth and continuous. */
+  const DISCO_HUE_SPEED = 30;
+  /** Hue-wash gentle alpha pulse frequency (Hz) — well under the ~3Hz
+   *  photosensitivity cap; amplitude kept modest via *_BASE/*_RANGE below. */
+  const DISCO_WASH_PULSE_HZ = 0.35;
+  const DISCO_WASH_ALPHA_BASE = 0.06;
+  const DISCO_WASH_ALPHA_RANGE = 0.03;
+
+  /** Build the two disco-light gradients once. Cheap no-op on every call
+   *  after the first. Never called while inactive (drawDiscoOverlay's early
+   *  return guards it), so an unused scene pays nothing at all for this. */
+  function ensureDiscoGradients() {
+    if (discoGradientA && discoGradientB) return;
+    discoGradientA = ctx.createRadialGradient(0, 0, 0, 0, 0, DISCO_LIGHT_RADIUS);
+    discoGradientA.addColorStop(0, "rgba(255,0,170,0.95)");
+    discoGradientA.addColorStop(1, "rgba(255,0,170,0)");
+    discoGradientB = ctx.createRadialGradient(0, 0, 0, 0, 0, DISCO_LIGHT_RADIUS);
+    discoGradientB.addColorStop(0, "rgba(0,200,255,0.95)");
+    discoGradientB.addColorStop(1, "rgba(0,200,255,0)");
+  }
+
+  /**
+   * Paint the full-scene disco lighting pass: two slowly-orbiting colored
+   * radial gradients plus a gentle hue-washed tint, composited over
+   * everything already drawn this frame (background, objects, decor,
+   * characters — called after the depth-sorted entity loop, before drawHUD).
+   * Inactive-path cost is a single comparison and nothing else — no
+   * allocation, no canvas state touched — satisfying the product's
+   * "cost near-nothing when inactive" requirement.
+   *
+   * PHOTOSENSITIVITY: reduced-motion users get NO lighting pass at all, ever
+   * — not even from the manual D-key trigger (chosen behavior; the D key
+   * still triggers the dancing for those users, just not this overlay — see
+   * the keydown handler's comment). This is deliberately unconditional on
+   * discoPartyIntensity so it can never be bypassed by a future call site.
+   * @param {number} w canvas width
+   * @param {number} h canvas height
+   */
+  function drawDiscoOverlay(w, h) {
+    if (discoPartyIntensity <= 0 || prefersReducedMotion) return;
+    ensureDiscoGradients();
+    const t = (nowMs() - discoPartyStartMs) / 1000;
+    ctx.save();
+    ctx.globalCompositeOperation = "overlay";
+    ctx.globalAlpha = discoPartyIntensity * DISCO_LIGHT_MAX_ALPHA;
+    // Light 1: slow orbit.
+    ctx.save();
+    ctx.translate(
+      w * 0.5 + Math.cos(t * DISCO_ORBIT_SPEED) * w * 0.32,
+      h * 0.45 + Math.sin(t * DISCO_ORBIT_SPEED * 0.8) * h * 0.28
+    );
+    ctx.fillStyle = discoGradientA;
+    ctx.fillRect(-DISCO_LIGHT_RADIUS, -DISCO_LIGHT_RADIUS, DISCO_LIGHT_RADIUS * 2, DISCO_LIGHT_RADIUS * 2);
+    ctx.restore();
+    // Light 2: counter-orbit, opposite phase.
+    ctx.save();
+    ctx.translate(
+      w * 0.5 + Math.cos(t * -DISCO_ORBIT_SPEED * 0.85 + Math.PI) * w * 0.30,
+      h * 0.5 + Math.sin(t * DISCO_ORBIT_SPEED * 0.6 + Math.PI) * h * 0.30
+    );
+    ctx.fillStyle = discoGradientB;
+    ctx.fillRect(-DISCO_LIGHT_RADIUS, -DISCO_LIGHT_RADIUS, DISCO_LIGHT_RADIUS * 2, DISCO_LIGHT_RADIUS * 2);
+    ctx.restore();
+    // Gentle global hue wash — smooth continuous hue drift (~12s period) with
+    // a slow, low-amplitude alpha pulse. Well under the ~3 changes/sec
+    // photosensitivity cap; nowhere near a strobe.
+    const hue = (t * DISCO_HUE_SPEED) % 360;
+    const washPulse = 0.5 + 0.5 * Math.sin(t * DISCO_WASH_PULSE_HZ * Math.PI * 2);
+    ctx.globalCompositeOperation = "soft-light";
+    ctx.globalAlpha = discoPartyIntensity * (DISCO_WASH_ALPHA_BASE + washPulse * DISCO_WASH_ALPHA_RANGE);
+    ctx.fillStyle = `hsl(${hue}, 70%, 55%)`;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  /**
+   * Start a disco party: every agentCharMap entry gets set dancing for
+   * DISCO_PARTY_SECONDS via the EXISTING dance mechanism
+   * (charEntry.dancing/danceTimeLeft — same fields startAgentDance uses), so
+   * the per-frame dance-countdown loop naturally reverts each character back
+   * to normal behavior when the party ends — no parallel state machine.
+   * Rivals are never entries in agentCharMap (see activeEnemies), so this
+   * can't sweep one in; callers (updateDiscoParty's random trigger, the D-key
+   * handler) already refuse to start while any rival is present or a conga
+   * is running.
+   */
+  function startDiscoParty() {
+    discoPartyActive = true;
+    discoPartyTimeLeft = DISCO_PARTY_SECONDS;
+    discoPartyStartMs = nowMs();
+    discoPartyIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateDiscoParty
+    for (const id of Object.keys(agentCharMap)) {
+      const e = agentCharMap[id];
+      if (!e) continue;
+      freeAgentSeat(e);
+      e.dancing = true;
+      e.danceTimeLeft = DISCO_PARTY_SECONDS;
+      e.danceFrameTimer = 0;
+      e.lastDanceIdx = -1;
+    }
+    return true;
+  }
+
+  /** Natural end (timer ran out, no rival interruption): ease-out already
+   *  reached 0 via updateDiscoParty's min(inT,outT) intensity formula, and
+   *  every agentCharMap entry's danceTimeLeft was seeded to the same
+   *  DISCO_PARTY_SECONDS and has been counting down against the same
+   *  per-frame delta ever since — so it has already self-reverted
+   *  (dancing=false) via the existing dance-countdown loop by the time this
+   *  fires. Nothing dance-related to clear here. */
+  function endDiscoParty() {
+    discoPartyActive = false;
+    discoPartyTimeLeft = 0;
+    discoPartyIntensity = 0;
+    discoCooldown = DISCO_COOLDOWN_SECONDS;
+  }
+
+  /**
+   * Rival-arrival cancel path (product rule: "if rivals arrive, the party is
+   * over"). Unlike endDiscoParty, this fires BEFORE the per-character
+   * combat/dance loop runs this same frame (updateDiscoParty is called early
+   * in render()), so forcing dancing=false here — rather than waiting on the
+   * normal countdown — makes the very next lines of this same frame's
+   * per-character loop see !charEntry.dancing and let combat engagement
+   * (isEngaging, gated on !dancing) start immediately, matching "our
+   * characters immediately get to action and attack the rivals". Lighting
+   * snaps to 0 with no ease-out — that abruptness is the point.
+   */
+  function cancelDiscoParty() {
+    discoPartyActive = false;
+    discoPartyTimeLeft = 0;
+    discoPartyIntensity = 0; // snap off, no ease-out
+    discoCooldown = DISCO_COOLDOWN_SECONDS;
+    for (const id of Object.keys(agentCharMap)) {
+      const e = agentCharMap[id];
+      if (!e) continue;
+      e.dancing = false;
+      e.danceTimeLeft = 0;
+      e.danceFrameTimer = 0;
+      e.lastDanceIdx = -1;
+    }
+  }
+
+  /**
+   * Advance the disco-party easter egg. Called once per frame, gated exactly
+   * like updateConga (only while the scene is actually loaded/rendering —
+   * the caller already skips this while document.hidden or the theme is
+   * still loading, satisfying "only evaluated while the scene is actually
+   * rendering and visible").
+   * @param {number} delta seconds
+   * @param {Array<object>} agentList current scene agent list (sceneAgentList)
+   */
+  function updateDiscoParty(delta, agentList) {
+    if (discoCooldown > 0) discoCooldown = Math.max(0, discoCooldown - delta);
+
+    if (discoPartyActive) {
+      // Rivals end the party immediately (product rule) — checked first,
+      // before any timer/easing math, so a rival arriving mid-party cancels
+      // on the same frame it appears.
+      if (activeEnemies.length > 0) {
+        cancelDiscoParty();
+        return;
+      }
+      // Belt-and-braces: a conga must never start during a party (the
+      // random trigger below and the 'c' hotkey both check discoPartyActive,
+      // and updateConga is called before updateDiscoParty in render() so a
+      // same-frame race can't slip through) — but if that ever fails, end
+      // the party immediately rather than let two systems both drive
+      // charEntry.dancing/animation this frame. Reuses cancelDiscoParty's
+      // full clear (snap lighting off, release every dancer) since this is
+      // the same "another system now owns these characters" situation as a
+      // rival arriving.
+      if (congaActive) {
+        cancelDiscoParty();
+        return;
+      }
+      discoPartyTimeLeft -= delta;
+      // Ease in over DISCO_EASE_SECONDS, hold, ease out over the same window
+      // as the party naturally winds down (min of the two ramps).
+      const elapsed = DISCO_PARTY_SECONDS - discoPartyTimeLeft;
+      const inT = Math.min(1, elapsed / DISCO_EASE_SECONDS);
+      const outT = Math.min(1, discoPartyTimeLeft / DISCO_EASE_SECONDS);
+      discoPartyIntensity = Math.max(0, Math.min(inT, outT));
+      if (discoPartyTimeLeft <= 0) endDiscoParty();
+      return;
+    }
+
+    // Not active. Random triggering is fully disabled for reduced-motion
+    // users (product decision — see the D-key handler for the manual path,
+    // which still works for them).
+    if (prefersReducedMotion) return;
+    discoCheckTimer += delta;
+    if (discoCheckTimer < DISCO_CHECK_SECONDS) return;
+    discoCheckTimer = 0;
+    // Blocked while: no agents, a rival is present, still on cooldown, or a
+    // conga is running (kept mutually exclusive — both drive charEntry.dancing).
+    if (agentList.length < 1 || activeEnemies.length > 0 || discoCooldown > 0 || congaActive) return;
+    if (Math.random() >= DISCO_CHANCE) return;
+    startDiscoParty();
   }
 
   /**
@@ -12764,10 +13060,33 @@
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
     const key = (e.key || "").toLowerCase();
     if (key === "c") {
-      // Force-start a conga now (ignore eligibility/cooldown/probability).
+      // Force-start a conga now (ignore eligibility/cooldown/probability) —
+      // but NOT the safety gates: refuses while a party is already running,
+      // while a rival is present (previously missing here — updateConga's
+      // own random trigger already checked this; the hotkey now matches),
+      // or while a disco party is active (mutual exclusion — see
+      // updateDiscoParty/updateConga).
       if (congaActive) return;
+      if (activeEnemies.length > 0) return;
+      if (discoPartyActive) return;
       if (lastAgentList.length < 1) return;
       startConga(lastAgentList);
+    }
+    if (key === "d" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // Force-start a disco party now (ignores DISCO_COOLDOWN_SECONDS and the
+      // random probability, mirroring the 'c' conga debug hotkey above) —
+      // but NOT the safety gates: refuses while a party is already running,
+      // while a rival is present (product rule: rivals also BLOCK a party
+      // from starting, not just end one), or during a conga.
+      // Reduced-motion note: this still triggers the dancing for
+      // prefers-reduced-motion users — only drawDiscoOverlay's lighting pass
+      // is suppressed for them (see its doc comment) — so D remains a useful,
+      // motion-safe way to see the dance without the flashing lights.
+      if (discoPartyActive) return;
+      if (activeEnemies.length > 0) return;
+      if (congaActive) return;
+      if (lastAgentList.length < 1) return;
+      startDiscoParty();
     }
   });
 
@@ -13366,6 +13685,7 @@
       updateEnemySpawning(delta, sceneAgentList);
       advanceEnemies(delta);
       updateConga(delta, sceneAgentList);
+      updateDiscoParty(delta, sceneAgentList);
     }
     // Change C: advance live projectiles. t runs 0→1 over PROJECTILE_FLIGHT_SEC,
     // then lingers on the blast for PROJECTILE_BLAST_HOLD before removal. Drawn
@@ -15164,6 +15484,12 @@
         ctx.restore();
       }
     }
+
+    // ── Disco party lighting overlay ──────────────────────────────────────
+    // Painted over everything drawn so far this frame (background, objects,
+    // decor, characters, enemies, projectiles) and BEFORE drawHUD, so the HUD
+    // text stays crisp. Single cheap comparison when no party is running.
+    drawDiscoOverlay(w, h);
 
     // (Nav-polygon debug overlay removed — the Stage Editor now shows/edits
     //  the walkable polygon, so the standalone N-key view is no longer needed.)
