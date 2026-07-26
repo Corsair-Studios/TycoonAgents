@@ -51,6 +51,7 @@ module's.
 Entry point: ``run_moderation_scan(project_dir=None)`` — see its docstring.
 """
 
+import datetime
 import glob
 import hashlib
 import json
@@ -1725,6 +1726,69 @@ def _domain_match_tld(matched_text):
         return head.rsplit(".", 1)[-1].lower()
     except Exception:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# BUG FIX (79% false-positive rate on external_link_risks — review finding
+# from a real end-to-end run: 233 hits, ~185 noise, ALL on the "verse"
+# surface). The domain/invite_path/handle detectors above were tuned
+# against ASSET NAMES, never against real Verse source, and Verse code has
+# three shapes that structurally collide with link detection:
+#   1. `using { /Fortnite.com/Devices }` module-import paths — a bare
+#      domain-with-path shape, immediately preceded by "/" (the statement's
+#      own leading slash).
+#   2. `@editable` / `@author` attribute specifiers — Verse language syntax,
+#      not social-media handles, but both are "@" + identifier.
+#   3. Field accessors like `Stats.fr` / `VendorItem.Name` — a bare
+#      "label.tld" collision where the trailing segment happens to match a
+#      real ccTLD/gTLD in the allowlist, with NO path component at all.
+# All three fixes below are STRUCTURAL/brand-neutral (shape only, no
+# hardcoded module/product names) and scoped to the "verse" surface only —
+# text_metadata (the island-facing surface where a real link actually
+# violates Rule 1.12) stays fully sensitive, unchanged.
+# ---------------------------------------------------------------------------
+
+def _is_verse_module_path_shape(text, match_start):
+    """True if a domain/invite_path-shaped match starting at ``match_start``
+    in ``text`` is immediately preceded by a literal ``/`` — the shape of a
+    Verse ``using { /Module.tld/Path }`` import statement, e.g.
+    "/Fortnite.com/Devices". A genuine external link mentioned in Verse
+    source (a comment, a string) is essentially never written this way — a
+    bare domain directly preceded by another slash with no scheme/``www.``
+    prefix. Purely structural: does not require or hardcode any specific
+    module/product name. Never raises."""
+    try:
+        return match_start > 0 and text[match_start - 1] == "/"
+    except Exception:
+        return False
+
+
+def _verse_text_has_link_context(text):
+    """True if ``text`` contains an ACTUAL url/www/domain-with-path signal
+    anywhere in the same snippet — used to decide whether an ``@token`` on
+    the "verse" surface is plausibly a real social-handle mention (the kind
+    that's typically paired with a link) rather than a bare Verse attribute
+    specifier like ``@editable``/``@author``, which never co-occurs with a
+    link. Reuses ``_is_verse_module_path_shape`` so a ``using`` statement in
+    the same snippet can't itself manufacture false context. Never raises;
+    returns False (i.e. suppress the handle) on any failure — "when in
+    doubt on the verse surface, do not emit" is the doctrine here."""
+    try:
+        if _EXTERNAL_LINK_URL_RE.search(text):
+            return True
+        if _EXTERNAL_LINK_WWW_RE.search(text):
+            return True
+        for m in _EXTERNAL_LINK_DOMAIN_RE.finditer(text):
+            if _is_verse_module_path_shape(text, m.start()):
+                continue
+            if "/" not in m.group(0):
+                continue
+            return True
+        return False
+    except Exception:
+        return False
+
+
 # "qr" as a whole word/delimiter-bounded segment — the negative lookaround
 # treats any non-alnum (including "_"/"-") as a boundary, so a name like
 # "<platform>_QR" or "QR_code" matches but "SQRT"/"QRcode" (mid-word) do not.
@@ -1736,7 +1800,7 @@ _EXTERNAL_LINK_SCAN_ME_RE = re.compile(r'\bscan\s*me\b', re.IGNORECASE)
 _EXTERNAL_LINK_HANDLE_RE = re.compile(r'(?<![A-Za-z0-9_])@[A-Za-z][A-Za-z0-9_]{1,31}\b')
 
 
-def _scan_text_for_external_link_risks(text, emit, allow_domain_like=True):
+def _scan_text_for_external_link_risks(text, emit, allow_domain_like=True, verse_mode=False):
     """Scan a single string for url/www/invite_path/domain/scannable_code
     shapes and call ``emit(matched_text, kind)`` for each hit. Never raises.
 
@@ -1755,6 +1819,19 @@ def _scan_text_for_external_link_risks(text, emit, allow_domain_like=True):
     docstring above) and would otherwise be the dominant false-positive
     source. url/www/scannable_code_token are still checked on that surface
     since those shapes don't collide with UE's path convention.
+
+    ``verse_mode=True`` (BUG FIX — 79% false-positive rate, review finding
+    from a real end-to-end run; see the block comment above
+    ``_is_verse_module_path_shape``) applies TWO extra suppressions scoped
+    ONLY to invite_path/domain candidates, used exclusively for the "verse"
+    surface: (1) a match immediately preceded by "/" — a Verse ``using {
+    /Module.tld/Path }`` import statement, never a real link — is dropped;
+    (2) a "domain"-kind match with NO path/slug component at all (a bare
+    "label.tld") is dropped, since on Verse source this is overwhelmingly a
+    field-accessor collision (``Stats.fr``, ``VendorItem.Name``) rather than
+    a link — a genuine domain mention essentially always carries a path,
+    scheme, or "www." prefix. text_metadata is NOT affected by this flag
+    and stays fully sensitive.
     """
     if not text:
         return
@@ -1774,10 +1851,17 @@ def _scan_text_for_external_link_risks(text, emit, allow_domain_like=True):
             for m in _EXTERNAL_LINK_SHORT_HOST_SLUG_RE.finditer(text):
                 if _domain_match_tld(m.group(0)) in _FILE_EXTENSION_DENYLIST:
                     continue
+                if verse_mode and _is_verse_module_path_shape(text, m.start()):
+                    continue
                 candidates.append((m.start(), m.end(), "invite_path", m.group(0), 2))
             for m in _EXTERNAL_LINK_DOMAIN_RE.finditer(text):
                 if _domain_match_tld(m.group(0)) in _FILE_EXTENSION_DENYLIST:
                     continue
+                if verse_mode:
+                    if _is_verse_module_path_shape(text, m.start()):
+                        continue
+                    if "/" not in m.group(0):
+                        continue
                 candidates.append((m.start(), m.end(), "domain", m.group(0), 3))
         candidates.sort(key=lambda c: (c[4], -(c[1] - c[0]), c[0]))
         accepted = []
@@ -1867,11 +1951,33 @@ def collect_external_link_risks(asset_surfaces, verse_surfaces, text_metadata, i
         for s in verse_surfaces or []:
             loc = f"{s.get('file', '')}:{s.get('line', '')}"
             text = s.get("text", "")
+            kind = s.get("kind", "")
+            # BUG FIX (review finding — the FP fix cost real recall):
+            # collect_verse_surfaces emits ONE string/comment/label per
+            # entry, never a multi-line block, so a genuine standalone
+            # promo line like "Follow @mystudio for updates!" (a
+            # string_literal — i.e. potentially PLAYER-VISIBLE text) never
+            # has a paired URL in the SAME snippet and was being silently
+            # dropped by the link-context gate below. string_literal is the
+            # one kind that can actually be player-visible, so it stays
+            # FULLY SENSITIVE — no verse_mode suppression, no link-context
+            # gate on handles. Every other kind is CODE: comment_line/
+            # comment_block is where `using { /Module.tld/Path }` and
+            # `@editable`/`@author` noise lives, and label_assignment's
+            # captured text is "Name := <RHS>" — a device/actor binding
+            # EXPRESSION (see collect_verse_surfaces's docstring), never
+            # natural-language text (an RHS string literal is ALREADY
+            # captured separately as its own string_literal entry on the
+            # same line) — so those kinds keep the existing suppression.
+            _is_player_visible = (kind == "string_literal")
             _scan_text_for_external_link_risks(
-                text, lambda t, k, _loc=loc: _emit("verse", _loc, t, k), allow_domain_like=True,
+                text, lambda t, k, _loc=loc: _emit("verse", _loc, t, k),
+                allow_domain_like=True, verse_mode=not _is_player_visible,
             )
-            for m in _EXTERNAL_LINK_HANDLE_RE.finditer(str(text or "")):
-                _emit("verse", loc, m.group(0), "handle")
+            _text_str = str(text or "")
+            if _is_player_visible or _verse_text_has_link_context(_text_str):
+                for m in _EXTERNAL_LINK_HANDLE_RE.finditer(_text_str):
+                    _emit("verse", loc, m.group(0), "handle")
     except Exception:
         pass
 
@@ -2112,6 +2218,27 @@ _THUMBNAIL_TAIL_WINDOW_BYTES = 8 * 1024 * 1024
 # _THUMBNAIL_MAX_BYTES (the largest a real thumbnail is expected to be), so
 # a genuine trailing thumbnail is never truncated by this window.
 
+# BUG FIX (coverage regression — a real end-to-end run on a live project
+# extracted only 40 of 2,325 suspects, 1.5% coverage, and the ONE asset
+# that actually got the island rejected (a QR-code image) was not among
+# the 40 because the suspect queue was consumed in plain list order rather
+# than by risk priority — a human had to recover it manually from the raw
+# asset list). Two changes fix this together: the suspect queue is now
+# ORDERED by risk signal before this cap is applied (see run_moderation_
+# scan's suspect-queue construction — an asset scoring on BOTH import-
+# provenance AND external-link risk sorts first), and the item budget
+# itself is raised, since a tail read is cheap (8 MB window, 200 MB skip
+# ceiling above) and thumbnails are small:
+_THUMBNAIL_DEFAULT_MAX_ITEMS = 150
+# ^ Was 40. Still hard-capped, still counted (see suspects_not_extracted).
+_THUMBNAIL_TOTAL_BYTES_BUDGET = 24 * 1024 * 1024
+# ^ Cumulative EXTRACTED-bytes budget (not read budget — the tail-window
+# read above already bounds per-file reads regardless). Extraction stops
+# early once this is reached; the stop is recorded via
+# "stopped_for_byte_budget" and reported SEPARATELY from the item cap
+# ("suspects_not_extracted") in the returned notes, so a byte-budget
+# cutoff can never be mistaken for — or silently mask — the item cap.
+
 
 def _extract_last_jpeg_span(data):
     """Find the LAST embedded JPEG (SOI ``\\xff\\xd8\\xff`` ... EOI
@@ -2163,8 +2290,9 @@ def _package_name_to_uasset_path(package_name, project_dir, mount_prefix):
         return None
 
 
-def extract_asset_thumbnails(suspect_entries, out_dir, max_thumbnails=40,
-                              project_dir=None, mount_prefix=None):
+def extract_asset_thumbnails(suspect_entries, out_dir, max_thumbnails=_THUMBNAIL_DEFAULT_MAX_ITEMS,
+                              project_dir=None, mount_prefix=None,
+                              max_total_bytes=_THUMBNAIL_TOTAL_BYTES_BUDGET):
     """Given ``suspect_entries`` (asset-surface-shaped dicts with at least
     ``object_path``/``package_name``/``display_name``), resolve each one's
     .uasset on disk and extract its embedded editor JPEG thumbnail (see
@@ -2174,8 +2302,13 @@ def extract_asset_thumbnails(suspect_entries, out_dir, max_thumbnails=40,
     roughly-square UI-shaped textures (see
     ``collect_asset_surfaces``'s ``small_square_ui_texture_entries``) — this
     function itself does no registry walking and is HARD-CAPPED at
-    ``max_thumbnails`` (default 40): it must never process the full
-    registry.
+    ``max_thumbnails`` (default 150): it must never process the full
+    registry. CALLERS MUST ORDER ``suspect_entries`` BY RISK PRIORITY before
+    calling this — this function extracts in list order and applies the cap
+    positionally; it does not re-rank (see run_moderation_scan's suspect-
+    queue construction, the fix for a real regression where the single
+    highest-risk suspect was NOT among the 40 extracted because the queue
+    wasn't priority-ordered).
 
     ``project_dir``/``mount_prefix`` default to the live-resolved scan root
     and project mount (via ``_resolve_project_dir``/``_resolve_project_mount``)
@@ -2191,19 +2324,35 @@ def extract_asset_thumbnails(suspect_entries, out_dir, max_thumbnails=40,
     end and 8 MB comfortably exceeds any real thumbnail's max plausible
     size (``_THUMBNAIL_MAX_BYTES``, 2 MB).
 
-    Returns {"written_paths": [...], "attempted": int, "extracted": int,
+    TWO INDEPENDENT LIMITS (BUG FIX — coverage regression, see
+    ``_THUMBNAIL_DEFAULT_MAX_ITEMS``'s comment above): the item cap
+    (``max_thumbnails``) and a cumulative EXTRACTED-bytes budget
+    (``max_total_bytes``, default 24 MB) can each stop extraction early,
+    and BOTH are reported honestly and separately in the returned notes —
+    a byte-budget cutoff never silently masks the item cap, or vice versa.
+
+    Returns {"written_paths": [...], "total_suspects": int (len of the
+    input BEFORE either limit is applied), "attempted": int, "extracted":
+    int, "bytes_extracted": int, "stopped_for_byte_budget": bool,
     "skipped_not_found": int, "skipped_too_large": int, "skipped_no_jpeg":
-    int, "suspects_not_extracted": int, "notes": [...]}. Never raises — a
-    single unreadable/unresolvable/oversized/undersized asset is skipped,
-    not fatal."""
+    int, "suspects_not_extracted": int (everything neither attempted NOR
+    extracted, for ANY reason — item cap or byte budget), "notes": [...]}.
+    Never raises — a single unreadable/unresolvable/oversized/undersized
+    asset is skipped, not fatal. UNEXTRACTED SUSPECTS ARE UNREVIEWED
+    PIXELS, NOT CLEARED — callers must never read a partial extraction as
+    evidence the unextracted suspects are clean."""
     result = {
-        "written_paths": [], "attempted": 0, "extracted": 0,
+        "written_paths": [], "total_suspects": 0, "attempted": 0, "extracted": 0,
+        "bytes_extracted": 0, "stopped_for_byte_budget": False,
         "skipped_not_found": 0, "skipped_too_large": 0, "skipped_no_jpeg": 0,
         "suspects_not_extracted": 0, "notes": [],
     }
-    entries = list(suspect_entries or [])
+    all_entries = list(suspect_entries or [])
+    result["total_suspects"] = len(all_entries)
+    entries = all_entries
+    item_cap_not_attempted = 0
     if len(entries) > max_thumbnails:
-        result["suspects_not_extracted"] = len(entries) - max_thumbnails
+        item_cap_not_attempted = len(entries) - max_thumbnails
         entries = entries[:max_thumbnails]
 
     if project_dir is None or mount_prefix is None:
@@ -2225,6 +2374,14 @@ def extract_asset_thumbnails(suspect_entries, out_dir, max_thumbnails=40,
         return result
 
     for entry in entries:
+        if result["bytes_extracted"] >= max_total_bytes:
+            # Cumulative byte budget reached — stop BEFORE attempting this
+            # (and every remaining) entry, so "attempted" stays an honest
+            # count of files actually opened. Reported separately from the
+            # item cap below (see the class docstring's "TWO INDEPENDENT
+            # LIMITS" note) so neither cutoff silently masks the other.
+            result["stopped_for_byte_budget"] = True
+            break
         result["attempted"] += 1
         try:
             package_name = entry.get("package_name") or (entry.get("object_path", "") or "").split(".")[0]
@@ -2263,22 +2420,43 @@ def extract_asset_thumbnails(suspect_entries, out_dir, max_thumbnails=40,
                 wf.write(span)
             result["written_paths"].append(out_path)
             result["extracted"] += 1
+            result["bytes_extracted"] += len(span)
         except Exception:
             continue
 
+    byte_budget_not_attempted = max(0, len(entries) - result["attempted"]) if result["stopped_for_byte_budget"] else 0
+    result["suspects_not_extracted"] = item_cap_not_attempted + byte_budget_not_attempted
+
+    coverage_pct = (result["extracted"] / result["total_suspects"] * 100) if result["total_suspects"] else 0.0
     note = (
         f"Extracted {result['extracted']} of {result['attempted']} attempted "
-        f"suspect thumbnail(s) ({result['skipped_not_found']} asset file not "
-        f"found/unreadable on disk, {result['skipped_too_large']} skipped for "
-        f"exceeding the {_THUMBNAIL_SOURCE_MAX_FILE_BYTES // (1024 * 1024)}MB "
-        f"size ceiling, {result['skipped_no_jpeg']} had no valid-sized "
-        "embedded JPEG in the read window)."
+        f"({result['total_suspects']} total suspect(s) identified, "
+        f"{coverage_pct:.1f}% coverage) — {result['skipped_not_found']} asset "
+        f"file not found/unreadable on disk, {result['skipped_too_large']} "
+        f"skipped for exceeding the {_THUMBNAIL_SOURCE_MAX_FILE_BYTES // (1024 * 1024)}"
+        f"MB size ceiling, {result['skipped_no_jpeg']} had no valid-sized "
+        "embedded JPEG in the read window."
     )
-    if result["suspects_not_extracted"]:
+    if item_cap_not_attempted:
         note += (
-            f" {result['suspects_not_extracted']} additional suspect(s) were "
-            f"NOT attempted (hard-capped at {max_thumbnails})."
+            f" {item_cap_not_attempted} suspect(s) NOT attempted at all "
+            f"(hard-capped at max_thumbnails={max_thumbnails})."
         )
+    if result["stopped_for_byte_budget"]:
+        note += (
+            f" Extraction stopped EARLY after {result['bytes_extracted']} "
+            f"bytes (cumulative byte budget max_total_bytes={max_total_bytes} "
+            f"reached) — {byte_budget_not_attempted} further suspect(s) in "
+            "the ranked queue were never attempted AS A RESULT OF THE BYTE "
+            "BUDGET, separate from the item cap above; both limits are "
+            "reported independently so neither silently masks the other."
+        )
+    note += (
+        " UNEXTRACTED SUSPECTS ARE UNREVIEWED PIXELS, NOT CLEARED — the "
+        "queue is priority-ordered by the caller so the highest-risk "
+        "suspects are extracted first, but an absence of a finding among "
+        "suspects that were never extracted is NOT evidence of absence."
+    )
     result["notes"].append(note)
     return result
 
@@ -2921,46 +3099,107 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
     # Embedded-thumbnail extraction — narrow, hard-capped suspect set only
     # (import_provenance/external_link_risks hits + small square UI-shaped
     # textures), never a full-registry walk. See extract_asset_thumbnails.
+    #
+    # BUG FIX (coverage regression — real end-to-end run): the suspect queue
+    # used to be a plain dedup-and-append, consumed in collection order by
+    # extract_asset_thumbnails' item cap. On a live project that produced
+    # 2,325 suspects and only 40 got a thumbnail (1.5% coverage), and the
+    # ONE asset that actually got the island REJECTED (a QR-code image
+    # scoring on BOTH import-provenance AND external-link risk) was not
+    # among the 40 — a human had to recover it manually. The queue is now
+    # ranked by (risk-signal count desc, best-tier asc) BEFORE the cap is
+    # applied, so a multi-signal asset always sorts first regardless of
+    # where it happened to land during collection.
     try:
-        _suspect_entries = []
-        _suspect_seen_keys = set()
+        _suspect_records = {}   # key -> {"entry": dict, "signal_count": int, "best_tier": int}
+        _suspect_order = []     # first-seen order, for a stable sort tiebreak
 
-        def _add_suspect(entry_like):
+        def _entry_key(entry_like):
             try:
-                key = (
+                return (
                     entry_like.get("object_path")
                     or entry_like.get("package_name")
                     or entry_like.get("location")
                 )
             except Exception:
-                key = None
-            if not key or key in _suspect_seen_keys:
-                return
-            _suspect_seen_keys.add(key)
-            _suspect_entries.append(entry_like)
+                return None
 
-        for _it in result["import_provenance"].get("items") or []:
-            _add_suspect(_it)
-        for _it in result["external_link_risks"].get("items") or []:
-            if _it.get("surface") in ("asset_name", "asset_path"):
-                _loc = _it.get("location", "")
-                _add_suspect({"object_path": _loc, "package_name": _loc, "display_name": _loc})
-        for _it in asset_result.get("small_square_ui_texture_entries") or []:
-            _add_suspect(_it)
+        # BUG FIX (review finding — signal_count double-counted ONE
+        # collector): collect_external_link_risks emits SEPARATE asset_name
+        # and asset_path items for the same asset, and one regex hit
+        # usually fires on both (the object path embeds the display name),
+        # so counting raw ITEMS gave a single-collector duplicate
+        # signal_count=2 — enough to outrank a genuinely distinct
+        # import_provenance hit at signal_count=1/tier=0. "independent
+        # signals" must mean distinct COLLECTORS, not distinct items, so
+        # each collector's hits are first deduped down to one entry PER
+        # ASSET before scoring — _add_collector_hits below then contributes
+        # AT MOST +1 signal_count per collector, however many raw items
+        # that collector produced for the same asset.
+        def _dedupe_collector_hits(items):
+            deduped = {}
+            for it in items or []:
+                key = _entry_key(it)
+                if key and key not in deduped:
+                    deduped[key] = it
+            return deduped
+
+        def _add_collector_hits(hit_keys, tier):
+            for key, entry_like in hit_keys.items():
+                rec = _suspect_records.get(key)
+                if rec is not None:
+                    rec["signal_count"] += 1
+                    rec["best_tier"] = min(rec["best_tier"], tier)
+                    # Prefer whichever entry carries a real display_name, so
+                    # the written thumbnail filename stays readable either way.
+                    if not rec["entry"].get("display_name") and entry_like.get("display_name"):
+                        rec["entry"] = entry_like
+                    continue
+                _suspect_records[key] = {"entry": entry_like, "signal_count": 1, "best_tier": tier}
+                _suspect_order.append(key)
+
+        _link_asset_hits = [
+            {"object_path": _it.get("location", ""), "package_name": _it.get("location", ""),
+             "display_name": _it.get("location", "")}
+            for _it in result["external_link_risks"].get("items") or []
+            if _it.get("surface") in ("asset_name", "asset_path")
+        ]
+
+        # Tier: 0 = import-provenance (strongest single signal), 1 =
+        # external-link risk, 2 = small-square-UI-texture heuristic (weakest
+        # single signal) — used only as a tiebreak when signal_count matches;
+        # signal_count itself (an asset flagged by MULTIPLE independent
+        # COLLECTORS) is the primary sort key, since that is exactly the
+        # QR-code-image regression case this fix targets (see the block
+        # comment above this try: block).
+        _add_collector_hits(_dedupe_collector_hits(result["import_provenance"].get("items")), tier=0)
+        _add_collector_hits(_dedupe_collector_hits(_link_asset_hits), tier=1)
+        _add_collector_hits(_dedupe_collector_hits(asset_result.get("small_square_ui_texture_entries")), tier=2)
+
+        _suspect_order_ranked = sorted(
+            _suspect_order,
+            key=lambda k: (-_suspect_records[k]["signal_count"], _suspect_records[k]["best_tier"]),
+        )
+        _suspect_entries = [_suspect_records[k]["entry"] for k in _suspect_order_ranked]
 
         _thumb_out_dir = os.path.join(os.path.dirname(_moderation_report_path()), "moderation_thumbnails")
         result["extracted_thumbnails"] = extract_asset_thumbnails(
-            _suspect_entries, _thumb_out_dir, max_thumbnails=40,
+            _suspect_entries, _thumb_out_dir,
             project_dir=scan_root, mount_prefix=asset_result.get("project_mount"),
         )
         _new_thumb_paths = result["extracted_thumbnails"].get("written_paths") or []
+        _thumb_total_suspects = result["extracted_thumbnails"].get("total_suspects", 0)
+        _thumb_extracted_n = result["extracted_thumbnails"].get("extracted", 0)
+        notes.append(
+            f"THUMBNAIL COVERAGE: {_thumb_extracted_n} of {_thumb_total_suspects} "
+            "total suspect(s) had an embedded thumbnail extracted for vision "
+            "review (queue ranked by risk-signal count, highest first — see "
+            "extracted_thumbnails.notes for the item-cap/byte-budget "
+            "breakdown). UNEXTRACTED SUSPECTS ARE UNREVIEWED PIXELS, NOT "
+            "CLEARED."
+        )
         if _new_thumb_paths:
             result["image_paths"] = list(result.get("image_paths") or []) + _new_thumb_paths
-            notes.append(
-                f"Extracted {len(_new_thumb_paths)} embedded thumbnail(s) from "
-                "suspect assets into image_paths for visual inspection — see "
-                "extracted_thumbnails."
-            )
     except Exception as e:
         notes.append(f"extract_asset_thumbnails failed: {e}")
         result["extracted_thumbnails"] = {"written_paths": [], "notes": [f"failed: {e}"]}
@@ -3303,6 +3542,108 @@ def _write_moderation_allowlist(licensed_ip_list):
         pass
 
 
+def _build_export_markdown(report_data, project_dir, scan_result):
+    """Render the analysed report as a small Markdown document: a short
+    header (project path, resolved project mount, report timestamp,
+    severity counts) followed by the report body itself (the report text
+    is already Markdown). Never raises — every field is read defensively
+    so a missing/odd value degrades to a placeholder rather than aborting
+    the whole export."""
+    counts = {}
+    generated_at = "?"
+    body = "(no report text)"
+    try:
+        counts = report_data.get("severity_counts") or {}
+        generated_at = report_data.get("generated_at") or "?"
+        body = report_data.get("report") or "(no report text)"
+    except Exception:
+        pass
+
+    project_mount = None
+    try:
+        if isinstance(scan_result, dict):
+            project_mount = scan_result.get("project_mount")
+    except Exception:
+        pass
+
+    lines = [
+        "# UEFN Moderation Pre-Flight Report — Export",
+        "",
+        f"- **Project path:** {project_dir}",
+        f"- **Resolved project mount:** {project_mount or '(unresolved)'}",
+        f"- **Report generated at:** {generated_at}",
+        (
+            "- **Severity counts:** "
+            f"BLOCKER {counts.get('BLOCKER', 0)}, "
+            f"WARN {counts.get('WARN', 0)}, "
+            f"KNOWN_RISK {counts.get('KNOWN_RISK', 0)}, "
+            f"INFO {counts.get('INFO', 0)}"
+        ),
+        "",
+        "---",
+        "",
+        body,
+    ]
+    return "\n".join(lines)
+
+
+def _write_export_file(markdown_text):
+    """Write `markdown_text` to a timestamped .md file inside the bridge
+    IPC temp dir (see ``_bridge_ipc_dir()``) — deliberately OUTSIDE the
+    user's UEFN project tree, so an export can never end up staged into,
+    or accidentally committed from, the project. No ``filedialog``/
+    ``messagebox``/``wait_window``/``wait_variable`` is used anywhere here
+    or in any caller — this window is tick-pumped inside UEFN with no
+    running ``mainloop()``, and a nested Tk event loop from any of those
+    APIs has previously hard-aborted the UEFN editor process for a real
+    user (see the clipboard comment near the top of this file for the
+    exact crash story).
+
+    Returns ``(ok, path_or_error_message)`` — NEVER raises.
+
+    HONEST FAILURE: this file has shipped five swallowed-exception bugs
+    that produced a success-shaped result for something that did not
+    actually happen, including a save handler that returned ``saved:
+    True`` after writing nothing. To not make a sixth, this does not just
+    catch-and-return-True after the ``open()``/``write()`` call — it
+    re-checks the file exists AND re-reads it back afterward, comparing
+    against what was meant to be written, before reporting success. Any
+    failure at any stage returns ``ok=False`` with a real, specific error
+    string — never a generic "failed" with the cause swallowed."""
+    try:
+        out_dir = _bridge_ipc_dir()
+        os.makedirs(out_dir, exist_ok=True)
+    except Exception as e:
+        return False, f"could not create/access export directory: {e}"
+
+    try:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    except Exception:
+        timestamp = "unknown_time"
+    out_path = os.path.join(out_dir, f"moderation_report_export_{timestamp}.md")
+
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(markdown_text)
+    except Exception as e:
+        return False, f"write failed ({out_path}): {e}"
+
+    # Verify — never trust a non-raising write call by itself (see the
+    # HONEST FAILURE note above).
+    try:
+        if not os.path.isfile(out_path):
+            return False, f"write did not raise but no file exists at {out_path}"
+        with open(out_path, "r", encoding="utf-8") as f:
+            written_back = f.read()
+    except Exception as e:
+        return False, f"post-write verification read failed ({out_path}): {e}"
+
+    if written_back != markdown_text:
+        return False, f"file at {out_path} does not match what was written (verification mismatch)"
+
+    return True, out_path
+
+
 def _format_compact_summary(result):
     """Render a compact, COUNTS-ONLY summary of run_moderation_scan()'s
     dict — the "scanned N, excluded M engine assets" honesty line plus one
@@ -3352,6 +3693,7 @@ def _format_compact_summary(result):
         hlod_generated_n = result.get("hlod_generated_count", 0)
         thumbs = result.get("extracted_thumbnails") or {}
         thumbs_extracted_n = thumbs.get("extracted", 0)
+        thumbs_total_suspects_n = thumbs.get("total_suspects", 0)
 
         # PARTITION counts — reconcile: project + shared + engine == total.
         if project_mount:
@@ -3394,12 +3736,23 @@ def _format_compact_summary(result):
                 "Import provenance — imported from OUTSIDE the project tree: "
                 "0 found (see import_provenance.note)."
             )
-        if thumbs_extracted_n:
+        if thumbs_total_suspects_n:
+            _thumb_coverage_pct = (thumbs_extracted_n / thumbs_total_suspects_n * 100) if thumbs_total_suspects_n else 0.0
             lines.append(
                 f"Suspect-asset embedded thumbnails extracted for vision review: "
-                f"{thumbs_extracted_n} (appended to image_paths; see "
-                "extracted_thumbnails)"
+                f"{thumbs_extracted_n} of {thumbs_total_suspects_n} total suspect(s) "
+                f"({_thumb_coverage_pct:.1f}% coverage) — appended to image_paths; "
+                "see extracted_thumbnails"
             )
+            if thumbs_extracted_n < thumbs_total_suspects_n:
+                lines.append(
+                    "  UNEXTRACTED SUSPECTS ARE UNREVIEWED PIXELS, NOT CLEARED — "
+                    "the highest-signal suspects are extracted first (see "
+                    "extracted_thumbnails.notes), but an absence of a finding "
+                    "among the ones NOT extracted is never evidence of absence."
+                )
+        elif thumbs.get("notes"):
+            lines.append("Suspect-asset embedded thumbnails: no suspects identified this pass.")
         lines.append(f"Verse string/comment/label surfaces: {verse_n}")
         lines.append(f"Text metadata fields (island name/description/etc.): {text_fields_n}")
         lines.append(f"Images with embedded text metadata: {images_n} (of {total_images} scanned)")
@@ -3716,8 +4069,8 @@ def show_moderation_scan():
     _master = tk._default_root
     root = tk.Toplevel(_master) if _master is not None else tk.Tk()
     root.title("Trashbyrd's IP / Moderation Pre-Flight Scan")
-    root.geometry("900x700")
-    root.minsize(760, 480)
+    root.geometry("920x740")
+    root.minsize(760, 520)
     root.configure(bg=_BG)
 
     header_frame = tk.Frame(root, bg=_BG, padx=16, pady=12)
@@ -3729,9 +4082,44 @@ def show_moderation_scan():
         font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG,
     ).pack(anchor=tk.W)
 
+    # --- Split, draggable content area: report pane (top) vs raw surfaces
+    # pane (bottom). tk.PanedWindow gives a native, idiomatic sash the user
+    # can drag to reallocate space between the two — a real analysed report
+    # can run "many screens" long, so a fixed-height box forced constant
+    # scrolling. minsize on both panes keeps either from being dragged to
+    # nothing. Footer is built and packed FIRST (below) so its fixed space
+    # is reserved before content_paned claims the leftover via
+    # fill=BOTH/expand=True — packing an expand=True widget before a fixed
+    # one risks starving the fixed one of its guaranteed size.
+    footer = tk.Frame(root, bg=_SECTION_BG, padx=8, pady=4)
+    footer.pack(fill=tk.X, side=tk.BOTTOM)
+    social = tk.Label(footer, text="@thetrashbyrd", font=("Segoe UI", 8),
+                      fg=_ACCENT_BLUE, bg=_SECTION_BG, cursor="hand2")
+    social.pack(side=tk.RIGHT, padx=(0, 4))
+    social.bind("<Button-1>", lambda _e: webbrowser.open("https://x.com/thetrashbyrd"))
+
+    content_paned = tk.PanedWindow(
+        root, orient=tk.VERTICAL, sashwidth=6, sashrelief=tk.RAISED,
+        bg=_BG, bd=0, opaqueresize=True,
+    )
+    content_paned.pack(fill=tk.BOTH, expand=True)
+
+    pane_top = tk.Frame(content_paned, bg=_BG)
+    pane_bottom = tk.Frame(content_paned, bg=_BG)
+    # Report pane gets the meaningfully larger initial share (it's the
+    # primary content); both minsizes keep either pane from collapsing to
+    # nothing when the sash is dragged.
+    content_paned.add(pane_top, minsize=260, height=460, stretch="always")
+    content_paned.add(pane_bottom, minsize=100, height=180, stretch="always")
+
     # --- Analysed report / call-to-action (rebuilt on load and on Refresh) ---
-    report_frame = tk.Frame(root, bg=_BG, padx=16)
-    report_frame.pack(fill=tk.BOTH, expand=False, pady=(4, 8))
+    # Packed with side=TOP + fill=BOTH + expand=True, but NOT YET — it is
+    # deliberately packed LAST among pane_top's children (see below the
+    # summary/allowlist/export/action blocks) so those fixed-size widgets
+    # reserve their own space first and this one only claims genuine
+    # leftover space — which is what actually lets it grow when the sash
+    # is dragged down.
+    report_frame = tk.Frame(pane_top, bg=_BG, padx=16)
 
     def _render_report_section():
         for child in report_frame.winfo_children():
@@ -3822,9 +4210,98 @@ def show_moderation_scan():
 
     _render_report_section()
 
+    # --- Compact summary (always shown, counts only — not a dump) ---
+    # BUG FIX: this used to be a plain tk.Label with no wraplength. A Label
+    # never wraps or scrolls on its own — a line longer than the window's
+    # current width is simply CLIPPED at the window edge with no
+    # indication anything was cut off. The NOTES lines (the honest
+    # caveats about caps/scope, e.g. "...omitted from the shared_game_mou")
+    # are exactly the long prose lines that got clipped, hiding the
+    # caveats they exist to surface. A ScrolledText with wrap=tk.WORD
+    # wraps every line instead — nothing is silently cut off — and its own
+    # scrollbar keeps the section from forcing the window to grow
+    # unbounded when there are many notes. Packed with side=tk.BOTTOM (see
+    # the report_frame comment above) so this fixed-size block reserves
+    # its own space before report_frame claims the leftover.
+    summary_frame = tk.Frame(pane_top, bg=_BG, padx=16)
+    summary_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(0, 4))
+    _summary_text = _format_compact_summary(result)
+    _summary_height = max(6, min(_summary_text.count("\n") + 1, 18))
+    summary_widget = scrolledtext.ScrolledText(
+        summary_frame, wrap=tk.WORD, bg=_BG, fg=_TEXT_FG,
+        insertbackground=_TEXT_FG, relief="flat", font=("Consolas", 9),
+        height=_summary_height, borderwidth=0, highlightthickness=0,
+    )
+    summary_widget.pack(fill=tk.BOTH, expand=True)
+    summary_widget.insert("1.0", _summary_text)
+    summary_widget.configure(state=tk.DISABLED)
+
+    # --- Licensed IP (optional) — feeds the MCP tool's `allowlist` param ---
+    allowlist_frame = tk.Frame(pane_top, bg=_BG, padx=16)
+    allowlist_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(0, 8))
+    tk.Label(
+        allowlist_frame, text="Licensed IP (optional):",
+        font=("Segoe UI", 9, "bold"), fg=_HEADER_FG, bg=_BG,
+    ).pack(anchor=tk.W)
+
+    allowlist_entry_row = tk.Frame(allowlist_frame, bg=_BG)
+    allowlist_entry_row.pack(fill=tk.X, pady=(2, 0))
+
+    allowlist_var = tk.StringVar()
+    allowlist_entry = tk.Entry(
+        allowlist_entry_row, textvariable=allowlist_var, font=("Segoe UI", 9),
+        bg=_SECTION_BG, fg=_TEXT_FG, insertbackground=_TEXT_FG, relief="flat",
+    )
+    allowlist_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+
+    tk.Label(
+        allowlist_entry_row,
+        text=(
+            "  franchises you are licensed to use — comma separated; "
+            "leave blank if none"
+        ),
+        font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
+    ).pack(side=tk.LEFT)
+
+    # NO pre-seed suggestion here, deliberately. This used to pre-fill from
+    # the project's own resolved content mount name, but a project's
+    # folder/mount name is not evidence of a license — pre-filling it reads
+    # as a claim (a real reviewer saw the pre-filled value and mistook it
+    # for a hardcoded example or a brand "detection", which is exactly the
+    # wrong impression). A WRONG allowlist entry is actively harmful: it
+    # groups assets as "expected licensed" that the creator may not
+    # actually be licensed for. An EMPTY field is the safe default —
+    # everything simply gets reported — so only a previously-SAVED value
+    # (this project's own moderation_allowlist.json beside the bridge)
+    # ever pre-fills this field. Do not re-add a mount-derived suggestion.
+    _saved_allowlist = _read_moderation_allowlist()
+    if _saved_allowlist:
+        allowlist_var.set(", ".join(_saved_allowlist))
+
+    def _save_allowlist_field(_event=None):
+        raw = allowlist_var.get()
+        _write_moderation_allowlist([p.strip() for p in raw.split(",") if p.strip()])
+
+    allowlist_entry.bind("<FocusOut>", _save_allowlist_field)
+    allowlist_entry.bind("<Return>", _save_allowlist_field)
+
+    # --- Export status/path line — a read-only Entry so the exported
+    # file's path can be selected and copied by the user directly, on top
+    # of the best-effort automatic clipboard copy _export_report does via
+    # the already-sanctioned _copy_text_to_system_clipboard helper below.
+    export_status_frame = tk.Frame(pane_top, bg=_BG, padx=16)
+    export_status_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(0, 4))
+    export_status_var = tk.StringVar(value="")
+    export_status_entry = tk.Entry(
+        export_status_frame, textvariable=export_status_var,
+        font=("Consolas", 8), fg=_TEXT_DIM, bg=_BG, relief="flat",
+        state="readonly", readonlybackground=_BG,
+    )
+    export_status_entry.pack(fill=tk.X)
+
     # --- Action buttons ---
-    actions_frame = tk.Frame(root, bg=_BG, padx=16)
-    actions_frame.pack(fill=tk.X, pady=(0, 8))
+    actions_frame = tk.Frame(pane_top, bg=_BG, padx=16)
+    actions_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(0, 8))
 
     def _current_allowlist_for_prompt():
         """Values to feed into the copied prompt right now: the entry's
@@ -3895,91 +4372,86 @@ def show_moderation_scan():
     )
     copy_btn.pack(side=tk.LEFT)
 
+    def _sync_export_button_state():
+        """Re-check whether an analysed report is currently loaded and
+        enable/disable the Export button accordingly — called once at
+        build time and again on every Refresh, since Refresh is what can
+        make a report appear (or, on a project with none yet, confirm it
+        stays absent)."""
+        if _read_moderation_report():
+            export_btn.configure(state=tk.NORMAL)
+        else:
+            export_btn.configure(state=tk.DISABLED)
+            export_status_var.set("Nothing to export — no analysed report loaded yet.")
+
+    def _on_refresh():
+        _render_report_section()
+        _sync_export_button_state()
+
     tk.Button(
         actions_frame, text="Refresh", font=("Segoe UI", 9),
         bg=_SECTION_BG, fg=_TEXT_FG, activebackground=_BG,
         activeforeground=_TEXT_FG, relief="flat", padx=10, pady=4,
-        command=_render_report_section,
+        command=_on_refresh,
     ).pack(side=tk.LEFT, padx=(8, 0))
 
-    # --- Licensed IP (optional) — feeds the MCP tool's `allowlist` param ---
-    allowlist_frame = tk.Frame(root, bg=_BG, padx=16)
-    allowlist_frame.pack(fill=tk.X, pady=(0, 8))
+    def _export_report():
+        # Re-check for real — never trust only the button's enabled state,
+        # which could theoretically be stale (e.g. a harness/test calling
+        # this handler directly, bypassing the widget entirely).
+        report_data = _read_moderation_report()
+        if not report_data:
+            export_status_var.set("Nothing to export — no analysed report loaded yet.")
+            return
+        try:
+            markdown_text = _build_export_markdown(report_data, scan_root, result)
+        except Exception as e:
+            export_status_var.set(f"Export failed while building the file: {e}")
+            return
+        ok, path_or_error = _write_export_file(markdown_text)
+        if not ok:
+            # Honest failure — never claim success for a write that did
+            # not verifiably land (this file has shipped that exact class
+            # of bug before; see _write_export_file's docstring).
+            export_status_var.set(f"Export FAILED: {path_or_error}")
+            return
+        export_status_var.set(f"Exported: {path_or_error}")
+        # Best-effort convenience copy via the already-sanctioned helper
+        # (subprocess `clip`, never Tk's own clipboard API) — the path
+        # stays visible/selectable in the read-only field above regardless
+        # of whether this succeeds.
+        _copy_text_to_system_clipboard(path_or_error)
+
+    export_btn = tk.Button(
+        actions_frame, text="Export", font=("Segoe UI", 9),
+        bg=_SECTION_BG, fg=_TEXT_FG, activebackground=_BG,
+        activeforeground=_TEXT_FG, relief="flat", padx=10, pady=4,
+        command=_export_report,
+    )
+    export_btn.pack(side=tk.LEFT, padx=(8, 0))
+    _sync_export_button_state()
+
+    # report_frame is packed LAST (side=TOP default, fill=BOTH,
+    # expand=True) so it only claims genuine leftover space in pane_top,
+    # after the fixed summary/allowlist/export-status/action blocks above
+    # have already reserved theirs — see the comment where report_frame
+    # was created, above _render_report_section.
+    report_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
+
+    # --- Raw surfaces pane — the bottom half of the draggable split.
+    # Previously hidden behind a "Show raw collected surfaces" toggle; now
+    # always shown but resizable via the sash above, down to minsize=100
+    # on pane_bottom (see content_paned.add above) — dragging the sash up
+    # shrinks it without ever collapsing it to nothing.
+    raw_header = tk.Frame(pane_bottom, bg=_BG, padx=16)
+    raw_header.pack(fill=tk.X, pady=(6, 0))
     tk.Label(
-        allowlist_frame, text="Licensed IP (optional):",
-        font=("Segoe UI", 9, "bold"), fg=_HEADER_FG, bg=_BG,
+        raw_header, text="Raw collected surfaces", font=("Segoe UI", 9, "bold"),
+        fg=_HEADER_FG, bg=_BG,
     ).pack(anchor=tk.W)
 
-    allowlist_entry_row = tk.Frame(allowlist_frame, bg=_BG)
-    allowlist_entry_row.pack(fill=tk.X, pady=(2, 0))
-
-    allowlist_var = tk.StringVar()
-    allowlist_entry = tk.Entry(
-        allowlist_entry_row, textvariable=allowlist_var, font=("Segoe UI", 9),
-        bg=_SECTION_BG, fg=_TEXT_FG, insertbackground=_TEXT_FG, relief="flat",
-    )
-    allowlist_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-
-    tk.Label(
-        allowlist_entry_row,
-        text=(
-            "  franchises you are licensed to use — comma separated; "
-            "leave blank if none"
-        ),
-        font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
-    ).pack(side=tk.LEFT)
-
-    # NO pre-seed suggestion here, deliberately. This used to pre-fill from
-    # the project's own resolved content mount name, but a project's
-    # folder/mount name is not evidence of a license — pre-filling it reads
-    # as a claim (a real reviewer saw the pre-filled value and mistook it
-    # for a hardcoded example or a brand "detection", which is exactly the
-    # wrong impression). A WRONG allowlist entry is actively harmful: it
-    # groups assets as "expected licensed" that the creator may not
-    # actually be licensed for. An EMPTY field is the safe default —
-    # everything simply gets reported — so only a previously-SAVED value
-    # (this project's own moderation_allowlist.json beside the bridge)
-    # ever pre-fills this field. Do not re-add a mount-derived suggestion.
-    _saved_allowlist = _read_moderation_allowlist()
-    if _saved_allowlist:
-        allowlist_var.set(", ".join(_saved_allowlist))
-
-    def _save_allowlist_field(_event=None):
-        raw = allowlist_var.get()
-        _write_moderation_allowlist([p.strip() for p in raw.split(",") if p.strip()])
-
-    allowlist_entry.bind("<FocusOut>", _save_allowlist_field)
-    allowlist_entry.bind("<Return>", _save_allowlist_field)
-
-    # --- Compact summary (always shown, counts only — not a dump) ---
-    # BUG FIX: this used to be a plain tk.Label with no wraplength. A Label
-    # never wraps or scrolls on its own — a line longer than the window's
-    # current width is simply CLIPPED at the window edge with no
-    # indication anything was cut off. The NOTES lines (the honest
-    # caveats about caps/scope, e.g. "...omitted from the shared_game_mou")
-    # are exactly the long prose lines that got clipped, hiding the
-    # caveats they exist to surface. A ScrolledText with wrap=tk.WORD
-    # wraps every line instead — nothing is silently cut off — and its own
-    # scrollbar keeps the section from forcing the window to grow
-    # unbounded when there are many notes.
-    summary_frame = tk.Frame(root, bg=_BG, padx=16)
-    summary_frame.pack(fill=tk.X, pady=(0, 4))
-    _summary_text = _format_compact_summary(result)
-    _summary_height = max(6, min(_summary_text.count("\n") + 1, 18))
-    summary_widget = scrolledtext.ScrolledText(
-        summary_frame, wrap=tk.WORD, bg=_BG, fg=_TEXT_FG,
-        insertbackground=_TEXT_FG, relief="flat", font=("Consolas", 9),
-        height=_summary_height, borderwidth=0, highlightthickness=0,
-    )
-    summary_widget.pack(fill=tk.BOTH, expand=True)
-    summary_widget.insert("1.0", _summary_text)
-    summary_widget.configure(state=tk.DISABLED)
-
-    # --- Raw surfaces, collapsed by default ---
-    raw_container = tk.Frame(root, bg=_BG, padx=16, pady=4)
-    raw_container.pack(fill=tk.BOTH, expand=True)
-
-    raw_text_frame = tk.Frame(raw_container, bg=_BG)
+    raw_text_frame = tk.Frame(pane_bottom, bg=_BG, padx=16)
+    raw_text_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 6))
     raw_widget = scrolledtext.ScrolledText(
         raw_text_frame, wrap=tk.WORD, bg=_SECTION_BG, fg=_TEXT_FG,
         insertbackground=_TEXT_FG, relief="flat", font=("Consolas", 9),
@@ -3987,34 +4459,6 @@ def show_moderation_scan():
     raw_widget.pack(fill=tk.BOTH, expand=True)
     raw_widget.insert("1.0", _format_raw_surfaces(result))
     raw_widget.configure(state=tk.DISABLED)
-
-    _raw_visible = [False]
-
-    def _toggle_raw():
-        if _raw_visible[0]:
-            raw_text_frame.pack_forget()
-            toggle_btn.configure(text="Show raw collected surfaces ▾")
-            _raw_visible[0] = False
-        else:
-            raw_text_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
-            toggle_btn.configure(text="Hide raw collected surfaces ▴")
-            _raw_visible[0] = True
-
-    toggle_btn = tk.Button(
-        raw_container, text="Show raw collected surfaces ▾",
-        font=("Segoe UI", 9), bg=_SECTION_BG, fg=_TEXT_FG,
-        activebackground=_BG, activeforeground=_TEXT_FG, relief="flat",
-        padx=10, pady=4, command=_toggle_raw,
-    )
-    toggle_btn.pack(anchor=tk.W)
-
-    # Footer
-    footer = tk.Frame(root, bg=_SECTION_BG, padx=8, pady=4)
-    footer.pack(fill=tk.X, side=tk.BOTTOM)
-    social = tk.Label(footer, text="@thetrashbyrd", font=("Segoe UI", 8),
-                      fg=_ACCENT_BLUE, bg=_SECTION_BG, cursor="hand2")
-    social.pack(side=tk.RIGHT, padx=(0, 4))
-    social.bind("<Button-1>", lambda _e: webbrowser.open("https://x.com/thetrashbyrd"))
 
     # Tick pump (UEFN's embedded Python has no running Tk mainloop).
     _tick_handle = [None]
