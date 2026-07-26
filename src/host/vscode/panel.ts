@@ -285,6 +285,7 @@ const UEFN_URC_IGNORE_ENTRIES: string[] = [
   "*.jsonl",
   "*.mjs",
   "*.py",
+  "*.bak",
   "Content/Python/",
   "Python/",
 ];

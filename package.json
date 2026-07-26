@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.459",
+  "version": "0.0.460",
   "private": true,
   "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
   "displayName": "TycoonAgents",
@@ -112,9 +112,10 @@
     "Other"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run test:compiled",
+    "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run test:python && npm run test:compiled",
     "check:paths": "node scripts/check-no-absolute-paths.mjs",
     "check:webview": "node scripts/check-webview.mjs",
+    "test:python": "node scripts/test-python.mjs",
     "lint": "eslint .",
     "build": "tsc -p .",
     "build-ext": "tsc -p . && npm run bundle:host",
