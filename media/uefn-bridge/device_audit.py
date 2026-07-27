@@ -84,9 +84,44 @@ def _is_device(actor):
 
 
 def _actor_location_tuple(actor):
-    """Return (x, y, z) for the actor's world location."""
+    """Return (x, y, z) for the actor's world location.
+
+    This is the traditional Unreal XYZ triple, unchanged by UEFN's LUF
+    editor display (see ``_xyz_to_luf`` below) — every existing consumer of
+    this function keeps reading raw XYZ exactly as before.
+    """
     loc = actor.get_actor_location()
     return (round(loc.x, 2), round(loc.y, 2), round(loc.z, 2))
+
+
+def _xyz_to_luf(x, y, z):
+    """
+    Convert a traditional Unreal XYZ position triple to UEFN's LUF
+    (Left-Up-Forward) triple.
+
+    As of UEFN 36.00, the editor uses the LUF coordinate system for the
+    Details panel and all ``/Verse.org`` module transforms:
+        Left    = -Y
+        Up      =  Z
+        Forward =  X
+    ``/UnrealEngine.com`` and ``/Fortnite.com`` module transforms still use
+    the traditional XYZ system — do NOT feed an LUF value into code that
+    expects XYZ, or vice versa; the mixup silently mis-places the actor.
+
+    Source: Epic's "Left-Up-Forward Coordinate System in Unreal Editor for
+    Fortnite":
+    https://dev.epicgames.com/documentation/fortnite/leftupforward-coordinate-system-in-unreal-editor-for-fortnite
+    Epic also supplies ``FromVector3``/``FromTransform`` conversion helpers
+    for the reverse direction.
+
+    This is a pure, POSITION-ONLY conversion. LUF is right-handed while
+    XYZ is left-handed, so rotation is NOT a simple component swap like
+    this — do not reuse this function for rotations; use Epic's
+    ``FromRotation`` helper instead (see ``get_actor_rotation()`` callers).
+
+    Returns (left, up, forward).
+    """
+    return (-y, z, x)
 
 
 def _get_property_names(actor, exclude=None):
@@ -545,14 +580,26 @@ def _collect_device_details(actor):
         pass
 
     # --- Transform ---
+    # Location is shown in BOTH conventions, clearly labelled, so it can
+    # never be mistaken for the other: XYZ (traditional, used by
+    # /UnrealEngine.com and /Fortnite.com module transforms) and LUF
+    # (Left-Up-Forward, what the UEFN 36.00+ Details panel and /Verse.org
+    # actually display). See _xyz_to_luf's docstring for the source.
     try:
-        rows.append(("Transform", "Location", _fmt_vec(actor.get_actor_location()), ""))
+        loc = actor.get_actor_location()
+        rows.append(("Transform", "Location (XYZ)", _fmt_vec(loc),
+                     "/UnrealEngine.com, /Fortnite.com"))
+        lx, ly, lz = _xyz_to_luf(loc.x, loc.y, loc.z)
+        rows.append(("Transform", "Location (LUF)",
+                     f"{lx:.1f}, {ly:.1f}, {lz:.1f}",
+                     "Details panel, /Verse.org (36.00+)"))
     except Exception:
         pass
     try:
         r = actor.get_actor_rotation()
-        rows.append(("Transform", "Rotation",
-                     f"P {r.pitch:.1f}  Y {r.yaw:.1f}  R {r.roll:.1f}", ""))
+        rows.append(("Transform", "Rotation (XYZ only)",
+                     f"P {r.pitch:.1f}  Y {r.yaw:.1f}  R {r.roll:.1f}",
+                     "NOT LUF — convert with Epic's FromRotation"))
     except Exception:
         pass
     try:

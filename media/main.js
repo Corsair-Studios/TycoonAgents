@@ -2199,6 +2199,18 @@
    *  confirmation for that namespace instead of just silently dropping the
    *  row once it flips out of info.foreignManagedBlocks. */
   let managedBlockRemovalRequested = new Set();
+  /** Setup Wizard Step 2 package checkbox list: ids the user currently has
+   *  checked, persisted across re-renders of renderSetupOptionals (e.g. once
+   *  the async "packs" catalog response lands) so a re-render never loses a
+   *  user's tick/untick. Lazily initialized to {"uefn"} iff detected, else
+   *  empty — see renderSetupOptionals. Reset to null on a fresh install so a
+   *  later session starts from the auto-detect defaults again. */
+  let setupPackageSelection = null;
+  /** The `info` object passed to the most recent renderSetupOptionals call —
+   *  cached so renderPacksList can re-invoke renderSetupOptionals with the
+   *  same UEFN/foreign-block state once the async "packs" catalog response
+   *  lands (see renderPacksList). Not read anywhere else. */
+  let lastSetupOptionalsInfo = null;
 
   /**
    * Show the full-bleed setup overlay; hide the live app view.
@@ -8815,6 +8827,15 @@
   setupBackBtn.setAttribute("hidden", "");
   vscode.postMessage({ type: "checkInstall" });
 
+  // Pre-fetch the packs catalog so the Setup Wizard Step-2 package checkbox
+  // list (renderSetupOptionals) has real "what this installs" data (skills/
+  // commands/MCP/agents) available the moment a fresh install reaches it,
+  // without waiting on a click into Settings > Packs. Reuses the existing
+  // getPacks/packs round-trip (lastPacks) rather than adding a new one; also
+  // marks packsLoaded so the Settings Packs tab doesn't re-fetch redundantly.
+  vscode.postMessage({ type: "getPacks" });
+  packsLoaded = true;
+
   // Ask the host for current engine connection status immediately.
   vscode.postMessage({ type: "getEngineStatus" });
 
@@ -8886,9 +8907,12 @@
     }
   }
 
-  /** Skill catalog ids offered as pre-install-optional chips. "unreal-engine"
-   *  is the real media/skills/catalog.json id; engine DETECTION (engineChips
-   *  from computeEngineChips) reports it as "unreal" — normalized below. */
+  /** Skill/pack catalog ids offered as pre-install-optional rows in the Setup
+   *  Wizard Step-2 package checkbox list. Most of these ids also exist as a
+   *  full pack in media/packs/catalog.json (skills + commands + MCP + agents
+   *  + bridge staging); "unreal-engine" does not — it ships as a standalone
+   *  skill only, so it falls back to installSkill on Continue (see
+   *  describePackageInstalls / the Continue click handler below). */
   var SETUP_SKILL_CHIPS = [
     { id: "playwright", label: "Playwright" },
     { id: "godot", label: "Godot" },
@@ -8896,6 +8920,63 @@
     { id: "unreal-engine", label: "Unreal Engine" },
     { id: "uefn", label: "UEFN" },
   ];
+
+  /** Ids above that are also full packs in media/packs/catalog.json, kept
+   *  only as an id-routing safety net for the (rare) case Continue is
+   *  clicked before the async getPacks response has landed in lastPacks —
+   *  the host re-validates the id against the real catalog regardless
+   *  (_handleInstallPack), so a stale/unused entry here is harmless. This is
+   *  NOT where any "what it installs" copy comes from — that is always read
+   *  from the live pack entry in lastPacks (describePackageInstalls). */
+  var KNOWN_PACK_CHIP_IDS = ["uefn", "playwright", "godot", "unity"];
+
+  /**
+   * Build the "Installs: …" line for a Setup Wizard Step-2 package row from
+   * the matching media/packs/catalog.json entry (as returned by getPacks /
+   * _handleGetPacks) — skills, slash commands, MCP server, agents, and
+   * whether it stages the Python UEFN bridge. Every clause is sourced from
+   * `pack`; nothing here is pack-specific prose, so a pack gaining or losing
+   * a component is reflected automatically without a code change.
+   * @param {any} pack Matching lastPacks entry, or undefined if this chip id
+   *   has no pack (falls back to installSkill on Continue).
+   * @param {{id:string,label:string}} def The SETUP_SKILL_CHIPS entry.
+   * @returns {string}
+   */
+  function describePackageInstalls(pack, def) {
+    if (!pack) {
+      return (def && def.label ? def.label : "this") + " skill";
+    }
+    var parts = [];
+    if (Array.isArray(pack.skills) && pack.skills.length) {
+      var skillNames = pack.skills
+        .map(function (s) { return (s && (s.name || s.id)) || ""; })
+        .filter(Boolean);
+      if (skillNames.length) {
+        parts.push((skillNames.length === 1 ? "skill: " : "skills: ") + skillNames.join(", "));
+      }
+    }
+    if (Array.isArray(pack.commands) && pack.commands.length) {
+      parts.push(
+        (pack.commands.length === 1 ? "command: " : "commands: ") +
+          pack.commands.map(function (c) { return "/" + c; }).join(", ")
+      );
+    }
+    if (pack.mcpName) {
+      parts.push("MCP server: " + pack.mcpName);
+    }
+    if (Array.isArray(pack.agents) && pack.agents.length) {
+      var agentNames = pack.agents
+        .map(function (a) { return (a && (a.name || a.id)) || ""; })
+        .filter(Boolean);
+      if (agentNames.length) {
+        parts.push((agentNames.length === 1 ? "agent: " : "agents: ") + agentNames.join(", "));
+      }
+    }
+    if (pack.stagesPythonBridge) {
+      parts.push("stages the Python bridge into Content/Python");
+    }
+    return parts.length ? parts.join("; ") : "nothing additional";
+  }
 
   /**
    * Remove the Step-2 Optionals wizard's DOM (both card halves, the UEFN
@@ -8933,6 +9014,8 @@
   function renderSetupOptionals(info) {
     const setupCard = document.getElementById("setup-card");
     if (!setupCard) return;
+    // Cache for renderPacksList — see lastSetupOptionalsInfo declaration.
+    lastSetupOptionalsInfo = info;
 
     const existingTop = document.getElementById("setup-optionals-top");
     if (existingTop) existingTop.remove();
@@ -9020,43 +9103,72 @@
     skillsHeading.textContent = "Skills & packages";
     top.appendChild(skillsHeading);
 
-    const chipsRow = document.createElement("div");
-    chipsRow.id = "setup-skill-chips";
-    chipsRow.className = "setup-skill-chips";
+    // Checkbox list (replaces the old click-to-toggle chip row): one row per
+    // SETUP_SKILL_CHIPS entry, each showing name + one-line description +
+    // a "what this installs" line derived from the matching media/packs/
+    // catalog.json entry (fetched via getPacks at boot, cached in lastPacks)
+    // — never hardcoded per-pack prose, so it stays correct as packs change.
+    const packageList = document.createElement("div");
+    packageList.id = "setup-package-list";
+    packageList.className = "setup-package-list";
 
-    var detectedIds = {};
-    var chips = (info && info.engineChips) || [];
-    for (var ci = 0; ci < chips.length; ci++) {
-      var cid = chips[ci].id === "unreal" ? "unreal-engine" : chips[ci].id;
-      detectedIds[cid] = true;
+    // Lazily initialize the selection ONCE per wizard session so a later
+    // re-render (e.g. the async "packs" response landing after this first
+    // paint) never resets ticks the user already made. Per the product
+    // spec: UEFN is pre-checked iff detected on this machine (uefnInstalled
+    // — %LOCALAPPDATA%/UnrealEditorFortnite, plumbed through INSTALL_STATE
+    // by panel.ts _handleCheckInstall), every other row defaults unchecked.
+    if (setupPackageSelection === null) {
+      setupPackageSelection = new Set();
+      if (info && info.uefnInstalled) setupPackageSelection.add("uefn");
     }
-    if (info && info.uefnDetected) detectedIds["uefn"] = true;
 
     SETUP_SKILL_CHIPS.forEach(function (def) {
-      const pill = document.createElement("div");
-      pill.className = "engine-chip setup-skill-chip";
-      pill.dataset.skillChipId = def.id;
-      pill.title = def.label;
+      var pack = lastPacks.find(function (p) { return p && p.id === def.id; });
 
-      const dot = document.createElement("span");
-      dot.className = "engine-chip-dot engine-chip-dot--setup";
+      const row = document.createElement("label");
+      row.className = "setup-package-row";
 
-      const label = document.createElement("span");
-      label.className = "engine-chip-label";
-      label.textContent = def.label;
-
-      pill.appendChild(dot);
-      pill.appendChild(label);
-      if (detectedIds[def.id]) {
-        pill.classList.add("setup-skill-chip--checked");
-      }
-      // Selection state only — installed on "Done", not on click.
-      pill.addEventListener("click", function () {
-        pill.classList.toggle("setup-skill-chip--checked");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "setup-package-checkbox";
+      checkbox.dataset.packageChipId = def.id;
+      checkbox.checked = setupPackageSelection.has(def.id);
+      checkbox.addEventListener("change", function () {
+        if (checkbox.checked) setupPackageSelection.add(def.id);
+        else setupPackageSelection.delete(def.id);
       });
-      chipsRow.appendChild(pill);
+
+      const textBlock = document.createElement("div");
+      textBlock.className = "setup-package-text";
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "setup-package-name";
+      nameEl.textContent = (pack && pack.name) || def.label;
+      textBlock.appendChild(nameEl);
+
+      const descEl = document.createElement("span");
+      descEl.className = "setup-package-desc";
+      descEl.textContent = (pack && pack.description) || def.label;
+      textBlock.appendChild(descEl);
+
+      const installsEl = document.createElement("span");
+      installsEl.className = "setup-package-installs";
+      installsEl.textContent = "Installs: " + describePackageInstalls(pack, def);
+      textBlock.appendChild(installsEl);
+
+      if (def.id === "uefn" && info && info.uefnInstalled) {
+        const reasonEl = document.createElement("span");
+        reasonEl.className = "setup-package-reason";
+        reasonEl.textContent = "UEFN detected on this system — pre-checked, untick to skip.";
+        textBlock.appendChild(reasonEl);
+      }
+
+      row.appendChild(checkbox);
+      row.appendChild(textBlock);
+      packageList.appendChild(row);
     });
-    top.appendChild(chipsRow);
+    top.appendChild(packageList);
 
     setupCard.appendChild(top);
 
@@ -9087,23 +9199,28 @@
       if (existingUefnCard) existingUefnCard.remove();
     }
 
-    // ── Bottom half: advanced-tuning link, Done button ───────────────
+    // ── Bottom half: advanced-settings call-to-action, Done button ───
     const bottom = document.createElement("div");
     bottom.id = "setup-optionals-bottom";
     bottom.className = "setup-optionals-card";
 
-    const advancedLink = document.createElement("a");
-    advancedLink.href = "#";
-    advancedLink.className = "setup-optionals-advanced-link";
-    advancedLink.textContent = "Advanced tuning (models, keyword routing, plan, design docs) lives in Settings →";
-    advancedLink.addEventListener("click", function (e) {
-      e.preventDefault();
+    // Deliberately a <button> (not the old underlined link) so it reads as a
+    // real, clickable call-to-action — but styled muted (.setup-optionals-
+    // advanced-btn) relative to Continue below so it stays a secondary
+    // action rather than competing with it. Behavior is unchanged: closes
+    // the wizard and opens Settings.
+    const advancedBtn = document.createElement("button");
+    advancedBtn.type = "button";
+    advancedBtn.id = "setup-optionals-advanced-btn";
+    advancedBtn.className = "setup-optionals-advanced-btn";
+    advancedBtn.textContent = "Advanced settings (models, keyword routing, plan, design docs) →";
+    advancedBtn.addEventListener("click", function () {
       closeMenu();
       // Leaving the wizard for Settings — remove the Step-2 Optionals nodes
       // (this card, its sibling half, and the UEFN card/confirmation) so
       // they don't stay visibly stacked on top of the Settings panel.
       removeSetupOptionalsNodes();
-      // The user has moved past the wizard by choosing this link; mark it
+      // The user has moved past the wizard by choosing this button; mark it
       // done so a later stray installState push (e.g. after Back) goes
       // straight to showMain() instead of re-rendering the wizard.
       setupStage = "done";
@@ -9112,21 +9229,43 @@
       vscode.postMessage({ type: "checkInstall" });
       vscode.postMessage({ type: "getSettings" });
     });
-    bottom.appendChild(advancedLink);
+    bottom.appendChild(advancedBtn);
 
     // Explicit finalize gate: the ONLY way the wizard leaves the setup
     // screen after "Install hooks". The user must review/select the
-    // optionals above (gitignore, UEFN card, skill chips) and then click
-    // this button on purpose — there is no auto-dismiss on install.
+    // optionals above (gitignore, UEFN card, package checkboxes) and then
+    // click this button on purpose — there is no auto-dismiss on install.
     const continueBtn = document.createElement("button");
     continueBtn.id = "setup-optionals-done-btn";
     continueBtn.className = "skill-btn setup-optionals-continue-btn";
     continueBtn.textContent = "Continue to TycoonAgents";
     continueBtn.addEventListener("click", function () {
-      const checkedChips = chipsRow.querySelectorAll(".setup-skill-chip--checked");
-      checkedChips.forEach(function (el) {
-        const id = el.dataset.skillChipId;
-        if (id) vscode.postMessage({ type: "installSkill", id });
+      const checkedBoxes = packageList.querySelectorAll(".setup-package-checkbox:checked");
+      checkedBoxes.forEach(function (el) {
+        const id = el.dataset.packageChipId;
+        if (!id) return;
+        const pack = lastPacks.find(function (p) { return p && p.id === id; });
+        if (pack || KNOWN_PACK_CHIP_IDS.indexOf(id) !== -1) {
+          // Pack ids install the WHOLE pack — skills + commands + MCP entry
+          // + agents + Python bridge staging where applicable — via the same
+          // host path Settings > Packs already uses (_handleInstallPack).
+          // This is the fix for the bug where onboarding used to post
+          // installSkill for every chip: selecting UEFN installed only the
+          // skill and silently skipped the uefn-bridge MCP entry, the
+          // verse-expert/uefn-auditor agents, the uefn-moderation-scan
+          // command, and the staged Python bridge.
+          vscode.postMessage({
+            type: "installPack",
+            id: id,
+            thirdParty: !!(pack && pack.thirdParty),
+            disclosures: (pack && Array.isArray(pack.disclosures)) ? pack.disclosures : [],
+          });
+        } else {
+          // No pack entry for this chip id (e.g. "unreal-engine" ships as a
+          // standalone skill only) — fall back to the single-skill
+          // installer, unchanged from before.
+          vscode.postMessage({ type: "installSkill", id: id });
+        }
       });
       if (gitignoreCheckbox.checked) {
         vscode.postMessage({ type: "addGitignoreEntries" });
@@ -10907,8 +11046,23 @@
    * @param {string|undefined} error
    */
   function renderPacksList(packs, error) {
-    if (!packsListEl) return;
     lastPacks = Array.isArray(packs) ? packs : [];
+    // The Setup Wizard Step-2 Optionals list (renderSetupOptionals) may have
+    // already painted its "Installs: ..." lines from the pre-getPacks
+    // fallback (describePackageInstalls with no matching pack) if this
+    // response landed after that first render. Re-render it now that
+    // lastPacks is populated, but ONLY while that step is actually on
+    // screen: gated on setupStage so nothing fires once the user has moved
+    // past it (Continue / Advanced settings both flip setupStage away from
+    // "optionals"), plus a DOM check as a belt-and-suspenders guard. This
+    // never touches the Settings > Packs list below, and never disturbs the
+    // user's ticks — setupPackageSelection is seeded exactly once per
+    // session (see its declaration) and renderSetupOptionals reads from it
+    // on every call, including this one.
+    if (setupStage === "optionals" && document.getElementById("setup-optionals-top")) {
+      renderSetupOptionals(lastSetupOptionalsInfo);
+    }
+    if (!packsListEl) return;
     packsListEl.innerHTML = "";
     packsListEl.appendChild(buildCatalogNotice("third-party"));
     if (error) {

@@ -511,7 +511,19 @@ server.registerTool(
 
 server.registerTool(
   "uefn_list_devices",
-  { description: "List all Creative devices in the level.", inputSchema: {} },
+  {
+    description:
+      "List all Creative devices in the level. Each device reports its location in TWO coordinate " +
+      "systems, never confuse them: `location` is traditional XYZ — use it with /UnrealEngine.com and " +
+      "/Fortnite.com module transforms. `location_luf` ({left, up, forward}) is UEFN 36.00+'s " +
+      "Left-Up-Forward system (Left=-Y, Up=Z, Forward=X) — this is what the editor's Details panel " +
+      "and /Verse.org module transforms actually show. Feeding a value from one system into code " +
+      "expecting the other silently mis-places the actor. See Epic's docs: " +
+      "https://dev.epicgames.com/documentation/fortnite/leftupforward-coordinate-system-in-unreal-editor-for-fortnite. " +
+      "Rotation is reported in XYZ ONLY — LUF is right-handed vs. XYZ's left-handed, so rotation is " +
+      "NOT a component swap; convert it yourself with Epic's FromRotation helper if you need LUF rotation.",
+    inputSchema: {},
+  },
   async () => bridgeTool("list_devices", {})
 );
 
@@ -553,7 +565,19 @@ server.registerTool(
 
 server.registerTool(
   "uefn_run_audit",
-  { description: "Run a full device audit.", inputSchema: {} },
+  {
+    description:
+      "Run a full device audit. Each device reports its location in TWO coordinate systems, never " +
+      "confuse them: `location` is traditional XYZ — use it with /UnrealEngine.com and /Fortnite.com " +
+      "module transforms. `location_luf` ({left, up, forward}) is UEFN 36.00+'s Left-Up-Forward " +
+      "system (Left=-Y, Up=Z, Forward=X) — this is what the editor's Details panel and /Verse.org " +
+      "module transforms actually show. Feeding a value from one system into code expecting the " +
+      "other silently mis-places the actor. See Epic's docs: " +
+      "https://dev.epicgames.com/documentation/fortnite/leftupforward-coordinate-system-in-unreal-editor-for-fortnite. " +
+      "Rotation is reported in XYZ ONLY — LUF is right-handed vs. XYZ's left-handed, so rotation is " +
+      "NOT a component swap; convert it yourself with Epic's FromRotation helper if you need LUF rotation.",
+    inputSchema: {},
+  },
   async () => bridgeTool("run_audit", {})
 );
 

@@ -2867,11 +2867,19 @@ export class TycoonPanel {
       const result = packs.map((pack: any) => {
         const disclosures = this._buildPackDisclosures(pack, mcpCatalog);
         const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
+        const packCommands: string[] = Array.isArray(pack.commands) ? pack.commands : [];
+        const packAgents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
         const skills = packSkills.map((id: string) => ({
           id,
           name: skillNames[id] ?? id,
           installed: skillInstalled(id),
         }));
+        // Name lookup regardless of thirdParty status (disclosures above only
+        // cover third-party servers) - the Setup Wizard's package checkbox
+        // list (media/main.js renderSetupOptionals/describePackageInstalls)
+        // shows "MCP server: <name>" for bundled/local servers too (e.g.
+        // uefn-bridge), so the transparency isn't limited to disclosed ones.
+        const mcpEntry = pack.mcp ? mcpCatalog.find((x: any) => x.id === pack.mcp) : undefined;
         return {
           id: pack.id,
           name: pack.name,
@@ -2881,11 +2889,19 @@ export class TycoonPanel {
             skill: packSkills.length > 0 && packSkills.every((id: string) => skillInstalled(id)),
             mcp: pack.mcp ? hasMcpServer(mcpConfig, pack.mcp) : false,
             agent: (() => {
-              const packAgents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
               return root !== "" && packAgents.length > 0 && packAgents.every((a: any) => fs.existsSync(path.join(root, ".claude", "agents", `${a.id}.md`)));
             })(),
           },
           skills,
+          // Slash commands, agent identities, MCP server name, and whether
+          // this pack stages the Python UEFN bridge - all sourced straight
+          // from the catalog entry so the onboarding "what it installs" copy
+          // (media/main.js describePackageInstalls) never hardcodes per-pack
+          // prose and stays correct as packs change.
+          commands: packCommands,
+          agents: packAgents.map((a: any) => ({ id: a.id, name: a.name })),
+          mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
+          stagesPythonBridge: pack.mcp === "uefn-bridge" || pack.id === "uefn",
           thirdParty: disclosures.length > 0,
           disclosures,
         };
@@ -4442,6 +4458,14 @@ export class TycoonPanel {
       installed,
       uefnDetected: uefn.detected,
       uefnSignals: uefn.signals,
+      // Machine-level signal (distinct from uefnDetected's project-file
+      // signals): true when %LOCALAPPDATA%/UnrealEditorFortnite exists, i.e.
+      // UEFN itself is installed on this machine. Consumed by the Setup
+      // Wizard Step-2 package checkbox list (media/main.js
+      // renderSetupOptionals) to pre-check the UEFN row — every other row
+      // defaults unchecked. Piggybacks on this existing INSTALL_STATE push
+      // rather than adding a second message round-trip.
+      uefnInstalled: uefn.uefnInstalled,
       uefnBridgeSetUp,
       engineChips,
       foreignManagedBlocks,

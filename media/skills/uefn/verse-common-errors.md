@@ -1,5 +1,17 @@
-<!-- version: 4.4.0 -->
-<!-- changelog: 4.4.0 confirms rules 20 and 21 against the Book of Verse, "Modules and
+<!-- version: 4.5.0 -->
+<!-- changelog: 4.5.0 adds new rule 24 (which `SpatialMath` module you import
+     decides your coordinate system: `/Verse.org` transforms are LUF,
+     `/UnrealEngine.com` and `/Fortnite.com` transforms are traditional XYZ,
+     and the two are opposite-handed so a rotation conversion is not a
+     component swap). Sourced from Epic's "Left-Up-Forward Coordinate System
+     in Unreal Editor for Fortnite" doc page, cited by title and URL, with a
+     real field-confirmed worked example (the same actor's transform read in
+     both systems, matching the documented mapping exactly). Cross-links
+     rule 23 for disambiguating the two modules' identically-named types
+     rather than repeating that mechanism. Added to the Quick Reference
+     index under Import / Using Errors. Purely additive: no existing rule
+     text changed.
+     4.4.0 confirms rules 20 and 21 against the Book of Verse, "Modules and
      Paths" chapter (https://verselang.github.io/book/16_modules/), fetched directly
      this pass — both move from unverified/observed-only to CONFIRMED and are removed
      from the Uncertain section. Rule 20 gained the chapter's actual mechanism (relative
@@ -166,6 +178,7 @@ made them before considering a change done.**
 - [Module path depends on the new file's directory depth](#20-module-path-depends-on-the-new-files-directory-depth) — relative `using` resolves per-file; prefer an absolute (`/`-leading) path if it may travel between files
 - [Finding a symbol in the digest is not enough — you still need its owning `using`](#21-finding-a-symbol-in-the-digest-is-not-enough) — walk backwards from the symbol to its enclosing `module`
 - [Disambiguating a name two imported modules both define](#23-disambiguating-a-name-that-two-imported-modules-both-define) — qualify the call with `(/Module/Path:)Symbol(...)`
+- [Which `SpatialMath` module you import decides your coordinate system](#24-which-spatialmath-module-you-import-decides-your-coordinate-system) — `/Verse.org` = LUF, `/UnrealEngine.com`+`/Fortnite.com` = XYZ; convert with `FromVector3`/`FromRotation`/`FromTransform`, never by hand
 
 ### Naming / Scope Errors
 - [Local variable name conflicts with a module name](#14-local-variable-name-conflicts-with-a-module-name) — avoid `VFX`/`SFX`/`UI`/`Assets`/`Materials`/`Textures` as variable names
@@ -1274,6 +1287,68 @@ Damage := (/GameA/Combat:)CalculateDamage(10.0)
 **Rule:** when two `using`-imported modules define the same name, qualify
 the call with `(/Absolute/Module/Path:)Symbol(...)` rather than renaming
 either definition — this works even when you don't own one of the modules.
+
+### 24. Which `SpatialMath` module you import decides your coordinate system
+
+**CONFIRMED — Epic, "Left-Up-Forward Coordinate System in Unreal Editor for
+Fortnite"**
+(https://dev.epicgames.com/documentation/fortnite/leftupforward-coordinate-system-in-uefn):
+*"As of 36.00, UEFN uses the LUF coordinate system for the editor and all
+`/Verse.org` module transforms."* `/UnrealEngine.com` and `/Fortnite.com`
+module transforms use the traditional XYZ system instead. Both
+`/UnrealEngine.com/Temporary/SpatialMath` and `/Verse.org/SpatialMath` define
+identically-named types (`vector3`, `rotation`, `transform`), so importing
+both in one file creates the same kind of ambiguity covered in
+[rule 23](#23-disambiguating-a-name-that-two-imported-modules-both-define) —
+if you hit an ambiguous-identifier error on `vector3`/`rotation`/`transform`,
+that rule's qualified-call fix applies here too. But even with the
+ambiguity resolved, picking the wrong one of the two silently mislocates
+things rather than failing to compile, because they don't share a coordinate
+convention.
+
+**The mapping** (traditional XYZ → LUF): **Left = -Y, Up = Z, Forward = X.**
+LUF is right-handed; XYZ is left-handed, so this is not just a relabeling —
+Verse spatial math functions are right-handed by default under LUF.
+
+**Field confirmation:** the same actor read `(x=-8044, y=339924, z=5848)`
+from the Unreal Python API (XYZ) and `(-339924, 5848, -8044)` in the UEFN
+Details panel (LUF) for the same transform — matching the documented mapping
+exactly: `Left = -y` → `-339924`, `Up = z` → `5848`, `Forward = x` → `-8044`.
+
+**The Details panel displays LUF.** A coordinate copied from it is not
+directly usable in `/UnrealEngine.com` or `/Fortnite.com` code (XYZ) without
+conversion — and vice versa.
+
+**Convert with Epic's helpers, never by hand — especially rotations.**
+Epic supplies `FromVector3`, `FromRotation`, and `FromTransform` for
+converting between the two systems. A position conversion is a component
+reorder, but because LUF and XYZ have opposite handedness, a rotation
+conversion is **not** a component swap — hand-converting a rotation
+produces a value that looks plausible but is wrong, and the actor ends up
+misoriented rather than the file failing to compile.
+
+```verse
+# WRONG — copying a Details-panel (LUF) rotation straight into
+# /UnrealEngine.com or /Fortnite.com code, or hand-swapping components:
+using { /UnrealEngine.com/Temporary/SpatialMath }
+
+# Details panel showed this rotation in LUF — using it as XYZ is wrong,
+# and manually reordering its components is still wrong for rotations:
+XYZRotation : rotation = rotation{X := LUFRotation.Z, Y := -LUFRotation.X, Z := LUFRotation.Y}  # do not do this
+
+# RIGHT — convert with Epic's helper instead of hand-mapping components:
+using { /Verse.org/SpatialMath }
+using { /UnrealEngine.com/Temporary/SpatialMath }
+
+LUFRotation : rotation = rotation{...}          # /Verse.org rotation, LUF
+XYZRotation : rotation = FromRotation(LUFRotation)  # converts to XYZ correctly
+```
+
+**Rule:** the module path in your `using` statement — not the type name —
+determines whether a `vector3`/`rotation`/`transform` is LUF or XYZ. Convert
+between the two with `FromVector3`/`FromRotation`/`FromTransform`, never by
+manually reordering or negating components, and never assume a value copied
+from the Details panel is already in the coordinate system your code expects.
 
 ## Visibility and access errors
 

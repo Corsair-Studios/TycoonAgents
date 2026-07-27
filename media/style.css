@@ -386,38 +386,97 @@ body {
   cursor: pointer;
 }
 
-.setup-skill-chips {
+/* Setup wizard Step 2 package checkbox list — replaces the old click-to-
+   toggle chip row so it's clear each row is an install decision, not a
+   status pill. One row per SETUP_SKILL_CHIPS entry (media/main.js). */
+.setup-package-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
 }
 
-/* Selectable variant of the read-only .engine-chip status pill: clickable,
-   toggles .setup-skill-chip--checked. Selection only — installing happens
-   on "Done", not on click. */
-.setup-skill-chip {
+.setup-package-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(10, 10, 11, 0.35);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.setup-package-row:hover {
+  border-color: var(--accent);
+}
+
+.setup-package-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  accent-color: var(--accent);
   cursor: pointer;
 }
 
-.setup-skill-chip--checked {
-  border-color: var(--accent);
-  background: rgba(163, 230, 53, 0.14);
+.setup-package-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
-.setup-skill-chip--checked .engine-chip-dot {
-  background: var(--status-active);
-  box-shadow: 0 0 5px rgba(163, 230, 53, 0.7);
+.setup-package-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
 }
 
-.setup-optionals-advanced-link {
+.setup-package-desc {
   font-size: 11px;
   color: var(--muted);
-  text-decoration: underline;
-  cursor: pointer;
+  line-height: 1.4;
 }
 
-.setup-optionals-advanced-link:hover {
+/* The transparency line — what this row will actually install (skills,
+   commands, MCP server, agents, bridge). Always derived from the pack
+   catalog data the host sends, never hardcoded per-pack copy. */
+.setup-package-installs {
+  font-size: 10px;
+  color: var(--accent);
+  line-height: 1.4;
+  opacity: 0.9;
+}
+
+/* Inline explanation for why a row was pre-checked (currently only UEFN,
+   when detected on this machine) — a default, not a lock; the checkbox
+   above stays fully editable. */
+.setup-package-reason {
+  font-size: 10px;
+  color: var(--status-active);
+  font-style: italic;
+}
+
+/* Secondary call-to-action: styled deliberately muted relative to
+   .setup-optionals-continue-btn so it reads as "also available" rather than
+   competing with the primary Continue action. */
+.setup-optionals-advanced-btn {
+  align-self: stretch;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.setup-optionals-advanced-btn:hover {
   color: var(--text);
+  border-color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 /* Explicit finalize gate for the Step-2 Optionals wizard — the only exit

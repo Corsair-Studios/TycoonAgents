@@ -35,6 +35,7 @@ from device_audit import (
     _is_device,
     _safe_label,
     _actor_location_tuple,
+    _xyz_to_luf,
     _find_overridden_properties,
     _build_base_property_set,
     _get_property_names,
@@ -270,11 +271,19 @@ def _handle_list_devices(params):
                 continue
             label = _safe_label(actor)
             loc = _actor_location_tuple(actor)
+            luf = _xyz_to_luf(*loc)
             changed = _find_overridden_properties(actor, base_props)
             devices.append({
                 "label": label,
                 "class": actor.get_class().get_name(),
+                # Traditional XYZ — unchanged, byte-identical to before this
+                # field existed. Use with /UnrealEngine.com and
+                # /Fortnite.com module transforms.
                 "location": {"x": loc[0], "y": loc[1], "z": loc[2]},
+                # UEFN 36.00+ Left-Up-Forward — matches the editor Details
+                # panel and /Verse.org module transforms. See
+                # device_audit._xyz_to_luf's docstring for the source.
+                "location_luf": {"left": luf[0], "up": luf[1], "forward": luf[2]},
                 "changed_property_count": len(changed),
                 "changed_properties": changed,
             })
@@ -419,11 +428,19 @@ def _handle_run_audit(params):
             if _is_device(actor):
                 label = _safe_label(actor)
                 loc = _actor_location_tuple(actor)
+                luf = _xyz_to_luf(*loc)
                 changed = _find_overridden_properties(actor, base_props)
                 devices.append({
                     "label": label,
                     "class": class_name,
+                    # Traditional XYZ — unchanged, byte-identical to before
+                    # this field existed. Use with /UnrealEngine.com and
+                    # /Fortnite.com module transforms.
                     "location": {"x": loc[0], "y": loc[1], "z": loc[2]},
+                    # UEFN 36.00+ Left-Up-Forward — matches the editor
+                    # Details panel and /Verse.org module transforms. See
+                    # device_audit._xyz_to_luf's docstring for the source.
+                    "location_luf": {"left": luf[0], "up": luf[1], "forward": luf[2]},
                     "changed_property_count": len(changed),
                     "changed_properties": changed,
                 })
