@@ -1,4 +1,8 @@
-<!-- version: 4.0.0 -->
+<!-- version: 4.1.0 -->
+<!-- changelog: 4.1.0 adds rules 20-22 (module-path depth, digest-verified-but-missing-using,
+     double-wrapped optionals), a compile-failure stakes warning, and the verse_lint.py
+     pointer — sourced from docs/VERSE-AGENT-COMPILE-FAILURES.md (11 real errors, one
+     UEFN project, 2026-07-27). Additive only; no prior content changed. -->
 # Verse Common Errors — Pre-Flight Reference
 
 ## Why this file exists
@@ -11,6 +15,17 @@ libraries and functions."
 
 **Prime directive: verify every API against the digest files before writing
 it. Never write an API from memory.**
+
+## A failed compile is not benign — treat correctness as high-stakes
+
+**Observed in one UEFN project:** a failed Verse compile can trigger an
+engine rollback path that infinitely recurses and **crashes the editor**
+(stack overflow in `SemanticAnalyzer.cpp:9320`). The creator hit this crash
+loop twice in one session. That means "just try it and see if it compiles"
+is not a cheap iteration strategy here — each non-compiling file can cost a
+full editor restart, not just a red error in the output log. Verify imports,
+module paths, and parameter conventions *before* triggering a build, not
+after.
 
 ## How this file is sourced
 
@@ -70,6 +85,8 @@ made them before considering a change done.**
 
 ### Import / Using Errors
 - [Unknown member — missing `using`](#11-unknown-member-missing-using-statement) — extension methods need the defining module imported
+- [Module path depends on the new file's directory depth](#20-module-path-depends-on-the-new-files-directory-depth) — never copy a `using` block from a reference file at a different depth
+- [Finding a symbol in the digest is not enough — you still need its owning `using`](#21-finding-a-symbol-in-the-digest-is-not-enough) — walk backwards from the symbol to its enclosing `module`
 
 ### Naming / Scope Errors
 - [Local variable name conflicts with a module name](#14-local-variable-name-conflicts-with-a-module-name) — avoid `VFX`/`SFX`/`UI`/`Assets`/`Materials`/`Textures` as variable names
@@ -81,6 +98,7 @@ made them before considering a change done.**
 - [Square brackets vs parentheses](#call-style-square-brackets-vs-parentheses) — `[]` for failable, `()` for always-succeed
 - [Failable conversions vs optional returns](#failable-conversions-vs-optional-returns) — the two look similar but need different handling
 - [Unsafe array access](#17-unsafe-array-access-patterns) — `..` ranges are inclusive; iterate `0..Array.Length - 1`, or prefer `for (Element : Array)`
+- [Double-wrapped optional parameters](#22-double-wrapped-optional-parameters) — `?Param := Value`, not `?Param := option{Value}`
 
 ## Things that DO NOT EXIST in Verse
 
@@ -980,6 +998,110 @@ Do not fall back to a hand-rolled counter-based pseudo-random workaround —
 that pattern was sourced from older, unverified material and isn't needed;
 `GetRandomInt` is the real, current API.
 
+### 20. Module path depends on the new file's directory depth
+
+**Observed in one project:** error 3506, `Unknown identifier`, hit twice in
+one file.
+
+**Error message:** `Unknown identifier 'GameInit'.` /
+`Unknown identifier 'main_game_globals'.`
+
+A `using { GameInit }` statement resolves relative to the file it's written
+in. It compiled fine in `Content/MyProject/Framework/GameSystems/*.verse`,
+but copying that same `using` block verbatim into a **new** file at
+`Content/` root did not resolve — from root, the correct reference was the
+fully-qualified `MyProject.Framework.GameInit.main_game_globals`.
+
+```verse
+# WRONG — copied from a file several directories deeper, does not
+# resolve from Content/ root:
+using { GameInit }
+
+MyDevice := class(creative_device):
+    OnBegin<override>()<suspends>:void=
+        main_game_globals.DoSomething()   # Error 3506: Unknown identifier
+
+# RIGHT — from a shallower directory, use the fully-qualified path:
+MyDevice := class(creative_device):
+    OnBegin<override>()<suspends>:void=
+        MyProject.Framework.GameInit.main_game_globals.DoSomething()
+```
+
+**Rule:** derive `using` paths from the *target* file's own directory —
+never copy a `using` block verbatim from a reference file at a different
+depth. Before writing a new file's imports, check whether an existing file
+**at the same depth** already uses that import, and copy from that one
+instead. This is a single-project observation (directory-relative module
+resolution), not an exhaustively verified language rule — confirm against
+the digest and an existing sibling file, not against a deeper or shallower
+reference file.
+
+### 21. Finding a symbol in the digest is not enough
+
+**Observed in one project:** error 3506 (`Unknown member`/`Unknown
+identifier`), three separate symbols in one build.
+
+Locating a symbol in a digest file (`Fortnite.digest.verse`,
+`UnrealEngine.digest.verse`, etc.) confirms the API **exists**. It does not
+confirm it's **visible** — you also need a `using` for the module that
+*owns* it, or the call still fails to resolve.
+
+```verse
+# WRONG — GetFortCharacter and MakeNavigationTarget were both verified to
+# exist in the digest, but their owning modules were never imported:
+using { /Fortnite.com/Devices }
+using { /Verse.org/Simulation }
+
+CheckPlayer(Player : player):void=
+    if (Character := Player.GetFortCharacter[]):        # Error 3506
+        NavTarget := MakeNavigationTarget(Character)     # Error 3506
+        Print("ready")                                    # Error 3506
+
+# RIGHT — add the using for the module that owns each symbol:
+using { /Fortnite.com/Devices }
+using { /Fortnite.com/Characters }              # owns GetFortCharacter
+using { /Fortnite.com/AI }                      # owns MakeNavigationTarget
+using { /UnrealEngine.com/Temporary/Diagnostics } # owns Print
+using { /Verse.org/Simulation }
+
+CheckPlayer(Player : player):void=
+    if (Character := Player.GetFortCharacter[]):
+        NavTarget := MakeNavigationTarget(Character)
+        Print("ready")
+```
+
+**Rule:** after locating a symbol in a digest, walk backwards to its
+enclosing `module` declaration in that same digest file and add the matching
+`using`. Treat "found in the digest" and "callable from this file" as two
+separate checks, not one.
+
+### 22. Double-wrapped optional parameters
+
+**Observed in one project:** error 3509, type mismatch, calling
+`npc_spawner_device.SpawnAt`.
+
+Given a signature like
+`SpawnAt(Position:vector3, ?Rotation:?rotation)<suspends>:?agent`, the `?`
+prefix on the parameter name already marks it optional. Wrapping the
+argument in `option{...}` on top of that double-wraps it into
+`?(?rotation)`, which does not match the expected `?rotation`.
+
+```verse
+# Signature: SpawnAt(Position:vector3, ?Rotation:?rotation)<suspends>:?agent
+
+# WRONG — the '?' prefix on the parameter already means optional;
+# wrapping the value in option{} double-wraps it:
+MySpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})   # Error 3509
+
+# RIGHT — pass the value directly:
+MySpawner.SpawnAt(Pos, ?Rotation := FacingRotation)
+```
+
+**Rule:** when a parameter name is already prefixed with `?` in the
+signature, assign the plain value with `:=` — never re-wrap it in
+`option{...}`. Reserve `option{...}` for building a `?T`-typed value from
+scratch, not for satisfying an already-optional parameter.
+
 ## Visibility and access errors
 
 ### Public member depends on a non-public type
@@ -1356,6 +1478,36 @@ multiple copies exist the most recently modified one wins.
 **Grep the relevant digest for the exact symbol and signature BEFORE writing
 a call.** The digest overrides anything in this file and anything in the
 model's memory — if this file and the digest disagree, the digest is right.
+
+## Deterministic lint: verse_lint.py
+
+A small deterministic lint ships beside this file:
+
+```
+python .claude/skills/uefn/verse_lint.py <file-or-directory>
+```
+
+**Exit codes:** `0` clean, `1` findings reported, `2` usage error, `3`
+incomplete scan (it could not check everything). **Exit code `3` is never a
+pass** — treat an incomplete scan the same as an unverified file, not a
+clean one.
+
+It currently detects:
+
+- unguarded `set Map[Key] = Value` (see [rule 6](#6-arrays-and-maps-indexing-is-failable))
+- comparison operators bound with `:=` outside a failure context (see
+  [rule 3](#3-failure-contexts))
+- double-wrapped optional parameters (see
+  [rule 22](#22-double-wrapped-optional-parameters))
+
+**It covers only a subset of the errors in this file, and a clean run is NOT
+a compile guarantee.** In particular, [rule 20](#20-module-path-depends-on-the-new-files-directory-depth)
+(module-path depth) and [rule 21](#21-finding-a-symbol-in-the-digest-is-not-enough)
+(digest-verified-but-missing-`using`) are **not detectable by static text
+scanning** — both require knowing the target file's location relative to
+the module tree and cross-referencing the digest, neither of which the lint
+has access to. Run the lint as a fast pre-check, not a substitute for
+digest verification or an actual UEFN build.
 
 ## Version drift
 

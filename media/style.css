@@ -1018,7 +1018,10 @@ body {
 .trophy-row {
   position: absolute;
   right: 74px;        /* 12 edge + 52 medal + 10 gap */
-  bottom: 12px;
+  /* Vertically centred against .badge-hud (bottom: 12px, height: 52px):
+     bottom = 12 + (52 - 24) / 2 = 12 + 14 = 26px, where 24px is the cup
+     size below. Re-derive if either the medal box or the cup size changes. */
+  bottom: 26px;
   display: flex;
   align-items: center;
   gap: 3px;
@@ -1031,8 +1034,8 @@ body {
 }
 
 .trophy-row svg {
-  width: 20px;
-  height: 20px;
+  width: 24px;         /* 20px + 20% */
+  height: 24px;
   flex: none;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, .7));
 }
@@ -1040,7 +1043,7 @@ body {
 /* Past MAX_TROPHY_CUPS the row collapses to one cup + this counter — styled
    like .badge-hud-count so it reads as the same HUD "material". */
 .trophy-row-count {
-  font-size: 13px;
+  font-size: 15px;     /* 13px + ~20% to stay balanced against the bigger cup */
   font-weight: 800;
   color: #fff8e6;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 4px rgba(0, 0, 0, 0.85);

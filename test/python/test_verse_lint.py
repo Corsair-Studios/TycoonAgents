@@ -244,6 +244,284 @@ class MixedGuardedUnguardedTests(unittest.TestCase):
         self.assertEqual(flagged_targets, ["Unguarded1", "Unguarded2"])
 
 
+class WalrusComparisonTests(unittest.TestCase):
+    """Category A: a bare comparison bound with `:=` outside a failure
+    context (error 3512). Ground truth is
+    docs/VERSE-AGENT-COMPILE-FAILURES.md, category 2."""
+
+    def test_bare_ge_comparison_bound_with_walrus_is_flagged(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    HasCooledDown := (Now - LastPlayedTime) >= CooldownSeconds",
+        )
+        findings = verse_lint.lint_verse_source(src, "x.verse")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["category"], "unguarded-comparison-walrus")
+        self.assertEqual(findings[0]["target"], "HasCooledDown")
+        self.assertEqual(findings[0]["line"], 2)
+
+    def test_bare_eq_comparison_bound_with_walrus_is_flagged(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    IsFirstTrigger := LastPlayedTime = 0.0",
+        )
+        findings = verse_lint.lint_verse_source(src, "x.verse")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["target"], "IsFirstTrigger")
+
+    def test_documented_right_idiom_is_not_flagged(self):
+        """The exact RIGHT rewrite from the incident report."""
+        src = _lines(
+            "Foo<public>():void=",
+            "    var MayPlay : logic = false",
+            "    if (LastPlayedTime <= 0.0):",
+            "        set MayPlay = true",
+            "    else if ((Now - LastPlayedTime) >= CooldownSeconds):",
+            "        set MayPlay = true",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_decides_function_permits_walrus_comparison(self):
+        src = _lines(
+            "Foo<public><decides>():void=",
+            "    HasCooledDown := (Now - LastPlayedTime) >= CooldownSeconds",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_if_colon_block_permits_walrus_comparison(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    if:",
+            "        HasCooledDown := (Now - LastPlayedTime) >= CooldownSeconds",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_trap_walrus_inside_if_condition_is_not_flagged(self):
+        """Trap: `:=` inside an `if (...)` condition is already a failure
+        context and must NOT fire."""
+        src = _lines(
+            "Foo<public>():void=",
+            "    if (HasCooledDown := (Now - LastPlayedTime) >= CooldownSeconds):",
+            "        DoSomething()",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_trap_effect_specifiers_not_mistaken_for_comparisons(self):
+        """Trap: `<suspends>`/`<decides>` effect specifiers must not be
+        mistaken for `<`/`>` comparisons, and must not corrupt a genuine,
+        comparison-free walrus binding on the next line."""
+        src = _lines(
+            "Foo<public><suspends><decides>(X:int):void=",
+            "    Y := X",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_trap_generic_angle_brackets_not_mistaken_for_comparisons(self):
+        """Trap: tight, unspaced `<T>` generic instantiation must not be
+        mistaken for a comparison."""
+        src = _lines(
+            "Foo<public>():void=",
+            "    X := Array<int>{}",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_trap_comparison_in_comment_is_not_flagged(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    X := 5  # was: X := A >= B",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_trap_comparison_in_string_is_not_flagged(self):
+        src = _lines(
+            "Foo<public>():void=",
+            '    X := "A >= B"',
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_trap_named_call_argument_walrus_is_not_flagged(self):
+        """A `:=` nested inside a call's parens (a named argument, same
+        syntax Category B's `?Name := ...` uses) is a different question
+        than a top-level variable binding -- skipped, not guessed at."""
+        src = _lines(
+            "Foo<public>():void=",
+            "    Bar(X := A > B)",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_non_vacuity_disabling_comparison_regex_makes_this_fail(self):
+        """Proves the true-positive test above actually exercises
+        `_COMPARISON_RE`, not a vacuously-passing assertion."""
+        src = _lines(
+            "Foo<public>():void=",
+            "    HasCooledDown := (Now - LastPlayedTime) >= CooldownSeconds",
+        )
+        original = verse_lint._COMPARISON_RE
+        try:
+            verse_lint._COMPARISON_RE = verse_lint.re.compile(r"THIS_CAN_NEVER_MATCH_ANYTHING")
+            neutered_findings = verse_lint.lint_verse_source(src, "x.verse")
+            self.assertEqual(
+                len(neutered_findings), 0,
+                "sanity check itself is broken: neutering detection should "
+                "silence the true positive",
+            )
+        finally:
+            verse_lint._COMPARISON_RE = original
+        restored_findings = verse_lint.lint_verse_source(src, "x.verse")
+        self.assertEqual(len(restored_findings), 1)
+
+
+class WalrusComparisonNestingSymmetryTests(unittest.TestCase):
+    """Review-gate finding: `_nesting_depth_before` (walrus LHS) tracked
+    parens AND braces, but `_has_top_level_comparison` (walrus RHS) only
+    tracked parens -- so a comparison nested inside `{}` on the
+    right-hand side (a struct/array/map literal) was misattributed to the
+    OUTER binding instead of being skipped as ambiguous/nested, same as
+    the LHS side already does. Fixed by making both depth checks
+    brace-aware. Repro is the reviewer's exact `my_struct{...}` shape."""
+
+    def test_comparison_nested_in_struct_literal_is_not_attributed_to_outer_binding(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    S := my_struct{Field := 5, Other := X >= 3}",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_comparison_nested_in_map_literal_is_not_attributed_to_outer_binding(self):
+        src = _lines(
+            "Foo<public>():void=",
+            '    Counts := map{"a" => X > 5, "b" => 2}',
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_comparison_nested_in_array_literal_is_not_attributed_to_outer_binding(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    Values := array{A > B, 3}",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_genuine_top_level_comparison_still_flags_after_brace_fix(self):
+        """Confirms the brace-awareness fix narrows, not removes,
+        detection: a comparison with no brace nesting at all must still
+        be flagged."""
+        src = _lines(
+            "Foo<public>():void=",
+            "    HasCooledDown := (Now - LastPlayedTime) >= CooldownSeconds",
+        )
+        findings = verse_lint.lint_verse_source(src, "x.verse")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["target"], "HasCooledDown")
+
+
+class DoubleWrappedOptionalTests(unittest.TestCase):
+    """Category B: `?Name := option{...}` double-wraps an already-optional
+    call argument (error 3509). Ground truth is
+    docs/VERSE-AGENT-COMPILE-FAILURES.md, category 5."""
+
+    def test_double_wrapped_optional_argument_is_flagged(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    EmperorSpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})",
+        )
+        findings = verse_lint.lint_verse_source(src, "x.verse")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["category"], "double-wrapped-optional")
+        self.assertEqual(findings[0]["target"], "Rotation")
+        self.assertEqual(findings[0]["line"], 2)
+
+    def test_correct_unwrapped_optional_argument_is_not_flagged(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    EmperorSpawner.SpawnAt(Pos, ?Rotation := FacingRotation)",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_trap_multiline_option_guard_idiom_not_mistaken_for_double_wrap(self):
+        """The unrelated multi-line `option{` GUARD idiom (no `?Name :=`
+        prefix) must never be mistaken for a double-wrapped argument."""
+        src = _lines(
+            "Foo<public>():void=",
+            "    Result : ?logic = option{",
+            "        set Map[Key] = true",
+            "        true",
+            "    }",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_trap_double_wrap_in_comment_is_not_flagged(self):
+        src = _lines(
+            "Foo<public>():void=",
+            "    # EmperorSpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_double_wrap_fires_regardless_of_failure_context(self):
+        """Category B is a pure textual pattern, independent of the
+        block-level failure-context stack categories 1 and 2 share."""
+        src = _lines(
+            "Foo<public>():void=",
+            "    if:",
+            "        EmperorSpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})",
+        )
+        findings = verse_lint.lint_verse_source(src, "x.verse")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["category"], "double-wrapped-optional")
+
+
+class RealWorldFalsePositiveRegressionTests(unittest.TestCase):
+    """Found by running the new categories against the real, currently-
+    compiling StarWars project tree (the acceptance test that matters
+    most per the task brief) -- both are PRE-EXISTING gaps in category 1's
+    block-stack, newly exposed by scanning a much wider real tree than the
+    single ground-truth file the original rule was validated against."""
+
+    def test_else_if_colon_is_recognized_as_permitting(self):
+        """illest_safe_zone_tracking.verse:191-197 -- `else if:` was only
+        matched as keyword 'else' (non-permitting) because keyword
+        extraction stopped at the first token; 'if' was never seen."""
+        src = _lines(
+            "SetStoredOverlapCount<private>(Player : player, Count : int) : void =",
+            "    if (Count <= 0):",
+            "        ClearStoredOverlapCount(Player)",
+            "    else if:",
+            "        set SafeZoneOverlapCountByPlayer[Player] = Count",
+            "    then:",
+            "        false",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_brace_bodied_decides_function_header_is_recognized(self):
+        """illest_player_persistence_manager.verse:281-297 -- a
+        `<decides>` function using brace-body style (`...:void = {`
+        instead of bare-`=`/colon-indented style) was pushed as a
+        non-permitting frame because only the bare-`=`-ending header shape
+        was recognized as a function header."""
+        src = _lines(
+            "PersistCurrency<public>(CurrencyKey:string, Amount:int)<transacts><decides>:void = {",
+            "    if:",
+            "        OldStats := GetStats()",
+            "    then:",
+            "        var NewCurrencies : [string]int = OldStats",
+            "        set NewCurrencies[CurrencyKey] = Amount",
+            "}",
+        )
+        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
+
+    def test_brace_bodied_non_decides_function_still_flags(self):
+        """Same brace-body header shape WITHOUT <decides> must still flag
+        an unguarded write -- the fix only widens which headers are
+        recognized, it does not blanket-permit every brace-bodied
+        function."""
+        src = _lines(
+            "Foo<public>(X:int):void = {",
+            "    set Bad[X] = true",
+            "}",
+        )
+        findings = verse_lint.lint_verse_source(src, "x.verse")
+        self.assertEqual(len(findings), 1)
+
+
 class GroundTruthFileTests(unittest.TestCase):
     """If the real ground-truth file is present on this machine (it is a
     creator project outside the repo, so CI/other machines won't have it),

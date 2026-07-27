@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Deterministic Verse lint: unguarded map/array subscript writes.
+"""Deterministic Verse lint: three statically-detectable compile-failure
+shapes (unguarded map/array writes, unguarded comparison bindings, and
+double-wrapped optional arguments).
 
 WHY THIS EXISTS
 ----------------
@@ -16,31 +18,79 @@ it is a MECHANICAL one: whether a `set X[K] = V` statement sits inside a
 failure context is a structural, indentation-driven fact about the source
 text, not something that should depend on a model remembering a doc.
 
+A follow-up incident (see docs/VERSE-AGENT-COMPILE-FAILURES.md) hit two
+more MECHANICAL shapes in the same session: comparison operators bound
+with `:=` outside a failure context (3 of 8 errors in one build), and a
+double-wrapped optional call argument (`?Name := option{...}` when `Name`
+is already declared optional). Both are structural/textual facts about the
+source, same as the original rule, so both were added here rather than
+left to model recall.
+
 WHAT THIS CHECKS (and ONLY this)
 ---------------------------------
-A write to a map/array subscript — `set <expr>[<key>] = <value>` — that is
-not enclosed by anything that permits Verse's `<decides>` effect:
-`if:` / `if (...)`, `for`, `option{...}`, or an enclosing function/method
-declared `<decides>` in its effect specifiers.
+Three shapes, each independently detected:
+
+  1. UNGUARDED MAP/ARRAY WRITE -- a write to a map/array subscript,
+     `set <expr>[<key>] = <value>`, that is not enclosed by anything that
+     permits Verse's `<decides>` effect: `if:` / `if (...)`, `for`,
+     `option{...}`, or an enclosing function/method declared `<decides>`
+     in its effect specifiers.
+  2. UNGUARDED COMPARISON BOUND WITH `:=` -- a top-level `<Name> :=`
+     binding (not nested inside any parens/braces on that physical line,
+     so not a call-site named argument, and not already inside a failure
+     context per the same permitting-scope rules as #1) whose right-hand
+     side contains a bare `>=`, `<=`, `<`, `>`, or `=` comparison at the
+     RHS's own top level (not itself nested inside a further call within
+     the RHS). Comparison operators carry the `decides` effect in Verse.
+  3. DOUBLE-WRAPPED OPTIONAL ARGUMENT -- a call-site named argument of the
+     shape `?Name := option{...}` (opened and closed on one physical
+     line): the `?` prefix already denotes an optional slot, so wrapping
+     the value in `option{...}` on top of that double-wraps it (error
+     3509). Pure textual pattern, independent of the failure-context
+     machinery used by #1 and #2.
 
 WHAT THIS DOES **NOT** CHECK
 ------------------------------
-This is a narrow, single-purpose structural lint, NOT a Verse parser and
-NOT a compiler. A clean run (zero findings) is NOT proof a file compiles.
-In particular it does NOT catch:
+This is a narrow, multi-rule structural lint, NOT a Verse parser and NOT a
+compiler. A clean run (zero findings) is NOT proof a file compiles. In
+particular it does NOT catch:
 
   - Any other failure-context violation (bare `Array[i]` reads, bare
     `Function[...]` calls, `Mod[...]`, optional unwraps, etc.) — only the
-    `set <subscript> = <value>` WRITE shape is modeled.
-  - Multi-line statements where the subscript or the `=` wraps onto a
-    following physical line (e.g. `set Map[\n    Key\n] = Value`). The
-    detector is single-line only; such writes are silently NOT flagged.
+    `set <subscript> = <value>` WRITE shape (#1) and the `:=`-bound
+    comparison shape (#2) are modeled.
+  - Multi-line statements where the subscript, the `=`, the `:=`, or the
+    comparison operator wraps onto a following physical line (e.g.
+    `set Map[\n    Key\n] = Value`). All three detectors are single-line
+    only; such statements are silently NOT flagged.
+  - A `:=`-bound comparison where the comparison operator or the RHS
+    itself is missing surrounding whitespace (e.g. `X:=A>B` with no
+    spaces). Requiring whitespace around the operator is what lets this
+    lint tell a real comparison apart from Verse generic/type angle
+    brackets (`array<int>`) and effect specifiers (`<decides>`,
+    `<suspends>`), which are always written with no surrounding space —
+    the tradeoff is deliberate (see DESIGN BIAS below) and costs only
+    unusually-dense formatting, not observed in real code so far.
+  - A `?Name := option{...}` double-wrap that spans multiple physical
+    lines, or one where the module cannot see the callee's signature to
+    confirm `Name` is actually declared optional -- this lint has no
+    signature information at all; it fires purely on the `?Name :=
+    option{...}` text shape, which is what the task calls "low-risk", not
+    "signature-verified".
+  - The MISSING inverse of #3 (a call argument that needed `option{...}`
+    but doesn't have it) -- that requires the callee's signature, which is
+    out of scope for a text lint.
   - Effect permission nuances inside concurrency blocks (`spawn:`, `sync:`,
     `race:`, `rush:`, `branch:`) — these are modeled as NON-permitting,
     which matches Verse's actual rules for those blocks, but the modeling
     is heuristic, not a real parse of the concurrency spec.
-  - Any Verse error class other than this one (missing `using`, visibility,
-    `<suspends>` omission, etc. — see verse-common-errors.md for those).
+  - Module resolution depending on a new file's directory depth (report
+    category 1) and a missing `using` for a symbol's owning module (report
+    category 4) -- both require knowing the project's module tree / digest
+    contents, not just the text of one file, so neither is in scope for
+    this lint. See docs/VERSE-AGENT-COMPILE-FAILURES.md.
+  - Any Verse error class other than these three (visibility, `<suspends>`
+    omission, etc. — see verse-common-errors.md for those).
   - A same-line guard (`if (...)`, `for (...)`, `option{...}`) that wraps
     across multiple physical lines before it closes -- e.g. an `if (`
     opener on one line with the write on the next. The same-line guard
@@ -64,6 +114,14 @@ than guessing. Concretely:
     treated as non-permitting ONLY when the write is directly, unambiguously
     inside it with no enclosing if/for/option/<decides> anywhere above it —
     it does not try to guess semantics for constructs it can't parse.
+  - The `:=`-bound comparison check (#2) requires the comparison operator
+    to have whitespace on both sides, and requires the `:=` itself to sit
+    at paren/brace depth zero on its physical line. Either ambiguity (tight
+    spacing, or nesting this module can't classify) means the line is
+    silently skipped, never guessed at.
+  - The double-wrapped-optional check (#3) only fires on the exact
+    `?Name := option{...}` text shape, closed on one line. Anything else
+    (multi-line, no `?` prefix, nested braces inside the wrap) is skipped.
 
 USAGE
 -----
@@ -73,9 +131,11 @@ Exits non-zero iff any finding was reported. Human-readable output is
 `path:line: message`, one finding per line.
 
 Also importable: `lint_verse_source(text, path)` returns a list of finding
-dicts (`path`, `line`, `column`, `target`, `key`, `message`) so callers
-(including tests) can exercise the real detection logic directly rather
-than parsing CLI output.
+dicts (`path`, `line`, `column`, `target`, `key`, `message`, `category`) so
+callers (including tests) can exercise the real detection logic directly
+rather than parsing CLI output. `category` is one of
+`"unguarded-map-write"`, `"unguarded-comparison-walrus"`, or
+`"double-wrapped-optional"`, so a caller can tell which rule fired.
 
 EXIT CODES
 ----------
@@ -96,10 +156,13 @@ import re
 import sys
 
 SCOPE_NOTE = (
-    "verse_lint checks ONLY unguarded 'set Map[Key] = Value' subscript "
-    "writes missing a failure context. A clean (0-finding) run is NOT a "
-    "compile guarantee -- see the module docstring for what it does not "
-    "catch."
+    "verse_lint checks ONLY three shapes: (1) unguarded 'set Map[Key] = "
+    "Value' subscript writes missing a failure context, (2) comparisons "
+    "bound with ':=' outside a failure context, and (3) double-wrapped "
+    "optional call arguments ('?Name := option{...}'). A clean (0-finding) "
+    "run is NOT a compile guarantee -- it does NOT check module "
+    "resolution, missing 'using' imports, or any other Verse error class. "
+    "See the module docstring for the full list of what it does not catch."
 )
 
 # Keywords whose colon-block body is a failure context (permits the
@@ -132,6 +195,39 @@ _OPTION_BRACE_OPEN_RE = re.compile(r"(?<![A-Za-z0-9_])option\s*\{$")
 # passes everything BEFORE it) to recognise a same-line, already-closed
 # `option{ ... }` guard, e.g. `option{ set Map[Key] = true }`.
 _OPTION_KEYWORD_BEFORE_BRACE_RE = re.compile(r"(?<![A-Za-z0-9_])option\s*$")
+
+# `<identifier> :=` -- Verse's bind operator. Also the syntax for a call-
+# site named argument (`?Rotation := Value`), which is why every match is
+# additionally checked for physical-line paren/brace nesting before it
+# counts as a candidate top-level variable binding (see
+# `_nesting_depth_before` and its use in `lint_verse_source`).
+_WALRUS_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*:=")
+
+# A bare comparison operator (`>=`, `<=`, `<`, `>`, `=`) with whitespace
+# required on BOTH sides. Deliberately conservative: Verse generic/type
+# instantiation (`array<int>`, `Foo<T>`) and effect specifiers
+# (`<decides>`, `<suspends>`, `<transacts>`) are always written with NO
+# surrounding space, so requiring space on both sides keeps this pattern
+# from ever matching those. Applied only to text taken from AFTER a `:=`
+# match (the right-hand side of a binding), never to a whole line.
+_COMPARISON_RE = re.compile(
+    r"(?<=\s)>=(?=\s)"
+    r"|(?<=\s)<=(?=\s)"
+    r"|(?<=\s)<(?!=)(?=\s)"
+    r"|(?<=\s)>(?!=)(?=\s)"
+    r"|(?<=\s)=(?!=)(?=\s)"
+)
+
+# `?Name := option{...}` closed on one physical line, with no nested
+# braces inside the wrap -- a call-site named optional argument that has
+# been double-wrapped (the `?` prefix already denotes optionality; error
+# 3509). The `?` prefix and `:=` together are what make this distinct from
+# the unrelated multi-line `option{` GUARD idiom (`Result : ?logic =
+# option{` ... `}`), which has neither a `?` prefix nor `:=` before the
+# `option{`.
+_DOUBLE_WRAPPED_OPTIONAL_RE = re.compile(
+    r"\?([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*option\s*\{([^{}]*)\}"
+)
 
 
 def _mask_strings_and_strip_comment(line: str) -> str:
@@ -205,12 +301,62 @@ def _is_inline_guarded(masked_line: str, match_start: int) -> bool:
     return any(brace_is_option)
 
 
+def _nesting_depth_before(masked_line: str, pos: int) -> int:
+    """Count of unmatched `(` plus unmatched `{` in `masked_line[:pos]`.
+
+    Used by the `:=`-bound-comparison check (Category A) to require that a
+    candidate binding sit at TOP LEVEL on its physical line before it is
+    considered a real variable binding at all. A `:=` found at depth > 0
+    is either a call-site named argument (e.g. `Foo(X := ...)`,
+    `?Rotation := ...`) or already inside an `if (...)` / `option{...}`
+    guard -- in both cases this is a different question than "is this an
+    unguarded local binding", so the line is skipped rather than guessed
+    at (this project's stated false-negative bias). This deliberately
+    subsumes what `_is_inline_guarded` recognizes for the write rule
+    (unclosed `if (`/`for (`/`option{` before the match) plus the new
+    named-argument case that rule never needed to handle."""
+    prefix = masked_line[:pos]
+    paren_depth = prefix.count("(") - prefix.count(")")
+    brace_depth = prefix.count("{") - prefix.count("}")
+    return max(paren_depth, 0) + max(brace_depth, 0)
+
+
+def _has_top_level_comparison(rhs: str) -> bool:
+    """True if `rhs` (text after a `:=` match, to end of physical line)
+    contains a whitespace-bounded comparison operator that itself sits at
+    paren-AND-brace depth 0 RELATIVE TO `rhs` -- i.e. not nested inside a
+    further call or brace scope within the right-hand side (e.g. the `>`
+    in `Foo(X := A > B)` used as an outer RHS is intentionally NOT counted
+    here; that inner `X := A > B` is its own, separately-nested candidate,
+    and conflating the two would misattribute which binding actually
+    fails). Braces are tracked for the SAME reason parens are: a struct
+    literal on the RHS, e.g. `S := my_struct{Field := 5, Other := X >=
+    3}`, nests its OWN `Other := X >= 3` binding inside `{}`, and that
+    inner comparison must not be misattributed to the outer `S` binding.
+    Must stay symmetric with `_nesting_depth_before`, which tracks the
+    same two bracket kinds for the walrus LHS side of this same check --
+    an asymmetry there (paren-only vs paren+brace) let a brace-nested
+    comparison leak through as a false positive on the outer binding; see
+    the real-world regression tests for the repro. This is what lets
+    `(Now - LastPlayedTime) >= CooldownSeconds` (parens close before the
+    comparison) still match while a same-shaped nested call/struct
+    literal on the RHS does not."""
+    for match in _COMPARISON_RE.finditer(rhs):
+        paren_depth = rhs.count("(", 0, match.start()) - rhs.count(")", 0, match.start())
+        brace_depth = rhs.count("{", 0, match.start()) - rhs.count("}", 0, match.start())
+        if paren_depth <= 0 and brace_depth <= 0:
+            return True
+    return False
+
+
 def lint_verse_source(text: str, path: str = "<string>") -> list:
-    """Scan Verse source `text` for unguarded map/array subscript writes.
+    """Scan Verse source `text` for the three finding categories (see the
+    module docstring): unguarded map/array writes, unguarded `:=`-bound
+    comparisons, and double-wrapped optional call arguments.
 
     Returns a list of finding dicts: {path, line, column, target, key,
-    message}. Pure function, no filesystem access -- `path` is only used
-    to label findings.
+    message, category}. Pure function, no filesystem access -- `path` is
+    only used to label findings.
     """
     findings = []
     # Each stack frame: {"indent": int, "permits": bool}. A write is
@@ -245,7 +391,9 @@ def lint_verse_source(text: str, path: str = "<string>") -> list:
                     "column": match.start() + 1,
                     "target": target,
                     "key": key,
+                    "category": "unguarded-map-write",
                     "message": (
+                        "[unguarded-map-write] "
                         f"unguarded write `set {target}[{key}] = ...` -- this "
                         "has the 'decides' effect and is not allowed by its "
                         "context (no enclosing if:/if(...)/for/option/"
@@ -255,11 +403,79 @@ def lint_verse_source(text: str, path: str = "<string>") -> list:
                 }
             )
 
+        # --- 1b. Look for a comparison bound with `:=` on this line ------
+        for match in _WALRUS_RE.finditer(masked):
+            if _nesting_depth_before(masked, match.start()) > 0:
+                continue  # named call-site arg, or already inside if(/option{
+            if currently_permits:
+                continue
+            rhs = masked[match.end():]
+            if not _has_top_level_comparison(rhs):
+                continue
+            name = match.group(1)
+            findings.append(
+                {
+                    "path": path,
+                    "line": line_no,
+                    "column": match.start() + 1,
+                    "target": name,
+                    "key": None,
+                    "category": "unguarded-comparison-walrus",
+                    "message": (
+                        "[unguarded-comparison-walrus] "
+                        f"unguarded binding `{name} := ...` -- the "
+                        "comparison on the right-hand side has the "
+                        "'decides' effect and is not allowed by its "
+                        "context (no enclosing if:/if(...)/for/option/"
+                        "<decides> function found). See "
+                        "verse-common-errors.md, section 3 (Failure "
+                        "contexts), and "
+                        "docs/VERSE-AGENT-COMPILE-FAILURES.md category 2."
+                    ),
+                }
+            )
+
+        # --- 1c. Look for a double-wrapped optional call argument --------
+        for match in _DOUBLE_WRAPPED_OPTIONAL_RE.finditer(masked):
+            name, inner = match.group(1), match.group(2)
+            findings.append(
+                {
+                    "path": path,
+                    "line": line_no,
+                    "column": match.start() + 1,
+                    "target": name,
+                    "key": None,
+                    "category": "double-wrapped-optional",
+                    "message": (
+                        "[double-wrapped-optional] "
+                        f"`?{name} := option{{{inner.strip()}}}` -- `{name}` "
+                        "is already an optional parameter slot (the `?` "
+                        "prefix denotes that); wrapping the argument in "
+                        "`option{...}` on top of that double-wraps it "
+                        "(error 3509). Pass the value directly: "
+                        f"`?{name} := {inner.strip()}`. See "
+                        "docs/VERSE-AGENT-COMPILE-FAILURES.md category 5."
+                    ),
+                }
+            )
+
         # --- 2. Does this line OPEN a new indented scope for later lines?
         if stripped.endswith(":"):
             header = stripped[:-1].strip()
             keyword_match = _COLON_HEADER_KEYWORD_RE.match(header)
             keyword = keyword_match.group(1) if keyword_match else None
+            if keyword == "else":
+                # `else if:` / `else for:` is the SAME failure-context
+                # construct as a bare `if:` / `for:` -- only bare `else:`
+                # (no trailing keyword) stays non-permitting. Found via a
+                # real false positive: illest_safe_zone_tracking.verse's
+                # `else if:\n    set Map[K] = V\nthen:` construct, which
+                # compiles today, was flagged because only the leading
+                # "else" token was inspected.
+                rest = header[keyword_match.end():].strip()
+                rest_match = _COLON_HEADER_KEYWORD_RE.match(rest)
+                if rest_match:
+                    keyword = rest_match.group(1)
             permits = keyword in _PERMITTING_KEYWORDS
             stack.append({"indent": indent, "permits": permits})
         elif stripped.endswith("=") and _FUNCTION_HEADER_RE.search(stripped):
@@ -267,14 +483,27 @@ def lint_verse_source(text: str, path: str = "<string>") -> list:
             permits = bool(_DECIDES_SPECIFIER_RE.search(stripped))
             stack.append({"indent": indent, "permits": permits})
         elif stripped.endswith("{") and not stripped.endswith("{}"):
-            # Unclosed brace block, e.g. a multi-line `option{` (rare in
-            # observed real code, which favors colon blocks) -- tracked
-            # conservatively via indentation like everything else. Matched
-            # anywhere the line ends (e.g. `Result : ?logic = option{`,
-            # the documented assignment-form idiom -- see
-            # verse-common-errors.md), not only when the line starts with
-            # `option`.
-            permits = bool(_OPTION_BRACE_OPEN_RE.search(stripped))
+            # Unclosed brace block. Two different things end in an
+            # unclosed '{': a multi-line `option{` guard, and a
+            # brace-BODIED function/method header, e.g.
+            # `Foo<decides>(X:int):void = {` (equivalent to
+            # `Foo<decides>(X:int):void=` followed by an indented block --
+            # Verse allows both styles for the same construct). Found via
+            # a real false positive: several `<decides>`-declared
+            # functions in illest_player_persistence_manager.verse and
+            # illest_verse_utils.verse use brace-body style, and were
+            # treated as non-permitting because only the bare '='-ending
+            # header form was recognized as a function header.
+            body_before_brace = stripped[:-1].rstrip()
+            if body_before_brace.endswith("=") and _FUNCTION_HEADER_RE.search(body_before_brace):
+                permits = bool(_DECIDES_SPECIFIER_RE.search(body_before_brace))
+            else:
+                # Not a function header -- fall back to the option{} guard
+                # check, e.g. `Result : ?logic = option{` (the documented
+                # assignment-form idiom -- see verse-common-errors.md),
+                # matched anywhere the line ends, not only when the line
+                # starts with `option`.
+                permits = bool(_OPTION_BRACE_OPEN_RE.search(stripped))
             stack.append({"indent": indent, "permits": permits})
 
     return findings
