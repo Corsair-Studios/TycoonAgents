@@ -5632,6 +5632,10 @@
   let danceOffCooldown = 0;
   /** Seconds each dancer performs before yielding the floor to the other. */
   const DANCE_OFF_TURN_SECONDS = 2;
+  /** Music-bubble duration (seconds) popped above the dancer's head at the
+   *  start of each turn — shorter than DANCE_OFF_TURN_SECONDS so it reads as
+   *  a lead-in, not a cover for the whole turn. See beginDanceOffTurn. */
+  const DANCE_OFF_BUBBLE_DURATION_SEC = 1.2;
   /** Full rounds (both participants each get one turn = 1 round). Product spec: "three rounds". */
   const DANCE_OFF_ROUNDS = 3;
   /** Total alternating turns in a run (2 dancers x DANCE_OFF_ROUNDS). */
@@ -5669,6 +5673,143 @@
   // (search "GATE SPOT" in updateDanceOff) — mirrors DANCE_PARTY_UNLOCK_REBIRTH's
   // check in updateDiscoParty — plus the same check in the Alt+O hotkey below,
   // mirroring Alt+D's DANCE_PARTY_UNLOCK_REBIRTH check.
+
+  // ── Dance-off winner confetti ──────────────────────────────────────────
+  // A small, theme-independent, asset-free celebration burst (plain colored
+  // rects/ribbons — no sprite, so it looks right in every theme) at the
+  // winner's on-screen position when danceOffPhase becomes "celebrate" (see
+  // the winner-pick block in updateDanceOff). Pooled at module scope so
+  // spawning a burst never allocates: every particle object in
+  // danceOffConfettiPool is created once, below, and only ever has its
+  // fields overwritten. danceOffConfettiActive is the single boolean the
+  // inactive path (both the per-frame update and the draw) checks first —
+  // one comparison, nothing else, when no confetti is falling.
+  /** True while at least one pooled particle is still alive. Single cheap
+   *  gate for both updateDanceOffConfetti and drawDanceOffConfetti. */
+  let danceOffConfettiActive = false;
+  /** Particle count for one burst — "a little bit of confetti", not a
+   *  screen-filling effect. */
+  const DANCE_OFF_CONFETTI_COUNT = 22;
+  /** Downward acceleration (px/s^2) applied to every live particle. */
+  const DANCE_OFF_CONFETTI_GRAVITY = 260;
+  /** Amplitude (px/s^2) of the gentle side-to-side drift wobble. */
+  const DANCE_OFF_CONFETTI_DRIFT = 40;
+  /** Flat palette of small ribbon colors — deliberately generic (not
+   *  theme-sourced) so the burst reads correctly under every theme. */
+  const DANCE_OFF_CONFETTI_COLORS = [
+    "#ff5252", "#ffb300", "#ffee58", "#66bb6a", "#42a5f5", "#ab47bc", "#ff7043",
+  ];
+  /** Fixed-size particle pool, allocated ONCE at module scope and reused for
+   *  every burst — the inactive path never allocates. Each entry:
+   *  {active, x, y, vx, vy, rot, vrot, life, maxLife, color, w, h} in canvas
+   *  (screen) coordinates. */
+  const danceOffConfettiPool = (function buildDanceOffConfettiPool() {
+    const pool = new Array(DANCE_OFF_CONFETTI_COUNT);
+    for (let i = 0; i < DANCE_OFF_CONFETTI_COUNT; i++) {
+      pool[i] = {
+        active: false, x: 0, y: 0, vx: 0, vy: 0, rot: 0, vrot: 0,
+        life: 0, maxLife: 0, color: DANCE_OFF_CONFETTI_COLORS[0], w: 4, h: 7,
+      };
+    }
+    return pool;
+  })();
+
+  /**
+   * Spawn one confetti burst at (cx, cy) — the winner's canvas position at
+   * the instant the winner is picked (see the celebrate-phase transition in
+   * updateDanceOff, which reads winnerEntry.x/winnerEntry.y the same way the
+   * per-character loop derives cx/cy for every other overlay). No-op for
+   * reduced-motion users, matching the disco lighting/ball suppression rule.
+   * Reuses the pooled particle objects in place — no allocation.
+   * @param {number} cx @param {number} cy canvas-space burst origin
+   */
+  function spawnDanceOffConfetti(cx, cy) {
+    if (prefersReducedMotion) return;
+    for (let i = 0; i < danceOffConfettiPool.length; i++) {
+      const p = danceOffConfettiPool[i];
+      p.active = true;
+      p.x = cx;
+      p.y = cy;
+      // Mostly-upward burst spread (a shallow cone around straight up), then
+      // gravity below arcs it back down and out.
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.8;
+      const speed = 70 + Math.random() * 90;
+      p.vx = Math.cos(angle) * speed;
+      p.vy = Math.sin(angle) * speed;
+      p.rot = Math.random() * Math.PI * 2;
+      p.vrot = (Math.random() - 0.5) * 8;
+      p.maxLife = 0.9 + Math.random() * 0.5;
+      p.life = p.maxLife;
+      p.color = DANCE_OFF_CONFETTI_COLORS[Math.floor(Math.random() * DANCE_OFF_CONFETTI_COLORS.length)];
+      p.w = 3 + Math.random() * 3;
+      p.h = 6 + Math.random() * 4;
+    }
+    danceOffConfettiActive = true;
+  }
+
+  /**
+   * Advance every live confetti particle by delta seconds: gravity, a gentle
+   * sideways drift wobble, rotation, and life decay. Inactive path is the
+   * single danceOffConfettiActive boolean check — no allocation either way.
+   * @param {number} delta seconds
+   */
+  function updateDanceOffConfetti(delta) {
+    if (!danceOffConfettiActive) return;
+    let anyAlive = false;
+    for (let i = 0; i < danceOffConfettiPool.length; i++) {
+      const p = danceOffConfettiPool[i];
+      if (!p.active) continue;
+      p.life -= delta;
+      if (p.life <= 0) { p.active = false; continue; }
+      p.vy += DANCE_OFF_CONFETTI_GRAVITY * delta;
+      p.vx += Math.sin(p.life * 6 + p.rot) * DANCE_OFF_CONFETTI_DRIFT * delta;
+      p.x += p.vx * delta;
+      p.y += p.vy * delta;
+      p.rot += p.vrot * delta;
+      anyAlive = true;
+    }
+    danceOffConfettiActive = anyAlive;
+  }
+
+  /**
+   * Draw every live confetti particle as a small colored, rotated rect
+   * (asset-free, theme-independent) fading out over its lifetime. Guarded
+   * like drawDiscoOverlay/drawDiscoBall: a single cheap boolean check when
+   * inactive, and reduced-motion users get none (spawnDanceOffConfetti
+   * already refuses to populate the pool for them, but this is checked too
+   * as belt-and-braces in case that ever changes). Every ctx mutation is
+   * inside its own save/restore so no state (globalAlpha, transform) leaks
+   * into later draws.
+   */
+  function drawDanceOffConfetti() {
+    if (!danceOffConfettiActive || prefersReducedMotion) return;
+    for (let i = 0; i < danceOffConfettiPool.length; i++) {
+      const p = danceOffConfettiPool[i];
+      if (!p.active) continue;
+      const alpha = Math.max(0, Math.min(1, p.life / p.maxLife));
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+  }
+
+  /** Clear all confetti state — deactivates every pooled particle and drops
+   *  the single active flag. Called from clearDanceOffParticipants so every
+   *  one of its four callers-in-spirit (natural end via endDanceOff,
+   *  interruption via cancelDanceOff — rival arrival, a participant going
+   *  active, or a participant vanishing) stops the confetti on the same
+   *  frame it stops everything else, rather than letting it fall over
+   *  whatever replaces the dance-off scene. */
+  function clearDanceOffConfetti() {
+    for (let i = 0; i < danceOffConfettiPool.length; i++) {
+      danceOffConfettiPool[i].active = false;
+    }
+    danceOffConfettiActive = false;
+  }
 
   /**
    * Currently alive enemies. Each: {instance_id, rival_id, nx, ny, hp, maxHp,
@@ -13240,6 +13381,14 @@
     watcher.dancing = false;
     watcher.danceTimeLeft = 0;
     danceOffTurnTimeLeft = DANCE_OFF_TURN_SECONDS;
+    // Music bubble on the dancer whose turn is starting — once per turn (6x
+    // per dance-off: 3 rounds x 2 dancers), NOT the watcher. force=true
+    // bypasses BUBBLE_COOLDOWN_SEC (60s) the same way the conga/disco-party
+    // start bubbles do (see their own showExpression(..., true) call sites) —
+    // without it only the very first turn's bubble would ever show. Duration
+    // is shorter than DANCE_OFF_TURN_SECONDS so it reads as a lead-in rather
+    // than covering the whole turn.
+    showExpression(dancer, 5, DANCE_OFF_BUBBLE_DURATION_SEC, true);
   }
 
   /**
@@ -13261,6 +13410,12 @@
       e.danceFrameTimer = 0;
       e.lastDanceIdx = -1;
     }
+    // Winner-celebration confetti (see spawnDanceOffConfetti) shares this
+    // single exit funnel with everything else the dance-off owns — both
+    // endDanceOff (natural end) and cancelDanceOff (rival arrival /
+    // participant active / participant vanished) call this, so the confetti
+    // never keeps falling over whatever the scene becomes next.
+    clearDanceOffConfetti();
   }
 
   /** Reset all module-level dance-off state to inactive. Shared tail of both endDanceOff and cancelDanceOff. */
@@ -13424,6 +13579,11 @@
             loserEntry.settled = false;
             danceOffPhase = "celebrate";
             danceOffCelebrateTimeLeft = DANCE_OFF_CELEBRATE_SECONDS;
+            // Winner-celebration confetti — spawned at the winner's current
+            // canvas position (winnerEntry.x/.y, the same fields the
+            // per-character loop derives cx/cy from for every other overlay,
+            // e.g. drawExpressionBubble). No-op for reduced-motion users.
+            spawnDanceOffConfetti(winnerEntry.x, winnerEntry.y);
           } else {
             danceOffTurnActor = danceOffTurnActor === 0 ? 1 : 0;
             beginDanceOffTurn(eA, eB);
@@ -14410,6 +14570,7 @@
       updateConga(delta, sceneAgentList);
       updateDiscoParty(delta, sceneAgentList);
       updateDanceOff(delta, sceneAgentList);
+      updateDanceOffConfetti(delta);
     }
     // Change C: advance live projectiles. t runs 0→1 over PROJECTILE_FLIGHT_SEC,
     // then lingers on the blast for PROJECTILE_BLAST_HOLD before removal. Drawn
@@ -16237,6 +16398,10 @@
     // crisp. Single cheap comparison each when no party is running.
     drawDiscoBall(w, h, bgX, bgY, bgW, bgH);
     drawDiscoOverlay(w, h);
+    // Dance-off winner confetti — same overlay region (composites above the
+    // scene, drawn before drawHUD so HUD text stays crisp/unoccluded).
+    // Single cheap boolean check when no burst is live.
+    drawDanceOffConfetti();
 
     // (Nav-polygon debug overlay removed — the Stage Editor now shows/edits
     //  the walkable polygon, so the standalone N-key view is no longer needed.)
