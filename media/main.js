@@ -6124,7 +6124,14 @@
     }
     if (upgraded) {
       partyVisualStartMs = nowMs();
-      partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateVictoryLap
+      if (goldPalettePreviewActive) {
+        // Handoff — see handOffGoldPalettePreviewToParty's doc: keep the
+        // CURRENT partyVisualIntensity so the lap's ease-in continues
+        // smoothly from wherever the preview was, instead of snapping to black.
+        handOffGoldPalettePreviewToParty();
+      } else {
+        partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateVictoryLap
+      }
       if (posCount > 0) spawnDanceOffConfetti(cx / posCount, cy / posCount);
     }
     return true;
@@ -13433,7 +13440,17 @@
     // same start pattern startDiscoParty uses, so drawDiscoOverlay/
     // drawDiscoBall pick up the conga for free with no code changes there.
     partyVisualStartMs = nowMs();
-    partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateConga
+    if (goldPalettePreviewActive) {
+      // Handoff (Alt+P preview was mid-ride): end the preview's own
+      // bookkeeping but deliberately keep the CURRENT partyVisualIntensity as
+      // this conga's starting point, so the real party's ease-in continues
+      // smoothly instead of snapping to black first — see
+      // handOffGoldPalettePreviewToParty's doc. No preview running: unchanged
+      // zero-start behaviour below.
+      handOffGoldPalettePreviewToParty();
+    } else {
+      partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateConga
+    }
     return true;
   }
 
@@ -13485,6 +13502,139 @@
     return (goldPalettePreviewForced || rebirthCount >= GOLD_PALETTE_UNLOCK_REBIRTH)
       ? PARTY_PALETTE_GOLD
       : PARTY_PALETTE_DEFAULT;
+  }
+
+  // ── Gold-palette standalone preview (Alt+P with no party running) ──────
+  // getActivePartyPalette() only feeds drawDiscoOverlay/drawDiscoBall/
+  // spawnDanceOffConfetti, and every one of those is gated on
+  // partyVisualIntensity > 0 — so flipping goldPalettePreviewForced with no
+  // party active was previously a correct but INVISIBLE no-op (console.log
+  // only). This gives Alt+P something to actually show: a short, self-
+  // contained ride of the SAME shared partyVisualIntensity/partyEaseIntensity
+  // lighting layer the conga/disco-party/dance-off/victory-lap all use, with
+  // no agentCharMap/dancing/participant state touched at all — visuals only.
+  /** Hold time (seconds) once the standalone preview reaches full intensity;
+   *  combined with the two DISCO_EASE_SECONDS in/out ramps this reads for a
+   *  few seconds total, per product ask ("roughly 4-5 seconds"). */
+  const GOLD_PALETTE_PREVIEW_SECONDS = 4.5;
+  /** True only while the standalone preview (not a real party) owns
+   *  partyVisualIntensity. Never true at the same time as
+   *  congaActive/discoPartyActive/danceOffActive/victoryLapActive — see
+   *  startGoldPalettePreview's caller (the Alt+P handler) and
+   *  updateGoldPalettePreview's belt-and-braces check below. */
+  let goldPalettePreviewActive = false;
+  let goldPalettePreviewTimeLeft = 0;
+  /** On-screen chip telling the user the palette is a PREVIEW, not an earned
+   *  unlock (see the Alt+P handler doc). Lives at bottom-center of
+   *  #stage-area — clear of the trophy row (right: 74px) and the handbook
+   *  launcher (bottom-left, see setupHandbookLauncher above). Built lazily so
+   *  nothing is added to the DOM until the override is actually toggled on. */
+  let goldPalettePreviewChipEl = null;
+  function setGoldPalettePreviewChipVisible(visible) {
+    if (!visible) {
+      if (goldPalettePreviewChipEl) {
+        goldPalettePreviewChipEl.remove();
+        goldPalettePreviewChipEl = null;
+      }
+      return;
+    }
+    if (goldPalettePreviewChipEl) return;
+    const stageAreaEl = document.getElementById("stage-area");
+    if (!stageAreaEl) return;
+    const chip = document.createElement("div");
+    chip.id = "gold-palette-preview-chip";
+    chip.className = "engine-chip"; // house style (rgba(10,10,11,.72), 1px #27272A, 999px radius, 11px)
+    chip.style.position = "absolute";
+    chip.style.left = "50%";
+    chip.style.bottom = "12px";
+    chip.style.transform = "translateX(-50%)";
+    chip.style.zIndex = "10";
+    chip.style.pointerEvents = "none"; // purely informational, never blocks stage clicks
+    chip.textContent = "Preview — Gold Party Palette";
+    stageAreaEl.appendChild(chip);
+    goldPalettePreviewChipEl = chip;
+  }
+
+  /** Start the standalone preview. Only called by the Alt+P handler, and
+   *  only when no real party is currently active (the handler checks
+   *  congaActive/discoPartyActive/danceOffActive/victoryLapActive first —
+   *  same "toggle alone suffices" reasoning documented there). Mirrors
+   *  startDiscoParty's lighting-only setup (partyVisualStartMs/
+   *  partyVisualIntensity) but deliberately does NOT touch agentCharMap —
+   *  no dancing, no participants, visuals only. */
+  function startGoldPalettePreview() {
+    goldPalettePreviewActive = true;
+    goldPalettePreviewTimeLeft = GOLD_PALETTE_PREVIEW_SECONDS;
+    partyVisualStartMs = nowMs();
+    partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateGoldPalettePreview
+    setGoldPalettePreviewChipVisible(true);
+  }
+
+  /** Shared end path for the standalone preview — natural timeout (ease-out
+   *  already reached ~0, same reasoning as endDiscoParty), a rival arriving
+   *  (snap, matching cancelDiscoParty's "abruptness is the point"), a real
+   *  party starting mid-preview (belt-and-braces, see updateGoldPalettePreview),
+   *  or the user pressing Alt+P again to revert. Unlike the real parties there
+   *  is no per-character state to differentiate a "natural" end from a
+   *  "cancel" — nothing here ever touched agentCharMap — so one function
+   *  covers all four exits. */
+  function endGoldPalettePreview() {
+    goldPalettePreviewActive = false;
+    goldPalettePreviewTimeLeft = 0;
+    partyVisualIntensity = 0;
+    setGoldPalettePreviewChipVisible(false);
+  }
+
+  /** Handoff path: called by each real party's startX() (startConga,
+   *  startDiscoParty, startDanceOff, the victory-lap upgrade branch) at the
+   *  exact moment it discovers a preview was mid-ride. Clears the SAME
+   *  bookkeeping/chip as endGoldPalettePreview but deliberately does NOT
+   *  zero partyVisualIntensity — the caller skips its own zero-set and lets
+   *  the real party's ease-in continue from whatever intensity the preview
+   *  had already reached, so the screen never snaps to black on handoff. */
+  function handOffGoldPalettePreviewToParty() {
+    goldPalettePreviewActive = false;
+    goldPalettePreviewTimeLeft = 0;
+    setGoldPalettePreviewChipVisible(false);
+  }
+
+  /**
+   * Advance the standalone gold-palette preview. Called once per frame from
+   * the same gated block as updateConga/updateDiscoParty/updateDanceOff/
+   * updateVictoryLap. Deliberately ORDER-INDEPENDENT — do not "optimise away"
+   * the active-flags check below by relying on call position: every real
+   * party's startX() already calls handOffGoldPalettePreviewToParty() the
+   * instant it starts (see startConga/startDiscoParty/startDanceOff/the
+   * victory-lap upgrade branch), synchronously clearing
+   * goldPalettePreviewActive before this function next runs regardless of
+   * where in the frame it's called from — proven by construction: every path
+   * that can flip congaActive/discoPartyActive/danceOffActive/victoryLapActive
+   * true routes through exactly one of those four startX() functions, and
+   * each one performs the handoff itself. The flags check here is a
+   * defensive backstop for any future call path that sets one of those flags
+   * without going through a startX(), not the primary mechanism.
+   * @param {number} delta seconds
+   */
+  function updateGoldPalettePreview(delta) {
+    if (!goldPalettePreviewActive) return;
+    // Backstop — see the order-independence note above. Ends the preview
+    // (full snap-to-zero) rather than handing off, since reaching this
+    // branch means some path started a party WITHOUT calling
+    // handOffGoldPalettePreviewToParty() first — treat it like a rival: end
+    // cleanly rather than silently leave stale preview state.
+    if (congaActive || discoPartyActive || danceOffActive || victoryLapActive) {
+      endGoldPalettePreview();
+      return;
+    }
+    // Rivals end the preview immediately, same product rule as every other
+    // party type ("if rivals arrive, the party is over").
+    if (activeEnemies.length > 0) {
+      endGoldPalettePreview();
+      return;
+    }
+    goldPalettePreviewTimeLeft -= delta;
+    partyVisualIntensity = partyEaseIntensity(goldPalettePreviewTimeLeft, GOLD_PALETTE_PREVIEW_SECONDS);
+    if (goldPalettePreviewTimeLeft <= 0) endGoldPalettePreview();
   }
 
   /** Radial gradients for the two moving disco lights, built ONCE per
@@ -13665,7 +13815,14 @@
     discoPartyActive = true;
     discoPartyTimeLeft = DISCO_PARTY_SECONDS;
     partyVisualStartMs = nowMs();
-    partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateDiscoParty
+    if (goldPalettePreviewActive) {
+      // Handoff — see handOffGoldPalettePreviewToParty's doc: keep the
+      // CURRENT partyVisualIntensity so this party's ease-in continues
+      // smoothly from wherever the preview was, instead of snapping to black.
+      handOffGoldPalettePreviewToParty();
+    } else {
+      partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateDiscoParty
+    }
     // Slight per-character stagger for the music bubble (product ask: "show
     // the music emoji over their heads for a moment before they start
     // dancing... just like the conga line"), so the whole roster doesn't pop
@@ -13882,7 +14039,14 @@
     // same start pattern startConga/startDiscoParty use, so drawDiscoOverlay/
     // drawDiscoBall pick this up for free with no code changes there.
     partyVisualStartMs = nowMs();
-    partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS during walk-in
+    if (goldPalettePreviewActive) {
+      // Handoff — see handOffGoldPalettePreviewToParty's doc: keep the
+      // CURRENT partyVisualIntensity so this party's ease-in continues
+      // smoothly from wherever the preview was, instead of snapping to black.
+      handOffGoldPalettePreviewToParty();
+    } else {
+      partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS during walk-in
+    }
     return true;
   }
 
@@ -14526,6 +14690,21 @@
       // eslint-disable-next-line no-console -- deliberate: makes the preview
       // override observable so it never reads as a real unlock.
       console.log(`[preview] gold party palette override: ${goldPalettePreviewForced ? "ON — Alt+P to revert" : "off"}`);
+      if (goldPalettePreviewForced) {
+        // With no party running the palette flip alone is invisible (every
+        // consumer of getActivePartyPalette() is gated on
+        // partyVisualIntensity > 0) — kick off a short standalone preview so
+        // the lighting/ball are actually visible. If a real party is already
+        // showing those same visuals, the flip alone is enough (see
+        // startGoldPalettePreview's doc) — do nothing extra.
+        if (!congaActive && !discoPartyActive && !danceOffActive && !victoryLapActive) {
+          startGoldPalettePreview();
+        }
+      } else if (goldPalettePreviewActive) {
+        // Reverting mid-preview ends it cleanly rather than leaving the
+        // lighting/ball hanging on the palette that was just turned off.
+        endGoldPalettePreview();
+      }
     }
     if (key === "l" && e.altKey && !e.ctrlKey && !e.metaKey) {
       // Preview/debug hotkey: force-start a wave-clear victory lap now (see
@@ -15156,6 +15335,11 @@
       // this same frame, matching how updateDanceOff's own confetti spawn
       // already precedes it).
       updateVictoryLap(delta);
+      // Call position here does NOT matter for correctness — see
+      // updateGoldPalettePreview's own doc for why it's order-independent.
+      // Kept in this slot (before updateDanceOffConfetti) purely to read
+      // alongside the other four party updates above.
+      updateGoldPalettePreview(delta);
       updateDanceOffConfetti(delta);
     }
     // Change C: advance live projectiles. t runs 0→1 over PROJECTILE_FLIGHT_SEC,
