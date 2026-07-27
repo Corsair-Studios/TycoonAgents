@@ -1813,6 +1813,18 @@
       panel.appendChild(turretHint);
     }
 
+    // Advertise the disco dance party unlock the same way the turret hint
+    // above advertises its own — only while still locked; the turret hint
+    // doesn't distinguish an "unlocked" state either, it just stops
+    // rendering, so this follows the same simple pattern (see
+    // DANCE_PARTY_UNLOCK_REBIRTH).
+    if (rebirthCount < DANCE_PARTY_UNLOCK_REBIRTH) {
+      const dancePartyHint = document.createElement("div");
+      dancePartyHint.className = "rebirth-bonus";
+      dancePartyHint.textContent = `Reach Rebirth ${DANCE_PARTY_UNLOCK_REBIRTH} to unlock the disco dance party`;
+      panel.appendChild(dancePartyHint);
+    }
+
     if (rebirthConfirmPending) {
       const confirm = document.createElement("div");
       confirm.className = "rebirth-confirm";
@@ -4750,6 +4762,12 @@
   // buildSeededQueue) until the player has completed this many rebirths, then
   // appears automatically — no reload required (see doRebirth's live splice).
   const TURRET_UNLOCK_REBIRTH = 2;      // rebirths required before a turret object becomes buildable; tunable
+  // p3-t2: the disco dance party (random trigger AND the Alt+D hotkey) is
+  // withheld until the player has completed this many rebirths — an
+  // advertised unlock, mirroring TURRET_UNLOCK_REBIRTH above. The conga line
+  // stays intentionally ungated (still random + Alt+C) — see updateDiscoParty
+  // and the keydown handler's Alt+D branch for the two gate checks.
+  const DANCE_PARTY_UNLOCK_REBIRTH = 3; // rebirths required before the disco dance party unlocks; tunable
 
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
@@ -5568,6 +5586,89 @@
    *  1.2 * 7/5 for the 7s party) so the fraction of the party spent
    *  popping bubbles stays the same as before. */
   const DISCO_BUBBLE_STAGGER_MAX_SEC = 1.68;
+
+  // ── Dance-off easter egg ───────────────────────────────────────────────
+  // Two NOT-working agents meet in the middle and take turns dancing for
+  // DANCE_OFF_TURN_SECONDS each, alternating for DANCE_OFF_ROUNDS full
+  // rounds (a "round" = both dancers get one turn), then a winner is picked
+  // at random: it celebrates in place (cheer pose) while the loser walks
+  // away. Shares the SAME partyVisualIntensity/partyVisualStartMs lighting
+  // layer the conga and disco party use (see partyEaseIntensity) — no
+  // separate visual system. Mutually exclusive with BOTH the conga and the
+  // disco party in both directions (random triggers AND hotkeys) — see the
+  // congaActive/discoPartyActive checks in this block's own start gates,
+  // the mirrored danceOffActive checks added to updateConga/updateDiscoParty
+  // and their hotkeys, and updateDanceOff's own belt-and-braces check.
+  /** True while a dance-off is running (walk-in, duel, or celebration). */
+  let danceOffActive = false;
+  /** "walkin" | "duel" | "celebrate" | "idle" (idle = not meaningful while !danceOffActive). */
+  let danceOffPhase = "idle";
+  /** agent.id of each participant, or null when inactive. */
+  let danceOffIdA = null;
+  let danceOffIdB = null;
+  /** Native-coord stand points either side of the walkable polygon's centroid, computed once at start. */
+  let danceOffPosA = null;
+  let danceOffPosB = null;
+  /** Seconds elapsed walking in this run — capped by DANCE_OFF_WALKIN_TIMEOUT_SEC so a blocked path can't hang the easter egg forever. */
+  let danceOffWalkinElapsed = 0;
+  /** Which participant dances THIS turn: 0 = A, 1 = B. */
+  let danceOffTurnActor = 0;
+  /** Turns (A-dances-once or B-dances-once) completed so far this run; DANCE_OFF_TURNS_TOTAL ends the duel. */
+  let danceOffTurnsCompleted = 0;
+  /** Seconds remaining in the CURRENT turn's dance. */
+  let danceOffTurnTimeLeft = 0;
+  /** Overall countdown (seconds) covering duel+celebrate, feeding partyEaseIntensity
+   *  exactly like congaTimeLeft/discoPartyTimeLeft do — set once when the duel
+   *  starts (walk-in has no fixed length, see danceOffWalkinElapsed) and never
+   *  reset again, so the celebration's ease-out lands at the true end. */
+  let danceOffTimeLeft = 0;
+  /** agent.id of the randomly-chosen winner, set when the duel ends; only meaningful during danceOffPhase === "celebrate". */
+  let danceOffWinnerId = null;
+  /** Seconds remaining in the winner's post-duel celebration hold. */
+  let danceOffCelebrateTimeLeft = 0;
+  /** Accumulator (seconds) toward the next rare-trigger eligibility check. */
+  let danceOffCheckTimer = 0;
+  /** Cooldown (seconds) remaining before another dance-off may start. */
+  let danceOffCooldown = 0;
+  /** Seconds each dancer performs before yielding the floor to the other. */
+  const DANCE_OFF_TURN_SECONDS = 2;
+  /** Full rounds (both participants each get one turn = 1 round). Product spec: "three rounds". */
+  const DANCE_OFF_ROUNDS = 3;
+  /** Total alternating turns in a run (2 dancers x DANCE_OFF_ROUNDS). */
+  const DANCE_OFF_TURNS_TOTAL = DANCE_OFF_ROUNDS * 2;
+  /** Total duel time (seconds): all turns back to back. */
+  const DANCE_OFF_DUEL_SECONDS = DANCE_OFF_TURNS_TOTAL * DANCE_OFF_TURN_SECONDS;
+  /** Seconds the winner holds its victory cheer while the loser walks away. */
+  const DANCE_OFF_CELEBRATE_SECONDS = 3;
+  /** danceOffTimeLeft's starting value at the moment the duel begins (see its own doc). */
+  const DANCE_OFF_TIMED_TOTAL = DANCE_OFF_DUEL_SECONDS + DANCE_OFF_CELEBRATE_SECONDS;
+  /** Sane upper bound (seconds) on the walk-in phase — a blocked path snaps both
+   *  dancers straight to their stand points and starts the duel rather than
+   *  hanging forever. */
+  const DANCE_OFF_WALKIN_TIMEOUT_SEC = 6;
+  /** Half the native-px gap between the two stand points (centred on the
+   *  walkable polygon's centroid) — comfortably above MIN_AGENT_SEP_NATIVE (34)
+   *  so the agent-separation pass never fights the face-off spacing. */
+  const DANCE_OFF_STAND_HALF_GAP = 40;
+  /** Seconds between random-trigger eligibility rolls — same time-based (not
+   *  per-frame) approach as the conga/disco checks, so frame rate never
+   *  affects frequency. */
+  const DANCE_OFF_CHECK_SECONDS = 45;
+  /** Chance per eligibility check that a dance-off starts — rare, in the same
+   *  spirit as the conga/disco random triggers (see CONGA_CHANCE/DISCO_CHANCE). */
+  const DANCE_OFF_CHANCE = 0.01;
+  /** Cooldown (seconds) after a dance-off ends before another may start via the
+   *  random trigger (the Alt+O hotkey ignores this, mirroring the conga/disco
+   *  hotkey precedent). */
+  const DANCE_OFF_COOLDOWN_SECONDS = 300;
+  // NOTE: deliberately UNGATED by rebirth for now (product hasn't decided
+  // whether to lock this one down) — unlike the disco party's
+  // DANCE_PARTY_UNLOCK_REBIRTH gate. To gate it later, add ONE line inside
+  // updateDanceOff's random-trigger block: `if (rebirthCount <
+  // DANCE_OFF_UNLOCK_REBIRTH) return;` right after the DANCE_OFF_CHANCE roll
+  // (search "GATE SPOT" in updateDanceOff) — mirrors DANCE_PARTY_UNLOCK_REBIRTH's
+  // check in updateDiscoParty — plus the same check in the Alt+O hotkey below,
+  // mirroring Alt+D's DANCE_PARTY_UNLOCK_REBIRTH check.
 
   /**
    * Currently alive enemies. Each: {instance_id, rival_id, nx, ny, hp, maxHp,
@@ -12613,6 +12714,18 @@
         endConga();
         return;
       }
+      // Belt-and-braces: a disco party or dance-off must never start during
+      // a conga (both of their own start gates already refuse to fire while
+      // congaActive is true, and updateConga runs first in render() so a
+      // same-frame race can't slip through) — but if that ever fails, end
+      // the conga immediately rather than let two systems both drive
+      // charEntry.dancing/animation this frame. Mirrors updateDiscoParty's
+      // congaActive check and updateDanceOff's congaActive/discoPartyActive
+      // check exactly, so all three party systems now defend symmetrically.
+      if (discoPartyActive || danceOffActive) {
+        endConga();
+        return;
+      }
       congaTimeLeft -= delta;
       // Shared lighting/ball intensity — same partyEaseIntensity helper
       // updateDiscoParty uses for discoPartyTimeLeft, applied here against
@@ -12641,10 +12754,14 @@
     congaCheckTimer += delta;
     if (congaCheckTimer < CONGA_CHECK_SECONDS) return;
     congaCheckTimer = 0;
-    // A conga and a disco party must never own character animation state
-    // simultaneously (see updateDiscoParty's symmetric discoPartyActive
-    // block, and its belt-and-braces congaActive check in the active branch).
-    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0 || discoPartyActive) return;
+    // A conga, a disco party, and a dance-off must never own character
+    // animation state simultaneously — all three now carry the identical
+    // belt-and-braces shape: each active branch checks the OTHER two's
+    // active flags and ends itself cleanly if either is somehow true (see
+    // this function's own congaActive-branch check above, updateDiscoParty's
+    // congaActive/danceOffActive check, and updateDanceOff's
+    // congaActive/discoPartyActive check).
+    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0 || discoPartyActive || danceOffActive) return;
     if (Math.random() >= CONGA_CHANCE) return;
 
     startConga(agentList);
@@ -12966,16 +13083,16 @@
         cancelDiscoParty();
         return;
       }
-      // Belt-and-braces: a conga must never start during a party (the
-      // random trigger below and the 'c' hotkey both check discoPartyActive,
-      // and updateConga is called before updateDiscoParty in render() so a
-      // same-frame race can't slip through) — but if that ever fails, end
-      // the party immediately rather than let two systems both drive
-      // charEntry.dancing/animation this frame. Reuses cancelDiscoParty's
-      // full clear (snap lighting off, release every dancer) since this is
-      // the same "another system now owns these characters" situation as a
-      // rival arriving.
-      if (congaActive) {
+      // Belt-and-braces: a conga or dance-off must never start during a
+      // party (the random trigger below and the 'c'/Alt+O hotkeys all check
+      // discoPartyActive, and updateConga/updateDanceOff are both called
+      // around updateDiscoParty in render() so a same-frame race can't slip
+      // through) — but if that ever fails, end the party immediately rather
+      // than let two systems both drive charEntry.dancing/animation this
+      // frame. Reuses cancelDiscoParty's full clear (snap lighting off,
+      // release every dancer) since this is the same "another system now
+      // owns these characters" situation as a rival arriving.
+      if (congaActive || danceOffActive) {
         cancelDiscoParty();
         return;
       }
@@ -13018,11 +13135,329 @@
     discoCheckTimer += delta;
     if (discoCheckTimer < DISCO_CHECK_SECONDS) return;
     discoCheckTimer = 0;
-    // Blocked while: no agents, a rival is present, still on cooldown, or a
-    // conga is running (kept mutually exclusive — both drive charEntry.dancing).
-    if (agentList.length < 1 || activeEnemies.length > 0 || discoCooldown > 0 || congaActive) return;
+    // Blocked while: no agents, a rival is present, still on cooldown, a
+    // conga or dance-off is running (kept mutually exclusive — all three
+    // drive charEntry.dancing), or the player hasn't reached the advertised
+    // unlock rebirth yet (see DANCE_PARTY_UNLOCK_REBIRTH — mirrors
+    // TURRET_UNLOCK_REBIRTH's gate style; the Alt+D hotkey below carries the
+    // same check).
+    if (agentList.length < 1 || activeEnemies.length > 0 || discoCooldown > 0 || congaActive || danceOffActive) return;
+    if (rebirthCount < DANCE_PARTY_UNLOCK_REBIRTH) return;
     if (Math.random() >= DISCO_CHANCE) return;
     startDiscoParty();
+  }
+
+  // ── Dance-off easter egg ────────────────────────────────────────────────
+
+  /**
+   * Select exactly two NOT-working agents eligible to face off: not active
+   * (isMetricsAgentActive), not already in a conga, not dancing, not seated.
+   * Returns null (never a partial pair) if fewer than two qualify — the
+   * dance-off must never start with only one participant.
+   * @param {Array<object>} agentList current sceneAgentList
+   * @returns {string[]|null} [idA, idB] (order randomized), or null
+   */
+  function pickDanceOffParticipants(agentList) {
+    const eligible = [];
+    for (const a of agentList) {
+      if (!a || isMetricsAgentActive(a)) continue;
+      const e = agentCharMap[a.id];
+      if (!e) continue;
+      if (e.congaIndex >= 0) continue; // defensive — congaActive is already required false to reach here
+      if (e.dancing) continue;
+      if (e.sitting || e.sitSeatId != null) continue;
+      eligible.push(a.id);
+    }
+    if (eligible.length < 2) return null;
+    // Fisher-Yates partial shuffle — only the first two picks matter.
+    for (let i = eligible.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = eligible[i]; eligible[i] = eligible[j]; eligible[j] = tmp;
+    }
+    return [eligible[0], eligible[1]];
+  }
+
+  /**
+   * Start a dance-off between two randomly-chosen non-working agents: pick
+   * the pair, compute two stand points either side of the walkable
+   * polygon's centroid, and send both walking there. Shared by
+   * updateDanceOff's random trigger and the Alt+O hotkey.
+   * @param {Array<object>} agentList current sceneAgentList
+   * @returns {boolean} true if a dance-off actually started
+   */
+  function startDanceOff(agentList) {
+    const pair = pickDanceOffParticipants(agentList);
+    if (!pair) return false;
+    const eA = agentCharMap[pair[0]];
+    const eB = agentCharMap[pair[1]];
+    if (!eA || !eB) return false;
+    let ccx = 0, ccy = 0;
+    for (const p of walkablePolygon) { ccx += p[0]; ccy += p[1]; }
+    ccx /= walkablePolygon.length; ccy /= walkablePolygon.length;
+    danceOffPosA = clampToPolygon(ccx - DANCE_OFF_STAND_HALF_GAP, ccy, walkablePolygon);
+    danceOffPosB = clampToPolygon(ccx + DANCE_OFF_STAND_HALF_GAP, ccy, walkablePolygon);
+    danceOffIdA = pair[0];
+    danceOffIdB = pair[1];
+    freeAgentSeat(eA);
+    freeAgentSeat(eB);
+    eA.dancing = false; eA.danceTimeLeft = 0;
+    eB.dancing = false; eB.danceTimeLeft = 0;
+    eA.destNx = danceOffPosA[0]; eA.destNy = danceOffPosA[1]; eA.settled = false;
+    eB.destNx = danceOffPosB[0]; eB.destNy = danceOffPosB[1]; eB.settled = false;
+    danceOffActive = true;
+    danceOffPhase = "walkin";
+    danceOffWalkinElapsed = 0;
+    danceOffTurnActor = 0;
+    danceOffTurnsCompleted = 0;
+    danceOffTurnTimeLeft = 0;
+    danceOffTimeLeft = 0;
+    danceOffWinnerId = null;
+    danceOffCelebrateTimeLeft = 0;
+    // Shared lighting/ball state (see partyVisualIntensity's declaration) —
+    // same start pattern startConga/startDiscoParty use, so drawDiscoOverlay/
+    // drawDiscoBall pick this up for free with no code changes there.
+    partyVisualStartMs = nowMs();
+    partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS during walk-in
+    return true;
+  }
+
+  /**
+   * Begin one turn of the duel: the current danceOffTurnActor dances for
+   * DANCE_OFF_TURN_SECONDS (via the EXISTING dancing/danceTimeLeft
+   * mechanism — same fields startAgentDance/startDiscoParty use) while the
+   * other stands and watches. Shared by the walk-in→duel transition and
+   * updateDanceOff's turn-advance.
+   * @param {object} eA danceOffIdA's charMap entry
+   * @param {object} eB danceOffIdB's charMap entry
+   */
+  function beginDanceOffTurn(eA, eB) {
+    const dancer = danceOffTurnActor === 0 ? eA : eB;
+    const watcher = danceOffTurnActor === 0 ? eB : eA;
+    dancer.dancing = true;
+    dancer.danceTimeLeft = DANCE_OFF_TURN_SECONDS;
+    dancer.danceFrameTimer = 0;
+    dancer.lastDanceIdx = -1;
+    watcher.dancing = false;
+    watcher.danceTimeLeft = 0;
+    danceOffTurnTimeLeft = DANCE_OFF_TURN_SECONDS;
+  }
+
+  /**
+   * Clear every dance-off field this feature ever writes on its two
+   * participants (dancing/danceTimeLeft/danceFrameTimer/lastDanceIdx) —
+   * called by both endDanceOff (natural end) and cancelDanceOff
+   * (interruption) so neither exit path can miss one. Facing/position are
+   * deliberately left as-is (matches endConga) — normal wander/AI takes over
+   * from wherever the agent currently is the instant danceOffActive/inDanceOff
+   * (its live-derived gate, see the per-character loop) goes false.
+   */
+  function clearDanceOffParticipants() {
+    const eA = danceOffIdA ? agentCharMap[danceOffIdA] : null;
+    const eB = danceOffIdB ? agentCharMap[danceOffIdB] : null;
+    for (const e of [eA, eB]) {
+      if (!e) continue;
+      e.dancing = false;
+      e.danceTimeLeft = 0;
+      e.danceFrameTimer = 0;
+      e.lastDanceIdx = -1;
+    }
+  }
+
+  /** Reset all module-level dance-off state to inactive. Shared tail of both endDanceOff and cancelDanceOff. */
+  function resetDanceOffState() {
+    danceOffActive = false;
+    danceOffPhase = "idle";
+    danceOffIdA = null;
+    danceOffIdB = null;
+    danceOffPosA = null;
+    danceOffPosB = null;
+    danceOffWalkinElapsed = 0;
+    danceOffTurnActor = 0;
+    danceOffTurnsCompleted = 0;
+    danceOffTurnTimeLeft = 0;
+    danceOffTimeLeft = 0;
+    danceOffWinnerId = null;
+    danceOffCelebrateTimeLeft = 0;
+  }
+
+  /**
+   * Natural end (duel completed all DANCE_OFF_TURNS_TOTAL turns, winner
+   * celebrated for DANCE_OFF_CELEBRATE_SECONDS): lighting has already eased
+   * to ~0 via partyEaseIntensity by the time this fires. Mirrors
+   * endConga/endDiscoParty.
+   */
+  function endDanceOff() {
+    clearDanceOffParticipants();
+    partyVisualIntensity = 0;
+    danceOffCooldown = DANCE_OFF_COOLDOWN_SECONDS;
+    resetDanceOffState();
+  }
+
+  /**
+   * Interruption path — rival arrival, a participant went active/working
+   * again, a participant vanished from the agent list, or (belt-and-braces)
+   * a conga/disco party somehow became active. Snaps the shared
+   * lighting/ball straight to 0 — no ease-out, matching
+   * cancelDiscoParty/endConga's rival-cancel rule that the abruptness is the
+   * point — and clears both participants' dance fields on the SAME frame so
+   * they re-engage combat/work immediately. Called from updateDanceOff,
+   * which (like updateConga/updateDiscoParty) runs before the per-character
+   * isEngaging gate in render(), so this ordering guarantee is preserved.
+   */
+  function cancelDanceOff() {
+    clearDanceOffParticipants();
+    partyVisualIntensity = 0; // snap off, no ease-out
+    danceOffCooldown = DANCE_OFF_COOLDOWN_SECONDS;
+    resetDanceOffState();
+  }
+
+  /**
+   * Advance the dance-off easter egg. Called once per frame, after
+   * updateConga/updateDiscoParty (see render()) so a conga/party that just
+   * started THIS frame is already visible to this function's start gates —
+   * and before the per-character loop, so an interruption clears both
+   * participants in time for them to re-engage combat/work on the same frame.
+   * @param {number} delta seconds
+   * @param {Array<object>} agentList current sceneAgentList
+   */
+  function updateDanceOff(delta, agentList) {
+    if (danceOffCooldown > 0) danceOffCooldown = Math.max(0, danceOffCooldown - delta);
+
+    if (danceOffActive) {
+      // Belt-and-braces: a conga or disco party must never own character
+      // state at the same time as a dance-off. Both of their own start
+      // gates now refuse to fire while danceOffActive is true, so this
+      // should be unreachable — but if it ever happens, end cleanly rather
+      // than let two systems fight over these two characters.
+      if (congaActive || discoPartyActive) { cancelDanceOff(); return; }
+      // Rival arrival ends it immediately (same product rule as conga/disco).
+      if (activeEnemies.length > 0) { cancelDanceOff(); return; }
+      const eA = agentCharMap[danceOffIdA];
+      const eB = agentCharMap[danceOffIdB];
+      const agentA = agentList.find((a) => a && a.id === danceOffIdA);
+      const agentB = agentList.find((a) => a && a.id === danceOffIdB);
+      // Either participant vanished from the roster, or went back to
+      // active/working — end immediately, in every phase (walkin/duel/celebrate).
+      if (!eA || !eB || !agentA || !agentB || isMetricsAgentActive(agentA) || isMetricsAgentActive(agentB)) {
+        cancelDanceOff();
+        return;
+      }
+
+      if (danceOffPhase === "walkin") {
+        const dxA = danceOffPosA[0] - eA.nx, dyA = danceOffPosA[1] - eA.ny;
+        const dxB = danceOffPosB[0] - eB.nx, dyB = danceOffPosB[1] - eB.ny;
+        const arrivedA = Math.sqrt(dxA * dxA + dyA * dyA) <= WANDER_ARRIVED_EPS + 2;
+        const arrivedB = Math.sqrt(dxB * dxB + dyB * dyB) <= WANDER_ARRIVED_EPS + 2;
+        danceOffWalkinElapsed += delta;
+        // Simple ease-IN only while walking in — there's no fixed end yet to
+        // ease OUT against (see danceOffTimeLeft's doc). The duel phase below
+        // switches to the shared partyEaseIntensity helper, which handles the
+        // real ease-out at the true end.
+        partyVisualIntensity = Math.max(0, Math.min(1, (nowMs() - partyVisualStartMs) / 1000 / DISCO_EASE_SECONDS));
+        const timedOut = danceOffWalkinElapsed >= DANCE_OFF_WALKIN_TIMEOUT_SEC;
+        if ((arrivedA && arrivedB) || timedOut) {
+          // Snap both onto their stand points (covers the timeout case,
+          // where a blocked path left one short) and force them to face off.
+          eA.nx = danceOffPosA[0]; eA.ny = danceOffPosA[1];
+          eB.nx = danceOffPosB[0]; eB.ny = danceOffPosB[1];
+          eA.destNx = eA.nx; eA.destNy = eA.ny; eA.settled = true;
+          eB.destNx = eB.nx; eB.destNy = eB.ny; eB.settled = true;
+          eA.facingLeft = (eB.nx - eA.nx) < 0;
+          eB.facingLeft = (eA.nx - eB.nx) < 0;
+          danceOffPhase = "duel";
+          danceOffTurnActor = 0;
+          danceOffTurnsCompleted = 0;
+          danceOffTimeLeft = DANCE_OFF_TIMED_TOTAL;
+          beginDanceOffTurn(eA, eB);
+        }
+        return;
+      }
+
+      if (danceOffPhase === "duel") {
+        // Reassert the current turn's dancing state EVERY frame, before the
+        // shared per-character decay block runs later this same frame (it
+        // does `charEntry.danceTimeLeft -= delta` unconditionally on any
+        // dancing=true entry — see the block right after the sitting/love
+        // bubble section in the per-character loop). Without this,
+        // charEntry.danceTimeLeft (set once at turn start) and
+        // danceOffTurnTimeLeft (decremented once per frame, below) drift out
+        // of step by exactly one frame — charEntry's copy always hits <=0
+        // one frame before danceOffTurnTimeLeft does, so the decay block
+        // force-clears dancing and pops the dancer to idle for a frame at
+        // EVERY turn boundary. Refreshing danceTimeLeft back to a full
+        // DANCE_OFF_TURN_SECONDS here, every frame, makes updateDanceOff the
+        // single owner of both fields for its two participants: the decay
+        // block's decrement can never reach <=0 while a turn is still live,
+        // because this always runs first and tops it back up. Turn timing
+        // itself is owned entirely by danceOffTurnTimeLeft below — never by
+        // the shared danceTimeLeft countdown. Deliberately does NOT touch
+        // danceFrameTimer/lastDanceIdx (only beginDanceOffTurn resets those,
+        // once per turn) so the manual dance-frame swap cadence
+        // (DANCE_FRAME_SWAP) keeps running normally instead of restarting
+        // every frame.
+        const dancer = danceOffTurnActor === 0 ? eA : eB;
+        const watcher = danceOffTurnActor === 0 ? eB : eA;
+        dancer.dancing = true;
+        dancer.danceTimeLeft = DANCE_OFF_TURN_SECONDS;
+        watcher.dancing = false;
+        watcher.danceTimeLeft = 0;
+
+        danceOffTimeLeft -= delta;
+        partyVisualIntensity = partyEaseIntensity(danceOffTimeLeft, DANCE_OFF_TIMED_TOTAL);
+        danceOffTurnTimeLeft -= delta;
+        if (danceOffTurnTimeLeft <= 0) {
+          danceOffTurnsCompleted++;
+          if (danceOffTurnsCompleted >= DANCE_OFF_TURNS_TOTAL) {
+            const winnerIsA = Math.random() < 0.5;
+            const winnerEntry = winnerIsA ? eA : eB;
+            const loserEntry = winnerIsA ? eB : eA;
+            danceOffWinnerId = winnerIsA ? danceOffIdA : danceOffIdB;
+            winnerEntry.dancing = false; winnerEntry.danceTimeLeft = 0;
+            loserEntry.dancing = false; loserEntry.danceTimeLeft = 0;
+            // Winner holds position in place (see the DANCE-OFF cheer clip
+            // override in the per-character loop); loser is released to a
+            // random walkable point and picked up by normal wander/AI once
+            // inDanceOff clears at endDanceOff.
+            winnerEntry.destNx = winnerEntry.nx; winnerEntry.destNy = winnerEntry.ny;
+            const away = randomInsidePoly(walkablePolygon);
+            loserEntry.destNx = away[0]; loserEntry.destNy = away[1];
+            loserEntry.settled = false;
+            danceOffPhase = "celebrate";
+            danceOffCelebrateTimeLeft = DANCE_OFF_CELEBRATE_SECONDS;
+          } else {
+            danceOffTurnActor = danceOffTurnActor === 0 ? 1 : 0;
+            beginDanceOffTurn(eA, eB);
+          }
+        }
+        return;
+      }
+
+      if (danceOffPhase === "celebrate") {
+        danceOffTimeLeft -= delta;
+        partyVisualIntensity = partyEaseIntensity(danceOffTimeLeft, DANCE_OFF_TIMED_TOTAL);
+        danceOffCelebrateTimeLeft -= delta;
+        if (danceOffCelebrateTimeLeft <= 0) endDanceOff();
+        return;
+      }
+      return;
+    }
+
+    // Not active. Random trigger — time-based (not per-frame) so frame rate
+    // never affects frequency, same approach as the conga/disco checks.
+    danceOffCheckTimer += delta;
+    if (danceOffCheckTimer < DANCE_OFF_CHECK_SECONDS) return;
+    danceOffCheckTimer = 0;
+    // Blocked while: fewer than 2 agents, a rival is present, still on
+    // cooldown, or a conga/disco party is running (kept mutually exclusive —
+    // all three drive charEntry.dancing/destNx/destNy).
+    if (agentList.length < 2 || activeEnemies.length > 0 || danceOffCooldown > 0 || congaActive || discoPartyActive) return;
+    // GATE SPOT: to gate this behind a rebirth unlock later, add
+    // `if (rebirthCount < DANCE_OFF_UNLOCK_REBIRTH) return;` here (mirrors
+    // DANCE_PARTY_UNLOCK_REBIRTH's check in updateDiscoParty above) —
+    // deliberately absent for now; product hasn't decided whether to gate
+    // this feature.
+    if (Math.random() >= DANCE_OFF_CHANCE) return;
+    startDanceOff(agentList);
   }
 
   /**
@@ -13310,41 +13745,71 @@
     }
   }
 
-  // debug hotkey: c=conga (the former f=fast-forward-build debug instabuild
-  // hotkey was removed — F is now the Edit-Stage flip shortcut above; the
-  // poof/build flow it used to shortcut is confirmed working on its own).
+  // debug hotkey: Alt+C=conga, Alt+D=disco party, Alt+O=dance-off (the former
+  // f=fast-forward-build debug instabuild hotkey was removed — F is now the
+  // Edit-Stage flip shortcut above; the poof/build flow it used to shortcut
+  // is confirmed working on its own). All three easter-egg hotkeys require
+  // the Alt modifier specifically (product ask: make them a little harder to
+  // trigger by accident) — Ctrl/Meta combinations must NOT fire any of them.
   document.addEventListener("keydown", (e) => {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
     const key = (e.key || "").toLowerCase();
-    if (key === "c") {
+    if (key === "c" && e.altKey && !e.ctrlKey && !e.metaKey) {
       // Force-start a conga now (ignore eligibility/cooldown/probability) —
       // but NOT the safety gates: refuses while a party is already running,
       // while a rival is present (previously missing here — updateConga's
       // own random trigger already checked this; the hotkey now matches),
-      // or while a disco party is active (mutual exclusion — see
-      // updateDiscoParty/updateConga).
+      // or while a disco party or dance-off is active (mutual exclusion —
+      // see updateDiscoParty/updateConga/updateDanceOff). The conga stays
+      // fully ungated by rebirth — only the disco dance party (below) is an
+      // advertised unlock (see DANCE_PARTY_UNLOCK_REBIRTH).
       if (congaActive) return;
       if (activeEnemies.length > 0) return;
       if (discoPartyActive) return;
+      if (danceOffActive) return;
       if (lastAgentList.length < 1) return;
       startConga(lastAgentList);
     }
-    if (key === "d" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (key === "d" && e.altKey && !e.ctrlKey && !e.metaKey) {
       // Force-start a disco party now (ignores DISCO_COOLDOWN_SECONDS and the
-      // random probability, mirroring the 'c' conga debug hotkey above) —
+      // random probability, mirroring the conga debug hotkey above) —
       // but NOT the safety gates: refuses while a party is already running,
       // while a rival is present (product rule: rivals also BLOCK a party
-      // from starting, not just end one), or during a conga.
+      // from starting, not just end one), during a conga or dance-off, or
+      // below the advertised unlock rebirth (DANCE_PARTY_UNLOCK_REBIRTH —
+      // mirrors the random trigger's gate in updateDiscoParty; a gate the
+      // hotkey bypasses isn't a real gate).
       // Reduced-motion note: this still triggers the dancing for
       // prefers-reduced-motion users — only drawDiscoOverlay's lighting pass
-      // is suppressed for them (see its doc comment) — so D remains a useful,
-      // motion-safe way to see the dance without the flashing lights.
+      // is suppressed for them (see its doc comment) — so Alt+D remains a
+      // useful, motion-safe way to see the dance without the flashing lights.
       if (discoPartyActive) return;
       if (activeEnemies.length > 0) return;
       if (congaActive) return;
+      if (danceOffActive) return;
+      if (rebirthCount < DANCE_PARTY_UNLOCK_REBIRTH) return;
       if (lastAgentList.length < 1) return;
       startDiscoParty();
+    }
+    if (key === "o" && e.altKey && !e.ctrlKey && !e.metaKey) {
+      // Force-start a dance-off now (ignores DANCE_OFF_COOLDOWN_SECONDS and
+      // the random probability, mirroring the conga/disco debug hotkeys
+      // above) — but NOT the safety gates: refuses while a party is already
+      // running, while a rival is present, or during a conga/disco party
+      // (mutual exclusion — see updateConga/updateDiscoParty/updateDanceOff).
+      // Deliberately UNGATED by rebirth for now (see DANCE_OFF_COOLDOWN_SECONDS'
+      // doc comment above for the one-line change to add a gate later).
+      // Reduced-motion note: same as Alt+D — this still triggers the actual
+      // dance-off; only the shared lighting/ball pass is suppressed for
+      // those users (drawDiscoOverlay/drawDiscoBall self-guard on
+      // prefersReducedMotion).
+      if (danceOffActive) return;
+      if (activeEnemies.length > 0) return;
+      if (congaActive) return;
+      if (discoPartyActive) return;
+      if (lastAgentList.length < 2) return;
+      startDanceOff(lastAgentList);
     }
   });
 
@@ -13944,6 +14409,7 @@
       advanceEnemies(delta);
       updateConga(delta, sceneAgentList);
       updateDiscoParty(delta, sceneAgentList);
+      updateDanceOff(delta, sceneAgentList);
     }
     // Change C: advance live projectiles. t runs 0→1 over PROJECTILE_FLIGHT_SEC,
     // then lingers on the blast for PROJECTILE_BLAST_HOLD before removal. Drawn
@@ -14356,6 +14822,13 @@
       // part of the line. Movement target is resolved here; the shared "step
       // toward destination" block below actually moves it.
       const inConga = congaActive && charEntry.congaIndex >= 0 && congaWaypoints.length >= 3;
+      // Dance-off enrollment (live-derived, mirrors inConga's derivation
+      // style): true for exactly the two participants while a dance-off is
+      // active, across ALL its phases (walkin/duel/celebrate) — see
+      // updateDanceOff. Used below to extend every inConga exclusion gate
+      // (engage/build/wander/extinguish) rather than inventing a parallel
+      // mechanism, per the same "fully preempts" contract inConga has.
+      const inDanceOff = danceOffActive && (charEntry.__id === danceOffIdA || charEntry.__id === danceOffIdB);
       if (inConga) {
         // A conga member never dances or sits.
         charEntry.dancing = false;
@@ -14402,7 +14875,7 @@
       // A dazed agent (dazePhase != null) also sits out combat entirely —
       // "stop fighting" is part of the dazed-on-damage cosmetic state
       // machine (see DAZE_* consts); it resumes once daze clears.
-      if (!inConga && !charEntry.dancing && enemiesAlive && charEntry.dazePhase == null) {
+      if (!inConga && !inDanceOff && !charEntry.dancing && enemiesAlive && charEntry.dazePhase == null) {
         let nearestEnemy = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
           if (en.fleeing) continue; // Change 2: fleeing enemies are not threats
@@ -14602,7 +15075,7 @@
       // to repair when damage exists, and resume building once the repair
       // assignment clears (extinguishTargetId back to null next frame).
       let isBuilding = false;
-      if (!inConga && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement && charEntry.extinguishTargetId == null) {
+      if (!inConga && !inDanceOff && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement && charEntry.extinguishTargetId == null) {
         // Once already settled (arrived + latched, see charEntry.settled) at
         // THIS same build target, freeze destNx/destNy — no per-frame
         // re-target — so a stationary builder never gets nudged back into
@@ -14625,7 +15098,7 @@
         }
         charEntry.buildTargetId = activeBuildObj.object_id;
         isBuilding = true;
-      } else if (!isEngaging && !inConga) {
+      } else if (!isEngaging && !inConga && !inDanceOff) {
         charEntry.buildTargetId = null;
       }
 
@@ -14633,7 +15106,7 @@
       // An idle, stationary agent may randomly break into a short dance. It
       // is fully preempted by conga/engage/build. While dancing it holds
       // position and a manual frame mixer swaps the three dance frames.
-      const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga;
+      const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga && !inDanceOff;
       charEntry.idleStill = idleAndStill;
 
       // ── Dazed-on-damage: retreat/seated phases (cosmetic) ───────────────
@@ -14728,7 +15201,7 @@
       // anymore.) Then derive this-frame intent: an eligible char with a
       // still-smoking assigned object that isn't fighting a rival (combat always
       // wins). extinguishArrived latches once within EXTINGUISH_ARRIVE_EPS of it.
-      charEntry.extinguishEligible = !inConga && !isEngaging && !charEntry.dancing && (charEntry.sitSeatId == null) && charEntry.dazePhase == null;
+      charEntry.extinguishEligible = !inConga && !inDanceOff && !isEngaging && !charEntry.dancing && (charEntry.sitSeatId == null) && charEntry.dazePhase == null;
       const isExtinguishing = !!(
         charEntry.extinguishTargetId &&
         objectSmoke[charEntry.extinguishTargetId] &&
@@ -14909,8 +15382,8 @@
       // ── Wander logic (native polygon space) ───────────────────────
       // Dancing agents hold position (no wander). Conga members are driven
       // by updateConga's destination assignment above.
-      if (!inConga) charEntry.wanderTimer -= delta;
-      if (!inConga && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.dazePhase == null && charEntry.wanderTimer <= 0) {
+      if (!inConga && !inDanceOff) charEntry.wanderTimer -= delta;
+      if (!inConga && !inDanceOff && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.dazePhase == null && charEntry.wanderTimer <= 0) {
         // At this idle wander-decision point, an eligible idle agent may
         // instead start dancing (rare) or go sit on a free seat (rare).
         // Otherwise pick a new destination.
@@ -15171,13 +15644,23 @@
       if (charEntry.sitting) {
         desiredClip = "sit";
       }
+      // DANCE-OFF override: the winner holds the cheer pose (frame 19, hold)
+      // in place during the post-duel celebration beat. Highest priority,
+      // like SIT above — a celebrating winner is never dancing/emoting/
+      // sitting at the same time (endDanceOff/cancelDanceOff clear those
+      // fields the instant the dance-off ends). The loser just falls through
+      // to the normal walk/idle clips while walking away.
+      if (danceOffActive && danceOffPhase === "celebrate" && charEntry.__id === danceOffWinnerId) {
+        desiredClip = "cheer";
+      }
       // FINAL MOVEMENT GUARD: a physically-moving agent ALWAYS walks — no
       // combat (shoot/melee), celebration (cheer), or emote (point/signal/
       // block) pose may play mid-slide; those only begin once the agent is
       // stationary at its destination. Exemptions: "dance"/"sit" are genuine
-      // in-place festivity states (position-locked), and conga members walk
-      // their line with an intentional periodic cheer, so leave those clips.
-      if (isMoving && !inConga && desiredClip !== "dance" && desiredClip !== "sit") {
+      // in-place festivity states (position-locked), conga members walk
+      // their line with an intentional periodic cheer, and a dance-off
+      // winner holds its cheer in place (never moving) — so leave those clips.
+      if (isMoving && !inConga && desiredClip !== "dance" && desiredClip !== "sit" && desiredClip !== "cheer") {
         desiredClip = "walk";
       }
 
