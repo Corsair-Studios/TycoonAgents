@@ -1,5 +1,30 @@
-<!-- version: 4.5.0 -->
-<!-- changelog: 4.5.0 adds new rule 24 (which `SpatialMath` module you import
+<!-- version: 4.6.0 -->
+<!-- changelog: 4.6.0 adds a sibling section to "Deterministic lint:
+     verse_lint.py" documenting the new project-symbol resolver,
+     `verse_project_check.py` (media/skills/uefn/verse_project_check.py):
+     what its three checks (A/B/C) cover, usage, exit codes (same contract
+     as verse_lint.py: 0/1/2/3, 3 never a pass), and its limits (Epic/engine
+     types out of scope, no type inference, single-line declarations only,
+     Check B suppressed for any class it could not fully enumerate). This
+     closes a structural blind spot neither verse_lint.py (single-file text
+     shapes) nor the uefn-auditor (Epic digest only) could ever cover: a
+     project's OWN types. Corrects rules 20 and 21, which previously stated
+     their failure class was NOT lint-detectable — that is now only half
+     true. Rule 21's exact failure mode (a symbol found in the digest but
+     unreachable because the owning module was never imported) has a
+     project-symbol counterpart that verse_project_check.py's Check A does
+     detect: a project-declared type referenced from a file that cannot see
+     it (different module, no covering `using`, not fully qualified). Rule
+     20's directory-depth module-path mechanism is likewise now mechanically
+     checked for project symbols (the tool derives each file's module path
+     from its directory and walks relative `using` values the same way).
+     What remains genuinely undetectable by any static tool, for both
+     rules, is anything involving an EPIC/engine symbol — the digest is not
+     machine-readable by this resolver, so that half of each rule's
+     "not lint-detectable" statement still stands. Both rules gained a
+     pointer to the new section rather than restating its content. Purely
+     additive/corrective: no other rule text changed.
+     4.5.0 adds new rule 24 (which `SpatialMath` module you import
      decides your coordinate system: `/Verse.org` transforms are LUF,
      `/UnrealEngine.com` and `/Fortnite.com` transforms are traditional XYZ,
      and the two are opposite-handed so a rotation conversion is not a
@@ -179,6 +204,7 @@ made them before considering a change done.**
 - [Finding a symbol in the digest is not enough — you still need its owning `using`](#21-finding-a-symbol-in-the-digest-is-not-enough) — walk backwards from the symbol to its enclosing `module`
 - [Disambiguating a name two imported modules both define](#23-disambiguating-a-name-that-two-imported-modules-both-define) — qualify the call with `(/Module/Path:)Symbol(...)`
 - [Which `SpatialMath` module you import decides your coordinate system](#24-which-spatialmath-module-you-import-decides-your-coordinate-system) — `/Verse.org` = LUF, `/UnrealEngine.com`+`/Fortnite.com` = XYZ; convert with `FromVector3`/`FromRotation`/`FromTransform`, never by hand
+- [Deterministic project-symbol resolver: verse_project_check.py](#deterministic-project-symbol-resolver-verse_project_checkpy) — makes rules 20 and 21 lint-detectable for a project's OWN types (still not for Epic types)
 
 ### Naming / Scope Errors
 - [Local variable name conflicts with a module name](#14-local-variable-name-conflicts-with-a-module-name) — avoid `VFX`/`SFX`/`UI`/`Assets`/`Materials`/`Textures` as variable names
@@ -1139,6 +1165,15 @@ different depth. Before writing a new file's imports, check whether an
 existing file **at the same depth** already uses that import, and copy from
 that one instead.
 
+**Now partially lint-detectable:** for a **project-owned** type, this
+directory-depth resolution mechanism is checked mechanically by
+[`verse_project_check.py`](#deterministic-project-symbol-resolver-verse_project_checkpy)
+— it derives each file's module path from its own directory and walks
+relative `using` values the same way described above. That coverage stops
+at the project boundary: an Epic/engine module resolved the wrong way is
+still undetectable by any static tool here, because this resolver cannot
+read the digest.
+
 ### 21. Finding a symbol in the digest is not enough
 
 **CONFIRMED — Book of Verse, "Modules and Paths"**
@@ -1189,6 +1224,16 @@ separate checks, not one — unless the symbol's file is in the *same* module
 as the file using it, in which case no import is needed at all. See also
 [rule 23](#23-disambiguating-a-name-that-two-imported-modules-both-define) for
 the related case where TWO imports both resolve, ambiguously.
+
+**Now partially lint-detectable:** this exact failure mode — a symbol
+provably exists but the referencing file can't see it because the owning
+module was never imported — is what
+[`verse_project_check.py`](#deterministic-project-symbol-resolver-verse_project_checkpy)'s
+Check A detects, for a **project-owned** type (the "found in the digest"
+step becomes "found in the project's own symbol table"). The Epic-symbol
+half of this rule is unchanged: still not lint-detectable by anything in
+this pack, because that half needs the digest, which this resolver cannot
+read.
 
 ### 22. Named vs optional parameters — when to `option{}`-wrap
 
@@ -1747,19 +1792,117 @@ It currently detects:
   [rule 3](#3-failure-contexts))
 
 **It covers only a subset of the errors in this file, and a clean run is NOT
-a compile guarantee.** In particular, [rule 20](#20-module-path-depends-on-the-new-files-directory-depth)
-(module-path depth), [rule 21](#21-finding-a-symbol-in-the-digest-is-not-enough)
-(digest-verified-but-missing-`using`), [rule 22](#22-named-vs-optional-parameters--when-to-optionwrap)
-(named vs optional `option{}`-wrapping), and
+a compile guarantee.** [rule 22](#22-named-vs-optional-parameters--when-to-optionwrap)
+(named vs optional `option{}`-wrapping) and
 [rule 23](#23-disambiguating-a-name-that-two-imported-modules-both-define)
-(cross-module name collisions) are **not detectable by static text
+(cross-module name collisions) remain **not detectable by static text
 scanning** — each requires cross-referencing something outside the file
-being scanned (the module tree, the digest, or the callee's own signature),
-which the lint has no access to. A prior lint check for rule 22 was removed
-after it produced false positives on correct, shipping code — flagging
-`?Name := option{Value}` as always wrong regardless of the callee's
-declared type. Run the lint as a fast pre-check, not a substitute for
-digest verification or an actual UEFN build.
+being scanned (the callee's own signature, or the full set of imported
+modules' public symbol lists), which neither this lint nor its sibling
+project-symbol tool (below) has access to. A prior lint check for rule 22
+was removed after it produced false positives on correct, shipping code —
+flagging `?Name := option{Value}` as always wrong regardless of the
+callee's declared type.
+
+[rule 20](#20-module-path-depends-on-the-new-files-directory-depth)
+(module-path depth) and [rule 21](#21-finding-a-symbol-in-the-digest-is-not-enough)
+(digest-verified-but-missing-`using`) are **no longer fully in that bucket —
+this statement is UPDATED from earlier versions of this file.** This
+single-file lint still can't detect them; it has no view of the project's
+module tree. But each rule has two halves, and one half is now covered by a
+sibling tool with a project-wide view: **module-path resolution by
+directory depth, and a missing `using` for a PROJECT-OWNED symbol, ARE now
+detectable** — by `verse_project_check.py` (see the next section), not by
+this lint. The other half of each rule — anything involving an
+**Epic/engine symbol** (a digest symbol found but its owning Epic module
+never imported, or a relative `using` that fails to resolve to an Epic
+module) — is still not detectable by any static tool in this pack, because
+that half needs the digest, which no scanner here can read. Run the lint as
+a fast pre-check, not a substitute for digest verification or an actual
+UEFN build.
+
+## Deterministic project-symbol resolver: verse_project_check.py
+
+A sibling tool to `verse_lint.py` ships alongside it, closing a structural
+blind spot neither `verse_lint.py` nor the uefn-auditor's digest-based
+review can ever cover: **a project's own types.** The digest files
+(`Verse.digest.verse`, `Fortnite.digest.verse`, `UnrealEngine.digest.verse`)
+only describe Epic's API surface — by definition they cannot contain a
+symbol the project itself declares, so no amount of digest-checking can
+ever catch a broken reference to a project class. `verse_lint.py` checks a
+single file's text shape and likewise has no view of the project's module
+tree. `verse_project_check.py` builds a symbol table from the project's own
+`.verse` files (deriving each file's module path from its directory) and
+answers the question neither of those can: **does this project symbol
+exist, and can this file see it?**
+
+**Division of labour — all four layers, side by side:**
+
+- **The digest** answers "does this Epic API exist, and what is its
+  signature."
+- **The Book of Verse** answers "what does this syntax mean."
+- **`verse_lint.py`** catches two single-file text shapes (unguarded
+  `set Map[Key] = Value`; comparisons bound with `:=` outside a failure
+  context).
+- **`verse_project_check.py`** answers "does this PROJECT symbol exist, and
+  can this file see it" — the layer the digest structurally cannot cover,
+  because the digest cannot contain a project's own types.
+
+**Usage:**
+
+```
+python .claude/skills/uefn/verse_project_check.py <project-content-root>
+```
+
+**Exit codes match `verse_lint.py`'s contract exactly:** `0` clean, `1`
+findings reported, `2` usage error, `3` incomplete scan. **Exit code `3` is
+never a pass**, for the same reason as `verse_lint.py` — treat an
+incomplete scan as unverified, not clean.
+
+**What it checks — three, and only three:**
+
+- **Check A — a project type referenced but not visible.** A type IS
+  declared somewhere in the project, and the referencing file neither
+  shares its module, has a `using` that resolves to that module, nor
+  fully-qualifies the reference. This is [rule 21](#21-finding-a-symbol-in-the-digest-is-not-enough)'s
+  failure mode, for a project-owned symbol instead of an Epic one, and it
+  also mechanically checks [rule 20](#20-module-path-depends-on-the-new-files-directory-depth)'s
+  directory-depth module-path resolution along the way.
+- **Check B — a member missing on a known project class.** Only fires when
+  a variable's type is certain from an explicit annotation (a parameter, a
+  typed field, a typed binding) — never from `:=` inference or a call
+  return, and never for a class this tool could not fully parse (see
+  limits below).
+- **Check C — a `<private>` member accessed from outside its declaring
+  file.** Same explicit-annotation requirement as Check B.
+
+**What it deliberately does NOT catch — read this before trusting a clean
+run:**
+
+- **Anything involving an Epic/engine type** (`creative_device`, `player`,
+  or any digest symbol) is completely out of scope — that half of rules 20
+  and 21 is still the uefn-auditor's job against the digest, not this
+  tool's. This tool only knows what it can see under the project root.
+- **No type inference, ever.** Only explicit `Name : Type` annotations feed
+  Check B/C.
+- **A class this tool cannot fully parse** (most commonly a multi-line
+  declaration header) is reported as **incompletely enumerated**, and
+  Check B is suppressed for that class entirely — an unseen member would
+  otherwise look "missing" on a class that actually declares it. **Read
+  the incompletely-enumerated count in the tool's own output; do not
+  ignore it.** A quiet run ("0 findings") sitting next to a large
+  incompletely-enumerated count is a coverage gap, not a clean bill of
+  health — Check B never ran on those classes at all.
+- Multi-line declaration headers in general (single-line headers only,
+  same bias as `verse_lint.py`).
+- Chained member access beyond one hop.
+- Any effect-system, failure-context, or syntax rule — that's still
+  `verse_lint.py` and the rest of this file's job.
+
+**A clean run (exit `0`) is not a compile guarantee** — it means these
+three specific checks found nothing, not that the file compiles. Run it as
+a fast pre-check alongside `verse_lint.py`, never as a substitute for an
+actual UEFN build.
 
 ## Version drift
 
