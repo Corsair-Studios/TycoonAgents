@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Deterministic Verse lint: three statically-detectable compile-failure
-shapes (unguarded map/array writes, unguarded comparison bindings, and
-double-wrapped optional arguments).
+"""Deterministic Verse lint: two statically-detectable compile-failure
+shapes (unguarded map/array writes and unguarded comparison bindings).
 
 WHY THIS EXISTS
 ----------------
@@ -18,17 +17,24 @@ it is a MECHANICAL one: whether a `set X[K] = V` statement sits inside a
 failure context is a structural, indentation-driven fact about the source
 text, not something that should depend on a model remembering a doc.
 
-A follow-up incident (see docs/VERSE-AGENT-COMPILE-FAILURES.md) hit two
-more MECHANICAL shapes in the same session: comparison operators bound
-with `:=` outside a failure context (3 of 8 errors in one build), and a
-double-wrapped optional call argument (`?Name := option{...}` when `Name`
-is already declared optional). Both are structural/textual facts about the
-source, same as the original rule, so both were added here rather than
-left to model recall.
+A follow-up incident (see docs/VERSE-AGENT-COMPILE-FAILURES.md) hit one
+more MECHANICAL shape in the same session: comparison operators bound with
+`:=` outside a failure context (3 of 8 errors in one build). That is a
+structural/textual fact about the source, same as the original rule, so it
+was added here rather than left to model recall.
+
+A third detector -- "double-wrapped optional argument" -- was added and
+then REMOVED after review found its premise inverted (see "WHAT THIS DOES
+NOT CHECK" below): it flagged `?Name := option{...}` call-site arguments as
+always wrong, but `?Name` in a call is a NAMED PARAMETER marker, unrelated
+to whether the parameter's declared TYPE is optional (`?T`). Whether
+`option{...}` belongs there depends on the callee's signature, which this
+text-only lint cannot see. Both "findings" it produced against the real
+107-file StarWars tree were false positives on correct, compiling code.
 
 WHAT THIS CHECKS (and ONLY this)
 ---------------------------------
-Three shapes, each independently detected:
+Two shapes, each independently detected:
 
   1. UNGUARDED MAP/ARRAY WRITE -- a write to a map/array subscript,
      `set <expr>[<key>] = <value>`, that is not enclosed by anything that
@@ -42,27 +48,35 @@ Three shapes, each independently detected:
      side contains a bare `>=`, `<=`, `<`, `>`, or `=` comparison at the
      RHS's own top level (not itself nested inside a further call within
      the RHS). Comparison operators carry the `decides` effect in Verse.
-  3. DOUBLE-WRAPPED OPTIONAL ARGUMENT -- a call-site named argument of the
-     shape `?Name := option{...}` (opened and closed on one physical
-     line): the `?` prefix already denotes an optional slot, so wrapping
-     the value in `option{...}` on top of that double-wraps it (error
-     3509). Pure textual pattern, independent of the failure-context
-     machinery used by #1 and #2.
 
 WHAT THIS DOES **NOT** CHECK
 ------------------------------
-This is a narrow, multi-rule structural lint, NOT a Verse parser and NOT a
+This is a narrow, two-rule structural lint, NOT a Verse parser and NOT a
 compiler. A clean run (zero findings) is NOT proof a file compiles. In
 particular it does NOT catch:
+
+  - WHETHER A CALL ARGUMENT NEEDS `option{...}` WRAPPING -- e.g.
+    `?Rotation := option{FromRotation(...)}` vs `?Rotation := FromRotation(...)`.
+    The `?` prefix on a call-site argument name (`?Name :=`) marks a NAMED
+    parameter; it says nothing about whether that parameter's declared
+    TYPE is optional (`?rotation` vs `rotation`). Only the callee's
+    signature answers that, and a text-only lint has no signature
+    information at all. A prior detector here assumed `?Name := option{...}`
+    was always a double-wrap (error 3509) and flagged it unconditionally;
+    it was REMOVED because both "findings" it produced against the real
+    107-file StarWars tree were false positives on correct, compiling
+    code -- the parameters were genuinely `?T`-typed, so `option{...}` was
+    required, not redundant. Do not re-add this check without resolving
+    the callee's declared parameter type; syntax alone cannot decide it.
 
   - Any other failure-context violation (bare `Array[i]` reads, bare
     `Function[...]` calls, `Mod[...]`, optional unwraps, etc.) — only the
     `set <subscript> = <value>` WRITE shape (#1) and the `:=`-bound
     comparison shape (#2) are modeled.
-  - Multi-line statements where the subscript, the `=`, the `:=`, or the
-    comparison operator wraps onto a following physical line (e.g.
-    `set Map[\n    Key\n] = Value`). All three detectors are single-line
-    only; such statements are silently NOT flagged.
+  - Multi-line statements where the subscript, the `=`, or the comparison
+    operator wraps onto a following physical line (e.g.
+    `set Map[\n    Key\n] = Value`). Both detectors are single-line only;
+    such statements are silently NOT flagged.
   - A `:=`-bound comparison where the comparison operator or the RHS
     itself is missing surrounding whitespace (e.g. `X:=A>B` with no
     spaces). Requiring whitespace around the operator is what lets this
@@ -71,15 +85,6 @@ particular it does NOT catch:
     `<suspends>`), which are always written with no surrounding space —
     the tradeoff is deliberate (see DESIGN BIAS below) and costs only
     unusually-dense formatting, not observed in real code so far.
-  - A `?Name := option{...}` double-wrap that spans multiple physical
-    lines, or one where the module cannot see the callee's signature to
-    confirm `Name` is actually declared optional -- this lint has no
-    signature information at all; it fires purely on the `?Name :=
-    option{...}` text shape, which is what the task calls "low-risk", not
-    "signature-verified".
-  - The MISSING inverse of #3 (a call argument that needed `option{...}`
-    but doesn't have it) -- that requires the callee's signature, which is
-    out of scope for a text lint.
   - Effect permission nuances inside concurrency blocks (`spawn:`, `sync:`,
     `race:`, `rush:`, `branch:`) — these are modeled as NON-permitting,
     which matches Verse's actual rules for those blocks, but the modeling
@@ -89,7 +94,7 @@ particular it does NOT catch:
     category 4) -- both require knowing the project's module tree / digest
     contents, not just the text of one file, so neither is in scope for
     this lint. See docs/VERSE-AGENT-COMPILE-FAILURES.md.
-  - Any Verse error class other than these three (visibility, `<suspends>`
+  - Any Verse error class other than these two (visibility, `<suspends>`
     omission, etc. — see verse-common-errors.md for those).
   - A same-line guard (`if (...)`, `for (...)`, `option{...}`) that wraps
     across multiple physical lines before it closes -- e.g. an `if (`
@@ -119,9 +124,6 @@ than guessing. Concretely:
     at paren/brace depth zero on its physical line. Either ambiguity (tight
     spacing, or nesting this module can't classify) means the line is
     silently skipped, never guessed at.
-  - The double-wrapped-optional check (#3) only fires on the exact
-    `?Name := option{...}` text shape, closed on one line. Anything else
-    (multi-line, no `?` prefix, nested braces inside the wrap) is skipped.
 
 USAGE
 -----
@@ -134,8 +136,8 @@ Also importable: `lint_verse_source(text, path)` returns a list of finding
 dicts (`path`, `line`, `column`, `target`, `key`, `message`, `category`) so
 callers (including tests) can exercise the real detection logic directly
 rather than parsing CLI output. `category` is one of
-`"unguarded-map-write"`, `"unguarded-comparison-walrus"`, or
-`"double-wrapped-optional"`, so a caller can tell which rule fired.
+`"unguarded-map-write"` or `"unguarded-comparison-walrus"`, so a caller
+can tell which rule fired.
 
 EXIT CODES
 ----------
@@ -156,13 +158,17 @@ import re
 import sys
 
 SCOPE_NOTE = (
-    "verse_lint checks ONLY three shapes: (1) unguarded 'set Map[Key] = "
-    "Value' subscript writes missing a failure context, (2) comparisons "
-    "bound with ':=' outside a failure context, and (3) double-wrapped "
-    "optional call arguments ('?Name := option{...}'). A clean (0-finding) "
+    "verse_lint checks ONLY two shapes: (1) unguarded 'set Map[Key] = "
+    "Value' subscript writes missing a failure context, and (2) comparisons "
+    "bound with ':=' outside a failure context. A clean (0-finding) "
     "run is NOT a compile guarantee -- it does NOT check module "
     "resolution, missing 'using' imports, or any other Verse error class. "
-    "See the module docstring for the full list of what it does not catch."
+    "In particular it does NOT check whether a call argument needs "
+    "'option{...}' wrapping ('?Name := option{...}' vs '?Name := Value') -- "
+    "that depends on the callee's declared parameter TYPE, which a text-only "
+    "lint cannot resolve; a prior detector assumed it could and was removed "
+    "after it flagged correct, compiling code as broken. See the module "
+    "docstring for the full list of what it does not catch."
 )
 
 # Keywords whose colon-block body is a failure context (permits the
@@ -216,17 +222,6 @@ _COMPARISON_RE = re.compile(
     r"|(?<=\s)<(?!=)(?=\s)"
     r"|(?<=\s)>(?!=)(?=\s)"
     r"|(?<=\s)=(?!=)(?=\s)"
-)
-
-# `?Name := option{...}` closed on one physical line, with no nested
-# braces inside the wrap -- a call-site named optional argument that has
-# been double-wrapped (the `?` prefix already denotes optionality; error
-# 3509). The `?` prefix and `:=` together are what make this distinct from
-# the unrelated multi-line `option{` GUARD idiom (`Result : ?logic =
-# option{` ... `}`), which has neither a `?` prefix nor `:=` before the
-# `option{`.
-_DOUBLE_WRAPPED_OPTIONAL_RE = re.compile(
-    r"\?([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*option\s*\{([^{}]*)\}"
 )
 
 
@@ -350,9 +345,9 @@ def _has_top_level_comparison(rhs: str) -> bool:
 
 
 def lint_verse_source(text: str, path: str = "<string>") -> list:
-    """Scan Verse source `text` for the three finding categories (see the
-    module docstring): unguarded map/array writes, unguarded `:=`-bound
-    comparisons, and double-wrapped optional call arguments.
+    """Scan Verse source `text` for the two finding categories (see the
+    module docstring): unguarded map/array writes and unguarded `:=`-bound
+    comparisons.
 
     Returns a list of finding dicts: {path, line, column, target, key,
     message, category}. Pure function, no filesystem access -- `path` is
@@ -435,30 +430,6 @@ def lint_verse_source(text: str, path: str = "<string>") -> list:
                 }
             )
 
-        # --- 1c. Look for a double-wrapped optional call argument --------
-        for match in _DOUBLE_WRAPPED_OPTIONAL_RE.finditer(masked):
-            name, inner = match.group(1), match.group(2)
-            findings.append(
-                {
-                    "path": path,
-                    "line": line_no,
-                    "column": match.start() + 1,
-                    "target": name,
-                    "key": None,
-                    "category": "double-wrapped-optional",
-                    "message": (
-                        "[double-wrapped-optional] "
-                        f"`?{name} := option{{{inner.strip()}}}` -- `{name}` "
-                        "is already an optional parameter slot (the `?` "
-                        "prefix denotes that); wrapping the argument in "
-                        "`option{...}` on top of that double-wraps it "
-                        "(error 3509). Pass the value directly: "
-                        f"`?{name} := {inner.strip()}`. See "
-                        "docs/VERSE-AGENT-COMPILE-FAILURES.md category 5."
-                    ),
-                }
-            )
-
         # --- 2. Does this line OPEN a new indented scope for later lines?
         if stripped.endswith(":"):
             header = stripped[:-1].strip()
@@ -468,10 +439,9 @@ def lint_verse_source(text: str, path: str = "<string>") -> list:
                 # `else if:` / `else for:` is the SAME failure-context
                 # construct as a bare `if:` / `for:` -- only bare `else:`
                 # (no trailing keyword) stays non-permitting. Found via a
-                # real false positive: illest_safe_zone_tracking.verse's
-                # `else if:\n    set Map[K] = V\nthen:` construct, which
-                # compiles today, was flagged because only the leading
-                # "else" token was inspected.
+                # real false positive: an `else if:\n    set Map[K] = V\nthen:`
+                # construct, which compiles today, was flagged because only
+                # the leading "else" token was inspected.
                 rest = header[keyword_match.end():].strip()
                 rest_match = _COLON_HEADER_KEYWORD_RE.match(rest)
                 if rest_match:
@@ -490,10 +460,9 @@ def lint_verse_source(text: str, path: str = "<string>") -> list:
             # `Foo<decides>(X:int):void=` followed by an indented block --
             # Verse allows both styles for the same construct). Found via
             # a real false positive: several `<decides>`-declared
-            # functions in illest_player_persistence_manager.verse and
-            # illest_verse_utils.verse use brace-body style, and were
-            # treated as non-permitting because only the bare '='-ending
-            # header form was recognized as a function header.
+            # functions using brace-body style were treated as
+            # non-permitting because only the bare '='-ending header form
+            # was recognized as a function header.
             body_before_brace = stripped[:-1].rstrip()
             if body_before_brace.endswith("=") and _FUNCTION_HEADER_RE.search(body_before_brace):
                 permits = bool(_DECIDES_SPECIFIER_RE.search(body_before_brace))

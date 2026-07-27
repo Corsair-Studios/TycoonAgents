@@ -207,3 +207,49 @@ silently rather than reporting the miss.
 - Crash logs:
   `%LOCALAPPDATA%\UnrealEditorFortnite\Saved\Crashes\UECC-Windows-{0879EBF3...,F96D33BE...}`
 - Project: `StarWars` UEFN island (48,087 project assets, ~27k Verse surfaces)
+
+## CORRECTION (2026-07-27) — Category 5 was wrong
+
+**What Category 5 said (above, unchanged):** that a `?`-prefixed parameter
+name (e.g. `?Rotation:?rotation`) already means the parameter is optional,
+so wrapping the argument in `option{...}` "double-wraps" it and is always
+wrong — the fix given was to always pass the bare value.
+
+**Why it is wrong:** this conflates two independent uses of `?` in Verse.
+`?` on a parameter's **name** marks it as a *named* parameter (callable as
+`?Name := Value`); it says nothing about optionality. `?` on a parameter's
+**type** (e.g. `Rotation:?rotation`) is what makes it optional and requires
+an `option{...}`-wrapped bare value. A signature like
+`?Rotation:?rotation` uses both independently — named AND optional. The
+worked example in the original Category 5,
+`SpawnAt(Position:vector3, ?Rotation:?rotation)`, has an optional-typed
+`Rotation`, so `?Rotation := option{FacingRotation})` was CORRECT Verse and
+`?Rotation := FacingRotation` (what Category 5 recommended as the fix) is
+the actual type error. A Verse expert reviewing the two files this
+category was drawn from confirmed both compile as originally written, with
+the `option{}` wrap in place.
+
+**The accurate rule:** wrap the argument in `option{Value}` if and only if
+the parameter's declared TYPE begins with `?`. The `?` on the parameter's
+*name* is irrelevant to that decision. This cannot be determined from the
+call site — the callee's signature must be read every time.
+
+**Consequence:** this wrong rule shipped in `verse-common-errors.md` (rule
+22, v4.1.0) and was inlined into the `verse-expert` and `uefn-auditor`
+agent prompts in `media/packs/catalog.json`. A deterministic lint check was
+also built from it in `verse_lint.py`, which produced false positives —
+flagging correct, already-compiling code (`?Name := option{Value}` against
+a genuinely `?`-typed parameter) as an error — before that check was
+removed. All three locations were corrected in the same pass that added
+this section; `verse-common-errors.md` was bumped to 4.2.0. This report's
+Category 5 text above is left unchanged intentionally — this section is the
+correction, not a rewrite of the original record.
+
+**Process note:** this is the same failure mode the 0.0.470 release notes
+already called out for three other rules in this file — a claim repeated
+across community sources but never independently checked against Verse's
+actual language semantics. Category 5 was orchestrator-authored (see
+"Orchestrator-side failures" above), which is exactly why the "small enough
+to do inline" exemption doesn't hold: this was the fourth wrong rule from
+the same reference, this time self-inflicted rather than inherited from an
+external report.

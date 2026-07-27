@@ -1,8 +1,18 @@
-<!-- version: 4.1.0 -->
-<!-- changelog: 4.1.0 adds rules 20-22 (module-path depth, digest-verified-but-missing-using,
-     double-wrapped optionals), a compile-failure stakes warning, and the verse_lint.py
-     pointer — sourced from docs/VERSE-AGENT-COMPILE-FAILURES.md (11 real errors, one
-     UEFN project, 2026-07-27). Additive only; no prior content changed. -->
+<!-- version: 4.2.0 -->
+<!-- changelog: 4.2.0 CORRECTS rule 22. The 4.1.0 statement of this rule was WRONG and
+     could break working code: it claimed a `?`-prefixed parameter NAME always means
+     optional, so `option{...}` should never be used with it. That is false — `?` on a
+     NAME marks a named parameter (`?Name := Value` call syntax); optionality comes from
+     the parameter's declared TYPE starting with `?`, independently of the name prefix.
+     A parameter like `?Rotation:?rotation` combines both, and `option{Value}` there is
+     CORRECT, not a double-wrap. Anyone who read 4.1.0's rule 22 should treat it as
+     superseded by this version. See docs/VERSE-AGENT-COMPILE-FAILURES.md for the
+     correction record (append at end of that file).
+     4.1.0 (superseded content) added rules 20-22 (module-path depth,
+     digest-verified-but-missing-using, the now-corrected optional-parameter rule), a
+     compile-failure stakes warning, and the verse_lint.py pointer — sourced from
+     docs/VERSE-AGENT-COMPILE-FAILURES.md (11 real errors, one UEFN project,
+     2026-07-27). -->
 # Verse Common Errors — Pre-Flight Reference
 
 ## Why this file exists
@@ -98,7 +108,7 @@ made them before considering a change done.**
 - [Square brackets vs parentheses](#call-style-square-brackets-vs-parentheses) — `[]` for failable, `()` for always-succeed
 - [Failable conversions vs optional returns](#failable-conversions-vs-optional-returns) — the two look similar but need different handling
 - [Unsafe array access](#17-unsafe-array-access-patterns) — `..` ranges are inclusive; iterate `0..Array.Length - 1`, or prefer `for (Element : Array)`
-- [Double-wrapped optional parameters](#22-double-wrapped-optional-parameters) — `?Param := Value`, not `?Param := option{Value}`
+- [Named vs optional parameters — when to `option{}`-wrap](#22-named-vs-optional-parameters--when-to-optionwrap) — `?` on a parameter's NAME means named, not optional; the parameter's TYPE decides optionality
 
 ## Things that DO NOT EXIST in Verse
 
@@ -1003,28 +1013,28 @@ that pattern was sourced from older, unverified material and isn't needed;
 **Observed in one project:** error 3506, `Unknown identifier`, hit twice in
 one file.
 
-**Error message:** `Unknown identifier 'GameInit'.` /
-`Unknown identifier 'main_game_globals'.`
+**Error message:** `Unknown identifier 'CoreSystems'.` /
+`Unknown identifier 'shared_globals'.`
 
-A `using { GameInit }` statement resolves relative to the file it's written
-in. It compiled fine in `Content/MyProject/Framework/GameSystems/*.verse`,
+A `using { CoreSystems }` statement resolves relative to the file it's
+written in. It compiled fine in `Content/MyProject/Framework/GameSystems/*.verse`,
 but copying that same `using` block verbatim into a **new** file at
 `Content/` root did not resolve — from root, the correct reference was the
-fully-qualified `MyProject.Framework.GameInit.main_game_globals`.
+fully-qualified `MyProject.Framework.CoreSystems.shared_globals`.
 
 ```verse
 # WRONG — copied from a file several directories deeper, does not
 # resolve from Content/ root:
-using { GameInit }
+using { CoreSystems }
 
 MyDevice := class(creative_device):
     OnBegin<override>()<suspends>:void=
-        main_game_globals.DoSomething()   # Error 3506: Unknown identifier
+        shared_globals.DoSomething()   # Error 3506: Unknown identifier
 
 # RIGHT — from a shallower directory, use the fully-qualified path:
 MyDevice := class(creative_device):
     OnBegin<override>()<suspends>:void=
-        MyProject.Framework.GameInit.main_game_globals.DoSomething()
+        MyProject.Framework.CoreSystems.shared_globals.DoSomething()
 ```
 
 **Rule:** derive `using` paths from the *target* file's own directory —
@@ -1075,32 +1085,61 @@ enclosing `module` declaration in that same digest file and add the matching
 `using`. Treat "found in the digest" and "callable from this file" as two
 separate checks, not one.
 
-### 22. Double-wrapped optional parameters
+### 22. Named vs optional parameters — when to `option{}`-wrap
 
-**Observed in one project:** error 3509, type mismatch, calling
-`npc_spawner_device.SpawnAt`.
+**CORRECTED in 4.2.0 — the prior statement of this rule (4.1.0) was WRONG**
+and would break working code. It claimed a `?`-prefixed parameter *name*
+always means the parameter is optional, so `option{...}` should never be
+used with it. That is false, and following it produces a real type error.
 
-Given a signature like
-`SpawnAt(Position:vector3, ?Rotation:?rotation)<suspends>:?agent`, the `?`
-prefix on the parameter name already marks it optional. Wrapping the
-argument in `option{...}` on top of that double-wraps it into
-`?(?rotation)`, which does not match the expected `?rotation`.
+**Two independent things share the `?` glyph, and a parameter can carry
+either, both, or neither:**
+
+- `?` on the parameter **NAME** (e.g. `?Rotation:vector`) marks it as a
+  **named parameter** — that is what lets you call it as
+  `?Rotation := Value` instead of positionally. It says nothing about
+  optionality.
+- `?` on the parameter's **TYPE** (e.g. `Rotation:?vector`) marks the
+  parameter as **optional** — its type is `?T`, and a bare `T` value must
+  be wrapped in `option{...}` to satisfy it.
+
+A signature like `?Rotation:?rotation` combines both: `?` on the name makes
+it callable by name, `?` on the type makes it optional. Those are two
+separate facts about the same parameter, not one fact stated twice.
 
 ```verse
-# Signature: SpawnAt(Position:vector3, ?Rotation:?rotation)<suspends>:?agent
+# Callee signature — read this before deciding whether to wrap:
+SpawnAt(Position:vector3, ?Rotation:?rotation)<suspends>:?agent
 
-# WRONG — the '?' prefix on the parameter already means optional;
-# wrapping the value in option{} double-wraps it:
-MySpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})   # Error 3509
+# CORRECT — the TYPE (?rotation) is optional, so a bare `rotation` value
+# must be wrapped in option{} to satisfy it. This is NOT a double-wrap:
+MySpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})
 
-# RIGHT — pass the value directly:
+# WRONG — passing the bare value against a ?-typed parameter is a type
+# mismatch (Error 3509: expected ?rotation, got rotation):
 MySpawner.SpawnAt(Pos, ?Rotation := FacingRotation)
 ```
 
-**Rule:** when a parameter name is already prefixed with `?` in the
-signature, assign the plain value with `:=` — never re-wrap it in
-`option{...}`. Reserve `option{...}` for building a `?T`-typed value from
-scratch, not for satisfying an already-optional parameter.
+Contrast with a named parameter whose type is NOT optional — there,
+wrapping in `option{}` would be the mistake:
+
+```verse
+# Callee signature — name is ?-prefixed, but the TYPE is plain (not ?T):
+Configure(?ActiveDurationSeconds:float = 5.0):void
+
+# CORRECT — plain type, pass the bare value:
+MyDevice.Configure(?ActiveDurationSeconds := TimerSeconds)
+
+# WRONG — the type isn't optional, so option{} doesn't match it:
+MyDevice.Configure(?ActiveDurationSeconds := option{TimerSeconds})
+```
+
+**Rule:** wrap the argument in `option{Value}` **if and only if the
+parameter's declared TYPE begins with `?`**. The `?` on the parameter's
+*name* is irrelevant to this decision — it only controls whether you can
+pass the argument by name. You cannot tell which case applies from the
+call site alone; **read the callee's signature** (in the digest or the
+source file) every time before deciding whether to wrap.
 
 ## Visibility and access errors
 
@@ -1497,16 +1536,18 @@ It currently detects:
 - unguarded `set Map[Key] = Value` (see [rule 6](#6-arrays-and-maps-indexing-is-failable))
 - comparison operators bound with `:=` outside a failure context (see
   [rule 3](#3-failure-contexts))
-- double-wrapped optional parameters (see
-  [rule 22](#22-double-wrapped-optional-parameters))
 
 **It covers only a subset of the errors in this file, and a clean run is NOT
 a compile guarantee.** In particular, [rule 20](#20-module-path-depends-on-the-new-files-directory-depth)
-(module-path depth) and [rule 21](#21-finding-a-symbol-in-the-digest-is-not-enough)
-(digest-verified-but-missing-`using`) are **not detectable by static text
-scanning** — both require knowing the target file's location relative to
-the module tree and cross-referencing the digest, neither of which the lint
-has access to. Run the lint as a fast pre-check, not a substitute for
+(module-path depth), [rule 21](#21-finding-a-symbol-in-the-digest-is-not-enough)
+(digest-verified-but-missing-`using`), and [rule 22](#22-named-vs-optional-parameters--when-to-optionwrap)
+(named vs optional `option{}`-wrapping) are **not detectable by static text
+scanning** — each requires cross-referencing something outside the file
+being scanned (the module tree, the digest, or the callee's own signature),
+which the lint has no access to. A prior lint check for rule 22 was removed
+after it produced false positives on correct, shipping code — flagging
+`?Name := option{Value}` as always wrong regardless of the callee's
+declared type. Run the lint as a fast pre-check, not a substitute for
 digest verification or an actual UEFN build.
 
 ## Version drift

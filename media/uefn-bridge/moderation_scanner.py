@@ -2270,7 +2270,7 @@ def _extract_last_jpeg_span(data):
 
 def _package_name_to_uasset_path(package_name, project_dir, mount_prefix):
     """Best-effort mapping of a UE package name (e.g.
-    ``"/MyIsland/UI/ScoreBoard/some_asset"``) to its .uasset file on disk,
+    ``"/MyIsland/UI/HUD/some_asset"``) to its .uasset file on disk,
     using the same mount-prefix-to-``Content/`` convention every other
     filesystem collector in this module assumes. Returns None if inputs are
     missing or the mapping fails. Never raises — callers must still check

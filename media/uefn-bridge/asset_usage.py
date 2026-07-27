@@ -164,9 +164,9 @@ def _get_island_sample_packages(project_prefix, limit=25):
 
 def _derive_content_root_from_asset_path(pkg, disk_path):
     """
-    Given an island package path like ``/YourProject/ArudoStuff/Anim/X`` and
+    Given an island package path like ``/YourProject/Props/Anim/X`` and
     its real on-disk file (e.g.
-    ``.../YourProject/Content/ArudoStuff/Anim/X.uasset``), strip the
+    ``.../YourProject/Content/Props/Anim/X.uasset``), strip the
     package-relative tail to recover ``.../YourProject/Content``. Returns
     ``None`` if ``disk_path`` doesn't end with the expected tail.
     """

@@ -340,9 +340,9 @@ class WalrusComparisonTests(unittest.TestCase):
         self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
 
     def test_trap_named_call_argument_walrus_is_not_flagged(self):
-        """A `:=` nested inside a call's parens (a named argument, same
-        syntax Category B's `?Name := ...` uses) is a different question
-        than a top-level variable binding -- skipped, not guessed at."""
+        """A `:=` nested inside a call's parens (a named argument, e.g. the
+        `?Name := ...` call-site syntax) is a different question than a
+        top-level variable binding -- skipped, not guessed at."""
         src = _lines(
             "Foo<public>():void=",
             "    Bar(X := A > B)",
@@ -412,61 +412,6 @@ class WalrusComparisonNestingSymmetryTests(unittest.TestCase):
         findings = verse_lint.lint_verse_source(src, "x.verse")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["target"], "HasCooledDown")
-
-
-class DoubleWrappedOptionalTests(unittest.TestCase):
-    """Category B: `?Name := option{...}` double-wraps an already-optional
-    call argument (error 3509). Ground truth is
-    docs/VERSE-AGENT-COMPILE-FAILURES.md, category 5."""
-
-    def test_double_wrapped_optional_argument_is_flagged(self):
-        src = _lines(
-            "Foo<public>():void=",
-            "    EmperorSpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})",
-        )
-        findings = verse_lint.lint_verse_source(src, "x.verse")
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["category"], "double-wrapped-optional")
-        self.assertEqual(findings[0]["target"], "Rotation")
-        self.assertEqual(findings[0]["line"], 2)
-
-    def test_correct_unwrapped_optional_argument_is_not_flagged(self):
-        src = _lines(
-            "Foo<public>():void=",
-            "    EmperorSpawner.SpawnAt(Pos, ?Rotation := FacingRotation)",
-        )
-        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
-
-    def test_trap_multiline_option_guard_idiom_not_mistaken_for_double_wrap(self):
-        """The unrelated multi-line `option{` GUARD idiom (no `?Name :=`
-        prefix) must never be mistaken for a double-wrapped argument."""
-        src = _lines(
-            "Foo<public>():void=",
-            "    Result : ?logic = option{",
-            "        set Map[Key] = true",
-            "        true",
-            "    }",
-        )
-        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
-
-    def test_trap_double_wrap_in_comment_is_not_flagged(self):
-        src = _lines(
-            "Foo<public>():void=",
-            "    # EmperorSpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})",
-        )
-        self.assertEqual(verse_lint.lint_verse_source(src, "x.verse"), [])
-
-    def test_double_wrap_fires_regardless_of_failure_context(self):
-        """Category B is a pure textual pattern, independent of the
-        block-level failure-context stack categories 1 and 2 share."""
-        src = _lines(
-            "Foo<public>():void=",
-            "    if:",
-            "        EmperorSpawner.SpawnAt(Pos, ?Rotation := option{FacingRotation})",
-        )
-        findings = verse_lint.lint_verse_source(src, "x.verse")
-        self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["category"], "double-wrapped-optional")
 
 
 class RealWorldFalsePositiveRegressionTests(unittest.TestCase):
