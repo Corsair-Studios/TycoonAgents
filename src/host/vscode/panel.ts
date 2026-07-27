@@ -6740,6 +6740,25 @@ export class TycoonPanel {
         <span class="badge-hud-count">0</span>
         <span class="badge-hud-dot" aria-hidden="true"></span>
       </button>
+      <!-- Rebirth trophy row: SIBLING of #badge-hud-btn (never a child — a
+           child would inherit .badge-hud's positioning context, which is
+           where .badge-hud-dot's top/right offsets live). One bare gold cup
+           per completed rebirth, immediately left of the badge medal;
+           rendered by updateTrophyRow() in media/main.js from the
+           module-scope rebirthCount. The gradient the cups share lives in
+           this hidden defs-only sprite (referenced via fill:url(#...) from
+           each cup) so the cup markup itself only needs to live in ONE
+           place (media/main.js's TROPHY_CUP_SVG). -->
+      <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="trophyCupGoldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#ffe9a8" />
+            <stop offset="50%" stop-color="#ffb020" />
+            <stop offset="100%" stop-color="#8a4d06" />
+          </linearGradient>
+        </defs>
+      </svg>
+      <div id="trophy-row" class="trophy-row"></div>
     </div>
 
     <!-- Resize handle: drag to split stage vs metrics panel -->

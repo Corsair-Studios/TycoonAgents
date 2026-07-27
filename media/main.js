@@ -857,6 +857,13 @@
 
   const badgeHudBtn       = /** @type {HTMLElement|null} */ (document.getElementById("badge-hud-btn"));
   const badgeHudCountEl   = badgeHudBtn ? /** @type {HTMLElement|null} */ (badgeHudBtn.querySelector(".badge-hud-count")) : null;
+  // Rebirth trophy row: a SIBLING of #badge-hud-btn (see panel.ts), not a
+  // child — it must never inherit .badge-hud's positioning context (that's
+  // where .badge-hud-dot's top/right offsets live). Updated by
+  // updateTrophyRow() below, itself only called from the exact spots
+  // rebirthCount changes (doRebirth, THEME_INITIALIZED restore, Reset) —
+  // never from the animation loop.
+  const trophyRowEl       = /** @type {HTMLElement|null} */ (document.getElementById("trophy-row"));
   // Last count rendered into the HUD; -1 means "not yet shown" so the very
   // first paint (and a rebirth reset, which only ever decreases the count)
   // never trigger the celebratory pop below — only genuine new unlocks do.
@@ -1039,6 +1046,52 @@
       }
     }
     badgeHudLastCount = count;
+  }
+
+  // Individual cups render up to this many; beyond it the row collapses to
+  // one cup + "×N" so a committed player's uncapped rebirthCount (the LATE
+  // requirement tier keeps rolling forever past rebirth 6) never grows the
+  // row's width past this point.
+  const MAX_TROPHY_CUPS = 8;
+
+  // Single source of truth for the cup glyph — one bowl + two handles + stem
+  // + base, same gold-gradient/near-black-stroke material language as the
+  // badge medal (compare panel.ts's badgeHudGoldGrad). The gradient itself
+  // is defined ONCE in panel.ts (id="trophyCupGoldGrad", a hidden defs-only
+  // sprite sibling of #badge-hud-btn) and referenced here via fill:url(#...)
+  // so every cup instance shares it instead of repeating a <linearGradient>
+  // per copy. Every cup is IDENTICAL regardless of rebirth tier — cups are a
+  // counter, not a palette indicator, so they deliberately do NOT pick up
+  // the Rebirth 6 gold-palette upgrade (see getActivePartyPalette).
+  const TROPHY_CUP_SVG = '<svg class="trophy-cup" viewBox="0 0 20 20" aria-hidden="true" focusable="false">' +
+    '<path d="M5 4 C2 4 2 9 5 9" fill="none" stroke="#141418" stroke-width="1.4" stroke-linecap="round" />' +
+    '<path d="M15 4 C18 4 18 9 15 9" fill="none" stroke="#141418" stroke-width="1.4" stroke-linecap="round" />' +
+    '<path d="M5 3 H15 V7 A5 5 0 0 1 5 7 Z" fill="url(#trophyCupGoldGrad)" stroke="#141418" stroke-width="1.2" stroke-linejoin="round" />' +
+    '<rect x="9" y="12" width="2" height="3" fill="url(#trophyCupGoldGrad)" stroke="#141418" stroke-width="0.75" />' +
+    '<rect x="6" y="15" width="8" height="2" rx="0.6" fill="url(#trophyCupGoldGrad)" stroke="#141418" stroke-width="1" stroke-linejoin="round" />' +
+    '</svg>';
+
+  /**
+   * Rebirth trophy row: one bare gold cup per completed rebirth, stacking
+   * right-to-left immediately left of the badge medal, collapsing to a
+   * single cup + "×N" past MAX_TROPHY_CUPS. Reads module-scope rebirthCount
+   * directly — no new state, no persistence — and is only ever called from
+   * the exact points rebirthCount changes (doRebirth, THEME_INITIALIZED
+   * restore, Reset), never per animation frame. At 0 rebirths the row is
+   * left empty (`.trophy-row:empty` in style.css hides it entirely).
+   */
+  function updateTrophyRow() {
+    if (!trophyRowEl) return;
+    if (rebirthCount <= 0) {
+      trophyRowEl.innerHTML = "";
+      return;
+    }
+    if (rebirthCount <= MAX_TROPHY_CUPS) {
+      trophyRowEl.innerHTML = TROPHY_CUP_SVG.repeat(rebirthCount);
+    } else {
+      trophyRowEl.innerHTML = TROPHY_CUP_SVG +
+        '<span class="trophy-row-count">×' + rebirthCount + '</span>';
+    }
   }
 
   /**
@@ -1643,6 +1696,7 @@
     // once the rack is actually built, which the rebirth above just made
     // possible by appending rackObjectId onto buildQueue.
     updateBadgeHud();
+    updateTrophyRow();
     renderBadgePanel();
     // Cosmetic celebration — must never break the rebirth itself.
     celebrateRebirth();
@@ -1813,16 +1867,42 @@
       panel.appendChild(turretHint);
     }
 
-    // Advertise the disco dance party unlock the same way the turret hint
-    // above advertises its own — only while still locked; the turret hint
-    // doesn't distinguish an "unlocked" state either, it just stops
-    // rendering, so this follows the same simple pattern (see
-    // DANCE_PARTY_UNLOCK_REBIRTH).
+    // Advertise the disco dance party and dance-off the same way the turret
+    // hint above advertises its own — only while each is still locked; the
+    // turret hint doesn't distinguish an "unlocked" state either, it just
+    // stops rendering, so this follows the same simple pattern. The two
+    // celebrations now unlock at different tiers (dance party at
+    // DANCE_PARTY_UNLOCK_REBIRTH, dance-off one tier later at
+    // DANCE_OFF_UNLOCK_REBIRTH — see updateDanceOff's GATE SPOT and the
+    // Alt+O hotkey), so each gets its own hint, shown only while that
+    // specific feature is still locked.
     if (rebirthCount < DANCE_PARTY_UNLOCK_REBIRTH) {
       const dancePartyHint = document.createElement("div");
       dancePartyHint.className = "rebirth-bonus";
       dancePartyHint.textContent = `Reach Rebirth ${DANCE_PARTY_UNLOCK_REBIRTH} to unlock the disco dance party`;
       panel.appendChild(dancePartyHint);
+    }
+    if (rebirthCount < DANCE_OFF_UNLOCK_REBIRTH) {
+      const danceOffHint = document.createElement("div");
+      danceOffHint.className = "rebirth-bonus";
+      danceOffHint.textContent = `Reach Rebirth ${DANCE_OFF_UNLOCK_REBIRTH} to unlock the dance-off`;
+      panel.appendChild(danceOffHint);
+    }
+    // Same pattern, but the base wave-clear victory lap is already ungated —
+    // this only advertises the UPGRADE (see VICTORY_LAP_UNLOCK_REBIRTH /
+    // updateVictoryLap), so the wording says "upgrade" rather than "unlock".
+    if (rebirthCount < VICTORY_LAP_UNLOCK_REBIRTH) {
+      const victoryLapHint = document.createElement("div");
+      victoryLapHint.className = "rebirth-bonus";
+      victoryLapHint.textContent = `Reach Rebirth ${VICTORY_LAP_UNLOCK_REBIRTH} to upgrade the victory lap with party lights and confetti`;
+      panel.appendChild(victoryLapHint);
+    }
+    // Same pattern, one tier past the dance-off — see GOLD_PALETTE_UNLOCK_REBIRTH.
+    if (rebirthCount < GOLD_PALETTE_UNLOCK_REBIRTH) {
+      const goldPaletteHint = document.createElement("div");
+      goldPaletteHint.className = "rebirth-bonus";
+      goldPaletteHint.textContent = `Reach Rebirth ${GOLD_PALETTE_UNLOCK_REBIRTH} to unlock the gold party palette`;
+      panel.appendChild(goldPaletteHint);
     }
 
     if (rebirthConfirmPending) {
@@ -4768,6 +4848,26 @@
   // stays intentionally ungated (still random + Alt+C) — see updateDiscoParty
   // and the keydown handler's Alt+D branch for the two gate checks.
   const DANCE_PARTY_UNLOCK_REBIRTH = 3; // rebirths required before the disco dance party unlocks; tunable
+  // p3-t3: the dance-off (random trigger AND the Alt+O hotkey) unlocks one
+  // tier above the disco dance party — its own constant, since it no longer
+  // shares a tier with DANCE_PARTY_UNLOCK_REBIRTH. See updateDanceOff and the
+  // keydown handler's Alt+O branch for the two gate checks.
+  const DANCE_OFF_UNLOCK_REBIRTH = 4;   // rebirths required before the dance-off unlocks; tunable
+  // p3-t4: the wave-clear "victory lap" is deliberately UNGATED at its base —
+  // every agent that fought pops a brief cheer the instant a wave is fully
+  // cleared (see updateVictoryLap), from the very start of the game, so
+  // combat always has a payoff. This constant only gates the UPGRADE: the
+  // same moment gets longer, plus the shared party lighting/ball
+  // (partyVisualIntensity/getActivePartyPalette) and a confetti burst, once
+  // the player reaches this rebirth tier — mirroring DANCE_OFF_UNLOCK_REBIRTH's
+  // gate style one line up. The Alt+G gold-preview override (below) also
+  // force-shows the upgraded version early — see startVictoryLap.
+  const VICTORY_LAP_UNLOCK_REBIRTH = 5; // rebirths required before the wave-clear victory lap gets the upgraded (lit/confetti) version; the base cheer is ungated; tunable
+  // p3-t5: the gold/amber party palette (disco lighting, the disco ball, and
+  // the dance-off winner confetti — see getActivePartyPalette further down)
+  // unlocks one tier above the dance-off. Alt+G previews it without touching
+  // this gate or rebirthCount — see the keydown handler's Alt+G branch.
+  const GOLD_PALETTE_UNLOCK_REBIRTH = 6; // rebirths required before the gold party palette unlocks; tunable
 
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
@@ -5560,6 +5660,37 @@
   let discoBallFrames = null;
   /** Guards loadDiscoBallSprite so it only ever runs once. */
   let discoBallLoadAttempted = false;
+  /** Warm/gold-tinted variant of discoBallFrames, built ONCE lazily by
+   *  ensureDiscoBallGoldFrames (below loadDiscoBallSprite) the first time the
+   *  gold party palette actually needs to draw the ball — no second sprite
+   *  asset, just a runtime-tinted bake of the existing one, cached forever
+   *  after. Null until built, or if building ever fails — drawDiscoBall
+   *  falls back to the plain discoBallFrames in that case.
+   *  @type {HTMLImageElement[] | null} */
+  let discoBallGoldFrames = null;
+  /** Guards ensureDiscoBallGoldFrames so the bake only ever LATCHES once —
+   *  but only once the outcome is actually known (built successfully, a
+   *  real error was thrown, or the retry budget below was exhausted). Never
+   *  set just because a base frame hasn't finished decoding YET — see
+   *  discoBallGoldBuildAttempts and ensureDiscoBallGoldFrames's own doc. */
+  let discoBallGoldBuildAttempted = false;
+  /** Consecutive "base frames exist but haven't finished decoding yet"
+   *  calls seen by ensureDiscoBallGoldFrames — distinguishes "not ready
+   *  yet, try again" from "cannot succeed, stop trying" (see
+   *  DISCO_BALL_GOLD_MAX_ATTEMPTS). Reset is never needed: it only ever
+   *  increments while discoBallGoldBuildAttempted is still false, and the
+   *  moment either the bake succeeds or this hits the cap,
+   *  discoBallGoldBuildAttempted latches and this stops being read. */
+  let discoBallGoldBuildAttempts = 0;
+  /** Attempt cap before a still-not-decoded base frame is treated as a
+   *  genuine, permanent failure rather than "still decoding" — generous
+   *  (ensureDiscoBallGoldFrames is only actually called while a gold-palette
+   *  party is visibly active, see drawDiscoBall, so this budget can span
+   *  several separate celebrations before giving up for the rest of the
+   *  session and falling back to the untinted ball). */
+  const DISCO_BALL_GOLD_MAX_ATTEMPTS = 300;
+  /** Multiply-blend tint color used to bake discoBallGoldFrames — warm amber. */
+  const DISCO_BALL_GOLD_TINT_COLOR = "#ffcc55";
   /** Spin-cycle clip for the ball sprite — same {frames,fps,loop} shape as
    *  OBJECT_CLIPS (~4681), driven the same way drawObjectSmoke drives
    *  OBJECT_CLIPS.poof: frame index = floor(elapsed*fps) mod frame count. A
@@ -5665,14 +5796,10 @@
    *  random trigger (the Alt+O hotkey ignores this, mirroring the conga/disco
    *  hotkey precedent). */
   const DANCE_OFF_COOLDOWN_SECONDS = 300;
-  // NOTE: deliberately UNGATED by rebirth for now (product hasn't decided
-  // whether to lock this one down) — unlike the disco party's
-  // DANCE_PARTY_UNLOCK_REBIRTH gate. To gate it later, add ONE line inside
-  // updateDanceOff's random-trigger block: `if (rebirthCount <
-  // DANCE_OFF_UNLOCK_REBIRTH) return;` right after the DANCE_OFF_CHANCE roll
-  // (search "GATE SPOT" in updateDanceOff) — mirrors DANCE_PARTY_UNLOCK_REBIRTH's
-  // check in updateDiscoParty — plus the same check in the Alt+O hotkey below,
-  // mirroring Alt+D's DANCE_PARTY_UNLOCK_REBIRTH check.
+  // NOTE: gated one tier above the disco party via its own
+  // DANCE_OFF_UNLOCK_REBIRTH constant (search "GATE SPOT" in updateDanceOff
+  // for the random-trigger check, plus the matching check in the Alt+O
+  // hotkey below).
 
   // ── Dance-off winner confetti ──────────────────────────────────────────
   // A small, theme-independent, asset-free celebration burst (plain colored
@@ -5725,6 +5852,12 @@
    */
   function spawnDanceOffConfetti(cx, cy) {
     if (prefersReducedMotion) return;
+    // Colour source is the only thing the gold palette changes here — see
+    // getActivePartyPalette (defined further down, but hoisted like every
+    // other function declaration in this IIFE, so it's already callable by
+    // the time this function actually runs). Looked up once per burst, not
+    // per particle.
+    const confettiColors = getActivePartyPalette().confetti;
     for (let i = 0; i < danceOffConfettiPool.length; i++) {
       const p = danceOffConfettiPool[i];
       p.active = true;
@@ -5740,7 +5873,7 @@
       p.vrot = (Math.random() - 0.5) * 8;
       p.maxLife = 0.9 + Math.random() * 0.5;
       p.life = p.maxLife;
-      p.color = DANCE_OFF_CONFETTI_COLORS[Math.floor(Math.random() * DANCE_OFF_CONFETTI_COLORS.length)];
+      p.color = confettiColors[Math.floor(Math.random() * confettiColors.length)];
       p.w = 3 + Math.random() * 3;
       p.h = 6 + Math.random() * 4;
     }
@@ -5809,6 +5942,244 @@
       danceOffConfettiPool[i].active = false;
     }
     danceOffConfettiActive = false;
+  }
+
+  // ── Victory lap (wave-clear celebration) ──────────────────────────────
+  // Fires the instant activeEnemies goes from non-empty to empty (a wave is
+  // fully cleared) — see updateVictoryLap for the edge-trigger latch. Base
+  // form is an ungated, ~2s "cheer" pose (via playEmote, the SAME
+  // emoting/emoteClip/emoteTimeLeft one-shot mechanism point/signal/block
+  // already use) on every agent that fought — purely cosmetic, never touches
+  // movement/build/combat state, so it can't block the work loop even if
+  // left to decay naturally. The Rebirth-5 upgrade (VICTORY_LAP_UNLOCK_REBIRTH)
+  // makes the SAME moment longer and adds the shared party lighting/ball
+  // (partyVisualIntensity/getActivePartyPalette — exactly like the conga/
+  // disco party/dance-off) plus one pooled confetti burst
+  // (spawnDanceOffConfetti). Mutually exclusive with all three of those (see
+  // updateVictoryLap's own belt-and-braces check and the `|| victoryLapActive`
+  // addition to each of their own idle-trigger gates).
+  /** True while a victory lap (base or upgraded) is playing. */
+  let victoryLapActive = false;
+  /** True if the CURRENT run is the upgraded (lighting/ball/confetti)
+   *  version — decided once, at start, from rebirthCount/goldPalettePreviewForced
+   *  (see startVictoryLap) and never re-evaluated mid-run, so a rebirth or a
+   *  preview toggle mid-lap can't change an already-playing celebration. */
+  let victoryLapUpgraded = false;
+  /** Seconds remaining in the current victory lap. */
+  let victoryLapTimeLeft = 0;
+  /** Snapshot of participant agent ids for the CURRENT run (taken from
+   *  victoryLapWaveParticipants at start) — the set every clear/cancel path
+   *  sweeps to release its emote fields. @type {string[]} */
+  let victoryLapParticipantIds = [];
+  /** Edge-trigger latch: whether activeEnemies held at least one enemy as of
+   *  LAST frame. updateVictoryLap compares this against the current frame's
+   *  count to detect the exact non-empty→empty transition — a level check
+   *  (`activeEnemies.length === 0`) would instead fire on every frame the
+   *  floor stays clear (almost always), not just the clearing instant. */
+  let victoryLapPrevEnemiesPresent = false;
+  /** Agent ids that engaged combat at any point during the CURRENT wave.
+   *  Populated live by the per-character isEngaging block (see the
+   *  `isEngaging = true` branch in the per-character loop) and drained by
+   *  startVictoryLap. A running set is necessary rather than reading
+   *  isEngaging at the clearing instant, because a defeated enemy FLEES for
+   *  several frames before actually leaving the screen (see advanceEnemies'
+   *  fleeing-prune filter) — during that tail every agent's isEngaging (and
+   *  combatTargetInstanceId) already reads false again, which would
+   *  otherwise erase who actually fought by the time activeEnemies truly
+   *  empties. @type {Set<string>} */
+  const victoryLapWaveParticipants = new Set();
+  /** Duration (seconds) of the base, ungated victory-lap cheer. */
+  const VICTORY_LAP_BASE_SECONDS = 2;
+  /** Duration (seconds) of the Rebirth-5 upgraded celebration — long enough
+   *  to read the shared lighting/ball ease in and out (DISCO_EASE_SECONDS
+   *  each way, via partyEaseIntensity, same as the other three parties) plus
+   *  a real hold in the middle. */
+  const VICTORY_LAP_UPGRADED_SECONDS = 4;
+
+  /**
+   * Clear every field this feature writes on its participants
+   * (emoting/emoteClip/emoteTimeLeft) — called by both endVictoryLap
+   * (natural end) and cancelVictoryLap (rival arrival / belt-and-braces)
+   * so neither exit path can miss one. Mirrors clearDanceOffParticipants'
+   * shape. Guarded to only clear an emote THIS feature actually started
+   * (clip still "cheer") so it can never stomp an unrelated emote (e.g. a
+   * "block" hit-reaction) that started on the same agent after the lap began.
+   */
+  function clearVictoryLapParticipants() {
+    for (const id of victoryLapParticipantIds) {
+      const e = agentCharMap[id];
+      if (!e || e.emoteClip !== "cheer") continue;
+      e.emoting = false;
+      e.emoteClip = null;
+      e.emoteTimeLeft = 0;
+    }
+  }
+
+  /** Natural end (timer ran out). On an upgraded run, lighting has already
+   *  eased to ~0 via partyEaseIntensity by the time this fires (mirrors
+   *  endConga/endDiscoParty/endDanceOff); a base run never touched
+   *  partyVisualIntensity at all, so this is a no-op for it. */
+  function endVictoryLap() {
+    clearVictoryLapParticipants();
+    if (victoryLapUpgraded) partyVisualIntensity = 0;
+    victoryLapActive = false;
+    victoryLapUpgraded = false;
+    victoryLapTimeLeft = 0;
+    victoryLapParticipantIds = [];
+  }
+
+  /**
+   * Rival-arrival cancel path (and the belt-and-braces "another party
+   * somehow started" path). Clears every participant's emote fields on the
+   * SAME frame — before the per-character isEngaging gate runs later this
+   * frame (updateVictoryLap is called alongside updateConga/updateDiscoParty/
+   * updateDanceOff, early in render(), well before the per-character loop) —
+   * and, on an upgraded run, snaps the shared lighting straight to 0 with no
+   * ease-out, matching cancelDiscoParty/endConga/cancelDanceOff's rule that
+   * the abruptness on a rival arrival is the point. Note: playEmote never
+   * touched movement/build/combat state to begin with (isEngaging itself is
+   * never gated on charEntry.emoting), so agents were always free to
+   * re-engage even before this runs — this exists to stop the cosmetic
+   * cheer pose/visuals cleanly rather than because anything was actually
+   * blocking combat.
+   */
+  function cancelVictoryLap() {
+    clearVictoryLapParticipants();
+    if (victoryLapUpgraded) partyVisualIntensity = 0; // snap off, no ease-out
+    victoryLapActive = false;
+    victoryLapUpgraded = false;
+    victoryLapTimeLeft = 0;
+    victoryLapParticipantIds = [];
+  }
+
+  /**
+   * Full victory-lap runtime reset for a scene transition where
+   * activeEnemies itself is being hard-reset out from under this feature
+   * (theme switch via THEME_INITIALIZED, and a metrics Reset — see their
+   * call sites). Without this, two things go stale across the boundary:
+   *   1. victoryLapPrevEnemiesPresent (the edge-trigger latch) can still
+   *      read true from the OLD theme's last frame. The very next frame
+   *      sees the freshly-reset activeEnemies as empty and reads that as a
+   *      non-empty→empty transition, spuriously firing a lap with no combat
+   *      having happened in the new theme/session.
+   *   2. victoryLapWaveParticipants can still hold agent ids from the
+   *      previous theme's roster, which no longer exist in the fresh
+   *      agentCharMap.
+   * Also cancels any lap actually in flight, since its participants may no
+   * longer exist (or, on a metrics Reset, rebirthCount/getActivePartyPalette
+   * just changed under it). Safe to call even when nothing is in flight.
+   */
+  function resetVictoryLapForSceneReset() {
+    if (victoryLapActive) cancelVictoryLap();
+    victoryLapPrevEnemiesPresent = false;
+    victoryLapWaveParticipants.clear();
+  }
+
+  /**
+   * Start a victory lap. Snapshots this wave's participants (from
+   * victoryLapWaveParticipants — see its own doc), or, when overrideAgentList
+   * is given (the Alt+V debug/preview hotkey), sweeps every currently
+   * on-stage agent instead — mirroring the whole-cast preview convention
+   * startConga/startDiscoParty/startDanceOff already use for THEIR hotkeys —
+   * so Alt+V is useful for testing even when no real wave has been fought
+   * yet. Pops a "cheer" pose on each participant via the EXISTING
+   * emoting/emoteClip/emoteTimeLeft one-shot mechanism (playEmote — the same
+   * fields the point/signal/block emotes use), which is purely cosmetic and
+   * self-reverts on its own once emoteTimeLeft decays, needing no active
+   * state machine for that part.
+   *
+   * Whether THIS run is the upgraded version is decided once, here, from
+   * rebirthCount >= VICTORY_LAP_UNLOCK_REBIRTH OR the Alt+G gold-preview
+   * override (goldPalettePreviewForced) — the same override
+   * getActivePartyPalette reads — so pressing Alt+G first, then Alt+V, is
+   * how a player below Rebirth 5 previews the upgraded celebration. Upgraded
+   * runs additionally get the shared party lighting/ball
+   * (partyVisualIntensity, same start pattern startConga/startDiscoParty/
+   * startDanceOff use) and one confetti burst (spawnDanceOffConfetti) at the
+   * centroid of the participants' last-known canvas position, and run via
+   * victoryLapActive/victoryLapTimeLeft so a rival arriving mid-lap has
+   * explicit state to cancel.
+   * @param {Array<object>} [overrideAgentList] when given, sweep every id in
+   *   this list instead of the tracked wave participants (Alt+V only).
+   * @returns {boolean} true if a lap actually started (false if there was
+   *   nobody to celebrate with).
+   */
+  function startVictoryLap(overrideAgentList) {
+    const upgraded = goldPalettePreviewForced || rebirthCount >= VICTORY_LAP_UNLOCK_REBIRTH;
+    const ids = overrideAgentList
+      ? overrideAgentList.map((a) => a.id)
+      : Array.from(victoryLapWaveParticipants);
+    victoryLapWaveParticipants.clear();
+    if (ids.length === 0) return false; // nobody actually fought this wave — nothing to celebrate
+    victoryLapActive = true;
+    victoryLapUpgraded = upgraded;
+    victoryLapTimeLeft = upgraded ? VICTORY_LAP_UPGRADED_SECONDS : VICTORY_LAP_BASE_SECONDS;
+    victoryLapParticipantIds = ids;
+    let cx = 0, cy = 0, posCount = 0;
+    for (const id of ids) {
+      const e = agentCharMap[id];
+      if (!e) continue;
+      playEmote(e, "cheer", victoryLapTimeLeft);
+      if (typeof e.x === "number" && typeof e.y === "number") { cx += e.x; cy += e.y; posCount++; }
+    }
+    if (upgraded) {
+      partyVisualStartMs = nowMs();
+      partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateVictoryLap
+      if (posCount > 0) spawnDanceOffConfetti(cx / posCount, cy / posCount);
+    }
+    return true;
+  }
+
+  /**
+   * Advance the wave-clear victory lap. Called once per frame, in the SAME
+   * block as updateConga/updateDiscoParty/updateDanceOff (see render()) —
+   * BEFORE the per-character isEngaging gate, so a rival arriving mid-lap
+   * cancels it and lets agents re-engage the same frame the rival appears,
+   * matching those three systems' ordering guarantee.
+   * @param {number} delta seconds
+   */
+  function updateVictoryLap(delta) {
+    const enemiesPresentNow = activeEnemies.length > 0;
+    if (victoryLapActive) {
+      // Belt-and-braces: a conga/disco party/dance-off must never own
+      // character state at the same time as a victory lap. All three now
+      // refuse to start while victoryLapActive is true (see the
+      // `|| victoryLapActive` addition to each of their own idle-trigger
+      // gates), so this should be unreachable — but if it ever happens,
+      // cancel cleanly rather than let two systems fight over these
+      // participants. Mirrors updateDanceOff's own congaActive/discoPartyActive
+      // check.
+      if (congaActive || discoPartyActive || danceOffActive) {
+        cancelVictoryLap();
+        victoryLapPrevEnemiesPresent = enemiesPresentNow;
+        return;
+      }
+      // Rival arrival ends it immediately — same product rule as the other
+      // three ("if rivals arrive, the celebration is over").
+      if (enemiesPresentNow) {
+        cancelVictoryLap();
+        victoryLapPrevEnemiesPresent = enemiesPresentNow;
+        return;
+      }
+      victoryLapTimeLeft -= delta;
+      if (victoryLapUpgraded) {
+        partyVisualIntensity = partyEaseIntensity(victoryLapTimeLeft, VICTORY_LAP_UPGRADED_SECONDS);
+      }
+      if (victoryLapTimeLeft <= 0) endVictoryLap();
+      victoryLapPrevEnemiesPresent = enemiesPresentNow;
+      return;
+    }
+
+    // Not active. Edge-triggered: only start on the exact non-empty→empty
+    // transition (this frame has none, but LAST frame had at least one) —
+    // a level check here would instead fire every frame the floor stays
+    // clear, which is almost always. Also refuses while a conga/disco
+    // party/dance-off is running — a wave clearing during one of those
+    // simply doesn't trigger a lap (see the header comment above).
+    if (victoryLapPrevEnemiesPresent && !enemiesPresentNow && !congaActive && !discoPartyActive && !danceOffActive) {
+      startVictoryLap();
+    }
+    victoryLapPrevEnemiesPresent = enemiesPresentNow;
   }
 
   /**
@@ -8147,6 +8518,79 @@
   }
 
   /**
+   * Bake a warm/gold-tinted variant of every discoBallFrames entry into
+   * discoBallGoldFrames. Runs entirely on its own throwaway per-frame
+   * canvas (never touches the main `ctx`, so there is no shared canvas
+   * state to leak). Deliberately NOT a second sprite asset: it's a
+   * runtime-computed tint of the existing media/sprites/disco_ball.png
+   * frames, using the same "bake once via toDataURL" pattern
+   * loadDiscoBallSprite already uses for the base frames above.
+   *
+   * Tint technique: draw the frame, multiply-blend a flat amber fill over
+   * it (this also flat-fills the frame's transparent margins, since
+   * "multiply" degrades to plain source-over where destination alpha is 0),
+   * then re-clip with a "destination-in" pass of the original frame so only
+   * the sprite's own silhouette survives — leaves shading intact, just
+   * warmed, with clean edges.
+   *
+   * Three distinct outcomes, and discoBallGoldBuildAttempted is latched
+   * (true) on exactly two of them — never on the first:
+   *   1. NOT READY YET — discoBallFrames exists but at least one frame
+   *      hasn't finished decoding (.complete/.naturalWidth not set yet: the
+   *      base frames are data-URI Images with no onload handler of their
+   *      own — see loadDiscoBallSprite — so this is expected for the first
+   *      few calls). discoBallGoldBuildAttempted is NOT set; only
+   *      discoBallGoldBuildAttempts increments, so the very next call (this
+   *      is only ever invoked while a gold-palette party is actually
+   *      visible — see drawDiscoBall) retries for real.
+   *   2. CANNOT SUCCEED — either the retry budget (DISCO_BALL_GOLD_MAX_ATTEMPTS)
+   *      is exhausted (frames still never finished decoding across many
+   *      calls/celebrations) or a real error occurred (no 2d context, a
+   *      thrown exception). discoBallGoldBuildAttempted latches true so
+   *      this never retries again this session; discoBallGoldFrames stays
+   *      null and drawDiscoBall's own fallback (`(palette.key === "gold" &&
+   *      discoBallGoldFrames) ? ... : discoBallFrames`) keeps drawing the
+   *      untinted ball — the celebration itself never depends on this bake.
+   *   3. SUCCESS — discoBallGoldFrames is populated and
+   *      discoBallGoldBuildAttempted latches true; every later call this
+   *      session is then a single cheap `if` no-op, same as before.
+   */
+  function ensureDiscoBallGoldFrames() {
+    if (discoBallGoldFrames || discoBallGoldBuildAttempted) return;
+    if (!discoBallFrames || !discoBallFrames.length) return; // base frames not ready yet — try again next call
+    const allFramesDecoded = discoBallFrames.every((frame) => frame && frame.complete && frame.naturalWidth);
+    if (!allFramesDecoded) {
+      discoBallGoldBuildAttempts++;
+      if (discoBallGoldBuildAttempts < DISCO_BALL_GOLD_MAX_ATTEMPTS) return; // still decoding — retry next call, guard stays open
+      discoBallGoldBuildAttempted = true; // budget exhausted — genuine failure, stop retrying, fall back to untinted
+      return;
+    }
+    try {
+      const built = [];
+      for (const frame of discoBallFrames) {
+        const cvs = document.createElement("canvas");
+        cvs.width = frame.naturalWidth;
+        cvs.height = frame.naturalHeight;
+        const cctx = cvs.getContext("2d");
+        if (!cctx) { discoBallGoldBuildAttempted = true; return; } // real failure — discoBallGoldFrames stays null, degrade to the untinted ball
+        cctx.drawImage(frame, 0, 0);
+        cctx.globalCompositeOperation = "multiply";
+        cctx.fillStyle = DISCO_BALL_GOLD_TINT_COLOR;
+        cctx.fillRect(0, 0, cvs.width, cvs.height);
+        cctx.globalCompositeOperation = "destination-in";
+        cctx.drawImage(frame, 0, 0);
+        const img = new Image();
+        img.src = cvs.toDataURL("image/png");
+        built.push(img);
+      }
+      discoBallGoldFrames = built;
+      discoBallGoldBuildAttempted = true; // succeeded — latch so later calls are a single cheap no-op
+    } catch (_err) {
+      discoBallGoldBuildAttempted = true; // genuine failure — discoBallGoldFrames stays null, degrade to the untinted ball
+    }
+  }
+
+  /**
    * Preload all character sprite images from raw frames data.
    * @param {Record<string, string[]>} rawFrames
    */
@@ -9352,6 +9796,7 @@
         // trigger a persistRebirth() call.
         persistRebirth();
         updateBadgeHud();
+        updateTrophyRow();
         // ── Ranged combat upgrade ─────────────────────────────────────────
         // Characters START in melee. Building the ranged weapon rack (the
         // buildable with build_order 0 → themeBuildables[0] after the sort)
@@ -9498,6 +9943,11 @@
         // Reset runtime enemy state for the new theme (no enemies carry over).
         activeEnemies = [];
         enemySpawnElapsed = 0;
+        // Victory lap's own edge-trigger latch/participant set/in-flight run
+        // must not survive this reset either — see resetVictoryLapForSceneReset's
+        // doc for why a stale latch would spuriously fire a lap on the fresh
+        // theme with no combat having happened.
+        resetVictoryLapForSceneReset();
         // Change C: capture projectile FX availability. A theme has projectiles
         // only when BOTH the manifest declares the asset AND the frames loaded
         // (themeImages['projectile'] is populated generically by preloadThemeImages
@@ -11706,6 +12156,11 @@
       rangedUnlocked = false;
       rangedPermanentlyUnlocked = false;
       rackInsertIndex = null;
+      // Victory lap's edge-trigger latch/participant set/in-flight run must
+      // not survive a Reset either (rebirthCount was just zeroed above,
+      // which changes the upgraded/base decision for anything in flight —
+      // see resetVictoryLapForSceneReset's doc).
+      resetVictoryLapForSceneReset();
       // Purge the persisted blob so a reload can't rehydrate stale progress.
       try {
         const prev = vscode.getState() || {};
@@ -11720,6 +12175,7 @@
       // changes (see updateBadgeHud, L708) rather than duplicating its
       // hidden/pop-animation logic here.
       updateBadgeHud();
+      updateTrophyRow();
     } else if (dangerStatusEl) {
       dangerStatusEl.textContent = msg.error || "Reset failed";
       dangerStatusEl.classList.add("settings-error-note");
@@ -12901,8 +13357,10 @@
     // active flags and ends itself cleanly if either is somehow true (see
     // this function's own congaActive-branch check above, updateDiscoParty's
     // congaActive/danceOffActive check, and updateDanceOff's
-    // congaActive/discoPartyActive check).
-    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0 || discoPartyActive || danceOffActive) return;
+    // congaActive/discoPartyActive check). The victoryLapActive check added
+    // below is the same idea applied to the newer fourth system — see
+    // updateVictoryLap.
+    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0 || discoPartyActive || danceOffActive || victoryLapActive) return;
     if (Math.random() >= CONGA_CHANCE) return;
 
     startConga(agentList);
@@ -12981,15 +13439,63 @@
 
   // ── Disco party easter egg ────────────────────────────────────────────────
 
-  /** Radial gradients for the two moving disco lights, built ONCE (lazily,
-   *  on first actual paint — see ensureDiscoGradients) and centered at their
-   *  own local (0,0) origin with a fixed DISCO_LIGHT_RADIUS reach. Movement
-   *  is achieved by translating the canvas before painting each one, NOT by
-   *  recreating the gradient — so drawDiscoOverlay never allocates a
-   *  gradient inside the render loop. @type {CanvasGradient|null} */
-  let discoGradientA = null;
-  /** @type {CanvasGradient|null} */
-  let discoGradientB = null;
+  // ── Party palette (default vs gold) ─────────────────────────────────────
+  // Rebirth 6 unlock (GOLD_PALETTE_UNLOCK_REBIRTH, ~line 4797): the shared
+  // party visuals — disco lighting, the disco ball, and the dance-off winner
+  // confetti (all three party types funnel through this one lighting layer
+  // already) — shift from the multicoloured default scheme to a warm
+  // gold/amber one, so a long-time player's parties visibly read differently
+  // from a newcomer's. Palettes are DATA, not scattered
+  // `if (rebirthCount >= 6)` branches: every draw path below reads its
+  // colors from whichever object getActivePartyPalette() returns.
+  // getActivePartyPalette is the ONLY place rebirthCount (or the Alt+G
+  // preview override — see the keydown handler) is consulted for this
+  // feature; nothing else checks either one directly.
+  const PARTY_PALETTE_DEFAULT = {
+    key: "default",
+    lightA: { start: "rgba(255,0,170,0.95)", end: "rgba(255,0,170,0)" },
+    lightB: { start: "rgba(0,200,255,0.95)", end: "rgba(0,200,255,0)" },
+    hueBase: 0,      // full-spectrum hue wash — unchanged from the original single-scheme behavior
+    hueRange: 360,
+    washSat: "70%",
+    washLight: "55%",
+    confetti: DANCE_OFF_CONFETTI_COLORS, // declared ~line 5710; unchanged 7-color set
+  };
+  const PARTY_PALETTE_GOLD = {
+    key: "gold",
+    lightA: { start: "rgba(255,196,64,0.95)", end: "rgba(255,196,64,0)" },
+    lightB: { start: "rgba(255,140,0,0.95)", end: "rgba(255,140,0,0)" },
+    hueBase: 35,     // amber
+    hueRange: 30,    // narrow warm band (35°..65°: amber through gold-yellow) — never leaves warm hues
+    washSat: "85%",
+    washLight: "52%",
+    confetti: ["#ffd700", "#ffc107", "#ffb300", "#ff8f00", "#ffe082", "#fff176"],
+  };
+  /** Alt+G preview override (see the keydown handler) — forces the gold
+   *  palette on regardless of rebirthCount so it can be previewed before
+   *  it's actually earned. In-memory only: never persisted, never posted to
+   *  the host, never touches rebirthCount itself. Toggling again reverts to
+   *  the rebirth-derived palette. */
+  let goldPalettePreviewForced = false;
+  /** Single source of truth for which party palette is active right now.
+   *  drawDiscoOverlay, drawDiscoBall, and spawnDanceOffConfetti all call
+   *  this instead of checking rebirthCount/goldPalettePreviewForced
+   *  themselves. */
+  function getActivePartyPalette() {
+    return (goldPalettePreviewForced || rebirthCount >= GOLD_PALETTE_UNLOCK_REBIRTH)
+      ? PARTY_PALETTE_GOLD
+      : PARTY_PALETTE_DEFAULT;
+  }
+
+  /** Radial gradients for the two moving disco lights, built ONCE per
+   *  palette (lazily, on first actual paint of that palette — see
+   *  ensureDiscoGradients) and centered at their own local (0,0) origin with
+   *  a fixed DISCO_LIGHT_RADIUS reach. Movement is achieved by translating
+   *  the canvas before painting each one, NOT by recreating the gradient —
+   *  so drawDiscoOverlay never allocates a gradient inside the render loop,
+   *  for either palette. Keyed by palette.key ("default"/"gold").
+   *  @type {Record<string, {a: CanvasGradient, b: CanvasGradient}>} */
+  const discoGradientCache = {};
   /** Reach (px) of each disco light gradient before it fades to transparent. */
   const DISCO_LIGHT_RADIUS = 340;
   /** Peak alpha of each moving light at full party intensity. */
@@ -13004,17 +13510,25 @@
   const DISCO_WASH_ALPHA_BASE = 0.06;
   const DISCO_WASH_ALPHA_RANGE = 0.03;
 
-  /** Build the two disco-light gradients once. Cheap no-op on every call
-   *  after the first. Never called while inactive (drawDiscoOverlay's early
-   *  return guards it), so an unused scene pays nothing at all for this. */
-  function ensureDiscoGradients() {
-    if (discoGradientA && discoGradientB) return;
-    discoGradientA = ctx.createRadialGradient(0, 0, 0, 0, 0, DISCO_LIGHT_RADIUS);
-    discoGradientA.addColorStop(0, "rgba(255,0,170,0.95)");
-    discoGradientA.addColorStop(1, "rgba(255,0,170,0)");
-    discoGradientB = ctx.createRadialGradient(0, 0, 0, 0, 0, DISCO_LIGHT_RADIUS);
-    discoGradientB.addColorStop(0, "rgba(0,200,255,0.95)");
-    discoGradientB.addColorStop(1, "rgba(0,200,255,0)");
+  /** Build (or return the cached) pair of disco-light gradients for the
+   *  given palette. Cheap no-op on every call after the first for that
+   *  palette. Never called while inactive (drawDiscoOverlay's early return
+   *  guards it), so an unused scene — or a palette never actually painted —
+   *  pays nothing at all for this.
+   *  @param {{key:string, lightA:{start:string,end:string}, lightB:{start:string,end:string}}} palette
+   *  @returns {{a: CanvasGradient, b: CanvasGradient}} */
+  function ensureDiscoGradients(palette) {
+    const cached = discoGradientCache[palette.key];
+    if (cached) return cached;
+    const a = ctx.createRadialGradient(0, 0, 0, 0, 0, DISCO_LIGHT_RADIUS);
+    a.addColorStop(0, palette.lightA.start);
+    a.addColorStop(1, palette.lightA.end);
+    const b = ctx.createRadialGradient(0, 0, 0, 0, 0, DISCO_LIGHT_RADIUS);
+    b.addColorStop(0, palette.lightB.start);
+    b.addColorStop(1, palette.lightB.end);
+    const pair = { a, b };
+    discoGradientCache[palette.key] = pair;
+    return pair;
   }
 
   /**
@@ -13038,7 +13552,8 @@
    */
   function drawDiscoOverlay(w, h) {
     if (partyVisualIntensity <= 0 || prefersReducedMotion) return;
-    ensureDiscoGradients();
+    const palette = getActivePartyPalette();
+    const grad = ensureDiscoGradients(palette);
     const t = (nowMs() - partyVisualStartMs) / 1000;
     ctx.save();
     ctx.globalCompositeOperation = "overlay";
@@ -13049,7 +13564,7 @@
       w * 0.5 + Math.cos(t * DISCO_ORBIT_SPEED) * w * 0.32,
       h * 0.45 + Math.sin(t * DISCO_ORBIT_SPEED * 0.8) * h * 0.28
     );
-    ctx.fillStyle = discoGradientA;
+    ctx.fillStyle = grad.a;
     ctx.fillRect(-DISCO_LIGHT_RADIUS, -DISCO_LIGHT_RADIUS, DISCO_LIGHT_RADIUS * 2, DISCO_LIGHT_RADIUS * 2);
     ctx.restore();
     // Light 2: counter-orbit, opposite phase.
@@ -13058,17 +13573,19 @@
       w * 0.5 + Math.cos(t * -DISCO_ORBIT_SPEED * 0.85 + Math.PI) * w * 0.30,
       h * 0.5 + Math.sin(t * DISCO_ORBIT_SPEED * 0.6 + Math.PI) * h * 0.30
     );
-    ctx.fillStyle = discoGradientB;
+    ctx.fillStyle = grad.b;
     ctx.fillRect(-DISCO_LIGHT_RADIUS, -DISCO_LIGHT_RADIUS, DISCO_LIGHT_RADIUS * 2, DISCO_LIGHT_RADIUS * 2);
     ctx.restore();
     // Gentle global hue wash — smooth continuous hue drift (~12s period) with
     // a slow, low-amplitude alpha pulse. Well under the ~3 changes/sec
-    // photosensitivity cap; nowhere near a strobe.
-    const hue = (t * DISCO_HUE_SPEED) % 360;
+    // photosensitivity cap; nowhere near a strobe. Range is palette-driven:
+    // the default palette sweeps the full 360° (unchanged original
+    // behavior); the gold palette stays inside its narrow warm hueRange.
+    const hue = palette.hueBase + ((t * DISCO_HUE_SPEED) % palette.hueRange);
     const washPulse = 0.5 + 0.5 * Math.sin(t * DISCO_WASH_PULSE_HZ * Math.PI * 2);
     ctx.globalCompositeOperation = "soft-light";
     ctx.globalAlpha = partyVisualIntensity * (DISCO_WASH_ALPHA_BASE + washPulse * DISCO_WASH_ALPHA_RANGE);
-    ctx.fillStyle = `hsl(${hue}, 70%, 55%)`;
+    ctx.fillStyle = `hsl(${hue}, ${palette.washSat}, ${palette.washLight})`;
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
   }
@@ -13111,8 +13628,14 @@
   function drawDiscoBall(w, h, bgX, bgY, bgW, bgH) {
     if (partyVisualIntensity <= 0 || prefersReducedMotion) return;
     if (!discoBallFrames || !discoBallFrames.length) return; // never loaded / failed — degrade silently
+    // Gold palette: lazily bake (once ever) and use the tinted frame set;
+    // ensureDiscoBallGoldFrames no-ops after its first call. Falls back to
+    // the plain frames if the bake hasn't finished yet or ever failed.
+    const palette = getActivePartyPalette();
+    if (palette.key === "gold") ensureDiscoBallGoldFrames();
+    const frames = (palette.key === "gold" && discoBallGoldFrames) ? discoBallGoldFrames : discoBallFrames;
     const fi = Math.floor(((nowMs() - partyVisualStartMs) / 1000) * DISCO_BALL_CLIP.fps) % DISCO_BALL_CLIP.frames.length;
-    const frame = discoBallFrames[DISCO_BALL_CLIP.frames[fi]];
+    const frame = frames[DISCO_BALL_CLIP.frames[fi]];
     if (!frame || !frame.complete || frame.naturalWidth === 0) return;
     const size = bgW * DISCO_BALL_SIZE_FRAC;
     if (!(size > 0)) return;
@@ -13281,8 +13804,9 @@
     // drive charEntry.dancing), or the player hasn't reached the advertised
     // unlock rebirth yet (see DANCE_PARTY_UNLOCK_REBIRTH — mirrors
     // TURRET_UNLOCK_REBIRTH's gate style; the Alt+D hotkey below carries the
-    // same check).
-    if (agentList.length < 1 || activeEnemies.length > 0 || discoCooldown > 0 || congaActive || danceOffActive) return;
+    // same check). Also blocked while a victory lap is playing — see
+    // updateVictoryLap.
+    if (agentList.length < 1 || activeEnemies.length > 0 || discoCooldown > 0 || congaActive || danceOffActive || victoryLapActive) return;
     if (rebirthCount < DANCE_PARTY_UNLOCK_REBIRTH) return;
     if (Math.random() >= DISCO_CHANCE) return;
     startDiscoParty();
@@ -13609,13 +14133,14 @@
     danceOffCheckTimer = 0;
     // Blocked while: fewer than 2 agents, a rival is present, still on
     // cooldown, or a conga/disco party is running (kept mutually exclusive —
-    // all three drive charEntry.dancing/destNx/destNy).
-    if (agentList.length < 2 || activeEnemies.length > 0 || danceOffCooldown > 0 || congaActive || discoPartyActive) return;
-    // GATE SPOT: to gate this behind a rebirth unlock later, add
-    // `if (rebirthCount < DANCE_OFF_UNLOCK_REBIRTH) return;` here (mirrors
-    // DANCE_PARTY_UNLOCK_REBIRTH's check in updateDiscoParty above) —
-    // deliberately absent for now; product hasn't decided whether to gate
-    // this feature.
+    // all three drive charEntry.dancing/destNx/destNy). Also blocked while a
+    // victory lap is playing — see updateVictoryLap.
+    if (agentList.length < 2 || activeEnemies.length > 0 || danceOffCooldown > 0 || congaActive || discoPartyActive || victoryLapActive) return;
+    // GATE SPOT: the dance-off unlocks one tier above the disco dance party,
+    // via its own DANCE_OFF_UNLOCK_REBIRTH constant (mirrors
+    // DANCE_PARTY_UNLOCK_REBIRTH's check in updateDiscoParty above; the
+    // Alt+O hotkey below carries the same check).
+    if (rebirthCount < DANCE_OFF_UNLOCK_REBIRTH) return;
     if (Math.random() >= DANCE_OFF_CHANCE) return;
     startDanceOff(agentList);
   }
@@ -13905,12 +14430,13 @@
     }
   }
 
-  // debug hotkey: Alt+C=conga, Alt+D=disco party, Alt+O=dance-off (the former
-  // f=fast-forward-build debug instabuild hotkey was removed — F is now the
-  // Edit-Stage flip shortcut above; the poof/build flow it used to shortcut
-  // is confirmed working on its own). All three easter-egg hotkeys require
-  // the Alt modifier specifically (product ask: make them a little harder to
-  // trigger by accident) — Ctrl/Meta combinations must NOT fire any of them.
+  // debug hotkey: Alt+C=conga, Alt+D=disco party, Alt+O=dance-off, Alt+V=
+  // victory lap (the former f=fast-forward-build debug instabuild hotkey was
+  // removed — F is now the Edit-Stage flip shortcut above; the poof/build
+  // flow it used to shortcut is confirmed working on its own). All of these
+  // easter-egg hotkeys require the Alt modifier specifically (product ask:
+  // make them a little harder to trigger by accident) — Ctrl/Meta
+  // combinations must NOT fire any of them.
   document.addEventListener("keydown", (e) => {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -13921,13 +14447,18 @@
       // while a rival is present (previously missing here — updateConga's
       // own random trigger already checked this; the hotkey now matches),
       // or while a disco party or dance-off is active (mutual exclusion —
-      // see updateDiscoParty/updateConga/updateDanceOff). The conga stays
+      // see updateDiscoParty/updateConga/updateDanceOff), or while a victory
+      // lap is playing (see updateVictoryLap) — without this check the
+      // hotkey could start a second system on the same agents for a frame,
+      // relying on updateVictoryLap's belt-and-braces to clean it up next
+      // frame instead of never letting it happen. The conga stays
       // fully ungated by rebirth — only the disco dance party (below) is an
       // advertised unlock (see DANCE_PARTY_UNLOCK_REBIRTH).
       if (congaActive) return;
       if (activeEnemies.length > 0) return;
       if (discoPartyActive) return;
       if (danceOffActive) return;
+      if (victoryLapActive) return;
       if (lastAgentList.length < 1) return;
       startConga(lastAgentList);
     }
@@ -13948,6 +14479,9 @@
       if (activeEnemies.length > 0) return;
       if (congaActive) return;
       if (danceOffActive) return;
+      // Also refuses while a victory lap is playing (see updateVictoryLap) —
+      // same gate-not-a-frame-later-patch reasoning as the Alt+C branch above.
+      if (victoryLapActive) return;
       if (rebirthCount < DANCE_PARTY_UNLOCK_REBIRTH) return;
       if (lastAgentList.length < 1) return;
       startDiscoParty();
@@ -13957,9 +14491,10 @@
       // the random probability, mirroring the conga/disco debug hotkeys
       // above) — but NOT the safety gates: refuses while a party is already
       // running, while a rival is present, or during a conga/disco party
-      // (mutual exclusion — see updateConga/updateDiscoParty/updateDanceOff).
-      // Deliberately UNGATED by rebirth for now (see DANCE_OFF_COOLDOWN_SECONDS'
-      // doc comment above for the one-line change to add a gate later).
+      // (mutual exclusion — see updateConga/updateDiscoParty/updateDanceOff),
+      // or below the advertised unlock rebirth (DANCE_OFF_UNLOCK_REBIRTH —
+      // mirrors the random trigger's gate in updateDanceOff; a gate the
+      // hotkey bypasses isn't a real gate).
       // Reduced-motion note: same as Alt+D — this still triggers the actual
       // dance-off; only the shared lighting/ball pass is suppressed for
       // those users (drawDiscoOverlay/drawDiscoBall self-guard on
@@ -13968,8 +14503,48 @@
       if (activeEnemies.length > 0) return;
       if (congaActive) return;
       if (discoPartyActive) return;
+      // Also refuses while a victory lap is playing (see updateVictoryLap) —
+      // same gate-not-a-frame-later-patch reasoning as the Alt+C/D branches above.
+      if (victoryLapActive) return;
+      if (rebirthCount < DANCE_OFF_UNLOCK_REBIRTH) return;
       if (lastAgentList.length < 2) return;
       startDanceOff(lastAgentList);
+    }
+    if (key === "g" && e.altKey && !e.ctrlKey && !e.metaKey) {
+      // Preview-only toggle for the Rebirth-6 gold party palette (see
+      // GOLD_PALETTE_UNLOCK_REBIRTH / getActivePartyPalette) — lets the
+      // product owner SEE the palette before it's actually earned. Unlike
+      // Alt+C/D/O above this doesn't start anything and carries no
+      // eligibility/party-state gates — it only flips which colors the NEXT
+      // party paint (or an already-running one) reads. In-memory only:
+      // never writes rebirthCount, never persists, never posts to the host.
+      // Pressing it again reverts to the rebirth-derived palette.
+      goldPalettePreviewForced = !goldPalettePreviewForced;
+      // eslint-disable-next-line no-console -- deliberate: makes the preview
+      // override observable so it never reads as a real unlock.
+      console.log(`[preview] gold party palette override: ${goldPalettePreviewForced ? "ON — Alt+G to revert" : "off"}`);
+    }
+    if (key === "v" && e.altKey && !e.ctrlKey && !e.metaKey) {
+      // Preview/debug hotkey: force-start a wave-clear victory lap now (see
+      // updateVictoryLap/startVictoryLap). Unlike Alt+C/D/O this has no
+      // eligibility-roll or real wave to draw participants from, so it
+      // sweeps the CURRENT roster instead (startVictoryLap's
+      // overrideAgentList path) — mirrors the whole-cast preview convention
+      // those three already use for their own hotkeys. Refuses while already
+      // running, while a rival is present, or during a conga/disco
+      // party/dance-off (same mutual-exclusion rule the real trigger follows
+      // — see updateVictoryLap). Carries NO rebirth gate of its own: the
+      // base cheer is ungated from the start, and startVictoryLap's own
+      // upgraded/base decision (rebirthCount >= VICTORY_LAP_UNLOCK_REBIRTH,
+      // OR the Alt+G gold-preview override just above) already decides which
+      // version plays — so pressing Alt+G first, THEN Alt+V, is how a player
+      // below Rebirth 5 previews the upgraded (longer, lit, confetti)
+      // celebration.
+      if (victoryLapActive) return;
+      if (activeEnemies.length > 0) return;
+      if (congaActive || discoPartyActive || danceOffActive) return;
+      if (lastAgentList.length < 1) return;
+      startVictoryLap(lastAgentList);
     }
   });
 
@@ -14570,6 +15145,14 @@
       updateConga(delta, sceneAgentList);
       updateDiscoParty(delta, sceneAgentList);
       updateDanceOff(delta, sceneAgentList);
+      // Runs AFTER the three parties (so this frame's congaActive/
+      // discoPartyActive/danceOffActive already reflect anything that just
+      // started/ended this same frame — no same-frame race, same reasoning
+      // as updateConga's own ordering note) and BEFORE updateDanceOffConfetti
+      // (so a confetti burst spawned by startVictoryLap gets its first tick
+      // this same frame, matching how updateDanceOff's own confetti spawn
+      // already precedes it).
+      updateVictoryLap(delta);
       updateDanceOffConfetti(delta);
     }
     // Change C: advance live projectiles. t runs 0→1 over PROJECTILE_FLIGHT_SEC,
@@ -15067,6 +15650,14 @@
         nearestDist = nearestPickDist;
         if (nearest) {
           isEngaging = true;
+          // Victory lap (see updateVictoryLap/startVictoryLap): record every
+          // agent that actually fought at any point during this wave. Can't
+          // wait and read isEngaging at the moment the wave truly clears —
+          // by then the last rival has already spent several frames fleeing
+          // off-screen, during which isEngaging (and combatTargetInstanceId)
+          // reads false for everyone again — see victoryLapWaveParticipants'
+          // own doc.
+          victoryLapWaveParticipants.add(agent.id);
           nearest.targetAgentId = agent.id;
           charEntry.combatTargetInstanceId = nearest.instance_id;
           // Ranged combat upgrade: once the rack is built, agents engage from
