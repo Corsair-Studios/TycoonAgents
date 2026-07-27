@@ -1,5 +1,32 @@
-<!-- version: 4.2.0 -->
-<!-- changelog: 4.2.0 CORRECTS rule 22. The 4.1.0 statement of this rule was WRONG and
+<!-- version: 4.4.0 -->
+<!-- changelog: 4.4.0 confirms rules 20 and 21 against the Book of Verse, "Modules and
+     Paths" chapter (https://verselang.github.io/book/16_modules/), fetched directly
+     this pass — both move from unverified/observed-only to CONFIRMED and are removed
+     from the Uncertain section. Rule 20 gained the chapter's actual mechanism (relative
+     paths resolve per-file against the current module's location) plus a documented
+     remedy (absolute `/`-leading paths resolve from the global registry regardless of
+     file location). Rule 21 gained the chapter's confirmation that importing exposes a
+     module's public members, plus the same-module exception (files in the same module
+     see each other without imports) that explains why the error is intermittent. Added
+     new rule 23 (disambiguating a name two imported modules both define, via the
+     `(/Module/Path:)Symbol(...)` qualified-call form) from the same chapter, sourced
+     from a real field debugging cost. All three citations use verbatim quotes supplied
+     by the coordinator after fetching the chapter directly; nothing was invented beyond
+     that material.
+     4.3.0 closes the PROCESS gap that let 4.1.0's wrong rule 22 ship: the
+     prime directive covered API existence (digest files) but never said language
+     SEMANTICS (what `?`, effect specifiers, and failure contexts MEAN) require the
+     Book of Verse instead — a digest grep proves a symbol exists, not what it means.
+     Added an explicit API-existence-vs-language-semantics split under the prime
+     directive; added a "How to add a rule to this file" section requiring every rule
+     to cite its Book of Verse section or Epic doc page, reusing the existing
+     Uncertain/observed-only convention for anything that can't cite one; added a
+     confirmed Book of Verse Functions-chapter citation to rule 22 (named-parameter
+     call syntax) rather than only self-correcting its prior content; marked rules 20
+     and 21 (module-path depth, digest-existence-vs-using-visibility) as unverified
+     against the Book of Verse's Modules and Paths chapter — they remain single-project
+     observations, not confirmed language rules, and are now listed under Uncertain.
+     4.2.0 CORRECTS rule 22. The 4.1.0 statement of this rule was WRONG and
      could break working code: it claimed a `?`-prefixed parameter NAME always means
      optional, so `option{...}` should never be used with it. That is false — `?` on a
      NAME marks a named parameter (`?Name := Value` call syntax); optionality comes from
@@ -26,6 +53,26 @@ libraries and functions."
 **Prime directive: verify every API against the digest files before writing
 it. Never write an API from memory.**
 
+**That directive covers API existence, not language semantics — the two
+need different sources, and confusing them is what shipped a wrong rule in
+this file (see the 4.2.0 changelog above).**
+
+- **API existence and signatures → the digest files.** Grepping
+  `Verse.digest.verse` / `Fortnite.digest.verse` / `UnrealEngine.digest.verse`
+  tells you a symbol exists, its parameter list, and its effect specifiers.
+  This is ground truth for what is actually installed on this machine — see
+  [Digest files = ground truth](#digest-files--ground-truth) below.
+- **Language semantics — what a syntactic construct MEANS → the Book of
+  Verse** (https://verselang.github.io/book), an official Epic publication
+  covering 19 chapters. A digest grep proves `?Rotation:?rotation` type-checks;
+  it says nothing about what the `?` on the name versus the `?` on the type
+  each mean, what an effect specifier permits, what counts as a failure
+  context, or parameter-passing conventions. Only the Book of Verse (or
+  Epic's prose documentation) answers those questions.
+
+Do not substitute one for the other. A digest confirms a symbol is real; it
+cannot tell you how to use it correctly.
+
 ## A failed compile is not benign — treat correctness as high-stakes
 
 **Observed in one UEFN project:** a failed Verse compile can trigger an
@@ -49,6 +96,27 @@ release. Anything neither source could confirm is listed under
 [Uncertain](#uncertain--verify-before-relying-on) rather than stated as fact.
 **The project's digest files override this file in every case** — see
 [Digest files = ground truth](#digest-files--ground-truth) below.
+
+### How to add a rule to this file
+
+**Every rule must cite the specific Book of Verse section or Epic
+documentation page it was verified against.** A rule that cannot cite one
+must be explicitly marked using this file's existing
+[Uncertain — verify before relying on](#uncertain--verify-before-relying-on)
+convention — do not invent a second "maybe true" mechanism.
+
+Why this is non-negotiable: an uncited rule is indistinguishable from a
+plausible-sounding guess, and this file has already shipped four wrong rules
+that looked plausible — three sourced from community write-ups that turned
+out to disagree with Epic's docs, and one (the original rule 22, retracted in
+4.2.0) sourced from a first-hand incident report and never checked against
+the Book of Verse at all. Community consensus and a real compile error are
+both evidence, not proof. Before adding or editing a rule: find the relevant
+Book of Verse chapter or Epic doc page, confirm the claim against it, and
+cite it inline the way the existing rules do (e.g. "Book of Verse §07 Control
+Flow", "dev.epicgames.com/.../editable-properties-in-verse"). If you cannot
+find confirming text, say so and mark the rule unverified/observed-only —
+never state it as settled fact on the strength of an incident report alone.
 
 ## TOP 5 MOST FREQUENT ERRORS — CHECK THESE FIRST
 
@@ -95,8 +163,9 @@ made them before considering a change done.**
 
 ### Import / Using Errors
 - [Unknown member — missing `using`](#11-unknown-member-missing-using-statement) — extension methods need the defining module imported
-- [Module path depends on the new file's directory depth](#20-module-path-depends-on-the-new-files-directory-depth) — never copy a `using` block from a reference file at a different depth
+- [Module path depends on the new file's directory depth](#20-module-path-depends-on-the-new-files-directory-depth) — relative `using` resolves per-file; prefer an absolute (`/`-leading) path if it may travel between files
 - [Finding a symbol in the digest is not enough — you still need its owning `using`](#21-finding-a-symbol-in-the-digest-is-not-enough) — walk backwards from the symbol to its enclosing `module`
+- [Disambiguating a name two imported modules both define](#23-disambiguating-a-name-that-two-imported-modules-both-define) — qualify the call with `(/Module/Path:)Symbol(...)`
 
 ### Naming / Scope Errors
 - [Local variable name conflicts with a module name](#14-local-variable-name-conflicts-with-a-module-name) — avoid `VFX`/`SFX`/`UI`/`Assets`/`Materials`/`Textures` as variable names
@@ -1010,8 +1079,21 @@ that pattern was sourced from older, unverified material and isn't needed;
 
 ### 20. Module path depends on the new file's directory depth
 
-**Observed in one project:** error 3506, `Unknown identifier`, hit twice in
-one file.
+**CONFIRMED — Book of Verse, "Modules and Paths"**
+(https://verselang.github.io/book/16_modules/): *"Imports have file scope —
+they only affect the file in which they appear"* and *"Relative paths
+(without leading `/`) are resolved relative to the current module's
+location."* Together these confirm the mechanism behind the incident below:
+a relative `using` is resolved per-file against that file's own location, so
+the identical line can resolve in one file and fail in another at a
+different depth — this is not a fluke of one project, it's how relative-path
+resolution works. Error 3506, `Unknown identifier`, hit twice in one file.
+
+**Remedy confirmed by the same chapter:** *"Absolute paths (starting with
+`/`) are resolved from the global module registry"* — independent of the
+importing file's location. Prefer an absolute path (leading `/`) for a
+`using` that may get copied between files at different depths, or that
+belongs to a file whose location might move.
 
 **Error message:** `Unknown identifier 'CoreSystems'.` /
 `Unknown identifier 'shared_globals'.`
@@ -1037,19 +1119,26 @@ MyDevice := class(creative_device):
         MyProject.Framework.CoreSystems.shared_globals.DoSomething()
 ```
 
-**Rule:** derive `using` paths from the *target* file's own directory —
-never copy a `using` block verbatim from a reference file at a different
-depth. Before writing a new file's imports, check whether an existing file
-**at the same depth** already uses that import, and copy from that one
-instead. This is a single-project observation (directory-relative module
-resolution), not an exhaustively verified language rule — confirm against
-the digest and an existing sibling file, not against a deeper or shallower
-reference file.
+**Rule:** derive `using` paths from the *target* file's own directory, or use
+an absolute (`/`-leading) path if the import may travel between files —
+never copy a relative `using` block verbatim from a reference file at a
+different depth. Before writing a new file's imports, check whether an
+existing file **at the same depth** already uses that import, and copy from
+that one instead.
 
 ### 21. Finding a symbol in the digest is not enough
 
-**Observed in one project:** error 3506 (`Unknown member`/`Unknown
-identifier`), three separate symbols in one build.
+**CONFIRMED — Book of Verse, "Modules and Paths"**
+(https://verselang.github.io/book/16_modules/): *"When you import a module,
+all its public members become available in your code."* Importing is what
+makes a module's members usable — merely confirming a symbol's existence in
+a digest file says nothing about whether the current file has imported the
+module that owns it. The chapter also states the genuine exception this rule
+bites against: *"Files within the same module can see each other's
+definitions without imports"* — which is why the same symbol can work
+untouched in one file and fail with `Unknown member`/`Unknown identifier` the
+moment it's used from a file in a different module. Error 3506, three
+separate symbols in one build.
 
 Locating a symbol in a digest file (`Fortnite.digest.verse`,
 `UnrealEngine.digest.verse`, etc.) confirms the API **exists**. It does not
@@ -1083,9 +1172,22 @@ CheckPlayer(Player : player):void=
 **Rule:** after locating a symbol in a digest, walk backwards to its
 enclosing `module` declaration in that same digest file and add the matching
 `using`. Treat "found in the digest" and "callable from this file" as two
-separate checks, not one.
+separate checks, not one — unless the symbol's file is in the *same* module
+as the file using it, in which case no import is needed at all. See also
+[rule 23](#23-disambiguating-a-name-that-two-imported-modules-both-define) for
+the related case where TWO imports both resolve, ambiguously.
 
 ### 22. Named vs optional parameters — when to `option{}`-wrap
+
+**CONFIRMED — Book of Verse, Functions chapter:** "Named parameters are
+declared with a `?` prefix and called with the name and a `:=` followed by a
+value," with the worked example `Greet(?Name:string, ?Greeting:string):string`
+called as `Greet(?Name := "Alice", ?Greeting := "Hello")`. That confirms the
+NAME-prefix half of this rule (named-parameter call syntax); the TYPE-prefix
+half (optionality) follows from the general option-type rule in
+[Options, not null](#5-options-not-null) — `?T` is Verse's optional-type
+syntax independent of parameter naming. Exact section number not confirmed
+this pass; cite the chapter title only until a section number is verified.
 
 **CORRECTED in 4.2.0 — the prior statement of this rule (4.1.0) was WRONG**
 and would break working code. It claimed a `?`-prefixed parameter *name*
@@ -1140,6 +1242,38 @@ parameter's declared TYPE begins with `?`**. The `?` on the parameter's
 pass the argument by name. You cannot tell which case applies from the
 call site alone; **read the callee's signature** (in the digest or the
 source file) every time before deciding whether to wrap.
+
+### 23. Disambiguating a name that two imported modules both define
+
+**CONFIRMED — Book of Verse, "Modules and Paths"**
+(https://verselang.github.io/book/16_modules/): *"When two imported modules
+define members with the same name, you need to disambiguate,"* using the
+qualified-call form `(/GameA/Combat:)CalculateDamage(10.0)` — the module's
+absolute path in parentheses followed by `:`, immediately before the call.
+This is a real field cost: a same-named-symbol collision between two
+imported modules burned a debugging cycle before the fix was to qualify the
+call rather than rename anything.
+
+**Error message:** `Ambiguous identifier; could be (module1:)Name or
+(module2:)Name` — the same error shape as
+[rule 13](#13-ambiguous-identifier-across-files), but the fix here is a
+qualified call at the use site, not a rename at the definition site.
+
+```verse
+# Two imported modules both define CalculateDamage:
+using { /GameA/Combat }
+using { /GameB/Combat }
+
+# WRONG — ambiguous, the compiler can't tell which CalculateDamage you mean:
+Damage := CalculateDamage(10.0)
+
+# RIGHT — qualify the call with the owning module's absolute path:
+Damage := (/GameA/Combat:)CalculateDamage(10.0)
+```
+
+**Rule:** when two `using`-imported modules define the same name, qualify
+the call with `(/Absolute/Module/Path:)Symbol(...)` rather than renaming
+either definition — this works even when you don't own one of the modules.
 
 ## Visibility and access errors
 
@@ -1540,8 +1674,10 @@ It currently detects:
 **It covers only a subset of the errors in this file, and a clean run is NOT
 a compile guarantee.** In particular, [rule 20](#20-module-path-depends-on-the-new-files-directory-depth)
 (module-path depth), [rule 21](#21-finding-a-symbol-in-the-digest-is-not-enough)
-(digest-verified-but-missing-`using`), and [rule 22](#22-named-vs-optional-parameters--when-to-optionwrap)
-(named vs optional `option{}`-wrapping) are **not detectable by static text
+(digest-verified-but-missing-`using`), [rule 22](#22-named-vs-optional-parameters--when-to-optionwrap)
+(named vs optional `option{}`-wrapping), and
+[rule 23](#23-disambiguating-a-name-that-two-imported-modules-both-define)
+(cross-module name collisions) are **not detectable by static text
 scanning** — each requires cross-referencing something outside the file
 being scanned (the module tree, the digest, or the callee's own signature),
 which the lint has no access to. A prior lint check for rule 22 was removed
@@ -1606,6 +1742,9 @@ settled fact. **The digest files override this file in every case.**
 - The literal `<decides>` specifier text as it appears on `Mod`'s actual
   declaration — `Mod`'s failable, bracket-call behavior IS confirmed via
   Epic's API page regardless of the exact specifier spelling reported.
+- The exact Book of Verse section number for rule 22's named-parameter
+  confirmation — the chapter (Functions) and the quoted text are confirmed;
+  the section number was not verified this pass.
 
 ### Primary references
 
