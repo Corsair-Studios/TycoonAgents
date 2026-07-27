@@ -4860,13 +4860,13 @@
   // same moment gets longer, plus the shared party lighting/ball
   // (partyVisualIntensity/getActivePartyPalette) and a confetti burst, once
   // the player reaches this rebirth tier — mirroring DANCE_OFF_UNLOCK_REBIRTH's
-  // gate style one line up. The Alt+G gold-preview override (below) also
+  // gate style one line up. The Alt+P gold-preview override (below) also
   // force-shows the upgraded version early — see startVictoryLap.
   const VICTORY_LAP_UNLOCK_REBIRTH = 5; // rebirths required before the wave-clear victory lap gets the upgraded (lit/confetti) version; the base cheer is ungated; tunable
   // p3-t5: the gold/amber party palette (disco lighting, the disco ball, and
   // the dance-off winner confetti — see getActivePartyPalette further down)
-  // unlocks one tier above the dance-off. Alt+G previews it without touching
-  // this gate or rebirthCount — see the keydown handler's Alt+G branch.
+  // unlocks one tier above the dance-off. Alt+P previews it without touching
+  // this gate or rebirthCount — see the keydown handler's Alt+P branch.
   const GOLD_PALETTE_UNLOCK_REBIRTH = 6; // rebirths required before the gold party palette unlocks; tunable
 
   /** Theme data set by THEME_INITIALIZED */
@@ -6078,10 +6078,10 @@
   /**
    * Start a victory lap. Snapshots this wave's participants (from
    * victoryLapWaveParticipants — see its own doc), or, when overrideAgentList
-   * is given (the Alt+V debug/preview hotkey), sweeps every currently
+   * is given (the Alt+L debug/preview hotkey), sweeps every currently
    * on-stage agent instead — mirroring the whole-cast preview convention
    * startConga/startDiscoParty/startDanceOff already use for THEIR hotkeys —
-   * so Alt+V is useful for testing even when no real wave has been fought
+   * so Alt+L is useful for testing even when no real wave has been fought
    * yet. Pops a "cheer" pose on each participant via the EXISTING
    * emoting/emoteClip/emoteTimeLeft one-shot mechanism (playEmote — the same
    * fields the point/signal/block emotes use), which is purely cosmetic and
@@ -6089,9 +6089,9 @@
    * state machine for that part.
    *
    * Whether THIS run is the upgraded version is decided once, here, from
-   * rebirthCount >= VICTORY_LAP_UNLOCK_REBIRTH OR the Alt+G gold-preview
+   * rebirthCount >= VICTORY_LAP_UNLOCK_REBIRTH OR the Alt+P gold-preview
    * override (goldPalettePreviewForced) — the same override
-   * getActivePartyPalette reads — so pressing Alt+G first, then Alt+V, is
+   * getActivePartyPalette reads — so pressing Alt+P first, then Alt+L, is
    * how a player below Rebirth 5 previews the upgraded celebration. Upgraded
    * runs additionally get the shared party lighting/ball
    * (partyVisualIntensity, same start pattern startConga/startDiscoParty/
@@ -6100,7 +6100,7 @@
    * victoryLapActive/victoryLapTimeLeft so a rival arriving mid-lap has
    * explicit state to cancel.
    * @param {Array<object>} [overrideAgentList] when given, sweep every id in
-   *   this list instead of the tracked wave participants (Alt+V only).
+   *   this list instead of the tracked wave participants (Alt+L only).
    * @returns {boolean} true if a lap actually started (false if there was
    *   nobody to celebrate with).
    */
@@ -13448,7 +13448,7 @@
   // from a newcomer's. Palettes are DATA, not scattered
   // `if (rebirthCount >= 6)` branches: every draw path below reads its
   // colors from whichever object getActivePartyPalette() returns.
-  // getActivePartyPalette is the ONLY place rebirthCount (or the Alt+G
+  // getActivePartyPalette is the ONLY place rebirthCount (or the Alt+P
   // preview override — see the keydown handler) is consulted for this
   // feature; nothing else checks either one directly.
   const PARTY_PALETTE_DEFAULT = {
@@ -13471,7 +13471,7 @@
     washLight: "52%",
     confetti: ["#ffd700", "#ffc107", "#ffb300", "#ff8f00", "#ffe082", "#fff176"],
   };
-  /** Alt+G preview override (see the keydown handler) — forces the gold
+  /** Alt+P preview override (see the keydown handler) — forces the gold
    *  palette on regardless of rebirthCount so it can be previewed before
    *  it's actually earned. In-memory only: never persisted, never posted to
    *  the host, never touches rebirthCount itself. Toggling again reverts to
@@ -14430,13 +14430,16 @@
     }
   }
 
-  // debug hotkey: Alt+C=conga, Alt+D=disco party, Alt+O=dance-off, Alt+V=
+  // debug hotkey: Alt+C=conga, Alt+D=disco party, Alt+O=dance-off, Alt+L=
   // victory lap (the former f=fast-forward-build debug instabuild hotkey was
   // removed — F is now the Edit-Stage flip shortcut above; the poof/build
   // flow it used to shortcut is confirmed working on its own). All of these
   // easter-egg hotkeys require the Alt modifier specifically (product ask:
   // make them a little harder to trigger by accident) — Ctrl/Meta
   // combinations must NOT fire any of them.
+  // Reserved letters — do NOT bind: f e s v g r t h (VS Code/Antigravity menu
+  // mnemonics: File/Edit/Selection/View/Go/Run/Terminal/Help) and z (VS Code
+  // toggle word wrap). Letters currently taken: c d o l p.
   document.addEventListener("keydown", (e) => {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -14510,7 +14513,7 @@
       if (lastAgentList.length < 2) return;
       startDanceOff(lastAgentList);
     }
-    if (key === "g" && e.altKey && !e.ctrlKey && !e.metaKey) {
+    if (key === "p" && e.altKey && !e.ctrlKey && !e.metaKey) {
       // Preview-only toggle for the Rebirth-6 gold party palette (see
       // GOLD_PALETTE_UNLOCK_REBIRTH / getActivePartyPalette) — lets the
       // product owner SEE the palette before it's actually earned. Unlike
@@ -14522,9 +14525,9 @@
       goldPalettePreviewForced = !goldPalettePreviewForced;
       // eslint-disable-next-line no-console -- deliberate: makes the preview
       // override observable so it never reads as a real unlock.
-      console.log(`[preview] gold party palette override: ${goldPalettePreviewForced ? "ON — Alt+G to revert" : "off"}`);
+      console.log(`[preview] gold party palette override: ${goldPalettePreviewForced ? "ON — Alt+P to revert" : "off"}`);
     }
-    if (key === "v" && e.altKey && !e.ctrlKey && !e.metaKey) {
+    if (key === "l" && e.altKey && !e.ctrlKey && !e.metaKey) {
       // Preview/debug hotkey: force-start a wave-clear victory lap now (see
       // updateVictoryLap/startVictoryLap). Unlike Alt+C/D/O this has no
       // eligibility-roll or real wave to draw participants from, so it
@@ -14536,8 +14539,8 @@
       // — see updateVictoryLap). Carries NO rebirth gate of its own: the
       // base cheer is ungated from the start, and startVictoryLap's own
       // upgraded/base decision (rebirthCount >= VICTORY_LAP_UNLOCK_REBIRTH,
-      // OR the Alt+G gold-preview override just above) already decides which
-      // version plays — so pressing Alt+G first, THEN Alt+V, is how a player
+      // OR the Alt+P gold-preview override just above) already decides which
+      // version plays — so pressing Alt+P first, THEN Alt+L, is how a player
       // below Rebirth 5 previews the upgraded (longer, lit, confetti)
       // celebration.
       if (victoryLapActive) return;
