@@ -31,6 +31,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -1021,6 +1022,412 @@ class OutputFormattingTests(unittest.TestCase):
         self.assertIn("meh thing", out)
         self.assertIn("2 diagnostic(s)", out)
         self.assertIn("1 file(s)", out)
+
+
+class ResolveTargetsPureFunctionTests(unittest.TestCase):
+    """`_resolve_targets`: absolute/relative/glob resolution, unmatched
+    reporting, and dedup -- the piece that makes `--target` a real
+    targeting guarantee instead of best-effort string matching. See
+    docs/VERSE-LSP-CHECK-TARGETING.md."""
+
+    def test_relative_target_resolves_against_content_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content_dir = os.path.join(tmp, "Content")
+            target = _write(os.path.join(content_dir, "MyDevice", "Foo.verse"), "x")
+            resolved, unmatched = vsc._resolve_targets([os.path.join("MyDevice", "Foo.verse")], content_dir)
+        self.assertEqual(unmatched, [])
+        self.assertEqual(len(resolved), 1)
+        self.assertEqual(os.path.normcase(os.path.abspath(resolved[0])), os.path.normcase(os.path.abspath(target)))
+
+    def test_absolute_target_resolves_directly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content_dir = os.path.join(tmp, "Content")
+            target = _write(os.path.join(content_dir, "Foo.verse"), "x")
+            resolved, unmatched = vsc._resolve_targets([os.path.abspath(target)], content_dir)
+        self.assertEqual(unmatched, [])
+        self.assertEqual(len(resolved), 1)
+
+    def test_recursive_glob_matches_nested_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content_dir = os.path.join(tmp, "Content")
+            _write(os.path.join(content_dir, "a", "b", "Deep.verse"), "x")
+            _write(os.path.join(content_dir, "Other.verse"), "x")
+            resolved, unmatched = vsc._resolve_targets(["**/Deep.verse"], content_dir)
+        self.assertEqual(unmatched, [])
+        self.assertEqual(len(resolved), 1)
+        self.assertTrue(resolved[0].endswith("Deep.verse"))
+
+    def test_target_matching_nothing_is_reported_unmatched_with_original_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content_dir = os.path.join(tmp, "Content")
+            os.makedirs(content_dir)
+            resolved, unmatched = vsc._resolve_targets(["NoSuchFile.verse"], content_dir)
+        self.assertEqual(resolved, [])
+        self.assertEqual(len(unmatched), 1)
+        raw, pattern = unmatched[0]
+        self.assertEqual(raw, "NoSuchFile.verse")
+        self.assertIn("NoSuchFile.verse", pattern)
+
+    def test_duplicate_targets_deduped_order_preserving(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content_dir = os.path.join(tmp, "Content")
+            target = _write(os.path.join(content_dir, "Foo.verse"), "x")
+            resolved, unmatched = vsc._resolve_targets(["Foo.verse", os.path.abspath(target)], content_dir)
+        self.assertEqual(unmatched, [])
+        self.assertEqual(len(resolved), 1)
+
+
+class TargetingFilesToOpenTests(unittest.TestCase):
+    """`main()`'s `--target` / `--max-auto-files` handling: the ACTUAL
+    `files_to_open` list assembled before `run_lsp_session` is called.
+    `run_lsp_session` itself is mocked at the call boundary only -- every
+    line of the module upstream of it (CLI parsing, `_resolve_targets`,
+    the os.walk-based auto-discovery, the ordered_targets + auto_selected
+    assembly) runs for real, so these tests exercise the actual code that
+    used to make a --target-less caller's file silently invisible. See
+    docs/VERSE-LSP-CHECK-TARGETING.md for the incident this guards
+    against."""
+
+    def _fixture(self, tmp, filenames):
+        project_root = os.path.join(tmp, "Project")
+        content_dir_path = os.path.join(project_root, "Content")
+        os.makedirs(content_dir_path, exist_ok=True)
+        for name in filenames:
+            _write(os.path.join(content_dir_path, name), "foo_device := class:\n    0\n")
+        content_dir, _ = vsc.resolve_content_dir(project_root)
+        appdata = os.path.join(tmp, "appdata")
+        _write_vproject(appdata, "Project", "Project.vproject", _vproject_json(str(content_dir), name="Project"))
+        lsp_dummy = _write(os.path.join(tmp, "fake-verse-lsp.exe"), "x")
+        return project_root, str(content_dir), {"LOCALAPPDATA": appdata, "VERSE_LSP_PATH": lsp_dummy}
+
+    def _run_and_capture_files_to_open(self, argv, env):
+        """Runs main() for real up through file-selection, then mocks ONLY
+        run_lsp_session (the actual LSP/subprocess boundary) to capture the
+        exact `files_to_open` list it was called with."""
+        captured = {}
+        fake_session = {
+            "handshake_ok": True, "init_error": None, "diagnostics": {},
+            "stderr_tail": [], "opened_files": [], "unreadable_files": [], "timed_out": False,
+        }
+
+        def fake_run(exe_path, vproject_dir, vproject_file, workspace_name, files_to_open, hard_timeout):
+            captured["files_to_open"] = list(files_to_open)
+            return fake_session
+
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch("verse_lsp_check.run_lsp_session", side_effect=fake_run):
+                exit_code = vsc.main(argv)
+        return exit_code, captured.get("files_to_open")
+
+    def test_target_not_in_first_n_sorted_files_is_included_and_opened_first(self):
+        """The exact bug: without --target, only the first
+        DEFAULT_MAX_AUTO_OPEN_FILES sorted files were ever opened, and a
+        file outside that set was silently invisible -- indistinguishable
+        from "opened and clean". This proves --target both includes it AND
+        puts it first, ahead of auto-discovery."""
+        with tempfile.TemporaryDirectory() as tmp:
+            early_names = [f"a{i}.verse" for i in range(vsc.DEFAULT_MAX_AUTO_OPEN_FILES)]
+            filenames = early_names + ["zzz_target.verse"]
+            project_root, content_dir, env = self._fixture(tmp, filenames)
+            target_path = os.path.join(content_dir, "zzz_target.verse")
+            exit_code, files_to_open = self._run_and_capture_files_to_open(
+                [project_root, "--target", target_path], env
+            )
+        self.assertIsNotNone(files_to_open)
+        self.assertEqual(os.path.abspath(files_to_open[0]), os.path.abspath(target_path))
+        opened_abs = [os.path.abspath(f) for f in files_to_open]
+        self.assertIn(os.path.abspath(target_path), opened_abs)
+
+    def test_targets_bypass_the_auto_open_cap_entirely(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target_names = ["t1.verse", "t2.verse", "t3.verse"]
+            other_names = ["o1.verse", "o2.verse"]
+            project_root, content_dir, env = self._fixture(tmp, target_names + other_names)
+            targets = [os.path.join(content_dir, n) for n in target_names]
+            argv = [project_root, "--max-auto-files", "1"]
+            for t in targets:
+                argv += ["--target", t]
+            exit_code, files_to_open = self._run_and_capture_files_to_open(argv, env)
+        opened_abs = {os.path.abspath(f) for f in files_to_open}
+        for t in targets:
+            self.assertIn(os.path.abspath(t), opened_abs, "--max-auto-files=1 must not have capped an explicit target")
+        # 3 uncapped targets + at most 1 capped auto-selected file.
+        self.assertEqual(len(files_to_open), 4)
+
+    def test_repeatable_target_flag_and_glob_expansion_both_work_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            filenames = [
+                "a.verse", "b.verse",
+                os.path.join("sub", "c.verse"), os.path.join("sub", "d.verse"),
+                "other.verse",
+            ]
+            project_root, content_dir, env = self._fixture(tmp, filenames)
+            argv = [project_root, "--target", "a.verse", "--target", os.path.join("sub", "*.verse")]
+            exit_code, files_to_open = self._run_and_capture_files_to_open(argv, env)
+        opened_abs = {os.path.normcase(os.path.abspath(f)) for f in files_to_open}
+        expected = {
+            os.path.normcase(os.path.abspath(os.path.join(content_dir, "a.verse"))),
+            os.path.normcase(os.path.abspath(os.path.join(content_dir, "sub", "c.verse"))),
+            os.path.normcase(os.path.abspath(os.path.join(content_dir, "sub", "d.verse"))),
+        }
+        self.assertTrue(expected.issubset(opened_abs))
+
+    def test_target_matching_nothing_is_usage_error_naming_the_bad_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root, content_dir, env = self._fixture(tmp, ["a.verse"])
+            with mock.patch.dict(os.environ, env, clear=False):
+                buf_err = io.StringIO()
+                with contextlib.redirect_stderr(buf_err):
+                    exit_code = vsc.main([project_root, "--target", "does-not-exist.verse"])
+        self.assertEqual(exit_code, vsc.EXIT_USAGE_ERROR)
+        self.assertIn("does-not-exist.verse", buf_err.getvalue())
+
+    def test_target_matching_nothing_in_json_mode_also_names_the_bad_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root, content_dir, env = self._fixture(tmp, ["a.verse"])
+            with mock.patch.dict(os.environ, env, clear=False):
+                buf_out = io.StringIO()
+                with contextlib.redirect_stdout(buf_out):
+                    exit_code = vsc.main([project_root, "--target", "does-not-exist.verse", "--json"])
+        self.assertEqual(exit_code, vsc.EXIT_USAGE_ERROR)
+        parsed = json.loads(buf_out.getvalue())
+        self.assertEqual(parsed["status"], "usage_error")
+        self.assertIn("does-not-exist.verse", json.dumps(parsed))
+
+    def test_exit_4_when_a_requested_target_was_not_analyzed_never_exit_0(self):
+        """THE HEADLINE REGRESSION TEST: a --target file that the server
+        never opened and never published anything for must yield exit code
+        4 -- never 0, which is exactly the false-clean this whole change
+        exists to close."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root, content_dir, env = self._fixture(tmp, ["a.verse", "target.verse"])
+            target_path = os.path.join(content_dir, "target.verse")
+            fake_session = {
+                "handshake_ok": True, "init_error": None,
+                "diagnostics": {},  # server never published anything for the target
+                "stderr_tail": [], "opened_files": [], "unreadable_files": [], "timed_out": False,
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("verse_lsp_check.run_lsp_session", return_value=fake_session):
+                    exit_code = vsc.main([project_root, "--target", target_path])
+        self.assertEqual(exit_code, vsc.EXIT_TARGET_NOT_ANALYZED)
+        self.assertNotEqual(exit_code, vsc.EXIT_OK)
+
+    def test_absolute_and_content_relative_targets_both_resolve_in_the_same_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root, content_dir, env = self._fixture(
+                tmp, ["a.verse", os.path.join("sub", "b.verse")]
+            )
+            abs_target = os.path.join(content_dir, "a.verse")
+            rel_target = os.path.join("sub", "b.verse")
+            exit_code, files_to_open = self._run_and_capture_files_to_open(
+                [project_root, "--target", abs_target, "--target", rel_target], env
+            )
+        opened_abs = {os.path.normcase(os.path.abspath(f)) for f in files_to_open}
+        self.assertIn(os.path.normcase(os.path.abspath(abs_target)), opened_abs)
+        self.assertIn(os.path.normcase(os.path.abspath(os.path.join(content_dir, "sub", "b.verse"))), opened_abs)
+
+    def test_max_auto_files_caps_the_auto_selected_portion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            filenames = [f"f{i}.verse" for i in range(5)]
+            project_root, content_dir, env = self._fixture(tmp, filenames)
+            exit_code, files_to_open = self._run_and_capture_files_to_open(
+                [project_root, "--max-auto-files", "2"], env
+            )
+        self.assertEqual(len(files_to_open), 2)
+
+    def test_capped_run_is_disclosed_in_both_human_and_json_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            filenames = [f"f{i}.verse" for i in range(5)]
+            project_root, content_dir, env = self._fixture(tmp, filenames)
+            fake_session = {
+                "handshake_ok": True, "init_error": None, "diagnostics": {},
+                "stderr_tail": [], "opened_files": [], "unreadable_files": [], "timed_out": False,
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("verse_lsp_check.run_lsp_session", return_value=fake_session):
+                    buf = io.StringIO()
+                    with contextlib.redirect_stdout(buf):
+                        vsc.main([project_root, "--max-auto-files", "2"])
+                    human_out = buf.getvalue()
+                with mock.patch("verse_lsp_check.run_lsp_session", return_value=fake_session):
+                    buf2 = io.StringIO()
+                    with contextlib.redirect_stdout(buf2):
+                        vsc.main([project_root, "--max-auto-files", "2", "--json"])
+                    json_out = json.loads(buf2.getvalue())
+        self.assertIn("capped", human_out.lower())
+        self.assertTrue(json_out["auto_open_capped"])
+
+
+class OpenedFilesRealSubprocessLoopRegressionTests(unittest.TestCase):
+    """REGRESSION: `run_lsp_session`'s `opened_files` used to be populated
+    aspirationally, copied from `files_to_open` up front -- so a file that
+    failed to open (unreadable, deleted mid-run, etc.) was STILL reported
+    as opened, a second latent false-clean layered on top of the
+    auto-discovery-cap gap this whole change exists to close. It is now
+    populated ONLY after a successful didOpen send, with failures recorded
+    in `unreadable_files` instead (see run_lsp_session's docstring comment
+    directly above `"opened_files": []`).
+
+    This drives the REAL `run_lsp_session` function end-to-end -- not a
+    reimplementation -- through a fake child process substituted for
+    `subprocess.Popen`: two OS pipes stand in for the process's
+    stdin/stdout, with a small background thread on the test side playing
+    the minimal LSP server role (answers only 'initialize' and 'shutdown',
+    which is all this function needs to complete a full
+    handshake -> open -> collect -> teardown cycle). No real
+    verse-lsp.exe, no UEFN, no network."""
+
+    def test_unreadable_target_never_lands_in_opened_files_and_lands_in_unreadable_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            readable = _write(os.path.join(tmp, "ok.verse"), "foo_device := class:\n    0\n")
+            missing = os.path.join(tmp, "does-not-exist.verse")
+            self.assertFalse(os.path.exists(missing))
+
+            stdin_r_fd, stdin_w_fd = os.pipe()
+            stdout_r_fd, stdout_w_fd = os.pipe()
+            stdin_w = os.fdopen(stdin_w_fd, "wb", buffering=0)
+            stdin_r = os.fdopen(stdin_r_fd, "rb", buffering=0)
+            stdout_r = os.fdopen(stdout_r_fd, "rb", buffering=0)
+            stdout_w = os.fdopen(stdout_w_fd, "wb", buffering=0)
+
+            stop_event = threading.Event()
+
+            def frame(obj):
+                data = json.dumps(obj).encode("utf-8")
+                return f"Content-Length: {len(data)}\r\n\r\n".encode("ascii") + data
+
+            def fake_server():
+                # Minimal mirror of the module's own Content-Length framing
+                # (see _reader_thread) -- just enough to answer 'initialize'
+                # (id 1) and 'shutdown' (id 2) so the real handshake and
+                # teardown logic in run_lsp_session runs unmodified.
+                while not stop_event.is_set():
+                    headers = {}
+                    while True:
+                        line = stdin_r.readline()
+                        if line == b"":
+                            return
+                        line = line.rstrip(b"\r\n")
+                        if line == b"":
+                            break
+                        if b":" in line:
+                            k, _, v = line.partition(b":")
+                            headers[k.strip().lower()] = v.strip()
+                    try:
+                        length = int(headers.get(b"content-length", b"0"))
+                    except ValueError:
+                        continue
+                    if length <= 0:
+                        continue
+                    body = stdin_r.read(length)
+                    try:
+                        obj = json.loads(body.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        continue
+                    if obj.get("id") == 1 and obj.get("method") == "initialize":
+                        stdout_w.write(frame({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}))
+                    elif obj.get("id") == 2 and obj.get("method") == "shutdown":
+                        stdout_w.write(frame({"jsonrpc": "2.0", "id": 2, "result": None}))
+                        stop_event.set()
+
+            server_thread = threading.Thread(target=fake_server, daemon=True)
+            server_thread.start()
+
+            class _FakeProc:
+                def __init__(self):
+                    self.stdin = stdin_w
+                    self.stdout = stdout_r
+                    self.stderr = io.BytesIO(b"")
+
+                def wait(self, timeout=None):
+                    return 0
+
+                def terminate(self):
+                    pass
+
+                def kill(self):
+                    pass
+
+            try:
+                with mock.patch("verse_lsp_check.subprocess.Popen", return_value=_FakeProc()):
+                    result = vsc.run_lsp_session(
+                        "fake-exe-path-unused-because-popen-is-mocked",
+                        tmp, os.path.join(tmp, "x.vproject"), "workspace",
+                        [readable, missing], 0.0,
+                    )
+            finally:
+                stop_event.set()
+                server_thread.join(timeout=5)
+                for fh in (stdin_r, stdout_w):
+                    try:
+                        fh.close()
+                    except OSError:
+                        pass
+
+        self.assertTrue(result["handshake_ok"], result.get("init_error"))
+        self.assertIn(readable, result["opened_files"])
+        self.assertNotIn(missing, result["opened_files"])
+        self.assertIn(missing, result["unreadable_files"])
+
+
+class ReportHonestyTests(unittest.TestCase):
+    """A file never opened must never be presented as clean -- in either
+    report shape, whether or not --target was involved."""
+
+    def test_human_report_always_states_unopened_files_have_unknown_status(self):
+        meta = {
+            "lsp_path": "x", "lsp_version": "0.0.1", "vproject_path": "y",
+            "content_dir": "z", "opened_files": ["a.verse"], "total_verse_files": 5, "version_note": None,
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vsc._print_human_report([], meta)
+        out = buf.getvalue()
+        self.assertIn("UNKNOWN status", out)
+        self.assertIn("opened 1 of 5 total", out)
+
+    def test_json_report_discloses_partial_coverage_without_falsely_elevating_status(self):
+        meta = {
+            "lsp_path": "x", "lsp_version": "0.0.1", "vproject_path": "y",
+            "content_dir": "z", "opened_files": ["a.verse"], "total_verse_files": 5,
+            "target_files": [], "unreadable_files": [], "capped": True, "max_auto_files": 1,
+            "targets_not_analyzed": [], "version_note": None,
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vsc._print_json_report([], meta)
+        parsed = json.loads(buf.getvalue())
+        self.assertEqual(parsed["opened_files"], ["a.verse"])
+        self.assertEqual(parsed["total_verse_files"], 5)
+        self.assertTrue(parsed["auto_open_capped"])
+
+    def test_human_report_shows_a_loud_targets_not_analyzed_block(self):
+        meta = {
+            "lsp_path": "x", "lsp_version": "0.0.1", "vproject_path": "y",
+            "content_dir": "z", "opened_files": [], "total_verse_files": 1,
+            "target_files": ["missing.verse"], "targets_not_analyzed": ["missing.verse"],
+            "version_note": None,
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vsc._print_human_report([], meta)
+        out = buf.getvalue()
+        self.assertIn("REQUESTED TARGET(S) NOT ANALYZED", out)
+        self.assertIn("missing.verse", out)
+
+    def test_json_report_status_is_target_not_analyzed_when_targets_not_analyzed_is_non_empty(self):
+        meta = {
+            "lsp_path": "x", "lsp_version": "0.0.1", "vproject_path": "y",
+            "content_dir": "z", "opened_files": [], "total_verse_files": 1,
+            "target_files": ["missing.verse"], "targets_not_analyzed": ["missing.verse"],
+            "version_note": None,
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vsc._print_json_report([], meta)
+        parsed = json.loads(buf.getvalue())
+        self.assertEqual(parsed["status"], "target_not_analyzed")
 
 
 if __name__ == "__main__":

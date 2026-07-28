@@ -77,6 +77,7 @@ interface UefnVerseCheckInternals {
     files?: string[];
     severity?: string[];
     max_diagnostics?: number;
+    max_auto_files?: number;
   }) => Promise<{ content: [{ type: 'text'; text: string }] }>;
   locateVerseCheckScript: (projectRoot: string) => {
     chosen: string | null;
@@ -787,5 +788,193 @@ test('a version_note starting with "WARNING" is prepended to next_required_actio
     assert.match(parsed.next_required_action as string, /^WARNING: verse-lsp\.exe version mismatch — /);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+/*
+ * ── --target / exit-4 / auto_open_capped regression coverage ───────────────
+ *
+ * Coverage for docs/VERSE-LSP-CHECK-TARGETING.md: `files` used to be a pure
+ * OUTPUT filter over whatever verse_lsp_check.py's small auto-discovery
+ * sample happened to open, so a `files` entry outside that sample came back
+ * as an empty diagnostics list -- indistinguishable from "checked and
+ * clean". `files` is now passed through as --target (a targeting
+ * guarantee), the underlying script gained exit code 4 for
+ * "requested target not analyzed", and a capped auto-discovery run now
+ * discloses itself via `auto_open_capped`/`total_verse_files`. The tests
+ * below drive the REAL extracted handler exactly as the existing exit-code
+ * tests above do; the only new technique is capturing the literal argv the
+ * handler hands to execFileAsync, via a staged fixture "script" (really JS,
+ * per the FAKE_PY_DIR trick above) that writes process.argv to a file on
+ * disk before producing its own stdout result.
+ */
+
+function writeArgvCaptureScript(
+  projectRoot: string,
+  capturePath: string,
+  resultJson: string,
+  exitCode: number
+): string {
+  return writeStagedScript(
+    projectRoot,
+    `require('fs').writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(process.argv.slice(2)));\n` +
+      `process.stdout.write(${JSON.stringify(resultJson)});\n` +
+      `process.exit(${exitCode});\n`
+  );
+}
+
+test('files: produces repeated --target argv entries in the ACTUAL spawned command, not just an output filter', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-argv-target-');
+  const capturePath = join(projectRoot, 'argv-capture.json');
+  writeArgvCaptureScript(projectRoot, capturePath, okJson(), 0);
+  try {
+    await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot, files: ['FileA.verse', 'FileB.verse'] }));
+    const argv = JSON.parse(readFileSync(capturePath, 'utf8')) as string[];
+    assert.deepEqual(argv, [projectRoot, '--json', '--target', 'FileA.verse', '--target', 'FileB.verse']);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('max_auto_files reaches the spawned command as --max-auto-files', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-argv-maxauto-');
+  const capturePath = join(projectRoot, 'argv-capture.json');
+  writeArgvCaptureScript(projectRoot, capturePath, okJson(), 0);
+  try {
+    await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot, max_auto_files: 7 }));
+    const argv = JSON.parse(readFileSync(capturePath, 'utf8')) as string[];
+    assert.deepEqual(argv, [projectRoot, '--json', '--max-auto-files', '7']);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('files and max_auto_files together: --target entries precede --max-auto-files in the real argv', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-argv-both-');
+  const capturePath = join(projectRoot, 'argv-capture.json');
+  writeArgvCaptureScript(projectRoot, capturePath, okJson(), 0);
+  try {
+    await withPath(FAKE_PY_DIR, () =>
+      callHandler(internals, { project_root: projectRoot, files: ['Only.verse'], max_auto_files: 0 })
+    );
+    const argv = JSON.parse(readFileSync(capturePath, 'utf8')) as string[];
+    assert.deepEqual(argv, [projectRoot, '--json', '--target', 'Only.verse', '--max-auto-files', '0']);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('exit 4: target_not_analyzed maps to status error with NO diagnostics key -- never a clean/empty-diagnostics shape', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-exit4-');
+  const raw = JSON.stringify({
+    status: 'target_not_analyzed',
+    lsp_path: 'C:/fake/verse-lsp.exe',
+    lsp_version: '1.2.3-fake',
+    vproject_path: 'C:/fake/proj/Foo.vproject',
+    content_dir: 'C:/fake/proj/Content',
+    opened_files: ['C:/proj/Content/Other.verse'],
+    total_verse_files: 3,
+    target_files: ['Missing.verse'],
+    unreadable_files: [],
+    auto_open_capped: false,
+    max_auto_files: 3,
+    targets_not_analyzed: ['Missing.verse'],
+    version_note: null,
+    diagnostics: [],
+    summary: { total: 0, by_severity: {} },
+  });
+  writeStagedScript(projectRoot, `process.stdout.write(${JSON.stringify(raw)}); process.exit(4);`);
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot, files: ['Missing.verse'] }));
+    assert.equal(parsed.status, 'error');
+    assert.equal(parsed.exit_code, 4);
+    assert.equal(parsed.tier, 'target_not_analyzed');
+    assert.ok(
+      !('diagnostics' in parsed),
+      'exit 4 must never carry a diagnostics key -- that key presence is exactly what would make this read as a clean/zero-diagnostics pass'
+    );
+    assert.deepEqual(parsed.targets_not_analyzed, ['Missing.verse']);
+    assert.match(parsed.next_required_action as string, /UNKNOWN status, NOT clean/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('exit 4 also fires from parsed.status alone (belt-and-suspenders: the script could exit 4 without stdout matching, or vice versa)', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-exit4-statusonly-');
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(okJson({ status: 'target_not_analyzed', targets_not_analyzed: ['X.verse'] }))}); process.exit(0);`
+  );
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    assert.equal(parsed.status, 'error');
+    assert.equal(parsed.tier, 'target_not_analyzed');
+    assert.ok(!('diagnostics' in parsed));
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('auto_open_capped true surfaces an explicit PARTIAL RUN disclosure in next_required_action', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-capped-');
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(
+      okJson({ auto_open_capped: true, total_verse_files: 50, opened_files: ['a.verse', 'b.verse', 'c.verse'], max_auto_files: 3 })
+    )}); process.exit(0);`
+  );
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    assert.equal(parsed.auto_open_capped, true);
+    assert.match(parsed.next_required_action as string, /PARTIAL RUN/);
+    assert.match(parsed.next_required_action as string, /3 of 50/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('a capped run can never be mistaken for a full clean pass: PARTIAL RUN disclosure appears iff auto_open_capped is true', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const cappedRoot = tmpProjectRoot('uefn-verse-check-nofalseclean-capped-');
+  const fullRoot = tmpProjectRoot('uefn-verse-check-nofalseclean-full-');
+  try {
+    writeStagedScript(
+      cappedRoot,
+      `process.stdout.write(${JSON.stringify(
+        okJson({ auto_open_capped: true, total_verse_files: 10, opened_files: ['a.verse', 'b.verse', 'c.verse'], max_auto_files: 3 })
+      )}); process.exit(0);`
+    );
+    writeStagedScript(
+      fullRoot,
+      `process.stdout.write(${JSON.stringify(
+        okJson({ auto_open_capped: false, total_verse_files: 3, opened_files: ['a.verse', 'b.verse', 'c.verse'], max_auto_files: 3 })
+      )}); process.exit(0);`
+    );
+
+    const capped = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: cappedRoot }));
+    const full = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: fullRoot }));
+
+    assert.equal(capped.status, 'ok');
+    assert.equal(capped.tier, 'clean');
+    assert.equal(capped.auto_open_capped, true);
+    assert.match(capped.next_required_action as string, /PARTIAL RUN/);
+
+    assert.equal(full.status, 'ok');
+    assert.equal(full.tier, 'clean');
+    assert.equal(full.auto_open_capped, false);
+    assert.ok(
+      !/PARTIAL RUN/.test(full.next_required_action as string),
+      'an uncapped, genuinely complete run must not carry the partial-run disclosure text'
+    );
+  } finally {
+    rmSync(cappedRoot, { recursive: true, force: true });
+    rmSync(fullRoot, { recursive: true, force: true });
   }
 });

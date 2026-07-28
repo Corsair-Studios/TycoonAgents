@@ -27,15 +27,29 @@ all, silently, which looks exactly like a clean pass and is not one. Only
 the vproject folder produces real diagnostics. Do not "simplify" this to a
 more intuitive-looking root; it will silently stop working.
 
-HOW THE SERVER ACTUALLY BEHAVES (observed, not documented by Epic)
+HOW THE SERVER ACTUALLY BEHAVES (observed, not documented by Epic; treat as
+UNSETTLED, not as a guarantee -- see the correction below)
 -----------------------------------------------------------------------
-- Opening a SINGLE `.verse` file via `textDocument/didOpen` is enough to
-  make the server analyse and `publishDiagnostics` for MANY files across
-  the project -- it appears to walk the vproject's whole dependency graph
-  once it has any open document to anchor from, not just files reachable
-  from the one that was opened. This tool still opens a small handful of
-  files (see MAX_FILES_TO_OPEN below) rather than exactly one, purely as
-  cheap redundancy -- not because one was ever observed to be insufficient.
+- Opening a `.verse` file via `textDocument/didOpen` reliably yields
+  `publishDiagnostics` for THAT file. An early single-project spike also
+  saw diagnostics come back for a handful of OTHER, unopened files after
+  opening just one -- but a later field session on a different (108-file)
+  project saw the opposite: files outside the opened set produced NO
+  diagnostics entry at all, indistinguishable at the output layer from
+  "opened and found clean". That second observation is the one this tool
+  now designs around. **Do not assume opening one file analyses the whole
+  project.** This tool does not currently know of an explicit LSP request
+  that reliably pulls project-wide diagnostics without opening every file
+  individually; if Epic's `verse-lsp` exposes one, this tool does not yet
+  use it.
+- Because whole-project coverage from a single opened file is NOT a safe
+  assumption, a caller that needs a SPECIFIC file checked must name it with
+  `--target` (see USAGE below) rather than hoping it lands inside the small
+  auto-discovery sample this tool opens by default (see
+  DEFAULT_MAX_AUTO_OPEN_FILES below). A file that was never opened has
+  UNKNOWN status in this tool's report -- never clean status; see the
+  "opened_files" / "targets_not_analyzed" reporting described under EXIT
+  CODES and USAGE below.
 - After `shutdown`, the server RE-publishes every previously-diagnosed file
   with an EMPTY `diagnostics` array as part of its teardown. That is a
   cleanup clear, not a real result, and a collector that keeps applying
@@ -76,21 +90,73 @@ EXIT CODES
     1  analysis ran to completion, one or more diagnostics were found.
     2  usage error -- bad or missing command-line argument.
     3  PRECONDITIONS NOT MET -- the analysis could not run at all (missing
-       extension, missing/mismatched .vproject, handshake failure, etc.).
-       This is DELIBERATELY distinct from exit 0: a run that never happened
-       must never be reported as "no errors found". See the module's
-       precondition-failure paths; none of them print a clean-pass shape.
+       extension, missing/mismatched .vproject, handshake failure, zero
+       files selected to open, etc.). This is DELIBERATELY distinct from
+       exit 0: a run that never happened must never be reported as "no
+       errors found". See the module's precondition-failure paths; none of
+       them print a clean-pass shape.
+    4  REQUESTED TARGET NOT ANALYZED -- one or more `--target` file(s) were
+       never opened (e.g. the file could not be read once selected). This is
+       DELIBERATELY distinct from both exit 0 and exit 1: a file you
+       explicitly asked this tool to check, that it did not actually get a
+       `textDocument/didOpen` sent for, must never present as either "clean"
+       or as ordinary "findings". See "targets_not_analyzed" in the
+       human/JSON report.
+
+       NOTE ON WHAT THIS DOES *NOT* COVER, AND WHY (empirically confirmed,
+       not assumed): a target that WAS opened but produced zero diagnostics
+       is treated as "analyzed and clean", never as exit 4. A live wire
+       probe against the real server (open a genuinely clean project file,
+       watch traffic for 20s, then trigger shutdown) showed the server
+       publishes NO `textDocument/publishDiagnostics` for that file's own
+       URI whatsoever -- not live, not even in the post-shutdown empty
+       republish that DOES occur for URIs it already had something to say
+       about (the .vproject and the two `*.digest.verse` files). A mirror
+       probe that opened a synthetic in-memory file containing a real error
+       DID get a live `publishDiagnostics` keyed to its own URI. Conclusion:
+       the server confirms "I analyzed this and it's dirty" but never
+       confirms "I analyzed this and it's clean" -- it is silent either way
+       a file is never opened or opened-and-clean. Requiring a
+       diagnostics-key hit as proof of analysis would therefore flag every
+       genuinely clean `--target` as exit 4: a false-alarm storm exactly as
+       destructive as the false-clean this tool exists to prevent. Treating
+       a successfully-sent `didOpen` as "analyzed" is the strongest signal
+       this server actually exposes.
 
 USAGE
 -----
     python verse_lsp_check.py <uefn-project-root-or-its-Content-dir>
-        [--json] [--timeout <seconds>]
+        [--json] [--timeout <seconds>] [--target <path-or-glob>]...
+        [--max-auto-files <n>]
 
 `<path>` may be either a UEFN project's root directory or that project's
 `Content` directory directly -- both are accepted and resolved to the same
 place. `--timeout` bounds the whole diagnostic-collection phase (default
 120s); it does not need to be exact, since collection also stops early on
 an idle window once no new server messages have arrived for a few seconds.
+
+`--target <path-or-glob>` names a specific `.verse` file to guarantee gets
+opened and analysed -- repeatable, and each value may be an absolute path,
+a path relative to the Content directory, or a glob pattern in either form
+(matched with recursive `**` support). Every resolved target is added to
+the files this tool opens FIRST and UNCONDITIONALLY, independent of
+`os.walk` order and independent of `--max-auto-files`. A `--target` value
+that matches no file on disk is a usage error (exit 2) naming the bad
+value -- never a silent skip. This exists because, absent a way to name a
+file directly, the only way to force a specific file into this tool's
+auto-discovered sample was to rename/copy it into a path that happened to
+sort early -- a dangerous workaround (a duplicate-class file left live in
+the actual Content tree UEFN builds from). `--target` removes the reason
+for that workaround to exist.
+
+`--max-auto-files <n>` overrides DEFAULT_MAX_AUTO_OPEN_FILES, the number of
+*additional* files this tool opens on its own initiative (beyond whatever
+`--target` requested), sampled from the sorted list of `.verse` files under
+the content dir. See DEFAULT_MAX_AUTO_OPEN_FILES below for why this is kept
+small by default and is never silently raised to "everything". Any run
+where the auto-discovery sample was capped short of the full project says
+so explicitly in its report -- a capped run must never look like a
+complete one.
 
 An explicit `VERSE_LSP_PATH` environment variable, if set, overrides all
 automatic discovery of the verse-lsp binary (see "STEP 1" below). An
@@ -142,6 +208,12 @@ EXIT_OK = 0
 EXIT_FINDINGS = 1
 EXIT_USAGE_ERROR = 2
 EXIT_PRECONDITION_FAILED = 3
+# A file the caller explicitly named with --target was not analyzed in this
+# run (never opened, or opened but the server never published anything for
+# it -- not even an empty diagnostics list). Deliberately its own code: this
+# must never be conflated with EXIT_OK (which would hide a false-clean) or
+# with EXIT_FINDINGS (this is not "diagnostics found", it's "we don't know").
+EXIT_TARGET_NOT_ANALYZED = 4
 
 # --------------------------------------------------------------------------
 # Tunables.
@@ -153,11 +225,22 @@ MIN_COLLECT_SECONDS = 2.0
 SHUTDOWN_GRACE_SECONDS = 5.0
 PROCESS_KILL_GRACE_SECONDS = 5.0
 
-# A small handful, not "blindly open everything" -- see the module
-# docstring's "HOW THE SERVER ACTUALLY BEHAVES" section. One open file was
-# observed sufficient to trigger whole-project analysis; opening a few more
-# is cheap redundancy, not a requirement.
-MAX_FILES_TO_OPEN = 3
+# Default budget for files this tool opens on its OWN initiative (beyond
+# whatever --target explicitly requested), purely as cheap sampling -- NOT a
+# mechanism this tool relies on for whole-project coverage. See the module
+# docstring's "HOW THE SERVER ACTUALLY BEHAVES" section: an early spike saw
+# opening one file also surface diagnostics for a few other files, but a
+# later field session on a different project saw the opposite (files
+# outside the opened set produced no diagnostics entry at all). Kept small
+# deliberately: opening files serially over LSP/stdio has a real, linear
+# time cost, and 3 is cheap insurance without materially slowing a typical
+# run; blindly raising it to "every file" would make a 100+-file project
+# slow for a benefit this tool cannot confirm. Overridable per-run via
+# --max-auto-files. A caller that needs a SPECIFIC file checked MUST use
+# --target -- this budget is not a substitute for that, and any run capped
+# by this value says so explicitly in its report (see "capped" in the
+# human/JSON output).
+DEFAULT_MAX_AUTO_OPEN_FILES = 3
 
 # Every editor/IDE layout this tool knows to search for a copy of Epic's
 # "Verse" extension, relative to the current user's home directory.
@@ -177,11 +260,14 @@ SCOPE_NOTE = (
     "reports its REAL diagnostics -- it is not a text-level heuristic like "
     "verse_lint.py / verse_project_check.py in this same directory. A clean "
     "(0-diagnostic) run is a strong signal but not a build guarantee: it "
-    "reflects only what the analyzer chose to open in this headless session. "
-    "Exit code 3 means the analysis did NOT run at all (missing extension, "
-    "missing/mismatched .vproject, handshake failure) and must never be read "
-    "as a clean pass, even though the process still exits non-zero. See the "
-    "module docstring for the full list of caveats."
+    "reflects only the files this tool actually opened in this headless "
+    "session (see 'opened' above) -- a file NOT opened has UNKNOWN status, "
+    "not clean status, no matter how the report reads. Use --target to "
+    "guarantee a specific file is analyzed. Exit code 3 means the analysis "
+    "did NOT run at all (missing extension, missing/mismatched .vproject, "
+    "handshake failure) and must never be read as a clean pass, even though "
+    "the process still exits non-zero. Exit code 4 means a --target file was "
+    "not analyzed. See the module docstring for the full list of caveats."
 )
 
 EOF_SENTINEL = object()
@@ -401,6 +487,44 @@ def resolve_content_dir(user_path: str):
     if candidate.is_dir():
         return candidate, p
     return None, None
+
+
+def _resolve_targets(raw_targets, content_dir):
+    """Resolves `--target` argument value(s) to absolute, existing file
+    paths. Each raw value may be an absolute path, a path relative to
+    `content_dir`, or a glob pattern (recursive `**` supported) in either
+    form.
+
+    Returns (resolved_paths, unmatched):
+      - `resolved_paths`: a deduplicated (by canonicalised path),
+        order-preserving list of absolute file paths.
+      - `unmatched`: a list of (raw_target, resolved_pattern_or_path) pairs
+        for every --target value that matched NOTHING on disk. Callers MUST
+        treat a non-empty `unmatched` as a usage error and refuse to run --
+        a --target that quietly resolves to nothing is exactly the kind of
+        silent gap this argument exists to close; it must never be
+        swallowed."""
+    resolved = []
+    seen = set()
+    unmatched = []
+    for raw in raw_targets:
+        pattern = raw if os.path.isabs(raw) else os.path.join(str(content_dir), raw)
+        try:
+            hits = sorted(glob.glob(pattern, recursive=True))
+        except OSError:
+            hits = []
+        files = [h for h in hits if os.path.isfile(h)]
+        if not files:
+            unmatched.append((raw, pattern))
+            continue
+        for h in files:
+            abs_h = os.path.abspath(h)
+            canon = _canon_path(abs_h)
+            if canon in seen:
+                continue
+            seen.add(canon)
+            resolved.append(abs_h)
+    return resolved, unmatched
 
 
 def _registry_verseproject_candidates():
@@ -744,7 +868,13 @@ def run_lsp_session(exe_path, vproject_dir, vproject_file, workspace_name, files
         "init_error": None,
         "diagnostics": {},  # uri -> list[diagnostic]
         "stderr_tail": [],
-        "opened_files": list(files_to_open),
+        "requested_files": list(files_to_open),
+        # Populated ONLY as each didOpen is actually sent successfully (see
+        # the send loop below) -- NOT aspirationally copied from
+        # files_to_open up front. A file that failed to read never reaches
+        # this list, even though it was requested; see "unreadable_files".
+        "opened_files": [],
+        "unreadable_files": [],
         "timed_out": False,
     }
     stderr_buffer = []
@@ -854,7 +984,11 @@ def run_lsp_session(exe_path, vproject_dir, vproject_file, workspace_name, files
             try:
                 text = Path(file_path).read_text(encoding="utf-8", errors="replace")
             except OSError:
-                continue  # unreadable file -- skip it, don't abort the run
+                # Unreadable file -- record it as such (never silently, and
+                # never counted as "opened") and skip it without aborting
+                # the rest of the run.
+                result["unreadable_files"].append(file_path)
+                continue
             _send(proc.stdin, {
                 "jsonrpc": "2.0", "method": "textDocument/didOpen",
                 "params": {
@@ -864,6 +998,7 @@ def run_lsp_session(exe_path, vproject_dir, vproject_file, workspace_name, files
                     }
                 },
             })
+            result["opened_files"].append(file_path)
 
         # Collect until an idle window elapses (no new server message) or
         # the hard timeout is hit, whichever comes first.
@@ -1074,7 +1209,52 @@ def _print_human_report(findings, meta):
     print(f"verse_lsp_check: analyzer {meta['lsp_version']} ({meta['lsp_path']})")
     print(f"verse_lsp_check: vproject  {meta['vproject_path']}")
     print(f"verse_lsp_check: content   {meta['content_dir']}")
-    print(f"verse_lsp_check: opened {len(meta['opened_files'])} file(s) as the analysis anchor")
+
+    opened_files = meta.get("opened_files") or []
+    total_verse_files = meta.get("total_verse_files")
+    if total_verse_files is not None:
+        print(
+            f"verse_lsp_check: opened {len(opened_files)} of {total_verse_files} total "
+            ".verse file(s) under the content dir"
+        )
+    else:
+        print(f"verse_lsp_check: opened {len(opened_files)} file(s) as the analysis anchor")
+    print(
+        "verse_lsp_check: a file NOT in the 'opened' set has UNKNOWN status in this run "
+        "-- its absence below is NOT evidence it is clean."
+    )
+
+    target_files = meta.get("target_files")
+    if target_files:
+        print(f"verse_lsp_check: {len(target_files)} file(s) explicitly requested via --target (guaranteed included):")
+        for f in target_files:
+            print(f"    {f}")
+
+    unreadable_files = meta.get("unreadable_files")
+    if unreadable_files:
+        print(f"verse_lsp_check: WARNING -- {len(unreadable_files)} requested file(s) could not be read and were NOT opened:")
+        for f in unreadable_files:
+            print(f"    {f}")
+
+    if meta.get("capped"):
+        print(
+            f"verse_lsp_check: NOTE -- auto-discovery sampling capped at {meta.get('max_auto_files')} "
+            "file(s) (override with --max-auto-files); this run is a PARTIAL, capped sample of the "
+            "project, not a complete scan."
+        )
+
+    targets_not_analyzed = meta.get("targets_not_analyzed")
+    if targets_not_analyzed:
+        print()
+        print("verse_lsp_check: *** REQUESTED TARGET(S) NOT ANALYZED (exit code 4) ***")
+        for f in targets_not_analyzed:
+            print(f"    {f}")
+        print(
+            "verse_lsp_check: the file(s) above were explicitly requested via --target but did NOT "
+            "receive analysis in this run -- this is NOT a clean result and must never be reported "
+            "as one."
+        )
+
     if meta.get("version_note"):
         print(f"verse_lsp_check: {meta['version_note']}")
     print()
@@ -1107,13 +1287,26 @@ def _print_json_report(findings, meta):
     counts = {}
     for f in findings:
         counts[f["severity_word"]] = counts.get(f["severity_word"], 0) + 1
+    targets_not_analyzed = meta.get("targets_not_analyzed") or []
+    # "status" intentionally stays "ok" for a run that completed, whether or
+    # not it found diagnostics -- pass/fail lives in the exit code and in
+    # `summary`. It is overridden ONLY for the exit-4 condition, which is a
+    # fundamentally different kind of result (a requested check that did not
+    # happen), never a normal completion.
+    status = "target_not_analyzed" if targets_not_analyzed else "ok"
     obj = {
-        "status": "ok",
+        "status": status,
         "lsp_path": meta["lsp_path"],
         "lsp_version": meta["lsp_version"],
         "vproject_path": meta["vproject_path"],
         "content_dir": meta["content_dir"],
-        "opened_files": meta["opened_files"],
+        "opened_files": meta.get("opened_files") or [],
+        "total_verse_files": meta.get("total_verse_files"),
+        "target_files": meta.get("target_files") or [],
+        "unreadable_files": meta.get("unreadable_files") or [],
+        "auto_open_capped": bool(meta.get("capped")),
+        "max_auto_files": meta.get("max_auto_files"),
+        "targets_not_analyzed": targets_not_analyzed,
         "version_note": meta.get("version_note"),
         "diagnostics": findings,
         "summary": {"total": len(findings), "by_severity": counts},
@@ -1127,9 +1320,13 @@ def _print_json_report(findings, meta):
 
 USAGE = (
     "usage: verse_lsp_check.py <uefn-project-root-or-Content-dir> [--json] "
-    "[--timeout <seconds>]\n"
+    "[--timeout <seconds>] [--target <path-or-glob>]... [--max-auto-files <n>]\n"
+    "  --target may be repeated; each is an absolute path, a path relative "
+    "to the Content dir, or a glob. Named targets are always opened, "
+    "independent of --max-auto-files.\n"
     "exit codes: 0=clean  1=diagnostics found  2=usage error  "
-    "3=PRECONDITIONS NOT MET (analysis did not run -- never a clean pass)"
+    "3=PRECONDITIONS NOT MET (analysis did not run -- never a clean pass)  "
+    "4=a --target file was not analyzed (never a clean pass or a findings result)"
 )
 
 
@@ -1138,6 +1335,8 @@ def main(argv=None) -> int:
 
     json_mode = False
     timeout = DEFAULT_TIMEOUT_SECONDS
+    max_auto_files = DEFAULT_MAX_AUTO_OPEN_FILES
+    raw_targets = []
     positional = []
     i = 0
     while i < len(argv):
@@ -1159,6 +1358,36 @@ def main(argv=None) -> int:
                 timeout = float(arg.split("=", 1)[1])
             except ValueError:
                 print(f"verse_lsp_check: --timeout value is not a number: {arg!r}", file=sys.stderr)
+                return EXIT_USAGE_ERROR
+        elif arg == "--target":
+            i += 1
+            if i >= len(argv):
+                print("verse_lsp_check: --target requires a value", file=sys.stderr)
+                return EXIT_USAGE_ERROR
+            raw_targets.append(argv[i])
+        elif arg.startswith("--target="):
+            raw_targets.append(arg.split("=", 1)[1])
+        elif arg == "--max-auto-files":
+            i += 1
+            if i >= len(argv):
+                print("verse_lsp_check: --max-auto-files requires a value", file=sys.stderr)
+                return EXIT_USAGE_ERROR
+            try:
+                max_auto_files = int(argv[i])
+            except ValueError:
+                print(f"verse_lsp_check: --max-auto-files value is not an integer: {argv[i]!r}", file=sys.stderr)
+                return EXIT_USAGE_ERROR
+            if max_auto_files < 0:
+                print("verse_lsp_check: --max-auto-files must be >= 0", file=sys.stderr)
+                return EXIT_USAGE_ERROR
+        elif arg.startswith("--max-auto-files="):
+            try:
+                max_auto_files = int(arg.split("=", 1)[1])
+            except ValueError:
+                print(f"verse_lsp_check: --max-auto-files value is not an integer: {arg!r}", file=sys.stderr)
+                return EXIT_USAGE_ERROR
+            if max_auto_files < 0:
+                print("verse_lsp_check: --max-auto-files must be >= 0", file=sys.stderr)
                 return EXIT_USAGE_ERROR
         elif arg in ("-h", "--help"):
             # A user who explicitly asked for help got what they asked for
@@ -1191,6 +1420,36 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE_ERROR
+
+    # ---- resolve --target argument(s), if any -------------------------------
+    # Deliberately done BEFORE the (slower) LSP/vproject discovery steps: a
+    # bad --target value is a usage error and should fail fast, never a
+    # silent skip.
+    ordered_targets = []
+    if raw_targets:
+        resolved_targets, unmatched_targets = _resolve_targets(raw_targets, content_dir)
+        if unmatched_targets:
+            lines = ["The following --target argument(s) matched no file on disk:"]
+            for raw, pattern in unmatched_targets:
+                lines.append(f"  {raw!r} (resolved against: {pattern})")
+            lines.append(
+                "--target accepts an absolute path, a path relative to the Content "
+                f"directory ({content_dir}), or a glob pattern in either form."
+            )
+            if json_mode:
+                print(json.dumps({"status": "usage_error", "reason": "target_not_found", "messages": lines}, indent=2))
+            else:
+                print("verse_lsp_check: USAGE ERROR", file=sys.stderr)
+                for line in lines:
+                    print(line, file=sys.stderr)
+            return EXIT_USAGE_ERROR
+        seen_target_canon = set()
+        for t in resolved_targets:
+            c = _canon_path(t)
+            if c in seen_target_canon:
+                continue
+            seen_target_canon.add(c)
+            ordered_targets.append(t)
 
     # ---- STEP 1: locate verse-lsp(.exe) -----------------------------------
     chosen_lsp, all_lsp_candidates, searched_roots, override_error = locate_lsp_exe()
@@ -1235,12 +1494,36 @@ def main(argv=None) -> int:
             if name.endswith(".verse"):
                 verse_files.append(os.path.join(dirpath, name))
     verse_files.sort()
-    if not verse_files:
+    if not verse_files and not ordered_targets:
         return _fail_precondition(
             json_mode, "no_verse_files",
-            [f"The Content directory {content_dir} contains zero *.verse files -- there is nothing to analyse."],
+            [
+                f"The Content directory {content_dir} contains zero *.verse files, and no "
+                "--target was given -- there is nothing to analyse."
+            ],
         )
-    files_to_open = verse_files[:MAX_FILES_TO_OPEN]
+
+    # Named --target files are added FIRST and UNCONDITIONALLY, independent
+    # of os.walk order and independent of --max-auto-files. Auto-discovery
+    # (the sorted walk below) then fills in up to `max_auto_files` MORE
+    # files as cheap redundant sampling, skipping anything already covered
+    # by an explicit target -- see DEFAULT_MAX_AUTO_OPEN_FILES for why that
+    # budget is kept small by default.
+    target_canon = {_canon_path(t) for t in ordered_targets}
+    auto_pool = [f for f in verse_files if _canon_path(f) not in target_canon]
+    auto_selected = auto_pool[:max_auto_files] if max_auto_files > 0 else []
+    capped = len(auto_pool) > len(auto_selected)
+    files_to_open = ordered_targets + auto_selected
+
+    if not files_to_open:
+        return _fail_precondition(
+            json_mode, "no_files_selected_to_open",
+            [
+                f"{len(verse_files)} .verse file(s) exist under {content_dir}, but zero were "
+                f"selected to open (--max-auto-files is {max_auto_files} and no --target was "
+                "given). Pass --target to name specific file(s), or raise --max-auto-files.",
+            ],
+        )
 
     # ---- STEP 4: run the analysis -------------------------------------------
     session = run_lsp_session(
@@ -1256,13 +1539,43 @@ def main(argv=None) -> int:
             lines.append("verse-lsp produced no stderr output.")
         return _fail_precondition(json_mode, "handshake_failed", lines)
 
+    opened_files = session.get("opened_files") or []
+    unreadable_files = session.get("unreadable_files") or []
     findings = _normalize_diagnostics(session["diagnostics"])
+
+    # Cross-check every requested --target against what was ACTUALLY
+    # analyzed: it counts as analyzed if `didOpen` was sent successfully
+    # (opened_files) OR the server independently published a diagnostics
+    # message keyed to it. The OR is deliberate and empirically justified,
+    # not the stricter "must have a diagnostics-key hit": a live wire probe
+    # against the real server showed it NEVER publishes anything -- not even
+    # an empty array -- for a file that is genuinely clean, while it DOES
+    # publish live for a file with a real error. Requiring a diagnostics-key
+    # hit would therefore flag every clean --target as "not analyzed", a
+    # false-alarm storm. See the module docstring's EXIT CODES section
+    # (exit 4) for the full evidence. A target in neither set was requested
+    # but never even opened (e.g. unreadable), which must never present as
+    # clean or as ordinary findings.
+    analyzed_canon = {_canon_path(p) for p in opened_files}
+    for uri in session["diagnostics"].keys():
+        try:
+            analyzed_canon.add(_canon_path(_uri_to_path(uri)))
+        except Exception:
+            pass
+    targets_not_analyzed = [t for t in ordered_targets if _canon_path(t) not in analyzed_canon]
+
     meta = {
         "lsp_path": chosen_lsp["path"],
         "lsp_version": chosen_lsp["version"],
         "vproject_path": vp_entry["vproject_path"],
         "content_dir": str(content_dir),
-        "opened_files": files_to_open,
+        "opened_files": opened_files,
+        "total_verse_files": len(verse_files),
+        "target_files": ordered_targets,
+        "unreadable_files": unreadable_files,
+        "capped": capped,
+        "max_auto_files": max_auto_files,
+        "targets_not_analyzed": targets_not_analyzed,
         "version_note": version_note,
     }
 
@@ -1275,6 +1588,8 @@ def main(argv=None) -> int:
         note = f"verse_lsp_check: NOTE -- hit the {timeout:g}s timeout before an idle window was reached; results above may be incomplete."
         print(note, file=sys.stderr)
 
+    if targets_not_analyzed:
+        return EXIT_TARGET_NOT_ANALYZED
     return EXIT_FINDINGS if findings else EXIT_OK
 
 

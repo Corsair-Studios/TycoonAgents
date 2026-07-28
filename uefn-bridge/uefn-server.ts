@@ -1122,12 +1122,18 @@ interface RawVerseDiagnostic {
 }
 
 interface RawVerseCheckOk {
-  status: "ok";
+  status: "ok" | "target_not_analyzed";
   lsp_path: string;
   lsp_version: string;
   vproject_path: string;
   content_dir: string;
   opened_files: string[];
+  total_verse_files: number;
+  target_files: string[];
+  unreadable_files: string[];
+  auto_open_capped: boolean;
+  max_auto_files: number;
+  targets_not_analyzed: string[];
   version_note: string | null;
   diagnostics: RawVerseDiagnostic[];
   summary: { total: number; by_severity: Record<string, number> };
@@ -1152,13 +1158,24 @@ server.registerTool(
       "heuristic. UEFN does NOT need to be running and no compile happens, so there is no editor-crash risk. " +
       "That makes this the tool to reach for precisely when a project is too broken to open in UEFN at all. " +
       "A clean (0-diagnostic) run is a strong signal, not a build guarantee. " +
-      "Use `files` to scope results to only the files your change touched: a real project can carry 500+ " +
+      "`files` is a TARGETING guarantee, not just an output filter: every path you list is forced open and " +
+      "analyzed FIRST, unconditionally — it does not depend on landing inside the small handful of files this " +
+      "tool auto-samples by default. Use it for baseline/delta discipline: a real project can carry 500+ " +
       "pre-existing diagnostics unrelated to your change, and you own only the diagnostics your change " +
-      "introduced — baseline/delta discipline, not a full-project cleanup. " +
+      "introduced. If a file you named could NOT actually be analyzed this run, this tool NEVER reports it as " +
+      "clean or as zero diagnostics — the result comes back with tier `target_not_analyzed` and " +
+      "`next_required_action` stating plainly that its status is UNKNOWN, distinct from both a clean result " +
+      "and a diagnostics-found result. Beyond your `files`, this tool also auto-opens a small additional " +
+      "sample of other project files (cheap sanity coverage, not a substitute for `files`); if that sample " +
+      "was capped short of the whole project, the result discloses it explicitly via " +
+      "`auto_open_capped`/`total_verse_files` — a partial run never presents as a complete scan. Override the " +
+      "auto-sample size with `max_auto_files` if needed (rarely necessary). " +
       "Exit codes from the underlying script: 0 = ran, zero diagnostics. 1 = ran, diagnostics found. " +
-      "2 = usage error (e.g. an invalid project_root). 3 = PRECONDITIONS NOT MET — missing the Epic Verse " +
-      "extension, or the project has never been opened in UEFN (which is what generates the .vproject file " +
-      "this depends on); exit 3 is NEVER a clean pass even though no diagnostics are listed.",
+      "2 = usage error (e.g. an invalid project_root, or a `files` entry that matched no file on disk). " +
+      "3 = PRECONDITIONS NOT MET — missing the Epic Verse extension, or the project has never been opened in " +
+      "UEFN (which is what generates the .vproject file this depends on); exit 3 is NEVER a clean pass even " +
+      "though no diagnostics are listed. 4 = one or more `files` entries were never analyzed — surfaced as " +
+      "tier `target_not_analyzed`, also never a clean pass.",
     inputSchema: {
       project_root: z
         .string()
@@ -1172,10 +1189,14 @@ server.registerTool(
         .array(z.string())
         .optional()
         .describe(
-          "Scope reported diagnostics to only these files (exact path, path-boundary suffix, or bare " +
-            "filename match). Use this to stay focused on the diagnostics YOUR change introduced instead of " +
-            "the project's full pre-existing set — this is the baseline/delta discipline this tool is built " +
-            "around."
+          "GUARANTEES these files are opened and analyzed (passed through as --target to the underlying " +
+            "script, forced open first and unconditionally) — a targeting guarantee, not just an output " +
+            "filter. Reported diagnostics are then scoped to these files (exact path, path-boundary suffix, " +
+            "or bare filename match). Use this for baseline/delta discipline: stay focused on the diagnostics " +
+            "YOUR change introduced instead of the project's full pre-existing set. A file named here that " +
+            "could not actually be analyzed is NEVER reported as clean — the result comes back as tier " +
+            "`target_not_analyzed` (UNKNOWN status) instead. A `files` entry matching nothing on disk is a " +
+            "usage error (exit 2), never a silent skip."
         ),
       severity: z
         .array(z.enum(["error", "warning", "info", "hint"]))
@@ -1190,12 +1211,25 @@ server.registerTool(
           "Cap on returned diagnostics after filtering (default 100). NEVER a silent cap — if it truncates, " +
             "the result states exactly how many were omitted and how to see the rest."
         ),
+      max_auto_files: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe(
+          "Overrides the underlying script's small default auto-open sample size — additional files it opens " +
+            "on its own initiative beyond whatever `files` explicitly requested, as cheap sanity coverage. " +
+            "Rarely needed: `files` is the mechanism for guaranteeing a specific file gets analyzed, not this. " +
+            "If the auto-sample is capped short of the full project, the result discloses that explicitly " +
+            "(`auto_open_capped`/`total_verse_files`) regardless of this setting."
+        ),
     },
   },
   async (args) => {
     const requestedSeverities = args.severity && args.severity.length > 0 ? args.severity : [...VERSE_CHECK_DEFAULT_SEVERITIES];
     const maxDiagnostics = args.max_diagnostics ?? VERSE_CHECK_DEFAULT_MAX_DIAGNOSTICS;
     const fileFilters = args.files && args.files.length > 0 ? args.files : undefined;
+    const maxAutoFiles = args.max_auto_files;
 
     // ---- resolve project_root -------------------------------------------------
     let projectRoot: string;
@@ -1266,11 +1300,27 @@ server.registerTool(
     const python = pythonLocation.chosen;
 
     // ---- spawn the script -------------------------------------------------------
+    // `files` is passed through as --target: each entry is forced open and
+    // analyzed FIRST, unconditionally, independent of the script's own
+    // auto-discovery walk order. This is what makes `files` a targeting
+    // guarantee rather than only an output filter — a requested file that
+    // was never opened used to silently read as "0 diagnostics" instead of
+    // "never checked". See docs/VERSE-LSP-CHECK-TARGETING.md.
+    const spawnArgs = [scriptPath, projectRoot, "--json"];
+    if (fileFilters) {
+      for (const f of fileFilters) {
+        spawnArgs.push("--target", f);
+      }
+    }
+    if (maxAutoFiles !== undefined) {
+      spawnArgs.push("--max-auto-files", String(maxAutoFiles));
+    }
+
     let stdoutText = "";
     let stderrText = "";
     let exitCode: number | null = null;
     try {
-      const { stdout, stderr } = await execFileAsync(python.cmd, [scriptPath, projectRoot, "--json"], {
+      const { stdout, stderr } = await execFileAsync(python.cmd, spawnArgs, {
         timeout: VERSE_CHECK_SUBPROCESS_TIMEOUT_MS,
         killSignal: "SIGTERM",
         maxBuffer: 20 * 1024 * 1024,
@@ -1330,8 +1380,20 @@ server.registerTool(
       }
     }
 
-    // ---- exit 2: usage error — verse_lsp_check.py prints NO JSON here, even in --json mode -----
+    // ---- exit 2: usage error — most usage errors print to stderr only, but a
+    // `files` entry that matched no file on disk (a bad --target value) DOES
+    // print a JSON `{status: "usage_error", ...}` body on stdout even in
+    // --json mode; opportunistically parse it so that specific case is
+    // surfaced clearly instead of only the generic stderr text. -----------
     if (exitCode === 2) {
+      let usageDetail: unknown;
+      try {
+        usageDetail = stdoutText ? JSON.parse(stdoutText) : undefined;
+      } catch {
+        // Most usage errors (bad --timeout, missing project_root, etc.) are
+        // stderr-only and print nothing parseable on stdout — expected, not
+        // an error in itself.
+      }
       return ok(
         verseCheckError(
           "usage_error",
@@ -1341,10 +1403,14 @@ server.registerTool(
             python_used: python,
             project_root: projectRoot,
             project_root_source: projectRootSource,
+            files_requested: fileFilters ?? [],
             stderr: stderrText.trim(),
+            ...(usageDetail ? { detail: usageDetail } : {}),
           },
-          "verse_lsp_check.py rejected its arguments (see stderr) — most likely project_root does not resolve " +
-            "to a UEFN project root or Content directory. Fix project_root and retry; this is not a clean pass."
+          "verse_lsp_check.py rejected its arguments (see stderr" +
+            (usageDetail ? "/detail" : "") +
+            ") — most likely project_root does not resolve to a UEFN project root or Content directory, or one " +
+            "of `files` matched no file on disk. Fix the argument and retry; this is not a clean pass."
         )
       );
     }
@@ -1394,6 +1460,42 @@ server.registerTool(
       );
     }
 
+    // ---- exit 4: a requested `files` entry was NEVER ANALYZED — the exact false-clean
+    // this tool used to produce silently (filtering, without targeting, meant a file
+    // outside the auto-opened sample yielded an empty diagnostics list indistinguishable
+    // from "checked and clean"). Must never read as clean or as an ordinary findings
+    // result. See docs/VERSE-LSP-CHECK-TARGETING.md. ---------------------------------
+    if (exitCode === 4 || parsed.status === "target_not_analyzed") {
+      const tna = parsed as RawVerseCheckOk;
+      const targetsNotAnalyzed = tna.targets_not_analyzed ?? [];
+      return ok(
+        verseCheckError(
+          "target_not_analyzed",
+          {
+            exit_code: 4,
+            script_path: scriptPath,
+            python_used: python,
+            project_root: projectRoot,
+            project_root_source: projectRootSource,
+            files_requested: fileFilters ?? [],
+            targets_not_analyzed: targetsNotAnalyzed,
+            opened_files: tna.opened_files ?? [],
+            unreadable_files: tna.unreadable_files ?? [],
+            total_verse_files: tna.total_verse_files,
+            auto_open_capped: !!tna.auto_open_capped,
+            max_auto_files: tna.max_auto_files,
+            version_note: tna.version_note,
+          },
+          `UNKNOWN status, NOT clean: ${targetsNotAnalyzed.length} of your requested \`files\` — ` +
+            `${targetsNotAnalyzed.join(", ")} — was/were never analyzed this run (never opened, or opened but ` +
+            "the analyzer never published even an empty diagnostics list for it). Do NOT report these file(s) " +
+            "as clean or as having 0 diagnostics — their status is UNKNOWN, not verified. Check " +
+            "unreadable_files/opened_files above for why, then re-run uefn_verse_check before making any " +
+            "verification claim about them."
+        )
+      );
+    }
+
     // ---- guard against a drifted script contract — never fall through to a
     // clean shape just because the JSON parsed and the exit code was 0/1.
     // `okResult.diagnostics ?? []` below would otherwise turn a renamed key
@@ -1423,6 +1525,7 @@ server.registerTool(
     const okResult = parsed as RawVerseCheckOk;
     const allDiagnostics = okResult.diagnostics ?? [];
     const totalRaw = okResult.summary?.total ?? allDiagnostics.length;
+    const autoOpenCapped = !!okResult.auto_open_capped;
 
     const afterFiles = fileFilters ? allDiagnostics.filter((d) => diagnosticFileMatches(d.path, fileFilters)) : allDiagnostics;
     const afterSeverity = afterFiles.filter((d) => requestedSeverities.includes(d.severity_word.toLowerCase() as (typeof requestedSeverities)[number]));
@@ -1453,9 +1556,20 @@ server.registerTool(
         "clear diagnostics outside your change's scope.";
     } else {
       nextRequiredAction =
-        "0 diagnostics in the requested scope. This is a strong signal, not a build guarantee — see " +
-        "version_note below if present, and remember diagnostics outside your `files`/`severity` filters were " +
-        "not evaluated for this statement.";
+        "0 diagnostics in the requested scope. " +
+        (fileFilters
+          ? "Every path in `files` was guaranteed opened and analyzed this run (see opened_files/target_files " +
+            "below), so this is a real, checked result for those files — "
+          : "") +
+        "This is a strong signal, not a build guarantee — see version_note below if present, and remember " +
+        "diagnostics outside your `files`/`severity` filters were not evaluated for this statement.";
+    }
+    if (autoOpenCapped) {
+      nextRequiredAction =
+        `PARTIAL RUN — auto-discovery sampling was capped at max_auto_files=${okResult.max_auto_files}: only ` +
+        `${okResult.opened_files.length} of ${okResult.total_verse_files} total .verse file(s) under the ` +
+        "project were opened (your `files`, if any, were guaranteed included; the REST of the project was not " +
+        `scanned this run). ${nextRequiredAction}`;
     }
     if (okResult.version_note && okResult.version_note.startsWith("WARNING")) {
       nextRequiredAction = `${okResult.version_note} — ${nextRequiredAction}`;
@@ -1474,8 +1588,18 @@ server.registerTool(
       vproject_path: okResult.vproject_path,
       content_dir: okResult.content_dir,
       opened_files: okResult.opened_files,
+      total_verse_files: okResult.total_verse_files,
+      target_files: okResult.target_files,
+      unreadable_files: okResult.unreadable_files,
+      auto_open_capped: autoOpenCapped,
+      max_auto_files: okResult.max_auto_files,
       version_note: okResult.version_note,
-      filters_applied: { files: fileFilters ?? null, severity: requestedSeverities, max_diagnostics: maxDiagnostics },
+      filters_applied: {
+        files: fileFilters ?? null,
+        severity: requestedSeverities,
+        max_diagnostics: maxDiagnostics,
+        max_auto_files: maxAutoFiles ?? null,
+      },
       counts: {
         total_reported_by_analyzer: totalRaw,
         by_severity_total: okResult.summary?.by_severity ?? {},
