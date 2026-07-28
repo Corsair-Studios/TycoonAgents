@@ -40,12 +40,46 @@ export function detectUefnProject(root: string): { detected: boolean; signals: s
       signals.push("content-verse");
     }
 
-    // Check if UEFN is installed
-    const localAppData = process.env["LOCALAPPDATA"];
+    // Check if UEFN is installed.
+    // Rung 1: explicit override always wins (points straight at the
+    // UnrealEditorFortnite folder, skipping AppData\Local derivation).
+    // Rung 2: LOCALAPPDATA, as Windows normally sets it.
+    // Rung 3: derive AppData\Local from os.homedir() when LOCALAPPDATA is
+    // unset (seen in some shells/CI runners on otherwise-normal machines).
     let uefnInstalled = false;
-    if (localAppData !== undefined) {
-      const uefnPath = path.join(localAppData, "UnrealEditorFortnite");
-      uefnInstalled = fs.existsSync(uefnPath);
+    const uefnInstallOverride = process.env["UEFN_INSTALL_DIR"];
+    if (uefnInstallOverride) {
+      try {
+        uefnInstalled = fs.existsSync(uefnInstallOverride);
+      } catch {
+        uefnInstalled = false;
+      }
+    } else {
+      let appDataLocal: string | undefined = process.env["LOCALAPPDATA"];
+      if (!appDataLocal) {
+        try {
+          const home = os.homedir();
+          if (home) {
+            appDataLocal = path.join(home, "AppData", "Local");
+          }
+        } catch {
+          // os.homedir() can throw in rare sandboxed/CI environments.
+        }
+      }
+
+      if (appDataLocal) {
+        const uefnPath = path.join(appDataLocal, "UnrealEditorFortnite");
+        uefnInstalled = fs.existsSync(uefnPath);
+      } else {
+        // Not "UEFN isn't installed" — we couldn't even look. Keep this
+        // distinguishable from a genuine not-found so a silent false never
+        // gets read as a real negative result.
+        console.error(
+          "TycoonAgents: UEFN install detection could not resolve an AppData\\Local root — " +
+            "tried env.LOCALAPPDATA and os.homedir()-derived AppData\\Local, both unavailable. " +
+            "Set UEFN_INSTALL_DIR to the UnrealEditorFortnite folder to override.",
+        );
+      }
     }
 
     return { detected: signals.length > 0, signals, uefnInstalled };

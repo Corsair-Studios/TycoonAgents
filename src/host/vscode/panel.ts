@@ -290,6 +290,53 @@ const UEFN_URC_IGNORE_ENTRIES: string[] = [
   "Python/",
 ];
 
+/**
+ * Resolve the Windows `ProgramData` root. `overrideValue` (a caller-supplied
+ * override, e.g. a test fixture) always wins; then `PROGRAMDATA`/`ProgramData`
+ * as the OS sets it (Node's `process.env` is case-insensitive on win32, so
+ * either spelling reads the same var); then a derived drive letter from other
+ * signals Windows still sets when `PROGRAMDATA` itself is missing (seen in
+ * some restricted/CI shells); the literal default is a last resort only.
+ * Module-level (not a class method) so it stays callable with a bare
+ * receiver, matching how `_findFortniteEngineBridgeDir` is exercised in
+ * `test/panelEngineBridgePush.test.ts`.
+ */
+function resolveProgramDataRoot(overrideValue?: string): string {
+  if (overrideValue) return overrideValue;
+  const envVal = process.env.PROGRAMDATA || process.env.ProgramData;
+  if (envVal) return envVal;
+  const driveSource = process.env.SystemDrive || process.env.SystemRoot || process.env.windir || os.homedir() || "";
+  const driveMatch = /^[A-Za-z]:/.exec(driveSource);
+  if (driveMatch) {
+    return path.join(`${driveMatch[0]}\\`, "ProgramData");
+  }
+  // Last-resort literal — only reached when every signal above is absent.
+  return "C:\\ProgramData";
+}
+
+/**
+ * Probe every fixed drive letter actually present on the machine (not a
+ * hardcoded `C:`-`F:` guess). Bounded to the 24 non-floppy letters `C:`-`Z:`
+ * (`A:`/`B:` skipped — legacy floppy letters can trigger a slow OS-level
+ * probe on old systems and are never a real install target); each check is
+ * a single cheap `fs.existsSync` stat on a drive root, so the whole probe is
+ * at most 24 fast synchronous stats and never blocks the extension host for
+ * longer than that.
+ */
+function enumerateFixedDrives(): string[] {
+  const drives: string[] = [];
+  for (const code of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
+    try {
+      if (fs.existsSync(`${code}:\\`)) {
+        drives.push(`${code}:`);
+      }
+    } catch {
+      /* inaccessible or errored drive letter, skip */
+    }
+  }
+  return drives;
+}
+
 /** Singleton webview panel that renders the TycoonAgents visualization. */
 export class TycoonPanel {
   public static currentPanel: TycoonPanel | undefined;
@@ -3442,10 +3489,13 @@ export class TycoonPanel {
 
   /**
    * Discover the Fortnite engine `FortniteGame/Content/Python` director(ies)
-   * that UEFN actually loads bridge modules from. Resolves the install via the
-   * Epic Games Launcher manifests (authoritative), falling back to common
-   * default install locations across drives. Returns only paths whose parent
-   * `FortniteGame/Content` exists (the Python subdir is created on stage).
+   * that UEFN actually loads bridge modules from. Resolves the install via
+   * `FORTNITE_INSTALL_DIR` (explicit override — always wins, skips every
+   * other rung), then the Epic Games Launcher manifests (authoritative),
+   * then a bounded probe of every fixed drive letter actually present on the
+   * machine (see `enumerateFixedDrives`) for the common default install
+   * location. Returns only paths whose parent `FortniteGame/Content` exists
+   * (the Python subdir is created on stage).
    */
   private _findFortnitePythonDirs(): string[] {
     const found = new Set<string>();
@@ -3461,9 +3511,16 @@ export class TycoonPanel {
       }
     };
 
+    // 0) Explicit override always wins.
+    const overrideDir = process.env.FORTNITE_INSTALL_DIR;
+    if (overrideDir) {
+      addFromInstall(overrideDir);
+      if (found.size > 0) return [...found];
+    }
+
     // 1) Epic Games Launcher manifests list every installed app's location.
     try {
-      const programData = process.env.ProgramData || "C:\\ProgramData";
+      const programData = resolveProgramDataRoot();
       const manifestsDir = path.join(programData, "Epic", "EpicGamesLauncher", "Data", "Manifests");
       if (fs.existsSync(manifestsDir)) {
         for (const f of fs.readdirSync(manifestsDir)) {
@@ -3484,9 +3541,9 @@ export class TycoonPanel {
       /* manifests unavailable — fall through to defaults */
     }
 
-    // 2) Fallback: common default install locations.
+    // 2) Fallback: probe every fixed drive letter actually present.
     if (found.size === 0) {
-      for (const drive of ["C:", "D:", "E:", "F:"]) {
+      for (const drive of enumerateFixedDrives()) {
         addFromInstall(path.join(`${drive}\\`, "Program Files", "Epic Games", "Fortnite"));
       }
     }
@@ -3975,7 +4032,7 @@ export class TycoonPanel {
    */
   private _findFortniteEngineBridgeDir(programDataRoot?: string): string | null {
     try {
-      const programData = programDataRoot ?? process.env.PROGRAMDATA ?? "C:\\ProgramData";
+      const programData = resolveProgramDataRoot(programDataRoot);
       if (!programData) return null;
       const manifestsDir = path.join(programData, "Epic", "EpicGamesLauncher", "Data", "Manifests");
       if (!fs.existsSync(manifestsDir)) return null;

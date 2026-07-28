@@ -93,15 +93,32 @@ place. `--timeout` bounds the whole diagnostic-collection phase (default
 an idle window once no new server messages have arrived for a few seconds.
 
 An explicit `VERSE_LSP_PATH` environment variable, if set, overrides all
-automatic discovery of the verse-lsp binary (see "STEP 1" below).
+automatic discovery of the verse-lsp binary (see "STEP 1" below). An
+explicit `UEFN_VERSE_PROJECT_DIR` environment variable, if set, overrides
+all automatic discovery of the `VerseProject` data root -- the directory
+that directly contains per-project subfolders, each with a `vproject`
+subfolder holding that project's `.vproject` file (see "STEP 2" below).
+Both overrides follow the same contract: if set but pointing at something
+that doesn't exist, that is a precondition failure naming the bad value,
+never a silent fallback to automatic discovery.
+
+Automatic discovery of the `VerseProject` root tries, in order: the
+standard `%LOCALAPPDATA%\\UnrealEditorFortnite\\Saved\\VerseProject`
+location; fallbacks derived from `USERPROFILE`/`os.path.expanduser("~")` and
+`%APPDATA%`/`%PROGRAMDATA%` for machines where `LOCALAPPDATA` is unset or
+redirected; and, on Windows, a best-effort (fail-open, never-raising) scan
+of the registry under `HKEY_CURRENT_USER` and `HKEY_LOCAL_MACHINE` for an
+Epic Games / UEFN install or data path. Every candidate tried is recorded
+so a discovery failure can list all of them.
 
 HARD CONSTRAINTS
 -----------------
 Python 3 standard library ONLY -- no third-party packages. Every filesystem
 path used at runtime is derived from environment variables
-(USERPROFILE/LOCALAPPDATA) or from the user's own on-disk project files;
-nothing below is a real username, machine path, or project name -- examples
-in this docstring use neutral placeholders (`<Name>`) deliberately.
+(USERPROFILE/LOCALAPPDATA/APPDATA/PROGRAMDATA/UEFN_VERSE_PROJECT_DIR), the
+Windows registry, or from the user's own on-disk project files; nothing
+below is a real username, machine path, or project name -- examples in
+this docstring use neutral placeholders (`<Name>`) deliberately.
 """
 from __future__ import annotations
 
@@ -205,11 +222,29 @@ def _uri_to_path(uri_str: str) -> str:
     `\\C:\\Users\\...` with a stray leading backslash left over from the
     misdetected UNC-style fallback. Unquoting FIRST and THEN matching the
     drive-letter pattern sidesteps that entirely and handles both forms
-    identically."""
+    identically.
+
+    Also handles a UNC-style URI, `file://server/share/dir/file.verse`, where
+    the host lives in `urlparse`'s `netloc` component, NOT `path`. Reading
+    only `parsed.path` (as this function used to) silently drops the server
+    name and produces a wrong local path (`\\share\\dir\\file.verse` instead
+    of `\\\\server\\share\\dir\\file.verse`). A `file:///C:/...` URI has an
+    EMPTY netloc (three slashes -- the third is the start of the path), so
+    this reconstruction never fires for the ordinary drive-letter forms
+    above; it only fires when a real host is present."""
     parsed = urlparse(uri_str)
     if parsed.scheme != "file":
         return uri_str
     raw = unquote(parsed.path)
+    netloc = unquote(parsed.netloc) if parsed.netloc else ""
+    if netloc and netloc.lower() != "localhost":
+        # `raw` already starts with "/share/..."; prefixing "//" + netloc
+        # yields "//server/share/..." which becomes "\\server\share\..."
+        # (a proper UNC path) once slashes are normalised below.
+        combined = "//" + netloc + raw
+        if os.name == "nt":
+            combined = combined.replace("/", "\\")
+        return combined
     if re.match(r"^/[A-Za-z]:", raw):
         raw = raw[1:]  # strip the leading slash before a drive letter
     if os.name == "nt":
@@ -368,22 +403,188 @@ def resolve_content_dir(user_path: str):
     return None, None
 
 
+def _registry_verseproject_candidates():
+    """Best-effort Windows registry scan for an Epic Games / UEFN install or
+    data location, under both HKEY_CURRENT_USER and HKEY_LOCAL_MACHINE.
+    Epic does not publish a stable schema for these keys, so this probes a
+    handful of plausible locations and pulls out any string value whose
+    NAME looks like a path (contains "path" or "dir"), treating each as a
+    possible base to append `UnrealEditorFortnite\\Saved\\VerseProject` to.
+
+    Deliberately, unconditionally fail-open: `winreg` is imported lazily
+    (so this module still imports on non-Windows), the whole function is a
+    no-op on non-Windows, and every registry access is wrapped so a missing
+    key, a permission error, or any other OSError just yields "no candidate
+    from this key" rather than propagating. A registry probe is a nice-to-
+    have fallback, never something allowed to abort discovery."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    probe_keys = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Epic Games\Unreal Engine"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Epic Games\Unreal Engine"),
+        (winreg.HKEY_CURRENT_USER, r"Software\Epic Games\EpicGamesLauncher"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Epic Games\EpicGamesLauncher"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Epic Games\EpicGamesLauncher"),
+        (winreg.HKEY_CURRENT_USER, r"Software\Epic Games\UnrealEditorFortnite"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Epic Games\UnrealEditorFortnite"),
+    ]
+    results = []
+    for hive, subkey in probe_keys:
+        try:
+            key = winreg.OpenKey(hive, subkey)
+        except OSError:
+            continue
+        try:
+            index = 0
+            while True:
+                try:
+                    name, value, _vtype = winreg.EnumValue(key, index)
+                except OSError:
+                    break  # no more values (or nothing to enumerate)
+                index += 1
+                if not isinstance(value, str) or not value:
+                    continue
+                lowered = name.lower()
+                if "path" not in lowered and "dir" not in lowered:
+                    continue
+                results.append(os.path.join(value, "UnrealEditorFortnite", "Saved", "VerseProject"))
+        except OSError:
+            pass
+        finally:
+            try:
+                winreg.CloseKey(key)
+            except OSError:
+                pass
+    return results
+
+
+def _candidate_verseproject_roots():
+    """Returns an ordered list of (label, path) candidate `VerseProject`
+    data-root directories to search, highest priority first, deduplicated
+    by canonicalised path. Every path is derived at runtime from
+    environment variables or the registry -- never a hardcoded real path.
+    A candidate that can't be read (permission error, etc.) is skipped by
+    the caller, never allowed to abort the rest of the search."""
+    home = _home_dir()
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    appdata = os.environ.get("APPDATA")
+    userprofile = os.environ.get("USERPROFILE")
+    program_data = os.environ.get("PROGRAMDATA")
+
+    raw_candidates = []
+
+    def add(label, base_dir):
+        if base_dir:
+            raw_candidates.append((label, os.path.join(base_dir, "UnrealEditorFortnite", "Saved", "VerseProject")))
+
+    add("LOCALAPPDATA", local_appdata)
+    add("USERPROFILE\\AppData\\Local", userprofile and os.path.join(userprofile, "AppData", "Local"))
+    add("~\\AppData\\Local", os.path.join(home, "AppData", "Local"))
+    # APPDATA is normally the ROAMING profile (...\AppData\Roaming); derive
+    # the sibling Local dir from it for a machine where LOCALAPPDATA itself
+    # is unset/redirected but APPDATA still points somewhere useful.
+    add("APPDATA-derived Local", appdata and os.path.join(os.path.dirname(appdata), "Local"))
+    add("PROGRAMDATA", program_data)
+
+    for reg_path in _registry_verseproject_candidates():
+        raw_candidates.append(("registry", reg_path))
+
+    seen = set()
+    deduped = []
+    for label, path in raw_candidates:
+        canon = _canon_path(path)
+        if canon in seen:
+            continue
+        seen.add(canon)
+        deduped.append((label, path))
+    return deduped
+
+
+def locate_verseproject_root():
+    """Multi-strategy discovery of UEFN's `VerseProject` data root (the
+    directory that directly contains per-project subfolders, each holding a
+    `vproject` subfolder with that project's `.vproject` file).
+
+    Tries, in order: the `UEFN_VERSE_PROJECT_DIR` env override (wins
+    outright if set); then every candidate from `_candidate_verseproject_roots`
+    (standard LOCALAPPDATA location, USERPROFILE/home/APPDATA/PROGRAMDATA
+    fallbacks, then registry hits), picking the first candidate that both
+    exists AND contains at least one `*/vproject/*.vproject` file.
+
+    Returns (root_or_None, tried, override_error, found_but_empty):
+      - `root_or_None`: the chosen root directory, or None if nothing usable
+        was found.
+      - `tried`: ordered list of (label, path) -- EVERY candidate location
+        that was checked, for building a precondition-failure message that
+        lists them all.
+      - `override_error`: set only when UEFN_VERSE_PROJECT_DIR was given but
+        does not exist -- callers must surface that specifically rather
+        than falling through to the generic "not found" message, matching
+        how VERSE_LSP_PATH's override_error is already handled.
+      - `found_but_empty`: True when at least one candidate root existed on
+        disk but none contained a `*/vproject/*.vproject` file -- a
+        distinctly different problem ("UEFN is installed, but no project
+        has ever been opened in it") than "no root found at all"."""
+    override = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+    if override:
+        if os.path.isdir(override):
+            return override, [("UEFN_VERSE_PROJECT_DIR", override)], None, False
+        return (
+            None,
+            [],
+            f"UEFN_VERSE_PROJECT_DIR is set to {override!r} but no directory exists at that path.",
+            False,
+        )
+
+    tried = _candidate_verseproject_roots()
+    found_but_empty = False
+    for _label, path in tried:
+        try:
+            if not os.path.isdir(path):
+                continue
+        except OSError:
+            continue
+        try:
+            has_any = bool(glob.glob(os.path.join(path, "*", "vproject", "*.vproject")))
+        except OSError:
+            continue
+        if has_any:
+            return path, tried, None, False
+        found_but_empty = True
+
+    return None, tried, None, found_but_empty
+
+
 def locate_vproject(content_dir: str):
     """Returns (chosen_entry_or_None, info) where `info` carries everything
     needed to build a precondition-failure message when nothing was chosen:
-    info['reason'] in {'localappdata_unset', 'none_at_all', 'no_match',
-    'ambiguous'} plus supporting lists. Matches STRICTLY by canonicalised,
-    case-insensitive Source-package `dirPath`, never by project name --
-    see the module docstring and the sibling verse_project_check.py, which
-    documents the same "match by content, not name" reasoning."""
-    local_appdata = os.environ.get("LOCALAPPDATA")
-    if not local_appdata:
-        return None, {"reason": "localappdata_unset"}
+    info['reason'] in {'root_override_invalid', 'root_not_found',
+    'root_found_but_empty', 'no_match', 'ambiguous'} plus supporting lists.
+    Matches STRICTLY by canonicalised, case-insensitive Source-package
+    `dirPath`, never by project name -- see the module docstring and the
+    sibling verse_project_check.py, which documents the same "match by
+    content, not name" reasoning."""
+    root, tried, override_error, found_but_empty = locate_verseproject_root()
+    if override_error:
+        return None, {"reason": "root_override_invalid", "override_error": override_error}
+    if root is None:
+        return None, {
+            "reason": "root_found_but_empty" if found_but_empty else "root_not_found",
+            "tried": tried,
+        }
 
-    pattern = os.path.join(local_appdata, "UnrealEditorFortnite", "Saved", "VerseProject", "*", "vproject", "*.vproject")
+    pattern = os.path.join(root, "*", "vproject", "*.vproject")
     all_vprojects = sorted(glob.glob(pattern))
     if not all_vprojects:
-        return None, {"reason": "none_at_all", "searched_pattern": pattern}
+        # Shouldn't normally happen -- locate_verseproject_root() only
+        # returns a root once it has confirmed a match exists -- but guard
+        # anyway rather than assume that invariant holds forever.
+        return None, {"reason": "root_found_but_empty", "tried": tried, "searched_pattern": pattern}
 
     target_canon = _canon_path(content_dir)
     parsed_entries = []
@@ -779,19 +980,43 @@ def _extension_not_found_lines(searched_roots, override_error):
 
 def _vproject_failure_lines(info, content_dir):
     reason = info["reason"]
-    if reason == "localappdata_unset":
+    if reason == "root_override_invalid":
         return [
-            "The LOCALAPPDATA environment variable is not set, so this tool "
-            "cannot locate UEFN's saved Verse project state (normally under "
-            "%LOCALAPPDATA%\\UnrealEditorFortnite\\Saved\\VerseProject)."
+            info["override_error"],
+            "Unset UEFN_VERSE_PROJECT_DIR to fall back to automatic discovery.",
         ]
-    if reason == "none_at_all":
-        return [
-            f"No .vproject file was found under {info['searched_pattern']!r}.",
-            "UEFN generates this file the first time a project is opened in "
-            "the editor. Open this project in UEFN at least once, then "
-            "re-run this tool (UEFN does not need to stay open).",
-        ]
+    if reason in ("root_not_found", "root_found_but_empty"):
+        lines = []
+        if reason == "root_found_but_empty":
+            lines.append(
+                "Found a UEFN 'VerseProject' data folder, but it contains no "
+                "'*/vproject/*.vproject' files -- UEFN appears to be "
+                "installed on this machine, but no project has been opened "
+                "in it yet."
+            )
+        else:
+            lines.append(
+                "Could not locate UEFN's saved Verse project state (the "
+                "'VerseProject' data folder) anywhere on this machine."
+            )
+        lines.append("Locations tried, in order:")
+        for label, path in info.get("tried") or []:
+            lines.append(f"  [{label}] {path}")
+        if not info.get("tried"):
+            lines.append("  (none -- no candidate base directory could be derived at all)")
+        lines.append(
+            "UEFN generates this folder's contents the first time a project "
+            "is opened in the editor. Open this project in UEFN at least "
+            "once, then re-run this tool (UEFN does not need to stay open)."
+        )
+        lines.append(
+            "If UEFN's data lives somewhere nonstandard, set the "
+            "UEFN_VERSE_PROJECT_DIR environment variable to the exact "
+            "'VerseProject' folder (the directory that directly contains "
+            "one subfolder per project, each with its own 'vproject' "
+            "subfolder) and re-run."
+        )
+        return lines
     if reason == "no_match":
         lines = [
             f"Found {len(info['parsed_entries']) + len(info['parse_failures'])} "

@@ -254,6 +254,17 @@ class UriConversionRegressionTests(unittest.TestCase):
             recovered = vsc._uri_to_path(uri)
         self.assertEqual(os.path.normcase(recovered), os.path.normcase(target))
 
+    def test_unc_style_uri_reconstructs_server_and_share_from_netloc(self):
+        """REGRESSION: `file://server/share/dir/file.verse` puts the host in
+        urlparse's `netloc`, not `path`. Reading only `.path` (the old
+        implementation) silently drops the server name and produces
+        `\\share\\dir\\file.verse` instead of the correct
+        `\\\\server\\share\\dir\\file.verse`. See `_uri_to_path`'s
+        docstring for the full reasoning."""
+        uri = "file://myserver/MyShare/Project/Content/foo.verse"
+        result = vsc._uri_to_path(uri)
+        self.assertEqual(result, r"\\myserver\MyShare\Project\Content\foo.verse")
+
 
 class IsResponseToTests(unittest.TestCase):
     """`_is_response_to`: the critical id-vs-method disambiguation. A
@@ -328,6 +339,51 @@ def _write_vproject(appdata_root, project_folder, file_name, raw_content):
         project_folder, "vproject", file_name,
     )
     return _write(path, raw_content)
+
+
+def _write_vproject_under_root(verseproject_root, project_folder, file_name, raw_content):
+    """Like `_write_vproject`, but `verseproject_root` IS already the
+    VerseProject data-root directory itself (no UnrealEditorFortnite/Saved
+    prefix to append) -- for tests that exercise `locate_verseproject_root`
+    / `_candidate_verseproject_roots` directly against an arbitrary
+    fallback location, not just the LOCALAPPDATA one."""
+    path = os.path.join(verseproject_root, project_folder, "vproject", file_name)
+    return _write(path, raw_content)
+
+
+def _neutralized_discovery_env(tmp):
+    """Base-directory env-var values that neutralise every VerseProject
+    discovery avenue except the registry probe (callers must separately
+    mock `_registry_verseproject_candidates`). Each value is a real, EMPTY
+    temp directory -- not a nonexistent path and never a real machine path
+    -- so `os.path.isdir()` on the derived `.../UnrealEditorFortnite/Saved/
+    VerseProject` candidate fails naturally, and the test stays hermetic
+    regardless of whether UEFN is actually installed on the host."""
+    env = {
+        "LOCALAPPDATA": os.path.join(tmp, "localappdata"),
+        "USERPROFILE": os.path.join(tmp, "userprofile"),
+        "APPDATA": os.path.join(tmp, "userprofile", "AppData", "Roaming"),
+        "PROGRAMDATA": os.path.join(tmp, "programdata"),
+    }
+    for path in env.values():
+        os.makedirs(path, exist_ok=True)
+    return env
+
+
+@contextlib.contextmanager
+def _neutralized_discovery(tmp):
+    """Context manager pointing LOCALAPPDATA/USERPROFILE/APPDATA/
+    PROGRAMDATA at empty temp dirs, removing any UEFN_VERSE_PROJECT_DIR
+    override, and mocking the registry probe to return no candidates --
+    i.e. every discovery avenue is under test control. Yields the env dict
+    so callers can populate one specific candidate (e.g. by creating a
+    VerseProject folder under `env["LOCALAPPDATA"]`) to test a fallback
+    being found, or leave everything untouched to test 'nothing found'."""
+    env = _neutralized_discovery_env(tmp)
+    with mock.patch.dict(os.environ, env, clear=False):
+        os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+        with mock.patch("verse_lsp_check._registry_verseproject_candidates", return_value=[]):
+            yield env
 
 
 class VprojectMatchingByContentTests(unittest.TestCase):
@@ -452,19 +508,209 @@ class VprojectMatchingByContentTests(unittest.TestCase):
                 entry, info = vsc.locate_vproject(target)
         self.assertIsNotNone(entry)
 
-    def test_localappdata_unset_reports_reason(self):
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("LOCALAPPDATA", None)
-            entry, info = vsc.locate_vproject(os.path.join(tempfile.gettempdir(), "x", "Content"))
+    def test_all_discovery_avenues_exhausted_reports_root_not_found(self):
+        """NEW CONTRACT regression: this test used to only clear
+        LOCALAPPDATA, leaving USERPROFILE (and everything else) pointed at
+        this machine's REAL environment -- so once `locate_vproject`
+        gained a USERPROFILE fallback, that old test started asserting the
+        OLD bug (silently missing the real root) rather than proving
+        anything. Correctly falling through to a real, existing root is
+        the DESIRED behaviour now, not a failure to guard against.
+        To actually exercise 'root not found', every discovery avenue --
+        override, LOCALAPPDATA, USERPROFILE, ~/expanduser, APPDATA,
+        PROGRAMDATA, and the registry probe -- must be neutralised at
+        once, hermetically (temp dirs, never real machine paths), so this
+        passes/fails identically regardless of what's actually installed
+        on the host."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with _neutralized_discovery(tmp):
+                entry, info = vsc.locate_vproject(os.path.join(tmp, "Target", "Content"))
         self.assertIsNone(entry)
-        self.assertEqual(info["reason"], "localappdata_unset")
+        self.assertEqual(info["reason"], "root_not_found")
+        # The failure path must also point the user at the escape hatch.
+        message = "\n".join(vsc._vproject_failure_lines(info, "x"))
+        self.assertIn("UEFN_VERSE_PROJECT_DIR", message)
 
-    def test_no_vprojects_at_all_reports_reason(self):
-        with tempfile.TemporaryDirectory() as appdata:
-            with mock.patch.dict(os.environ, {"LOCALAPPDATA": appdata}, clear=False):
-                entry, info = vsc.locate_vproject(os.path.join(tempfile.gettempdir(), "x", "Content"))
+    def test_root_found_but_empty_is_reported_distinctly_from_not_found(self):
+        """The OLD 'no_vprojects_at_all' fixture created an appdata folder
+        but never the nested `UnrealEditorFortnite/Saved/VerseProject`
+        directory itself -- under the new contract that's still
+        `root_not_found` (the root directory never existed at all). The
+        genuinely different case -- 'UEFN is installed and the VerseProject
+        root exists, but no project has ever been opened in it' -- requires
+        the root directory to actually exist and be empty."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with _neutralized_discovery(tmp) as env:
+                verseproject_root = os.path.join(
+                    env["LOCALAPPDATA"], "UnrealEditorFortnite", "Saved", "VerseProject"
+                )
+                os.makedirs(verseproject_root)  # exists, but zero vproject files inside
+                entry, info = vsc.locate_vproject(os.path.join(tmp, "Target", "Content"))
         self.assertIsNone(entry)
-        self.assertEqual(info["reason"], "none_at_all")
+        self.assertEqual(info["reason"], "root_found_but_empty")
+
+
+class LocateVerseProjectRootDiscoveryTests(unittest.TestCase):
+    """`locate_verseproject_root` / `_candidate_verseproject_roots`: the new
+    multi-strategy VerseProject-root discovery -- env-override precedence,
+    the ordered fallback chain, candidate dedup, and the distinct
+    not-found vs found-but-empty vs override-invalid outcomes. Every test
+    here is fully hermetic: every avenue is pointed at a temp dir (never a
+    real machine path) and the registry probe is mocked out, so these pass
+    identically whether or not UEFN is actually installed on the host."""
+
+    def test_env_override_wins_outright_over_an_also_valid_localappdata_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            override_root = os.path.join(tmp, "override_root")
+            _write_vproject_under_root(override_root, "OverrideProj", "OverrideProj.vproject", "{}")
+            with _neutralized_discovery(tmp) as env:
+                localappdata_root = os.path.join(
+                    env["LOCALAPPDATA"], "UnrealEditorFortnite", "Saved", "VerseProject"
+                )
+                _write_vproject_under_root(localappdata_root, "LocalProj", "LocalProj.vproject", "{}")
+                with mock.patch.dict(os.environ, {"UEFN_VERSE_PROJECT_DIR": override_root}, clear=False):
+                    root, tried, override_error, found_but_empty = vsc.locate_verseproject_root()
+        self.assertIsNone(override_error)
+        self.assertEqual(root, override_root)
+        # The override wins OUTRIGHT -- discovery never even evaluates the
+        # LOCALAPPDATA candidate, proven by `tried` containing only it.
+        self.assertEqual(tried, [("UEFN_VERSE_PROJECT_DIR", override_root)])
+
+    def test_override_invalid_path_reports_error_naming_the_bad_value_not_crash(self):
+        bogus = os.path.join(tempfile.gettempdir(), "definitely-does-not-exist-verseproject-dir")
+        self.assertFalse(os.path.exists(bogus))
+        with mock.patch.dict(os.environ, {"UEFN_VERSE_PROJECT_DIR": bogus}, clear=False):
+            root, tried, override_error, found_but_empty = vsc.locate_verseproject_root()
+        self.assertIsNone(root)
+        self.assertIsNotNone(override_error)
+        self.assertIn(repr(bogus), override_error)
+
+    def test_fallback_reaches_userprofile_derived_root_when_localappdata_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with _neutralized_discovery(tmp) as env:
+                # LOCALAPPDATA's own candidate is neutral (no VerseProject
+                # subtree beneath it), so discovery must fall through to
+                # the USERPROFILE\AppData\Local one.
+                userprofile_root = os.path.join(
+                    env["USERPROFILE"], "AppData", "Local",
+                    "UnrealEditorFortnite", "Saved", "VerseProject",
+                )
+                _write_vproject_under_root(userprofile_root, "Proj", "Proj.vproject", "{}")
+                root, tried, override_error, found_but_empty = vsc.locate_verseproject_root()
+        self.assertIsNone(override_error)
+        self.assertEqual(root, userprofile_root)
+        self.assertFalse(found_but_empty)
+
+    def test_candidate_dedup_same_path_via_two_env_vars_appears_once(self):
+        """When only USERPROFILE is set, both the 'USERPROFILE\\AppData\\
+        Local' candidate and the '~\\AppData\\Local' candidate (`_home_dir`
+        reads USERPROFILE first) derive the IDENTICAL path -- they must
+        collapse to a single deduped entry, not be searched/reported
+        twice."""
+        with tempfile.TemporaryDirectory() as tmp:
+            userprofile = os.path.join(tmp, "userprofile")
+            os.makedirs(userprofile, exist_ok=True)
+            with mock.patch.dict(os.environ, {"USERPROFILE": userprofile}, clear=False):
+                for var in ("LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "UEFN_VERSE_PROJECT_DIR"):
+                    os.environ.pop(var, None)
+                with mock.patch("verse_lsp_check._registry_verseproject_candidates", return_value=[]):
+                    deduped = vsc._candidate_verseproject_roots()
+        expected = os.path.join(
+            userprofile, "AppData", "Local", "UnrealEditorFortnite", "Saved", "VerseProject"
+        )
+        matching = [c for c in deduped if os.path.normcase(os.path.normpath(c[1])) == os.path.normcase(os.path.normpath(expected))]
+        self.assertEqual(len(matching), 1)
+
+    def test_root_found_but_empty_flag_distinct_from_root_not_found_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with _neutralized_discovery(tmp) as env:
+                verseproject_root = os.path.join(
+                    env["LOCALAPPDATA"], "UnrealEditorFortnite", "Saved", "VerseProject"
+                )
+                os.makedirs(verseproject_root)  # exists, zero vproject files
+                root, tried, override_error, found_but_empty = vsc.locate_verseproject_root()
+        self.assertIsNone(root)
+        self.assertIsNone(override_error)
+        self.assertTrue(found_but_empty)
+
+    def test_root_not_found_flag_is_false_when_nothing_exists_at_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with _neutralized_discovery(tmp):
+                root, tried, override_error, found_but_empty = vsc.locate_verseproject_root()
+        self.assertIsNone(root)
+        self.assertIsNone(override_error)
+        self.assertFalse(found_but_empty)
+
+    def test_one_permission_denied_candidate_does_not_abort_the_rest_of_the_search(self):
+        """A candidate root that exists but can't be scanned (permission
+        error, simulated here as `glob.glob` raising OSError) must be
+        skipped, not allowed to abort discovery of the next, good
+        candidate."""
+        real_glob = vsc.glob.glob
+
+        def flaky_glob(pattern, *args, **kwargs):
+            if "blocked" in pattern:
+                raise OSError("simulated permission denied")
+            return real_glob(pattern, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked_root = os.path.join(tmp, "blocked")
+            os.makedirs(os.path.join(blocked_root, "UnrealEditorFortnite", "Saved", "VerseProject"))
+            good_userprofile = os.path.join(tmp, "good_userprofile")
+            good_root = os.path.join(
+                good_userprofile, "AppData", "Local",
+                "UnrealEditorFortnite", "Saved", "VerseProject",
+            )
+            _write_vproject_under_root(good_root, "Proj", "Proj.vproject", "{}")
+
+            env = {"LOCALAPPDATA": blocked_root, "USERPROFILE": good_userprofile}
+            with mock.patch.dict(os.environ, env, clear=False):
+                for var in ("APPDATA", "PROGRAMDATA", "UEFN_VERSE_PROJECT_DIR"):
+                    os.environ.pop(var, None)
+                with mock.patch("verse_lsp_check._registry_verseproject_candidates", return_value=[]):
+                    with mock.patch("verse_lsp_check.glob.glob", side_effect=flaky_glob):
+                        root, tried, override_error, found_but_empty = vsc.locate_verseproject_root()
+        self.assertIsNone(override_error)
+        self.assertEqual(root, good_root)
+
+    def test_failure_message_lists_tried_locations_and_mentions_override_var(self):
+        info = {
+            "reason": "root_not_found",
+            "tried": [
+                ("LOCALAPPDATA", r"C:\fake\localappdata\UnrealEditorFortnite\Saved\VerseProject"),
+                (
+                    "USERPROFILE\\AppData\\Local",
+                    r"C:\fake\userprofile\AppData\Local\UnrealEditorFortnite\Saved\VerseProject",
+                ),
+            ],
+        }
+        text = "\n".join(vsc._vproject_failure_lines(info, r"C:\fake\Target\Content"))
+        self.assertIn("UEFN_VERSE_PROJECT_DIR", text)
+        for _label, path in info["tried"]:
+            self.assertIn(path, text)
+
+
+@unittest.skipUnless(os.name == "nt", "the registry probe is Windows-specific")
+class RegistryProbeFailOpenTests(unittest.TestCase):
+    """`_registry_verseproject_candidates` is documented as unconditionally
+    fail-open: a missing `winreg` module or a missing/inaccessible key must
+    yield an empty list, never raise -- it's a nice-to-have fallback, not
+    something allowed to abort discovery."""
+
+    def test_winreg_import_failure_returns_empty_list_not_raise(self):
+        # Setting a module to None in sys.modules forces the next `import`
+        # of that name to raise ImportError -- simulates a restricted
+        # Python build where winreg genuinely isn't importable.
+        with mock.patch.dict(sys.modules, {"winreg": None}):
+            result = vsc._registry_verseproject_candidates()
+        self.assertEqual(result, [])
+
+    def test_registry_keys_missing_or_inaccessible_returns_empty_list_not_raise(self):
+        import winreg
+
+        with mock.patch.object(winreg, "OpenKey", side_effect=OSError("key not found")):
+            result = vsc._registry_verseproject_candidates()
+        self.assertEqual(result, [])
 
 
 class ExitCodeContractTests(unittest.TestCase):
@@ -526,6 +772,21 @@ class ExitCodeContractTests(unittest.TestCase):
             os.makedirs(os.path.join(project_root, "Content"))
             bogus = os.path.join(tmp, "does-not-exist.exe")
             with mock.patch.dict(os.environ, {"VERSE_LSP_PATH": bogus}, clear=False):
+                exit_code = vsc.main([project_root])
+        self.assertEqual(exit_code, vsc.EXIT_PRECONDITION_FAILED)
+        self.assertNotEqual(exit_code, vsc.EXIT_OK)
+
+    def test_precondition_verseproject_dir_override_nonexistent_yields_3_not_0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = os.path.join(tmp, "Project")
+            os.makedirs(os.path.join(project_root, "Content"))
+            lsp_dummy = _write(os.path.join(tmp, "fake-verse-lsp.exe"), "x")
+            bogus = os.path.join(tmp, "does-not-exist-verseproject-dir")
+            with mock.patch.dict(
+                os.environ,
+                {"VERSE_LSP_PATH": lsp_dummy, "UEFN_VERSE_PROJECT_DIR": bogus},
+                clear=False,
+            ):
                 exit_code = vsc.main([project_root])
         self.assertEqual(exit_code, vsc.EXIT_PRECONDITION_FAILED)
         self.assertNotEqual(exit_code, vsc.EXIT_OK)

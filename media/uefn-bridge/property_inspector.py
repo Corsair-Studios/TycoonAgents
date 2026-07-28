@@ -68,8 +68,18 @@ _ENTRY_FG = "#1A1A1A"
 # ---------------------------------------------------------------------------
 
 def _get_bridge_dir():
-    """Return the bridge IPC directory path (same one the bridge/launcher use)."""
-    return os.path.join(tempfile.gettempdir(), "uefn_bridge")
+    """Return the bridge IPC directory, creating it if necessary.
+
+    Honors the ``UEFN_BRIDGE_DIR`` environment variable, so this really is
+    the same directory the bridge/launcher use; otherwise falls back to
+    ``<temp>/uefn_bridge``. To use a custom dir, set UEFN_BRIDGE_DIR for
+    BOTH the UEFN process and the MCP wrapper.
+    """
+    bridge_dir = os.environ.get("UEFN_BRIDGE_DIR") or os.path.join(
+        tempfile.gettempdir(), "uefn_bridge"
+    )
+    os.makedirs(bridge_dir, exist_ok=True)
+    return bridge_dir
 
 
 def _report_path():

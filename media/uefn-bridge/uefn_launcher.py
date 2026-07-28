@@ -90,9 +90,19 @@ def _bridge_status_line():
 # ---------------------------------------------------------------------------
 
 def _get_bridge_dir():
-    """Return the bridge IPC directory path."""
+    """Return the bridge IPC directory, creating it if necessary.
+
+    Honors the ``UEFN_BRIDGE_DIR`` environment variable so this launcher and
+    the bridge/MCP wrapper agree on the same location; otherwise falls back
+    to ``<temp>/uefn_bridge``. To use a custom dir, set UEFN_BRIDGE_DIR for
+    BOTH the UEFN process and the MCP wrapper.
+    """
     import tempfile
-    return os.path.join(tempfile.gettempdir(), "uefn_bridge")
+    bridge_dir = os.environ.get("UEFN_BRIDGE_DIR") or os.path.join(
+        tempfile.gettempdir(), "uefn_bridge"
+    )
+    os.makedirs(bridge_dir, exist_ok=True)
+    return bridge_dir
 
 
 def _read_heartbeat():
@@ -103,7 +113,19 @@ def _read_heartbeat():
         dict with keys: connected (bool), status (str), timestamp (str),
         level_name (str), actor_count (int)
     """
-    heartbeat_path = os.path.join(_get_bridge_dir(), "heartbeat.json")
+    try:
+        heartbeat_path = os.path.join(_get_bridge_dir(), "heartbeat.json")
+    except Exception as e:
+        unreal.log_warning(
+            "uefn_launcher: failed to resolve/create bridge dir: " + str(e)
+        )
+        return {
+            "connected": False,
+            "status": "bridge dir unavailable",
+            "timestamp": "",
+            "level_name": "",
+            "actor_count": 0,
+        }
     try:
         with open(heartbeat_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -812,6 +834,8 @@ def show_launcher():
                 bar_text += " (stopped)"
             elif hb["status"] == "no heartbeat":
                 bar_text += " (no heartbeat file)"
+            elif hb["status"] == "bridge dir unavailable":
+                bar_text += " (bridge dir unavailable — see log)"
 
         statusbar_label.config(text=bar_text)
 
