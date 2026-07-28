@@ -40,6 +40,13 @@ import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { parseBridgeVersion, isBridgeVersionNewer, isNumericVersion } from "../../shared/bridgeVersion";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
+import {
+  probePathHealth,
+  detectVerseExtensionState,
+  writeUefnPathOverride,
+  buildPathDiagnosticText,
+  isPathOverrideKey,
+} from "./pathHealth";
 import { buildContextBudget } from "./contextBudget";
 import { computeEngineChips, mcpEntryForEngine, type EngineChip } from "./engineDetect";
 import { nativeWindowsUserDataPath } from "./revealUri";
@@ -496,6 +503,19 @@ export class TycoonPanel {
     // both auto-heals stay in a stable, predictable order.
     this._autoHealMcpServerPathIfStale(this._projectRoot());
 
+    // Auto-heal stale pack content (skills, commands, agent .md files) for
+    // every pack this project already has installed, once per panel open
+    // when the running extension version differs from the version stamped
+    // into `.claude/tycoon/pack-staging.json` the last time this ran (see
+    // _ensureInstalledPacksFresh doc comment) — fixes an extension UPDATE
+    // never reaching an already-installed project's `.claude/skills/**`
+    // and `.claude/agents/*.md` content, which previously only ever
+    // refreshed on an explicit "Install pack" click (and even then, only
+    // for genuinely new files — see _stageSkillTree). Runs after the other
+    // auto-heals above so it sees their results (e.g. a freshly-created
+    // worker roster) in the same load cycle.
+    this._ensureInstalledPacksFresh();
+
     this._update();
 
     // Subscribe to runtime state changes
@@ -760,6 +780,34 @@ export class TycoonPanel {
           if (t) {
             await vscode.env.clipboard.writeText(t);
             vscode.window.showInformationMessage("Prompt copied — paste it into Claude Code to run it.");
+          }
+        } else if (message.type === MSG.SET_PATH_OVERRIDE) {
+          const parsedSetPathOverride = MSG_SCHEMAS.SET_PATH_OVERRIDE.safeParse(message);
+          if (parsedSetPathOverride.success) {
+            await this._handleSetPathOverride(parsedSetPathOverride.data.key, parsedSetPathOverride.data.path);
+          } else {
+            console.error("TycoonAgents: setPathOverride payload rejected:", parsedSetPathOverride.error.message);
+          }
+        } else if (message.type === MSG.CLEAR_PATH_OVERRIDE) {
+          const parsedClearPathOverride = MSG_SCHEMAS.CLEAR_PATH_OVERRIDE.safeParse(message);
+          if (parsedClearPathOverride.success) {
+            await this._handleClearPathOverride(parsedClearPathOverride.data.key);
+          } else {
+            console.error("TycoonAgents: clearPathOverride payload rejected:", parsedClearPathOverride.error.message);
+          }
+        } else if (message.type === MSG.REFRESH_PATH_HEALTH) {
+          const parsedRefreshPathHealth = MSG_SCHEMAS.REFRESH_PATH_HEALTH.safeParse(message);
+          if (parsedRefreshPathHealth.success) {
+            this._handleCheckInstall();
+          } else {
+            console.error("TycoonAgents: refreshPathHealth payload rejected:", parsedRefreshPathHealth.error.message);
+          }
+        } else if (message.type === MSG.COPY_PATH_DIAGNOSTIC) {
+          const parsedCopyPathDiagnostic = MSG_SCHEMAS.COPY_PATH_DIAGNOSTIC.safeParse(message);
+          if (parsedCopyPathDiagnostic.success) {
+            await this._handleCopyPathDiagnostic();
+          } else {
+            console.error("TycoonAgents: copyPathDiagnostic payload rejected:", parsedCopyPathDiagnostic.error.message);
           }
         } else if (message.type === MSG.OPEN_HANDBOOK) {
           void this._handleOpenHandbook();
@@ -2987,32 +3035,49 @@ export class TycoonPanel {
   }
 
   /**
-   * Install every Claude Code slash command a pack ships (a pack's optional
-   * `commands` catalog array — generic across ALL packs, not UEFN-specific;
-   * driven purely by whatever ids a pack's `commands` array lists). Mirrors
-   * the skills-install step immediately above it in `_handleInstallPack`:
-   * one file per id, copied from `media/commands/<id>.md` into
-   * `<root>/.claude/commands/<id>.md`, same idempotence (skip with status
-   * "exists" if the destination file is already there — never overwritten).
-   * Each id is handled in its own try/catch so one failure (e.g. a missing
-   * shipped source file) can't abort the rest of the commands, or the rest
-   * of the pack install that called this.
+   * Install (or refresh) every Claude Code slash command a pack ships (a
+   * pack's optional `commands` catalog array — generic across ALL packs,
+   * not UEFN-specific; driven purely by whatever ids a pack's `commands`
+   * array lists). Mirrors the skills-install step immediately above it in
+   * `_handleInstallPack`: one file per id, copied from
+   * `media/commands/<id>.md` into `<root>/.claude/commands/<id>.md`. A file
+   * is written only when absent or when its content differs from the
+   * shipped source (content-diff, same convention `_stageSkillTree` and
+   * `_stageBridgeTo` use) — previously this skipped re-copying forever once
+   * the destination file existed at all, the same write-once bug
+   * `_stageSkillTree`'s doc comment describes for skills, so a shipped
+   * command's content could never reach an already-installed project on
+   * either an explicit reinstall or `_ensureInstalledPacksFresh`'s
+   * panel-open auto-heal (which calls this same method). Each id is
+   * handled in its own try/catch so one failure (e.g. a missing shipped
+   * source file) can't abort the rest of the commands, or the rest of the
+   * pack install that called this.
    */
   private _installPackCommands(
     root: string,
     packCommands: string[]
-  ): Array<{ id: string; status: "installed" | "exists" | "error"; error?: string }> {
-    const results: Array<{ id: string; status: "installed" | "exists" | "error"; error?: string }> = [];
+  ): Array<{ id: string; status: "installed" | "updated" | "unchanged" | "error"; error?: string }> {
+    const results: Array<{ id: string; status: "installed" | "updated" | "unchanged" | "error"; error?: string }> = [];
     for (const commandId of packCommands) {
       try {
         const target = path.join(root, ".claude", "commands", `${commandId}.md`);
-        if (fs.existsSync(target)) {
-          results.push({ id: commandId, status: "exists" });
-        } else {
-          const src = path.join(this._extensionUri.fsPath, "media", "commands", `${commandId}.md`);
+        const src = path.join(this._extensionUri.fsPath, "media", "commands", `${commandId}.md`);
+        const srcContent = fs.readFileSync(src, "utf8");
+        let destContent: string | undefined;
+        try {
+          destContent = fs.readFileSync(target, "utf8");
+        } catch {
+          destContent = undefined;
+        }
+        if (destContent === undefined) {
           fs.mkdirSync(path.join(root, ".claude", "commands"), { recursive: true });
-          fs.cpSync(src, target);
+          fs.writeFileSync(target, srcContent);
           results.push({ id: commandId, status: "installed" });
+        } else if (destContent !== srcContent) {
+          fs.writeFileSync(target, srcContent);
+          results.push({ id: commandId, status: "updated" });
+        } else {
+          results.push({ id: commandId, status: "unchanged" });
         }
       } catch (e) {
         results.push({ id: commandId, status: "error", error: String(e) });
@@ -3131,16 +3196,26 @@ export class TycoonPanel {
       const results: Record<string, any> = {};
       const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
       if (packSkills.length > 0) {
-        const skillResults: Array<{ id: string; status: "installed" | "exists" }> = [];
+        // Content-diff copy (see _stageSkillTree) rather than the old
+        // "the target directory exists at all -> skip forever" check — that
+        // check made a skill directory a WRITE-ONCE artifact: once
+        // `.claude/skills/<skillId>` existed, no later re-install (explicit
+        // click here, or the panel-open auto-heal in
+        // _ensureInstalledPacksFresh, which calls the same helper) ever
+        // re-copied newer files the shipped skill had grown since. Status is
+        // now per-file-outcome: "installed" if any new file was written,
+        // "updated" if any existing file's content changed, else
+        // "unchanged".
+        const skillResults: Array<{ id: string; status: "installed" | "updated" | "unchanged"; error?: string }> = [];
         for (const skillId of packSkills) {
-          const target = path.join(root, ".claude", "skills", skillId);
-          if (fs.existsSync(target)) {
-            skillResults.push({ id: skillId, status: "exists" });
-          } else {
-            const src = path.join(this._extensionUri.fsPath, "media", "skills", skillId);
-            fs.mkdirSync(path.join(root, ".claude", "skills"), { recursive: true });
-            fs.cpSync(src, target, { recursive: true });
-            skillResults.push({ id: skillId, status: "installed" });
+          try {
+            const { staged, updated } = this._stageSkillTree(skillId, root);
+            skillResults.push({
+              id: skillId,
+              status: staged > 0 ? "installed" : updated > 0 ? "updated" : "unchanged",
+            });
+          } catch (e) {
+            skillResults.push({ id: skillId, status: "unchanged", error: String(e) });
           }
         }
         results.skills = skillResults;
@@ -4224,6 +4299,83 @@ export class TycoonPanel {
     }
   }
 
+  /**
+   * Copy `media/skills/<skillId>` into `<root>/.claude/skills/<skillId>`,
+   * recursively, generalizing `_installProjectPlanSkill`'s copy logic (see
+   * its doc comment) to any skill id shipped by any pack. A file is written
+   * only when absent or when its content differs byte-for-byte from the
+   * shipped source (binary compare, matching `_stageBridgeTo`'s convention)
+   * — never a blind overwrite. `__pycache__` and `.pyc`/`.pyo` files are
+   * skipped, same exclusions `_stageBridgeTo` applies to the Python bridge.
+   *
+   * Two callers share this one implementation: `_handleInstallPack`'s
+   * explicit skill-install step, and `_ensureInstalledPacksFresh`'s
+   * panel-open auto-heal. Previously `_handleInstallPack` used a coarse
+   * `fs.existsSync(target)` check on the WHOLE skill directory — once
+   * `.claude/skills/<skillId>` existed at all, it was treated as fully
+   * installed forever, so a later release that added files to a skill (e.g.
+   * `verse_lsp_check.py`) or updated an existing one (e.g.
+   * `verse-common-errors.md`) never reached an already-installed project,
+   * on either an explicit reinstall or an extension update. This method is
+   * the fix for both call sites at once.
+   *
+   * Returns per-outcome counts so callers can report install vs. update vs.
+   * no-op. Never creates `dest`'s parent unless there is at least one file
+   * to write (mirrors `_installProjectPlanSkill`).
+   */
+  private _stageSkillTree(skillId: string, root: string): { staged: number; updated: number; unchanged: number } {
+    const src = path.join(this._extensionUri.fsPath, "media", "skills", skillId);
+    const dest = path.join(root, ".claude", "skills", skillId);
+    let staged = 0;
+    let updated = 0;
+    let unchanged = 0;
+
+    const copyRecursive = (srcDir: string, destDir: string): void => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(srcDir, { withFileTypes: true });
+      } catch (e) {
+        console.error("TycoonAgents: _stageSkillTree failed to read", srcDir, e);
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name === "__pycache__") continue;
+        if (entry.name.endsWith(".pyc") || entry.name.endsWith(".pyo")) continue;
+        const srcPath = path.join(srcDir, entry.name);
+        const destPath = path.join(destDir, entry.name);
+        if (entry.isDirectory()) {
+          copyRecursive(srcPath, destPath);
+          continue;
+        }
+        try {
+          const srcBuf = fs.readFileSync(srcPath);
+          let same = false;
+          let destExists = true;
+          try {
+            same = srcBuf.equals(fs.readFileSync(destPath));
+          } catch {
+            destExists = false;
+          }
+          if (!destExists) {
+            fs.mkdirSync(destDir, { recursive: true });
+            fs.copyFileSync(srcPath, destPath);
+            staged++;
+          } else if (!same) {
+            fs.copyFileSync(srcPath, destPath);
+            updated++;
+          } else {
+            unchanged++;
+          }
+        } catch (e) {
+          console.error("TycoonAgents: _stageSkillTree failed to copy", srcPath, e);
+        }
+      }
+    };
+
+    copyRecursive(src, dest);
+    return { staged, updated, unchanged };
+  }
+
   private async _handleInstallProjectPlanSkill(): Promise<void> {
     const root = this._projectRoot();
     if (!root) {
@@ -4510,6 +4662,18 @@ export class TycoonPanel {
         // No CLAUDE.md yet -> nothing to detect.
       }
     }
+    // Path Health (see src/host/vscode/pathHealth.ts): probes every required
+    // UEFN/Verse path through the override->env->auto-detect->NOT FOUND
+    // ladder, plus the three-state Verse extension check. Piggybacked onto
+    // this same INSTALL_STATE push (like uefnBridgeSetUp above) rather than
+    // a separate round trip — SET_PATH_OVERRIDE/CLEAR_PATH_OVERRIDE/
+    // REFRESH_PATH_HEALTH all re-invoke this method to push fresh results.
+    const pathHealthReport = root !== "" ? probePathHealth(path.join(root, ".claude")) : null;
+    const verseExt = vscode.extensions.getExtension("epicgames.verse");
+    const verseExtensionState = detectVerseExtensionState({
+      liveExtensionFound: verseExt !== undefined,
+      liveExtensionVersion: (verseExt?.packageJSON?.version as string | undefined) ?? null,
+    });
     void this._panel.webview.postMessage({
       type: MSG.INSTALL_STATE,
       installed,
@@ -4526,6 +4690,10 @@ export class TycoonPanel {
       uefnBridgeSetUp,
       engineChips,
       foreignManagedBlocks,
+      pathHealth: pathHealthReport?.entries ?? [],
+      pathOverridesFilePath: pathHealthReport?.overridesFilePath ?? null,
+      pathOverridesFileExists: pathHealthReport?.overridesFileExists ?? false,
+      verseExtensionState,
     });
   }
 
@@ -4989,6 +5157,205 @@ export class TycoonPanel {
       this._installProjectPlanSkill(root);
     } catch (e) {
       console.error("TycoonAgents: _ensureProjectPlanSkillFresh failed:", e);
+    }
+  }
+
+  /** The running extension's own `package.json` version, or `null` if it can't be read. Shared by `_handleGenerateDiagnostic` and `_ensureInstalledPacksFresh`. */
+  private _currentExtensionVersion(): string | null {
+    try {
+      const pkgRaw = fs.readFileSync(path.join(this._extensionUri.fsPath, "package.json"), "utf8");
+      return JSON.parse(pkgRaw).version || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Auto-heal: re-stage every capability pack this project ALREADY has
+   * installed, once per panel open when the extension version has changed
+   * since the last time this ran.
+   *
+   * THE BUG THIS FIXES: nothing in this codebase previously re-ran ANY part
+   * of pack install on an extension update. `_handleInstallPack` (skills,
+   * commands, `.mcp.json` entry, agent `.md` files) only ever runs on an
+   * explicit "Install pack" click — contrast with the Python bridge, the
+   * hook script, and the project-plan skill, which all already have their
+   * own panel-open auto-heal (`_autoUpdateUefnBridgeIfStale`,
+   * `_ensureHookScriptFresh`, `_ensureProjectPlanSkillFresh`). On top of
+   * that gap, `_handleInstallPack`'s skill step used to skip re-copying
+   * entirely once `.claude/skills/<skillId>` existed at all (see
+   * `_stageSkillTree`'s doc comment) — so even re-clicking "Install pack"
+   * on an already-installed pack didn't pick up new/changed skill files.
+   * Confirmed on a real project: `.claude/skills/uefn/` was missing
+   * `verse_lsp_check.py`, `verse_project_check.py`, and `verse_lint.py`
+   * (all added in later releases), `verse-common-errors.md` was frozen at
+   * v4.0.0 while the shipped copy had moved to v4.7.0, and
+   * `.claude/agents/verse-expert.md` / `uefn-auditor.md` predated any
+   * mention of `verse_lsp_check` — despite the extension itself being
+   * current.
+   *
+   * STAMP: `.claude/tycoon/pack-staging.json` (`{ version, packs: {
+   * [packId]: version } }`) records the extension version that last
+   * re-staged this project. Compared against `_currentExtensionVersion()`
+   * on every panel open; an exact match short-circuits immediately (no
+   * filesystem tree walk) so this is a cheap no-op on an already-current
+   * project. A missing/unparsable stamp is treated as "stale" (never as
+   * "nothing to do") so a project that predates this method's existence
+   * still gets re-staged once.
+   *
+   * "ALREADY HAS" DETECTION — never installs a pack the user did not
+   * choose: a pack counts as installed only if its first agent's
+   * `.claude/agents/<id>.md` file exists AND carries the `tycoon_pack:
+   * <packId>` provenance marker (`agentMarkdownHasTycoonMarker`) — the same
+   * signal `_isUefnPackInstalled` already uses for the UEFN pack,
+   * generalized here to every pack in `media/packs/catalog.json`. A pack
+   * with no marker file present is left completely untouched.
+   *
+   * CONTENT-DIFF, NOT BLIND OVERWRITE: skills go through `_stageSkillTree`
+   * (write only if absent or content differs from the shipped source, byte
+   * for byte). Agent `.md` files are refreshed only when the file already
+   * carries the `tycoon_pack` marker (i.e. it's already recognized as ours)
+   * AND the freshly-generated content differs from what's on disk — this
+   * is the exact rule `_handleInstallPack` already applies to a
+   * marker-bearing agent file, reused here rather than reinvented. Neither
+   * path distinguishes a deliberate user edit from ordinary staleness — no
+   * file in this tree currently tracks that distinction (see
+   * `_ensureHookScriptFresh`, which has the identical "differs from
+   * bundled = refresh forward" posture); inventing a different contract
+   * for just this one method would be inconsistent, not safer.
+   *
+   * GATE: only runs when TycoonAgents hooks are installed for this project
+   * (`_hooksInstalledForRoot`, the same consent proxy every other auto-heal
+   * in this file uses). Idempotent and safe to run on every panel load.
+   * Wrapped in try/catch so a failure here can never break panel
+   * construction/rendering — but unlike most other auto-heals, a failure
+   * that leaves pack content stale is surfaced with a warning toast rather
+   * than swallowed: this repo has a documented history of tools silently
+   * returning success shapes when discovery/staging actually failed, and a
+   * user must never be told (by omission) that a tool exists when their
+   * project doesn't have it.
+   */
+  private _ensureInstalledPacksFresh(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+      if (!this._hooksInstalledForRoot(root)) return;
+
+      const currentVersion = this._currentExtensionVersion();
+      if (currentVersion === null) return; // can't stamp reliably without a known version
+
+      const stampPath = path.join(root, ".claude", "tycoon", "pack-staging.json");
+      let stamp: { version?: string; packs?: Record<string, string> } = {};
+      try {
+        stamp = JSON.parse(fs.readFileSync(stampPath, "utf8"));
+      } catch {
+        stamp = {};
+      }
+      if (stamp.version === currentVersion) return; // already re-staged for this version
+
+      const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
+      let packs: any[];
+      try {
+        packs = JSON.parse(fs.readFileSync(packsPath, "utf8"));
+      } catch (e) {
+        console.error("TycoonAgents: _ensureInstalledPacksFresh could not read pack catalog:", e);
+        void vscode.window.showWarningMessage(
+          "TycoonAgents: could not read the shipped pack catalog, so installed pack content (skills, agents) could not be checked for updates. Restart the editor; if this persists, reinstall the extension."
+        );
+        return;
+      }
+
+      const restaged: string[] = [];
+      const failed: string[] = [];
+      const packStamp: Record<string, string> = { ...(stamp.packs ?? {}) };
+
+      for (const pack of packs) {
+        try {
+          const markerAgent = Array.isArray(pack.agents) && pack.agents.length > 0 ? pack.agents[0] : pack.agent;
+          if (!markerAgent) continue;
+          let markerContent: string;
+          try {
+            markerContent = fs.readFileSync(path.join(root, ".claude", "agents", `${markerAgent.id}.md`), "utf8");
+          } catch {
+            continue; // this pack is not installed in this project — never install uninvited
+          }
+          if (!agentMarkdownHasTycoonMarker(markerContent)) continue; // same id, but not ours — never touch
+
+          let ok = true;
+
+          const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
+          for (const skillId of packSkills) {
+            try {
+              this._stageSkillTree(skillId, root);
+            } catch (e) {
+              ok = false;
+              console.error(`TycoonAgents: failed to re-stage skill "${skillId}" for pack "${pack.id}":`, e);
+            }
+          }
+
+          const packCommands: string[] = Array.isArray(pack.commands) ? pack.commands : [];
+          if (packCommands.length > 0) {
+            try {
+              this._installPackCommands(root, packCommands);
+            } catch (e) {
+              ok = false;
+              console.error(`TycoonAgents: failed to re-stage commands for pack "${pack.id}":`, e);
+            }
+          }
+
+          const agents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
+          for (const a of agents) {
+            try {
+              const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
+              let existingContent: string;
+              try {
+                existingContent = fs.readFileSync(agentPath, "utf8");
+              } catch {
+                continue; // never install an agent the user doesn't already have
+              }
+              if (!agentMarkdownHasTycoonMarker(existingContent)) continue; // not ours — never touch
+              const generated = buildAgentMarkdown(a, pack.id);
+              if (existingContent !== generated) {
+                fs.writeFileSync(agentPath, generated);
+              }
+            } catch (e) {
+              ok = false;
+              console.error(`TycoonAgents: failed to re-stage agent "${a.id}" for pack "${pack.id}":`, e);
+            }
+          }
+
+          if (ok) {
+            restaged.push(pack.id);
+            packStamp[pack.id] = currentVersion;
+          } else {
+            failed.push(pack.id);
+          }
+        } catch (e) {
+          failed.push(pack.id);
+          console.error(`TycoonAgents: failed to re-stage pack "${pack.id}":`, e);
+        }
+      }
+
+      try {
+        fs.mkdirSync(path.dirname(stampPath), { recursive: true });
+        fs.writeFileSync(stampPath, JSON.stringify({ version: currentVersion, packs: packStamp }, null, 2));
+      } catch (e) {
+        console.error("TycoonAgents: failed to write pack-staging.json stamp:", e);
+      }
+
+      if (restaged.length > 0) {
+        console.log(`TycoonAgents: re-staged installed pack content (${restaged.join(", ")}) to v${currentVersion}.`);
+      }
+      if (failed.length > 0) {
+        void vscode.window.showWarningMessage(
+          `TycoonAgents: could not fully re-stage pack content for: ${failed.join(", ")}. Some skill or agent files may be OUT OF DATE for this project — check the extension's console log, or use "Remove pack" then reinstall from the Packs panel.`
+        );
+      }
+    } catch (e) {
+      console.error("TycoonAgents: _ensureInstalledPacksFresh failed:", e);
+      void vscode.window.showWarningMessage(
+        "TycoonAgents: could not check installed pack content for updates — skills or agent files for this project may be OUT OF DATE. See the extension's console log."
+      );
     }
   }
 
@@ -6309,13 +6676,7 @@ export class TycoonPanel {
       const agentsDir = path.join(root, ".claude", "agents");
 
       // ---- environment -----------------------------------------------------
-      let extensionVersion: string | null = null;
-      try {
-        const pkgRaw = fs.readFileSync(path.join(this._extensionUri.fsPath, "package.json"), "utf8");
-        extensionVersion = JSON.parse(pkgRaw).version || null;
-      } catch {
-        extensionVersion = null;
-      }
+      const extensionVersion = this._currentExtensionVersion();
       const hostAppHost = (vscode.env as unknown as { appHost?: string }).appHost;
 
       // ---- hook health --------------------------------------------------
@@ -6449,6 +6810,117 @@ export class TycoonPanel {
       );
     } catch (err) {
       void vscode.window.showErrorMessage(`TycoonAgents: Could not generate diagnostic report: ${errorMessage(err)}`);
+    }
+  }
+
+  /**
+   * Set a single Path Health override in `.claude/tycoon/uefn-paths.json`
+   * (see pathHealth.ts). Validates the given path actually exists on disk
+   * BEFORE accepting it — an override pointing at nothing is worse than no
+   * override, since it would silently outrank the auto-discovery ladder with
+   * a value that still doesn't work. Rejects with a clear reason via
+   * PATH_OVERRIDE_RESULT rather than writing a bad value. On success,
+   * re-runs `_handleCheckInstall` so the webview gets a fresh probe
+   * reflecting the new override immediately.
+   */
+  private async _handleSetPathOverride(key: string, rawPath: string): Promise<void> {
+    const root = this._projectRoot();
+    if (root === "") {
+      void vscode.window.showWarningMessage("TycoonAgents: No project root — open a folder first.");
+      return;
+    }
+    if (!isPathOverrideKey(key)) {
+      void this._panel.webview.postMessage({
+        type: MSG.PATH_OVERRIDE_RESULT,
+        key,
+        ok: false,
+        error: `Unknown override key: "${key}".`,
+      });
+      return;
+    }
+    const trimmed = rawPath.trim();
+    let exists = false;
+    try {
+      exists = trimmed !== "" && fs.existsSync(trimmed);
+    } catch {
+      exists = false;
+    }
+    if (!exists) {
+      void this._panel.webview.postMessage({
+        type: MSG.PATH_OVERRIDE_RESULT,
+        key,
+        ok: false,
+        error: `Nothing exists at "${trimmed}" — set an override to a path that actually exists on this machine.`,
+      });
+      return;
+    }
+    const result = writeUefnPathOverride(path.join(root, ".claude"), key, trimmed);
+    void this._panel.webview.postMessage({ type: MSG.PATH_OVERRIDE_RESULT, key, ok: result.ok, error: result.error });
+    if (result.ok) {
+      this._handleCheckInstall();
+    } else {
+      void vscode.window.showErrorMessage(`TycoonAgents: Could not save path override: ${result.error}`);
+    }
+  }
+
+  /** Clear a single Path Health override (see `_handleSetPathOverride`). No existence check needed — clearing always succeeds unless the write itself fails. */
+  private async _handleClearPathOverride(key: string): Promise<void> {
+    const root = this._projectRoot();
+    if (root === "") {
+      void vscode.window.showWarningMessage("TycoonAgents: No project root — open a folder first.");
+      return;
+    }
+    if (!isPathOverrideKey(key)) {
+      void this._panel.webview.postMessage({
+        type: MSG.PATH_OVERRIDE_RESULT,
+        key,
+        ok: false,
+        error: `Unknown override key: "${key}".`,
+      });
+      return;
+    }
+    const result = writeUefnPathOverride(path.join(root, ".claude"), key, null);
+    void this._panel.webview.postMessage({ type: MSG.PATH_OVERRIDE_RESULT, key, ok: result.ok, error: result.error });
+    if (result.ok) {
+      this._handleCheckInstall();
+    } else {
+      void vscode.window.showErrorMessage(`TycoonAgents: Could not clear path override: ${result.error}`);
+    }
+  }
+
+  /**
+   * Build the paste-to-Claude Path Health diagnostic text (pathHealth.ts's
+   * `buildPathDiagnosticText`) from a fresh probe + Verse extension check,
+   * and copy it to the clipboard — the same interaction shape as COPY_NUDGE
+   * (panel.ts's `copyNudge` handler above), but built host-side since it
+   * needs real filesystem probing that the webview can't do itself.
+   */
+  private async _handleCopyPathDiagnostic(): Promise<void> {
+    const root = this._projectRoot();
+    if (root === "") {
+      void vscode.window.showWarningMessage("TycoonAgents: No project root — open a folder first.");
+      return;
+    }
+    try {
+      const report = probePathHealth(path.join(root, ".claude"));
+      const verseExt = vscode.extensions.getExtension("epicgames.verse");
+      const verseState = detectVerseExtensionState({
+        liveExtensionFound: verseExt !== undefined,
+        liveExtensionVersion: (verseExt?.packageJSON?.version as string | undefined) ?? null,
+      });
+      // Deliberately NOT routed through diagnosticReport.ts's sanitize().
+      // That report is built for PUBLIC sharing and strips absolute paths on
+      // purpose; this text is the opposite — the user pastes it into their
+      // OWN Claude Code session so Claude can fix THEIR paths, so it must
+      // keep the real paths to be useful. Do not "fix" this by adding
+      // sanitize() here; see buildPathDiagnosticText's own doc comment.
+      const text = buildPathDiagnosticText(report, verseState, { platform: process.platform });
+      await vscode.env.clipboard.writeText(text);
+      vscode.window.showInformationMessage(
+        "Path diagnostic copied to clipboard — paste it into Claude Code to fix any path issues.",
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(`TycoonAgents: Could not build path diagnostic: ${errorMessage(err)}`);
     }
   }
 

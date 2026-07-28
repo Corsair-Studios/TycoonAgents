@@ -8,7 +8,23 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-export function detectUefnProject(root: string): { detected: boolean; signals: string[]; uefnInstalled: boolean } {
+export interface UefnProjectDetection {
+  detected: boolean;
+  signals: string[];
+  uefnInstalled: boolean;
+  /**
+   * Set ONLY when detection could not fully run — an exception escaped every
+   * inner guard below (each individual check already has its own try/catch;
+   * this is the outer, last-resort guard). Distinguishes "we looked and
+   * genuinely found nothing" (this field absent, detected/uefnInstalled just
+   * false) from "we couldn't look" (this field present). Never set on the
+   * happy path, and additive-only on the return shape so existing callers
+   * destructuring {detected, signals, uefnInstalled} are unaffected.
+   */
+  lookupError?: string;
+}
+
+export function detectUefnProject(root: string): UefnProjectDetection {
   try {
     const signals: string[] = [];
 
@@ -83,7 +99,14 @@ export function detectUefnProject(root: string): { detected: boolean; signals: s
     }
 
     return { detected: signals.length > 0, signals, uefnInstalled };
-  } catch {
-    return { detected: false, signals: [], uefnInstalled: false };
+  } catch (err) {
+    // Genuinely unexpected — every individual check above already guards its
+    // own failure. This is NOT "detected: false" in the ordinary sense (we
+    // looked and found nothing); it's "detection itself blew up", which must
+    // stay distinguishable from a real negative (see lookupError doc above)
+    // rather than silently reporting a clean-looking false.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`TycoonAgents: detectUefnProject could not complete for root "${root}": ${message}`);
+    return { detected: false, signals: [], uefnInstalled: false, lookupError: message };
   }
 }

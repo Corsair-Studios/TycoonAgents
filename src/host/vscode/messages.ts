@@ -94,6 +94,24 @@ export const MSG = {
   // REPAIR_HOOK/REMOVE_MANAGED_BLOCK. No network, no runtime AI.
   GENERATE_DIAGNOSTIC: "generateDiagnostic",
 
+  // ---- Path Health diagnostics (src/host/vscode/pathHealth.ts) -----------
+  // SET_PATH_OVERRIDE/CLEAR_PATH_OVERRIDE write/clear one key in
+  // `.claude/tycoon/uefn-paths.json` (validated to exist on disk before
+  // accepting a SET). REFRESH_PATH_HEALTH re-runs the probe and re-pushes
+  // INSTALL_STATE (which now carries `pathHealth`/`verseExtensionState`
+  // alongside the existing uefn* fields — see panel.ts _handleCheckInstall).
+  // COPY_PATH_DIAGNOSTIC mirrors COPY_NUDGE's clipboard-write pattern but the
+  // text is built host-side (fresh probe + Verse extension state) rather
+  // than webview-side, since building it needs real filesystem access.
+  SET_PATH_OVERRIDE: "setPathOverride",
+  CLEAR_PATH_OVERRIDE: "clearPathOverride",
+  // Reply to SET_PATH_OVERRIDE/CLEAR_PATH_OVERRIDE: `{ key, ok, error? }`.
+  // `ok: false` carries a human-readable `error` (e.g. "nothing exists at
+  // that path") the webview can show inline rather than a silent no-op.
+  PATH_OVERRIDE_RESULT: "pathOverrideResult",
+  REFRESH_PATH_HEALTH: "refreshPathHealth",
+  COPY_PATH_DIAGNOSTIC: "copyPathDiagnostic",
+
   // ---- packs catalog -----------------------------------------------------
   GET_PACKS: "getPacks",
   PACKS: "packs",
@@ -482,6 +500,15 @@ export const MSG_SCHEMAS = {
   // No required fields — the host gathers every input itself; this message
   // is purely the user's confirm-click trigger from Settings.
   GENERATE_DIAGNOSTIC: z.object({}).passthrough(),
+
+  // ---- Path Health diagnostics --------------------------------------------
+  // `key` is validated against PATH_OVERRIDE_KEYS host-side (isPathOverrideKey)
+  // rather than a zod enum here, so a new override key added to pathHealth.ts
+  // doesn't require touching this schema too.
+  SET_PATH_OVERRIDE: z.object({ key: z.string().min(1), path: z.string().min(1) }).passthrough(),
+  CLEAR_PATH_OVERRIDE: z.object({ key: z.string().min(1) }).passthrough(),
+  REFRESH_PATH_HEALTH: z.object({}).passthrough(),
+  COPY_PATH_DIAGNOSTIC: z.object({}).passthrough(),
 
   // `enabled` mirrors the projectPlanEnabled toggle so the webview always
   // knows whether to show the Project Plan section, even when `plan` is

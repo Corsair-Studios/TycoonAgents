@@ -66,7 +66,7 @@ function tmpRoot(): string {
 function callInstallPackCommands(
   root: string,
   commandIds: string[]
-): Array<{ id: string; status: "installed" | "exists" | "error"; error?: string }> {
+): Array<{ id: string; status: "installed" | "updated" | "unchanged" | "error"; error?: string }> {
   const fakeThis = {
     _extensionUri: { fsPath: REPO_ROOT },
   };
@@ -103,7 +103,7 @@ test("_installPackCommands creates .claude/commands/uefn-moderation-scan.md with
   }
 });
 
-test("_installPackCommands is idempotent — a second run does not error or duplicate, and leaves local edits untouched (skip-if-exists, mirroring the skills step)", () => {
+test("_installPackCommands is idempotent — a second run with unchanged content is a no-op, and content that has drifted from the shipped source is refreshed forward (content-diff, mirroring _stageSkillTree/_stageBridgeTo)", () => {
   const root = tmpRoot();
   try {
     assert.deepEqual(callInstallPackCommands(root, ["uefn-moderation-scan"]), [
@@ -113,23 +113,32 @@ test("_installPackCommands is idempotent — a second run does not error or dupl
     const dest = path.join(commandsDir(root), "uefn-moderation-scan.md");
     const shipped = fs.readFileSync(dest, "utf8");
 
-    // Simulate a user editing their installed command file, then re-running
-    // install. The skills step never overwrites an existing target, so
-    // _installPackCommands must not either.
+    // A second run with byte-identical content is a true no-op.
+    assert.deepEqual(callInstallPackCommands(root, ["uefn-moderation-scan"]), [
+      { id: "uefn-moderation-scan", status: "unchanged" },
+    ]);
+
+    // Simulate the destination drifting from the shipped source — either a
+    // stale copy from an older release, or a local edit. Per this
+    // codebase's established convention for pack-owned content
+    // (_ensureHookScriptFresh, _installProjectPlanSkill, _stageBridgeTo:
+    // "differs from bundled = staleness to refresh forward"), a content
+    // mismatch is corrected, not silently preserved — the old skip-if-exists
+    // behavior was the bug (an extension update could never re-stage a
+    // pack's commands into an already-installed project).
     fs.writeFileSync(dest, "LOCALLY MODIFIED CONTENT\n");
 
     const second = callInstallPackCommands(root, ["uefn-moderation-scan"]);
-    assert.deepEqual(second, [{ id: "uefn-moderation-scan", status: "exists" }]);
+    assert.deepEqual(second, [{ id: "uefn-moderation-scan", status: "updated" }]);
     assert.equal(
       fs.readFileSync(dest, "utf8"),
-      "LOCALLY MODIFIED CONTENT\n",
-      "an existing command file must be left untouched (skip-if-exists, same idempotence as the skills step)"
+      shipped,
+      "a drifted command file must be refreshed forward to match the shipped source"
     );
 
-    // A third call (back to a byte-identical file) is still a no-op status.
-    fs.writeFileSync(dest, shipped);
+    // A third call (now byte-identical again) is back to a no-op status.
     assert.deepEqual(callInstallPackCommands(root, ["uefn-moderation-scan"]), [
-      { id: "uefn-moderation-scan", status: "exists" },
+      { id: "uefn-moderation-scan", status: "unchanged" },
     ]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
