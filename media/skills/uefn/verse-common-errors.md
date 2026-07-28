@@ -1,5 +1,35 @@
-<!-- version: 4.6.0 -->
-<!-- changelog: 4.6.0 adds a sibling section to "Deterministic lint:
+<!-- version: 4.7.0 -->
+<!-- changelog: 4.7.0 documents `verse_lsp_check.py`, a categorical upgrade
+     over the two existing deterministic tools: it drives Epic's OWN bundled
+     Verse language server (verse-lsp.exe, shipped with the epicgames.verse
+     VS Code extension) standalone over LSP/stdio and returns the SAME
+     diagnostics the editor draws as red squiggles — with no UEFN running and
+     no compile, therefore no editor-crash risk. Verified on a live 108-file
+     project: 500 diagnostics across 5 files, including a real 3506 Unknown
+     identifier with a "Did you mean <FullyQualified.Path>" suggestion. Adds
+     a new "Primary analyzer: verse_lsp_check.py" section documenting the
+     tool contract, exit codes (0/1/2/3, matching the existing convention),
+     the tiered PRIMARY/FALLBACK gate (fall back to verse_lint.py and
+     verse_project_check.py only when verse_lsp_check.py exits 3, and say so
+     explicitly), the baseline/delta discipline for pre-existing diagnostics
+     on a real project, and the two hard preconditions (the epicgames.verse
+     extension must be installed; a .vproject must exist, which UEFN
+     generates on first open — a project never opened in UEFN has none).
+     Records the load-bearing technical fact that cost six configurations to
+     find: `rootUri` passed to the language server must be the vproject
+     FOLDER — the UEFN project root, the Content directory, and the digest
+     root all produce zero diagnostics. CORRECTS rules 20 and 21: both
+     previously stated that the Epic-symbol half of their failure class was
+     undetectable by any static tool in this pack, because verse_lint.py and
+     verse_project_check.py genuinely can't read the digest. That limitation
+     is now OBSOLETE — verse_lsp_check.py drives the actual compiler
+     front end, so it catches BOTH halves (project symbols AND Epic/engine
+     symbols) for the failure modes described in rules 20 and 21. The prior
+     "still not lint-detectable" language is corrected in place, with this
+     entry as the record of what changed and when; the 4.6.0 verse_lint.py/
+     verse_project_check.py material is left intact as still-accurate
+     FALLBACK-tier documentation, not deleted.
+     4.6.0 adds a sibling section to "Deterministic lint:
      verse_lint.py" documenting the new project-symbol resolver,
      `verse_project_check.py` (media/skills/uefn/verse_project_check.py):
      what its three checks (A/B/C) cover, usage, exit codes (same contract
@@ -204,7 +234,8 @@ made them before considering a change done.**
 - [Finding a symbol in the digest is not enough — you still need its owning `using`](#21-finding-a-symbol-in-the-digest-is-not-enough) — walk backwards from the symbol to its enclosing `module`
 - [Disambiguating a name two imported modules both define](#23-disambiguating-a-name-that-two-imported-modules-both-define) — qualify the call with `(/Module/Path:)Symbol(...)`
 - [Which `SpatialMath` module you import decides your coordinate system](#24-which-spatialmath-module-you-import-decides-your-coordinate-system) — `/Verse.org` = LUF, `/UnrealEngine.com`+`/Fortnite.com` = XYZ; convert with `FromVector3`/`FromRotation`/`FromTransform`, never by hand
-- [Deterministic project-symbol resolver: verse_project_check.py](#deterministic-project-symbol-resolver-verse_project_checkpy) — makes rules 20 and 21 lint-detectable for a project's OWN types (still not for Epic types)
+- [Primary analyzer: verse_lsp_check.py](#primary-analyzer-verse_lsp_checkpy) — runs Epic's own Verse language server; makes rules 20 and 21 fully lint-detectable, project-owned AND Epic types alike
+- [Deterministic project-symbol resolver: verse_project_check.py](#deterministic-project-symbol-resolver-verse_project_checkpy) — fallback tier; makes rules 20 and 21 lint-detectable for a project's OWN types only
 
 ### Naming / Scope Errors
 - [Local variable name conflicts with a module name](#14-local-variable-name-conflicts-with-a-module-name) — avoid `VFX`/`SFX`/`UI`/`Assets`/`Materials`/`Textures` as variable names
@@ -1165,14 +1196,22 @@ different depth. Before writing a new file's imports, check whether an
 existing file **at the same depth** already uses that import, and copy from
 that one instead.
 
-**Now partially lint-detectable:** for a **project-owned** type, this
-directory-depth resolution mechanism is checked mechanically by
+**Now fully lint-detectable (corrected in 4.7.0 — see below for what
+changed and when).** For a **project-owned** type, this directory-depth
+resolution mechanism is checked mechanically by
 [`verse_project_check.py`](#deterministic-project-symbol-resolver-verse_project_checkpy)
 — it derives each file's module path from its own directory and walks
-relative `using` values the same way described above. That coverage stops
-at the project boundary: an Epic/engine module resolved the wrong way is
-still undetectable by any static tool here, because this resolver cannot
-read the digest.
+relative `using` values the same way described above. **As of 4.7.0, the
+Epic/engine half is also covered**, by
+[`verse_lsp_check.py`](#primary-analyzer-verse_lsp_checkpy): it drives
+Epic's own Verse language server, so a relative `using` that fails to
+resolve to an Epic module — not just a project module — now surfaces as a
+real diagnostic. Earlier versions of this file stated that the Epic/engine
+half was undetectable by any static tool here; that was true only while
+`verse_project_check.py` (which genuinely cannot read the digest) was the
+only project-aware tool available. Prefer `verse_lsp_check.py` as the
+PRIMARY check; treat `verse_project_check.py` as the FALLBACK, used only
+when `verse_lsp_check.py` can't run (exit `3`).
 
 ### 21. Finding a symbol in the digest is not enough
 
@@ -1225,15 +1264,24 @@ as the file using it, in which case no import is needed at all. See also
 [rule 23](#23-disambiguating-a-name-that-two-imported-modules-both-define) for
 the related case where TWO imports both resolve, ambiguously.
 
-**Now partially lint-detectable:** this exact failure mode — a symbol
-provably exists but the referencing file can't see it because the owning
-module was never imported — is what
+**Now fully lint-detectable (corrected in 4.7.0 — see below for what
+changed and when).** This exact failure mode — a symbol provably exists but
+the referencing file can't see it because the owning module was never
+imported — is what
 [`verse_project_check.py`](#deterministic-project-symbol-resolver-verse_project_checkpy)'s
 Check A detects, for a **project-owned** type (the "found in the digest"
-step becomes "found in the project's own symbol table"). The Epic-symbol
-half of this rule is unchanged: still not lint-detectable by anything in
-this pack, because that half needs the digest, which this resolver cannot
-read.
+step becomes "found in the project's own symbol table"). **As of 4.7.0, the
+Epic-symbol half is also covered**, by
+[`verse_lsp_check.py`](#primary-analyzer-verse_lsp_checkpy): it drives
+Epic's own Verse language server directly, the same one the editor uses, so
+a digest-verified-but-unimported Epic symbol now surfaces as a real
+diagnostic (this is literally what the 3506 "Unknown identifier ... Did you
+mean" error is). Earlier versions of this file stated the Epic-symbol half
+was "unchanged: still not lint-detectable by anything in this pack" — that
+was true only while `verse_project_check.py` (which cannot read the digest)
+was the only project-aware tool available. Prefer `verse_lsp_check.py` as
+the PRIMARY check; treat `verse_project_check.py` as the FALLBACK, used
+only when `verse_lsp_check.py` can't run (exit `3`).
 
 ### 22. Named vs optional parameters — when to `option{}`-wrap
 
@@ -1772,7 +1820,108 @@ multiple copies exist the most recently modified one wins.
 a call.** The digest overrides anything in this file and anything in the
 model's memory — if this file and the digest disagree, the digest is right.
 
-## Deterministic lint: verse_lint.py
+## Primary analyzer: verse_lsp_check.py
+
+**This is the PRIMARY gate — run it after writing or modifying ANY `.verse`
+file, before reporting a task done.** It is a categorical upgrade over the
+two tools below: `verse_lint.py` and `verse_project_check.py` are this
+project reimplementing a compiler badly; `verse_lsp_check.py` drives the
+compiler's actual front end. It launches Epic's own bundled Verse language
+server (`verse-lsp.exe`, shipped inside the official `epicgames.verse` VS
+Code extension) standalone over LSP/stdio and returns the SAME diagnostics
+the editor draws as red squiggles — with **no UEFN running and no compile,
+therefore no editor-crash risk** (contrast with the crash-loop risk noted in
+[A failed compile is not benign](#a-failed-compile-is-not-benign--treat-correctness-as-high-stakes)
+above — this analyzer sidesteps that risk entirely, it never triggers a
+compile).
+
+**Verified real output**, on a live 108-file project: 500 diagnostics across
+5 files, including `<some_device>.verse:61:32 ERROR [3506] Unknown
+identifier ... Did you mean <FullyQualified.Path>`.
+
+**Usage:**
+
+```
+python <skill dir>/verse_lsp_check.py <UEFN project root or its Content dir>
+```
+
+Optional flags: `--json` (structured output), `--timeout <seconds>`
+(default 120).
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | analyzer ran, no diagnostics |
+| `1` | analyzer ran, **diagnostics found** — must be fixed |
+| `2` | usage error |
+| `3` | **preconditions not met** — analysis could not run |
+
+Exit `1` means real errors from Epic's own analyzer: fix them and re-run
+until clean. Do not report a task complete with known exit-`1` diagnostics
+outstanding.
+
+**Two hard preconditions (exit `3` if either is missing):**
+
+1. **The `epicgames.verse` VS Code extension must be installed.** It
+   supplies `verse-lsp.exe`, the analyzer binary this tool drives — there is
+   no bundled fallback binary.
+2. **A `.vproject` file must exist.** UEFN generates this the first time the
+   project is opened in the editor. A project that has never been opened in
+   UEFN has no `.vproject`, and analysis cannot run.
+
+**Load-bearing fact for future maintainers — `rootUri` must be the vproject
+FOLDER.** The language server's `rootUri` parameter must point at the
+directory that *contains* the `.vproject` file. The UEFN project root, the
+`Content` directory, and the digest root were all tried and **each produced
+zero diagnostics** — the server started, responded, and silently analyzed
+nothing. This cost six configurations to find; if a future change to this
+tool (or a similar LSP integration) starts returning zero diagnostics on a
+project known to have errors, check `rootUri` first.
+
+**FALLBACK tier — only when `verse_lsp_check.py` exits `3`:** run
+`verse_lint.py` and `verse_project_check.py` (both documented below) and
+**state explicitly in the report that the primary analyzer was unavailable
+and why**, so nobody mistakes their narrower coverage for a clean bill of
+health. Both remain useful as a fast pre-check and as a last resort, but
+neither reads the digest and neither reads Epic's own analyzer state — see
+their sections below for exactly what they do and don't catch.
+
+**Baseline/delta discipline.** A real project can carry hundreds of
+pre-existing diagnostics — 500 was the measured count on one 108-file
+project. An agent that edits a single file must NOT be blamed for, and must
+NOT try to fix, every pre-existing diagnostic in the project. The discipline:
+capture the diagnostic set **before** editing, capture it again **after**,
+and be accountable only for the **delta** — every diagnostic the edit
+introduced must be resolved. Pre-existing diagnostics get **reported**, not
+silently fixed and not silently ignored.
+
+**Acting on the output — diagnostics are directly actionable, not just
+informational.** Known codes seen in the wild:
+
+| Code | Meaning | Typical fix |
+|---|---|---|
+| `3506` | Unknown identifier | Usually carries a `Did you mean <FullyQualified.Name>` suggestion — add the matching `using`, or fully qualify the reference, exactly as suggested. |
+| `3502` | Can't access a function from a preceding type | Reorder or fully-qualify the access; the function isn't visible from where it's being called. |
+| `3579` | `loop` requires an async subexpression or a jump-out | The loop body needs a `<suspends>` call (e.g. `Sleep`/`Await`) or an explicit `break`/`return` — an unconditional bare loop with neither never terminates and won't compile. |
+
+A `3506` "Did you mean" suggestion is usually the literal fix — apply it
+(add the `using`, or fully-qualify the reference) rather than merely
+reporting the diagnostic back to the user.
+
+**Claim language — same discipline as everywhere else in this file.** This
+is Epic's analyzer, not a UEFN build. Say **"analyzer-clean"** (or
+"analyzer-clean except pre-existing diagnostics: ...") — never "compiles" or
+"verified." The creator's actual UEFN build remains the only true compile
+gate.
+
+## Deterministic lint: verse_lint.py (fallback tier)
+
+**As of 4.7.0, this tool and `verse_project_check.py` below are the
+FALLBACK tier — reach for them only when
+[`verse_lsp_check.py`](#primary-analyzer-verse_lsp_checkpy) exits `3` and
+say so explicitly.** They remain individually accurate; what changed is
+their place in the gate order, not their behavior.
 
 A small deterministic lint ships beside this file:
 
@@ -1836,17 +1985,23 @@ tree. `verse_project_check.py` builds a symbol table from the project's own
 answers the question neither of those can: **does this project symbol
 exist, and can this file see it?**
 
-**Division of labour — all four layers, side by side:**
+**Division of labour — all five layers, side by side:**
 
 - **The digest** answers "does this Epic API exist, and what is its
   signature."
 - **The Book of Verse** answers "what does this syntax mean."
+- **[`verse_lsp_check.py`](#primary-analyzer-verse_lsp_checkpy)** — the
+  PRIMARY gate — runs Epic's own Verse language server and answers "does
+  this actually pass Epic's own analyzer," for project AND Epic symbols
+  alike. Prefer this over the two tools below; they are FALLBACK tier.
 - **`verse_lint.py`** catches two single-file text shapes (unguarded
   `set Map[Key] = Value`; comparisons bound with `:=` outside a failure
   context).
 - **`verse_project_check.py`** answers "does this PROJECT symbol exist, and
   can this file see it" — the layer the digest structurally cannot cover,
-  because the digest cannot contain a project's own types.
+  because the digest cannot contain a project's own types. Its coverage of
+  rules 20/21 is now a subset of what `verse_lsp_check.py` catches, but it
+  remains useful as a fast pre-check or when the primary analyzer can't run.
 
 **Usage:**
 
