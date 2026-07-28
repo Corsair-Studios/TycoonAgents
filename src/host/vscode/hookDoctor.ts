@@ -1,4 +1,4 @@
-import { TYCOON_HOOK_SLOTS } from "./hookInstall";
+import { TYCOON_HOOK_SLOTS, LEGACY_MATCHER_ALIASES } from "./hookInstall";
 
 export type DoctorSeverity = "ok" | "warn" | "error";
 
@@ -334,6 +334,30 @@ export function repairSettings(
 
   if (!settings.hooks || typeof settings.hooks !== "object") {
     settings.hooks = {};
+  }
+
+  // Upgrade any pre-existing pure-ours entry still wired to a legacy
+  // matcher (e.g. the old bare "mcp__" PreToolUse matcher) to the current
+  // matcher BEFORE the slot loop below runs. Without this, the slot loop
+  // would find no entry matching the new matcher and push a brand-new one,
+  // leaving the stale matcher's entry (and its tycoon hook command) in
+  // place too — wiring our hook twice for the same event.
+  for (const alias of LEGACY_MATCHER_ALIASES) {
+    const list = settings.hooks[alias.event];
+    if (!Array.isArray(list)) continue;
+    for (const e of list) {
+      if (
+        e &&
+        typeof e === "object" &&
+        e.matcher === alias.from &&
+        Array.isArray(e.hooks) &&
+        e.hooks.length > 0 &&
+        e.hooks.every((h: any) => h && typeof h.command === "string" && isTycoonCommand(h.command))
+      ) {
+        e.matcher = alias.to;
+        changes.push(`Upgraded ${alias.event} matcher "${alias.from}" -> "${alias.to}"`);
+      }
+    }
   }
 
   for (const slot of TYCOON_HOOK_SLOTS) {

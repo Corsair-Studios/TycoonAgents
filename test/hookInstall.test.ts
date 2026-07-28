@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   mergeTycoonHooks,
+  migrateLegacyHookMatchers,
   TYCOON_HOOK_SLOTS,
   cleanupForeignHookArtifacts,
   findLegacyHookCommands,
@@ -40,8 +41,8 @@ test("empty settings produces all 9 hook slots", () => {
   assert.ok(ptu2, "PreToolUse Read|Write|Edit|Grep|Glob|Bash entry must exist");
   assert.ok(ptu2!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
 
-  const ptu3 = hooks["PreToolUse"].find((e) => e.matcher === "mcp__");
-  assert.ok(ptu3, "PreToolUse mcp__ entry must exist");
+  const ptu3 = hooks["PreToolUse"].find((e) => e.matcher === "mcp__.*");
+  assert.ok(ptu3, "PreToolUse mcp__.* entry must exist");
   assert.ok(ptu3!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
 
   // SubagentStop
@@ -342,6 +343,93 @@ test("cleanupForeignHookArtifacts: an already-clean active-agent.json (no lock, 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Legacy "mcp__" -> "mcp__.*" matcher migration
+// (mergeTycoonHooks in-place rename + migrateLegacyHookMatchers narrow heal)
+// ---------------------------------------------------------------------------
+
+test("mergeTycoonHooks: pre-existing bare mcp__ entry (ours) is renamed to mcp__.*, not duplicated", () => {
+  const input: Record<string, unknown> = {
+    hooks: {
+      PreToolUse: [{ matcher: "mcp__", hooks: [{ type: "command", command: cmd }] }],
+    },
+  };
+  const result = mergeTycoonHooks(input, cmd);
+  const ptu = (result.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>)["PreToolUse"];
+  assert.equal(ptu.filter((e) => e.matcher === "mcp__").length, 0, "old bare mcp__ matcher must be gone");
+  const news = ptu.filter((e) => e.matcher === "mcp__.*");
+  assert.equal(news.length, 1, "exactly one mcp__.* entry must exist");
+  assert.equal(news[0].hooks.length, 1, "renamed entry must not gain extra hooks");
+});
+
+test("mergeTycoonHooks: user-customized bare mcp__ entry (different command) is left alone, mcp__.* added separately", () => {
+  const input: Record<string, unknown> = {
+    hooks: {
+      PreToolUse: [{ matcher: "mcp__", hooks: [{ type: "command", command: "node user-custom-mcp-logger.js" }] }],
+    },
+  };
+  const result = mergeTycoonHooks(input, cmd);
+  const ptu = (result.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>)["PreToolUse"];
+  const oldEntry = ptu.find((e) => e.matcher === "mcp__");
+  assert.ok(oldEntry, "user's custom mcp__ entry must be preserved untouched");
+  assert.equal(oldEntry!.hooks[0].command, "node user-custom-mcp-logger.js");
+  const newEntry = ptu.find((e) => e.matcher === "mcp__.*");
+  assert.ok(newEntry, "our mcp__.* entry must still be added");
+  assert.ok(newEntry!.hooks.some((h) => h.command === cmd));
+});
+
+test("mergeTycoonHooks: already-migrated mcp__.* entry is untouched and idempotent on re-merge", () => {
+  const once = mergeTycoonHooks({}, cmd);
+  const twice = mergeTycoonHooks(once, cmd);
+  const ptu = (twice.hooks as Record<string, Array<{ matcher: string }>>)["PreToolUse"];
+  assert.equal(ptu.filter((e) => e.matcher === "mcp__.*").length, 1);
+  assert.equal(ptu.filter((e) => e.matcher === "mcp__").length, 0);
+});
+
+test("migrateLegacyHookMatchers: old bare mcp__ (ours) -> mcp__.*, changed:true", () => {
+  const input: Record<string, unknown> = {
+    hooks: {
+      PreToolUse: [
+        { matcher: "mcp__", hooks: [{ type: "command", command: cmd }] },
+        { matcher: "Task|Agent|Skill", hooks: [{ type: "command", command: cmd }] },
+      ],
+    },
+  };
+  const { settings, changed } = migrateLegacyHookMatchers(input);
+  assert.equal(changed, true);
+  const ptu = (settings.hooks as Record<string, unknown>)["PreToolUse"] as Array<{ matcher: string; hooks: Array<{ command: string }> }>;
+  assert.equal(ptu.find((e) => e.matcher === "mcp__"), undefined, "bare mcp__ must be gone");
+  const upgraded = ptu.find((e) => e.matcher === "mcp__.*");
+  assert.ok(upgraded, "mcp__.* must exist after migration");
+  assert.equal(upgraded!.hooks[0].command, cmd);
+  // Unrelated entry untouched.
+  assert.ok(ptu.some((e) => e.matcher === "Task|Agent|Skill"));
+});
+
+test("migrateLegacyHookMatchers: user-customized mcp__ entry (different command) is left untouched", () => {
+  const input: Record<string, unknown> = {
+    hooks: {
+      PreToolUse: [{ matcher: "mcp__", hooks: [{ type: "command", command: "node user-custom-mcp-logger.js" }] }],
+    },
+  };
+  const { settings, changed } = migrateLegacyHookMatchers(input);
+  assert.equal(changed, false, "a non-ours entry must never be migrated");
+  assert.equal(settings, input, "no-op must return the SAME object reference");
+});
+
+test("migrateLegacyHookMatchers: already-current mcp__.* settings -> no-op, same object reference", () => {
+  const already = mergeTycoonHooks({}, cmd);
+  const { settings, changed } = migrateLegacyHookMatchers(already);
+  assert.equal(changed, false);
+  assert.equal(settings, already, "no-op must return the SAME object reference");
+});
+
+test("migrateLegacyHookMatchers: settings with no hooks section -> no-op, no throw", () => {
+  const { settings, changed } = migrateLegacyHookMatchers({});
+  assert.equal(changed, false);
+  assert.deepEqual(settings, {});
 });
 
 test("cleanupForeignHookArtifacts: idempotent — second run on already-cleaned project is a no-op", () => {

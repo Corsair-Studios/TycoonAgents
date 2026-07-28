@@ -390,6 +390,41 @@ test("repairSettings: already-correct settings -> changes:[]", () => {
   assert.deepEqual(changes, [], "No changes expected when settings already correct");
 });
 
+test("repairSettings: pre-existing bare mcp__ entry (ours) is renamed to mcp__.*, not duplicated", () => {
+  const input: any = {
+    hooks: {
+      PreToolUse: [{ matcher: "mcp__", hooks: [{ type: "command", command: CMD }] }],
+    },
+  };
+  const { settings, changes } = repairSettings(input, CMD, { removeForeign: false });
+  const ptu: Array<{ matcher: string; hooks: Array<{ command: string }> }> = settings.hooks["PreToolUse"];
+  assert.equal(ptu.filter((e) => e.matcher === "mcp__").length, 0, "old bare mcp__ matcher must be gone");
+  const upgraded = ptu.filter((e) => e.matcher === "mcp__.*");
+  assert.equal(upgraded.length, 1, "exactly one mcp__.* entry must exist (no double-wiring)");
+  assert.equal(
+    upgraded[0].hooks.filter((h) => h.command === CMD).length,
+    1,
+    "renamed entry must carry exactly one Tycoon command"
+  );
+  assert.ok(changes.some((c) => c.includes("mcp__") && c.includes("mcp__.*")), "changes should mention the upgrade");
+});
+
+test("repairSettings: user-customized bare mcp__ entry (different command) is left untouched, mcp__.* added separately", () => {
+  const input: any = {
+    hooks: {
+      PreToolUse: [{ matcher: "mcp__", hooks: [{ type: "command", command: "node user-custom-mcp-logger.js" }] }],
+    },
+  };
+  const { settings } = repairSettings(input, CMD, { removeForeign: false });
+  const ptu: Array<{ matcher: string; hooks: Array<{ command: string }> }> = settings.hooks["PreToolUse"];
+  const oldEntry = ptu.find((e) => e.matcher === "mcp__");
+  assert.ok(oldEntry, "user's custom mcp__ entry must be preserved");
+  assert.equal(oldEntry!.hooks[0].command, "node user-custom-mcp-logger.js");
+  const newEntry = ptu.find((e) => e.matcher === "mcp__.*");
+  assert.ok(newEntry, "our mcp__.* entry must still be wired");
+  assert.ok(newEntry!.hooks.some((h) => h.command === CMD));
+});
+
 // ---------------------------------------------------------------------------
 // diagnose: operational health (legacy artifacts, stale lock, stuck stack,
 // malformed activity records) — all driven by optional DoctorInput fields

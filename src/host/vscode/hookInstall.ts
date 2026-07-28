@@ -21,7 +21,7 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   { event: "UserPromptSubmit", matcher: "" },
   { event: "PreToolUse", matcher: "Task|Agent|Skill" },
   { event: "PreToolUse", matcher: "Read|Write|Edit|Grep|Glob|Bash" },
-  { event: "PreToolUse", matcher: "mcp__" },
+  { event: "PreToolUse", matcher: "mcp__.*" },
   { event: "SubagentStop", matcher: "" },
   { event: "Stop", matcher: "" },
   { event: "TaskCompleted", matcher: "" },
@@ -37,6 +37,94 @@ function isOurHookCommand(h: unknown): boolean {
     typeof (h as { command?: unknown }).command === "string" &&
     ((h as { command: string }).command).includes("tycoon-claude-hook.cjs")
   );
+}
+
+/**
+ * Legacy matcher values TycoonAgents used to write for a given event, keyed
+ * to the value TYCOON_HOOK_SLOTS uses today for that same event. Consumed by
+ * both {@link mergeTycoonHooks} (in-place rename during install/repair) and
+ * {@link migrateLegacyHookMatchers} (narrow panel-open auto-heal) so an
+ * already-installed project's settings.local.json picks up a matcher
+ * upgrade as a rename instead of ending up with both the stale and the
+ * current matcher wired to our hook (which would double-fire the hook on
+ * every matching tool call). Add an entry here whenever a TYCOON_HOOK_SLOTS
+ * matcher changes for an event that previously shipped under a different
+ * value.
+ *
+ * Current entry: PreToolUse's MCP-tool matcher was bare `"mcp__"` (substring
+ * regex) through 0.0.482; Claude Code's docs recommend the anchored
+ * `"mcp__.*"` form for matching all MCP tools, and field evidence showed an
+ * MCP tool call producing no PreToolUse record under the bare form.
+ */
+export const LEGACY_MATCHER_ALIASES: ReadonlyArray<{ event: string; from: string; to: string }> = [
+  { event: "PreToolUse", from: "mcp__", to: "mcp__.*" },
+];
+
+/**
+ * Renames the matcher of any entry in `list` whose matcher is `from` AND
+ * whose hooks are entirely ours (per {@link isOurHookCommand}) to `to`.
+ * Immutable — returns a NEW array only when something changed; returns the
+ * SAME `list` reference untouched when nothing matched, so callers can
+ * cheaply detect "nothing to do". An entry with a mixed or foreign hook, or
+ * a different matcher, is never touched.
+ */
+function renamePureOursMatchers(list: HookEntry[], from: string, to: string): HookEntry[] {
+  let changed = false;
+  const next = list.map((e) => {
+    if (
+      e !== null &&
+      typeof e === "object" &&
+      e.matcher === from &&
+      Array.isArray(e.hooks) &&
+      e.hooks.length > 0 &&
+      e.hooks.every((h) => isOurHookCommand(h))
+    ) {
+      changed = true;
+      return { ...e, matcher: to };
+    }
+    return e;
+  });
+  return changed ? next : list;
+}
+
+/**
+ * Narrow, pure migration for panel-open auto-heal: renames any pre-existing
+ * hook entry matching a {@link LEGACY_MATCHER_ALIASES} (event, from) pair —
+ * AND whose hooks are entirely ours — to that alias's `to` matcher. Unlike
+ * {@link mergeTycoonHooks}, this never adds a missing slot, never collapses
+ * duplicates, and never touches an entry with a different matcher, a
+ * different command, or any non-ours hook mixed in, so a user's manual
+ * customization is always preserved untouched.
+ *
+ * Returns `changed: false` (with `settings` being the SAME object reference
+ * as `existing`) when there was nothing to migrate, so a caller writing
+ * this back to disk can skip the write entirely on the common no-op case.
+ */
+export function migrateLegacyHookMatchers(
+  existing: Record<string, unknown>
+): { settings: Record<string, unknown>; changed: boolean } {
+  const hooksSection = existing.hooks;
+  if (hooksSection === null || typeof hooksSection !== "object") {
+    return { settings: existing, changed: false };
+  }
+  const hooks = hooksSection as Record<string, unknown>;
+
+  let changed = false;
+  const nextHooks: Record<string, unknown> = { ...hooks };
+  for (const alias of LEGACY_MATCHER_ALIASES) {
+    const list = hooks[alias.event];
+    if (!Array.isArray(list)) continue;
+    const next = renamePureOursMatchers(list as HookEntry[], alias.from, alias.to);
+    if (next !== list) {
+      nextHooks[alias.event] = next;
+      changed = true;
+    }
+  }
+
+  if (!changed) {
+    return { settings: existing, changed: false };
+  }
+  return { settings: { ...existing, hooks: nextHooks }, changed: true };
 }
 
 /**
@@ -70,6 +158,18 @@ export function mergeTycoonHooks(
   for (const event of Object.keys(srcHooks)) {
     const arr = srcHooks[event];
     hooks[event] = Array.isArray(arr) ? (arr.slice() as HookEntry[]) : [];
+  }
+
+  // Upgrade any pre-existing pure-ours entry still wired to a legacy
+  // matcher (see LEGACY_MATCHER_ALIASES) to the current matcher BEFORE the
+  // per-slot loop below runs, so an install/repair lands as an in-place
+  // rename instead of leaving the stale entry AND appending a duplicate
+  // under the new matcher — which would double-fire the hook.
+  for (const alias of LEGACY_MATCHER_ALIASES) {
+    const list = hooks[alias.event];
+    if (list) {
+      hooks[alias.event] = renamePureOursMatchers(list, alias.from, alias.to);
+    }
   }
 
   for (const slot of TYCOON_HOOK_SLOTS) {

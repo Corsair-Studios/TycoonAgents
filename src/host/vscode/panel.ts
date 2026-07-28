@@ -150,6 +150,7 @@ function errorMessage(error: unknown): string {
 
 import {
   mergeTycoonHooks,
+  migrateLegacyHookMatchers,
   cleanupForeignHookArtifacts,
   findLegacyHookCommands,
   LEGACY_STATE_FILE_NAMES,
@@ -480,6 +481,16 @@ export class TycoonPanel {
     // it previously only ever refreshed on an explicit "Install hooks"
     // click.
     this._ensureHookScriptFresh();
+
+    // Auto-heal a stale settings.local.json hook matcher once per panel
+    // open (see _ensureHookMatchersFresh doc comment) — closes the gap
+    // _ensureHookScriptFresh does NOT cover: it refreshes the hook SCRIPT
+    // file but never touched the settings.local.json matcher strings, so a
+    // project installed before a matcher change (e.g. PreToolUse's MCP
+    // matcher going from bare "mcp__" to anchored "mcp__.*") stayed on the
+    // old matcher forever unless the user clicked "Install hooks"/"Repair"
+    // again.
+    this._ensureHookMatchersFresh();
 
     // Auto-heal a stale on-disk project-plan skill once per panel open (see
     // _ensureProjectPlanSkillFresh doc comment) — fixes the skill drifting
@@ -5155,6 +5166,60 @@ export class TycoonPanel {
       if (srcContent === destContent) return; // already current
 
       fs.writeFileSync(dest, srcContent);
+    } catch {
+      // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
+   * Auto-heal: upgrade a project's `.claude/settings.local.json` hook
+   * matcher(s) that still carry a legacy value TycoonAgents used to write
+   * (see `LEGACY_MATCHER_ALIASES` in hookInstall.ts) to the current value,
+   * once per panel open.
+   *
+   * WHY: `_ensureHookScriptFresh` (above) refreshes the on-disk hook SCRIPT
+   * on every panel open, but nothing previously refreshed the settings
+   * ENTRIES that point at it — a project installed before a matcher
+   * changed (e.g. PreToolUse's MCP-tool matcher going from bare "mcp__" to
+   * the anchored "mcp__.*" Claude Code's docs recommend) stayed on the old
+   * matcher indefinitely unless the user re-ran "Install hooks"/"Repair"
+   * (which calls `mergeTycoonHooks`, which performs this same rename).
+   * This closes that gap for panel-open the same way `_ensureHookScriptFresh`
+   * closes it for the script file.
+   *
+   * Delegates the actual matcher logic to `migrateLegacyHookMatchers`
+   * (pure, unit-tested in hookInstall.test.ts): it only ever renames an
+   * entry whose matcher is a KNOWN legacy value AND whose hooks are
+   * entirely ours — any user-customized entry (different matcher,
+   * different command, or any non-ours hook mixed in) is left completely
+   * alone, and nothing here ever adds a missing hook slot (that stays
+   * `_handleInstallHooks`'s job, an explicit user action).
+   *
+   * Rules mirror `_ensureHookScriptFresh`:
+   * - Never creates settings.local.json — a project with no such file has
+   *   nothing to heal and is left untouched (opt-in preserved).
+   * - Only writes back when something actually changed (no mtime churn on
+   *   an already-current project).
+   * - Wrapped in try/catch so a failure here can never break panel
+   *   construction/rendering.
+   */
+  private _ensureHookMatchersFresh(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+
+      const settingsPath = path.join(root, ".claude", "settings.local.json");
+      if (!fs.existsSync(settingsPath)) return; // nothing installed -> nothing to heal
+
+      const raw = fs.readFileSync(settingsPath, "utf8").trim();
+      if (raw === "") return;
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== "object") return;
+
+      const { settings, changed } = migrateLegacyHookMatchers(parsed as Record<string, unknown>);
+      if (!changed) return; // already current -> no write, no mtime churn
+
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }
