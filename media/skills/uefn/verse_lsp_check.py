@@ -66,6 +66,25 @@ UNSETTLED, not as a guarantee -- see the correction below)
   `client/registerCapability`) to be mistaken for a response and dropped,
   silently stalling the handshake.
 
+OBSERVED: A VALID .vproject CAN LACK A SOURCE PACKAGE
+-------------------------------------------------------
+Confirmed directly on a real project: a `.vproject` file can be well-formed,
+valid JSON and still contain no Source-role package at all -- only
+External-role packages (e.g. Verse, UnrealEngine, Fortnite). One project's
+`.vproject` was seen in exactly that state (three External packages, no
+Source entry), where an earlier copy of the SAME file had five packages
+including a Source entry with a real `dirPath`. UEFN is what regenerates a
+project's `.vproject` (see EXIT CODES / STEP 2 below: it is written the
+first time the project is opened in the editor), so re-opening the project
+in UEFN is the known-working way to get the Source package written back.
+What specifically causes an already-opened project's `.vproject` to be
+rewritten WITHOUT a Source package is not established here -- only the
+before/after states on disk were observed, not the trigger. This tool
+treats "valid JSON, no Source package" as its own precondition-failure
+case, distinct from "the file could not be parsed at all" and from "a
+Source package exists but its `dirPath` doesn't match the target" -- see
+`locate_vproject` and `_vproject_failure_lines`.
+
 WHAT THIS DOES NOT GUARANTEE
 --------------------------------
 - A clean run (zero diagnostics) is a strong signal, not a build guarantee.
@@ -713,6 +732,12 @@ def locate_vproject(content_dir: str):
     target_canon = _canon_path(content_dir)
     parsed_entries = []
     parse_failures = []
+    # Separate from `parse_failures` on purpose: this file WAS valid JSON --
+    # it is structurally incomplete (no Source-role package), not corrupt.
+    # Conflating the two under one label ("UNPARSEABLE") sends a user
+    # hunting for JSON corruption that does not exist. See the module
+    # docstring's "OBSERVED: A VALID .vproject CAN LACK A SOURCE PACKAGE".
+    no_source_entries = []
 
     for vp_path in all_vprojects:
         try:
@@ -734,7 +759,11 @@ def locate_vproject(content_dir: str):
                 source_pkg = desc
                 break
         if not isinstance(source_pkg, dict) or not source_pkg.get("dirPath"):
-            parse_failures.append({"path": vp_path, "reason": "no Source-role package with a dirPath was found"})
+            # The file parsed fine -- this is "valid but incomplete", never
+            # "unparseable". UEFN can and does write a .vproject with only
+            # External-role packages and no Source package at all; see the
+            # module docstring.
+            no_source_entries.append({"path": vp_path})
             continue
 
         entry = {
@@ -753,6 +782,7 @@ def locate_vproject(content_dir: str):
             "reason": "no_match",
             "parsed_entries": parsed_entries,
             "parse_failures": parse_failures,
+            "no_source_entries": no_source_entries,
         }
     if len(matches) > 1:
         return None, {"reason": "ambiguous", "matches": matches}
@@ -1153,8 +1183,10 @@ def _vproject_failure_lines(info, content_dir):
         )
         return lines
     if reason == "no_match":
+        no_source = info.get("no_source_entries") or []
+        total = len(info["parsed_entries"]) + len(info["parse_failures"]) + len(no_source)
         lines = [
-            f"Found {len(info['parsed_entries']) + len(info['parse_failures'])} "
+            f"Found {total} "
             f".vproject file(s), but none of their Source package "
             f"directories match the Content directory given to this tool:",
             f"  target: {content_dir}",
@@ -1162,10 +1194,29 @@ def _vproject_failure_lines(info, content_dir):
         ]
         for entry in info["parsed_entries"]:
             lines.append(f"  {entry['source_dir']}  (workspace {entry['workspace_name']!r})")
+        # Three genuinely distinct cases below -- never share one label:
+        #   1. UNPARSEABLE: the file could not be read or is not valid JSON.
+        #   2. VALID BUT INCOMPLETE: the file parsed fine but has no
+        #      Source-role package (see the module docstring's "OBSERVED"
+        #      section -- UEFN can write a .vproject in exactly this shape).
+        #   3. (handled above, in "Source directories that WERE found") a
+        #      Source package exists but its dirPath is not this target --
+        #      a real mismatch, reported with the other found entries.
         for fail in info["parse_failures"]:
             lines.append(f"  UNPARSEABLE {fail['path']}: {fail['reason']}")
-        if not info["parsed_entries"] and not info["parse_failures"]:
+        for entry in no_source:
+            lines.append(
+                f"  VALID BUT INCOMPLETE {entry['path']}: parses fine as JSON, but contains "
+                "no Source-role package (only External-role packages, or none at all)."
+            )
+        if not info["parsed_entries"] and not info["parse_failures"] and not no_source:
             lines.append("  (none)")
+        if no_source:
+            lines.append(
+                "UEFN writes a project's Source package into its .vproject when the project is "
+                "opened in the editor. If one of the 'VALID BUT INCOMPLETE' project(s) above is "
+                "the one you meant to analyse, open it in UEFN once, then re-run this tool."
+            )
         return lines
     if reason == "ambiguous":
         lines = [
