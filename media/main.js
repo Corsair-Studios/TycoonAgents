@@ -1887,54 +1887,66 @@
     }
     panel.appendChild(reqList);
 
-    // Subtle upcoming-unlock hint: only while the theme actually has a
-    // turret object AND it isn't unlocked yet (rebirthCount reaching
-    // TURRET_UNLOCK_REBIRTH removes this — see buildSeededQueue/canBuild
-    // gating around line 5288). Purely additive; nothing renders for
-    // turret-less themes or once the turret is already unlocked.
-    if (turretObjectIds.size > 0 && rebirthCount < TURRET_UNLOCK_REBIRTH) {
-      const turretHint = document.createElement("div");
-      turretHint.className = "rebirth-bonus";
-      turretHint.textContent = `Reach Rebirth ${TURRET_UNLOCK_REBIRTH} to unlock a buildable defensive turret`;
-      panel.appendChild(turretHint);
+    // Upcoming-unlock hint: show ONLY the single next tier the player
+    // hasn't reached yet (lowest threshold strictly greater than
+    // rebirthCount), not every future unlock at once. Same underlying
+    // tiers/wording as before — weapons rack (real threshold is the literal
+    // `>= 1` check in buildSeededQueue, only when the theme has a buildable
+    // rack object), turret (TURRET_UNLOCK_REBIRTH, only when the theme
+    // actually has a turret object), disco dance party
+    // (DANCE_PARTY_UNLOCK_REBIRTH), dance-off (DANCE_OFF_UNLOCK_REBIRTH),
+    // victory lap upgrade (VICTORY_LAP_UNLOCK_REBIRTH), gold palette
+    // (GOLD_PALETTE_UNLOCK_REBIRTH) — just filtered down to one line. Past
+    // the highest known tier there is nothing left to preview, so nothing
+    // renders (no stale last-tier line, no placeholder).
+    const rebirthUnlockPreviews = [];
+    // Rack: buildSeededQueue withholds buildables[0] (rackObjectId) from the
+    // build queue entirely until rebirthCount >= 1, at which point it splices
+    // back in and becomes buildable — building it unlocks ranged weapons
+    // (see the "Building this unlocks ranged weapons" tooltip ~line 2708).
+    // There is no named RACK_UNLOCK_REBIRTH constant — buildSeededQueue's
+    // gate is the literal `>= 1` at line ~5533 — so this mirrors that literal
+    // rather than inventing a duplicate constant.
+    if (rackObjectId) {
+      rebirthUnlockPreviews.push({
+        rebirth: 1,
+        text: `Reach Rebirth 1 to unlock the buildable weapons rack and ranged weapons`,
+      });
     }
+    if (turretObjectIds.size > 0) {
+      rebirthUnlockPreviews.push({
+        rebirth: TURRET_UNLOCK_REBIRTH,
+        text: `Reach Rebirth ${TURRET_UNLOCK_REBIRTH} to unlock a buildable defensive turret`,
+      });
+    }
+    rebirthUnlockPreviews.push({
+      rebirth: DANCE_PARTY_UNLOCK_REBIRTH,
+      text: `Reach Rebirth ${DANCE_PARTY_UNLOCK_REBIRTH} to unlock the disco dance party`,
+    });
+    rebirthUnlockPreviews.push({
+      rebirth: DANCE_OFF_UNLOCK_REBIRTH,
+      text: `Reach Rebirth ${DANCE_OFF_UNLOCK_REBIRTH} to unlock the dance-off`,
+    });
+    // Base wave-clear victory lap is already ungated — this only advertises
+    // the UPGRADE (see VICTORY_LAP_UNLOCK_REBIRTH / updateVictoryLap), so
+    // the wording says "upgrade" rather than "unlock".
+    rebirthUnlockPreviews.push({
+      rebirth: VICTORY_LAP_UNLOCK_REBIRTH,
+      text: `Reach Rebirth ${VICTORY_LAP_UNLOCK_REBIRTH} to upgrade the victory lap with party lights and confetti`,
+    });
+    rebirthUnlockPreviews.push({
+      rebirth: GOLD_PALETTE_UNLOCK_REBIRTH,
+      text: `Reach Rebirth ${GOLD_PALETTE_UNLOCK_REBIRTH} to unlock the gold party palette`,
+    });
 
-    // Advertise the disco dance party and dance-off the same way the turret
-    // hint above advertises its own — only while each is still locked; the
-    // turret hint doesn't distinguish an "unlocked" state either, it just
-    // stops rendering, so this follows the same simple pattern. The two
-    // celebrations now unlock at different tiers (dance party at
-    // DANCE_PARTY_UNLOCK_REBIRTH, dance-off one tier later at
-    // DANCE_OFF_UNLOCK_REBIRTH — see updateDanceOff's GATE SPOT and the
-    // Alt+O hotkey), so each gets its own hint, shown only while that
-    // specific feature is still locked.
-    if (rebirthCount < DANCE_PARTY_UNLOCK_REBIRTH) {
-      const dancePartyHint = document.createElement("div");
-      dancePartyHint.className = "rebirth-bonus";
-      dancePartyHint.textContent = `Reach Rebirth ${DANCE_PARTY_UNLOCK_REBIRTH} to unlock the disco dance party`;
-      panel.appendChild(dancePartyHint);
-    }
-    if (rebirthCount < DANCE_OFF_UNLOCK_REBIRTH) {
-      const danceOffHint = document.createElement("div");
-      danceOffHint.className = "rebirth-bonus";
-      danceOffHint.textContent = `Reach Rebirth ${DANCE_OFF_UNLOCK_REBIRTH} to unlock the dance-off`;
-      panel.appendChild(danceOffHint);
-    }
-    // Same pattern, but the base wave-clear victory lap is already ungated —
-    // this only advertises the UPGRADE (see VICTORY_LAP_UNLOCK_REBIRTH /
-    // updateVictoryLap), so the wording says "upgrade" rather than "unlock".
-    if (rebirthCount < VICTORY_LAP_UNLOCK_REBIRTH) {
-      const victoryLapHint = document.createElement("div");
-      victoryLapHint.className = "rebirth-bonus";
-      victoryLapHint.textContent = `Reach Rebirth ${VICTORY_LAP_UNLOCK_REBIRTH} to upgrade the victory lap with party lights and confetti`;
-      panel.appendChild(victoryLapHint);
-    }
-    // Same pattern, one tier past the dance-off — see GOLD_PALETTE_UNLOCK_REBIRTH.
-    if (rebirthCount < GOLD_PALETTE_UNLOCK_REBIRTH) {
-      const goldPaletteHint = document.createElement("div");
-      goldPaletteHint.className = "rebirth-bonus";
-      goldPaletteHint.textContent = `Reach Rebirth ${GOLD_PALETTE_UNLOCK_REBIRTH} to unlock the gold party palette`;
-      panel.appendChild(goldPaletteHint);
+    const nextRebirthUnlock = rebirthUnlockPreviews
+      .filter((p) => rebirthCount < p.rebirth)
+      .sort((a, b) => a.rebirth - b.rebirth)[0];
+    if (nextRebirthUnlock) {
+      const nextUnlockHint = document.createElement("div");
+      nextUnlockHint.className = "rebirth-bonus";
+      nextUnlockHint.textContent = nextRebirthUnlock.text;
+      panel.appendChild(nextUnlockHint);
     }
 
     if (rebirthConfirmPending) {
