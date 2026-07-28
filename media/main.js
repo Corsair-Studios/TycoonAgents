@@ -1627,9 +1627,15 @@
    * to the CURRENT lifetime totals (so badges must be re-earned from here),
    * wipe unlockedBadgeIds (EXCEPT rebirth_* milestone badges, which are
    * permanent and survive every Rebirth), roll a fresh 3-badge requirement
-   * from the tier matching the new rebirthCount, and persist. Deliberately
-   * does NOT touch buildBuiltCount/rivalsEvictedCount/agent metrics/HUD —
-   * those are lifetime and keep counting through rebirth.
+   * from the tier matching the new rebirthCount, and persist. Also wipes the
+   * player's BUILT OBJECTS back to zero (buildBuiltCount/buildCurrentProgress
+   * + the per-object animation/phase map) so the board has to be rebuilt from
+   * scratch every cycle — "that's just the nature of a rebirth." This does
+   * NOT touch rivalsEvictedCount/agent metrics/HUD, which stay lifetime, and
+   * it does NOT touch buildQueue membership or rebirth-earned PERMANENT
+   * unlocks (rack/turret availability, rangedPermanentlyUnlocked, and every
+   * rebirthCount-gated cosmetic ladder reward) — only the "how much of the
+   * queue is already built" pointer resets, not what's unlocked.
    */
   function doRebirth() {
     rebirthCount++;
@@ -1668,7 +1674,14 @@
         }
       });
     }
-    rebirthBaseline = { built: buildBuiltCount, evicted: rivalsEvictedCount, tasks: (state.completedTasks || 0) };
+    // buildBuiltCount is being wiped to 0 a few lines below, so the baseline's
+    // `built` component must be consistent with that (0), not the pre-wipe
+    // value — otherwise updateBadgeUnlocks()-style (eff = lifetime - baseline)
+    // math would go negative. In practice `rebirthBaseline.built` is a
+    // write-only field today (nothing subtracts it; OBJECTS_BUILT badge
+    // progress reads cycleObjectsBuilt instead, and THEME_INITIALIZED always
+    // re-zeroes it on load — see ~L9930), but keep it truthful anyway.
+    rebirthBaseline = { built: 0, evicted: rivalsEvictedCount, tasks: (state.completedTasks || 0) };
     cycleObjectsBuilt = 0;
     cycleRivalsEvicted = 0;
     cyclePeakActive = 0;
@@ -1676,10 +1689,29 @@
     rollRebirthRequirement();
     rebirthConfirmPending = false;
     persistRebirth();
-    // buildBuiltCount itself is deliberately NOT reset by rebirth (it's a
-    // lifetime counter — see comment above), but persist it here too so the
-    // rebirth-reset path always leaves a fresh save on the host, matching
-    // every other rebirth-state field persisted just above.
+    // ── Wipe built objects: "a rebirth resets ... all of the objects the
+    // player has built, and they have to build them all over again." Mirrors
+    // the full-Reset path (see handleMetricsReset, ~L12659) for the
+    // buildBuiltCount/buildCurrentProgress zeroing, but — unlike Reset —
+    // leaves buildQueue, rebirthCount, rangedPermanentlyUnlocked, and every
+    // other permanent unlock untouched (the rack/turret objects just queued
+    // above stay queued; they simply aren't pre-built).
+    //
+    // objectAnimMap is also cleared here (not just left to the per-frame
+    // status loop) because that loop only force-resets entries whose derived
+    // status is "unbuilt"; the single object now sitting at buildQueue[0]
+    // derives status "active", and the loop's active-branch only creates a
+    // fresh crate anim when entry.phase was "unbuilt" — an entry left over
+    // from being fully built (phase "idle") would never transition and would
+    // keep rendering as already-built forever. Clearing the map here means
+    // every entry is freshly created "unbuilt" next frame and transitions
+    // correctly regardless of which index it lands on.
+    buildBuiltCount = 0;
+    buildCurrentProgress = 0;
+    objectAnimMap = {};
+    // Persist the wipe host-side (composite-keyed build-progress.json is a
+    // plain overwrite — see panel.ts saveBuildProgress) so a reload restores
+    // 0, not the pre-rebirth count.
     saveBuildProgress();
     // Durably clear the host-side badge unlocks we just wiped locally, so the
     // host doesn't re-send stale unlocks on the next theme init (which would
@@ -5238,13 +5270,21 @@
   let currentBadgeThemeId = null;
 
   // ── Rebirth prestige mechanic (all webview-side; survives reload via
-  // vscode state, but NEVER touches buildBuiltCount/rivalsEvictedCount/agent
-  // metrics directly — see doRebirth()). Badges measure progress WITHIN the
-  // current rebirth cycle via the baselines below, since the underlying
-  // lifetime counters persist through rebirth. ──────────────────────────────
+  // vscode state; DOES reset buildBuiltCount (built objects) but NEVER
+  // touches rivalsEvictedCount/agent metrics directly — see doRebirth()).
+  // Badges measure progress WITHIN the current rebirth cycle via the
+  // baselines below, since the underlying lifetime counters persist through
+  // rebirth. ──────────────────────────────────────────────────────────────
   /** Number of times the player has rebirthed. Drives ranged-weapon + build-speed bonuses. */
   let rebirthCount = 0;
-  /** Lifetime-counter snapshot captured at the moment of the last rebirth (or 0/0/0 if never). */
+  /**
+   * Lifetime-counter snapshot captured at the moment of the last rebirth (or
+   * 0/0/0 if never). Only `.tasks` is actually read (updateBadgeUnlocks'
+   * effTasks) — `.built`/`.evicted` are write-only today (OBJECTS_BUILT/
+   * RIVALS_EVICTED badge progress reads cycleObjectsBuilt/cycleRivalsEvicted
+   * instead, and THEME_INITIALIZED always re-zeroes them on load), kept only
+   * so a saved snapshot never reads as truthful-but-stale.
+   */
   let rebirthBaseline = { built: 0, evicted: 0, tasks: 0 };
   /** High-water mark of concurrently-active agents observed since the last rebirth (not persisted). */
   let cyclePeakActive = 0;
