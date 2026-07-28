@@ -4,8 +4,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import fs from "fs/promises";
+import fsSync from "fs";
 import os from "os";
 import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { fileURLToPath } from "url";
 
 // Bridge directory — honor env var or fall back to OS temp dir (matching Python's tempfile.gettempdir())
 const BRIDGE_DIR = process.env.UEFN_BRIDGE_DIR ?? path.join(os.tmpdir(), "uefn_bridge");
@@ -903,6 +907,587 @@ server.registerTool(
         severity_counts: args.severity_counts,
       })
     )
+);
+
+// ── uefn_verse_check — offline, direct-spawn Verse diagnostics ──────────────
+//
+// CRITICALLY DIFFERENT from every other uefn_* tool above: those relay
+// through file IPC (BRIDGE_DIR / callBridge) to the Python bridge running
+// INSIDE a live UEFN editor session. This tool does NOT talk to that bridge
+// at all — it spawns media/skills/uefn/verse_lsp_check.py directly as a
+// local subprocess, which in turn drives Epic's bundled verse-lsp.exe
+// (from the 'epicgames.verse' extension) headless over LSP/stdio. UEFN does
+// NOT need to be running, and no compile happens, so there is no
+// editor-crash risk. This is precisely the situation where the other tools
+// are useless (a project too broken to open in UEFN) and this one still
+// works. See verse_lsp_check.py's own module docstring for the full
+// behavioral contract this section relies on (exit codes, --json shape,
+// rootUri-must-be-the-vproject-folder discovery, etc.).
+
+const execFileAsync = promisify(execFile);
+
+// verse_lsp_check.py's own internal collection phase defaults to 120s
+// (DEFAULT_TIMEOUT_SECONDS) and can additionally spend up to ~30s on the
+// initial handshake plus ~10s of shutdown/kill grace on top of that. Our
+// subprocess bound must comfortably exceed the script's own worst case, or
+// we'd kill it before it gets a chance to exit cleanly and report its own
+// (better) timeout note. 170s gives ~40s of headroom over that worst case.
+const VERSE_CHECK_SUBPROCESS_TIMEOUT_MS = 170_000;
+
+const VERSE_CHECK_DEFAULT_SEVERITIES = ["error", "warning"] as const;
+const VERSE_CHECK_DEFAULT_MAX_DIAGNOSTICS = 100;
+
+// New override — genuinely no existing name covers "where verse_lsp_check.py
+// itself lives" (VERSE_LSP_PATH is the analyzer BINARY the script locates
+// internally, a different thing). Read both as an env var and as a matching
+// key in .claude/tycoon/uefn-paths.json, following the same override
+// contract as the known keys in pathHealth.ts: set-but-invalid is an
+// explicit failure, never a silent fallthrough to auto-discovery.
+const VERSE_CHECK_SCRIPT_ENV_VAR = "VERSE_LSP_CHECK_SCRIPT";
+
+function existsAsFile(p: string): boolean {
+  try {
+    return fsSync.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function existsAsDir(p: string): boolean {
+  try {
+    return fsSync.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// Best-effort, never-throwing read of a single key out of
+// .claude/tycoon/uefn-paths.json under the given project root. Deliberately
+// reads the raw file rather than importing pathHealth.ts's PATH_OVERRIDE_KEYS
+// list (that module is vscode-adjacent extension code, not something this
+// standalone MCP process depends on) — same file, same contract, read
+// independently.
+function readUefnPathsJsonKey(projectRoot: string, key: string): string | undefined {
+  try {
+    const raw = fsSync.readFileSync(path.join(projectRoot, ".claude", "tycoon", "uefn-paths.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof (parsed as Record<string, unknown>)[key] === "string") {
+      const v = (parsed as Record<string, unknown>)[key] as string;
+      return v.trim() !== "" ? v : undefined;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// This bundled server file lives at <extension>/media/uefn-bridge/uefn-server.mjs
+// (see package.json's bundle:uefn script) — the shipped copy of
+// verse_lsp_check.py is a sibling directory at
+// <extension>/media/skills/uefn/verse_lsp_check.py. Computed from
+// import.meta.url (not process.cwd()) so it resolves correctly regardless of
+// which directory the MCP client launches this process from.
+const SERVER_FILE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+interface TriedLocation {
+  label: string;
+  path: string;
+}
+
+interface ScriptLocateResult {
+  chosen: string | null;
+  tried: TriedLocation[];
+  overrideInvalid?: TriedLocation;
+}
+
+// Discovery ladder for verse_lsp_check.py itself, per CLAUDE.md's "Path &
+// Environment Discovery" principle: (1) explicit env override — wins
+// outright, invalid value is a hard failure, never a silent fallthrough;
+// (2) .claude/tycoon/uefn-paths.json override — same contract; (3) multiple
+// independent auto-discovery signals (project's staged copy, then the
+// extension's own bundled copy); (4) caller reports explicit failure
+// listing everything tried.
+function locateVerseCheckScript(projectRoot: string): ScriptLocateResult {
+  const tried: TriedLocation[] = [];
+
+  const envOverride = process.env[VERSE_CHECK_SCRIPT_ENV_VAR];
+  if (envOverride) {
+    const loc: TriedLocation = { label: `${VERSE_CHECK_SCRIPT_ENV_VAR} env override`, path: envOverride };
+    tried.push(loc);
+    if (existsAsFile(envOverride)) return { chosen: envOverride, tried };
+    return { chosen: null, tried, overrideInvalid: loc };
+  }
+
+  const jsonOverride = readUefnPathsJsonKey(projectRoot, VERSE_CHECK_SCRIPT_ENV_VAR);
+  if (jsonOverride) {
+    const loc: TriedLocation = { label: "uefn-paths.json override", path: jsonOverride };
+    tried.push(loc);
+    if (existsAsFile(jsonOverride)) return { chosen: jsonOverride, tried };
+    return { chosen: null, tried, overrideInvalid: loc };
+  }
+
+  const stagedCopy: TriedLocation = {
+    label: "project's staged copy",
+    path: path.join(projectRoot, ".claude", "skills", "uefn", "verse_lsp_check.py"),
+  };
+  tried.push(stagedCopy);
+  if (existsAsFile(stagedCopy.path)) return { chosen: stagedCopy.path, tried };
+
+  const bundledCopy: TriedLocation = {
+    label: "extension's bundled copy",
+    path: path.join(SERVER_FILE_DIR, "..", "skills", "uefn", "verse_lsp_check.py"),
+  };
+  tried.push(bundledCopy);
+  if (existsAsFile(bundledCopy.path)) return { chosen: bundledCopy.path, tried };
+
+  return { chosen: null, tried };
+}
+
+interface PythonLocateResult {
+  chosen: { cmd: string; version: string } | null;
+  tried: string[];
+}
+
+// Discover the Python interpreter rather than assuming one name — a missing
+// interpreter is a fixable precondition failure, never a crash. Tries each
+// candidate's `--version` with a short timeout; the first that succeeds
+// wins.
+async function locatePythonInterpreter(): Promise<PythonLocateResult> {
+  const candidates = ["python", "python3", "py"];
+  const tried: string[] = [];
+  for (const cmd of candidates) {
+    tried.push(cmd);
+    try {
+      const { stdout, stderr } = await execFileAsync(cmd, ["--version"], { timeout: 5_000, windowsHide: true });
+      const versionText = (stdout || stderr || "").toString().trim();
+      return { chosen: { cmd, version: versionText || "unknown" }, tried };
+    } catch {
+      // Not found on PATH, not executable, or timed out probing it — try
+      // the next candidate. A probe failure here is expected and common
+      // (most machines don't have all three), never a reason to abort.
+    }
+  }
+  return { chosen: null, tried };
+}
+
+function normalizeForMatch(p: string): string {
+  return p.replace(/\\/g, "/").toLowerCase();
+}
+
+// Scopes a diagnostic's file path against the caller-supplied `files` list.
+// Supports an exact match, a path-boundary suffix match (so a caller-given
+// relative path like "MyDevice/Foo.verse" matches a full absolute
+// diagnostic path), and a bare filename match. Deliberately avoids a plain
+// substring/endsWith check with no boundary, which would let "Bar.verse"
+// wrongly match "FooBar.verse".
+function diagnosticFileMatches(diagnosticPath: string, filters: string[]): boolean {
+  const dn = normalizeForMatch(diagnosticPath);
+  return filters.some((f) => {
+    const fn = normalizeForMatch(f);
+    if (!fn) return false;
+    if (dn === fn) return true;
+    if (dn.endsWith("/" + fn)) return true;
+    if (!fn.includes("/") && dn.split("/").pop() === fn) return true;
+    return false;
+  });
+}
+
+// Every distinct failure path below builds through this so `next_required_action`
+// is always the terminal key — models act far more reliably on data in a tool
+// RESULT than on schema-description prose (see the moderation tools' own
+// note on this above). Nothing in this file may swallow an exception and
+// return a clean/empty/success shape instead of going through here.
+function verseCheckError(
+  tier: string,
+  detail: Record<string, unknown>,
+  nextRequiredAction: string
+): Record<string, unknown> {
+  return {
+    status: "error",
+    exit_code: null,
+    tier,
+    ...detail,
+    next_required_action: nextRequiredAction,
+  };
+}
+
+interface RawVerseDiagnostic {
+  path: string;
+  line: number;
+  character: number;
+  severity: number;
+  severity_word: string;
+  code: string | number;
+  message: string;
+}
+
+interface RawVerseCheckOk {
+  status: "ok";
+  lsp_path: string;
+  lsp_version: string;
+  vproject_path: string;
+  content_dir: string;
+  opened_files: string[];
+  version_note: string | null;
+  diagnostics: RawVerseDiagnostic[];
+  summary: { total: number; by_severity: Record<string, number> };
+}
+
+interface RawVerseCheckPreconditionFailed {
+  status: "precondition_failed";
+  reason: string;
+  messages: string[];
+}
+
+server.registerTool(
+  "uefn_verse_check",
+  {
+    description:
+      "OFFLINE, DIRECT-SPAWN Verse diagnostics — the ONE exception to how every other uefn_* tool in this " +
+      "server works. Every other uefn_* tool relays through file IPC to the Python bridge running INSIDE a " +
+      "live UEFN editor session; this tool does NOT talk to that bridge at all. It spawns a local Python " +
+      "script (verse_lsp_check.py) directly, which drives Epic's own bundled Verse language server " +
+      "(verse-lsp.exe, shipped inside the 'epicgames.verse' VS Code-compatible extension) headless over " +
+      "LSP/stdio and returns the REAL compiler diagnostics the editor draws as squiggles — not a text-level " +
+      "heuristic. UEFN does NOT need to be running and no compile happens, so there is no editor-crash risk. " +
+      "That makes this the tool to reach for precisely when a project is too broken to open in UEFN at all. " +
+      "A clean (0-diagnostic) run is a strong signal, not a build guarantee. " +
+      "Use `files` to scope results to only the files your change touched: a real project can carry 500+ " +
+      "pre-existing diagnostics unrelated to your change, and you own only the diagnostics your change " +
+      "introduced — baseline/delta discipline, not a full-project cleanup. " +
+      "Exit codes from the underlying script: 0 = ran, zero diagnostics. 1 = ran, diagnostics found. " +
+      "2 = usage error (e.g. an invalid project_root). 3 = PRECONDITIONS NOT MET — missing the Epic Verse " +
+      "extension, or the project has never been opened in UEFN (which is what generates the .vproject file " +
+      "this depends on); exit 3 is NEVER a clean pass even though no diagnostics are listed.",
+    inputSchema: {
+      project_root: z
+        .string()
+        .optional()
+        .describe(
+          "UEFN project root or its Content dir. If omitted: tries CLAUDE_PROJECT_DIR, then this server's " +
+            "own working directory. If given explicitly and it doesn't exist on disk, that is reported as an " +
+            "explicit error — it is never silently replaced with an auto-discovered fallback."
+        ),
+      files: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Scope reported diagnostics to only these files (exact path, path-boundary suffix, or bare " +
+            "filename match). Use this to stay focused on the diagnostics YOUR change introduced instead of " +
+            "the project's full pre-existing set — this is the baseline/delta discipline this tool is built " +
+            "around."
+        ),
+      severity: z
+        .array(z.enum(["error", "warning", "info", "hint"]))
+        .optional()
+        .describe("Severities to include in the returned/counted diagnostics. Default: [\"error\", \"warning\"]."),
+      max_diagnostics: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Cap on returned diagnostics after filtering (default 100). NEVER a silent cap — if it truncates, " +
+            "the result states exactly how many were omitted and how to see the rest."
+        ),
+    },
+  },
+  async (args) => {
+    const requestedSeverities = args.severity && args.severity.length > 0 ? args.severity : [...VERSE_CHECK_DEFAULT_SEVERITIES];
+    const maxDiagnostics = args.max_diagnostics ?? VERSE_CHECK_DEFAULT_MAX_DIAGNOSTICS;
+    const fileFilters = args.files && args.files.length > 0 ? args.files : undefined;
+
+    // ---- resolve project_root -------------------------------------------------
+    let projectRoot: string;
+    let projectRootSource: string;
+    if (args.project_root) {
+      const resolved = path.resolve(args.project_root);
+      if (!existsAsDir(resolved)) {
+        return ok(
+          verseCheckError(
+            "project_root_invalid",
+            {
+              given: args.project_root,
+              resolved,
+            },
+            `project_root ${JSON.stringify(args.project_root)} does not exist on disk (resolved to ${resolved}). ` +
+              "Pass a real UEFN project root or its Content directory, or omit project_root to let this tool " +
+              "auto-discover it."
+          )
+        );
+      }
+      projectRoot = resolved;
+      projectRootSource = "explicit project_root parameter";
+    } else if (process.env.CLAUDE_PROJECT_DIR && existsAsDir(process.env.CLAUDE_PROJECT_DIR)) {
+      projectRoot = process.env.CLAUDE_PROJECT_DIR;
+      projectRootSource = "CLAUDE_PROJECT_DIR env var";
+    } else {
+      projectRoot = process.cwd();
+      projectRootSource = "server working directory (process.cwd())";
+    }
+
+    // ---- locate verse_lsp_check.py --------------------------------------------
+    const scriptLocation = locateVerseCheckScript(projectRoot);
+    if (scriptLocation.overrideInvalid) {
+      return ok(
+        verseCheckError(
+          "script_override_invalid",
+          { override: scriptLocation.overrideInvalid, tried: scriptLocation.tried },
+          `${scriptLocation.overrideInvalid.label} is set to ${JSON.stringify(scriptLocation.overrideInvalid.path)} but ` +
+            "no file exists there. Fix or unset the override rather than expecting auto-discovery to take over."
+        )
+      );
+    }
+    if (!scriptLocation.chosen) {
+      return ok(
+        verseCheckError(
+          "script_not_found",
+          { tried: scriptLocation.tried, project_root: projectRoot },
+          "Could not locate verse_lsp_check.py anywhere. Locations tried are listed above. Set the " +
+            `${VERSE_CHECK_SCRIPT_ENV_VAR} environment variable (or the same key in ` +
+            ".claude/tycoon/uefn-paths.json) to the exact script path and retry."
+        )
+      );
+    }
+    const scriptPath = scriptLocation.chosen;
+
+    // ---- locate a Python interpreter ------------------------------------------
+    const pythonLocation = await locatePythonInterpreter();
+    if (!pythonLocation.chosen) {
+      return ok(
+        verseCheckError(
+          "python_not_found",
+          { tried: pythonLocation.tried },
+          `None of ${pythonLocation.tried.join(", ")} launched successfully on this machine. Install Python 3 ` +
+            "and ensure it's on PATH, then retry — this is a fixable precondition, not a bug in this tool."
+        )
+      );
+    }
+    const python = pythonLocation.chosen;
+
+    // ---- spawn the script -------------------------------------------------------
+    let stdoutText = "";
+    let stderrText = "";
+    let exitCode: number | null = null;
+    try {
+      const { stdout, stderr } = await execFileAsync(python.cmd, [scriptPath, projectRoot, "--json"], {
+        timeout: VERSE_CHECK_SUBPROCESS_TIMEOUT_MS,
+        killSignal: "SIGTERM",
+        maxBuffer: 20 * 1024 * 1024,
+        windowsHide: true,
+      });
+      stdoutText = stdout;
+      stderrText = stderr;
+      exitCode = 0;
+    } catch (e) {
+      const err = e as { code?: unknown; killed?: boolean; signal?: string | null; stdout?: string; stderr?: string };
+      stdoutText = err.stdout ?? "";
+      stderrText = err.stderr ?? "";
+      if (err.killed || (err.signal && typeof err.code !== "number")) {
+        return ok(
+          verseCheckError(
+            "timeout",
+            {
+              script_path: scriptPath,
+              python_used: python,
+              project_root: projectRoot,
+              timeout_ms: VERSE_CHECK_SUBPROCESS_TIMEOUT_MS,
+              stderr_tail: stderrText.slice(-2000),
+            },
+            `verse_lsp_check.py did not finish within ${Math.round(VERSE_CHECK_SUBPROCESS_TIMEOUT_MS / 1000)}s and ` +
+              "was killed. This is NOT a clean pass. Re-run with a smaller/narrower project, or investigate " +
+              "why the analyzer didn't reach an idle window (see stderr_tail)."
+          )
+        );
+      }
+      if (err.code === "ERR_CHILD_PROCESS_STDOUT_MAXBUFFER" || err.code === "ERR_CHILD_PROCESS_STDERR_MAXBUFFER") {
+        // Distinct from spawn_failed: the subprocess launched and ran fine —
+        // it just produced more output than the 20MB maxBuffer allows
+        // (an extremely large diagnostic set). Mislabeling this as
+        // spawn_failed would send someone debugging a huge project down the
+        // wrong path.
+        return ok(
+          verseCheckError(
+            "output_too_large",
+            { script_path: scriptPath, python_used: python, project_root: projectRoot, error: String(e) },
+            "verse_lsp_check.py's output exceeded the 20MB subprocess buffer, most likely from an extremely " +
+              "large diagnostic set. This is NOT a clean pass. Narrow `files`/project scope and retry."
+          )
+        );
+      }
+      if (typeof err.code === "number") {
+        exitCode = err.code;
+      } else {
+        return ok(
+          verseCheckError(
+            "spawn_failed",
+            { script_path: scriptPath, python_used: python, project_root: projectRoot, error: String(e) },
+            "Failed to launch the verse_lsp_check.py subprocess (not a timeout, not a script/Python-not-found " +
+              "case already ruled out above). See the error field for the underlying OS error and investigate " +
+              "before retrying."
+          )
+        );
+      }
+    }
+
+    // ---- exit 2: usage error — verse_lsp_check.py prints NO JSON here, even in --json mode -----
+    if (exitCode === 2) {
+      return ok(
+        verseCheckError(
+          "usage_error",
+          {
+            exit_code: 2,
+            script_path: scriptPath,
+            python_used: python,
+            project_root: projectRoot,
+            project_root_source: projectRootSource,
+            stderr: stderrText.trim(),
+          },
+          "verse_lsp_check.py rejected its arguments (see stderr) — most likely project_root does not resolve " +
+            "to a UEFN project root or Content directory. Fix project_root and retry; this is not a clean pass."
+        )
+      );
+    }
+
+    // ---- exit 0/1/3 all print JSON in --json mode; parse it --------------------
+    let parsed: RawVerseCheckOk | RawVerseCheckPreconditionFailed;
+    try {
+      parsed = JSON.parse(stdoutText);
+    } catch (parseErr) {
+      return ok(
+        verseCheckError(
+          "unparseable_output",
+          {
+            exit_code: exitCode,
+            script_path: scriptPath,
+            python_used: python,
+            project_root: projectRoot,
+            stdout_tail: stdoutText.slice(-2000),
+            stderr_tail: stderrText.slice(-2000),
+            parse_error: String(parseErr),
+          },
+          "verse_lsp_check.py exited but its stdout was not valid JSON. This is NOT a clean pass — inspect " +
+            "stdout_tail/stderr_tail above; the script or its output shape may have changed."
+        )
+      );
+    }
+
+    // ---- exit 3: preconditions not met — must never read as a clean pass -------
+    if (exitCode === 3 || parsed.status === "precondition_failed") {
+      const pf = parsed as RawVerseCheckPreconditionFailed;
+      return ok(
+        verseCheckError(
+          "precondition_failed",
+          {
+            exit_code: 3,
+            reason: pf.reason,
+            messages: pf.messages,
+            script_path: scriptPath,
+            python_used: python,
+            project_root: projectRoot,
+            project_root_source: projectRootSource,
+          },
+          "Analysis did NOT run — this is NOT a clean/zero-diagnostic result. Resolve what `messages` above " +
+            "names (typically: install/enable the 'epicgames.verse' extension, or open this project in UEFN " +
+            "at least once so its .vproject file exists), then re-run uefn_verse_check."
+        )
+      );
+    }
+
+    // ---- guard against a drifted script contract — never fall through to a
+    // clean shape just because the JSON parsed and the exit code was 0/1.
+    // `okResult.diagnostics ?? []` below would otherwise turn a renamed key
+    // or an unrecognized status into a false-clean "0 diagnostics" result —
+    // the exact bug class this repo has been burned by before.
+    if (parsed.status !== "ok") {
+      const observedStatus = (parsed as Record<string, unknown>).status;
+      return ok(
+        verseCheckError(
+          "unexpected_output_shape",
+          {
+            exit_code: exitCode,
+            script_path: scriptPath,
+            python_used: python,
+            project_root: projectRoot,
+            observed_status: observedStatus,
+            raw_payload: parsed,
+          },
+          `verse_lsp_check.py exited ${exitCode} with syntactically valid JSON, but status was ` +
+            `${JSON.stringify(observedStatus)} instead of "ok". The script's output contract may have drifted. ` +
+            "This is NOT a clean pass — inspect raw_payload above before trusting anything from this run."
+        )
+      );
+    }
+
+    // ---- exit 0/1: real result ---------------------------------------------------
+    const okResult = parsed as RawVerseCheckOk;
+    const allDiagnostics = okResult.diagnostics ?? [];
+    const totalRaw = okResult.summary?.total ?? allDiagnostics.length;
+
+    const afterFiles = fileFilters ? allDiagnostics.filter((d) => diagnosticFileMatches(d.path, fileFilters)) : allDiagnostics;
+    const afterSeverity = afterFiles.filter((d) => requestedSeverities.includes(d.severity_word.toLowerCase() as (typeof requestedSeverities)[number]));
+
+    const truncated = afterSeverity.length > maxDiagnostics;
+    const returned = truncated ? afterSeverity.slice(0, maxDiagnostics) : afterSeverity;
+    const omittedCount = truncated ? afterSeverity.length - maxDiagnostics : 0;
+
+    const outputDiagnostics = returned.map((d) => ({
+      file: d.path,
+      line: d.line,
+      character: d.character,
+      severity: d.severity_word.toLowerCase(),
+      code: d.code,
+      message: d.message,
+    }));
+
+    let nextRequiredAction: string;
+    if (truncated) {
+      nextRequiredAction =
+        `max_diagnostics=${maxDiagnostics} truncated the list — ${omittedCount} diagnostic(s) in scope were ` +
+        "omitted, NOT because they don't exist. Increase max_diagnostics or narrow `files` before concluding " +
+        "anything about the omitted ones.";
+    } else if (outputDiagnostics.length > 0) {
+      nextRequiredAction =
+        `Fix the ${outputDiagnostics.length} diagnostic(s) listed above (already scoped per your filters), then ` +
+        "re-run uefn_verse_check with the SAME `files` scope to confirm they're resolved. Do not attempt to " +
+        "clear diagnostics outside your change's scope.";
+    } else {
+      nextRequiredAction =
+        "0 diagnostics in the requested scope. This is a strong signal, not a build guarantee — see " +
+        "version_note below if present, and remember diagnostics outside your `files`/`severity` filters were " +
+        "not evaluated for this statement.";
+    }
+    if (okResult.version_note && okResult.version_note.startsWith("WARNING")) {
+      nextRequiredAction = `${okResult.version_note} — ${nextRequiredAction}`;
+    }
+
+    return ok({
+      status: "ok",
+      exit_code: exitCode,
+      tier: exitCode === 1 ? "diagnostics_found" : "clean",
+      script_path: scriptPath,
+      python_used: python,
+      project_root: projectRoot,
+      project_root_source: projectRootSource,
+      lsp_path: okResult.lsp_path,
+      lsp_version: okResult.lsp_version,
+      vproject_path: okResult.vproject_path,
+      content_dir: okResult.content_dir,
+      opened_files: okResult.opened_files,
+      version_note: okResult.version_note,
+      filters_applied: { files: fileFilters ?? null, severity: requestedSeverities, max_diagnostics: maxDiagnostics },
+      counts: {
+        total_reported_by_analyzer: totalRaw,
+        by_severity_total: okResult.summary?.by_severity ?? {},
+        after_files_scope: afterFiles.length,
+        after_severity_filter: afterSeverity.length,
+        returned: outputDiagnostics.length,
+        omitted_by_max_diagnostics: omittedCount,
+      },
+      diagnostics: outputDiagnostics,
+      next_required_action: nextRequiredAction,
+    });
+  }
 );
 
 // ── Start ─────────────────────────────────────────────────────────────────────
