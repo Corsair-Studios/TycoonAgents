@@ -10261,6 +10261,28 @@
       handleAgentRemoved(msg.id, msg.ok, msg.cancelled, msg.error);
     } else if (msg && msg.type === "installState") {
       lastUefnBridgeSetUp = Boolean(msg.uefnBridgeSetUp);
+      // Path Health (see src/host/vscode/pathHealth.ts) piggybacks on this
+      // same push rather than a separate round trip — capture it here and
+      // re-render Settings so a Save/Clear/Refresh's fresh re-probe (which
+      // re-invokes _handleCheckInstall host-side) shows up immediately even
+      // though it arrived on "installState", not "settings". renderSettings()
+      // itself no-ops until lastSettings has loaded, so this is safe to call
+      // on every installState push (including the very first one at panel
+      // load, before Settings has ever been opened).
+      lastPathHealth = Array.isArray(msg.pathHealth) ? msg.pathHealth : [];
+      lastPathOverridesFilePath = msg.pathOverridesFilePath || null;
+      lastPathOverridesFileExists = Boolean(msg.pathOverridesFileExists);
+      lastVerseExtensionState = msg.verseExtensionState || null;
+      // Gate the rebuild to genuine changes only — renderSettings() does a
+      // full setupConfigEl.innerHTML="" rebuild, which would otherwise wipe
+      // unsaved text in any other open Settings input (e.g. a keyword-
+      // routing box mid-edit) on every installState push, most of which
+      // carry no path-health change at all.
+      const pathHealthSnapshot = JSON.stringify([lastPathHealth, lastPathOverridesFilePath, lastPathOverridesFileExists, lastVerseExtensionState]);
+      if (pathHealthSnapshot !== lastPathHealthSnapshot) {
+        lastPathHealthSnapshot = pathHealthSnapshot;
+        renderSettings();
+      }
       handleInstallState(msg);
       // When handleInstallState just took (or continued in) the Step-2
       // Optionals branch, renderSetupOptionals already handled the UEFN
@@ -10299,6 +10321,8 @@
       renderDelegationStats(state.modeStats);
     } else if (msg && msg.type === "settingsUpdated") {
       handleSettingsUpdated(msg);
+    } else if (msg && msg.type === "pathOverrideResult") {
+      handlePathOverrideResult(msg);
     } else if (msg && msg.type === "metricsReset") {
       handleMetricsReset(msg);
     } else if (msg && msg.type === "doctorReport") {
@@ -12083,6 +12107,39 @@
    */
   let lastSettings = null;
 
+  /**
+   * Most recent Path Health probe results, pushed alongside "installState"
+   * (see src/host/vscode/pathHealth.ts's probePathHealth /
+   * detectVerseExtensionState, wired through panel.ts's
+   * _handleCheckInstall). Kept separate from lastSettings because it arrives
+   * on a different message ("installState", not "settings") — renderSettings()
+   * reads both. Re-probed by SET_PATH_OVERRIDE/CLEAR_PATH_OVERRIDE/
+   * REFRESH_PATH_HEALTH, each of which makes the host re-push "installState".
+   * @type {Array<{key:string,label:string,description:string,resolvedPath:(string|null),source:("override"|"env"|"auto-detected"|"not-found"),exists:boolean,candidates:Array<{origin:string,location:string}>}>}
+   */
+  let lastPathHealth = [];
+  /** Where `.claude/tycoon/uefn-paths.json` lives — shown so the user can find/edit it by hand too. @type {string|null} */
+  let lastPathOverridesFilePath = null;
+  let lastPathOverridesFileExists = false;
+  /**
+   * Three-state Verse extension report (enabled / installed-but-disabled /
+   * not-installed) — see pathHealth.ts's detectVerseExtensionState doc
+   * comment for why the three states carry different guidance.
+   * @type {{state:("enabled"|"disabled"|"not-installed"),enabledVersion:(string|null),versionsFound:Array<{version:string,ideDir:string,extensionDir:string}>,multipleVersions:boolean,message:string}|null}
+   */
+  let lastVerseExtensionState = null;
+  /**
+   * Serialized snapshot of the last-applied pathHealth/pathOverridesFilePath/
+   * pathOverridesFileExists/verseExtensionState, used to gate the
+   * "installState" handler's renderSettings() call to genuine changes only —
+   * see that handler below. A full rebuild on every installState push would
+   * wipe unsaved text in any other open Settings input (e.g. a keyword-
+   * routing box mid-edit); a NOP-only push (nothing about paths changed)
+   * must not trigger one.
+   * @type {string|null}
+   */
+  let lastPathHealthSnapshot = null;
+
   /** Cost weight by model (relative price); used for savings estimates. */
   const COST_WEIGHT = { opus: 15, sonnet: 3, haiku: 0.8 };
 
@@ -12240,6 +12297,274 @@
   }
 
   /**
+   * A colored status chip for one Path Health row. Mirrors
+   * pathHealth.ts's own buildPathDiagnosticText status derivation exactly
+   * (NOT FOUND / SET-BUT-MISSING / OK) so the webview never invents a
+   * fourth reading of the same three states. Reuses the existing
+   * `.stat-chip` shape (see the Agents section above) with inline colors
+   * pulled from the same CSS custom properties/hex values the rest of this
+   * file already uses for red/green severity (danger-btn's red, routing-
+   * light--green's green) — no new CSS classes, per the "don't introduce a
+   * new visual language" constraint.
+   * @param {{source:string, exists:boolean}} entry
+   */
+  function buildPathStatusChip(entry) {
+    const chip = document.createElement("span");
+    chip.className = "stat-chip";
+    if (entry.source === "not-found") {
+      chip.textContent = "NOT FOUND";
+      chip.style.color = "var(--status-error)";
+      chip.style.background = "rgba(251, 113, 133, 0.16)";
+      chip.style.borderColor = "var(--status-error)";
+      chip.style.fontWeight = "700";
+    } else if (!entry.exists) {
+      chip.textContent = "SET, BUT MISSING ON DISK";
+      chip.style.color = "var(--status-error)";
+      chip.style.background = "rgba(251, 113, 133, 0.16)";
+      chip.style.borderColor = "var(--status-error)";
+      chip.style.fontWeight = "700";
+    } else {
+      const sourceLabel = entry.source === "override" ? "override" : entry.source === "env" ? "env var" : "auto-detected";
+      chip.textContent = `OK · ${sourceLabel}`;
+      chip.style.color = "var(--status-active)";
+      chip.style.background = "rgba(63, 185, 80, 0.12)";
+      chip.style.borderColor = "var(--status-active)";
+    }
+    return chip;
+  }
+
+  /**
+   * Build one Path Health row: label + description, resolved value, status
+   * chip, on-disk existence, the candidate ladder (collapsed, shown when
+   * something's wrong), and the override text input + Save/Clear. Field
+   * names below are read straight off src/host/vscode/pathHealth.ts's
+   * `PathHealthEntry` (key/label/description/resolvedPath/source/exists/
+   * candidates) — see that file's own interface for the authoritative shape.
+   * @param {{key:string,label:string,description:string,resolvedPath:(string|null),source:string,exists:boolean,candidates:Array<{origin:string,location:string}>}} entry
+   */
+  function buildPathHealthRow(entry) {
+    const row = document.createElement("div");
+    row.className = "settings-row path-health-row";
+    row.dataset.agentRow = "path-" + entry.key;
+
+    const head = document.createElement("div");
+    head.className = "agent-row-head";
+    const nameEl = document.createElement("span");
+    nameEl.className = "agent-name";
+    nameEl.textContent = entry.label;
+    head.appendChild(nameEl);
+    head.appendChild(buildPathStatusChip(entry));
+    row.appendChild(head);
+
+    const descEl = document.createElement("p");
+    descEl.className = "settings-empty";
+    descEl.style.padding = "0";
+    descEl.textContent = entry.description;
+    row.appendChild(descEl);
+
+    const resolvedEl = document.createElement("div");
+    resolvedEl.className = "hook-activity";
+    resolvedEl.textContent = "Resolved path: " + (entry.resolvedPath || "(none)");
+    row.appendChild(resolvedEl);
+
+    const existsEl = document.createElement("div");
+    existsEl.className = "hook-activity";
+    existsEl.textContent = "Exists on disk: " + (entry.exists ? "Yes" : "No");
+    row.appendChild(existsEl);
+
+    // Candidate ladder — only worth expanding when something's wrong; an OK
+    // row already told the user everything they need. Collapsed <details>,
+    // never innerHTML — every value here came off the user's own filesystem.
+    if ((entry.source === "not-found" || !entry.exists) && Array.isArray(entry.candidates) && entry.candidates.length > 0) {
+      const details = document.createElement("details");
+      details.className = "hook-activity";
+      const summary = document.createElement("summary");
+      summary.textContent = `Locations checked (${entry.candidates.length})`;
+      details.appendChild(summary);
+      const list = document.createElement("div");
+      list.style.marginTop = "4px";
+      list.style.fontFamily = "var(--mono-font, monospace)";
+      for (const c of entry.candidates) {
+        const line = document.createElement("div");
+        line.textContent = `[${c.origin}] ${c.location}`;
+        list.appendChild(line);
+      }
+      details.appendChild(list);
+      row.appendChild(details);
+    }
+
+    // Override entry — text input + Save/Clear, per-row. Save posts
+    // SET_PATH_OVERRIDE {key, path}; the host validates the path actually
+    // exists on disk BEFORE accepting it and replies PATH_OVERRIDE_RESULT
+    // (handled by handlePathOverrideResult above) — never assume success.
+    const overrideWrap = document.createElement("div");
+    overrideWrap.className = "keyword-input-wrap";
+    const overrideInput = document.createElement("input");
+    overrideInput.type = "text";
+    overrideInput.className = "keyword-input";
+    overrideInput.placeholder = "Absolute path to override " + entry.key;
+    if (entry.source === "override" && entry.resolvedPath) {
+      overrideInput.value = entry.resolvedPath;
+    }
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "skill-btn settings-btn";
+    saveBtn.textContent = "Save";
+    saveBtn.addEventListener("click", () => {
+      const val = overrideInput.value.trim();
+      if (!val) {
+        flashError(row, "Enter a path first");
+        return;
+      }
+      saveBtn.disabled = true;
+      clearBtn.disabled = true;
+      vscode.postMessage({ type: "setPathOverride", key: entry.key, path: val });
+    });
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "skill-btn settings-btn";
+    clearBtn.textContent = "Clear";
+    if (entry.source !== "override") {
+      clearBtn.disabled = true;
+      clearBtn.classList.add("btn-disabled");
+    }
+    clearBtn.addEventListener("click", () => {
+      saveBtn.disabled = true;
+      clearBtn.disabled = true;
+      vscode.postMessage({ type: "clearPathOverride", key: entry.key });
+    });
+    overrideWrap.appendChild(overrideInput);
+    overrideWrap.appendChild(saveBtn);
+    overrideWrap.appendChild(clearBtn);
+    row.appendChild(overrideWrap);
+
+    return row;
+  }
+
+  /**
+   * Build the "Verse extension" status block inside the Path Health section
+   * — three distinct states from pathHealth.ts's detectVerseExtensionState
+   * (enabled / installed-but-disabled / not-installed), each with different
+   * real-world consequences the host already phrased correctly in
+   * `verse.message` (rendered verbatim here rather than re-authored, so the
+   * UI never drifts from the host's own reasoning). multipleVersions is
+   * surfaced as its own note since a stale analyzer reports confidently
+   * wrong diagnostics.
+   * @param {{state:string,enabledVersion:(string|null),versionsFound:Array<{version:string,ideDir:string,extensionDir:string}>,multipleVersions:boolean,message:string}} verse
+   */
+  function buildVerseExtensionBlock(verse) {
+    const wrap = document.createElement("div");
+    wrap.className = "settings-row";
+
+    const label = document.createElement("div");
+    label.className = "keyword-label";
+    label.textContent = "Verse extension (epicgames.verse)";
+    wrap.appendChild(label);
+
+    const stateLine = document.createElement("div");
+    if (verse.state === "enabled") {
+      stateLine.className = "hook-ok";
+    } else if (verse.state === "disabled") {
+      stateLine.className = "hook-warn";
+    } else {
+      stateLine.className = "hook-bad";
+    }
+    stateLine.textContent = verse.message;
+    wrap.appendChild(stateLine);
+
+    if (verse.multipleVersions && Array.isArray(verse.versionsFound) && verse.versionsFound.length > 0) {
+      const multiNote = document.createElement("div");
+      multiNote.className = "hook-warn";
+      multiNote.textContent = "Multiple Verse extension versions found on disk:";
+      wrap.appendChild(multiNote);
+      const list = document.createElement("div");
+      list.className = "hook-activity";
+      for (const v of verse.versionsFound) {
+        const line = document.createElement("div");
+        line.textContent = `[${v.ideDir}] v${v.version} — ${v.extensionDir}`;
+        list.appendChild(line);
+      }
+      wrap.appendChild(list);
+    }
+
+    return wrap;
+  }
+
+  /**
+   * Build the whole "Path Health" settings section — the visible half of
+   * this repo's Path & Environment Discovery core principle (see CLAUDE.md
+   * and src/host/vscode/pathHealth.ts). Reads lastPathHealth/
+   * lastPathOverridesFilePath/lastPathOverridesFileExists/
+   * lastVerseExtensionState (populated by the "installState" handler above).
+   * A NOT FOUND path or a non-enabled Verse extension surfaces a prominent
+   * (not quiet-grey) rollup line at the top, reusing the exact hook-ok/
+   * hook-bad classes Hook health already uses above — same alert language,
+   * not a new one.
+   */
+  function buildPathHealthSection() {
+    const section = buildSection("Path Health");
+    const entries = Array.isArray(lastPathHealth) ? lastPathHealth : [];
+    const verse = lastVerseExtensionState;
+
+    if (entries.length === 0) {
+      const emptyP = document.createElement("p");
+      emptyP.className = "settings-empty";
+      emptyP.textContent = "No project root open — Path Health needs an open folder to probe.";
+      section.appendChild(emptyP);
+      return section;
+    }
+
+    const notFoundCount = entries.filter((e) => e.source === "not-found" || !e.exists).length;
+    const verseNeedsAttention = verse !== null && verse.state !== "enabled";
+
+    const rollup = document.createElement("div");
+    rollup.className = (notFoundCount === 0 && !verseNeedsAttention) ? "hook-ok" : "hook-bad";
+    rollup.textContent =
+      notFoundCount === 0 && !verseNeedsAttention
+        ? "✓ All required paths detected"
+        : `⚠ ${notFoundCount} path${notFoundCount === 1 ? "" : "s"} not detected${verseNeedsAttention ? " · Verse extension needs attention" : ""}`;
+    section.appendChild(rollup);
+
+    if (lastPathOverridesFilePath) {
+      const overridesFileNote = document.createElement("div");
+      overridesFileNote.className = "hook-activity";
+      overridesFileNote.textContent =
+        "Overrides file: " + lastPathOverridesFilePath + (lastPathOverridesFileExists ? "" : " (not created yet)");
+      section.appendChild(overridesFileNote);
+    }
+
+    const actionsRow = document.createElement("div");
+    actionsRow.className = "settings-row";
+    actionsRow.style.flexDirection = "row";
+    actionsRow.style.gap = "8px";
+    const refreshBtn = document.createElement("button");
+    refreshBtn.className = "skill-btn settings-btn";
+    refreshBtn.textContent = "Refresh";
+    refreshBtn.addEventListener("click", () => {
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = "Refreshing…";
+      vscode.postMessage({ type: "refreshPathHealth" });
+    });
+    const copyDiagBtn = document.createElement("button");
+    copyDiagBtn.className = "skill-btn settings-btn";
+    copyDiagBtn.textContent = "Copy for Claude";
+    copyDiagBtn.addEventListener("click", () => {
+      vscode.postMessage({ type: "copyPathDiagnostic" });
+    });
+    actionsRow.appendChild(refreshBtn);
+    actionsRow.appendChild(copyDiagBtn);
+    section.appendChild(actionsRow);
+
+    for (const entry of entries) {
+      section.appendChild(buildPathHealthRow(entry));
+    }
+
+    if (verse) {
+      section.appendChild(buildVerseExtensionBlock(verse));
+    }
+
+    return section;
+  }
+
+  /**
    * Handle a settingsUpdated ack from the host.
    * @param {{ok:boolean, id?:string, field?:string, error?:string}} msg
    */
@@ -12261,6 +12586,31 @@
       } else if (msg.field === "reviewEnabled" && row) {
         row.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.disabled = false; });
       }
+    }
+  }
+
+  /**
+   * Handle a pathOverrideResult ack from SET_PATH_OVERRIDE/CLEAR_PATH_OVERRIDE
+   * (see src/host/vscode/panel.ts's _handleSetPathOverride /
+   * _handleClearPathOverride). `ok:false` carries a human-readable `error`
+   * (e.g. "nothing exists at that path") — rendered inline via flashError so
+   * a rejected override is visible on the row, never a silent no-op. On
+   * success the host has already re-run _handleCheckInstall and will push a
+   * fresh "installState" momentarily, which rebuilds this whole row with the
+   * new probe (see the "installState" handler above) — this only needs to
+   * re-enable the buttons and flash a confirm in the meantime.
+   * @param {{key:string, ok:boolean, error?:string}} msg
+   */
+  function handlePathOverrideResult(msg) {
+    const row = msg.key
+      ? setupConfigEl.querySelector(`[data-agent-row="path-${CSS.escape(msg.key)}"]`)
+      : null;
+    if (!row) return;
+    row.querySelectorAll("button").forEach((el) => { el.disabled = false; });
+    if (msg.ok) {
+      flashSaved(row);
+    } else {
+      flashError(row, msg.error || "Could not save override");
     }
   }
 
@@ -12452,6 +12802,14 @@
     });
 
     setupConfigEl.appendChild(hookSection);
+
+    // ── 1a. Path Health ──
+    // The visible half of this repo's Path & Environment Discovery core
+    // principle (see CLAUDE.md and src/host/vscode/pathHealth.ts) — placed
+    // right after Hook health so a NOT FOUND path or a non-enabled Verse
+    // extension is proactively visible near the top of Settings rather than
+    // buried below the roster/routing sections.
+    setupConfigEl.appendChild(buildPathHealthSection());
 
     // ── 1.5. Delegation style (Team Lead Mode, Phase 2) ──
     // Same radio block + exact copy as the pre-install setup-view picker
