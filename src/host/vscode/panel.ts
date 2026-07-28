@@ -4469,9 +4469,21 @@ export class TycoonPanel {
    * authoritative roster value from `_getRosterModelMap`, so the metrics
    * panel's tooltip and "vs. orch." badge always reflect what
    * `.claude/agents/<id>.md` actually declares rather than a value a hook
-   * event may have fabricated. Never mutates `state` or its nested arrays —
-   * only entries whose model actually changes are cloned; entries with no
-   * roster match keep the same object reference.
+   * event may have fabricated. `model` answers "what tier is this agent
+   * CONFIGURED to use" and drives cost attribution — it must stay
+   * roster-authoritative.
+   *
+   * Before overwriting, the incoming `model` (the hook-observed resolved
+   * model id, e.g. "claude-opus-5" — see hookRecord.ts) is preserved
+   * verbatim on a separate `observedModel` field, answering the different
+   * question "what model actually ran". The webview uses `observedModel`
+   * ONLY to parse a display version number, and only after validating it
+   * (untrusted, hook-sourced) and confirming its family agrees with the
+   * roster `model` — see prettyModel() in media/main.js.
+   *
+   * Never mutates `state` or its nested arrays — only entries whose fields
+   * actually change are cloned; entries with no roster match and no
+   * observed model keep the same object reference.
    */
   private _stampRosterModels(state: any): any {
     if (state === null || typeof state !== "object" || !Array.isArray(state.agentMetrics)) {
@@ -4485,7 +4497,15 @@ export class TycoonPanel {
           return m;
         }
         const rm = map.get(m.id);
-        return rm ? { ...m, model: rm } : m;
+        const observed = typeof m.model === "string" && m.model.trim() !== "" ? m.model : undefined;
+        if (!rm && observed === undefined) {
+          return m;
+        }
+        return {
+          ...m,
+          ...(rm ? { model: rm } : {}),
+          ...(observed !== undefined ? { observedModel: observed } : {}),
+        };
       }),
     };
   }

@@ -11416,11 +11416,12 @@
    * Blended $ per MILLION tokens, keyed by model family. Derived from
    * Anthropic's current published API token rates using a 3:1 input:output
    * blend (agentic work is input-heavy), i.e. (3*input + output) / 4, taking
-   * the latest non-deprecated model per family:
-   *   opus   (4.8)  $5 in / $25 out  -> (3*5  + 25)/4 = $10
-   *   sonnet (5)    $2 in / $10 out  -> (3*2  + 10)/4 = $4   [intro rate thru 2026-08-31; standard $3/$15 -> $6 from 2026-09-01]
-   *   haiku  (4.5)  $1 in / $5  out  -> (3*1  +  5)/4 = $2
-   *   fable  (5)    $10 in / $50 out -> (3*10 + 50)/4 = $20
+   * the latest non-deprecated model per family (version numbers omitted —
+   * see prettyModel()'s docs for why this project never hardcodes them):
+   *   opus    $5 in / $25 out  -> (3*5  + 25)/4 = $10
+   *   sonnet  $2 in / $10 out  -> (3*2  + 10)/4 = $4   [intro rate thru 2026-08-31; standard $3/$15 -> $6 from 2026-09-01]
+   *   haiku   $1 in / $5  out  -> (3*1  +  5)/4 = $2
+   *   fable   $10 in / $50 out -> (3*10 + 50)/4 = $20
    * Only TOTAL tokens are tracked per agent (no input/output/cache split), so
    * treat this as a rough estimate — RATIOS between models matter more than
    * absolute accuracy. These are API rates and do NOT reflect Claude
@@ -11566,28 +11567,74 @@
     return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Agent";
   }
 
-  // Latest known version per Claude model family. Update these when a newer model
-  // ships. The runtime-resolved id auto-wins if it ever reports a HIGHER version
-  // than this map (so a real upgrade is never masked), and bare auto-latest
-  // aliases (no version in the id) fall back to this map.
-  const LATEST_MODEL_VERSION = { Opus: "4.8", Sonnet: "5", Haiku: "4.5", Fable: "5" };
-  function prettyModel(model) {
-    if (!model) return "";
+  /**
+   * Extract "Opus"/"Sonnet"/"Haiku"/"Fable" from a model string via
+   * case-insensitive substring match. Returns null when no known family
+   * substring is present.
+   * @param {string|null|undefined} model
+   * @returns {string|null}
+   */
+  function modelFamily(model) {
+    if (!model) return null;
     const s = String(model).toLowerCase();
-    let family = null;
-    if (s.includes("opus")) family = "Opus";
-    else if (s.includes("sonnet")) family = "Sonnet";
-    else if (s.includes("haiku")) family = "Haiku";
-    else if (s.includes("fable")) family = "Fable";
-    if (!family) return String(model); // unknown family → show raw
-    // Version parsed from the resolved id, excluding 8-digit date stamps (e.g. 20250929).
-    const nums = (s.match(/\d+/g) || []).filter((n) => n.length < 8);
-    const idVer = nums.length ? nums.join(".") : null;
-    const knownVer = LATEST_MODEL_VERSION[family] || null;
-    // Prefer whichever numeric version is higher (future-proof if the runtime is ahead).
-    let ver = knownVer;
-    if (idVer && (!knownVer || parseFloat(idVer) > parseFloat(knownVer))) ver = idVer;
-    return ver ? `${family} ${ver}` : family;
+    if (s.includes("opus")) return "Opus";
+    if (s.includes("sonnet")) return "Sonnet";
+    if (s.includes("haiku")) return "Haiku";
+    if (s.includes("fable")) return "Fable";
+    return null;
+  }
+
+  /**
+   * True when `id` has the shape of a genuine resolved Claude model id (e.g.
+   * "claude-opus-5", "claude-sonnet-4-6") rather than arbitrary/garbled hook
+   * data. Hook-observed model ids are untrusted input (they come from
+   * `hookRecord.ts`'s `model` field, resolved by a hook script we don't
+   * control the payload of) — only a string matching this shape may have its
+   * digits parsed into a displayed version number.
+   * @param {string} id
+   * @returns {boolean}
+   */
+  function isWellFormedClaudeModelId(id) {
+    return /^claude-(opus|sonnet|haiku|fable)(-\d+)+$/i.test(String(id || "").trim());
+  }
+
+  /**
+   * Render an agent's model for display, e.g. "Opus 5", or just "Opus" when
+   * no verified version is available. Never hardcodes a version number —
+   * this project has a standing doctrine against pinning model versions
+   * (they age the instant a newer model ships), so a version is shown ONLY
+   * when it can be derived from a real, well-formed resolved model id.
+   *
+   * Two different sources answer two different questions, and this function
+   * deliberately does not conflate them:
+   *   - `rosterModel` (agentMetrics[].model, stamped from
+   *     `.claude/agents/<id>.md` by panel.ts's `_stampRosterModels`) is
+   *     AUTHORITATIVE for which family/tier the agent is CONFIGURED to run
+   *     — it drives cost attribution ("Nx cheaper") and always wins for the
+   *     family shown.
+   *   - `observedModel` (agentMetrics[].observedModel, the hook's real
+   *     resolved model id at spawn time) answers what ACTUALLY ran. It is
+   *     untrusted input, so it is used ONLY to parse a version number, and
+   *     only when it is well-formed (isWellFormedClaudeModelId) AND its
+   *     family agrees with `rosterModel`.
+   *
+   * If there's no observed id, or it's malformed, or its family contradicts
+   * the roster, the version is simply omitted — a missing version is
+   * honest, a wrong one is not, and a family mismatch is never surfaced as
+   * a contradiction (the roster family is authoritative for configuration).
+   * @param {string|null|undefined} rosterModel
+   * @param {string|null|undefined} [observedModel]
+   * @returns {string}
+   */
+  function prettyModel(rosterModel, observedModel) {
+    if (!rosterModel) return "";
+    const family = modelFamily(rosterModel);
+    if (!family) return String(rosterModel); // roster value is trusted config, not hook data — show raw
+    if (observedModel && isWellFormedClaudeModelId(observedModel) && modelFamily(observedModel) === family) {
+      const nums = (String(observedModel).match(/\d+/g) || []).filter((n) => n.length < 8);
+      if (nums.length) return `${family} ${nums.join(".")}`;
+    }
+    return family;
   }
 
   /**
@@ -11640,9 +11687,9 @@
     const role = describeRole(agent.description);
     let nameTitle = displayName;
     if (agent.model && role) {
-      nameTitle = `${displayName} — ${prettyModel(agent.model)}\n${role}`;
+      nameTitle = `${displayName} — ${prettyModel(agent.model, agent.observedModel)}\n${role}`;
     } else if (agent.model) {
-      nameTitle = `${displayName} — ${prettyModel(agent.model)}`;
+      nameTitle = `${displayName} — ${prettyModel(agent.model, agent.observedModel)}`;
     } else if (role) {
       nameTitle = `${displayName}\n${role}`;
     }
@@ -11902,7 +11949,7 @@
       const tasks = a.taskCount ?? 0;
       const tokens = a.tokens ?? 0;
       if (tasks === 0 && tokens === 0) continue;
-      const family = a.model ? prettyModel(a.model).split(" ")[0] : "Unknown";
+      const family = a.model ? prettyModel(a.model, a.observedModel).split(" ")[0] : "Unknown";
       const entry = tierMap.get(family) || { tasks: 0, tokens: 0 };
       entry.tasks += tasks;
       entry.tokens += tokens;
@@ -11963,7 +12010,7 @@
       const coordLine = document.createElement("div");
       coordLine.className = "delegation-stats-row";
       const orchTasks = orch.taskCount ?? 0;
-      coordLine.textContent = `${orch.model ? prettyModel(orch.model) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens(orch.tokens ?? 0)} tokens`;
+      coordLine.textContent = `${orch.model ? prettyModel(orch.model, orch.observedModel) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens(orch.tokens ?? 0)} tokens`;
       coordSection.appendChild(coordLine);
 
       const coordSub = document.createElement("div");
@@ -12015,7 +12062,7 @@
         tr.appendChild(nameTd);
 
         const modelTd = document.createElement("td");
-        modelTd.textContent = a.model ? prettyModel(a.model) : "—";
+        modelTd.textContent = a.model ? prettyModel(a.model, a.observedModel) : "—";
         tr.appendChild(modelTd);
 
         const tasksTd = document.createElement("td");

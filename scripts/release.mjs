@@ -110,7 +110,7 @@ function main() {
   const vsixSize = statSync(vsixPath).size;
 
   const commitMessage = message ? `Release ${newVersion}: ${message}` : `Release ${newVersion}`;
-  const commitBody = `${commitMessage}\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`;
+  const commitBody = `${commitMessage}\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>`;
 
   try {
     execSync('git add -A', { stdio: 'inherit', cwd: ROOT });
