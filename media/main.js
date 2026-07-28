@@ -1072,6 +1072,46 @@
     '</svg>';
 
   /**
+   * Minimal HTML-attribute escape for the trophy cup `title` values below.
+   * Those strings are always static/generated (never user or filesystem
+   * data — see rebirthTierTooltip), but they're spliced into an innerHTML
+   * string rather than set via the DOM `.title` property, so `&` and `"`
+   * still need escaping to stay attribute-safe (e.g. the R1 tooltip's
+   * "rack & ranged weapons").
+   */
+  function escapeHtmlAttr(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  /**
+   * Hover text for a single completed-rebirth cup: "Rebirth N" plus, for
+   * tiers that granted a perk, an em-dash summary of that perk. Tier numbers
+   * are derived from the same UNLOCK constants that gate the corresponding
+   * preview line (~1902-1940) and current-bonus line above, so the tooltip
+   * can never drift out of sync with the actual gates. Rebirth 1's weapons
+   * rack has no named constant — its real gate is the literal `>= 1` in
+   * buildSeededQueue — so it's a literal 1 here too, matching how the
+   * preview list (rebirthUnlockPreviews) already treats it. Tiers past the
+   * highest named constant fall back to the bare "Rebirth N" form.
+   */
+  function rebirthTierTooltip(tier) {
+    const perkByTier = {
+      1: "unlocked the weapons rack & ranged weapons",
+      [TURRET_UNLOCK_REBIRTH]: "unlocked the defensive turret",
+      [DANCE_PARTY_UNLOCK_REBIRTH]: "unlocked the disco dance party",
+      [DANCE_OFF_UNLOCK_REBIRTH]: "unlocked the dance-off",
+      [VICTORY_LAP_UNLOCK_REBIRTH]: "upgraded the victory lap",
+      [GOLD_PALETTE_UNLOCK_REBIRTH]: "unlocked the gold party palette",
+    };
+    const perk = perkByTier[tier];
+    return perk ? `Rebirth ${tier} — ${perk}` : `Rebirth ${tier}`;
+  }
+
+  /**
    * Rebirth trophy row: one bare gold cup per completed rebirth, stacking
    * right-to-left immediately left of the badge medal, collapsing to a
    * single cup + "×N" past MAX_TROPHY_CUPS. Reads module-scope rebirthCount
@@ -1079,6 +1119,16 @@
    * the exact points rebirthCount changes (doRebirth, THEME_INITIALIZED
    * restore, Reset), never per animation frame. At 0 rebirths the row is
    * left empty (`.trophy-row:empty` in style.css hides it entirely).
+   *
+   * Each cup carries a `title` naming the rebirth it represents so hovering
+   * it surfaces what that tier unlocked (rebirthTierTooltip above). Cups are
+   * built low-tier-first (tier 1, 2, 3, ...) and appended in that order; the
+   * row is a normal (non-reversed) flex container anchored by its RIGHT edge
+   * next to the badge medal, so the LAST-appended cup — the highest tier —
+   * lands rightmost/closest to the medal, and tier 1 lands leftmost/farthest
+   * from it. Markup per cup is byte-identical to the old TROPHY_CUP_SVG
+   * repeat() output aside from the added title attribute, so appearance is
+   * unchanged.
    */
   function updateTrophyRow() {
     if (!trophyRowEl) return;
@@ -1087,9 +1137,20 @@
       return;
     }
     if (rebirthCount <= MAX_TROPHY_CUPS) {
-      trophyRowEl.innerHTML = TROPHY_CUP_SVG.repeat(rebirthCount);
+      let html = "";
+      for (let tier = 1; tier <= rebirthCount; tier++) {
+        html += TROPHY_CUP_SVG.replace(
+          '<svg class="trophy-cup"',
+          `<svg class="trophy-cup" title="${escapeHtmlAttr(rebirthTierTooltip(tier))}"`
+        );
+      }
+      trophyRowEl.innerHTML = html;
     } else {
-      trophyRowEl.innerHTML = TROPHY_CUP_SVG +
+      const collapsedCup = TROPHY_CUP_SVG.replace(
+        '<svg class="trophy-cup"',
+        `<svg class="trophy-cup" title="${escapeHtmlAttr(rebirthTierTooltip(rebirthCount))}"`
+      );
+      trophyRowEl.innerHTML = collapsedCup +
         '<span class="trophy-row-count">×' + rebirthCount + '</span>';
     }
   }
@@ -1852,9 +1913,10 @@
     head.appendChild(title);
     if (rebirthCount > 0) {
       const pct = Math.round((Math.pow(1.2, rebirthCount) - 1) * 100);
+      const defensePct = Math.round((Math.pow(1.1, rebirthCount) - 1) * 100);
       const bonus = document.createElement("div");
       bonus.className = "rebirth-bonus";
-      bonus.textContent = `Ranged weapons · Build speed +${pct}%`;
+      bonus.textContent = `Ranged weapons · Build speed +${pct}% · Defense +${defensePct}%`;
       head.appendChild(bonus);
     }
     panel.appendChild(head);
@@ -1948,6 +2010,21 @@
       nextUnlockHint.textContent = nextRebirthUnlock.text;
       panel.appendChild(nextUnlockHint);
     }
+
+    // Concrete next-rebirth stat line: current → next build-speed AND
+    // defense bonus, both derived live from the same compounding formulas
+    // used for the current-bonus line above (~1915-1916) and gameplay (build
+    // speed ~13784+, defense ~8347/16557) — never a hardcoded table. Unlike
+    // the tier-gated unlock hint above, neither stat has a cap, so there is
+    // always a next rebirth to preview and this renders unconditionally.
+    const nextPct = Math.round((Math.pow(1.2, rebirthCount + 1) - 1) * 100);
+    const currentPct = Math.round((Math.pow(1.2, rebirthCount) - 1) * 100);
+    const nextDefensePct = Math.round((Math.pow(1.1, rebirthCount + 1) - 1) * 100);
+    const currentDefensePct = Math.round((Math.pow(1.1, rebirthCount) - 1) * 100);
+    const nextStatLine = document.createElement("div");
+    nextStatLine.className = "rebirth-bonus";
+    nextStatLine.textContent = `Next rebirth: build speed +${currentPct}% → +${nextPct}% · defense +${currentDefensePct}% → +${nextDefensePct}%`;
+    panel.appendChild(nextStatLine);
 
     if (rebirthConfirmPending) {
       const confirm = document.createElement("div");
@@ -8268,7 +8345,9 @@
         // Reuse the same hp field agents drain (AGENT_DPS); the existing
         // hp<=0 → fleeing eviction check (advanceEnemies, ~L13634) reaps it
         // next frame — no new death/disengage path is introduced here.
-        if (typeof bestEnemy.hp === "number") bestEnemy.hp -= TURRET_HIT_DAMAGE;
+        // Same live rebirth defense scaling as agent damage above — derived
+        // from rebirthCount at fire time, never persisted.
+        if (typeof bestEnemy.hp === "number") bestEnemy.hp -= TURRET_HIT_DAMAGE * Math.pow(1.1, rebirthCount);
         // Brief stagger: while turretStaggerT > 0 (decremented in
         // advanceEnemies), updateObjectSmoke's `engaged` gate excludes this
         // rival so it stops ramping structure damage — the visible "repel".
@@ -16473,7 +16552,12 @@
             engageInRange = true;
             charEntry.destNx = charEntry.nx;
             charEntry.destNy = rangedUnlocked ? nearest.ny : charEntry.ny;
-            nearest.hp -= AGENT_DPS * delta;
+            // Rebirth defense scaling: derived live from rebirthCount every
+            // frame (same Math.pow(1.1, n) compounding style as build speed's
+            // 1.2) — never baked into a stored stat, so a reload can't
+            // compound it. Rivals are untouched; this only strengthens the
+            // player's agents.
+            nearest.hp -= AGENT_DPS * delta * Math.pow(1.1, rebirthCount);
             // Enemy faces its attacker; agent facing is set below from relative x.
             nearest.facingLeft = (charEntry.nx > nearest.nx);
             // ── Cosmetic hit-reaction (idle ambient combat) ────────────────
