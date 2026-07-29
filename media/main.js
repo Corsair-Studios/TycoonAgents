@@ -1095,17 +1095,22 @@
    * can never drift out of sync with the actual gates. Rebirth 1's weapons
    * rack has no named constant — its real gate is the literal `>= 1` in
    * buildSeededQueue — so it's a literal 1 here too, matching how the
-   * preview list (rebirthUnlockPreviews) already treats it. Tiers past the
+   * preview list (rebirthUnlockPreviews) already treats it. The turret tier
+   * text also covers the stand-up huddle, since HUDDLE_UNLOCK_REBIRTH
+   * currently coincides with TURRET_UNLOCK_REBIRTH; the gold-palette tier
+   * text likewise covers the sparring exhibition, since SPARRING_UNLOCK_REBIRTH
+   * currently coincides with GOLD_PALETTE_UNLOCK_REBIRTH — both are separate
+   * tunable constants that happen to share a tier today. Tiers past the
    * highest named constant fall back to the bare "Rebirth N" form.
    */
   function rebirthTierTooltip(tier) {
     const perkByTier = {
       1: "unlocked the weapons rack & ranged weapons",
-      [TURRET_UNLOCK_REBIRTH]: "unlocked the defensive turret",
+      [TURRET_UNLOCK_REBIRTH]: "unlocked the defensive turret & stand-up huddles",
       [DANCE_PARTY_UNLOCK_REBIRTH]: "unlocked the disco dance party",
       [DANCE_OFF_UNLOCK_REBIRTH]: "unlocked the dance-off",
       [VICTORY_LAP_UNLOCK_REBIRTH]: "upgraded the victory lap",
-      [GOLD_PALETTE_UNLOCK_REBIRTH]: "unlocked the gold party palette",
+      [GOLD_PALETTE_UNLOCK_REBIRTH]: "unlocked the gold party palette & agent sparring exhibitions",
     };
     const perk = perkByTier[tier];
     return perk ? `Rebirth ${tier} — ${perk}` : `Rebirth ${tier}`;
@@ -1986,15 +1991,14 @@
         text: `Reach Rebirth ${TURRET_UNLOCK_REBIRTH} to unlock a buildable defensive turret`,
       });
     }
-    // Sparring exhibition + stand-up huddle (see updateSparring/updateHuddle,
-    // SPARRING_UNLOCK_REBIRTH/HUDDLE_UNLOCK_REBIRTH — both gated at the same
-    // rebirth tier as the turret above). Unlike the turret entry, this is
+    // Stand-up huddle (see updateHuddle, HUDDLE_UNLOCK_REBIRTH — gated at the
+    // same rebirth tier as the turret above). Unlike the turret entry, this is
     // pure character-animation cosmetics with no buildable-object dependency,
     // so — per product ask — it ALWAYS renders regardless of theme contents:
     // Rebirth 2's preview line must never be empty.
     rebirthUnlockPreviews.push({
-      rebirth: SPARRING_UNLOCK_REBIRTH,
-      text: `Reach Rebirth ${SPARRING_UNLOCK_REBIRTH} to unlock agent sparring drills & stand-up huddles`,
+      rebirth: HUDDLE_UNLOCK_REBIRTH,
+      text: `Reach Rebirth ${HUDDLE_UNLOCK_REBIRTH} to unlock team stand-up huddles`,
     });
     rebirthUnlockPreviews.push({
       rebirth: DANCE_PARTY_UNLOCK_REBIRTH,
@@ -2014,6 +2018,13 @@
     rebirthUnlockPreviews.push({
       rebirth: GOLD_PALETTE_UNLOCK_REBIRTH,
       text: `Reach Rebirth ${GOLD_PALETTE_UNLOCK_REBIRTH} to unlock the gold party palette`,
+    });
+    // Sparring exhibition (see updateSparring, SPARRING_UNLOCK_REBIRTH) —
+    // moved to the gold-palette tier; the stand-up huddle above stays at its
+    // own earlier tier via HUDDLE_UNLOCK_REBIRTH.
+    rebirthUnlockPreviews.push({
+      rebirth: SPARRING_UNLOCK_REBIRTH,
+      text: `Reach Rebirth ${SPARRING_UNLOCK_REBIRTH} to unlock agent sparring exhibitions`,
     });
 
     const nextRebirthUnlock = rebirthUnlockPreviews
@@ -6099,7 +6110,7 @@
     danceOffConfettiActive = false;
   }
 
-  // ── Sparring exhibition (Rebirth-2 ambient easter egg) ─────────────────
+  // ── Sparring exhibition (Rebirth-6 ambient easter egg) ─────────────────
   // Two idle, non-building agents face off in a friendly sparring drill:
   // alternating attacker (melee clip)/defender (block clip) roles, with 0-3
   // idle bystanders drifting in as ring spectators. Shares NO state with the
@@ -6149,8 +6160,8 @@
   let sparringCheckTimer = 0;
   /** Cooldown (seconds) remaining before another sparring exhibition may start via the random trigger. */
   let sparringCooldown = 0;
-  /** Rebirths required before the sparring exhibition (and stand-up huddle) unlocks — same tier as the turret. */
-  const SPARRING_UNLOCK_REBIRTH = 2;
+  /** Rebirths required before the sparring exhibition unlocks — same tier as the gold party palette; the stand-up huddle unlocks separately at HUDDLE_UNLOCK_REBIRTH. */
+  const SPARRING_UNLOCK_REBIRTH = 6;
   /** Seconds between random-trigger eligibility rolls (time-based, not per-frame, like every other ambient system's check). */
   const SPARRING_CHECK_SECONDS = 60;
   /** Chance per eligibility check that an exhibition starts — mean interval ≈ SPARRING_CHECK_SECONDS/SPARRING_CHANCE ≈ 150s, an "occasional" cadence per product ask. */
@@ -6482,7 +6493,7 @@
   let huddleCheckTimer = 0;
   /** Cooldown (seconds) remaining before another huddle may start via the random trigger. */
   let huddleCooldown = 0;
-  /** Rebirths required before the huddle unlocks — same tier as the sparring exhibition/turret. */
+  /** Rebirths required before the huddle unlocks — same tier as the turret; the sparring exhibition unlocks separately at SPARRING_UNLOCK_REBIRTH. */
   const HUDDLE_UNLOCK_REBIRTH = 2;
   /** Seconds between random-trigger eligibility rolls — offset from SPARRING_CHECK_SECONDS so the two activities' random rolls don't always land on the same tick. */
   const HUDDLE_CHECK_SECONDS = 75;
