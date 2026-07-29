@@ -91,9 +91,38 @@ function healDuplicate(effRoot: string, bridgeDir: string): void {
   (TycoonPanel.prototype as any)._healDuplicateUefnBridgeStaging.call({}, effRoot, bridgeDir);
 }
 
+// `_stageBridgeTo` only touches path/fs -- a bare receiver is enough.
+function stageBridgeTo(
+  bridgeDir: string,
+  pyDest: string
+): { staged: number; updated: number; unchanged: number; error?: string } {
+  return (TycoonPanel.prototype as any)._stageBridgeTo.call({}, bridgeDir, pyDest);
+}
+
+function chmodIfExists(p: string, mode: number): void {
+  try {
+    fs.chmodSync(p, mode);
+  } catch {
+    /* platform may not support this bit -- test below tolerates that */
+  }
+}
+
 function writeStamp(dir: string, contents: string): void {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "bridge_version.py"), contents);
+}
+
+// `_autoUpdateUefnBridgeIfStale`'s opt-in signal is `uefn_bridge.py`
+// presence (the fix for the silent-skip bug -- see FIX 5 below), NOT the
+// version stamp alone. Fixtures that want "a bridge is already staged
+// here, with this stamp" must write both files; this helper does that in
+// one call so each test site doesn't have to remember it.
+function writeStagedProjectBridge(pyDir: string, stampContents: string | null): void {
+  fs.mkdirSync(pyDir, { recursive: true });
+  fs.writeFileSync(path.join(pyDir, "uefn_bridge.py"), "# staged bridge");
+  if (stampContents !== null) {
+    fs.writeFileSync(path.join(pyDir, "bridge_version.py"), stampContents);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +321,7 @@ async function autoUpdate(
     _extensionUri: { fsPath: extensionRoot },
     ...UEFN_EVIDENCE_METHODS,
     _stageBridgeTo: (TycoonPanel.prototype as any)._stageBridgeTo,
+    _healDuplicateUefnBridgeStaging: (TycoonPanel.prototype as any)._healDuplicateUefnBridgeStaging,
     _findFortniteEngineBridgeDir: () => {
       findCalls++;
       return findEngineBridgeDir();
@@ -312,7 +342,7 @@ test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the DISCO
   try {
     const stamp = 'BRIDGE_VERSION = "1.2.3"';
     // Project copy already matches bundled -- no project-side staleness.
-    writeStamp(path.join(root, "Content", "Python"), `${stamp}\n`);
+    writeStagedProjectBridge(path.join(root, "Content", "Python"), `${stamp}\n`);
     writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
 
     const { engineCalls, findCalls } = await autoUpdate(
@@ -340,7 +370,7 @@ test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the disco
   const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-stale-ext-");
   const sentinelEngineDir = tmpDir("panelBridgeStaleness-auto-engine-stale-engine-");
   try {
-    writeStamp(path.join(root, "Content", "Python"), 'BRIDGE_VERSION = "1.2.3"\n');
+    writeStagedProjectBridge(path.join(root, "Content", "Python"), 'BRIDGE_VERSION = "1.2.3"\n');
     writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
 
     const { engineCalls } = await autoUpdate(
@@ -363,7 +393,7 @@ test("_autoUpdateUefnBridgeIfStale never calls _refreshEngineBridgeCopy when the
   const root = tmpDir("panelBridgeStaleness-auto-engine-noopt-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-noopt-ext-");
   try {
-    // No Content/Python/bridge_version.py at all -- opt-in guard returns early.
+    // No Content/Python/uefn_bridge.py at all -- opt-in guard returns early.
     writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
 
     const { engineCalls, findCalls } = await autoUpdate(
@@ -388,7 +418,7 @@ test("_autoUpdateUefnBridgeIfStale treats a missing engine dir as unavailable: n
   try {
     const stamp = 'BRIDGE_VERSION = "1.2.3"';
     // Project copy already current -- isolates the engine-only path.
-    writeStamp(path.join(root, "Content", "Python"), `${stamp}\n`);
+    writeStagedProjectBridge(path.join(root, "Content", "Python"), `${stamp}\n`);
     writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
 
     const { engineCalls, findCalls } = await autoUpdate(
@@ -402,6 +432,414 @@ test("_autoUpdateUefnBridgeIfStale treats a missing engine dir as unavailable: n
 
     assert.equal(findCalls, 1, "_findFortniteEngineBridgeDir must still be attempted");
     assert.equal(engineCalls.length, 0, "_refreshEngineBridgeCopy must not be called when discovery returns null");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FIX 5: the silent-skip bug. A pre-stamping-era (June) install has
+// uefn_bridge.py staged but NO bridge_version.py -- the old opt-in gate
+// checked for the STAMP's existence and read "no stamp" as "never opted
+// into UEFN, do nothing", so a project that badly needed refreshing was
+// silently skipped forever. The fix gates opt-in on `uefn_bridge.py`
+// itself and treats a missing/unparseable installed stamp as MAXIMALLY
+// stale. This section also covers the two things wired into the SAME rail
+// alongside the gate fix: the misplaced Content/Content/Python heal (only
+// ran on explicit install before), and using the real evidence-ladder
+// target resolution (never a fallback guess) since this is a write path.
+// ---------------------------------------------------------------------------
+
+function writeVprojectForAuto(vprojectPath: string, sourceDir: string, name: string): void {
+  fs.mkdirSync(path.dirname(vprojectPath), { recursive: true });
+  fs.writeFileSync(
+    vprojectPath,
+    JSON.stringify({
+      packages: [
+        { desc: { name, dirPath: sourceDir, settings: { role: "Source" } } },
+        { desc: { name: "SomeExternalPkg", settings: { role: "External" } } },
+      ],
+    })
+  );
+}
+
+test("_autoUpdateUefnBridgeIfStale refreshes a STAMPLESS (pre-stamping-era) staged bridge instead of silently skipping it", async () => {
+  const root = tmpDir("panelBridgeStaleness-gate-stampless-root-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-gate-stampless-ext-");
+  try {
+    const projectPyDir = path.join(root, "Content", "Python");
+    // June-era install: real bridge file present, NO bridge_version.py at
+    // all -- this is exactly the shape the old gate misread as "not
+    // opted in".
+    fs.mkdirSync(projectPyDir, { recursive: true });
+    fs.writeFileSync(path.join(projectPyDir, "uefn_bridge.py"), "# STALE June bridge, no stamp");
+
+    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "2.1.0"\n');
+
+    const { findCalls } = await autoUpdate(
+      root,
+      extensionRoot,
+      () => null,
+      () => {
+        throw new Error("must not be called -- no engine dir in this fixture");
+      }
+    );
+
+    assert.equal(findCalls, 1, "the rail must run past the opt-in gate to reach the engine-refresh step too");
+    assert.equal(
+      fs.readFileSync(path.join(projectPyDir, "bridge_version.py"), "utf8"),
+      'BRIDGE_VERSION = "2.1.0"\n',
+      "a missing stamp must be treated as maximally stale and refreshed, never silently skipped"
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+test("_autoUpdateUefnBridgeIfStale heals a misplaced Content/Content/Python left by the old staging bug, alongside a normal project refresh", async () => {
+  const root = tmpDir("panelBridgeStaleness-gate-dupheal-root-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-gate-dupheal-ext-");
+  try {
+    const projectPyDir = path.join(root, "Content", "Python");
+    writeStagedProjectBridge(projectPyDir, 'BRIDGE_VERSION = "1.0.0"\n');
+
+    const bridgeDir = path.join(extensionRoot, "media", "uefn-bridge");
+    fs.mkdirSync(bridgeDir, { recursive: true });
+    fs.writeFileSync(path.join(bridgeDir, "uefn_bridge.py"), "# shipped bridge");
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+
+    // The old staging bug's fabricated nested copy, carrying our own
+    // bridge's filenames.
+    const bogusNestedPythonDir = path.join(root, "Content", "Content", "Python");
+    fs.mkdirSync(bogusNestedPythonDir, { recursive: true });
+    fs.writeFileSync(path.join(bogusNestedPythonDir, "uefn_bridge.py"), "# bogus nested copy");
+    fs.writeFileSync(path.join(bogusNestedPythonDir, "bridge_version.py"), 'BRIDGE_VERSION = "1.0.0"\n');
+
+    await autoUpdate(
+      root,
+      extensionRoot,
+      () => null,
+      () => {
+        throw new Error("must not be called -- no engine dir in this fixture");
+      }
+    );
+
+    assert.equal(
+      fs.readFileSync(path.join(projectPyDir, "uefn_bridge.py"), "utf8"),
+      "# shipped bridge",
+      "the real project copy must be refreshed"
+    );
+    assert.ok(!fs.existsSync(bogusNestedPythonDir), "the misplaced nested copy must be healed on this SAME auto-heal rail, not just on explicit install");
+    assert.ok(!fs.existsSync(path.join(root, "Content", "Content")), "the emptied Content/Content parent must be removed too");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+test("_autoUpdateUefnBridgeIfStale field fixture: Plugins-layout project, workspace opened at the plugin's Content dir, stampless staged bridge, and a bogus nested Content/Content copy -- resolves via the evidence ladder, refreshes the real dir, and heals the nested copy", async () => {
+  const projectRoot = tmpDir("panelBridgeStaleness-field-plugins-");
+  const verseProjectRoot = tmpDir("panelBridgeStaleness-field-plugins-vproj-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-field-plugins-ext-");
+  const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
+  try {
+    // "<...>\MyIsland_\Plugins\PluginA\Content\" -- the real content dir,
+    // confirmed by the vproject's Source dirPath below.
+    const realContentDir = path.join(projectRoot, "Plugins", "PluginA", "Content");
+    fs.mkdirSync(realContentDir, { recursive: true });
+
+    // Stampless June bridge already staged directly in the real content
+    // dir -- a pre-stamping-era install, the exact shape the old gate
+    // silently skipped.
+    const realPythonDir = path.join(realContentDir, "Python");
+    fs.mkdirSync(realPythonDir, { recursive: true });
+    fs.writeFileSync(path.join(realPythonDir, "uefn_bridge.py"), "# STALE June bridge, no stamp");
+
+    // The old bug's fabricated nested copy: realContentDir/Content/Python.
+    const bogusNestedPythonDir = path.join(realContentDir, "Content", "Python");
+    fs.mkdirSync(bogusNestedPythonDir, { recursive: true });
+    fs.writeFileSync(path.join(bogusNestedPythonDir, "uefn_bridge.py"), "# bogus nested copy");
+    fs.writeFileSync(path.join(bogusNestedPythonDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.0.0"\n');
+
+    // The .vproject UEFN wrote for this project: its Source package
+    // dirPath IS realContentDir.
+    writeVprojectForAuto(
+      path.join(verseProjectRoot, "PluginA", "vproject", "PluginA.vproject"),
+      realContentDir,
+      "PluginA"
+    );
+
+    const bridgeDir = path.join(extensionRoot, "media", "uefn-bridge");
+    fs.mkdirSync(bridgeDir, { recursive: true });
+    fs.writeFileSync(path.join(bridgeDir, "uefn_bridge.py"), "# shipped bridge");
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+
+    process.env.UEFN_VERSE_PROJECT_DIR = verseProjectRoot;
+
+    // Workspace opened directly at the plugin's Content dir -- the exact
+    // shape of the field failure.
+    await autoUpdate(
+      realContentDir,
+      extensionRoot,
+      () => null,
+      () => {
+        throw new Error("must not be called -- no engine dir in this fixture");
+      }
+    );
+
+    assert.equal(
+      fs.readFileSync(path.join(realPythonDir, "uefn_bridge.py"), "utf8"),
+      "# shipped bridge",
+      "the REAL Python dir must be refreshed, resolved via vproject evidence"
+    );
+    assert.equal(
+      fs.readFileSync(path.join(realPythonDir, "bridge_version.py"), "utf8"),
+      'BRIDGE_VERSION = "2.1.0"\n',
+      "a fresh stamp must land even though the installed copy had none at all"
+    );
+    assert.ok(!fs.existsSync(bogusNestedPythonDir), "the bogus nested Content/Content/Python dir must be healed on the panel-load rail");
+    assert.ok(!fs.existsSync(path.join(realContentDir, "Content")), "the emptied Content/Content parent must be removed too");
+    assert.ok(fs.existsSync(realContentDir), "the real content dir itself must survive");
+  } finally {
+    if (savedOverride === undefined) delete process.env.UEFN_VERSE_PROJECT_DIR;
+    else process.env.UEFN_VERSE_PROJECT_DIR = savedOverride;
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(verseProjectRoot, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+test("_autoUpdateUefnBridgeIfStale never guesses a target: an unresolved evidence ladder (ambiguous Plugins layout) writes nothing", async () => {
+  const projectRoot = tmpDir("panelBridgeStaleness-field-ambiguous-");
+  const verseProjectRoot = tmpDir("panelBridgeStaleness-field-ambiguous-vproj-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-field-ambiguous-ext-");
+  const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
+  try {
+    // Two plausible Plugins-layout content dirs, no vproject evidence to
+    // disambiguate between them, and no existing bridge under either --
+    // rung 4 (layout-rule) sees 2 candidates and must refuse to guess.
+    const pluginAContent = path.join(projectRoot, "Plugins", "PluginA", "Content");
+    const pluginBContent = path.join(projectRoot, "Plugins", "PluginB", "Content");
+    fs.mkdirSync(pluginAContent, { recursive: true });
+    fs.mkdirSync(pluginBContent, { recursive: true });
+
+    const bridgeDir = path.join(extensionRoot, "media", "uefn-bridge");
+    fs.mkdirSync(bridgeDir, { recursive: true });
+    fs.writeFileSync(path.join(bridgeDir, "uefn_bridge.py"), "# shipped bridge");
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+
+    process.env.UEFN_VERSE_PROJECT_DIR = verseProjectRoot; // exists, empty -- zero vproject matches
+
+    const { findCalls } = await autoUpdate(
+      projectRoot,
+      extensionRoot,
+      () => {
+        throw new Error("must not be called -- target never resolved, rail must return before engine discovery");
+      },
+      () => {
+        throw new Error("must not be called");
+      }
+    );
+
+    assert.equal(findCalls, 0, "an unresolved/ambiguous target must stop the rail before any staging or engine discovery");
+    assert.ok(!fs.existsSync(path.join(pluginAContent, "Python")), "must never guess-write into either candidate");
+    assert.ok(!fs.existsSync(path.join(pluginBContent, "Python")), "must never guess-write into either candidate");
+  } finally {
+    if (savedOverride === undefined) delete process.env.UEFN_VERSE_PROJECT_DIR;
+    else process.env.UEFN_VERSE_PROJECT_DIR = savedOverride;
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(verseProjectRoot, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FIX 6: stamp-after-verify ordering (review-gate CRITICAL). `_stageBridgeTo`
+// used to copy files in plain directory-listing order, and
+// `bridge_version.py` sorts alphabetically ahead of nearly every sibling. On
+// the panel-load rail, which can run while UEFN holds a sibling file locked,
+// that meant the stamp could land and THEN a later sibling could fail to
+// copy -- new stamp + stale files on disk, silently certified as current
+// forever after (the next load reads the stamp as current and never
+// retries). The fix copies bridge_version.py LAST, and only attempts it if
+// every other sibling copied cleanly; a real per-file failure now leaves the
+// OLD stamp (or none) in place, so the on-disk state alone drives a retry.
+// ---------------------------------------------------------------------------
+
+test("_stageBridgeTo: a locked sibling fails to copy -> bridge_version.py is skipped entirely, the OLD stamp survives, and the failure is reported", () => {
+  const bridgeDir = tmpDir("panelBridgeStaleness-order-bridge-");
+  const pyDest = tmpDir("panelBridgeStaleness-order-dest-");
+  try {
+    // "zzz_locked.py" deliberately sorts AFTER "bridge_version.py"
+    // alphabetically -- proving this is a real reorder, not an accident of
+    // directory-listing order.
+    fs.writeFileSync(path.join(bridgeDir, "aaa_ok.py"), "NEW aaa content");
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+    fs.writeFileSync(path.join(bridgeDir, "zzz_locked.py"), "NEW zzz content");
+
+    fs.mkdirSync(pyDest, { recursive: true });
+    fs.writeFileSync(path.join(pyDest, "aaa_ok.py"), "OLD aaa content");
+    fs.writeFileSync(path.join(pyDest, "bridge_version.py"), 'BRIDGE_VERSION = "1.0.0"\n');
+    fs.writeFileSync(path.join(pyDest, "zzz_locked.py"), "OLD zzz content, different from shipped");
+    // Simulate UEFN holding this file locked / a read-only/AV block --
+    // copyFileSync throws EPERM overwriting a read-only destination on
+    // Windows (confirmed against the real fs, not assumed).
+    fs.chmodSync(path.join(pyDest, "zzz_locked.py"), 0o444);
+
+    const result = stageBridgeTo(bridgeDir, pyDest);
+
+    assert.ok(result.error, "a real per-file failure must be reported, never swallowed to a clean-looking result");
+    assert.ok(result.error!.includes("zzz_locked.py"), "the error must name the file that actually failed");
+    assert.ok(
+      result.error!.includes("bridge_version.py"),
+      "the error must also record that the stamp was skipped as a consequence"
+    );
+
+    assert.equal(
+      fs.readFileSync(path.join(pyDest, "bridge_version.py"), "utf8"),
+      'BRIDGE_VERSION = "1.0.0"\n',
+      "the OLD stamp must survive a partial failure -- never advance while siblings are stale"
+    );
+    // A sibling that copied fine BEFORE the failure still lands -- one
+    // failing file must not roll back unrelated successful progress.
+    assert.equal(fs.readFileSync(path.join(pyDest, "aaa_ok.py"), "utf8"), "NEW aaa content");
+  } finally {
+    chmodIfExists(path.join(pyDest, "zzz_locked.py"), 0o666);
+    fs.rmSync(bridgeDir, { recursive: true, force: true });
+    fs.rmSync(pyDest, { recursive: true, force: true });
+  }
+});
+
+test("_stageBridgeTo: once the lock is cleared, the NEXT call completes cleanly and the stamp advances", () => {
+  const bridgeDir = tmpDir("panelBridgeStaleness-order-retry-bridge-");
+  const pyDest = tmpDir("panelBridgeStaleness-order-retry-dest-");
+  try {
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+    fs.writeFileSync(path.join(bridgeDir, "zzz_locked.py"), "NEW zzz content");
+
+    fs.mkdirSync(pyDest, { recursive: true });
+    fs.writeFileSync(path.join(pyDest, "bridge_version.py"), 'BRIDGE_VERSION = "1.0.0"\n');
+    fs.writeFileSync(path.join(pyDest, "zzz_locked.py"), "OLD zzz content, different from shipped");
+    fs.chmodSync(path.join(pyDest, "zzz_locked.py"), 0o444);
+
+    const firstAttempt = stageBridgeTo(bridgeDir, pyDest);
+    assert.ok(firstAttempt.error, "first attempt must fail while the file is locked");
+    assert.equal(
+      fs.readFileSync(path.join(pyDest, "bridge_version.py"), "utf8"),
+      'BRIDGE_VERSION = "1.0.0"\n',
+      "still the old stamp after the first, failed attempt"
+    );
+
+    // The block is removed (file unlocked) -- the on-disk state (stamp
+    // still 1.0.0) is exactly what makes the caller retry on the next
+    // panel load; simulate that retry directly.
+    fs.chmodSync(path.join(pyDest, "zzz_locked.py"), 0o666);
+    const secondAttempt = stageBridgeTo(bridgeDir, pyDest);
+
+    assert.equal(secondAttempt.error, undefined, "the retry must complete cleanly once the block is gone");
+    assert.equal(
+      fs.readFileSync(path.join(pyDest, "bridge_version.py"), "utf8"),
+      'BRIDGE_VERSION = "2.1.0"\n',
+      "the stamp must now advance -- every sibling copied successfully this time"
+    );
+    assert.equal(fs.readFileSync(path.join(pyDest, "zzz_locked.py"), "utf8"), "NEW zzz content");
+  } finally {
+    chmodIfExists(path.join(pyDest, "zzz_locked.py"), 0o666);
+    fs.rmSync(bridgeDir, { recursive: true, force: true });
+    fs.rmSync(pyDest, { recursive: true, force: true });
+  }
+});
+
+test("_autoUpdateUefnBridgeIfStale end-to-end: a locked sibling blocks the stamp this panel load, then a later panel load (block removed) completes and shows the update toast", async () => {
+  const root = tmpDir("panelBridgeStaleness-order-e2e-root-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-order-e2e-ext-");
+  try {
+    const projectPyDir = path.join(root, "Content", "Python");
+    fs.mkdirSync(projectPyDir, { recursive: true });
+    fs.writeFileSync(path.join(projectPyDir, "uefn_bridge.py"), "# staged bridge (old)");
+    fs.writeFileSync(path.join(projectPyDir, "bridge_version.py"), 'BRIDGE_VERSION = "1.0.0"\n');
+    fs.writeFileSync(path.join(projectPyDir, "zzz_locked.py"), "OLD zzz content, different from shipped");
+    fs.chmodSync(path.join(projectPyDir, "zzz_locked.py"), 0o444);
+
+    const bridgeDir = path.join(extensionRoot, "media", "uefn-bridge");
+    fs.mkdirSync(bridgeDir, { recursive: true });
+    fs.writeFileSync(path.join(bridgeDir, "uefn_bridge.py"), "# shipped bridge (new)");
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+    fs.writeFileSync(path.join(bridgeDir, "zzz_locked.py"), "NEW zzz content");
+
+    const toasts: string[] = [];
+    const fakeThis = {
+      _extensionUri: { fsPath: extensionRoot },
+      ...UEFN_EVIDENCE_METHODS,
+      _stageBridgeTo: (TycoonPanel.prototype as any)._stageBridgeTo,
+      _healDuplicateUefnBridgeStaging: (TycoonPanel.prototype as any)._healDuplicateUefnBridgeStaging,
+      _findFortniteEngineBridgeDir: () => null,
+      _refreshEngineBridgeCopy: () => {
+        throw new Error("must not be called -- no engine dir in this fixture");
+      },
+    };
+    const run = async (): Promise<void> => {
+      toasts.length = 0;
+      await (TycoonPanel.prototype as any)._autoUpdateUefnBridgeIfStale.call(fakeThis, root);
+    };
+
+    await run();
+    assert.equal(
+      fs.readFileSync(path.join(projectPyDir, "bridge_version.py"), "utf8"),
+      'BRIDGE_VERSION = "1.0.0"\n',
+      "first (locked) panel load must NOT advance the stamp"
+    );
+    // "uefn_bridge.py" sorts alphabetically before "zzz_locked.py", so it
+    // copies successfully on this same (still overall-failing) run --
+    // partial progress on files that DID succeed is expected and fine; the
+    // one thing that must never advance on a partial failure is the stamp
+    // itself (asserted above).
+    assert.equal(
+      fs.readFileSync(path.join(projectPyDir, "uefn_bridge.py"), "utf8"),
+      "# shipped bridge (new)",
+      "a sibling that copies fine before the failing file is allowed to land"
+    );
+
+    // The lock is released (e.g. the user closed UEFN) -- next panel load.
+    fs.chmodSync(path.join(projectPyDir, "zzz_locked.py"), 0o666);
+    await run();
+
+    assert.equal(
+      fs.readFileSync(path.join(projectPyDir, "bridge_version.py"), "utf8"),
+      'BRIDGE_VERSION = "2.1.0"\n',
+      "the retry must complete once the block is gone -- the stamp finally advances"
+    );
+    assert.equal(fs.readFileSync(path.join(projectPyDir, "uefn_bridge.py"), "utf8"), "# shipped bridge (new)");
+  } finally {
+    chmodIfExists(path.join(root, "Content", "Python", "zzz_locked.py"), 0o666);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+test("_verifiedUefnBridgeStampValue treats a matching stamp with a missing uefn_bridge.py as stale, not verified", () => {
+  const root = tmpDir("panelBridgeStaleness-verify-missing-entry-");
+  const extensionRoot = tmpDir("panelBridgeStaleness-verify-missing-entry-ext-");
+  try {
+    const pyDir = path.join(root, "Content", "Python");
+    fs.mkdirSync(pyDir, { recursive: true });
+    // Stamp matches the shipped version, but the actual bridge entry point
+    // never landed (or was removed) -- must not be read as verified.
+    fs.writeFileSync(path.join(pyDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+
+    const bridgeDir = path.join(extensionRoot, "media", "uefn-bridge");
+    fs.mkdirSync(bridgeDir, { recursive: true });
+    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+
+    const fakeThis = {
+      _extensionUri: { fsPath: extensionRoot },
+      ...UEFN_EVIDENCE_METHODS,
+    };
+    const value = (TycoonPanel.prototype as any)._verifiedUefnBridgeStampValue.call(fakeThis, root);
+
+    assert.equal(value, "stale:missing-uefn_bridge.py");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });

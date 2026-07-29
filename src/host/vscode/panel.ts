@@ -3659,32 +3659,87 @@ export class TycoonPanel {
    * A file is written only when absent or when its content differs, so tool
    * updates land without needlessly rewriting unchanged files. Creates pyDest.
    */
+  /**
+   * Stage every shipped bridge file into `pyDest`. `bridge_version.py`
+   * ALWAYS copies LAST, and ONLY if every other sibling copied cleanly.
+   *
+   * THE BUG THIS ORDERING FIXES: this used to copy files in plain
+   * `fs.readdirSync` (directory-listing) order, and `bridge_version.py`
+   * sorts alphabetically ahead of nearly every sibling. This method runs on
+   * panel load (`_autoUpdateUefnBridgeIfStale`) while UEFN may be open and
+   * holding a sibling file locked — so the stamp could land, then a LATER
+   * sibling's `copyFileSync` throws (locked/read-only/AV), leaving NEW
+   * stamp + STALE siblings on disk. That state is self-perpetuating: the
+   * next panel load reads the stamp as current and never retries, and
+   * `_verifiedUefnBridgeStampValue` (which only re-reads the stamp) would
+   * certify the broken state as verified — recreating, one layer down,
+   * the exact "success-shaped stamp with no verified files behind it" bug
+   * this changeset exists to kill.
+   *
+   * Every file copy is individually try/caught: one failing sibling no
+   * longer aborts the whole call (best-effort, same posture as
+   * `_healDuplicateUefnBridgeStaging`), but if ANY sibling fails,
+   * `bridge_version.py` is skipped entirely rather than attempted — so a
+   * partial failure always leaves the OLD stamp (or none) in place. The
+   * on-disk state alone is what guarantees the next panel load sees this
+   * as stale and retries; no separate "did it work" signal needs to be
+   * threaded through the caller.
+   *
+   * Returns `error` (a joined, human-readable summary of every failed
+   * file) when anything failed to copy — callers must surface this rather
+   * than reading a call with `error` unset as full success.
+   */
   private _stageBridgeTo(
     bridgeDir: string,
     pyDest: string
-  ): { staged: number; updated: number; unchanged: number } {
+  ): { staged: number; updated: number; unchanged: number; error?: string } {
     fs.mkdirSync(pyDest, { recursive: true });
     let staged = 0;
     let updated = 0;
     let unchanged = 0;
-    for (const name of fs.readdirSync(bridgeDir)) {
-      if (name === "uefn-server.mjs") continue;
-      if (name === "__pycache__") continue;
-      if (name.endsWith(".pyc") || name.endsWith(".pyo")) continue;
-      const srcPath = path.join(bridgeDir, name);
-      if (!fs.statSync(srcPath).isFile()) continue;
-      const destPath = path.join(pyDest, name);
-      if (!fs.existsSync(destPath)) {
-        fs.copyFileSync(srcPath, destPath);
-        staged++;
-      } else if (!fs.readFileSync(srcPath).equals(fs.readFileSync(destPath))) {
-        fs.copyFileSync(srcPath, destPath);
-        updated++;
-      } else {
-        unchanged++;
+    const failures: string[] = [];
+
+    const names = fs.readdirSync(bridgeDir).filter((name) => {
+      if (name === "uefn-server.mjs") return false;
+      if (name === "__pycache__") return false;
+      if (name.endsWith(".pyc") || name.endsWith(".pyo")) return false;
+      try {
+        return fs.statSync(path.join(bridgeDir, name)).isFile();
+      } catch {
+        return false;
+      }
+    });
+
+    const STAMP_NAME = "bridge_version.py";
+    const orderedNames = [...names.filter((n) => n !== STAMP_NAME), ...names.filter((n) => n === STAMP_NAME)];
+
+    for (const name of orderedNames) {
+      if (name === STAMP_NAME && failures.length > 0) {
+        // A sibling already failed this run -- never stamp a partially
+        // updated dir, even if bridge_version.py itself would copy fine.
+        failures.push(`${STAMP_NAME}: skipped -- ${failures.length} earlier sibling(s) failed to copy`);
+        continue;
+      }
+      try {
+        const srcPath = path.join(bridgeDir, name);
+        const destPath = path.join(pyDest, name);
+        if (!fs.existsSync(destPath)) {
+          fs.copyFileSync(srcPath, destPath);
+          staged++;
+        } else if (!fs.readFileSync(srcPath).equals(fs.readFileSync(destPath))) {
+          fs.copyFileSync(srcPath, destPath);
+          updated++;
+        } else {
+          unchanged++;
+        }
+      } catch (e) {
+        failures.push(`${name}: ${String(e)}`);
       }
     }
-    return { staged, updated, unchanged };
+
+    return failures.length > 0
+      ? { staged, updated, unchanged, error: failures.join("; ") }
+      : { staged, updated, unchanged };
   }
 
   /**
@@ -4300,6 +4355,72 @@ export class TycoonPanel {
   }
 
   /**
+   * Verify-after-write for the UEFN bridge, used by `_ensureInstalledPacksFresh`
+   * so a pack's `pack-staging.json` entry can never claim the bridge is
+   * current without re-reading its ACTUAL on-disk stamp. Mirrors the
+   * `_write_json_checked` precedent in `media/uefn-bridge/uefn_bridge.py`
+   * (verify the write landed by reading it back, never trust the write call
+   * alone): re-resolves the project target via `_resolveUefnContentDirEvidence`
+   * (the same write-path evidence ladder `_autoUpdateUefnBridgeIfStale` /
+   * `_stageUefnBridgeAllTargets` use — never the best-effort
+   * `_uefnEffectiveRoot`), then compares the resolved target's OWN
+   * `Content/Python/bridge_version.py` against the shipped one.
+   *
+   * Returns the verified numeric version string ONLY when the resolved
+   * target's stamp matches the shipped bridge exactly — that is the one
+   * shape a caller may read as "confirmed current". Every other outcome
+   * returns a `"stale:<reason>"` / `"unresolved:<reason>"` marker that can
+   * never be mistaken for a real version number, so a reader that
+   * (incorrectly) treated any string here as "it's fine" would still see
+   * an obviously-not-a-version value rather than a false "0.0.490".
+   * Never throws.
+   */
+  private _verifiedUefnBridgeStampValue(root: string): string {
+    try {
+      const resolved = this._resolveUefnContentDirEvidence(root);
+      if (resolved.contentDir === null) return `unresolved:${resolved.reason}`;
+      const effRoot = path.dirname(resolved.contentDir);
+      const stampPath = path.join(effRoot, "Content", "Python", "bridge_version.py");
+
+      let installedText: string;
+      try {
+        installedText = fs.readFileSync(stampPath, "utf8");
+      } catch {
+        return "stale:missing"; // no bridge_version.py on disk at the resolved target -- never landed
+      }
+
+      const bundledPath = path.join(this._extensionUri.fsPath, "media", "uefn-bridge", "bridge_version.py");
+      const bundledText = fs.readFileSync(bundledPath, "utf8");
+
+      const installedVersion = parseBridgeVersion(installedText);
+      const bundledVersion = parseBridgeVersion(bundledText);
+      if (!installedVersion) return "stale:unparseable";
+      if (!bundledVersion || installedVersion !== bundledVersion) return `stale:${installedVersion}`;
+
+      // Cheap spot-check beyond the stamp alone: `_stageBridgeTo` copies
+      // `bridge_version.py` LAST, only after every sibling succeeded (see
+      // its docstring) -- so a matching stamp SHOULD imply the rest of the
+      // bridge landed too. This is a second, independent signal against
+      // that guarantee ever regressing (or a stamp being hand-placed/
+      // restored without its siblings): if the bridge's actual entry point
+      // is missing or empty right next to a "matching" stamp, that is not
+      // a verified install. Deliberately narrow (one file, one stat) --
+      // the ordering guarantee in `_stageBridgeTo` is the primary defense,
+      // this is just a cheap trip-wire, not a full file-set diff.
+      const entryPointPath = path.join(effRoot, "Content", "Python", "uefn_bridge.py");
+      try {
+        if (fs.statSync(entryPointPath).size === 0) return "stale:empty-uefn_bridge.py";
+      } catch {
+        return "stale:missing-uefn_bridge.py";
+      }
+
+      return installedVersion; // verified: on-disk stamp matches the shipped bridge, entry point present
+    } catch (e) {
+      return `stale:error(${String(e)})`;
+    }
+  }
+
+  /**
    * True when the staged bridge is STALE: both the staged
    * `<effRoot>/Content/Python/bridge_version.py` stamp and the shipped
    * `media/uefn-bridge/bridge_version.py` are readable, and their trimmed
@@ -4347,10 +4468,38 @@ export class TycoonPanel {
    * PROJECT copy: unlike `_stageUefnBridgeAllTargets` (used by the explicit
    * user-initiated Install-pack / Setup-UEFN flows), this automatic
    * panel-load path never CREATES a Fortnite engine install copy — it only
-   * ever pushes to the project's own `<effRoot>/Content/Python` via the
-   * same single-target `_stageBridgeTo` helper and the same project-target
-   * path `_stageUefnBridgeAllTargets` computes, so check and push still
-   * agree, gated behind the version comparison above.
+   * ever pushes to the resolved project target via the same single-target
+   * `_stageBridgeTo` helper. As of the fix below, the target is resolved
+   * via `_resolveUefnContentDirEvidence` directly (the SAME evidence
+   * ladder `_stageUefnBridgeAllTargets` uses for the explicit install path)
+   * rather than the best-effort, fall-back-to-`root` `_uefnEffectiveRoot` —
+   * this is a WRITE path, so an unresolved/ambiguous target must be treated
+   * as "can't safely act" and skipped, never guessed at.
+   *
+   * THE SILENT-SKIP BUG THIS FIXES: the opt-in gate used to check for
+   * `<effRoot>/Content/Python/bridge_version.py` — i.e. it treated "no
+   * version stamp" as "never opted into UEFN, do nothing". But a
+   * pre-stamping-era install (staged before `bridge_version.py` existed at
+   * all) has real bridge files with NO stamp — the gate misread "unknown
+   * version" as "not installed" and skipped a project that badly needed
+   * refreshing. Confirmed in the field: a June-era staged bridge with a
+   * hard `from device_audit import <symbol>` import died against a newer
+   * engine-side `device_audit.py` that had dropped that symbol, and this
+   * method's early return meant it never got the chance to heal. The gate
+   * now checks for `uefn_bridge.py` itself (the actual "this project has a
+   * bridge staged" signal, same one `_uefnBridgePythonStaged` uses) —
+   * opt-in is still preserved (never creates a bridge copy that wasn't
+   * there before), but a missing/unparseable version stamp on an otherwise
+   * staged bridge is now treated as MAXIMALLY stale rather than "can't
+   * tell so skip".
+   *
+   * MISPLACED-COPY HEAL: after a project push, this now also calls
+   * `_healDuplicateUefnBridgeStaging` against the SAME resolved `effRoot`
+   * the push used — the bogus `Content/Content/Python` left by the old
+   * staging bug previously only got cleaned up on an explicit
+   * install/reinstall (`_stageUefnBridgeAllTargets`), never on this
+   * automatic panel-load rail, so a project that hit the bug once stayed
+   * bogus-nested forever unless the user re-ran setup.
    *
    * ENGINE copy: this method ALSO best-effort refreshes an EXISTING engine
    * bridge copy by first discovering it via `_findFortniteEngineBridgeDir`
@@ -4373,15 +4522,20 @@ export class TycoonPanel {
    * directory).
    *
    * Rules:
-   * - Never creates a bridge copy (project or engine) — if the project has
-   *   no installed `<effRoot>/Content/Python/bridge_version.py`, the
-   *   project never opted into UEFN and this returns immediately before
-   *   touching either copy (opt-in preserved, same posture as
-   *   `_ensureHookScriptFresh`).
-   * - Project copy only re-stages when the bundled version is strictly
-   *   newer than the installed one (or the installed stamp is unparseable
-   *   garbage); equal or genuinely newer-or-older-but-valid installed
-   *   versions are left untouched.
+   * - Never creates a bridge copy (project or engine) — if the resolved
+   *   project target has no `uefn_bridge.py` staged, the project never
+   *   opted into UEFN and this returns immediately before touching either
+   *   copy (opt-in preserved, same posture as `_ensureHookScriptFresh`).
+   *   If the target itself can't be resolved (no evidence, or ambiguous),
+   *   this also returns immediately — a write path must never guess.
+   * - Project copy re-stages when the bundled version is strictly newer
+   *   than the installed one, OR the installed stamp is missing/unparseable
+   *   garbage (never "can't tell so skip" — see above); equal or
+   *   genuinely newer-but-valid installed versions are left untouched.
+   * - The misplaced `Content/Content/Python` heal runs after every attempt
+   *   to resolve a target, independent of whether the project copy was
+   *   itself stale — a stray nested copy can outlive an already-current
+   *   real one.
    * - Engine copy refresh runs independently every call (see above) and is
    *   itself a no-op unless a stale engine copy already exists.
    * - Shows exactly one informational toast when EITHER copy actually
@@ -4392,27 +4546,63 @@ export class TycoonPanel {
   private async _autoUpdateUefnBridgeIfStale(root: string): Promise<void> {
     try {
       if (root === "") return;
-      const effRoot = this._uefnEffectiveRoot(root);
+
+      // Write path -- resolve via the evidence ladder directly (same as
+      // `_stageUefnBridgeAllTargets`), never the best-effort
+      // fall-back-to-`root` `_uefnEffectiveRoot`. An unresolved/ambiguous
+      // target must be skipped, not guessed at.
+      const resolved = this._resolveUefnContentDirEvidence(root);
+      if (resolved.contentDir === null) return;
+      const effRoot = path.dirname(resolved.contentDir);
       const projectPyDest = path.join(effRoot, "Content", "Python");
-      const installedStampPath = path.join(projectPyDest, "bridge_version.py");
-      if (!fs.existsSync(installedStampPath)) return; // never auto-install -- opt-in preserved
+
+      // Opt-in signal: an actual staged bridge file, NOT the version stamp
+      // (a pre-stamping-era install has the former but not the latter --
+      // see docstring). Never auto-install.
+      const installedBridgePath = path.join(projectPyDest, "uefn_bridge.py");
+      if (!fs.existsSync(installedBridgePath)) return;
 
       const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
       const bundledStampPath = path.join(bridgeDir, "bridge_version.py");
+      const installedStampPath = path.join(projectPyDest, "bridge_version.py");
 
-      const installedText = fs.readFileSync(installedStampPath, "utf8");
       const bundledText = fs.readFileSync(bundledStampPath, "utf8");
-
-      const installedVersion = parseBridgeVersion(installedText);
       const bundledVersion = parseBridgeVersion(bundledText);
       if (!bundledVersion || !isNumericVersion(bundledVersion)) return;
-      if (!installedVersion) return;
 
-      const installedIsCorrupt = !isNumericVersion(installedVersion);
+      // A missing or unparseable installed stamp is MAXIMALLY stale, never
+      // a reason to skip -- this is the exact gap that let a June-era
+      // (pre-stamping) bridge sit unrefreshed in the field.
+      let installedVersion: string | null = null;
+      try {
+        installedVersion = parseBridgeVersion(fs.readFileSync(installedStampPath, "utf8"));
+      } catch {
+        installedVersion = null;
+      }
+      const installedIsUnknownOrCorrupt = installedVersion === null || !isNumericVersion(installedVersion);
+
       let projectUpdated = false;
-      if (installedIsCorrupt || isBridgeVersionNewer(bundledVersion, installedVersion)) {
-        this._stageBridgeTo(bridgeDir, projectPyDest);
-        projectUpdated = true;
+      if (installedIsUnknownOrCorrupt || isBridgeVersionNewer(bundledVersion, installedVersion as string)) {
+        const stageResult = this._stageBridgeTo(bridgeDir, projectPyDest);
+        if (stageResult.error) {
+          // Partial failure -- `_stageBridgeTo` guarantees the OLD stamp
+          // (or none) is still on disk, so the next panel load will see
+          // this as stale and retry on its own. Never claim success here:
+          // no toast, no `projectUpdated`.
+          console.warn(`TycoonAgents: _autoUpdateUefnBridgeIfStale partial staging failure at ${projectPyDest}: ${stageResult.error}`);
+        } else {
+          projectUpdated = true;
+        }
+      }
+
+      // Heal a bogus nested Content/Content/Python left by the old staging
+      // bug, using the SAME resolved `effRoot` the push above used -- never
+      // guessed. Runs regardless of whether the project copy itself needed
+      // refreshing (mirrors `_stageUefnBridgeAllTargets`'s post-stage heal).
+      try {
+        this._healDuplicateUefnBridgeStaging(effRoot, bridgeDir);
+      } catch {
+        /* auto-heal is best-effort -- must never break this rail */
       }
 
       // Independent of project staleness above: a stuck engine copy can
@@ -5802,7 +5992,17 @@ export class TycoonPanel {
    * filesystem tree walk) so this is a cheap no-op on an already-current
    * project. A missing/unparsable stamp is treated as "stale" (never as
    * "nothing to do") so a project that predates this method's existence
-   * still gets re-staged once.
+   * still gets re-staged once. `packs[packId] = currentVersion` claims ONLY
+   * that this pack's skill/agent files were re-staged successfully — for a
+   * pack that also provides the Python UEFN bridge (`pack.mcp ===
+   * "uefn-bridge" || pack.id === "uefn"`), the bridge itself is staged by a
+   * wholly separate rail (`_autoUpdateUefnBridgeIfStale`), so its state is
+   * independently verified and recorded under the synthetic `"uefn-bridge"`
+   * key via `_verifiedUefnBridgeStampValue` (see) — never inferred from
+   * this pack's own success. This is the fix for a real field bug:
+   * `pack-staging.json` was stamped `0.0.490` while the project's actual
+   * `Content/Python/bridge_version.py` was still a pre-stamping June
+   * install — a success-shaped stamp with no verified files behind it.
    *
    * "ALREADY HAS" DETECTION — never installs a pack the user did not
    * choose: a pack counts as installed only if its first agent's
@@ -5928,6 +6128,24 @@ export class TycoonPanel {
           if (ok) {
             restaged.push(pack.id);
             packStamp[pack.id] = currentVersion;
+
+            // The "uefn" pack also provides the Python bridge, but that
+            // bridge is staged/refreshed by an entirely separate rail
+            // (`_autoUpdateUefnBridgeIfStale` on panel load,
+            // `_stageUefnBridgeAllTargets` on explicit install) — NOT by
+            // the skill/agent restage above. `packStamp[pack.id] =
+            // currentVersion` must never be read as "the bridge is current
+            // too": that was the exact field bug (pack-staging.json
+            // stamped 0.0.490 while the real Content/Python bridge was
+            // still June-era). Record the bridge's OWN verified on-disk
+            // state under its own key — verify-after-write, mirroring
+            // `_write_json_checked` in uefn_bridge.py — so a stale/missing
+            // bridge shows up here as `"stale:..."`, never silently
+            // implied current by the pack's success.
+            const stagesPythonBridge = pack.mcp === "uefn-bridge" || pack.id === "uefn";
+            if (stagesPythonBridge) {
+              packStamp["uefn-bridge"] = this._verifiedUefnBridgeStampValue(root);
+            }
           } else {
             failed.push(pack.id);
           }

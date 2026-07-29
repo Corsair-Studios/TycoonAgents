@@ -30,6 +30,28 @@ import traceback
 import time
 import secrets
 
+# sys.path self-consistency shield: guarantee every sibling import below
+# (device_audit, batch_tools, texture_finder, ...) resolves from THIS
+# file's own directory, never a differently-versioned copy that happens to
+# sit earlier on sys.path (e.g. an engine-side FortniteGame/Content/Python
+# shadowing a project copy, or vice versa). Mixed-version sibling imports
+# have crashed the bridge in the field: a stale bridge here paired with a
+# newer device_audit.py (or the reverse) resolving from elsewhere is
+# exactly what took the whole bridge down with no IPC, no heartbeat, and no
+# Power Tools popup. Idempotent (removes any existing entry before
+# reinserting at index 0, so re-running/re-importing this module never
+# duplicates the path) and wrapped so it can never break module import.
+try:
+    import os as _shield_os
+    import sys as _shield_sys
+    _bridge_own_dir = _shield_os.path.dirname(_shield_os.path.abspath(__file__))
+    if _bridge_own_dir in _shield_sys.path:
+        _shield_sys.path.remove(_bridge_own_dir)
+    _shield_sys.path.insert(0, _bridge_own_dir)
+    del _shield_os, _shield_sys, _bridge_own_dir
+except Exception:
+    pass
+
 # Reuse device_audit helpers — do NOT duplicate that logic.
 #
 # Resolved via getattr() rather than `from device_audit import (...)`: a
