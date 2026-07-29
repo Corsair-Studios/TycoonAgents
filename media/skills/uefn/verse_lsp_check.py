@@ -103,6 +103,33 @@ WHAT THIS DOES NOT GUARANTEE
   run on a mismatch, because a warning that might be wrong is still better
   than silently trusting a stale analyzer.
 
+ORIGIN CLASSIFICATION
+----------------------
+Confirmed directly against a real project scan: the user's OWN code was
+analyzer-clean, but the run still reported 152 diagnostics -- 151 inside a
+`*.digest.verse` file and 1 inside the project's own `.vproject` (a VNI
+dependency-cycle error), both of which UEFN itself generates and
+regenerates on every open. None of those 152 were creator-actionable, but
+nothing in the report said so; a human had to work that out by hand. Every
+diagnostic this tool reports now carries an `origin` field so that
+judgment happens automatically, every run:
+  - "project"        the file resides under the resolved Content directory
+                      -- the only origin a creator can act on.
+  - "epic-generated"  the file resides under the VerseProject digest root
+                      (this covers the `.vproject` file and any
+                      `*.digest.verse`), OR the filename itself ends in
+                      `.digest.verse`, checked FIRST and unconditionally --
+                      that suffix is definitionally Epic-generated wherever
+                      it happens to sit, never just inferred from location.
+  - "other"           neither of the above -- reported honestly, never
+                      guessed into one of the other two buckets.
+Classification is by canonicalised path CONTAINMENT (residence), not by
+filename pattern-matching, except for the `.digest.verse` special case
+above. This is purely additive labelling: exit codes are UNCHANGED -- a run
+whose diagnostics are 100% Epic-generated still exits 1, because the
+analysis genuinely found diagnostics; this tool labels, it does not
+suppress. See `_classify_origin`, `_origin_counts`, `_origin_split_line`.
+
 EXIT CODES
 ----------
     0  analysis ran to completion, zero diagnostics.
@@ -1235,15 +1262,88 @@ def _vproject_failure_lines(info, content_dir):
 # ==========================================================================
 
 
-def _normalize_diagnostics(diagnostics_by_uri):
+ORIGIN_PROJECT = "project"
+ORIGIN_EPIC_GENERATED = "epic-generated"
+ORIGIN_OTHER = "other"
+
+
+def _is_under(path_canon, root_canon) -> bool:
+    """True iff `path_canon` is `root_canon` itself or lives somewhere
+    beneath it, compared as already-canonicalised (`_canon_path`) strings.
+    A missing/empty root never matches anything -- callers pass `None` when
+    a root wasn't resolved, and that must yield False, not a crash or a
+    false positive."""
+    if not path_canon or not root_canon:
+        return False
+    if path_canon == root_canon:
+        return True
+    prefix = root_canon if root_canon.endswith(os.sep) else root_canon + os.sep
+    return path_canon.startswith(prefix)
+
+
+def _classify_origin(path: str, content_dir_canon, digest_root_canon) -> str:
+    """Classifies a single diagnostic's file by RESIDENCE (canonical path
+    containment), per the field evidence that drove this feature: a real
+    scan found the user's own code analyzer-clean while ALL of its
+    diagnostics sat inside Epic auto-generated files -- digests and the
+    project's own `.vproject` -- which are not creator-actionable (UEFN
+    regenerates them; editing them is wrong).
+
+    Returns one of:
+      - ORIGIN_PROJECT: the file lives under the resolved Content directory
+        -- the only origin a creator can actually act on.
+      - ORIGIN_EPIC_GENERATED: the file lives under the VerseProject digest
+        root (this covers both `*.digest.verse` files AND the `.vproject`
+        file itself, since both sit under that root), OR the filename ends
+        in `.digest.verse` REGARDLESS of where it sits -- that suffix is
+        definitionally Epic-generated, matched before residence so a copy
+        or symlink elsewhere still classifies correctly.
+      - ORIGIN_OTHER: neither of the above. Reported honestly, never
+        guessed into one of the other two buckets.
+
+    Residence is checked, not just filename, for everything except the
+    `.digest.verse` special case -- see the module docstring / this
+    feature's task description for why that ordering matters."""
+    if path.lower().endswith(".digest.verse"):
+        return ORIGIN_EPIC_GENERATED
+    canon = _canon_path(path)
+    if _is_under(canon, content_dir_canon):
+        return ORIGIN_PROJECT
+    if _is_under(canon, digest_root_canon):
+        return ORIGIN_EPIC_GENERATED
+    return ORIGIN_OTHER
+
+
+def _origin_counts(findings):
+    counts = {ORIGIN_PROJECT: 0, ORIGIN_EPIC_GENERATED: 0, ORIGIN_OTHER: 0}
+    for f in findings:
+        counts[f.get("origin", ORIGIN_OTHER)] = counts.get(f.get("origin", ORIGIN_OTHER), 0) + 1
+    return counts
+
+
+def _origin_split_line(counts) -> str:
+    return (
+        f"{counts.get(ORIGIN_PROJECT, 0)} in project code, "
+        f"{counts.get(ORIGIN_EPIC_GENERATED, 0)} in Epic-generated files (digests/vproject -- "
+        f"not creator-actionable), {counts.get(ORIGIN_OTHER, 0)} other."
+    )
+
+
+def _normalize_diagnostics(diagnostics_by_uri, content_dir_canon=None, digest_root_canon=None):
+    """`content_dir_canon`/`digest_root_canon` should already be
+    `_canon_path`-normalised. Both default to None (yielding ORIGIN_OTHER
+    for every non-`.digest.verse` file) so pure unit tests that only care
+    about line/severity normalisation, not origin, keep working unchanged."""
     findings = []
     for uri, diags in diagnostics_by_uri.items():
         path = _uri_to_path(uri)
+        origin = _classify_origin(path, content_dir_canon, digest_root_canon)
         for d in diags:
             rng = (d.get("range") or {}).get("start") or {}
             findings.append(
                 {
                     "path": path,
+                    "origin": origin,
                     "line": int(rng.get("line", 0)) + 1,       # LSP lines are 0-indexed
                     "character": int(rng.get("character", 0)) + 1,
                     "severity": d.get("severity", 1),
@@ -1315,22 +1415,40 @@ def _print_human_report(findings, meta):
         print(SCOPE_NOTE)
         return
 
-    by_path = {}
+    # Grouped by origin FIRST (project code ahead of Epic-generated/other),
+    # per this feature's task: a creator scanning the report should hit
+    # their own actionable diagnostics before wading through hundreds of
+    # baseline Epic-generated ones. Within each origin bucket, still grouped
+    # by file and sorted alphabetically, same as before this feature.
+    by_origin_path = {}
     for f in findings:
-        by_path.setdefault(f["path"], []).append(f)
+        by_origin_path.setdefault(f.get("origin", ORIGIN_OTHER), {}).setdefault(f["path"], []).append(f)
 
-    for path in sorted(by_path):
-        print(path)
-        for f in by_path[path]:
-            code = f"[{f['code']}]" if f["code"] != "" else ""
-            print(f"  {path}:{f['line']}:{f['character']} {f['severity_word']} {code} {f['message']}")
-        print()
+    origin_order = (ORIGIN_PROJECT, ORIGIN_OTHER, ORIGIN_EPIC_GENERATED)
+    origin_headers = {
+        ORIGIN_PROJECT: "PROJECT CODE (creator-actionable)",
+        ORIGIN_OTHER: "OTHER (origin outside the project Content dir and the Epic VerseProject root)",
+        ORIGIN_EPIC_GENERATED: "EPIC-GENERATED (digests/vproject -- not creator-actionable; UEFN regenerates these)",
+    }
+    for origin in origin_order:
+        by_path = by_origin_path.get(origin)
+        if not by_path:
+            continue
+        print(f"--- {origin_headers[origin]} ---")
+        for path in sorted(by_path):
+            print(path)
+            for f in by_path[path]:
+                code = f"[{f['code']}]" if f["code"] != "" else ""
+                print(f"  {path}:{f['line']}:{f['character']} {f['severity_word']} {code} {f['message']}")
+            print()
 
+    all_paths = {f["path"] for f in findings}
     counts = {}
     for f in findings:
         counts[f["severity_word"]] = counts.get(f["severity_word"], 0) + 1
     summary = ", ".join(f"{n} {word.lower()}(s)" for word, n in sorted(counts.items()))
-    print(f"verse_lsp_check: {len(findings)} diagnostic(s) -- {summary} -- across {len(by_path)} file(s).")
+    print(f"verse_lsp_check: {len(findings)} diagnostic(s) -- {summary} -- across {len(all_paths)} file(s).")
+    print(f"verse_lsp_check: {_origin_split_line(_origin_counts(findings))}")
     print(SCOPE_NOTE)
 
 
@@ -1338,6 +1456,7 @@ def _print_json_report(findings, meta):
     counts = {}
     for f in findings:
         counts[f["severity_word"]] = counts.get(f["severity_word"], 0) + 1
+    origin_counts = _origin_counts(findings)
     targets_not_analyzed = meta.get("targets_not_analyzed") or []
     # "status" intentionally stays "ok" for a run that completed, whether or
     # not it found diagnostics -- pass/fail lives in the exit code and in
@@ -1360,7 +1479,12 @@ def _print_json_report(findings, meta):
         "targets_not_analyzed": targets_not_analyzed,
         "version_note": meta.get("version_note"),
         "diagnostics": findings,
-        "summary": {"total": len(findings), "by_severity": counts},
+        "summary": {
+            "total": len(findings),
+            "by_severity": counts,
+            "by_origin": origin_counts,
+            "origin_line": _origin_split_line(origin_counts),
+        },
     }
     print(json.dumps(obj, indent=2))
 
@@ -1592,7 +1716,11 @@ def main(argv=None) -> int:
 
     opened_files = session.get("opened_files") or []
     unreadable_files = session.get("unreadable_files") or []
-    findings = _normalize_diagnostics(session["diagnostics"])
+    findings = _normalize_diagnostics(
+        session["diagnostics"],
+        _canon_path(content_dir),
+        _canon_path(vp_entry["digest_root"]),
+    )
 
     # Cross-check every requested --target against what was ACTUALLY
     # analyzed: it counts as analyzed if `didOpen` was sent successfully

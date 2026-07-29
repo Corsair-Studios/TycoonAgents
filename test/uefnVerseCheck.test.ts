@@ -978,3 +978,207 @@ test('a capped run can never be mistaken for a full clean pass: PARTIAL RUN disc
     rmSync(fullRoot, { recursive: true, force: true });
   }
 });
+
+/*
+ * ── origin classification passthrough (project / epic-generated / other) ────
+ *
+ * Coverage for the field evidence that drove this: a real project scan found
+ * the user's OWN code analyzer-clean while ALL 152 diagnostics sat inside
+ * Epic auto-generated files (digests + the project's own .vproject) -- not
+ * creator-actionable, since UEFN regenerates those on every open. A human had
+ * to work that out by hand; verse_lsp_check.py now labels every diagnostic
+ * with `origin`, and uefn_verse_check passes it through per-diagnostic, adds
+ * a project-vs-Epic-generated split to `counts`/`origin_summary`, and folds
+ * it into `next_required_action`.
+ */
+
+test('origin passes through per-diagnostic in the returned result', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-origin-passthrough-');
+  const diagnostics = [
+    { path: 'C:/proj/Content/FileA.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: 'E001', message: 'project err', origin: 'project' },
+    { path: 'C:/verseproject/Verse.digest.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: 'E002', message: 'digest err', origin: 'epic-generated' },
+  ];
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(
+      okJson({
+        diagnostics,
+        summary: { total: 2, by_severity: { error: 2 }, by_origin: { project: 1, 'epic-generated': 1, other: 0 }, origin_line: '1 in project code, 1 in Epic-generated files (digests/vproject -- not creator-actionable), 0 other.' },
+      })
+    )}); process.exit(1);`
+  );
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    const returned = parsed.diagnostics as { message: string; origin: string }[];
+    const byMessage = Object.fromEntries(returned.map((d) => [d.message, d.origin]));
+    assert.equal(byMessage['project err'], 'project');
+    assert.equal(byMessage['digest err'], 'epic-generated');
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('origin defaults to "other" when the underlying script omits the field (older cached copy)', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-origin-missing-');
+  const diagnostics = [
+    { path: 'C:/proj/Content/FileA.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: 'E001', message: 'no origin field' },
+  ];
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(okJson({ diagnostics, summary: { total: 1, by_severity: { error: 1 } } }))}); process.exit(1);`
+  );
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    const returned = parsed.diagnostics as { message: string; origin: string }[];
+    assert.equal(returned[0].origin, 'other');
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('counts.by_origin_in_scope, counts.by_origin_total, and origin_summary all reflect the project/Epic-generated split', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-origin-counts-');
+  const diagnostics = [
+    { path: 'C:/proj/Content/FileA.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'p1', origin: 'project' },
+    { path: 'C:/proj/Content/FileB.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'p2', origin: 'project' },
+    { path: 'C:/verseproject/Verse.digest.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'd1', origin: 'epic-generated' },
+  ];
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(
+      okJson({
+        diagnostics,
+        summary: { total: 3, by_severity: { error: 3 }, by_origin: { project: 2, 'epic-generated': 1, other: 0 }, origin_line: '2 in project code, 1 in Epic-generated files (digests/vproject -- not creator-actionable), 0 other.' },
+      })
+    )}); process.exit(1);`
+  );
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    const counts = parsed.counts as Record<string, unknown>;
+    assert.deepEqual(counts.by_origin_total, { project: 2, 'epic-generated': 1, other: 0 });
+    assert.deepEqual(counts.by_origin_in_scope, { project: 2, 'epic-generated': 1, other: 0 });
+    assert.match(parsed.origin_summary as string, /2 in project code/);
+    assert.match(parsed.origin_summary as string, /1 in Epic-generated files/);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('when EVERY diagnostic in scope is Epic-generated, next_required_action says plainly that project code is analyzer-clean', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-origin-allepic-');
+  const diagnostics = Array.from({ length: 3 }, (_, i) => ({
+    path: 'C:/verseproject/Verse.digest.verse',
+    line: i,
+    character: 0,
+    severity: 1,
+    severity_word: 'Error',
+    code: '',
+    message: `digest err ${i}`,
+    origin: 'epic-generated',
+  }));
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(
+      okJson({ diagnostics, summary: { total: 3, by_severity: { error: 3 }, by_origin: { project: 0, 'epic-generated': 3, other: 0 } } })
+    )}); process.exit(1);`
+  );
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    const action = parsed.next_required_action as string;
+    assert.match(action, /analyzer-clean/);
+    assert.match(action, /Epic-generated/);
+    assert.match(action, /0 in project code, 3 in Epic-generated files/);
+    assert.ok(!/^Fix the/.test(action), 'must not tell the creator to "Fix" baseline files they do not own');
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('when project-origin diagnostics exist alongside Epic-generated ones, next_required_action focuses on the project-origin count', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-origin-mixed-');
+  const diagnostics = [
+    { path: 'C:/proj/Content/FileA.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'p1', origin: 'project' },
+    { path: 'C:/verseproject/Verse.digest.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'd1', origin: 'epic-generated' },
+    { path: 'C:/verseproject/Verse.digest.verse', line: 2, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'd2', origin: 'epic-generated' },
+  ];
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(
+      okJson({ diagnostics, summary: { total: 3, by_severity: { error: 3 }, by_origin: { project: 1, 'epic-generated': 2, other: 0 } } })
+    )}); process.exit(1);`
+  );
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    const action = parsed.next_required_action as string;
+    assert.match(action, /Fix the 1 project-origin diagnostic/);
+    assert.ok(!/analyzer-clean/.test(action), 'must not claim analyzer-clean when project-origin diagnostics exist');
+    // Every diagnostic (including Epic-origin) must still be present -- never dropped or hidden.
+    assert.equal((parsed.diagnostics as unknown[]).length, 3);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('severity/files filters still apply exactly as before with origin present -- Epic-origin diagnostics are never specially hidden by an origin-based filter', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-origin-filters-');
+  const diagnostics = [
+    { path: 'C:/proj/Content/FileA.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'project error', origin: 'project' },
+    { path: 'C:/verseproject/Verse.digest.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'digest error', origin: 'epic-generated' },
+    { path: 'C:/verseproject/Verse.digest.verse', line: 2, character: 0, severity: 2, severity_word: 'Warning', code: '', message: 'digest warning', origin: 'epic-generated' },
+  ];
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(
+      okJson({ diagnostics, summary: { total: 3, by_severity: { error: 2, warning: 1 } } })
+    )}); process.exit(1);`
+  );
+  try {
+    // Default severity filter (error+warning), no files filter: both origins, both severities present.
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    const messages = (parsed.diagnostics as { message: string }[]).map((d) => d.message);
+    assert.ok(messages.includes('digest error'), 'Epic-origin diagnostics matching the severity filter must not be dropped');
+    assert.ok(messages.includes('digest warning'));
+    assert.ok(messages.includes('project error'));
+
+    // severity: ["error"] only -- must exclude the digest WARNING (a severity-filter effect), not any origin-filter effect.
+    const errorsOnly = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot, severity: ['error'] }));
+    const errorMessages = (errorsOnly.diagnostics as { message: string }[]).map((d) => d.message);
+    assert.ok(errorMessages.includes('digest error'), 'an Epic-origin ERROR must still pass a severity:["error"] filter');
+    assert.ok(!errorMessages.includes('digest warning'));
+
+    // files: only the project file -- excludes both digest diagnostics via the FILES filter, not an origin filter.
+    const filesOnly = await withPath(FAKE_PY_DIR, () =>
+      callHandler(internals, { project_root: projectRoot, files: ['FileA.verse'] })
+    );
+    const filesMessages = (filesOnly.diagnostics as { message: string }[]).map((d) => d.message);
+    assert.deepEqual(filesMessages, ['project error']);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test('next_required_action remains the terminal key when origin fields (counts.by_origin_*, origin_summary) are present', async () => {
+  const internals = loadUefnVerseCheckInternals();
+  const projectRoot = tmpProjectRoot('uefn-verse-check-origin-terminal-');
+  const diagnostics = [
+    { path: 'C:/proj/Content/FileA.verse', line: 1, character: 0, severity: 1, severity_word: 'Error', code: '', message: 'p1', origin: 'project' },
+  ];
+  writeStagedScript(
+    projectRoot,
+    `process.stdout.write(${JSON.stringify(okJson({ diagnostics, summary: { total: 1, by_severity: { error: 1 } } }))}); process.exit(1);`
+  );
+  try {
+    const parsed = await withPath(FAKE_PY_DIR, () => callHandler(internals, { project_root: projectRoot }));
+    const keys = Object.keys(parsed);
+    assert.equal(keys[keys.length - 1], 'next_required_action');
+    assert.ok(keys.includes('origin_summary'));
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});

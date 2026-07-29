@@ -1111,6 +1111,18 @@ function verseCheckError(
   };
 }
 
+// "origin" classifies WHERE a diagnostic's file resides, per the field
+// evidence that drove this: a real scan found the user's OWN code
+// analyzer-clean while ALL 152 diagnostics sat inside Epic auto-generated
+// files (digests + the project's own .vproject) — not creator-actionable,
+// since UEFN regenerates those on every open. verse_lsp_check.py now labels
+// every diagnostic with one of these three values (see its
+// ORIGIN CLASSIFICATION docstring section / `_classify_origin`); `origin`
+// is typed optional here purely defensively (an older cached copy of the
+// script would omit it) — every read of `.origin` below falls back to
+// "other" rather than assuming it's always present.
+type VerseDiagnosticOrigin = "project" | "epic-generated" | "other";
+
 interface RawVerseDiagnostic {
   path: string;
   line: number;
@@ -1119,6 +1131,7 @@ interface RawVerseDiagnostic {
   severity_word: string;
   code: string | number;
   message: string;
+  origin?: VerseDiagnosticOrigin;
 }
 
 interface RawVerseCheckOk {
@@ -1136,7 +1149,12 @@ interface RawVerseCheckOk {
   targets_not_analyzed: string[];
   version_note: string | null;
   diagnostics: RawVerseDiagnostic[];
-  summary: { total: number; by_severity: Record<string, number> };
+  summary: {
+    total: number;
+    by_severity: Record<string, number>;
+    by_origin?: Record<string, number>;
+    origin_line?: string;
+  };
 }
 
 interface RawVerseCheckPreconditionFailed {
@@ -1175,7 +1193,13 @@ server.registerTool(
       "3 = PRECONDITIONS NOT MET — missing the Epic Verse extension, or the project has never been opened in " +
       "UEFN (which is what generates the .vproject file this depends on); exit 3 is NEVER a clean pass even " +
       "though no diagnostics are listed. 4 = one or more `files` entries were never analyzed — surfaced as " +
-      "tier `target_not_analyzed`, also never a clean pass.",
+      "tier `target_not_analyzed`, also never a clean pass. " +
+      "Every diagnostic also carries `origin`: \"project\" (your own Content dir — the only kind you can act " +
+      "on), \"epic-generated\" (Epic's digest/.vproject baseline — UEFN regenerates these; never edit them to " +
+      "\"fix\" one), or \"other\". Epic-origin diagnostics are still fully reported (never dropped or hidden) " +
+      "— `counts.by_origin_*` and `next_required_action` state the project-vs-Epic-generated split explicitly, " +
+      "and when EVERY diagnostic in scope is Epic-generated, `next_required_action` says plainly that your own " +
+      "code is analyzer-clean instead of asking you to \"fix\" baseline files you don't own.",
     inputSchema: {
       project_root: z
         .string()
@@ -1540,20 +1564,51 @@ server.registerTool(
       character: d.character,
       severity: d.severity_word.toLowerCase(),
       code: d.code,
+      origin: (d.origin ?? "other") as VerseDiagnosticOrigin,
       message: d.message,
     }));
+
+    // ---- origin split, computed over the SAME scope next_required_action already
+    // reasons about (files + severity filters applied, BEFORE max_diagnostics
+    // truncation — so a capped run still reports the true split, not just the
+    // truncated slice). Never used to filter anything: severity/files/max_diagnostics
+    // remain the only filters, per this feature's constraints — Epic-origin
+    // diagnostics are always counted and returned like any other. ------------------
+    const originCountsInScope: Record<VerseDiagnosticOrigin, number> = { project: 0, "epic-generated": 0, other: 0 };
+    for (const d of afterSeverity) {
+      const o = (d.origin ?? "other") as VerseDiagnosticOrigin;
+      originCountsInScope[o] = (originCountsInScope[o] ?? 0) + 1;
+    }
+    const originSplitLineInScope =
+      `${originCountsInScope.project} in project code, ${originCountsInScope["epic-generated"]} in Epic-` +
+      `generated files (digests/vproject — not creator-actionable), ${originCountsInScope.other} other.`;
+    const allEpicOriginInScope =
+      afterSeverity.length > 0 && afterSeverity.every((d) => (d.origin ?? "other") === "epic-generated");
 
     let nextRequiredAction: string;
     if (truncated) {
       nextRequiredAction =
         `max_diagnostics=${maxDiagnostics} truncated the list — ${omittedCount} diagnostic(s) in scope were ` +
         "omitted, NOT because they don't exist. Increase max_diagnostics or narrow `files` before concluding " +
-        "anything about the omitted ones.";
+        `anything about the omitted ones. Origin split across the full in-scope set: ${originSplitLineInScope}`;
+    } else if (outputDiagnostics.length > 0 && allEpicOriginInScope) {
+      nextRequiredAction =
+        `Your own project code is analyzer-clean — every diagnostic in scope (${outputDiagnostics.length}) ` +
+        "originates from Epic-generated files (digests/vproject), which are baseline and NOT creator-" +
+        "actionable: UEFN regenerates them on open, so editing one to \"fix\" it is wrong. Nothing to do here " +
+        `unless project-origin diagnostics appear on a future run. Origin split: ${originSplitLineInScope}`;
+    } else if (outputDiagnostics.length > 0 && originCountsInScope.project > 0) {
+      nextRequiredAction =
+        `Fix the ${originCountsInScope.project} project-origin diagnostic(s) (origin:"project") — those are ` +
+        "the ones your change owns. Any Epic-generated diagnostics above are reported as baseline, not yours " +
+        "to fix (UEFN regenerates digests/vproject; never edit them). " +
+        `Origin split: ${originSplitLineInScope} Then re-run uefn_verse_check with the SAME \`files\` scope to ` +
+        "confirm the project-origin diagnostics are resolved.";
     } else if (outputDiagnostics.length > 0) {
       nextRequiredAction =
         `Fix the ${outputDiagnostics.length} diagnostic(s) listed above (already scoped per your filters), then ` +
         "re-run uefn_verse_check with the SAME `files` scope to confirm they're resolved. Do not attempt to " +
-        "clear diagnostics outside your change's scope.";
+        `clear diagnostics outside your change's scope. Origin split: ${originSplitLineInScope}`;
     } else {
       nextRequiredAction =
         "0 diagnostics in the requested scope. " +
@@ -1603,11 +1658,14 @@ server.registerTool(
       counts: {
         total_reported_by_analyzer: totalRaw,
         by_severity_total: okResult.summary?.by_severity ?? {},
+        by_origin_total: okResult.summary?.by_origin ?? {},
         after_files_scope: afterFiles.length,
         after_severity_filter: afterSeverity.length,
+        by_origin_in_scope: originCountsInScope,
         returned: outputDiagnostics.length,
         omitted_by_max_diagnostics: omittedCount,
       },
+      origin_summary: okResult.summary?.origin_line ?? originSplitLineInScope,
       diagnostics: outputDiagnostics,
       next_required_action: nextRequiredAction,
     });

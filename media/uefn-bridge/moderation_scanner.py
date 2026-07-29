@@ -700,6 +700,12 @@ def collect_asset_surfaces(scan_root=None):
                         "source_path": src_path,
                         "file_md5": file_md5 or "",
                         "timestamp": timestamp or "",
+                        # Carried through to collect_import_provenance's
+                        # items so run_moderation_scan's thumbnail-suspect
+                        # queue can exclude Epic-owned/shared-mount assets
+                        # (see PIXEL REVIEW SCOPE below) without re-deriving
+                        # mount membership from scratch.
+                        "is_project_owned": is_project_owned,
                     })
 
                 # Small/roughly-square Texture2D suspect signal (feeds
@@ -2152,10 +2158,20 @@ def collect_import_provenance(import_source_records, project_dir, total_non_engi
                     result["items"].append({
                         "object_path": rec.get("object_path", ""),
                         "display_name": rec.get("display_name", ""),
+                        "package_name": rec.get("package_name", ""),
                         "source_path": src,
                         "classification": classification,
                         "file_md5": rec.get("file_md5", ""),
                         "timestamp": rec.get("timestamp", ""),
+                        # PIXEL REVIEW SCOPE (see run_moderation_scan's
+                        # thumbnail-suspect queue): passed through from the
+                        # source record's own mount classification (already
+                        # computed once in collect_asset_surfaces — never
+                        # re-derived here). Missing/unknown defaults to True
+                        # (in scope) — an ambiguous or absent flag must fail
+                        # toward reviewing an asset, never toward silently
+                        # excluding it.
+                        "is_project_owned": rec.get("is_project_owned", True),
                     })
             except Exception:
                 continue
@@ -2288,6 +2304,42 @@ def _package_name_to_uasset_path(package_name, project_dir, mount_prefix):
         return os.path.join(str(project_dir), "Content", rel + ".uasset")
     except Exception:
         return None
+
+
+def _is_thumbnail_suspect_project_owned(entry_like, mount_prefix):
+    """PIXEL REVIEW SCOPE (user directive: "only scan the pixels of
+    thumbnails the project has uploaded — never Fortnite/Unreal/engine
+    content") — classifies ONE thumbnail-suspect candidate (an
+    import_provenance item, a small_square_ui_texture_entries entry, or an
+    external_link_risks asset hit) as project-owned or not, for
+    run_moderation_scan's thumbnail-suspect queue ONLY. Never affects any
+    other finding/bucket in the report.
+
+    Two signals, preferred in order:
+      1. An explicit ``is_project_owned`` tag, already computed ONCE in
+         ``collect_asset_surfaces`` from the resolved project mount (see
+         that function's partition logic) and carried through by
+         ``collect_import_provenance`` onto its ``items`` — reused here
+         rather than re-derived, so this can never disagree with the
+         report's own project_assets/shared_game_mount_assets split.
+      2. A ``package_path`` on the entry itself compared against
+         ``mount_prefix`` (present on ``small_square_ui_texture_entries``
+         entries, which carry the full asset-surface shape).
+
+    If NEITHER signal is present on the entry (e.g. an external_link_risks
+    asset hit, which is only a free-text ``location`` string) the entry is
+    treated as project-owned BY DEFAULT — an entry this function cannot
+    classify must fail toward being reviewed, never toward being silently
+    dropped from pixel review. Never raises."""
+    try:
+        if "is_project_owned" in entry_like:
+            return bool(entry_like.get("is_project_owned"))
+        package_path = entry_like.get("package_path")
+        if package_path and mount_prefix:
+            return str(package_path).startswith(mount_prefix)
+    except Exception:
+        return True
+    return True
 
 
 def extract_asset_thumbnails(suspect_entries, out_dir, max_thumbnails=_THUMBNAIL_DEFAULT_MAX_ITEMS,
@@ -2880,6 +2932,7 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
         "import_provenance": {},
         "hlod_generated_count": 0,
         "extracted_thumbnails": {},
+        "thumbnail_scope_excluded_count": 0,
         "notes": notes,
         "truncated": truncated,
         "truncated_collectors": truncated_collectors,
@@ -3164,6 +3217,43 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
             for _it in result["external_link_risks"].get("items") or []
             if _it.get("surface") in ("asset_name", "asset_path")
         ]
+        # ^ Already project-scoped at the SOURCE — collect_external_link_
+        # risks is called with result["asset_surfaces"] (= project_assets
+        # only, see collect_asset_surfaces's call site above), never the
+        # shared/Epic-owned mount bucket. No PIXEL REVIEW SCOPE filtering
+        # needed for this tier.
+
+        # PIXEL REVIEW SCOPE (user directive: never scan pixels of
+        # thumbnails belonging to Fortnite/Unreal/engine content — only the
+        # project's own uploads). Epic-owned/shared-mount assets must not
+        # consume extract_asset_thumbnails' item cap, appear as "suspects",
+        # or generate an "unreviewed pixels" warning about content that
+        # cannot be the creator's own IP violation.
+        #
+        # Exclusion is applied ONLY when the project's own mount is
+        # CONFIRMED (live level-actor/world signal, not the folder-name
+        # guess — see _resolve_project_mount's confirmed flag) — anything
+        # less certain is ambiguous mount classification and must fail
+        # toward REVIEWING the suspect, never toward silently dropping a
+        # creator asset from pixel review (see _is_thumbnail_suspect_
+        # project_owned's docstring).
+        _mount_scope_confident = bool(asset_result.get("project_mount")) and bool(
+            asset_result.get("project_mount_confirmed")
+        )
+        _epic_mount_excluded_keys = set()
+
+        def _filter_project_owned_suspects(items_list):
+            if not _mount_scope_confident:
+                return items_list or []
+            kept = []
+            for _it in items_list or []:
+                if _is_thumbnail_suspect_project_owned(_it, asset_result.get("project_mount")):
+                    kept.append(_it)
+                else:
+                    _k = _entry_key(_it)
+                    if _k:
+                        _epic_mount_excluded_keys.add(_k)
+            return kept
 
         # Tier: 0 = import-provenance (strongest single signal), 1 =
         # external-link risk, 2 = small-square-UI-texture heuristic (weakest
@@ -3172,9 +3262,37 @@ def run_moderation_scan(project_dir=None, include_hashes=False, max_items=None):
         # COLLECTORS) is the primary sort key, since that is exactly the
         # QR-code-image regression case this fix targets (see the block
         # comment above this try: block).
-        _add_collector_hits(_dedupe_collector_hits(result["import_provenance"].get("items")), tier=0)
+        _add_collector_hits(
+            _dedupe_collector_hits(_filter_project_owned_suspects(result["import_provenance"].get("items"))),
+            tier=0,
+        )
         _add_collector_hits(_dedupe_collector_hits(_link_asset_hits), tier=1)
-        _add_collector_hits(_dedupe_collector_hits(asset_result.get("small_square_ui_texture_entries")), tier=2)
+        _add_collector_hits(
+            _dedupe_collector_hits(
+                _filter_project_owned_suspects(asset_result.get("small_square_ui_texture_entries"))
+            ),
+            tier=2,
+        )
+
+        result["thumbnail_scope_excluded_count"] = len(_epic_mount_excluded_keys)
+        if _mount_scope_confident:
+            if _epic_mount_excluded_keys:
+                notes.append(
+                    f"THUMBNAIL SCOPE: {len(_epic_mount_excluded_keys)} Epic-owned/"
+                    "engine-mount asset(s) were excluded from thumbnail pixel "
+                    "review by provenance (not the creator's own upload — outside "
+                    "the resolved project_mount) before the extraction cap was "
+                    "applied; only the project's own content is queued for pixel "
+                    "review."
+                )
+        else:
+            notes.append(
+                "THUMBNAIL SCOPE: the project's own content mount could not be "
+                "confirmed this pass (see project_mount_confirmed) — Epic-owned/"
+                "engine-mount exclusion was NOT applied to the thumbnail suspect "
+                "queue, so every non-engine suspect stays in scope rather than "
+                "risk silently skipping the creator's own content."
+            )
 
         _suspect_order_ranked = sorted(
             _suspect_order,

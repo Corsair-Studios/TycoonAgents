@@ -1430,5 +1430,228 @@ class ReportHonestyTests(unittest.TestCase):
         self.assertEqual(parsed["status"], "target_not_analyzed")
 
 
+class OriginClassificationTests(unittest.TestCase):
+    """`origin` labelling: the field-evidence-driven feature where a real
+    project scan found ALL 152 diagnostics sitting inside Epic
+    auto-generated files (151 in a `*.digest.verse`, 1 in the project's own
+    `.vproject`) while the user's OWN code was analyzer-clean -- a fact a
+    human had to work out by hand. `_classify_origin` makes that judgment
+    automatically: 'project' (under content_dir), 'epic-generated' (under
+    the VerseProject digest root, OR any `*.digest.verse` regardless of
+    residence), 'other' (neither, reported honestly)."""
+
+    def test_file_under_content_dir_is_project_origin(self):
+        content_canon = vsc._canon_path(r"C:\Fake\Project\Content")
+        digest_canon = vsc._canon_path(r"C:\Fake\VerseProject\Project")
+        path = r"C:\Fake\Project\Content\MyDevice\foo.verse"
+        self.assertEqual(vsc._classify_origin(path, content_canon, digest_canon), vsc.ORIGIN_PROJECT)
+
+    def test_vproject_file_under_digest_root_is_epic_generated(self):
+        """The `.vproject` file itself (code 3677 VNI dependency-cycle
+        errors land here per the field evidence) sits directly under the
+        digest root's vproject subfolder -- residence, not filename, is
+        what classifies it."""
+        content_canon = vsc._canon_path(r"C:\Fake\Project\Content")
+        digest_canon = vsc._canon_path(r"C:\Fake\VerseProject\Project")
+        path = r"C:\Fake\VerseProject\Project\vproject\Project.vproject"
+        self.assertEqual(vsc._classify_origin(path, content_canon, digest_canon), vsc.ORIGIN_EPIC_GENERATED)
+
+    def test_digest_verse_file_under_digest_root_is_epic_generated(self):
+        content_canon = vsc._canon_path(r"C:\Fake\Project\Content")
+        digest_canon = vsc._canon_path(r"C:\Fake\VerseProject\Project")
+        path = r"C:\Fake\VerseProject\Project\Verse.digest.verse"
+        self.assertEqual(vsc._classify_origin(path, content_canon, digest_canon), vsc.ORIGIN_EPIC_GENERATED)
+
+    def test_digest_verse_filename_anywhere_is_epic_generated_even_inside_content_dir(self):
+        """Definitional rule: `*.digest.verse` is Epic-generated WHEREVER
+        it sits, checked before residence -- a copy or symlink landing
+        inside the project's own Content dir must still classify as
+        epic-generated, never silently reclassified as 'project' just
+        because of where it happens to be."""
+        content_canon = vsc._canon_path(r"C:\Fake\Project\Content")
+        digest_canon = vsc._canon_path(r"C:\Fake\VerseProject\Project")
+        path = r"C:\Fake\Project\Content\Copied.digest.verse"
+        self.assertEqual(vsc._classify_origin(path, content_canon, digest_canon), vsc.ORIGIN_EPIC_GENERATED)
+
+    def test_digest_verse_match_is_case_insensitive(self):
+        content_canon = vsc._canon_path(r"C:\Fake\Project\Content")
+        digest_canon = vsc._canon_path(r"C:\Fake\VerseProject\Project")
+        path = r"C:\Fake\VerseProject\Project\Verse.DIGEST.VERSE"
+        self.assertEqual(vsc._classify_origin(path, content_canon, digest_canon), vsc.ORIGIN_EPIC_GENERATED)
+
+    def test_file_outside_both_roots_is_other_not_guessed(self):
+        content_canon = vsc._canon_path(r"C:\Fake\Project\Content")
+        digest_canon = vsc._canon_path(r"C:\Fake\VerseProject\Project")
+        path = r"C:\SomewhereElse\random.verse"
+        self.assertEqual(vsc._classify_origin(path, content_canon, digest_canon), vsc.ORIGIN_OTHER)
+
+    def test_unknown_roots_classify_as_other_not_project(self):
+        """When content_dir_canon/digest_root_canon are None (unresolved),
+        a real file must never be guessed as 'project' just because it
+        exists -- honesty over a false-actionable label."""
+        path = r"C:\Fake\Project\Content\foo.verse"
+        self.assertEqual(vsc._classify_origin(path, None, None), vsc.ORIGIN_OTHER)
+
+    def test_is_under_does_not_false_positive_on_sibling_directory_with_shared_prefix(self):
+        """REGRESSION-shaped: 'C:\\Foo\\ContentOther' must NOT be treated as
+        under 'C:\\Foo\\Content' just because it shares a string prefix --
+        `_is_under` must respect the path separator boundary."""
+        root = vsc._canon_path(r"C:\Foo\Content")
+        sibling = vsc._canon_path(r"C:\Foo\ContentOther\file.verse")
+        self.assertFalse(vsc._is_under(sibling, root))
+
+    def test_is_under_matches_the_root_itself(self):
+        root = vsc._canon_path(r"C:\Foo\Content")
+        self.assertTrue(vsc._is_under(root, root))
+
+    def test_is_under_returns_false_for_missing_root(self):
+        path = vsc._canon_path(r"C:\Foo\Content\x.verse")
+        self.assertFalse(vsc._is_under(path, None))
+        self.assertFalse(vsc._is_under(path, ""))
+
+    def test_normalize_diagnostics_assigns_origin_per_uri(self):
+        content_canon = vsc._canon_path(r"C:\Fake\Project\Content")
+        digest_canon = vsc._canon_path(r"C:\Fake\VerseProject\Project")
+        diags = {
+            "file:///C:/Fake/Project/Content/foo.verse": [
+                {"range": {"start": {"line": 0, "character": 0}}, "severity": 1, "message": "project err"}
+            ],
+            "file:///C:/Fake/VerseProject/Project/vproject/Project.vproject": [
+                {"range": {"start": {"line": 0, "character": 0}}, "severity": 1, "message": "vni cycle"}
+            ],
+            "file:///C:/Elsewhere/x.verse": [
+                {"range": {"start": {"line": 0, "character": 0}}, "severity": 2, "message": "other"}
+            ],
+        }
+        findings = vsc._normalize_diagnostics(diags, content_canon, digest_canon)
+        by_message = {f["message"]: f["origin"] for f in findings}
+        self.assertEqual(by_message["project err"], vsc.ORIGIN_PROJECT)
+        self.assertEqual(by_message["vni cycle"], vsc.ORIGIN_EPIC_GENERATED)
+        self.assertEqual(by_message["other"], vsc.ORIGIN_OTHER)
+
+    def test_normalize_diagnostics_without_roots_defaults_every_finding_to_other(self):
+        """Backward-compat: callers that only care about line/severity
+        normalisation (pre-existing tests in this file) can still call
+        `_normalize_diagnostics(diags)` with no root args."""
+        diags = {"file:///C:/x/foo.verse": [{"range": {"start": {"line": 0, "character": 0}}, "severity": 1, "message": "m"}]}
+        findings = vsc._normalize_diagnostics(diags)
+        self.assertEqual(findings[0]["origin"], vsc.ORIGIN_OTHER)
+
+    def test_origin_counts_and_split_line(self):
+        findings = [
+            {"origin": vsc.ORIGIN_PROJECT}, {"origin": vsc.ORIGIN_PROJECT},
+            {"origin": vsc.ORIGIN_EPIC_GENERATED},
+            {"origin": vsc.ORIGIN_OTHER},
+        ]
+        counts = vsc._origin_counts(findings)
+        self.assertEqual(counts, {vsc.ORIGIN_PROJECT: 2, vsc.ORIGIN_EPIC_GENERATED: 1, vsc.ORIGIN_OTHER: 1})
+        line = vsc._origin_split_line(counts)
+        self.assertIn("2 in project code", line)
+        self.assertIn("1 in Epic-generated files", line)
+        self.assertIn("not creator-actionable", line)
+        self.assertIn("1 other", line)
+
+    def test_json_report_summary_has_by_origin_and_origin_line(self):
+        findings = [
+            {"path": "a.verse", "origin": vsc.ORIGIN_PROJECT, "line": 1, "character": 1, "severity": 1, "severity_word": "ERROR", "code": "", "message": "m1"},
+            {"path": "b.digest.verse", "origin": vsc.ORIGIN_EPIC_GENERATED, "line": 1, "character": 1, "severity": 1, "severity_word": "ERROR", "code": "", "message": "m2"},
+        ]
+        meta = {
+            "lsp_path": "x", "lsp_version": "0.0.1", "vproject_path": "y",
+            "content_dir": "z", "opened_files": ["a.verse"], "version_note": None,
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vsc._print_json_report(findings, meta)
+        parsed = json.loads(buf.getvalue())
+        self.assertEqual(parsed["summary"]["by_origin"], {vsc.ORIGIN_PROJECT: 1, vsc.ORIGIN_EPIC_GENERATED: 1, vsc.ORIGIN_OTHER: 0})
+        self.assertIn("1 in project code", parsed["summary"]["origin_line"])
+        self.assertIn("1 in Epic-generated files", parsed["summary"]["origin_line"])
+
+    def test_human_report_groups_project_origin_before_epic_generated_and_prints_split_line(self):
+        findings = [
+            {"path": "Verse.digest.verse", "origin": vsc.ORIGIN_EPIC_GENERATED, "line": 1, "character": 1, "severity": 1, "severity_word": "ERROR", "code": "", "message": "digest error"},
+            {"path": "MyDevice.verse", "origin": vsc.ORIGIN_PROJECT, "line": 1, "character": 1, "severity": 1, "severity_word": "ERROR", "code": "", "message": "project error"},
+        ]
+        meta = {
+            "lsp_path": "x", "lsp_version": "0.0.1", "vproject_path": "y",
+            "content_dir": "z", "opened_files": ["MyDevice.verse", "Verse.digest.verse"], "version_note": None,
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vsc._print_human_report(findings, meta)
+        out = buf.getvalue()
+        # Project-origin section must appear BEFORE the Epic-generated section.
+        self.assertLess(out.index("PROJECT CODE"), out.index("EPIC-GENERATED"))
+        self.assertLess(out.index("project error"), out.index("digest error"))
+        self.assertIn("1 in project code, 1 in Epic-generated files", out)
+        self.assertIn("not creator-actionable", out)
+
+    def test_all_epic_origin_run_still_reports_findings_and_says_so_in_split_line(self):
+        """Exit codes are UNCHANGED by this feature -- an Epic-only-origin
+        run with real diagnostics still counts as findings, just labelled.
+        This mirrors the real field evidence: 152/152 diagnostics were
+        Epic-generated and the run still (correctly) exits 1."""
+        findings = [
+            {"path": "Verse.digest.verse", "origin": vsc.ORIGIN_EPIC_GENERATED, "line": i, "character": 1, "severity": 1, "severity_word": "ERROR", "code": "", "message": f"e{i}"}
+            for i in range(3)
+        ]
+        meta = {
+            "lsp_path": "x", "lsp_version": "0.0.1", "vproject_path": "y",
+            "content_dir": "z", "opened_files": ["Verse.digest.verse"], "version_note": None,
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vsc._print_human_report(findings, meta)
+        out = buf.getvalue()
+        self.assertIn("3 diagnostic(s)", out)
+        self.assertIn("0 in project code, 3 in Epic-generated files", out)
+
+    def test_end_to_end_main_classifies_project_and_epic_generated_diagnostics(self):
+        """Full `main()` run (run_lsp_session mocked at the subprocess
+        boundary only, same technique as TargetingFilesToOpenTests) proving
+        origin classification is wired all the way through from a real
+        content_dir/vproject_dir resolution to the printed JSON."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = os.path.join(tmp, "Project")
+            content_dir_path = os.path.join(project_root, "Content")
+            os.makedirs(content_dir_path)
+            _write(os.path.join(content_dir_path, "foo.verse"), "foo_device := class:\n    0\n")
+            content_dir, _ = vsc.resolve_content_dir(project_root)
+            appdata = os.path.join(tmp, "appdata")
+            vp_path = _write_vproject(
+                appdata, "Project", "Project.vproject",
+                _vproject_json(str(content_dir), name="Project"),
+            )
+            lsp_dummy = _write(os.path.join(tmp, "fake-verse-lsp.exe"), "x")
+
+            project_file_uri = vsc._path_to_uri(os.path.join(content_dir_path, "foo.verse"))
+            vproject_uri = vsc._path_to_uri(vp_path)
+            fake_session = {
+                "handshake_ok": True, "init_error": None,
+                "diagnostics": {
+                    project_file_uri: [
+                        {"range": {"start": {"line": 0, "character": 0}}, "severity": 1, "message": "project-owned error"}
+                    ],
+                    vproject_uri: [
+                        {"range": {"start": {"line": 0, "character": 0}}, "severity": 1, "message": "VNI dependency cycle"}
+                    ],
+                },
+                "stderr_tail": [], "opened_files": [], "unreadable_files": [], "timed_out": False,
+            }
+            env = {"LOCALAPPDATA": appdata, "VERSE_LSP_PATH": lsp_dummy}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("verse_lsp_check.run_lsp_session", return_value=fake_session):
+                    buf = io.StringIO()
+                    with contextlib.redirect_stdout(buf):
+                        exit_code = vsc.main([project_root, "--json"])
+        self.assertEqual(exit_code, vsc.EXIT_FINDINGS)  # exit codes unchanged by origin labelling
+        parsed = json.loads(buf.getvalue())
+        by_message = {d["message"]: d["origin"] for d in parsed["diagnostics"]}
+        self.assertEqual(by_message["project-owned error"], vsc.ORIGIN_PROJECT)
+        self.assertEqual(by_message["VNI dependency cycle"], vsc.ORIGIN_EPIC_GENERATED)
+        self.assertEqual(parsed["summary"]["by_origin"], {vsc.ORIGIN_PROJECT: 1, vsc.ORIGIN_EPIC_GENERATED: 1, vsc.ORIGIN_OTHER: 0})
+
+
 if __name__ == "__main__":
     unittest.main()
