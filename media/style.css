@@ -1097,6 +1097,17 @@ body {
   height: 24px;
   flex: none;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, .7));
+  /* .trophy-row itself is pointer-events:none (bottom-right HUD overlay,
+     click-through by default like #engine-chips). Re-enable hit-testing
+     ONLY on the 24x24 cup icons — not the row's gaps/whitespace — so their
+     new <title> tooltip (see updateTrophyRow in main.js) can receive hover
+     at all; a `none` ancestor still blocks descendants unless a descendant
+     explicitly opts back in with `auto`, which is what this does. Side
+     effect: each cup now eats clicks over its own small footprint. This
+     corner sits outside the game board/canvas hit-testing area (it's fixed
+     HUD chrome next to the badge medal button), so nothing behind it relied
+     on click-through here. */
+  pointer-events: auto;
 }
 
 /* Past MAX_TROPHY_CUPS the row collapses to one cup + this counter — styled

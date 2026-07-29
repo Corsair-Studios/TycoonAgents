@@ -1120,16 +1120,28 @@
    * restore, Reset), never per animation frame. At 0 rebirths the row is
    * left empty (`.trophy-row:empty` in style.css hides it entirely).
    *
-   * Each cup carries a `title` naming the rebirth it represents so hovering
-   * it surfaces what that tier unlocked (rebirthTierTooltip above). Cups are
+   * Each cup carries its tooltip as an SVG `<title>` CHILD ELEMENT (first
+   * child inside the <svg>) naming the rebirth it represents, so hovering it
+   * surfaces what that tier unlocked (rebirthTierTooltip above). Chromium
+   * (VS Code webviews) does NOT honor a plain `title` HTML ATTRIBUTE on
+   * inline SVG — only the nested <title> element triggers the native
+   * tooltip — so that's the mechanism used here, not an attribute. Cups are
    * built low-tier-first (tier 1, 2, 3, ...) and appended in that order; the
    * row is a normal (non-reversed) flex container anchored by its RIGHT edge
    * next to the badge medal, so the LAST-appended cup — the highest tier —
    * lands rightmost/closest to the medal, and tier 1 lands leftmost/farthest
    * from it. Markup per cup is byte-identical to the old TROPHY_CUP_SVG
-   * repeat() output aside from the added title attribute, so appearance is
-   * unchanged.
+   * repeat() output aside from the added <title> child, so appearance is
+   * unchanged (aria-hidden="true" already suppresses it from the a11y tree;
+   * that's fine, the tooltip is a hover nicety, not a screen-reader label).
    */
+  function trophyCupSvgWithTitle(titleText) {
+    return TROPHY_CUP_SVG.replace(
+      '<svg class="trophy-cup" viewBox="0 0 20 20" aria-hidden="true" focusable="false">',
+      `<svg class="trophy-cup" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><title>${escapeHtmlAttr(titleText)}</title>`
+    );
+  }
+
   function updateTrophyRow() {
     if (!trophyRowEl) return;
     if (rebirthCount <= 0) {
@@ -1139,18 +1151,11 @@
     if (rebirthCount <= MAX_TROPHY_CUPS) {
       let html = "";
       for (let tier = 1; tier <= rebirthCount; tier++) {
-        html += TROPHY_CUP_SVG.replace(
-          '<svg class="trophy-cup"',
-          `<svg class="trophy-cup" title="${escapeHtmlAttr(rebirthTierTooltip(tier))}"`
-        );
+        html += trophyCupSvgWithTitle(rebirthTierTooltip(tier));
       }
       trophyRowEl.innerHTML = html;
     } else {
-      const collapsedCup = TROPHY_CUP_SVG.replace(
-        '<svg class="trophy-cup"',
-        `<svg class="trophy-cup" title="${escapeHtmlAttr(rebirthTierTooltip(rebirthCount))}"`
-      );
-      trophyRowEl.innerHTML = collapsedCup +
+      trophyRowEl.innerHTML = trophyCupSvgWithTitle(rebirthTierTooltip(rebirthCount)) +
         '<span class="trophy-row-count">×' + rebirthCount + '</span>';
     }
   }
