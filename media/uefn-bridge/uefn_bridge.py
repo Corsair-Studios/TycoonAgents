@@ -78,6 +78,13 @@ _find_overridden_properties = getattr(device_audit, "_find_overridden_properties
 _build_base_property_set = getattr(device_audit, "_build_base_property_set", None)
 _get_property_names = getattr(device_audit, "_get_property_names", None)
 
+# Optional — deliberately NOT added to _DEVICE_AUDIT_MISSING/the required-
+# symbols list below. A device_audit.py old enough to lack CDO diffing
+# still has every OTHER helper (this is additive, not a breaking rename),
+# so run_audit must keep working via _find_overridden_properties' own
+# no-CDO fallback rather than being gated on this one extra symbol.
+_get_class_default_object = getattr(device_audit, "_get_class_default_object", None)
+
 # Names not found on the resolved device_audit module — consulted by
 # _require_device_audit_symbols() at handler call time.
 _DEVICE_AUDIT_MISSING = [
@@ -558,6 +565,28 @@ def _handle_run_audit(params):
                 loc = _actor_location_tuple(actor)
                 luf = _xyz_to_luf(*loc)
                 changed = _find_overridden_properties(actor, base_props)
+                # Per-property "overridden" is True / False / "unknown" (see
+                # device_audit._find_overridden_properties). Tally here so
+                # callers can spot hand-tuned devices without walking every
+                # property themselves.
+                overridden_count = sum(
+                    1 for v in changed.values() if v.get("overridden") is True
+                )
+                unknown_count = sum(
+                    1 for v in changed.values() if v.get("overridden") == "unknown"
+                )
+                # Resolved independently of _find_overridden_properties'
+                # internal CDO lookup (which is per-class-cached, so this is
+                # a cheap cache hit, not a second real resolution) because a
+                # fully-stock device has an EMPTY changed dict — there would
+                # be no property entry left to infer this from otherwise.
+                if _get_class_default_object is not None:
+                    try:
+                        defaults_resolved = _get_class_default_object(actor.get_class()) is not None
+                    except Exception:
+                        defaults_resolved = False
+                else:
+                    defaults_resolved = False
                 devices.append({
                     "label": label,
                     "class": class_name,
@@ -571,6 +600,9 @@ def _handle_run_audit(params):
                     "location_luf": {"left": luf[0], "up": luf[1], "forward": luf[2]},
                     "changed_property_count": len(changed),
                     "changed_properties": changed,
+                    "overridden_count": overridden_count,
+                    "unknown_count": unknown_count,
+                    "defaults_resolved": defaults_resolved,
                 })
             else:
                 non_device_counts[class_name] = non_device_counts.get(class_name, 0) + 1

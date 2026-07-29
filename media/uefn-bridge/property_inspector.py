@@ -127,12 +127,71 @@ def _is_overridden(obj, name):
         return False
 
 
-def _dump_properties(obj, owner_label):
+def _resolve_cdo_getter():
+    """
+    Lazily resolve ``device_audit._get_class_default_object`` as a getattr-
+    guarded SIBLING import, performed HERE — inside the function that needs
+    it — rather than at module scope. Mirrors uefn_bridge.py's per-symbol
+    getattr() resolution pattern (never a bare ``from device_audit import
+    ...``, which would fail the whole import over one missing/renamed
+    symbol in a stale or version-skewed device_audit.py copy).
+    property_inspector.py has no other dependency on device_audit.py, so
+    this keeps that dependency scoped to exactly the one feature (the
+    Default column) that needs it — every other capability in this
+    read-only tool works with device_audit.py absent entirely.
+
+    Returns ``(getter, None)`` on success, or ``(None, note)`` where *note*
+    is a one-line, user-facing explanation for why the Default column is
+    unavailable — surfaced verbatim in the report window.
+    """
+    try:
+        import device_audit as _device_audit
+    except Exception as e:
+        return None, (
+            "Default column unavailable — could not import device_audit.py: " + str(e)
+        )
+
+    getter = getattr(_device_audit, "_get_class_default_object", None)
+    if getter is None:
+        return None, (
+            "Default column unavailable — device_audit.py is missing "
+            "_get_class_default_object (stale/old copy?)."
+        )
+    return getter, None
+
+
+def _resolve_cdo_for(obj):
+    """
+    Best-effort class-default-object lookup for *obj*'s class, via
+    ``_resolve_cdo_getter``. Returns ``None`` on ANY failure — sibling
+    import unavailable, missing symbol, no ``get_class()``, or the
+    resolution itself raising — so callers degrade to "?" without needing
+    to know why (device_audit.py's own per-class CDO cache/warning already
+    covers the "why", logged once per class there).
+    """
+    getter, _note = _resolve_cdo_getter()
+    if getter is None:
+        return None
+    try:
+        cls = obj.get_class()
+    except Exception:
+        return None
+    try:
+        return getter(cls)
+    except Exception:
+        return None
+
+
+def _dump_properties(obj, owner_label, cdo=None):
     """
     Dump every editor-gettable property of *obj* into a list of dicts:
-    {internal_name, value, type, owner, overridden}.
+    {internal_name, value, type, owner, overridden, default}.
     Every ``get_editor_property`` call is individually guarded; a property
     that raises is silently skipped (it is not editor-exposed).
+
+    *cdo* is *obj*'s class-default-object (see ``_resolve_cdo_for``), or
+    ``None`` if it couldn't be resolved — in which case every row's
+    "default" is "?", never a guess.
     """
     rows = []
     for name in _get_property_names(obj):
@@ -153,12 +212,21 @@ def _dump_properties(obj, owner_label):
         except Exception:
             type_name = "<unknown>"
 
+        if cdo is not None:
+            try:
+                default_repr = _truncate(repr(cdo.get_editor_property(name)))
+            except Exception:
+                default_repr = "?"
+        else:
+            default_repr = "?"
+
         rows.append({
             "internal_name": name,
             "value": value_repr,
             "type": type_name,
             "owner": owner_label,
             "overridden": _is_overridden(obj, name),
+            "default": default_repr,
         })
     return rows
 
@@ -172,7 +240,7 @@ def _dump_actor(actor):
     except Exception:
         owner_label = "<actor>"
 
-    rows.extend(_dump_properties(actor, owner_label))
+    rows.extend(_dump_properties(actor, owner_label, _resolve_cdo_for(actor)))
 
     try:
         components = actor.get_components_by_class(unreal.ActorComponent)
@@ -185,7 +253,7 @@ def _dump_actor(actor):
         except Exception:
             comp_class_name = "<component>"
         comp_owner_label = "Component: " + comp_class_name
-        rows.extend(_dump_properties(comp, comp_owner_label))
+        rows.extend(_dump_properties(comp, comp_owner_label, _resolve_cdo_for(comp)))
 
     return rows
 
@@ -418,6 +486,20 @@ def _show_window(result):
     )
     stats_label.pack(side=tk.RIGHT)
 
+    # -- Default column availability note (lazy sibling-import check; see
+    # _resolve_cdo_getter's docstring). Shown once, window-wide, only when
+    # the Default column truly cannot be populated at all — a single
+    # actor/class's CDO failing to resolve degrades quietly to "?" in that
+    # row instead (device_audit.py already logs the per-class reason).
+    _cdo_note = _resolve_cdo_getter()[1]
+    if _cdo_note:
+        note_frame = tk.Frame(root, bg=_BG, padx=12)
+        note_frame.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(
+            note_frame, text=_cdo_note, font=("Segoe UI", 8),
+            fg=_TEXT_DIM, bg=_BG, anchor=tk.W,
+        ).pack(side=tk.LEFT, fill=tk.X)
+
     # -- Report path (selectable) --
     if result.get("report_path"):
         path_frame = tk.Frame(root, bg=_BG, padx=12)
@@ -447,15 +529,17 @@ def _show_window(result):
     tree_frame = tk.Frame(root, bg=_SECTION_BG)
     tree_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
-    columns = ("name", "value", "type", "owner", "overridden")
+    columns = ("name", "value", "default", "type", "owner", "overridden")
     tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=20)
     tree.heading("name", text="Internal Name")
     tree.heading("value", text="Value")
+    tree.heading("default", text="Default")
     tree.heading("type", text="Type")
     tree.heading("owner", text="Owner")
     tree.heading("overridden", text="Overridden")
     tree.column("name", width=220)
-    tree.column("value", width=260)
+    tree.column("value", width=220)
+    tree.column("default", width=220)
     tree.column("type", width=100)
     tree.column("owner", width=200)
     tree.column("overridden", width=80, anchor=tk.CENTER)
@@ -474,8 +558,8 @@ def _show_window(result):
             tree.delete(_row)
         filter_text = filter_text.lower().strip()
         for p in state["props"]:
-            haystack = "{} {} {} {}".format(
-                p["internal_name"], p["value"], p["type"], p["owner"]
+            haystack = "{} {} {} {} {}".format(
+                p["internal_name"], p["value"], p.get("default", "?"), p["type"], p["owner"]
             ).lower()
             if filter_text and filter_text not in haystack:
                 continue
@@ -483,7 +567,7 @@ def _show_window(result):
             tree.insert(
                 "", tk.END,
                 values=(
-                    p["internal_name"], p["value"], p["type"], p["owner"],
+                    p["internal_name"], p["value"], p.get("default", "?"), p["type"], p["owner"],
                     "yes" if p["overridden"] else "",
                 ),
                 tags=("match",) if is_match else (),

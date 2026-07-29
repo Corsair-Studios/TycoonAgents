@@ -65,6 +65,115 @@ _SKIP_PROPERTIES = frozenset({
     "centroid_offset",
 })
 
+# Cache of resolved class-default-objects, keyed by class name — see
+# _get_class_default_object below.
+_CDO_CACHE = {}
+
+# Class path names (or the sentinel "<symbol-missing>", or a class's bare
+# name as a last-resort dedup key when get_path_name() itself is
+# unavailable) for which a CDO resolution failure has already been logged,
+# so a level with thousands of actors of an unsupported class logs the
+# warning once, not once per actor.
+_CDO_UNAVAILABLE_LOGGED = set()
+
+# Max characters kept for a stringified property value in the JSON report
+# (mirrors property_inspector.py's _VALUE_MAX_LEN convention).
+_REPORT_VALUE_MAX_LEN = 120
+
+
+def _get_class_default_object(cls):
+    """
+    Return the class-default-object (CDO) for *cls*, or ``None`` if
+    ``unreal.get_default_object`` is unavailable on this build or the call
+    raises.
+
+    Field-proven (live UEFN probe): ``unreal.get_default_object(cls)``
+    successfully returned a CDO for 579/579 level classes seen, including
+    all 42 device classes, with 100% of properties readable via
+    ``cdo.get_editor_property(name)`` afterward. Still guarded end-to-end —
+    an older/unusual UEFN build is not something this repo controls — so a
+    missing or failing CDO degrades ONLY the default-value diffing feature;
+    it must never raise out of an audit.
+
+    Cached per class, keyed on the class's full ``get_path_name()`` when
+    available — NOT the bare ``get_name()`` short name. Two distinct
+    classes can share a short name (e.g. two Verse devices named
+    identically in different modules); a name-only key would let the
+    second lookup silently return the FIRST class's cached CDO, producing
+    wrong-default comparisons (false "overridden" / false "equal").
+    ``get_path_name()`` is this codebase's established disambiguation
+    pattern for exactly this (asset_usage.py, texture_finder.py,
+    moderation_scanner.py), so it is tried first and, when it resolves,
+    makes same-name collisions impossible. Only when ``get_path_name``
+    itself is unavailable/fails on this build does this fall back to the
+    bare short name — a real (if rarer) residual collision risk versus no
+    caching at all, but still far better than re-resolving the CDO once
+    per ACTOR instead of once per CLASS on levels with thousands of
+    actors.
+    """
+    try:
+        class_label = cls.get_name()
+    except Exception:
+        class_label = "<unknown class>"
+
+    get_path_name = getattr(cls, "get_path_name", None)
+    cache_key = None
+    if get_path_name is not None:
+        try:
+            cache_key = get_path_name()
+        except Exception:
+            cache_key = None  # resolution itself failed — fall through
+    if cache_key is None:
+        # get_path_name unavailable or failed — fall back to the bare
+        # short name (see docstring for the residual collision caveat).
+        cache_key = class_label
+
+    if cache_key in _CDO_CACHE:
+        return _CDO_CACHE[cache_key]
+
+    get_default_object = getattr(unreal, "get_default_object", None)
+    if get_default_object is None:
+        # One-time note, not per-actor spam: log this exactly once for the
+        # whole process, the first time it's discovered.
+        if "<symbol-missing>" not in _CDO_UNAVAILABLE_LOGGED:
+            _CDO_UNAVAILABLE_LOGGED.add("<symbol-missing>")
+            unreal.log_warning(
+                "device_audit: unreal.get_default_object is not available in "
+                "this UEFN build — default-value diffing is disabled for "
+                "this audit; changed properties will still be reported, "
+                "just without their real default values."
+            )
+        _CDO_CACHE[cache_key] = None
+        return None
+
+    try:
+        cdo = get_default_object(cls)
+    except Exception as e:
+        if cache_key not in _CDO_UNAVAILABLE_LOGGED:
+            _CDO_UNAVAILABLE_LOGGED.add(cache_key)
+            unreal.log_warning(
+                f"device_audit: get_default_object({class_label}) raised: {e} "
+                "— default-value diffing disabled for this class only."
+            )
+        cdo = None
+
+    _CDO_CACHE[cache_key] = cdo
+    return cdo
+
+
+def _truncate_report_value(value):
+    """Stringify *value* for the JSON report, truncated to
+    ``_REPORT_VALUE_MAX_LEN`` chars so one pathological property (e.g. a
+    huge array) can't blow up the report. Mirrors property_inspector.py's
+    ``_truncate`` convention."""
+    try:
+        s = str(value)
+    except Exception:
+        return "<unrepresentable>"
+    if len(s) > _REPORT_VALUE_MAX_LEN:
+        return s[:_REPORT_VALUE_MAX_LEN] + "..."
+    return s
+
 
 def _is_device(actor):
     """Return True if *actor* looks like a Creative device."""
@@ -187,21 +296,97 @@ def _build_base_property_set(all_actors):
 
 def _find_overridden_properties(actor, base_props=None):
     """
-    Identify properties on *actor* that have been modified from their defaults.
+    Identify properties on *actor* that differ from their class defaults.
 
-    Uses ``actor.is_editor_property_overridden(name)`` to detect overrides and
-    ``actor.get_editor_property(name)`` to read the current value.  The actual
-    default value is not available (CDO comparison does not work in UEFN), so
-    the default column is shown as a placeholder.
+    Real class-default-object (CDO) diffing: resolves the actor's CDO via
+    ``_get_class_default_object`` and, for each enumerated property, reads
+    BOTH the instance value and the CDO value, comparing with Python ``==``.
+    Struct-valued properties stringify with memory addresses (e.g.
+    ``<Struct 'Vector3f' (0x...)>``), so ``==`` on the raw returned values \u2014
+    never str()/repr() forms \u2014 is the only correct comparison (unreal
+    structs implement value equality; field-proven against a live UEFN
+    level: an Item Spawner instance showed 11/124 properties differing,
+    113 equal, 0 unreadable). If ``==`` itself raises for some exotic
+    property type, that property is classified ``"unknown"`` \u2014 NEVER
+    ``True`` (differing) \u2014 a comparison failure must never masquerade as a
+    real override.
+
+    If the CDO cannot be resolved at all (older UEFN build, or resolution
+    itself failed), falls back to ``actor.is_editor_property_overridden``
+    to detect overrides \u2014 same detection as before this upgrade \u2014 but the
+    default is reported as an explicit ``None`` with a
+    ``default_unavailable_reason``, never a silent placeholder that could
+    be mistaken for real data.
 
     If *base_props* is provided (a frozenset), those property names are
     excluded so that only device-specific properties are checked.
 
-    Returns a dict of ``{name: {"actor_value": str, "default_value": str}}``.
+    Returns a dict of ``{name: {"actor_value": str, "default_value": str or
+    None, "overridden": True | False | "unknown", ...}}`` containing only
+    properties that differ from their default or could not be conclusively
+    compared \u2014 properties confirmed equal to their default are omitted, so
+    ``len(result)`` still means "changed (or uncertain) property count", as
+    it always has.
     """
     changed = {}
     prop_names = _get_property_names(actor, exclude=base_props)
 
+    try:
+        cdo = _get_class_default_object(actor.get_class())
+    except Exception:
+        cdo = None
+
+    if cdo is not None:
+        for name in prop_names:
+            try:
+                actor_value = actor.get_editor_property(name)
+                actor_readable = True
+            except Exception:
+                actor_value = None
+                actor_readable = False
+
+            try:
+                default_value = cdo.get_editor_property(name)
+                default_readable = True
+            except Exception:
+                default_value = None
+                default_readable = False
+
+            if not actor_readable or not default_readable:
+                # Can't compare without both sides \u2014 never guess "differing".
+                changed[name] = {
+                    "actor_value": _truncate_report_value(actor_value) if actor_readable else "<unreadable>",
+                    "default_value": None,
+                    "default_unavailable_reason": "property unreadable on instance or default object",
+                    "overridden": "unknown",
+                }
+                continue
+
+            try:
+                is_equal = bool(actor_value == default_value)
+            except Exception:
+                # The comparison itself raised (exotic type) \u2014 per the
+                # field-proven comparison rule, this is "unknown", never
+                # "differing".
+                changed[name] = {
+                    "actor_value": _truncate_report_value(actor_value),
+                    "default_value": _truncate_report_value(default_value),
+                    "overridden": "unknown",
+                }
+                continue
+
+            if is_equal:
+                continue  # matches the class default \u2014 not "changed"
+
+            changed[name] = {
+                "actor_value": _truncate_report_value(actor_value),
+                "default_value": _truncate_report_value(default_value),
+                "overridden": True,
+            }
+
+        return changed
+
+    # --- No CDO available: fall back to Unreal's own override flag ---
     for name in prop_names:
         try:
             if not actor.is_editor_property_overridden(name):
@@ -211,13 +396,15 @@ def _find_overridden_properties(actor, base_props=None):
 
         try:
             value = actor.get_editor_property(name)
-            actor_str = str(value)
+            actor_str = _truncate_report_value(value)
         except Exception:
             actor_str = "<unreadable>"
 
         changed[name] = {
             "actor_value": actor_str,
-            "default_value": "\u2014",  # em-dash placeholder (CDO not available)
+            "default_value": None,
+            "default_unavailable_reason": "class-default-object unavailable in this UEFN build",
+            "overridden": True,
         }
 
     return changed
@@ -1054,6 +1241,40 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
     # -- Actor lookup for double-click selection --
     actor_map = {}  # treeview item id -> unreal actor
 
+    # -- Per-device CDO override info, computed once up front so the
+    # Devices table's "Tuned" column can show every row's count immediately
+    # (not just the selected device) without re-running property diffing on
+    # each click. Mirrors uefn_bridge.py's _handle_run_audit computation
+    # (overridden_count / unknown_count / defaults_resolved), applied here
+    # to the same devices_with_actors list this window already renders.
+    # Any single device's diffing failure degrades only that device's row
+    # ("?" / empty), never the whole window.
+    _tuned_by_idx = []
+    for _dev in devices_with_actors:
+        _actor = _dev.get("actor")
+        if _actor is None:
+            _tuned_by_idx.append({
+                "changed": {}, "overridden_count": 0, "unknown_count": 0,
+                "defaults_resolved": False,
+            })
+            continue
+        try:
+            _changed = _find_overridden_properties(_actor, base_props)
+        except Exception:
+            _changed = {}
+        _overridden_count = sum(1 for v in _changed.values() if v.get("overridden") is True)
+        _unknown_count = sum(1 for v in _changed.values() if v.get("overridden") == "unknown")
+        try:
+            _defaults_resolved = _get_class_default_object(_actor.get_class()) is not None
+        except Exception:
+            _defaults_resolved = False
+        _tuned_by_idx.append({
+            "changed": _changed,
+            "overridden_count": _overridden_count,
+            "unknown_count": _unknown_count,
+            "defaults_resolved": _defaults_resolved,
+        })
+
     # ================================================================
     # Top section — summary bar
     # ================================================================
@@ -1125,14 +1346,14 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
         bg=_SECTION_BG,
     ).pack(side=tk.RIGHT)
 
-    dev_all_columns = ("_idx", "#", "Label", "Class", "Location", "Layer")
-    dev_display_columns = ("#", "Label", "Class", "Location", "Layer")
+    dev_all_columns = ("_idx", "#", "Label", "Class", "Tuned", "Location", "Layer")
+    dev_display_columns = ("#", "Label", "Class", "Tuned", "Location", "Layer")
     dev_tree = ttk.Treeview(
         mid_frame, columns=dev_all_columns, displaycolumns=dev_display_columns,
         show="headings", height=12,
     )
 
-    dev_numeric_cols = {"#"}
+    dev_numeric_cols = {"#", "Tuned"}
 
     dev_tree.heading("#", text="#", anchor=tk.CENTER,
                      command=lambda: _treeview_sort_column(dev_tree, "#", False, dev_numeric_cols))
@@ -1140,6 +1361,8 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
                      command=lambda: _treeview_sort_column(dev_tree, "Label", False, dev_numeric_cols))
     dev_tree.heading("Class", text="Class", anchor=tk.W,
                      command=lambda: _treeview_sort_column(dev_tree, "Class", False, dev_numeric_cols))
+    dev_tree.heading("Tuned", text="Tuned", anchor=tk.CENTER,
+                     command=lambda: _treeview_sort_column(dev_tree, "Tuned", False, dev_numeric_cols))
     dev_tree.heading("Location", text="Location", anchor=tk.W,
                      command=lambda: _treeview_sort_column(dev_tree, "Location", False, dev_numeric_cols))
     dev_tree.heading("Layer", text="Layer", anchor=tk.CENTER,
@@ -1148,7 +1371,8 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
     dev_tree.column("_idx", width=0, stretch=False)
     dev_tree.column("#", width=40, stretch=False, anchor=tk.CENTER)
     dev_tree.column("Label", width=260)
-    dev_tree.column("Class", width=280)
+    dev_tree.column("Class", width=240)
+    dev_tree.column("Tuned", width=60, stretch=False, anchor=tk.CENTER)
     dev_tree.column("Location", width=220)
     dev_tree.column("Layer", width=80, stretch=False, anchor=tk.CENTER)
 
@@ -1162,10 +1386,14 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
     for i, dev in enumerate(devices_with_actors, 1):
         loc = dev["location"]
         loc_str = f"{loc['x']}, {loc['y']}, {loc['z']}"
+        _tuned = _tuned_by_idx[i - 1]
+        # An unknown must never read as "untouched" — only show a real
+        # count when defaults were actually resolvable for this device.
+        tuned_display = str(_tuned["overridden_count"]) if _tuned["defaults_resolved"] else "?"
         iid = dev_tree.insert(
             "",
             tk.END,
-            values=(i - 1, i, dev["label"], dev["class"], loc_str,
+            values=(i - 1, i, dev["label"], dev["class"], tuned_display, loc_str,
                     dev.get("hud_layer", "")),
         )
         if dev.get("actor") is not None:
@@ -1238,6 +1466,7 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
     detail_tree.tag_configure("detail", foreground=_TEXT)
     detail_tree.tag_configure("conn", foreground="#227A32")
     detail_tree.tag_configure("info", foreground=_TEXT_DIM)
+    detail_tree.tag_configure("tuned", foreground=_ACCENT)
     # Legacy tags retained for any lingering references.
     detail_tree.tag_configure("actor_ref", foreground="#227A32")
     detail_tree.tag_configure("asset_ref", foreground="#A8431A")
@@ -1320,6 +1549,55 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
                     values=(conn["target_label"], note), tags=("conn",),
                 )
                 row_count += 1
+
+        # 2b) Tuned Properties — CDO diffing: properties whose value differs
+        # from (or couldn't be conclusively compared to) the class default.
+        # Precomputed up front in _tuned_by_idx (see top of this function)
+        # so this handler never re-runs property diffing on selection.
+        tuned = _tuned_by_idx[idx] if 0 <= idx < len(_tuned_by_idx) else None
+        if tuned is not None:
+            tp_node = _section("Tuned Properties")
+            if not tuned["defaults_resolved"]:
+                reason = None
+                for _v in tuned["changed"].values():
+                    _r = _v.get("default_unavailable_reason")
+                    if _r:
+                        reason = _r
+                        break
+                if not reason:
+                    reason = (
+                        "Class-default-object unavailable in this UEFN "
+                        "build — property comparisons could not be "
+                        "performed for this device's class."
+                    )
+                detail_tree.insert(
+                    tp_node, tk.END, text="Defaults unavailable",
+                    values=(reason, ""), tags=("info",),
+                )
+                row_count += 1
+            elif not tuned["changed"]:
+                detail_tree.insert(
+                    tp_node, tk.END, text="No overrides",
+                    values=("No properties differ from class defaults.", ""),
+                    tags=("info",),
+                )
+                row_count += 1
+            else:
+                for prop_name, entry in sorted(tuned["changed"].items()):
+                    if entry.get("overridden") is False:
+                        continue  # equal props are already omitted upstream
+                    current_val = entry.get("actor_value", "")
+                    if entry.get("overridden") == "unknown":
+                        default_val = "?"
+                    else:
+                        default_val = entry.get("default_value")
+                        if default_val is None:
+                            default_val = "?"
+                    detail_tree.insert(
+                        tp_node, tk.END, text=prop_name,
+                        values=(current_val, default_val), tags=("tuned",),
+                    )
+                    row_count += 1
 
         # 3) Honest note for stock devices that have no Verse wiring.
         if not verse_conns:
