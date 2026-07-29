@@ -13,6 +13,10 @@
   --muted: #A1A1AA;
   --accent: #FFB020;
   /* amber – primary / header */
+  --accent-info: #4FC3F7;
+  /* sky blue – secondary actions (e.g. Advanced Settings), distinct from
+     the amber primary so a secondary CTA reads as "also available" rather
+     than competing with Continue/Install */
 
   --status-active: #A3E635;
   /* lime */
@@ -386,6 +390,19 @@ body {
   cursor: pointer;
 }
 
+/* Disabled state (no ignore-file evidence detected, see media/main.js
+   renderSetupOptionals) — dim the whole row instead of leaving a live-
+   looking but non-functional checkbox. */
+.setup-optionals-checkbox-row:has(input:disabled) {
+  cursor: default;
+  color: var(--muted);
+}
+
+.setup-optionals-checkbox-row input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 /* Setup wizard Step 2 package checkbox list — replaces the old click-to-
    toggle chip row so it's clear each row is an install decision, not a
    status pill. One row per SETUP_SKILL_CHIPS entry (media/main.js). */
@@ -456,9 +473,12 @@ body {
   font-style: italic;
 }
 
-/* Secondary call-to-action: styled deliberately muted relative to
-   .setup-optionals-continue-btn so it reads as "also available" rather than
-   competing with the primary Continue action. */
+/* Secondary call-to-action: an outlined button in --accent-info (sky blue)
+   so it stays clearly visible and obviously clickable next to surrounding
+   content, while its cool tone keeps it from competing with the amber
+   --accent primary (.setup-optionals-continue-btn / #install-hooks-btn).
+   Previously transparent + var(--muted) gray, which read as disabled/
+   invisible against the card. */
 .setup-optionals-advanced-btn {
   align-self: stretch;
   font-family: inherit;
@@ -466,17 +486,17 @@ body {
   font-weight: 600;
   padding: 8px 16px;
   border-radius: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent-info);
   background: transparent;
-  color: var(--muted);
+  color: var(--accent-info);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
 .setup-optionals-advanced-btn:hover {
   color: var(--text);
-  border-color: var(--muted);
-  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--accent-info);
+  background: color-mix(in srgb, var(--accent-info) 16%, transparent);
 }
 
 /* Explicit finalize gate for the Step-2 Optionals wizard — the only exit

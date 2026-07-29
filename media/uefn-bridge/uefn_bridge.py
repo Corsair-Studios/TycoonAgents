@@ -31,16 +31,108 @@ import time
 import secrets
 
 # Reuse device_audit helpers — do NOT duplicate that logic.
-from device_audit import (
-    _is_device,
-    _safe_label,
-    _actor_location_tuple,
-    _xyz_to_luf,
-    _find_overridden_properties,
-    _build_base_property_set,
-    _get_property_names,
-)
-from batch_tools import batch_set_property, batch_get_property
+#
+# Resolved via getattr() rather than `from device_audit import (...)`: a
+# version-skewed staging (e.g. a stale engine-side copy of device_audit.py
+# shadowing a newer project copy on sys.path, or vice versa) can be missing
+# a symbol this file expects. A plain from-import dies at MODULE IMPORT
+# TIME on the FIRST missing name — which is exactly what happened in the
+# field: one missing helper in a stale device_audit.py took down the ENTIRE
+# bridge (no IPC, no heartbeat, no Power Tools popup). Resolving per-symbol
+# instead means a missing helper disables only the handler(s) that actually
+# need it — see _require_device_audit_symbols() and its call sites in
+# _find_actor_by_label, _handle_list_devices, and _handle_run_audit below.
+import device_audit
+
+# Each helper resolved individually (not via globals()[name] = ...) so every
+# name below is a real, statically-visible module-level assignment — plain
+# and IDE/linter-friendly, at the cost of one explicit line per helper.
+_is_device = getattr(device_audit, "_is_device", None)
+_safe_label = getattr(device_audit, "_safe_label", None)
+_actor_location_tuple = getattr(device_audit, "_actor_location_tuple", None)
+_xyz_to_luf = getattr(device_audit, "_xyz_to_luf", None)
+_find_overridden_properties = getattr(device_audit, "_find_overridden_properties", None)
+_build_base_property_set = getattr(device_audit, "_build_base_property_set", None)
+_get_property_names = getattr(device_audit, "_get_property_names", None)
+
+# Names not found on the resolved device_audit module — consulted by
+# _require_device_audit_symbols() at handler call time.
+_DEVICE_AUDIT_MISSING = [
+    _name
+    for _name, _value in (
+        ("_is_device", _is_device),
+        ("_safe_label", _safe_label),
+        ("_actor_location_tuple", _actor_location_tuple),
+        ("_xyz_to_luf", _xyz_to_luf),
+        ("_find_overridden_properties", _find_overridden_properties),
+        ("_build_base_property_set", _build_base_property_set),
+        ("_get_property_names", _get_property_names),
+    )
+    if _value is None
+]
+
+if _DEVICE_AUDIT_MISSING:
+    # ONE clear warning at startup naming every missing symbol and the
+    # resolved module path — that path is the smoking gun for diagnosing a
+    # shadowed/stale copy (see init_unreal.py's self-sync for why more than
+    # one copy of these files can exist on a machine).
+    try:
+        unreal.log_warning(
+            "uefn_bridge: device_audit (resolved from "
+            + str(getattr(device_audit, "__file__", "<unknown path>"))
+            + ") is missing helper(s): " + ", ".join(_DEVICE_AUDIT_MISSING)
+            + ". This usually means a version-skewed/stale copy is shadowing "
+            "the current one on sys.path. Tool(s) that depend on the missing "
+            "helper(s) will return an explicit error naming them instead of "
+            "silently degrading; the rest of the bridge (status, heartbeat, "
+            "get_property/set_property/select_actor when unaffected, and "
+            "every non-device-audit tool) is unaffected."
+        )
+    except Exception:
+        pass
+
+
+def _require_device_audit_symbols(*names):
+    """Return ``None`` if every name in *names* resolved to a real
+    device_audit helper; otherwise return an explicit error string naming
+    the missing symbol(s) and the resolved device_audit module path.
+
+    Call this at the TOP of any handler that uses a device_audit helper,
+    before doing any work, and raise/return based on its result rather than
+    let a missing helper (``None``) get called and its resulting TypeError
+    silently swallowed by a broad ``except Exception`` lower in the handler
+    — which would otherwise turn "helper missing" into a falsely-empty-but-
+    "successful" result. This repo has a standing rule against exactly that
+    failure shape.
+    """
+    missing = [name for name in names if name in _DEVICE_AUDIT_MISSING]
+    if not missing:
+        return None
+    return (
+        "device_audit (resolved from "
+        + str(getattr(device_audit, "__file__", "<unknown path>"))
+        + ") is missing required helper(s): " + ", ".join(missing)
+    )
+
+
+try:
+    from batch_tools import batch_set_property, batch_get_property
+except ImportError as _bt_exc:
+    # batch_tools.py does its OWN hard `from device_audit import _is_device,
+    # _safe_label` at module scope — the identical version-skew exposure
+    # this file just hardened against, one layer deeper. If either symbol
+    # is missing from the resolved device_audit, that import raises here
+    # and would otherwise crash this entire module's import (the field
+    # failure this whole change exists to prevent — see the device_audit
+    # block above). Degrade only the two tools that need it instead.
+    unreal.log_warning(
+        f"uefn_bridge: batch_tools unavailable ({_bt_exc}) — most likely the "
+        "same device_audit version skew described above. batch_set/"
+        "batch_get will return an explicit error naming this; the rest of "
+        "the bridge is unaffected."
+    )
+    batch_set_property = None
+    batch_get_property = None
 from texture_finder import find_texture_usage, find_texture_summary, list_textures_on_actor
 from material_browser import browse_materials, find_unused_materials
 from niagara_inspector import browse_niagara, find_niagara_usage
@@ -223,6 +315,9 @@ def _get_all_actors():
 
 def _find_actor_by_label(label):
     """Find an actor by its display label.  Raises if not found."""
+    missing = _require_device_audit_symbols("_safe_label")
+    if missing:
+        raise RuntimeError("find_actor_by_label unavailable: " + missing)
     actors = _get_all_actors()
     for actor in actors:
         if _safe_label(actor) == label:
@@ -254,6 +349,12 @@ def _handle_status(params):
 
 def _handle_list_devices(params):
     """List all Creative devices in the level (reuses device_audit logic)."""
+    missing = _require_device_audit_symbols(
+        "_is_device", "_safe_label", "_actor_location_tuple",
+        "_xyz_to_luf", "_find_overridden_properties", "_build_base_property_set",
+    )
+    if missing:
+        raise RuntimeError("list_devices unavailable: " + missing)
     try:
         all_actors = _get_all_actors()
     except Exception as e:
@@ -405,8 +506,12 @@ def _handle_select_actor(params):
 
 def _handle_run_audit(params):
     """Run the full device audit and return the report as JSON."""
-    # Import device_audit's run logic directly
-    import device_audit
+    missing = _require_device_audit_symbols(
+        "_is_device", "_safe_label", "_actor_location_tuple",
+        "_xyz_to_luf", "_find_overridden_properties", "_build_base_property_set",
+    )
+    if missing:
+        raise RuntimeError("run_audit unavailable: " + missing)
 
     try:
         all_actors = _get_all_actors()
@@ -500,6 +605,11 @@ def _handle_get_level_info(params):
 
 def _handle_batch_set(params):
     """Batch set a property on multiple actors."""
+    if batch_set_property is None:
+        raise RuntimeError(
+            "batch_set unavailable: batch_tools failed to import, most likely "
+            "the same device_audit version skew reported at startup"
+        )
     filter_type = params.get("filter_type", "all_devices")
     filter_value = params.get("filter_value", "")
     property_name = params.get("property_name")
@@ -514,6 +624,11 @@ def _handle_batch_set(params):
 
 def _handle_batch_get(params):
     """Batch read a property from multiple actors."""
+    if batch_get_property is None:
+        raise RuntimeError(
+            "batch_get unavailable: batch_tools failed to import, most likely "
+            "the same device_audit version skew reported at startup"
+        )
     filter_type = params.get("filter_type", "all_devices")
     filter_value = params.get("filter_value", "")
     property_name = params.get("property_name")

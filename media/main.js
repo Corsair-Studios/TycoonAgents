@@ -2433,9 +2433,8 @@
     } else if (justInstalled || setupStage === "optionals") {
       // Step 2 (Optionals): STAY on the setup screen instead of switching to
       // the main app immediately. This used to be an unconditional
-      // showMain(), which hid the whole screen before the UEFN card
-      // (renderUefnPrompt, appended into #setup-card) — or any other
-      // optional action — ever had a chance to render.
+      // showMain(), which hid the whole screen before renderSetupOptionals
+      // — or any other optional action — ever had a chance to render.
       setupStage = "optionals";
       showSetup();
       setupStatusEl.textContent = "Hooks installed ✓";
@@ -9139,11 +9138,13 @@
    * own two card halves each call so a repeated installState push doesn't
    * duplicate anything.
    *
-   * Renders in two pieces (top: confirmation/gitignore/skill chips, bottom:
-   * advanced-tuning link/Done button) with the UEFN card (renderUefnPrompt)
-   * appended between them, so DOM order matches the wizard spec regardless
-   * of whether UEFN is detected: confirmation -> optional gitignore ->
-   * skill chips -> [UEFN card] -> advanced link -> Done.
+   * Renders in two pieces (top: confirmation/ignore-file checkbox/skill
+   * chips, bottom: advanced-tuning link/Done button) with an "already set
+   * up" UEFN confirmation line appended between them when applicable, so DOM
+   * order matches the wizard spec: confirmation -> optional ignore-file
+   * checkbox -> skill chips (UEFN's row is the SINGLE place to opt into
+   * UEFN setup — there is no separate action card) -> [UEFN confirmation] ->
+   * advanced link -> Done.
    *
    * @param {{engineChips?: Array<{id:string,label:string,state:string,detail:string}>, uefnDetected?: boolean, uefnSignals?: string[], foreignManagedBlocks?: Array<{namespace:string,lines:number}>}} info
    */
@@ -9173,22 +9174,28 @@
     optionalHeading.textContent = "Optional setup";
     top.appendChild(optionalHeading);
 
+    // Evidence-based, not guessed: panel.ts _detectIgnoreTargets inspects
+    // the project (.git dir, existing .p4ignore/.p4config/P4CONFIG,
+    // existing .urcignore, or a detected UEFN project) and sends back only
+    // the ignore file(s) it actually found signal for. Default ON iff at
+    // least one target was detected; when none were, the checkbox is
+    // disabled+unchecked with a reason instead of guessing a VCS.
     const gitignoreLabel = document.createElement("label");
     gitignoreLabel.className = "setup-optionals-checkbox-row";
     const gitignoreCheckbox = document.createElement("input");
     gitignoreCheckbox.type = "checkbox";
     gitignoreCheckbox.id = "setup-gitignore-checkbox";
-    // Opt-in only, unchecked by default (explicit user decision).
-    gitignoreCheckbox.checked = false;
-    gitignoreLabel.appendChild(gitignoreCheckbox);
+    const ignoreTargets = info && Array.isArray(info.ignoreTargets) ? info.ignoreTargets : [];
     const gitignoreText = document.createElement("span");
-    // Project-neutral label: the host writes .gitignore always, and also
-    // .p4ignore on a detected UEFN/Perforce project (see panel.ts
-    // _handleAddGitignoreEntries) since Perforce never reads .gitignore.
-    gitignoreText.textContent =
-      info && info.uefnDetected
-        ? "Add tycoon logs to ignore file (.gitignore + .p4ignore for UEFN/Perforce)"
-        : "Add tycoon logs to ignore file";
+    if (ignoreTargets.length > 0) {
+      gitignoreCheckbox.checked = true;
+      gitignoreText.textContent = "Add Tycoon logs to " + ignoreTargets.join(", ") + " (detected)";
+    } else {
+      gitignoreCheckbox.checked = false;
+      gitignoreCheckbox.setAttribute("disabled", "");
+      gitignoreText.textContent = "Add Tycoon logs to ignore file — no version-control ignore file detected";
+    }
+    gitignoreLabel.appendChild(gitignoreCheckbox);
     gitignoreLabel.appendChild(gitignoreText);
     top.appendChild(gitignoreLabel);
 
@@ -9251,12 +9258,17 @@
     // Lazily initialize the selection ONCE per wizard session so a later
     // re-render (e.g. the async "packs" response landing after this first
     // paint) never resets ticks the user already made. Per the product
-    // spec: UEFN is pre-checked iff detected on this machine (uefnInstalled
-    // — %LOCALAPPDATA%/UnrealEditorFortnite, plumbed through INSTALL_STATE
-    // by panel.ts _handleCheckInstall), every other row defaults unchecked.
+    // spec: UEFN is pre-checked when EITHER signal fires — the project
+    // itself looks like UEFN (uefnDetected — project-file signals, see
+    // detectUefnProject) OR UEFN is installed on this machine (uefnInstalled
+    // — %LOCALAPPDATA%/UnrealEditorFortnite) — plumbed through INSTALL_STATE
+    // by panel.ts _handleCheckInstall. Every other row defaults unchecked.
+    // This checkbox is now the SINGLE place UEFN setup is offered in the
+    // wizard (see removeSetupOptionalsNodes / the UEFN section below —
+    // there is no longer a separate "UEFN project detected" card).
     if (setupPackageSelection === null) {
       setupPackageSelection = new Set();
-      if (info && info.uefnInstalled) setupPackageSelection.add("uefn");
+      if (info && (info.uefnDetected || info.uefnInstalled)) setupPackageSelection.add("uefn");
     }
 
     SETUP_SKILL_CHIPS.forEach(function (def) {
@@ -9293,10 +9305,14 @@
       installsEl.textContent = "Installs: " + describePackageInstalls(pack, def);
       textBlock.appendChild(installsEl);
 
-      if (def.id === "uefn" && info && info.uefnInstalled) {
+      if (def.id === "uefn" && info && (info.uefnDetected || info.uefnInstalled)) {
         const reasonEl = document.createElement("span");
         reasonEl.className = "setup-package-reason";
-        reasonEl.textContent = "UEFN detected on this system — pre-checked, untick to skip.";
+        // Reflect whichever signal actually fired rather than always
+        // crediting machine-level detection.
+        reasonEl.textContent = info.uefnDetected
+          ? "This looks like a UEFN project — pre-checked, untick to skip."
+          : "UEFN detected on this system — pre-checked, untick to skip.";
         textBlock.appendChild(reasonEl);
       }
 
@@ -9308,31 +9324,20 @@
 
     setupCard.appendChild(top);
 
-    // ── UEFN card / already-set-up confirmation, appended between the two
+    // ── UEFN "already set up" confirmation, appended between the two
     //    halves so it lands after the skill chips and before the advanced
-    //    link/Done button. The outer installState handler skips its own
-    //    renderUefnPrompt call whenever this optionals path just ran (see
-    //    the "installState" message handler) so it's never rendered twice.
+    //    link/Done button. There is no separate UEFN action card anymore —
+    //    the "UEFN" row in the skill-chip checkbox list above is the single
+    //    place UEFN setup (pack + bridge staging) is offered; this is purely
+    //    an informational status line for the already-done case.
     const existingUefnConfirm = document.getElementById("uefn-bridge-setup-confirm");
     if (existingUefnConfirm) existingUefnConfirm.remove();
-    if (info && info.uefnDetected) {
-      if (info.uefnBridgeSetUp) {
-        // UEFN setup already ran (the .mcp.json uefn-bridge entry is
-        // present) — show a static confirmation instead of the redundant
-        // "Yes, set up UEFN" button.
-        const existingUefnCard = document.getElementById("uefn-prompt-card");
-        if (existingUefnCard) existingUefnCard.remove();
-        const confirm = document.createElement("p");
-        confirm.id = "uefn-bridge-setup-confirm";
-        confirm.className = "setup-optionals-confirm";
-        confirm.textContent = "✓ UEFN bridge already set up";
-        setupCard.appendChild(confirm);
-      } else {
-        renderUefnPrompt(info.uefnSignals || []);
-      }
-    } else {
-      const existingUefnCard = document.getElementById("uefn-prompt-card");
-      if (existingUefnCard) existingUefnCard.remove();
+    if (info && info.uefnDetected && info.uefnBridgeSetUp) {
+      const confirm = document.createElement("p");
+      confirm.id = "uefn-bridge-setup-confirm";
+      confirm.className = "setup-optionals-confirm";
+      confirm.textContent = "✓ UEFN bridge already set up";
+      setupCard.appendChild(confirm);
     }
 
     // ── Bottom half: advanced-settings call-to-action, Done button ───
@@ -9418,102 +9423,14 @@
     setupCard.appendChild(bottom);
   }
 
-  /**
-   * Render the UEFN project detected card inside #setup-card.
-   * Called when checkInstall response carries uefnDetected:true.
-   * @param {string[]} signals
-   */
-  function renderUefnPrompt(signals) {
-    // Remove any existing card first (idempotent)
-    const existing = document.getElementById("uefn-prompt-card");
-    if (existing) existing.remove();
-
-    const setupCard = document.getElementById("setup-card");
-    if (!setupCard) return;
-
-    const card = document.createElement("div");
-    card.id = "uefn-prompt-card";
-    card.className = "uefn-prompt-card";
-
-    const heading = document.createElement("h2");
-    heading.className = "uefn-prompt-heading";
-    heading.textContent = "UEFN project detected";
-    card.appendChild(heading);
-
-    const body = document.createElement("p");
-    body.className = "uefn-prompt-body";
-    body.id = "uefn-prompt-body";
-    body.textContent = "This looks like a UEFN project. Set up the Verse Expert and Auditor agents and stage the UEFN bridge (uefn_bridge.py into Content/Python)?";
-    card.appendChild(body);
-
-    const btnRow = document.createElement("div");
-    btnRow.className = "uefn-prompt-btns";
-
-    const yesBtn = document.createElement("button");
-    yesBtn.className = "skill-btn";
-    yesBtn.id = "uefn-yes-btn";
-    yesBtn.textContent = "Yes, set up UEFN";
-    yesBtn.addEventListener("click", function () {
-      yesBtn.setAttribute("disabled", "");
-      notNowBtn.setAttribute("disabled", "");
-      body.textContent = "Setting up…";
-      vscode.postMessage({ type: "setupUefnProject" });
-    });
-
-    const notNowBtn = document.createElement("button");
-    notNowBtn.className = "skill-btn";
-    notNowBtn.id = "uefn-notnow-btn";
-    notNowBtn.textContent = "Not now";
-    notNowBtn.addEventListener("click", function () {
-      card.remove();
-    });
-
-    btnRow.appendChild(yesBtn);
-    btnRow.appendChild(notNowBtn);
-    card.appendChild(btnRow);
-
-    setupCard.appendChild(card);
-  }
-
-  /**
-   * Handle the uefnSetupDone message from the host.
-   * @param {{ok:boolean, results?:{pack:string, bridge:"staged"|"exists", engineFound?:boolean, locations?:Array<{label:string,dir:string,staged:number,updated:number,unchanged:number,error?:string}>}, error?:string}} msg
-   */
-  function handleUefnSetupDone(msg) {
-    const card = document.getElementById("uefn-prompt-card");
-    if (!card) return;
-    const body = document.getElementById("uefn-prompt-body");
-    const btns = card.querySelector(".uefn-prompt-btns");
-    if (btns) btns.remove();
-    if (msg.ok && msg.results) {
-      const r = msg.results;
-      const lines = [];
-      lines.push("UEFN setup complete:");
-      lines.push("Agents: Verse Expert + Auditor installed");
-      lines.push("Skill: uefn");
-      lines.push("MCP: uefn-bridge");
-      if (r.locations && r.locations.length) {
-        lines.push("Bridge staged to:");
-        r.locations.forEach(function (loc) {
-          if (loc.error) {
-            lines.push("  " + loc.label + " (write failed): " + loc.error);
-          } else {
-            lines.push(
-              "  " + loc.label + ": " + loc.staged + " new, " + loc.updated + " updated, " + loc.unchanged + " unchanged"
-            );
-          }
-        });
-        if (r.engineFound === false) {
-          lines.push("  ⚠ Fortnite engine Python dir not found — tools may not load until copied there.");
-        }
-      } else {
-        lines.push("Content/Python (bridge + tools): " + r.bridge);
-      }
-      if (body) body.textContent = lines.join("\n");
-    } else {
-      if (body) body.textContent = "Setup failed: " + (msg.error || "unknown error");
-    }
-  }
+  // NOTE: the standalone "UEFN project detected" action card (formerly
+  // renderUefnPrompt/handleUefnSetupDone, posting "setupUefnProject") was
+  // removed — it duplicated the Setup Wizard Step-2 UEFN checkbox row
+  // (SETUP_SKILL_CHIPS above), which is now the single place UEFN setup
+  // (pack install + bridge staging) is offered. The host-side
+  // _handleSetupUefnProject/MSG.SETUP_UEFN_PROJECT handler is left in place
+  // (see panel.ts) in case another flow still calls it; nothing in this
+  // webview posts "setupUefnProject" anymore.
 
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
@@ -10420,34 +10337,11 @@
         renderSettings();
       }
       handleInstallState(msg);
-      // When handleInstallState just took (or continued in) the Step-2
-      // Optionals branch, renderSetupOptionals already handled the UEFN
-      // section inline (button or "already set up" line), in the correct
-      // DOM position (between the skill chips and the advanced-link/Done
-      // button). Skip the generic call here so the UEFN card isn't
-      // re-appended at the very end of #setup-card (which would both
-      // duplicate-render and misplace it).
-      // Mirrors handleInstallState's own branch predicate exactly (not just
-      // "installed && !openedFromSettings && !done") so this is true ONLY
-      // when renderSetupOptionals actually ran just now — a plain returning
-      // session (hooks pre-installed, never justInstalled, setupStage stuck
-      // at "not-installed") takes handleInstallState's final showMain()
-      // fallback instead, and must NOT suppress the fallback renderUefnPrompt
-      // call below.
-      var uefnHandledByOptionals =
-        msg &&
-        msg.installed === true &&
-        !openedFromSettings &&
-        setupStage !== "done" &&
-        (justInstalled || setupStage === "optionals");
-      // uefnBridgeSetUp: the .mcp.json uefn-bridge entry is already present
-      // (UEFN setup ran before) — don't keep re-prompting "set up UEFN".
-      if (msg.uefnDetected && !msg.uefnBridgeSetUp && !uefnHandledByOptionals) {
-        lastUefnDetected = true;
-        renderUefnPrompt(msg.uefnSignals || []);
-      }
-    } else if (msg && msg.type === "uefnSetupDone") {
-      handleUefnSetupDone(msg);
+      // The Step-2 Optionals branch (renderSetupOptionals) shows the UEFN
+      // "already set up" confirmation inline when applicable — there is no
+      // separate standalone UEFN card/prompt anymore (the Step-2 UEFN
+      // checkbox row is the single place UEFN setup is offered), so no
+      // generic fallback render is needed here.
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();

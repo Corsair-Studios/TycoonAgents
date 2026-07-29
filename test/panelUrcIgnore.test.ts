@@ -46,6 +46,14 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { TycoonPanel } = require("../src/host/vscode/panel") as typeof import("../src/host/vscode/panel");
 
+// `_uefnEffectiveRoot`'s evidence ladder (rung 1) reads real
+// `%LOCALAPPDATA%\UnrealEditorFortnite\Saved\VerseProject` by default —
+// point it at an empty scratch dir for the whole file so these tests never
+// depend on whatever UEFN project data happens to exist on the machine
+// running them (see CLAUDE.md's Path & Environment Discovery: fixtures
+// build their own temp trees, never real machine state).
+process.env.UEFN_VERSE_PROJECT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "panelUrcIgnore-noverseproject-"));
+
 function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "panelUrcIgnore-"));
 }
@@ -57,19 +65,36 @@ function markAsUefnProject(root: string): void {
   fs.writeFileSync(path.join(root, "project.uproject"), "{}");
 }
 
+// Give the tmp root a git signal (`detectIgnoreTargets` looks for a `.git`
+// dir, or an existing `.gitignore`, at the plain project root) so the
+// `.gitignore` target fires without a UEFN marker present.
+function markAsGitProject(root: string): void {
+  fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+}
+
 // `_handleAddGitignoreEntries` calls `this._projectRoot()`,
-// `this._appendIgnoreEntries(...)`, and (for the UEFN branch)
-// `this._uefnEffectiveRoot(...)` (plus the globally-stubbed
-// `vscode.window.showInformationMessage`) — a minimal receiver carrying
-// those bound members is enough to invoke the real method under test
-// without constructing a full TycoonPanel. None of these tmp roots are
-// named "Content", so `_uefnEffectiveRoot` is a no-op passthrough here —
-// its own behavior is covered by test/panelBridgeStaleness.test.ts.
+// `this._appendIgnoreEntries(...)`, and `this._uefnEffectiveRoot(...)` (plus
+// the globally-stubbed `vscode.window.showInformationMessage`).
+// `_uefnEffectiveRoot` in turn delegates to `_resolveUefnContentDirEvidence`
+// (the evidence ladder: matching .vproject Source dirPath, then an existing
+// Python/init_unreal.py, then documented layout rules), which calls
+// `_findMatchingVprojectContentDirs`, `_plausibleContentDirCandidates`, and
+// `_canonPath` — all of these need to be present on the receiver for the
+// real call chain to run rather than throw. None of these tmp roots are
+// named "Content" and none have a nearby `.vproject`/layout match, so the
+// evidence ladder is a no-op passthrough here (effRoot === root) — the
+// ladder's own redirect behavior is covered by
+// test/panelBridgeStaleness.test.ts.
 function callAddGitignoreEntries(root: string): void {
   const fakeThis = {
     _projectRoot: () => root,
     _appendIgnoreEntries: (TycoonPanel.prototype as any)._appendIgnoreEntries,
     _uefnEffectiveRoot: (TycoonPanel.prototype as any)._uefnEffectiveRoot,
+    _resolveUefnContentDirEvidence: (TycoonPanel.prototype as any)._resolveUefnContentDirEvidence,
+    _findMatchingVprojectContentDirs: (TycoonPanel.prototype as any)._findMatchingVprojectContentDirs,
+    _plausibleContentDirCandidates: (TycoonPanel.prototype as any)._plausibleContentDirCandidates,
+    _confirmedContentDirItself: (TycoonPanel.prototype as any)._confirmedContentDirItself,
+    _canonPath: (TycoonPanel.prototype as any)._canonPath,
   };
   (TycoonPanel.prototype as any)._handleAddGitignoreEntries.call(fakeThis);
 }
@@ -129,15 +154,39 @@ test("_handleAddGitignoreEntries creates .urcignore for a UEFN project with the 
   }
 });
 
-test("_handleAddGitignoreEntries does not touch .urcignore for a non-UEFN project", () => {
+// Contract (see `detectIgnoreTargets` in panel.ts): targets are
+// evidence-detected only — a `.git` dir (or existing `.gitignore`) for
+// `.gitignore`, an existing Perforce marker or a detected UEFN project for
+// `.p4ignore`, an existing `.urcignore` or a detected UEFN project for
+// `.urcignore`. No evidence for a given target means that file is never
+// written, and a project with NO evidence for any of the three gets no
+// writes at all — never a guessed VCS.
+
+test("_handleAddGitignoreEntries writes only .gitignore (minimal list) for a git-only, non-UEFN project", () => {
   const root = tmpRoot();
   try {
+    markAsGitProject(root);
     callAddGitignoreEntries(root);
-    assert.ok(!fs.existsSync(path.join(root, ".urcignore")), "non-UEFN project must not get a .urcignore");
-    // Non-UEFN .gitignore keeps only the minimal runtime-artifact list.
+
+    assert.ok(!fs.existsSync(path.join(root, ".urcignore")), "git-only, non-UEFN project must not get a .urcignore");
+    assert.ok(!fs.existsSync(path.join(root, ".p4ignore")), "git-only, non-UEFN project must not get a .p4ignore");
+
     const gitignore = fs.readFileSync(path.join(root, ".gitignore"), "utf8");
     assert.ok(gitignore.includes(".claude/tycoon/"));
     assert.ok(!gitignore.includes("CLAUDE.md"), "non-UEFN .gitignore must keep its minimal list, not the UEFN one");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("_handleAddGitignoreEntries writes nothing for a project with no git, no UEFN, and no existing ignore/marker files", () => {
+  const root = tmpRoot();
+  try {
+    callAddGitignoreEntries(root);
+
+    assert.ok(!fs.existsSync(path.join(root, ".gitignore")), "must never guess .gitignore with zero evidence");
+    assert.ok(!fs.existsSync(path.join(root, ".urcignore")), "must never guess .urcignore with zero evidence");
+    assert.ok(!fs.existsSync(path.join(root, ".p4ignore")), "must never guess .p4ignore with zero evidence");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

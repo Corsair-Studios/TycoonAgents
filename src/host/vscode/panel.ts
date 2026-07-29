@@ -299,6 +299,90 @@ const UEFN_URC_IGNORE_ENTRIES: string[] = [
 ];
 
 /**
+ * The three ignore-file basenames this feature can write. Cross-referenced
+ * into EVERY ignore file we write (see `_handleAddGitignoreEntries`) so
+ * installing one never leaves it — or a sibling ignore file — queued for
+ * ADD into whichever VCS reads it. Field evidence: a fresh UEFN install
+ * showed `.gitignore`, `.mcp.json`, `.p4ignore`, `.urcignore`, and
+ * `CLAUDE.md` all marked "A" (add) in Unreal Revision Control — the ignore
+ * files were not excluding each other, or the tooling files beside them.
+ * Listing a file's own name in its own entries is harmless (VCS tools
+ * ignore self-references) so this list is used unconditionally rather than
+ * branching per target.
+ */
+const IGNORE_FILE_NAMES: string[] = [".gitignore", ".p4ignore", ".urcignore"];
+
+/**
+ * TycoonAgents/Claude Code tooling artifacts to additionally keep out of
+ * the URC-side ignore files (`.p4ignore`, `.urcignore`) — dev tooling,
+ * never island content. Deliberately NOT written to `.gitignore`: a git
+ * user may legitimately want `CLAUDE.md`/`.claude` versioned in git, but
+ * shipping them into a Fortnite island's Perforce/URC history carries
+ * needless island-moderation risk and is never wanted.
+ */
+const URC_TOOLING_EXTRAS: string[] = [".mcp.json", "CLAUDE.md", ".claude/"];
+
+/**
+ * Evidence-based detection of which ignore file(s) the Setup Wizard's
+ * "Add Tycoon logs to ignore file" checkbox should target — content
+ * signals only, never a guessed VCS (Path & Environment Discovery: an
+ * override always wins, multiple independent signals, never one guess).
+ * `effRoot` is the caller-resolved UEFN-effective root (see
+ * `_uefnEffectiveRoot`) — `.p4ignore`/`.urcignore` live there, while
+ * `.git`/`.gitignore` are always checked at the plain `root`.
+ *   - `.gitignore`: a `.git` directory exists at `root`, OR a `.gitignore`
+ *     file already exists there.
+ *   - `.p4ignore`: a `.p4ignore` or `.p4config` file already exists at
+ *     `effRoot`, the `P4CONFIG` env var is set, OR the project is a
+ *     detected UEFN project (UEFN's usual Perforce pairing).
+ *   - `.urcignore`: a `.urcignore` file already exists at `effRoot`, OR
+ *     the project is a detected UEFN project (URC is UEFN's own revision
+ *     control) — matching `_handleAddGitignoreEntries`'s existing "UEFN
+ *     project with no markers still gets .urcignore + .p4ignore" behavior.
+ * Returns `[]` when nothing was detected; callers must never write into a
+ * git-less, non-UEFN project on a guess. Every fs probe fails open (a
+ * missing path is just "no signal", never a thrown error). Module-level
+ * (not a class method) so it stays callable with a bare receiver, matching
+ * `resolveProgramDataRoot` below and `_findFortniteEngineBridgeDir`'s use
+ * in `test/panelEngineBridgePush.test.ts` — existing gitignore-handler
+ * tests (`test/panelUrcIgnore.test.ts`) invoke `_handleAddGitignoreEntries`
+ * against a minimal stub receiver, and a module-level helper keeps that
+ * working without the stub needing to grow another bound method.
+ */
+function detectIgnoreTargets(root: string, effRoot: string, uefnDetected: boolean): string[] {
+  let hasGit = false;
+  try {
+    hasGit = fs.existsSync(path.join(root, ".git")) || fs.existsSync(path.join(root, ".gitignore"));
+  } catch {
+    hasGit = false;
+  }
+
+  let hasP4 = false;
+  try {
+    hasP4 =
+      fs.existsSync(path.join(effRoot, ".p4ignore")) ||
+      fs.existsSync(path.join(effRoot, ".p4config")) ||
+      Boolean(process.env.P4CONFIG) ||
+      uefnDetected;
+  } catch {
+    hasP4 = uefnDetected;
+  }
+
+  let hasUrc = false;
+  try {
+    hasUrc = fs.existsSync(path.join(effRoot, ".urcignore")) || uefnDetected;
+  } catch {
+    hasUrc = uefnDetected;
+  }
+
+  const targets: string[] = [];
+  if (hasUrc) targets.push(".urcignore");
+  if (hasP4) targets.push(".p4ignore");
+  if (hasGit) targets.push(".gitignore");
+  return targets;
+}
+
+/**
  * Resolve the Windows `ProgramData` root. `overrideValue` (a caller-supplied
  * override, e.g. a test fixture) always wins; then `PROGRAMDATA`/`ProgramData`
  * as the OS sets it (Node's `process.env` is case-insensitive on win32, so
@@ -3320,11 +3404,23 @@ export class TycoonPanel {
       if (pack.mcp === "uefn-bridge" || pack.id === "uefn") {
         try {
           bridgeStaging = this._stageUefnBridgeAllTargets(root);
+          results.bridge = {
+            status: bridgeStaging.bridgeStatus,
+            engineFound: bridgeStaging.engineFound,
+            locations: bridgeStaging.locations,
+          };
           void vscode.window.showInformationMessage(
             "UEFN bridge installed into Content/Python. Reopen your UEFN project in the editor to activate it."
           );
-        } catch {
-          /* best-effort: pack install itself still succeeded even if staging failed */
+        } catch (e) {
+          // Do NOT swallow this into the overall `ok: true` success shape —
+          // the rest of the pack (skills/commands/mcp/agents) can genuinely
+          // succeed while bridge staging fails, and the caller (Setup Wizard
+          // Step-2 checkbox install, or Settings > Packs) needs to know the
+          // bridge specifically did not land. Reported the same way every
+          // other per-component failure above is: an `error` field inside
+          // `results`, never a silently-dropped catch.
+          results.bridge = { status: "error", error: String(e) };
         }
       }
 
@@ -3529,6 +3625,24 @@ export class TycoonPanel {
       const engineFound = staged?.engineFound ?? false;
       const locations = staged?.locations ?? [];
 
+      // Do NOT report ok:true when the project-target resolution itself
+      // failed (see `_stageUefnBridgeAllTargets` / `_resolveUefnContentDirEvidence`)
+      // — `bridgeStatus` alone can look like an innocuous "exists" (nothing
+      // needed doing) when what actually happened is "we couldn't figure out
+      // where to stage it and wrote nothing". The project location's own
+      // `error` field is the authoritative signal; surface it explicitly
+      // rather than let a misleadingly-clean top-level `ok:true` hide it.
+      const projectLocation = locations.find((l) => l.label === "project");
+      if (projectLocation?.error) {
+        void this._panel.webview.postMessage({
+          type: MSG.UEFN_SETUP_DONE,
+          ok: false,
+          error: projectLocation.error,
+          results: { pack: "uefn", bridge: bridgeStatus, engineFound, locations },
+        });
+        return;
+      }
+
       void this._panel.webview.postMessage({
         type: MSG.UEFN_SETUP_DONE,
         ok: true,
@@ -3637,27 +3751,366 @@ export class TycoonPanel {
     return [...found];
   }
 
+  /** Canonicalized (case-insensitive, trailing-separator-stripped) form of a path, for containment/equality comparisons that must be robust to trailing slashes and Windows case-insensitivity. */
+  private _canonPath(p: string): string {
+    return path.normalize(p).toLowerCase().replace(/[\\/]+$/, "");
+  }
+
+  /**
+   * Rung 1 of the staging-target evidence ladder (see CLAUDE.md's Path &
+   * Environment Discovery ladder / docs/PATH-DISCOVERY.md): the workspace's
+   * matching UEFN `.vproject` Source package `dirPath` — content-based
+   * evidence, never a name/layout guess. UEFN writes one `.vproject` per
+   * opened project under `<VerseProjectRoot>/<name>/vproject/*.vproject`
+   * (see `media/skills/uefn/verse_lsp_check.py`'s `locate_vproject`, which
+   * this mirrors on the TS side); its `packages[].desc` entry whose
+   * `settings.role === "Source"` carries the REAL content directory in
+   * `dirPath`, independent of where the workspace happens to be opened.
+   *
+   * `VerseProjectRoot` resolution: `UEFN_VERSE_PROJECT_DIR` override always
+   * wins; else `%LOCALAPPDATA%\UnrealEditorFortnite\Saved\VerseProject`;
+   * else a homedir()-derived `AppData\Local` fallback (same ladder
+   * `uefnDetect.ts` already uses for `uefnInstalled`).
+   *
+   * A `.vproject` file's Source `dirPath` is considered a match for `root`
+   * when the two are canonically equal, `root` is an ancestor of `dirPath`
+   * (workspace opened at the outer project root, content dir is a
+   * descendant — the classic ROOT layout, and the Plugins layout where the
+   * content dir lives under `Plugins/<Plugin>/Content`), or `dirPath` is an
+   * ancestor of `root` (workspace opened somewhere inside the content dir,
+   * e.g. `Content/Verse`). Every unreadable/invalid `.vproject` is skipped,
+   * never thrown — this is a best-effort evidence GATHERER; the caller
+   * decides what "zero matches" or "more than one distinct match" means.
+   */
+  private _findMatchingVprojectContentDirs(root: string): Array<{ contentDir: string; vprojectPath: string }> {
+    const verseProjectRoots: string[] = [];
+    const override = process.env.UEFN_VERSE_PROJECT_DIR;
+    if (override) {
+      verseProjectRoots.push(override);
+    } else {
+      const localAppData = process.env.LOCALAPPDATA;
+      if (localAppData) {
+        verseProjectRoots.push(path.join(localAppData, "UnrealEditorFortnite", "Saved", "VerseProject"));
+      } else {
+        try {
+          const home = os.homedir();
+          if (home) {
+            verseProjectRoots.push(path.join(home, "AppData", "Local", "UnrealEditorFortnite", "Saved", "VerseProject"));
+          }
+        } catch {
+          /* os.homedir() can throw in rare sandboxed/CI environments -- no candidate from this rung */
+        }
+      }
+    }
+
+    const canonRoot = this._canonPath(root);
+    const results: Array<{ contentDir: string; vprojectPath: string }> = [];
+    const seenContentDirs = new Set<string>();
+
+    for (const vpRoot of verseProjectRoots) {
+      let projectDirs: string[];
+      try {
+        projectDirs = fs.readdirSync(vpRoot);
+      } catch {
+        continue;
+      }
+      for (const projectDir of projectDirs) {
+        const vprojectSub = path.join(vpRoot, projectDir, "vproject");
+        let files: string[];
+        try {
+          files = fs.readdirSync(vprojectSub);
+        } catch {
+          continue;
+        }
+        for (const f of files) {
+          if (!f.toLowerCase().endsWith(".vproject")) continue;
+          const vprojectPath = path.join(vprojectSub, f);
+          let sourceDir: string | null = null;
+          try {
+            const data = JSON.parse(fs.readFileSync(vprojectPath, "utf8"));
+            const packages = Array.isArray(data?.packages) ? data.packages : [];
+            for (const pkg of packages) {
+              const desc = pkg?.desc;
+              if (desc?.settings?.role === "Source" && typeof desc?.dirPath === "string" && desc.dirPath) {
+                sourceDir = desc.dirPath;
+                break;
+              }
+            }
+          } catch {
+            continue; // unreadable/invalid JSON, or no Source package -- not evidence for this workspace
+          }
+          if (!sourceDir) continue;
+
+          const canonSource = this._canonPath(sourceDir);
+          const isMatch =
+            canonSource === canonRoot ||
+            canonSource.startsWith(canonRoot + path.sep) ||
+            canonRoot.startsWith(canonSource + path.sep);
+          if (!isMatch) continue;
+
+          if (!seenContentDirs.has(canonSource)) {
+            seenContentDirs.add(canonSource);
+            results.push({ contentDir: sourceDir, vprojectPath });
+          }
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
+   * True when `root` is CONFIRMED to be a UEFN content dir in its own
+   * right, never on name alone (an unrelated project's own "Content"
+   * folder must not be redirected): either it directly contains `.verse`
+   * files, or it's named `Content` AND a `.uefnproject` marker is found
+   * walking UP its ancestor chain (bounded to 6 levels). The bounded walk
+   * (rather than only the immediate parent) is what actually fixes the
+   * Plugins layout: `.uefnproject` lives at the true project root, several
+   * levels above `Plugins/<Plugin>/Content`, not in `Content`'s immediate
+   * parent — the exact shape of the field failure: a workspace opened at
+   * `Plugins/<Plugin>/Content` got staged into a fabricated
+   * `Content/Content/Python` because only the immediate parent was ever
+   * checked for the marker.
+   *
+   * Gates `_resolveUefnContentDirEvidence`'s rung 2 (root confirmed as real
+   * content, checked BEFORE any bridge-file scanning) — an unconfirmed root
+   * can still be picked up later via rung 3's existing-bridge check, but
+   * only as corroborating evidence, never in place of this check.
+   */
+  private _confirmedContentDirItself(dir: string): boolean {
+    try {
+      if (fs.readdirSync(dir).some((f) => f.toLowerCase().endsWith(".verse"))) return true;
+    } catch {
+      /* inaccessible -- fall through to the marker-walk check */
+    }
+    if (path.basename(dir).toLowerCase() !== "content") return false;
+    let cursor = path.dirname(dir);
+    for (let i = 0; i < 6; i++) {
+      try {
+        if (fs.readdirSync(cursor).some((entry) => entry.toLowerCase().endsWith(".uefnproject"))) return true;
+      } catch {
+        break;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break; // reached the filesystem root
+      cursor = parent;
+    }
+    return false;
+  }
+
+  /**
+   * Rungs 3/4's shared candidate set: every directory that PLAUSIBLY IS the
+   * project's UEFN content dir, purely from documented layout rules (no
+   * vproject evidence involved) —
+   *   - workspace-is-content-dir: `root` itself, UNCONDITIONALLY included
+   *     here so rung 3's existing-bridge scan can still pick up an
+   *     UNCONFIRMED root that happens to already have a bridge staged
+   *     (a root PASSING `_confirmedContentDirItself` is already settled by
+   *     rung 2, before this candidate set is even built) — `root` itself IS
+   *     the content dir in this case and must never get another `Content`
+   *     appended onto it.
+   *   - root Content: `<root>/Content` exists (the classic ROOT layout,
+   *     workspace opened at the project root).
+   *   - Plugins scan: `<root>/Plugins/<name>/Content` (the Plugins layout,
+   *     workspace opened at the project root, content dir nested under a
+   *     plugin).
+   * De-duplicated by canonical path. Every fs probe fails open.
+   */
+  private _plausibleContentDirCandidates(root: string): string[] {
+    const candidates: string[] = [root];
+
+    try {
+      const rootContent = path.join(root, "Content");
+      if (fs.existsSync(rootContent) && fs.statSync(rootContent).isDirectory()) {
+        candidates.push(rootContent);
+      }
+    } catch {
+      /* inaccessible -- not a candidate */
+    }
+
+    try {
+      const pluginsDir = path.join(root, "Plugins");
+      if (fs.existsSync(pluginsDir) && fs.statSync(pluginsDir).isDirectory()) {
+        for (const entry of fs.readdirSync(pluginsDir)) {
+          const pluginContent = path.join(pluginsDir, entry, "Content");
+          try {
+            if (fs.existsSync(pluginContent) && fs.statSync(pluginContent).isDirectory()) {
+              candidates.push(pluginContent);
+            }
+          } catch {
+            /* inaccessible -- not a candidate */
+          }
+        }
+      }
+    } catch {
+      /* inaccessible -- not a candidate */
+    }
+
+    const seen = new Set<string>();
+    return candidates.filter((c) => {
+      const canon = this._canonPath(c);
+      if (seen.has(canon)) return false;
+      seen.add(canon);
+      return true;
+    });
+  }
+
+  /**
+   * The full evidence ladder for "what is this workspace's real UEFN
+   * content directory" — strongest evidence first, never a guess (see
+   * CLAUDE.md's Path & Environment Discovery ladder):
+   *   1. A UNIQUE matching `.vproject` Source `dirPath` (content-based,
+   *      see `_findMatchingVprojectContentDirs`). More than one distinct
+   *      match is reported `ambiguous`, never silently picked.
+   *   2. The workspace root ITSELF confirmed as real content (see
+   *      `_confirmedContentDirItself`: `.verse` files present, or a
+   *      `.uefnproject` marker found walking up) — wins outright, BEFORE
+   *      any bridge-file scanning, so a bogus sibling `Content/Python` left
+   *      by a prior corrupted install can never out-"evidence" the real,
+   *      confirmed root.
+   *   3. A UNIQUE plausible content dir (see `_plausibleContentDirCandidates`)
+   *      that already has `Python/init_unreal.py` staged — corroborating
+   *      evidence only, refresh in place rather than guessing a second
+   *      target. Never checked ahead of rung 2: `init_unreal.py` presence
+   *      alone is exactly what a corrupted install scatters around, never
+   *      primary evidence.
+   *   4. A UNIQUE plausible content dir per the documented layout rules,
+   *      with no bridge staged yet (root itself excluded — already settled
+   *      by rung 2).
+   * Zero candidates at every rung, or more than one at whichever rung is
+   * reached, both return `contentDir: null` — callers must surface that
+   * rather than fabricating a path (the field failure this ladder exists
+   * to prevent: staging into `Content/Content/Python` because a workspace
+   * opened AT a Plugins-layout content dir wasn't recognised as one).
+   */
+  private _resolveUefnContentDirEvidence(root: string):
+    | { contentDir: string; source: "vproject" | "existing-python" | "layout-rule"; detail: string }
+    | { contentDir: null; ambiguous: boolean; reason: string } {
+    // Safety net applied at EVERY rung below: every downstream consumer of
+    // the resolved content dir (`_uefnEffectiveRoot`, `_stageUefnBridgeAllTargets`,
+    // `_healDuplicateUefnBridgeStaging`, the staleness/ignore-target checks)
+    // reconstructs it as `dirname(contentDir) + "Content"` — correct ONLY
+    // when the resolved dir is actually named `Content` (always true for a
+    // real UEFN project; Unreal/UEFN's own convention never names the
+    // content dir anything else). A candidate that fails this check is
+    // rejected outright rather than silently reconstructed into a wrong
+    // path — this is what actually caught a fixture bug during development
+    // where a non-"Content"-named stand-in resolved into a nonsense sibling
+    // path instead of failing loudly.
+    const isNamedContentDir = (dir: string): boolean => path.basename(dir).toLowerCase() === "content";
+
+    const vprojectMatches = this._findMatchingVprojectContentDirs(root).filter((m) => isNamedContentDir(m.contentDir));
+    if (vprojectMatches.length === 1) {
+      return {
+        contentDir: vprojectMatches[0].contentDir,
+        source: "vproject",
+        detail: `matched .vproject Source package at ${vprojectMatches[0].vprojectPath}`,
+      };
+    }
+    if (vprojectMatches.length > 1) {
+      return {
+        contentDir: null,
+        ambiguous: true,
+        reason:
+          `${vprojectMatches.length} .vproject Source packages matched this workspace: ` +
+          vprojectMatches.map((m) => m.contentDir).join(", "),
+      };
+    }
+
+    // Rung 2: the workspace root ITSELF is CONFIRMED real content (`.verse`
+    // files directly present, or a `.uefnproject` marker found walking up
+    // its ancestor chain — see `_confirmedContentDirItself`). This is
+    // checked BEFORE any bridge-file scanning below and wins outright:
+    // `init_unreal.py` presence elsewhere is corroboration, never primary
+    // evidence — it is exactly what a prior corrupted install scatters
+    // around (a bogus `<root>/Content/Python` left by the original bug
+    // would otherwise out-"evidence" the real, confirmed root via rung 3's
+    // bridge-file scan below). A confirmed root must never lose to a
+    // fabricated sibling just because that sibling happens to already have
+    // our own files staged in it.
+    if (isNamedContentDir(root) && this._confirmedContentDirItself(root)) {
+      return {
+        contentDir: root,
+        source: "layout-rule",
+        detail: "workspace root confirmed as the content dir (.verse files present or a .uefnproject marker found)",
+      };
+    }
+
+    // Rung 3: an existing staged bridge (`Python/init_unreal.py`) under a
+    // plausible content dir — refresh in place rather than guessing a
+    // second target. Only reached when the root itself wasn't confirmed
+    // above, so this is corroborating evidence for an UNCONFIRMED root (or
+    // a sibling candidate), never primary evidence on its own.
+    const candidates = this._plausibleContentDirCandidates(root).filter(isNamedContentDir);
+    const withBridge = candidates.filter((c) => {
+      try {
+        return fs.existsSync(path.join(c, "Python", "init_unreal.py"));
+      } catch {
+        return false;
+      }
+    });
+    if (withBridge.length === 1) {
+      return { contentDir: withBridge[0], source: "existing-python", detail: `existing Python/init_unreal.py under ${withBridge[0]}` };
+    }
+    if (withBridge.length > 1) {
+      return {
+        contentDir: null,
+        ambiguous: true,
+        reason: `multiple existing Python/init_unreal.py bridge copies found: ${withBridge.join(", ")}`,
+      };
+    }
+
+    // Rung 4: bare layout rule, no bridge staged anywhere and root itself
+    // wasn't confirmed (already handled by rung 2 above, so always excluded
+    // here). `<root>/Content` and `<root>/Plugins/<name>/Content` are
+    // already self-evidencing structural facts on their own.
+    const rootCanon = this._canonPath(root);
+    const layoutCandidates = candidates.filter((c) => this._canonPath(c) !== rootCanon);
+    if (layoutCandidates.length === 1) {
+      return { contentDir: layoutCandidates[0], source: "layout-rule", detail: `layout rule matched ${layoutCandidates[0]}` };
+    }
+    if (layoutCandidates.length > 1) {
+      return {
+        contentDir: null,
+        ambiguous: true,
+        reason: `multiple plausible content dirs with no way to disambiguate: ${layoutCandidates.join(", ")}`,
+      };
+    }
+
+    return {
+      contentDir: null,
+      ambiguous: false,
+      reason:
+        "no matching .vproject Source package, no existing Python bridge, and no plausible content dir " +
+        "(workspace root itself, <root>/Content, or <root>/Plugins/*/Content) found",
+    };
+  }
+
   /**
    * If `root` (the workspace folder) IS a UEFN project's `Content` dir
    * itself (opened at the wrong level — parent holds the `.uefnproject`),
    * every UEFN-filesystem path must anchor at the PARENT instead. Staging
-   * hardcodes `<root>/Content/Python`, so when `root` is already `Content`
-   * that lands at `Content/Content/Python` (a real bug hit in the field) and
-   * URC — which reads `.urcignore`/`.p4ignore` only at the true project
-   * root — never sees the ignore entries written under the wrong root.
-   * Returns `root` unchanged whenever the parent can't be confirmed (any
-   * `readdirSync` failure), so this only ever redirects when the UEFN
-   * project marker is actually found.
+   * hardcodes `<effRoot>/Content/Python`, so when `root` is already the
+   * content dir that must land at `<parent-of-Content>/Content/Python`, not
+   * a doubled `Content/Content/Python` (a real bug hit in the field, in
+   * both the ROOT layout — content dir's parent holds `.uefnproject` — and
+   * the Plugins layout — content dir is `Plugins/<Plugin>/Content`, with
+   * `.uefnproject` several levels further up at the true project root).
+   * Delegates to `_resolveUefnContentDirEvidence` (see) for WHICH directory
+   * is the real content dir, then returns its PARENT so every existing
+   * `path.join(effRoot, "Content", ...)` call site keeps working unchanged.
+   * Best-effort / read-only-safe: returns `root` unchanged whenever the
+   * evidence ladder can't confirm a content dir (no match, or ambiguous) —
+   * callers that only READ through this (staleness checks, ignore-file
+   * targets) are safe with a passthrough; the STAGING write path
+   * (`_stageUefnBridgeAllTargets`) uses `_resolveUefnContentDirEvidence`
+   * directly instead, so it can surface a failure rather than fall back to
+   * a possibly-wrong guessed path.
    */
   private _uefnEffectiveRoot(root: string): string {
-    if (path.basename(root).toLowerCase() !== "content") return root;
-    const parent = path.dirname(root);
-    try {
-      const hasUefnProjectMarker = fs.readdirSync(parent).some((entry) => entry.endsWith(".uefnproject"));
-      return hasUefnProjectMarker ? parent : root;
-    } catch {
-      return root;
-    }
+    const resolved = this._resolveUefnContentDirEvidence(root);
+    if (resolved.contentDir !== null) return path.dirname(resolved.contentDir);
+    return root;
   }
 
   /**
@@ -3670,11 +4123,19 @@ export class TycoonPanel {
    * `_handleSetupUefnProject` reuses `_handleInstallPack`'s result instead of
    * staging a second time.
    *
-   * The project target is anchored via `_uefnEffectiveRoot` (see) — a
-   * workspace opened at the project's `Content/` dir must still stage into
-   * that project's `Content/Python`, not a doubled `Content/Content/Python`.
-   * After staging, `_healDuplicateUefnBridgeStaging` auto-repairs any
-   * bogus `Content/Content/Python` left behind by older installs.
+   * The project target is resolved via `_resolveUefnContentDirEvidence` (see
+   * — the evidence ladder that replaced a bare `_uefnEffectiveRoot` call
+   * here): a workspace opened at the project's `Content/` dir, or at a
+   * Plugins-layout plugin's `Content/` dir, must still stage into that
+   * project's real `Content/Python`, not a doubled `Content/Content/Python`
+   * fabricated by guessing. When the ladder can't confirm a target (no
+   * evidence, or more than one candidate), the "project" location is
+   * recorded with an explicit `error` and NOTHING is written there — engine
+   * targets still stage normally, and the failure is visible in the
+   * returned `locations`, never swallowed into a success shape. After a
+   * successful project stage, `_healDuplicateUefnBridgeStaging` auto-repairs
+   * any bogus `Content/Content/Python` left behind by an older, guessed
+   * install.
    */
   private _stageUefnBridgeAllTargets(root: string): {
     bridgeStatus: "staged" | "exists";
@@ -3685,33 +4146,53 @@ export class TycoonPanel {
     }>;
   } {
     const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
-    const effRoot = this._uefnEffectiveRoot(root);
-    const targets: Array<{ label: string; dir: string }> = [
-      { label: "project", dir: path.join(effRoot, "Content", "Python") },
-    ];
-    for (const engineDir of this._findFortnitePythonDirs()) {
-      targets.push({ label: "engine", dir: engineDir });
-    }
+    const resolved = this._resolveUefnContentDirEvidence(root);
 
     const locations: Array<{
       label: string; dir: string;
       staged: number; updated: number; unchanged: number; error?: string;
     }> = [];
     let totalWritten = 0;
-    let engineFound = false;
-    for (const t of targets) {
-      if (t.label === "engine") engineFound = true;
+    let effRoot: string | null = null;
+
+    if (resolved.contentDir !== null) {
+      effRoot = path.dirname(resolved.contentDir);
+      const projectDir = path.join(effRoot, "Content", "Python");
       try {
-        const r = this._stageBridgeTo(bridgeDir, t.dir);
-        locations.push({ label: t.label, dir: t.dir, ...r });
+        const r = this._stageBridgeTo(bridgeDir, projectDir);
+        locations.push({ label: "project", dir: projectDir, ...r });
         totalWritten += r.staged + r.updated;
       } catch (e) {
-        locations.push({ label: t.label, dir: t.dir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
+        locations.push({ label: "project", dir: projectDir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
+      }
+    } else {
+      locations.push({
+        label: "project",
+        dir: "(unresolved)",
+        staged: 0,
+        updated: 0,
+        unchanged: 0,
+        error:
+          `Could not resolve this workspace's real UEFN Content directory (${resolved.reason}). ` +
+          "Set UEFN_VERSE_PROJECT_DIR to override, or open the project once in UEFN so its .vproject Source " +
+          "package is written, then retry install.",
+      });
+    }
+
+    let engineFound = false;
+    for (const engineDir of this._findFortnitePythonDirs()) {
+      engineFound = true;
+      try {
+        const r = this._stageBridgeTo(bridgeDir, engineDir);
+        locations.push({ label: "engine", dir: engineDir, ...r });
+        totalWritten += r.staged + r.updated;
+      } catch (e) {
+        locations.push({ label: "engine", dir: engineDir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
       }
     }
 
     const projectLocation = locations.find((l) => l.label === "project");
-    if (projectLocation && !projectLocation.error) {
+    if (effRoot && projectLocation && !projectLocation.error) {
       try {
         this._healDuplicateUefnBridgeStaging(effRoot, bridgeDir);
       } catch {
@@ -4705,11 +5186,16 @@ export class TycoonPanel {
       liveExtensionFound: verseExt !== undefined,
       liveExtensionVersion: (verseExt?.packageJSON?.version as string | undefined) ?? null,
     });
+    // Evidence-based ignore-file targets for the Setup Wizard's "Add Tycoon
+    // logs to ignore file" checkbox (see detectIgnoreTargets) — never a
+    // guessed VCS. Piggybacks on this same INSTALL_STATE push.
+    const ignoreTargets = root !== "" ? detectIgnoreTargets(root, this._uefnEffectiveRoot(root), uefn.detected) : [];
     void this._panel.webview.postMessage({
       type: MSG.INSTALL_STATE,
       installed,
       uefnDetected: uefn.detected,
       uefnSignals: uefn.signals,
+      ignoreTargets,
       // Machine-level signal (distinct from uefnDetected's project-file
       // signals): true when %LOCALAPPDATA%/UnrealEditorFortnite exists, i.e.
       // UEFN itself is installed on this machine. Consumed by the Setup
@@ -4777,47 +5263,77 @@ export class TycoonPanel {
    *
    * UEFN projects use Perforce, which does NOT honor `.gitignore` — it reads
    * `.p4ignore` instead. So on a UEFN project (per {@link detectUefnProject})
-   * this writes BOTH `.gitignore` (some UEFN projects also use git) AND
-   * `.p4ignore` with the identical minimal entries; on a non-UEFN project it
-   * writes only `.gitignore`. After a real `.p4ignore` write we surface a
-   * one-time note that Perforce only honors it once `P4IGNORE` is configured.
+   * this writes to the targets `_detectIgnoreTargets` actually found evidence
+   * for — `.gitignore` only when a `.git` dir (or existing `.gitignore`) is
+   * present, `.p4ignore` only on an existing Perforce marker or a detected
+   * UEFN project, `.urcignore` only on an existing marker or a detected UEFN
+   * project. It never writes `.gitignore` into a git-less project, and never
+   * guesses a VCS that isn't there. After a real `.p4ignore` write we surface
+   * a one-time note that Perforce only honors it once `P4IGNORE` is
+   * configured.
+   *
+   * Every file written also cross-references the OTHER two ignore filenames
+   * (see {@link IGNORE_FILE_NAMES}) — an ignore file must never leave itself
+   * or its siblings queued for ADD into whichever VCS reads it. The two
+   * URC-side files (`.p4ignore`, `.urcignore`) additionally keep this
+   * extension's own tooling artifacts ({@link URC_TOOLING_EXTRAS} —
+   * `.mcp.json`, `CLAUDE.md`, `.claude/`) out of Perforce/URC; `.gitignore`
+   * deliberately does NOT get those three, since a git user may legitimately
+   * want CLAUDE.md/.claude versioned in git.
    *
    * UEFN projects ALSO get the comprehensive {@link UEFN_URC_IGNORE_ENTRIES}
    * list written to BOTH `.urcignore` (UEFN's native Revision Control, which
    * reads only the root `.urcignore` — never `.gitignore`) and `.p4ignore`
    * (so URC-native and URC-via-Perforce agree). This comprehensive list is
-   * UEFN-only and separate from the minimal `.gitignore`/`.p4ignore` runtime
-   * entries above, since non-UEFN git users often WANT to commit
-   * CLAUDE.md/.claude.
+   * UEFN-only (broader UEFN-specific patterns, Content/-anchored
+   * duplicates) and layered ON TOP of the base + cross-reference + tooling
+   * entries above, not a replacement for them.
    */
   private _handleAddGitignoreEntries(): void {
     const root = this._projectRoot();
     if (root === "") return;
 
-    const header = "# TycoonAgents runtime artifacts";
-    const entries = [".claude/tycoon/", ".claude/session-journal.json"];
-
-    this._appendIgnoreEntries(path.join(root, ".gitignore"), header, entries);
-
     const uefn = detectUefnProject(root);
+    // URC/Perforce read .urcignore/.p4ignore only at the true project root —
+    // if this workspace is opened AT the project's Content/ dir, that root
+    // is the PARENT (see _uefnEffectiveRoot), not `root`.
+    const effRoot = this._uefnEffectiveRoot(root);
+    const targets = detectIgnoreTargets(root, effRoot, uefn.detected);
+    if (targets.length === 0) return; // no VCS/ignore-file evidence — never guess
+
+    const header = "# TycoonAgents runtime artifacts";
+    const baseEntries = [".claude/tycoon/", ".claude/session-journal.json", ...IGNORE_FILE_NAMES];
+    const urcSideEntries = [...baseEntries, ...URC_TOOLING_EXTRAS];
+
+    if (targets.includes(".gitignore")) {
+      this._appendIgnoreEntries(path.join(root, ".gitignore"), header, baseEntries);
+    }
+
+    let wroteP4ignore = false;
+    if (targets.includes(".p4ignore")) {
+      wroteP4ignore = this._appendIgnoreEntries(path.join(effRoot, ".p4ignore"), header, urcSideEntries);
+    }
+    if (targets.includes(".urcignore")) {
+      this._appendIgnoreEntries(path.join(effRoot, ".urcignore"), header, urcSideEntries);
+    }
+
     if (uefn.detected) {
-      // URC/Perforce read .urcignore/.p4ignore only at the true project
-      // root — if this workspace is opened AT the project's Content/ dir,
-      // that root is the PARENT (see _uefnEffectiveRoot), not `root`.
-      const effRoot = this._uefnEffectiveRoot(root);
-      const wroteP4ignore = this._appendIgnoreEntries(path.join(effRoot, ".p4ignore"), header, entries);
-
       const urcHeader = "# TycoonAgents / Claude Code dev-tool artifacts (keep out of revision control)";
-      this._appendIgnoreEntries(path.join(effRoot, ".urcignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
-      this._appendIgnoreEntries(path.join(effRoot, ".p4ignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
-
-      if (wroteP4ignore) {
-        vscode.window.showInformationMessage(
-          "TycoonAgents added .p4ignore entries for this UEFN/Perforce project. " +
-            "Perforce only honors .p4ignore once P4IGNORE is configured — run `p4 set P4IGNORE=.p4ignore` " +
-            "(or set the P4IGNORE environment variable) to enable it."
-        );
+      if (targets.includes(".urcignore")) {
+        this._appendIgnoreEntries(path.join(effRoot, ".urcignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
       }
+      if (targets.includes(".p4ignore")) {
+        const wroteP4Urc = this._appendIgnoreEntries(path.join(effRoot, ".p4ignore"), urcHeader, UEFN_URC_IGNORE_ENTRIES);
+        wroteP4ignore = wroteP4ignore || wroteP4Urc;
+      }
+    }
+
+    if (wroteP4ignore) {
+      vscode.window.showInformationMessage(
+        "TycoonAgents added .p4ignore entries for this UEFN/Perforce project. " +
+          "Perforce only honors .p4ignore once P4IGNORE is configured — run `p4 set P4IGNORE=.p4ignore` " +
+          "(or set the P4IGNORE environment variable) to enable it."
+      );
     }
   }
 

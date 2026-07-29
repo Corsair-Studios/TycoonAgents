@@ -50,14 +50,29 @@ function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
-// `_uefnEffectiveRoot` only touches path/fs — no other `this` members — so a
-// bare receiver is enough to invoke the real method under test.
+// `_uefnEffectiveRoot` delegates to `_resolveUefnContentDirEvidence` (the
+// evidence ladder: matching .vproject Source dirPath, then an existing
+// Python/init_unreal.py, then documented layout rules), which in turn calls
+// `_findMatchingVprojectContentDirs`, `_plausibleContentDirCandidates`, and
+// `_canonPath` — all of these only touch path/fs/process.env (no other
+// `this` state), so a receiver carrying just this method set is enough to
+// invoke the real methods under test with their real internal call chain.
+const UEFN_EVIDENCE_METHODS = {
+  _uefnEffectiveRoot: (TycoonPanel.prototype as any)._uefnEffectiveRoot,
+  _resolveUefnContentDirEvidence: (TycoonPanel.prototype as any)._resolveUefnContentDirEvidence,
+  _findMatchingVprojectContentDirs: (TycoonPanel.prototype as any)._findMatchingVprojectContentDirs,
+  _plausibleContentDirCandidates: (TycoonPanel.prototype as any)._plausibleContentDirCandidates,
+  _confirmedContentDirItself: (TycoonPanel.prototype as any)._confirmedContentDirItself,
+  _canonPath: (TycoonPanel.prototype as any)._canonPath,
+};
+
 function effectiveRoot(root: string): string {
-  return (TycoonPanel.prototype as any)._uefnEffectiveRoot.call({}, root);
+  return (TycoonPanel.prototype as any)._uefnEffectiveRoot.call({ ...UEFN_EVIDENCE_METHODS }, root);
 }
 
-// `_uefnBridgeStale` calls `this._uefnEffectiveRoot` and reads
-// `this._extensionUri.fsPath` — a minimal receiver carrying those two is
+// `_uefnBridgeStale` calls `this._uefnEffectiveRoot` (and its own evidence-
+// ladder call chain, see `UEFN_EVIDENCE_METHODS`) and reads
+// `this._extensionUri.fsPath` — a minimal receiver carrying those is
 // enough, mirroring test/panelProjectPlanSkillInstall.test.ts's pattern for
 // `_extensionUri`. `shippedRoot` stands in for the extension install dir; a
 // fake `media/uefn-bridge/bridge_version.py` is written under it by each
@@ -65,7 +80,7 @@ function effectiveRoot(root: string): string {
 function bridgeStale(root: string, shippedRoot: string): boolean {
   const fakeThis = {
     _extensionUri: { fsPath: shippedRoot },
-    _uefnEffectiveRoot: (TycoonPanel.prototype as any)._uefnEffectiveRoot,
+    ...UEFN_EVIDENCE_METHODS,
   };
   return (TycoonPanel.prototype as any)._uefnBridgeStale.call(fakeThis, root);
 }
@@ -275,7 +290,7 @@ async function autoUpdate(
   let findCalls = 0;
   const fakeThis = {
     _extensionUri: { fsPath: extensionRoot },
-    _uefnEffectiveRoot: (TycoonPanel.prototype as any)._uefnEffectiveRoot,
+    ...UEFN_EVIDENCE_METHODS,
     _stageBridgeTo: (TycoonPanel.prototype as any)._stageBridgeTo,
     _findFortniteEngineBridgeDir: () => {
       findCalls++;
