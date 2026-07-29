@@ -781,6 +781,97 @@ server.registerTool(
     )
 );
 
+// ── Level editing ────────────────────────────────────────────────────────────
+// Unlike every tool above, these three EDIT the open level rather than just
+// reading it or tweaking an existing property. Each Python-side handler
+// wraps its edit in an unreal.ScopedEditorTransaction (falling back to a
+// no-op if unavailable), so every change these tools make is a single
+// Ctrl+Z step for the creator.
+
+const vectorXYZSchema = z.object({
+  x: z.number().optional(),
+  y: z.number().optional(),
+  z: z.number().optional(),
+});
+
+const rotatorSchema = z.object({
+  pitch: z.number().optional(),
+  yaw: z.number().optional(),
+  roll: z.number().optional(),
+});
+
+server.registerTool(
+  "uefn_spawn_actor",
+  {
+    description:
+      "Spawn a new actor from an asset into the open level. EDITS the level and supports editor undo (Ctrl+Z). Verifies the asset exists before spawning and returns an explicit error naming the exact path checked if it doesn't — use uefn_list_assets or uefn_inspect_asset to find a valid path.",
+    inputSchema: {
+      asset_path: z.string().describe("Content-browser path of the asset to spawn, e.g. /Game/Meshes/SM_Rock"),
+      location: vectorXYZSchema.optional().describe("World location {x, y, z} (default 0,0,0)"),
+      rotation: rotatorSchema.optional().describe("Rotation {pitch, yaw, roll} (default 0,0,0)"),
+      scale: vectorXYZSchema.optional().describe("Scale {x, y, z} (default 1,1,1)"),
+      label: z.string().optional().describe("Actor label to set after spawning"),
+    },
+  },
+  async (args) =>
+    bridgeTool(
+      "spawn_actor",
+      compact({
+        asset_path: args.asset_path,
+        location: args.location,
+        rotation: args.rotation,
+        scale: args.scale,
+        label: args.label,
+      })
+    )
+);
+
+server.registerTool(
+  "uefn_duplicate_actor",
+  {
+    description:
+      "Duplicate an existing actor by label into the open level, offsetting the copy so it's visibly distinct from the source. EDITS the level and supports editor undo (Ctrl+Z).",
+    inputSchema: {
+      actor_label: z.string().describe("Label of the actor to duplicate"),
+      offset: vectorXYZSchema.optional().describe("World-space offset applied to the copy (default {x:100, y:100, z:0})"),
+      new_label: z.string().optional().describe("Label to set on the duplicate"),
+    },
+  },
+  async (args) =>
+    bridgeTool(
+      "duplicate_actor",
+      compact({
+        actor_label: args.actor_label,
+        offset: args.offset,
+        new_label: args.new_label,
+      })
+    )
+);
+
+server.registerTool(
+  "uefn_set_transform",
+  {
+    description:
+      "Set an actor's location, rotation, and/or scale by label. EDITS the level and supports editor undo (Ctrl+Z). Only the components you provide are changed; provide at least one of location, rotation, or scale.",
+    inputSchema: {
+      actor_label: z.string().describe("Label of the actor to transform"),
+      location: vectorXYZSchema.optional().describe("New world location {x, y, z}"),
+      rotation: rotatorSchema.optional().describe("New rotation {pitch, yaw, roll}"),
+      scale: vectorXYZSchema.optional().describe("New scale {x, y, z}"),
+    },
+  },
+  async (args) =>
+    bridgeTool(
+      "set_transform",
+      compact({
+        actor_label: args.actor_label,
+        location: args.location,
+        rotation: args.rotation,
+        scale: args.scale,
+      })
+    )
+);
+
 server.registerTool(
   "uefn_moderation_scan",
   {

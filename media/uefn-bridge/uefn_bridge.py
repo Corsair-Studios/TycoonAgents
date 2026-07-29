@@ -29,6 +29,7 @@ import datetime
 import traceback
 import time
 import secrets
+import contextlib
 
 # sys.path self-consistency shield: guarantee every sibling import below
 # (device_audit, batch_tools, texture_finder, ...) resolves from THIS
@@ -1109,6 +1110,289 @@ def _handle_inspect_asset(params):
     }
 
 
+# ---------------------------------------------------------------------------
+# Level editing: spawn / duplicate / set_transform
+# ---------------------------------------------------------------------------
+#
+# Unlike every read-only/property handler above, these three mutate the open
+# level. Each wraps its edit in unreal.ScopedEditorTransaction (see
+# _scoped_transaction) so the change lands as a single Ctrl+Z step for the
+# user — falling back to a no-op context manager if that symbol isn't
+# exposed in this build, since undo support is a nicety and never a reason
+# to fail a level edit. The unreal API surface used here
+# (EditorActorSubsystem.spawn_actor_from_object / .duplicate_actor,
+# EditorAssetLibrary.does_asset_exist, EditorLevelLibrary's legacy spawn)
+# varies across engine builds; every symbol is resolved via getattr() at
+# call time so a missing one disables only the ONE handler that needs it,
+# same shape as _require_device_audit_symbols above — never the whole
+# bridge.
+
+
+def _scoped_transaction(name):
+    """Best-effort unreal.ScopedEditorTransaction for *name*. Falls back to
+    a no-op context manager if the symbol is missing or construction fails
+    in this build — undo support is a nicety, never a reason to fail an
+    edit."""
+    cls = getattr(unreal, "ScopedEditorTransaction", None)
+    if cls is None:
+        return contextlib.nullcontext()
+    try:
+        return cls(name)
+    except Exception:
+        return contextlib.nullcontext()
+
+
+def _spawn_via_editor_actor_subsystem(asset, location, rotation):
+    """Try spawning through the modern EditorActorSubsystem. Returns the new
+    actor, or None if the subsystem/method isn't available in this build."""
+    try:
+        subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    except Exception:
+        subsystem = None
+    spawn_fn = getattr(subsystem, "spawn_actor_from_object", None) if subsystem is not None else None
+    if spawn_fn is None:
+        return None
+    return spawn_fn(asset, location, rotation)
+
+
+def _spawn_via_editor_level_library(asset, location, rotation):
+    """Fallback spawn path for builds where EditorActorSubsystem lacks
+    spawn_actor_from_object. Returns the new actor, or None if
+    EditorLevelLibrary.spawn_actor_from_object isn't available either."""
+    legacy = getattr(unreal, "EditorLevelLibrary", None)
+    spawn_fn = getattr(legacy, "spawn_actor_from_object", None) if legacy is not None else None
+    if spawn_fn is None:
+        return None
+    return spawn_fn(asset, location, rotation)
+
+
+def _handle_spawn_actor(params):
+    """Spawn a new actor from an asset into the open level."""
+    asset_path = params.get("asset_path")
+    if not asset_path:
+        raise ValueError("Missing required param: asset_path")
+
+    does_asset_exist = getattr(unreal.EditorAssetLibrary, "does_asset_exist", None)
+    if does_asset_exist is None:
+        raise RuntimeError(
+            "spawn_actor unavailable: unreal.EditorAssetLibrary.does_asset_exist is not "
+            "exposed in this build of the UEFN bridge"
+        )
+    if not does_asset_exist(asset_path):
+        raise ValueError(
+            f"spawn_actor: no asset exists at '{asset_path}'. Verify the exact "
+            "content-browser path — try uefn_list_assets on the containing folder, "
+            "or uefn_inspect_asset on a candidate path, to find a valid one before retrying."
+        )
+
+    try:
+        asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+    except Exception as e:
+        raise RuntimeError(f"spawn_actor: load_asset failed for '{asset_path}': {e}") from e
+    if asset is None:
+        raise RuntimeError(f"spawn_actor: load_asset returned None for '{asset_path}'")
+
+    loc = params.get("location") or {}
+    rot = params.get("rotation") or {}
+    scale = params.get("scale") or {}
+    location = unreal.Vector(
+        float(loc.get("x", 0.0)), float(loc.get("y", 0.0)), float(loc.get("z", 0.0))
+    )
+    rotation = unreal.Rotator(
+        roll=float(rot.get("roll", 0.0)), pitch=float(rot.get("pitch", 0.0)), yaw=float(rot.get("yaw", 0.0))
+    )
+
+    with _scoped_transaction("TycoonAgents: Spawn Actor"):
+        actor = _spawn_via_editor_actor_subsystem(asset, location, rotation)
+        if actor is None:
+            actor = _spawn_via_editor_level_library(asset, location, rotation)
+        if actor is None:
+            raise RuntimeError(
+                "spawn_actor unavailable: neither EditorActorSubsystem.spawn_actor_from_object "
+                "nor the legacy EditorLevelLibrary.spawn_actor_from_object is exposed in this "
+                "build of the UEFN bridge"
+            )
+
+        try:
+            actor.set_actor_scale3d(unreal.Vector(
+                float(scale.get("x", 1.0)), float(scale.get("y", 1.0)), float(scale.get("z", 1.0))
+            ))
+        except Exception as e:
+            unreal.log_warning(f"uefn_bridge: spawn_actor: could not set scale on '{asset_path}': {e}")
+
+        label = params.get("label")
+        if label:
+            try:
+                actor.set_actor_label(label)
+            except Exception as e:
+                unreal.log_warning(f"uefn_bridge: spawn_actor: could not set label '{label}': {e}")
+
+    try:
+        final_label = actor.get_actor_label()
+    except Exception:
+        final_label = label or asset_path
+
+    final_location = actor.get_actor_location()
+    return {
+        "success": True,
+        "label": final_label,
+        "class": actor.get_class().get_name(),
+        "location": {
+            "x": round(final_location.x, 3),
+            "y": round(final_location.y, 3),
+            "z": round(final_location.z, 3),
+        },
+    }
+
+
+def _handle_duplicate_actor(params):
+    """Duplicate an existing actor by label, offsetting the copy so it's
+    visibly distinct from the source."""
+    actor_label = params.get("actor_label")
+    if not actor_label:
+        raise ValueError("Missing required param: actor_label")
+
+    source = _find_actor_by_label(actor_label)
+
+    try:
+        subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    except Exception:
+        subsystem = None
+    dup_fn = getattr(subsystem, "duplicate_actor", None) if subsystem is not None else None
+    if dup_fn is None:
+        raise RuntimeError(
+            "duplicate_actor unavailable: EditorActorSubsystem.duplicate_actor is not "
+            "exposed in this build of the UEFN bridge"
+        )
+
+    offset = params.get("offset") or {}
+    offset_x = float(offset.get("x", 100.0))
+    offset_y = float(offset.get("y", 100.0))
+    offset_z = float(offset.get("z", 0.0))
+    source_location = source.get_actor_location()
+    new_label = params.get("new_label")
+
+    with _scoped_transaction("TycoonAgents: Duplicate Actor"):
+        try:
+            new_actor = dup_fn(source)
+        except Exception as e:
+            raise RuntimeError(f"duplicate_actor: duplicate_actor failed for '{actor_label}': {e}") from e
+        if new_actor is None:
+            raise RuntimeError(f"duplicate_actor: duplicate_actor returned None for '{actor_label}'")
+
+        new_location = unreal.Vector(
+            source_location.x + offset_x,
+            source_location.y + offset_y,
+            source_location.z + offset_z,
+        )
+        try:
+            new_actor.set_actor_location(new_location, False, True)
+        except Exception as e:
+            unreal.log_warning(f"uefn_bridge: duplicate_actor: could not offset copy of '{actor_label}': {e}")
+
+        if new_label:
+            try:
+                new_actor.set_actor_label(new_label)
+            except Exception as e:
+                unreal.log_warning(f"uefn_bridge: duplicate_actor: could not set label '{new_label}': {e}")
+
+    try:
+        final_label = new_actor.get_actor_label()
+    except Exception:
+        final_label = new_label or actor_label
+
+    final_location = new_actor.get_actor_location()
+    return {
+        "success": True,
+        "label": final_label,
+        "source_label": actor_label,
+        "location": {
+            "x": round(final_location.x, 3),
+            "y": round(final_location.y, 3),
+            "z": round(final_location.z, 3),
+        },
+    }
+
+
+def _handle_set_transform(params):
+    """Set location/rotation/scale on an actor by label. Only the
+    components provided are changed; at least one must be given."""
+    actor_label = params.get("actor_label")
+    if not actor_label:
+        raise ValueError("Missing required param: actor_label")
+
+    location = params.get("location")
+    rotation = params.get("rotation")
+    scale = params.get("scale")
+    if location is None and rotation is None and scale is None:
+        raise ValueError("set_transform: provide at least one of location, rotation, scale")
+
+    actor = _find_actor_by_label(actor_label)
+
+    def _snapshot():
+        try:
+            loc = actor.get_actor_location()
+            rot = actor.get_actor_rotation()
+            scl = actor.get_actor_scale3d()
+        except Exception as e:
+            raise RuntimeError(
+                f"set_transform: could not read current transform of '{actor_label}': {e}"
+            ) from e
+        return {
+            "location": {"x": round(loc.x, 3), "y": round(loc.y, 3), "z": round(loc.z, 3)},
+            "rotation": {"pitch": round(rot.pitch, 3), "yaw": round(rot.yaw, 3), "roll": round(rot.roll, 3)},
+            "scale": {"x": round(scl.x, 3), "y": round(scl.y, 3), "z": round(scl.z, 3)},
+        }
+
+    before = _snapshot()
+
+    with _scoped_transaction("TycoonAgents: Set Transform"):
+        if location is not None:
+            cur = actor.get_actor_location()
+            new_loc = unreal.Vector(
+                float(location.get("x", cur.x)),
+                float(location.get("y", cur.y)),
+                float(location.get("z", cur.z)),
+            )
+            try:
+                actor.set_actor_location(new_loc, False, True)
+            except Exception as e:
+                raise RuntimeError(f"set_transform: set_actor_location failed for '{actor_label}': {e}") from e
+
+        if rotation is not None:
+            cur = actor.get_actor_rotation()
+            new_rot = unreal.Rotator(
+                roll=float(rotation.get("roll", cur.roll)),
+                pitch=float(rotation.get("pitch", cur.pitch)),
+                yaw=float(rotation.get("yaw", cur.yaw)),
+            )
+            try:
+                actor.set_actor_rotation(new_rot, False)
+            except Exception as e:
+                raise RuntimeError(f"set_transform: set_actor_rotation failed for '{actor_label}': {e}") from e
+
+        if scale is not None:
+            cur = actor.get_actor_scale3d()
+            new_scale = unreal.Vector(
+                float(scale.get("x", cur.x)),
+                float(scale.get("y", cur.y)),
+                float(scale.get("z", cur.z)),
+            )
+            try:
+                actor.set_actor_scale3d(new_scale)
+            except Exception as e:
+                raise RuntimeError(f"set_transform: set_actor_scale3d failed for '{actor_label}': {e}") from e
+
+    after = _snapshot()
+
+    return {
+        "success": True,
+        "label": actor_label,
+        "before": before,
+        "after": after,
+    }
+
+
 # Method dispatch table
 _METHODS = {
     "status": _handle_status,
@@ -1135,6 +1419,9 @@ _METHODS = {
     "asset_sweep": _handle_asset_sweep,
     "list_assets": _handle_list_assets,
     "inspect_asset": _handle_inspect_asset,
+    "spawn_actor": _handle_spawn_actor,
+    "duplicate_actor": _handle_duplicate_actor,
+    "set_transform": _handle_set_transform,
 }
 
 

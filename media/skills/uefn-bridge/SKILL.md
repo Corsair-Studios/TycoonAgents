@@ -125,6 +125,9 @@ Use an absolute path for `args`. On Windows use forward slashes. Do **not** add 
 | `uefn_list_assets` | List assets under a content-browser path via the Unreal Asset Registry (read-only, metadata only — no asset loads) | `path`, `recursive` (optional), `class_filter` (optional), `limit` (optional) |
 | `uefn_inspect_asset` | EXPERIMENTAL: load a single asset by path and reflect its editor-property values via Python (read-only — loads but never saves or modifies) | `asset_path`, `max_depth` (optional) |
 | `uefn_moderation_scan` | Collect raw project surfaces (asset/HLOD names, Verse strings, island metadata, image metadata, audio) for an IP/authenticity pre-flight prediction; the calling LLM does the judgment and produces the report | `project_dir` (optional), `allowlist` (optional) |
+| `uefn_spawn_actor` | Spawn a new actor from an asset into the open level. Edits the level and supports editor undo (Ctrl+Z) | `asset_path`, `location` (optional), `rotation` (optional), `scale` (optional), `label` (optional) |
+| `uefn_duplicate_actor` | Duplicate an existing actor by label, offsetting the copy. Edits the level and supports editor undo (Ctrl+Z) | `actor_label`, `offset` (optional), `new_label` (optional) |
+| `uefn_set_transform` | Set an actor's location, rotation, and/or scale by label. Edits the level and supports editor undo (Ctrl+Z) | `actor_label`, `location` (optional), `rotation` (optional), `scale` (optional) — at least one transform component required |
 
 ## Usage Examples
 
