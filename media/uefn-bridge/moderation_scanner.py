@@ -3523,15 +3523,25 @@ def _bridge_ipc_dir():
     """The bridge IPC temp directory — the FALLBACK location a report can
     land in when the primary (``_moderation_report_path()``) is
     unwritable. Mirrors ``uefn_bridge.py``'s ``_get_bridge_dir()``
-    derivation EXACTLY (env var override, else ``<temp>/uefn_bridge``) —
-    reimplemented locally for the same "never imports uefn_bridge.py"
-    reason as ``_moderation_report_path()`` above. A divergent derivation
-    here would recreate the exact silent-failure class of bug this dual-
+    derivation EXACTLY (env var override, else ``<temp>/uefn_bridge``).
+
+    Delegates to bridge_paths.py (side-effect-free — see its module
+    docstring; this module still deliberately never imports
+    uefn_bridge.py itself, for the same reason as
+    ``_moderation_report_path()`` above) when available. ImportError-
+    guarded fallback below reproduces the same derivation for a version-
+    skewed sibling set missing that file — a divergent derivation here
+    would recreate the exact silent-failure class of bug this dual-
     location read was added to fix (reader looking in a different place
     than the writer actually wrote). Deliberately does NOT create the
     directory (unlike ``_get_bridge_dir()``) — this is a READ-side helper,
     and creating a directory has no purpose when there is nothing to read
     from it. Never raises."""
+    try:
+        import bridge_paths
+        return bridge_paths.bridge_ipc_dir(create=False)
+    except Exception:
+        pass
     try:
         return os.environ.get("UEFN_BRIDGE_DIR") or os.path.join(
             tempfile.gettempdir(), "uefn_bridge"

@@ -152,11 +152,24 @@ def _safe_class_name(actor):
 # must process. Creative devices reliably derive from FortCreativeDevice /
 # CreativeDevice, so "Device" / "FortCreativeDevice" / "CreativeDevice" are
 # sufficient to catch them without over-excluding buildables.
-_DEVICE_CLASS_HINTS = (
-    "Device",
-    "FortCreativeDevice",
-    "CreativeDevice",
-)
+#
+# Derived from device_audit's canonical _DEVICE_CLASS_HINTS (guarded import
+# — this module is deliberately side-effect-free at import time, see above)
+# with "BuildingGameplayActor" dropped per the rationale above, so the two
+# lists can never silently drift apart on the other three hints. Fallback
+# (device_audit.py missing/unimportable) is this file's own long-standing
+# literal.
+try:
+    from device_audit import _DEVICE_CLASS_HINTS as _DEVICE_AUDIT_CLASS_HINTS
+    _DEVICE_CLASS_HINTS = tuple(
+        hint for hint in _DEVICE_AUDIT_CLASS_HINTS if hint != "BuildingGameplayActor"
+    )
+except ImportError:
+    _DEVICE_CLASS_HINTS = (
+        "Device",
+        "FortCreativeDevice",
+        "CreativeDevice",
+    )
 
 
 def _is_device(actor):

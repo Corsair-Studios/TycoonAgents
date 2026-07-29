@@ -210,6 +210,32 @@ _warned_bad_token = False  # log a rejected-command warning once, not per-poll
 # IPC directory setup
 # ---------------------------------------------------------------------------
 
+# Centralized in bridge_paths.py (side-effect-free — see its module
+# docstring for why property_inspector.py and moderation_scanner.py used to
+# reimplement this derivation locally instead of importing THIS module:
+# uefn_bridge.py auto-starts the bridge's tick/poll loop on import, so
+# importing it just to reuse one function would start a second bridge
+# instance). ImportError-guarded: an old engine-side sibling set missing
+# bridge_paths.py (version skew — see the sys.path shield comment above)
+# falls back to the literal derivation this replaced, unchanged.
+try:
+    import bridge_paths as _bridge_paths
+except ImportError:
+    _bridge_paths = None
+
+# IPC filenames — sourced from bridge_paths when available so this module
+# and every sibling agree on one literal; falls back to the same literals
+# this always used when bridge_paths isn't importable (see above).
+if _bridge_paths is not None:
+    _HEARTBEAT_FILENAME = _bridge_paths.HEARTBEAT_FILENAME
+    _COMMAND_FILENAME = _bridge_paths.COMMAND_FILENAME
+    _RESPONSE_PREFIX = _bridge_paths.RESPONSE_PREFIX
+else:
+    _HEARTBEAT_FILENAME = "heartbeat.json"
+    _COMMAND_FILENAME = "command.json"
+    _RESPONSE_PREFIX = "response_"
+
+
 def _get_bridge_dir():
     """Return the bridge IPC directory, creating it if necessary.
 
@@ -220,6 +246,8 @@ def _get_bridge_dir():
     configuration is needed for the common case. To use a custom dir, set
     UEFN_BRIDGE_DIR for BOTH the UEFN process and the MCP wrapper.
     """
+    if _bridge_paths is not None:
+        return _bridge_paths.bridge_ipc_dir(create=True)
     import tempfile
     bridge_dir = os.environ.get("UEFN_BRIDGE_DIR") or os.path.join(
         tempfile.gettempdir(), "uefn_bridge"
@@ -323,7 +351,7 @@ def _write_heartbeat():
         # and falls back to tokenless commands.
         "token": _bridge_token,
     }
-    _write_json(os.path.join(_bridge_dir, "heartbeat.json"), heartbeat)
+    _write_json(os.path.join(_bridge_dir, _HEARTBEAT_FILENAME), heartbeat)
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +798,9 @@ def _handle_moderation_scan(params):
 # report length.
 _MODERATION_REPORT_MAX_CHARS = 200000
 
+# Mirrored in uefn-server.ts's `moderation_report_save` inputSchema
+# (severity_counts: {BLOCKER, WARN, KNOWN_RISK, INFO}) — keep both in sync;
+# a drift-guard test pins them (added separately from this change).
 _SEVERITY_KEYS = ("BLOCKER", "WARN", "KNOWN_RISK", "INFO")
 
 
@@ -1465,7 +1496,7 @@ def _process_command():
     """Check for command.json, execute it, and write the response."""
     global _bridge_dir, _bridge_token, _warned_bad_token
 
-    cmd_path = os.path.join(_bridge_dir, "command.json")
+    cmd_path = os.path.join(_bridge_dir, _COMMAND_FILENAME)
     if not os.path.exists(cmd_path):
         return
 
@@ -1523,7 +1554,7 @@ def _process_command():
         "error": error,
         "timestamp": datetime.datetime.now().isoformat(),
     }
-    response_path = os.path.join(_bridge_dir, "response_" + cmd_id + ".json")
+    response_path = os.path.join(_bridge_dir, _RESPONSE_PREFIX + cmd_id + ".json")
     _write_json(response_path, response)
 
     unreal.log("uefn_bridge: Response written for " + cmd_id)
@@ -1586,7 +1617,7 @@ def start_bridge():
     unreal.log("uefn_bridge: Bridge started.  IPC dir: " + _bridge_dir)
     unreal.log(
         "uefn_bridge: Listening for commands in "
-        + os.path.join(_bridge_dir, "command.json")
+        + os.path.join(_bridge_dir, _COMMAND_FILENAME)
     )
 
 
@@ -1607,7 +1638,7 @@ def stop_bridge():
             "status": "stopped",
             "timestamp": datetime.datetime.now().isoformat(),
         }
-        _write_json(os.path.join(_bridge_dir, "heartbeat.json"), stopped)
+        _write_json(os.path.join(_bridge_dir, _HEARTBEAT_FILENAME), stopped)
 
     unreal.log("uefn_bridge: Bridge stopped.")
 

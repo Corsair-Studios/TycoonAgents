@@ -119,10 +119,21 @@ def _get_project_prefix():
     """
     Detect the current UEFN project's asset prefix (e.g. ``/MyProject/``).
 
+    Delegates to asset_usage.get_project_prefix() (canonical — identical
+    strategy order: actor path, then world path, then "/Game/" default)
+    when importable; ImportError-guarded fallback below reproduces the same
+    strategies locally (with this module's own diagnostic logging) for a
+    version-skewed sibling set missing that file.
+
     Strategy 1 — derive the prefix from the first level actor's full path.
     Strategy 2 — fall back to the world's own path.
     Strategy 3 — last-resort default ``/Game/``.
     """
+    try:
+        import asset_usage
+        return asset_usage.get_project_prefix()
+    except ImportError:
+        pass
     try:
         subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
         actors = subsystem.get_all_level_actors()
@@ -158,7 +169,14 @@ def _get_project_prefix():
 # Internal registry helpers
 # ---------------------------------------------------------------------------
 
-_SKIP_PREFIXES = ("/Engine/", "/Script/")
+# Sourced from asset_usage's canonical tuple (guarded — this file already
+# requires `unreal`, but a version-skewed sibling set could be missing
+# asset_usage.py); fallback matches the canonical value exactly, including
+# "/Temp/" (UEFN's transient/scratch mount).
+try:
+    from asset_usage import _SKIP_PREFIXES
+except ImportError:
+    _SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
 
 
 def _get_asset_registry():

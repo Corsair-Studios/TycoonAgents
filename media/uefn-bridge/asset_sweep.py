@@ -146,7 +146,15 @@ _ASSET_CLASSES = [
     ("FileMediaSource",          "/Script/MediaAssets"),
 ]
 
-_SKIP_PREFIXES = ("/Engine/", "/Script/")
+# Sourced from asset_usage's canonical tuple (guarded to match this file's
+# own defensive-import convention above, even though this module already
+# does an unguarded `from asset_usage import ...` for confirm_orphans/
+# get_project_prefix a few lines up); fallback matches the canonical value
+# exactly, including "/Temp/" (UEFN's transient/scratch mount).
+try:
+    from asset_usage import _SKIP_PREFIXES
+except ImportError:
+    _SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
 
 
 # ---------------------------------------------------------------------------

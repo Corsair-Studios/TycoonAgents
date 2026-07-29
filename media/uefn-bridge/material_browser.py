@@ -119,7 +119,16 @@ _last_unused_result   = [None]
 # must be included when project_only=True. Do NOT switch this back to an
 # allow-list keyed on a single detected project prefix: that previously
 # excluded valid plugin mounts that don't share the primary project prefix.
-_SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
+#
+# Sourced from asset_usage's canonical tuple (guarded — this file already
+# requires `unreal`, but a version-skewed sibling set could be missing
+# asset_usage.py); this module was the ORIGIN of the /Temp/ exclusion later
+# canonicalized onto asset_usage._SKIP_PREFIXES, so the fallback below is
+# simply this file's own long-standing value.
+try:
+    from asset_usage import _SKIP_PREFIXES
+except ImportError:
+    _SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
 
 
 def _get_asset_registry():

@@ -74,7 +74,17 @@ def _get_bridge_dir():
     the same directory the bridge/launcher use; otherwise falls back to
     ``<temp>/uefn_bridge``. To use a custom dir, set UEFN_BRIDGE_DIR for
     BOTH the UEFN process and the MCP wrapper.
+
+    Delegates to bridge_paths.py (side-effect-free, importable without
+    starting a bridge instance — see its module docstring) when available;
+    ImportError-guarded fallback below reproduces its derivation exactly
+    for a version-skewed sibling set missing that file.
     """
+    try:
+        import bridge_paths
+        return bridge_paths.bridge_ipc_dir(create=True)
+    except ImportError:
+        pass
     bridge_dir = os.environ.get("UEFN_BRIDGE_DIR") or os.path.join(
         tempfile.gettempdir(), "uefn_bridge"
     )

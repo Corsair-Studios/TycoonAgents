@@ -51,6 +51,17 @@ _TEXT_DIM = "#57524C"
 _ENTRY_BG = "#FBFAF6"
 _ENTRY_FG = "#1A1A1A"
 
+# Prefixes never treated as real project content. Sourced from asset_usage's
+# canonical tuple (guarded — this file already requires `unreal`, but a
+# version-skewed sibling set could be missing asset_usage.py) so this stays
+# in sync with the orphan-confirmation logic that ultimately decides what
+# counts as "in use"; fallback below matches the canonical value exactly,
+# including "/Temp/" (UEFN's transient/scratch mount).
+try:
+    from asset_usage import _SKIP_PREFIXES
+except ImportError:
+    _SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
+
 
 # ---------------------------------------------------------------------------
 # Clipboard — Tk's clipboard API (clipboard_clear/clipboard_append/
@@ -227,8 +238,18 @@ def _get_project_prefix():
     """
     Detect the current UEFN project's asset prefix (e.g. "/MyProject/").
 
-    Uses multiple strategies and logs the result for debugging.
+    Delegates to asset_usage.get_project_prefix() (canonical — identical
+    strategy order: actor path, then world path, then "/Game/" default)
+    when importable; ImportError-guarded fallback below reproduces the same
+    strategies locally (with this module's own diagnostic logging) for a
+    version-skewed sibling set missing that file.
     """
+    try:
+        import asset_usage
+        return asset_usage.get_project_prefix()
+    except ImportError:
+        pass
+
     # Strategy 1: Level actors have paths like /MyProject/IslandLake.IslandLake:PersistentLevel.Actor
     # Extract the root from the first actor's full path
     try:
@@ -388,9 +409,9 @@ def find_texture_usage(texture_name, match_mode="substring", project_only=True):
     )
 
     # matched_texture_info: package_name_str -> {"texture_name": str}
-    # Skip pure engine internals (/Engine/, /Script/) but include all game
-    # content — the user's search query is the real filter.
-    _SKIP_PREFIXES = ("/Engine/", "/Script/")
+    # Skip pure engine internals (/Engine/, /Script/, /Temp/ — see the
+    # module-level _SKIP_PREFIXES above) but include all game content — the
+    # user's search query is the real filter.
     matched_texture_info = {}
     for asset_data in all_textures:
         pkg_name = str(asset_data.package_name)   # Name -> str
@@ -711,7 +732,7 @@ def browse_textures(project_only=True):
     """
     registry = _get_asset_registry()
     dep_options = _make_dep_options()
-    _SKIP_PREFIXES = ("/Engine/", "/Script/")
+    # _SKIP_PREFIXES is the module-level canonical (see top of file).
 
     # -----------------------------------------------------------------------
     # Step 1 — collect all Texture2D assets, apply scope filter

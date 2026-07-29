@@ -96,7 +96,17 @@ def _get_bridge_dir():
     the bridge/MCP wrapper agree on the same location; otherwise falls back
     to ``<temp>/uefn_bridge``. To use a custom dir, set UEFN_BRIDGE_DIR for
     BOTH the UEFN process and the MCP wrapper.
+
+    Delegates to bridge_paths.py (side-effect-free, importable without
+    starting a bridge instance — see its module docstring) when available;
+    ImportError-guarded fallback below reproduces its derivation exactly
+    for a version-skewed sibling set missing that file.
     """
+    try:
+        import bridge_paths
+        return bridge_paths.bridge_ipc_dir(create=True)
+    except ImportError:
+        pass
     import tempfile
     bridge_dir = os.environ.get("UEFN_BRIDGE_DIR") or os.path.join(
         tempfile.gettempdir(), "uefn_bridge"
@@ -400,30 +410,28 @@ def _show_mcp_info():
     ).pack(anchor=tk.W)
 
     clients = [
-        ("Claude Code", "Anthropic", "Auto-configured (.mcp.json)"),
-        ("OpenAI Codex CLI", "OpenAI", "MCP via stdio (manual config)"),
-        ("Gemini CLI", "Google", "MCP via stdio (manual config)"),
-        ("Cursor IDE", "Cursor", "Built-in MCP (manual config)"),
-        ("Windsurf", "Codeium", "MCP via config (manual)"),
-        ("VS Code Copilot", "GitHub/Microsoft", "MCP via extension (manual)"),
+        ("Claude Code", "Auto-configured (.mcp.json)"),
+        ("Codex CLI", "MCP via stdio (manual config)"),
+        ("Gemini CLI", "MCP via stdio (manual config)"),
+        ("Cursor IDE", "Built-in MCP (manual config)"),
+        ("Windsurf", "MCP via config (manual)"),
+        ("VS Code Copilot", "MCP via extension (manual)"),
     ]
 
     ai_list_frame = tk.Frame(ai_frame, bg=_SECTION_BG, padx=4, pady=4)
     ai_list_frame.pack(fill=tk.X, pady=(4, 0))
 
     ai_tree = ttk.Treeview(
-        ai_list_frame, columns=("client", "provider", "notes"), show="headings",
+        ai_list_frame, columns=("client", "notes"), show="headings",
         style="MCP.Treeview", height=min(len(clients), 6),
     )
     ai_tree.heading("client", text="Client")
-    ai_tree.heading("provider", text="Provider")
     ai_tree.heading("notes", text="Integration")
-    ai_tree.column("client", width=160)
-    ai_tree.column("provider", width=140)
-    ai_tree.column("notes", width=260)
+    ai_tree.column("client", width=200)
+    ai_tree.column("notes", width=360)
 
-    for client, provider, notes in clients:
-        ai_tree.insert("", tk.END, values=(client, provider, notes))
+    for client, notes in clients:
+        ai_tree.insert("", tk.END, values=(client, notes))
 
     ai_tree.pack(fill=tk.X)
 
@@ -473,142 +481,82 @@ def _show_mcp_info():
 # Tool actions
 # ---------------------------------------------------------------------------
 
+def _launch_reloaded(module_name, entry_point, friendly_name):
+    """Generic launcher shared by every dispatch entry below: import the
+    named sibling module fresh, ``importlib.reload`` it (so in-editor edits
+    are picked up on the next launch without restarting UEFN), call its
+    entry-point function, and surface any failure as both a log warning and
+    (if tkinter is available) an error dialog. ``module_name`` is used in
+    the log line, ``friendly_name`` in the dialog/log text shown to the
+    user — matching the two different strings each hand-written branch of
+    the old elif chain used to hardcode per tool."""
+    try:
+        import importlib
+        module = importlib.import_module(module_name)
+        importlib.reload(module)
+        getattr(module, entry_point)()
+    except Exception as e:
+        unreal.log_warning("uefn_launcher: Failed to launch " + module_name + ": " + str(e))
+        if _HAS_TKINTER:
+            messagebox.showerror("Error", "Failed to launch " + friendly_name + ":\n" + str(e))
+
+
+def _launch_moderation_scan():
+    """Dedicated (not the generic _launch_reloaded) because this is the one
+    tool with an extra ModuleNotFoundError branch — moderation_scanner.py
+    can be legitimately absent from an older/partial project sync, and that
+    case gets its own actionable message instead of the generic error."""
+    try:
+        import importlib
+        import moderation_scanner
+        importlib.reload(moderation_scanner)
+        moderation_scanner.show_moderation_scan()
+    except ModuleNotFoundError:
+        msg = (
+            "moderation_scanner.py is missing from your project's Content/Python/ folder.\n\n"
+            "Re-run the /uefn-bridge install to sync all tool files."
+        )
+        unreal.log_warning("uefn_launcher: moderation_scanner module not found — " + msg)
+        if _HAS_TKINTER:
+            messagebox.showerror("Missing Module", msg)
+    except Exception as e:
+        unreal.log_warning("uefn_launcher: Failed to launch moderation_scanner: " + str(e))
+        if _HAS_TKINTER:
+            messagebox.showerror("Error", "Failed to launch IP / Moderation Scan:\n" + str(e))
+
+
+# Module-level action -> launch-callable dispatch. Keyed by the SAME
+# "action" strings used in the _TOOLS card list above, so a test can assert
+# parity (every _TOOLS action has a dispatch entry and vice versa) without
+# either list going stale relative to the other. "mcp_info" intentionally
+# maps directly to _show_mcp_info (no try/except wrapper) — that matches
+# the original elif branch exactly, which never wrapped this one call.
+_TOOL_DISPATCH = {
+    "device_audit": lambda: _launch_reloaded("device_audit", "run_audit", "Device Audit"),
+    "material_browser": lambda: _launch_reloaded("material_browser", "show_material_browser", "Material Browser"),
+    "texture_finder": lambda: _launch_reloaded("texture_finder", "show_texture_finder", "Texture Finder"),
+    "niagara_inspector": lambda: _launch_reloaded("niagara_inspector", "show_niagara_inspector", "Niagara Inspector"),
+    "dependency_viewer": lambda: _launch_reloaded("dependency_viewer", "show_dependency_viewer", "Dependency Viewer"),
+    "health_scanner": lambda: _launch_reloaded("health_scanner", "show_health_scanner", "Project Health"),
+    "moderation_scan": _launch_moderation_scan,
+    "level_stats": lambda: _launch_reloaded("level_stats", "show_level_stats", "Level Stats"),
+    "mcp_info": _show_mcp_info,
+    "asset_sweep": lambda: _launch_reloaded("asset_sweep", "show_asset_sweep", "Dead Asset Sweep"),
+    "property_inspector": lambda: _launch_reloaded("property_inspector", "show_ui", "Property Inspector"),
+    "build_mode_cleanup": lambda: _launch_reloaded("build_mode_cleanup", "show_ui", "Build-Mode Cleanup"),
+}
+
+
 def _launch_tool(action):
-    """Launch the tool identified by *action*."""
-    if action == "device_audit":
-        try:
-            import importlib
-            import device_audit
-            importlib.reload(device_audit)
-            device_audit.run_audit()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch device_audit: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Device Audit:\n" + str(e))
-
-    elif action == "material_browser":
-        try:
-            import importlib
-            import material_browser
-            importlib.reload(material_browser)
-            material_browser.show_material_browser()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch material_browser: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Material Browser:\n" + str(e))
-
-    elif action == "texture_finder":
-        try:
-            import importlib
-            import texture_finder
-            importlib.reload(texture_finder)
-            texture_finder.show_texture_finder()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch texture_finder: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Texture Finder:\n" + str(e))
-
-    elif action == "niagara_inspector":
-        try:
-            import importlib
-            import niagara_inspector
-            importlib.reload(niagara_inspector)
-            niagara_inspector.show_niagara_inspector()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch niagara_inspector: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Niagara Inspector:\n" + str(e))
-
-    elif action == "dependency_viewer":
-        try:
-            import importlib
-            import dependency_viewer
-            importlib.reload(dependency_viewer)
-            dependency_viewer.show_dependency_viewer()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch dependency_viewer: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Dependency Viewer:\n" + str(e))
-
-    elif action == "health_scanner":
-        try:
-            import importlib
-            import health_scanner
-            importlib.reload(health_scanner)
-            health_scanner.show_health_scanner()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch health_scanner: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Project Health:\n" + str(e))
-
-    elif action == "moderation_scan":
-        try:
-            import importlib
-            import moderation_scanner
-            importlib.reload(moderation_scanner)
-            moderation_scanner.show_moderation_scan()
-        except ModuleNotFoundError:
-            msg = (
-                "moderation_scanner.py is missing from your project's Content/Python/ folder.\n\n"
-                "Re-run the /uefn-bridge install to sync all tool files."
-            )
-            unreal.log_warning("uefn_launcher: moderation_scanner module not found — " + msg)
-            if _HAS_TKINTER:
-                messagebox.showerror("Missing Module", msg)
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch moderation_scanner: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch IP / Moderation Scan:\n" + str(e))
-
-    elif action == "level_stats":
-        try:
-            import importlib
-            import level_stats
-            importlib.reload(level_stats)
-            level_stats.show_level_stats()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch level_stats: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Level Stats:\n" + str(e))
-
-    elif action == "mcp_info":
-        _show_mcp_info()
-
-    elif action == "asset_sweep":
-        try:
-            import importlib
-            import asset_sweep
-            importlib.reload(asset_sweep)
-            asset_sweep.show_asset_sweep()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch asset_sweep: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Dead Asset Sweep:\n" + str(e))
-
-    elif action == "property_inspector":
-        try:
-            import importlib
-            import property_inspector
-            importlib.reload(property_inspector)
-            property_inspector.show_ui()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch property_inspector: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Property Inspector:\n" + str(e))
-
-    elif action == "build_mode_cleanup":
-        try:
-            import importlib
-            import build_mode_cleanup
-            importlib.reload(build_mode_cleanup)
-            build_mode_cleanup.show_ui()
-        except Exception as e:
-            unreal.log_warning("uefn_launcher: Failed to launch build_mode_cleanup: " + str(e))
-            if _HAS_TKINTER:
-                messagebox.showerror("Error", "Failed to launch Build-Mode Cleanup:\n" + str(e))
-
-    else:
+    """Launch the tool identified by *action* via the module-level
+    _TOOL_DISPATCH dict above. Behavior is identical to the elif chain this
+    replaced: an unknown action logs the same warning and does nothing
+    else."""
+    handler = _TOOL_DISPATCH.get(action)
+    if handler is None:
         unreal.log_warning("uefn_launcher: Unknown action: " + str(action))
+        return
+    handler()
 
 
 # ---------------------------------------------------------------------------

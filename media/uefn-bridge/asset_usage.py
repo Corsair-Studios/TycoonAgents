@@ -26,7 +26,16 @@ import glob
 import os
 import unreal
 
-_SKIP_PREFIXES = ("/Engine/", "/Script/")
+# CANONICAL skip-list, imported (guarded) by material_browser.py,
+# texture_finder.py, niagara_inspector.py, dependency_viewer.py, and
+# asset_sweep.py. "/Temp/" is UEFN's transient/scratch mount — a referencer
+# living there is not a real in-use signal (the reference itself is
+# transient), so it must never keep a candidate asset out of the orphan
+# list. material_browser.py already excluded it; moderation_scanner.py's
+# independently-derived _ENGINE_EXCLUDE_PREFIXES agrees. This is the one
+# deliberate behavior change in this pass: confirm_orphans() below now
+# treats /Temp/-only referencers the same way material_browser already did.
+_SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
 _VERSE_SKIP = {"Saved", "Intermediate", "__pycache__", ".uefn_bridge"}
 
 # Per-process cache of the concatenated, lowercased Verse source text.
