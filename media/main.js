@@ -1986,6 +1986,16 @@
         text: `Reach Rebirth ${TURRET_UNLOCK_REBIRTH} to unlock a buildable defensive turret`,
       });
     }
+    // Sparring exhibition + stand-up huddle (see updateSparring/updateHuddle,
+    // SPARRING_UNLOCK_REBIRTH/HUDDLE_UNLOCK_REBIRTH — both gated at the same
+    // rebirth tier as the turret above). Unlike the turret entry, this is
+    // pure character-animation cosmetics with no buildable-object dependency,
+    // so — per product ask — it ALWAYS renders regardless of theme contents:
+    // Rebirth 2's preview line must never be empty.
+    rebirthUnlockPreviews.push({
+      rebirth: SPARRING_UNLOCK_REBIRTH,
+      text: `Reach Rebirth ${SPARRING_UNLOCK_REBIRTH} to unlock agent sparring drills & stand-up huddles`,
+    });
     rebirthUnlockPreviews.push({
       rebirth: DANCE_PARTY_UNLOCK_REBIRTH,
       text: `Reach Rebirth ${DANCE_PARTY_UNLOCK_REBIRTH} to unlock the disco dance party`,
@@ -6087,6 +6097,679 @@
       danceOffConfettiPool[i].active = false;
     }
     danceOffConfettiActive = false;
+  }
+
+  // ── Sparring exhibition (Rebirth-2 ambient easter egg) ─────────────────
+  // Two idle, non-building agents face off in a friendly sparring drill:
+  // alternating attacker (melee clip)/defender (block clip) roles, with 0-3
+  // idle bystanders drifting in as ring spectators. Shares NO state with the
+  // dance-off/disco/conga "party" lighting layer (partyVisualIntensity) —
+  // this is plain character animation, not a lighting event — but mirrors
+  // their STRUCTURAL shape (own state block, start/update/end/cancel
+  // functions, a live-derived `inSparring` gate threaded through every
+  // engage/build/wander exclusion the same way `inDanceOff` is, see the
+  // per-character loop). Purely cosmetic: never touches hp, build progress,
+  // or persisted state — only destNx/destNy/settled/facingLeft (all fields
+  // every other ambient system already reuses) and display-only expression
+  // bubbles. STRICT product rule: this activity must NEVER show a Dazed (7)
+  // or Anger (2) bubble — see updateSparring's spectator-reaction roll and
+  // the celebrate-phase winner pick, both of which only ever pick from
+  // {Love, Team, Thumbs-up}.
+  /** True while a sparring exhibition is running (walk-in, active, or celebrate). */
+  let sparringActive = false;
+  /** "walkin" | "active" | "celebrate" | "idle" (idle = not meaningful while !sparringActive). */
+  let sparringPhase = "idle";
+  /** agent.id of the two sparrers, or null when inactive. */
+  let sparringIdA = null;
+  let sparringIdB = null;
+  /** Native-coord stand points either side of a random ring center, computed once at start. */
+  let sparringPosA = null;
+  let sparringPosB = null;
+  /** agent.id of each spectator enrolled this run (0..SPARRING_MAX_SPECTATORS), index-aligned with sparringSpectatorPos. @type {string[]} */
+  let sparringSpectatorIds = [];
+  /** Native-coord ring stand point per spectator, computed once at start, index-aligned with sparringSpectatorIds. @type {number[][]} */
+  let sparringSpectatorPos = [];
+  /** Seconds elapsed walking in this run — capped by SPARRING_WALKIN_TIMEOUT_SEC so a blocked path can't hang the easter egg forever. */
+  let sparringWalkinElapsed = 0;
+  /** Which sparrer is CURRENTLY attacking: 0 = A, 1 = B (the other defends). */
+  let sparringAttacker = 0;
+  /** Seconds remaining before the current attacker/defender assignment swaps. */
+  let sparringRoleTimeLeft = 0;
+  /** Overall countdown (seconds) for the active (melee/block) phase — randomized once at the walkin→active transition. */
+  let sparringTimeLeft = 0;
+  /** agent.id of the sparrer randomly chosen to celebrate at the end — "only one will celebrate" (product rule); the other returns to idle with no bubble. */
+  let sparringCelebrateId = null;
+  /** Seconds remaining in the celebrating sparrer's cheer hold. */
+  let sparringCelebrateTimeLeft = 0;
+  /** Accumulator (seconds) toward the next spectator sparse-reaction roll. */
+  let sparringSpectatorReactTimer = 0;
+  /** rebirthCount snapshot at the moment this run started — updateSparring cancels immediately if this drifts (a rebirth happened mid-exhibition). */
+  let sparringStartRebirthCount = 0;
+  /** Accumulator (seconds) toward the next rare-trigger eligibility check. */
+  let sparringCheckTimer = 0;
+  /** Cooldown (seconds) remaining before another sparring exhibition may start via the random trigger. */
+  let sparringCooldown = 0;
+  /** Rebirths required before the sparring exhibition (and stand-up huddle) unlocks — same tier as the turret. */
+  const SPARRING_UNLOCK_REBIRTH = 2;
+  /** Seconds between random-trigger eligibility rolls (time-based, not per-frame, like every other ambient system's check). */
+  const SPARRING_CHECK_SECONDS = 60;
+  /** Chance per eligibility check that an exhibition starts — mean interval ≈ SPARRING_CHECK_SECONDS/SPARRING_CHANCE ≈ 150s, an "occasional" cadence per product ask. */
+  const SPARRING_CHANCE = 0.4;
+  /** Cooldown (seconds) after a run ends before another may start via the random trigger. */
+  const SPARRING_COOLDOWN_SECONDS = 240;
+  /** Half the native-px gap between the two sparrers ("~a body-width apart") — comfortably above MIN_AGENT_SEP_NATIVE (34) so the separation pass never fights the face-off spacing, mirrors DANCE_OFF_STAND_HALF_GAP. */
+  const SPARRING_STAND_HALF_GAP = 34;
+  /** Sane upper bound (seconds) on the walk-in phase before both sparrers snap straight to their stand points. */
+  const SPARRING_WALKIN_TIMEOUT_SEC = 6;
+  /** Min/max seconds an attacker/defender role holds before swapping. */
+  const SPARRING_ROLE_MIN_SEC = 0.8;
+  const SPARRING_ROLE_MAX_SEC = 1.2;
+  /** Min/max seconds the exhibition runs before a winner is chosen to celebrate. */
+  const SPARRING_DURATION_MIN_SEC = 6;
+  const SPARRING_DURATION_MAX_SEC = 10;
+  /** Seconds the chosen sparrer holds its cheer pose. */
+  const SPARRING_CELEBRATE_SECONDS = 2;
+  /** Max idle bystanders that may drift in as ring spectators this run. */
+  const SPARRING_MAX_SPECTATORS = 3;
+  /** Minimum idle, non-building agents required (the two sparrers) to even attempt a start. */
+  const SPARRING_MIN_IDLE_FOR_START = 2;
+  /** Native-px ring radius spectators stand at around the sparring pair's
+   *  midpoint. Worst case is the edge spectator (fan angle 36°/144° off the
+   *  A-B axis — hit for BOTH the 2-spectator case, where the ±54° offsets
+   *  land exactly there, and the 3-spectator case's two outer slots): its
+   *  distance to the NEAR sparrer (SPARRING_STAND_HALF_GAP=34 out from
+   *  center) is sqrt(R^2 - 2*34*R*cos36 + 34^2). At R=46 that was ~27.2px —
+   *  under MIN_AGENT_SEP_NATIVE (34), so the universal separation pass kept
+   *  nudging that spectator off its ring point every frame. R=64 gives
+   *  ~41.6px, a comfortable ~7.6px margin above MIN_AGENT_SEP_NATIVE. */
+  const SPARRING_RING_RADIUS = 64;
+  /** Chance, per SPARRING_SPECTATOR_REACT_INTERVAL_SEC tick, that a given spectator reacts with a sparse bubble. */
+  const SPARRING_SPECTATOR_REACT_CHANCE = 0.15;
+  /** Seconds between spectator reaction eligibility ticks. */
+  const SPARRING_SPECTATOR_REACT_INTERVAL_SEC = 2.0;
+
+  /**
+   * Select the two sparrers (and, from the remainder, 0..SPARRING_MAX_SPECTATORS
+   * spectators) eligible for a sparring exhibition: not active
+   * (isMetricsAgentActive), not in a conga/dance-off/huddle, not dancing,
+   * emoting, seated, dazed, or already repairing. Mirrors
+   * pickDanceOffParticipants' shape. Returns null (never a partial pick) if
+   * fewer than SPARRING_MIN_IDLE_FOR_START qualify.
+   * @param {Array<object>} agentList current sceneAgentList
+   * @returns {{a:string, b:string, spectators:string[]}|null}
+   */
+  function pickSparringParticipants(agentList) {
+    const eligible = [];
+    for (const a of agentList) {
+      if (!a) continue;
+      if (isMetricsAgentActive(a)) continue;
+      const e = agentCharMap[a.id];
+      if (!e) continue;
+      if (e.congaIndex >= 0) continue;
+      if (e.dancing || e.emoting) continue;
+      if (e.sitting || e.sitSeatId != null) continue;
+      if (e.dazePhase != null) continue;
+      if (e.extinguishTargetId != null) continue;
+      if (danceOffActive && (a.id === danceOffIdA || a.id === danceOffIdB)) continue;
+      if (huddleActive && huddleParticipantIds.indexOf(a.id) >= 0) continue;
+      eligible.push(a.id);
+    }
+    if (eligible.length < SPARRING_MIN_IDLE_FOR_START) return null;
+    // Fisher-Yates partial shuffle (mirrors pickDanceOffParticipants).
+    for (let i = eligible.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = eligible[i]; eligible[i] = eligible[j]; eligible[j] = tmp;
+    }
+    const a = eligible[0], b = eligible[1];
+    const rest = eligible.slice(2);
+    const spectatorCount = Math.min(rest.length, Math.floor(Math.random() * (SPARRING_MAX_SPECTATORS + 1)));
+    return { a, b, spectators: rest.slice(0, spectatorCount) };
+  }
+
+  /**
+   * Start a sparring exhibition: pick participants, drop a ring center at a
+   * random walkable point (variety run to run — deliberately NOT the same
+   * centroid spot the dance-off always uses), compute stand points, and send
+   * everyone walking in. Shared by updateSparring's random trigger only (no
+   * debug hotkey requested for this feature).
+   * @param {Array<object>} agentList current sceneAgentList
+   * @returns {boolean} true if an exhibition actually started
+   */
+  function startSparring(agentList) {
+    const pick = pickSparringParticipants(agentList);
+    if (!pick) return false;
+    const eA = agentCharMap[pick.a];
+    const eB = agentCharMap[pick.b];
+    if (!eA || !eB) return false;
+    const center = randomInsidePoly(walkablePolygon);
+    const ccx = center[0], ccy = center[1];
+    sparringPosA = clampToPolygon(ccx - SPARRING_STAND_HALF_GAP, ccy, walkablePolygon);
+    sparringPosB = clampToPolygon(ccx + SPARRING_STAND_HALF_GAP, ccy, walkablePolygon);
+    sparringIdA = pick.a;
+    sparringIdB = pick.b;
+    sparringSpectatorIds = pick.spectators.slice();
+    // Fan spectators out on a semicircle "audience" arc facing the ring,
+    // rather than the 0/π angles the two sparrers already occupy.
+    const count = sparringSpectatorIds.length;
+    sparringSpectatorPos = sparringSpectatorIds.map((id, i) => {
+      const spread = Math.PI * 0.6;
+      const angle = Math.PI / 2 + (i - (count - 1) / 2) * (spread / Math.max(count - 1, 1));
+      return clampToPolygon(ccx + Math.cos(angle) * SPARRING_RING_RADIUS, ccy + Math.sin(angle) * SPARRING_RING_RADIUS, walkablePolygon);
+    });
+    freeAgentSeat(eA);
+    freeAgentSeat(eB);
+    eA.destNx = sparringPosA[0]; eA.destNy = sparringPosA[1]; eA.settled = false;
+    eB.destNx = sparringPosB[0]; eB.destNy = sparringPosB[1]; eB.settled = false;
+    for (let i = 0; i < sparringSpectatorIds.length; i++) {
+      const se = agentCharMap[sparringSpectatorIds[i]];
+      if (!se) continue;
+      freeAgentSeat(se);
+      se.destNx = sparringSpectatorPos[i][0];
+      se.destNy = sparringSpectatorPos[i][1];
+      se.settled = false;
+    }
+    sparringActive = true;
+    sparringPhase = "walkin";
+    sparringWalkinElapsed = 0;
+    sparringAttacker = Math.random() < 0.5 ? 0 : 1;
+    sparringRoleTimeLeft = 0;
+    sparringTimeLeft = 0;
+    sparringCelebrateId = null;
+    sparringCelebrateTimeLeft = 0;
+    sparringSpectatorReactTimer = SPARRING_SPECTATOR_REACT_INTERVAL_SEC;
+    sparringStartRebirthCount = rebirthCount;
+    return true;
+  }
+
+  /** Reset all module-level sparring state to inactive. Shared tail of both
+   *  endSparring and cancelSparring. No per-agent fields to clear (unlike
+   *  dance-off's dancing/danceTimeLeft) — this feature never writes anything
+   *  onto a charEntry beyond destNx/destNy/settled/facingLeft, all of which
+   *  normal wander/AI happily inherits and overwrites on its own the instant
+   *  `inSparring` reads false next frame. That's what makes disband "no
+   *  stuck flags" for free. */
+  function resetSparringState() {
+    sparringActive = false;
+    sparringPhase = "idle";
+    sparringIdA = null;
+    sparringIdB = null;
+    sparringPosA = null;
+    sparringPosB = null;
+    sparringSpectatorIds = [];
+    sparringSpectatorPos = [];
+    sparringWalkinElapsed = 0;
+    sparringAttacker = 0;
+    sparringRoleTimeLeft = 0;
+    sparringTimeLeft = 0;
+    sparringCelebrateId = null;
+    sparringCelebrateTimeLeft = 0;
+  }
+
+  /** Natural end (celebration hold ran out). */
+  function endSparring() {
+    sparringCooldown = SPARRING_COOLDOWN_SECONDS;
+    resetSparringState();
+  }
+
+  /** Interruption path — rival arrival, rebirth, a load-bearing sparrer went
+   *  active/vanished, or (belt-and-braces) another party-style system somehow
+   *  became active. Participants simply resume normal AI next frame once
+   *  `inSparring` reads false — see resetSparringState's doc. */
+  function cancelSparring() {
+    sparringCooldown = SPARRING_COOLDOWN_SECONDS;
+    resetSparringState();
+  }
+
+  /**
+   * Advance the sparring exhibition. Called once per frame, after
+   * updateDanceOff (so this frame's congaActive/discoPartyActive/
+   * danceOffActive already reflect anything that just started/ended this
+   * same frame) and before the per-character loop (so an interruption clears
+   * participants in time for them to re-engage combat/work on the same frame).
+   * @param {number} delta seconds
+   * @param {Array<object>} agentList current sceneAgentList
+   */
+  function updateSparring(delta, agentList) {
+    if (sparringCooldown > 0) sparringCooldown = Math.max(0, sparringCooldown - delta);
+
+    if (sparringActive) {
+      // Preemption (product rule): real combat, a rebirth, or another
+      // party-style system taking the floor all cancel immediately.
+      // huddleActive is belt-and-braces here (both activities' own start
+      // gates already refuse to fire while the other is active — see
+      // updateHuddle's own random-trigger gate — so this should be
+      // unreachable), same defensive style as congaActive/discoPartyActive.
+      if (activeEnemies.length > 0 || rebirthCount !== sparringStartRebirthCount || congaActive || discoPartyActive || danceOffActive || huddleActive) {
+        cancelSparring();
+        return;
+      }
+      const eA = agentCharMap[sparringIdA];
+      const eB = agentCharMap[sparringIdB];
+      const agentA = agentList.find((a) => a && a.id === sparringIdA);
+      const agentB = agentList.find((a) => a && a.id === sparringIdB);
+      // Either load-bearing sparrer vanished or went back to active/working — end immediately.
+      if (!eA || !eB || !agentA || !agentB || isMetricsAgentActive(agentA) || isMetricsAgentActive(agentB)) {
+        cancelSparring();
+        return;
+      }
+      // A spectator that went active/vanished just quietly drops out — only
+      // the two sparrers are load-bearing for the whole exhibition.
+      for (let i = sparringSpectatorIds.length - 1; i >= 0; i--) {
+        const sid = sparringSpectatorIds[i];
+        const sAgent = agentList.find((a) => a && a.id === sid);
+        const sEnt = agentCharMap[sid];
+        if (!sAgent || !sEnt || isMetricsAgentActive(sAgent)) {
+          sparringSpectatorIds.splice(i, 1);
+          sparringSpectatorPos.splice(i, 1);
+        }
+      }
+
+      if (sparringPhase === "walkin") {
+        const dxA = sparringPosA[0] - eA.nx, dyA = sparringPosA[1] - eA.ny;
+        const dxB = sparringPosB[0] - eB.nx, dyB = sparringPosB[1] - eB.ny;
+        const arrivedA = Math.sqrt(dxA * dxA + dyA * dyA) <= WANDER_ARRIVED_EPS + 2;
+        const arrivedB = Math.sqrt(dxB * dxB + dyB * dyB) <= WANDER_ARRIVED_EPS + 2;
+        sparringWalkinElapsed += delta;
+        const timedOut = sparringWalkinElapsed >= SPARRING_WALKIN_TIMEOUT_SEC;
+        if ((arrivedA && arrivedB) || timedOut) {
+          eA.nx = sparringPosA[0]; eA.ny = sparringPosA[1];
+          eB.nx = sparringPosB[0]; eB.ny = sparringPosB[1];
+          eA.destNx = eA.nx; eA.destNy = eA.ny; eA.settled = true;
+          eB.destNx = eB.nx; eB.destNy = eB.ny; eB.settled = true;
+          eA.facingLeft = (eB.nx - eA.nx) < 0;
+          eB.facingLeft = (eA.nx - eB.nx) < 0;
+          sparringPhase = "active";
+          sparringTimeLeft = SPARRING_DURATION_MIN_SEC + Math.random() * (SPARRING_DURATION_MAX_SEC - SPARRING_DURATION_MIN_SEC);
+          sparringRoleTimeLeft = SPARRING_ROLE_MIN_SEC + Math.random() * (SPARRING_ROLE_MAX_SEC - SPARRING_ROLE_MIN_SEC);
+        }
+        return;
+      }
+
+      if (sparringPhase === "active") {
+        sparringTimeLeft -= delta;
+        sparringRoleTimeLeft -= delta;
+        if (sparringRoleTimeLeft <= 0) {
+          sparringAttacker = sparringAttacker === 0 ? 1 : 0;
+          sparringRoleTimeLeft = SPARRING_ROLE_MIN_SEC + Math.random() * (SPARRING_ROLE_MAX_SEC - SPARRING_ROLE_MIN_SEC);
+        }
+        // Sparse spectator reactions. STRICT product rule: friendly only —
+        // never index 7 (Dazed) or index 2 (Anger) here.
+        sparringSpectatorReactTimer -= delta;
+        if (sparringSpectatorReactTimer <= 0) {
+          sparringSpectatorReactTimer = SPARRING_SPECTATOR_REACT_INTERVAL_SEC;
+          for (const sid of sparringSpectatorIds) {
+            const se = agentCharMap[sid];
+            if (!se || Math.random() >= SPARRING_SPECTATOR_REACT_CHANCE) continue;
+            const roll = Math.random();
+            const idx = roll < 0.45 ? 3 /* Team */ : roll < 0.9 ? 4 /* Thumbs-up */ : 0 /* Love, rare */;
+            showExpression(se, idx, 1.6);
+          }
+        }
+        if (sparringTimeLeft <= 0) {
+          // Only ONE randomly-chosen sparrer celebrates — the other simply
+          // returns to idle with no bubble (product rule: "only one will
+          // celebrate").
+          sparringCelebrateId = Math.random() < 0.5 ? sparringIdA : sparringIdB;
+          const celebEnt = agentCharMap[sparringCelebrateId];
+          if (celebEnt) showExpression(celebEnt, 4 /* Thumbs-up */, SPARRING_CELEBRATE_SECONDS);
+          sparringPhase = "celebrate";
+          sparringCelebrateTimeLeft = SPARRING_CELEBRATE_SECONDS;
+        }
+        return;
+      }
+
+      if (sparringPhase === "celebrate") {
+        sparringCelebrateTimeLeft -= delta;
+        if (sparringCelebrateTimeLeft <= 0) endSparring();
+        return;
+      }
+      return;
+    }
+
+    // Not active. Random trigger — time-based (not per-frame), same approach
+    // as the conga/disco/dance-off checks.
+    sparringCheckTimer += delta;
+    if (sparringCheckTimer < SPARRING_CHECK_SECONDS) return;
+    sparringCheckTimer = 0;
+    // Blocked while: too few agents, a rival present, still on cooldown, a
+    // conga/disco/dance-off/huddle is running (all drive destNx/destNy or
+    // charEntry.dancing), or a victory lap is playing.
+    if (agentList.length < SPARRING_MIN_IDLE_FOR_START || activeEnemies.length > 0 || sparringCooldown > 0 ||
+        congaActive || discoPartyActive || danceOffActive || huddleActive || victoryLapActive) return;
+    if (rebirthCount < SPARRING_UNLOCK_REBIRTH) return;
+    if (Math.random() >= SPARRING_CHANCE) return;
+    startSparring(agentList);
+  }
+
+  // ── Stand-up huddle (Rebirth-2 ambient easter egg) ─────────────────────
+  // 3-5 idle, non-building agents converge on a ring around a clear nav
+  // point (near a random built object, or an open point in the walkable
+  // polygon) with a rotating SPEAKER (point clip + Idea/Team bubble) and
+  // listeners (idle clip, sparse Thumbs-up/Idea reactions). Same structural
+  // shape and same cosmetic-only guarantee as the sparring exhibition above;
+  // mutually exclusive with it (and with conga/disco/dance-off) so the two
+  // ambient activities interleave rather than ever overlapping.
+  /** True while a huddle is running (walk-in or active). */
+  let huddleActive = false;
+  /** "walkin" | "active" | "idle" (idle = not meaningful while !huddleActive). No celebrate phase — "speaker gets no special ending" (product rule). */
+  let huddlePhase = "idle";
+  /** agent.id of every participant this run (3..5), in ring-slot order — index-aligned with huddlePositions. @type {string[]} */
+  let huddleParticipantIds = [];
+  /** Native-coord ring stand point per participant, computed once at start, index-aligned with huddleParticipantIds. @type {number[][]} */
+  let huddlePositions = [];
+  /** Fixed ring anchor (native coords), computed once at start by pickHuddleAnchor. */
+  let huddleAnchorNx = 0;
+  let huddleAnchorNy = 0;
+  /** Seconds elapsed walking in this run — capped by HUDDLE_WALKIN_TIMEOUT_SEC. */
+  let huddleWalkinElapsed = 0;
+  /** Index into huddleParticipantIds of the CURRENT rotating speaker. */
+  let huddleSpeakerIdx = 0;
+  /** Seconds remaining in the current speaker's turn. */
+  let huddleSpeakerTimeLeft = 0;
+  /** Overall countdown (seconds) for the active phase — randomized once at the walkin→active transition. */
+  let huddleTimeLeft = 0;
+  /** huddleTimeLeft's starting value for the current run (needed to derive "mid-meeting" for the sleep joke below, since the duration itself is randomized per run). */
+  let huddleDurationTotal = 0;
+  /** agent.id picked (at most once per huddle, ~HUDDLE_SLEEP_JOKE_CHANCE of runs) to show the mid-meeting Sleep joke bubble, or null if this run doesn't get one. */
+  let huddleSleeperChosenId = null;
+  /** True once the Sleep joke has actually fired this run — guarantees "at most once per huddle" even though the eligibility check re-runs every listener-reaction tick. */
+  let huddleSleeperFired = false;
+  /** Accumulator (seconds) toward the next listener sparse-reaction roll. */
+  let huddleListenerReactTimer = 0;
+  /** rebirthCount snapshot at the moment this run started — updateHuddle cancels immediately if this drifts. */
+  let huddleStartRebirthCount = 0;
+  /** Accumulator (seconds) toward the next rare-trigger eligibility check. */
+  let huddleCheckTimer = 0;
+  /** Cooldown (seconds) remaining before another huddle may start via the random trigger. */
+  let huddleCooldown = 0;
+  /** Rebirths required before the huddle unlocks — same tier as the sparring exhibition/turret. */
+  const HUDDLE_UNLOCK_REBIRTH = 2;
+  /** Seconds between random-trigger eligibility rolls — offset from SPARRING_CHECK_SECONDS so the two activities' random rolls don't always land on the same tick. */
+  const HUDDLE_CHECK_SECONDS = 75;
+  /** Chance per eligibility check that a huddle starts — mean interval ≈ HUDDLE_CHECK_SECONDS/HUDDLE_CHANCE ≈ 250s, a bit rarer than the sparring exhibition. */
+  const HUDDLE_CHANCE = 0.3;
+  /** Cooldown (seconds) after a run ends before another may start via the random trigger. */
+  const HUDDLE_COOLDOWN_SECONDS = 300;
+  /** Min/max participants — product spec: "3-5 idle agents". */
+  const HUDDLE_MIN_PARTICIPANTS = 3;
+  const HUDDLE_MAX_PARTICIPANTS = 5;
+  /** Native-px ring radius around the anchor — above MIN_AGENT_SEP_NATIVE (34) so the separation pass never fights the ring spacing. */
+  const HUDDLE_RING_RADIUS = 40;
+  /** Sane upper bound (seconds) on the walk-in phase before every participant snaps straight to its ring slot. */
+  const HUDDLE_WALKIN_TIMEOUT_SEC = 7;
+  /** Seconds each rotating speaker holds the floor. */
+  const HUDDLE_SPEAKER_TURN_SEC = 2;
+  /** Min/max seconds the huddle runs before disbanding. */
+  const HUDDLE_DURATION_MIN_SEC = 8;
+  const HUDDLE_DURATION_MAX_SEC = 12;
+  /** Chance, per HUDDLE_LISTENER_REACT_INTERVAL_SEC tick, that a given listener reacts with a sparse bubble. */
+  const HUDDLE_LISTENER_REACT_CHANCE = 0.18;
+  /** Seconds between listener reaction eligibility ticks. */
+  const HUDDLE_LISTENER_REACT_INTERVAL_SEC = 2.2;
+  /** Chance, decided once per huddle at start, that this run includes the mid-meeting Sleep joke — "~10% chance per huddle... at most once per huddle" (product rule). */
+  const HUDDLE_SLEEP_JOKE_CHANCE = 0.10;
+  /** Bubble duration (seconds) for the speaker's Idea/Team pose and the listener reactions. */
+  const HUDDLE_BUBBLE_DURATION_SEC = 1.8;
+  /** Chance the ring anchor is dropped near a random FULLY BUILT object (phase "idle" in objectAnimMap) instead of an open walkable point. */
+  const HUDDLE_ANCHOR_NEAR_OBJECT_CHANCE = 0.5;
+
+  /**
+   * Pick the huddle's ring anchor: either near a random fully-built object
+   * (a small jitter around its placement, clamped inside the walkable
+   * polygon) or an open point inside the polygon — per product ask ("near a
+   * random built object or open nav centroid"). Falls back to an open point
+   * whenever the theme has no built objects yet.
+   * @returns {number[]} [nx, ny] native coords, guaranteed inside walkablePolygon
+   */
+  function pickHuddleAnchor() {
+    if (Math.random() < HUDDLE_ANCHOR_NEAR_OBJECT_CHANCE) {
+      const built = [];
+      for (const obj of themeBuildables) {
+        const entry = objectAnimMap[obj.object_id];
+        const p = objectPlacement[obj.object_id];
+        if (entry && entry.phase === "idle" && p) built.push(p);
+      }
+      if (built.length > 0) {
+        const p = built[Math.floor(Math.random() * built.length)];
+        return clampToPolygon(
+          p.nx + (Math.random() - 0.5) * HUDDLE_RING_RADIUS,
+          p.ny + (Math.random() - 0.5) * HUDDLE_RING_RADIUS,
+          walkablePolygon
+        );
+      }
+    }
+    return randomInsidePoly(walkablePolygon);
+  }
+
+  /**
+   * Select 3..5 huddle participants: same eligibility shape as
+   * pickSparringParticipants (not active, not conga/dance-off/sparring, not
+   * dancing/emoting/seated/dazed/repairing). Returns null if fewer than
+   * HUDDLE_MIN_PARTICIPANTS qualify.
+   * @param {Array<object>} agentList current sceneAgentList
+   * @returns {string[]|null}
+   */
+  function pickHuddleParticipants(agentList) {
+    const eligible = [];
+    for (const a of agentList) {
+      if (!a) continue;
+      if (isMetricsAgentActive(a)) continue;
+      const e = agentCharMap[a.id];
+      if (!e) continue;
+      if (e.congaIndex >= 0) continue;
+      if (e.dancing || e.emoting) continue;
+      if (e.sitting || e.sitSeatId != null) continue;
+      if (e.dazePhase != null) continue;
+      if (e.extinguishTargetId != null) continue;
+      if (danceOffActive && (a.id === danceOffIdA || a.id === danceOffIdB)) continue;
+      if (sparringActive && (a.id === sparringIdA || a.id === sparringIdB || sparringSpectatorIds.indexOf(a.id) >= 0)) continue;
+      eligible.push(a.id);
+    }
+    if (eligible.length < HUDDLE_MIN_PARTICIPANTS) return null;
+    for (let i = eligible.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = eligible[i]; eligible[i] = eligible[j]; eligible[j] = tmp;
+    }
+    const count = Math.min(eligible.length, HUDDLE_MIN_PARTICIPANTS + Math.floor(Math.random() * (HUDDLE_MAX_PARTICIPANTS - HUDDLE_MIN_PARTICIPANTS + 1)));
+    return eligible.slice(0, count);
+  }
+
+  /**
+   * Start a huddle: pick participants, drop a ring anchor (pickHuddleAnchor),
+   * compute one ring-slot stand point per participant, and send everyone
+   * walking in.
+   * @param {Array<object>} agentList current sceneAgentList
+   * @returns {boolean} true if a huddle actually started
+   */
+  function startHuddle(agentList) {
+    const ids = pickHuddleParticipants(agentList);
+    if (!ids) return false;
+    const anchor = pickHuddleAnchor();
+    huddleAnchorNx = anchor[0];
+    huddleAnchorNy = anchor[1];
+    huddleParticipantIds = ids;
+    huddlePositions = ids.map((id, i) => {
+      const angle = (i / ids.length) * Math.PI * 2;
+      return clampToPolygon(
+        huddleAnchorNx + Math.cos(angle) * HUDDLE_RING_RADIUS,
+        huddleAnchorNy + Math.sin(angle) * HUDDLE_RING_RADIUS,
+        walkablePolygon
+      );
+    });
+    for (let i = 0; i < ids.length; i++) {
+      const e = agentCharMap[ids[i]];
+      if (!e) continue;
+      freeAgentSeat(e);
+      e.destNx = huddlePositions[i][0];
+      e.destNy = huddlePositions[i][1];
+      e.settled = false;
+    }
+    huddleActive = true;
+    huddlePhase = "walkin";
+    huddleWalkinElapsed = 0;
+    huddleSpeakerIdx = 0;
+    huddleSpeakerTimeLeft = 0;
+    huddleTimeLeft = 0;
+    huddleDurationTotal = 0;
+    huddleSleeperChosenId = (Math.random() < HUDDLE_SLEEP_JOKE_CHANCE)
+      ? ids[Math.floor(Math.random() * ids.length)]
+      : null;
+    huddleSleeperFired = false;
+    huddleListenerReactTimer = HUDDLE_LISTENER_REACT_INTERVAL_SEC;
+    huddleStartRebirthCount = rebirthCount;
+    return true;
+  }
+
+  /** Reset all module-level huddle state to inactive. No per-agent fields to
+   *  clear — same "no stuck flags" reasoning as resetSparringState. */
+  function resetHuddleState() {
+    huddleActive = false;
+    huddlePhase = "idle";
+    huddleParticipantIds = [];
+    huddlePositions = [];
+    huddleAnchorNx = 0;
+    huddleAnchorNy = 0;
+    huddleWalkinElapsed = 0;
+    huddleSpeakerIdx = 0;
+    huddleSpeakerTimeLeft = 0;
+    huddleTimeLeft = 0;
+    huddleDurationTotal = 0;
+    huddleSleeperChosenId = null;
+    huddleSleeperFired = false;
+  }
+
+  /** Natural end (duration ran out). Speaker gets no special ending (product rule) — everyone just disperses. */
+  function endHuddle() {
+    huddleCooldown = HUDDLE_COOLDOWN_SECONDS;
+    resetHuddleState();
+  }
+
+  /** Interruption path — rival arrival, rebirth, the group falling below
+   *  HUDDLE_MIN_PARTICIPANTS, or (belt-and-braces) another party-style
+   *  system somehow becoming active. */
+  function cancelHuddle() {
+    huddleCooldown = HUDDLE_COOLDOWN_SECONDS;
+    resetHuddleState();
+  }
+
+  /**
+   * Advance the huddle. Called once per frame, after updateSparring (so a
+   * sparring exhibition that just started/ended this frame is already
+   * reflected) and before the per-character loop.
+   * @param {number} delta seconds
+   * @param {Array<object>} agentList current sceneAgentList
+   */
+  function updateHuddle(delta, agentList) {
+    if (huddleCooldown > 0) huddleCooldown = Math.max(0, huddleCooldown - delta);
+
+    if (huddleActive) {
+      // sparringActive is belt-and-braces here — see the matching note in
+      // updateSparring's own preemption check above.
+      if (activeEnemies.length > 0 || rebirthCount !== huddleStartRebirthCount || congaActive || discoPartyActive || danceOffActive || sparringActive) {
+        cancelHuddle();
+        return;
+      }
+      // Drop any participant that went active or vanished. If the group
+      // falls below HUDDLE_MIN_PARTICIPANTS it no longer reads as a
+      // "meeting" — disband entirely rather than limp on with 1-2 agents.
+      for (let i = huddleParticipantIds.length - 1; i >= 0; i--) {
+        const pid = huddleParticipantIds[i];
+        const pAgent = agentList.find((a) => a && a.id === pid);
+        const pEnt = agentCharMap[pid];
+        if (!pAgent || !pEnt || isMetricsAgentActive(pAgent)) {
+          huddleParticipantIds.splice(i, 1);
+          huddlePositions.splice(i, 1);
+          if (huddleSpeakerIdx >= huddleParticipantIds.length) huddleSpeakerIdx = 0;
+        }
+      }
+      if (huddleParticipantIds.length < HUDDLE_MIN_PARTICIPANTS) {
+        cancelHuddle();
+        return;
+      }
+
+      if (huddlePhase === "walkin") {
+        let allArrived = true;
+        for (let i = 0; i < huddleParticipantIds.length; i++) {
+          const e = agentCharMap[huddleParticipantIds[i]];
+          const pos = huddlePositions[i];
+          if (!e || !pos) continue;
+          const dx = pos[0] - e.nx, dy = pos[1] - e.ny;
+          if (Math.sqrt(dx * dx + dy * dy) > WANDER_ARRIVED_EPS + 2) allArrived = false;
+        }
+        huddleWalkinElapsed += delta;
+        const timedOut = huddleWalkinElapsed >= HUDDLE_WALKIN_TIMEOUT_SEC;
+        if (allArrived || timedOut) {
+          for (let i = 0; i < huddleParticipantIds.length; i++) {
+            const e = agentCharMap[huddleParticipantIds[i]];
+            const pos = huddlePositions[i];
+            if (!e || !pos) continue;
+            e.nx = pos[0]; e.ny = pos[1];
+            e.destNx = e.nx; e.destNy = e.ny; e.settled = true;
+            e.facingLeft = (huddleAnchorNx - e.nx) < 0; // face inward, toward the ring center
+          }
+          huddlePhase = "active";
+          huddleTimeLeft = HUDDLE_DURATION_MIN_SEC + Math.random() * (HUDDLE_DURATION_MAX_SEC - HUDDLE_DURATION_MIN_SEC);
+          huddleDurationTotal = huddleTimeLeft;
+          huddleSpeakerIdx = Math.floor(Math.random() * huddleParticipantIds.length);
+          huddleSpeakerTimeLeft = HUDDLE_SPEAKER_TURN_SEC;
+          const speakerEnt = agentCharMap[huddleParticipantIds[huddleSpeakerIdx]];
+          if (speakerEnt) showExpression(speakerEnt, Math.random() < 0.5 ? 1 /* Idea */ : 3 /* Team */, HUDDLE_BUBBLE_DURATION_SEC);
+        }
+        return;
+      }
+
+      if (huddlePhase === "active") {
+        huddleTimeLeft -= delta;
+        huddleSpeakerTimeLeft -= delta;
+        if (huddleSpeakerTimeLeft <= 0) {
+          huddleSpeakerIdx = (huddleSpeakerIdx + 1) % huddleParticipantIds.length;
+          huddleSpeakerTimeLeft = HUDDLE_SPEAKER_TURN_SEC;
+          const speakerEnt = agentCharMap[huddleParticipantIds[huddleSpeakerIdx]];
+          if (speakerEnt) showExpression(speakerEnt, Math.random() < 0.5 ? 1 /* Idea */ : 3 /* Team */, HUDDLE_BUBBLE_DURATION_SEC);
+        }
+        const speakerId = huddleParticipantIds[huddleSpeakerIdx];
+
+        huddleListenerReactTimer -= delta;
+        if (huddleListenerReactTimer <= 0) {
+          huddleListenerReactTimer = HUDDLE_LISTENER_REACT_INTERVAL_SEC;
+          for (const pid of huddleParticipantIds) {
+            if (pid === speakerId) continue;
+            const e = agentCharMap[pid];
+            if (!e || Math.random() >= HUDDLE_LISTENER_REACT_CHANCE) continue;
+            showExpression(e, Math.random() < 0.5 ? 4 /* Thumbs-up */ : 1 /* Idea */, 1.6);
+          }
+        }
+
+        // Sleep joke (the bit): at most once per huddle, roughly mid-meeting,
+        // never dropped on whoever is currently speaking.
+        if (huddleSleeperChosenId && !huddleSleeperFired && speakerId !== huddleSleeperChosenId) {
+          const elapsed = huddleDurationTotal - huddleTimeLeft;
+          if (elapsed >= huddleDurationTotal / 2) {
+            const sleeperEnt = agentCharMap[huddleSleeperChosenId];
+            if (sleeperEnt) {
+              showExpression(sleeperEnt, 6 /* Sleep */, 2.2);
+              huddleSleeperFired = true;
+            }
+          }
+        }
+
+        if (huddleTimeLeft <= 0) endHuddle();
+        return;
+      }
+      return;
+    }
+
+    // Not active. Random trigger — time-based (not per-frame), offset from
+    // the sparring exhibition's own check cadence so the two interleave
+    // naturally instead of always rolling on the same tick.
+    huddleCheckTimer += delta;
+    if (huddleCheckTimer < HUDDLE_CHECK_SECONDS) return;
+    huddleCheckTimer = 0;
+    if (agentList.length < HUDDLE_MIN_PARTICIPANTS || activeEnemies.length > 0 || huddleCooldown > 0 ||
+        congaActive || discoPartyActive || danceOffActive || sparringActive || victoryLapActive) return;
+    if (rebirthCount < HUDDLE_UNLOCK_REBIRTH) return;
+    if (Math.random() >= HUDDLE_CHANCE) return;
+    startHuddle(agentList);
   }
 
   // ── Victory lap (wave-clear celebration) ──────────────────────────────
@@ -15916,6 +16599,18 @@
       updateConga(delta, sceneAgentList);
       updateDiscoParty(delta, sceneAgentList);
       updateDanceOff(delta, sceneAgentList);
+      // Rebirth-2 ambient activities — plain character animation, not a
+      // lighting event, so these don't touch partyVisualIntensity. Run after
+      // the three parties above (so this frame's congaActive/
+      // discoPartyActive/danceOffActive already reflect anything that just
+      // started/ended) and before the per-character loop (so a preemption
+      // clears inSparring/inHuddle in time for combat/build to resume the
+      // same frame). Each also reads victoryLapActive in its own random-
+      // trigger gate — that one lags by a frame here (updateVictoryLap runs
+      // after these two), same one-frame tolerance every other ambient
+      // system's ordering already accepts. See updateSparring/updateHuddle.
+      updateSparring(delta, sceneAgentList);
+      updateHuddle(delta, sceneAgentList);
       // Runs AFTER the three parties (so this frame's congaActive/
       // discoPartyActive/danceOffActive already reflect anything that just
       // started/ended this same frame — no same-frame race, same reasoning
@@ -16349,6 +17044,14 @@
       // (engage/build/wander/extinguish) rather than inventing a parallel
       // mechanism, per the same "fully preempts" contract inConga has.
       const inDanceOff = danceOffActive && (charEntry.__id === danceOffIdA || charEntry.__id === danceOffIdB);
+      // Sparring/huddle enrollment (live-derived, mirrors inDanceOff's
+      // derivation style): true for the sparring pair + its ring spectators,
+      // or the huddle's ring, while that respective ambient activity is
+      // active — see updateSparring/updateHuddle. Threaded through every
+      // engage/build/wander/extinguish exclusion inDanceOff already extends,
+      // per the same "fully preempts" contract.
+      const inSparring = sparringActive && (charEntry.__id === sparringIdA || charEntry.__id === sparringIdB || sparringSpectatorIds.indexOf(charEntry.__id) >= 0);
+      const inHuddle = huddleActive && huddleParticipantIds.indexOf(charEntry.__id) >= 0;
       if (inConga) {
         // A conga member never dances or sits.
         charEntry.dancing = false;
@@ -16395,7 +17098,7 @@
       // A dazed agent (dazePhase != null) also sits out combat entirely —
       // "stop fighting" is part of the dazed-on-damage cosmetic state
       // machine (see DAZE_* consts); it resumes once daze clears.
-      if (!inConga && !inDanceOff && !charEntry.dancing && enemiesAlive && charEntry.dazePhase == null) {
+      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !charEntry.dancing && enemiesAlive && charEntry.dazePhase == null) {
         let nearestEnemy = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
           if (en.fleeing) continue; // Change 2: fleeing enemies are not threats
@@ -16608,7 +17311,7 @@
       // to repair when damage exists, and resume building once the repair
       // assignment clears (extinguishTargetId back to null next frame).
       let isBuilding = false;
-      if (!inConga && !inDanceOff && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement && charEntry.extinguishTargetId == null) {
+      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement && charEntry.extinguishTargetId == null) {
         // Once already settled (arrived + latched, see charEntry.settled) at
         // THIS same build target, freeze destNx/destNy — no per-frame
         // re-target — so a stationary builder never gets nudged back into
@@ -16631,7 +17334,7 @@
         }
         charEntry.buildTargetId = activeBuildObj.object_id;
         isBuilding = true;
-      } else if (!isEngaging && !inConga && !inDanceOff) {
+      } else if (!isEngaging && !inConga && !inDanceOff && !inSparring && !inHuddle) {
         charEntry.buildTargetId = null;
       }
 
@@ -16639,7 +17342,7 @@
       // An idle, stationary agent may randomly break into a short dance. It
       // is fully preempted by conga/engage/build. While dancing it holds
       // position and a manual frame mixer swaps the three dance frames.
-      const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga && !inDanceOff;
+      const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga && !inDanceOff && !inSparring && !inHuddle;
       charEntry.idleStill = idleAndStill;
 
       // ── Dazed-on-damage: retreat/seated phases (cosmetic) ───────────────
@@ -16734,7 +17437,7 @@
       // anymore.) Then derive this-frame intent: an eligible char with a
       // still-smoking assigned object that isn't fighting a rival (combat always
       // wins). extinguishArrived latches once within EXTINGUISH_ARRIVE_EPS of it.
-      charEntry.extinguishEligible = !inConga && !inDanceOff && !isEngaging && !charEntry.dancing && (charEntry.sitSeatId == null) && charEntry.dazePhase == null;
+      charEntry.extinguishEligible = !inConga && !inDanceOff && !inSparring && !inHuddle && !isEngaging && !charEntry.dancing && (charEntry.sitSeatId == null) && charEntry.dazePhase == null;
       const isExtinguishing = !!(
         charEntry.extinguishTargetId &&
         objectSmoke[charEntry.extinguishTargetId] &&
@@ -16915,8 +17618,8 @@
       // ── Wander logic (native polygon space) ───────────────────────
       // Dancing agents hold position (no wander). Conga members are driven
       // by updateConga's destination assignment above.
-      if (!inConga && !inDanceOff) charEntry.wanderTimer -= delta;
-      if (!inConga && !inDanceOff && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.dazePhase == null && charEntry.wanderTimer <= 0) {
+      if (!inConga && !inDanceOff && !inSparring && !inHuddle) charEntry.wanderTimer -= delta;
+      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.dazePhase == null && charEntry.wanderTimer <= 0) {
         // At this idle wander-decision point, an eligible idle agent may
         // instead start dancing (rare) or go sit on a free seat (rare).
         // Otherwise pick a new destination.
@@ -17186,6 +17889,33 @@
       if (danceOffActive && danceOffPhase === "celebrate" && charEntry.__id === danceOffWinnerId) {
         desiredClip = "cheer";
       }
+      // SPARRING override: highest priority while enrolled, mirrors the
+      // DANCE-OFF override's placement — a sparrer/spectator's pose is never
+      // fought over by idle/walk/dance/sit/emote (all already resolved
+      // above). During "walkin" this forces "idle", but the FINAL MOVEMENT
+      // GUARD right below still wins while still physically approaching
+      // (isMoving), so the pose only actually shows once arrived. Only the
+      // two sparrers ever get melee/block/cheer — a spectator always reads
+      // "idle" (see the else branch below).
+      if (inSparring) {
+        if (sparringPhase === "active" && (charEntry.__id === sparringIdA || charEntry.__id === sparringIdB)) {
+          const isA = charEntry.__id === sparringIdA;
+          const isAttacker = isA ? sparringAttacker === 0 : sparringAttacker === 1;
+          desiredClip = isAttacker ? "melee" : "block";
+        } else if (sparringPhase === "celebrate") {
+          desiredClip = (charEntry.__id === sparringCelebrateId) ? "cheer" : "idle";
+        } else {
+          desiredClip = "idle";
+        }
+      }
+      // HUDDLE override: same priority tier as SPARRING above (the two are
+      // mutually exclusive per-agent — inSparring/inHuddle can never both be
+      // true for the same charEntry, see updateSparring/updateHuddle's
+      // eligibility checks). The rotating speaker plays "point"; every other
+      // participant (including one still walking in) reads "idle".
+      if (inHuddle) {
+        desiredClip = (huddlePhase === "active" && huddleParticipantIds[huddleSpeakerIdx] === charEntry.__id) ? "point" : "idle";
+      }
       // FINAL MOVEMENT GUARD: a physically-moving agent ALWAYS walks — no
       // combat (shoot/melee), celebration (cheer), or emote (point/signal/
       // block) pose may play mid-slide; those only begin once the agent is
@@ -17210,17 +17940,25 @@
       } else if (
         (desiredClip === "melee" || desiredClip === "shoot") &&
         anim.completed &&
-        isEngaging &&
-        engageInRange
+        (
+          (isEngaging && engageInRange) ||
+          // Sparring exhibition: the current attacker's melee swing must
+          // keep replaying for the whole ~0.8-1.2s role window (SPARRING_
+          // ROLE_MIN/MAX_SEC) instead of freezing after one 2-frame swing —
+          // same loop-at-the-engage-site reasoning as real combat below,
+          // just gated on inSparring instead of isEngaging/engageInRange.
+          (desiredClip === "melee" && inSparring && sparringPhase === "active")
+        )
       ) {
         // Change 3: melee/shoot clips are loop:false one-shots in
         // ATLAS_CLIPS (kept that way for non-looping uses elsewhere), but
-        // while an agent is actively engaging an in-range enemy the attack
-        // must keep replaying instead of freezing on the last frame. Reset
-        // here (loop-at-the-engage-site) rather than change ATLAS_CLIPS
-        // globally. Stops automatically once out of range/enemy defeated,
-        // because desiredClip then changes to "walk"/"idle" and the branch
-        // above handles the reset instead.
+        // while an agent is actively engaging an in-range enemy — or (see
+        // above) sparring as the current attacker — the attack must keep
+        // replaying instead of freezing on the last frame. Reset here
+        // (loop-at-the-engage-site) rather than change ATLAS_CLIPS globally.
+        // Stops automatically once out of range/enemy defeated, because
+        // desiredClip then changes to "walk"/"idle" and the branch above
+        // handles the reset instead.
         anim.frameIndex = 0;
         anim.direction = 1;
         anim.elapsed = 0;
