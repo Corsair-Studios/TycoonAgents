@@ -114,18 +114,24 @@ nothing in the report said so; a human had to work that out by hand. Every
 diagnostic this tool reports now carries an `origin` field so that
 judgment happens automatically, every run:
   - "project"        the file resides under the resolved Content directory
-                      -- the only origin a creator can act on.
-  - "epic-generated"  the file resides under the VerseProject digest root
-                      (this covers the `.vproject` file and any
-                      `*.digest.verse`), OR the filename itself ends in
-                      `.digest.verse`, checked FIRST and unconditionally --
-                      that suffix is definitionally Epic-generated wherever
-                      it happens to sit, never just inferred from location.
+                      -- the only origin a creator can act on. Checked
+                      FIRST: RESIDENCE WINS over the `.digest.verse` name
+                      rule below, per this project's PATH-DISCOVERY
+                      doctrine (content-based matching beats name-based
+                      matching) -- Epic writes digests into the
+                      VerseProject external-package folders, never into
+                      the creator's own Content tree.
+  - "epic-generated"  for a file OUTSIDE the Content directory: it resides
+                      under the VerseProject digest root (this covers the
+                      `.vproject` file and any `*.digest.verse`), OR the
+                      filename itself ends in `.digest.verse` -- that
+                      suffix is definitionally Epic-generated wherever it
+                      sits outside the project's own Content tree.
   - "other"           neither of the above -- reported honestly, never
                       guessed into one of the other two buckets.
-Classification is by canonicalised path CONTAINMENT (residence), not by
-filename pattern-matching, except for the `.digest.verse` special case
-above. This is purely additive labelling: exit codes are UNCHANGED -- a run
+Classification is by canonicalised path CONTAINMENT (residence) FIRST; the
+`.digest.verse` filename rule is a fallback that only applies once Content-
+dir residence has already been ruled out. This is purely additive labelling: exit codes are UNCHANGED -- a run
 whose diagnostics are 100% Epic-generated still exits 1, because the
 analysis genuinely found diagnostics; this tool labels, it does not
 suppress. See `_classify_origin`, `_origin_counts`, `_origin_split_line`.
@@ -235,6 +241,7 @@ this docstring use neutral placeholders (`<Name>`) deliberately.
 from __future__ import annotations
 
 import copy
+import datetime
 import glob
 import json
 import os
@@ -242,6 +249,7 @@ import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -730,6 +738,24 @@ def locate_verseproject_root():
     return None, tried, None, found_but_empty
 
 
+def _vproject_package_list(data):
+    """Returns `[{"name": ..., "role": ...}]` for every package entry in a
+    parsed .vproject JSON payload, regardless of role -- unlike the
+    Source-only extraction in `locate_vproject`, this is used solely by the
+    passive regression watch (`_update_vproject_watch`) to snapshot the
+    FULL package list for later comparison. Defensive like its sibling:
+    unknown/missing keys degrade to `None` rather than raising."""
+    out = []
+    packages = data.get("packages") if isinstance(data, dict) else None
+    for pkg in packages or []:
+        desc = (pkg or {}).get("desc") if isinstance(pkg, dict) else None
+        settings = (desc or {}).get("settings") if isinstance(desc, dict) else None
+        name = (desc or {}).get("name") if isinstance(desc, dict) else None
+        role = settings.get("role") if isinstance(settings, dict) else None
+        out.append({"name": name, "role": role})
+    return out
+
+
 def locate_vproject(content_dir: str):
     """Returns (chosen_entry_or_None, info) where `info` carries everything
     needed to build a precondition-failure message when nothing was chosen:
@@ -765,6 +791,18 @@ def locate_vproject(content_dir: str):
     # hunting for JSON corruption that does not exist. See the module
     # docstring's "OBSERVED: A VALID .vproject CAN LACK A SOURCE PACKAGE".
     no_source_entries = []
+    # Passive Source-package regression watch (see `_update_vproject_watch`):
+    # a full name/role snapshot of every vproject that parses as valid JSON
+    # this run, whether or not it has a Source package or matches the
+    # target Content dir -- collected here because this is the one place
+    # that already parses every candidate .vproject file. IMPORTANT: `root`
+    # above is the SHARED UEFN 'VerseProject' cache -- `all_vprojects` can
+    # (and on a machine with multiple opened UEFN projects, will) include
+    # OTHER projects entirely. This list is therefore raw, whole-cache data,
+    # NOT yet scoped to the target project -- `_update_vproject_watch` is
+    # responsible for filtering it down to only what THIS run can actually
+    # associate with the target Content dir before anything is persisted.
+    parsed_snapshots = []
 
     for vp_path in all_vprojects:
         try:
@@ -773,6 +811,8 @@ def locate_vproject(content_dir: str):
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             parse_failures.append({"path": vp_path, "reason": str(exc)})
             continue
+
+        parsed_snapshots.append({"vproject_path": vp_path, "packages": _vproject_package_list(data)})
 
         # Parse defensively: unknown/missing keys are fine, never crash on
         # schema drift -- only a package whose settings.role == "Source"
@@ -810,11 +850,265 @@ def locate_vproject(content_dir: str):
             "parsed_entries": parsed_entries,
             "parse_failures": parse_failures,
             "no_source_entries": no_source_entries,
+            "parsed_snapshots": parsed_snapshots,
         }
     if len(matches) > 1:
-        return None, {"reason": "ambiguous", "matches": matches}
+        return None, {"reason": "ambiguous", "matches": matches, "parsed_snapshots": parsed_snapshots}
 
-    return matches[0], {"reason": None}
+    return matches[0], {
+        "reason": None,
+        "parsed_snapshots": parsed_snapshots,
+        # The one candidate this run PROVED belongs to the target project --
+        # its Source-package dirPath equals the target Content dir. Read by
+        # `_update_vproject_watch` to scope what gets persisted; absent
+        # (None) on every failure path, since a match by definition didn't
+        # happen there.
+        "matched_vproject_path": matches[0]["vproject_path"],
+    }
+
+
+# ==========================================================================
+# vproject Source-package regression watch -- passive evidence recorder
+# ==========================================================================
+#
+# WHY THIS EXISTS: UEFN projects' .vproject files have been observed to
+# regress from having a Source-role package to External-only, trigger
+# unknown (see the module docstring's "VALID BUT INCOMPLETE" case, and
+# `locate_vproject`'s `no_source_entries`). That failure is reported loudly
+# the moment it happens, but a ONE-OFF report can't show whether it is a
+# fluke or a recurring pattern. This module builds that evidence over time,
+# per project, with zero effect on the tool's actual analysis: it never
+# changes exit codes, diagnostics, or the existing VALID-BUT-INCOMPLETE
+# error text -- it only ADDS a regression line/field alongside them.
+#
+# FAIL-OPEN, ALWAYS: every read/write here is wrapped so a permission
+# error, a missing directory, a corrupt/BOM-prefixed file, or any other IO
+# problem degrades to a short note string, never an exception -- consistent
+# with this project's "an override/probe must never abort discovery"
+# doctrine (see the module docstring and docs/PATH-DISCOVERY.md).
+
+VPROJECT_WATCH_MAX_SNAPSHOTS = 20
+VPROJECT_WATCH_RELATIVE_PATH = os.path.join(".claude", "tycoon", "vproject-watch.json")
+
+
+def _vproject_watch_path(project_root) -> str:
+    return os.path.join(str(project_root), VPROJECT_WATCH_RELATIVE_PATH)
+
+
+def _load_vproject_watch(path: str):
+    """Best-effort read of the watch file. Returns (snapshots, note):
+    `snapshots` is always a list of dicts (empty if the file is missing,
+    corrupt, or unreadable); `note` is a short human-readable string when
+    something went wrong, else None. Tolerates a UTF-8 BOM (utf-8-sig) and
+    starts fresh -- rather than crashing -- on any parse/IO failure.
+
+    Also defends against a structurally-valid-but-malformed file, e.g.
+    `{"version": 1, "snapshots": ["x"]}`: a non-dict element would make
+    every later `.get(...)` on it raise AttributeError, which -- unguarded
+    -- would escape all the way into `main()` and change the tool's exit
+    code. Malformed elements are dropped individually (the rest of the
+    evidence is kept, not thrown away) and counted into the returned
+    note."""
+    if not os.path.exists(path):
+        return [], None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            raw = fh.read()
+        data = json.loads(raw) if raw.strip() else {}
+        snapshots = data.get("snapshots") if isinstance(data, dict) else None
+        if not isinstance(snapshots, list):
+            return [], f"existing vproject watch file at {path} had no usable 'snapshots' list -- starting fresh."
+        clean = [s for s in snapshots if isinstance(s, dict)]
+        dropped = len(snapshots) - len(clean)
+        note = None
+        if dropped:
+            entry_word = "entry" if dropped == 1 else "entries"
+            note = (
+                f"existing vproject watch file at {path} had {dropped} malformed snapshot {entry_word} "
+                "(not an object) -- dropped, kept the rest."
+            )
+        return clean, note
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [], f"existing vproject watch file at {path} could not be read/parsed ({exc}) -- starting fresh."
+
+
+def _save_vproject_watch(path: str, snapshots) -> "str | None":
+    """Atomic write (temp file in the same directory, then `os.replace`),
+    capped to the most recent `VPROJECT_WATCH_MAX_SNAPSHOTS` entries.
+    Returns None on success, else a short note string -- never raises."""
+    try:
+        watch_dir = os.path.dirname(path)
+        os.makedirs(watch_dir, exist_ok=True)
+        payload = {"version": 1, "snapshots": snapshots[-VPROJECT_WATCH_MAX_SNAPSHOTS:]}
+        fd, tmp_path = tempfile.mkstemp(dir=watch_dir, prefix=".vproject-watch-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        return None
+    except OSError as exc:
+        return f"could not write vproject watch file at {path}: {exc}"
+
+
+def _snapshot_canon_path(entry):
+    """Canonicalised `vproject_path` of a snapshot-shaped dict, or None if
+    absent/unusable -- centralises the `_canon_path` usage this watch
+    relies on for same-file comparison, matching the rest of the module
+    (see `_canon_path`, `locate_vproject`'s `target_canon`/`matches`)."""
+    vp_path = entry.get("vproject_path") if isinstance(entry, dict) else None
+    return _canon_path(vp_path) if vp_path else None
+
+
+def _update_vproject_watch(project_root, vp_info):
+    """Records THIS run's vproject package snapshot(s) and checks for a
+    Source-role REGRESSION against this SAME project's own watch history --
+    i.e. the current parse has no Source-role package, but the most recent
+    PRIOR snapshot recorded for that exact (canonicalised) vproject path
+    did.
+
+    CROSS-PROJECT ISOLATION (the reason this function filters before it
+    persists anything): `locate_vproject` globs every project cached in
+    the SHARED UEFN 'VerseProject' folder, not just this one, so
+    `vp_info['parsed_snapshots']` can legitimately contain other, unrelated
+    projects' vproject data. Only two kinds of candidate ever get written
+    to THIS project's watch file:
+      1. `vp_info['matched_vproject_path']`, when present -- set only by
+         `locate_vproject`'s success path, where a Source package `dirPath`
+         equals this run's target Content dir, so it IS this project's own
+         vproject, definitively.
+      2. in the no-Source/no-match case, a candidate whose vproject path is
+         already present in THIS project's own prior watch history -- that
+         history could only have been written by a genuine prior dirPath
+         match (case 1 on some earlier run), so a recurring path is still
+         this project's, even though its Source package is now missing --
+         that IS the regression this watch exists to catch.
+    Any other cached project's vproject (a path never previously associated
+    with this one) is discarded, never written -- otherwise a machine with
+    several cached UEFN projects would burn this project's 20-slot cap on
+    unrelated projects within a run or two, evicting exactly the
+    Source-bearing evidence this feature exists to preserve. If NOTHING
+    this run can be associated with the project, the watch is skipped
+    entirely for this run (with a note), never populated with a guess --
+    including the very first run, if it has no match and no history yet to
+    correlate against; there is nothing dishonest about waiting for real
+    evidence of association before writing anything.
+
+    Returns (notes, regression):
+      - `notes`: list[str] of short context lines (IO problems, a skip
+        reason, or the loud regression line itself) meant to be appended to
+        the human/JSON report ALONGSIDE existing output -- never in place
+        of it.
+      - `regression`: {"detected": False} normally, else a dict with
+        detected/last_source_seen/prior_roles/current_roles/
+        vproject_mtime_then/vproject_mtime_now for the JSON report's
+        `vproject_regression` field.
+
+    Never raises internally; the call site in `main()` additionally wraps
+    this whole call in try/except as a second, belt-and-suspenders layer,
+    so no future bug here can ever change the tool's exit code."""
+    notes = []
+    regression = {"detected": False}
+
+    if project_root is None:
+        notes.append("vproject watch: skipped -- project root could not be determined.")
+        return notes, regression
+
+    all_parsed = (vp_info or {}).get("parsed_snapshots") or []
+    if not all_parsed:
+        return notes, regression
+
+    # Raw, whole-cache candidates from THIS run, indexed by canonical path
+    # -- see the docstring above for why this must be filtered before any
+    # of it is associated with (let alone written to) this project.
+    by_canon_path = {}
+    for p in all_parsed:
+        canon = _snapshot_canon_path(p) if isinstance(p, dict) else None
+        if canon:
+            by_canon_path[canon] = {"vproject_path": p["vproject_path"], "packages": p.get("packages") or []}
+
+    watch_path = _vproject_watch_path(project_root)
+    snapshots, load_note = _load_vproject_watch(watch_path)
+    if load_note:
+        notes.append(f"vproject watch: {load_note}")
+
+    known_paths = {c for c in (_snapshot_canon_path(s) for s in snapshots) if c}
+
+    matched_path = (vp_info or {}).get("matched_vproject_path")
+    matched_canon = _canon_path(matched_path) if matched_path else None
+    associated_paths = []
+    if matched_canon and matched_canon in by_canon_path:
+        associated_paths.append(matched_canon)
+    for canon in by_canon_path:
+        if canon == matched_canon:
+            continue
+        if canon in known_paths:
+            associated_paths.append(canon)
+
+    if not associated_paths:
+        notes.append(
+            "vproject watch: skipped -- this run's parsed .vproject file(s) could not be associated "
+            "with this project (no Source dirPath match, and no prior watch history to correlate a "
+            "no-Source candidate against) -- never guessing across the shared VerseProject cache."
+        )
+        return notes, regression
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    new_entries = []
+    for canon in associated_paths:
+        cand = by_canon_path[canon]
+        vp_path = cand["vproject_path"]
+        packages = cand["packages"]
+        try:
+            mtime_iso = datetime.datetime.fromtimestamp(
+                os.path.getmtime(vp_path), tz=datetime.timezone.utc
+            ).isoformat()
+        except OSError:
+            mtime_iso = None
+
+        current_roles = [pkg.get("role") for pkg in packages]
+        if "Source" not in current_roles:
+            # Most recent PRIOR snapshot for this SAME (canonicalised)
+            # vproject path -- snapshots are appended oldest-first, so
+            # scan in reverse.
+            prior = next((s for s in reversed(snapshots) if _snapshot_canon_path(s) == canon), None)
+            if prior is not None:
+                prior_roles = [pkg.get("role") for pkg in (prior.get("packages") or [])]
+                if "Source" in prior_roles:
+                    regression = {
+                        "detected": True,
+                        "vproject_path": vp_path,
+                        "last_source_seen": prior.get("timestamp"),
+                        "prior_roles": prior_roles,
+                        "current_roles": current_roles,
+                        "vproject_mtime_then": prior.get("vproject_mtime"),
+                        "vproject_mtime_now": mtime_iso,
+                    }
+                    notes.append(
+                        f"VPROJECT REGRESSION: Source package present at {prior.get('timestamp')} is now "
+                        f"missing from {vp_path}. Prior roles: {prior_roles}. Current roles: {current_roles}. "
+                        f"vproject mtime then/now: {prior.get('vproject_mtime')}/{mtime_iso}."
+                    )
+
+        new_entries.append(
+            {
+                "timestamp": now_iso,
+                "vproject_path": canon,
+                "vproject_mtime": mtime_iso,
+                "packages": packages,
+            }
+        )
+
+    save_note = _save_vproject_watch(watch_path, snapshots + new_entries)
+    if save_note:
+        notes.append(f"vproject watch: {save_note}")
+
+    return notes, regression
 
 
 # ==========================================================================
@@ -1135,9 +1429,12 @@ def run_lsp_session(exe_path, vproject_dir, vproject_file, workspace_name, files
 # ==========================================================================
 
 
-def _fail_precondition(json_mode: bool, reason: str, lines) -> int:
+def _fail_precondition(json_mode: bool, reason: str, lines, extra_json=None) -> int:
     if json_mode:
-        print(json.dumps({"status": "precondition_failed", "reason": reason, "messages": list(lines)}, indent=2))
+        payload = {"status": "precondition_failed", "reason": reason, "messages": list(lines)}
+        if extra_json:
+            payload.update(extra_json)
+        print(json.dumps(payload, indent=2))
     else:
         print("verse_lsp_check: PRECONDITION NOT MET -- analysis did NOT run.", file=sys.stderr)
         for line in lines:
@@ -1291,24 +1588,33 @@ def _classify_origin(path: str, content_dir_canon, digest_root_canon) -> str:
 
     Returns one of:
       - ORIGIN_PROJECT: the file lives under the resolved Content directory
-        -- the only origin a creator can actually act on.
-      - ORIGIN_EPIC_GENERATED: the file lives under the VerseProject digest
-        root (this covers both `*.digest.verse` files AND the `.vproject`
-        file itself, since both sit under that root), OR the filename ends
-        in `.digest.verse` REGARDLESS of where it sits -- that suffix is
-        definitionally Epic-generated, matched before residence so a copy
-        or symlink elsewhere still classifies correctly.
+        -- the only origin a creator can actually act on. Checked FIRST,
+        ahead of the `.digest.verse` filename rule: RESIDENCE WINS.
+        Content/residence-based matching beats name-based matching, per
+        this project's PATH-DISCOVERY doctrine (see docs/PATH-DISCOVERY.md,
+        "content-based matching over name-based matching wherever
+        possible") -- and empirically, Epic writes digest files into the
+        VerseProject's external-package folders, never into the creator's
+        own Content tree, so a file that genuinely resides under the
+        project's Content dir IS the creator's own code, even if it
+        happens to be named `*.digest.verse` (e.g. a copy or symlink).
+      - ORIGIN_EPIC_GENERATED: for a file OUTSIDE the project Content dir --
+        the file lives under the VerseProject digest root (this covers both
+        `*.digest.verse` files AND the `.vproject` file itself, since both
+        sit under that root), OR the filename ends in `.digest.verse`
+        regardless of where (outside Content) it sits.
       - ORIGIN_OTHER: neither of the above. Reported honestly, never
         guessed into one of the other two buckets.
 
-    Residence is checked, not just filename, for everything except the
-    `.digest.verse` special case -- see the module docstring / this
-    feature's task description for why that ordering matters."""
-    if path.lower().endswith(".digest.verse"):
-        return ORIGIN_EPIC_GENERATED
+    Residence inside the project Content dir is checked before anything
+    else; the `.digest.verse` name rule only applies to files that reside
+    OUTSIDE it -- see the module docstring / this feature's task
+    description for why that ordering matters."""
     canon = _canon_path(path)
     if _is_under(canon, content_dir_canon):
         return ORIGIN_PROJECT
+    if path.lower().endswith(".digest.verse"):
+        return ORIGIN_EPIC_GENERATED
     if _is_under(canon, digest_root_canon):
         return ORIGIN_EPIC_GENERATED
     return ORIGIN_OTHER
@@ -1408,6 +1714,10 @@ def _print_human_report(findings, meta):
 
     if meta.get("version_note"):
         print(f"verse_lsp_check: {meta['version_note']}")
+
+    for note in meta.get("vproject_watch_notes") or []:
+        print(f"verse_lsp_check: {note}")
+
     print()
 
     if not findings:
@@ -1478,6 +1788,7 @@ def _print_json_report(findings, meta):
         "max_auto_files": meta.get("max_auto_files"),
         "targets_not_analyzed": targets_not_analyzed,
         "version_note": meta.get("version_note"),
+        "vproject_regression": meta.get("vproject_regression") or {"detected": False},
         "diagnostics": findings,
         "summary": {
             "total": len(findings),
@@ -1636,8 +1947,25 @@ def main(argv=None) -> int:
 
     # ---- STEP 2: locate the matching .vproject -----------------------------
     vp_entry, vp_info = locate_vproject(str(content_dir))
+    # Passive, fail-open evidence recorder -- see `_update_vproject_watch`
+    # and the block above `locate_vproject`. Runs on EVERY vproject parse
+    # this tool does, whether the run then succeeds or fails; never changes
+    # the outcome below, only adds context lines/fields alongside it. The
+    # try/except here is a SECOND, belt-and-suspenders layer on top of the
+    # function's own internal fail-open handling -- this instrumentation
+    # must never be able to alter the exit code, no matter what.
+    try:
+        vproject_watch_notes, vproject_regression = _update_vproject_watch(project_root, vp_info)
+    except Exception as exc:
+        vproject_watch_notes = [f"vproject watch: internal error ({exc}) -- skipped; did not affect analysis."]
+        vproject_regression = {"detected": False}
     if vp_entry is None:
-        return _fail_precondition(json_mode, f"vproject_{vp_info['reason']}", _vproject_failure_lines(vp_info, content_dir))
+        return _fail_precondition(
+            json_mode,
+            f"vproject_{vp_info['reason']}",
+            _vproject_failure_lines(vp_info, content_dir) + vproject_watch_notes,
+            extra_json={"vproject_regression": vproject_regression},
+        )
 
     # ---- STEP 3: version sanity (non-fatal) --------------------------------
     version_note = None
@@ -1756,6 +2084,8 @@ def main(argv=None) -> int:
         "max_auto_files": max_auto_files,
         "targets_not_analyzed": targets_not_analyzed,
         "version_note": version_note,
+        "vproject_watch_notes": vproject_watch_notes,
+        "vproject_regression": vproject_regression,
     }
 
     if json_mode:
