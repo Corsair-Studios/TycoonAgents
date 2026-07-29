@@ -827,6 +827,44 @@ def _coerce_severity_counts(raw):
     return counts
 
 
+def _read_moderation_report():
+    """Underlying read primitive for moderation_report.json.
+
+    Checks both the primary (next to this script) and fallback (bridge IPC
+    temp dir) locations written by ``_handle_moderation_report_save`` and
+    returns whichever exists with the newest mtime, parsed as JSON. Shared
+    by ``_handle_moderation_report_read`` (the read tool exposed to callers)
+    and by ``_handle_moderation_report_save``, which reads back through this
+    same primitive to verify its own write — see the save handler for why.
+
+    Returns ``(data, error)``: ``data`` is the parsed report dict, or
+    ``None`` if nothing could be read. ``error`` is ``None`` when neither
+    location exists at all (a legitimate "nothing saved yet"), or a
+    human-readable reason when a file exists but could not be parsed.
+    """
+    candidates = []
+    for path in (_moderation_report_path(), os.path.join(_get_bridge_dir(), "moderation_report.json")):
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        candidates.append((mtime, path))
+
+    if not candidates:
+        return None, None
+
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+
+    last_error = None
+    for _mtime, path in candidates:
+        data = _read_json(path)
+        if data is not None:
+            return data, None
+        last_error = "{} exists but could not be parsed".format(path)
+
+    return None, last_error or "moderation_report.json exists but could not be parsed"
+
+
 def _handle_moderation_report_save(params):
     """Save the connected LLM's finished moderation-analysis report.
 
@@ -843,6 +881,13 @@ def _handle_moderation_report_save(params):
     MCP side should never take down the bridge or the tick loop — but
     ``saved`` now reflects an actually-verified write, not just the absence
     of an exception.
+
+    Self-verifying choke point: after writing, this handler reads the report
+    back through the SAME primitive (``_read_moderation_report``) that the
+    read tool uses and checks the content round-tripped, so every caller —
+    our MCP server, other MCP clients (e.g. Codex against the standalone
+    Power Tools), future callers — gets a save that is proven, not merely
+    attempted, before success is reported.
     """
     try:
         report = params.get("report")
@@ -913,8 +958,66 @@ def _handle_moderation_report_save(params):
                 )
             )
 
+        # Round-trip verification: re-read what was just written through the
+        # same primitive the read tool uses, and confirm the content actually
+        # matches (not just "some file exists somewhere"). A save that wrote
+        # bytes but can't be read back correctly is not a save — surface it
+        # loudly rather than claiming success.
+        if saved:
+            read_back, read_error = _read_moderation_report()
+            verify_error = None
+            if read_back is None:
+                verify_error = "round-trip read-back failed: {}".format(
+                    read_error or "file missing"
+                )
+            else:
+                read_back_report = read_back.get("report")
+                mismatch = read_back.get("generated_at") != generated_at or (
+                    len(read_back_report) if isinstance(read_back_report, str) else -1
+                ) != len(report)
+                if mismatch:
+                    verify_error = (
+                        "round-trip read-back content mismatch (expected "
+                        "generated_at={!r} report_len={}, got generated_at={!r} "
+                        "report_len={})".format(
+                            generated_at,
+                            len(report),
+                            read_back.get("generated_at"),
+                            len(read_back_report) if isinstance(read_back_report, str) else None,
+                        )
+                    )
+
+            if verify_error is not None:
+                # Distinct from the "failed at ALL locations" / "partially
+                # failed" warnings above: the write(s) to paths_written
+                # actually succeeded here, verification is what disagreed.
+                # Log and report that distinction explicitly — a bare
+                # "failed" would be indistinguishable from a total write
+                # failure and would mislead a diagnosing caller.
+                unreal.log_warning(
+                    "uefn_bridge: moderation_report_save wrote to {} but "
+                    "FAILED round-trip verification: {}".format(
+                        ", ".join(paths_written), verify_error
+                    )
+                )
+                # saved/verified are False (the save is not trustworthy) but
+                # paths_written stays truthful to what's actually on disk —
+                # the write happened, only verification disagreed, and
+                # hiding that from the caller would misdescribe disk state.
+                return {
+                    "saved": False,
+                    "verified": False,
+                    "paths_written": paths_written,
+                    "paths_failed": paths_failed,
+                    "generated_at": generated_at,
+                    "error": "moderation_report_save: wrote to {} but {}".format(
+                        ", ".join(paths_written), verify_error
+                    ),
+                }
+
         return {
             "saved": saved,
+            "verified": saved,
             "paths_written": paths_written,
             "paths_failed": paths_failed,
             "generated_at": generated_at,
@@ -923,45 +1026,33 @@ def _handle_moderation_report_save(params):
         unreal.log_warning(
             "uefn_bridge: moderation_report_save failed:\n" + traceback.format_exc()
         )
-        return {"saved": False, "paths_written": [], "paths_failed": [{"path": None, "error": str(e)}], "error": str(e)}
+        return {"saved": False, "verified": False, "paths_written": [], "paths_failed": [{"path": None, "error": str(e)}], "error": str(e)}
 
 
 def _handle_moderation_report_read(params):
     """Read back the stored moderation_report.json, if any.
 
-    Guarded read used by the MCP side to confirm a save landed, and by the
-    UEFN launcher window to display the report. Mirrors the dual-location
-    write in ``_handle_moderation_report_save``: checks both the primary
-    (next to this script) and fallback (bridge IPC temp dir) locations and
-    returns whichever exists with the newest mtime, so a report that only
-    made it to the fallback (because the primary location was unwritable)
-    is still readable. Returns {"exists": False} rather than raising when
-    neither location is present or parsable.
+    Used by the UEFN launcher window to display the report. Delegates to
+    ``_read_moderation_report``, the shared read primitive: checks both the
+    primary (next to this script) and fallback (bridge IPC temp dir)
+    locations and returns whichever exists with the newest mtime, so a
+    report that only made it to the fallback (because the primary location
+    was unwritable) is still readable. ``_handle_moderation_report_save``
+    now performs its own read-back through that same primitive to verify a
+    save landed — this method remains the underlying primitive and stays
+    available as the read tool for any caller (including future ones) that
+    wants to fetch the stored report directly. Returns {"exists": False}
+    rather than raising when neither location is present or parsable.
     """
     try:
-        candidates = []
-        for path in (_moderation_report_path(), os.path.join(_get_bridge_dir(), "moderation_report.json")):
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                continue
-            candidates.append((mtime, path))
-
-        if not candidates:
+        data, error = _read_moderation_report()
+        if data is None:
+            if error:
+                return {"exists": False, "error": error}
             return {"exists": False}
-
-        candidates.sort(key=lambda pair: pair[0], reverse=True)
-
-        last_error = None
-        for _mtime, path in candidates:
-            data = _read_json(path)
-            if data is not None:
-                data = dict(data)
-                data["exists"] = True
-                return data
-            last_error = "{} exists but could not be parsed".format(path)
-
-        return {"exists": False, "error": last_error or "moderation_report.json exists but could not be parsed"}
+        data = dict(data)
+        data["exists"] = True
+        return data
     except Exception as e:
         unreal.log_warning(
             "uefn_bridge: moderation_report_read failed:\n" + traceback.format_exc()
