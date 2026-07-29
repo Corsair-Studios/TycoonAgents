@@ -242,6 +242,85 @@ _TOOLS = [
 # MCP Bridge info window
 # ---------------------------------------------------------------------------
 
+# Display-only blurbs, keyed by uefn_bridge._METHODS dispatch key (NOT the
+# "uefn_" tool name — that prefix is added in _mcp_command_entries()). This
+# map is descriptive only; it is never the enumeration source, so a method
+# missing here still shows up in the panel (see _mcp_command_entries()).
+_MCP_METHOD_DESCRIPTIONS = {
+    "status": "Check bridge connectivity",
+    "list_devices": "List all Creative devices with properties",
+    "get_property": "Read a property from an actor",
+    "set_property": "Set a property on an actor",
+    "select_actor": "Select an actor in the UEFN viewport",
+    "run_audit": "Run full device audit",
+    "get_level_info": "Get level metadata",
+    "batch_get": "Read a property from filtered actors",
+    "batch_set": "Set a property on filtered actors",
+    "texture_find": "Find texture references",
+    "texture_summary": "Grouped texture usage summary",
+    "texture_on_actor": "List all textures on an actor",
+    "material_browse": "Browse project materials",
+    "material_unused": "Find unused materials",
+    "niagara_browse": "Browse Niagara VFX systems",
+    "niagara_usage": "Find Niagara usage on actors",
+    "dependency_scan": "Scan asset dependency chains",
+    "health_scan": "Scan for problematic project files",
+    "moderation_scan": "Scan the project for IP/moderation risk signals (assets, HLOD priority, imports)",
+    "moderation_report_save": "Save a moderation scan report for the in-editor review panel",
+    "moderation_report_read": "Read back a previously saved moderation report",
+    "asset_sweep": "Find unreferenced assets across all types",
+    "list_assets": "List assets under a content-browser path via the Asset Registry",
+    "inspect_asset": "Load a single asset and reflect its editor-property values (experimental, read-only)",
+    "spawn_actor": "Spawn an actor from an asset into the level — undoable with Ctrl+Z",
+    "duplicate_actor": "Duplicate an actor by label with an offset — undoable with Ctrl+Z",
+    "set_transform": "Set an actor's location/rotation/scale by label — undoable with Ctrl+Z",
+}
+
+
+def _mcp_command_entries():
+    """Return the ordered (tool_name, description) list shown in the MCP
+    Bridge Commands window.
+
+    This is the SINGLE enumeration source — it derives the list dynamically
+    from ``uefn_bridge._METHODS`` (the live dispatch table) rather than a
+    hand-maintained copy, so the panel can never go stale again. Pure and
+    UI-free: safe to call from a test with no tkinter/unreal UI involved.
+
+    ``uefn_bridge`` is imported lazily (inside the function, not at module
+    scope) purely as a defensive habit for this launcher module, which is
+    imported very early during UEFN startup — importing it lazily means a
+    problem loading uefn_bridge only affects this one window instead of the
+    whole launcher. uefn_bridge itself does not import uefn_launcher, so
+    there is no actual cycle today, but keeping the import lazy costs
+    nothing and avoids re-introducing one later.
+
+    Raises on failure (missing module, missing/renamed _METHODS) instead of
+    swallowing the error — the caller (_show_mcp_info) is responsible for
+    turning that into an explicit on-screen error line. Never falls back to
+    a hardcoded list and never returns an empty success-looking result.
+    """
+    import uefn_bridge
+
+    entries = [
+        ("uefn_" + method, _MCP_METHOD_DESCRIPTIONS.get(method, "(no description)"))
+        for method in uefn_bridge._METHODS
+    ]
+
+    # The one deliberate NON-derived entry: uefn_verse_check is served by the
+    # MCP server process directly (verse_lsp_check.py driving Epic's Verse
+    # language server headless) — it never goes through uefn_bridge's
+    # command.json dispatch, so it cannot appear in _METHODS. It works even
+    # when UEFN is closed, unlike every other tool in this list.
+    entries.append((
+        "uefn_verse_check",
+        "Run Epic's Verse language server for compiler diagnostics — works "
+        "even when UEFN is closed (served directly by the MCP server, not "
+        "the bridge)",
+    ))
+
+    return entries
+
+
 def _show_mcp_info():
     """Open a window showing MCP bridge commands and AI compatibility."""
     if not _HAS_TKINTER:
@@ -283,27 +362,16 @@ def _show_mcp_info():
         font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
     ).pack(padx=16, pady=(0, 8), anchor=tk.W)
 
-    commands = [
-        ("uefn_status", "Check bridge connectivity"),
-        ("uefn_list_devices", "List all Creative devices with properties"),
-        ("uefn_get_property", "Read a property from an actor"),
-        ("uefn_set_property", "Set a property on an actor"),
-        ("uefn_select_actor", "Select an actor in the UEFN viewport"),
-        ("uefn_run_audit", "Run full device audit"),
-        ("uefn_get_level_info", "Get level metadata"),
-        ("uefn_batch_get", "Read a property from filtered actors"),
-        ("uefn_batch_set", "Set a property on filtered actors"),
-        ("uefn_texture_find", "Find texture references"),
-        ("uefn_texture_summary", "Grouped texture usage summary"),
-        ("uefn_texture_on_actor", "List all textures on an actor"),
-        ("uefn_material_browse", "Browse project materials"),
-        ("uefn_material_unused", "Find unused materials"),
-        ("uefn_niagara_browse", "Browse Niagara VFX systems"),
-        ("uefn_niagara_usage", "Find Niagara usage on actors"),
-        ("uefn_dependency_scan", "Scan asset dependency chains"),
-        ("uefn_health_scan", "Scan for problematic project files"),
-        ("uefn_asset_sweep", "Find unreferenced assets across all types"),
-    ]
+    # Derived DYNAMICALLY from uefn_bridge._METHODS — see _mcp_command_entries()
+    # docstring. No hardcoded command list here: a stale copy is exactly the
+    # bug this indirection exists to prevent. On failure, render an explicit
+    # error row naming the module and exception rather than an empty panel
+    # or a fallback list (project doctrine: no success-shaped failures).
+    try:
+        commands = _mcp_command_entries()
+    except Exception as e:
+        unreal.log_warning("uefn_launcher: _mcp_command_entries failed: " + str(e))
+        commands = [("ERROR", "uefn_bridge: " + str(e))]
 
     cmd_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
     cmd_frame.pack(fill=tk.X, padx=12, pady=4)
