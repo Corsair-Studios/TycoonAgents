@@ -4,12 +4,16 @@ UEFN Bridge — File-based IPC for MCP Server
 Runs inside UEFN's embedded Python 3.11. Provides file-based IPC so an
 external MCP server can send commands and receive responses.
 
-Polls a ``command.json`` file for incoming requests, executes them using
-the ``unreal`` API, and writes results to ``response_{id}.json``.  Also
-emits a ``heartbeat.json`` every ~5 seconds, which carries a per-session
-token that command.json must echo back (cheap partial isolation against a
-stale/unrelated MCP server writing into a shared temp dir — not full auth;
-see the ``_bridge_token`` comment below).
+Polls the legacy ``command.json`` file AND any per-command
+``command_{id}.json`` inbox files (see bridge_paths.COMMAND_PREFIX) for
+incoming requests, executes them using the ``unreal`` API, and writes
+results to ``response_{id}.json``.  Also emits a ``heartbeat.json`` every
+~5 seconds, which carries a per-session token that a command must echo
+back (cheap partial isolation against a stale/unrelated MCP server writing
+into a shared temp dir — not full auth; see the ``_bridge_token`` comment
+below) and this bridge's version, so a TS client can tell whether it's safe
+to write a per-command inbox file instead of the single shared
+``command.json``.
 
 IPC directory: ``.uefn_bridge/`` (next to this script)
 
@@ -204,6 +208,9 @@ _last_heartbeat_time = 0.0 # monotonic time of last heartbeat write
 # heartbeat.json so the MCP server can pick it up before its first command.
 _bridge_token = None
 _warned_bad_token = False  # log a rejected-command warning once, not per-poll
+_poll_count = 0            # number of completed command polls (see _tick) —
+                            # drives the "every Nth poll" orphan-response
+                            # cleanup cadence, not a per-frame counter
 
 
 # ---------------------------------------------------------------------------
@@ -229,11 +236,28 @@ except ImportError:
 if _bridge_paths is not None:
     _HEARTBEAT_FILENAME = _bridge_paths.HEARTBEAT_FILENAME
     _COMMAND_FILENAME = _bridge_paths.COMMAND_FILENAME
+    # getattr-guarded: a version-skewed engine-side bridge_paths.py staged
+    # before this constant existed lacks the attribute entirely — fall back
+    # to the literal rather than raising (same convention as the COMMAND_-
+    # PREFIX comment in bridge_paths.py itself).
+    _COMMAND_PREFIX = getattr(_bridge_paths, "COMMAND_PREFIX", "command_")
     _RESPONSE_PREFIX = _bridge_paths.RESPONSE_PREFIX
 else:
     _HEARTBEAT_FILENAME = "heartbeat.json"
     _COMMAND_FILENAME = "command.json"
+    _COMMAND_PREFIX = "command_"
     _RESPONSE_PREFIX = "response_"
+
+# Bridge version stamp, published in heartbeat.json so a TS client can tell
+# whether this bridge is new enough to understand per-command inbox files
+# (see _COMMAND_PREFIX above) before ever writing one. Guarded exactly like
+# uefn_launcher.py's own BRIDGE_VERSION import — a bridge_version.py missing
+# entirely (very old staged copy) degrades to "unknown" rather than crashing
+# the whole bridge on import.
+try:
+    from bridge_version import BRIDGE_VERSION
+except ImportError:
+    BRIDGE_VERSION = "unknown"
 
 
 def _get_bridge_dir():
@@ -350,6 +374,10 @@ def _write_heartbeat():
         # builds; the MCP server treats a missing field as "no token support"
         # and falls back to tokenless commands.
         "token": _bridge_token,
+        # Bridge version — see the BRIDGE_VERSION import above. Lets the TS
+        # server decide (via isBridgeVersionNewer) whether this bridge is
+        # new enough to poll per-command inbox files before writing one.
+        "bridge_version": BRIDGE_VERSION,
     }
     _write_json(os.path.join(_bridge_dir, _HEARTBEAT_FILENAME), heartbeat)
 
@@ -424,35 +452,101 @@ def _handle_list_devices(params):
         base_props = frozenset()
 
     devices = []
+    skipped_actors = 0
+    # Per-run (fresh every call, not module-level) — so a 44k-actor level
+    # with one flaky Blueprint class logs ONE warning for that class, not
+    # one per actor.
+    warned_check_failure_classes = set()
+
     for actor in all_actors:
+        # Phase 1: device check, guarded independently of enrichment below.
+        # device_audit._is_device is itself hardened (see its docstring) to
+        # never raise out of the class-hierarchy walk, but this call is
+        # wrapped anyway as defense against a version-skewed device_audit.py
+        # that lacks that hardening (see the sys.path skew comments at the
+        # top of this file) — either way, a failure here must be counted
+        # and logged, never silently dropped.
         try:
-            if not _is_device(actor):
-                continue
-            label = _safe_label(actor)
+            is_device = _is_device(actor)
+        except Exception as e:
+            skipped_actors += 1
+            try:
+                class_name = actor.get_class().get_name()
+            except Exception:
+                class_name = "<unknown class>"
+            if class_name not in warned_check_failure_classes:
+                warned_check_failure_classes.add(class_name)
+                try:
+                    label = _safe_label(actor)
+                except Exception:
+                    label = "<unknown label>"
+                unreal.log_warning(
+                    "uefn_bridge: list_devices: device check failed for "
+                    f"actor '{label}' (class {class_name}): {e} "
+                    "(further actors of this class will not be logged)"
+                )
+            continue
+
+        if not is_device:
+            continue
+
+        # Phase 2: enrichment. A device that PASSED the check above always
+        # appears in the results, even if one or more fields below fail to
+        # resolve — a broken field is reported as an "error" entry on the
+        # device, never a reason to drop it (no success-shaped failures).
+        device = {}
+        errors = []
+
+        try:
+            device["label"] = _safe_label(actor)
+        except Exception as e:
+            errors.append(f"label: {e}")
+
+        try:
+            device["class"] = actor.get_class().get_name()
+        except Exception as e:
+            errors.append(f"class: {e}")
+
+        loc = None
+        try:
             loc = _actor_location_tuple(actor)
-            luf = _xyz_to_luf(*loc)
-            changed = _find_overridden_properties(actor, base_props)
-            devices.append({
-                "label": label,
-                "class": actor.get_class().get_name(),
-                # Traditional XYZ — unchanged, byte-identical to before this
-                # field existed. Use with /UnrealEngine.com and
-                # /Fortnite.com module transforms.
-                "location": {"x": loc[0], "y": loc[1], "z": loc[2]},
+            # Traditional XYZ — unchanged, byte-identical to before this
+            # field existed. Use with /UnrealEngine.com and /Fortnite.com
+            # module transforms.
+            device["location"] = {"x": loc[0], "y": loc[1], "z": loc[2]}
+        except Exception as e:
+            errors.append(f"location: {e}")
+
+        if loc is not None:
+            try:
+                luf = _xyz_to_luf(*loc)
                 # UEFN 36.00+ Left-Up-Forward — matches the editor Details
                 # panel and /Verse.org module transforms. See
                 # device_audit._xyz_to_luf's docstring for the source.
-                "location_luf": {"left": luf[0], "up": luf[1], "forward": luf[2]},
-                "changed_property_count": len(changed),
-                "changed_properties": changed,
-            })
-        except Exception:
-            continue
+                device["location_luf"] = {"left": luf[0], "up": luf[1], "forward": luf[2]}
+            except Exception as e:
+                errors.append(f"location_luf: {e}")
+
+        try:
+            changed = _find_overridden_properties(actor, base_props)
+            device["changed_property_count"] = len(changed)
+            device["changed_properties"] = changed
+        except Exception as e:
+            errors.append(f"changed_properties: {e}")
+
+        if errors:
+            device["error"] = "; ".join(errors)
+
+        devices.append(device)
 
     return {
         "devices": devices,
         "total_devices": len(devices),
         "total_actors": len(all_actors),
+        # Honest-scope field: actors whose device CHECK itself failed (not
+        # actors that were checked and cleanly determined not to be a
+        # device). See the per-actor loop above.
+        "skipped_actors": skipped_actors,
     }
 
 
@@ -1583,11 +1677,48 @@ _METHODS = {
 # Command processing
 # ---------------------------------------------------------------------------
 
-def _process_command():
-    """Check for command.json, execute it, and write the response."""
-    global _bridge_dir, _bridge_token, _warned_bad_token
+def _list_pending_command_files():
+    """Return every pending command file in the bridge dir, oldest first by
+    mtime: the legacy ``command.json`` (if present) together with any
+    per-command ``command_<id>.json`` inbox files (see bridge_paths.py's
+    ``COMMAND_PREFIX``). Processing every pending file in one tick — not
+    just one — matters once a TS client starts writing per-command files: a
+    burst of calls queued behind ``requestChain`` in one process, or two
+    client processes calling concurrently, can leave several
+    ``command_*.json`` files sitting in the dir between 500ms polls. Never
+    raises — a listdir failure (or a file that vanishes between listdir and
+    stat, e.g. deleted by a retrying client) yields fewer/no candidates, the
+    same as "nothing pending" today."""
+    try:
+        names = os.listdir(_bridge_dir)
+    except OSError:
+        return []
 
-    cmd_path = os.path.join(_bridge_dir, _COMMAND_FILENAME)
+    candidates = []
+    for name in names:
+        is_legacy = name == _COMMAND_FILENAME
+        is_inbox = name.startswith(_COMMAND_PREFIX) and name.endswith(".json")
+        if not (is_legacy or is_inbox):
+            continue
+        path = os.path.join(_bridge_dir, name)
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        candidates.append((mtime, path))
+
+    candidates.sort(key=lambda item: item[0])
+    return [path for _, path in candidates]
+
+
+def _process_command_file(cmd_path):
+    """Read, delete, execute, and respond to a single command file at
+    *cmd_path* — the per-file body of the polling loop, unchanged from what
+    ``_process_command`` always did for the single ``command.json`` path,
+    just factored out so it can now run once per pending file (see
+    ``_list_pending_command_files``)."""
+    global _bridge_token, _warned_bad_token
+
     if not os.path.exists(cmd_path):
         return
 
@@ -1601,7 +1732,9 @@ def _process_command():
         pass
 
     if cmd is None:
-        unreal.log_warning("uefn_bridge: Could not parse command.json")
+        unreal.log_warning(
+            "uefn_bridge: Could not parse " + os.path.basename(cmd_path)
+        )
         return
 
     # Session-token check (see _bridge_token comment for threat model).
@@ -1613,8 +1746,9 @@ def _process_command():
         if not _warned_bad_token:
             _warned_bad_token = True
             unreal.log_warning(
-                "uefn_bridge: Rejected command.json with missing/mismatched "
-                "session token (further mismatches will not be logged)."
+                "uefn_bridge: Rejected " + os.path.basename(cmd_path)
+                + " with missing/mismatched session token (further "
+                "mismatches will not be logged)."
             )
         return
 
@@ -1651,19 +1785,78 @@ def _process_command():
     unreal.log("uefn_bridge: Response written for " + cmd_id)
 
 
+def _process_command():
+    """Process every currently-pending command file this tick — the legacy
+    ``command.json`` and any per-command ``command_<id>.json`` inbox files,
+    oldest first (see ``_list_pending_command_files``). Each file still gets
+    the exact same read-then-delete-then-execute treatment as before (see
+    ``_process_command_file``); this only changes how many files get that
+    treatment per tick, from at most one to every file currently pending —
+    the fix for the command.json clobber race, where a second writer's
+    rename-over-command.json could land in the up-to-500ms window before
+    this bridge read and deleted the first writer's still-unread command.
+    One file's processing failure is caught here (not left to abort the
+    whole batch) so it can't block the rest of a same-tick batch."""
+    for cmd_path in _list_pending_command_files():
+        try:
+            _process_command_file(cmd_path)
+        except Exception:
+            unreal.log_warning(
+                "uefn_bridge: Error processing " + os.path.basename(cmd_path)
+                + ":\n" + traceback.format_exc()
+            )
+
+
+# Orphan response-file cleanup (Bug 2, part d): a response_*.json is
+# orphaned when the TS client that requested it crashed, was killed, or hit
+# its own timeout before ever reading the response back — nothing ever
+# claims/deletes it otherwise. Deleting anything past this age is
+# unilaterally safe on either side of the IPC contract; no live caller waits
+# this long (DEFAULT_BRIDGE_TIMEOUT_MS in uefn-server.ts is 30s, and even
+# the largest known per-call override there is 180s).
+_ORPHAN_RESPONSE_MAX_AGE_SECONDS = 600  # 10 minutes
+_ORPHAN_CLEANUP_EVERY_N_POLLS = 20      # ~10s at _POLL_INTERVAL=0.5s — cheap
+
+
+def _cleanup_orphan_responses():
+    """Delete response_*.json files older than _ORPHAN_RESPONSE_MAX_AGE_-
+    SECONDS. Only called every _ORPHAN_CLEANUP_EVERY_N_POLLS polls (see
+    _tick) so the listdir/stat cost stays cheap. Never raises."""
+    try:
+        names = os.listdir(_bridge_dir)
+    except OSError:
+        return
+
+    now = time.time()
+    for name in names:
+        if not (name.startswith(_RESPONSE_PREFIX) and name.endswith(".json")):
+            continue
+        path = os.path.join(_bridge_dir, name)
+        try:
+            age = now - os.path.getmtime(path)
+        except OSError:
+            continue
+        if age > _ORPHAN_RESPONSE_MAX_AGE_SECONDS:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Tick callback
 # ---------------------------------------------------------------------------
 
 def _tick(delta_time):
     """Slate post-tick callback.  Polls for commands and writes heartbeats."""
-    global _last_poll_time, _last_heartbeat_time
+    global _last_poll_time, _last_heartbeat_time, _poll_count
 
     now = time.monotonic()
 
     # Poll for commands at _POLL_INTERVAL
     if now - _last_poll_time >= _POLL_INTERVAL:
         _last_poll_time = now
+        _poll_count += 1
         try:
             _process_command()
         except Exception:
@@ -1671,6 +1864,16 @@ def _tick(delta_time):
                 "uefn_bridge: Tick error in _process_command:\n"
                 + traceback.format_exc()
             )
+
+        # Cheap orphan-response sweep — see _cleanup_orphan_responses.
+        if _poll_count % _ORPHAN_CLEANUP_EVERY_N_POLLS == 0:
+            try:
+                _cleanup_orphan_responses()
+            except Exception:
+                unreal.log_warning(
+                    "uefn_bridge: Tick error in _cleanup_orphan_responses:\n"
+                    + traceback.format_exc()
+                )
 
     # Write heartbeat at _HEARTBEAT_INTERVAL
     if now - _last_heartbeat_time >= _HEARTBEAT_INTERVAL:
@@ -1691,7 +1894,7 @@ def _tick(delta_time):
 def start_bridge():
     """Register the tick callback and begin listening for commands."""
     global _tick_handle, _bridge_dir, _last_poll_time, _last_heartbeat_time
-    global _bridge_token, _warned_bad_token
+    global _bridge_token, _warned_bad_token, _poll_count
 
     if _tick_handle is not None:
         unreal.log("uefn_bridge: Bridge already running.")
@@ -1702,6 +1905,7 @@ def start_bridge():
     _warned_bad_token = False
     _last_poll_time = time.monotonic()
     _last_heartbeat_time = 0.0  # write heartbeat immediately on start
+    _poll_count = 0
 
     _tick_handle = unreal.register_slate_post_tick_callback(_tick)
 

@@ -176,18 +176,34 @@ def _truncate_report_value(value):
 
 
 def _is_device(actor):
-    """Return True if *actor* looks like a Creative device."""
-    cls = actor.get_class()
-    class_name = cls.get_name()
+    """Return True if *actor* looks like a Creative device.
+
+    Hardened per-call (mirrors build_mode_cleanup.py's ``_is_device`` twin —
+    the two must stay in lockstep): ``get_class()``/``get_name()``/
+    ``get_super_class()`` can raise on some Blueprint classes. A walk
+    failure means "couldn't determine" — return False rather than let the
+    exception propagate and silently vanish the actor from callers that
+    don't guard this call themselves.
+    """
+    try:
+        cls = actor.get_class()
+    except Exception:
+        return False
 
     # Walk the class hierarchy looking for device-like names.
     current = cls
     while current is not None:
-        name = current.get_name()
+        try:
+            name = current.get_name()
+        except Exception:
+            break
         for hint in _DEVICE_CLASS_HINTS:
             if hint in name:
                 return True
-        current = current.get_super_class()
+        try:
+            current = current.get_super_class()
+        except Exception:
+            break
 
     return False
 

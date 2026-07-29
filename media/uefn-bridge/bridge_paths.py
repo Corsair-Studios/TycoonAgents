@@ -45,6 +45,18 @@ _ENV_OVERRIDE = "UEFN_BRIDGE_DIR"
 # File names written/read inside the IPC directory by uefn_bridge.py.
 HEARTBEAT_FILENAME = "heartbeat.json"
 COMMAND_FILENAME = "command.json"
+# Per-command inbox filename prefix (0.0.499+): a TS client new enough to see
+# a bridge_version-carrying heartbeat.json writes command_<id>.json instead
+# of clobbering the single shared COMMAND_FILENAME — fixes the intermittent
+# 30s-timeout race where a second writer's rename-over-command.json could
+# land in the up-to-500ms window before uefn_bridge.py reads and deletes the
+# first writer's still-unread command. uefn_bridge.py polls BOTH this
+# pattern and the legacy COMMAND_FILENAME every tick so old-TS+new-Python and
+# new-TS+old-Python each behave exactly as they did before this constant
+# existed. Do not change COMMAND_FILENAME's meaning or value for this — it
+# stays the permanent fallback for any TS client that hasn't seen a
+# bridge_version-carrying heartbeat yet.
+COMMAND_PREFIX = "command_"  # + <command id> + ".json"
 RESPONSE_PREFIX = "response_"  # + <command id> + ".json"
 
 

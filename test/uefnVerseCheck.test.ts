@@ -99,6 +99,32 @@ interface UefnVerseCheckInternals {
   VERSE_CHECK_SUBPROCESS_TIMEOUT_MS: number;
 }
 
+// The extracted source's transpiled `import ... from "../src/shared/X"`
+// becomes `require("../src/shared/X")`, resolved via a `require` scoped to
+// SERVER_TS_PATH's directory (uefn-bridge/) so node_modules imports
+// (@modelcontextprotocol/sdk, zod) still resolve as if this code lived at
+// its real source path. That scoping breaks for `../src/shared/*` imports
+// specifically: `src/shared/*.ts` has no compiled sibling `.js` next to the
+// `.ts` source (only under `out/src/shared/*.js`, tsc's outDir) — a plain
+// `require("../src/shared/bridgeVersion")` from uefn-bridge/ throws
+// MODULE_NOT_FOUND, even though the real product code (bundled by esbuild
+// into uefn-server.mjs) resolves this import fine. This shim intercepts
+// exactly that one pattern and redirects it to the compiled `out/` copy;
+// everything else still goes through the real scoped require unchanged.
+// Stays robust to future `../src/shared/*` imports — no per-module literal
+// needed, just the directory pattern.
+function shimSharedRequire(baseRequire: NodeJS.Require): NodeJS.Require {
+  const shimmed = ((id: string) => {
+    const match = /^\.\.\/src\/shared\/(.+)$/.exec(id);
+    if (match) {
+      const compiledPath = join(process.cwd(), 'out', 'src', 'shared', `${match[1]}.js`);
+      return baseRequire(compiledPath);
+    }
+    return baseRequire(id);
+  }) as NodeJS.Require;
+  return Object.assign(shimmed, baseRequire);
+}
+
 function requireAnchorOnce(fullSource: string, label: string, needle: string): number {
   const idx = fullSource.indexOf(needle);
   assert.ok(idx > 0, `uefn-server.ts layout changed: could not find "${label}" anchor — update it in this test`);
@@ -169,7 +195,7 @@ export {
   // the pure-prefix imports even though unused here) as if this code lived
   // at the real source path, not this test file's own location.
   const scopedRequire = createRequire(SERVER_TS_PATH);
-  runModule(mod, mod.exports, scopedRequire);
+  runModule(mod, mod.exports, shimSharedRequire(scopedRequire));
   return mod.exports as unknown as UefnVerseCheckInternals;
 }
 

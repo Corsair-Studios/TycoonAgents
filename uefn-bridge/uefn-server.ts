@@ -10,6 +10,7 @@ import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { fileURLToPath } from "url";
+import { isBridgeVersionNewer, isNumericVersion } from "../src/shared/bridgeVersion";
 
 // Bridge directory — honor env var or fall back to OS temp dir (matching Python's tempfile.gettempdir())
 const BRIDGE_DIR = process.env.UEFN_BRIDGE_DIR ?? path.join(os.tmpdir(), "uefn_bridge");
@@ -36,20 +37,67 @@ const BRIDGE_DIR = process.env.UEFN_BRIDGE_DIR ?? path.join(os.tmpdir(), "uefn_b
 //   old server x old bridge  -> unchanged, tokenless.
 const HEARTBEAT_PATH = path.join(BRIDGE_DIR, "heartbeat.json");
 
-async function readBridgeToken(): Promise<string | undefined> {
+// Per-command-inbox compat matrix (fixes the command.json clobber race — a
+// second writer's rename-over-command.json could land in the up-to-500ms
+// window before the Python bridge read and deleted the first writer's
+// still-unread command, producing an intermittent 30s timeout):
+//
+//   new server x new bridge  -> per-command inbox. heartbeat.json carries a
+//                                bridge_version >= MIN_INBOX_BRIDGE_VERSION,
+//                                so this server writes command_{id}.json —
+//                                every caller gets its own file, no clobber
+//                                possible. The Python bridge polls BOTH this
+//                                pattern and legacy command.json every tick.
+//   new server x old bridge  -> legacy path, unchanged. heartbeat.json has
+//                                no bridge_version field (or an older one),
+//                                so this server writes the single shared
+//                                command.json exactly as it always has — an
+//                                old bridge is never worse off than today.
+//   old server x new bridge  -> legacy path, unchanged (an un-upgraded
+//                                server never reads bridge_version and
+//                                always writes command.json; the new bridge
+//                                still polls that path too).
+//   old server x old bridge  -> unchanged.
+//
+// NEVER write both command.json and command_{id}.json for the same call —
+// that would risk the Python bridge executing it twice.
+const MIN_INBOX_BRIDGE_VERSION = "0.0.499";
+
+interface BridgeHeartbeatInfo {
+  token: string | undefined;
+  bridgeVersion: string | undefined;
+}
+
+async function readBridgeHeartbeat(): Promise<BridgeHeartbeatInfo> {
   try {
     const raw = await fs.readFile(HEARTBEAT_PATH, "utf8");
-    const heartbeat = JSON.parse(raw) as { token?: unknown };
-    return typeof heartbeat.token === "string" ? heartbeat.token : undefined;
+    const heartbeat = JSON.parse(raw) as { token?: unknown; bridge_version?: unknown };
+    return {
+      token: typeof heartbeat.token === "string" ? heartbeat.token : undefined,
+      bridgeVersion: typeof heartbeat.bridge_version === "string" ? heartbeat.bridge_version : undefined,
+    };
   } catch {
     // heartbeat.json missing/unreadable/stale — bridge not started yet, or
-    // an old bridge build that never wrote a token. Either way, fall back
-    // to a tokenless command (see compat matrix above).
-    return undefined;
+    // an old bridge build that never wrote these fields. Either way, fall
+    // back to tokenless + legacy command.json (see compat matrices above).
+    return { token: undefined, bridgeVersion: undefined };
   }
 }
 
-// Serialize all requests — Python only handles one command.json at a time
+// True iff *bridgeVersion* is new enough to poll command_{id}.json files
+// (see the compat matrix above). A missing/non-numeric version — an old
+// bridge, a corrupted stamp, or a heartbeat read failure — is always
+// treated as "not capable", never as capable-by-default: writing to the
+// shared command.json is always safe against an old bridge, but writing to
+// command_{id}.json against a bridge that doesn't poll for it would hang
+// every call until its timeout.
+function isBridgeInboxCapable(bridgeVersion: string | undefined): boolean {
+  if (bridgeVersion === undefined || !isNumericVersion(bridgeVersion)) return false;
+  return bridgeVersion === MIN_INBOX_BRIDGE_VERSION || isBridgeVersionNewer(bridgeVersion, MIN_INBOX_BRIDGE_VERSION);
+}
+
+// Serialize all requests — legacy command.json only handles one at a time;
+// harmless (if unnecessary) to keep serializing per-command-inbox calls too.
 let requestChain: Promise<unknown> = Promise.resolve();
 let counter = 0;
 
@@ -77,17 +125,30 @@ async function _callBridgeNow(
   timeoutMs: number = DEFAULT_BRIDGE_TIMEOUT_MS
 ): Promise<unknown> {
   const id = `${Date.now()}_${++counter}`;
-  const commandPath = path.join(BRIDGE_DIR, "command.json");
+  const { token, bridgeVersion } = await readBridgeHeartbeat();
+  // See the per-command-inbox compat matrix above: only write command_{id}.json
+  // once the bridge has proven (via its own heartbeat) that it polls for it —
+  // otherwise write the single shared command.json exactly as always. Never
+  // write both for the same call.
+  const commandPath = isBridgeInboxCapable(bridgeVersion)
+    ? path.join(BRIDGE_DIR, `command_${id}.json`)
+    : path.join(BRIDGE_DIR, "command.json");
   const commandTmpPath = path.join(BRIDGE_DIR, `command_${id}.tmp`);
   const responsePath = path.join(BRIDGE_DIR, `response_${id}.json`);
 
-  const token = await readBridgeToken();
   const payload = JSON.stringify(token ? { id, method, params, token } : { id, method, params });
 
-  // Atomic write: write to .tmp then rename (mirrors Python's os.replace)
+  // Atomic write: write to .tmp then rename (mirrors Python's os.replace).
+  // The .tmp suffix keeps this invisible to the Python bridge's *.json glob
+  // in both legacy and per-command-inbox modes.
   await fs.mkdir(BRIDGE_DIR, { recursive: true });
   await fs.writeFile(commandTmpPath, payload, "utf8");
   await fs.rename(commandTmpPath, commandPath);
+
+  // Orphan response-file cleanup (see Python's _cleanup_orphan_responses
+  // twin) — best-effort, fire-and-forget so it never adds latency or a new
+  // failure mode to this call.
+  cleanupOrphanResponseFiles().catch(() => undefined);
 
   // Poll for response every 200ms, timeout at `timeoutMs` (default 30s;
   // callers doing known-slow work pass a larger budget — see call sites).
@@ -117,6 +178,42 @@ async function _callBridgeNow(
   throw new TimeoutError(
     `Bridge timeout after ${Math.round(timeoutMs / 1000)}s waiting for ` +
       `response_${id}.json (method: ${method})`
+  );
+}
+
+// Orphan response-file cleanup (Bug 2, part d) — a response_*.json is
+// orphaned when the call that requested it timed out, threw before reaching
+// the poll loop, or this process was killed mid-poll: nothing else ever
+// claims/deletes it. Deleting anything past this age is unilaterally safe —
+// no live caller waits this long (DEFAULT_BRIDGE_TIMEOUT_MS is 30s; the
+// largest known per-call override, uefn_moderation_scan, is 180s). Mirrors
+// the Python bridge's own _cleanup_orphan_responses; runs independently on
+// each side so either one alone keeps the dir clean.
+const ORPHAN_RESPONSE_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+
+async function cleanupOrphanResponseFiles(): Promise<void> {
+  let names: string[];
+  try {
+    names = await fs.readdir(BRIDGE_DIR);
+  } catch {
+    return; // dir missing/unreadable — nothing to clean up
+  }
+
+  const now = Date.now();
+  await Promise.all(
+    names
+      .filter((name) => name.startsWith("response_") && name.endsWith(".json"))
+      .map(async (name) => {
+        const filePath = path.join(BRIDGE_DIR, name);
+        try {
+          const stat = await fs.stat(filePath);
+          if (now - stat.mtimeMs > ORPHAN_RESPONSE_MAX_AGE_MS) {
+            await fs.unlink(filePath).catch(() => undefined);
+          }
+        } catch {
+          // vanished between readdir and stat, or unreadable — ignore
+        }
+      })
   );
 }
 
