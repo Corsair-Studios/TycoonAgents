@@ -31,7 +31,7 @@
 </nav>
 </details>
 </aside>
-  <div class="crumb">TycoonAgents Handbook / Chapter 02 / Part I &middot; Getting Started &middot; v0.0.429</div>
+  <div class="crumb">TycoonAgents Handbook / Chapter 02 / Part I &middot; Getting Started &middot; v0.0.503</div>
 
   <div class="chapter-num">02</div>
   <h1>Installation &amp; First-Run Setup</h1>
@@ -119,11 +119,17 @@
       <div class="step-num">01</div>
       <div class="step-body">
         <p>
-          <strong>Ignore tycoon logs</strong> &mdash; adds TycoonAgents'
-          activity logs to your ignore files so they don't clutter version
-          control: <code>.gitignore</code> for Git projects, or
-          <code>.p4ignore</code> / <code>.urcignore</code> for UEFN
-          projects using Perforce or Unreal Revision Control.
+          <strong>Ignore tycoon logs</strong> &mdash; the installer detects
+          which version control system your project actually uses and writes
+          the matching ignore file(s): <code>.gitignore</code> for Git,
+          <code>.p4ignore</code> for Perforce, or <code>.urcignore</code> for
+          Unreal Revision Control. The ignore files also ignore each other,
+          so a project using more than one doesn't end up tracking the
+          others' ignore files. On Perforce and Unreal Revision Control
+          specifically, the ignore file additionally excludes
+          <code>.mcp.json</code>, <code>CLAUDE.md</code>, and
+          <code>.claude/</code>, so TycoonAgents' own tooling files are never
+          pushed into a shared project.
         </p>
       </div>
     </div>

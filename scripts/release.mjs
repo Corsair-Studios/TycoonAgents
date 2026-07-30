@@ -7,7 +7,7 @@
 // package` (which runs the full vscode:prepublish chain — build, bundles,
 // check:paths, check:webview — then `vsce package`), verify the .vsix,
 // `git add -A`, commit "Release x.y.z: ...", `git push origin main`.
-import { readFileSync, writeFileSync, existsSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, unlinkSync, readdirSync } from 'node:fs';
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 const ROOT = process.cwd();
 const PKG_PATH = join(ROOT, 'package.json');
 const BRIDGE_VERSION_PATH = join(ROOT, 'media', 'uefn-bridge', 'bridge_version.py');
+const HANDBOOK_DIR = join(ROOT, 'media', 'handbook');
 
 const LEVELS = ['patch', 'minor', 'major'];
 
@@ -78,6 +79,37 @@ function main() {
     `BRIDGE_VERSION = "${newVersion}"\n`;
   writeFileSync(BRIDGE_VERSION_PATH, bridgeVersionContent);
   console.log(`[release] Stamped bridge_version.py to ${newVersion}.`);
+
+  // Stamp the release version into every handbook page's crumb line. Scoped
+  // to the `class="crumb"` element specifically (the version is always the
+  // last token before the element's closing tag) so this can never touch
+  // unrelated version-like text in chapter prose. Drift-guard: if a file has
+  // no crumb-scoped version stamp — a chapter added later without one, or a
+  // rewritten stamp format — fail the release loudly instead of silently
+  // leaving it un-stamped (this is exactly how all 14 pages froze at
+  // v0.0.429 for ~70 releases before this loop existed).
+  const CRUMB_VERSION_RE = /(<(?:div|p) class="crumb">[^<]*)v\d+\.\d+\.\d+/;
+  const handbookFiles = readdirSync(HANDBOOK_DIR).filter((f) => f.endsWith('.html'));
+  if (handbookFiles.length === 0) {
+    console.error(`[release] No .html files found under ${HANDBOOK_DIR}; expected the handbook pages.`);
+    process.exit(1);
+  }
+  let handbookStamped = 0;
+  for (const file of handbookFiles) {
+    const filePath = join(HANDBOOK_DIR, file);
+    const raw = readFileSync(filePath, 'utf8');
+    if (!CRUMB_VERSION_RE.test(raw)) {
+      console.error(
+        `[release] "${file}" has no class="crumb" ... vX.Y.Z stamp — the stamp ` +
+        'markup may have changed. Fix the file or CRUMB_VERSION_RE in scripts/release.mjs before releasing.',
+      );
+      process.exit(1);
+    }
+    const stamped = raw.replace(CRUMB_VERSION_RE, `$1v${newVersion}`);
+    writeFileSync(filePath, stamped);
+    handbookStamped += 1;
+  }
+  console.log(`[release] Stamped ${handbookStamped} handbook files to v${newVersion}.`);
 
   // `npm run package` runs the full vscode:prepublish chain (build, bundles,
   // check:paths, check:webview) before `vsce package`. shell:true lets Node

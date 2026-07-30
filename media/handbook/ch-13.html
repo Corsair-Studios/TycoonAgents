@@ -32,7 +32,7 @@
 </details>
 </aside>
 
-<p class="crumb">TycoonAgents Handbook / Chapter 13 / Part III · Reference · v0.0.429</p>
+<p class="crumb">TycoonAgents Handbook / Chapter 13 / Part III · Reference · v0.0.503</p>
 
 <h1><span class="chapter-num">13</span>Troubleshooting &amp; Diagnostics</h1>
 
@@ -89,6 +89,10 @@
 <div class="callout tip">
   <p class="callout-label">Tip</p>
   <p>The UEFN MCP chip also needs <code>node</code> v18+ on your PATH — the MCP client launches the bridge's server through Node. Run <code>node --version</code> in a terminal to check.</p>
+</div>
+<div class="callout note">
+  <p class="callout-label">Advanced</p>
+  <p>On Windows, a deep project path — especially one under a OneDrive-redirected folder — can exceed the 260-character <code>MAX_PATH</code> limit. When TycoonAgents detects this condition, it names it directly in the relevant error message rather than leaving you to guess. The fix is either to enable Windows long paths (the <code>LongPathsEnabled</code> registry policy) or to shorten or move the project path so it sits closer to the drive root.</p>
 </div>
 
 <div class="section-head">

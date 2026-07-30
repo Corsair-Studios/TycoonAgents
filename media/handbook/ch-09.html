@@ -32,7 +32,7 @@
 </details>
 </aside>
 
-<p class="crumb">TycoonAgents Handbook / Chapter 09 / Part III · Reference · v0.0.429</p>
+<p class="crumb">TycoonAgents Handbook / Chapter 09 / Part III · Reference · v0.0.503</p>
 
 <h1><span class="chapter-num">09</span>Settings Reference</h1>
 
@@ -81,41 +81,47 @@
   <div class="step">
     <span class="stepno">02</span>
     <div>
-      <p><strong>Delegation style.</strong> Choose between <em>Direct</em> and <em>Team Leads</em> delegation modes, plus a separate <strong>Review pass</strong> checkbox (on by default) — when enabled, a second agent reviews each specialist's work before it's reported done.</p>
+      <p><strong>Path Health.</strong> Shows how each UEFN-related path was resolved — <em>override</em>, <em>environment</em>, <em>auto-detected</em>, or <em>NOT FOUND</em> — along with every candidate location that was tried. It also detects whether Epic's Verse VS Code extension is installed and enabled, and warns separately when the extension is installed but disabled rather than missing entirely. You can set explicit path overrides here; they're persisted to <code>.claude/tycoon/uefn-paths.json</code>. A copy-paste diagnostic block is available too, formatted to hand to your own Claude session for guided fixing. See Chapter 13 for the related troubleshooting callout and the environment-variable overrides it honors.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">03</span>
     <div>
-      <p><strong>Project Plan.</strong> Turns the optional phase/task planning feature on or off (see Chapter 11).</p>
+      <p><strong>Delegation style.</strong> Choose between <em>Direct</em> and <em>Team Leads</em> delegation modes, plus a separate <strong>Review pass</strong> checkbox (on by default) — when enabled, a second agent reviews each specialist's work before it's reported done.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">04</span>
     <div>
-      <p><strong>Agents.</strong> Per-role model and agent choices — which model each specialist role runs on.</p>
+      <p><strong>Project Plan.</strong> Turns the optional phase/task planning feature on or off (see Chapter 11).</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">05</span>
     <div>
-      <p><strong>Keyword routing.</strong> The word lists that decide which specialist a task's description routes to.</p>
+      <p><strong>Agents.</strong> Per-role model and agent choices — which model each specialist role runs on.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">06</span>
     <div>
-      <p><strong>Delegation Health.</strong> A live look at how well delegation is working for this session — see Chapter 10 for how to read it.</p>
+      <p><strong>Keyword routing.</strong> The word lists that decide which specialist a task's description routes to.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">07</span>
     <div>
-      <p><strong>Context budget.</strong> Controls related to how much context gets passed between agents.</p>
+      <p><strong>Delegation Health.</strong> A live look at how well delegation is working for this session — see Chapter 10 for how to read it.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">08</span>
+    <div>
+      <p><strong>Context budget.</strong> Controls related to how much context gets passed between agents.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">09</span>
     <div>
       <p><strong>Report a bug / Diagnostics.</strong> Generates a sanitized diagnostic report you can share when something isn't working — see Chapter 13.</p>
     </div>

@@ -32,7 +32,7 @@
 </details>
 </aside>
 
-<p class="crumb">TycoonAgents Handbook / Chapter 12 / Part III · Reference · v0.0.429</p>
+<p class="crumb">TycoonAgents Handbook / Chapter 12 / Part III · Reference · v0.0.503</p>
 
 <h1><span class="chapter-num">12</span>UEFN Power Tools</h1>
 
@@ -171,6 +171,16 @@
 </table>
 </div>
 
+<div class="ref-table">
+<p class="group-label">Verse analysis</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_verse_check</code></td><td>Runs Epic's own Verse language server — the same analyzer bundled with the Verse VS Code extension — headless, for real compiler diagnostics. It's the only tool in this reference that works while UEFN itself is closed. It accepts a set of target files, and classifies every diagnostic's origin as <em>project</em> (your own code) or <em>epic-generated</em> (Epic's digest/cache files). A clean project can still report hundreds of epic-generated diagnostics — that's normal, and it means your own code is analyzer-clean.</td></tr>
+  </tbody>
+</table>
+</div>
+
 <div class="section-head">
   <span class="s-title">§ 12.4 · Keeping the bridge current</span>
   <span class="cap">self-updating, mostly</span>
@@ -186,6 +196,25 @@
   <span class="cap">.urcignore</span>
 </div>
 <p>Setup also writes a <code>.urcignore</code> file so day-to-day dev artifacts (config, logs, and similar loose files) stay out of UEFN's Revision Control — only your actual project assets get tracked.</p>
+
+<div class="section-head">
+  <span class="s-title">§ 12.6 · Device audit</span>
+  <span class="cap">defaults comparison</span>
+</div>
+<p>The device audit diffs every device's properties against its class defaults, so it can show exactly what a creator changed versus what shipped as the default. The audit window's device list has a <strong>Tuned</strong> column showing how many properties differ from default for each device — when defaults can't be resolved for a class, that column shows a <code>?</code> rather than a fake <code>0</code>, so an unresolved comparison is never mistaken for "nothing changed."</p>
+<p>Opening a device's detail view adds a <strong>Tuned Properties</strong> table listing each changed property alongside its current value and its class default. The same idea carries into the Property Inspector: every current value there is shown beside a Default column, so you can spot a tuned property without cross-referencing anything else.</p>
+<p>Device listings also account for every actor rather than silently dropping ones that fail to resolve: skipped actors are counted, and a device with a field that fails to read is listed anyway, with an error note attached, instead of being omitted from the results.</p>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Device audit window — Tuned column and a device's Tuned Properties table.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 12.7 · Moderation</span>
+  <span class="cap">self-verifying saves &amp; thumbnail scope</span>
+</div>
+<p>Moderation report saves are self-verifying: after writing a report, the bridge re-reads back what it just wrote and only reports success once that round-trip passes. A save is never reported as landed on the strength of the write call alone.</p>
+<p>Thumbnail pixel review is scoped to project-owned images only — engine and Fortnite built-in thumbnails are never scanned. The report states how many thumbnails were excluded for this reason, so the exclusion is visible rather than silent.</p>
 
 <p class="nav-links">
   <a class="prev" href="ch-11.html">&larr; Ch 11 · Project Plan</a>
