@@ -63,7 +63,11 @@ function tmpRoot(): string {
 // string used with path.join — never a real vscode.Uri method), so a minimal
 // receiver carrying just that field is enough to invoke the real method
 // under test without constructing a full TycoonPanel.
-function callInstallProjectPlanSkill(root: string): boolean {
+// `_installProjectPlanSkill` now returns `{ ok, failed }` (per-file failures
+// surfaced explicitly, see its doc comment) rather than a bare boolean.
+type InstallResult = { ok: boolean; failed: { path: string; error: string }[] };
+
+function callInstallProjectPlanSkill(root: string): InstallResult {
   const fakeThis = {
     _extensionUri: { fsPath: REPO_ROOT },
   };
@@ -77,8 +81,9 @@ function destDir(root: string): string {
 test("_installProjectPlanSkill copies the shipped skill files into .claude/skills/project-plan", () => {
   const root = tmpRoot();
   try {
-    const ok = callInstallProjectPlanSkill(root);
-    assert.equal(ok, true, "should report success");
+    const result = callInstallProjectPlanSkill(root);
+    assert.equal(result.ok, true, "should report success");
+    assert.deepEqual(result.failed, [], "a clean install must report zero per-file failures");
 
     const shippedFiles = fs.readdirSync(SKILL_SRC, { withFileTypes: true }).filter((e) => e.isFile());
     assert.ok(shippedFiles.length > 0, "sanity: shipped skill source must have at least one file");
@@ -101,7 +106,9 @@ test("_installProjectPlanSkill copies the shipped skill files into .claude/skill
 test("_installProjectPlanSkill is idempotent and refreshes a modified dest file back to shipped content", () => {
   const root = tmpRoot();
   try {
-    assert.equal(callInstallProjectPlanSkill(root), true);
+    const firstResult = callInstallProjectPlanSkill(root);
+    assert.equal(firstResult.ok, true);
+    assert.deepEqual(firstResult.failed, []);
 
     const skillMdDest = path.join(destDir(root), "SKILL.md");
     const shipped = fs.readFileSync(path.join(SKILL_SRC, "SKILL.md"), "utf8");

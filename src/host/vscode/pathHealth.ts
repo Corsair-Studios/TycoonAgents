@@ -731,7 +731,7 @@ export function detectVerseExtensionState(input: {
 export function buildPathDiagnosticText(
   report: PathHealthReport,
   verse: VerseExtensionReport,
-  opts?: { platform?: string },
+  opts?: { platform?: string; mcpUefnEntryConfigured?: boolean },
 ): string {
   const lines: string[] = [];
   lines.push("TycoonAgents Path Diagnostic");
@@ -771,6 +771,22 @@ export function buildPathDiagnosticText(
   }
   lines.push("");
   lines.push(`Override file: ${report.overridesFilePath} (${report.overridesFileExists ? "exists" : "does not exist yet"})`);
+
+  // MCP transport note: every path above is a FILESYSTEM discovery signal —
+  // none of them can tell you whether the MCP CLIENT (Claude Code, etc.)
+  // actually managed to start the server process itself. If a UEFN entry
+  // is registered in .mcp.json but its status chip stays gray while
+  // everything else here is healthy, the most common remaining cause is
+  // the MCP client's own `node` launch failing silently, not a path
+  // discovery problem this report can catch.
+  if (opts?.mcpUefnEntryConfigured) {
+    lines.push("");
+    lines.push(
+      "Note: the UEFN MCP server is launched via `node` on PATH by your MCP client (not by this extension) — " +
+        "if the UEFN status chip stays gray even though every path above is healthy, verify `node --version` " +
+        "(v18+) works in a plain terminal.",
+    );
+  }
 
   return lines.join("\n");
 }

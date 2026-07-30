@@ -40,6 +40,8 @@ import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { parseBridgeVersion, isBridgeVersionNewer, isNumericVersion } from "../../shared/bridgeVersion";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
+import { healMcpServerPathIfStale } from "./mcpHeal";
+import { describeFsError } from "./fsErrors";
 import {
   probePathHealth,
   detectVerseExtensionState,
@@ -2177,8 +2179,17 @@ export class TycoonPanel {
             // Enabling the checkbox implicitly (re)installs the skill so the
             // feature is never left inert — best-effort, silent (no popup),
             // since this is a side effect of flipping a toggle, not an
-            // explicit user action on the install button.
-            this._installProjectPlanSkill(root);
+            // explicit user action on the install button. Still logged on
+            // failure (never silently swallowed) — no stamp tracks this
+            // skill's freshness, so a failure here simply means the next
+            // panel open / toggle retries the copy.
+            const enableResult = this._installProjectPlanSkill(root);
+            if (!enableResult.ok && enableResult.failed.length > 0) {
+              console.error(
+                "TycoonAgents: project-plan skill install (via enable toggle) had failures:",
+                enableResult.failed
+              );
+            }
           }
           // _postPlanState recomputes enabled/plan/archivedPlans (plus
           // planReadable/hasBackup) via readPlanSafe, so this reuses the same
@@ -3300,14 +3311,20 @@ export class TycoonPanel {
         // re-copied newer files the shipped skill had grown since. Status is
         // now per-file-outcome: "installed" if any new file was written,
         // "updated" if any existing file's content changed, else
-        // "unchanged".
+        // "unchanged". `_stageSkillTree` never throws — a per-file failure
+        // comes back in `failed` (see its doc comment) rather than a swallowed
+        // console.error, so it's surfaced here as `error` naming every
+        // failing path rather than a silently-honest-looking status.
         const skillResults: Array<{ id: string; status: "installed" | "updated" | "unchanged"; error?: string }> = [];
         for (const skillId of packSkills) {
           try {
-            const { staged, updated } = this._stageSkillTree(skillId, root);
+            const { staged, updated, failed } = this._stageSkillTree(skillId, root);
             skillResults.push({
               id: skillId,
               status: staged > 0 ? "installed" : updated > 0 ? "updated" : "unchanged",
+              ...(failed.length > 0
+                ? { error: failed.map((f) => `${f.path}: ${f.error}`).join("; ") }
+                : {}),
             });
           } catch (e) {
             skillResults.push({ id: skillId, status: "unchanged", error: String(e) });
@@ -3693,7 +3710,15 @@ export class TycoonPanel {
     bridgeDir: string,
     pyDest: string
   ): { staged: number; updated: number; unchanged: number; error?: string } {
-    fs.mkdirSync(pyDest, { recursive: true });
+    try {
+      fs.mkdirSync(pyDest, { recursive: true });
+    } catch (e) {
+      // Can't even create the destination -- nothing below can proceed.
+      // Route through describeFsError so a masked-long-path ENOENT (see its
+      // doc comment) is named explicitly rather than looking like a
+      // mysterious "destination doesn't exist" failure.
+      return { staged: 0, updated: 0, unchanged: 0, error: describeFsError(e, pyDest) };
+    }
     let staged = 0;
     let updated = 0;
     let unchanged = 0;
@@ -3733,7 +3758,7 @@ export class TycoonPanel {
           unchanged++;
         }
       } catch (e) {
-        failures.push(`${name}: ${String(e)}`);
+        failures.push(`${name}: ${describeFsError(e, path.join(pyDest, name))}`);
       }
     }
 
@@ -4627,145 +4652,14 @@ export class TycoonPanel {
 
   /**
    * Auto-heal a STALE UEFN MCP server path in the project's `.mcp.json` once
-   * per panel open. Real bug hit in the field: `.mcp.json` registers the UEFN
-   * bridge server with a VERSION-STAMPED ABSOLUTE PATH into the *installed*
-   * extension (e.g. `.../.vscode/extensions/tycoonagents.tycoonagents-0.0.424/
-   * media/uefn-bridge/uefn-server.mjs`). Every extension update deletes that
-   * versioned folder, so the MCP server then fails to start and the user's AI
-   * assistant silently loses every `uefn_*` tool with no obvious error —
-   * breaking on EVERY update for EVERY user. This mirrors
-   * `_autoUpdateUefnBridgeIfStale`'s posture for the Python bridge: strictly
-   * opt-in (never creates `.mcp.json`), tolerant of anything it can't parse,
-   * and fully best-effort.
-   *
-   * Location: `path.join(root, ".mcp.json")` — the SAME resolution every
-   * other `.mcp.json` reader/writer in this file uses (`_handleInstallMcp`,
-   * `_handleRemoveMcp`, `_handleCheckInstall`, `_readMcpConfig` call sites).
-   * Deliberately NOT `_uefnEffectiveRoot`: that redirect only applies to the
-   * Python bridge staged under `<effRoot>/Content/Python` — `.mcp.json`
-   * itself always lives at the plain project root Claude Code loads it from.
-   *
-   * Recognizes both key names this product has written for the UEFN server
-   * over time (`uefn-bridge`, current; `uefn`, legacy). For each recognized
-   * entry, locates the `args` element whose filename is `uefn-server.mjs` or
-   * `uefn-server.js` — an entry with no such arg is left untouched entirely
-   * (not this product's UEFN server entry). An entry's path is STALE when
-   * EITHER:
-   *   (a) the file it points at no longer exists on disk, OR
-   *   (b) the path sits inside *some* `tycoonagents` extension directory that
-   *       is not the CURRENTLY RUNNING one (`this._extensionUri.fsPath`) — a
-   *       version-stamped path from an older/uninstalled extension folder.
-   * A path that exists on disk and sits outside any tycoonagents extension
-   * folder is left alone — the user may have deliberately pointed it at a
-   * custom build.
-   *
-   * On a stale hit, rewrites the arg to
-   * `<current extension dir>/media/uefn-bridge/uefn-server.mjs` (forward
-   * slashes, matching this file's other path-normalization call sites in
-   * progressScope.ts / themeArchive.ts) — but only after confirming that
-   * file actually exists, so a corrupted/incomplete extension install can
-   * never write a second broken path. Also drops `env.UEFN_BRIDGE_DIR` from
-   * a rewritten entry (documented as breaking the file-IPC default — both
-   * sides must default to `<OS temp>/uefn_bridge`), removing the whole `env`
-   * block only once it becomes empty, and forces `command` to `"node"` on a
-   * rewritten entry (the only command that can run the shipped `.mjs`).
-   * Every other key — other MCP servers, unrelated entry fields — is left
-   * alone; the file is rewritten as 2-space JSON, UTF-8, no BOM, trailing
-   * newline. Shows one toast on an actual change (MCP servers only load at
-   * session start, so a restart note matters). Wrapped in try/catch — must
-   * never throw or block panel load.
+   * per panel open. Thin wrapper over `mcpHeal.ts`'s `healMcpServerPathIfStale`
+   * (see its doc comment for the full contract) — the implementation was
+   * extracted there so it can ALSO run once at extension `activate()`
+   * (`extension.ts`), fixing a CLI-only user (never opens the TycoonAgents
+   * panel) previously never getting this heal at all.
    */
   private _autoHealMcpServerPathIfStale(root: string): void {
-    try {
-      if (root === "") return;
-      const mcpPath = path.join(root, ".mcp.json");
-      if (!fs.existsSync(mcpPath)) return; // opt-in only -- never create .mcp.json
-
-      let raw: string;
-      try {
-        raw = fs.readFileSync(mcpPath, "utf8");
-      } catch {
-        return;
-      }
-      const withoutBom = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
-
-      let parsed: Record<string, unknown>;
-      try {
-        const json = JSON.parse(withoutBom);
-        if (json === null || typeof json !== "object" || Array.isArray(json)) return;
-        parsed = json as Record<string, unknown>;
-      } catch {
-        return; // never clobber a file we can't parse
-      }
-
-      const servers = parsed["mcpServers"];
-      if (servers === null || typeof servers !== "object" || Array.isArray(servers)) return;
-      const serverMap = servers as Record<string, unknown>;
-
-      const isUefnServerFile = (p: unknown): boolean => {
-        if (typeof p !== "string") return false;
-        const segments = p.split(/[\\/]/);
-        const last = segments[segments.length - 1] ?? "";
-        return /^uefn-server\.(mjs|js)$/i.test(last);
-      };
-
-      type Candidate = { entry: Record<string, unknown>; args: unknown[]; argIdx: number };
-      const candidates: Candidate[] = [];
-      for (const key of ["uefn-bridge", "uefn"]) {
-        const rawEntry = serverMap[key];
-        if (rawEntry === null || typeof rawEntry !== "object" || Array.isArray(rawEntry)) continue;
-        const entry = rawEntry as Record<string, unknown>;
-        const args = entry["args"];
-        if (!Array.isArray(args)) continue;
-        const argIdx = args.findIndex(isUefnServerFile);
-        if (argIdx === -1) continue;
-        candidates.push({ entry, args, argIdx });
-      }
-      if (candidates.length === 0) return; // don't invent an entry that isn't there
-
-      const currentServerPath = path.join(this._extensionUri.fsPath, "media", "uefn-bridge", "uefn-server.mjs");
-      if (!fs.existsSync(currentServerPath)) return; // can't heal onto a file that isn't shipped
-
-      const currentServerPathNormalized = currentServerPath.replace(/\\/g, "/");
-      const currentExtDirNormalized = this._extensionUri.fsPath.replace(/\\/g, "/").toLowerCase();
-
-      const isStale = (argPath: string): boolean => {
-        if (!fs.existsSync(argPath)) return true;
-        const argNormalized = argPath.replace(/\\/g, "/").toLowerCase();
-        const inSomeTycoonagentsExtDir = argNormalized.includes("tycoonagents");
-        const inCurrentExtDir = argNormalized.startsWith(currentExtDirNormalized);
-        return inSomeTycoonagentsExtDir && !inCurrentExtDir;
-      };
-
-      let changed = false;
-      for (const { entry, args, argIdx } of candidates) {
-        const argPath = args[argIdx];
-        if (typeof argPath !== "string" || !isStale(argPath)) continue;
-
-        args[argIdx] = currentServerPathNormalized;
-        changed = true;
-
-        const env = entry["env"];
-        if (env !== null && typeof env === "object" && !Array.isArray(env)) {
-          const envMap = env as Record<string, unknown>;
-          if (Object.prototype.hasOwnProperty.call(envMap, "UEFN_BRIDGE_DIR")) {
-            delete envMap["UEFN_BRIDGE_DIR"];
-            if (Object.keys(envMap).length === 0) delete entry["env"];
-          }
-        }
-
-        if (entry["command"] !== "node") entry["command"] = "node";
-      }
-
-      if (!changed) return;
-
-      fs.writeFileSync(mcpPath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
-      void vscode.window.showInformationMessage(
-        "TycoonAgents: updated the UEFN MCP server path in .mcp.json — restart your AI assistant session to load it."
-      );
-    } catch (e) {
-      console.warn("TycoonAgents: _autoHealMcpServerPathIfStale failed:", e);
-    }
+    healMcpServerPathIfStale(root, this._extensionUri);
   }
 
   /**
@@ -4928,13 +4822,20 @@ export class TycoonPanel {
    * (e.g. from the checkbox handler) as well as from the explicit
    * "Reinstall / Repair skill" button.
    *
-   * Returns `true` iff the destination directory exists and is non-empty
-   * after the operation (used only for the button's success/failure UI
-   * feedback).
+   * Returns per-file failures explicitly (mirroring `_stageBridgeTo`'s
+   * honesty) instead of collapsing them into a single "does the destination
+   * directory exist and have SOMETHING in it" boolean — that check used to
+   * read a partial copy (e.g. 3 of 5 files landed, 2 failed) as full
+   * success. `ok` is true only when the destination is non-empty AND no
+   * file failed to copy this run; callers must surface `failed` (path +
+   * `describeFsError`-classified error) rather than treating `ok: false`
+   * with an empty `failed` list (destination genuinely empty/missing) the
+   * same as a partial-copy failure.
    */
-  private _installProjectPlanSkill(root: string): boolean {
+  private _installProjectPlanSkill(root: string): { ok: boolean; failed: { path: string; error: string }[] } {
     const src = path.join(this._extensionUri.fsPath, "media", "skills", "project-plan");
     const dest = path.join(root, ".claude", "skills", "project-plan");
+    const failed: { path: string; error: string }[] = [];
 
     const copyRecursive = (srcDir: string, destDir: string): void => {
       let entries: fs.Dirent[];
@@ -4942,6 +4843,7 @@ export class TycoonPanel {
         entries = fs.readdirSync(srcDir, { withFileTypes: true });
       } catch (e) {
         console.error("TycoonAgents: _installProjectPlanSkill failed to read", srcDir, e);
+        failed.push({ path: srcDir, error: describeFsError(e, srcDir) });
         return;
       }
       for (const entry of entries) {
@@ -4964,6 +4866,7 @@ export class TycoonPanel {
           fs.writeFileSync(destPath, srcContent);
         } catch (e) {
           console.error("TycoonAgents: _installProjectPlanSkill failed to copy", srcPath, e);
+          failed.push({ path: destPath, error: describeFsError(e, destPath) });
         }
       }
     };
@@ -4972,13 +4875,17 @@ export class TycoonPanel {
       copyRecursive(src, dest);
     } catch (e) {
       console.error("TycoonAgents: _installProjectPlanSkill failed:", e);
+      failed.push({ path: dest, error: describeFsError(e, dest) });
     }
 
+    let destOk: boolean;
     try {
-      return fs.existsSync(dest) && fs.readdirSync(dest).length > 0;
+      destOk = fs.existsSync(dest) && fs.readdirSync(dest).length > 0;
     } catch {
-      return false;
+      destOk = false;
     }
+
+    return { ok: destOk && failed.length === 0, failed };
   }
 
   /**
@@ -5004,13 +4911,25 @@ export class TycoonPanel {
    * Returns per-outcome counts so callers can report install vs. update vs.
    * no-op. Never creates `dest`'s parent unless there is at least one file
    * to write (mirrors `_installProjectPlanSkill`).
+   *
+   * Also returns `failed` — every file/dir that could not be read or
+   * written, as `{ path, error }` (error classified via `describeFsError`,
+   * so a masked-long-path failure names itself). Previously a per-file copy
+   * failure was only `console.error`'d and swallowed, so a caller checking
+   * "destination exists && has >=1 entry" (or, for the auto-heal caller,
+   * simply "did this throw") could read a PARTIAL copy as full success.
+   * Never throws — a read/copy failure is captured into `failed` instead.
    */
-  private _stageSkillTree(skillId: string, root: string): { staged: number; updated: number; unchanged: number } {
+  private _stageSkillTree(
+    skillId: string,
+    root: string
+  ): { staged: number; updated: number; unchanged: number; failed: { path: string; error: string }[] } {
     const src = path.join(this._extensionUri.fsPath, "media", "skills", skillId);
     const dest = path.join(root, ".claude", "skills", skillId);
     let staged = 0;
     let updated = 0;
     let unchanged = 0;
+    const failed: { path: string; error: string }[] = [];
 
     const copyRecursive = (srcDir: string, destDir: string): void => {
       let entries: fs.Dirent[];
@@ -5018,6 +4937,7 @@ export class TycoonPanel {
         entries = fs.readdirSync(srcDir, { withFileTypes: true });
       } catch (e) {
         console.error("TycoonAgents: _stageSkillTree failed to read", srcDir, e);
+        failed.push({ path: srcDir, error: describeFsError(e, srcDir) });
         return;
       }
       for (const entry of entries) {
@@ -5050,12 +4970,13 @@ export class TycoonPanel {
           }
         } catch (e) {
           console.error("TycoonAgents: _stageSkillTree failed to copy", srcPath, e);
+          failed.push({ path: destPath, error: describeFsError(e, destPath) });
         }
       }
     };
 
     copyRecursive(src, dest);
-    return { staged, updated, unchanged };
+    return { staged, updated, unchanged, failed };
   }
 
   private async _handleInstallProjectPlanSkill(): Promise<void> {
@@ -5064,17 +4985,25 @@ export class TycoonPanel {
       vscode.window.showWarningMessage("No project root — open a folder first.");
       return;
     }
-    let ok: boolean;
+    let result: { ok: boolean; failed: { path: string; error: string }[] };
     try {
-      ok = this._installProjectPlanSkill(root);
+      result = this._installProjectPlanSkill(root);
     } catch (e) {
       vscode.window.showErrorMessage("Failed to install project-plan skill: " + String(e));
       void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: false, error: String(e) });
       return;
     }
-    if (!ok) {
-      vscode.window.showErrorMessage("Failed to install project-plan skill: destination is empty after copy.");
-      void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: false, error: "destination empty after copy" });
+    if (!result.ok) {
+      // Never report success on a partial copy — name the failing file(s)
+      // and their classified error (see describeFsError) rather than a
+      // generic "destination empty" message when SOME files landed but
+      // others didn't.
+      const error =
+        result.failed.length > 0
+          ? `Failed to copy: ${result.failed.map((f) => `${f.path} (${f.error})`).join("; ")}`
+          : "destination empty after copy";
+      vscode.window.showErrorMessage("Failed to install project-plan skill: " + error);
+      void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: false, error });
       return;
     }
     const prompt = "Use the project-plan skill (.claude/skills/project-plan) to decompose the design doc / goals for this project into an approvable plan of phases and tasks with human gate checkpoints.";
@@ -5090,13 +5019,25 @@ export class TycoonPanel {
    * `${EXTENSION_DIR}` in any string value (recursively through objects/arrays)
    * with the extension's real install path (`this._extensionUri.fsPath`).
    * Called at install time so catalog entries with bundled servers resolve correctly.
+   *
+   * Any string a token was actually substituted into is additionally
+   * normalized to forward slashes (`\` -> `/`) — matching what
+   * `healMcpServerPathIfStale` (mcpHeal.ts) writes on a later heal pass, so
+   * a fresh install's `.mcp.json` and a healed one are byte-identical in
+   * form rather than differing only by separator style on Windows. Scoped
+   * to strings that actually contained the token: this substitution only
+   * ever produces a FILESYSTEM PATH (`extensionUri.fsPath`-derived), never
+   * an arbitrary command arg/env value that might legitimately contain a
+   * literal backslash — a string with no token occurrence is returned
+   * completely untouched.
    */
   private _resolveConfigTokens(config: unknown): unknown {
     const token = "${EXTENSION_DIR}";
     const replacement = this._extensionUri.fsPath;
     const resolve = (value: unknown): unknown => {
       if (typeof value === "string") {
-        return value.split(token).join(replacement);
+        if (!value.includes(token)) return value;
+        return value.split(token).join(replacement).replace(/\\/g, "/");
       }
       if (Array.isArray(value)) {
         return value.map(resolve);
@@ -5945,7 +5886,16 @@ export class TycoonPanel {
       const root = this._projectRoot();
       if (root === "") return;
       if (!readProjectPlanEnabled(root)) return;
-      this._installProjectPlanSkill(root);
+      const result = this._installProjectPlanSkill(root);
+      // No staleness stamp guards this call (it re-runs, cheaply, on every
+      // panel open) so there is nothing to keep "stale" for a retry — the
+      // retry already happens automatically next panel open. Still log a
+      // failure explicitly (never silently swallowed) so it's visible in
+      // the extension's console/output channel rather than only inferable
+      // from the skill directory being stuck out of date.
+      if (!result.ok && result.failed.length > 0) {
+        console.error("TycoonAgents: _ensureProjectPlanSkillFresh had copy failures:", result.failed);
+      }
     } catch (e) {
       console.error("TycoonAgents: _ensureProjectPlanSkillFresh failed:", e);
     }
@@ -6087,7 +6037,22 @@ export class TycoonPanel {
           const packSkills: string[] = Array.isArray(pack.skills) ? pack.skills : [];
           for (const skillId of packSkills) {
             try {
-              this._stageSkillTree(skillId, root);
+              // `_stageSkillTree` never throws on a per-file copy failure —
+              // it reports `failed` instead (see its doc comment). This was
+              // the actual bug: `ok` only ever flipped false on a THROWN
+              // exception, so a real partial-copy failure (e.g. a locked
+              // file, a too-long path) here was invisible — the pack still
+              // landed in `restaged` and `packStamp[pack.id]` was stamped to
+              // the current version below, meaning the NEXT panel open
+              // would see the stamp match and never retry the failed file.
+              const { failed } = this._stageSkillTree(skillId, root);
+              if (failed.length > 0) {
+                ok = false;
+                console.error(
+                  `TycoonAgents: failed to re-stage skill "${skillId}" for pack "${pack.id}":`,
+                  failed
+                );
+              }
             } catch (e) {
               ok = false;
               console.error(`TycoonAgents: failed to re-stage skill "${skillId}" for pack "${pack.id}":`, e);
@@ -6157,7 +6122,28 @@ export class TycoonPanel {
 
       try {
         fs.mkdirSync(path.dirname(stampPath), { recursive: true });
-        fs.writeFileSync(stampPath, JSON.stringify({ version: currentVersion, packs: packStamp }, null, 2));
+        // Only advance the TOP-LEVEL `version` (the field that gates the
+        // early-return at the top of this method) when EVERY pack this run
+        // touched fully succeeded. This was the actual bug behind "a failed
+        // stage must remain stale so the next panel open retries": the old
+        // code always wrote `version: currentVersion` here regardless of
+        // `failed`, so on the very next panel open the top gate
+        // (`stamp.version === currentVersion`) matched and the WHOLE method
+        // returned immediately — the failed pack's skill/agent files were
+        // never retried again until the extension's version itself changed.
+        // Keeping the OLD (or absent) version on any failure leaves the
+        // mismatch in place so this method runs again, and retries, on the
+        // next panel open. Per-pack `packStamp[pack.id]` entries for packs
+        // that DID succeed this run are still recorded (used by the
+        // `uefn-bridge` verified-value logic above) — only the gating field
+        // is held back.
+        const stampBody: { version?: string; packs: Record<string, string> } = { packs: packStamp };
+        if (failed.length === 0) {
+          stampBody.version = currentVersion;
+        } else if (stamp.version !== undefined) {
+          stampBody.version = stamp.version;
+        }
+        fs.writeFileSync(stampPath, JSON.stringify(stampBody, null, 2));
       } catch (e) {
         console.error("TycoonAgents: failed to write pack-staging.json stamp:", e);
       }
@@ -7733,7 +7719,16 @@ export class TycoonPanel {
       // OWN Claude Code session so Claude can fix THEIR paths, so it must
       // keep the real paths to be useful. Do not "fix" this by adding
       // sanitize() here; see buildPathDiagnosticText's own doc comment.
-      const text = buildPathDiagnosticText(report, verseState, { platform: process.platform });
+      // Recognizes both key names this product has written for the UEFN MCP
+      // server over time (see mcpHeal.ts) so the node/PATH note below only
+      // appears when there's actually an entry it could be relevant to.
+      const mcpConfigForDiagnostic = this._readMcpConfig(path.join(root, ".mcp.json"));
+      const mcpUefnEntryConfigured =
+        hasMcpServer(mcpConfigForDiagnostic, "uefn-bridge") || hasMcpServer(mcpConfigForDiagnostic, "uefn");
+      const text = buildPathDiagnosticText(report, verseState, {
+        platform: process.platform,
+        mcpUefnEntryConfigured,
+      });
       await vscode.env.clipboard.writeText(text);
       vscode.window.showInformationMessage(
         "Path diagnostic copied to clipboard — paste it into Claude Code to fix any path issues.",

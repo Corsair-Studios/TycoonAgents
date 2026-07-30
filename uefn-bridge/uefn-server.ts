@@ -141,9 +141,28 @@ async function _callBridgeNow(
   // Atomic write: write to .tmp then rename (mirrors Python's os.replace).
   // The .tmp suffix keeps this invisible to the Python bridge's *.json glob
   // in both legacy and per-command-inbox modes.
-  await fs.mkdir(BRIDGE_DIR, { recursive: true });
-  await fs.writeFile(commandTmpPath, payload, "utf8");
-  await fs.rename(commandTmpPath, commandPath);
+  try {
+    await fs.mkdir(BRIDGE_DIR, { recursive: true });
+    await fs.writeFile(commandTmpPath, payload, "utf8");
+    await fs.rename(commandTmpPath, commandPath);
+  } catch (e) {
+    // A bare ENOENT/EACCES/EROFS surfacing here (via bridgeTool's generic
+    // `String(e)` fallback, since this isn't a BridgeError/TimeoutError) is
+    // easy to misread as "the bridge isn't running" when the real cause is
+    // that the IPC DIRECTORY ITSELF is unwritable (read-only mount, locked-
+    // down permissions, an EROFS temp dir on some sandboxed setups). Name
+    // the directory and the override that fixes it explicitly rather than
+    // letting the raw OS error speak for itself.
+    const code = (e as { code?: unknown } | null | undefined)?.code;
+    if (code === "EACCES" || code === "EROFS") {
+      throw new Error(
+        `Could not write to the UEFN bridge IPC directory (${BRIDGE_DIR}): ${String(e)}. This directory is not ` +
+          "writable by this process. Set the UEFN_BRIDGE_DIR environment variable to a writable location to " +
+          "override where the MCP server and the Python bridge exchange command/response files."
+      );
+    }
+    throw e;
+  }
 
   // Orphan response-file cleanup (see Python's _cleanup_orphan_responses
   // twin) — best-effort, fire-and-forget so it never adds latency or a new
@@ -1236,26 +1255,58 @@ interface PythonLocateResult {
   tried: string[];
 }
 
+// Process-lifetime interpreter cache (Fix: repeated re-probing spammed
+// Windows' "Open Store?" popup on machines where a `python`/`python3`/`py`
+// name resolves to the Microsoft Store app-execution-alias stub rather than
+// a real interpreter — every verse_lsp_check tool call used to re-run
+// `--version` against all three candidates from scratch). Once a candidate
+// is confirmed working, EVERY later call in this process reuses it without
+// re-probing. `failedCandidates` remembers names that have already proven
+// not to work THIS run, so a re-probe (see `invalidateCachedPythonInterpreter`
+// below) never wastes time — or triggers another popup — retrying a
+// known-bad candidate; it is never cleared for the life of the process.
+let cachedPythonInterpreter: { cmd: string; version: string } | null = null;
+const failedPythonCandidates = new Set<string>();
+
 // Discover the Python interpreter rather than assuming one name — a missing
 // interpreter is a fixable precondition failure, never a crash. Tries each
 // candidate's `--version` with a short timeout; the first that succeeds
-// wins.
+// wins. Skips candidates already known to have failed this run, and skips
+// probing entirely once a working interpreter is cached (see above).
 async function locatePythonInterpreter(): Promise<PythonLocateResult> {
+  if (cachedPythonInterpreter) {
+    return { chosen: cachedPythonInterpreter, tried: [] };
+  }
   const candidates = ["python", "python3", "py"];
   const tried: string[] = [];
   for (const cmd of candidates) {
+    if (failedPythonCandidates.has(cmd)) continue; // known-bad this run — never re-probe it
     tried.push(cmd);
     try {
       const { stdout, stderr } = await execFileAsync(cmd, ["--version"], { timeout: 5_000, windowsHide: true });
       const versionText = (stdout || stderr || "").toString().trim();
-      return { chosen: { cmd, version: versionText || "unknown" }, tried };
+      cachedPythonInterpreter = { cmd, version: versionText || "unknown" };
+      return { chosen: cachedPythonInterpreter, tried };
     } catch {
       // Not found on PATH, not executable, or timed out probing it — try
       // the next candidate. A probe failure here is expected and common
       // (most machines don't have all three), never a reason to abort.
+      failedPythonCandidates.add(cmd);
     }
   }
   return { chosen: null, tried };
+}
+
+// Invalidate the cached interpreter so the NEXT `locatePythonInterpreter`
+// call re-probes once, rather than reusing a candidate that answered
+// `--version` successfully earlier in this process but has since stopped
+// working (uninstalled mid-session, a Store stub that only fails on a real
+// invocation, etc.). The now-stale candidate is folded into
+// `failedPythonCandidates` first, so the re-probe tries the OTHER
+// candidates rather than immediately repeating the one that just failed.
+function invalidateCachedPythonInterpreter(): void {
+  if (cachedPythonInterpreter) failedPythonCandidates.add(cachedPythonInterpreter.cmd);
+  cachedPythonInterpreter = null;
 }
 
 function normalizeForMatch(p: string): string {
@@ -1509,7 +1560,7 @@ server.registerTool(
         )
       );
     }
-    const python = pythonLocation.chosen;
+    let python = pythonLocation.chosen;
 
     // ---- spawn the script -------------------------------------------------------
     // `files` is passed through as --target: each entry is forced open and
@@ -1531,64 +1582,86 @@ server.registerTool(
     let stdoutText = "";
     let stderrText = "";
     let exitCode: number | null = null;
-    try {
-      const { stdout, stderr } = await execFileAsync(python.cmd, spawnArgs, {
-        timeout: VERSE_CHECK_SUBPROCESS_TIMEOUT_MS,
-        killSignal: "SIGTERM",
-        maxBuffer: 20 * 1024 * 1024,
-        windowsHide: true,
-      });
-      stdoutText = stdout;
-      stderrText = stderr;
-      exitCode = 0;
-    } catch (e) {
-      const err = e as { code?: unknown; killed?: boolean; signal?: string | null; stdout?: string; stderr?: string };
-      stdoutText = err.stdout ?? "";
-      stderrText = err.stderr ?? "";
-      if (err.killed || (err.signal && typeof err.code !== "number")) {
-        return ok(
-          verseCheckError(
-            "timeout",
-            {
-              script_path: scriptPath,
-              python_used: python,
-              project_root: projectRoot,
-              timeout_ms: VERSE_CHECK_SUBPROCESS_TIMEOUT_MS,
-              stderr_tail: stderrText.slice(-2000),
-            },
-            `verse_lsp_check.py did not finish within ${Math.round(VERSE_CHECK_SUBPROCESS_TIMEOUT_MS / 1000)}s and ` +
-              "was killed. This is NOT a clean pass. Re-run with a smaller/narrower project, or investigate " +
-              "why the analyzer didn't reach an idle window (see stderr_tail)."
-          )
-        );
-      }
-      if (err.code === "ERR_CHILD_PROCESS_STDOUT_MAXBUFFER" || err.code === "ERR_CHILD_PROCESS_STDERR_MAXBUFFER") {
-        // Distinct from spawn_failed: the subprocess launched and ran fine —
-        // it just produced more output than the 20MB maxBuffer allows
-        // (an extremely large diagnostic set). Mislabeling this as
-        // spawn_failed would send someone debugging a huge project down the
-        // wrong path.
-        return ok(
-          verseCheckError(
-            "output_too_large",
-            { script_path: scriptPath, python_used: python, project_root: projectRoot, error: String(e) },
-            "verse_lsp_check.py's output exceeded the 20MB subprocess buffer, most likely from an extremely " +
-              "large diagnostic set. This is NOT a clean pass. Narrow `files`/project scope and retry."
-          )
-        );
-      }
-      if (typeof err.code === "number") {
-        exitCode = err.code;
-      } else {
-        return ok(
-          verseCheckError(
-            "spawn_failed",
-            { script_path: scriptPath, python_used: python, project_root: projectRoot, error: String(e) },
-            "Failed to launch the verse_lsp_check.py subprocess (not a timeout, not a script/Python-not-found " +
-              "case already ruled out above). See the error field for the underlying OS error and investigate " +
-              "before retrying."
-          )
-        );
+    // A cached interpreter can go stale between the `--version` probe and an
+    // actual spawn (uninstalled mid-session, a Store-alias stub that only
+    // fails on real invocation, etc.) — allow exactly ONE re-probe-and-retry
+    // when that happens, rather than either permanently trusting a dead
+    // cache entry or re-probing (and risking popup spam) on every call.
+    let spawnRetriesLeft = 1;
+    spawnLoop: for (;;) {
+      try {
+        const { stdout, stderr } = await execFileAsync(python.cmd, spawnArgs, {
+          timeout: VERSE_CHECK_SUBPROCESS_TIMEOUT_MS,
+          killSignal: "SIGTERM",
+          maxBuffer: 20 * 1024 * 1024,
+          windowsHide: true,
+        });
+        stdoutText = stdout;
+        stderrText = stderr;
+        exitCode = 0;
+        break spawnLoop;
+      } catch (e) {
+        const err = e as { code?: unknown; killed?: boolean; signal?: string | null; stdout?: string; stderr?: string };
+        stdoutText = err.stdout ?? "";
+        stderrText = err.stderr ?? "";
+        if (err.killed || (err.signal && typeof err.code !== "number")) {
+          return ok(
+            verseCheckError(
+              "timeout",
+              {
+                script_path: scriptPath,
+                python_used: python,
+                project_root: projectRoot,
+                timeout_ms: VERSE_CHECK_SUBPROCESS_TIMEOUT_MS,
+                stderr_tail: stderrText.slice(-2000),
+              },
+              `verse_lsp_check.py did not finish within ${Math.round(VERSE_CHECK_SUBPROCESS_TIMEOUT_MS / 1000)}s and ` +
+                "was killed. This is NOT a clean pass. Re-run with a smaller/narrower project, or investigate " +
+                "why the analyzer didn't reach an idle window (see stderr_tail)."
+            )
+          );
+        }
+        if (err.code === "ERR_CHILD_PROCESS_STDOUT_MAXBUFFER" || err.code === "ERR_CHILD_PROCESS_STDERR_MAXBUFFER") {
+          // Distinct from spawn_failed: the subprocess launched and ran fine —
+          // it just produced more output than the 20MB maxBuffer allows
+          // (an extremely large diagnostic set). Mislabeling this as
+          // spawn_failed would send someone debugging a huge project down the
+          // wrong path.
+          return ok(
+            verseCheckError(
+              "output_too_large",
+              { script_path: scriptPath, python_used: python, project_root: projectRoot, error: String(e) },
+              "verse_lsp_check.py's output exceeded the 20MB subprocess buffer, most likely from an extremely " +
+                "large diagnostic set. This is NOT a clean pass. Narrow `files`/project scope and retry."
+            )
+          );
+        }
+        if (typeof err.code === "number") {
+          exitCode = err.code;
+          break spawnLoop;
+        } else {
+          // The interpreter itself failed to launch (not a timeout, not an
+          // exit-code failure) — invalidate the cache and re-probe ONCE
+          // before giving up, in case a different candidate now works.
+          if (spawnRetriesLeft > 0) {
+            spawnRetriesLeft--;
+            invalidateCachedPythonInterpreter();
+            const reprobed = await locatePythonInterpreter();
+            if (reprobed.chosen && reprobed.chosen.cmd !== python.cmd) {
+              python = reprobed.chosen;
+              continue spawnLoop;
+            }
+          }
+          return ok(
+            verseCheckError(
+              "spawn_failed",
+              { script_path: scriptPath, python_used: python, project_root: projectRoot, error: String(e) },
+              "Failed to launch the verse_lsp_check.py subprocess (not a timeout, not a script/Python-not-found " +
+                "case already ruled out above). See the error field for the underlying OS error and investigate " +
+                "before retrying."
+            )
+          );
+        }
       }
     }
 

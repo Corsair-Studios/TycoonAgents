@@ -15,6 +15,7 @@ import { activate as activateTheater, deactivate as deactivateTheater } from "..
 import { upgradeInstalledThemes } from "../../extension/themeService";
 import { seedBundledThemes } from "./bundledThemeSeeds";
 import { resolveProjectRoot } from "./progressScope";
+import { healMcpServerPathIfStale } from "./mcpHeal";
 
 let provider: ClaudeCodeProvider | undefined;
 let demoDisposable: { dispose(): void } | undefined;
@@ -28,6 +29,27 @@ export function activate(context: vscode.ExtensionContext): void {
   // Best-effort: seed bundled starter themes into global storage on first
   // run so a freshly installed plugin has a default theme available.
   void seedBundledThemes(context.extensionUri, context.globalStorageUri);
+
+  // Auto-heal a stale UEFN MCP server path in .mcp.json at ACTIVATION, not
+  // only on panel open (see mcpHeal.ts's healMcpServerPathIfStale doc
+  // comment). Fixes a real gap: a CLI-only user who drives `uefn_*` tools
+  // through Claude Code without ever opening the TycoonAgents webview panel
+  // previously never got this heal at all, so an extension update that
+  // deletes the old version-numbered folder left them with a permanently
+  // dead .mcp.json entry. Guarded so activation can never throw or slow:
+  // wrapped in try/catch, the workspace-root lookup is a cheap in-memory
+  // read, and healMcpServerPathIfStale itself is opt-in (no-op unless
+  // .mcp.json already exists and contains our uefn entry) and internally
+  // try/catches every step.
+  try {
+    const workspacePaths = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    const projectRootForMcpHeal = resolveProjectRoot(workspacePaths, process.env["CLAUDE_PROJECT_DIR"]);
+    if (projectRootForMcpHeal !== "") {
+      healMcpServerPathIfStale(projectRootForMcpHeal, context.extensionUri);
+    }
+  } catch (e) {
+    console.warn("TycoonAgents: MCP heal on activate failed:", e);
+  }
 
   // Command: open (or reveal) the TycoonAgents panel
   const openCmd = vscode.commands.registerCommand("tycoonagents.open", () => {

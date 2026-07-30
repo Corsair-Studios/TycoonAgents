@@ -32,11 +32,54 @@ init_unreal.py — Auto-runs when UEFN opens the project.
 # copy serves whichever UEFN project happens to be open — so if more than
 # one project on this machine carries the bridge, the newest stamp is the
 # most recent extension install/update and is what should be running.
+
+
+def _classify_long_path_error(_exc, _paths=()):
+    """Best-effort check for whether an OSError is Windows MAX_PATH-shaped
+    (paths over ~260 chars) — the single most-reported cause of a stuck
+    "stale engine copy" on real user machines (deep OneDrive-redirected
+    "Fortnite Projects" trees are the usual culprit). Returns the offending
+    path (for the warning message) if the failure looks long-path-shaped,
+    else None. Checks explicit candidate paths (e.g. copy src/dst) plus the
+    exception's own filename/filename2 attrs: first by raw length (>250,
+    leaving headroom below the 260-char MAX_PATH), then by a Windows
+    long-path winerror (206 = ERROR_FILENAME_EXCED_RANGE, 3 =
+    ERROR_PATH_NOT_FOUND — Windows also raises this one for over-length
+    paths) paired with whichever candidate path is available for the
+    message. Deliberately has no dependency on the _sync_* imports so it
+    still works even if those failed. Never raises.
+    """
+    try:
+        _candidates = [_p for _p in _paths if _p]
+        for _attr in ("filename", "filename2"):
+            try:
+                _fp = getattr(_exc, _attr, None)
+            except Exception:
+                _fp = None
+            if _fp:
+                _candidates.append(str(_fp))
+        _longest = None
+        for _p in _candidates:
+            if len(_p) > 250 and (_longest is None or len(_p) > len(_longest)):
+                _longest = _p
+        if _longest is not None:
+            return _longest
+        _winerror = getattr(_exc, "winerror", None)
+        if _winerror in (206, 3):
+            for _p in _candidates:
+                return _p
+        return None
+    except Exception:
+        return None
+
+
 try:
     import glob as _sync_glob
     import os as _sync_os
     import re as _sync_re
     import shutil as _sync_shutil
+
+    _stamp_read_warned = False
 
     def _read_stamp(_dir):
         """Parse BRIDGE_VERSION = "X.Y.Z" out of <_dir>/bridge_version.py via
@@ -45,7 +88,14 @@ try:
         and would require the dir to already be on sys.path. Returns a
         comparable (int, int, int) tuple; any failure (file missing, bad
         format, non-numeric parts) yields (0, 0, 0) — oldest possible, so an
-        unparseable candidate never wins over a real stamp.
+        unparseable candidate never wins over a real stamp. An OSError while
+        reading (e.g. a OneDrive Files-On-Demand placeholder that fails to
+        hydrate) gets exactly ONE warning logged per session, via the
+        module-level _stamp_read_warned flag, naming the file and exception
+        — that specific failure mode silently forces a "treat as oldest"
+        verdict and is worth knowing about. A missing/malformed
+        BRIDGE_VERSION line (not an OSError) is a normal, expected case for
+        older copies and stays silent, same as before.
         """
         try:
             with open(
@@ -57,6 +107,29 @@ try:
                 _text,
             )
             return tuple(int(_g) for _g in _m.groups()) if _m else (0, 0, 0)
+        except OSError as _stamp_os_exc:
+            global _stamp_read_warned
+            if not _stamp_read_warned:
+                _stamp_read_warned = True
+                _stamp_warn_msg = (
+                    "Trashbyrd: bridge version stamp unreadable for {} ({}: {}) — "
+                    "treating as oldest (v0.0.0); if this path is on OneDrive, check "
+                    "the file has fully downloaded (Files-On-Demand)"
+                ).format(
+                    _sync_os.path.join(_dir, "bridge_version.py"),
+                    type(_stamp_os_exc).__name__,
+                    _stamp_os_exc,
+                )
+                try:
+                    print(_stamp_warn_msg)
+                except Exception:
+                    pass
+                try:
+                    import unreal as _stamp_unreal
+                    _stamp_unreal.log_warning(_stamp_warn_msg)
+                except Exception:
+                    pass
+            return (0, 0, 0)
         except Exception:
             return (0, 0, 0)
 
@@ -173,18 +246,45 @@ try:
         _newest_stamp, _newest_dir = _candidates[-1]
         if _newest_stamp > _own_stamp:
             _copied, _failed = 0, 0
+            _copy_long_path_warned = False
             for _name in _sync_os.listdir(_newest_dir):
                 if _name == "uefn-server.mjs":
                     continue
                 if not (_name.endswith(".py") or _name == "trashbyrd_40x40.png"):
                     continue
+                _src = _sync_os.path.join(_newest_dir, _name)
+                _dst = _sync_os.path.join(_this_dir, _name)
                 try:
-                    _src = _sync_os.path.join(_newest_dir, _name)
                     if _sync_os.path.isfile(_src):
-                        _sync_shutil.copyfile(_src, _sync_os.path.join(_this_dir, _name))
+                        _sync_shutil.copyfile(_src, _dst)
                         _copied += 1
-                except Exception:
+                except Exception as _copy_exc:
                     _failed += 1
+                    # Long-path failures are the #1 reported "stale engine
+                    # copy" root cause — surface it loudly (once per sync
+                    # pass; the remaining per-file failures still count
+                    # toward _failed above, they just don't re-warn).
+                    if not _copy_long_path_warned:
+                        _copy_long_path = _classify_long_path_error(_copy_exc, (_src, _dst))
+                        if _copy_long_path:
+                            _copy_long_path_warned = True
+                            _copy_warn_msg = (
+                                "Trashbyrd: bridge self-sync copy failed — path exceeds "
+                                "Windows MAX_PATH ({} chars): {} — likely cause is Windows "
+                                "MAX_PATH (260 chars). Enable long paths (registry "
+                                "LongPathsEnabled=1 under HKLM\\SYSTEM\\CurrentControlSet\\"
+                                "Control\\FileSystem) or shorten the Fortnite Projects path. "
+                                "Startup continues on the STALE engine copy."
+                            ).format(len(_copy_long_path), _copy_long_path)
+                            try:
+                                print(_copy_warn_msg)
+                            except Exception:
+                                pass
+                            try:
+                                import unreal as _copy_unreal
+                                _copy_unreal.log_warning(_copy_warn_msg)
+                            except Exception:
+                                pass
             _sync_msg = (
                 "Trashbyrd: bridge self-sync — updated v{}.{}.{} -> v{}.{}.{} "
                 "({} copied, {} failed) from {}"
@@ -227,15 +327,27 @@ try:
     except Exception:
         pass
 except Exception as _sync_exc:
+    _sync_long_path = _classify_long_path_error(_sync_exc, ())
+    if _sync_long_path:
+        _sync_fail_msg = (
+            "Trashbyrd: bridge self-sync failed — path exceeds Windows MAX_PATH "
+            "({} chars): {} — likely cause is Windows MAX_PATH (260 chars). Enable "
+            "long paths (registry LongPathsEnabled=1 under HKLM\\SYSTEM\\"
+            "CurrentControlSet\\Control\\FileSystem) or shorten the Fortnite "
+            "Projects path. Startup continues on the STALE engine copy."
+        ).format(len(_sync_long_path), _sync_long_path)
+    else:
+        _sync_fail_msg = (
+            "Trashbyrd: bridge self-sync failed, startup continues unaffected — "
+            "{} ({})"
+        ).format(_sync_exc, type(_sync_exc).__name__)
     try:
-        print(f"Trashbyrd: bridge self-sync failed, startup continues unaffected — {_sync_exc}")
+        print(_sync_fail_msg)
     except Exception:
         pass
     try:
         import unreal as _sync_unreal_fail
-        _sync_unreal_fail.log_warning(
-            f"Trashbyrd: bridge self-sync failed, startup continues unaffected — {_sync_exc}"
-        )
+        _sync_unreal_fail.log_warning(_sync_fail_msg)
     except Exception:
         pass
 

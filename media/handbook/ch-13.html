@@ -82,6 +82,14 @@
     <div><p>Restart UEFN so it picks up the bridge from <code>Content/Python</code>.</p></div>
   </div>
 </div>
+<div class="callout note">
+  <p class="callout-label">Advanced</p>
+  <p>The bridge auto-discovers its paths, but three environment variables override that discovery when it picks the wrong location: <code>UEFN_BRIDGE_DIR</code> overrides the IPC directory the bridge and MCP server use to talk to each other; <code>UEFN_VERSE_PROJECT_DIR</code> overrides the Verse project cache root; <code>VERSE_LSP_PATH</code> overrides the Verse language server executable the Verse-aware audit tools launch. Reach for one of these only if the chip stays gray after a restart, or the bridge responds with the wrong project's data.</p>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>The UEFN MCP chip also needs <code>node</code> v18+ on your PATH — the MCP client launches the bridge's server through Node. Run <code>node --version</code> in a terminal to check.</p>
+</div>
 
 <div class="section-head">
   <span class="s-title">§ 13.4 · Metrics numbers look wrong</span>
