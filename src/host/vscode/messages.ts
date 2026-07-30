@@ -175,6 +175,12 @@ export const MSG = {
   // ---- build progress persistence ------------------------------------------
   SAVE_BUILD_PROGRESS: "saveBuildProgress",
 
+  // ---- roster order persistence ---------------------------------------------
+  // Character roster order (drag-reorder in the "Character roster order"
+  // modal section, including which character occupies Seat 1 / leader — see
+  // main.js isLeaderEntry, which derives leader-ness purely from index 0).
+  SAVE_ROSTER_ORDER: "saveRosterOrder",
+
   // ---- theme image review / retry / reslice / normalize / rename ---------
   OPEN_THEME_IMAGES: "OPEN_THEME_IMAGES",
   REVEAL_THEME_IMAGE: "REVEAL_THEME_IMAGE",
@@ -370,6 +376,14 @@ export const MSG_SCHEMAS = {
     .object({
       themeId: z.string().min(1),
       builtCount: z.number().int().nonnegative(),
+    })
+    .passthrough(),
+
+  // ---- roster order persistence ---------------------------------------------
+  SAVE_ROSTER_ORDER: z
+    .object({
+      themeId: z.string().min(1),
+      rosterOrder: z.array(z.string()).max(64),
     })
     .passthrough(),
 

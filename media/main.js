@@ -3214,7 +3214,6 @@
           if (rowId) descriptions[rowId] = textarea.value;
         }
         drafts.set(itemId, {
-          feedback: card.querySelector(".theme-review-feedback")?.value || "",
           characterName: card.querySelector(".theme-review-name-input")?.value || "",
           // Single merged section now — namesOpen drives the one <details>
           // (the old, separate descriptionsOpen flag is retired). The Creative
@@ -4448,32 +4447,17 @@
       });
       decisionRow.appendChild(uploadBtn);
 
-      const feedback = document.createElement("textarea");
-      feedback.className = "theme-review-feedback";
-      feedback.rows = 3;
-      feedback.placeholder = item.generation_error
-        ? "Replace the blocked creative direction with neutral, non-graphic visual instructions."
-        : "Optional: describe what should change. Leave blank to just reroll.";
       const savedDraft = reviewUiState.drafts.get(item.id);
-      if (savedDraft) feedback.value = savedDraft.feedback;
-      // Guided notes are APPENDED as revision notes on top of the freshly-rebuilt
-      // structured prompt (mode 'augment' — selectThemeImageRetryPrompt), never
-      // sent as the entire prompt. Hidden for blocked items, whose notes DO fully
-      // replace the flagged prompt (see blockedEmptyHint below), where this
-      // reassurance would be misleading.
-      const feedbackHint = document.createElement("div");
-      feedbackHint.className = "theme-review-feedback-hint";
-      feedbackHint.textContent = "Notes only — don't paste a full prompt; layout and art rules are added automatically. Leave blank to reroll unchanged.";
-      feedbackHint.hidden = Boolean(item.generation_error);
-      // Blocked items are the one narrow recovery case where notes DO become the
-      // entire replacement prompt (mode 'custom') — the previous prompt was
-      // flagged, so there is no safe structured base left to append onto.
-      // Required (non-empty) only for this path; normal retry/augment notes stay
-      // optional. No other UI path can trigger 'custom'.
-      const blockedEmptyHint = document.createElement("div");
-      blockedEmptyHint.className = "theme-review-feedback-hint theme-review-custom-warning";
-      blockedEmptyHint.textContent = "Add replacement notes for this blocked image before retrying.";
-      blockedEmptyHint.hidden = true;
+      // The one-shot notes textarea (mode 'augment'/'custom') is retired — the
+      // per-item visual description (namesDescriptionsSection below) is now the
+      // single steering surface for retries. A blank Retry always rebuilds the
+      // structured prompt fresh from the current plan ('retry' mode), which
+      // consumes whatever visual description is currently saved. This applies
+      // uniformly, including for blocked items: to recover from a block, edit
+      // the description above (e.g. to neutral, non-graphic wording) then Retry.
+      const retryGuidanceHint = document.createElement("div");
+      retryGuidanceHint.className = "theme-review-names-descriptions-hint";
+      retryGuidanceHint.textContent = "To steer the retry, edit the visual description above, then Retry. Blank retry = fresh reroll.";
       // Object/decor/rival board rows are always drawn from the manifest's
       // buildable_objects / decor_objects / roster_rivals display names, and
       // per-item visual descriptions (0.0.265) replace the manual "retry with
@@ -4489,15 +4473,15 @@
       );
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
-      // Single retry action — no mode dropdown. 'retry' rebuilds the structured
-      // prompt fresh from the current plan (names & descriptions); when the user
-      // types notes they are APPENDED as revision notes on top of that same
-      // fresh structured prompt ('augment' — selectThemeImageRetryPrompt), never
-      // sent as the whole prompt. The one exception is a blocked image
-      // (item.generation_error), whose notes fully replace the flagged prompt
-      // ('custom') since there's no safe structured base left to append onto —
-      // see the effectiveMode computation in the click handler below. No other
-      // path can reach 'custom'.
+      // Single retry action — no mode dropdown, no notes channel. Always sends
+      // mode 'retry': the host rebuilds the structured prompt fresh from the
+      // current plan (selectThemeImageRetryPrompt), which consumes whatever
+      // visual description is currently saved for this item — that description
+      // (namesDescriptionsSection above) is the only steering surface now,
+      // including for blocked items (edit the description to neutral wording,
+      // then Retry). 'augment'/'custom' modes are retired from this UI; the
+      // host still accepts them on the wire for compat, this screen just never
+      // sends them.
       const retryBtn = document.createElement("button");
       retryBtn.className = "skill-btn theme-review-retry";
       const retryIdleText = item.image_src || item.generation_error ? "Retry image" : "Generate image";
@@ -4514,23 +4498,11 @@
       const retryBtnBaseDisabled = retryBusy || Boolean(payload.generation_active && !isCurrentReviewGate);
       retryBtn.disabled = retryBtnBaseDisabled;
       retryBtn.title = !item.image_src && !payload.generation_active
-        ? "Generate this unfinished image using the notes above."
+        ? "Generate this unfinished image using the current visual description."
         : payload.generation_active && !isCurrentReviewGate
           ? "This image is generating or queued in the active run."
-          : "Generate a replacement using the notes above.";
+          : "Generate a replacement using the current visual description.";
       retryBtn.addEventListener("click", () => {
-        const notes = feedback.value.trim();
-        // Blocked items always fully replace the flagged prompt ('custom');
-        // otherwise notes present -> 'augment' (appended onto the freshly-
-        // rebuilt structured prompt), notes empty -> plain re-roll ('retry').
-        // No UI path here can ever send 'custom' for a normal (non-blocked) item.
-        const effectiveMode = item.generation_error ? "custom" : (notes ? "augment" : "retry");
-        if (effectiveMode !== "retry" && !notes) {
-          feedback.focus();
-          feedback.setAttribute("aria-invalid", "true");
-          return;
-        }
-        feedback.removeAttribute("aria-invalid");
         retryBtn.disabled = true;
         retryBtn.textContent = "Generating...";
         themeReviewBusyItems.set(item.id, "retry");
@@ -4542,23 +4514,12 @@
           payload: {
             theme_id: reviewThemeId,
             item_id: item.id,
-            feedback: notes,
-            mode: effectiveMode,
+            mode: "retry",
             image_provider: selectedThemeImageProvider(),
             character_name: characterNameInput ? characterNameInput.value.trim() : undefined,
           },
         });
       });
-      const updateFeedbackState = () => {
-        // Only a blocked item requires non-empty notes before it can be retried
-        // (its notes fully replace the flagged prompt); normal retry/augment
-        // notes stay optional.
-        const blockedNeedsNotes = Boolean(item.generation_error) && !feedback.value.trim();
-        blockedEmptyHint.hidden = !blockedNeedsNotes;
-        retryBtn.disabled = retryBtnBaseDisabled || blockedNeedsNotes;
-      };
-      feedback.addEventListener("input", updateFeedbackState);
-      updateFeedbackState();
       // Re-slice re-runs slicing on the saved raw atlas with no image-API cost.
       // Only available when the theme saved its original atlas (older themes did not).
       let resliceBtn = null;
@@ -4598,9 +4559,7 @@
       if (nameRow) body.appendChild(nameRow);
       if (namesDescriptionsSection) body.appendChild(namesDescriptionsSection);
       body.appendChild(decisionRow);
-      body.appendChild(feedback);
-      body.appendChild(feedbackHint);
-      body.appendChild(blockedEmptyHint);
+      body.appendChild(retryGuidanceHint);
       body.appendChild(retryRow);
       body.appendChild(retryStatus);
       body.appendChild(retryWarning);
@@ -4824,6 +4783,9 @@
 
           const prev = vscode.getState() || {};
           vscode.setState({ ...prev, rosterOrder: rosterOrder.slice() });
+          // Durable host-side persist (survives a full VS Code reload) —
+          // vscode.setState above stays as a same-session fast-path cache.
+          saveRosterOrder();
 
           // Also rebuild the stage strip (now a no-op since it's removed from stage)
           buildRosterStrip();
@@ -5360,6 +5322,21 @@
         payload: { themeId: selectedThemeId, builtCount: buildBuiltCount },
       });
     }, 750);
+  }
+  /**
+   * Persist the current rosterOrder (drag-reorder in the "Character roster
+   * order" modal section, including which character sits in Seat 1 / leader
+   * — leader-ness is derived purely from rosterOrder[0], see isLeaderEntry)
+   * to the host, mirroring saveBuildProgress so the order survives a full
+   * VS Code reload instead of only living in vscode.setState. Posted under
+   * selectedThemeId. No-ops if no theme is loaded.
+   */
+  function saveRosterOrder() {
+    if (!selectedThemeId) return;
+    vscode.postMessage({
+      type: "saveRosterOrder",
+      payload: { themeId: selectedThemeId, rosterOrder: rosterOrder.slice() },
+    });
   }
   /** Count of rival agents successfully evicted (fled offscreen and pruned) this theme session. */
   let rivalsEvictedCount = 0;
@@ -10880,7 +10857,18 @@
         // roster set — a stale saved order captured before this fix may contain
         // non-roster keys (rival_/object_/etc.) and must be rejected/rebuilt.
         const saved = vscode.getState() || {};
-        const savedOrder = Array.isArray(saved.rosterOrder) ? saved.rosterOrder : [];
+        // Host-persisted order (roster-order.json, survives a full VS Code
+        // reload — see savedRosterOrder in the THEME_INITIALIZED payload)
+        // takes priority; vscode.getState()'s rosterOrder is a same-session
+        // fast-path fallback for a save that hasn't round-tripped to the host
+        // yet. Either way, the reconcile below already tolerates unknown/
+        // missing ids (theme edited since the order was saved).
+        const hostRosterOrder = msg.payload && Array.isArray(msg.payload.savedRosterOrder)
+          ? msg.payload.savedRosterOrder.filter((id) => typeof id === "string")
+          : null;
+        const savedOrder = hostRosterOrder && hostRosterOrder.length > 0
+          ? hostRosterOrder
+          : (Array.isArray(saved.rosterOrder) ? saved.rosterOrder : []);
         const savedValid =
           savedOrder.length > 0 &&
           savedOrder.every((id) => manifestChars.includes(id)) &&

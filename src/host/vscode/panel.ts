@@ -1150,6 +1150,7 @@ export class TycoonPanel {
             await this._removeThemeBadgeUnlocks(themeId);
             await this._removeThemeRebirthState(themeId);
             await this._removeThemeBuildProgress(themeId);
+            await this._removeThemeRosterOrder(themeId);
             deletedThemeId = themeId;
           } catch (err) {
             deleteError = String(err);
@@ -1202,6 +1203,15 @@ export class TycoonPanel {
             }
           } catch (err) {
             console.error("TycoonAgents: Could not persist build progress:", err);
+          }
+        } else if (message.type === MSG.SAVE_ROSTER_ORDER) {
+          try {
+            const parsedRosterOrder = MSG_SCHEMAS.SAVE_ROSTER_ORDER.safeParse((message as any).payload);
+            if (parsedRosterOrder.success) {
+              await this.saveRosterOrder(parsedRosterOrder.data.themeId, parsedRosterOrder.data.rosterOrder);
+            }
+          } catch (err) {
+            console.error("TycoonAgents: Could not persist roster order:", err);
           }
         } else if (message.type === MSG.SELECT_THEME) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
@@ -2444,6 +2454,72 @@ export class TycoonPanel {
     if (next !== store) await this._writeBuildProgressStore(next);
   }
 
+  // --- Roster order persistence -----------------------------------------
+  // Per-theme character roster order (drag-reorder in the "Character roster
+  // order" modal section, including Seat-1 leader assignment — leader-ness
+  // is derived purely from rosterOrder[0] in the webview, see main.js
+  // isLeaderEntry). Previously this lived ONLY in vscode.setState, which is
+  // wiped on a full VS Code reload. Mirrors the build-progress persistence
+  // above exactly (file-based, composite-keyed by project+theme).
+  private _rosterOrderUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this._globalStorageUri, "roster-order.json");
+  }
+
+  private async _readRosterOrderStore(): Promise<Record<string, string[]>> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(this._rosterOrderUri());
+      const parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private async _writeRosterOrderStore(store: Record<string, string[]>): Promise<void> {
+    try {
+      await vscode.workspace.fs.writeFile(
+        this._rosterOrderUri(),
+        Buffer.from(JSON.stringify(store, null, 2), "utf8"),
+      );
+    } catch (err) {
+      console.error("TycoonAgents: Could not save roster order:", err);
+    }
+  }
+
+  private async getRosterOrder(themeId: string | undefined): Promise<string[] | null> {
+    if (!themeId) return null;
+    const store = await this._readRosterOrderStore();
+    const { value, store: migratedStore, migrated } = readCompositeWithMigration(
+      store,
+      this._projectScopeKey(),
+      themeId,
+    );
+    if (migrated) await this._writeRosterOrderStore(migratedStore);
+    return Array.isArray(value) ? value.filter((id) => typeof id === "string") : null;
+  }
+
+  private async saveRosterOrder(themeId: string, order: unknown): Promise<void> {
+    if (!themeId) return;
+    // Sanitize: array of strings only, capped to a sane length — mirrors
+    // saveBuildProgress's clamp of its own payload before it ever touches disk.
+    const sanitized = (Array.isArray(order) ? order : [])
+      .filter((id): id is string => typeof id === "string")
+      .slice(0, 64);
+    const store = await this._readRosterOrderStore();
+    await this._writeRosterOrderStore(writeComposite(store, this._projectScopeKey(), themeId, sanitized));
+  }
+
+  /**
+   * Fully removes a theme's saved roster order (legacy key + every project's
+   * composite key) — used when the theme itself is deleted from disk.
+   */
+  private async _removeThemeRosterOrder(themeId: string): Promise<void> {
+    if (!themeId) return;
+    const store = await this._readRosterOrderStore();
+    const next = removeThemeEverywhere(store, themeId);
+    if (next !== store) await this._writeRosterOrderStore(next);
+  }
+
   /**
    * Builds a THEME_INITIALIZED payload, seeding persisted badge unlocks.
    * Also latches `_currentThemeId` — every THEME_INITIALIZED post funnels
@@ -2462,6 +2538,7 @@ export class TycoonPanel {
     unlocked_badge_ids: string[];
     rebirth_state: RebirthPersist | null;
     savedBuildProgress: number;
+    savedRosterOrder: string[] | null;
   }> {
     this._currentThemeId = manifest?.theme_id;
     return {
@@ -2471,6 +2548,7 @@ export class TycoonPanel {
       unlocked_badge_ids: await this.getUnlockedBadges(manifest?.theme_id),
       rebirth_state: await this.getRebirthState(manifest?.theme_id),
       savedBuildProgress: await this.getBuildProgress(manifest?.theme_id),
+      savedRosterOrder: await this.getRosterOrder(manifest?.theme_id),
     };
   }
 
