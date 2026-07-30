@@ -2008,9 +2008,11 @@
       rebirth: DANCE_OFF_UNLOCK_REBIRTH,
       text: `Reach Rebirth ${DANCE_OFF_UNLOCK_REBIRTH} to unlock the dance-off`,
     });
-    // Base wave-clear victory lap is already ungated — this only advertises
-    // the UPGRADE (see VICTORY_LAP_UNLOCK_REBIRTH / updateVictoryLap), so
-    // the wording says "upgrade" rather than "unlock".
+    // Whether a wave-clear victory lap fires at all is gated on a random
+    // cadence (VICTORY_LAP_CLASH_INTERVAL/VICTORY_LAP_CHANCE), not on
+    // rebirth — this tier preview only advertises the UPGRADE (see
+    // VICTORY_LAP_UNLOCK_REBIRTH / updateVictoryLap), so the wording says
+    // "upgrade" rather than "unlock".
     rebirthUnlockPreviews.push({
       rebirth: VICTORY_LAP_UNLOCK_REBIRTH,
       text: `Reach Rebirth ${VICTORY_LAP_UNLOCK_REBIRTH} to upgrade the victory lap with party lights and confetti`,
@@ -4973,16 +4975,18 @@
   // shares a tier with DANCE_PARTY_UNLOCK_REBIRTH. See updateDanceOff and the
   // keydown handler's Alt+O branch for the two gate checks.
   const DANCE_OFF_UNLOCK_REBIRTH = 4;   // rebirths required before the dance-off unlocks; tunable
-  // p3-t4: the wave-clear "victory lap" is deliberately UNGATED at its base —
-  // every agent that fought pops a brief cheer the instant a wave is fully
-  // cleared (see updateVictoryLap), from the very start of the game, so
-  // combat always has a payoff. This constant only gates the UPGRADE: the
-  // same moment gets longer, plus the shared party lighting/ball
+  // p3-t4: the wave-clear "victory lap" fires on a gated cadence, not every
+  // clear — see VICTORY_LAP_CLASH_INTERVAL/VICTORY_LAP_CHANCE/victoryLapClashCount
+  // near updateVictoryLap: only every VICTORY_LAP_CLASH_INTERVAL-th wave-clear
+  // "clash" even rolls, and that roll only hits VICTORY_LAP_CHANCE of the
+  // time, from the very start of the game, so combat's payoff stays a
+  // surprise rather than a guarantee. This constant only gates the UPGRADE:
+  // when a lap DOES fire, it gets longer, plus the shared party lighting/ball
   // (partyVisualIntensity/getActivePartyPalette) and a confetti burst, once
   // the player reaches this rebirth tier — mirroring DANCE_OFF_UNLOCK_REBIRTH's
   // gate style one line up. The Alt+P gold-preview override (below) also
   // force-shows the upgraded version early — see startVictoryLap.
-  const VICTORY_LAP_UNLOCK_REBIRTH = 5; // rebirths required before the wave-clear victory lap gets the upgraded (lit/confetti) version; the base cheer is ungated; tunable
+  const VICTORY_LAP_UNLOCK_REBIRTH = 5; // rebirths required before a wave-clear victory lap gets the upgraded (lit/confetti) version; whether a lap fires at all is gated separately (VICTORY_LAP_CLASH_INTERVAL/VICTORY_LAP_CHANCE); tunable
   // p3-t5: the gold/amber party palette (disco lighting, the disco ball, and
   // the dance-off winner confetti — see getActivePartyPalette further down)
   // unlocks one tier above the dance-off. Alt+P previews it without touching
@@ -5776,16 +5780,16 @@
    *  rival-cancel path, which snaps off immediately — see cancelDiscoParty). */
   const DISCO_EASE_SECONDS = 0.4;
   /** Seconds between random-trigger eligibility rolls. */
-  const DISCO_CHECK_SECONDS = 20;
+  const DISCO_CHECK_SECONDS = 45;
   /** Chance per eligibility check that a party starts. Mean interval ≈
-   *  DISCO_CHECK_SECONDS / DISCO_CHANCE ≈ 500s (~8 min) of continuous
+   *  DISCO_CHECK_SECONDS / DISCO_CHANCE ≈ 1125s (~19 min) of continuous
    *  visible runtime — "on the order of once per several minutes", per spec.
    *  Time-based (not a per-frame roll) so the rate is frame-rate independent. */
   const DISCO_CHANCE = 0.04;
   /** Minimum cooldown (seconds) after a party ends before another may start
    *  via the random trigger (the D-key debug trigger ignores this, mirroring
    *  the 'c' conga hotkey precedent — see the keydown handler). */
-  const DISCO_COOLDOWN_SECONDS = 180;
+  const DISCO_COOLDOWN_SECONDS = 300;
 
   // ── Disco-ball sprite (bundled, theme-independent) ────────────────────────
   // Ships with the extension (media/sprites/disco_ball.png) rather than being
@@ -6140,9 +6144,9 @@
   /** Rebirths required before the sparring exhibition unlocks — same tier as the gold party palette; the stand-up huddle unlocks separately at HUDDLE_UNLOCK_REBIRTH. */
   const SPARRING_UNLOCK_REBIRTH = 6;
   /** Seconds between random-trigger eligibility rolls (time-based, not per-frame, like every other ambient system's check). */
-  const SPARRING_CHECK_SECONDS = 60;
-  /** Chance per eligibility check that an exhibition starts — mean interval ≈ SPARRING_CHECK_SECONDS/SPARRING_CHANCE ≈ 150s, an "occasional" cadence per product ask. */
-  const SPARRING_CHANCE = 0.4;
+  const SPARRING_CHECK_SECONDS = 90;
+  /** Chance per eligibility check that an exhibition starts — mean interval ≈ SPARRING_CHECK_SECONDS/SPARRING_CHANCE ≈ 900s, an "occasional" cadence per product ask. */
+  const SPARRING_CHANCE = 0.1;
   /** Cooldown (seconds) after a run ends before another may start via the random trigger. */
   const SPARRING_COOLDOWN_SECONDS = 240;
   /** Half the native-px gap between the two sparrers ("~a body-width apart") — comfortably above MIN_AGENT_SEP_NATIVE (34) so the separation pass never fights the face-off spacing, mirrors DANCE_OFF_STAND_HALF_GAP. */
@@ -6761,9 +6765,15 @@
   }
 
   // ── Victory lap (wave-clear celebration) ──────────────────────────────
-  // Fires the instant activeEnemies goes from non-empty to empty (a wave is
-  // fully cleared) — see updateVictoryLap for the edge-trigger latch. Base
-  // form is an ungated, ~2s "cheer" pose (via playEmote, the SAME
+  // Each non-empty→empty activeEnemies edge (a wave is fully cleared, i.e. a
+  // "clash" completing) — see updateVictoryLap for the edge-trigger latch —
+  // increments a session-local clash counter. Only every
+  // VICTORY_LAP_CLASH_INTERVAL-th clash even ROLLS for a lap, and that roll
+  // only succeeds VICTORY_LAP_CHANCE of the time; every other clash (wrong
+  // multiple, or a failed roll) just returns agents to normal post-combat
+  // idle with no lap and no dangling state (updateVictoryLap explicitly
+  // drains victoryLapWaveParticipants on that path). On a hit, base form is
+  // an ungated, ~2s "cheer" pose (via playEmote, the SAME
   // emoting/emoteClip/emoteTimeLeft one-shot mechanism point/signal/block
   // already use) on every agent that fought — purely cosmetic, never touches
   // movement/build/combat state, so it can't block the work loop even if
@@ -6793,6 +6803,11 @@
    *  (`activeEnemies.length === 0`) would instead fire on every frame the
    *  floor stays clear (almost always), not just the clearing instant. */
   let victoryLapPrevEnemiesPresent = false;
+  /** Count of completed wave-clear "clashes" seen this session — used to gate
+   *  the lap to every VICTORY_LAP_CLASH_INTERVAL-th one (see updateVictoryLap).
+   *  Deliberately a plain session-local counter, not persisted anywhere — it
+   *  resets to 0 on reload, which is fine for a purely cosmetic cadence. */
+  let victoryLapClashCount = 0;
   /** Agent ids that engaged combat at any point during the CURRENT wave.
    *  Populated live by the per-character isEngaging block (see the
    *  `isEngaging = true` branch in the per-character loop) and drained by
@@ -6811,6 +6826,11 @@
    *  each way, via partyEaseIntensity, same as the other three parties) plus
    *  a real hold in the middle. */
   const VICTORY_LAP_UPGRADED_SECONDS = 4;
+  /** How many wave-clear clashes must complete before the next one even
+   *  ROLLS for a lap (see victoryLapClashCount / updateVictoryLap). */
+  const VICTORY_LAP_CLASH_INTERVAL = 5;
+  /** Chance, on an eligible (every-Nth) clash, that a lap actually starts. */
+  const VICTORY_LAP_CHANCE = 0.2;
 
   /**
    * Clear every field this feature writes on its participants
@@ -6993,14 +7013,27 @@
       return;
     }
 
-    // Not active. Edge-triggered: only start on the exact non-empty→empty
+    // Not active. Edge-triggered: only evaluate on the exact non-empty→empty
     // transition (this frame has none, but LAST frame had at least one) —
     // a level check here would instead fire every frame the floor stays
     // clear, which is almost always. Also refuses while a conga/disco
     // party/dance-off is running — a wave clearing during one of those
-    // simply doesn't trigger a lap (see the header comment above).
+    // simply doesn't count as a clash at all (see the header comment above).
     if (victoryLapPrevEnemiesPresent && !enemiesPresentNow && !congaActive && !discoPartyActive && !danceOffActive) {
-      startVictoryLap();
+      // Every clash increments the counter; only every VICTORY_LAP_CLASH_INTERVAL-th
+      // one even rolls, and that roll only hits VICTORY_LAP_CHANCE of the time.
+      victoryLapClashCount++;
+      const eligible = victoryLapClashCount % VICTORY_LAP_CLASH_INTERVAL === 0;
+      if (eligible && Math.random() < VICTORY_LAP_CHANCE) {
+        startVictoryLap();
+      } else {
+        // No lap this clash — agents simply return to work like any other
+        // post-combat moment. startVictoryLap() is the only thing that
+        // normally drains victoryLapWaveParticipants, so a clash that skips
+        // it must clear the set itself here or the NEXT wave's fighters
+        // would inherit stale ids from this uncelebrated one.
+        victoryLapWaveParticipants.clear();
+      }
     }
     victoryLapPrevEnemiesPresent = enemiesPresentNow;
   }
