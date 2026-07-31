@@ -1760,6 +1760,16 @@
     rollRebirthRequirement();
     rebirthConfirmPending = false;
     persistRebirth();
+    // Rebirth mid-ambient-quake preemption: if the panic activity (see the
+    // "Quake panic" section near the quake engine) is running, end it BEFORE
+    // starting the rebirth-profile shake below — a rebirth isn't a per-frame
+    // event (unlike a rival spawning, see updateQuakePanic's own rival
+    // preemption), so nothing else clears quakePanicActive for us. No fast
+    // fade needed here (that's specifically for fading the ambient shake out
+    // to silence): the rebirth-profile startQuake() call right below
+    // immediately overwrites the envelope with the dramatic wipe shake
+    // anyway, so there's nothing to fade — just stop driving agent movement.
+    if (quakePanicActive) endQuakePanic();
     // Quake (render-only, see startQuake): snapshot the built-object
     // positions BEFORE the wipe below clears buildBuiltCount/objectAnimMap,
     // so the dust puffs land on the objects actually being wiped, then kick
@@ -6434,7 +6444,7 @@
     // conga/disco/dance-off/huddle is running (all drive destNx/destNy or
     // charEntry.dancing), or a victory lap is playing.
     if (agentList.length < SPARRING_MIN_IDLE_FOR_START || activeEnemies.length > 0 || sparringCooldown > 0 ||
-        congaActive || discoPartyActive || danceOffActive || huddleActive || victoryLapActive) return;
+        congaActive || discoPartyActive || danceOffActive || huddleActive || victoryLapActive || quakePanicActive) return;
     if (rebirthCount < SPARRING_UNLOCK_REBIRTH) return;
     if (Math.random() >= SPARRING_CHANCE) return;
     startSparring(agentList);
@@ -6765,7 +6775,7 @@
     if (huddleCheckTimer < HUDDLE_CHECK_SECONDS) return;
     huddleCheckTimer = 0;
     if (agentList.length < HUDDLE_MIN_PARTICIPANTS || activeEnemies.length > 0 || huddleCooldown > 0 ||
-        congaActive || discoPartyActive || danceOffActive || sparringActive || victoryLapActive) return;
+        congaActive || discoPartyActive || danceOffActive || sparringActive || victoryLapActive || quakePanicActive) return;
     if (rebirthCount < HUDDLE_UNLOCK_REBIRTH) return;
     if (Math.random() >= HUDDLE_CHANCE) return;
     startHuddle(agentList);
@@ -9637,36 +9647,63 @@
   // ── Quake engine (rebirth wipe + ambient profile) ──────────────────────────
   // RENDER-TIME ONLY: a reusable camera-shake effect wired to the rebirth
   // wipe (see doRebirth()) and exposed via debug hotkeys (Alt+Q / Alt+Shift+Q,
-  // see the keydown handler near the conga/disco/dance-off hotkeys). It NEVER
-  // mutates any agent's nx/ny, dest, or object/logic state — the shake is a
-  // camera translate (render(), wrapped around the whole scene draw) plus a
-  // small per-agent secondary jitter applied ONLY at drawImage time (the
-  // "agent" branch of the depthList.forEach draw loop) — so it cannot
-  // interact with polygon clamping, combat, build, or persistence. Respects
-  // prefersReducedMotion (declared above): reduced-motion users get NO
-  // camera shake and NO per-agent jitter — dust puffs alone still play (they
-  // carry no camera motion of their own).
+  // see the keydown handler near the conga/disco/dance-off hotkeys). This
+  // ENGINE (quakeActive/quakeElapsed/quakeDuration/quakeIntensity, the
+  // amplitude/camera-offset/agent-jitter math, and the dust puffs below)
+  // still NEVER mutates any agent's nx/ny, dest, or object/logic state — the
+  // shake is a camera translate (render(), wrapped around the whole scene
+  // draw) plus a small per-agent secondary jitter applied ONLY at drawImage
+  // time (the "agent" branch of the depthList.forEach draw loop) — so it
+  // cannot interact with polygon clamping, combat, build, or persistence.
+  // Respects prefersReducedMotion (declared above): reduced-motion users get
+  // NO camera shake and NO per-agent jitter — dust puffs alone still play
+  // (they carry no camera motion of their own). The AMBIENT profile now also
+  // drives a real agent-movement activity (panic) — that is a SEPARATE
+  // system layered on top, see the "Quake panic" section below; it never
+  // reaches into this engine except to call startQuake("ambient", …) and, on
+  // rival preemption, cancelQuakeFast() (a fast amplitude fade, still
+  // render-only).
   let quakeActive = false;
   let quakeElapsed = 0;   // seconds into the current quake
   let quakeDuration = 0;  // seconds, set by startQuake() from the chosen profile
   let quakeIntensity = 0; // native px amplitude, set by startQuake() from the chosen profile
+  /** True while a rival-arrival preemption is fading the quake out early
+   *  (see cancelQuakeFast) instead of running its normal envelope. */
+  let quakeFastFade = false;
+  /** Seconds elapsed into the fast fade-out (counts 0 → QUAKE_CANCEL_FADE_SEC). */
+  let quakeFastFadeElapsed = 0;
+  /** Amplitude (native px) captured at the instant cancelQuakeFast() was
+   *  called — the fade-out ramps linearly from this down to 0, so it
+   *  continues smoothly from wherever the normal envelope currently was
+   *  rather than jumping. */
+  let quakeFastFadeFromAmp = 0;
   /** Brief dust puffs spawned on quake start, reusing the poof sprite pipeline.
    * @type {Array<{nx:number, ny:number, animState:{action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}}>} */
   let quakeDustPuffs = [];
 
   const QUAKE_REBIRTH_DURATION = 1.6;    // s
   const QUAKE_REBIRTH_INTENSITY = 5;     // native px
-  const QUAKE_AMBIENT_DURATION = 4.0;    // s — gentler but longer than the rebirth profile
+  // 30s ambient rumble (creative sign-off) — long enough that a flat
+  // attack→decay envelope over the whole span would read as fading out
+  // almost immediately (a plain cosine decay drops below ~15% amplitude by
+  // the 25s mark); quakeAmplitude() below instead does attack → a gentle
+  // flat sustain → a final QUAKE_DECAY_SEC cosine fade, so the rumble
+  // actually holds through the middle of the 30s instead of visibly
+  // trailing off early. Short profiles (rebirth, 1.6s) have no runway for a
+  // sustain phase — decayWindow there just clamps to whatever remainder is
+  // left after the attack, reproducing the original attack→decay shape
+  // exactly (see quakeAmplitude's math).
+  const QUAKE_AMBIENT_DURATION = 30.0;   // s
   const QUAKE_AMBIENT_INTENSITY = 3;     // native px
-  const QUAKE_ATTACK_SEC = 0.15;         // fast amplitude ramp-in; the remainder of quakeDuration decays to 0
+  const QUAKE_ATTACK_SEC = 0.15;         // fast amplitude ramp-in
+  const QUAKE_DECAY_SEC = 3.0;           // final cosine fade-out window (capped to the available remainder — see quakeAmplitude)
   const QUAKE_AGENT_JITTER_FRAC = 0.30;  // per-agent secondary jitter as a fraction of the camera amplitude
   const QUAKE_DUST_MAX_PUFFS = 8;        // cap on dust puffs spawned per quake start
-  // Ambient RANDOM scheduling intentionally not wired — pending creative
-  // sign-off after hotkey testing (Alt+Shift+Q triggers the ambient profile
-  // on demand today; see the keydown handler). When/if enabled, gate a
-  // per-frame roll behind constants like:
-  // const QUAKE_AMBIENT_CHECK_SECONDS = 20;
-  // const QUAKE_AMBIENT_CHANCE = 0.05;
+  /** Fade-out window (seconds) used by cancelQuakeFast — a rival arriving
+   *  mid-quake ends the shake quickly rather than on a hard cut, but still
+   *  faster than the normal QUAKE_DECAY_SEC tail (which is tuned for a
+   *  natural end, not an interruption). */
+  const QUAKE_CANCEL_FADE_SEC = 0.5;
 
   /**
    * Start a quake of the given profile ("rebirth" | "ambient") and spawn its
@@ -9680,6 +9717,13 @@
   function startQuake(profile, positions) {
     quakeActive = true;
     quakeElapsed = 0;
+    // A fresh start always wins over any in-flight fast fade (re-triggering
+    // — e.g. doRebirth's rebirth-profile quake overriding an in-progress
+    // ambient one, see doRebirth's own quake-panic cancel note) — the new
+    // envelope starts clean from a fresh attack, not a fading-out amplitude.
+    quakeFastFade = false;
+    quakeFastFadeElapsed = 0;
+    quakeFastFadeFromAmp = 0;
     if (profile === "ambient") {
       quakeDuration = QUAKE_AMBIENT_DURATION;
       quakeIntensity = QUAKE_AMBIENT_INTENSITY;
@@ -9690,11 +9734,41 @@
     spawnQuakeDust(positions);
   }
 
+  /**
+   * Preempt the active quake with a fast fade-out (QUAKE_CANCEL_FADE_SEC)
+   * instead of a hard cut — used when a rival spawns mid-ambient-quake (see
+   * updateQuakePanic). Captures the CURRENT amplitude so the fade continues
+   * smoothly from wherever the envelope was (attack/sustain/decay) rather
+   * than jumping. No-op when no quake is active or a fast fade is already
+   * running.
+   */
+  function cancelQuakeFast() {
+    if (!quakeActive || quakeFastFade) return;
+    quakeFastFade = true;
+    quakeFastFadeElapsed = 0;
+    quakeFastFadeFromAmp = quakeAmplitude();
+  }
+
   /** Advance the active quake's timer by delta seconds (same delta the rest
    * of render() uses — pause-when-hidden-safe, no fast-forward on tab return).
-   * No-op when no quake is active. */
+   * No-op when no quake is active. While a fast fade is running (see
+   * cancelQuakeFast) this advances the fade instead of the normal envelope
+   * timer, so a rival-preempted quake can't also hit its natural end mid-fade. */
   function updateQuake(delta) {
     if (!quakeActive) return;
+    if (quakeFastFade) {
+      quakeFastFadeElapsed += delta;
+      if (quakeFastFadeElapsed >= QUAKE_CANCEL_FADE_SEC) {
+        quakeActive = false;
+        quakeElapsed = 0;
+        quakeDuration = 0;
+        quakeIntensity = 0;
+        quakeFastFade = false;
+        quakeFastFadeElapsed = 0;
+        quakeFastFadeFromAmp = 0;
+      }
+      return;
+    }
     quakeElapsed += delta;
     if (quakeElapsed >= quakeDuration) {
       quakeActive = false;
@@ -9706,16 +9780,30 @@
 
   /**
    * Current shake amplitude in NATIVE px: a fast attack ramp (QUAKE_ATTACK_SEC)
-   * up to quakeIntensity, then a smooth cosine decay to 0 over the remainder
-   * of quakeDuration. 0 when no quake is active.
+   * up to quakeIntensity, then a gentle flat sustain, then a smooth cosine
+   * decay to 0 over the final QUAKE_DECAY_SEC (capped to whatever remainder
+   * is actually available after the attack, so a short profile like rebirth
+   * — no runway for a sustain — decays over its full remainder exactly as
+   * before). While a fast fade is in flight (see cancelQuakeFast) this
+   * ignores the normal envelope entirely and ramps quakeFastFadeFromAmp
+   * linearly to 0 over QUAKE_CANCEL_FADE_SEC instead. 0 when no quake is active.
    */
   function quakeAmplitude() {
     if (!quakeActive) return 0;
+    if (quakeFastFade) {
+      const t = Math.min(1, quakeFastFadeElapsed / QUAKE_CANCEL_FADE_SEC);
+      return quakeFastFadeFromAmp * (1 - t);
+    }
     if (quakeElapsed < QUAKE_ATTACK_SEC) {
       return quakeIntensity * (quakeElapsed / QUAKE_ATTACK_SEC);
     }
-    const remain = Math.max(quakeDuration - QUAKE_ATTACK_SEC, 0.0001);
-    const t = Math.max(0, Math.min(1, (quakeElapsed - QUAKE_ATTACK_SEC) / remain));
+    const remainAfterAttack = Math.max(quakeDuration - QUAKE_ATTACK_SEC, 0.0001);
+    const decayWindow = Math.min(QUAKE_DECAY_SEC, remainAfterAttack);
+    const decayStart = quakeDuration - decayWindow;
+    if (quakeElapsed < decayStart) {
+      return quakeIntensity; // gentle sustain — steady rumble between attack and final decay
+    }
+    const t = Math.max(0, Math.min(1, (quakeElapsed - decayStart) / decayWindow));
     return quakeIntensity * (0.5 + 0.5 * Math.cos(t * Math.PI));
   }
 
@@ -9821,6 +9909,219 @@
       const canvasPt = nativeToCanvas(puff.nx, puff.ny, lastBgX, lastBgY, lastBgW, lastBgH);
       ctx.drawImage(img, canvasPt[0] - size / 2, canvasPt[1] - size, size, size);
     }
+  }
+
+  // ── Quake panic (ambient earthquake easter egg) ─────────────────────────
+  // The FULL ambient quake event: the render-only camera shake above (see
+  // startQuake("ambient", …)) PLUS a real agent-movement activity layered on
+  // top — every non-dazed agent scatters, repeatedly picking a new random
+  // walkable destination on its own stagger timer and moving there at an
+  // elevated speed (QUAKE_PANIC_SPEED_MULT), via the SAME dest-based
+  // movement machinery every other ambient activity uses (destNx/destNy →
+  // the shared "step toward destination" block in the per-character loop —
+  // see charEntry.quakePanicTimer and the "Quake panic" block in that loop).
+  // Real movement, so every polygon-clamp/collision guarantee applies
+  // automatically. Each panicking agent ALSO shows a frequent expression
+  // bubble — see charEntry.quakePanicExprTimer and QUAKE_PANIC_EXPR_* below
+  // — a deliberate exception: Dazed (index 7) is normally combat-reserved,
+  // but during the AMBIENT quake it's combat-and-earthquake-reserved (still
+  // off-limits to every other ambient system — sparring/huddle/dance-off —
+  // which keep their own STRICT no-Dazed/no-Anger rules unchanged). The
+  // REBIRTH-profile quake (startQuake("rebirth", …), Alt+Q, doRebirth) never
+  // calls startQuakePanic — only triggerAmbientQuake does — so it stays
+  // zero-expression and visual-only, exactly as before.
+  //
+  // Structurally mirrors the sparring/huddle sections above (own state,
+  // start/end/cancel functions, a live-derived `inQuakePanic` gate threaded
+  // through every engage/build/idle/extinguish/wander exclusion the other
+  // ambient activities already extend) with ONE difference: this isn't a
+  // small picked participant set — since the event can never start (or
+  // survive) while any rival is alive (see quakeAmbientBlockedReason and
+  // updateQuakePanic's rival-preemption below), there's never a combat agent
+  // to hand-pick around, so every eligible agent panics at once.
+  /** True while the panic activity is running (camera shake and panic are
+   *  independently timed — see startQuake vs startQuakePanic — but always
+   *  started/stopped together by triggerAmbientQuake/updateQuakePanic). */
+  let quakePanicActive = false;
+  /** Accumulator (seconds) toward the next ambient-quake eligibility check. */
+  let quakeAmbientCheckTimer = 0;
+  /** Cooldown (seconds) remaining before another ambient quake may start via
+   *  the random trigger. Also stamped by the Alt+Shift+Q hotkey (see
+   *  triggerAmbientQuake) so manual previews don't defeat the rarity budget. */
+  let quakeAmbientCooldown = 0;
+  /** Per-agent panic destination re-pick interval (seconds) — a per-agent
+   *  stagger, not a synchronized tick, so the whole roster doesn't redirect
+   *  in lockstep (mirrors DISCO_BUBBLE_STAGGER's reasoning, applied to
+   *  movement instead of a bubble). */
+  const QUAKE_PANIC_INTERVAL_MIN = 0.6;
+  const QUAKE_PANIC_INTERVAL_MAX = 1.2;
+  /** Panic movement speed as a multiple of WANDER_SPEED — applied at the
+   *  "step toward destination" block (mirrors the conga leader's
+   *  WANDER_SPEED*1.2, just larger — panic should read as faster than any
+   *  other ambient movement). */
+  const QUAKE_PANIC_SPEED_MULT = 1.6;
+  /** Per-agent panic EXPRESSION re-pick interval (seconds), independent of
+   *  QUAKE_PANIC_INTERVAL_* (movement) — see charEntry.quakePanicExprTimer
+   *  and the "Quake panic" block in the per-character loop. Design target:
+   *  ~3-5 bubbles per agent over the 30s ambient event. A staggered first
+   *  fire at QUAKE_PANIC_EXPR_STAGGER_MIN/MAX_SEC (mean 6s) followed by
+   *  repeats every QUAKE_PANIC_EXPR_MIN/MAX_SEC (mean 8s) works out to
+   *  roughly 1 + floor((30 - 6) / 8) ≈ 4 fires per agent — within target —
+   *  randomized per-agent so the whole roster doesn't bubble in lockstep. */
+  const QUAKE_PANIC_EXPR_STAGGER_MIN_SEC = 4;
+  const QUAKE_PANIC_EXPR_STAGGER_MAX_SEC = 8;
+  const QUAKE_PANIC_EXPR_MIN_SEC = 6;
+  const QUAKE_PANIC_EXPR_MAX_SEC = 10;
+  /** How long (seconds) each panic expression bubble stays visible — mirrors
+   *  the sparring spectator-reaction bubble's duration. */
+  const QUAKE_PANIC_EXPR_DURATION_SEC = 1.6;
+  /** Equal-chance icon pool for panic bubbles: Team(3), Anger(2), Idea(1),
+   *  Dazed(7) — per explicit product direction, Dazed is allowed here even
+   *  though it's normally combat-only (see this section's top-of-file doc:
+   *  Dazed is combat-AND-earthquake-reserved, still off-limits to every
+   *  other ambient system). */
+  const QUAKE_PANIC_EXPR_POOL = [3, 2, 1, 7];
+  /** Seconds between ambient-quake random-trigger eligibility rolls — same
+   *  time-based (not per-frame) approach every other ambient system uses. */
+  const QUAKE_AMBIENT_CHECK_SECONDS = 180;
+  /** Chance per eligibility check that the ambient event starts. Mean
+   *  interval ≈ QUAKE_AMBIENT_CHECK_SECONDS / QUAKE_AMBIENT_CHANCE = 180 /
+   *  0.001 = 180,000s ≈ 50 hours — deliberately rare (an earthquake is a
+   *  "someday, during a long session" event, not a frequent one). */
+  const QUAKE_AMBIENT_CHANCE = 0.001;
+  /** Cooldown (seconds) after an ambient quake ends before another may start
+   *  via the random trigger — same 3600s (1h) budget conga's rare-event
+   *  cooldown uses. */
+  const QUAKE_AMBIENT_COOLDOWN_SECONDS = 3600;
+  /** Minimum agents required to even attempt a start — same floor conga uses. */
+  const QUAKE_AMBIENT_MIN_AGENTS = 3;
+
+  /**
+   * Reason the FULL ambient quake event (shake + panic) cannot start right
+   * now, or null if it's clear to start. Shared by the random scheduler
+   * (updateQuakeAmbientScheduler) and the Alt+Shift+Q hotkey (via
+   * triggerAmbientQuake) so both paths refuse for the identical set of
+   * reasons — the "no rival battle at the same time" rule lives here once,
+   * not duplicated. Deliberately does NOT check quakeAmbientCooldown/
+   * prefersReducedMotion — those are scheduler-only concerns (the hotkey is
+   * a manual preview and intentionally bypasses cooldown/reduced-motion,
+   * mirroring the conga/disco/dance-off debug-hotkey precedent — see the
+   * keydown handler's own comment on those).
+   * @param {Array<object>} agentList current sceneAgentList
+   * @returns {string|null}
+   */
+  function quakeAmbientBlockedReason(agentList) {
+    if (quakePanicActive) return "ambient quake already active";
+    if (!agentList || agentList.length < QUAKE_AMBIENT_MIN_AGENTS) return "too few agents";
+    if (activeEnemies.length > 0) return "rivals present";
+    if (congaActive || discoPartyActive || danceOffActive || sparringActive || huddleActive || victoryLapActive) return "another ambient activity is active";
+    return null;
+  }
+
+  /**
+   * Attempt to start the full ambient quake event (shake + panic), applying
+   * quakeAmbientBlockedReason's guard first. No-op (with a console.log
+   * naming the reason) when blocked — used by both the random scheduler and
+   * the Alt+Shift+Q hotkey so a suppressed attempt is always visible in the
+   * console rather than silently doing nothing. Stamps quakeAmbientCooldown
+   * on an actual start either way (random trigger OR hotkey), so a manual
+   * preview still counts against the rarity budget.
+   * @param {Array<object>} agentList current sceneAgentList
+   * @param {string} source "random" | "hotkey", for the console log only
+   * @returns {boolean} true if the event actually started
+   */
+  function triggerAmbientQuake(agentList, source) {
+    const blocked = quakeAmbientBlockedReason(agentList);
+    if (blocked) {
+      console.log(`[quake] ambient event suppressed (${source}): ${blocked}`);
+      return false;
+    }
+    startQuake("ambient", capturedBuiltObjectPositions());
+    startQuakePanic(agentList);
+    quakeAmbientCooldown = QUAKE_AMBIENT_COOLDOWN_SECONDS;
+    return true;
+  }
+
+  /**
+   * Enroll every eligible agent (see inQuakePanic's derivation in the
+   * per-character loop — non-dazed is the only exclusion) into the panic
+   * activity and pre-seed each one's movement AND expression re-pick timers
+   * with a random stagger so the whole roster doesn't redirect/bubble on the
+   * same frame.
+   * @param {Array<object>} agentList current sceneAgentList
+   */
+  function startQuakePanic(agentList) {
+    quakePanicActive = true;
+    for (const a of agentList) {
+      if (!a) continue;
+      const e = agentCharMap[a.id];
+      if (!e) continue;
+      e.quakePanicTimer = Math.random() * QUAKE_PANIC_INTERVAL_MAX;
+      e.quakePanicExprTimer = QUAKE_PANIC_EXPR_STAGGER_MIN_SEC + Math.random() * (QUAKE_PANIC_EXPR_STAGGER_MAX_SEC - QUAKE_PANIC_EXPR_STAGGER_MIN_SEC);
+    }
+  }
+
+  /** Reset the panic activity to inactive. No per-agent destNx/destNy/
+   *  settled/quakePanicExprTimer cleanup needed — same reasoning as
+   *  resetSparringState's doc: normal wander/AI happily inherits and
+   *  overwrites those fields the instant `inQuakePanic` reads false next
+   *  frame, and quakePanicExprTimer is only ever read/decremented INSIDE
+   *  the `if (inQuakePanic)` block in the per-character loop — once this
+   *  flips quakePanicActive false, nothing ever fires another bubble off a
+   *  stale value; startQuakePanic reseeds it fresh on the next run anyway. */
+  function endQuakePanic() {
+    quakePanicActive = false;
+  }
+
+  /**
+   * Advance the panic activity's preemption rule. Called once per frame,
+   * after updateHuddle (same ordering rationale as updateSparring/
+   * updateHuddle's own doc — this frame's congaActive/discoPartyActive/
+   * danceOffActive/sparringActive/huddleActive already reflect anything that
+   * just started/ended) and before the per-character loop, so a same-frame
+   * rival arrival clears quakePanicActive (and therefore inQuakePanic,
+   * derived per-agent in that loop) in time for combat to resume THIS frame.
+   * The actual per-agent destination-picking lives inline in the
+   * per-character loop (see the "Quake panic" block there, mirroring
+   * inConga's shape) since every agent independently re-targets on its own
+   * stagger timer rather than sharing one line/ring of positions.
+   *
+   * Rebirth mid-quake is handled separately by doRebirth() itself (it calls
+   * endQuakePanic() directly right before starting the rebirth-profile
+   * quake) since a rebirth isn't a per-frame event — see doRebirth's own note.
+   */
+  function updateQuakePanic() {
+    if (!quakePanicActive) return;
+    // Rivals spawning mid-quake immediately end BOTH the panic (agents
+    // revert to normal AI this same frame, including engaging combat
+    // normally — see inQuakePanic's derivation) and the shake itself, faded
+    // out quickly rather than cut hard (see cancelQuakeFast).
+    if (activeEnemies.length > 0) {
+      endQuakePanic();
+      cancelQuakeFast();
+    }
+  }
+
+  /**
+   * Random-trigger scheduler for the ambient quake event — time-based (not
+   * per-frame), same approach as the conga/disco/dance-off/sparring/huddle
+   * checks. Random triggering is fully disabled for reduced-motion users
+   * (product decision — mirrors updateDiscoParty's identical rule; the
+   * Alt+Shift+Q hotkey still works for them, same as the D-key precedent).
+   * @param {number} delta seconds
+   * @param {Array<object>} agentList current sceneAgentList
+   */
+  function updateQuakeAmbientScheduler(delta, agentList) {
+    if (quakeAmbientCooldown > 0) quakeAmbientCooldown = Math.max(0, quakeAmbientCooldown - delta);
+    if (quakePanicActive) return; // already running — updateQuakePanic owns it
+    if (prefersReducedMotion) return;
+    quakeAmbientCheckTimer += delta;
+    if (quakeAmbientCheckTimer < QUAKE_AMBIENT_CHECK_SECONDS) return;
+    quakeAmbientCheckTimer = 0;
+    if (quakeAmbientCooldown > 0) return;
+    if (quakeAmbientBlockedReason(agentList)) return;
+    if (Math.random() >= QUAKE_AMBIENT_CHANCE) return;
+    triggerAmbientQuake(agentList, "random");
   }
 
   function resize() {
@@ -14867,7 +15168,7 @@
     // congaActive/discoPartyActive check). The victoryLapActive check added
     // below is the same idea applied to the newer fourth system — see
     // updateVictoryLap.
-    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0 || discoPartyActive || danceOffActive || victoryLapActive) return;
+    if (agentList.length < 3 || activeEnemies.length > 0 || congaCooldown > 0 || discoPartyActive || danceOffActive || victoryLapActive || quakePanicActive) return;
     if (Math.random() >= CONGA_CHANCE) return;
 
     startConga(agentList);
@@ -15463,7 +15764,7 @@
     // TURRET_UNLOCK_REBIRTH's gate style; the Alt+D hotkey below carries the
     // same check). Also blocked while a victory lap is playing — see
     // updateVictoryLap.
-    if (agentList.length < 1 || activeEnemies.length > 0 || discoCooldown > 0 || congaActive || danceOffActive || victoryLapActive) return;
+    if (agentList.length < 1 || activeEnemies.length > 0 || discoCooldown > 0 || congaActive || danceOffActive || victoryLapActive || quakePanicActive) return;
     if (rebirthCount < DANCE_PARTY_UNLOCK_REBIRTH) return;
     if (Math.random() >= DISCO_CHANCE) return;
     startDiscoParty();
@@ -15799,7 +16100,7 @@
     // cooldown, or a conga/disco party is running (kept mutually exclusive —
     // all three drive charEntry.dancing/destNx/destNy). Also blocked while a
     // victory lap is playing — see updateVictoryLap.
-    if (agentList.length < 2 || activeEnemies.length > 0 || danceOffCooldown > 0 || congaActive || discoPartyActive || victoryLapActive) return;
+    if (agentList.length < 2 || activeEnemies.length > 0 || danceOffCooldown > 0 || congaActive || discoPartyActive || victoryLapActive || quakePanicActive) return;
     // GATE SPOT: the dance-off unlocks one tier above the disco dance party,
     // via its own DANCE_OFF_UNLOCK_REBIRTH constant (mirrors
     // DANCE_PARTY_UNLOCK_REBIRTH's check in updateDiscoParty above; the
@@ -16234,18 +16535,22 @@
       startVictoryLap(lastAgentList);
     }
     if (key === "q" && e.altKey && !e.ctrlKey && !e.metaKey) {
-      // Debug/preview hotkeys for the quake engine (see startQuake). Unlike
-      // the party hotkeys above these carry NO eligibility/party-state gates
-      // — a quake never touches agent behavior or party state, so there's
-      // nothing to conflict with. Both branches use CURRENT built-object
-      // positions for the dust puffs (capturedBuiltObjectPositions) since
-      // neither one wipes anything.
+      // Debug/preview hotkeys for the quake engine (see startQuake). Alt+Q
+      // (rebirth-profile shake) carries NO eligibility/party-state gates — a
+      // plain camera shake never touches agent behavior or party state, so
+      // there's nothing to conflict with. Alt+Shift+Q is different: it now
+      // triggers the FULL ambient event (shake + panic — see "Quake panic"
+      // near the quake engine), which DOES drive agent movement, so it goes
+      // through the same start guard the random scheduler uses
+      // (triggerAmbientQuake/quakeAmbientBlockedReason) — a no-op with a
+      // console.log reason when suppressed by rivals or another ambient
+      // activity, same as every other party hotkey's belt-and-braces style.
       if (e.shiftKey) {
-        // Alt+Shift+Q → ambient-profile quake (gentler, longer — see
-        // QUAKE_AMBIENT_DURATION/INTENSITY). Not otherwise wired anywhere
-        // yet (see the "ambient RANDOM scheduling" comment near the quake
-        // constants) — this is the only way to preview it today.
-        startQuake("ambient", capturedBuiltObjectPositions());
+        // Alt+Shift+Q → full ambient quake event: QUAKE_AMBIENT_DURATION
+        // shake + panic, and stamps quakeAmbientCooldown same as the random
+        // trigger (see triggerAmbientQuake) so a manual preview still counts
+        // against the rarity budget.
+        triggerAmbientQuake(lastAgentList, "hotkey");
       } else {
         // Alt+Q → rebirth-profile quake, VISUAL ONLY: does NOT call
         // doRebirth() and does not touch rebirthCount, badges, or build
@@ -16885,6 +17190,16 @@
       // system's ordering already accepts. See updateSparring/updateHuddle.
       updateSparring(delta, sceneAgentList);
       updateHuddle(delta, sceneAgentList);
+      // Ambient quake event (shake + panic — see the "Quake panic" section
+      // near the quake engine). The scheduler's random trigger reads
+      // congaActive/discoPartyActive/danceOffActive/sparringActive/
+      // huddleActive/victoryLapActive via quakeAmbientBlockedReason, so it
+      // runs after all five of those (same ordering rationale as
+      // updateSparring/updateHuddle above); the preemption check runs before
+      // the per-character loop so a same-frame rival arrival clears
+      // inQuakePanic in time for combat to resume THIS frame.
+      updateQuakePanic();
+      updateQuakeAmbientScheduler(delta, sceneAgentList);
       // Runs AFTER the three parties (so this frame's congaActive/
       // discoPartyActive/danceOffActive already reflect anything that just
       // started/ended this same frame — no same-frame race, same reasoning
@@ -17135,6 +17450,17 @@
           destNy: home[1],
           // Timer until next wander pick
           wanderTimer: wanderDelay,
+          // Timer until next quake-panic destination re-pick (see the
+          // "Quake panic" section near the quake engine and inQuakePanic's
+          // derivation above) — defaults to 0 so a mid-panic new roster
+          // entry re-targets on its very next eligible frame rather than
+          // waiting on an undefined countdown.
+          quakePanicTimer: 0,
+          // Timer until next quake-panic EXPRESSION bubble re-pick (see
+          // QUAKE_PANIC_EXPR_* and startQuakePanic's stagger seed) —
+          // independent of quakePanicTimer (movement); same
+          // defaults-to-0/reseeded-on-start reasoning.
+          quakePanicExprTimer: 0,
           // Legacy canvas x/y (kept for facing, not for positioning)
           x: 0,
           y: 0,
@@ -17326,6 +17652,55 @@
       // per the same "fully preempts" contract.
       const inSparring = sparringActive && (charEntry.__id === sparringIdA || charEntry.__id === sparringIdB || sparringSpectatorIds.indexOf(charEntry.__id) >= 0);
       const inHuddle = huddleActive && huddleParticipantIds.indexOf(charEntry.__id) >= 0;
+      // Quake-panic enrollment (see the "Quake panic" section near the quake
+      // engine, and updateQuakePanic/triggerAmbientQuake): unlike
+      // inConga/inDanceOff/inSparring/inHuddle above, this is NOT a small
+      // picked participant set — the ambient quake event can never start (or
+      // survive) while any rival is alive (quakeAmbientBlockedReason refuses
+      // to start with one present; a rival arriving mid-quake preempts the
+      // whole event immediately — see updateQuakePanic), so there is never a
+      // combat agent to exclude by hand and every eligible agent panics at
+      // once. Dazed is the one exception — mirrors pickSparringParticipants/
+      // pickHuddleParticipants excluding dazePhase != null — a recovering
+      // agent keeps its seat-seek/recovery animation instead of being pulled
+      // into a panic sprint. Threaded through every engage/build/idle/
+      // extinguish/wander exclusion inDanceOff already extends, per the same
+      // "fully preempts" contract.
+      const inQuakePanic = quakePanicActive && charEntry.dazePhase == null;
+      if (inQuakePanic) {
+        // A panicking agent never dances or sits — mirrors inConga's own
+        // dancing/seat clear above.
+        charEntry.dancing = false;
+        charEntry.danceTimeLeft = 0;
+        if (charEntry.sitting || charEntry.sitSeatId != null) freeAgentSeat(charEntry);
+        charEntry.quakePanicTimer -= delta;
+        if (charEntry.quakePanicTimer <= 0) {
+          const dest = randomInsidePoly(walkablePolygon);
+          charEntry.destNx = dest[0];
+          charEntry.destNy = dest[1];
+          charEntry.settled = false;
+          charEntry.quakePanicTimer = QUAKE_PANIC_INTERVAL_MIN + Math.random() * (QUAKE_PANIC_INTERVAL_MAX - QUAKE_PANIC_INTERVAL_MIN);
+        }
+        // Frequent panic expression bubble (product direction, distinct from
+        // the sparring/dance-off/huddle "no Dazed/Anger" rule): equal random
+        // pick from QUAKE_PANIC_EXPR_POOL (Team/Anger/Idea/Dazed), on its own
+        // independent stagger timer (QUAKE_PANIC_EXPR_*, seeded by
+        // startQuakePanic). force=true bypasses the 60s BUBBLE_COOLDOWN_SEC
+        // (same as the disco/conga "deliberate whole-cast" bubbles) so the
+        // ~6-10s cadence isn't swallowed by the shared ambient-chatter rate
+        // limit; it deliberately does NOT set the cooldown either, so it
+        // can't suppress a legitimate ambient bubble once panic ends. This
+        // timer only ever ticks/fires inside this `if (inQuakePanic)` block,
+        // so the moment quakePanicActive goes false (natural end, rival
+        // preemption, or rebirth — see endQuakePanic's callers) nothing more
+        // fires; no pending timer leaks past the event.
+        charEntry.quakePanicExprTimer -= delta;
+        if (charEntry.quakePanicExprTimer <= 0) {
+          const exprIdx = QUAKE_PANIC_EXPR_POOL[Math.floor(Math.random() * QUAKE_PANIC_EXPR_POOL.length)];
+          showExpression(charEntry, exprIdx, QUAKE_PANIC_EXPR_DURATION_SEC, true);
+          charEntry.quakePanicExprTimer = QUAKE_PANIC_EXPR_MIN_SEC + Math.random() * (QUAKE_PANIC_EXPR_MAX_SEC - QUAKE_PANIC_EXPR_MIN_SEC);
+        }
+      }
       if (inConga) {
         // A conga member never dances or sits.
         charEntry.dancing = false;
@@ -17372,7 +17747,7 @@
       // A dazed agent (dazePhase != null) also sits out combat entirely —
       // "stop fighting" is part of the dazed-on-damage cosmetic state
       // machine (see DAZE_* consts); it resumes once daze clears.
-      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !charEntry.dancing && enemiesAlive && charEntry.dazePhase == null) {
+      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !inQuakePanic && !charEntry.dancing && enemiesAlive && charEntry.dazePhase == null) {
         let nearestEnemy = null, nearestDist = Infinity;
         for (const en of activeEnemies) {
           if (en.fleeing) continue; // Change 2: fleeing enemies are not threats
@@ -17585,7 +17960,7 @@
       // to repair when damage exists, and resume building once the repair
       // assignment clears (extinguishTargetId back to null next frame).
       let isBuilding = false;
-      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement && charEntry.extinguishTargetId == null) {
+      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !inQuakePanic && !isEngaging && !charEntry.dancing && isActive && activeBuildPlacement && charEntry.extinguishTargetId == null) {
         // Once already settled (arrived + latched, see charEntry.settled) at
         // THIS same build target, freeze destNx/destNy — no per-frame
         // re-target — so a stationary builder never gets nudged back into
@@ -17608,7 +17983,7 @@
         }
         charEntry.buildTargetId = activeBuildObj.object_id;
         isBuilding = true;
-      } else if (!isEngaging && !inConga && !inDanceOff && !inSparring && !inHuddle) {
+      } else if (!isEngaging && !inConga && !inDanceOff && !inSparring && !inHuddle && !inQuakePanic) {
         charEntry.buildTargetId = null;
       }
 
@@ -17616,7 +17991,7 @@
       // An idle, stationary agent may randomly break into a short dance. It
       // is fully preempted by conga/engage/build. While dancing it holds
       // position and a manual frame mixer swaps the three dance frames.
-      const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga && !inDanceOff && !inSparring && !inHuddle;
+      const idleAndStill = !isActive && !isBuilding && !isEngaging && !inConga && !inDanceOff && !inSparring && !inHuddle && !inQuakePanic;
       charEntry.idleStill = idleAndStill;
 
       // ── Dazed-on-damage: retreat/seated phases (cosmetic) ───────────────
@@ -17711,7 +18086,7 @@
       // anymore.) Then derive this-frame intent: an eligible char with a
       // still-smoking assigned object that isn't fighting a rival (combat always
       // wins). extinguishArrived latches once within EXTINGUISH_ARRIVE_EPS of it.
-      charEntry.extinguishEligible = !inConga && !inDanceOff && !inSparring && !inHuddle && !isEngaging && !charEntry.dancing && (charEntry.sitSeatId == null) && charEntry.dazePhase == null;
+      charEntry.extinguishEligible = !inConga && !inDanceOff && !inSparring && !inHuddle && !inQuakePanic && !isEngaging && !charEntry.dancing && (charEntry.sitSeatId == null) && charEntry.dazePhase == null;
       const isExtinguishing = !!(
         charEntry.extinguishTargetId &&
         objectSmoke[charEntry.extinguishTargetId] &&
@@ -17892,8 +18267,8 @@
       // ── Wander logic (native polygon space) ───────────────────────
       // Dancing agents hold position (no wander). Conga members are driven
       // by updateConga's destination assignment above.
-      if (!inConga && !inDanceOff && !inSparring && !inHuddle) charEntry.wanderTimer -= delta;
-      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.dazePhase == null && charEntry.wanderTimer <= 0) {
+      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !inQuakePanic) charEntry.wanderTimer -= delta;
+      if (!inConga && !inDanceOff && !inSparring && !inHuddle && !inQuakePanic && !charEntry.dancing && charEntry.sitSeatId == null && !isBuilding && !isEngaging && !isExtinguishing && charEntry.dazePhase == null && charEntry.wanderTimer <= 0) {
         // At this idle wander-decision point, an eligible idle agent may
         // instead start dancing (rare) or go sit on a free seat (rare).
         // Otherwise pick a new destination.
@@ -18016,10 +18391,16 @@
       // ── Step toward destination ────────────────────────────────────
       // Dancing agents hold position (dest == current pos). Conga leader
       // moves a touch faster so the line snakes; followers use walk speed.
+      // A panicking agent moves faster still (QUAKE_PANIC_SPEED_MULT) — the
+      // two never overlap (conga and quake-panic are mutually exclusive
+      // ambient activities, see quakeAmbientBlockedReason), so this is a
+      // plain either/or, not a stacking multiplier.
       const dxNative = charEntry.destNx - charEntry.nx;
       const dyNative = charEntry.destNy - charEntry.ny;
       const distNative = Math.sqrt(dxNative * dxNative + dyNative * dyNative);
-      const moveSpeed = (inConga && charEntry.congaIndex === 0) ? WANDER_SPEED * 1.2 : WANDER_SPEED;
+      const moveSpeed = (inConga && charEntry.congaIndex === 0) ? WANDER_SPEED * 1.2
+        : inQuakePanic ? WANDER_SPEED * QUAKE_PANIC_SPEED_MULT
+        : WANDER_SPEED;
       let isMoving = false;
       // Synchronized conga cheer: the whole line freezes in place while holding
       // the cheer pose (congaCheerHold shared across all members).
