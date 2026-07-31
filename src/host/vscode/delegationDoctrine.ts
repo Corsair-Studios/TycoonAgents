@@ -216,6 +216,19 @@ You MUST delegate:
 
 ${checklistBody}
 
+### PROPORTIONALITY
+
+Delegation does not license scope creep. When the user names the exact
+file(s) and the task is mechanical — copy, move, rename, or a small localized
+edit — the assigned worker touches ONLY those named files: no greps beyond
+them, no exploratory reads, no reference-catalog consultation, no codebase
+surveys. Delegation still applies (the work still goes to the right
+specialist), but the brief handed to that specialist must scope the task to
+the named files, and finishing verification runs against the changed files
+only — not the whole repo. Example: "Copy the retry logic from a.verse to
+b.verse" means read those two files, make the edit, verify those two —
+nothing else.
+
 ### The Fallback Rule
 
 When a task does not clearly match any specialist's keywords, delegate it to
