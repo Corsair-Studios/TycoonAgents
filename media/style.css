@@ -874,6 +874,145 @@ body {
   background: rgba(251, 113, 133, 0.26);
 }
 
+/* ── Submit feedback (Settings area) ──────────────────────────────────── */
+.feedback-field {
+  gap: 4px;
+}
+
+.feedback-field > label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.feedback-field select,
+.feedback-field textarea,
+.feedback-field input[type="text"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+  color: var(--vscode-input-foreground, var(--text));
+  background: var(--vscode-input-background, #171a1f);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 4px;
+  font: inherit;
+}
+
+.feedback-field textarea {
+  resize: vertical;
+  min-height: 90px;
+}
+
+.feedback-field select:disabled,
+.feedback-field textarea:disabled,
+.feedback-field input[type="text"]:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.feedback-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.feedback-checkbox-row input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.feedback-char-counter {
+  align-self: flex-end;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.feedback-char-counter--warn {
+  color: var(--status-error);
+  font-weight: 600;
+}
+
+/* Plain-language "what gets sent" disclosure — verbatim copy from
+   docs/FEEDBACK-PIPELINE-SPEC.md §7, always visible above the preview. */
+.feedback-disclosure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.feedback-disclosure strong {
+  color: var(--accent);
+}
+
+.feedback-disclosure ul {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.feedback-disclosure ul ul {
+  margin-top: 3px;
+}
+
+.feedback-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feedback-preview[hidden] {
+  display: none;
+}
+
+.feedback-preview-json {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--vscode-textCodeBlock-background, #111318);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text);
+}
+
+.feedback-preview-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.feedback-status {
+  font-size: 12px;
+  min-height: 1em;
+}
+
+.feedback-status--ok {
+  color: var(--status-active);
+}
+
+.feedback-status--error {
+  color: var(--status-error);
+}
+
 .danger-status {
   font-size: 11px;
   color: var(--muted);

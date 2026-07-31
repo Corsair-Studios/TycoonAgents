@@ -119,7 +119,8 @@ import {
   readArchivedPlans,
   projectPlanBackupFilePath,
 } from "./projectPlan";
-import { buildDiagnosticReport, type DiagnosticReportInput } from "./diagnosticReport";
+import { buildDiagnosticReport, type DiagnosticReportInput, type SanitizeRoots } from "./diagnosticReport";
+import { buildFeedbackPayload, postFeedback, FEEDBACK_ENDPOINT, type FeedbackFetch } from "./feedbackSubmit";
 
 /**
  * Persisted per-theme rebirth (prestige) state, stored host-side in
@@ -325,6 +326,16 @@ const IGNORE_FILE_NAMES: string[] = [".gitignore", ".p4ignore", ".urcignore"];
 const URC_TOOLING_EXTRAS: string[] = [".mcp.json", "CLAUDE.md", ".claude/"];
 
 /**
+ * Bounds for `_feedbackTicketBodies` (see field doc): at most this many
+ * retained ticket bodies (each up to ~64KB) survive at once — plenty for a
+ * user filling out/retrying a feedback ticket, nowhere near enough to be a
+ * meaningful memory concern even at the panel's lifetime scale.
+ */
+const FEEDBACK_TICKET_MAX_ENTRIES = 5;
+/** Retained ticket bodies older than this are pruned on the next SUBMIT_FEEDBACK, regardless of count. */
+const FEEDBACK_TICKET_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
  * Evidence-based detection of which ignore file(s) the Setup Wizard's
  * "Add Tycoon logs to ignore file" checkbox should target — content
  * signals only, never a guessed VCS (Path & Environment Discovery: an
@@ -469,6 +480,20 @@ export class TycoonPanel {
    */
   private _currentThemeId: string | undefined;
   private _themeGenerationAbortController: AbortController | undefined;
+  /**
+   * ticketId -> { body, storedAt } for the exact JSON body string built by
+   * SUBMIT_FEEDBACK and shown to the user as the preview. CONFIRM_FEEDBACK_SEND
+   * looks up the entry for the ticketId it echoes back — the bytes POSTed
+   * are always byte-identical to what was previewed. The entry is deleted
+   * ONLY on a successful send (so a succeeded ticket can't be resent /
+   * double-filed); a failed send RETAINS the entry so the webview's "Retry
+   * Send" button can resend the same ticketId. An unknown/expired ticketId
+   * is a safe no-op (see _handleConfirmFeedbackSend). Bounded by
+   * FEEDBACK_TICKET_MAX_ENTRIES/FEEDBACK_TICKET_MAX_AGE_MS (pruned in
+   * _pruneFeedbackTickets, called on every new SUBMIT_FEEDBACK) and cleared
+   * entirely in dispose() so nothing survives a panel close.
+   */
+  private _feedbackTicketBodies = new Map<string, { body: string; storedAt: number }>();
   private _themeGenerationGateRetryActive = false;
   private _themePauseForReview = true;
   private _themeGenerationReviewGate: {
@@ -842,6 +867,23 @@ export class TycoonPanel {
             console.error(
               "TycoonAgents: generateDiagnostic payload rejected:",
               parsedGenerateDiagnostic.error.message
+            );
+          }
+        } else if (message.type === MSG.SUBMIT_FEEDBACK) {
+          const parsedSubmitFeedback = MSG_SCHEMAS.SUBMIT_FEEDBACK.safeParse(message);
+          if (parsedSubmitFeedback.success) {
+            this._handleSubmitFeedback(parsedSubmitFeedback.data);
+          } else {
+            console.error("TycoonAgents: submitFeedback payload rejected:", parsedSubmitFeedback.error.message);
+          }
+        } else if (message.type === MSG.CONFIRM_FEEDBACK_SEND) {
+          const parsedConfirmFeedbackSend = MSG_SCHEMAS.CONFIRM_FEEDBACK_SEND.safeParse(message);
+          if (parsedConfirmFeedbackSend.success) {
+            await this._handleConfirmFeedbackSend(parsedConfirmFeedbackSend.data.ticketId);
+          } else {
+            console.error(
+              "TycoonAgents: confirmFeedbackSend payload rejected:",
+              parsedConfirmFeedbackSend.error.message
             );
           }
         } else if (message.type === MSG.RESET_METRICS) {
@@ -7556,6 +7598,41 @@ export class TycoonPanel {
       return;
     }
     try {
+      const reportInput = this._buildDiagnosticReportInput(root);
+      const report = buildDiagnosticReport(reportInput);
+
+      const filenameSafeTimestamp = reportInput.timestamp.replace(/[:.]/g, "-");
+      const outDir = path.join(root, ".claude", "tycoon");
+      const outPath = path.join(outDir, `diagnostic-report-${filenameSafeTimestamp}.md`);
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(outPath, report, "utf8");
+
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(outPath));
+      await vscode.window.showTextDocument(doc, { preview: false });
+
+      await vscode.env.clipboard.writeText(report);
+      void vscode.window.showInformationMessage(
+        "Diagnostic report generated + copied to clipboard — review it, then send it to the maintainer."
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(`TycoonAgents: Could not generate diagnostic report: ${errorMessage(err)}`);
+    }
+  }
+
+  /**
+   * Gather step shared by `_handleGenerateDiagnostic` and the feedback
+   * pipeline's "include diagnostics" checkbox (`_handleSubmitFeedback`):
+   * assembles every health signal this panel already computes elsewhere
+   * (hook health, delegation/review mode, doctrine health, context budget,
+   * roster consistency, engine/UEFN status) into a `DiagnosticReportInput`
+   * for the PURE `buildDiagnosticReport` (diagnosticReport.ts). Extracted
+   * from `_handleGenerateDiagnostic` so both callers build the identical
+   * input from the identical live signals — no drift between what the
+   * standalone diagnostic report shows and what a feedback ticket's embedded
+   * diagnostics show. NO network, NO runtime AI — only reads state already
+   * on disk or in memory.
+   */
+  private _buildDiagnosticReportInput(root: string): DiagnosticReportInput {
       const agentsDir = path.join(root, ".claude", "agents");
 
       // ---- environment -----------------------------------------------------
@@ -7676,23 +7753,148 @@ export class TycoonPanel {
         },
       };
 
-      const report = buildDiagnosticReport(reportInput);
+      return reportInput;
+  }
 
-      const filenameSafeTimestamp = reportInput.timestamp.replace(/[:.]/g, "-");
-      const outDir = path.join(root, ".claude", "tycoon");
-      const outPath = path.join(outDir, `diagnostic-report-${filenameSafeTimestamp}.md`);
-      fs.mkdirSync(outDir, { recursive: true });
-      fs.writeFileSync(outPath, report, "utf8");
+  /**
+   * SUBMIT_FEEDBACK handler (docs/FEEDBACK-PIPELINE-SPEC.md §5) — builds the
+   * exact v1 payload and replies with a PREVIEW only. NO network call
+   * happens here; this is the "before Send" step the spec makes mandatory
+   * (§5, §7). `userDescription`/`contact` are sanitized inside
+   * `buildFeedbackPayload` using the same `roots` `_buildDiagnosticReportInput`
+   * already assembles; `diagnosticMarkdown` reuses that same gather step so
+   * a feedback ticket's embedded diagnostics never disagree with the
+   * standalone "Generate diagnostic report" output. The exact JSON body
+   * string built here is retained in `_feedbackTicketBodies` keyed by
+   * `ticketId` so CONFIRM_FEEDBACK_SEND posts byte-identical bytes to what
+   * was previewed.
+   */
+  private _handleSubmitFeedback(input: {
+    category: "bug" | "idea" | "question" | "other";
+    userDescription: string;
+    includeDiagnostics: boolean;
+    contact?: string;
+  }): void {
+    const root = this._projectRoot();
+    try {
+      const reportInput = root !== "" ? this._buildDiagnosticReportInput(root) : null;
+      const roots: SanitizeRoots = reportInput?.roots ?? {
+        projectRoot: root || null,
+        homeDir: os.homedir(),
+        extensionDir: this._extensionUri.fsPath,
+      };
+      const diagnosticMarkdown =
+        input.includeDiagnostics && reportInput ? buildDiagnosticReport(reportInput) : undefined;
 
-      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(outPath));
-      await vscode.window.showTextDocument(doc, { preview: false });
+      const payload = buildFeedbackPayload(
+        {
+          category: input.category,
+          userDescription: input.userDescription,
+          contact: input.contact,
+          diagnosticMarkdown,
+        },
+        {
+          roots,
+          extensionVersion: this._currentExtensionVersion(),
+          platform: process.platform,
+          hostAppName: vscode.env.appName,
+        }
+      );
 
-      await vscode.env.clipboard.writeText(report);
-      void vscode.window.showInformationMessage(
-        "Diagnostic report generated + copied to clipboard — review it, then send it to the maintainer."
+      const bodyString = JSON.stringify(payload, null, 2);
+      this._pruneFeedbackTickets();
+      this._feedbackTicketBodies.set(payload.ticketId, { body: bodyString, storedAt: Date.now() });
+      void this._panel.webview.postMessage({
+        type: MSG.FEEDBACK_PREVIEW,
+        ticketId: payload.ticketId,
+        payloadJson: bodyString,
+      });
+    } catch (err) {
+      void vscode.window.showErrorMessage(`TycoonAgents: Could not build feedback preview: ${errorMessage(err)}`);
+    }
+  }
+
+  /**
+   * Bound `_feedbackTicketBodies` before inserting a new entry: drop
+   * anything older than FEEDBACK_TICKET_MAX_AGE_MS, then — if still over
+   * FEEDBACK_TICKET_MAX_ENTRIES — evict the oldest (by `storedAt`) until
+   * back at the cap. Called from `_handleSubmitFeedback` only; the
+   * failure-retains-entry path in `_handleConfirmFeedbackSend` never adds a
+   * new key, so it can't itself cause growth.
+   */
+  private _pruneFeedbackTickets(): void {
+    const now = Date.now();
+    for (const [id, entry] of this._feedbackTicketBodies) {
+      if (now - entry.storedAt > FEEDBACK_TICKET_MAX_AGE_MS) {
+        this._feedbackTicketBodies.delete(id);
+      }
+    }
+    while (this._feedbackTicketBodies.size >= FEEDBACK_TICKET_MAX_ENTRIES) {
+      const oldestId = this._feedbackTicketBodies.keys().next().value;
+      if (oldestId === undefined) break;
+      this._feedbackTicketBodies.delete(oldestId);
+    }
+  }
+
+  /**
+   * CONFIRM_FEEDBACK_SEND handler — the ONLY message that triggers the real
+   * network POST (spec §5 step 5). Looks up (without consuming) the
+   * retained body for `ticketId`; an unknown/expired id fails safe — no
+   * network call, FEEDBACK_RESULT with ok:false. The entry is deleted ONLY
+   * on a successful send, so a succeeded ticket can't be resent /
+   * double-filed. On failure (timeout, network error, non-2xx) the entry is
+   * RETAINED (so the webview's "Retry Send" can resend the same ticketId),
+   * the full payload JSON is copied to the clipboard so no submission is
+   * silently lost (spec §5 step 7), and the user is told to retry later.
+   * Never throws outward.
+   */
+  private async _handleConfirmFeedbackSend(ticketId: string): Promise<void> {
+    const entry = this._feedbackTicketBodies.get(ticketId);
+    const bodyString = entry?.body;
+    if (bodyString === undefined) {
+      void this._panel.webview.postMessage({
+        type: MSG.FEEDBACK_RESULT,
+        ok: false,
+        ticketId,
+        error: "This feedback preview has expired — please rebuild it and try again.",
+      });
+      return;
+    }
+    try {
+      const fetchImpl = fetch as unknown as FeedbackFetch;
+      const result = await postFeedback(bodyString, FEEDBACK_ENDPOINT, fetchImpl);
+      if (result.ok) {
+        // Single-use only on success — a succeeded ticket must never be
+        // resendable (would double-file the GitHub issue). Failure paths
+        // below deliberately do NOT delete, so the same ticketId can retry.
+        this._feedbackTicketBodies.delete(ticketId);
+        void this._panel.webview.postMessage({ type: MSG.FEEDBACK_RESULT, ok: true, ticketId });
+        void vscode.window.showInformationMessage(`TycoonAgents: Feedback submitted — ticket ${ticketId}.`);
+        return;
+      }
+      await vscode.env.clipboard.writeText(bodyString);
+      void this._panel.webview.postMessage({
+        type: MSG.FEEDBACK_RESULT,
+        ok: false,
+        ticketId,
+        error: result.error,
+      });
+      void vscode.window.showErrorMessage(
+        `TycoonAgents: Feedback submission failed (${result.error ?? "unknown error"}). ` +
+          "The full ticket details were copied to your clipboard — please retry later or paste them into the fallback form."
       );
     } catch (err) {
-      void vscode.window.showErrorMessage(`TycoonAgents: Could not generate diagnostic report: ${errorMessage(err)}`);
+      const message = errorMessage(err);
+      try {
+        await vscode.env.clipboard.writeText(bodyString);
+      } catch {
+        /* best-effort — still report the failure below */
+      }
+      void this._panel.webview.postMessage({ type: MSG.FEEDBACK_RESULT, ok: false, ticketId, error: message });
+      void vscode.window.showErrorMessage(
+        `TycoonAgents: Feedback submission failed (${message}). ` +
+          "The full ticket details were copied to your clipboard — please retry later or paste them into the fallback form."
+      );
     }
   }
 
@@ -8053,6 +8255,7 @@ export class TycoonPanel {
     TycoonPanel.currentPanel = undefined;
     this._themeGenerationAbortController?.abort();
     this._themeGenerationAbortController = undefined;
+    this._feedbackTicketBodies.clear();
     if (this._enginePollInterval !== undefined) {
       clearInterval(this._enginePollInterval);
       this._enginePollInterval = undefined;

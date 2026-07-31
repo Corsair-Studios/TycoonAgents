@@ -11618,6 +11618,10 @@
       handlePathOverrideResult(msg);
     } else if (msg && msg.type === "metricsReset") {
       handleMetricsReset(msg);
+    } else if (msg && msg.type === "feedbackPreview") {
+      handleFeedbackPreview(msg);
+    } else if (msg && msg.type === "feedbackResult") {
+      handleFeedbackResult(msg);
     } else if (msg && msg.type === "doctorReport") {
       const el = document.getElementById("doctor-results");
       if (!el) return;
@@ -14036,6 +14040,171 @@
   /** Reference to the danger-zone status line (set during render). */
   let dangerStatusEl = null;
 
+  // ── Submit feedback (Settings area) ───────────────────────────────────
+  // Two-step flow per docs/FEEDBACK-PIPELINE-SPEC.md §5: "submitFeedback"
+  // only builds a preview (no network call, nothing sent); "confirmFeedback
+  // Send" is the ONLY message that actually sends. Element refs are rebuilt
+  // each renderSettings() call (Settings re-renders its whole subtree); the
+  // ticketId/in-flight flags below persist across renders since Settings
+  // normally stays open through the whole flow.
+  //
+  // Invalidation design: rather than a live input-diff, form fields are
+  // DISABLED the instant a preview is requested and stay disabled until
+  // "Back to edit" is pressed. Editing is therefore structurally impossible
+  // without going through Back first, and Back always clears the ticketId —
+  // so "editing after a preview invalidates it" holds by construction, with
+  // no separate dirty-tracking path that could drift out of sync.
+  let feedbackCategoryEl = null;
+  let feedbackDescEl = null;
+  let feedbackDiagCheckbox = null;
+  let feedbackContactEl = null;
+  let feedbackCharCounterEl = null;
+  let feedbackFormStatusEl = null;
+  let feedbackPreviewBtn = null;
+  let feedbackPreviewSection = null;
+  let feedbackPreviewTicketEl = null;
+  let feedbackPreviewJsonEl = null;
+  let feedbackSendBtn = null;
+  let feedbackBackBtn = null;
+  let feedbackResultEl = null;
+  /** ticketId of the currently active (previewed, unsent or send-failed) preview; null when no preview is active. */
+  let feedbackPreviewTicketId = null;
+  /** True while confirmFeedbackSend is awaiting a feedbackResult reply; guards against double-submit. */
+  let feedbackSendInFlight = false;
+
+  function setFeedbackFieldsDisabled(disabled) {
+    if (feedbackCategoryEl) feedbackCategoryEl.disabled = disabled;
+    if (feedbackDescEl) feedbackDescEl.disabled = disabled;
+    if (feedbackDiagCheckbox) feedbackDiagCheckbox.disabled = disabled;
+    if (feedbackContactEl) feedbackContactEl.disabled = disabled;
+  }
+
+  /** Live character counter + Preview-button validity gate for the description textarea. */
+  function updateFeedbackCharCounter() {
+    if (!feedbackDescEl || !feedbackCharCounterEl) return;
+    const len = feedbackDescEl.value.length;
+    feedbackCharCounterEl.textContent = len + " / 4000";
+    feedbackCharCounterEl.classList.toggle("feedback-char-counter--warn", len >= 3800);
+    if (feedbackPreviewBtn && !feedbackPreviewBtn.hasAttribute("hidden")) {
+      feedbackPreviewBtn.disabled = feedbackDescEl.value.trim().length === 0;
+    }
+  }
+
+  /** Clear the form back to its defaults after a successful send. */
+  function resetFeedbackForm() {
+    feedbackPreviewTicketId = null;
+    feedbackSendInFlight = false;
+    if (feedbackCategoryEl) feedbackCategoryEl.value = "bug";
+    if (feedbackDescEl) feedbackDescEl.value = "";
+    if (feedbackDiagCheckbox) feedbackDiagCheckbox.checked = true;
+    if (feedbackContactEl) feedbackContactEl.value = "";
+    setFeedbackFieldsDisabled(false);
+    if (feedbackPreviewSection) feedbackPreviewSection.setAttribute("hidden", "");
+    if (feedbackPreviewBtn) {
+      feedbackPreviewBtn.removeAttribute("hidden");
+      feedbackPreviewBtn.disabled = true; // re-gated by updateFeedbackCharCounter below (description is now empty)
+      feedbackPreviewBtn.textContent = "Preview";
+    }
+    if (feedbackFormStatusEl) feedbackFormStatusEl.textContent = "";
+    updateFeedbackCharCounter();
+  }
+
+  /** "Back to edit" — invalidates the current preview and unlocks the fields. Does NOT clear result text (caller decides). */
+  function cancelFeedbackPreview() {
+    feedbackPreviewTicketId = null;
+    feedbackSendInFlight = false;
+    setFeedbackFieldsDisabled(false);
+    if (feedbackPreviewSection) feedbackPreviewSection.setAttribute("hidden", "");
+    if (feedbackPreviewBtn) {
+      feedbackPreviewBtn.removeAttribute("hidden");
+      feedbackPreviewBtn.disabled = false;
+      feedbackPreviewBtn.textContent = "Preview";
+    }
+    if (feedbackFormStatusEl) feedbackFormStatusEl.textContent = "";
+    if (feedbackResultEl) {
+      feedbackResultEl.textContent = "";
+      feedbackResultEl.className = "feedback-status";
+    }
+    updateFeedbackCharCounter();
+  }
+
+  /** [Preview] click — posts submitFeedback. THIS ONLY BUILDS A PREVIEW; no network call happens until confirmFeedbackSend. */
+  function requestFeedbackPreview() {
+    if (!feedbackDescEl || !feedbackCategoryEl) return;
+    const description = feedbackDescEl.value;
+    if (description.trim().length === 0) {
+      if (feedbackFormStatusEl) feedbackFormStatusEl.textContent = "Description is required.";
+      return;
+    }
+    if (feedbackFormStatusEl) feedbackFormStatusEl.textContent = "Building preview…";
+    if (feedbackPreviewBtn) {
+      feedbackPreviewBtn.disabled = true;
+      feedbackPreviewBtn.textContent = "Building preview…";
+    }
+    setFeedbackFieldsDisabled(true);
+    vscode.postMessage({
+      type: "submitFeedback",
+      category: feedbackCategoryEl.value,
+      userDescription: description,
+      includeDiagnostics: Boolean(feedbackDiagCheckbox && feedbackDiagCheckbox.checked),
+      contact: feedbackContactEl ? feedbackContactEl.value : "",
+    });
+  }
+
+  /** Host replied with the built preview — render the exact JSON + reveal Send/Back. */
+  function handleFeedbackPreview(msg) {
+    feedbackPreviewTicketId = msg.ticketId || null;
+    feedbackSendInFlight = false;
+    if (feedbackFormStatusEl) feedbackFormStatusEl.textContent = "";
+    if (feedbackPreviewBtn) feedbackPreviewBtn.setAttribute("hidden", "");
+    if (feedbackPreviewTicketEl) feedbackPreviewTicketEl.textContent = "Ticket ID: " + (msg.ticketId || "");
+    if (feedbackPreviewJsonEl) feedbackPreviewJsonEl.textContent = msg.payloadJson || "";
+    if (feedbackPreviewSection) feedbackPreviewSection.removeAttribute("hidden");
+    if (feedbackSendBtn) {
+      feedbackSendBtn.disabled = false;
+      feedbackSendBtn.textContent = "Send";
+    }
+  }
+
+  /** [Send] click — the ONLY action that actually transmits anything. */
+  function sendFeedbackConfirmed() {
+    if (!feedbackPreviewTicketId || feedbackSendInFlight) return;
+    feedbackSendInFlight = true;
+    if (feedbackSendBtn) {
+      feedbackSendBtn.disabled = true;
+      feedbackSendBtn.textContent = "Sending…";
+    }
+    if (feedbackResultEl) {
+      feedbackResultEl.textContent = "";
+      feedbackResultEl.className = "feedback-status";
+    }
+    vscode.postMessage({ type: "confirmFeedbackSend", ticketId: feedbackPreviewTicketId });
+  }
+
+  /** Host replied to confirmFeedbackSend — show success (with ticketId) or failure (clipboard fallback + retry). */
+  function handleFeedbackResult(msg) {
+    // Ignore a stale reply for a preview that's since been backed-out-of/replaced.
+    if (feedbackPreviewTicketId && msg.ticketId && msg.ticketId !== feedbackPreviewTicketId) return;
+    feedbackSendInFlight = false;
+    if (msg.ok) {
+      if (feedbackResultEl) {
+        feedbackResultEl.textContent = "Sent — thank you. Ticket ID: " + (msg.ticketId || "");
+        feedbackResultEl.className = "feedback-status feedback-status--ok";
+      }
+      resetFeedbackForm();
+    } else {
+      if (feedbackResultEl) {
+        feedbackResultEl.textContent = (msg.error || "Send failed") +
+          " — the payload was copied to your clipboard. You can retry, or paste it into the fallback form.";
+        feedbackResultEl.className = "feedback-status feedback-status--error";
+      }
+      if (feedbackSendBtn) {
+        feedbackSendBtn.disabled = false;
+        feedbackSendBtn.textContent = "Retry Send";
+      }
+    }
+  }
+
   /** Render all settings sections into #setup-config from lastSettings. */
   function renderSettings() {
     if (!setupConfigEl) return;
@@ -14864,6 +15033,185 @@
     });
     diagSection.appendChild(diagBtn);
     setupConfigEl.appendChild(diagSection);
+
+    // ── 5b. Submit feedback ──
+    // Two-step preview-then-send flow to a private GitHub-issue-backed
+    // intake pipeline; see docs/FEEDBACK-PIPELINE-SPEC.md. The webview never
+    // sends anything on its own — "submitFeedback" only asks the host to
+    // build a preview, and "confirmFeedbackSend" (posted only from the Send
+    // button below, after a preview has been shown) is the sole message
+    // that triggers a network call, made host-side.
+    const feedbackSection = buildSection("Submit feedback");
+
+    const feedbackIntro = document.createElement("p");
+    feedbackIntro.className = "settings-empty";
+    feedbackIntro.textContent = "Report a bug, share an idea, or ask a question. Nothing is sent until you review the exact preview below and press Send.";
+    feedbackSection.appendChild(feedbackIntro);
+
+    // Plain-language disclosure — VERBATIM copy from
+    // docs/FEEDBACK-PIPELINE-SPEC.md §7 "Plain-language disclosure (what
+    // gets sent)". That section is the single source of truth for this
+    // text; do not reword, reorder, or summarize it here — update this
+    // block only by copying the spec's text again if it ever changes.
+    const feedbackDisclosure = document.createElement("div");
+    feedbackDisclosure.className = "feedback-disclosure";
+
+    const discTitle = document.createElement("p");
+    discTitle.textContent = "Here's exactly what this form sends when you press Send:";
+    feedbackDisclosure.appendChild(discTitle);
+
+    const discList = document.createElement("ul");
+
+    const discLi1 = document.createElement("li");
+    discLi1.textContent = "Your description and (if you add one) your contact info, exactly as you typed them — local file paths and recognizable API keys or tokens are automatically removed before anything is sent.";
+    discList.appendChild(discLi1);
+
+    const discLi2 = document.createElement("li");
+    discLi2.textContent = "If \"Include diagnostic report\" is checked, it also sends:";
+    const discSubList = document.createElement("ul");
+    [
+      "Your extension version, operating system, IDE name and variant, and when the report was generated",
+      "Whether the background hook is installed, whether it's working, and when it last ran",
+      "Your delegation settings",
+      "A list of your agent names and whether each one has routing configured",
+      "Whether your project's instructions file (CLAUDE.md) has any leftover sections from an older format",
+      "A size check of your instructions and agent files (so we can tell if they're getting too long)",
+      "The connection status of any configured engines (like UEFN). For MCP servers, only which ones are configured — not their connection status",
+    ].forEach((t) => {
+      const sub = document.createElement("li");
+      sub.textContent = t;
+      discSubList.appendChild(sub);
+    });
+    discLi2.appendChild(discSubList);
+    discList.appendChild(discLi2);
+
+    const discLi3 = document.createElement("li");
+    const discNeverStrong = document.createElement("strong");
+    discNeverStrong.textContent = "What's never sent:";
+    discLi3.appendChild(discNeverStrong);
+    discLi3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens."));
+    discList.appendChild(discLi3);
+
+    feedbackDisclosure.appendChild(discList);
+    feedbackSection.appendChild(feedbackDisclosure);
+
+    // Category
+    const feedbackCatRow = document.createElement("div");
+    feedbackCatRow.className = "settings-row feedback-field";
+    const feedbackCatLabel = document.createElement("label");
+    feedbackCatLabel.textContent = "Category";
+    feedbackCatLabel.setAttribute("for", "feedback-category");
+    feedbackCatRow.appendChild(feedbackCatLabel);
+    feedbackCategoryEl = document.createElement("select");
+    feedbackCategoryEl.id = "feedback-category";
+    [["bug", "Bug"], ["idea", "Idea"], ["question", "Question"], ["other", "Other"]].forEach(([v, l]) => {
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = l;
+      feedbackCategoryEl.appendChild(opt);
+    });
+    feedbackCatRow.appendChild(feedbackCategoryEl);
+    feedbackSection.appendChild(feedbackCatRow);
+
+    // Description
+    const feedbackDescRow = document.createElement("div");
+    feedbackDescRow.className = "settings-row feedback-field";
+    const feedbackDescLabel = document.createElement("label");
+    feedbackDescLabel.textContent = "Description";
+    feedbackDescLabel.setAttribute("for", "feedback-description");
+    feedbackDescRow.appendChild(feedbackDescLabel);
+    feedbackDescEl = document.createElement("textarea");
+    feedbackDescEl.id = "feedback-description";
+    feedbackDescEl.rows = 5;
+    feedbackDescEl.maxLength = 4000;
+    feedbackDescEl.placeholder = "What happened, or what would you like to see?";
+    feedbackDescRow.appendChild(feedbackDescEl);
+    feedbackCharCounterEl = document.createElement("span");
+    feedbackCharCounterEl.className = "feedback-char-counter";
+    feedbackDescRow.appendChild(feedbackCharCounterEl);
+    feedbackDescEl.addEventListener("input", updateFeedbackCharCounter);
+    feedbackSection.appendChild(feedbackDescRow);
+
+    // Include diagnostics (default checked)
+    const feedbackDiagRow = document.createElement("label");
+    feedbackDiagRow.className = "feedback-checkbox-row";
+    feedbackDiagCheckbox = document.createElement("input");
+    feedbackDiagCheckbox.type = "checkbox";
+    feedbackDiagCheckbox.checked = true;
+    feedbackDiagRow.appendChild(feedbackDiagCheckbox);
+    feedbackDiagRow.appendChild(document.createTextNode("Include diagnostic report"));
+    feedbackSection.appendChild(feedbackDiagRow);
+
+    // Contact (optional)
+    const feedbackContactRow = document.createElement("div");
+    feedbackContactRow.className = "settings-row feedback-field";
+    const feedbackContactLabel = document.createElement("label");
+    feedbackContactLabel.textContent = "Contact (optional)";
+    feedbackContactLabel.setAttribute("for", "feedback-contact");
+    feedbackContactRow.appendChild(feedbackContactLabel);
+    feedbackContactEl = document.createElement("input");
+    feedbackContactEl.type = "text";
+    feedbackContactEl.id = "feedback-contact";
+    feedbackContactEl.maxLength = 500;
+    feedbackContactEl.placeholder = "Email or Discord handle, if you'd like a reply";
+    feedbackContactRow.appendChild(feedbackContactEl);
+    feedbackSection.appendChild(feedbackContactRow);
+
+    feedbackFormStatusEl = document.createElement("p");
+    feedbackFormStatusEl.className = "feedback-status";
+    feedbackSection.appendChild(feedbackFormStatusEl);
+
+    feedbackPreviewBtn = document.createElement("button");
+    feedbackPreviewBtn.className = "skill-btn settings-btn";
+    feedbackPreviewBtn.textContent = "Preview";
+    feedbackPreviewBtn.disabled = true; // gated on non-empty description by updateFeedbackCharCounter
+    feedbackPreviewBtn.addEventListener("click", requestFeedbackPreview);
+    feedbackSection.appendChild(feedbackPreviewBtn);
+
+    // Preview step (hidden until the host replies with feedbackPreview).
+    // The Send action does not exist/isn't reachable until this is shown.
+    feedbackPreviewSection = document.createElement("div");
+    feedbackPreviewSection.className = "feedback-preview";
+    feedbackPreviewSection.setAttribute("hidden", "");
+
+    const feedbackPreviewHeading = document.createElement("p");
+    feedbackPreviewHeading.className = "settings-empty";
+    feedbackPreviewHeading.textContent = "Nothing has been sent yet — this is the exact JSON that will be POSTed if you press Send.";
+    feedbackPreviewSection.appendChild(feedbackPreviewHeading);
+
+    feedbackPreviewTicketEl = document.createElement("p");
+    feedbackPreviewTicketEl.className = "settings-empty";
+    feedbackPreviewSection.appendChild(feedbackPreviewTicketEl);
+
+    feedbackPreviewJsonEl = document.createElement("pre");
+    feedbackPreviewJsonEl.className = "feedback-preview-json";
+    feedbackPreviewJsonEl.tabIndex = 0;
+    feedbackPreviewSection.appendChild(feedbackPreviewJsonEl);
+
+    const feedbackPreviewActions = document.createElement("div");
+    feedbackPreviewActions.className = "feedback-preview-actions";
+
+    feedbackSendBtn = document.createElement("button");
+    feedbackSendBtn.className = "skill-btn settings-btn";
+    feedbackSendBtn.textContent = "Send";
+    feedbackSendBtn.addEventListener("click", sendFeedbackConfirmed);
+    feedbackPreviewActions.appendChild(feedbackSendBtn);
+
+    feedbackBackBtn = document.createElement("button");
+    feedbackBackBtn.className = "skill-btn settings-btn";
+    feedbackBackBtn.textContent = "Back to edit";
+    feedbackBackBtn.addEventListener("click", cancelFeedbackPreview);
+    feedbackPreviewActions.appendChild(feedbackBackBtn);
+
+    feedbackPreviewSection.appendChild(feedbackPreviewActions);
+    feedbackSection.appendChild(feedbackPreviewSection);
+
+    feedbackResultEl = document.createElement("p");
+    feedbackResultEl.className = "feedback-status";
+    feedbackSection.appendChild(feedbackResultEl);
+
+    setupConfigEl.appendChild(feedbackSection);
+    updateFeedbackCharCounter();
 
     // ── 6. Danger zone ──
     const dangerSection = buildSection("Danger zone");

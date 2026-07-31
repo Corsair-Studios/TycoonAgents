@@ -94,6 +94,19 @@ export const MSG = {
   // REPAIR_HOOK/REMOVE_MANAGED_BLOCK. No network, no runtime AI.
   GENERATE_DIAGNOSTIC: "generateDiagnostic",
 
+  // ---- Feedback pipeline (docs/FEEDBACK-PIPELINE-SPEC.md) -----------------
+  // SUBMIT_FEEDBACK builds a PREVIEW ONLY — no network call is made in
+  // response to it. The host replies with FEEDBACK_PREVIEW carrying the
+  // byte-exact JSON body it will POST later, keyed by `ticketId` (the host
+  // retains that exact string so the preview can never drift from what's
+  // actually sent). Only CONFIRM_FEEDBACK_SEND, echoing that `ticketId`,
+  // triggers the real network POST; an unknown/expired `ticketId` fails safe
+  // (no send, FEEDBACK_RESULT with ok:false).
+  SUBMIT_FEEDBACK: "submitFeedback",
+  FEEDBACK_PREVIEW: "feedbackPreview",
+  CONFIRM_FEEDBACK_SEND: "confirmFeedbackSend",
+  FEEDBACK_RESULT: "feedbackResult",
+
   // ---- Path Health diagnostics (src/host/vscode/pathHealth.ts) -----------
   // SET_PATH_OVERRIDE/CLEAR_PATH_OVERRIDE write/clear one key in
   // `.claude/tycoon/uefn-paths.json` (validated to exist on disk before
@@ -514,6 +527,20 @@ export const MSG_SCHEMAS = {
   // No required fields — the host gathers every input itself; this message
   // is purely the user's confirm-click trigger from Settings.
   GENERATE_DIAGNOSTIC: z.object({}).passthrough(),
+
+  // ---- Feedback pipeline ----------------------------------------------------
+  // Preview-only build request — see MSG.SUBMIT_FEEDBACK above. No network
+  // call happens as a direct result of this message.
+  SUBMIT_FEEDBACK: z
+    .object({
+      category: z.enum(["bug", "idea", "question", "other"]),
+      userDescription: z.string().min(1).max(4000),
+      includeDiagnostics: z.boolean(),
+      contact: z.string().max(500).optional(),
+    })
+    .passthrough(),
+  // The ONLY message that triggers the actual POST — see MSG.CONFIRM_FEEDBACK_SEND above.
+  CONFIRM_FEEDBACK_SEND: z.object({ ticketId: z.string().min(1) }).passthrough(),
 
   // ---- Path Health diagnostics --------------------------------------------
   // `key` is validated against PATH_OVERRIDE_KEYS host-side (isPathOverrideKey)
