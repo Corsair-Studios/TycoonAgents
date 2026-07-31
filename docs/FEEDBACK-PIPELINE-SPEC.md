@@ -168,6 +168,22 @@ that KV's eventual consistency (60s propagation) becomes a real gap, swap in
 the Rate Limiting binding — the validation pipeline doesn't change either
 way.
 
+### CORS
+
+The Worker returns `Access-Control-Allow-Origin` for exactly **one**
+explicitly configured allowed origin — the fallback form's own deployed
+origin (§6) — never `*` and never a reflected/wildcard match. This is a
+browser-only guardrail: it stops a third-party web page from silently
+scripting a *visitor's browser* into POSTing to `/submit` on the page's
+behalf (a distributed flood that would come from many different visitor
+IPs, each individually under the per-IP rate limit — see §9). It does
+**not** constrain non-browser callers (`curl`, a script, the extension
+host itself, which sends no `Origin` header and is unaffected by CORS)
+— those are still governed by the honeypot, schema validation, and
+per-IP rate limit above, which remain the primary abuse controls. The
+allowed-origin value must be updated whenever the fallback form's
+deployed URL changes.
+
 ### GitHub issue creation
 
 - Secret: a **fine-grained GitHub PAT** scoped to **only** the private
@@ -231,6 +247,15 @@ New "Submit Feedback" entry in the Settings area of the panel:
   (`src/host/vscode/panel.ts:7679-7690`, triggered from
   `media/main.js:14863`).
 - Optional contact free-text field.
+- **Plain-language disclosure block (mandatory, always on the form):** the
+  verbatim copy from §7 "Plain-language disclosure (what gets sent)" must
+  render on the feedback form itself — either always visible near the
+  submit controls, or one tap/click away (e.g. an expandable "What gets
+  sent?" note directly on the form) — but never buried behind the JSON
+  preview. The raw-JSON preview (below) is for users who want the literal
+  payload; this block is for everyone else, and it must appear *before* a
+  user could reach that preview. §7 is the single source of truth for this
+  copy — it must not be re-worded independently here.
 - **Preview step (mandatory, not skippable):** before sending, render the
   exact JSON payload that will be POSTed (pretty-printed) in the same
   open-in-editor pattern the existing diagnostic report flow uses, so the
@@ -297,10 +322,22 @@ A static page (Cloudflare Pages) for users whose panel won't open at all.
   `src/host/vscode/panel.ts:7679-7690`).
 - Same honeypot field (`website`, always absent/empty from real users), same
   client-generated `ticketId`/`createdAt`.
+- **Same plain-language disclosure block as the extension UI (§7), rendered
+  verbatim on the form itself before submission** — this is the same
+  requirement as §5 "UI", not a separate copy to maintain. On this surface
+  the block must also carry the existing note (below) that form text
+  travels over TLS exactly as typed and is only scrubbed server-side, after
+  it leaves the machine — that distinction matters here specifically
+  because, unlike the extension path, nothing sanitizes this surface's text
+  before it is sent.
 - POSTs to the **same** Worker route with the **same** payload shape — the
   Worker does not need to know which surface a submission came from.
 - Same rate limit and size cap apply automatically since they're enforced
   Worker-side, not client-side.
+- This form's deployed origin is the one the Worker's CORS allowlist (§4
+  "CORS") must be configured with. If the form is redeployed to a new
+  domain, that domain must be added to the allowlist or the browser will
+  block the form's own submissions.
 - The form has no access to the extension's `sanitize()`, so
   `userDescription`, `contact`, and any pasted `diagnosticMarkdown` travel to
   the Worker over TLS exactly as typed/pasted. They are scrubbed server-side
@@ -345,6 +382,48 @@ A static page (Cloudflare Pages) for users whose panel won't open at all.
   indefinitely, visible only to the maintainer and repo collaborators.
   Deletion on request is a manual `gh issue delete` / repo-admin action, not
   automated in v1.
+
+### Plain-language disclosure (what gets sent)
+
+The raw-JSON preview (§5, §6) is honest but not *understandable* to a
+non-technical user — most people cannot read a JSON payload and know what it
+means for their privacy. Both intake surfaces (extension form and fallback
+form) MUST also show the following copy, **verbatim**, before the user ever
+reaches the JSON preview. This is the single source of truth for that copy;
+§5 and §6 reference it rather than restating it.
+
+Every field named below is drawn directly from what `buildDiagnosticReport()`
+(`src/host/vscode/diagnosticReport.ts:294`) actually collects — nothing here
+describes a field the function doesn't capture, and nothing the function
+captures is left off this list.
+
+> **Here's exactly what this form sends when you press Send:**
+>
+> - Your description and (if you add one) your contact info, exactly as you
+>   typed them — local file paths and recognizable API keys or tokens are
+>   automatically removed before anything is sent.
+> - If "Include diagnostic report" is checked, it also sends:
+>   - Your extension version, operating system, IDE name and variant, and
+>     when the report was generated
+>   - Whether the background hook is installed, whether it's working, and
+>     when it last ran
+>   - Your delegation settings
+>   - A list of your agent names and whether each one has routing configured
+>   - Whether your project's instructions file (CLAUDE.md) has any leftover
+>     sections from an older format
+>   - A size check of your instructions and agent files (so we can tell if
+>     they're getting too long)
+>   - The connection status of any configured engines (like UEFN). For MCP
+>     servers, only which ones are configured — not their connection status
+> - **What's never sent:** your source code, file contents, project names
+>   (only redacted paths), API keys (they're removed), or anything running
+>   in the background. Nothing leaves your machine until you press Send —
+>   and you'll see the exact data being sent right before that happens.
+
+**Maintenance note:** if `buildDiagnosticReport()`'s sections change (new
+section added/removed, or a section starts/stops collecting a category of
+data), this copy must be updated in the same change — it is documentation of
+that function's actual output, not an independent description of it.
 
 ## 8. Triage Workflow
 
@@ -396,6 +475,7 @@ only a scheduler would be added on top (see §10 Phase 4).
 |---|---|
 | Spam / bot submissions | Honeypot field (silently dropped, fake success) + per-IP rate limit (§4). |
 | Payload flooding | Hard 64 KB body cap, checked before JSON parse. |
+| Distributed / cross-origin abuse | A third-party page could script visitors' browsers into flooding the Worker from many distinct IPs, each staying under the per-IP rate limit. Mitigation: the Worker sends CORS headers (`Access-Control-Allow-Origin`) only for the explicitly configured allowed origin — the fallback form's own origin, never a wildcard (§4 "CORS") — so a browser refuses to complete the cross-origin POST for any other page's script. This does not stop non-browser callers, who remain governed by the honeypot, validation, and per-IP rate limit above. |
 | Token theft | PAT is fine-grained, scoped to `issues:write` on **one** private repo only — no `contents`, no other repos, no org scope. |
 | Worker compromise | Blast radius is limited to the feedback repo: an attacker with the leaked PAT could create/read/close issues in that one private repo — they get no access to source code, other repos, CI, or secrets outside this Worker's own binding. |
 | Repo compromise | Same blast radius — it's an isolated, purpose-built repo containing only user-submitted tickets (server-side sanitized of local paths and known secret patterns by the Worker before storage, and additionally client-side sanitized before leaving the machine on the extension path — §7), not source code. |
@@ -407,7 +487,7 @@ only a scheduler would be added on top (see §10 Phase 4).
 | Phase | Scope | Acceptance criteria |
 |---|---|---|
 | **1 — Repo + Worker** | Create the private feedback repo. Write and deploy the Cloudflare Worker (`POST /submit` only) with validation, honeypot, content sanitization, KV rate limit, and GitHub issue creation per §4. | A manual `curl` POST with a valid v1 payload creates exactly one correctly-labeled issue in the private repo and returns `201` with a `ticketId` echo. An invalid payload (bad schemaVersion, oversized body, missing required field) returns the documented error code and no issue is created. A honeypot-filled POST returns 201-shaped success but creates no issue. A second burst of requests past the per-IP limit is rejected. A POST whose `userDescription` contains a fake absolute path (e.g. `C:\Users\test\secret.txt`) and a fake `sk-`-prefixed key results in an issue where both are redacted (`<path>` and `[REDACTED]` respectively), confirming the Worker's server-side sanitization runs regardless of which surface sent the request. |
-| **2 — Extension submit path** | Add the Settings UI, `SUBMIT_FEEDBACK` message + zod schema, host handler with sanitize + preview + POST + timeout + toast/fallback, per §5. | From the running extension: filling the form, previewing, and sending produces a real issue in the feedback repo; the preview payload shown to the user matches byte-for-byte what left the machine (verifiable via a temporary Worker echo/log during testing); disconnecting network and submitting falls back to clipboard copy + fallback-form pointer without throwing. |
+| **2 — Extension submit path** | Add the Settings UI, `SUBMIT_FEEDBACK` message + zod schema, host handler with sanitize + preview + POST + timeout + toast/fallback, per §5. | From the running extension: filling the form, previewing, and sending produces a real issue in the feedback repo; the preview payload shown to the user matches byte-for-byte what left the machine (verifiable via a temporary Worker echo/log during testing); disconnecting network and submitting falls back to clipboard copy + fallback-form pointer without throwing. **Additionally:** the plain-language disclosure block renders on the form itself (always visible or one tap away, never buried behind the JSON preview) and its text matches §7 "Plain-language disclosure (what gets sent)" verbatim; the user handbook documents the same data list (what's sent, what's not) in the feedback section. |
 | **3 — Fallback form** | Build and deploy the static Cloudflare Pages form per §6, pointed at the same Worker route. | Submitting the fallback form with a pasted diagnostic report creates a correctly-labeled issue identical in shape to a Phase 2 submission; honeypot and rate limit both verified to apply here too. |
 | **4 — Optional scheduled triage** | Not built until requested. Would add a headless scheduler invoking the same `gh` commands from §8 to pre-cluster/summarize tickets. | (Deferred — define acceptance criteria when this phase is greenlit.) |
 
