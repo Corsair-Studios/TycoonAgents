@@ -9939,10 +9939,24 @@
   // survive) while any rival is alive (see quakeAmbientBlockedReason and
   // updateQuakePanic's rival-preemption below), there's never a combat agent
   // to hand-pick around, so every eligible agent panics at once.
-  /** True while the panic activity is running (camera shake and panic are
-   *  independently timed — see startQuake vs startQuakePanic — but always
-   *  started/stopped together by triggerAmbientQuake/updateQuakePanic). */
+  /** True while the panic activity is running. Always STARTED together with
+   *  the camera shake (triggerAmbientQuake calls startQuake + startQuakePanic
+   *  in the same breath), but they don't always END together: a rival
+   *  arrival or rebirth stops both instantly, while the shake's own natural
+   *  end instead starts a QUAKE_PANIC_LINGER_SEC grace window (see
+   *  quakeAmbientLingering/updateQuakePanic) before this actually flips
+   *  false — panic reads as continuing "a beat" after the ground stops
+   *  shaking, per product direction. */
   let quakePanicActive = false;
+  /** True during the QUAKE_PANIC_LINGER_SEC grace window after the shake
+   *  itself (quakeActive) has finished naturally — see updateQuakePanic's
+   *  natural-end handling. quakePanicActive stays true the whole time (so
+   *  every "quake-panic still active" guard/block keeps behaving correctly
+   *  — the other five activities' start gates, quakeAmbientBlockedReason,
+   *  moveSpeed, expression firing, etc. all need zero changes for this). */
+  let quakeAmbientLingering = false;
+  /** Seconds remaining in the natural-end linger window (see quakeAmbientLingering). */
+  let quakeAmbientLingerTimeLeft = 0;
   /** Accumulator (seconds) toward the next ambient-quake eligibility check. */
   let quakeAmbientCheckTimer = 0;
   /** Cooldown (seconds) remaining before another ambient quake may start via
@@ -9981,6 +9995,17 @@
    *  Dazed is combat-AND-earthquake-reserved, still off-limits to every
    *  other ambient system). */
   const QUAKE_PANIC_EXPR_POOL = [3, 2, 1, 7];
+  /** Field bug (0.0.507): agents kept panicking indefinitely after the shake
+   *  visuals finished — updateQuake()'s natural-end path (quakeElapsed >=
+   *  quakeDuration) only ever zeroed the camera-shake state, it never called
+   *  endQuakePanic(), so only the PREEMPTION paths (rival arrival, rebirth)
+   *  actually stopped the panic. Per user direction: panic should stop
+   *  about TWO SECONDS after the shaking stops, not instantly and not
+   *  never — see updateQuakePanic's natural-end handling (quakeAmbientLingering
+   *  above) for the grace window this drives. Preemption paths remain
+   *  IMMEDIATE cancels (no linger) — this constant only applies to the
+   *  natural end. */
+  const QUAKE_PANIC_LINGER_SEC = 2;
   /** Seconds between ambient-quake random-trigger eligibility rolls — same
    *  time-based (not per-frame) approach every other ambient system uses. */
   const QUAKE_AMBIENT_CHECK_SECONDS = 180;
@@ -10071,34 +10096,60 @@
    *  stale value; startQuakePanic reseeds it fresh on the next run anyway. */
   function endQuakePanic() {
     quakePanicActive = false;
+    quakeAmbientLingering = false;
+    quakeAmbientLingerTimeLeft = 0;
   }
 
   /**
-   * Advance the panic activity's preemption rule. Called once per frame,
+   * Advance the panic activity's preemption rule AND its natural-end linger
+   * (see QUAKE_PANIC_LINGER_SEC's field-bug note). Called once per frame,
    * after updateHuddle (same ordering rationale as updateSparring/
    * updateHuddle's own doc — this frame's congaActive/discoPartyActive/
    * danceOffActive/sparringActive/huddleActive already reflect anything that
-   * just started/ended) and before the per-character loop, so a same-frame
-   * rival arrival clears quakePanicActive (and therefore inQuakePanic,
-   * derived per-agent in that loop) in time for combat to resume THIS frame.
-   * The actual per-agent destination-picking lives inline in the
-   * per-character loop (see the "Quake panic" block there, mirroring
-   * inConga's shape) since every agent independently re-targets on its own
-   * stagger timer rather than sharing one line/ring of positions.
+   * just started/ended) and AFTER updateQuake (see its call site) so this
+   * frame's quakeActive already reflects a natural end that happened this
+   * same frame, and before the per-character loop, so a same-frame rival
+   * arrival clears quakePanicActive (and therefore inQuakePanic, derived
+   * per-agent in that loop) in time for combat to resume THIS frame. The
+   * actual per-agent destination-picking lives inline in the per-character
+   * loop (see the "Quake panic" block there, mirroring inConga's shape)
+   * since every agent independently re-targets on its own stagger timer
+   * rather than sharing one line/ring of positions.
    *
    * Rebirth mid-quake is handled separately by doRebirth() itself (it calls
    * endQuakePanic() directly right before starting the rebirth-profile
    * quake) since a rebirth isn't a per-frame event — see doRebirth's own note.
+   * @param {number} delta seconds
    */
-  function updateQuakePanic() {
+  function updateQuakePanic(delta) {
     if (!quakePanicActive) return;
     // Rivals spawning mid-quake immediately end BOTH the panic (agents
     // revert to normal AI this same frame, including engaging combat
     // normally — see inQuakePanic's derivation) and the shake itself, faded
-    // out quickly rather than cut hard (see cancelQuakeFast).
+    // out quickly rather than cut hard (see cancelQuakeFast). IMMEDIATE — no
+    // linger, unlike the natural-end path below.
     if (activeEnemies.length > 0) {
       endQuakePanic();
       cancelQuakeFast();
+      return;
+    }
+    // Natural end: once the shake itself (quakeActive) has finished on its
+    // own — NOT via the rival branch above, which already returned — start
+    // (or continue) a QUAKE_PANIC_LINGER_SEC grace window instead of ending
+    // panic the instant the last camera-shake frame lands. quakePanicActive
+    // stays true throughout, so every other guard/derivation that reads it
+    // (the five activities' start gates, quakeAmbientBlockedReason,
+    // inQuakePanic, moveSpeed, expression firing) keeps behaving exactly as
+    // if the quake were still fully active — nothing else needed changing.
+    if (!quakeActive) {
+      if (!quakeAmbientLingering) {
+        quakeAmbientLingering = true;
+        quakeAmbientLingerTimeLeft = QUAKE_PANIC_LINGER_SEC;
+      }
+      quakeAmbientLingerTimeLeft -= delta;
+      if (quakeAmbientLingerTimeLeft <= 0) {
+        endQuakePanic();
+      }
     }
   }
 
@@ -17195,10 +17246,13 @@
       // congaActive/discoPartyActive/danceOffActive/sparringActive/
       // huddleActive/victoryLapActive via quakeAmbientBlockedReason, so it
       // runs after all five of those (same ordering rationale as
-      // updateSparring/updateHuddle above); the preemption check runs before
-      // the per-character loop so a same-frame rival arrival clears
-      // inQuakePanic in time for combat to resume THIS frame.
-      updateQuakePanic();
+      // updateSparring/updateHuddle above); the preemption/natural-end-linger
+      // check runs before the per-character loop so a same-frame rival
+      // arrival clears inQuakePanic in time for combat to resume THIS frame,
+      // and reads this frame's quakeActive (updateQuake already ran earlier
+      // in render() — see its own call site) so a natural end is caught the
+      // same frame it happens, not one frame late.
+      updateQuakePanic(delta);
       updateQuakeAmbientScheduler(delta, sceneAgentList);
       // Runs AFTER the three parties (so this frame's congaActive/
       // discoPartyActive/danceOffActive already reflect anything that just
