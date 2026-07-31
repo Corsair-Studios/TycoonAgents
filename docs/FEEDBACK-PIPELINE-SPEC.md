@@ -105,7 +105,11 @@ zero-dependency step. **No unsanitized field ever reaches `fetch()`.**
 
 ## 4. Cloudflare Worker Spec
 
-Single route: `POST /submit` (final path decided by maintainer, see §11).
+Single route: `POST /submit`. Canonical production endpoint:
+`https://feedback.corsairstudios.com/submit` (custom domain, decided — see
+§11). A `workers.dev` subdomain may still be used as an interim/testing
+endpoint during development, but it is never the address shipped in a
+release.
 
 ### Validation (in order, fail fast)
 
@@ -301,7 +305,16 @@ On receiving `SUBMIT_FEEDBACK`:
 5. On user confirmation, POST with the global `fetch()` (same primitive
    already used for the engine probe at `src/host/vscode/panel.ts:7833`; no
    new npm dependency — project rule is no new dependencies) wrapped in an
-   `AbortController` with a **10-second timeout**.
+   `AbortController` with a **10-second timeout**. The target URL is a single
+   constant set to the canonical endpoint `https://feedback.corsairstudios.com/submit`
+   (§4, §11). This constant is effectively permanent once a release ships:
+   installed extensions never phone home to check for a newer endpoint, so
+   whatever URL is baked into a given release is what that install posts to
+   forever, even years later. That is precisely why the endpoint must live on
+   a hostname the maintainer controls outright rather than a `workers.dev`
+   subdomain — it lets the destination behind the URL be changed (different
+   provider, different backend) or the service retired gracefully, without
+   ever needing to update already-shipped code.
 6. Success: `vscode.window.showInformationMessage` toast showing the
    `ticketId` echoed from the response.
 7. Failure (network error, timeout, non-2xx): fall back to copying the full
@@ -475,7 +488,7 @@ only a scheduler would be added on top (see §10 Phase 4).
 |---|---|
 | Spam / bot submissions | Honeypot field (silently dropped, fake success) + per-IP rate limit (§4). |
 | Payload flooding | Hard 64 KB body cap, checked before JSON parse. |
-| Distributed / cross-origin abuse | A third-party page could script visitors' browsers into flooding the Worker from many distinct IPs, each staying under the per-IP rate limit. Mitigation: the Worker sends CORS headers (`Access-Control-Allow-Origin`) only for the explicitly configured allowed origin — the fallback form's own origin, never a wildcard (§4 "CORS") — so a browser refuses to complete the cross-origin POST for any other page's script. This does not stop non-browser callers, who remain governed by the honeypot, validation, and per-IP rate limit above. |
+| Distributed / cross-origin abuse | A third-party page could script visitors' browsers into flooding the Worker from many distinct IPs, each staying under the per-IP rate limit. Mitigation: the Worker sends CORS headers (`Access-Control-Allow-Origin`) only for the explicitly configured allowed origin — the fallback form's own origin, never a wildcard (§4 "CORS") — so a browser refuses to complete the cross-origin POST for any other page's script. This does not stop non-browser callers, who remain governed by the honeypot, validation, and per-IP rate limit above. **Future mitigation:** because the Worker is served from the custom domain `feedback.corsairstudios.com` (§11) rather than a bare `workers.dev` subdomain, edge rate-limiting/WAF rules become available at the zone level — these can reject abusive traffic before the Worker is ever invoked, unlike the in-Worker per-IP KV counter (§4 "Rate limiting"), which still costs one Worker invocation per rejected request. Not built in v1; noted here as an option the custom domain unlocks. |
 | Token theft | PAT is fine-grained, scoped to `issues:write` on **one** private repo only — no `contents`, no other repos, no org scope. |
 | Worker compromise | Blast radius is limited to the feedback repo: an attacker with the leaked PAT could create/read/close issues in that one private repo — they get no access to source code, other repos, CI, or secrets outside this Worker's own binding. |
 | Repo compromise | Same blast radius — it's an isolated, purpose-built repo containing only user-submitted tickets (server-side sanitized of local paths and known secret patterns by the Worker before storage, and additionally client-side sanitized before leaving the machine on the extension path — §7), not source code. |
@@ -496,7 +509,7 @@ only a scheduler would be added on top (see §10 Phase 4).
 | Decision | Suggestion | Notes |
 |---|---|---|
 | Private repo name | `tycoonagents-feedback` under the same GitHub owner as the main repo | Must stay private; never referenced from any shipped/tracked file per the project's "no absolute paths / no leaked internals" rule — the Worker holds the owner/repo as a secret-adjacent config value, not hardcoded in the extension. |
-| Worker route/domain | e.g. `feedback.<maintainer-domain>/submit` or the default `*.workers.dev` subdomain | A custom domain avoids exposing the raw `workers.dev` name in extension code, but either works; `workers.dev` is fine for v1 and cheaper to stand up. |
+| Worker route/domain | **DECIDED:** custom domain `feedback.corsairstudios.com`, canonical endpoint `https://feedback.corsairstudios.com/submit` | Chosen over a `workers.dev` subdomain for portability: the extension bakes this URL into shipped releases, and already-installed versions can never be updated, so owning the hostname means the endpoint can be repointed to a different provider or retired gracefully later without breaking old installs. A custom domain also makes edge rate-limiting/WAF rules available (zone-level protection that a bare `workers.dev` subdomain can't get) — see §9. |
 | Category list final | `bug`, `idea`, `question`, `other` as specified | Confirm before Phase 2 ships — the enum is baked into both the extension zod schema and the Worker validator; changing it later is a schema-version bump, not a quick edit. |
 | Contact field in v1 | Recommend: ship it, optional, off by default focus (empty unless user types something) | Low cost, high value for following up on bug reports; confirm before Phase 2 UI is built. |
 
