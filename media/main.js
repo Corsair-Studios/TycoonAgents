@@ -1760,6 +1760,13 @@
     rollRebirthRequirement();
     rebirthConfirmPending = false;
     persistRebirth();
+    // Quake (render-only, see startQuake): snapshot the built-object
+    // positions BEFORE the wipe below clears buildBuiltCount/objectAnimMap,
+    // so the dust puffs land on the objects actually being wiped, then kick
+    // off the REBIRTH-profile camera shake. Purely cosmetic — the state
+    // mutation below stays exactly as instant as before; the shake+dust just
+    // cover it visually and can never delay or alter it.
+    startQuake("rebirth", capturedBuiltObjectPositions());
     // ── Wipe built objects: "a rebirth resets ... all of the objects the
     // player has built, and they have to build them all over again." Mirrors
     // the full-Reset path (see handleMetricsReset, ~L12659) for the
@@ -9627,6 +9634,195 @@
     }
   }
 
+  // ── Quake engine (rebirth wipe + ambient profile) ──────────────────────────
+  // RENDER-TIME ONLY: a reusable camera-shake effect wired to the rebirth
+  // wipe (see doRebirth()) and exposed via debug hotkeys (Alt+Q / Alt+Shift+Q,
+  // see the keydown handler near the conga/disco/dance-off hotkeys). It NEVER
+  // mutates any agent's nx/ny, dest, or object/logic state — the shake is a
+  // camera translate (render(), wrapped around the whole scene draw) plus a
+  // small per-agent secondary jitter applied ONLY at drawImage time (the
+  // "agent" branch of the depthList.forEach draw loop) — so it cannot
+  // interact with polygon clamping, combat, build, or persistence. Respects
+  // prefersReducedMotion (declared above): reduced-motion users get NO
+  // camera shake and NO per-agent jitter — dust puffs alone still play (they
+  // carry no camera motion of their own).
+  let quakeActive = false;
+  let quakeElapsed = 0;   // seconds into the current quake
+  let quakeDuration = 0;  // seconds, set by startQuake() from the chosen profile
+  let quakeIntensity = 0; // native px amplitude, set by startQuake() from the chosen profile
+  /** Brief dust puffs spawned on quake start, reusing the poof sprite pipeline.
+   * @type {Array<{nx:number, ny:number, animState:{action:string, frameIndex:number, direction:number, elapsed:number, completed:boolean}}>} */
+  let quakeDustPuffs = [];
+
+  const QUAKE_REBIRTH_DURATION = 1.6;    // s
+  const QUAKE_REBIRTH_INTENSITY = 5;     // native px
+  const QUAKE_AMBIENT_DURATION = 4.0;    // s — gentler but longer than the rebirth profile
+  const QUAKE_AMBIENT_INTENSITY = 3;     // native px
+  const QUAKE_ATTACK_SEC = 0.15;         // fast amplitude ramp-in; the remainder of quakeDuration decays to 0
+  const QUAKE_AGENT_JITTER_FRAC = 0.30;  // per-agent secondary jitter as a fraction of the camera amplitude
+  const QUAKE_DUST_MAX_PUFFS = 8;        // cap on dust puffs spawned per quake start
+  // Ambient RANDOM scheduling intentionally not wired — pending creative
+  // sign-off after hotkey testing (Alt+Shift+Q triggers the ambient profile
+  // on demand today; see the keydown handler). When/if enabled, gate a
+  // per-frame roll behind constants like:
+  // const QUAKE_AMBIENT_CHECK_SECONDS = 20;
+  // const QUAKE_AMBIENT_CHANCE = 0.05;
+
+  /**
+   * Start a quake of the given profile ("rebirth" | "ambient") and spawn its
+   * dust puffs at the given native-coord positions (capped, random subset —
+   * see spawnQuakeDust). Purely additive to any quake already in flight —
+   * re-triggering resets the envelope from a fresh attack rather than
+   * stacking amplitude.
+   * @param {"rebirth"|"ambient"} profile
+   * @param {Array<{nx:number, ny:number}>} [positions]
+   */
+  function startQuake(profile, positions) {
+    quakeActive = true;
+    quakeElapsed = 0;
+    if (profile === "ambient") {
+      quakeDuration = QUAKE_AMBIENT_DURATION;
+      quakeIntensity = QUAKE_AMBIENT_INTENSITY;
+    } else {
+      quakeDuration = QUAKE_REBIRTH_DURATION;
+      quakeIntensity = QUAKE_REBIRTH_INTENSITY;
+    }
+    spawnQuakeDust(positions);
+  }
+
+  /** Advance the active quake's timer by delta seconds (same delta the rest
+   * of render() uses — pause-when-hidden-safe, no fast-forward on tab return).
+   * No-op when no quake is active. */
+  function updateQuake(delta) {
+    if (!quakeActive) return;
+    quakeElapsed += delta;
+    if (quakeElapsed >= quakeDuration) {
+      quakeActive = false;
+      quakeElapsed = 0;
+      quakeDuration = 0;
+      quakeIntensity = 0;
+    }
+  }
+
+  /**
+   * Current shake amplitude in NATIVE px: a fast attack ramp (QUAKE_ATTACK_SEC)
+   * up to quakeIntensity, then a smooth cosine decay to 0 over the remainder
+   * of quakeDuration. 0 when no quake is active.
+   */
+  function quakeAmplitude() {
+    if (!quakeActive) return 0;
+    if (quakeElapsed < QUAKE_ATTACK_SEC) {
+      return quakeIntensity * (quakeElapsed / QUAKE_ATTACK_SEC);
+    }
+    const remain = Math.max(quakeDuration - QUAKE_ATTACK_SEC, 0.0001);
+    const t = Math.max(0, Math.min(1, (quakeElapsed - QUAKE_ATTACK_SEC) / remain));
+    return quakeIntensity * (0.5 + 0.5 * Math.cos(t * Math.PI));
+  }
+
+  /**
+   * Camera-shake draw offset for the given amplitude (already in whatever
+   * pixel space the caller wants — render() passes a canvas-px amplitude).
+   * A rumble, not a vibration: a pair of incommensurate low-frequency sines
+   * plus a small random component, driven by quakeElapsed so it's
+   * deterministic-ish (repeatable envelope, not truly random noise).
+   * @param {number} ampPx
+   * @returns {[number, number]}
+   */
+  function quakeCameraOffset(ampPx) {
+    if (ampPx <= 0) return [0, 0];
+    const t = quakeElapsed;
+    const x = Math.sin(t * 27.3) * 0.55 + Math.sin(t * 41.7 + 1.3) * 0.35 + (Math.random() - 0.5) * 0.2;
+    const y = Math.sin(t * 33.1 + 0.7) * 0.55 + Math.sin(t * 19.9 + 2.1) * 0.35 + (Math.random() - 0.5) * 0.2;
+    return [x * ampPx, y * ampPx];
+  }
+
+  /**
+   * Smaller secondary jitter for one agent's sprite draw, phased off the
+   * agent's own id so agents don't move in lockstep with each other or with
+   * the camera. Draw-time only — see the "agent" branch of the
+   * depthList.forEach loop in render(); never touches charEntry.x/y.
+   * @param {string} agentId
+   * @param {number} ampPx camera amplitude (same canvas-px units as quakeCameraOffset)
+   * @returns {[number, number]}
+   */
+  function quakeAgentJitter(agentId, ampPx) {
+    if (ampPx <= 0) return [0, 0];
+    const jAmp = ampPx * QUAKE_AGENT_JITTER_FRAC;
+    const id = String(agentId || "");
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 100000;
+    const phase = ((h % 1000) / 1000) * Math.PI * 2;
+    const t = quakeElapsed;
+    const x = Math.sin(t * 37 + phase) * jAmp;
+    const y = Math.sin(t * 31 + phase * 1.6) * jAmp;
+    return [x, y];
+  }
+
+  /**
+   * Snapshot the native-coord positions of every currently-built object
+   * (buildState.builtIds ∩ objectPlacement), for dust-puff spawning. Called
+   * BEFORE doRebirth()'s wipe clears buildBuiltCount/objectAnimMap so the
+   * rebirth profile's dust lands on the objects actually being wiped; called
+   * fresh (post-wipe state is irrelevant) by the debug hotkeys too.
+   * @returns {Array<{nx:number, ny:number}>}
+   */
+  function capturedBuiltObjectPositions() {
+    if (!themeBuildables.length) return [];
+    const bs = computeBuildState();
+    const out = [];
+    bs.builtIds.forEach((objId) => {
+      const p = objectPlacement[objId];
+      if (p) out.push({ nx: p.nx, ny: p.ny });
+    });
+    return out;
+  }
+
+  /**
+   * Spawn brief dust puffs at a random subset (capped QUAKE_DUST_MAX_PUFFS)
+   * of the given native-coord positions, reusing OBJECT_CLIPS.poof's 4-frame
+   * one-shot animation (see createAnimState/advanceObjectAnim/
+   * currentObjectSlot) — the same clip built objects play on completion.
+   * No-op on an empty/missing positions array.
+   * @param {Array<{nx:number, ny:number}>} [positions]
+   */
+  function spawnQuakeDust(positions) {
+    if (!Array.isArray(positions) || !positions.length) return;
+    const pool = positions.slice();
+    const n = Math.min(QUAKE_DUST_MAX_PUFFS, pool.length);
+    for (let i = 0; i < n; i++) {
+      const idx = Math.floor(Math.random() * pool.length);
+      const pos = pool.splice(idx, 1)[0];
+      quakeDustPuffs.push({ nx: pos.nx, ny: pos.ny, animState: createAnimState("poof") });
+    }
+  }
+
+  /**
+   * Advance + draw quake dust puffs in canvas space (uses the cached
+   * lastBgX/Y/W/H — see their declaration — so it can be called anywhere in
+   * render() after the background rect for THIS frame is known). One-shot:
+   * each puff removes itself once its poof animState reports completed
+   * (OBJECT_CLIPS.poof has loop:false). Never throws on missing/still-
+   * decoding poof art — just stops drawing that puff until it expires.
+   */
+  function updateAndDrawQuakeDust(delta) {
+    if (!quakeDustPuffs.length) return;
+    const poofSlots = themeImages.poof;
+    const size = Math.round(64 * themeOverallScale * sceneFitScale);
+    for (let i = quakeDustPuffs.length - 1; i >= 0; i--) {
+      const puff = quakeDustPuffs[i];
+      advanceObjectAnim(puff.animState, delta);
+      if (puff.animState.completed) {
+        quakeDustPuffs.splice(i, 1);
+        continue;
+      }
+      if (!poofSlots || !poofSlots.length) continue;
+      const img = poofSlots[currentObjectSlot(puff.animState)];
+      if (!img || !img.complete || img.naturalWidth === 0) continue;
+      const canvasPt = nativeToCanvas(puff.nx, puff.ny, lastBgX, lastBgY, lastBgW, lastBgH);
+      ctx.drawImage(img, canvasPt[0] - size / 2, canvasPt[1] - size, size, size);
+    }
+  }
+
   function resize() {
     // Keep the canvas backing-store resolution in lockstep with its CSS
     // display size. If they drift, the browser stretches the rendered bitmap
@@ -15899,15 +16095,20 @@
   }
 
   // debug hotkey: Alt+C=conga, Alt+D=disco party, Alt+O=dance-off, Alt+L=
-  // victory lap (the former f=fast-forward-build debug instabuild hotkey was
+  // victory lap, Alt+Q=rebirth-profile quake, Alt+Shift+Q=ambient-profile
+  // quake (the former f=fast-forward-build debug instabuild hotkey was
   // removed — F is now the Edit-Stage flip shortcut above; the poof/build
   // flow it used to shortcut is confirmed working on its own). All of these
   // easter-egg hotkeys require the Alt modifier specifically (product ask:
   // make them a little harder to trigger by accident) — Ctrl/Meta
-  // combinations must NOT fire any of them.
+  // combinations must NOT fire any of them. None of the other branches below
+  // check e.shiftKey (Alt+Shift+<letter> already falls into the matching
+  // Alt+<letter> branch since e.key lowercases the same either way) — the
+  // quake branch is the first one that needs Shift to pick between two
+  // profiles, so it checks e.shiftKey explicitly inside its own block.
   // Reserved letters — do NOT bind: f e s v g r t h (VS Code/Antigravity menu
   // mnemonics: File/Edit/Selection/View/Go/Run/Terminal/Help) and z (VS Code
-  // toggle word wrap). Letters currently taken: c d o l p.
+  // toggle word wrap). Letters currently taken: c d o l p q.
   document.addEventListener("keydown", (e) => {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -16031,6 +16232,27 @@
       if (congaActive || discoPartyActive || danceOffActive) return;
       if (lastAgentList.length < 1) return;
       startVictoryLap(lastAgentList);
+    }
+    if (key === "q" && e.altKey && !e.ctrlKey && !e.metaKey) {
+      // Debug/preview hotkeys for the quake engine (see startQuake). Unlike
+      // the party hotkeys above these carry NO eligibility/party-state gates
+      // — a quake never touches agent behavior or party state, so there's
+      // nothing to conflict with. Both branches use CURRENT built-object
+      // positions for the dust puffs (capturedBuiltObjectPositions) since
+      // neither one wipes anything.
+      if (e.shiftKey) {
+        // Alt+Shift+Q → ambient-profile quake (gentler, longer — see
+        // QUAKE_AMBIENT_DURATION/INTENSITY). Not otherwise wired anywhere
+        // yet (see the "ambient RANDOM scheduling" comment near the quake
+        // constants) — this is the only way to preview it today.
+        startQuake("ambient", capturedBuiltObjectPositions());
+      } else {
+        // Alt+Q → rebirth-profile quake, VISUAL ONLY: does NOT call
+        // doRebirth() and does not touch rebirthCount, badges, or build
+        // state — just the same camera shake + dust the real rebirth wipe
+        // triggers, for testing/tuning the effect without burning a rebirth.
+        startQuake("rebirth", capturedBuiltObjectPositions());
+      }
     }
   });
 
@@ -16482,6 +16704,18 @@
     const delta = lastFrameTime === 0 ? 0 : Math.min((timestamp - lastFrameTime) / 1000, 0.1);
     lastFrameTime = timestamp;
 
+    // Quake engine: advance on the same pause-aware delta as everything else
+    // in render() (see updateQuake's doc). Amplitude is computed once per
+    // frame in canvas px (native-px quakeAmplitude() × the same
+    // themeOverallScale/sceneFitScale factor every other native-sized draw
+    // uses) and reused below for both the whole-scene camera translate and
+    // each agent's smaller secondary jitter. Reduced-motion users get 0 here
+    // — no camera shake, no per-agent jitter — dust puffs are unaffected
+    // (spawnQuakeDust doesn't consult this at all).
+    updateQuake(delta);
+    const quakeAmpCanvas = prefersReducedMotion ? 0 : quakeAmplitude() * themeOverallScale * sceneFitScale;
+    const [quakeCamX, quakeCamY] = quakeCameraOffset(quakeAmpCanvas);
+
     frame++;
     // Hover-tooltip hit-list: rebuilt fresh this frame (see declaration).
     hoverTargets = [];
@@ -16503,6 +16737,14 @@
     if (!bootLoaderDone && loadingActive && themeLoaded) {
       bootLoaderSetProgress(75 + Math.round(_load.frac * 24), "Preparing scene…");
     }
+
+    // Quake camera translate: ONE wrap point around the whole scene draw
+    // (background through the disco/dance-off overlays below), restored just
+    // before the stage-editor overlay/loading-bar/HUD/rebirth-confetti layers
+    // — those stay static so edit handles and UI text never shake. A pure
+    // ctx-transform push; nothing under it needs to know it's shaking.
+    ctx.save();
+    ctx.translate(quakeCamX, quakeCamY);
 
     // ── Change 2: Fixed-size background (does NOT stretch on resize) ──────────
     if (themeLoaded && themeBackgroundImg && themeBackgroundImg.complete && themeBackgroundImg.naturalWidth > 0) {
@@ -18325,8 +18567,14 @@
               seatRaise = Math.max(0, SEAT_SURFACE_FRAC * chairSpriteSize - SEAT_CONTACT_FRAC * spriteSize);
             }
           }
-          const drawX = cx - spriteSize / 2 + seatNudge;
-          const drawY = cy - spriteSize - seatRaise; // feet at cy, raised for chair scale
+          // Quake secondary jitter: a small, per-agent-phased draw-time
+          // offset (see quakeAgentJitter) — added ONLY here, never into
+          // charEntry.x/y, cx, or cy, so hover hit-boxes/expression bubbles
+          // below intentionally stay put (the mismatch is sub-pixel-ish and
+          // purely cosmetic).
+          const [quakeAjX, quakeAjY] = quakeAgentJitter(agent.id, quakeAmpCanvas);
+          const drawX = cx - spriteSize / 2 + seatNudge + quakeAjX;
+          const drawY = cy - spriteSize - seatRaise + quakeAjY; // feet at cy, raised for chair scale
 
           // Hover tooltip hit-box (Feature: hover tooltips) — flip-invariant:
           // the mirrored draw path below (translate+scale(-1,1)) paints inside
@@ -18374,7 +18622,7 @@
             // seatNudge into the translate's x-origin shifts the resulting
             // on-screen bounding box by the same +seatNudge as the
             // non-flipped path below (translate right → screen shifts right).
-            ctx.translate(cx + spriteSize / 2 + seatNudge, 0);
+            ctx.translate(cx + spriteSize / 2 + seatNudge + quakeAjX, 0);
             ctx.scale(-1, 1);
             ctx.drawImage(img, 0, drawY, spriteSize, spriteSize);
           } else {
@@ -18484,6 +18732,11 @@
       // chips" screen that flashed before the loaded scene.
     });
 
+    // ── Quake dust puffs (see startQuake) — drawn on top of the depth-sorted
+    // scene, same layering slot as projectiles/confetti below. No-op when
+    // no quake has spawned any (the common case).
+    updateAndDrawQuakeDust(delta);
+
     // ── Change C: draw ranged-fire projectiles ─────────────────────────
     // Drawn on top of the depth-sorted scene so shots read clearly. The
     // 4-frame projectile FX: frame0 = muzzle at origin, frame1 = in-flight,
@@ -18544,6 +18797,11 @@
     // scene, drawn before drawHUD so HUD text stays crisp/unoccluded).
     // Single cheap boolean check when no burst is live.
     drawDanceOffConfetti();
+
+    // End of the quake camera translate (see the matching ctx.save() before
+    // the background draw above) — everything below (stage-editor handles,
+    // loading bar, HUD, rebirth confetti) is static/unshaken UI.
+    ctx.restore();
 
     // (Nav-polygon debug overlay removed — the Stage Editor now shows/edits
     //  the walkable polygon, so the standalone N-key view is no longer needed.)
