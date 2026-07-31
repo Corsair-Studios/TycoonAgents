@@ -12,6 +12,22 @@ description: >
 
 This project includes a Python bridge that connects Claude Code agents to the live UEFN editor session. When UEFN is running with the project open, agents can query and manipulate the level in real-time.
 
+## Requirements
+
+**In-editor Power Tools** (the launcher window inside UEFN itself):
+- UEFN installed, with the project open
+- The **Python Editor Script Plugin** enabled — the in-editor tools run on UEFN's own embedded Python interpreter, so no separate system Python install is needed for them
+
+**MCP tools** (agent access via the `uefn_*` tools), additionally:
+- Node.js v18+ on PATH — the MCP client launches the bridge's server (`uefn-server.js`) via `node`
+
+**`uefn_verse_check`** (headless Verse compiler diagnostics), additionally:
+- System Python 3 on PATH (`python`, `python3`, or `py`) — the server runs the analyzer script with it
+- Epic's Verse VS Code extension installed in any supported VS Code-family IDE (it bundles `verse-lsp.exe`, the actual analyzer engine)
+- The project opened at least once in UEFN, so the Verse project cache the analyzer reads exists
+
+No VS Code-family IDE available? Download Epic's Verse extension's `.vsix` directly from the VS Code Marketplace website, extract it (a `.vsix` is a zip archive), and set the `VERSE_LSP_PATH` environment variable to the `verse-lsp.exe` inside the extracted folder.
+
 ## Installation (run this if the bridge is not set up)
 
 If the UEFN chip in the TycoonAgents panel is gray, or if `uefn_status` fails, follow these steps to self-install the bridge.

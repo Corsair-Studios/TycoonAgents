@@ -32,7 +32,7 @@
 </details>
 </aside>
 
-<p class="crumb">TycoonAgents Handbook / Chapter 13 / Part III · Reference · v0.0.509</p>
+<p class="crumb">TycoonAgents Handbook / Chapter 13 / Part III · Reference · v0.0.510</p>
 
 <h1><span class="chapter-num">13</span>Troubleshooting &amp; Diagnostics</h1>
 
@@ -85,6 +85,11 @@
 <div class="callout note">
   <p class="callout-label">Advanced</p>
   <p>The bridge auto-discovers its paths, but three environment variables override that discovery when it picks the wrong location: <code>UEFN_BRIDGE_DIR</code> overrides the IPC directory the bridge and MCP server use to talk to each other; <code>UEFN_VERSE_PROJECT_DIR</code> overrides the Verse project cache root; <code>VERSE_LSP_PATH</code> overrides the Verse language server executable the Verse-aware audit tools launch. Reach for one of these only if the chip stays gray after a restart, or the bridge responds with the wrong project's data.</p>
+</div>
+<div class="callout note">
+  <p class="callout-label">Advanced</p>
+  <p><code>verse-lsp.exe</code> &mdash; the actual analyzer engine behind <code>uefn_verse_check</code> &mdash; ships inside Epic's own Verse VS Code extension rather than as a separate download. When <code>VERSE_LSP_PATH</code> isn't set, discovery searches for that extension across every supported IDE's extensions folder: VS Code, VS Code Insiders, Cursor, Antigravity, Windsurf, and a remote <code>vscode-server</code> install.</p>
+  <p>No VS Code-family IDE on this machine at all? You don't need to install one just for the analyzer: download Epic's Verse extension's <code>.vsix</code> directly from the VS Code Marketplace website, extract it (a <code>.vsix</code> is a zip archive), and point <code>VERSE_LSP_PATH</code> at the <code>verse-lsp.exe</code> inside the extracted folder.</p>
 </div>
 <div class="callout tip">
   <p class="callout-label">Tip</p>

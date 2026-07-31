@@ -31,7 +31,7 @@
 </nav>
 </details>
 </aside>
-  <div class="crumb">TycoonAgents Handbook / Chapter 02 / Part I &middot; Getting Started &middot; v0.0.509</div>
+  <div class="crumb">TycoonAgents Handbook / Chapter 02 / Part I &middot; Getting Started &middot; v0.0.510</div>
 
   <div class="chapter-num">02</div>
   <h1>Installation &amp; First-Run Setup</h1>
@@ -46,7 +46,57 @@
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 2.1 &middot; Installing the extension</div>
+    <div class="s-title">&sect; 2.1 &middot; What you need</div>
+    <div class="s-caption">by tier</div>
+  </div>
+  <p>
+    TycoonAgents is built in tiers &mdash; each one only needed for the
+    features it unlocks. The core panel (Tier 0) needs nothing beyond
+    itself; everything else is optional on top of it.
+  </p>
+  <div class="ref-table">
+  <table>
+    <thead><tr><th>Tier</th><th>Unlocks</th><th>Requires</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>0 &middot; Core panel</td>
+        <td>Scene, metrics, delegation visualization</td>
+        <td>A VS Code-family IDE (VS Code, Antigravity, Cursor, Windsurf, Insiders) + the Claude Code extension/CLI, plus Node.js v18+ on PATH &mdash; the activity hooks that feed the scene run through it.</td>
+      </tr>
+      <tr>
+        <td>1 &middot; Theme authoring</td>
+        <td>Generating custom art themes</td>
+        <td>An OpenAI or Gemini API key, used at authoring time only &mdash; the shipped plugin makes zero runtime AI calls.</td>
+      </tr>
+      <tr>
+        <td>2 &middot; UEFN bridge / Power Tools</td>
+        <td>Live-editor inspection, audits, MCP tools</td>
+        <td>UEFN installed with the project open, the Python Editor Script Plugin enabled (the in-editor bridge runs on UEFN's own embedded Python &mdash; no system Python needed for the in-editor tools), and Node.js v18+ on PATH (the MCP client launches the bridge's server via <code>node</code>).</td>
+      </tr>
+      <tr>
+        <td>3 &middot; Verse analyzer</td>
+        <td><code>uefn_verse_check</code> real compiler diagnostics</td>
+        <td>System Python 3 on PATH (<code>python</code> / <code>python3</code> / <code>py</code>), Epic's Verse VS Code extension installed in any supported IDE, and the project opened at least once in UEFN.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    Node.js v18+ is the one prerequisite that runs through every tier:
+    the activity hooks at Tier 0, and the bridge's MCP server on top of
+    that at Tier 2.
+  </p>
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      Each tier is needed only for its own features &mdash; the core panel
+      needs nothing beyond Tier 0. See Chapter 12 for the UEFN bridge and
+      Chapter 13 for the no-VS-Code Verse analyzer route.
+    </p>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 2.2 &middot; Installing the extension</div>
     <div class="s-caption">VSIX or marketplace</div>
   </div>
   <p>
@@ -61,7 +111,7 @@
   </p>
 
   <div class="section-head">
-    <div class="s-title">&sect; 2.2 &middot; The first-run wizard</div>
+    <div class="s-title">&sect; 2.3 &middot; The first-run wizard</div>
     <div class="s-caption">two steps, step 1 required</div>
   </div>
   <p>
@@ -181,7 +231,7 @@
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 2.3 &middot; Returning users</div>
+    <div class="s-title">&sect; 2.4 &middot; Returning users</div>
     <div class="s-caption">no repeat prompts</div>
   </div>
   <p>
