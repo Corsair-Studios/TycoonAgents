@@ -1,0 +1,936 @@
+{
+  "manifest_version": "1.0.0",
+  "theme_id": "survivors_vs_zombies",
+  "display_name": "Survivors vs Zombies",
+  "author": "TycoonAgents Factory",
+  "viewport": {
+    "native_width": 1280,
+    "native_height": 720,
+    "background_asset": "frames.json#environment_background",
+    "crate_asset": "frames.json#crate",
+    "poof_asset": "frames.json#poof",
+    "projectile_asset": "frames.json#projectile",
+    "walkable_nav_polygon": [
+      [
+        0.51606,
+        0.32219
+      ],
+      [
+        0.97003,
+        0.48936
+      ],
+      [
+        0.96789,
+        0.81003
+      ],
+      [
+        0.50536,
+        0.97872
+      ],
+      [
+        0.02784,
+        0.80699
+      ],
+      [
+        0.03426,
+        0.52736
+      ]
+    ],
+    "overall_scale": 1,
+    "enemy_config": {
+      "spawn_interval_seconds": 175,
+      "count_mode": "random"
+    },
+    "character_scale": 1.1,
+    "object_scale": 1,
+    "character_scale_overrides": {
+      "agent_2": 1.15,
+      "agent_3": 1.25,
+      "agent_5": 1.35,
+      "agent_7": 1.1,
+      "agent_9": 1.2
+    },
+    "object_scale_overrides": {
+      "mechanical_turret": 1.9,
+      "food_drying_rack": 1.45,
+      "barbed_wire_spool": 1.35,
+      "supply_crate_pile": 1.5,
+      "rope_ladder": 1.7,
+      "solar_panel_array": 1.65,
+      "water_purifier_unit": 1.8,
+      "improvised_sniper_nest": 2.4,
+      "radio_antenna_mast": 2.25,
+      "camouflage_netting": 2.3,
+      "barricade_spike_pit": 1.6,
+      "crossbow_rack": 1.2,
+      "makeshift_wooden_barricade": 1.4,
+      "rusted_metal_trap": 1.35,
+      "campfire_with_hanging_pot": 1.5,
+      "medic_supply_tent": 1.95,
+      "blinking_surveillance_drone": 1.85,
+      "wooden_watchtower": 2.5
+    },
+    "object_anchor_overrides": {
+      "mechanical_turret": [
+        0.7523394251036527,
+        0.6697530864197531
+      ],
+      "food_drying_rack": [
+        0.4710961067992724,
+        0.5957446808510638
+      ],
+      "barbed_wire_spool": [
+        0.310937970490816,
+        0.47376543209876537
+      ],
+      "wooden_watchtower": [
+        0.5805625043429921,
+        0.9429012345679012
+      ],
+      "supply_crate_pile": [
+        0.09636056729985117,
+        0.6489361702127658
+      ],
+      "rope_ladder": [
+        0.750165033701619,
+        0.8842592592592593
+      ],
+      "solar_panel_array": [
+        0.6414454635999352,
+        0.7021604938271604
+      ],
+      "water_purifier_unit": [
+        0.09207787541985779,
+        0.7097264437689969
+      ],
+      "improvised_sniper_nest": [
+        0.8545358209992355,
+        0.8333333333333333
+      ],
+      "radio_antenna_mast": [
+        0.9132443888541449,
+        0.5679012345679012
+      ],
+      "camouflage_netting": [
+        0.6959374304989252,
+        0.4331306990881459
+      ],
+      "barricade_spike_pit": [
+        0.3413794501192875,
+        0.7716049382716049
+      ],
+      "crossbow_rack": [
+        0.2891940564704792,
+        0.5555555555555555
+      ],
+      "makeshift_wooden_barricade": [
+        0.23918305422370462,
+        0.8734567901234568
+      ],
+      "rusted_metal_trap": [
+        0.3696465383457253,
+        0.9166666666666666
+      ],
+      "explosive_barrel_pile": [
+        0.7130681980188986,
+        0.4057750759878419
+      ],
+      "campfire_with_hanging_pot": [
+        0.4882268743192459,
+        0.6398176291793313
+      ],
+      "blinking_surveillance_drone": [
+        0.7392930766914506,
+        0.5401234567901234
+      ],
+      "medic_supply_tent": [
+        0.45879658582910615,
+        0.5
+      ]
+    },
+    "decor_anchor_overrides": {
+      "seat_patched_log_bench": [
+        0.1177740266998181,
+        0.5577507598784194
+      ],
+      "decor_glowing_firefly_swarm": [
+        0.40043169077938157,
+        0.40729483282674767
+      ],
+      "decor_charred_remains_of_campfire": [
+        0.059957686319907395,
+        0.82370820668693
+      ],
+      "decor_rusted_abandoned_bicycle": [
+        0.1541769076797619,
+        0.5167173252279634
+      ],
+      "seat_cracked_barrel_seat": [
+        0.6588405948162045,
+        0.5493827160493826
+      ],
+      "decor_dead_twisted_tree": [
+        0.13698665832812174,
+        0.8410493827160492
+      ],
+      "seat_rustic_wooden_chair": [
+        0.5053576418392195,
+        0.384498480243161
+      ],
+      "decor_collapsed_wooden_signpost": [
+        0.506633196673847,
+        0.9706790123456789
+      ],
+      "seat_broken_tree_stump_seat": [
+        0.2376893993396329,
+        0.6322188449848023
+      ]
+    },
+    "decor_flip_overrides": {},
+    "object_flip_overrides": {
+      "makeshift_wooden_barricade": true,
+      "barbed_wire_spool": true,
+      "rusted_metal_trap": true,
+      "crossbow_rack": true
+    },
+    "decor_hidden": [],
+    "rival_scale": 1,
+    "rival_scale_overrides": {
+      "rival_bloated_corpse": 1.35,
+      "rival_stalker_ghoul": 1.15
+    },
+    "decor_scale": 1,
+    "decor_scale_overrides": {
+      "decor_glowing_firefly_swarm": 1.65,
+      "decor_dead_twisted_tree": 1.8,
+      "decor_collapsed_wooden_signpost": 1.35
+    }
+  },
+  "roster_agents": [
+    {
+      "slot_id": 0,
+      "name": "Scout Rick",
+      "atlas_asset": "frames.json#agent_0",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 1,
+      "name": "Medic Lena",
+      "atlas_asset": "frames.json#agent_1",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 2,
+      "name": "Engineer Max",
+      "atlas_asset": "frames.json#agent_2",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 3,
+      "name": "Sharpshooter Joe",
+      "atlas_asset": "frames.json#agent_3",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 4,
+      "name": "Hunter Sarah",
+      "atlas_asset": "frames.json#agent_4",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 5,
+      "name": "Heavy Weapons Gus",
+      "atlas_asset": "frames.json#agent_5",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 6,
+      "name": "Trap Specialist Zoe",
+      "atlas_asset": "frames.json#agent_6",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 7,
+      "name": "Forager Eli",
+      "atlas_asset": "frames.json#agent_7",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 8,
+      "name": "Demolition Expert Cass",
+      "atlas_asset": "frames.json#agent_8",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 9,
+      "name": "Infiltrator Dex",
+      "atlas_asset": "frames.json#agent_9",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 10,
+      "name": "Survivalist Anna",
+      "atlas_asset": "frames.json#agent_10",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 11,
+      "name": "Mechanic Jax",
+      "atlas_asset": "frames.json#agent_11",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 12,
+      "name": "Sniper Maya",
+      "atlas_asset": "frames.json#agent_12",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 13,
+      "name": "Explorer Finn",
+      "atlas_asset": "frames.json#agent_13",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 14,
+      "name": "Wilderness Guide Tara",
+      "atlas_asset": "frames.json#agent_14",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 15,
+      "name": "Scavenger Rob",
+      "atlas_asset": "frames.json#agent_15",
+      "preferred_idle_pose": "pose_crossed"
+    }
+  ],
+  "roster_rivals": [
+    {
+      "rival_id": "rival_zombie",
+      "name": "Zombie",
+      "atlas_asset": "frames.json#rival_zombie",
+      "attack_style": "melee"
+    },
+    {
+      "rival_id": "rival_runner_infected",
+      "name": "Runner Infected",
+      "atlas_asset": "frames.json#rival_runner_infected",
+      "attack_style": "melee"
+    },
+    {
+      "rival_id": "rival_bloated_corpse",
+      "name": "Bloated Corpse",
+      "atlas_asset": "frames.json#rival_bloated_corpse",
+      "attack_style": "melee"
+    },
+    {
+      "rival_id": "rival_stalker_ghoul",
+      "name": "Stalker Ghoul",
+      "atlas_asset": "frames.json#rival_stalker_ghoul",
+      "attack_style": "melee"
+    }
+  ],
+  "buildable_objects": [
+    {
+      "build_order": 0,
+      "object_id": "crossbow_rack",
+      "display_name": "crossbow rack",
+      "sprite_asset": "frames.json#object_crossbow_rack",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 1,
+      "object_id": "makeshift_wooden_barricade",
+      "display_name": "makeshift wooden barricade",
+      "sprite_asset": "frames.json#object_makeshift_wooden_barricade",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 2,
+      "object_id": "rusted_metal_trap",
+      "display_name": "makeshift metal barricade",
+      "sprite_asset": "frames.json#object_rusted_metal_trap",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 3,
+      "object_id": "campfire_with_hanging_pot",
+      "display_name": "campfire with hanging pot",
+      "sprite_asset": "frames.json#object_campfire_with_hanging_pot",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 4,
+      "object_id": "scrap_metal_forge",
+      "display_name": "scrap metal forge",
+      "sprite_asset": "frames.json#object_scrap_metal_forge",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 5,
+      "object_id": "supply_crate_pile",
+      "display_name": "supply crate pile",
+      "sprite_asset": "frames.json#object_supply_crate_pile",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 6,
+      "object_id": "water_purifier_unit",
+      "display_name": "water purifier unit",
+      "sprite_asset": "frames.json#object_water_purifier_unit",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 7,
+      "object_id": "medic_supply_tent",
+      "display_name": "medic supply tent",
+      "sprite_asset": "frames.json#object_medic_supply_tent",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 8,
+      "object_id": "improvised_sniper_nest",
+      "display_name": "improvised sniper nest",
+      "sprite_asset": "frames.json#object_improvised_sniper_nest",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 9,
+      "object_id": "rope_ladder",
+      "display_name": "rusty gate",
+      "sprite_asset": "frames.json#object_rope_ladder",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 10,
+      "object_id": "wooden_watchtower",
+      "display_name": "wooden watchtower",
+      "sprite_asset": "frames.json#object_wooden_watchtower",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 11,
+      "object_id": "barbed_wire_spool",
+      "display_name": "barbed wire spool",
+      "sprite_asset": "frames.json#object_barbed_wire_spool",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 12,
+      "object_id": "food_drying_rack",
+      "display_name": "food drying rack",
+      "sprite_asset": "frames.json#object_food_drying_rack",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 13,
+      "object_id": "radio_antenna_mast",
+      "display_name": "radio antenna mast",
+      "sprite_asset": "frames.json#object_radio_antenna_mast",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 14,
+      "object_id": "camouflage_netting",
+      "display_name": "camouflage netting",
+      "sprite_asset": "frames.json#object_camouflage_netting",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 15,
+      "object_id": "barricade_spike_pit",
+      "display_name": "prison pit",
+      "sprite_asset": "frames.json#object_barricade_spike_pit",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 16,
+      "object_id": "explosive_barrel_pile",
+      "display_name": "explosive barrel pile",
+      "sprite_asset": "frames.json#object_explosive_barrel_pile",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 17,
+      "object_id": "landmine_cluster",
+      "display_name": "Two stacked cars",
+      "sprite_asset": "frames.json#object_landmine_cluster",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 18,
+      "object_id": "mechanical_turret",
+      "display_name": "Water Well",
+      "sprite_asset": "frames.json#object_mechanical_turret",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 19,
+      "object_id": "solar_panel_array",
+      "display_name": "Small Campire",
+      "sprite_asset": "frames.json#object_solar_panel_array",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 20,
+      "object_id": "blinking_surveillance_drone",
+      "display_name": "Old Radio Desk",
+      "sprite_asset": "frames.json#object_blinking_surveillance_drone",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    }
+  ],
+  "decor_objects": [
+    {
+      "decor_id": "seat_rustic_wooden_chair",
+      "display_name": "rustic wooden chair",
+      "sprite_asset": "frames.json#decor_seat_rustic_wooden_chair",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "is_sittable": true,
+      "sit_anchor": [
+        0,
+        -0.03
+      ]
+    },
+    {
+      "decor_id": "seat_broken_tree_stump_seat",
+      "display_name": "broken tree stump seat",
+      "sprite_asset": "frames.json#decor_seat_broken_tree_stump_seat",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "is_sittable": true,
+      "sit_anchor": [
+        0,
+        -0.03
+      ]
+    },
+    {
+      "decor_id": "seat_patched_log_bench",
+      "display_name": "patched log bench",
+      "sprite_asset": "frames.json#decor_seat_patched_log_bench",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "is_sittable": true,
+      "sit_anchor": [
+        0,
+        -0.03
+      ]
+    },
+    {
+      "decor_id": "seat_cracked_barrel_seat",
+      "display_name": "cracked barrel seat",
+      "sprite_asset": "frames.json#decor_seat_cracked_barrel_seat",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "is_sittable": true,
+      "sit_anchor": [
+        0,
+        -0.03
+      ]
+    },
+    {
+      "decor_id": "decor_dead_twisted_tree",
+      "display_name": "dead twisted tree",
+      "sprite_asset": "frames.json#decor_decor_dead_twisted_tree",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "decor_id": "decor_collapsed_wooden_signpost",
+      "display_name": "collapsed wooden signpost",
+      "sprite_asset": "frames.json#decor_decor_collapsed_wooden_signpost",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "decor_id": "decor_rusted_abandoned_bicycle",
+      "display_name": "rusted abandoned bicycle",
+      "sprite_asset": "frames.json#decor_decor_rusted_abandoned_bicycle",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "decor_id": "decor_charred_remains_of_campfire",
+      "display_name": "charred remains of a zombie",
+      "sprite_asset": "frames.json#decor_decor_charred_remains_of_campfire",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "decor_id": "decor_glowing_firefly_swarm",
+      "display_name": "glowing firefly swarm",
+      "sprite_asset": "frames.json#decor_decor_glowing_firefly_swarm",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "anim_fps": 5,
+      "anim_loop": true
+    }
+  ],
+  "badges": [
+    {
+      "badge_id": "build_1",
+      "display_name": "First Build",
+      "description": "Complete your first build.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 1,
+      "icon_asset": "frames.json#achievement_0"
+    },
+    {
+      "badge_id": "build_3",
+      "display_name": "Builder",
+      "description": "Build 3 objects.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 3,
+      "icon_asset": "frames.json#achievement_1"
+    },
+    {
+      "badge_id": "build_6",
+      "display_name": "Developer",
+      "description": "Build 6 objects.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 6,
+      "icon_asset": "frames.json#achievement_2"
+    },
+    {
+      "badge_id": "build_10",
+      "display_name": "Master Builder",
+      "description": "Build 10 objects.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 10,
+      "icon_asset": "frames.json#achievement_3"
+    },
+    {
+      "badge_id": "evict_1",
+      "display_name": "First Eviction",
+      "description": "Evict your first rival.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 1,
+      "icon_asset": "frames.json#achievement_4"
+    },
+    {
+      "badge_id": "evict_5",
+      "display_name": "Defender",
+      "description": "Evict 5 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 5,
+      "icon_asset": "frames.json#achievement_5"
+    },
+    {
+      "badge_id": "evict_10",
+      "display_name": "Enforcer",
+      "description": "Evict 10 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 10,
+      "icon_asset": "frames.json#achievement_6"
+    },
+    {
+      "badge_id": "evict_20",
+      "display_name": "Warlord",
+      "description": "Evict 20 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 20,
+      "icon_asset": "frames.json#achievement_7"
+    },
+    {
+      "badge_id": "task_1",
+      "display_name": "Getting Started",
+      "description": "Complete your first task.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 1,
+      "icon_asset": "frames.json#achievement_8"
+    },
+    {
+      "badge_id": "task_10",
+      "display_name": "Warmed Up",
+      "description": "Complete 10 tasks.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 10,
+      "icon_asset": "frames.json#achievement_9"
+    },
+    {
+      "badge_id": "task_50",
+      "display_name": "In the Zone",
+      "description": "Complete 50 tasks.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 50,
+      "icon_asset": "frames.json#achievement_10"
+    },
+    {
+      "badge_id": "task_150",
+      "display_name": "Grind Master",
+      "description": "Complete 150 tasks.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 150,
+      "icon_asset": "frames.json#achievement_11"
+    },
+    {
+      "badge_id": "task_500",
+      "display_name": "Unstoppable",
+      "description": "Complete 500 tasks.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 500,
+      "icon_asset": "frames.json#achievement_12"
+    },
+    {
+      "badge_id": "evict_35",
+      "display_name": "Turf War",
+      "description": "Evict 35 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 35,
+      "icon_asset": "frames.json#achievement_13"
+    },
+    {
+      "badge_id": "evict_50",
+      "display_name": "Overlord",
+      "description": "Evict 50 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 50,
+      "icon_asset": "frames.json#achievement_14"
+    },
+    {
+      "badge_id": "evict_75",
+      "display_name": "Kingpin",
+      "description": "Evict 75 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 75,
+      "icon_asset": "frames.json#achievement_15"
+    },
+    {
+      "badge_id": "evict_100",
+      "display_name": "Undisputed",
+      "description": "Evict 100 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 100,
+      "icon_asset": "frames.json#achievement_16"
+    },
+    {
+      "badge_id": "crew_3",
+      "display_name": "Small Crew",
+      "description": "Have 3 agents active at once.",
+      "trigger_type": "AGENTS_ACTIVE",
+      "threshold": 3,
+      "icon_asset": "frames.json#achievement_17"
+    },
+    {
+      "badge_id": "crew_6",
+      "display_name": "Full House",
+      "description": "Have 4 agents active at once.",
+      "trigger_type": "AGENTS_ACTIVE",
+      "threshold": 4,
+      "icon_asset": "frames.json#achievement_18"
+    },
+    {
+      "badge_id": "build_13",
+      "display_name": "Property Tycoon",
+      "description": "Build 13 objects.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 13,
+      "icon_asset": "frames.json#achievement_19"
+    },
+    {
+      "badge_id": "rebirth_1",
+      "display_name": "Reborn",
+      "description": "Rebirth once. This badge is permanent — it survives every future Rebirth.",
+      "trigger_type": "REBIRTH_COUNT",
+      "threshold": 1,
+      "icon_asset": "frames.json#achievement_20"
+    },
+    {
+      "badge_id": "rebirth_2",
+      "display_name": "Twice Reborn",
+      "description": "Rebirth twice. This badge is permanent — it survives every future Rebirth.",
+      "trigger_type": "REBIRTH_COUNT",
+      "threshold": 2,
+      "icon_asset": "frames.json#achievement_21"
+    },
+    {
+      "badge_id": "rebirth_3",
+      "display_name": "Transcendent",
+      "description": "Rebirth three times. This badge is permanent — it survives every future Rebirth.",
+      "trigger_type": "REBIRTH_COUNT",
+      "threshold": 3,
+      "icon_asset": "frames.json#achievement_22"
+    },
+    {
+      "badge_id": "rebirth_5",
+      "display_name": "Reborn Five Times",
+      "description": "Reach Rebirth ×5. This badge is permanent — it survives every future Rebirth.",
+      "trigger_type": "REBIRTH_COUNT",
+      "threshold": 5,
+      "icon_asset": "frames.json#achievement_24"
+    },
+    {
+      "badge_id": "reborn_builder",
+      "display_name": "New Game+",
+      "description": "After at least one Rebirth, build 10 objects in a single cycle.",
+      "trigger_type": "OBJECTS_BUILT_POST_REBIRTH",
+      "threshold": 10,
+      "icon_asset": "frames.json#achievement_23"
+    }
+  ]
+}
