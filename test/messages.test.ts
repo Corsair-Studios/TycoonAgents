@@ -265,3 +265,75 @@ test('MSG carries both the SET_THEME_CREATIVE_DIRECTION request and THEME_CREATI
   assert.equal(MSG.SET_THEME_CREATIVE_DIRECTION, 'SET_THEME_CREATIVE_DIRECTION');
   assert.equal(MSG.THEME_CREATIVE_DIRECTION_RESULT, 'THEME_CREATIVE_DIRECTION_RESULT');
 });
+
+// --- APPLY_DOCTOR_FIX -------------------------------------------------------
+// Regression coverage for the removeForeign default/honor contract described
+// at the schema's declaration site (messages.ts): omitting removeForeign
+// must still default to true (an older/stale webview keeps removing foreign
+// hooks), while an EXPLICIT false must be honored rather than overridden.
+// These two are the critical pair — write them so a future accidental flip
+// of `.default(true)` to `.default(false)` (or dropping the default
+// entirely) fails loudly here first.
+
+test('APPLY_DOCTOR_FIX schema: removeForeign absent parses to true (the safe default for stale webviews)', () => {
+  const result = MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse({});
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal((result.data as { removeForeign: boolean }).removeForeign, true);
+  }
+});
+
+test('APPLY_DOCTOR_FIX schema: an explicit false is honored as false, not overridden to the default', () => {
+  const result = MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse({ removeForeign: false });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal((result.data as { removeForeign: boolean }).removeForeign, false);
+  }
+});
+
+test('APPLY_DOCTOR_FIX schema: an explicit true stays true', () => {
+  const result = MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse({ removeForeign: true });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal((result.data as { removeForeign: boolean }).removeForeign, true);
+  }
+});
+
+test('APPLY_DOCTOR_FIX schema: non-boolean removeForeign values are rejected, never silently coerced', () => {
+  assert.equal(MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse({ removeForeign: 'false' }).success, false, 'the string "false" must not parse as boolean false');
+  assert.equal(MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse({ removeForeign: 0 }).success, false, 'the number 0 must not parse as boolean false');
+  assert.equal(MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse({ removeForeign: 1 }).success, false, 'the number 1 must not parse as boolean true');
+  assert.equal(MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse({ removeForeign: null }).success, false, 'null must not silently fall back to the default');
+});
+
+test('APPLY_DOCTOR_FIX schema: unknown keys are tolerated (passthrough)', () => {
+  const result = MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse({ removeForeign: false, futureField: 'ignored-by-older-hosts' });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal((result.data as Record<string, unknown>)['futureField'], 'ignored-by-older-hosts');
+  }
+});
+
+// --- LEGACY_ARTIFACTS_DETECTED ----------------------------------------------
+// Outbound host->webview notification (see panel.ts's
+// _detectLegacyArtifactsOnLoad + the MSG.READY handler). No MSG_SCHEMAS entry
+// (that table only covers inbound mutating messages) — just guard the wire
+// string itself, since the webview listener string-matches it by hand and a
+// silent rename would break that listener without any type error.
+
+test('MSG.LEGACY_ARTIFACTS_DETECTED wire string is stable ("legacyArtifactsDetected")', () => {
+  assert.equal(MSG.LEGACY_ARTIFACTS_DETECTED, 'legacyArtifactsDetected');
+});
+
+// --- REPAIR_HOOK (deleted dead code) ----------------------------------------
+// MSG.REPAIR_HOOK was removed as dead code alongside the
+// cleanupForeignHookArtifacts removeForeignCommands fix (see
+// test/hookInstall.test.ts). Guard against it silently reappearing.
+
+test('MSG.REPAIR_HOOK no longer exists', () => {
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(MSG, 'REPAIR_HOOK'),
+    false,
+    'REPAIR_HOOK was deleted as dead code and must not be reintroduced',
+  );
+});

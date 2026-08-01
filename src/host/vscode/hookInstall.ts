@@ -350,6 +350,23 @@ export interface CleanupResult {
 
 const SETTINGS_FILE_NAMES: ReadonlyArray<string> = ["settings.local.json", "settings.json"];
 
+export interface CleanupForeignHookArtifactsOptions {
+  /**
+   * Whether step 1 may strip foreign/legacy hook COMMANDS out of
+   * settings.local.json/settings.json (and write those files). Defaults to
+   * `true` so every existing caller (Install Hooks, and any other call site
+   * that doesn't pass this option) keeps today's behavior — only one
+   * harness can validly track a project. Callers that need to honor a
+   * user-facing "remove foreign hooks?" choice (e.g. Hook Doctor's Apply
+   * Fix) must pass `false` explicitly to skip settings mutation entirely
+   * when the user opted out. Step 3 (deleting orphaned
+   * `agent-activity-*.json` spool files) always runs regardless of this
+   * flag — that cleanup is safe either way and isn't a "remove hooks"
+   * choice.
+   */
+  removeForeignCommands?: boolean;
+}
+
 /**
  * Idempotently strips leftover foreign/legacy agent-hook artifacts under
  * `claudeDirRoot` (the project's `.claude` directory) so a fresh TycoonAgents
@@ -357,18 +374,27 @@ const SETTINGS_FILE_NAMES: ReadonlyArray<string> = ["settings.local.json", "sett
  *
  * 1. Removes foreign/legacy hook commands wired into OUR events in
  *    settings.local.json / settings.json (our own entries and unrelated
- *    non-agent hooks are left untouched).
+ *    non-agent hooks are left untouched) — gated on
+ *    `options.removeForeignCommands` (default `true`); when explicitly
+ *    `false`, this step does not touch settings at all (no read-driven
+ *    write), so `strippedForeignHookCommands` stays empty and neither
+ *    settings file is written.
  * 2. Clears a stale `active-agent.json.lock` (any age — install is a safe
  *    reset point) and, if the stack looked stuck, resets `active-agent.json`
  *    to an empty stack.
  * 3. Deletes known leftover legacy state files at the `.claude/` root (see
  *    {@link LEGACY_STATE_FILE_NAMES}) plus any `agent-activity-*.json` files.
+ *    Always runs, independent of `removeForeignCommands`.
  *
  * Every step is guarded (existsSync / try-catch) so this is a safe no-op on
  * a project that never had a foreign hook system, and safe to call on every
  * install.
  */
-export function cleanupForeignHookArtifacts(claudeDirRoot: string): CleanupResult {
+export function cleanupForeignHookArtifacts(
+  claudeDirRoot: string,
+  options: CleanupForeignHookArtifactsOptions = {}
+): CleanupResult {
+  const removeForeignCommands = options.removeForeignCommands !== false;
   const result: CleanupResult = {
     strippedForeignHookCommands: [],
     clearedStaleLock: false,
@@ -377,9 +403,10 @@ export function cleanupForeignHookArtifacts(claudeDirRoot: string): CleanupResul
     changes: [],
   };
 
-  // 1. Strip foreign/legacy hook commands from our event slots.
+  // 1. Strip foreign/legacy hook commands from our event slots — skipped
+  // entirely (no read, no write) when the caller explicitly opted out.
   const tycoonEvents = new Set(TYCOON_HOOK_SLOTS.map((s) => s.event));
-  for (const fileName of SETTINGS_FILE_NAMES) {
+  for (const fileName of removeForeignCommands ? SETTINGS_FILE_NAMES : []) {
     const filePath = path.join(claudeDirRoot, fileName);
     const parsed = readJsonFileSafe(filePath);
     const hooksSection = parsed ? (parsed as { hooks?: unknown }).hooks : undefined;

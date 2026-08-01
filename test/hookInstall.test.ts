@@ -457,3 +457,147 @@ test("cleanupForeignHookArtifacts: idempotent — second run on already-cleaned 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// cleanupForeignHookArtifacts: CleanupForeignHookArtifactsOptions.removeForeignCommands
+//
+// Independent verification of the fix for a CRITICAL review finding: the
+// Hook Doctor UI now shows a "Remove other harnesses' hooks" checkbox that
+// must be a REAL gate on whether settings.json/settings.local.json get
+// mutated at all — not merely a gate on the reported result. Before the fix,
+// legacy-basename hook commands were always stripped regardless of the
+// checkbox, i.e. the checkbox was inert/lying to the user about a
+// destructive action.
+// ---------------------------------------------------------------------------
+
+const LEGACY_CMD_A = `node "/old/project/.claude/hooks/${LEGACY_HOOK_BASENAMES[0]}"`; // task-start.cjs
+const LEGACY_CMD_B = `node "/old/project/.claude/hooks/teammate-idle.cjs"`; // present in LEGACY_HOOK_BASENAMES
+
+/**
+ * Builds a fixture `.claude/` dir containing settings.local.json with a mix
+ * of (a) legacy-basename hook commands, (b) our own tycoon-claude-hook.cjs
+ * command, and (c) orphaned agent-activity-<ts>-<pid>.json spool files.
+ * Returns the dir path and the exact settings.local.json content written, so
+ * callers can assert byte-identical no-write behavior.
+ */
+function makeMixedFixture(): { dir: string; settingsPath: string; settingsContent: string } {
+  const dir = makeTmpClaudeDir();
+  const settings = mergeTycoonHooks({}, cmd) as any;
+  settings.hooks.UserPromptSubmit.push({
+    matcher: "",
+    hooks: [{ type: "command", command: LEGACY_CMD_A }],
+  });
+  settings.hooks.Stop.push({
+    matcher: "",
+    hooks: [{ type: "command", command: LEGACY_CMD_B }],
+  });
+  const settingsContent = JSON.stringify(settings, null, 2);
+  const settingsPath = path.join(dir, "settings.local.json");
+  fs.writeFileSync(settingsPath, settingsContent);
+
+  // Orphaned agent-activity-<ts>-<pid>.json artifact files.
+  fs.writeFileSync(path.join(dir, "agent-activity-1738000000000-4321.json"), "{}");
+  fs.writeFileSync(path.join(dir, "agent-activity-1738000005555-9876.json"), "{}");
+
+  return { dir, settingsPath, settingsContent };
+}
+
+test("cleanupForeignHookArtifacts: removeForeignCommands:false skips settings entirely — legacy AND our own commands remain, file is untouched, orphan files still deleted", () => {
+  const { dir, settingsPath, settingsContent } = makeMixedFixture();
+  try {
+    const statBefore = fs.statSync(settingsPath);
+
+    const result = cleanupForeignHookArtifacts(dir, { removeForeignCommands: false });
+
+    // THE assertion that would have caught the shipped defect: with the gate
+    // off, no settings read/write happens, so nothing is reported stripped.
+    assert.deepEqual(result.strippedForeignHookCommands, [], "no commands may be reported stripped when removeForeignCommands:false");
+
+    const afterContent = fs.readFileSync(settingsPath, "utf8");
+    assert.equal(afterContent, settingsContent, "settings.local.json content must be byte-identical — no write may occur");
+
+    const statAfter = fs.statSync(settingsPath);
+    assert.equal(statAfter.mtimeMs, statBefore.mtimeMs, "settings.local.json mtime must be unchanged — proves no write happened, not just same content");
+
+    // Legacy commands remain verbatim.
+    const after = JSON.parse(afterContent);
+    const allCmds = Object.values(after.hooks as Record<string, any[]>)
+      .flat()
+      .flatMap((e: any) => e.hooks.map((h: any) => h.command));
+    assert.ok(allCmds.includes(LEGACY_CMD_A), "legacy command A must REMAIN when removeForeignCommands:false");
+    assert.ok(allCmds.includes(LEGACY_CMD_B), "legacy command B must REMAIN when removeForeignCommands:false");
+    assert.ok(allCmds.includes(cmd), "our own tycoon-claude-hook.cjs command must remain present");
+
+    // Orphan artifact files are still deleted regardless of the flag.
+    assert.ok(!fs.existsSync(path.join(dir, "agent-activity-1738000000000-4321.json")), "orphan artifact file A must still be deleted");
+    assert.ok(!fs.existsSync(path.join(dir, "agent-activity-1738000005555-9876.json")), "orphan artifact file B must still be deleted");
+    assert.ok(result.deletedLeftoverFiles.includes("agent-activity-1738000000000-4321.json"));
+    assert.ok(result.deletedLeftoverFiles.includes("agent-activity-1738000005555-9876.json"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cleanupForeignHookArtifacts: removeForeignCommands:true (explicit) strips legacy commands, preserves our own, deletes orphan files", () => {
+  const { dir, settingsPath } = makeMixedFixture();
+  try {
+    const result = cleanupForeignHookArtifacts(dir, { removeForeignCommands: true });
+
+    assert.ok(result.strippedForeignHookCommands.includes(LEGACY_CMD_A));
+    assert.ok(result.strippedForeignHookCommands.includes(LEGACY_CMD_B));
+
+    const after = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const allCmds = Object.values(after.hooks as Record<string, any[]>)
+      .flat()
+      .flatMap((e: any) => e.hooks.map((h: any) => h.command));
+    assert.ok(!allCmds.includes(LEGACY_CMD_A), "legacy command A must be removed");
+    assert.ok(!allCmds.includes(LEGACY_CMD_B), "legacy command B must be removed");
+    assert.ok(allCmds.includes(cmd), "our own tycoon hook command must never be stripped");
+
+    assert.ok(!fs.existsSync(path.join(dir, "agent-activity-1738000000000-4321.json")), "orphan artifact file A must be deleted");
+    assert.ok(!fs.existsSync(path.join(dir, "agent-activity-1738000005555-9876.json")), "orphan artifact file B must be deleted");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cleanupForeignHookArtifacts: option object present but removeForeignCommands key omitted ({}) behaves as true", () => {
+  const { dir, settingsPath } = makeMixedFixture();
+  try {
+    const result = cleanupForeignHookArtifacts(dir, {});
+
+    assert.ok(result.strippedForeignHookCommands.includes(LEGACY_CMD_A));
+    assert.ok(result.strippedForeignHookCommands.includes(LEGACY_CMD_B));
+
+    const after = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const allCmds = Object.values(after.hooks as Record<string, any[]>)
+      .flat()
+      .flatMap((e: any) => e.hooks.map((h: any) => h.command));
+    assert.ok(!allCmds.includes(LEGACY_CMD_A));
+    assert.ok(!allCmds.includes(LEGACY_CMD_B));
+    assert.ok(allCmds.includes(cmd));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cleanupForeignHookArtifacts: options argument entirely omitted (Install Hooks' call shape) behaves as true — protects Install Hooks", () => {
+  const { dir, settingsPath } = makeMixedFixture();
+  try {
+    // Call with ONLY the dir arg, exactly as Install Hooks does today.
+    const result = cleanupForeignHookArtifacts(dir);
+
+    assert.ok(result.strippedForeignHookCommands.includes(LEGACY_CMD_A));
+    assert.ok(result.strippedForeignHookCommands.includes(LEGACY_CMD_B));
+
+    const after = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const allCmds = Object.values(after.hooks as Record<string, any[]>)
+      .flat()
+      .flatMap((e: any) => e.hooks.map((h: any) => h.command));
+    assert.ok(!allCmds.includes(LEGACY_CMD_A), "Install Hooks' default call must still strip legacy commands");
+    assert.ok(!allCmds.includes(LEGACY_CMD_B));
+    assert.ok(allCmds.includes(cmd));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

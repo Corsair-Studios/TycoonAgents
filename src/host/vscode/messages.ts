@@ -80,18 +80,27 @@ export const MSG = {
   SET_AGENT_KEYWORDS: "setAgentKeywords",
   REMOVE_AGENT: "removeAgent",
   AGENT_REMOVED: "agentRemoved",
-  REPAIR_HOOK: "repairHook",
   RESET_METRICS: "resetMetrics",
   METRICS_RESET: "metricsReset",
   RUN_DOCTOR: "runDoctor",
   DOCTOR_REPORT: "doctorReport",
   APPLY_DOCTOR_FIX: "applyDoctorFix",
   DOCTOR_FIX_DONE: "doctorFixDone",
+  // Outbound-only, host -> webview: fired once per panel open (see panel.ts
+  // constructor's _detectLegacyArtifactsOnLoad + the MSG.READY handler that
+  // delivers it) when the same read-only scan Hook Doctor's "Run Doctor"
+  // uses (_detectLegacyArtifacts) finds leftover foreign/legacy agent-hook
+  // artifacts — orphaned `agent-activity-*.json` spool files and/or foreign
+  // hook commands still wired into our event slots. Detection + notification
+  // only; nothing is deleted as a side effect of this message. Payload:
+  // `{ artifactCount, foreignHookCount }`. Not in MSG_SCHEMAS since that
+  // table only covers inbound MUTATING webview->host messages.
+  LEGACY_ARTIFACTS_DETECTED: "legacyArtifactsDetected",
   // "Generate diagnostic report" (bug-report): host gathers already-computed
   // health signals, builds a SANITIZED Markdown report (diagnosticReport.ts),
   // writes it to .claude/tycoon/, opens it for review, and copies it to the
   // clipboard. No payload — purely a confirm-click trigger, same shape as
-  // REPAIR_HOOK/REMOVE_MANAGED_BLOCK. No network, no runtime AI.
+  // REMOVE_MANAGED_BLOCK. No network, no runtime AI.
   GENERATE_DIAGNOSTIC: "generateDiagnostic",
 
   // ---- Feedback pipeline (docs/FEEDBACK-PIPELINE-SPEC.md) -----------------
@@ -527,6 +536,14 @@ export const MSG_SCHEMAS = {
   // No required fields — the host gathers every input itself; this message
   // is purely the user's confirm-click trigger from Settings.
   GENERATE_DIAGNOSTIC: z.object({}).passthrough(),
+
+  // "Troubleshoot & Fix": `removeForeign` DEFAULTS TO TRUE when absent so an
+  // older/stale webview build that omits the flag still gets foreign hook
+  // commands removed (see _handleApplyDoctorFix). An EXPLICIT `false` from
+  // the webview is honored as-is — only the absent/undefined case flips to
+  // true; `.optional().default(true)` gives exactly that: undefined input ->
+  // true, `false` input -> false, `true` input -> true.
+  APPLY_DOCTOR_FIX: z.object({ removeForeign: z.boolean().optional().default(true) }).passthrough(),
 
   // ---- Feedback pipeline ----------------------------------------------------
   // Preview-only build request — see MSG.SUBMIT_FEEDBACK above. No network

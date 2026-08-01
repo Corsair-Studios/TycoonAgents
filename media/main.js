@@ -2223,6 +2223,20 @@
   const appEl          = /** @type {HTMLElement} */ (document.getElementById("app"));
   const setupStatusEl  = /** @type {HTMLElement} */ (document.getElementById("setup-status"));
   const installHooksBtn = /** @type {HTMLElement} */ (document.getElementById("install-hooks-btn"));
+  // One-line warning, inserted here (not in the static HTML owned by
+  // panel.ts) because Install Hooks strips foreign hooks unconditionally
+  // with no warning today. Placed as the button's very next sibling so the
+  // CSS rule `#install-hooks-btn[hidden] + #install-hooks-warning` mirrors
+  // whatever hidden/shown state the many call sites below already put the
+  // button in — no need to touch each one individually. Shown unconditionally
+  // (not gated on a foreign-hook count): the "installState" push this screen
+  // renders from carries no such count, and inventing new host plumbing for
+  // it is out of scope here.
+  const installHooksWarningEl = document.createElement("p");
+  installHooksWarningEl.id = "install-hooks-warning";
+  installHooksWarningEl.className = "delegation-mode-footnote";
+  installHooksWarningEl.textContent = "Removes other harnesses' hooks — only one can track a project.";
+  installHooksBtn.insertAdjacentElement("afterend", installHooksWarningEl);
   const setupErrorEl   = /** @type {HTMLElement} */ (document.getElementById("setup-error"));
   const setupConfigEl  = /** @type {HTMLElement} */ (document.getElementById("setup-config"));
   const setupBackBtn   = /** @type {HTMLElement} */ (document.getElementById("setup-back-btn"));
@@ -2233,6 +2247,64 @@
   const delegationModeGroupEl = /** @type {HTMLElement} */ (document.getElementById("delegation-mode-group"));
   const menuSettingsBtn = /** @type {HTMLElement} */ (document.getElementById("menu-settings"));
   const menuThemesBtn   = /** @type {HTMLElement} */ (document.getElementById("menu-themes"));
+
+  /**
+   * Legacy/foreign-harness leak notice — reacts to the host's
+   * "legacyArtifactsDetected" push (sent once per panel load, only when
+   * artifactCount or foreignHookCount is non-zero; see the message dispatch
+   * below). Fixing is delegated entirely to the existing Hook Doctor flow
+   * inside Settings (Troubleshoot & Fix / the foreign-hooks checkbox added
+   * above) — this notice never duplicates that repair UI, it just opens it.
+   */
+  function showLegacyArtifactsNotice(artifactCount, foreignHookCount) {
+    if (!artifactCount && !foreignHookCount) return; // nothing found — render nothing
+    if ((vscode.getState() || {}).legacyArtifactsNoticeDismissed) return;
+    if (document.getElementById("legacy-artifacts-notice")) return; // already up this load
+
+    const notice = document.createElement("div");
+    notice.id = "legacy-artifacts-notice";
+    notice.className = "catalog-notice legacy-artifacts-notice";
+
+    const text = document.createElement("span");
+    text.className = "legacy-artifacts-notice-text";
+    const fileWord = artifactCount === 1 ? "file" : "files";
+    const hookWord = foreignHookCount === 1 ? "hook" : "hooks";
+    text.textContent =
+      `Found ${artifactCount} leftover ${fileWord} and ${foreignHookCount} foreign ${hookWord} from another harness.`;
+    notice.appendChild(text);
+
+    const fixBtn = document.createElement("button");
+    fixBtn.className = "skill-btn settings-btn legacy-artifacts-notice-fix";
+    fixBtn.textContent = "Open Hook Doctor";
+    fixBtn.addEventListener("click", () => {
+      dismissLegacyArtifactsNotice();
+      menuSettingsBtn.click(); // same entry point the hamburger menu uses
+    });
+    notice.appendChild(fixBtn);
+
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "legacy-artifacts-notice-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss");
+    dismissBtn.textContent = "×";
+    dismissBtn.addEventListener("click", () => dismissLegacyArtifactsNotice());
+    notice.appendChild(dismissBtn);
+
+    document.body.appendChild(notice);
+  }
+
+  /**
+   * Session-scoped dismissal: written into the same vscode.getState()/
+   * setState() blob used elsewhere in this file (e.g. activeMetricsTab,
+   * badgeHudUnseen). Persists across webview hide/show and reload within
+   * this VS Code session, cleared on a fresh session — no host-side
+   * persistence invented for this.
+   */
+  function dismissLegacyArtifactsNotice() {
+    const notice = document.getElementById("legacy-artifacts-notice");
+    if (notice) notice.remove();
+    const prev = vscode.getState() || {};
+    vscode.setState({ ...prev, legacyArtifactsNoticeDismissed: true });
+  }
   
   // Themes Modal Elements
   const themesModalEl       = /** @type {HTMLElement} */ (document.getElementById("themes-modal"));
@@ -11622,6 +11694,8 @@
       handleFeedbackPreview(msg);
     } else if (msg && msg.type === "feedbackResult") {
       handleFeedbackResult(msg);
+    } else if (msg && msg.type === "legacyArtifactsDetected") {
+      showLegacyArtifactsNotice(Number(msg.artifactCount) || 0, Number(msg.foreignHookCount) || 0);
     } else if (msg && msg.type === "doctorReport") {
       const el = document.getElementById("doctor-results");
       if (!el) return;
@@ -11659,6 +11733,12 @@
       }
 
       const hasFixable = findings.some(f => f.fixable && !f.destructive);
+      // Declared here (not inside the `if (foreign.length > 0)` block below)
+      // so the "Fix issues" click handler's closure can read whatever the
+      // foreign-hooks checkbox is set to at click time — assignment happens
+      // further down, but by the time either button is clicked the whole
+      // report has already rendered.
+      let removeForeignCheckbox = null;
       if (hasFixable) {
         const fixRow = document.createElement("div");
         fixRow.className = "doctor-action-row";
@@ -11668,7 +11748,10 @@
         fixBtn.addEventListener("click", () => {
           fixBtn.disabled = true;
           fixBtn.textContent = "Fixing…";
-          vscode.postMessage({ type: "applyDoctorFix", removeForeign: false });
+          // Checked by default (see below) — the default repair now removes
+          // foreign hooks too, instead of silently leaving them behind.
+          const removeForeign = Boolean(removeForeignCheckbox && removeForeignCheckbox.checked);
+          vscode.postMessage({ type: "applyDoctorFix", removeForeign });
         });
         fixRow.appendChild(fixBtn);
         el.appendChild(fixRow);
@@ -11687,9 +11770,34 @@
           cmdEl.textContent = cmd;
           cautionDiv.appendChild(cmdEl);
         }
+
+        const removeForeignToggle = document.createElement("label");
+        removeForeignToggle.className = "doctor-caution-toggle";
+        removeForeignCheckbox = document.createElement("input");
+        removeForeignCheckbox.type = "checkbox";
+        removeForeignCheckbox.id = "doctor-remove-foreign-checkbox";
+        // ON by default: leaving this unchecked is the leaking state (foreign
+        // hooks survive the fix and keep spooling unread agent-activity-*.json
+        // spool files), so checked is the correct default.
+        removeForeignCheckbox.checked = true;
+        removeForeignToggle.appendChild(removeForeignCheckbox);
+        const removeForeignLabelText = document.createElement("span");
+        removeForeignLabelText.textContent = `Remove foreign hooks (${foreign.length})`;
+        removeForeignToggle.appendChild(removeForeignLabelText);
+        cautionDiv.appendChild(removeForeignToggle);
+
+        const removeForeignWarning = document.createElement("div");
+        removeForeignWarning.className = "delegation-mode-footnote";
+        removeForeignWarning.textContent = "Removes other harnesses' hooks — only one can track a project.";
+        cautionDiv.appendChild(removeForeignWarning);
+
         const removeBtn = document.createElement("button");
         removeBtn.className = "skill-btn settings-btn danger-btn";
-        removeBtn.textContent = `Remove foreign hooks (${foreign.length})`;
+        removeBtn.textContent = "Remove now";
+        removeBtn.disabled = !removeForeignCheckbox.checked;
+        removeForeignCheckbox.addEventListener("change", () => {
+          removeBtn.disabled = !removeForeignCheckbox.checked;
+        });
         removeBtn.addEventListener("click", () => {
           removeBtn.disabled = true;
           removeBtn.textContent = "Removing…";

@@ -457,6 +457,15 @@ export class TycoonPanel {
   private _enginePollInterval: NodeJS.Timeout | undefined;
   /** Cached "connected" results for HTTP-probeable engine MCP entries (e.g. unreal-engine-mcp), keyed by engine id. */
   private _engineProbeCache: Map<string, boolean> = new Map();
+  /**
+   * Result of the once-per-panel-open leftover foreign/legacy agent-hook
+   * artifact scan (see `_detectLegacyArtifactsOnLoad`), computed in the
+   * constructor and delivered as `MSG.LEGACY_ARTIFACTS_DETECTED` once
+   * `MSG.READY` arrives (a postMessage sent before the webview's listener
+   * attaches is silently lost). `null` when nothing was found, no workspace
+   * root was open, or the scan threw.
+   */
+  private _pendingLegacyArtifactsNotice: { artifactCount: number; foreignHookCount: number } | null = null;
   /** Engine ids with an in-flight probe fetch — guards against stacking probes across poll ticks. */
   private _engineProbeInFlight: Set<string> = new Set();
   /**
@@ -603,6 +612,15 @@ export class TycoonPanel {
     // again.
     this._ensureHookMatchersFresh();
 
+    // Detect (never auto-fix) leftover foreign/legacy agent-hook artifacts
+    // once per panel open — cheap read-only scan (see
+    // _detectLegacyArtifactsOnLoad), so a project that's accumulated
+    // orphaned agent-activity-*.json spool files and/or foreign hook
+    // commands surfaces that to the user without them having to open Hook
+    // Doctor. Result is stashed and delivered once MSG.READY arrives, below
+    // — removal stays a user action via Hook Doctor's existing fix path.
+    this._pendingLegacyArtifactsNotice = this._detectLegacyArtifactsOnLoad();
+
     // Auto-heal a stale on-disk project-plan skill once per panel open (see
     // _ensureProjectPlanSkillFresh doc comment) — fixes the skill drifting
     // out of date on a project where Project Plan is enabled but the skill
@@ -675,6 +693,21 @@ export class TycoonPanel {
       }) => {
         if (message.type === MSG.READY) {
           void this._panel.webview.postMessage({ type: MSG.STATE, state: this._stampRosterModels(this._applyTimeAdjustments(runtime.getState())) });
+          // Deliver the once-per-panel-open leftover-artifact notice (see
+          // _detectLegacyArtifactsOnLoad + the constructor call site) now
+          // that the webview's message listener is actually attached — a
+          // postMessage sent before READY would be silently lost. Harmless
+          // no-op for a webview build that doesn't listen for this message
+          // yet. Not resent on subsequent READY pings within the same panel
+          // life (cleared after the first delivery).
+          if (this._pendingLegacyArtifactsNotice) {
+            void this._panel.webview.postMessage({
+              type: MSG.LEGACY_ARTIFACTS_DETECTED,
+              artifactCount: this._pendingLegacyArtifactsNotice.artifactCount,
+              foreignHookCount: this._pendingLegacyArtifactsNotice.foreignHookCount,
+            });
+            this._pendingLegacyArtifactsNotice = null;
+          }
           // Auto-load the latest theme so the main panel shows the real
           // characters + environment on open (mirrors the Theater view).
           void (async () => {
@@ -850,15 +883,6 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: removeAgent payload rejected:", parsedRemoveAgent.error.message);
           }
-        } else if (message.type === MSG.REPAIR_HOOK) {
-          // Repair only fixes the hook registration — it must not silently
-          // revert an existing team_leads project back to flat, so it reuses
-          // whatever mode is already on disk rather than defaulting.
-          const root = this._projectRoot();
-          const currentMode =
-            root !== "" ? readExecutionConfig(path.join(root, ".claude")).delegation_mode : "flat";
-          this._handleInstallHooks(currentMode);
-          this._handleGetSettings();
         } else if (message.type === MSG.GENERATE_DIAGNOSTIC) {
           const parsedGenerateDiagnostic = MSG_SCHEMAS.GENERATE_DIAGNOSTIC.safeParse(message);
           if (parsedGenerateDiagnostic.success) {
@@ -957,7 +981,12 @@ export class TycoonPanel {
         } else if (message.type === MSG.RUN_DOCTOR) {
           this._handleRunDoctor();
         } else if (message.type === MSG.APPLY_DOCTOR_FIX) {
-          void this._handleApplyDoctorFix((message as any).removeForeign === true);
+          const parsedApplyDoctorFix = MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse(message);
+          if (parsedApplyDoctorFix.success) {
+            void this._handleApplyDoctorFix(parsedApplyDoctorFix.data.removeForeign);
+          } else {
+            console.error("TycoonAgents: applyDoctorFix payload rejected:", parsedApplyDoctorFix.error.message);
+          }
         } else if (message.type === MSG.DESIGN_DOC_ACTION) {
           await this._handleDesignDocAction((message as any).mode);
         } else if (message.type === MSG.PROJECT_PLAN_ACTION) {
@@ -5617,9 +5646,9 @@ export class TycoonPanel {
    * delimited region (plus the seam blank-line collapse) — never deletes
    * agent `.md` files. Re-runs `_handleCheckInstall` afterward so the
    * webview re-renders with the block gone from `foreignManagedBlocks`
-   * (Setup Wizard Step-2), AND `_handleGetSettings` (same pattern
-   * MSG.REPAIR_HOOK uses) so the Settings screen's "Hook health" row
-   * refreshes too and the Remove row disappears without a manual reload.
+   * (Setup Wizard Step-2), AND `_handleGetSettings` so the Settings screen's
+   * "Hook health" row refreshes too and the Remove row disappears without a
+   * manual reload.
    */
   private _handleRemoveManagedBlock(namespace: string): void {
     const root = this._projectRoot();
@@ -7390,6 +7419,34 @@ export class TycoonPanel {
   }
 
   /**
+   * Once-per-panel-open wrapper around {@link _detectLegacyArtifacts} for the
+   * passive load-time notice (see the constructor call site and the
+   * `MSG.READY` handler that delivers `MSG.LEGACY_ARTIFACTS_DETECTED`).
+   * Read-only: reuses the same directory scan Hook Doctor's "Run Doctor"
+   * button runs, mutates nothing, and never throws — a missing workspace
+   * root or any scan failure both resolve to `null` so the caller can skip
+   * sending anything.
+   */
+  private _detectLegacyArtifactsOnLoad(): { artifactCount: number; foreignHookCount: number } | null {
+    try {
+      const root = this._projectRoot();
+      if (root === "") {
+        return null;
+      }
+      const claudeDir = path.join(root, ".claude");
+      const localSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"));
+      const sharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
+      const { leftoverFiles, hookCommands } = this._detectLegacyArtifacts(claudeDir, localSettings, sharedSettings);
+      if (leftoverFiles.length === 0 && hookCommands.length === 0) {
+        return null;
+      }
+      return { artifactCount: leftoverFiles.length, foreignHookCount: hookCommands.length };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Reads the operational-health signals Hook Doctor needs but `diagnose()`
    * itself can't see (it stays fs-free/pure for unit testing): the age of
    * `active-agent.json.lock`, the current shape of `active-agent.json`, and
@@ -7535,6 +7592,19 @@ export class TycoonPanel {
    * performs at install time), then runs the existing settings repair
    * (missing/stale/duplicate/split slots, optional foreign-command removal),
    * then re-diagnoses from the now-fixed on-disk state.
+   *
+   * `removeForeign` genuinely gates BOTH strip paths, not just
+   * `repairSettings`'s: it's threaded into
+   * `cleanupForeignHookArtifacts(claudeDir, { removeForeignCommands })` so
+   * unchecking "Remove foreign hooks" also skips step 1's predecessor-harness
+   * command strip (previously that step ran unconditionally BEFORE this flag
+   * was even consulted, which meant unchecking the box did nothing for those
+   * commands). The confirmation dialog's command list is computed from a
+   * read taken BEFORE either strip path runs, so it always reflects what's
+   * about to be removed rather than — as before — settings already mutated
+   * by the (formerly unconditional) cleanup call. Orphaned
+   * `agent-activity-*.json` files are deleted unconditionally either way;
+   * that cleanup was never part of the "remove hooks" choice.
    */
   private async _handleApplyDoctorFix(removeForeign: boolean): Promise<void> {
     try {
@@ -7546,14 +7616,25 @@ export class TycoonPanel {
       const claudeDir = path.join(root, ".claude");
       const currentHookCommand = this._buildHookCommand();
 
-      const cleanup = cleanupForeignHookArtifacts(claudeDir);
+      // Pre-strip read: what WOULD be removed if the user confirms. Two
+      // distinct "foreign command" concepts feed the confirmation list —
+      // findLegacyHookCommands (predecessor-harness basenames; what
+      // cleanupForeignHookArtifacts' step 1 strips) and findForeignHooks
+      // (broader "any non-Tycoon command on our events"; what
+      // repairSettings' removeForeign strips) — unioned + de-duped so the
+      // dialog names everything that's actually about to disappear.
+      const preLocalSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"));
+      const preSharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
+      const legacyHookCommands = [
+        ...findLegacyHookCommands(preLocalSettings),
+        ...findLegacyHookCommands(preSharedSettings),
+      ];
+      const foreignHooksPreview = findForeignHooks(preLocalSettings, preSharedSettings);
+      const commandsToRemove = Array.from(new Set([...legacyHookCommands, ...foreignHooksPreview]));
 
-      const localSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"));
-      const sharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
-      const foreignCommands = findForeignHooks(localSettings, sharedSettings);
-      if (removeForeign && foreignCommands.length > 0) {
+      if (removeForeign && commandsToRemove.length > 0) {
         const answer = await vscode.window.showWarningMessage(
-          "The following hook commands will be permanently removed:\n\n" + foreignCommands.join("\n"),
+          "The following hook commands will be permanently removed:\n\n" + commandsToRemove.join("\n"),
           { modal: true },
           "Remove"
         );
@@ -7561,6 +7642,12 @@ export class TycoonPanel {
           return;
         }
       }
+
+      const cleanup = cleanupForeignHookArtifacts(claudeDir, { removeForeignCommands: removeForeign });
+
+      const localSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"));
+      const sharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
+      const foreignCommands = findForeignHooks(localSettings, sharedSettings);
       const { settings, changes } = repairSettings(localSettings, currentHookCommand, { removeForeign, foreignCommands: removeForeign ? foreignCommands : undefined });
       fs.writeFileSync(path.join(claudeDir, "settings.local.json"), JSON.stringify(settings, null, 2));
 
