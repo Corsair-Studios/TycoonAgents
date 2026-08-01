@@ -13521,6 +13521,11 @@
       leakDetail.textContent = `${searches} search${searches === 1 ? "" : "es"} · ${reads} read${reads === 1 ? "" : "s"} · ${edits} edit${edits === 1 ? "" : "s"}`;
       leakSection.appendChild(leakDetail);
 
+      const leakNote = document.createElement("div");
+      leakNote.className = "delegation-stats-caption";
+      leakNote.textContent = "Zero tasks ≠ zero tokens: coordinating each delegation costs orchestrator tokens.";
+      leakSection.appendChild(leakNote);
+
       el.appendChild(leakSection);
     }
 
