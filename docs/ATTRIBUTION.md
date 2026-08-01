@@ -4,7 +4,7 @@ How TycoonAgents credits itself: minimally, where it helps, and never by clutter
 
 ## 1. Own-repo source files — significant/entry files only
 - A short header is OPTIONAL and applied only to **significant or entry-point** files (e.g. the extension entry point, the core/provider public modules, the hook script) — NOT every file.
-- `LICENSE` (MIT) is the baseline attribution: MIT requires the copyright notice be retained in copies, so per-file headers add little beyond it.
+- `LICENSE` is the baseline attribution: it states the terms TycoonAgents (code and bundled theme art) is made available under, so per-file headers add little beyond it.
 - Header format when used — keep it to three lines; do not expand into a license block:
 
 ```

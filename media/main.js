@@ -13160,8 +13160,8 @@
     }
   }
 
-  /** Display label for a delegation mode id (the "flat" enum value renders as "Direct"). */
-  const DELEGATION_MODE_LABEL = { flat: "Direct", team_leads: "Team Leads" };
+  /** Display label for a delegation mode id (the "flat" enum value renders as "Flat (no team leads)"). */
+  const DELEGATION_MODE_LABEL = { flat: "Flat (no team leads)", team_leads: "Team leads" };
 
   /**
    * Render the Delegation tab's content (promoted out of #metrics-body into
@@ -13440,6 +13440,12 @@
       modeHeading.className = "delegation-stats-heading";
       modeHeading.textContent = "By delegation mode";
       modeSection.appendChild(modeHeading);
+
+      const modeCaption = document.createElement("div");
+      modeCaption.className = "delegation-stats-caption";
+      modeCaption.textContent =
+        "Tasks completed by every agent running in that mode, including the orchestrator.";
+      modeSection.appendChild(modeCaption);
 
       for (const m of rows) {
         const label = DELEGATION_MODE_LABEL[m.mode] || m.mode;
@@ -14393,13 +14399,13 @@
     const delegOptions = [
       {
         value: "flat",
-        label: "Direct (recommended for most projects)",
+        label: "Flat — no team leads (recommended for most projects)",
         help: "The orchestrator briefs specialist workers directly — it does the reviewing itself. Lowest coordination cost; best for focused fixes.",
       },
       {
         value: "team_leads",
-        label: "Team Leads",
-        help: "Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs — many features across many files — where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Direct.",
+        label: "Team leads",
+        help: "Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs — many features across many files — where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Flat.",
       },
     ];
     const delegInputs = [];

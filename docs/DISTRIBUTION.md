@@ -3,7 +3,7 @@
 > Hard requirements for install robustness across machines. The installer + doctor command MUST satisfy ALL of them. (The provider/host already exist; the *installer* is future work — this doc is its spec.)
 
 ## 1. Licensing
-- The entire suite is **MIT** — free, open source, public repo. This includes the bundled **UEFN Power Tools** (clean IP, written post-employment).
+- The entire suite is free for personal use under a custom license (not OSI-approved; see `LICENSE`) — no commercial sale, bundling, or redistribution without permission. This includes the bundled **UEFN Power Tools** (clean IP, written post-employment).
 
 ## 2. Repository structure (monorepo, single source of truth)
 - **Monorepo.** The visualization core/host and the UEFN Power Tools live in one repo.
@@ -34,4 +34,4 @@ Requirements:
 - Many users share a repo with teammates who do NOT use Claude Code. On setup, add per-developer agent artifacts (`.claude/`, `CLAUDE.md`, local settings) to the user's project **`.gitignore`**, and for **UEFN/Fortnite** projects to **`.urcignore`** (Unreal Revision Control; `.NET` globbing; add `CLAUDE.md` + `.claude/**`). (See DESIGN section 13.)
 
 ## 7. UEFN integration
-- The UEFN **Power Tools** are the suite's UEFN integration: when a creator works in UEFN with an AI agent (via the Power Tools' MCP bridge), that activity drives the TycoonAgents panel. Bundled as MIT, sourced from `packages/uefn-power-tools/` (section 2).
+- The UEFN **Power Tools** are the suite's UEFN integration: when a creator works in UEFN with an AI agent (via the Power Tools' MCP bridge), that activity drives the TycoonAgents panel. Bundled under the suite's license (see `LICENSE`), sourced from `packages/uefn-power-tools/` (section 2).

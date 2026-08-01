@@ -1,16 +1,30 @@
-MIT License
+TycoonAgents License
 
 Copyright (c) 2026 TycoonAgents (https://x.com/thetrashbyrd)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This is not a standard open-source license, and it is not OSI-approved.
+It is a plain-language notice of the terms under which TycoonAgents —
+including its code and the theme artwork bundled with it — is made
+available.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+TycoonAgents is provided free of charge.
+
+Permission is granted, at no cost, to:
+- use TycoonAgents for personal, educational, and internal business
+  purposes;
+- share unmodified copies of it for free;
+- modify it for your own use.
+
+Permission is withheld, unless you have express written permission from
+the copyright holder, to:
+- sell TycoonAgents, or charge for access to it;
+- bundle it into any paid product or service;
+- redistribute it commercially, in whole or in part;
+- redistribute modified versions of it.
+
+These terms apply equally to the software (code, configuration, and
+tooling) and to the theme artwork bundled with it — the images, sprites,
+and other original art assets shipped as part of TycoonAgents.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

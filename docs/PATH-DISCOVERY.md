@@ -2,7 +2,7 @@
 
 ## Why this exists
 
-TycoonAgents is open source. It installs on machines nobody on this team
+TycoonAgents is source-available (see `LICENSE`; not OSI open source). It installs on machines nobody on this team
 will ever see — unknown usernames, drive letters, IDE choices, and folder
 layouts. A tool that finds "the project" or "the UEFN install" by guessing
 one path only works on the machine it was written on.

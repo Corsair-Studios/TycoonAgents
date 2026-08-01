@@ -110,4 +110,7 @@ The main repository and the themes repository are both currently private, and th
 Attribution is intentionally light (see [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md)): a short, removable header on *significant* files only, a one-line footprint in the managed block of `CLAUDE.md` / agent files, and a clickable credit in the panel UI — TycoonAgents never stamps the user's own generated code.
 
 ## License
-**MIT** — free and open source. See [LICENSE](LICENSE). Anyone is welcome to use it.
+Free to use and share, including the bundled theme artwork — but not to be sold, repackaged into a paid product, or redistributed commercially, without the maintainer's express written approval. See [LICENSE](LICENSE) for the full terms.
+
+## Thanks
+Thanks to **IndieDevDan** for his tutorials.

@@ -994,15 +994,15 @@ function buildHostHtml() {
         <label class="delegation-mode-option">
           <input type="radio" name="delegation-mode" id="delegation-mode-flat" value="flat" checked>
           <span class="delegation-mode-option-body">
-            <span class="delegation-mode-option-label">Direct (recommended for most projects)</span>
+            <span class="delegation-mode-option-label">Flat — no team leads (recommended for most projects)</span>
             <span class="delegation-mode-option-help">The orchestrator briefs specialist workers directly &mdash; it does the reviewing itself. Lowest coordination cost; best for focused fixes.</span>
           </span>
         </label>
         <label class="delegation-mode-option">
           <input type="radio" name="delegation-mode" id="delegation-mode-team-leads" value="team_leads">
           <span class="delegation-mode-option-body">
-            <span class="delegation-mode-option-label">Team Leads</span>
-            <span class="delegation-mode-option-help">Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs &mdash; many features across many files &mdash; where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Direct.</span>
+            <span class="delegation-mode-option-label">Team leads</span>
+            <span class="delegation-mode-option-help">Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs &mdash; many features across many files &mdash; where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Flat.</span>
           </span>
         </label>
         <label class="delegation-mode-option review-pass-option">

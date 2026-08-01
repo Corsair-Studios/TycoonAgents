@@ -51,7 +51,7 @@ Running every task on one expensive model wastes tokens, and agent activity is o
 - **Integrations:** Claude Code hooks; MCP; Graphify (MIT); UEFN / Unreal Revision Control.
 - **Performance / scale:** lightweight, smooth canvas animation with many concurrent agents.
 - **Timeline / budget:** token-cost efficiency is a first-class product goal (Haiku/Sonnet/Opus split); default parallel limit of 2 Sonnet workers.
-- **Other:** MIT license; **clean-room** — tracked files carry no reference to predecessor tooling or IP; ship-the-plugin-not-the-framework; cross-platform; shared-repo hygiene.
+- **Other:** custom license, free for personal use, no commercial sale/bundling without permission (see `LICENSE`); **clean-room** — tracked files carry no reference to predecessor tooling or IP; ship-the-plugin-not-the-framework; cross-platform; shared-repo hygiene.
 
 ## 8. Success criteria
 - From the panel, a user can see at a glance which agents are active, what each has done, and what each costs.
