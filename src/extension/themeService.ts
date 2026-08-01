@@ -4086,13 +4086,34 @@ async function getThemeDiskSize(globalStorageUri: ThemeStorageRoot, themeId: str
   return sizes.reduce((total, size) => total + size, 0);
 }
 
+// Directory-name segments never counted toward a theme's reported disk size.
+// `raw` (images/raw/, and its legacy-layout equivalent) holds pre-slice raw
+// atlases — intermediate build artifacts that are never shipped, never
+// exported, and irrelevant to what the theme actually costs a user. Matched
+// against the bare directory-entry name (not a substring of the full path),
+// so a theme id that happens to contain "raw" is never affected. Do not
+// remove this exclusion without re-checking the reported sizes against real
+// themes — restoring it silently reintroduces the "raw inflates the number"
+// bug.
+const DISK_USAGE_EXCLUDED_DIRECTORY_NAMES = new Set(['raw']);
+
+// File-name patterns never counted: `.bak` backups (see the
+// `manifest.json.<timestamp>.bak` writer above) and `.tmp` in-progress
+// writes. Neither reflects real shippable content.
+const DISK_USAGE_EXCLUDED_FILE_PATTERN = /\.(?:bak|tmp)$/i;
+
 async function diskUsage(store: ThemeFileStore, path: string): Promise<number> {
   try {
     const stat = await store.stat(path);
     if (stat.isFile) return stat.size;
     if (!stat.isDirectory) return 0;
     const entries = await store.readdir(path);
-    const sizes = await Promise.all(entries.map((entry) => diskUsage(store, `${path}/${entry.name}`)));
+    const countedEntries = entries.filter((entry) => {
+      if (entry.isDirectory && DISK_USAGE_EXCLUDED_DIRECTORY_NAMES.has(entry.name)) return false;
+      if (entry.isFile && DISK_USAGE_EXCLUDED_FILE_PATTERN.test(entry.name)) return false;
+      return true;
+    });
+    const sizes = await Promise.all(countedEntries.map((entry) => diskUsage(store, `${path}/${entry.name}`)));
     return sizes.reduce((total, size) => total + size, 0);
   } catch {
     return 0;
