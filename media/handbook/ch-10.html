@@ -32,7 +32,7 @@
 </details>
 </aside>
 
-<p class="crumb">TycoonAgents Handbook / Chapter 10 / Part III · Reference · v0.0.517</p>
+<p class="crumb">TycoonAgents Handbook / Chapter 10 / Part III · Reference · v0.0.518</p>
 
 <h1><span class="chapter-num">10</span>Metrics &amp; Delegation Tabs</h1>
 
@@ -105,14 +105,14 @@
   <div class="step">
     <span class="stepno">06</span>
     <div>
-      <p><strong>Opus-leak meter.</strong> Warns when the orchestrator has been doing searches or exploration directly instead of delegating them — the warning threshold is <code>tycoonagents.delegationWarnThreshold</code> (default 5).</p>
+      <p><strong>Zero tasks &ne; zero tokens.</strong> A caption under the Coordination line notes that coordinating each delegation still costs orchestrator tokens even when the orchestrator completes no tasks of its own — still far cheaper than doing the work on that model.</p>
     </div>
   </div>
 </div>
 
 <div class="callout warn">
   <p class="callout-label">Warn</p>
-  <p>If the Opus-leak meter keeps tripping, it usually means an agent's instructions aren't routing search work to a specialist — worth a look at Keyword routing in Settings (Chapter 9).</p>
+  <p>If delegation looks like it isn't working, the Coordination line is the fastest check: a high orchestrator task count next to few completed agent tasks usually means an agent's instructions aren't routing work to a specialist — worth a look at Keyword routing in Settings (Chapter 9).</p>
 </div>
 
 <p>Both tabs share a <strong>Reset metrics</strong> button, which clears the counters for a fresh session without touching your themes or plan state.</p>

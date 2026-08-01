@@ -367,6 +367,41 @@ function buildStatePayload() {
   };
 }
 
+// A state payload for the Delegation tab's "Coordination (not delegated
+// work)" section vs. the Metrics tab's orchestrator row: both read the SAME
+// agentMetrics entry (id: "orchestrator") out of the module-scoped
+// `lastMetrics` main.js sets once in renderMetrics() (~L13148-13149) and
+// never recomputes a second way for the Delegation tab (see
+// renderDelegationStats ~L13365-13366, orch.taskCount). orchestratorTaskCount
+// is deliberately distinct from every other number in the fixture (16 tasks,
+// 500 tokens, 20 delegations) so a test asserting "same number both places"
+// can't pass by coincidence. A non-orchestrator agent with tokens>0 is
+// included so delegationStatsHasData is true and the Coordination section
+// actually renders (renderDelegationStats bails out early otherwise).
+function buildOrchestratorTaskCountStatePayload(orchestratorTaskCount: number) {
+  const agentMetrics = [
+    {
+      id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus',
+      tokens: 500, activeMs: 30000, taskCount: orchestratorTaskCount, delegations: 20,
+    },
+    {
+      id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet',
+      tokens: 4000, activeMs: 90000, taskCount: 5, mcpCount: 1, lastActivityAt: Date.now(),
+    },
+  ];
+  return {
+    type: 'state',
+    state: {
+      sessionActive: true,
+      completedTasks: 5,
+      idleFreezeMs: 180000,
+      sanityCapMs: 900000,
+      workers: {},
+      agentMetrics,
+    },
+  };
+}
+
 // A state payload exercising Team Lead Mode hierarchy telemetry (Phase 3):
 // one lead (tier: "lead") with two workers attributed via parentId.
 function buildTeamStatePayload() {
@@ -889,6 +924,50 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.ok(checked, 'a delegation-mode radio should be checked');
       assert.equal(checked.value, 'team_leads', 'radio selection must reflect the payload mode');
       assertNoErrors('delegation-chooser-visibility');
+    });
+
+    // ── Step 10b: Settings "Delegation Health" section removed ──────────────
+    // The Settings panel used to render a "Delegation Health" section reading
+    // directSearches/directReads/directEdits/delegations off
+    // lastSettings.delegationHealth — the same tool-call-count attribution
+    // that was removed from the Delegation tab (webviewSmoke step "the
+    // retired tool-call-count section is gone", ~L1716) because the
+    // underlying counts are unreliable (unlocked shared active-agent stack
+    // misattributes concurrent siblings' calls to the orchestrator) and
+    // conflate tool calls with tasks. Dispatch a settings payload with a
+    // fully populated (non-zero) delegationHealth to prove the section stays
+    // gone even when the host still sends the data.
+    await t.test('10b. settings: retired "Delegation Health" tool-call-count section does not render', async () => {
+      dispatch({
+        type: 'settings',
+        payload: {
+          hook: { installed: true, lastActivityAt: null },
+          agents: [],
+          delegation_mode: 'team_leads',
+          delegationHealth: {
+            directSearches: 12,
+            directReads: 3,
+            directEdits: 7,
+            delegations: 40,
+            tokens: 123456,
+            session: { directSearches: 4, directReads: 1, directEdits: 2, delegations: 10, tokens: 4321 },
+          },
+          hookHealth: { healthy: true, issueCount: 0 },
+          contextBudget: null,
+        },
+      });
+      await flush();
+      const setupConfig = doc.getElementById('setup-config');
+      const dhHeadings = [...setupConfig.querySelectorAll('.settings-heading')].filter(
+        (h: any) => (h.textContent || '').trim() === 'Delegation Health'
+      );
+      assert.equal(dhHeadings.length, 0, 'the retired "Delegation Health" section must not render');
+      const bodyText = setupConfig.textContent || '';
+      assert.ok(!bodyText.includes('Direct searches (Grep/Glob)'), 'no direct-search tool-call count should render');
+      assert.ok(!bodyText.includes('Direct edits:'), 'no direct-edit tool-call count should render');
+      assert.ok(!bodyText.includes('Direct file reads:'), 'no direct-read tool-call count should render');
+      assert.ok(!bodyText.includes('Copy delegation tip'), 'the retired copy-delegation-tip button must not render');
+      assertNoErrors('settings-delegation-health-removed');
     });
 
     // ── Step 11: Archived Plans section (0.0.340+) ───────────────────────────
@@ -1633,6 +1712,64 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
           ]
         );
       }
+    });
+
+    // ── Step 18: Delegation tab reports the orchestrator in TASKS, sourced
+    // from the same value the Metrics tab uses ────────────────────────────
+    // The Delegation tab used to have a separate "Orchestrator direct tool
+    // use" section reporting hook-attributed Grep/Read/Edit CALL counts
+    // (an unreliable, differently-scoped number from taskCount). That
+    // section was removed and folded into "Coordination (not delegated
+    // work)", which already reads orch.taskCount off the same lastMetrics
+    // array the Metrics tab's orchestrator row (tasksTd, the "16*" cell)
+    // reads. This guards both halves of that contract: the two numbers
+    // can't be observed to disagree, and the retired tool-call-count UI
+    // (heading text, leak classes) is gone for good.
+    await t.test('18. Delegation tab "Coordination" orchestrator task count matches the Metrics tab orchestrator row', async () => {
+      dispatch(buildOrchestratorTaskCountStatePayload(16));
+      tick(5);
+      await flush();
+      assertNoErrors('orchestrator-task-count-state');
+
+      // Metrics tab: orchestrator row's tasks cell is "<taskCount>*".
+      const tbody = doc.getElementById('metrics-tbody');
+      assert.ok(tbody, 'metrics-tbody should exist');
+      const rows = [...tbody.querySelectorAll('tr')];
+      const orchRow = rows.find((r: any) => r.querySelector('td.col-name')?.textContent === 'Orchestrator');
+      assert.ok(orchRow, 'an Orchestrator row should render in the Metrics tab');
+      const metricsTasksText = orchRow.querySelector('td.col-tasks').textContent;
+      assert.equal(metricsTasksText, '16*', 'Metrics tab orchestrator row should show taskCount with the asterisk cue');
+
+      // Delegation tab: the Coordination section states the same task count.
+      const delegationBody = doc.getElementById('delegation-stats');
+      assert.ok(delegationBody, 'delegation-stats should exist');
+      const headings = [...delegationBody.querySelectorAll('.delegation-stats-heading')];
+      const coordHeading = headings.find((h: any) => (h.textContent || '').trim() === 'Coordination (not delegated work)');
+      assert.ok(coordHeading, 'a Coordination (not delegated work) heading should render');
+      const coordLine = coordHeading.nextElementSibling;
+      assert.ok(coordLine, 'the Coordination heading should be followed by its stats row');
+      assert.match(coordLine.textContent, /\b16 tasks\b/, 'Coordination line should state 16 tasks');
+
+      // Both figures parse to the SAME integer — proves a single source,
+      // not two independently-maintained numbers that happen to agree here.
+      const metricsTaskCount = parseInt(metricsTasksText, 10);
+      const coordTaskMatch = /(\d+) tasks?/.exec(coordLine.textContent);
+      assert.ok(coordTaskMatch, 'Coordination line should contain a "<N> task(s)" figure');
+      assert.equal(parseInt(coordTaskMatch[1], 10), metricsTaskCount, 'Delegation tab and Metrics tab orchestrator task counts must never disagree');
+
+      // The retired tool-call-count section is gone: no heading, no leak
+      // status classes anywhere in the Delegation tab.
+      const retiredHeading = headings.find((h: any) => (h.textContent || '').trim() === 'Orchestrator direct tool use');
+      assert.equal(retiredHeading, undefined, 'the retired "Orchestrator direct tool use" (tool-call-count) section must not render');
+      assert.equal(delegationBody.querySelector('.delegation-leak-ok'), null, 'no leak-ok class should render');
+      assert.equal(delegationBody.querySelector('.delegation-leak-warn'), null, 'no leak-warn class should render');
+
+      // The coordination-cost caption still reads correctly in task units.
+      const caption = [...delegationBody.querySelectorAll('.delegation-stats-caption')].find(
+        (c: any) => (c.textContent || '').includes('Zero tasks')
+      );
+      assert.ok(caption, 'the "Zero tasks ≠ zero tokens" caption should still render');
+      assertNoErrors('orchestrator-task-count-render');
     });
   } finally {
     process.removeListener('unhandledRejection', onRejection);

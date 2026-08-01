@@ -31,7 +31,7 @@
 </nav>
 </details>
 </aside>
-  <div class="crumb">TycoonAgents Handbook / Chapter 03 / Part I &middot; Getting Started &middot; v0.0.517</div>
+  <div class="crumb">TycoonAgents Handbook / Chapter 03 / Part I &middot; Getting Started &middot; v0.0.518</div>
 
   <div class="chapter-num">03</div>
   <h1>Panel Tour</h1>
@@ -91,11 +91,11 @@
   <p>
     Delegation zooms out to the whole session: a chart of delegated work
     by model tier, a coordination line showing how much the orchestrator
-    itself is doing, and a dispatched-vs-completed reconciliation (the gap
-    between the two is normal &mdash; it reflects abandoned or unfinished
-    spawns, not a bug). Below that sits the same per-agent table as
-    Metrics, an Opus-leak meter flagging work that should have been
-    delegated but wasn't, and a savings headline like "avoided ~N%."
+    itself is doing (in tasks, matching the Metrics tab &mdash; not raw
+    tool-call counts), and a dispatched-vs-completed reconciliation (the
+    gap between the two is normal &mdash; it reflects abandoned or
+    unfinished spawns, not a bug). Below that sits the same per-agent
+    table as Metrics, and a savings headline like "avoided ~N%."
     Chapter 10 covers all of these in depth.
   </p>
 
@@ -140,7 +140,8 @@
     <span class="callout-label">Tip</span>
     <p>
       If delegation looks like it isn't working &mdash; no agents ever appear
-      on stage &mdash; check the Delegation tab's Opus-leak meter first. It's
+      on stage &mdash; check the Delegation tab's Coordination line first. A
+      high orchestrator task count next to few completed agent tasks is
       usually the fastest way to spot work that's quietly bypassing the
       doctrine.
     </p>

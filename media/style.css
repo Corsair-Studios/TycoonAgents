@@ -2947,19 +2947,6 @@ tr.metrics-row--child td.col-name {
   font-variant-numeric: tabular-nums;
 }
 
-/* Opus-leak meter (orchestrator direct tool use) */
-.delegation-leak-ok {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--status-active);
-}
-
-.delegation-leak-warn {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--status-error);
-}
-
 /* Empty state */
 #metrics-empty {
   padding: 40px 0;

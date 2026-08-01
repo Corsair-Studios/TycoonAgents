@@ -7284,8 +7284,6 @@ export class TycoonPanel {
     const state = this._runtime.getState();
     const { directSearches, directReads, directEdits, delegations, tokens: cumulativeTokens } =
       this._computeCumulativeDelegationHealth(state);
-    const warnThreshold: number =
-      vscode.workspace.getConfiguration("tycoonagents").get<number>("delegationWarnThreshold", 5);
 
     // "This session" scoping: the current session id's counters, via the
     // SAME reducer path the live runtime uses (mapHookRecord -> applyEvent),
@@ -7360,7 +7358,6 @@ export class TycoonPanel {
           directReads,
           directEdits,
           delegations,
-          warnThreshold,
           tokens: cumulativeTokens,
           session: sessionHealth,
           sessionId: currentSessionId,

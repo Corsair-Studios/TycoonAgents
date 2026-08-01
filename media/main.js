@@ -11624,12 +11624,6 @@
           workerOrder.splice(i, 1);
         }
       }
-      // Live delegationHealth (see latestDelegationHealth doc comment): the
-      // host now includes a freshly-computed snapshot with every "state"
-      // push, not just in response to an explicit "getSettings".
-      if (msg.delegationHealth && typeof msg.delegationHealth === "object") {
-        latestDelegationHealth = msg.delegationHealth;
-      }
       // Update metrics panel
       renderMetrics(state.agentMetrics);
       renderDelegationStats(state.modeStats);
@@ -11685,16 +11679,7 @@
       // generic fallback render is needed here.
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
-      if (lastSettings && lastSettings.delegationHealth && typeof lastSettings.delegationHealth === "object") {
-        // Authoritative refresh — includes the expensive session-scoped
-        // rebuild the "state" push's live update doesn't always have yet.
-        latestDelegationHealth = lastSettings.delegationHealth;
-      }
       renderSettings();
-      // The Delegation tab's "Orchestrator direct tool use" meter reads
-      // latestDelegationHealth; re-render so it doesn't wait for the
-      // next "state" push to pick up a fresh settings payload.
-      renderDelegationStats(state.modeStats);
     } else if (msg && msg.type === "settingsUpdated") {
       handleSettingsUpdated(msg);
     } else if (msg && msg.type === "pathOverrideResult") {
@@ -12730,27 +12715,6 @@
   }
 
   /**
-   * Resolve the roster's edit/implementation target label from the installed
-   * agents list (`lastSettings.agents`), mirroring the resolution
-   * delegationDoctrine.ts's renderPreamble/renderTeamLeadsSection use:
-   * prefer "coding-specialist" when it's actually installed, else
-   * "verse-expert" when installed (the UEFN roster's Verse-writing
-   * implementer, which REPLACES coding-specialist on a UEFN project), else a
-   * generic phrase when neither is present. Shared by the Delegation Health
-   * panel's edit-count row and the copyable delegation tip so neither one
-   * independently hardcodes an agent id that might not be on this project's
-   * roster.
-   * @param {Array<{id?: string}>} agents
-   * @returns {string}
-   */
-  function resolveEditTargetLabel(agents) {
-    const list = agents || [];
-    if (list.some((agent) => agent.id === "coding-specialist")) return "coding-specialist";
-    if (list.some((agent) => agent.id === "verse-expert")) return "verse-expert";
-    return "your coding/implementation agent";
-  }
-
-  /**
    * Format milliseconds as "Xm Ys".
    * @param {number} ms
    * @returns {string}
@@ -13203,11 +13167,11 @@
    * Render the Delegation tab's content (promoted out of #metrics-body into
    * its own full-width peer tab panel; formerly "Delegation stats" — Team
    * Lead Mode Phase 4: measurement). Top to bottom: a hero savings stat, a
-   * model-tier work-split breakdown, a per-agent delegation table, the
-   * original per-delegation-mode rows (kept, unchanged), and an
-   * "Orchestrator direct tool use" (opus-leak) meter. Also sets
-   * delegationStatsHasData, which gates whether the Delegation tab button is
-   * offered at all — see updateMetricsTabsUI().
+   * model-tier work-split breakdown, a per-agent delegation table, and the
+   * original per-delegation-mode rows (kept, unchanged); the orchestrator's
+   * direct tool use is now reported in TASKS, not a separate tool-call
+   * meter. Also sets delegationStatsHasData, which gates whether the
+   * Delegation tab button is offered at all — see updateMetricsTabsUI().
    * @param {Array<{mode:string,completedTasks:number,totalTokens:number,activeMs:number,leadTokens:number,teamTokens:number,leadOverheadPct:number|null,wallClockMs?:number}>|undefined} modeStats
    */
   function renderDelegationStats(modeStats) {
@@ -13383,6 +13347,22 @@
         "The orchestrator itself runs on Opus. Delegation lowers the cost of the WORK, not the coordinator — so this is the biggest single token bucket, and it is expected.";
       coordSection.appendChild(coordSub);
 
+      // This used to be a separate "Orchestrator direct tool use" section
+      // reporting Grep/Read/Edit call COUNTS from a hook-attributed
+      // delegationHealth payload. Removed: tasks and tool calls are
+      // different units (one task legitimately makes dozens of calls), and
+      // the call-count attribution itself is unreliable (a shared LIFO
+      // active-agent stack without a lock misattributes concurrent sibling
+      // subagents' calls to "orchestrator"). orchTasks above is read from
+      // the SAME lastMetrics entry the Metrics tab's orchestrator row uses
+      // (see renderMetrics ~L13148, tasksTd ~L13116), so the two numbers
+      // cannot drift apart — this caption just adds the coordination-cost
+      // framing that used to live on the separate section.
+      const coordCaption = document.createElement("div");
+      coordCaption.className = "delegation-stats-caption";
+      coordCaption.textContent = "Zero tasks ≠ zero tokens: coordinating each delegation costs orchestrator tokens — still far cheaper than doing the work on this model.";
+      coordSection.appendChild(coordCaption);
+
       el.appendChild(coordSection);
     }
 
@@ -13495,53 +13475,6 @@
       el.appendChild(modeSection);
     }
 
-    // ── 5. Opus-leak meter ── the orchestrator's own direct tool use
-    // (Grep/Glob/Edit/Read bypassing delegation), from Settings'
-    // delegationHealth payload (latestDelegationHealth — updated live by
-    // every "state" push AND authoritatively by "settings", see its doc
-    // comment; same source the Settings > Delegation Health panel reads,
-    // see ~L10993). Prefers the current-session-scoped counts when
-    // available, else falls back to the cumulative since-last-reset counts.
-    // Omitted entirely (never printed as "undefined") if delegationHealth
-    // hasn't arrived yet.
-    const dh = (latestDelegationHealth && typeof latestDelegationHealth === "object")
-      ? latestDelegationHealth
-      : null;
-    if (dh) {
-      const sess = (dh.session && typeof dh.session === "object") ? dh.session : null;
-      const src = sess || dh;
-      const searches = typeof src.directSearches === "number" ? src.directSearches : 0;
-      const reads = typeof src.directReads === "number" ? src.directReads : 0;
-      const edits = typeof src.directEdits === "number" ? src.directEdits : 0;
-      const total = searches + reads + edits;
-
-      const leakSection = document.createElement("div");
-      leakSection.className = "delegation-section";
-      const leakHeading = document.createElement("div");
-      leakHeading.className = "delegation-stats-heading";
-      leakHeading.textContent = "Orchestrator direct tool use";
-      leakSection.appendChild(leakHeading);
-
-      const leakLine = document.createElement("div");
-      leakLine.className = total === 0 ? "delegation-leak-ok" : "delegation-leak-warn";
-      leakLine.textContent = total === 0
-        ? "✓ 0 — all work delegated"
-        : `${total} direct tool use${total === 1 ? "" : "s"} ran on the orchestrator (Opus)`;
-      leakSection.appendChild(leakLine);
-
-      const leakDetail = document.createElement("div");
-      leakDetail.className = "delegation-stats-detail";
-      leakDetail.textContent = `${searches} search${searches === 1 ? "" : "es"} · ${reads} read${reads === 1 ? "" : "s"} · ${edits} edit${edits === 1 ? "" : "s"}`;
-      leakSection.appendChild(leakDetail);
-
-      const leakNote = document.createElement("div");
-      leakNote.className = "delegation-stats-caption";
-      leakNote.textContent = "Zero tasks ≠ zero tokens: coordinating each delegation costs orchestrator tokens — still far cheaper than doing the work on this model.";
-      leakSection.appendChild(leakNote);
-
-      el.appendChild(leakSection);
-    }
-
     const pricingCaption = document.createElement("div");
     pricingCaption.className = "delegation-stats-caption";
     pricingCaption.textContent =
@@ -13576,23 +13509,6 @@
    * @type {{hook:{installed:boolean,lastActivityAt:number|null}, agents:Array<{id:string,name:string,model:("opus"|"sonnet"|"haiku"|null),isOrchestrator:boolean,keywords:string}>}|null}
    */
   let lastSettings = null;
-
-  /**
-   * Most recently seen orchestrator delegationHealth (direct searches/reads/
-   * edits/delegations, cumulative + session-scoped). Updated by BOTH the
-   * "settings" message (authoritative, includes the expensive session-scoped
-   * rebuild) and every "state" push (a cheap live in-memory recompute the
-   * host now sends alongside `state`, see src/host/vscode/panel.ts's
-   * runtime.onChange handler) — previously only "settings" ever set this,
-   * so the Delegation tab's "Orchestrator direct tool use" meter froze at
-   * whatever it read the one time Settings happened to be opened (often
-   * 0/0/0, since that's commonly before the orchestrator had done any direct
-   * tool calls yet) while every other number on the same tab kept updating
-   * live. renderDelegationStats() reads this instead of
-   * lastSettings.delegationHealth directly.
-   * @type {{directSearches:number,directReads:number,directEdits:number,delegations:number,tokens:number,session?:{directSearches:number,directReads:number,directEdits:number,delegations:number,tokens:number}}|null}
-   */
-  let latestDelegationHealth = null;
 
   /**
    * Most recent Path Health probe results, pushed alongside "installState"
@@ -14795,220 +14711,6 @@
       routingSection.appendChild(unconfiguredEl);
     }
     setupConfigEl.appendChild(routingSection);
-
-  // ── 3b. Delegation Health ──
-  // Dual view: "this session" (scoped to the current Claude Code session id,
-  // rebuilt host-side from activity.jsonl via computeStateFromRecords) vs.
-  // "since last reset" (the pre-existing cumulative fields — unchanged shape,
-  // back-compat; the log is cleared on Reset, so cumulative == since reset).
-  const dhSection = buildSection("Delegation Health");
-  const dh = (lastSettings && lastSettings.delegationHealth) || {};
-  const cumDirectSearches = (typeof dh.directSearches === "number") ? dh.directSearches : 0;
-  const cumDirectReads    = (typeof dh.directReads    === "number") ? dh.directReads    : 0;
-  const cumDirectEdits    = (typeof dh.directEdits    === "number") ? dh.directEdits    : 0;
-  const cumDelegations    = (typeof dh.delegations    === "number") ? dh.delegations    : 0;
-  const cumTokens         = (typeof dh.tokens         === "number") ? dh.tokens         : 0;
-  const warnThreshold     = (typeof dh.warnThreshold  === "number") ? dh.warnThreshold  : 5;
-  // Session-scoped fields are additive on delegationHealth.session — absent
-  // when the host couldn't determine a current session id (e.g. no hook
-  // activity yet). hasSession gates the fallback described in the plan: no
-  // session -> show only the cumulative "Since last reset" row.
-  const sess = (dh.session && typeof dh.session === "object") ? dh.session : null;
-  const hasSession = sess !== null;
-  const sessDirectSearches = hasSession && typeof sess.directSearches === "number" ? sess.directSearches : 0;
-  const sessDirectReads    = hasSession && typeof sess.directReads    === "number" ? sess.directReads    : 0;
-  const sessDirectEdits    = hasSession && typeof sess.directEdits    === "number" ? sess.directEdits    : 0;
-  const sessDelegations    = hasSession && typeof sess.delegations    === "number" ? sess.delegations    : 0;
-  const sessTokens         = hasSession && typeof sess.tokens         === "number" ? sess.tokens         : 0;
-  // Reads are allowed for known files (per CLAUDE.md) — they are NOT a leak, so
-  // they are excluded from the ratio. Only direct Grep/Glob and edits count.
-  const cumLeak = cumDirectSearches + cumDirectEdits;
-  const cumTotal = cumDelegations + cumLeak;
-  const sessLeak = sessDirectSearches + sessDirectEdits;
-  const sessTotal = sessDelegations + sessLeak;
-  // The actionable leak breakdown further down reflects THIS SESSION's
-  // numbers when available, falling back to cumulative when no session
-  // scoping could be determined (matching the single-row fallback above).
-  const leakSearches = hasSession ? sessDirectSearches : cumDirectSearches;
-  const leakReads = hasSession ? sessDirectReads : cumDirectReads;
-  const leakEdits = hasSession ? sessDirectEdits : cumDirectEdits;
-  const leakDelegations = hasSession ? sessDelegations : cumDelegations;
-  if (cumTotal === 0 && sessTotal === 0) {
-    const emptyP = document.createElement("p");
-    emptyP.className = "settings-empty";
-    emptyP.textContent = "No delegatable activity yet since the last reset.";
-    dhSection.appendChild(emptyP);
-  } else {
-    // Renders one traffic-light row: "<label> — X% delegated (a of b) · ~N tokens".
-    function delegationHealthRow(label, delegs, total, tokens) {
-      const ratio = total > 0 ? delegs / total : 0;
-      // Green / yellow / red traffic light, consistent with the rest of the UI.
-      const light = total === 0
-        ? { color: "var(--muted)", glow: false }
-        : ratio >= 0.6
-          ? { color: "var(--status-active)", glow: true }
-          : ratio >= 0.35
-            ? { color: "var(--status-done)", glow: false }
-            : { color: "var(--status-error)", glow: false };
-      const row = document.createElement("div");
-      row.className = "settings-row";
-      row.style.flexDirection = "row";
-      row.style.alignItems = "center";
-      row.style.gap = "6px";
-      const dot = document.createElement("span");
-      dot.style.display = "inline-block";
-      dot.style.width = "9px";
-      dot.style.height = "9px";
-      dot.style.borderRadius = "50%";
-      dot.style.background = light.color;
-      if (light.glow) { dot.style.boxShadow = "0 0 5px " + light.color; }
-      const span = document.createElement("span");
-      span.style.fontWeight = "600";
-      span.textContent = total > 0
-        ? `${label} — ${Math.round(ratio * 100)}% delegated (${delegs} of ${total}) · ~${fmtTokens(tokens)} tokens`
-        : `${label} — no activity yet`;
-      row.appendChild(dot);
-      row.appendChild(span);
-      return row;
-    }
-
-    if (hasSession) {
-      dhSection.appendChild(delegationHealthRow("This session", sessDelegations, sessTotal, sessTokens));
-    }
-    dhSection.appendChild(delegationHealthRow("Since last reset", cumDelegations, cumTotal, cumTokens));
-
-    const searchRow = document.createElement("div");
-    searchRow.className = "settings-row";
-    const searchSpan = document.createElement("span");
-    searchSpan.textContent = `Direct searches (Grep/Glob): ${leakSearches} — delegate to search-retrieval (Haiku, ~40x cheaper)`;
-    if (leakSearches > warnThreshold) { searchSpan.style.color = "var(--status-error)"; }
-    searchRow.appendChild(searchSpan);
-    dhSection.appendChild(searchRow);
-
-    const editRow = document.createElement("div");
-    editRow.className = "settings-row";
-    const editSpan = document.createElement("span");
-    editSpan.textContent = `Direct edits: ${leakEdits} — delegate to ${resolveEditTargetLabel(agents)}`;
-    editRow.appendChild(editSpan);
-    dhSection.appendChild(editRow);
-
-    const readRow = document.createElement("div");
-    readRow.className = "settings-row";
-    const readSpan = document.createElement("span");
-    readSpan.style.color = "var(--muted)";
-    readSpan.textContent = `Direct file reads: ${leakReads} — allowed for known files`;
-    readRow.appendChild(readSpan);
-    dhSection.appendChild(readRow);
-
-    const noteRow = document.createElement("div");
-    noteRow.className = "settings-row";
-    const noteSpan = document.createElement("span");
-    noteSpan.style.color = "var(--muted)";
-    noteSpan.style.fontSize = "11px";
-    noteSpan.textContent = hasSession
-      ? "Breakdown above reflects this session; “Since last reset” totals every session's activity since the log was last cleared by Reset."
-      : "No current session detected — breakdown reflects activity since the last reset (the log is cleared on Reset).";
-    noteRow.appendChild(noteSpan);
-    dhSection.appendChild(noteRow);
-
-    // Builds the "Copy delegation tip" text live from this render's counters
-    // (leakSearches/leakReads/leakEdits/leakDelegations — this session's
-    // numbers when known, else cumulative — computed above from
-    // lastSettings.delegationHealth) and the installed roster (`agents`,
-    // computed at the top of renderSettings from lastSettings.agents). Keeps
-    // the tip honest to the actual project + session instead of a fixed
-    // 2-agent hardcoded string.
-    function buildDelegationTip() {
-      // Resolve the roster's edit/implementation target the same way the
-      // Delegation Health panel's edit row and the generated delegation
-      // doctrine do (resolveEditTargetLabel above; mirrors
-      // delegationDoctrine.ts's renderPreamble/renderTeamLeadsSection):
-      // prefer coding-specialist when it's actually installed, else
-      // verse-expert (the UEFN roster's Verse-writing implementer, which
-      // REPLACES coding-specialist on a UEFN project), else a generic
-      // phrase — never a hardcoded id that might not be installed on this
-      // project's roster.
-      const editTargetLabel = resolveEditTargetLabel(agents);
-      const leakTotal = leakSearches + leakEdits;
-      const totalActions = leakDelegations + leakTotal;
-      const ratio = totalActions > 0 ? leakDelegations / totalActions : 0;
-      const lines = [];
-      lines.push(
-        totalActions > 0
-          ? `Delegation this session: ${Math.round(ratio * 100)}% (${leakDelegations} delegated of ${totalActions} action${totalActions === 1 ? "" : "s"}).`
-          : "Delegation this session: no delegatable activity yet."
-      );
-      const extensionVersion = document.querySelector(".menu-version")?.textContent?.trim();
-      if (extensionVersion) {
-        lines.push(`Extension: ${extensionVersion}`);
-      }
-      if (leakEdits > 0) {
-        lines.push(`• ${leakEdits} direct edit${leakEdits === 1 ? "" : "s"} → send these to ${editTargetLabel}.`);
-      }
-      if (leakSearches > 0) {
-        lines.push(`• ${leakSearches} direct search${leakSearches === 1 ? "" : "es"} → send these to search-retrieval (Haiku, ~40x cheaper).`);
-      }
-      if (leakEdits === 0 && leakSearches === 0 && leakDelegations > 0) {
-        lines.push("Delegation looks healthy — keep routing work to specialists.");
-      }
-      if (leakReads > 0) {
-        lines.push(`Known-file reads (${leakReads}) are fine — keep those direct per CLAUDE.md.`);
-      }
-      const cumTotalActions = cumDelegations + cumLeak;
-      const cumRatio = cumTotalActions > 0 ? cumDelegations / cumTotalActions : 0;
-      lines.push(
-        cumTotalActions > 0
-          ? `Since last reset: ${Math.round(cumRatio * 100)}% (${cumDelegations} of ${cumTotalActions}), ~${fmtTokens(cumTokens)} tokens.`
-          : "Since last reset: no delegatable activity yet."
-      );
-      lines.push("");
-      lines.push("Route by task type:");
-      for (const agent of agents) {
-        if (agent.isOrchestrator) continue;
-        const modelLabel = agent.model || "default";
-        const kws = (agent.keywords || "")
-          .split("|")
-          .map((k) => k.trim())
-          .filter(Boolean)
-          .slice(0, 4);
-        const hint = kws.length ? kws.join(", ") : "general tasks";
-        lines.push(`• ${agent.name || agent.id} (${modelLabel}) → ${hint}`);
-      }
-      const searchTerms = ["search", "find", "grep", "glob", "look", "where", "locate", "explore"];
-      const hasSearchAgent = agents.some((agent) => {
-        if (agent.id === "search-retrieval") return true;
-        const kwText = (agent.keywords || "").toLowerCase();
-        return searchTerms.some((term) => kwText.includes(term));
-      });
-      if (!hasSearchAgent) {
-        lines.push("• Search / find / grep → search-retrieval (Explore · Haiku, ~40x cheaper)");
-      }
-      lines.push("");
-      lines.push("Task doesn't match any specialist's keywords? Route it to the Fallback Agent (Sonnet) — do not do it yourself on the orchestrator.");
-      lines.push(`Reminder: any file edit/write → ${editTargetLabel}. Anything past a single known-path read (multi-file, exploring, auditing) → search-retrieval (Haiku).`);
-      lines.push("");
-      lines.push("Keep direct: reading known files, coordination, and talking to you.");
-      const unconfiguredAgents = unconfiguredKeywordAgents();
-      if (unconfiguredAgents.length > 0) {
-        lines.push("");
-        lines.push(`Routing not configured for: ${unconfiguredAgents.map((a) => a.name || a.id).join(", ")}`);
-        lines.push("These agents have no keywords in .claude/tycoon/agent-keywords.json, so keyword routing can't send work to them. Please set sensible routing keywords for them.");
-      }
-      return lines.join("\n");
-    }
-
-    const btnRow = document.createElement("div");
-    btnRow.className = "settings-row";
-    const copyBtn = document.createElement("button");
-    copyBtn.className = "skill-btn settings-btn";
-    copyBtn.textContent = "Copy delegation tip";
-    copyBtn.addEventListener("click", function () {
-      vscode.postMessage({ type: "copyNudge", text: buildDelegationTip() });
-    });
-    btnRow.appendChild(copyBtn);
-    dhSection.appendChild(btnRow);
-  }
-  setupConfigEl.appendChild(dhSection);
 
     // ── 3c. Context budget ──
     const budgetSection = buildSection("Context budget");
