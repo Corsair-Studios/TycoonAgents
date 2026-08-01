@@ -13523,7 +13523,7 @@
 
       const leakNote = document.createElement("div");
       leakNote.className = "delegation-stats-caption";
-      leakNote.textContent = "Zero tasks ≠ zero tokens: coordinating each delegation costs orchestrator tokens.";
+      leakNote.textContent = "Zero tasks ≠ zero tokens: coordinating each delegation costs orchestrator tokens — still far cheaper than doing the work on this model.";
       leakSection.appendChild(leakNote);
 
       el.appendChild(leakSection);
