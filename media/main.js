@@ -11624,6 +11624,12 @@
           workerOrder.splice(i, 1);
         }
       }
+      // Live delegationHealth (see latestDelegationHealth doc comment): the
+      // host now includes a freshly-computed snapshot with every "state"
+      // push, not just in response to an explicit "getSettings".
+      if (msg.delegationHealth && typeof msg.delegationHealth === "object") {
+        latestDelegationHealth = msg.delegationHealth;
+      }
       // Update metrics panel
       renderMetrics(state.agentMetrics);
       renderDelegationStats(state.modeStats);
@@ -11679,9 +11685,14 @@
       // generic fallback render is needed here.
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
+      if (lastSettings && lastSettings.delegationHealth && typeof lastSettings.delegationHealth === "object") {
+        // Authoritative refresh — includes the expensive session-scoped
+        // rebuild the "state" push's live update doesn't always have yet.
+        latestDelegationHealth = lastSettings.delegationHealth;
+      }
       renderSettings();
       // The Delegation tab's "Orchestrator direct tool use" meter reads
-      // lastSettings.delegationHealth; re-render so it doesn't wait for the
+      // latestDelegationHealth; re-render so it doesn't wait for the
       // next "state" push to pick up a fresh settings payload.
       renderDelegationStats(state.modeStats);
     } else if (msg && msg.type === "settingsUpdated") {
@@ -13486,13 +13497,15 @@
 
     // ── 5. Opus-leak meter ── the orchestrator's own direct tool use
     // (Grep/Glob/Edit/Read bypassing delegation), from Settings'
-    // delegationHealth payload (lastSettings.delegationHealth — the same
-    // source the Settings > Delegation Health panel reads, see ~L10993).
-    // Prefers the current-session-scoped counts when available, else falls
-    // back to the cumulative since-last-reset counts. Omitted entirely
-    // (never printed as "undefined") if delegationHealth hasn't arrived yet.
-    const dh = (lastSettings && lastSettings.delegationHealth && typeof lastSettings.delegationHealth === "object")
-      ? lastSettings.delegationHealth
+    // delegationHealth payload (latestDelegationHealth — updated live by
+    // every "state" push AND authoritatively by "settings", see its doc
+    // comment; same source the Settings > Delegation Health panel reads,
+    // see ~L10993). Prefers the current-session-scoped counts when
+    // available, else falls back to the cumulative since-last-reset counts.
+    // Omitted entirely (never printed as "undefined") if delegationHealth
+    // hasn't arrived yet.
+    const dh = (latestDelegationHealth && typeof latestDelegationHealth === "object")
+      ? latestDelegationHealth
       : null;
     if (dh) {
       const sess = (dh.session && typeof dh.session === "object") ? dh.session : null;
@@ -13563,6 +13576,23 @@
    * @type {{hook:{installed:boolean,lastActivityAt:number|null}, agents:Array<{id:string,name:string,model:("opus"|"sonnet"|"haiku"|null),isOrchestrator:boolean,keywords:string}>}|null}
    */
   let lastSettings = null;
+
+  /**
+   * Most recently seen orchestrator delegationHealth (direct searches/reads/
+   * edits/delegations, cumulative + session-scoped). Updated by BOTH the
+   * "settings" message (authoritative, includes the expensive session-scoped
+   * rebuild) and every "state" push (a cheap live in-memory recompute the
+   * host now sends alongside `state`, see src/host/vscode/panel.ts's
+   * runtime.onChange handler) — previously only "settings" ever set this,
+   * so the Delegation tab's "Orchestrator direct tool use" meter froze at
+   * whatever it read the one time Settings happened to be opened (often
+   * 0/0/0, since that's commonly before the orchestrator had done any direct
+   * tool calls yet) while every other number on the same tab kept updating
+   * live. renderDelegationStats() reads this instead of
+   * lastSettings.delegationHealth directly.
+   * @type {{directSearches:number,directReads:number,directEdits:number,delegations:number,tokens:number,session?:{directSearches:number,directReads:number,directEdits:number,delegations:number,tokens:number}}|null}
+   */
+  let latestDelegationHealth = null;
 
   /**
    * Most recent Path Health probe results, pushed alongside "installState"

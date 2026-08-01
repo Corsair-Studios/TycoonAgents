@@ -4,7 +4,7 @@
 
 Sitting on top of that harness is a live, game-style visualization of your agent fleet — but the harness is the point.
 
-> **Status:** v0 — foundation & design. See [docs/DESIGN.md](docs/DESIGN.md) for the full product & architecture design.
+> **Status:** Working prerelease — not a design sketch. TycoonAgents ships as a real VS Code extension (.vsix) with a small early user base: mandatory delegation, the live visualization, custom themes, an in-panel handbook, and everything else described below runs today. It's still prerelease software — expect rough edges and breaking changes between versions. See [docs/DESIGN.md](docs/DESIGN.md) for the full product & architecture design.
 
 ## Mandatory delegation & orchestration
 
@@ -21,7 +21,9 @@ The roster the extension seeds (all model tiers are configurable):
 | **ux-ui-designer** | Sonnet | Webview scene, layout, CSS, animation |
 | **vscode-integration** | Sonnet | Extension API, webview, panel, lifecycle |
 | **workspace-monitor** | Sonnet | Agent lifecycle / hook-record mapping |
-| **Fallback agent** | Sonnet | Catch-all for work no specialist keyword matched — cheaper than letting Opus do it |
+| **uefn-auditor** | Sonnet | Reviews UEFN Verse for correctness, deprecations, and API compliance against the locally installed Verse/Fortnite/Unreal digests — does not author features |
+| **verse-expert** | Sonnet | Writes and refactors UEFN Verse device scripts and island gameplay, using the UEFN Bridge for live-editor control |
+| **Fallback agent** | Haiku | Catch-all for work no specialist keyword matched — a signal to refine routing, not a design goal |
 
 The doctrine also builds in **verification discipline**: a "completed" notification is not proof, so the orchestrator reads changed files on disk before trusting a result, keeps concurrent workers on disjoint files, and treats workers as leaves that do the work themselves rather than re-delegating.
 
@@ -55,6 +57,17 @@ Install the extension and open the TycoonAgents panel. First run (or the **Repai
 - enables the Project Plan by default.
 
 Everything it writes is marker-scoped and reversible, and it never stamps your own generated code.
+
+## What's shipped
+
+- **Bundled theme.** "Survivors vs Zombies" ships inside the VSIX and seeds automatically on first run, so a fresh install has a playable stage without any API keys.
+- **More themes to download.** Additional themes are published as `.zip` archives. The themes repo is private while the project is in prerelease, so get the `.zip` directly from the maintainer, then import it from the Theme Picker's **Import .zip**. The extension never fetches themes over the network.
+- **In-panel handbook.** A 13-chapter user handbook ships in the VSIX, opened from the book icon in the panel.
+- **Submit Feedback.** An in-panel two-step form shows the exact JSON payload before anything is sent; local paths and API keys are stripped from it first. If the panel won't open, there's a fallback web form at [feedback.corsairstudios.com](https://feedback.corsairstudios.com).
+- **Delegation & Metrics tabs.** Live panel views of what got delegated to which agent and the resulting token-cost breakdown (see "Token savings you can see" below).
+- **UEFN Power Tools bridge.** Live inspection and editing of an open UEFN level from Claude Code agents (see below).
+- **Verse analyzer.** Audits UEFN Verse source against the locally installed Verse/Fortnite/Unreal API digests, flagging calls to deprecated or nonexistent APIs.
+- **UEFN moderation pre-flight scan.** Collects the asset names, paths, and metadata Fortnite's island moderation actually inspects, then has your connected AI assistant judge them against Epic's IP and authenticity rules before you submit.
 
 ## The layer on top: the tycoon visualization
 
@@ -92,7 +105,7 @@ TycoonAgents includes a **UEFN component** for Unreal Editor for Fortnite: a **N
 
 ## Attribution
 Authored by **TycoonAgents** — https://x.com/thetrashbyrd
-Releases: _link TBD_.
+The main repository and the themes repository are both currently private, and there's no public releases page or Marketplace listing yet; get the VSIX and any additional theme archives directly from the maintainer.
 
 Attribution is intentionally light (see [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md)): a short, removable header on *significant* files only, a one-line footprint in the managed block of `CLAUDE.md` / agent files, and a clickable credit in the panel UI — TycoonAgents never stamps the user's own generated code.
 

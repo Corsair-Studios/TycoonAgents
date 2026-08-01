@@ -9,8 +9,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Runtime } from "./runtime";
-import { computeDelegationModeStats, computeStateFromRecords } from "../../core/state";
+import { computeDelegationModeStats, applyEvent, initialWorldState } from "../../core/state";
+import type { MetricsWorldState } from "../../core/state";
 import type { HookRecord } from "../../providers/claude-code/hookRecord";
+import { mapHookRecord } from "../../providers/claude-code/mapHookRecord";
 import {
   shortFromModelId,
   modelIdFromShort,
@@ -461,6 +463,44 @@ export class TycoonPanel {
   private _disposables: vscode.Disposable[] = [];
   private _runtimeDisposable: { dispose(): void } | undefined;
   private _enginePollInterval: NodeJS.Timeout | undefined;
+  /**
+   * Incremental read state for the session-scoped delegationHealth rebuild
+   * (see _computeSessionDelegationHealth). Cost is proportional to bytes
+   * APPENDED since the last read, not the total file size: `offset` only
+   * ever advances past confirmed-complete lines (a record flushed mid-write
+   * is safely re-read next time, mirroring
+   * ClaudeCodeProvider.drain()'s trailing-partial-line handling), and
+   * `state` is the running MetricsWorldState folded from every record seen
+   * so far that belongs to `sessionId` (reset on a session boundary or a
+   * file shrink/replacement — see _computeSessionDelegationHealth).
+   * `size`/`mtimeMs` are the file's stat() at the time `offset`/`state` were
+   * last updated, so a completely idle log (unchanged size+mtime) short-
+   * circuits to zero disk reads.
+   */
+  private _sessionHealthCache:
+    | {
+        size: number;
+        mtimeMs: number;
+        offset: number;
+        sessionId: string | undefined;
+        state: MetricsWorldState;
+      }
+    | undefined;
+  /**
+   * Last value handed back by _sessionDelegationHealthThrottled — the
+   * throttle's "return the cached value between recomputes" contract is
+   * separate from _sessionHealthCache's incremental-read bookkeeping above
+   * (a throttled caller may skip calling _computeSessionDelegationHealth at
+   * all for up to SESSION_HEALTH_THROTTLE_MS, even though that method itself
+   * is now cheap when idle). `_cachedSessionDelegationHealthAt` of 0 means
+   * "never computed".
+   */
+  private _cachedSessionDelegationHealth:
+    | { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number }
+    | undefined;
+  private _cachedSessionDelegationHealthAt = 0;
+  /** Minimum interval between session-scoped delegationHealth recompute ATTEMPTS on the live runtime.onChange path (a stat() rate limit; each attempt itself is now cheap when the log hasn't grown, see _sessionHealthCache). */
+  private static readonly SESSION_HEALTH_THROTTLE_MS = 4000;
   /** Cached "connected" results for HTTP-probeable engine MCP entries (e.g. unreal-engine-mcp), keyed by engine id. */
   private _engineProbeCache: Map<string, boolean> = new Map();
   /**
@@ -666,7 +706,7 @@ export class TycoonPanel {
 
     // Subscribe to runtime state changes
     this._runtimeDisposable = runtime.onChange((state) => {
-      void this._panel.webview.postMessage({ type: MSG.STATE, state: this._stampRosterModels(this._applyTimeAdjustments(state)) });
+      this._postStateUpdate(state);
     });
 
     // Start the engine-status poller (fires immediately, then every 10 s).
@@ -698,7 +738,11 @@ export class TycoonPanel {
         }>;
       }) => {
         if (message.type === MSG.READY) {
-          void this._panel.webview.postMessage({ type: MSG.STATE, state: this._stampRosterModels(this._applyTimeAdjustments(runtime.getState())) });
+          // Same delegationHealth-carrying push as runtime.onChange (see
+          // _postStateUpdate) — the very first paint after the panel opens
+          // should already have live counts, not wait for the next runtime
+          // mutation (which may be a while on an idle session).
+          this._postStateUpdate(runtime.getState());
           // Deliver the once-per-panel-open leftover-artifact notice (see
           // _detectLegacyArtifactsOnLoad + the constructor call site) now
           // that the webview's message listener is actually attached — a
@@ -6963,6 +7007,240 @@ export class TycoonPanel {
     );
   }
 
+  /**
+   * Post a fresh MSG.STATE to the webview, WITH a live delegationHealth
+   * payload attached (see _computeCumulativeDelegationHealth /
+   * _sessionDelegationHealthThrottled doc comments). Shared by
+   * runtime.onChange (every state mutation) and the READY handler (first
+   * paint after the panel opens), so both paths post the same shape.
+   *
+   * Extracted to its own testable method specifically so the regression this
+   * closes — the Delegation tab's "Orchestrator direct tool use" meter
+   * freezing at whatever it read the one time Settings happened to be
+   * opened, while every other number on the tab kept updating live — has a
+   * seam a test can assert against directly (capture what gets posted and
+   * check `delegationHealth` is present/populated), rather than only
+   * exercising the helper methods in isolation. See
+   * test/panelDelegationHealthLive.test.ts's "_postStateUpdate" tests: they
+   * would have failed if just the `delegationHealth: {...}` line here had
+   * been dropped/reverted, which the earlier (helpers-only) test suite would
+   * NOT have caught.
+   */
+  private _postStateUpdate(state: MetricsWorldState): void {
+    const root = this._projectRoot();
+    const cumulative = this._computeCumulativeDelegationHealth(state);
+    const session = root !== "" ? this._sessionDelegationHealthThrottled(root) : undefined;
+    void this._panel.webview.postMessage({
+      type: MSG.STATE,
+      state: this._stampRosterModels(this._applyTimeAdjustments(state)),
+      delegationHealth: { ...cumulative, session },
+    });
+  }
+
+  /**
+   * Cheap, in-memory cumulative delegationHealth fields for the orchestrator,
+   * derived from the live runtime state's agentMetrics — no disk I/O, safe to
+   * call on every runtime.onChange tick. Mirrors the per-record increments
+   * mapHookRecord/applyEvent already did when the events were ingested, so
+   * this is just a read of already-computed state, not a rebuild.
+   */
+  private _computeCumulativeDelegationHealth(
+    state: MetricsWorldState
+  ): { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number } {
+    const orchMetric = Array.isArray(state.agentMetrics)
+      ? state.agentMetrics.find((m) => m.id === "orchestrator")
+      : undefined;
+    return {
+      directSearches: orchMetric?.directSearches ?? 0,
+      directReads: orchMetric?.directReads ?? 0,
+      directEdits: orchMetric?.directEdits ?? 0,
+      delegations: orchMetric?.delegations ?? 0,
+      tokens: Array.isArray(state.agentMetrics)
+        ? state.agentMetrics.reduce((sum, m) => sum + (m?.tokens ?? 0), 0)
+        : 0,
+    };
+  }
+
+  /**
+   * Read only the COMPLETE lines appended to `activityPath` in the byte range
+   * [fromOffset, uptoSize) — mirrors ClaudeCodeProvider.drain()'s trailing-
+   * partial-line handling: only the range up to the LAST confirmed newline is
+   * parsed, and `newOffset` never advances past it. A record flushed
+   * mid-write (half-written when this reads it) is therefore left
+   * unconsumed and safely re-read whole on the next call, never dropped or
+   * corrupted. `newOffset` equals `fromOffset` if no complete line resolved
+   * this call (e.g. the entire appended chunk is one still-unterminated
+   * line).
+   */
+  private _readActivityRecordsSince(
+    activityPath: string,
+    fromOffset: number,
+    uptoSize: number
+  ): { records: HookRecord[]; newOffset: number } {
+    if (uptoSize <= fromOffset) return { records: [], newOffset: fromOffset };
+    const length = uptoSize - fromOffset;
+    const fd = fs.openSync(activityPath, "r");
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, fromOffset);
+    } finally {
+      fs.closeSync(fd);
+    }
+    // Search the raw buffer for 0x0A before decoding so the offset stays
+    // byte-accurate across multi-byte UTF-8 sequences that might straddle
+    // this chunk's end.
+    const lastNewline = buffer.lastIndexOf(0x0a);
+    if (lastNewline === -1) return { records: [], newOffset: fromOffset };
+    const complete = buffer.subarray(0, lastNewline);
+    const newOffset = fromOffset + lastNewline + 1;
+    const records: HookRecord[] = [];
+    for (const line of complete.toString("utf8").split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") records.push(parsed as HookRecord);
+      } catch {
+        /* skip malformed line */
+      }
+    }
+    return { records, newOffset };
+  }
+
+  /** Build the delegationHealth payload shape from a working state + the session id it's scoped to (undefined session id -> undefined result, matching "no session data yet"). */
+  private _sessionHealthResult(
+    state: MetricsWorldState,
+    sessionId: string | undefined
+  ): {
+    sessionId: string;
+    health: { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number };
+  } | undefined {
+    if (sessionId === undefined) return undefined;
+    const orchMetric = state.agentMetrics.find((m) => m.id === "orchestrator");
+    return {
+      sessionId,
+      health: {
+        directSearches: orchMetric?.directSearches ?? 0,
+        directReads: orchMetric?.directReads ?? 0,
+        directEdits: orchMetric?.directEdits ?? 0,
+        delegations: orchMetric?.delegations ?? 0,
+        tokens: state.agentMetrics.reduce((sum, m) => sum + (m.tokens ?? 0), 0),
+      },
+    };
+  }
+
+  /**
+   * Session-scoped delegationHealth: the orchestrator's direct-tool-use
+   * counters for the CURRENT session id, via the same reducer path the live
+   * runtime uses (mapHookRecord -> applyEvent). Cost is proportional to
+   * bytes APPENDED since the last call, not the total activity.jsonl size —
+   * see _sessionHealthCache's doc comment. Three cases, checked via a single
+   * fs.statSync (no read at all unless the file actually changed):
+   *   (a) size+mtime unchanged since last call -> return the cached result,
+   *       zero bytes read. The log is idle between tool calls most of the
+   *       time, so this is the common case.
+   *   (b) file grew -> read ONLY the newly appended bytes (from the stored
+   *       offset) and fold them into the cached running state. A session
+   *       boundary (a new sessionId appears) resets the running state to
+   *       start clean for the new session, without re-reading anything
+   *       already on disk.
+   *   (c) file shrank (rotation, deletion+recreation, or a different
+   *       project's log now at this path) -> the cache is invalidated and
+   *       this falls through to a full read from offset 0, same as a cold
+   *       start.
+   * The very first call ever (no cache yet) necessarily reads the whole file
+   * once — there is nothing to diff against — but every call after that is
+   * O(delta), not O(total). _handleGetSettings calls this directly (rare,
+   * user-triggered); the live runtime.onChange path goes through the
+   * additional call-frequency throttle in _sessionDelegationHealthThrottled.
+   */
+  private _computeSessionDelegationHealth(
+    root: string
+  ): {
+    sessionId: string;
+    health: { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number };
+  } | undefined {
+    const activityPath = path.join(root, ".claude", "tycoon", "activity.jsonl");
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(activityPath);
+    } catch {
+      // File missing (not yet created, or this root has none) -> nothing to
+      // report. Drop any stale cache too, so a file that later appears (or a
+      // different project root on a later call) starts clean.
+      this._sessionHealthCache = undefined;
+      return undefined;
+    }
+
+    const cache = this._sessionHealthCache;
+    if (cache !== undefined && cache.size === stat.size && cache.mtimeMs === stat.mtimeMs) {
+      // (a) Idle: nothing appended since last time -> zero disk reads.
+      return this._sessionHealthResult(cache.state, cache.sessionId);
+    }
+
+    // (c) Shrank/replaced (or no cache yet, i.e. the very first call): reset
+    // and treat as a from-scratch read of the whole file. Mirrors
+    // ClaudeCodeProvider.drain()'s own "size < offset -> truncated/rotated"
+    // detection.
+    const shrankOrReplaced = cache === undefined || stat.size < cache.size;
+    let workingState: MetricsWorldState = shrankOrReplaced ? initialWorldState() : cache!.state;
+    let workingSessionId: string | undefined = shrankOrReplaced ? undefined : cache!.sessionId;
+    const fromOffset = shrankOrReplaced ? 0 : cache!.offset;
+
+    // (b) Read only [fromOffset, stat.size) — the full file on a cold/reset
+    // start, or just the appended tail otherwise.
+    const { records, newOffset } = this._readActivityRecordsSince(activityPath, fromOffset, stat.size);
+    for (const record of records) {
+      const sid = record.sessionId;
+      if (sid === undefined || sid === "") continue; // sessionId-less records never contribute to a session-scoped view
+      if (workingSessionId === undefined) {
+        workingSessionId = sid;
+      } else if (sid !== workingSessionId) {
+        // Session boundary: everything folded so far belonged to the
+        // PREVIOUS session — start clean for the new one. No re-read needed;
+        // records before this point correctly don't count toward either the
+        // old session (they're behind us) or the new one (they predate it).
+        workingState = initialWorldState();
+        workingSessionId = sid;
+      }
+      for (const event of mapHookRecord(record)) {
+        workingState = applyEvent(workingState, event);
+      }
+    }
+
+    this._sessionHealthCache = {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      offset: newOffset,
+      sessionId: workingSessionId,
+      state: workingState,
+    };
+
+    return this._sessionHealthResult(workingState, workingSessionId);
+  }
+
+  /**
+   * Throttled wrapper around _computeSessionDelegationHealth for the hot
+   * runtime.onChange path: recomputes at most once per
+   * SESSION_HEALTH_THROTTLE_MS, returning the cached value between
+   * recomputes (undefined until the first successful compute, or if the
+   * activity log carries no session id yet).
+   */
+  private _sessionDelegationHealthThrottled(
+    root: string
+  ): { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number } | undefined {
+    const now = Date.now();
+    if (
+      this._cachedSessionDelegationHealthAt === 0 ||
+      now - this._cachedSessionDelegationHealthAt >= TycoonPanel.SESSION_HEALTH_THROTTLE_MS
+    ) {
+      this._cachedSessionDelegationHealth = this._computeSessionDelegationHealth(root)?.health;
+      this._cachedSessionDelegationHealthAt = now;
+    }
+    return this._cachedSessionDelegationHealth;
+  }
+
   /** Post the current settings snapshot (hook + per-agent model/keywords). */
   private _handleGetSettings(): void {
     const root = this._projectRoot();
@@ -6998,41 +7276,24 @@ export class TycoonPanel {
       lastActivityAt = null;
     }
 
-    // Build delegationHealth from orchestrator metric
+    // Build delegationHealth from orchestrator metric. Shared with the live
+    // runtime.onChange push (see _computeCumulativeDelegationHealth /
+    // _computeSessionDelegationHealth doc comments) so both paths report the
+    // same numbers computed the same way — this handler just isn't throttled
+    // since it only runs on explicit user action, not a hot loop.
     const state = this._runtime.getState();
-    const orchMetric = Array.isArray(state.agentMetrics)
-      ? state.agentMetrics.find((m: any) => m.id === "orchestrator")
-      : undefined;
-    const directSearches: number = orchMetric?.directSearches ?? 0;
-    const directReads: number = orchMetric?.directReads ?? 0;
-    const directEdits: number = orchMetric?.directEdits ?? 0;
-    const delegations: number = orchMetric?.delegations ?? 0;
+    const { directSearches, directReads, directEdits, delegations, tokens: cumulativeTokens } =
+      this._computeCumulativeDelegationHealth(state);
     const warnThreshold: number =
       vscode.workspace.getConfiguration("tycoonagents").get<number>("delegationWarnThreshold", 5);
-    const cumulativeTokens: number = Array.isArray(state.agentMetrics)
-      ? state.agentMetrics.reduce((sum: number, m: any) => sum + (m?.tokens ?? 0), 0)
-      : 0;
 
-    // "This session" scoping: rebuild state from activity.jsonl records filtered
-    // to the current session id, via the SAME reducer path the live runtime
-    // uses (computeStateFromRecords -> mapHookRecord -> applyEvent). Additive to
+    // "This session" scoping: the current session id's counters, via the
+    // SAME reducer path the live runtime uses (mapHookRecord -> applyEvent),
+    // read incrementally (see _computeSessionDelegationHealth). Additive to
     // the cumulative fields above, which remain unchanged (back-compat).
-    const activityRecords = this._readActivityRecords(root);
-    const currentSessionId = this._currentSessionId(activityRecords);
-    let sessionHealth:
-      | { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number }
-      | undefined;
-    if (currentSessionId !== undefined) {
-      const sessionState = computeStateFromRecords(activityRecords, currentSessionId);
-      const sessionOrchMetric = sessionState.agentMetrics.find((m) => m.id === "orchestrator");
-      sessionHealth = {
-        directSearches: sessionOrchMetric?.directSearches ?? 0,
-        directReads: sessionOrchMetric?.directReads ?? 0,
-        directEdits: sessionOrchMetric?.directEdits ?? 0,
-        delegations: sessionOrchMetric?.delegations ?? 0,
-        tokens: sessionState.agentMetrics.reduce((sum, m) => sum + (m.tokens ?? 0), 0),
-      };
-    }
+    const sessionResult = this._computeSessionDelegationHealth(root);
+    const sessionHealth = sessionResult?.health;
+    const currentSessionId = sessionResult?.sessionId;
 
     // Run hook diagnostic to compute hookHealth for the settings panel
     const { findings } = this._diagnoseHooks();
@@ -7501,52 +7762,6 @@ export class TycoonPanel {
     }
 
     return { lockFileAgeMs, activeAgentState, activityTailLines };
-  }
-
-  /**
-   * Reads and parses the FULL `.claude/tycoon/activity.jsonl` for `root` into
-   * an ordered HookRecord[] (oldest first), skipping blank/unparseable lines.
-   * Used by the Delegation Health dual view (session-scoped vs. cumulative
-   * rebuild via computeStateFromRecords) — unlike _readOperationalHealth's
-   * activityTailLines (last 5 raw lines, for Hook Doctor display), this reads
-   * every record so a session-scoped replay is complete.
-   */
-  private _readActivityRecords(root: string): HookRecord[] {
-    const records: HookRecord[] = [];
-    try {
-      const raw = fs.readFileSync(
-        path.join(root, ".claude", "tycoon", "activity.jsonl"),
-        "utf8"
-      );
-      for (const line of raw.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed === "") continue;
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed && typeof parsed === "object") {
-            records.push(parsed as HookRecord);
-          }
-        } catch {
-          /* skip malformed line */
-        }
-      }
-    } catch {
-      /* activity.jsonl absent -> no records */
-    }
-    return records;
-  }
-
-  /**
-   * The CURRENT session id: the `sessionId` carried on the LAST record (by
-   * file order) that has one. Undefined if no record carries a sessionId
-   * (empty log, or every record predates the hook writing sessionId).
-   */
-  private _currentSessionId(records: HookRecord[]): string | undefined {
-    for (let i = records.length - 1; i >= 0; i--) {
-      const sid = records[i]?.sessionId;
-      if (typeof sid === "string" && sid !== "") return sid;
-    }
-    return undefined;
   }
 
   /** Assembles a full DoctorInput (settings + operational health) from disk for `root`. */

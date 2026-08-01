@@ -1,8 +1,8 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.516",
+  "version": "0.0.517",
   "private": true,
-  "description": "A builder/tycoon-style live visualization of AI coding-agent activity.",
+  "description": "Enforces delegation of coding work to cheaper specialist AI models, with a live tycoon-style visualization of that work as it happens.",
   "displayName": "TycoonAgents",
   "publisher": "tycoonagents",
   "license": "MIT",
@@ -110,6 +110,17 @@
   "categories": [
     "Visualization",
     "Other"
+  ],
+  "keywords": [
+    "delegation",
+    "orchestration",
+    "ai agents",
+    "multi-agent",
+    "claude",
+    "cost optimization",
+    "uefn",
+    "verse",
+    "project planning"
   ],
   "scripts": {
     "vscode:prepublish": "npm run build && npm run bundle:uefn && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run test:python && npm run test:standalone && npm run test:compiled",
