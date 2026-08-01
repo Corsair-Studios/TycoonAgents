@@ -28,6 +28,14 @@ import { sanitize, type SanitizeRoots } from "./diagnosticReport";
 // that ships.
 export const FEEDBACK_ENDPOINT = "https://feedback.corsairstudios.com/submit";
 
+// Fallback web form (spec §6) — served at GET / by the same Worker that
+// accepts POST /submit above. Shown to the user when a submission fails, so
+// they have somewhere concrete to go. Same baked-into-shipped-releases
+// constraint as FEEDBACK_ENDPOINT: this must stay a hostname the maintainer
+// controls outright, since an already-installed extension can never be told
+// to point elsewhere later.
+export const FALLBACK_FORM_URL = "https://feedback.corsairstudios.com";
+
 export type FeedbackCategory = "bug" | "idea" | "question" | "other";
 
 /** v1 payload schema (spec §3). No `website` field here — that honeypot is form-only, never populated by real UI. */

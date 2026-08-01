@@ -14303,7 +14303,7 @@
     } else {
       if (feedbackResultEl) {
         feedbackResultEl.textContent = (msg.error || "Send failed") +
-          " — the payload was copied to your clipboard. You can retry, or paste it into the fallback form.";
+          " — copied to your clipboard. Retry, or use the fallback form: https://feedback.corsairstudios.com";
         feedbackResultEl.className = "feedback-status feedback-status--error";
       }
       if (feedbackSendBtn) {

@@ -120,7 +120,13 @@ import {
   projectPlanBackupFilePath,
 } from "./projectPlan";
 import { buildDiagnosticReport, type DiagnosticReportInput, type SanitizeRoots } from "./diagnosticReport";
-import { buildFeedbackPayload, postFeedback, FEEDBACK_ENDPOINT, type FeedbackFetch } from "./feedbackSubmit";
+import {
+  buildFeedbackPayload,
+  postFeedback,
+  FEEDBACK_ENDPOINT,
+  FALLBACK_FORM_URL,
+  type FeedbackFetch,
+} from "./feedbackSubmit";
 
 /**
  * Persisted per-theme rebirth (prestige) state, stored host-side in
@@ -7966,10 +7972,15 @@ export class TycoonPanel {
         ticketId,
         error: result.error,
       });
-      void vscode.window.showErrorMessage(
-        `TycoonAgents: Feedback submission failed (${result.error ?? "unknown error"}). ` +
-          "The full ticket details were copied to your clipboard — please retry later or paste them into the fallback form."
-      );
+      void vscode.window
+        .showErrorMessage(
+          `TycoonAgents: Feedback submission failed (${result.error ?? "unknown error"}). ` +
+            `Ticket copied to your clipboard — retry, or use the fallback form: ${FALLBACK_FORM_URL}`,
+          "Open form"
+        )
+        .then((selection) => {
+          if (selection === "Open form") void vscode.env.openExternal(vscode.Uri.parse(FALLBACK_FORM_URL));
+        });
     } catch (err) {
       const message = errorMessage(err);
       try {
@@ -7978,10 +7989,15 @@ export class TycoonPanel {
         /* best-effort — still report the failure below */
       }
       void this._panel.webview.postMessage({ type: MSG.FEEDBACK_RESULT, ok: false, ticketId, error: message });
-      void vscode.window.showErrorMessage(
-        `TycoonAgents: Feedback submission failed (${message}). ` +
-          "The full ticket details were copied to your clipboard — please retry later or paste them into the fallback form."
-      );
+      void vscode.window
+        .showErrorMessage(
+          `TycoonAgents: Feedback submission failed (${message}). ` +
+            `Ticket copied to your clipboard — retry, or use the fallback form: ${FALLBACK_FORM_URL}`,
+          "Open form"
+        )
+        .then((selection) => {
+          if (selection === "Open form") void vscode.env.openExternal(vscode.Uri.parse(FALLBACK_FORM_URL));
+        });
     }
   }
 

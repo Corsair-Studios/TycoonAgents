@@ -26,7 +26,10 @@ GitHub account.
   calls to submit feedback.
 - No scheduled/cron triage at current scale (~2 external users). The design
   must not preclude adding headless scheduled triage later (see §10 Phase 4).
-- No public listing/read endpoint. The Worker only ever accepts writes.
+- No route that reads ticket data. `GET /` serves the static fallback form
+  (§6, same Worker, same origin) but that is a fixed asset, not a ticket
+  read — the Worker exposes no way to list, view, or enumerate submitted
+  tickets.
 
 **Explicitly rejected alternatives:** custom hosted board app (too much to
 build/maintain for current scale); public GitHub repo for tickets (users
@@ -36,40 +39,44 @@ would need accounts and would see each other's reports); always-on server
 ## 2. Architecture
 
 ```
-┌─────────────────────────┐        ┌──────────────────────────┐
-│  VS Code Extension       │        │  Fallback Web Form         │
-│  "Submit Feedback" UI     │        │  (Cloudflare Pages, static) │
-│  (webview + host handler) │        │  used only if the panel     │
-└─────────────┬─────────────┘        │  won't open                │
-              │                       └─────────────┬───────────┘
-              │  sanitize() → JSON POST               │  manual paste →
-              │  (extension host, fetch + timeout)     │  JSON POST
-              ▼                                        ▼
-        ┌─────────────────────────────────────────────────┐
-        │        Cloudflare Worker  (single POST route)     │
-        │  - validate payload (schema, size cap, honeypot)   │
-        │  - rate limit per IP                                │
-        │  - GitHub REST call using fine-grained PAT           │
-        └───────────────────────┬───────────────────────────┘
-                                  │  creates issue
-                                  ▼
-                    ┌───────────────────────────────┐
-                    │  Private GitHub repo             │
-                    │  one Issue per ticket, labeled    │
-                    │  "ticket", "v<ext-version>",       │
-                    │  <platform>, <category>            │
-                    └───────────────┬───────────────────┘
-                                     │  gh CLI, on demand
-                                     ▼
-                    ┌───────────────────────────────┐
-                    │  Maintainer + Claude Code triage  │
-                    │  cluster dupes → close w/ link     │
-                    │  consolidate → "task"-labeled issue │
-                    └───────────────────────────────┘
+┌──────────────────────────────┐        ┌──────────────────────────────┐
+│  VS Code Extension           │        │  Browser (fallback form)     │
+│  "Submit Feedback" UI        │        │  loaded from GET / below     │
+│  (webview + host handler)    │        │  used only if the panel      │
+│                              │        │  won't open                  │
+└──────────────────────────────┘        └──────────────────────────────┘
+                │  sanitize() → JSON POST               │  GET / loads the form,
+                │  (extension host, fetch + timeout)    │  POST /submit sends the ticket
+                │  POST /submit                         │  (same origin — no CORS needed)
+                ▼                                       ▼
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│  Cloudflare Worker  (single origin, two routes)                            │
+│  GET  /        serves the static fallback form (fixed asset)               │
+│  POST /submit  validates payload (schema, size cap, honeypot),             │
+│                 rate-limits per IP, calls GitHub REST w/ fine-grained PAT  │
+└────────────────────────────────────────────────────────────────────────────┘
+                                       │  creates issue
+                                       ▼
+                      ┌─────────────────────────────────┐
+                      │  Private GitHub repo            │
+                      │  one Issue per ticket, labeled  │
+                      │  "ticket", "v<ext-version>",    │
+                      │  <platform>, <category>         │
+                      └─────────────────────────────────┘
+                                       │  gh CLI, on demand
+                                       ▼
+                   ┌──────────────────────────────────────┐
+                   │  Maintainer + Claude Code triage     │
+                   │  cluster dupes → close w/ link       │
+                   │  consolidate → "task"-labeled issue  │
+                   └──────────────────────────────────────┘
 ```
 
-Both intake paths (extension, fallback form) POST the **same payload shape**
-to the **same Worker route**, so the Worker and the GitHub-issue mapping are
+There is no separate Cloudflare Pages project and no cross-origin arrow: the
+same Worker, on the same origin, serves the fallback form (`GET /`) and
+accepts both intake paths' submissions (`POST /submit`, **same payload
+shape** from either surface), so the Worker and the GitHub-issue mapping are
 written once and shared by both.
 
 ## 3. Payload Schema v1
@@ -105,11 +112,14 @@ zero-dependency step. **No unsanitized field ever reaches `fetch()`.**
 
 ## 4. Cloudflare Worker Spec
 
-Single route: `POST /submit`. Canonical production endpoint:
+Two routes on the same Worker, same origin: `POST /submit` (ticket intake,
+§3) and `GET /` (serves the static fallback form, §6, as a fixed HTML/CSS/JS
+asset — not a ticket read). Canonical production endpoint for submissions:
 `https://feedback.corsairstudios.com/submit` (custom domain, decided — see
-§11). A `workers.dev` subdomain may still be used as an interim/testing
-endpoint during development, but it is never the address shipped in a
-release.
+§11); the fallback form is reachable at `https://feedback.corsairstudios.com/`
+on the same domain. A `workers.dev` subdomain may still be used as an
+interim/testing endpoint during development, but it is never the address
+shipped in a release.
 
 ### Validation (in order, fail fast)
 
@@ -174,19 +184,18 @@ way.
 
 ### CORS
 
-The Worker returns `Access-Control-Allow-Origin` for exactly **one**
-explicitly configured allowed origin — the fallback form's own deployed
-origin (§6) — never `*` and never a reflected/wildcard match. This is a
-browser-only guardrail: it stops a third-party web page from silently
-scripting a *visitor's browser* into POSTing to `/submit` on the page's
-behalf (a distributed flood that would come from many different visitor
-IPs, each individually under the per-IP rate limit — see §9). It does
-**not** constrain non-browser callers (`curl`, a script, the extension
-host itself, which sends no `Origin` header and is unaffected by CORS)
-— those are still governed by the honeypot, schema validation, and
-per-IP rate limit above, which remain the primary abuse controls. The
-allowed-origin value must be updated whenever the fallback form's
-deployed URL changes.
+**DECIDED, revised from an earlier draft of this spec:** the fallback form
+is served by this same Worker at `GET /` (§6), same origin as `POST
+/submit` — there is no separate Cloudflare Pages project and therefore no
+cross-origin caller that legitimately needs CORS headers at all. The
+Worker sends **no** `Access-Control-Allow-Origin` header for any origin
+(not `*`, not a specific allowlisted one). Practical effect: a browser
+refuses *every* cross-origin POST to `/submit`, from any third-party page,
+with no allowlist to configure or keep in sync with a form deployment URL.
+Non-browser callers (`curl`, a script, the extension host itself, which
+sends no `Origin` header and is unaffected by CORS either way) remain
+governed by the honeypot, schema validation, and per-IP rate limit above,
+which stay the primary abuse controls regardless of CORS.
 
 ### GitHub issue creation
 
@@ -234,8 +243,10 @@ deployed URL changes.
 - Any internal failure (GitHub API error, KV error, etc.): `502` with a
   generic `{ "error": "submission failed, please retry" }` — **never** leak
   the PAT, the repo owner/name, or raw upstream error bodies.
-- **No `GET`, no list, no read route of any kind.** The board is never
-  public; this Worker is write-only by design.
+- **No route that reads ticket data.** `POST /submit` is write-only. `GET /`
+  exists solely to serve the static fallback form (§6), a fixed asset — it
+  returns no ticket content, list, or lookup of any kind. The board itself
+  is never public.
 
 ## 5. Extension Changes
 
@@ -323,7 +334,13 @@ On receiving `SUBMIT_FEEDBACK`:
 
 ## 6. Fallback Web Form
 
-A static page (Cloudflare Pages) for users whose panel won't open at all.
+A static page for users whose panel won't open at all. **DECIDED, revised
+from an earlier draft of this spec:** the form is served by the same
+Cloudflare Worker at `GET /` (§4 "Routes") — same origin as `POST /submit`
+— rather than a separate Cloudflare Pages project. This removes the
+cross-origin case entirely: there is no second deployment target, no
+separate URL to keep in sync, and no CORS allowlist to maintain (§4
+"CORS").
 
 - Same category dropdown, description textarea, contact field as the
   extension UI.
@@ -347,10 +364,9 @@ A static page (Cloudflare Pages) for users whose panel won't open at all.
   Worker does not need to know which surface a submission came from.
 - Same rate limit and size cap apply automatically since they're enforced
   Worker-side, not client-side.
-- This form's deployed origin is the one the Worker's CORS allowlist (§4
-  "CORS") must be configured with. If the form is redeployed to a new
-  domain, that domain must be added to the allowlist or the browser will
-  block the form's own submissions.
+- Because the form is served same-origin from the Worker itself (above),
+  its `POST /submit` calls are same-origin requests — no CORS allowlist
+  entry is needed or exists for it (§4 "CORS").
 - The form has no access to the extension's `sanitize()`, so
   `userDescription`, `contact`, and any pasted `diagnosticMarkdown` travel to
   the Worker over TLS exactly as typed/pasted. They are scrubbed server-side
@@ -488,20 +504,20 @@ only a scheduler would be added on top (see §10 Phase 4).
 |---|---|
 | Spam / bot submissions | Honeypot field (silently dropped, fake success) + per-IP rate limit (§4). |
 | Payload flooding | Hard 64 KB body cap, checked before JSON parse. |
-| Distributed / cross-origin abuse | A third-party page could script visitors' browsers into flooding the Worker from many distinct IPs, each staying under the per-IP rate limit. Mitigation: the Worker sends CORS headers (`Access-Control-Allow-Origin`) only for the explicitly configured allowed origin — the fallback form's own origin, never a wildcard (§4 "CORS") — so a browser refuses to complete the cross-origin POST for any other page's script. This does not stop non-browser callers, who remain governed by the honeypot, validation, and per-IP rate limit above. **Future mitigation:** because the Worker is served from the custom domain `feedback.corsairstudios.com` (§11) rather than a bare `workers.dev` subdomain, edge rate-limiting/WAF rules become available at the zone level — these can reject abusive traffic before the Worker is ever invoked, unlike the in-Worker per-IP KV counter (§4 "Rate limiting"), which still costs one Worker invocation per rejected request. Not built in v1; noted here as an option the custom domain unlocks. |
+| Distributed / cross-origin abuse | A third-party page could try to script visitors' browsers into flooding the Worker from many distinct IPs, each staying under the per-IP rate limit. Mitigation: the Worker sends no `Access-Control-Allow-Origin` header for any origin — not a wildcard, not even the fallback form's own origin, since that form is now served same-origin from this same Worker (§4 "CORS", §6) and needs no cross-origin allowance at all. With no origin ever allowed, a browser refuses to complete a cross-origin POST to `/submit` from any third-party page's script, full stop — there is no allowlisted origin left to abuse. This does not stop non-browser callers, who remain governed by the honeypot, validation, and per-IP rate limit above. **Future mitigation:** because the Worker is served from the custom domain `feedback.corsairstudios.com` (§11) rather than a bare `workers.dev` subdomain, edge rate-limiting/WAF rules become available at the zone level — these can reject abusive traffic before the Worker is ever invoked, unlike the in-Worker per-IP KV counter (§4 "Rate limiting"), which still costs one Worker invocation per rejected request. Not built in v1; noted here as an option the custom domain unlocks. |
 | Token theft | PAT is fine-grained, scoped to `issues:write` on **one** private repo only — no `contents`, no other repos, no org scope. |
 | Worker compromise | Blast radius is limited to the feedback repo: an attacker with the leaked PAT could create/read/close issues in that one private repo — they get no access to source code, other repos, CI, or secrets outside this Worker's own binding. |
 | Repo compromise | Same blast radius — it's an isolated, purpose-built repo containing only user-submitted tickets (server-side sanitized of local paths and known secret patterns by the Worker before storage, and additionally client-side sanitized before leaving the machine on the extension path — §7), not source code. |
 | Response leakage | Worker error responses are generic; never include the PAT, repo owner/name, or raw upstream (GitHub) error text. |
-| Enumeration | No GET/list route exists — there is nothing to enumerate. |
+| Enumeration | No route reads ticket data — `GET /` only serves the static fallback form (a fixed asset), and no list/lookup route exists — there is nothing to enumerate. |
 
 ## 10. Rollout Phases
 
 | Phase | Scope | Acceptance criteria |
 |---|---|---|
-| **1 — Repo + Worker** | Create the private feedback repo. Write and deploy the Cloudflare Worker (`POST /submit` only) with validation, honeypot, content sanitization, KV rate limit, and GitHub issue creation per §4. | A manual `curl` POST with a valid v1 payload creates exactly one correctly-labeled issue in the private repo and returns `201` with a `ticketId` echo. An invalid payload (bad schemaVersion, oversized body, missing required field) returns the documented error code and no issue is created. A honeypot-filled POST returns 201-shaped success but creates no issue. A second burst of requests past the per-IP limit is rejected. A POST whose `userDescription` contains a fake absolute path (e.g. `C:\Users\test\secret.txt`) and a fake `sk-`-prefixed key results in an issue where both are redacted (`<path>` and `[REDACTED]` respectively), confirming the Worker's server-side sanitization runs regardless of which surface sent the request. |
+| **1 — Repo + Worker** | Create the private feedback repo. Write and deploy the Cloudflare Worker with its write-only ticket-intake route (`POST /submit` — the only route in this phase; `GET /` is added in Phase 3) with validation, honeypot, content sanitization, KV rate limit, and GitHub issue creation per §4. | A manual `curl` POST with a valid v1 payload creates exactly one correctly-labeled issue in the private repo and returns `201` with a `ticketId` echo. An invalid payload (bad schemaVersion, oversized body, missing required field) returns the documented error code and no issue is created. A honeypot-filled POST returns 201-shaped success but creates no issue. A second burst of requests past the per-IP limit is rejected. A POST whose `userDescription` contains a fake absolute path (e.g. `C:\Users\test\secret.txt`) and a fake `sk-`-prefixed key results in an issue where both are redacted (`<path>` and `[REDACTED]` respectively), confirming the Worker's server-side sanitization runs regardless of which surface sent the request. |
 | **2 — Extension submit path** | Add the Settings UI, `SUBMIT_FEEDBACK` message + zod schema, host handler with sanitize + preview + POST + timeout + toast/fallback, per §5. | From the running extension: filling the form, previewing, and sending produces a real issue in the feedback repo; the preview payload shown to the user matches byte-for-byte what left the machine (verifiable via a temporary Worker echo/log during testing); disconnecting network and submitting falls back to clipboard copy + fallback-form pointer without throwing. **Additionally:** the plain-language disclosure block renders on the form itself (always visible or one tap away, never buried behind the JSON preview) and its text matches §7 "Plain-language disclosure (what gets sent)" verbatim; the user handbook documents the same data list (what's sent, what's not) in the feedback section. |
-| **3 — Fallback form** | Build and deploy the static Cloudflare Pages form per §6, pointed at the same Worker route. | Submitting the fallback form with a pasted diagnostic report creates a correctly-labeled issue identical in shape to a Phase 2 submission; honeypot and rate limit both verified to apply here too. |
+| **3 — Fallback form** | **Shipped as:** add a `GET /` route to the same Worker (§4 "Routes") that serves the static fallback form as a fixed asset — same origin as `POST /submit`, no separate Cloudflare Pages project, no cross-origin case and therefore no CORS allowlist to configure (§4 "CORS", §6). Same mandatory preview-before-send step as the extension surface (§7) is implemented on this form too. | Loading `GET /` returns the fallback form from the same domain as `POST /submit`; submitting it with a pasted diagnostic report shows the exact JSON payload for the mandatory preview step before creating a correctly-labeled issue identical in shape to a Phase 2 submission; honeypot and rate limit both verified to apply here too; a cross-origin `POST /submit` attempted from a different origin is rejected by the browser (no `Access-Control-Allow-Origin` is ever returned). |
 | **4 — Optional scheduled triage** | Not built until requested. Would add a headless scheduler invoking the same `gh` commands from §8 to pre-cluster/summarize tickets. | (Deferred — define acceptance criteria when this phase is greenlit.) |
 
 ## 11. Open Decisions for the Maintainer
