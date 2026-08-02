@@ -1669,14 +1669,27 @@
    * Draws from the tier pool matching the CURRENT rebirthCount (see
    * rebirthTierPool()) so the requirement gets harder with each Rebirth.
    */
-  function rollRebirthRequirement() {
-    const ids = (themeBadges || []).map((b) => b && b.badge_id).filter(Boolean);
-    // Draw only from the curated tier pool intersected with this theme's
-    // badges; if the theme has none of the tier's pool badges, fall back to
-    // the full badge set so rebirth never becomes impossible.
+  /**
+   * Compute the pool of badge ids eligible to be drawn as the NEXT rebirth
+   * requirement: this theme's badges, minus REBIRTH_EXCLUDED_BADGE_IDS,
+   * restricted to the tier pool matching the current rebirthCount when that
+   * intersection is non-empty (falls back to the full excluded-filtered set
+   * so rebirth never becomes impossible if the theme has none of the tier's
+   * pool badges). Applying the exclusion BEFORE the tier restriction means
+   * it covers both the tier-restricted branch and the fallback branch.
+   * Shared by rollRebirthRequirement() and the save-restore heal path in
+   * the THEME_INITIALIZED handler so both draw from identical rules.
+   */
+  function eligibleRebirthPool() {
+    const ids = (themeBadges || []).map((b) => b && b.badge_id).filter(Boolean)
+      .filter((id) => REBIRTH_EXCLUDED_BADGE_IDS.indexOf(id) < 0);
     const tierPool = rebirthTierPool(rebirthCount);
     const restricted = ids.filter((id) => tierPool.indexOf(id) >= 0);
-    const pool = (restricted.length > 0 ? restricted : ids).slice();
+    return (restricted.length > 0 ? restricted : ids).slice();
+  }
+
+  function rollRebirthRequirement() {
+    const pool = eligibleRebirthPool();
     const picked = [];
     const n = Math.min(3, pool.length);
     for (let i = 0; i < n; i++) {
@@ -5504,13 +5517,13 @@
     "build_1", "build_3", "build_6", "build_10",
     "evict_1", "evict_5", "evict_10", "evict_20", "evict_35", "evict_50", "evict_75",
     "task_1", "task_10", "task_50",
-    "crew_3", "crew_6",
+    "crew_3",
   ];
   const REBIRTH_TIER_MID = [
     "build_6", "build_10", "build_13",
     "evict_20", "evict_35", "evict_50", "evict_75", "evict_100",
     "task_50", "task_150",
-    "crew_6", "reborn_builder",
+    "reborn_builder",
   ];
   const REBIRTH_TIER_LATE = [
     "build_10", "build_13",
@@ -5518,6 +5531,18 @@
     "task_150", "task_500",
     "reborn_builder",
   ];
+  /**
+   * Badge ids that must NEVER be selected as a rebirth requirement, even
+   * though they stay fully intact and earnable as normal badges. "Full
+   * House" (crew_6, 4 agents simultaneously active) requires a level of
+   * concurrent agent activity that is outside the user's control — the
+   * project's parallel-agent limit is commonly 2 — so gating rebirth on it
+   * can hand the user a requirement they may never be able to satisfy,
+   * permanently blocking rebirth. Enforced in rollRebirthRequirement() (via
+   * eligibleRebirthPool()) and re-applied as a heal to pre-existing saves
+   * at restore time.
+   */
+  const REBIRTH_EXCLUDED_BADGE_IDS = ["crew_6"];
   /** Pick the tier pool to draw the next requirement from, based on rebirthCount. */
   function rebirthTierPool(count) {
     if (count <= 2) return REBIRTH_TIER_EARLY;
@@ -11285,6 +11310,30 @@
           };
         }
         requiredRebirthBadgeIds = Array.isArray(savedRebirth.required) ? savedRebirth.required.slice() : [];
+        // HEAL pre-existing saves rolled before REBIRTH_EXCLUDED_BADGE_IDS
+        // existed: strip any now-excluded id (e.g. "crew_6" / Full House,
+        // whose 4-simultaneous-agents requirement is outside the user's
+        // control) and top the list back up to its original length from the
+        // same eligible pool rollRebirthRequirement() draws from, so a save
+        // made before this fix doesn't keep gating rebirth on an
+        // unreachable badge. If no eligible top-up candidates remain, the
+        // list is simply left shorter — the requiredStillValid check below
+        // re-rolls it from scratch if that leaves it empty or invalid.
+        {
+          const originalRequiredLength = requiredRebirthBadgeIds.length;
+          requiredRebirthBadgeIds = requiredRebirthBadgeIds.filter(
+            (id) => REBIRTH_EXCLUDED_BADGE_IDS.indexOf(id) < 0
+          );
+          if (requiredRebirthBadgeIds.length < originalRequiredLength) {
+            const topUpPool = eligibleRebirthPool().filter(
+              (id) => requiredRebirthBadgeIds.indexOf(id) < 0
+            );
+            while (requiredRebirthBadgeIds.length < originalRequiredLength && topUpPool.length > 0) {
+              const idx = Math.floor(Math.random() * topUpPool.length);
+              requiredRebirthBadgeIds.push(topUpPool.splice(idx, 1)[0]);
+            }
+          }
+        }
         // DURABLE per-cycle badge counters: RESTORE (don't reset) so earned-
         // badge progress survives webview reload. Default 0 when absent (old
         // saved state, or a theme with no prior cycle progress).
@@ -13138,8 +13187,23 @@
     // children of OTHER leads) that a lead→worker nesting pass could hide a
     // whole team's rows; a flat list can't hide anyone. See
     // docs/plan/team-lead-mode.md Phase 3 for the retired nesting approach.
+    //
+    // Pin the orchestrator to row 0 BY IDENTITY, same predicate/pattern as the
+    // scene's throne pin (see sceneAgentList/orchIdx near "Pin the orchestrator
+    // to index 0 BY IDENTITY for the SCENE only" ~line 17374): metrics is
+    // append-only, first-seen-by-hook order, so on a reused/misinstalled
+    // project a spawned lead can be recorded first instead of the orchestrator,
+    // permanently occupying the top row. Render from a stable-partitioned COPY
+    // — metrics/state.agentMetrics is never mutated — with every other agent
+    // keeping its existing relative order. No-op (identical output to today)
+    // when the orchestrator is already first or absent.
+    let orderedMetrics = metrics;
+    const orchIdx = metrics.findIndex((a) => a && a.id === "orchestrator");
+    if (orchIdx > 0) {
+      orderedMetrics = [metrics[orchIdx], ...metrics.slice(0, orchIdx), ...metrics.slice(orchIdx + 1)];
+    }
     tbodyEl.innerHTML = "";
-    for (const agent of metrics) {
+    for (const agent of orderedMetrics) {
       tbodyEl.appendChild(buildMetricsRow(agent, maxAgentTasks, { orchestratorPrice }));
     }
 
@@ -14827,7 +14891,7 @@
       trimBtn.className = "skill-btn settings-btn";
       trimBtn.textContent = "Review for trimming";
       trimBtn.addEventListener("click", () => {
-        vscode.postMessage({ type: "copyPrompt", text: "Review CLAUDE.md and the agent definition files in .claude/agents/ for context that can be tightened. CLAUDE.md is loaded into every prompt, so prioritize it: flag verbose, duplicated, or non-essential lines and propose a tighter rewrite that preserves every behavioral rule and the delegation routing. Then look at each .claude/agents/*.md (loaded per spawn, not every prompt) — but only flag a file if it has genuine verbosity or duplication to cut; a large reference/knowledge agent (e.g. a domain-expert agent with a big fact table) can be intentionally large and should not be flagged just because of its size. For any file with real cuts available, give a before/after token estimate and the specific cuts." });
+        vscode.postMessage({ type: "copyPrompt", text: "Do not modify, reword, condense, or remove the TycoonAgents-managed block in CLAUDE.md or any delegation routing rule anywhere in CLAUDE.md or the agent definitions, and never remove or alter the <!-- tycoon:delegation --> and <!-- /tycoon:delegation --> comment markers that bound that block — TycoonAgents uses them to locate and repair its section, and trimming that content or those markers breaks agent delegation. Outside of that, review CLAUDE.md and the agent definition files in .claude/agents/ for context that can be tightened: flag verbose, duplicated, or non-essential lines and propose a tighter rewrite that preserves every behavioral rule and the delegation routing. Then look at each .claude/agents/*.md (loaded per spawn, not every prompt) — but only flag a file if it has genuine verbosity or duplication to cut; a large reference/knowledge agent (e.g. a domain-expert agent with a big fact table) can be intentionally large and should not be flagged just because of its size. For any file with real cuts available, give a before/after token estimate and the specific cuts." });
       });
       budgetSection.appendChild(trimBtn);
     }
@@ -14913,12 +14977,36 @@
 
     const discList = document.createElement("ul");
 
+    // Each area collapses into its own <details>/<summary> — same
+    // construction technique as buildProjectPlanTaskCard's collapsible
+    // detail block (createElement, className set, summary created and
+    // appended BEFORE the body content, no `open` attribute so it defaults
+    // closed). Mirroring that order avoids a known webview quirk where a
+    // closed <details> built a different way renders wrong. The verbatim
+    // disclosure text from docs/FEEDBACK-PIPELINE-SPEC.md §7 moves into the
+    // details body unchanged — only the one-line <summary> is new copy.
+
     const discLi1 = document.createElement("li");
-    discLi1.textContent = "Your description and (if you add one) your contact info, exactly as you typed them — local file paths and recognizable API keys or tokens are automatically removed before anything is sent.";
+    const discDetails1 = document.createElement("details");
+    discDetails1.className = "feedback-disclosure-details";
+    const discSummary1 = document.createElement("summary");
+    discSummary1.textContent = "Your description and contact info are sent, with secrets automatically removed.";
+    discDetails1.appendChild(discSummary1);
+    const discBody1 = document.createElement("p");
+    discBody1.textContent = "Your description and (if you add one) your contact info, exactly as you typed them — local file paths and recognizable API keys or tokens are automatically removed before anything is sent.";
+    discDetails1.appendChild(discBody1);
+    discLi1.appendChild(discDetails1);
     discList.appendChild(discLi1);
 
     const discLi2 = document.createElement("li");
-    discLi2.textContent = "If \"Include diagnostic report\" is checked, it also sends:";
+    const discDetails2 = document.createElement("details");
+    discDetails2.className = "feedback-disclosure-details";
+    const discSummary2 = document.createElement("summary");
+    discSummary2.textContent = "Six additional setup details are sent if you include diagnostics.";
+    discDetails2.appendChild(discSummary2);
+    const discBody2 = document.createElement("p");
+    discBody2.textContent = "If \"Include diagnostic report\" is checked, it also sends:";
+    discDetails2.appendChild(discBody2);
     const discSubList = document.createElement("ul");
     [
       "Your extension version, operating system, IDE name and variant, and when the report was generated",
@@ -14933,14 +15021,23 @@
       sub.textContent = t;
       discSubList.appendChild(sub);
     });
-    discLi2.appendChild(discSubList);
+    discDetails2.appendChild(discSubList);
+    discLi2.appendChild(discDetails2);
     discList.appendChild(discLi2);
 
     const discLi3 = document.createElement("li");
+    const discDetails3 = document.createElement("details");
+    discDetails3.className = "feedback-disclosure-details";
+    const discSummary3 = document.createElement("summary");
+    discSummary3.textContent = "What's never sent: your code, files, project names, or API keys.";
+    discDetails3.appendChild(discSummary3);
+    const discBody3 = document.createElement("p");
     const discNeverStrong = document.createElement("strong");
     discNeverStrong.textContent = "What's never sent:";
-    discLi3.appendChild(discNeverStrong);
-    discLi3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens."));
+    discBody3.appendChild(discNeverStrong);
+    discBody3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens."));
+    discDetails3.appendChild(discBody3);
+    discLi3.appendChild(discDetails3);
     discList.appendChild(discLi3);
 
     feedbackDisclosure.appendChild(discList);

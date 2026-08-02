@@ -33,36 +33,36 @@ test("estimateTokens: 5-char string -> 2", () => {
 // gradeClaudeMd
 // ---------------------------------------------------------------------------
 
-test("gradeClaudeMd: 1999 -> ok", () => {
-  assert.equal(gradeClaudeMd(1999), "ok");
+test("gradeClaudeMd: 7999 -> ok", () => {
+  assert.equal(gradeClaudeMd(7999), "ok");
 });
 
-test("gradeClaudeMd: 2000 -> warn", () => {
-  assert.equal(gradeClaudeMd(2000), "warn");
+test("gradeClaudeMd: 8000 -> warn", () => {
+  assert.equal(gradeClaudeMd(8000), "warn");
 });
 
-test("gradeClaudeMd: 3999 -> warn", () => {
-  assert.equal(gradeClaudeMd(3999), "warn");
+test("gradeClaudeMd: 15999 -> warn", () => {
+  assert.equal(gradeClaudeMd(15999), "warn");
 });
 
-test("gradeClaudeMd: 4000 -> high", () => {
-  assert.equal(gradeClaudeMd(4000), "high");
+test("gradeClaudeMd: 16000 -> high", () => {
+  assert.equal(gradeClaudeMd(16000), "high");
 });
 
 // ---------------------------------------------------------------------------
 // gradeAgent
 // ---------------------------------------------------------------------------
 
-test("gradeAgent: 1499 -> ok", () => {
-  assert.equal(gradeAgent(1499), "ok");
+test("gradeAgent: 1999 -> ok", () => {
+  assert.equal(gradeAgent(1999), "ok");
 });
 
-test("gradeAgent: 1500 -> warn", () => {
-  assert.equal(gradeAgent(1500), "warn");
+test("gradeAgent: 2000 -> warn", () => {
+  assert.equal(gradeAgent(2000), "warn");
 });
 
-test("gradeAgent: a large reference agent (~2500 tokens) -> warn, not high", () => {
-  assert.equal(gradeAgent(2500), "warn");
+test("gradeAgent: a large reference agent (~5800 tokens) -> high, not a defect (UI labels it intentionally large)", () => {
+  assert.equal(gradeAgent(5800), "high");
 });
 
 test("gradeAgent: 3999 -> warn", () => {
@@ -71,6 +71,17 @@ test("gradeAgent: 3999 -> warn", () => {
 
 test("gradeAgent: 4000 -> high", () => {
   assert.equal(gradeAgent(4000), "high");
+});
+
+// ---------------------------------------------------------------------------
+// Two-scale divergence: CLAUDE.md and agent files are graded on different
+// scales on purpose (CLAUDE.md carries the doctrine and is loaded every
+// prompt; agent files should stay small and focused).
+// ---------------------------------------------------------------------------
+
+test("gradeClaudeMd vs gradeAgent: same token count (~5000) grades differently -- CLAUDE.md ok, agent high", () => {
+  assert.equal(gradeClaudeMd(5000), "ok");
+  assert.equal(gradeAgent(5000), "high");
 });
 
 // ---------------------------------------------------------------------------
@@ -86,8 +97,8 @@ test("buildContextBudget: null claudeMd, empty agents -> perPromptTokens=0, agen
   assert.deepEqual(budget.agents, []);
 });
 
-test("buildContextBudget: claudeMd with >=4000 tokens (16000 chars) -> overall=high, perPromptTokens>0", () => {
-  const bigContent = "x".repeat(16000); // 16000 / 4 = 4000 tokens -> high
+test("buildContextBudget: claudeMd with >=16000 tokens (64000 chars) -> overall=high, perPromptTokens>0", () => {
+  const bigContent = "x".repeat(64000); // 64000 / 4 = 16000 tokens -> high
   const budget = buildContextBudget(bigContent, []);
   assert.ok(budget.perPromptTokens > 0, "perPromptTokens must be positive");
   assert.equal(budget.overall, "high");
@@ -96,7 +107,7 @@ test("buildContextBudget: claudeMd with >=4000 tokens (16000 chars) -> overall=h
 });
 
 test("buildContextBudget: null claudeMd, one high-grade agent -> overall=high", () => {
-  // 4000 tokens -> high grade: 4000 * 4 = 16000 chars
+  // 4000 tokens -> high grade (agent scale): 4000 * 4 = 16000 chars
   const highAgentContent = "a".repeat(16000);
   const budget = buildContextBudget(null, [{ name: "heavy-agent.md", content: highAgentContent }]);
   assert.equal(budget.overall, "high");
@@ -104,10 +115,10 @@ test("buildContextBudget: null claudeMd, one high-grade agent -> overall=high", 
 });
 
 test("buildContextBudget: null claudeMd, mixed agents (ok + warn) -> overall=warn", () => {
-  // ok agent: <1500 tokens = <6000 chars
+  // ok agent: <2000 tokens = <8000 chars (agent scale)
   const okContent = "a".repeat(100);
-  // warn agent: >=1500 and <4000 tokens = >=6000 and <16000 chars
-  const warnContent = "b".repeat(8000); // 8000 / 4 = 2000 tokens -> warn
+  // warn agent: >=2000 and <4000 tokens = >=8000 and <16000 chars (agent scale)
+  const warnContent = "b".repeat(10000); // 10000 / 4 = 2500 tokens -> warn
   const budget = buildContextBudget(null, [
     { name: "small-agent.md", content: okContent },
     { name: "medium-agent.md", content: warnContent },
@@ -116,9 +127,9 @@ test("buildContextBudget: null claudeMd, mixed agents (ok + warn) -> overall=war
 });
 
 test("buildContextBudget: claudeMd (warn grade) + high-grade agent -> overall uses claudeMd grade (warn)", () => {
-  // warn claudeMd: >=2000 and <4000 tokens = >=8000 and <16000 chars
-  const warnClaudeMd = "c".repeat(10000); // 10000 / 4 = 2500 tokens -> warn
-  // high agent: >=4000 tokens = >=16000 chars
+  // warn claudeMd: >=8000 and <16000 tokens = >=32000 and <64000 chars (CLAUDE.md's own, higher scale)
+  const warnClaudeMd = "c".repeat(40000); // 40000 / 4 = 10000 tokens -> warn
+  // high agent: >=4000 tokens = >=16000 chars (agent's tighter scale)
   const highAgentContent = "d".repeat(16000); // 16000 / 4 = 4000 tokens -> high
   const budget = buildContextBudget(warnClaudeMd, [{ name: "heavy-agent.md", content: highAgentContent }]);
   assert.equal(budget.overall, "warn", "overall must follow claudeMd grade, not worst agent grade");

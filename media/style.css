@@ -988,6 +988,23 @@ body {
   margin-top: 3px;
 }
 
+/* Collapsible disclosure areas — summary styling mirrors .plan-task-details
+   summary (accent color, bold, pointer cursor) so "What's never sent" keeps
+   the same visual emphasis it had as a <strong> lead-in. */
+.feedback-disclosure-details {
+  margin: 0;
+}
+
+.feedback-disclosure-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.feedback-disclosure-details p {
+  margin: 4px 0 0;
+}
+
 .feedback-preview {
   display: flex;
   flex-direction: column;
