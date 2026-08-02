@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -241,6 +241,179 @@ test("hook falls back to 'flat' when execution.json contains invalid JSON (never
     const spawn = records.find((r) => r.event === "PreToolUse" && r.workerId === "coding-specialist");
     assert.ok(spawn, "expected a spawn record");
     assert.equal(spawn!.delegationMode, "flat", "invalid JSON must fall back to flat, not throw");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Session Journal (opt-in, default off): UserPromptSubmit appends
+// .claude/session-journal.json when execution.json's sessionJournalEntries
+// is set. Reuses the runHook/setupProject helpers above; each session-journal
+// interface is its own child-process invocation, so the hook's per-process
+// caches (cachedSessionJournalEntries etc.) never leak across tests.
+// ---------------------------------------------------------------------------
+
+interface JournalEntry {
+  timestamp: string;
+  prompt: string;
+  summary: string | null;
+  [key: string]: unknown;
+}
+
+interface JournalFile {
+  maxEntries: number;
+  entries: JournalEntry[];
+  [key: string]: unknown;
+}
+
+function journalPath(projectRoot: string): string {
+  return join(projectRoot, ".claude", "session-journal.json");
+}
+
+function writeExecutionConfigFile(projectRoot: string, config: Record<string, unknown>): void {
+  const tycoonDir = join(projectRoot, ".claude", "tycoon");
+  mkdirSync(tycoonDir, { recursive: true });
+  writeFileSync(join(tycoonDir, "execution.json"), JSON.stringify(config), "utf8");
+}
+
+function submitPrompt(projectRoot: string, prompt: string, sessionId = "journal-session"): void {
+  runHook(projectRoot, { hook_event_name: "UserPromptSubmit", prompt, session_id: sessionId });
+}
+
+test("Session Journal: setting sessionJournalEntries:3 and submitting a prompt creates session-journal.json", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    submitPrompt(root, "first prompt");
+
+    const journal = JSON.parse(readFileSync(journalPath(root), "utf8")) as JournalFile;
+    assert.equal(journal.maxEntries, 3);
+    assert.equal(journal.entries.length, 1);
+    assert.equal(journal.entries[0].prompt, "first prompt");
+    assert.equal(journal.entries[0].summary, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: 5 successive appends at N=3 trim to the last 3 entries, most recent last", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    for (let i = 1; i <= 5; i++) {
+      submitPrompt(root, `prompt ${i}`);
+    }
+
+    const journal = JSON.parse(readFileSync(journalPath(root), "utf8")) as JournalFile;
+    assert.equal(journal.maxEntries, 3);
+    assert.equal(journal.entries.length, 3);
+    assert.deepEqual(
+      journal.entries.map((e) => e.prompt),
+      ["prompt 3", "prompt 4", "prompt 5"]
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: a prompt longer than 300 chars is truncated with an ellipsis", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    const longPrompt = "x".repeat(400);
+    submitPrompt(root, longPrompt);
+
+    const journal = JSON.parse(readFileSync(journalPath(root), "utf8")) as JournalFile;
+    assert.equal(journal.entries[0].prompt.length, 303, "300 chars + '...'");
+    assert.equal(journal.entries[0].prompt, "x".repeat(300) + "...");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: an existing entry's non-null summary survives a later append", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    submitPrompt(root, "prompt one");
+
+    // Simulate the assistant filling in the summary for the first entry.
+    const beforePath = journalPath(root);
+    const before = JSON.parse(readFileSync(beforePath, "utf8")) as JournalFile;
+    before.entries[0].summary = "Did the thing.";
+    writeFileSync(beforePath, JSON.stringify(before, null, 2), "utf8");
+
+    submitPrompt(root, "prompt two");
+
+    const after = JSON.parse(readFileSync(beforePath, "utf8")) as JournalFile;
+    assert.equal(after.entries.length, 2);
+    assert.equal(after.entries[0].summary, "Did the thing.", "existing summary must survive a later append");
+    assert.equal(after.entries[1].summary, null, "new entry's summary starts null");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: an unknown top-level key on the journal file survives an append", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    const p = journalPath(root);
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(p, JSON.stringify({ maxEntries: 3, entries: [], customField: "keep-me" }), "utf8");
+
+    submitPrompt(root, "a prompt");
+
+    const journal = JSON.parse(readFileSync(p, "utf8")) as JournalFile;
+    assert.equal(journal.customField, "keep-me", "unknown top-level key must survive the append");
+    assert.equal(journal.entries.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: a malformed/BOM'd existing journal file does not throw and starts fresh", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    const p = journalPath(root);
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    // BOM + invalid JSON.
+    writeFileSync(p, "﻿{ not valid json", "utf8");
+
+    const result = spawnSync(process.execPath, [HOOK_PATH], {
+      input: JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: "recovering prompt", session_id: "journal-session" }),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    });
+    assert.equal(result.status, 0, `hook exited non-zero: ${result.stderr}`);
+
+    const journal = JSON.parse(readFileSync(p, "utf8")) as JournalFile;
+    assert.equal(journal.entries.length, 1, "must start fresh rather than throwing on malformed content");
+    assert.equal(journal.entries[0].prompt, "recovering prompt");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: sessionJournalEntries:0 (feature off) creates no journal file", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 0 });
+    submitPrompt(root, "should not be journaled");
+    assert.equal(existsSync(journalPath(root)), false, "N=0 must be a complete no-op for the journal file");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: a missing sessionJournalEntries key (execution.json absent entirely) creates no journal file", () => {
+  const root = setupProject();
+  try {
+    // No execution.json written at all.
+    submitPrompt(root, "should not be journaled either");
+    assert.equal(existsSync(journalPath(root)), false, "missing key must default to off and create no file");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

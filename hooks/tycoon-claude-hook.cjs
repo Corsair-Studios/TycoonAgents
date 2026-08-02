@@ -197,6 +197,81 @@ function readDelegationMode(tycoonDir) {
 }
 
 // ---------------------------------------------------------------------------
+// Session journal entry cap (Session Journal feature, off by default) — read
+// from .claude/tycoon/execution.json and cached for the lifetime of this
+// process, same shape as readDelegationMode above (one hook invocation = one
+// event; re-reading per call inside that single invocation is wasted I/O).
+// Valid values are integers 0-5; anything missing, non-numeric, out of
+// range, or unparseable defaults to 0 (feature off) so existing installs see
+// zero behavior change until the setting is explicitly turned on.
+// ---------------------------------------------------------------------------
+let cachedSessionJournalEntries; // undefined until first read this process
+function readSessionJournalEntries(tycoonDir) {
+  if (cachedSessionJournalEntries !== undefined) return cachedSessionJournalEntries;
+  let n = 0;
+  try {
+    const parsed = readJsonSafe(path.join(tycoonDir, "execution.json"));
+    const v = parsed && parsed.sessionJournalEntries;
+    if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 5) {
+      n = v;
+    }
+  } catch {
+    n = 0;
+  }
+  cachedSessionJournalEntries = n;
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Session journal writer — appends the submitted prompt to
+// <projectRoot>/.claude/session-journal.json, trimmed to the last N entries
+// (N = readSessionJournalEntries, 0 = caller never invokes this). Only
+// called when N > 0 (see the UserPromptSubmit handler below).
+//
+// Robustness: readJsonSafe strips a BOM and returns null on bad JSON (this
+// project has a documented history of PowerShell Out-File BOMs and other
+// corruption breaking JSON state files), so a missing/unreadable/malformed
+// file starts a fresh structure rather than throwing. Unknown top-level keys
+// on an existing, parseable file are preserved via a shallow merge, the same
+// pattern writeExecutionConfig() uses in delegationDoctrine.ts. The write
+// itself goes through atomicWriteSync (temp file + rename) so a crash
+// mid-write cannot leave invalid JSON on disk. Every failure mode is
+// swallowed — a broken journal must never break the hook.
+// ---------------------------------------------------------------------------
+function appendSessionJournalEntry(projectRoot, promptText, maxEntries, at) {
+  try {
+    const journalPath = path.join(projectRoot, ".claude", "session-journal.json");
+    const existing = readJsonSafe(journalPath);
+    const base = (existing && typeof existing === "object" && !Array.isArray(existing)) ? existing : {};
+    const entries = Array.isArray(base.entries) ? base.entries.slice() : [];
+
+    // Prompts routinely contain pasted secrets and absolute paths, and this
+    // file can end up committed to a user's repo — truncate hard before it
+    // ever touches disk.
+    const MAX_PROMPT_CHARS = 300;
+    const safePrompt = typeof promptText === "string" ? promptText : "";
+    const truncatedPrompt = safePrompt.length > MAX_PROMPT_CHARS
+      ? safePrompt.slice(0, MAX_PROMPT_CHARS) + "..."
+      : safePrompt;
+
+    // summary is always null on append; the assistant fills it in later per
+    // CLAUDE.md's Session Journal section. An existing entry's summary is
+    // never touched here — this only ever pushes a brand-new entry.
+    entries.push({ timestamp: new Date(at).toISOString(), prompt: truncatedPrompt, summary: null });
+
+    // Trim to the last N; also re-trims older overflow if maxEntries shrank
+    // since the last write.
+    const trimmed = maxEntries > 0 ? entries.slice(Math.max(0, entries.length - maxEntries)) : [];
+
+    const merged = Object.assign({}, base, { maxEntries, entries: trimmed });
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+    atomicWriteSync(journalPath, JSON.stringify(merged, null, 2));
+  } catch {
+    // Best-effort: a corrupted or unwritable journal must never break the hook.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Keyword-based agent matching
 // ---------------------------------------------------------------------------
 function matchAgentFromKeywords(searchText, keywordsConfig) {
@@ -704,6 +779,16 @@ function main(raw) {
   // SessionStart as before — this only adds the stack reset as a side effect.)
   if (hookEvent === "UserPromptSubmit") {
     clearActiveStack(activeAgentFile);
+
+    // Session journal (opt-in, default off — see CLAUDE.md "Session Journal").
+    // payload.prompt is the UserPromptSubmit hook's documented field for the
+    // submitted prompt text (confirmed against the installed Claude Code
+    // binary's hook-payload schema: hook_event_name/prompt/session_title).
+    const journalMax = readSessionJournalEntries(tycoonDir);
+    if (journalMax > 0) {
+      const promptText = typeof payload.prompt === "string" ? payload.prompt : "";
+      appendSessionJournalEntry(projectRoot, promptText, journalMax, at);
+    }
   }
 
   /** @type {Record<string, unknown>} */

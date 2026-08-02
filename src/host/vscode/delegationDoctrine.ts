@@ -28,6 +28,13 @@ export interface ExecutionConfig {
    * default) — see {@link readExecutionConfig}.
    */
   reviewEnabled?: boolean;
+  /**
+   * Optional "Session Journal" entry count: how many recent prompts the
+   * `.claude/session-journal.json` rolling journal keeps. `0` (the default)
+   * means the feature is OFF. Valid range is an integer `0`-`5`; anything
+   * else is coerced to `0` — see {@link readExecutionConfig}.
+   */
+  sessionJournalEntries?: number;
 }
 
 /** Markers wrapping the managed delegation section inside a project's CLAUDE.md. */
@@ -367,6 +374,25 @@ pass as final acceptance.`;
 }
 
 /**
+ * Optional "Session Journal" framing (composes with either base mode and the
+ * review pass — appended last). Mirrors {@link renderReviewSection}'s
+ * on/off-by-value shape: {@link renderDelegationDoctrine} pushes this only
+ * when the caller's `sessionJournalEntries` count is `> 0`, so a project that
+ * has never enabled the feature (the default, `0`) never renders it.
+ */
+function renderSessionJournalSection(entries: number): string {
+  return `## Session Journal
+
+A rolling journal of the last ${entries} prompts is maintained at \`.claude/session-journal.json\`.
+
+**At the start of each session:** read it to recover context from previous sessions.
+
+**At the end of each response:** find the last entry whose \`summary\` is \`null\` and set it to 1-2 sentences (under 150 characters) describing what was accomplished.
+
+The hook appends entries and trims to the last ${entries} automatically.`;
+}
+
+/**
  * Orchestrator-side verification discipline, always included in the doctrine
  * (independent of the review gate). Mitigates a Claude Code Task-tool
  * limitation: sub-agents don't block on nested children and can return
@@ -409,17 +435,24 @@ never runs two writers on the same file at once.`;
  * derived from `rosterAgents` alone (that array has `reviewer` tier-excluded
  * by `panel.ts`'s `_buildDoctrineRoster`). Only affects output when
  * `reviewEnabled` is true; ignored otherwise.
+ *
+ * `sessionJournalEntries` (default `0`, matching execution.json's default —
+ * OFF) appends {@link renderSessionJournalSection} last, only when `> 0`.
  */
 export function renderDelegationDoctrine(
   mode: DelegationMode,
   reviewEnabled = true,
   rosterAgents?: DoctrineRosterAgent[],
-  reviewAgentId?: string
+  reviewAgentId?: string,
+  sessionJournalEntries = 0
 ): string {
   const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents) : DIRECT_SECTION;
   const parts = [renderPreamble(rosterAgents), renderRosterTable(rosterAgents), modeSection, VERIFICATION_SECTION];
   if (reviewEnabled) {
     parts.push(renderReviewSection(rosterAgents, reviewAgentId));
+  }
+  if (sessionJournalEntries > 0) {
+    parts.push(renderSessionJournalSection(sessionJournalEntries));
   }
   return parts.join("\n\n");
 }
@@ -467,7 +500,7 @@ export function upsertDelegationSection(
 }
 
 /** Default execution config used when none has been written yet. */
-const DEFAULT_EXECUTION_CONFIG: ExecutionConfig = { delegation_mode: "flat", reviewEnabled: true };
+const DEFAULT_EXECUTION_CONFIG: ExecutionConfig = { delegation_mode: "flat", reviewEnabled: true, sessionJournalEntries: 0 };
 
 /** Resolve the path to `<claudeDirPath>/tycoon/execution.json`. */
 function executionConfigPath(claudeDirPath: string): string {
@@ -496,6 +529,13 @@ export function readExecutionConfig(claudeDirPath: string): ExecutionConfig {
       return {
         delegation_mode: DELEGATION_MODES.includes(parsed.delegation_mode) ? parsed.delegation_mode : "flat",
         reviewEnabled: typeof parsed.reviewEnabled === "boolean" ? parsed.reviewEnabled : true,
+        sessionJournalEntries:
+          typeof parsed.sessionJournalEntries === "number" &&
+          Number.isInteger(parsed.sessionJournalEntries) &&
+          parsed.sessionJournalEntries >= 0 &&
+          parsed.sessionJournalEntries <= 5
+            ? parsed.sessionJournalEntries
+            : 0,
       };
     }
   } catch {

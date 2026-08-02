@@ -40,6 +40,10 @@ scale-references/
 CLAUDE.md
 nul
 
+# Work-in-progress staging area for assets (e.g. screenshots) dropped in by hand
+# that are not ready to ship — must never be committed or packaged
+.wip/
+
 # Local diagnostic/config reports (may reference project-specific details; not for distribution)
 AGENTS-CONFIG-REPORT.md
 

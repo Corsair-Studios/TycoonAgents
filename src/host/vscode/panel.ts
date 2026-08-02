@@ -919,6 +919,16 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: setReviewEnabled payload rejected:", parsedSetReviewEnabled.error.message);
           }
+        } else if (message.type === MSG.SET_SESSION_JOURNAL_ENTRIES) {
+          const parsedSetSessionJournalEntries = MSG_SCHEMAS.SET_SESSION_JOURNAL_ENTRIES.safeParse(message);
+          if (parsedSetSessionJournalEntries.success) {
+            this._handleSetSessionJournalEntries(parsedSetSessionJournalEntries.data.entries);
+          } else {
+            console.error(
+              "TycoonAgents: setSessionJournalEntries payload rejected:",
+              parsedSetSessionJournalEntries.error.message
+            );
+          }
         } else if (message.type === MSG.SET_AGENT_KEYWORDS) {
           const parsedSetAgentKeywords = MSG_SCHEMAS.SET_AGENT_KEYWORDS.safeParse(message);
           if (parsedSetAgentKeywords.success) {
@@ -5755,7 +5765,7 @@ export class TycoonPanel {
       if (!this._hooksInstalledForRoot(root)) return;
 
       const claudeDir = path.join(root, ".claude");
-      const { delegation_mode, reviewEnabled } = readExecutionConfig(claudeDir);
+      const { delegation_mode, reviewEnabled, sessionJournalEntries } = readExecutionConfig(claudeDir);
 
       const claudeMdPath = path.join(root, "CLAUDE.md");
       let existingClaudeMd: string | null = null;
@@ -5765,7 +5775,13 @@ export class TycoonPanel {
         existingClaudeMd = null;
       }
 
-      const updated = this._buildClaudeMdDoctrine(existingClaudeMd, delegation_mode, reviewEnabled ?? true, root);
+      const updated = this._buildClaudeMdDoctrine(
+        existingClaudeMd,
+        delegation_mode,
+        reviewEnabled ?? true,
+        root,
+        sessionJournalEntries ?? 0
+      );
       if (existingClaudeMd !== null && updated === existingClaudeMd) return; // already current — no write, no notice
 
       fs.writeFileSync(claudeMdPath, updated);
@@ -6469,14 +6485,15 @@ export class TycoonPanel {
     existingContent: string | null,
     mode: DelegationMode,
     reviewEnabled: boolean,
-    root: string
+    root: string,
+    sessionJournalEntries = 0
   ): string {
     const roster = this._buildDoctrineRoster(root);
     const isUefn = detectUefnProject(root).detected;
     const reviewAgentId = this._resolveReviewAgentId(root);
     const withDelegation = upsertDelegationSection(
       existingContent,
-      renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId)
+      renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId, sessionJournalEntries)
     );
     return upsertCodeRulesSection(withDelegation, renderCodeRules(isUefn));
   }
@@ -6602,7 +6619,18 @@ export class TycoonPanel {
         } catch {
           existingClaudeMd = null;
         }
-        const updated = this._buildClaudeMdDoctrine(existingClaudeMd, delegationMode, reviewEnabled, root);
+        // sessionJournalEntries is untouched by the writeExecutionConfig call
+        // above (merge-safe) — read it back rather than assuming a fresh
+        // install's default of 0, so a repair run never resets an existing
+        // user's session-journal choice.
+        const sessionJournalEntries = readExecutionConfig(claudeDir).sessionJournalEntries ?? 0;
+        const updated = this._buildClaudeMdDoctrine(
+          existingClaudeMd,
+          delegationMode,
+          reviewEnabled,
+          root,
+          sessionJournalEntries
+        );
         fs.writeFileSync(claudeMdPath, updated);
       } catch (err) {
         claudeMdError = claudeMdError ?? String(err);
@@ -6878,9 +6906,12 @@ export class TycoonPanel {
     }
 
     // Doctrine composes delegation_mode with the (unrelated) reviewEnabled
-    // toggle — re-read the merged execution.json so a mode switch never
-    // silently resets the Review-pass section on/off.
-    const reviewEnabled = readExecutionConfig(path.join(root, ".claude")).reviewEnabled ?? true;
+    // and sessionJournalEntries settings — re-read the merged execution.json
+    // so a mode switch never silently resets the Review-pass or Session
+    // Journal sections on/off.
+    const execCfgForMode = readExecutionConfig(path.join(root, ".claude"));
+    const reviewEnabled = execCfgForMode.reviewEnabled ?? true;
+    const sessionJournalEntries = execCfgForMode.sessionJournalEntries ?? 0;
 
     let claudeMdError: string | undefined;
     try {
@@ -6893,7 +6924,13 @@ export class TycoonPanel {
       }
       const updated = upsertDelegationSection(
         existingClaudeMd,
-        renderDelegationDoctrine(mode, reviewEnabled, this._buildDoctrineRoster(root), this._resolveReviewAgentId(root))
+        renderDelegationDoctrine(
+          mode,
+          reviewEnabled,
+          this._buildDoctrineRoster(root),
+          this._resolveReviewAgentId(root),
+          sessionJournalEntries
+        )
       );
       fs.writeFileSync(claudeMdPath, updated);
     } catch (err) {
@@ -6950,7 +6987,11 @@ export class TycoonPanel {
       return;
     }
 
-    const mode = readExecutionConfig(path.join(root, ".claude")).delegation_mode;
+    const execCfgForReview = readExecutionConfig(path.join(root, ".claude"));
+    const mode = execCfgForReview.delegation_mode;
+    // Read back the current sessionJournalEntries so toggling Review pass
+    // never silently strips the (unrelated) Session Journal section.
+    const sessionJournalEntries = execCfgForReview.sessionJournalEntries ?? 0;
 
     let claudeMdError: string | undefined;
     try {
@@ -6963,7 +7004,13 @@ export class TycoonPanel {
       }
       const updated = upsertDelegationSection(
         existingClaudeMd,
-        renderDelegationDoctrine(mode, enabled, this._buildDoctrineRoster(root), this._resolveReviewAgentId(root))
+        renderDelegationDoctrine(
+          mode,
+          enabled,
+          this._buildDoctrineRoster(root),
+          this._resolveReviewAgentId(root),
+          sessionJournalEntries
+        )
       );
       fs.writeFileSync(claudeMdPath, updated);
     } catch (err) {
@@ -6976,6 +7023,103 @@ export class TycoonPanel {
       id: "review-enabled",
       field: "reviewEnabled",
       reviewEnabled: enabled,
+      ...(claudeMdError !== undefined ? { claudeMdError } : {}),
+    });
+  }
+
+  /**
+   * Set how many prompt/summary entries the session journal
+   * (`.claude/session-journal.json`) retains (0 disables it). Mirrors
+   * `_handleSetReviewEnabled`'s wiring exactly, but for the orthogonal
+   * `sessionJournalEntries` count: persists `execution.json` (merge-safe),
+   * re-renders the managed CLAUDE.md doctrine section via the same
+   * direct `upsertDelegationSection(renderDelegationDoctrine(...))` call
+   * `_handleSetReviewEnabled` uses (not `_buildClaudeMdDoctrine`, which is
+   * the separate shared builder used by the install/auto-heal paths), and
+   * — when enabling — ensures the journal file is gitignored, since it
+   * stores raw user prompts that routinely contain pasted secrets and
+   * absolute paths.
+   */
+  private _handleSetSessionJournalEntries(entries: number): void {
+    const root = this._projectRoot();
+    if (root === "") {
+      void this._panel.webview.postMessage({
+        type: MSG.SETTINGS_UPDATED,
+        ok: false,
+        id: "session-journal-entries",
+        field: "sessionJournalEntries",
+        error: "No workspace folder open",
+      });
+      return;
+    }
+
+    // Defensive clamp to an integer 0-5, even though MSG_SCHEMAS already
+    // validated this — belt and braces against a future caller that
+    // bypasses the schema.
+    const clamped = Math.min(5, Math.max(0, Math.trunc(entries)));
+
+    try {
+      const claudeDir = path.join(root, ".claude");
+      writeExecutionConfig(claudeDir, { sessionJournalEntries: clamped });
+
+      // The journal stores raw user prompts (routinely containing pasted
+      // secrets and absolute paths) — never let it land in version control.
+      // Only written when enabling, and only into an already-git-tracked
+      // project (never guess a VCS that isn't there — same gate
+      // `detectIgnoreTargets` applies for `.gitignore`).
+      if (clamped > 0) {
+        const hasGit =
+          fs.existsSync(path.join(root, ".git")) || fs.existsSync(path.join(root, ".gitignore"));
+        if (hasGit) {
+          this._appendIgnoreEntries(path.join(root, ".gitignore"), "# TycoonAgents runtime artifacts", [
+            ".claude/session-journal.json",
+          ]);
+        }
+      }
+    } catch (err) {
+      void this._panel.webview.postMessage({
+        type: MSG.SETTINGS_UPDATED,
+        ok: false,
+        id: "session-journal-entries",
+        field: "sessionJournalEntries",
+        error: String(err),
+      });
+      return;
+    }
+
+    const mode = readExecutionConfig(path.join(root, ".claude")).delegation_mode;
+    const reviewEnabled = readExecutionConfig(path.join(root, ".claude")).reviewEnabled ?? true;
+
+    let claudeMdError: string | undefined;
+    try {
+      const claudeMdPath = path.join(root, "CLAUDE.md");
+      let existingClaudeMd: string | null = null;
+      try {
+        existingClaudeMd = fs.readFileSync(claudeMdPath, "utf8");
+      } catch {
+        existingClaudeMd = null;
+      }
+      const updated = upsertDelegationSection(
+        existingClaudeMd,
+        renderDelegationDoctrine(
+          mode,
+          reviewEnabled,
+          this._buildDoctrineRoster(root),
+          this._resolveReviewAgentId(root),
+          clamped
+        )
+      );
+      fs.writeFileSync(claudeMdPath, updated);
+    } catch (err) {
+      claudeMdError = String(err);
+    }
+
+    void this._panel.webview.postMessage({
+      type: MSG.SETTINGS_UPDATED,
+      ok: true,
+      id: "session-journal-entries",
+      field: "sessionJournalEntries",
+      sessionJournalEntries: clamped,
       ...(claudeMdError !== undefined ? { claudeMdError } : {}),
     });
   }
@@ -7330,6 +7474,7 @@ export class TycoonPanel {
       root !== "" ? readExecutionConfig(path.join(root, ".claude")) : { delegation_mode: "flat" as const, reviewEnabled: true };
     const delegation_mode = execCfg.delegation_mode;
     const reviewEnabled = execCfg.reviewEnabled ?? true;
+    const sessionJournalEntries = execCfg.sessionJournalEntries ?? 0;
 
     // Generic foreign-managed-block detection — same read/compute
     // _handleCheckInstall does, duplicated here (rather than shared) so the
@@ -7353,6 +7498,7 @@ export class TycoonPanel {
         agents,
         delegation_mode,
         reviewEnabled,
+        sessionJournalEntries,
         delegationHealth: {
           directSearches,
           directReads,

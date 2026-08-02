@@ -134,8 +134,10 @@ that restates, verbatim, content explained in full later in the same file).
   Report server names only; never print token/secret values found in this
   file (see Step 4).
 - **`.claude/settings.local.json`** — confirm the hooks TycoonAgents relies
-  on are present and wired (session-journal writer, agent-activity logger,
-  team-idle/completion hooks per `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`).
+  on are present and wired (agent-activity logger, team-idle/completion hooks
+  per `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`; the session-journal writer is
+  expected only when `sessionJournalEntries` is greater than 0 in
+  `.claude/tycoon/execution.json` — absent otherwise is not a finding).
   Note any hook entry that references a script path that doesn't exist on
   disk.
 

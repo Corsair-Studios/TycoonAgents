@@ -77,6 +77,10 @@ export const MSG = {
   // Sibling of SET_DELEGATION_MODE: the optional "Review pass" toggle
   // composes with either delegation_mode rather than being a third mode.
   SET_REVIEW_ENABLED: "setReviewEnabled",
+  // Sibling of SET_REVIEW_ENABLED: how many prompt/summary entries the
+  // session journal keeps (0 disables it — see delegationDoctrine.ts's
+  // ExecutionConfig.sessionJournalEntries).
+  SET_SESSION_JOURNAL_ENTRIES: "setSessionJournalEntries",
   SET_AGENT_KEYWORDS: "setAgentKeywords",
   REMOVE_AGENT: "removeAgent",
   AGENT_REMOVED: "agentRemoved",
@@ -327,6 +331,13 @@ export const MSG_SCHEMAS = {
   // Sibling of SET_DELEGATION_MODE — the optional Review-pass toggle, on by
   // default (see delegationDoctrine.ts's ExecutionConfig.reviewEnabled).
   SET_REVIEW_ENABLED: z.object({ enabled: z.boolean() }).passthrough(),
+
+  // Sibling of SET_REVIEW_ENABLED — how many session-journal entries to
+  // retain (0 disables the journal). See delegationDoctrine.ts's
+  // ExecutionConfig.sessionJournalEntries.
+  SET_SESSION_JOURNAL_ENTRIES: z
+    .object({ entries: z.number().int().min(0).max(5) })
+    .passthrough(),
 
   // ---- theme: stage tuning / background / manual image upload -------------
   SAVE_STAGE_TUNING: z

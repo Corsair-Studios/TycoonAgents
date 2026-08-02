@@ -481,7 +481,7 @@ test("readExecutionConfig defaults to flat + reviewEnabled:true when no file exi
   try {
     const claudeDir = path.join(root, ".claude");
     const config = readExecutionConfig(claudeDir);
-    assert.deepEqual(config, { delegation_mode: "flat", reviewEnabled: true });
+    assert.deepEqual(config, { delegation_mode: "flat", reviewEnabled: true, sessionJournalEntries: 0 });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -493,7 +493,7 @@ test("writeExecutionConfig then readExecutionConfig round-trips team_leads (revi
     const claudeDir = path.join(root, ".claude");
     writeExecutionConfig(claudeDir, { delegation_mode: "team_leads" });
     const config = readExecutionConfig(claudeDir);
-    assert.deepEqual(config, { delegation_mode: "team_leads", reviewEnabled: true });
+    assert.deepEqual(config, { delegation_mode: "team_leads", reviewEnabled: true, sessionJournalEntries: 0 });
 
     const onDisk = JSON.parse(
       fs.readFileSync(path.join(claudeDir, "tycoon", "execution.json"), "utf8")
@@ -511,7 +511,7 @@ test("readExecutionConfig tolerates invalid JSON by falling back to the default"
     fs.mkdirSync(path.join(claudeDir, "tycoon"), { recursive: true });
     fs.writeFileSync(path.join(claudeDir, "tycoon", "execution.json"), "{ not valid json");
     const config = readExecutionConfig(claudeDir);
-    assert.deepEqual(config, { delegation_mode: "flat", reviewEnabled: true });
+    assert.deepEqual(config, { delegation_mode: "flat", reviewEnabled: true, sessionJournalEntries: 0 });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -527,7 +527,7 @@ test("writeExecutionConfig({ reviewEnabled: false }) then readExecutionConfig ro
     const claudeDir = path.join(root, ".claude");
     writeExecutionConfig(claudeDir, { delegation_mode: "flat", reviewEnabled: false });
     const config = readExecutionConfig(claudeDir);
-    assert.deepEqual(config, { delegation_mode: "flat", reviewEnabled: false });
+    assert.deepEqual(config, { delegation_mode: "flat", reviewEnabled: false, sessionJournalEntries: 0 });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -545,7 +545,7 @@ test("writeExecutionConfig can set reviewEnabled alone (partial write) without d
     assert.deepEqual(onDisk, { reviewEnabled: false });
     // Reading back still resolves delegation_mode via the flat default.
     const config = readExecutionConfig(claudeDir);
-    assert.deepEqual(config, { delegation_mode: "flat", reviewEnabled: false });
+    assert.deepEqual(config, { delegation_mode: "flat", reviewEnabled: false, sessionJournalEntries: 0 });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -575,7 +575,7 @@ test("writeExecutionConfig preserves an unrelated key (e.g. projectPlanEnabled) 
     assert.deepEqual(onDisk, { delegation_mode: "team_leads", projectPlanEnabled: true });
 
     const config = readExecutionConfig(claudeDir);
-    assert.deepEqual(config, { delegation_mode: "team_leads", reviewEnabled: true });
+    assert.deepEqual(config, { delegation_mode: "team_leads", reviewEnabled: true, sessionJournalEntries: 0 });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -635,8 +635,153 @@ test("delegation_mode, projectPlanEnabled, and reviewEnabled all survive interle
     });
 
     const config = readExecutionConfig(claudeDir);
-    assert.deepEqual(config, { delegation_mode: "team_leads", reviewEnabled: false });
+    assert.deepEqual(config, { delegation_mode: "team_leads", reviewEnabled: false, sessionJournalEntries: 0 });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// sessionJournalEntries: readExecutionConfig validation (integer 0-5, else 0)
+// ---------------------------------------------------------------------------
+
+test("readExecutionConfig accepts sessionJournalEntries at the boundaries and midpoint (0, 3, 5)", () => {
+  const root = tmpRoot();
+  try {
+    const claudeDir = path.join(root, ".claude");
+    for (const value of [0, 3, 5]) {
+      writeExecutionConfig(claudeDir, { sessionJournalEntries: value });
+      const config = readExecutionConfig(claudeDir);
+      assert.equal(config.sessionJournalEntries, value, `value ${value} must round-trip unchanged`);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readExecutionConfig coerces a missing sessionJournalEntries key to 0", () => {
+  const root = tmpRoot();
+  try {
+    const claudeDir = path.join(root, ".claude");
+    writeExecutionConfig(claudeDir, { delegation_mode: "flat" });
+    assert.equal(readExecutionConfig(claudeDir).sessionJournalEntries, 0, "missing key must coerce to 0");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readExecutionConfig coerces non-integer/out-of-range sessionJournalEntries values to 0 (null, string, float, negative, >5, true)", () => {
+  const root = tmpRoot();
+  try {
+    const claudeDir = path.join(root, ".claude");
+    const configPath = path.join(claudeDir, "tycoon", "execution.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+
+    const invalidValues: unknown[] = [null, "3", 3.5, -1, 6, true];
+    for (const value of invalidValues) {
+      fs.writeFileSync(configPath, JSON.stringify({ delegation_mode: "flat", sessionJournalEntries: value }));
+      const config = readExecutionConfig(claudeDir);
+      assert.equal(config.sessionJournalEntries, 0, `value ${JSON.stringify(value)} must coerce to 0`);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readExecutionConfig coerces a NaN sessionJournalEntries to 0 (JSON has no NaN literal, so this exercises the whole-file invalid-JSON fallback, which also yields 0)", () => {
+  const root = tmpRoot();
+  try {
+    const claudeDir = path.join(root, ".claude");
+    const configPath = path.join(claudeDir, "tycoon", "execution.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    // Not valid JSON (JSON.stringify would turn a real NaN into null) — this
+    // is the closest on-disk analogue to "the field holds NaN" and must still
+    // resolve to 0 rather than throwing.
+    fs.writeFileSync(configPath, '{"delegation_mode":"flat","sessionJournalEntries":NaN}');
+    const config = readExecutionConfig(claudeDir);
+    assert.equal(config.sessionJournalEntries, 0, "NaN-bearing content must coerce to 0");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// sessionJournalEntries: writeExecutionConfig round-trip + merge-safety
+// (mirrors the interleaved-writes test above for delegation_mode/reviewEnabled)
+// ---------------------------------------------------------------------------
+
+test("writeExecutionConfig round-trips sessionJournalEntries:4 without clobbering delegation_mode or reviewEnabled written earlier", () => {
+  const root = tmpRoot();
+  try {
+    const claudeDir = path.join(root, ".claude");
+    const configPath = path.join(claudeDir, "tycoon", "execution.json");
+
+    // 1. delegation_mode + reviewEnabled written first (mirrors install).
+    writeExecutionConfig(claudeDir, { delegation_mode: "team_leads", reviewEnabled: false });
+
+    // 2. sessionJournalEntries patched in later (mirrors _handleSetSessionJournalEntries).
+    writeExecutionConfig(claudeDir, { sessionJournalEntries: 4 });
+
+    const onDisk = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    assert.deepEqual(onDisk, {
+      delegation_mode: "team_leads",
+      reviewEnabled: false,
+      sessionJournalEntries: 4,
+    });
+
+    const config = readExecutionConfig(claudeDir);
+    assert.deepEqual(config, { delegation_mode: "team_leads", reviewEnabled: false, sessionJournalEntries: 4 });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// renderDelegationDoctrine: optional Session Journal section (composes with
+// either base mode; off by default — additive, so omitting the 5th arg must
+// be byte-identical to passing 0 explicitly)
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine omits the Session Journal section when entries is 0", () => {
+  const out = renderDelegationDoctrine("flat", true, undefined, undefined, 0);
+  assert.equal(out.includes("## Session Journal"), false, "entries=0 must omit the Session Journal section");
+});
+
+test("renderDelegationDoctrine includes the Session Journal section and mentions the count when entries is 3", () => {
+  const out = renderDelegationDoctrine("flat", true, undefined, undefined, 3);
+  assert.ok(out.includes("## Session Journal"), "entries=3 must include the Session Journal section");
+  assert.ok(/last 3 prompts/.test(out), "section body must mention the count 3");
+});
+
+test("renderDelegationDoctrine with the 5th arg omitted is byte-identical to explicitly passing sessionJournalEntries:0 (additive regression guard)", () => {
+  const omitted = renderDelegationDoctrine("flat", true, undefined, undefined);
+  const explicitZero = renderDelegationDoctrine("flat", true, undefined, undefined, 0);
+  assert.equal(omitted, explicitZero, "omitting the 5th arg must produce byte-identical output to entries=0");
+
+  // Spot-check across both base modes too — the additive guarantee must hold
+  // regardless of mode.
+  for (const mode of DELEGATION_MODES) {
+    assert.equal(
+      renderDelegationDoctrine(mode),
+      renderDelegationDoctrine(mode, true, undefined, undefined, 0),
+      `mode=${mode}: omitted 5th arg must match explicit 0`
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Session Journal section lands inside the managed <!-- tycoon:delegation -->
+// block (so it is auto-healed and removable like the rest of the doctrine)
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine's Session Journal section, once spliced via upsertDelegationSection, lands between the managed sentinels", () => {
+  const body = renderDelegationDoctrine("flat", true, undefined, undefined, 3);
+  const out = upsertDelegationSection(null, body);
+
+  const startIdx = out.indexOf(DELEGATION_SECTION_START);
+  const endIdx = out.indexOf(DELEGATION_SECTION_END);
+  assert.ok(startIdx !== -1 && endIdx !== -1 && endIdx > startIdx, "both sentinels must be present in order");
+
+  const span = out.slice(startIdx, endIdx);
+  assert.ok(span.includes("## Session Journal"), "Session Journal section must land inside the managed span");
 });

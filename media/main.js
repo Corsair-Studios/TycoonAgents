@@ -14058,6 +14058,8 @@
         row.querySelectorAll('input[type="radio"]').forEach((el) => { el.disabled = false; });
       } else if (msg.field === "reviewEnabled" && row) {
         row.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.disabled = false; });
+      } else if (msg.field === "sessionJournalEntries" && row) {
+        row.querySelectorAll('select').forEach((el) => { el.disabled = false; });
       }
     }
   }
@@ -14543,6 +14545,64 @@
     reviewGroup.appendChild(reviewOptLabel);
     reviewRow.appendChild(reviewGroup);
     delegSection.appendChild(reviewRow);
+
+    // ── 1.5c. Session journal (optional, off by default) ──
+    // Rolling log of the last N prompts + a one-line summary, so a new
+    // session can pick up where the last one left off. Grouped right next
+    // to the review-pass row since both are delegation/behavior toggles.
+    // A range input is preferred, but the settings panel itself has no
+    // range-input precedent (the .se-range sliders live in the Stage
+    // Editor's #stage-edit-panel, a different surface) — a <select>
+    // matches this panel's established look instead (see feedbackCategoryEl).
+    const journalRow = document.createElement("div");
+    journalRow.className = "settings-row";
+    journalRow.dataset.agentRow = "session-journal-entries";
+    const journalGroup = document.createElement("div");
+    journalGroup.className = "delegation-mode-group";
+    const journalOptLabel = document.createElement("div");
+    journalOptLabel.className = "delegation-mode-option";
+    const journalBody = document.createElement("span");
+    journalBody.className = "delegation-mode-option-body";
+    const journalLabelSpan = document.createElement("span");
+    journalLabelSpan.className = "delegation-mode-option-label";
+    journalLabelSpan.textContent = "Session journal";
+    const journalHelpSpan = document.createElement("span");
+    journalHelpSpan.className = "delegation-mode-option-help";
+    journalHelpSpan.textContent = "Keeps the last N prompts with a one-line summary of what was done, so a new session can pick up where the last one left off. Off by default.";
+    const journalSelect = document.createElement("select");
+    journalSelect.id = "session-journal-entries-select";
+    journalSelect.className = "session-journal-select";
+    journalSelect.setAttribute("aria-label", "Session journal entries to keep");
+    for (let n = 0; n <= 5; n++) {
+      const opt = document.createElement("option");
+      opt.value = String(n);
+      opt.textContent = n === 0 ? "Off" : String(n);
+      journalSelect.appendChild(opt);
+    }
+    // Clamp defensively — the contract is an integer 0-5, but don't trust
+    // a stale/out-of-range value from an older settings payload.
+    const currentJournalEntries = Math.max(0, Math.min(5, parseInt(lastSettings.sessionJournalEntries, 10) || 0));
+    journalSelect.value = String(currentJournalEntries);
+    const journalWarning = document.createElement("p");
+    journalWarning.className = "theme-review-retry-warning";
+    journalWarning.id = "session-journal-privacy-warning";
+    journalWarning.textContent = "Stores your prompt text on disk at .claude/session-journal.json — added to .gitignore when the project uses git.";
+    if (currentJournalEntries === 0) journalWarning.setAttribute("hidden", "");
+    journalSelect.addEventListener("change", () => {
+      journalSelect.disabled = true;
+      const entries = Math.max(0, Math.min(5, parseInt(journalSelect.value, 10) || 0));
+      if (entries > 0) journalWarning.removeAttribute("hidden");
+      else journalWarning.setAttribute("hidden", "");
+      vscode.postMessage({ type: "setSessionJournalEntries", entries });
+    });
+    journalBody.appendChild(journalLabelSpan);
+    journalBody.appendChild(journalHelpSpan);
+    journalBody.appendChild(journalSelect);
+    journalBody.appendChild(journalWarning);
+    journalOptLabel.appendChild(journalBody);
+    journalGroup.appendChild(journalOptLabel);
+    journalRow.appendChild(journalGroup);
+    delegSection.appendChild(journalRow);
 
     // ── 1.6. Project Plan (optional) ──
     // Opt-in toggle for the Project Plan tab in the metrics panel (see

@@ -363,6 +363,30 @@ body {
   cursor: pointer;
 }
 
+/* Session journal entries <select> (Settings panel, sibling of the
+   review-pass row). The settings panel has no range-input precedent — the
+   .se-range sliders above belong to the Stage Editor's #stage-edit-panel,
+   a different surface — so this is a plain <select> styled with the same
+   --vscode-input-* tokens used elsewhere (e.g. .feedback-field select) to
+   match the panel's established look. The privacy warning below it reuses
+   .theme-review-retry-warning (same amber accent + [hidden] rule) rather
+   than adding another warning class. */
+.session-journal-select {
+  margin-top: 2px;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--vscode-input-foreground, var(--text));
+  background: var(--vscode-input-background, #171a1f);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.session-journal-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* Install Hooks warning (media/main.js inserts #install-hooks-warning as
    the button's next sibling): mirror whatever hidden/shown state the many
    installHooksBtn.setAttribute/removeAttribute("hidden") call sites already
