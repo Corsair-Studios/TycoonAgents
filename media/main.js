@@ -5029,7 +5029,7 @@
   // init order, and this whole file is one IIFE evaluated top-to-bottom, so
   // referencing it here would hit the const TDZ (same pattern as
   // TURRET_HIT_DAMAGE above).
-  const SMOKE_DAMAGE_INTENSITY_FLOOR = 0.15; // min smoke intensity once `damaged` is true, so barely-damaged objects still smoke visibly
+  const SMOKE_DAMAGE_INTENSITY_FLOOR = 0.35; // min smoke intensity once `damaged` is true — fresh-damage alpha = SMOKE_MAX_ALPHA * 0.35 = 0.55 * 0.35 = ~0.19 (~19% opacity); the old 0.15 floor (~8% opacity) was too faint to read as damage at a glance
   // ── Extinguish / Repair (Plan p1-t4) ─────────────────────────────────────
   // Repair now acts DIRECTLY on the same graded `damage` value the attack
   // ramp writes (STRUCTURE_DAMAGE_PER_SEC, above) — extinguishing smoke and
@@ -5580,8 +5580,14 @@
   // out-pace a single attacker. Declared here (not with the rest of the
   // STRUCTURE_* block above) to avoid the BUILD_SECONDS_PER_OBJECT TDZ — see
   // the note left in that block.
-  const STRUCTURE_DAMAGE_PER_SEC = 0.5 / BUILD_SECONDS_PER_OBJECT; // ~0.00833/s — tunable, derived
+  const STRUCTURE_DAMAGE_PER_SEC = 0.5 / BUILD_SECONDS_PER_OBJECT; // ~0.00833/s per attacker — tunable, derived
   const STRUCTURE_REPAIR_PER_SEC = 1 / BUILD_SECONDS_PER_OBJECT;   // ~0.0167/s per active repairer — tunable, derived
+  // Damage now stacks per attacker (see updateObjectSmoke), so this caps how
+  // much a large swarm can accelerate the ramp — without a cap, a big raid
+  // could take a structure from undamaged to fully damaged in a single
+  // frame's worth of seconds; capped, the fastest possible ramp is bounded
+  // regardless of how many rivals pile onto one object.
+  const STRUCTURE_MAX_ATTACKERS = 4;
   /**
    * Per-frame count: number of ACTIVE agents currently AT the active build
    * target's standoff spot actually building it (clip "build", i.e.
@@ -8891,49 +8897,71 @@
       // 1. Built objIds engaged by a live, non-fleeing rival (same signal as
       //    the raid-targeting block: targetKind === 'object' + truthy
       //    targetObjId + not fleeing + membership in the already-built set).
-      //    p2-t3: a rival currently staggered by a turret hit (turretStaggerT
-      //    > 0) is excluded too — the struck rival briefly stops "attacking"
-      //    the structure for TURRET_STAGGER_SEC, which is the turret's repel
-      //    effect (this is the ONLY place structure-damage ramp is applied,
-      //    so gating it here is sufficient — no separate attack-apply site).
-      const engaged = new Set();
+      //    Two tallies are kept per object:
+      //      - `targeted`: every qualifying rival, staggered or not. A
+      //        staggered rival is still "attacking" in the sense that it
+      //        holds the object's warm-up (underAttack) steady rather than
+      //        letting it reset — see the reset loop below.
+      //      - `damaging`: a Map of objectId -> count of rivals ACTIVELY
+      //        damaging the object this frame (targeted AND NOT staggered).
+      //        p2-t3: a rival currently staggered by a turret hit
+      //        (turretStaggerT > 0) does not contribute to this count — the
+      //        struck rival briefly stops damaging the structure for
+      //        TURRET_STAGGER_SEC, which is the turret's repel/mitigation
+      //        effect (this is the ONLY place structure-damage ramp is
+      //        applied, so gating it here is sufficient — no separate
+      //        attack-apply site). Damage stacks per attacker (capped at
+      //        STRUCTURE_MAX_ATTACKERS) so a swarm damages faster than a
+      //        lone attacker, applied below.
+      const targeted = new Set();
+      const damaging = new Map();
       if (builtIds && builtIds.size > 0 && Array.isArray(activeEnemies)) {
         for (const en of activeEnemies) {
           if (!en || en.fleeing) continue;
-          if (en.turretStaggerT > 0) continue;
           if (en.targetKind !== "object") continue;
           const oid = en.targetObjId;
           if (!oid || !builtIds.has(oid)) continue;
-          engaged.add(oid);
+          targeted.add(oid);
+          if (en.turretStaggerT > 0) continue;
+          damaging.set(oid, (damaging.get(oid) || 0) + 1);
         }
       }
-      // 2. Under-attack objects: accumulate, then once past the warm-up delay
-      //    ramp a GRADED `damage` value (0..1, +STRUCTURE_DAMAGE_PER_SEC per
-      //    second, clamped to 1 — never exceeds, object is never destroyed or
-      //    reverted to a crate) and derive intensity from it, floored at
-      //    SMOKE_DAMAGE_INTENSITY_FLOOR so a freshly-damaged object smokes
-      //    faintly and thickens the longer the attack continues (fade-in,
-      //    not a pop to full). Lazily create the entry on first engaged
-      //    frame. Once the delay is crossed the object becomes PERSISTENTLY
-      //    `damaged`.
-      for (const oid of engaged) {
+      // 2. Under-attack objects: accumulate warm-up for every TARGETED object
+      //    (staggered attackers included, so a fully-staggered object holds
+      //    its warm-up instead of losing it), then once past the warm-up
+      //    delay ramp a GRADED `damage` value (0..1, +STRUCTURE_DAMAGE_PER_SEC
+      //    * min(activeAttackerCount, STRUCTURE_MAX_ATTACKERS) per second,
+      //    clamped to 1 — never exceeds, object is never destroyed or
+      //    reverted to a crate) using only the ACTIVELY-damaging count, and
+      //    derive intensity from it, floored at SMOKE_DAMAGE_INTENSITY_FLOOR
+      //    so a freshly-damaged object smokes visibly and thickens the
+      //    longer the attack continues (fade-in, not a pop to full). Lazily
+      //    create the entry on first targeted frame. Once the delay is
+      //    crossed the object becomes PERSISTENTLY `damaged`. If every
+      //    attacker is staggered this frame (activeAttackerCount === 0), no
+      //    damage is added but the existing damage/intensity holds steady.
+      for (const oid of targeted) {
         let s = objectSmoke[oid];
         if (!s) s = objectSmoke[oid] = { underAttack: 0, intensity: 0, anim: 0, damaged: false, damage: 0 };
         s.underAttack += delta;
         if (s.underAttack >= SMOKE_ATTACK_DELAY) {
           if (!s.damaged) s.damaged = true;
-          s.damage = Math.min(1, (s.damage ?? 0) + STRUCTURE_DAMAGE_PER_SEC * delta);
+          const activeAttackerCount = damaging.get(oid) || 0;
+          if (activeAttackerCount > 0) {
+            s.damage = Math.min(1, (s.damage ?? 0) + STRUCTURE_DAMAGE_PER_SEC * Math.min(activeAttackerCount, STRUCTURE_MAX_ATTACKERS) * delta);
+          }
           s.intensity = Math.max(SMOKE_DAMAGE_INTENSITY_FLOOR, s.damage);
         }
         s.anim += delta; // 4. advance the rising loop
       }
-      // 3. Not under attack this frame: a `damaged` object stays smoking
-      //    PERSISTENTLY (no auto-decay/delete) until a repair completes in
+      // 3. Not targeted at all this frame (nothing — staggered or not — is
+      //    attacking it): a `damaged` object stays smoking PERSISTENTLY (no
+      //    auto-decay/delete) until a repair completes in
       //    updateExtinguishProgress — only its rising-loop anim still advances.
       //    Undamaged objects (attack stopped before the delay elapsed) still
       //    fade out and delete as before.
       for (const oid of Object.keys(objectSmoke)) {
-        if (engaged.has(oid)) continue;
+        if (targeted.has(oid)) continue;
         const s = objectSmoke[oid];
         if (!s) { delete objectSmoke[oid]; continue; }
         s.underAttack = 0;
