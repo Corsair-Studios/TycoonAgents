@@ -2,6 +2,9 @@
 // Best-effort mirror of the UEFN Power Tools bridge (media/uefn-bridge/*.py +
 // the MCP server source) into a separate, standalone "Trashbyrd's UEFN Power
 // Tools" repo so that repo can be distributed independently of TycoonAgents.
+// Also stamps a LICENSE and the TycoonAgents version into that repo's
+// package.json, and — once the sync commit has actually landed on the
+// target's remote — tags and best-effort GitHub-Releases it there too.
 //
 // This script is a NO-OP on any machine that hasn't configured a target
 // directory (every contributor's machine except the maintainer's release
@@ -14,9 +17,10 @@
 //      (gitignored; machine-local, never committed)
 // If neither resolves, or the resolved directory doesn't exist, this is a
 // clean no-op (exit 0).
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFileSync, statSync, unlinkSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -25,6 +29,9 @@ const ROOT = dirname(SCRIPT_DIR); // repo root (scripts/ is one level down)
 const LOCAL_CONFIG_PATH = join(SCRIPT_DIR, 'powertools-sync.local.json');
 const BRIDGE_DIR = join(ROOT, 'media', 'uefn-bridge');
 const SERVER_SRC = join(ROOT, 'uefn-bridge', 'uefn-server.ts');
+// Adapted from this repo's own LICENSE (same terms, renamed for the Power
+// Tools project; see scripts/powertools-assets/LICENSE for the diff notes).
+const LICENSE_SRC = join(SCRIPT_DIR, 'powertools-assets', 'LICENSE');
 
 // Files that must never be synced even though they live alongside the .py
 // tools in media/uefn-bridge/ (build artifacts / caches, not source).
@@ -142,11 +149,59 @@ function pruneStaleFiles(targetDir) {
   return prunedCount;
 }
 
+// Copies the Power Tools LICENSE (see scripts/powertools-assets/LICENSE)
+// into <target>/LICENSE on every sync. Non-fatal on any failure — a missing
+// or unwritable LICENSE must never block the rest of the sync.
+function copyLicense(targetDir) {
+  if (!existsSync(LICENSE_SRC)) {
+    console.log(`[sync-powertools] Warning: ${LICENSE_SRC} not found; skipped LICENSE.`);
+    return false;
+  }
+  try {
+    copyFileSync(LICENSE_SRC, join(targetDir, 'LICENSE'));
+    return true;
+  } catch (err) {
+    console.log(`[sync-powertools] Could not copy LICENSE (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+// Stamps the TycoonAgents version into the target repo's package.json
+// "version" field only — every other field, key order, indentation style,
+// and trailing newline are preserved as-is. Non-fatal on any failure (a
+// missing/malformed target package.json must never block the rest of sync).
+function updateTargetPackageVersion(targetDir, version) {
+  const pkgPath = join(targetDir, 'package.json');
+  if (!existsSync(pkgPath)) {
+    console.log('[sync-powertools] Warning: target package.json not found; skipped version stamp.');
+    return false;
+  }
+  try {
+    const raw = readFileSync(pkgPath, 'utf8');
+    const pkg = JSON.parse(raw);
+    pkg.version = version;
+    // Detect the file's own indentation rather than assuming 2 spaces, so a
+    // differently-formatted target package.json isn't silently reformatted.
+    const indentMatch = raw.match(/^[ \t]+(?=")/m);
+    const indent = indentMatch ? indentMatch[0] : '  ';
+    const trailingNewline = raw.endsWith('\n');
+    const serialized = JSON.stringify(pkg, null, indent) + (trailingNewline ? '\n' : '');
+    writeFileSync(pkgPath, serialized, 'utf8');
+    return true;
+  } catch (err) {
+    console.log(`[sync-powertools] Could not update target package.json version (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+// Returns true only if this run actually created a new commit AND pushed it
+// to the target's remote — callers use this to gate the tag/release step,
+// which must only run once the sync it's tagging has really landed.
 function syncGitIfPresent(targetDir, version) {
   const gitDir = join(targetDir, '.git');
   if (!existsSync(gitDir)) {
     console.log('[sync-powertools] Files copied (target is not a git repo yet).');
-    return;
+    return false;
   }
 
   try {
@@ -158,7 +213,7 @@ function syncGitIfPresent(targetDir, version) {
 
     if (!status.trim()) {
       console.log('[sync-powertools] Power Tools already up to date.');
-      return;
+      return false;
     }
 
     execFileSync(
@@ -168,10 +223,156 @@ function syncGitIfPresent(targetDir, version) {
     );
     execFileSync('git', ['-C', targetDir, 'push'], { stdio: 'inherit' });
     console.log(`[sync-powertools] Committed and pushed sync from TycoonAgents v${version}.`);
+    return true;
   } catch (err) {
     // Never let a git failure (no remote, auth, detached HEAD, etc.) fail
     // whatever invoked this script (e.g. a release).
     console.log(`[sync-powertools] git sync step failed (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+// Best-effort tag + GitHub Release for the target repo, invoked only after
+// syncGitIfPresent() confirms the sync commit actually landed on the
+// remote. Mirrors the guarded pattern in scripts/release.mjs: fetch tags
+// first (best-effort) before checking existence, skip creation with a clear
+// warning if the tag already exists, and roll back a tag this run created
+// if pushing it fails. Every step is try/catch'd with a console.log warning
+// on failure — never fatal, this must never break a TycoonAgents release
+// that has already pushed.
+function tagAndReleaseTarget(targetDir, version) {
+  const tagName = `v${version}`;
+
+  try {
+    execFileSync('git', ['-C', targetDir, 'fetch', '--tags'], { stdio: 'ignore' });
+  } catch (err) {
+    console.log(
+      `[sync-powertools] "git fetch --tags" failed in target repo (non-fatal): ${err.message}`,
+    );
+  }
+
+  let tagExists = false;
+  try {
+    execFileSync(
+      'git',
+      ['-C', targetDir, 'rev-parse', '-q', '--verify', `refs/tags/${tagName}`],
+      { stdio: 'ignore' },
+    );
+    tagExists = true;
+  } catch {
+    tagExists = false;
+  }
+
+  let tagCreatedThisRun = false;
+  if (tagExists) {
+    console.log(
+      `[sync-powertools] Tag "${tagName}" already exists in target repo — skipping tag creation, still attempting push/release.`,
+    );
+  } else {
+    try {
+      execFileSync(
+        'git',
+        ['-C', targetDir, 'tag', '-a', tagName, '-m', `Sync from TycoonAgents v${version}`],
+        { stdio: 'inherit' },
+      );
+      tagCreatedThisRun = true;
+      console.log(`[sync-powertools] Created annotated tag "${tagName}" in target repo.`);
+    } catch (err) {
+      console.log(`[sync-powertools] Could not create tag "${tagName}" in target repo (non-fatal): ${err.message}`);
+      return;
+    }
+  }
+
+  let tagPushed = false;
+  try {
+    execFileSync('git', ['-C', targetDir, 'push', 'origin', tagName], { stdio: 'inherit' });
+    tagPushed = true;
+    console.log(`[sync-powertools] Pushed tag "${tagName}" to target repo remote.`);
+  } catch (err) {
+    console.log(`[sync-powertools] Could not push tag "${tagName}" to target repo (non-fatal): ${err.message}`);
+    // Roll back the tag ONLY if this run created it — never a pre-existing
+    // tag that was merely detected and skipped above.
+    if (tagCreatedThisRun) {
+      try {
+        execFileSync('git', ['-C', targetDir, 'tag', '-d', tagName], { stdio: 'inherit' });
+        console.log(`[sync-powertools] Rolled back local tag "${tagName}" so a re-run won't push an orphaned tag.`);
+      } catch (deleteErr) {
+        console.log(`[sync-powertools] Could not roll back local tag "${tagName}" (non-fatal): ${deleteErr.message}`);
+      }
+    }
+  }
+
+  if (!tagPushed) return;
+
+  publishTargetRelease(targetDir, version, tagName);
+}
+
+// Best-effort GitHub Release for the target repo, attempted only once its
+// tag is confirmed pushed. Builds the installable zip from the pushed tag
+// via `git archive`, which packages ONLY tracked files at that tag — this
+// is what keeps node_modules (~59MB) out of the asset, but only as long as
+// node_modules is actually gitignored in the target repo, so that's
+// verified here rather than assumed. Written to a temp dir (never into
+// either repo's working tree) and cleaned up afterward.
+function publishTargetRelease(targetDir, version, tagName) {
+  const gitignorePath = join(targetDir, '.gitignore');
+  let gitignoreText = '';
+  try {
+    gitignoreText = readFileSync(gitignorePath, 'utf8');
+  } catch (err) {
+    console.log(
+      `[sync-powertools] Could not read target .gitignore (non-fatal): ${err.message}. ` +
+      'Skipping release asset build to avoid risking an unfiltered archive.',
+    );
+    return;
+  }
+
+  const ignoresNodeModules = /^node_modules\/?\s*$/m.test(gitignoreText);
+  if (!ignoresNodeModules) {
+    console.log(
+      '[sync-powertools] Target .gitignore does not appear to ignore node_modules; ' +
+      'skipping release asset build rather than risk shipping it.',
+    );
+    return;
+  }
+
+  const zipName = `trashbyrds-power-tools-v${version}.zip`;
+  const tmpWorkDir = join(tmpdir(), `sync-powertools-release-${Date.now()}`);
+  const zipPath = join(tmpWorkDir, zipName);
+  try {
+    mkdirSync(tmpWorkDir, { recursive: true });
+    execFileSync('git', ['-C', targetDir, 'archive', '--format=zip', '-o', zipPath, tagName], {
+      stdio: 'inherit',
+    });
+    console.log(`[sync-powertools] Built release asset at ${zipPath}.`);
+  } catch (err) {
+    console.log(`[sync-powertools] Could not build release archive (non-fatal): ${err.message}`);
+    try {
+      rmSync(tmpWorkDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup; a stray temp dir is harmless
+    }
+    return;
+  }
+
+  try {
+    execFileSync(
+      'gh',
+      ['release', 'create', tagName, zipPath, '--title', tagName, '--notes', `Sync from TycoonAgents v${version}`],
+      { stdio: 'inherit', cwd: targetDir },
+    );
+    console.log(`[sync-powertools] Published GitHub Release "${tagName}" for target repo (see URL above).`);
+  } catch (err) {
+    console.log(
+      `[sync-powertools] GitHub Release NOT published for target repo (non-fatal): ${err.message}\n` +
+      `[sync-powertools] Publish it manually once resolved: gh release create ${tagName} "${zipPath}" --title ${tagName} --notes "..." (run from ${targetDir})`,
+    );
+  } finally {
+    try {
+      rmSync(tmpWorkDir, { recursive: true, force: true });
+    } catch (err) {
+      console.log(`[sync-powertools] Could not clean up temp release asset (non-fatal): ${err.message}`);
+    }
   }
 }
 
@@ -190,7 +391,21 @@ function main() {
   const prunedCount = pruneStaleFiles(targetDir);
   console.log(`[sync-powertools] Pruned ${prunedCount} stale file(s) from ${targetDir}.`);
 
-  syncGitIfPresent(targetDir, version);
+  if (copyLicense(targetDir)) {
+    console.log('[sync-powertools] Copied LICENSE into target repo.');
+  }
+
+  if (updateTargetPackageVersion(targetDir, version)) {
+    console.log(`[sync-powertools] Stamped target package.json version to ${version}.`);
+  }
+
+  const pushed = syncGitIfPresent(targetDir, version);
+
+  // Tag + best-effort GitHub Release only once the sync commit above has
+  // actually landed on the target repo's remote — see tagAndReleaseTarget().
+  if (pushed) {
+    tagAndReleaseTarget(targetDir, version);
+  }
 }
 
 try {

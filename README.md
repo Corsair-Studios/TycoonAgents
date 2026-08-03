@@ -114,3 +114,5 @@ Free to use and share, including the bundled theme artwork — but not to be sol
 
 ## Thanks
 Thanks to **IndieDevDan** for his tutorials.
+
+Thanks also to **KirChuvakov**, whose [uefn-mcp-server](https://github.com/kirchuvakov/uefn-mcp-server) is an independent UEFN MCP project we referenced while building this one.
