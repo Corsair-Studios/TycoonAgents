@@ -195,8 +195,13 @@ function updateTargetPackageVersion(targetDir, version) {
 }
 
 // Returns true only if this run actually created a new commit AND pushed it
-// to the target's remote — callers use this to gate the tag/release step,
-// which must only run once the sync it's tagging has really landed.
+// to the target's remote. Informational / logging only now — tag/release
+// gating uses isTargetPublishable() below instead, because a target that's
+// already in sync (nothing new to commit) can still be missing its tag or
+// release, e.g. a prior run pushed the sync commit but was killed before
+// tagging. Gating on "did we just commit" made that state permanent: every
+// later run would see a clean tree, log "already up to date", and skip
+// tag/release forever.
 function syncGitIfPresent(targetDir, version) {
   const gitDir = join(targetDir, '.git');
   if (!existsSync(gitDir)) {
@@ -232,9 +237,67 @@ function syncGitIfPresent(targetDir, version) {
   }
 }
 
-// Best-effort tag + GitHub Release for the target repo, invoked only after
-// syncGitIfPresent() confirms the sync commit actually landed on the
-// remote. Mirrors the guarded pattern in scripts/release.mjs: fetch tags
+// True only when the target repo is in a state safe to tag/release: a
+// clean working tree AND local HEAD equal to origin/main. Fetches origin
+// first (best-effort) so the origin/main comparison reflects the current
+// remote rather than a stale local view. Comparison is done with
+// `git rev-parse HEAD` vs `git rev-parse origin/main` (plain SHA string
+// equality) rather than `git status` alone, because a clean working tree
+// only proves there are no uncommitted changes — it says nothing about
+// whether local commits have actually been pushed, or whether the remote
+// has commits this clone doesn't have. Never tags a dirty or diverged tree.
+function isTargetPublishable(targetDir) {
+  const gitDir = join(targetDir, '.git');
+  if (!existsSync(gitDir)) return false;
+
+  try {
+    execFileSync('git', ['-C', targetDir, 'fetch', 'origin'], { stdio: 'ignore' });
+  } catch (err) {
+    console.log(`[sync-powertools] "git fetch origin" failed in target repo (non-fatal): ${err.message}`);
+  }
+
+  try {
+    const status = execFileSync('git', ['-C', targetDir, 'status', '--porcelain'], {
+      encoding: 'utf8',
+    });
+    if (status.trim()) {
+      console.log(
+        '[sync-powertools] Target repo working tree is not clean; skipping tag/release for this run.',
+      );
+      return false;
+    }
+  } catch (err) {
+    console.log(`[sync-powertools] Could not check target repo status (non-fatal): ${err.message}`);
+    return false;
+  }
+
+  try {
+    const localHead = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+    const remoteHead = execFileSync('git', ['-C', targetDir, 'rev-parse', 'origin/main'], {
+      encoding: 'utf8',
+    }).trim();
+    if (localHead !== remoteHead) {
+      console.log(
+        `[sync-powertools] Target repo HEAD (${localHead}) does not match origin/main (${remoteHead}); ` +
+        'skipping tag/release for this run (not in sync with remote).',
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.log(
+      `[sync-powertools] Could not compare target repo HEAD to origin/main (non-fatal): ${err.message}`,
+    );
+    return false;
+  }
+}
+
+// Best-effort tag + GitHub Release for the target repo, invoked once the
+// target repo is confirmed publishable (see isTargetPublishable() above —
+// clean tree, HEAD in sync with origin/main). Mirrors the guarded pattern
+// in scripts/release.mjs: fetch tags
 // first (best-effort) before checking existence, skip creation with a clear
 // warning if the tag already exists, and roll back a tag this run created
 // if pushing it fails. Every step is try/catch'd with a console.log warning
@@ -399,12 +462,19 @@ function main() {
     console.log(`[sync-powertools] Stamped target package.json version to ${version}.`);
   }
 
-  const pushed = syncGitIfPresent(targetDir, version);
+  syncGitIfPresent(targetDir, version);
 
-  // Tag + best-effort GitHub Release only once the sync commit above has
-  // actually landed on the target repo's remote — see tagAndReleaseTarget().
-  if (pushed) {
+  // Tag + best-effort GitHub Release once the target repo is confirmed
+  // publishable — clean tree AND HEAD in sync with origin/main (see
+  // isTargetPublishable()). Deliberately NOT gated on whether the line
+  // above just created a commit: a target that's already in sync (nothing
+  // new to commit) can still be missing its tag/release from a prior
+  // interrupted run, and gating on "did we just commit" made that
+  // permanent — every later run would see a clean tree and skip forever.
+  if (isTargetPublishable(targetDir)) {
     tagAndReleaseTarget(targetDir, version);
+  } else {
+    console.log('[sync-powertools] Target repo not publishable this run; skipping tag/release.');
   }
 }
 
