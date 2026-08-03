@@ -12,12 +12,18 @@ import { join } from "node:path";
 /*
  * Coverage for scripts/release.mjs's handbook crumb version-stamp loop
  * (~lines 83-112): CRUMB_VERSION_RE, the per-file stamp-and-fail-loud logic,
- * and the shipped media/handbook/*.html content that loop stamps.
+ * and the shipped media/handbook/*.html content that loop stamps. Also
+ * covers, as source-text anchor checks only (see the "Tag + best-effort
+ * GitHub Release anchors" section below), the annotated-tag creation,
+ * existing-tag guard, `--follow-tags` push, and best-effort `gh release
+ * create` steps added after the commit/push logic.
  *
  * This is a pure-data suite: no vscode stub needed, nothing under test runs
  * at module scope with side effects. It works off the REAL files on disk —
  * package.json, scripts/release.mjs, and every media/handbook/*.html page —
- * not a reimplementation of any of them.
+ * not a reimplementation of any of them. It does NOT invoke git or gh, so it
+ * cannot verify actual tag/push/release behavior end-to-end — see the task
+ * report for the list of behaviors that remain unverified by automation.
  */
 
 const ROOT = process.cwd();
@@ -76,6 +82,146 @@ function extractCrumbVersionRegex(): RegExp {
 test("CRUMB_VERSION_RE extracted from scripts/release.mjs is a usable RegExp", () => {
   const regex = extractCrumbVersionRegex();
   assert.ok(regex.source.length > 0);
+});
+
+// ── Tag + best-effort GitHub Release anchors (added alongside the tag/gh
+// steps in scripts/release.mjs). This is a pure-data suite with no
+// spawnSync/execFileSync stubbing, so it cannot exercise git/gh behavior —
+// these tests assert the SOURCE TEXT contains the specific commands/guards
+// the feature depends on, the same anchor style used above for the crumb
+// regex. A future edit that silently drops `--follow-tags`, the annotated
+// tag flag, the existing-tag guard, or the vsixPath reuse will fail here. ──
+
+test("release.mjs creates an ANNOTATED tag (git tag -a), not a lightweight one", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  assert.match(
+    fullSource,
+    /git tag -a/,
+    "release.mjs no longer creates an annotated tag — `--follow-tags` only pushes annotated tags",
+  );
+});
+
+test("release.mjs guards tag creation against a pre-existing tag via git rev-parse --verify", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  assert.match(
+    fullSource,
+    /git rev-parse -q --verify "refs\/tags\/\$\{tagName\}"/,
+    "release.mjs no longer detects an existing tag before creating one",
+  );
+  requireAnchorOnce(fullSource, "tagExists warning", "already exists — skipping tag creation");
+});
+
+test("release.mjs best-effort fetches remote tags before the existing-tag check, so a remote-only tag isn't a false negative", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  const fetchIdx = requireAnchorOnce(fullSource, "git fetch --tags call", "execSync('git fetch --tags'");
+  const verifyIdx = fullSource.indexOf('git rev-parse -q --verify "refs/tags/${tagName}"');
+  assert.ok(verifyIdx > fetchIdx, "release.mjs: `git fetch --tags` must run BEFORE the existing-tag rev-parse check");
+
+  // Best-effort: the fetch failure path must warn, not exit — a fetch
+  // failure (offline, auth) must never make the release itself fail.
+  const fetchBlockEnd = fullSource.indexOf("const tagName = ", fetchIdx);
+  assert.ok(fetchBlockEnd > fetchIdx, "release.mjs: could not bound the fetch-tags block");
+  const fetchBlock = fullSource.slice(fetchIdx, fetchBlockEnd);
+  assert.match(fetchBlock, /console\.warn/, "release.mjs: `git fetch --tags` failure no longer warns");
+  assert.doesNotMatch(
+    fetchBlock,
+    /process\.exit/,
+    "release.mjs: `git fetch --tags` must be best-effort — it must never call process.exit",
+  );
+});
+
+test("release.mjs runs a reachability pre-flight (git ls-remote) before bumping the version, and aborts hard on failure", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  const preflightIdx = requireAnchorOnce(fullSource, "ls-remote pre-flight call", "execSync('git ls-remote --exit-code origin HEAD'");
+  const versionBumpIdx = fullSource.indexOf("const newVersion = bumpVersion(");
+  assert.ok(
+    versionBumpIdx > preflightIdx,
+    "release.mjs: the ls-remote pre-flight must run BEFORE the version bump so a bad connection doesn't burn a version number",
+  );
+
+  const pkgReadIdx = fullSource.indexOf("const pkgRaw = readFileSync(PKG_PATH");
+  const preflightBlock = fullSource.slice(preflightIdx, pkgReadIdx > 0 ? pkgReadIdx : versionBumpIdx);
+  assert.match(preflightBlock, /process\.exit\(1\)/, "release.mjs: a failed reachability pre-flight must abort hard (process.exit(1))");
+});
+
+test("release.mjs rolls back only a tag it created THIS run when the push fails, never a pre-existing tag", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  requireAnchorOnce(fullSource, "tagCreatedThisRun declaration", "let tagCreatedThisRun = false;");
+  requireAnchorOnce(fullSource, "tagCreatedThisRun set on successful tag creation", "tagCreatedThisRun = true;");
+
+  const pushCatchIdx = fullSource.indexOf("pushed = false;");
+  assert.ok(pushCatchIdx >= 0, "release.mjs: could not locate the push-failure catch block");
+  const ghBlockIdx = fullSource.indexOf("if (pushed) {");
+  assert.ok(ghBlockIdx > pushCatchIdx, "release.mjs: could not bound the push-failure catch block");
+  const pushCatchBlock = fullSource.slice(pushCatchIdx, ghBlockIdx);
+
+  assert.match(
+    pushCatchBlock,
+    /if \(tagCreatedThisRun\)/,
+    "release.mjs: the push-failure path no longer gates tag rollback on tagCreatedThisRun — it could delete a pre-existing tag",
+  );
+  assert.match(
+    pushCatchBlock,
+    /git tag -d "\$\{tagName\}"/,
+    "release.mjs: the push-failure path no longer deletes the orphaned tag it created",
+  );
+
+  // Rollback must be its own try/catch so a delete failure can't mask the
+  // original push error, and the original push-failure message must still
+  // be logged (kept fatal, unchanged) before any rollback is attempted.
+  const rollbackTryIdx = pushCatchBlock.indexOf("if (tagCreatedThisRun)");
+  const beforeRollback = pushCatchBlock.slice(0, rollbackTryIdx);
+  assert.match(beforeRollback, /git push failed/, "release.mjs: the original push-failure message must still be logged before rollback");
+  const rollbackSection = pushCatchBlock.slice(rollbackTryIdx);
+  assert.match(rollbackSection, /catch \(deleteErr\)/, "release.mjs: tag rollback must have its own catch so a delete failure can't mask the push error");
+});
+
+test("release.mjs pushes the commit and tag together with --follow-tags", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  // Matched with a plain assertion (not requireAnchorOnce) because the
+  // string legitimately appears more than once: the actual `execSync` call,
+  // plus the top-of-file doc comment and the manual-recovery message in the
+  // push failure branch, both of which intentionally echo the same command.
+  assert.match(
+    fullSource,
+    /execSync\('git push origin main --follow-tags'/,
+    "release.mjs no longer pushes with --follow-tags — the tag would never reach the remote",
+  );
+});
+
+test("release.mjs publishes a GitHub Release only after a successful push, gated on `pushed`", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  const ghBlockStart = fullSource.indexOf("if (pushed) {");
+  assert.ok(ghBlockStart >= 0, "release.mjs: no `if (pushed) {` gate found ahead of the GitHub Release step");
+  const ghCreateIdx = fullSource.indexOf("'release', 'create'", ghBlockStart);
+  assert.ok(
+    ghCreateIdx >= 0 && ghCreateIdx < fullSource.indexOf("sync-powertools.mjs"),
+    "release.mjs: `gh release create` must run inside the `if (pushed)` block, before the Power Tools sync",
+  );
+});
+
+test("release.mjs's gh release create reuses the already-computed vsixPath, not a re-built filename", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  const ghCallStart = fullSource.indexOf("'release', 'create', tagName, vsixPath");
+  assert.ok(
+    ghCallStart >= 0,
+    "release.mjs: gh release create's argv no longer passes the vsixPath variable directly — " +
+      "it must reuse the same path the script already computed for the .vsix, not re-build a filename string",
+  );
+});
+
+test("release.mjs's GitHub Release step is best-effort: try/catch + console.warn, no process.exit in that block", () => {
+  const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
+  const ghBlockStart = fullSource.indexOf("if (pushed) {");
+  const powertoolsStart = fullSource.indexOf("sync-powertools.mjs");
+  assert.ok(ghBlockStart >= 0 && powertoolsStart > ghBlockStart, "release.mjs: could not locate the GitHub Release block");
+  const ghBlock = fullSource.slice(ghBlockStart, powertoolsStart);
+  assert.match(ghBlock, /console\.warn/, "release.mjs: GitHub Release failure path no longer warns");
+  assert.doesNotMatch(
+    ghBlock,
+    /process\.exit/,
+    "release.mjs: the GitHub Release step must never call process.exit — it is best-effort and must not fail the release",
+  );
 });
 
 // ── 1. Stamp parity: every handbook file's crumb equals v<package.json version> ──
