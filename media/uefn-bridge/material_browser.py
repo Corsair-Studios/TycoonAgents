@@ -125,10 +125,24 @@ _last_unused_result   = [None]
 # asset_usage.py); this module was the ORIGIN of the /Temp/ exclusion later
 # canonicalized onto asset_usage._SKIP_PREFIXES, so the fallback below is
 # simply this file's own long-standing value.
+#
+# get_project_prefix is imported in the SAME guarded block (mirrors the
+# batch_tools defensive-import pattern in uefn_bridge.py: on ImportError the
+# symbol is set to None rather than silently degraded, a warning names
+# exactly what failed, and every caller below checks for None and reports an
+# explicit failure state instead of pretending the allow-list ran).
 try:
-    from asset_usage import _SKIP_PREFIXES
-except ImportError:
+    from asset_usage import _SKIP_PREFIXES, get_project_prefix as _asset_usage_get_project_prefix
+except ImportError as _au_exc:
     _SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
+    _asset_usage_get_project_prefix = None
+    unreal.log_warning(
+        f"material_browser: asset_usage unavailable ({_au_exc}) — the "
+        "project-scope allow-list (fix for the 99k-Fortnite-materials bug) "
+        "cannot run; project_only mode falls back to the deny-list-only "
+        "scope (Engine/Script/Temp excluded, everything else included) and "
+        "every result is flagged scope_confident=False."
+    )
 
 
 def _get_asset_registry():
@@ -137,6 +151,90 @@ def _get_asset_registry():
 
 def _class_path(engine_class_name, module="/Script/Engine"):
     return unreal.TopLevelAssetPath(module, engine_class_name)
+
+
+# ---------------------------------------------------------------------------
+# Project-scope detection — fixes the bug where project_only=True still
+# listed ~99.7k materials because filtering was DENY-list-only (excluding
+# only /Engine/, /Script/, /Temp/), so any other mounted content root — most
+# visibly Fortnite's own /BRCosmetics/ cosmetics — passed straight through
+# and got counted as the user's project (and as the user's "unused" dead
+# assets). texture_finder.py:750-751 already fixes this for textures with an
+# ALLOW-list against the detected project prefix; this mirrors that.
+#
+# asset_usage.get_project_prefix() never raises and never returns an empty
+# value — its own last resort is a hardcoded "/Game/" default — so a
+# raised/empty result is not how failure shows up here. The real failure
+# mode is silent: /Game/ is frequently WRONG for a UEFN island (content
+# mounts under a project-specific root almost always), and get_project_prefix
+# gives the caller no signal for which branch it took. So this function
+# independently re-checks the SAME two signals get_project_prefix() uses
+# (a live level actor path, then a resolvable world path) to know whether
+# the returned prefix is backed by real detection or is just the /Game/
+# catch-all — and reports that confidence explicitly instead of letting a
+# caller trust an unverified prefix and either allow-list everything out
+# (empty "project has no materials") or silently include Fortnite content.
+# ---------------------------------------------------------------------------
+
+def _detect_project_scope():
+    """
+    Resolve the project's asset prefix and report whether it is trustworthy.
+
+    Returns
+    -------
+    (prefix, confident, detail) : tuple
+        prefix    — str or None. The value from
+                    asset_usage.get_project_prefix(), or None if that helper
+                    could not be imported at all.
+        confident — bool. True only when a live level actor or a resolvable
+                    world backed the prefix. False means either asset_usage
+                    was unavailable, or get_project_prefix() had no real
+                    signal and must have fallen back to its "/Game/" default
+                    — in both cases the allow-list must NOT be trusted.
+        detail    — str. Human-readable explanation for logs and the UI.
+    """
+    if _asset_usage_get_project_prefix is None:
+        return None, False, (
+            "asset_usage module unavailable — project prefix could not be "
+            "determined (see startup log for the import error)"
+        )
+
+    has_actor_signal = False
+    has_world_signal = False
+    try:
+        subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        actors = subsystem.get_all_level_actors()
+        if actors:
+            parts = actors[0].get_path_name().split('/')
+            has_actor_signal = len(parts) >= 2 and bool(parts[1])
+    except Exception:
+        pass
+    if not has_actor_signal:
+        try:
+            subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+            world = subsystem.get_world()
+            if world:
+                parts = world.get_path_name().split('/')
+                has_world_signal = len(parts) >= 2 and bool(parts[1])
+        except Exception:
+            pass
+
+    try:
+        prefix = _asset_usage_get_project_prefix()
+    except Exception as e:
+        return None, False, f"get_project_prefix() raised unexpectedly — {e}"
+
+    if not prefix:
+        return None, False, "get_project_prefix() returned an empty value"
+
+    if has_actor_signal or has_world_signal:
+        return prefix, True, f"resolved from live level data: {prefix}"
+
+    return prefix, False, (
+        f"no level actors or resolvable world were available to detect the "
+        f"project — the '{prefix}' value is only get_project_prefix()'s "
+        f"last-resort default and is not trusted here"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -185,16 +283,22 @@ def browse_materials(project_only=True):
     Parameters
     ----------
     project_only : bool
-        When *True* (default) assets under ``/Engine/``, ``/Script/``, and
-        ``/Temp/`` are excluded but every other content root — including
-        plugin/content-pack mounts such as ``/Jethro/`` — is included.
+        When *True* (default), materials are scoped to the detected project
+        prefix (e.g. ``/MyProject/``) via an ALLOW-list — mirroring
+        texture_finder.py's allow-list fix — with ``/Engine/``, ``/Script/``,
+        and ``/Temp/`` excluded as a second deny-list layer. If the project
+        prefix cannot be confidently detected (see ``_detect_project_scope``),
+        the allow-list is skipped and only the deny-list applies, and the
+        returned dict's ``scope_confident`` is False so callers can flag the
+        result as unverified rather than trusting it silently.
         When *False* no filtering is applied at all; every material in the
-        registry is returned, engine content included.
+        registry is returned, engine and Fortnite content included.
 
     Returns
     -------
     dict
-        ``total_materials`` — total number of materials found
+        ``total_materials`` — total number of materials found (after scope
+        filtering)
 
         ``materials`` — list of material dicts, sorted alphabetically by name.
         Each dict has:
@@ -204,9 +308,32 @@ def browse_materials(project_only=True):
         * ``type``          — ``"Material"`` or ``"MaterialInstanceConstant"``
         * ``texture_count`` — number of Texture2D dependencies
         * ``textures``      — list of ``{"name": str, "path": str}`` dicts
+
+        ``project_only``     — the ``project_only`` argument, echoed back
+        ``project_prefix``   — detected prefix (str) or None
+        ``scope_confident``  — True iff the allow-list was actually applied
+        ``scope_detail``     — human-readable explanation of the above
     """
     registry = _get_asset_registry()
     dep_options = _make_dep_options()
+
+    project_prefix   = None
+    prefix_confident = False
+    prefix_detail    = None
+    if project_only:
+        project_prefix, prefix_confident, prefix_detail = _detect_project_scope()
+        if prefix_confident:
+            unreal.log(
+                f"material_browser: Project-only mode — allow-list prefix "
+                f"'{project_prefix}', deny-list {_SKIP_PREFIXES}"
+            )
+        else:
+            unreal.log_warning(
+                f"material_browser: Project-only mode — prefix NOT "
+                f"confidently resolved ({prefix_detail}); falling back to "
+                f"deny-list-only scope (Engine/Script/Temp excluded, "
+                f"everything else — including non-project mounts — included)."
+            )
 
     # ------------------------------------------------------------------
     # Build a set of all Texture2D package paths for dependency matching
@@ -230,14 +357,21 @@ def browse_materials(project_only=True):
     # ------------------------------------------------------------------
     # Gather Material + MaterialInstanceConstant assets
     # ------------------------------------------------------------------
-    if project_only:
-        unreal.log("material_browser: Project-only mode — excluding /Engine/, /Script/, /Temp/")
-
     material_assets = []
     for cls_name in ("Material", "MaterialInstanceConstant"):
         try:
             assets = registry.get_assets_by_class(_class_path(cls_name))
-            if project_only:
+            if project_only and prefix_confident:
+                # Allow-list first (this is the actual project-scope fix),
+                # deny-list second — belt and braces.
+                filtered = [
+                    a for a in assets
+                    if str(a.package_name).startswith(project_prefix)
+                    and not any(str(a.package_name).startswith(p) for p in _SKIP_PREFIXES)
+                ]
+            elif project_only:
+                # Prefix unresolved — deny-list only (previous behaviour);
+                # scope_confident=False on the returned dict flags this.
                 filtered = [
                     a for a in assets
                     if not any(str(a.package_name).startswith(p) for p in _SKIP_PREFIXES)
@@ -298,6 +432,10 @@ def browse_materials(project_only=True):
     return {
         "total_materials": len(results),
         "materials": results,
+        "project_only": project_only,
+        "project_prefix": project_prefix,
+        "scope_confident": prefix_confident,
+        "scope_detail": prefix_detail,
     }
 
 
@@ -325,9 +463,11 @@ def find_unused_materials(project_only=True):
     ----------
     project_only : bool
         Passed through to :func:`browse_materials`. When *True*, materials
-        under ``/Engine/``, ``/Script/``, and ``/Temp/`` are excluded; every
-        other content root (including plugin/content-pack mounts) is
-        included. When *False* no filtering is applied.
+        are allow-list-scoped to the detected project prefix (deny-listing
+        ``/Engine/``, ``/Script/``, ``/Temp/`` as a second layer) — or, if
+        the prefix cannot be confidently detected, deny-list-only. When
+        *False* no filtering is applied. See :func:`browse_materials` for
+        the ``scope_confident`` / ``scope_detail`` fields this influences.
 
     Returns
     -------
@@ -451,6 +591,13 @@ def find_unused_materials(project_only=True):
         "total_project_materials": len(all_materials),
         "used_count":              len(used_list),
         "unused_count":            len(unused_list),
+        # Scope metadata echoed from browse_materials so the "unused" count
+        # above is never read as project-wide when it is only scoped to a
+        # deny-list-only (unconfident) or unfiltered result.
+        "project_only":            browse_result.get("project_only"),
+        "project_prefix":          browse_result.get("project_prefix"),
+        "scope_confident":         browse_result.get("scope_confident"),
+        "scope_detail":            browse_result.get("scope_detail"),
     }
 
 
@@ -474,7 +621,12 @@ def show_material_browser():
         Level 2 — Texture dependency (texture name | "Texture" | "" | path)
     - Double-click a material/texture to select it in the Content Browser
       (actor rows select the actor in the level; clipboard copy is the fallback)
-    - Status bar: "Showing X of Y materials (Z unused) [N textures total]"
+    - Status bar: "Showing X of Y <scope label> (Z unused within this same
+      scope) [N textures total]" — the scope label states whether results
+      are project-scoped (allow-listed to the detected project prefix),
+      deny-list-only (prefix undetected — may include non-project mounts),
+      or unfiltered (includes Engine/Fortnite content), so the count is
+      never mistaken for a project-wide figure it isn't.
     - Tkinter event pump via ``unreal.register_slate_post_tick_callback``
     """
     if not _HAS_TKINTER:
@@ -748,9 +900,29 @@ def show_material_browser():
         unused_count = len(unused_paths) if unused_result else 0
         used_count = len(browse_result["materials"]) - unused_count if unused_result else shown
         count_label_var.set(f"{used_count} used  |  {unused_count} unused")
+
+        # Scope label — make it unambiguous whether "materials"/"unused"
+        # below mean the user's project or a broader (possibly Engine/
+        # Fortnite-inclusive) set. This is the fix for the bug where
+        # "99694 of 99694 materials (99200 unused)" silently counted
+        # /BRCosmetics/ and other Fortnite content as the user's project.
+        project_only    = browse_result.get("project_only")
+        scope_confident = browse_result.get("scope_confident")
+        project_prefix  = browse_result.get("project_prefix")
+        if project_only and scope_confident:
+            scope_label = f"PROJECT materials only (scope: {project_prefix})"
+        elif project_only:
+            scope_label = (
+                "materials — WARNING: project prefix undetected, showing "
+                "Engine/Script/Temp-excluded content ONLY (may still "
+                "include non-project mounts such as Fortnite cosmetics)"
+            )
+        else:
+            scope_label = "ALL materials, INCLUDING Engine/Fortnite content"
+
         status_var.set(
-            f"Showing {shown} of {total} materials  "
-            f"({unused_count} unused)  "
+            f"Showing {shown} of {total} {scope_label}  "
+            f"({unused_count} unused within this same scope)  "
             f"[{total_tex} texture refs total]"
         )
 

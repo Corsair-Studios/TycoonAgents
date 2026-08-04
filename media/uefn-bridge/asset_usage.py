@@ -17,9 +17,37 @@ Public API:
     confirm_orphans(candidate_paths, project_only=True, registry=None) -> dict
         {path: reason} for candidates with NO project references (registry
         referencers + Verse source text). Paths ABSENT from the result ARE
-        referenced and must NOT be flagged as unused.
+        referenced and must NOT be flagged as unused. UNCHANGED signature and
+        behavior — kept for existing callers (asset_sweep, niagara_inspector,
+        material_browser, texture_finder). Internally now built on top of
+        confirm_orphans_detailed() below and is slightly MORE conservative
+        than before: a candidate whose registry check errored used to be
+        silently treated as "no referencers" and could be flagged orphaned;
+        it is now tiered "unknown" and excluded from this result instead
+        (never reported as unused when a check failed to run).
+    confirm_orphans_detailed(candidate_paths, project_only=True, registry=None,
+                              max_referencers=10, max_verse_matches=5) -> dict
+        ADDITIVE. {path: {tier, reason, registry_checked,
+        registry_referencers, registry_referencer_count,
+        registry_referencers_capped, verse_checked, verse_matches,
+        verse_matches_capped}} for EVERY candidate examined (not just
+        orphans). tier is one of "referenced", "referenced_verse",
+        "likely_unused", "unknown" — see the function docstring.
     get_referencer_details(pkg, project_only=True, registry=None) -> list[str]
         Project referencer package paths for one asset (for "who uses this").
+        UNCHANGED.
+    load_verse_source_text() -> str
+        UNCHANGED. Concatenated, lowercased Verse source text (or "" if the
+        scan is unavailable this run).
+    load_verse_source_files() -> list[dict]
+        ADDITIVE per-file accessor: [{"path": <relative path>, "text":
+        <lowercased content>}, ...] — same underlying scan/cache as
+        load_verse_source_text(), just not flattened, so callers can report
+        WHICH file matched.
+    verse_scan_available() -> bool
+        ADDITIVE. True if the Verse scan actually ran this process (project
+        root resolved), False if it could not run at all. Lets callers tell
+        "checked, found nothing" apart from "could not check".
 """
 
 import glob
@@ -38,8 +66,11 @@ import unreal
 _SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
 _VERSE_SKIP = {"Saved", "Intermediate", "__pycache__", ".uefn_bridge"}
 
-# Per-process cache of the concatenated, lowercased Verse source text.
-_verse_text_cache = [None]
+# Per-process cache of the resolved Verse scan: a dict with keys
+# {"available": bool, "content_root": str|None, "files": [{"path", "text"}]}.
+# Computed once by _compute_verse_scan(); load_verse_source_text() (legacy,
+# flattened) and load_verse_source_files() (new, per-file) both read from it.
+_verse_scan_cache = [None]
 
 
 def _set_dep_option(opts, names, value=True):
@@ -331,26 +362,20 @@ def _validate_project_root(project_root, project_prefix, sample_pkgs):
         return False
 
 
-def load_verse_source_text():
-    """Concatenated, lowercased text of every .verse file under the project's
-    root (walks the whole project, not just Content/, so devices/plugins are
-    covered too). Cached per process. Used as a belt-and-suspenders check for
-    assets referenced by name in Verse code rather than via a serialized
-    hard/soft reference.
-
-    ENGINE-COPY EXECUTION MODE: UEFN copies the project's Content/Python into
-    the embedded engine install (.../FortniteGame/Content/Python/) and
-    EXECUTES scripts from there, so plain __file__-anchored walkup alone is
-    not reliably sufficient (see _resolve_unreal_project_dir_with_content).
-    Every candidate below — including the walkup — is validated against real
-    registry assets on disk before being trusted; if NONE validates, the
-    Verse cross-reference check is simply treated as unavailable (empty
-    text) rather than falling back to a legacy filesystem guess that could
-    walk the install tree.
+def _compute_verse_scan():
+    """One-shot resolution + walk (see load_verse_source_text's former
+    docstring, preserved below) producing a dict:
+        {"available": bool, "content_root": str|None,
+         "files": [{"path": <relative-to-content_root>, "text": <lowercased>}]}
+    "available" is the signal load_verse_source_text() used to collapse into
+    an empty string: False means the project content root could not be
+    verified this run (Verse cross-reference check unavailable), NOT that it
+    was verified and simply has zero .verse files (that case is "available":
+    True, "files": []). Callers that need to tell those two apart (a real
+    "checked, found nothing" vs. "could not check") use verse_scan_available()
+    rather than inspecting the flattened text.
     """
-    if _verse_text_cache[0] is not None:
-        return _verse_text_cache[0]
-    text = ""
+    result = {"available": False, "content_root": None, "files": []}
     try:
         project_prefix = get_project_prefix()
         sample_pkgs = _get_island_sample_packages(project_prefix)
@@ -378,18 +403,23 @@ def load_verse_source_text():
                 break
 
         if content_root:
-            chunks = []
+            files = []
             for dirpath, dirnames, filenames in os.walk(content_root):
                 dirnames[:] = [d for d in dirnames if d not in _VERSE_SKIP and not d.startswith(".")]
                 for fn in filenames:
                     if fn.endswith(".verse"):
+                        full_path = os.path.join(dirpath, fn)
                         try:
-                            with open(os.path.join(dirpath, fn), "r", encoding="utf-8", errors="replace") as vf:
-                                chunks.append(vf.read())
+                            with open(full_path, "r", encoding="utf-8", errors="replace") as vf:
+                                raw = vf.read()
                         except Exception:
-                            pass
-            text = "\n".join(chunks).lower()
-            unreal.log(f"asset_usage: Verse scan — {len(chunks)} .verse file(s)")
+                            continue
+                        rel_path = os.path.relpath(full_path, content_root).replace("\\", "/")
+                        files.append({"path": rel_path, "text": raw.lower()})
+            result["available"] = True
+            result["content_root"] = content_root
+            result["files"] = files
+            unreal.log(f"asset_usage: Verse scan — {len(files)} .verse file(s)")
         else:
             unreal.log_warning(
                 "asset_usage: Verse scan root could not be verified — "
@@ -397,29 +427,167 @@ def load_verse_source_text():
             )
     except Exception as ve:
         unreal.log_warning(f"asset_usage: Verse scan failed — {ve}")
-    _verse_text_cache[0] = text
-    return text
+    return result
 
 
-def get_project_referencers(registry, pkg, ref_options, project_prefix, project_only=True):
-    """Project-scoped reverse referencers for one package path (excludes self,
-    /Engine, /Script). Returns a list of package-path strings."""
+def _get_verse_scan():
+    """Cached accessor for the resolved Verse scan dict — computed once per
+    process via _compute_verse_scan()."""
+    if _verse_scan_cache[0] is None:
+        _verse_scan_cache[0] = _compute_verse_scan()
+    return _verse_scan_cache[0]
+
+
+def load_verse_source_text():
+    """Concatenated, lowercased text of every .verse file under the project's
+    root (walks the whole project, not just Content/, so devices/plugins are
+    covered too). Cached per process. Used as a belt-and-suspenders check for
+    assets referenced by name in Verse code rather than via a serialized
+    hard/soft reference.
+
+    UNCHANGED behavior/signature — kept for backward compatibility. Now a
+    thin flattening wrapper over _get_verse_scan()/_compute_verse_scan();
+    see load_verse_source_files() for the per-file form and
+    verse_scan_available() to distinguish "ran, found nothing" from
+    "could not run".
+
+    ENGINE-COPY EXECUTION MODE: UEFN copies the project's Content/Python into
+    the embedded engine install (.../FortniteGame/Content/Python/) and
+    EXECUTES scripts from there, so plain __file__-anchored walkup alone is
+    not reliably sufficient (see _resolve_unreal_project_dir_with_content).
+    Every candidate is validated against real registry assets on disk before
+    being trusted; if NONE validates, the Verse cross-reference check is
+    simply treated as unavailable (empty text) rather than falling back to a
+    legacy filesystem guess that could walk the install tree.
+    """
+    scan = _get_verse_scan()
+    if not scan.get("available"):
+        return ""
+    return "\n".join(f["text"] for f in scan.get("files", []))
+
+
+def load_verse_source_files():
+    """ADDITIVE per-file accessor. Returns a list of
+    {"path": <path relative to the resolved project content root>,
+     "text": <lowercased file content>} for every .verse file found this
+    process, or [] if the scan is unavailable (see verse_scan_available()).
+    Same underlying cached scan as load_verse_source_text() — no extra
+    filesystem work. Lets callers report WHICH Verse file (and, by searching
+    "text", which line) matched, instead of only "somewhere in Verse"."""
+    scan = _get_verse_scan()
+    return [dict(f) for f in scan.get("files", [])]
+
+
+def verse_scan_available():
+    """ADDITIVE. True if the Verse cross-reference scan actually ran this
+    process (a project content root was resolved and validated), False if it
+    could not run at all. A candidate asset must never be reported as
+    "likely_unused" when this is False for its evaluation — that would
+    conflate "checked, found nothing" with "could not check"."""
+    return bool(_get_verse_scan().get("available"))
+
+
+def _get_referencers_raw(registry, pkg, ref_options):
+    """Low-level get_referencers call with success/failure kept SEPARATE from
+    an empty result. Returns (refs, ok): refs is a list of str package paths
+    (possibly empty), ok is False only when the call itself raised — an
+    empty list from a successful call is a real "no referencers" signal, not
+    a failure, and must not be treated as one."""
     try:
         refs = registry.get_referencers(pkg, ref_options)
-    except Exception:
-        return []
-    if not refs:
-        return []
-    out = [str(r) for r in refs if not any(str(r).startswith(p) for p in _SKIP_PREFIXES)]
+        return ([str(r) for r in refs] if refs else []), True
+    except Exception as e:
+        unreal.log_warning(f"asset_usage: get_referencers failed for {pkg} — {e}")
+        return [], False
+
+
+def _filter_project_referencers(refs, pkg, project_prefix, project_only):
+    """Apply the shared skip-prefix + project-scope + self-exclusion rules to
+    a raw referencer list. Pure filtering, no registry call."""
+    out = [r for r in refs if not any(r.startswith(p) for p in _SKIP_PREFIXES)]
     if project_only and project_prefix:
         out = [r for r in out if r.startswith(project_prefix)]
     return [r for r in out if r != pkg]
 
 
-def confirm_orphans(candidate_paths, project_only=True, registry=None):
-    """Given candidate 'unused' package paths, return {path: reason} ONLY for
-    those with no project references anywhere (registry referencers + Verse
-    source text). Any candidate that IS referenced is omitted and must be kept."""
+def get_project_referencers(registry, pkg, ref_options, project_prefix, project_only=True):
+    """Project-scoped reverse referencers for one package path (excludes self,
+    /Engine, /Script). Returns a list of package-path strings. UNCHANGED
+    signature/behavior — a registry error still yields [] here, exactly as
+    before, for existing callers (get_referencer_details and anything else
+    that only wants a plain list, not error-vs-empty detail)."""
+    refs, _ok = _get_referencers_raw(registry, pkg, ref_options)
+    if not refs:
+        return []
+    return _filter_project_referencers(refs, pkg, project_prefix, project_only)
+
+
+def _search_verse_matches(verse_scan, patterns, max_matches=5):
+    """Search the cached per-file Verse text for any of `patterns` (already
+    lowercased). Returns (matches, capped): matches is a list of
+    {"file": <relative path>, "line": <1-based int|None>, "pattern": <the
+    matched pattern string>}, one entry per matching file, capped at
+    max_matches; capped is True (never silently) whenever more files matched
+    than were kept."""
+    matches = []
+    total_matched_files = 0
+    for finfo in verse_scan.get("files", []):
+        text = finfo.get("text", "")
+        hit_pattern = None
+        for pat in patterns:
+            if pat and pat in text:
+                hit_pattern = pat
+                break
+        if hit_pattern is None:
+            continue
+        total_matched_files += 1
+        if len(matches) < max_matches:
+            idx = text.find(hit_pattern)
+            line_no = text.count("\n", 0, idx) + 1 if idx >= 0 else None
+            matches.append({"file": finfo.get("path"), "line": line_no, "pattern": hit_pattern})
+    return matches, total_matched_files > len(matches)
+
+
+def confirm_orphans_detailed(candidate_paths, project_only=True, registry=None,
+                              max_referencers=10, max_verse_matches=5):
+    """ADDITIVE, richer sibling of confirm_orphans() — returns a confidence
+    tier PLUS the evidence behind it for EVERY candidate examined (not just
+    the orphaned subset confirm_orphans() returns). Existing callers of
+    confirm_orphans() are unaffected; this is for callers (asset_sweep.py)
+    that want to show WHY a verdict was reached, not just the verdict.
+
+    Tiers:
+        "referenced"        — a hard/soft registry referencer was found
+                               (registry check ran successfully and found at
+                               least one project referencer).
+        "referenced_verse"  — no registry referencer, but the asset's short
+                               name, full package path, or object-path form
+                               ("/Prefix/Path/Asset.Asset") appears in the
+                               project's Verse source.
+        "likely_unused"     — the registry check AND the Verse scan both ran
+                               successfully and found nothing. Still not
+                               proof of deletion safety: dynamic string-path
+                               runtime loads (LoadObject / Verse LoadAsset
+                               with a computed path) are undetectable by
+                               static analysis.
+        "unknown"           — one or more checks could not run (a registry
+                               error, or the Verse scan root could not be
+                               resolved this session). NEVER conflated with
+                               "likely_unused" — this asset was not confirmed
+                               safe, it simply could not be fully evaluated.
+
+    Returns {path: {
+        "tier": str,
+        "reason": str,                              # human-readable summary
+        "registry_checked": bool,
+        "registry_referencers": [str, ...],         # capped, project-scoped
+        "registry_referencer_count": int,            # true total, pre-cap
+        "registry_referencers_capped": bool,
+        "verse_checked": bool,
+        "verse_matches": [{"file": str, "line": int|None, "pattern": str}, ...],
+        "verse_matches_capped": bool,
+    }}
+    """
     result = {}
     if not candidate_paths:
         return result
@@ -427,15 +595,101 @@ def confirm_orphans(candidate_paths, project_only=True, registry=None):
         registry = unreal.AssetRegistryHelpers.get_asset_registry()
     ref_options = _make_ref_options()
     project_prefix = get_project_prefix() if project_only else None
-    verse_text = load_verse_source_text()
+    verse_scan = _get_verse_scan()
+    verse_available = bool(verse_scan.get("available"))
+
     for pkg in candidate_paths:
         pkg = str(pkg)
-        if get_project_referencers(registry, pkg, ref_options, project_prefix, project_only):
-            continue  # referenced — not an orphan
-        short_name = pkg.rsplit("/", 1)[-1].lower()
-        if short_name and verse_text and short_name in verse_text:
-            continue  # name appears in Verse source — keep, don't flag
-        result[pkg] = "no references found (registry + Verse scan)"
+        raw_refs, registry_ok = _get_referencers_raw(registry, pkg, ref_options)
+        filtered = _filter_project_referencers(raw_refs, pkg, project_prefix, project_only)
+
+        entry = {
+            "registry_checked": registry_ok,
+            "registry_referencers": [],
+            "registry_referencer_count": 0,
+            "registry_referencers_capped": False,
+            "verse_checked": False,
+            "verse_matches": [],
+            "verse_matches_capped": False,
+        }
+
+        if registry_ok and filtered:
+            capped_list = filtered[:max_referencers]
+            entry["registry_referencers"] = capped_list
+            entry["registry_referencer_count"] = len(filtered)
+            entry["registry_referencers_capped"] = len(filtered) > max_referencers
+            entry["tier"] = "referenced"
+            note = f"referenced by {len(filtered)} project package(s) via the Asset Registry"
+            if entry["registry_referencers_capped"]:
+                note += f" (showing first {max_referencers})"
+            entry["reason"] = note
+            result[pkg] = entry
+            continue
+
+        # Registry found nothing (or the check itself failed) — fall through
+        # to the Verse cross-check, same order as the original confirm_orphans().
+        short_name = pkg.rsplit("/", 1)[-1]
+        patterns = []
+        if short_name:
+            patterns.append(short_name.lower())
+        patterns.append(pkg.lower())
+        if short_name:
+            patterns.append(f"{pkg}.{short_name}".lower())
+
+        if verse_available:
+            entry["verse_checked"] = True
+            matches, capped = _search_verse_matches(verse_scan, patterns, max_verse_matches)
+            entry["verse_matches"] = matches
+            entry["verse_matches_capped"] = capped
+            if matches:
+                entry["tier"] = "referenced_verse"
+                files_note = ", ".join(sorted({m["file"] for m in matches})[:3])
+                entry["reason"] = (
+                    f"matched in Verse source ({files_note}"
+                    f"{', +more' if capped else ''})"
+                )
+                result[pkg] = entry
+                continue
+
+        if registry_ok and verse_available:
+            entry["tier"] = "likely_unused"
+            entry["reason"] = "no references found (registry + Verse scan both checked, found nothing)"
+        else:
+            entry["tier"] = "unknown"
+            missing = []
+            if not registry_ok:
+                missing.append("registry lookup failed")
+            if not verse_available:
+                missing.append("Verse scan root unresolved")
+            entry["reason"] = "could not fully evaluate — " + "; ".join(missing)
+        result[pkg] = entry
+
+    return result
+
+
+def confirm_orphans(candidate_paths, project_only=True, registry=None):
+    """Given candidate 'unused' package paths, return {path: reason} ONLY for
+    those with no project references anywhere (registry referencers + Verse
+    source text). Any candidate that IS referenced is omitted and must be kept.
+
+    UNCHANGED signature and return shape — existing callers (asset_sweep.py,
+    niagara_inspector.py, material_browser.py, texture_finder.py) all use
+    this via plain `pkg in confirmed` membership checks and are unaffected.
+    Now implemented on top of confirm_orphans_detailed() and is slightly MORE
+    conservative than the original: a candidate tiered "unknown" (a check
+    failed to run) is no longer included here. Previously a registry error
+    was silently treated as "no referencers" and such a candidate could be
+    flagged orphaned if Verse also came back empty — that was exactly the
+    false-"dead"-verdict risk this module exists to prevent. Callers that
+    want to see "unknown" candidates explicitly should use
+    confirm_orphans_detailed() instead."""
+    result = {}
+    if not candidate_paths:
+        return result
+    detailed = confirm_orphans_detailed(candidate_paths, project_only=project_only, registry=registry)
+    for pkg, entry in detailed.items():
+        if entry.get("tier") == "likely_unused":
+            result[pkg] = "no references found (registry + Verse scan)"
     return result
 
 

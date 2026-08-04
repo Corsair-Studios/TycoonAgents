@@ -5,15 +5,25 @@ Project-wide unused-asset report across ALL asset types discoverable via the
 Asset Registry.  Runs inside UEFN's embedded Python 3.11 (requires the
 ``unreal`` module).
 
-IMPORTANT DISCLAIMER: "No references found" means the Asset Registry reverse-
-reference graph and a Verse source-text cross-check found zero references.
-It does NOT mean the asset is safe to delete.  Dynamic string-path runtime
-loads (e.g. ``LoadObject<T>(nullptr, TEXT("..."))`` or Verse ``LoadAsset``)
-are invisible to this scan.  ALWAYS verify before deleting any asset.
+IMPORTANT DISCLAIMER: "Likely unused" means the Asset Registry reverse-
+reference graph and a Verse source-text cross-check (checked against the
+asset's short name, full package path, AND its "/Path/Asset.Asset"
+object-path form) BOTH ran successfully and found zero references. It does
+NOT mean the asset is safe to delete. Dynamic string-path runtime loads
+(e.g. ``LoadObject<T>(nullptr, TEXT("..."))`` or Verse ``LoadAsset`` with a
+computed path) are genuinely undecidable by static analysis and remain
+invisible to this scan. Separately, an asset whose registry or Verse check
+could not run at all (e.g. the Verse scan root could not be resolved this
+session) is reported as "unknown", NEVER as unused — see confirm_orphans_
+detailed() in asset_usage.py. ALWAYS verify before deleting any asset.
 
 Public API:
     sweep_dead_assets(project_only=True) -> dict
-        Full scan result (structured dict).
+        Full scan result (structured dict). Every "likely unused" entry now
+        carries a "tier" and an "evidence" sub-dict (which referencing
+        packages or Verse files/lines were checked) alongside the existing
+        "reason" string. "unknown_count"/"unknown_assets" surface candidates
+        whose check(s) could not run, kept separate from the deletion list.
     show_asset_sweep()
         Open the Tkinter report window.
 """
@@ -36,8 +46,44 @@ try:
 except ImportError:
     _HAS_TKINTER = False
 
-# Re-use the PROVEN orphan-detection core — do NOT reinvent.
+# Re-use the PROVEN orphan-detection core — do NOT reinvent. UNGUARDED import
+# kept exactly as before (a version-skewed asset_usage.py missing even these
+# two would be a much bigger problem than this module can degrade around;
+# see test_powertools_dedup_ipc_and_skip_prefixes.py's
+# SkipPrefixCanonicalTests, which simulates a fake asset_usage exposing only
+# confirm_orphans/get_project_prefix and expects this import to still work).
 from asset_usage import confirm_orphans, get_project_prefix
+
+# confirm_orphans_detailed is the ADDITIVE, evidence-carrying sibling of
+# confirm_orphans, added to asset_usage.py in the same pass as this file's
+# tier-aware report. Guarded like _SKIP_PREFIXES below so a stale/mismatched
+# asset_usage.py that predates it degrades gracefully to the flat
+# confirm_orphans() reason string instead of crashing this module's import.
+try:
+    from asset_usage import confirm_orphans_detailed
+except ImportError:
+    def confirm_orphans_detailed(candidate_paths, project_only=True, registry=None,
+                                  max_referencers=10, max_verse_matches=5):
+        """Fallback shim for a stale asset_usage.py without the detailed API:
+        wrap confirm_orphans()'s flat {path: reason} result into the minimal
+        per-candidate shape sweep_dead_assets() needs. Every flagged path is
+        reported as tier "likely_unused" with no evidence sub-detail (that
+        detail simply isn't available from the flat API)."""
+        flat = confirm_orphans(candidate_paths, project_only=project_only, registry=registry)
+        return {
+            pkg: {
+                "tier": "likely_unused",
+                "reason": reason,
+                "registry_checked": True,
+                "registry_referencers": [],
+                "registry_referencer_count": 0,
+                "registry_referencers_capped": False,
+                "verse_checked": True,
+                "verse_matches": [],
+                "verse_matches_capped": False,
+            }
+            for pkg, reason in flat.items()
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +194,7 @@ _ASSET_CLASSES = [
 
 # Sourced from asset_usage's canonical tuple (guarded to match this file's
 # own defensive-import convention above, even though this module already
-# does an unguarded `from asset_usage import ...` for confirm_orphans/
+# does an unguarded `from asset_usage import ...` for confirm_orphans_detailed/
 # get_project_prefix a few lines up); fallback matches the canonical value
 # exactly, including "/Temp/" (UEFN's transient/scratch mount).
 try:
@@ -232,8 +278,10 @@ def _asset_type_label(class_path):
 def sweep_dead_assets(project_only=True):
     """
     Enumerate all project assets across all known asset types, then route
-    every candidate through ``asset_usage.confirm_orphans()`` — the proven
-    reverse-reference-graph + Verse source-text cross-check.
+    every candidate through ``asset_usage.confirm_orphans_detailed()`` — the
+    proven reverse-reference-graph + Verse source-text cross-check, in its
+    evidence-carrying form (see asset_usage.py for the four confidence tiers:
+    "referenced", "referenced_verse", "likely_unused", "unknown").
 
     Parameters
     ----------
@@ -245,8 +293,8 @@ def sweep_dead_assets(project_only=True):
     dict::
         {
             "total_scanned":       int,
-            "orphan_count":        int,
-            "total_size_bytes":    int,   # sum of est. sizes for orphans
+            "orphan_count":        int,   # count of "likely_unused" entries
+            "total_size_bytes":    int,   # sum of est. sizes for "likely_unused"
             "by_type": {
                 "<AssetType>": [
                     {
@@ -254,12 +302,25 @@ def sweep_dead_assets(project_only=True):
                         "path":       str,
                         "size_bytes": int,
                         "size_label": str,
-                        "reason":     str,
+                        "reason":     str,     # human-readable summary
+                        "tier":       str,     # always "likely_unused" here
+                        "evidence":   dict,    # registry_checked, verse_checked,
+                                                # verse_matches (file/line/pattern), etc.
+                                                # — see confirm_orphans_detailed()
                     },
                     ...
                 ],
                 ...
             },
+            # NEW — candidates whose registry or Verse check could not run at
+            # all this session. These are NEVER counted as unused/orphaned;
+            # kept as a separate list so the caller can surface "we could not
+            # fully evaluate N asset(s)" distinctly from "N assets are unused".
+            "unknown_count":  int,
+            "unknown_assets": [
+                {"name": str, "path": str, "type": str, "reason": str},
+                ...
+            ],
         }
     """
     if not _HAS_UNREAL:
@@ -269,6 +330,8 @@ def sweep_dead_assets(project_only=True):
             "orphan_count": 0,
             "total_size_bytes": 0,
             "by_type": {},
+            "unknown_count": 0,
+            "unknown_assets": [],
         }
 
     try:
@@ -280,6 +343,8 @@ def sweep_dead_assets(project_only=True):
             "orphan_count": 0,
             "total_size_bytes": 0,
             "by_type": {},
+            "unknown_count": 0,
+            "unknown_assets": [],
         }
 
     try:
@@ -328,27 +393,42 @@ def sweep_dead_assets(project_only=True):
     unreal.log(f"asset_sweep: {total_scanned} candidate asset(s) collected — running orphan check…")
 
     # ------------------------------------------------------------------
-    # Step 2 — route ALL candidates through confirm_orphans()
+    # Step 2 — route ALL candidates through confirm_orphans_detailed()
     # ------------------------------------------------------------------
     try:
-        orphan_map = confirm_orphans(
+        verdict_map = confirm_orphans_detailed(
             list(candidates.keys()),
             project_only=project_only,
             registry=registry,
         )
     except Exception as e:
-        unreal.log_warning(f"asset_sweep: confirm_orphans raised — {e}")
-        orphan_map = {}
+        unreal.log_warning(f"asset_sweep: confirm_orphans_detailed raised — {e}")
+        verdict_map = {}
 
-    unreal.log(f"asset_sweep: {len(orphan_map)} confirmed orphan(s) out of {total_scanned} scanned.")
+    orphan_map = {
+        pkg: entry for pkg, entry in verdict_map.items()
+        if entry.get("tier") == "likely_unused"
+    }
+    unknown_map = {
+        pkg: entry for pkg, entry in verdict_map.items()
+        if entry.get("tier") == "unknown"
+    }
+
+    unreal.log(
+        f"asset_sweep: {len(orphan_map)} likely-unused asset(s), "
+        f"{len(unknown_map)} could not be fully evaluated, "
+        f"out of {total_scanned} scanned."
+    )
 
     # ------------------------------------------------------------------
-    # Step 3 — group confirmed orphans by type and tally size
+    # Step 3 — group likely-unused assets by type and tally size; keep
+    # "unknown" (check-failed) candidates in a separate flat list so they
+    # are never conflated with the deletion-candidate list above.
     # ------------------------------------------------------------------
     by_type = {}
     total_size_bytes = 0
 
-    for pkg, reason in orphan_map.items():
+    for pkg, verdict in orphan_map.items():
         info = candidates.get(pkg, {})
         asset_type = info.get("type", "Unknown")
         name = info.get("name", pkg.rsplit("/", 1)[-1])
@@ -361,7 +441,17 @@ def sweep_dead_assets(project_only=True):
             "type":       asset_type,
             "size_bytes": size_b,
             "size_label": _fmt_size(size_b),
-            "reason":     reason,
+            "reason":     verdict.get("reason", ""),
+            "tier":       verdict.get("tier", "likely_unused"),
+            "evidence": {
+                "registry_checked":            verdict.get("registry_checked"),
+                "registry_referencers":        verdict.get("registry_referencers", []),
+                "registry_referencer_count":   verdict.get("registry_referencer_count", 0),
+                "registry_referencers_capped": verdict.get("registry_referencers_capped", False),
+                "verse_checked":               verdict.get("verse_checked"),
+                "verse_matches":               verdict.get("verse_matches", []),
+                "verse_matches_capped":        verdict.get("verse_matches_capped", False),
+            },
         }
         by_type.setdefault(asset_type, []).append(entry)
 
@@ -369,11 +459,23 @@ def sweep_dead_assets(project_only=True):
     for group in by_type.values():
         group.sort(key=lambda e: e["size_bytes"], reverse=True)
 
+    unknown_assets = []
+    for pkg, verdict in unknown_map.items():
+        info = candidates.get(pkg, {})
+        unknown_assets.append({
+            "name":   info.get("name", pkg.rsplit("/", 1)[-1]),
+            "path":   pkg,
+            "type":   info.get("type", "Unknown"),
+            "reason": verdict.get("reason", "could not fully evaluate"),
+        })
+
     return {
         "total_scanned":    total_scanned,
         "orphan_count":     len(orphan_map),
         "total_size_bytes": total_size_bytes,
         "by_type":          by_type,
+        "unknown_count":    len(unknown_assets),
+        "unknown_assets":   unknown_assets,
     }
 
 
@@ -393,8 +495,12 @@ def show_asset_sweep():
     - Footer with @thetrashbyrd link
 
     Safety labels:
-    - "No references found — verify before deleting."
+    - "Likely unused — verify before deleting." (registry + Verse both
+      checked, both found nothing; see asset_usage.confirm_orphans_detailed()
+      for the full evidence behind each verdict)
     - Disclaimer note about dynamic string-path runtime loads.
+    - Status bar separately calls out any assets whose check could not run
+      (tier "unknown") — never folded into the unused count.
     """
     if not _HAS_TKINTER:
         if _HAS_UNREAL:
@@ -493,15 +599,21 @@ def show_asset_sweep():
     tk.Label(
         warn_frame,
         text=(
-            "⚠️  No references found — verify before deleting.  "
-            "Cannot detect purely dynamic string-path runtime loads "
-            "(e.g. LoadObject / Verse LoadAsset with computed paths)."
+            "⚠️  Likely unused — verify before deleting.  Every asset below "
+            "was checked against the Asset Registry reference graph AND Verse "
+            "source (short name, full package path, and object-path form), "
+            "and both checks found nothing.  Assets whose check could not run "
+            "are reported separately, never as unused.  The one thing this "
+            "still cannot see: purely dynamic string-path runtime loads "
+            "(e.g. LoadObject / Verse LoadAsset with a computed path) — that "
+            "is undecidable by static analysis."
         ),
         font=("Segoe UI", 8),
         fg="#9A5D00",
         bg="#F6E7DB",
         anchor="w",
         justify="left",
+        wraplength=1000,
     ).pack(fill="x")
 
     # ------------------------------------------------------------------
@@ -619,7 +731,25 @@ def show_asset_sweep():
         for row in tree.get_children():
             tree.delete(row)
 
-        if not result or result.get("orphan_count", 0) == 0:
+        if not result:
+            return
+
+        if result.get("orphan_count", 0) == 0:
+            # Nothing "likely_unused" — still report "unknown" (check-could-
+            # not-run) candidates rather than leaving stale/blank status text,
+            # so an unevaluated asset is never silently indistinguishable
+            # from "everything is referenced".
+            unknown_count = result.get("unknown_count", 0)
+            total_scanned = result.get("total_scanned", 0)
+            if unknown_count:
+                status_var.set(
+                    f"No likely-unused assets (out of {total_scanned} scanned). "
+                    f"{unknown_count} asset(s) could not be fully evaluated — "
+                    f"see unknown_assets."
+                )
+            else:
+                status_var.set(f"No likely-unused assets found (out of {total_scanned} scanned).")
+            total_size_var.set(f"0 unreferenced / {total_scanned} total")
             return
 
         query = filter_var.get().strip().lower()
@@ -667,17 +797,19 @@ def show_asset_sweep():
 
             tree.item(group_iid, open=True)
 
-        total_scanned = result.get("total_scanned", 0)
-        total_orphans = result.get("orphan_count", 0)
-        total_size    = result.get("total_size_bytes", 0)
+        total_scanned  = result.get("total_scanned", 0)
+        total_orphans  = result.get("orphan_count", 0)
+        total_size     = result.get("total_size_bytes", 0)
+        unknown_count  = result.get("unknown_count", 0)
 
-        status_var.set(
-            f"Showing {shown_count} asset(s) with no references "
-            f"(out of {total_scanned} scanned)."
-        )
+        status_msg = f"Showing {shown_count} likely-unused asset(s) (out of {total_scanned} scanned)."
+        if unknown_count:
+            status_msg += f"  {unknown_count} asset(s) could not be fully evaluated (not counted either way)."
+        status_var.set(status_msg)
         total_size_var.set(
             f"Est. reclaimable: {_fmt_size(total_size)}  |  "
-            f"{total_orphans} unreferenced / {total_scanned} total"
+            f"{total_orphans} likely-unused / {total_scanned} total"
+            + (f"  |  {unknown_count} unknown" if unknown_count else "")
         )
 
     # ------------------------------------------------------------------

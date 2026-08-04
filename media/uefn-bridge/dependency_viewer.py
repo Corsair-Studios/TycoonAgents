@@ -121,7 +121,19 @@ try:
 except ImportError:
     _SKIP_PREFIXES = ("/Engine/", "/Script/", "/Temp/")
 
-# Asset classes to scan and their UE module paths
+# Asset classes — historically the ONLY classes scan_dependencies() would
+# enumerate, which silently hid every other asset type in the project
+# (Blueprints, sounds, animations, data assets, level sequences, widgets,
+# ...) from the whole viewer with no indication the view was partial. The
+# PRIMARY (project_only=True) path no longer uses this list: it enumerates
+# by PATH via registry.get_assets_by_path(project_prefix, recursive=True)
+# so every asset type is included by default, and derives each asset's type
+# from its own registry data (_asset_type_label) instead of a fixed allow
+# list. This list is kept ONLY as the class set for the project_only=False
+# (unscoped / "include Engine+Fortnite content") path, where there is no
+# project prefix to scope a path query by and an unbounded registry-wide
+# path scan would be the ~99k-mounted-assets failure mode this fix exists
+# to avoid elsewhere. Not dead code — see scan_classes below.
 _ASSET_CLASSES = [
     ("Texture2D",                "/Script/Engine"),
     ("Material",                 "/Script/Engine"),
@@ -142,8 +154,16 @@ _NODE_COLORS = {
 }
 _NODE_DEFAULT_COLOR = "#6B6B6B"
 
-# Max nodes displayed per side in graph (deps / refs)
+# Max nodes displayed per side in graph (deps / refs) — cosmetic, unchanged.
 _MAX_SIDE_NODES = 15
+
+# Safety cap on the PRIMARY path-scoped enumeration (project_only=True).
+# Enumerating by path instead of a fixed six-class list is unbounded in
+# principle; this caps a single scan at a generous ceiling so a pathological
+# project can't freeze the editor indefinitely. Mirrors tag_inspect.py's
+# _MAX_VERSE_FILES pattern — hit it and the result is flagged
+# truncated=True, never silently cut off.
+_MAX_ENUMERATED_ASSETS = 25000
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +259,136 @@ def _get_project_prefix():
 
     unreal.log_warning("dependency_viewer: Could not detect project prefix, defaulting to /Game/")
     return "/Game/"
+
+
+def _detect_project_scope():
+    """
+    Resolve the project prefix via ``_get_project_prefix()`` (unchanged —
+    no second resolution path is introduced) and report whether that value
+    is trustworthy enough to scope the PRIMARY path-scoped enumeration by.
+    Mirrors material_browser.py's ``_detect_project_scope()``.
+
+    ``_get_project_prefix()`` never raises and never returns an empty value
+    — its own last resort is a hardcoded ``"/Game/"`` default — so failure
+    here does not show up as an exception or an empty string. The real
+    failure mode is silent: ``/Game/`` is almost always WRONG for a UEFN
+    island, and the plain string return gives the caller no signal for
+    which strategy produced it. This independently re-checks the SAME two
+    signals ``_get_project_prefix()`` consults (a live level actor path,
+    then a resolvable world path) to know whether the returned prefix came
+    from real detection or is just the ``/Game/`` catch-all.
+
+    Returns
+    -------
+    (prefix, confident, detail) : tuple
+        prefix    — str, from ``_get_project_prefix()`` (never None).
+        confident — bool. True only when a live level actor or a
+                    resolvable world backed the prefix. False means the
+                    caller must NOT scope the primary enumeration by this
+                    prefix — it should fail loudly (see scan_dependencies)
+                    rather than either enumerating everything mounted
+                    (Fortnite content included) or reporting a
+                    silently-empty result.
+        detail    — str. Human-readable explanation for logs and the UI.
+    """
+    has_actor_signal = False
+    has_world_signal = False
+    try:
+        subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        actors = subsystem.get_all_level_actors()
+        if actors:
+            parts = actors[0].get_path_name().split("/")
+            has_actor_signal = len(parts) >= 2 and bool(parts[1])
+    except Exception:
+        pass
+    if not has_actor_signal:
+        try:
+            subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+            world = subsystem.get_world()
+            if world:
+                parts = world.get_path_name().split("/")
+                has_world_signal = len(parts) >= 2 and bool(parts[1])
+        except Exception:
+            pass
+
+    try:
+        prefix = _get_project_prefix()
+    except Exception as e:
+        return None, False, f"_get_project_prefix() raised unexpectedly — {e}"
+
+    if not prefix:
+        return None, False, "_get_project_prefix() returned an empty value"
+
+    if has_actor_signal or has_world_signal:
+        return prefix, True, f"resolved from live level data: {prefix}"
+
+    return prefix, False, (
+        f"no level actors or resolvable world were available to detect the "
+        f"project — the '{prefix}' value is only _get_project_prefix()'s "
+        f"last-resort default and is not trusted to scope the primary "
+        f"path-scoped enumeration"
+    )
+
+
+# ---------------------------------------------------------------------------
+# unreal.ScopedSlowTask helper — the enumeration below is unbounded where it
+# used to be six fixed classes, and this bridge runs INSIDE UEFN's editor
+# process on a tick callback, so a long synchronous loop freezes the editor
+# with zero feedback. ScopedSlowTask is the engine-idiomatic cancellable
+# progress dialog for exactly this case. Every call is guarded so a
+# missing/failed ScopedSlowTask API (older UE version, headless test
+# environment, etc.) never breaks the scan — it just runs without a dialog.
+# ---------------------------------------------------------------------------
+
+class _NullSlowTask:
+    """No-op stand-in with the same call surface as unreal.ScopedSlowTask,
+    used whenever the real API is unavailable or fails — callers never need
+    to branch on which one they have."""
+
+    def make_dialog(self, *_args, **_kwargs):
+        pass
+
+    def enter_progress_frame(self, *_args, **_kwargs):
+        pass
+
+    def should_cancel(self):
+        return False
+
+    def destroy(self):
+        pass
+
+
+def _st_call(slow_task, method_name, *args, **kwargs):
+    """Best-effort call of *method_name* on *slow_task*; swallows all
+    errors so a partial/broken ScopedSlowTask implementation can never
+    raise into the scan."""
+    try:
+        fn = getattr(slow_task, method_name, None)
+        if fn is None:
+            return None
+        return fn(*args, **kwargs)
+    except Exception:
+        return None
+
+
+def _make_slow_task(total_work, description):
+    """Best-effort unreal.ScopedSlowTask factory. Returns a real
+    ScopedSlowTask with its dialog opened when the API is present and
+    construction succeeds; otherwise returns _NullSlowTask() so the rest of
+    scan_dependencies() can call make_dialog/enter_progress_frame/
+    should_cancel/destroy unconditionally."""
+    try:
+        cls = getattr(unreal, "ScopedSlowTask", None)
+        if cls is not None:
+            task = cls(total_work, description)
+            _st_call(task, "make_dialog", True)
+            return task
+    except Exception as e:
+        unreal.log_warning(
+            f"dependency_viewer: ScopedSlowTask unavailable ({e}) — "
+            f"scanning without a progress dialog."
+        )
+    return _NullSlowTask()
 
 
 def _asset_type_label(class_path_str):
@@ -506,26 +656,36 @@ def scan_dependencies(project_only=True):
     on (outgoing edges).  The reverse map (incoming / referencers) is derived
     from the forward map.
 
-    Asset classes scanned: Texture2D, Material, MaterialInstanceConstant,
-    NiagaraSystem, StaticMesh, SkeletalMesh.
+    Enumeration (project_only=True, the path the UI always uses): PATH-scoped
+    — every asset under the detected project prefix is included regardless
+    of class (Blueprints, sounds, animations, data assets, level sequences,
+    widgets, textures, materials, meshes, …), not a fixed class allow-list.
+    Each asset's displayed ``type`` is derived from its own registry class
+    data (see ``_asset_type_label``). (project_only=False is an explicit
+    opt-in to an unscoped scan and keeps the original fixed-class behaviour
+    — see the branch below.)
 
     Parameters
     ----------
     project_only : bool
-        When True (default) only assets whose package_name starts with the
-        detected project prefix are included.
+        When True (default) the scan is scoped to the detected project
+        prefix — see ``_detect_project_scope``. If the prefix cannot be
+        CONFIDENTLY resolved, the scan is refused outright (returns
+        ``scan_failed=True``) rather than silently enumerating every mounted
+        asset (Fortnite content included) or reporting an empty result that
+        would read as "clean project".
 
     Returns
     -------
     dict::
 
         {
-            "total_assets": int,
+            "total_assets": int or None,   # None only when scan_failed
             "assets": [
                 {
                     "name":         str,
                     "path":         str,   # package path
-                    "type":         str,   # "Texture2D", "Material", …
+                    "type":         str,   # derived from registry class data
                     "dep_count":    int,   # outgoing — what this asset uses
                     "ref_count":    int,   # incoming — what uses this asset
                     "dependencies": [{"name": str, "path": str, "type": str}, …],
@@ -533,8 +693,15 @@ def scan_dependencies(project_only=True):
                 },
                 …
             ],
-            "orphan_count": int,
-            "orphans":      [str, …],   # package paths of orphaned assets
+            "orphan_count":      int or None,   # None only when scan_failed
+            "orphans":           [str, …],      # package paths of orphaned assets
+            "project_only":      bool,          # the argument, echoed back
+            "project_prefix":    str or None,   # detected prefix
+            "scope_confident":   bool,          # False => scan_failed, or project_only=False
+            "scan_failed":       bool,          # True => refused, nothing scanned
+            "failure_reason":    str or None,   # explains scan_failed
+            "truncated":         bool,          # True => cap or cancel hit; partial result
+            "truncation_reason": str or None,
         }
 
     The ``assets`` list is sorted by ``ref_count`` descending (most-referenced
@@ -550,14 +717,49 @@ def scan_dependencies(project_only=True):
     # Same options for the reverse-referencer check used later.
     ref_options = _make_dep_options()
 
-    project_prefix = _get_project_prefix() if project_only else None
+    project_prefix    = None
+    scope_confident   = True
+    prefix_detail     = None
+    if project_only:
+        project_prefix, scope_confident, prefix_detail = _detect_project_scope()
+        if not scope_confident:
+            unreal.log_error(
+                f"dependency_viewer: Project prefix could not be confidently "
+                f"resolved ({prefix_detail}). Refusing to scan — enumerating "
+                f"unscoped would silently pull in every mounted asset "
+                f"(Fortnite content included) instead of the project, and "
+                f"reporting zero assets would misread as a clean project. "
+                f"Nothing was scanned; set project_only=False to explicitly "
+                f"request an unscoped scan instead."
+            )
+            return {
+                "total_assets":      None,
+                "assets":            [],
+                "orphan_count":      None,
+                "orphans":           [],
+                "project_only":      project_only,
+                "project_prefix":    project_prefix,
+                "scope_confident":   False,
+                "scan_failed":       True,
+                "failure_reason":    prefix_detail,
+                "truncated":         False,
+                "truncation_reason": None,
+            }
+
     unreal.log(
         f"dependency_viewer: Starting scan "
         f"(project_only={project_only}, prefix={project_prefix})"
     )
 
+    # This bridge runs INSIDE UEFN's editor process on a tick callback, so a
+    # long synchronous loop freezes the editor with no feedback — a real
+    # concern now that enumeration is path-scoped (unbounded) instead of six
+    # fixed classes. ScopedSlowTask gives the user a cancellable progress
+    # dialog; _make_slow_task() degrades to a no-op if the API is unavailable.
+    slow_task = _make_slow_task(2, "Scanning project dependencies…")
+
     # ------------------------------------------------------------------
-    # Step 1 — collect all assets of the target classes
+    # Step 1 — collect project assets
     # ------------------------------------------------------------------
     # path_str -> {"name": str, "type": str}
     all_assets_info = {}
@@ -568,57 +770,94 @@ def scan_dependencies(project_only=True):
     # orphan candidates themselves.
     _level_packages = set()
 
-    scan_classes = list(_ASSET_CLASSES) + [("World", "/Script/Engine")]
+    truncated          = False
+    truncation_reason  = None
 
-    for cls_name, module in scan_classes:
+    _st_call(slow_task, "enter_progress_frame", 1, "Enumerating project assets…")
+
+    if project_only:
+        # PRIMARY enumeration (the fix) — path-scoped over the project's own
+        # content root, so every asset type is included by default and
+        # nothing is invisible to a fixed class list.
         try:
-            class_path = unreal.TopLevelAssetPath(module, cls_name)
-            assets = registry.get_assets_by_class(class_path)
+            project_assets = registry.get_assets_by_path(project_prefix, recursive=True)
         except Exception as e:
-            unreal.log_warning(f"dependency_viewer: Could not fetch {cls_name} — {e}")
-            continue
+            unreal.log_error(f"dependency_viewer: get_assets_by_path({project_prefix}) failed — {e}")
+            project_assets = []
 
-        count_before = len(all_assets_info)
-        for asset_data in assets:
+        for idx, asset_data in enumerate(project_assets):
+            if idx > 0 and idx % 500 == 0 and bool(_st_call(slow_task, "should_cancel")):
+                truncated = True
+                truncation_reason = f"cancelled by user after {len(all_assets_info)} asset(s)"
+                unreal.log_warning(f"dependency_viewer: Scan cancelled — {truncation_reason}")
+                break
+
             pkg = str(asset_data.package_name)   # Name → str
             if any(pkg.startswith(p) for p in _SKIP_PREFIXES):
                 continue
-            if project_only and not pkg.startswith(project_prefix):
+            if not pkg.startswith(project_prefix):
                 continue
-            if cls_name == "World":
+            if pkg in all_assets_info:
+                continue
+
+            if len(all_assets_info) >= _MAX_ENUMERATED_ASSETS:
+                truncated = True
+                truncation_reason = f"hit the {_MAX_ENUMERATED_ASSETS}-asset scan cap"
+                unreal.log_warning(f"dependency_viewer: Scan truncated — {truncation_reason}")
+                break
+
+            cls_str = str(asset_data.asset_class_path)
+            if "world" in cls_str.lower():
                 _level_packages.add(pkg)
-                # Register level in the info map so it can appear in
-                # reverse_map, but mark it so it won't be an orphan candidate.
-                if pkg not in all_assets_info:
-                    all_assets_info[pkg] = {
-                        "name": str(asset_data.asset_name),
-                        "type": "World",
-                    }
-            else:
-                if pkg not in all_assets_info:
-                    all_assets_info[pkg] = {
-                        "name": str(asset_data.asset_name),
-                        "type": _asset_type_label(asset_data.asset_class_path),
-                    }
+            all_assets_info[pkg] = {
+                "name": str(asset_data.asset_name),
+                "type": _asset_type_label(cls_str),
+            }
 
-        added = len(all_assets_info) - count_before
-        unreal.log(f"dependency_viewer: {added} {cls_name} asset(s) added (total so far: {len(all_assets_info)})")
+        unreal.log(
+            f"dependency_viewer: Path-scoped enumeration under '{project_prefix}' "
+            f"found {len(all_assets_info)} asset(s) across every asset type"
+            + (f" — TRUNCATED ({truncation_reason})" if truncated else "")
+        )
+    else:
+        # project_only=False — explicit opt-in to an UNSCOPED scan. There is
+        # no project prefix to scope a path query by here, and a registry-
+        # wide get_assets_by_path("/") would be the ~99k-mounted-assets
+        # failure mode this fix exists to avoid; kept as the original
+        # fixed-class enumeration. The UI never calls this branch.
+        scan_classes = list(_ASSET_CLASSES) + [("World", "/Script/Engine")]
 
-    # Also do a broad recursive path scan to catch maps the class query may miss.
-    if project_only and project_prefix:
-        try:
-            broad_assets = registry.get_assets_by_path(project_prefix, recursive=True)
-            for asset_data in broad_assets:
-                pkg = str(asset_data.package_name)
-                cls_str = str(asset_data.asset_class_path).lower()
-                if "world" in cls_str and pkg not in all_assets_info:
+        for cls_name, module in scan_classes:
+            try:
+                class_path = unreal.TopLevelAssetPath(module, cls_name)
+                assets = registry.get_assets_by_class(class_path)
+            except Exception as e:
+                unreal.log_warning(f"dependency_viewer: Could not fetch {cls_name} — {e}")
+                continue
+
+            count_before = len(all_assets_info)
+            for asset_data in assets:
+                pkg = str(asset_data.package_name)   # Name → str
+                if any(pkg.startswith(p) for p in _SKIP_PREFIXES):
+                    continue
+                if cls_name == "World":
                     _level_packages.add(pkg)
-                    all_assets_info[pkg] = {
-                        "name": str(asset_data.asset_name),
-                        "type": "World",
-                    }
-        except Exception as e:
-            unreal.log_warning(f"dependency_viewer: Broad path scan failed — {e}")
+                    # Register level in the info map so it can appear in
+                    # reverse_map, but mark it so it won't be an orphan candidate.
+                    if pkg not in all_assets_info:
+                        all_assets_info[pkg] = {
+                            "name": str(asset_data.asset_name),
+                            "type": "World",
+                        }
+                else:
+                    if pkg not in all_assets_info:
+                        all_assets_info[pkg] = {
+                            "name": str(asset_data.asset_name),
+                            "type": _asset_type_label(asset_data.asset_class_path),
+                        }
+
+            added = len(all_assets_info) - count_before
+            unreal.log(f"dependency_viewer: {added} {cls_name} asset(s) added (total so far: {len(all_assets_info)})")
 
     total = len(all_assets_info)
     unreal.log(f"dependency_viewer: {total} project asset(s) in scope — building dependency graph…")
@@ -696,9 +935,19 @@ def scan_dependencies(project_only=True):
 
     asset_paths = list(all_assets_info.keys())
 
+    _st_call(slow_task, "enter_progress_frame", 1, "Building dependency graph…")
+
     for idx, pkg in enumerate(asset_paths):
         if idx > 0 and idx % 100 == 0:
             unreal.log(f"dependency_viewer: Progress — {idx}/{total} assets processed…")
+            if bool(_st_call(slow_task, "should_cancel")):
+                truncated = True
+                truncation_reason = (
+                    f"cancelled by user while building the dependency graph "
+                    f"({idx}/{total} processed)"
+                )
+                unreal.log_warning(f"dependency_viewer: Scan cancelled — {truncation_reason}")
+                break
 
         try:
             deps = registry.get_dependencies(pkg, dep_options)
@@ -714,6 +963,8 @@ def scan_dependencies(project_only=True):
             if dep_str in all_assets_info:
                 forward_map[pkg].append(dep_str)
                 reverse_map[dep_str].append(pkg)
+
+    _st_call(slow_task, "destroy")
 
     # ------------------------------------------------------------------
     # Step 3 — build the output structure
@@ -815,13 +1066,21 @@ def scan_dependencies(project_only=True):
         f"dependency_viewer: Scan complete — "
         f"{total} assets, {len(orphans)} confirmed orphans, "
         f"{len(verse_referenced)} Verse-referenced"
+        + (f", TRUNCATED ({truncation_reason})" if truncated else "")
     )
 
     return {
-        "total_assets":  total,
-        "assets":        assets_list,
-        "orphan_count":  len(orphans),
-        "orphans":       orphans,
+        "total_assets":      total,
+        "assets":            assets_list,
+        "orphan_count":      len(orphans),
+        "orphans":           orphans,
+        "project_only":      project_only,
+        "project_prefix":    project_prefix,
+        "scope_confident":   scope_confident,
+        "scan_failed":       False,
+        "failure_reason":    None,
+        "truncated":         truncated,
+        "truncation_reason": truncation_reason,
     }
 
 
@@ -1435,6 +1694,16 @@ def show_dependency_viewer():
         if result is None:
             return
 
+        # Fail-loud state: the prefix could not be confidently resolved and
+        # nothing was scanned. Show that explicitly rather than an empty
+        # tree that would read as "clean project, zero assets".
+        if result.get("scan_failed"):
+            _populate_tree([])
+            reason = result.get("failure_reason") or "unknown reason"
+            status_var.set(f"Scan refused — project scope could not be confirmed ({reason})")
+            count_var.set("scan refused — see status bar")
+            return
+
         query        = filter_entry.get().strip().lower()
         type_filter  = type_combo.get()
         orphans_only = _show_orphans_state[0]
@@ -1459,8 +1728,17 @@ def show_dependency_viewer():
         orphan_count = result["orphan_count"]
         total        = result["total_assets"]
         shown        = len(filtered)
-        status_var.set(f"Showing {shown} of {total} assets ({orphan_count} orphans)")
-        count_var.set(f"{orphan_count} orphans | {total} total")
+        scope        = result.get("project_prefix") or ("unscoped" if not result.get("project_only") else "?")
+
+        status_line = f"Showing {shown} of {total} assets in {scope} ({orphan_count} orphans)"
+        if result.get("truncated"):
+            status_line += f" — TRUNCATED: {result.get('truncation_reason')}"
+        status_var.set(status_line)
+
+        count_line = f"{orphan_count} orphans | {total} total | scope: {scope}"
+        if result.get("truncated"):
+            count_line += " | TRUNCATED"
+        count_var.set(count_line)
 
     # ------------------------------------------------------------------
     # Column heading sort
@@ -1535,6 +1813,20 @@ def show_dependency_viewer():
             _path_to_asset.clear()
             for a in result["assets"]:
                 _path_to_asset[a["path"]] = a
+
+            # Path-scoped enumeration can surface asset types the dropdown's
+            # original fixed six never anticipated (Blueprint, SoundWave,
+            # AnimSequence, ...). Repopulate it from what was actually found
+            # so the Type filter isn't itself a hidden allow-list — the same
+            # failure class this whole fix targets. Keeps the current
+            # selection if it still exists, else resets to "All".
+            discovered_types = sorted({a["type"] for a in result["assets"]})
+            current_selection = type_combo.get()
+            type_combo["values"] = ["All"] + discovered_types
+            if current_selection in discovered_types or current_selection == "All":
+                type_combo.set(current_selection)
+            else:
+                type_combo.set("All")
 
             _apply_filters_and_display()
 

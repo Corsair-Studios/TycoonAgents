@@ -289,9 +289,10 @@ def run(keywords=None):
     components) to find internal property names. Fully read-only.
 
     Returns a dict:
-        {status, actor_count, matches, all_count, report_path}
-    On failure or "nothing selected", status explains why and matches/
-    all_properties are empty lists.
+        {status, actor_count, actors, matches, all_count, report_path}
+    ``actors`` is the list of selected actors' display labels (see
+    ``_actor_label``), in selection order. On failure or "nothing selected",
+    status explains why and actors/matches/all_properties are empty lists.
     """
     if keywords is None:
         keywords = list(_DEFAULT_KEYWORDS)
@@ -301,6 +302,7 @@ def run(keywords=None):
         result = {
             "status": "error: 'unreal' module not available (must run inside UEFN)",
             "actor_count": 0,
+            "actors": [],
             "matches": [],
             "all_properties": [],
             "all_count": 0,
@@ -321,6 +323,7 @@ def run(keywords=None):
         return {
             "status": "error: unhandled exception (see log)",
             "actor_count": 0,
+            "actors": [],
             "matches": [],
             "all_properties": [],
             "all_count": 0,
@@ -334,24 +337,24 @@ def _run_inner(keywords_lower):
     except Exception as e:
         status = "error: get_editor_subsystem raised: " + str(e)
         print("property_inspector: " + status)
-        return {"status": status, "actor_count": 0, "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
+        return {"status": status, "actor_count": 0, "actors": [], "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
 
     if subsystem is None:
         status = "error: could not get EditorActorSubsystem"
         print("property_inspector: " + status)
-        return {"status": status, "actor_count": 0, "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
+        return {"status": status, "actor_count": 0, "actors": [], "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
 
     try:
         selected = subsystem.get_selected_level_actors()
     except Exception as e:
         status = "error: get_selected_level_actors raised: " + str(e)
         print("property_inspector: " + status)
-        return {"status": status, "actor_count": 0, "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
+        return {"status": status, "actor_count": 0, "actors": [], "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
 
     if not selected:
         status = "no actor selected — select a prefab in the Outliner and try again"
         print("property_inspector: " + status)
-        return {"status": status, "actor_count": 0, "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
+        return {"status": status, "actor_count": 0, "actors": [], "matches": [], "all_properties": [], "all_count": 0, "report_path": ""}
 
     all_properties = []
     actors_info = []
@@ -417,6 +420,7 @@ def _run_inner(keywords_lower):
     return {
         "status": status,
         "actor_count": len(actors_info),
+        "actors": actors_info,
         "matches": matches,
         "all_properties": all_properties,
         "all_count": len(all_properties),
@@ -496,6 +500,30 @@ def _show_window(result):
     )
     stats_label.pack(side=tk.RIGHT)
 
+    # -- Persistent header instruction — always visible, one line, so the
+    # user never has to guess where the data comes from. --
+    instruction_frame = tk.Frame(root, bg=_BG, padx=12)
+    instruction_frame.pack(fill=tk.X, pady=(0, 2))
+    tk.Label(
+        instruction_frame,
+        text=(
+            "Shows properties for the actor(s) currently selected in the "
+            "Outliner — select one, then click ⟳ Refresh selection."
+        ),
+        font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG, anchor=tk.W,
+    ).pack(side=tk.LEFT, fill=tk.X)
+
+    # -- Selected-actor display — updated on every refresh (see
+    # _rebuild_from_result). Kept as its own StringVar/label so refresh can
+    # update it without rebuilding the frame. --
+    selected_actor_var = tk.StringVar(value="No actor selected.")
+    selected_actor_frame = tk.Frame(root, bg=_BG, padx=12)
+    selected_actor_frame.pack(fill=tk.X, pady=(0, 4))
+    tk.Label(
+        selected_actor_frame, textvariable=selected_actor_var,
+        font=("Segoe UI", 9, "bold"), fg=_ACCENT_GREEN, bg=_BG, anchor=tk.W,
+    ).pack(side=tk.LEFT, fill=tk.X)
+
     # -- Default column availability note (lazy sibling-import check; see
     # _resolve_cdo_getter's docstring). Shown once, window-wide, only when
     # the Default column truly cannot be populated at all — a single
@@ -554,10 +582,34 @@ def _show_window(result):
     tree.column("owner", width=200)
     tree.column("overridden", width=80, anchor=tk.CENTER)
 
-    scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
-    tree.configure(yscrollcommand=scroll.set)
-    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    scroll.pack(side=tk.RIGHT, fill=tk.Y)
+    # The 6 columns above sum to 1040px (220+220+220+100+200+80), wider than
+    # the 900px default window (root.geometry("900x600")). A vertical
+    # scrollbar alone doesn't help there — the last column(s) are simply
+    # unreachable. Grid (not pack) both scrollbars around the tree so a
+    # horizontal one is available too.
+    vscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+    hscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=tree.xview)
+    tree.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+
+    tree_frame.rowconfigure(0, weight=1)
+    tree_frame.columnconfigure(0, weight=1)
+    tree.grid(row=0, column=0, sticky="nsew")
+    vscroll.grid(row=0, column=1, sticky="ns")
+    hscroll.grid(row=1, column=0, sticky="ew")
+
+    # -- Empty-state placeholder — shown OVER the tree area (via .place, so
+    # it doesn't disturb the grid) whenever no actor is selected, instead of
+    # relying on the caller noticing the one-line status text. Hidden again
+    # as soon as an actor is selected and refreshed. --
+    empty_state_label = tk.Label(
+        tree_frame,
+        text=(
+            "No actor selected.\n\n"
+            "Select an actor in the Outliner, then click\n"
+            "⟳ Refresh selection above."
+        ),
+        font=("Segoe UI", 11), fg=_TEXT_DIM, bg=_SECTION_BG, justify=tk.CENTER,
+    )
 
     # Mutable container so the refresh closures below can swap in fresh data
     # without needing `nonlocal` on plain locals.
@@ -598,6 +650,30 @@ def _show_window(result):
 
         state["props"] = combined
         state["match_keys"] = keys
+
+        # -- Selected-actor line — mirrors the existing multi-select
+        # behavior (properties for EVERY selected actor are dumped and
+        # shown together, not just one), so say so rather than implying
+        # only one is displayed.
+        actors = res.get("actors", [])
+        if not actors:
+            selected_actor_var.set("No actor selected.")
+        elif len(actors) == 1:
+            selected_actor_var.set("Selected actor: " + actors[0])
+        else:
+            selected_actor_var.set(
+                "Selected: {} actors ({}) — properties shown for all".format(
+                    len(actors), ", ".join(actors)
+                )
+            )
+
+        # -- Empty-state placeholder — only meaningful when nothing is
+        # selected; an empty search filter is a normal, self-explanatory
+        # state and should not show this overlay.
+        if res.get("actor_count", 0) == 0:
+            empty_state_label.place(relx=0.5, rely=0.45, anchor=tk.CENTER)
+        else:
+            empty_state_label.place_forget()
 
         stats_text = "Actors: {}  |  Properties: {}  |  {}".format(
             res.get("actor_count", 0), res.get("all_count", 0), res.get("status", ""),
