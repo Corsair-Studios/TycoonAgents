@@ -2628,6 +2628,28 @@ body {
   padding: 16px 16px 12px;
 }
 
+/* Metrics tab scope toggle ("This session" / "All time", 0.0.528) — reuses
+   .model-radio-group/.model-radio (Settings screen's per-agent model picker)
+   rather than a new control idiom; only margin is added here to seat it
+   above the table. #metrics-scope-caption states the active scope in words
+   at all times, alongside the toggle's own checked state. */
+.metrics-scope-toggle {
+  margin-bottom: 6px;
+}
+
+.metrics-scope-toggle .model-radio:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.metrics-scope-toggle .model-radio input:disabled {
+  cursor: not-allowed;
+}
+
+#metrics-scope-caption {
+  margin-bottom: 10px;
+}
+
 /* Table */
 #metrics-table {
   width: 100%;

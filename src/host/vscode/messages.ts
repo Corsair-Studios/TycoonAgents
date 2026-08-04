@@ -24,6 +24,24 @@ import { ArchivedPlanSummarySchema, ProjectPlanSchema } from "./projectPlan";
 export const MSG = {
   // ---- lifecycle / state -------------------------------------------------
   READY: "ready",
+  // Outbound-only, host -> webview, posted by panel.ts's _postStateUpdate on
+  // every runtime.onChange tick (~4s cadence) and on READY. Payload shape:
+  // `{ state: MetricsWorldState, delegationHealth: {...cumulative, session},
+  // sessionMetrics }`. `state.agentMetrics` and `delegationHealth` are the
+  // CUMULATIVE view (since the last metrics reset — activity.jsonl is
+  // append-only, never rotated). `sessionMetrics` (0.0.528) is the CURRENT
+  // session's view, scoped by sessionId via the same incremental reducer
+  // panel.ts already runs for delegationHealth.session (see
+  // _sessionDelegationHealthThrottled) — additive, never replacing the
+  // cumulative fields. Shape:
+  //   `{ available: true; sessionId: string; agentMetrics: AgentMetric[] }`
+  //   `{ available: false; reason: string }` — no project root open, or no
+  //     sessionId-bearing activity recorded yet. The webview (media/main.js's
+  //     Metrics tab scope toggle) must render `reason`, never fabricate a
+  //     "0 tokens this session" from an unavailable session.
+  // Not in MSG_SCHEMAS since that table only covers inbound MUTATING
+  // webview->host messages (see the block comment below) — this is an
+  // outbound push with no corresponding inbound message to validate.
   STATE: "state",
 
   // ---- theme: stage tuning / background / manual image upload ------------

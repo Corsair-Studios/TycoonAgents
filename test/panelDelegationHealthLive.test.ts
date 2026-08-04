@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { initialWorldState, applyEvent, computeStateFromRecords } from "../src/core/state";
-import type { MetricsWorldState } from "../src/core/state";
+import type { MetricsWorldState, AgentMetric } from "../src/core/state";
 import type { HookRecord } from "../src/providers/claude-code/hookRecord";
 import { MSG } from "../src/host/vscode/messages";
 
@@ -477,6 +477,111 @@ test("_postStateUpdate: with no activity.jsonl at all, delegationHealth is still
   assert.ok(msg.delegationHealth, "delegationHealth key must exist even with no activity log on disk");
   assert.equal(msg.delegationHealth.directEdits, 1, "cumulative (in-memory) counts are independent of the activity log");
   assert.equal(msg.delegationHealth.session, undefined, "no session data available -> undefined, not a fabricated zero");
+});
+
+// ---------------------------------------------------------------------------
+// 0.0.528: `sessionMetrics` — the MSG.STATE field the Metrics tab's
+// Session/All-time scope toggle reads. Same regression class as
+// delegationHealth above: the helpers can be individually correct while the
+// actual posted payload silently omits/misshapes the field, so these assert
+// directly on what _postStateUpdate posts.
+// ---------------------------------------------------------------------------
+
+test("_postStateUpdate: sessionMetrics is added as its own top-level field; the cumulative `state` field's agentMetrics shape is untouched", () => {
+  const root = tmpRoot();
+  writeActivity(root, [{ event: "PreToolUse", tool: "Grep", workerId: "orchestrator", sessionId: "S1", at: T }]);
+
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "WorkerActivity", at: T, workerId: "orchestrator", kind: "survey", detail: "Grep" });
+  // Snapshot via shallow-copying each entry (not a JSON round-trip): AgentMetric
+  // entries carry own properties explicitly set to `undefined` (e.g. `model`,
+  // `parentId`, `tier`), which JSON.stringify silently drops, which would make
+  // this snapshot look "changed" against the live object even though nothing
+  // touched it -- a false failure, not a real one.
+  const agentMetricsBefore = state.agentMetrics.map((m) => ({ ...m }));
+
+  const { fake, posted } = makeFakePanelForPostState(root);
+  (TycoonPanel.prototype as any)._postStateUpdate.call(fake, state);
+
+  const msg = posted[0] as any;
+  assert.equal(msg.type, MSG.STATE);
+  assert.ok("sessionMetrics" in msg, "sessionMetrics must be a top-level field on the STATE payload");
+  assert.ok(msg.state && !("sessionMetrics" in msg.state), "sessionMetrics must be a SIBLING of state, never merged into it");
+  assert.deepEqual(
+    msg.state.agentMetrics,
+    agentMetricsBefore,
+    "the pre-existing cumulative state.agentMetrics must be byte-for-byte unchanged by the addition of sessionMetrics"
+  );
+});
+
+test("_postStateUpdate: no project folder open -> sessionMetrics is {available:false, reason:<non-empty>}, never an empty metrics array", () => {
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "WorkerActivity", at: T, workerId: "orchestrator", kind: "survey", detail: "Grep" });
+
+  const { fake, posted } = makeFakePanelForPostState(""); // root === "" -> no project folder
+  (TycoonPanel.prototype as any)._postStateUpdate.call(fake, state);
+
+  const msg = posted[0] as any;
+  assert.equal(msg.sessionMetrics.available, false);
+  assert.equal(typeof msg.sessionMetrics.reason, "string");
+  assert.ok(msg.sessionMetrics.reason.length > 0, "reason must be a non-empty string -- a silent unavailable state is as bad as fabricated zeros");
+  assert.equal((msg.sessionMetrics as any).agentMetrics, undefined, "unavailable must not also carry an (empty or otherwise) agentMetrics array");
+});
+
+test("_postStateUpdate: a project folder with no recorded activity yet -> sessionMetrics unavailable with its own non-empty reason", () => {
+  const root = tmpRoot(); // .claude/tycoon exists but no activity.jsonl written
+  let state = initialWorldState();
+
+  const { fake, posted } = makeFakePanelForPostState(root);
+  (TycoonPanel.prototype as any)._postStateUpdate.call(fake, state);
+
+  const msg = posted[0] as any;
+  assert.equal(msg.sessionMetrics.available, false);
+  assert.ok(typeof msg.sessionMetrics.reason === "string" && msg.sessionMetrics.reason.length > 0, "reason must be a non-empty string");
+});
+
+test("_postStateUpdate: sessionMetrics reflects ONLY the current session's tokens while the cumulative state.agentMetrics field covers every session", () => {
+  const root = tmpRoot();
+  // Two distinct sessions in the log: S1 finishes with 1000 tokens, then S2
+  // starts and finishes with 2500 tokens for the SAME agent id. The session-
+  // boundary-reset behavior pinned by the "_computeSessionDelegationHealth: a
+  // session boundary mid-stream..." test above means a fresh (cold) read of
+  // this file scopes to S2 (the LAST/current session) only.
+  const allRecords: HookRecord[] = [
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", sessionId: "S1", at: T },
+    { event: "SubagentStop", workerId: "coding-specialist", tokens: 1000, sessionId: "S1", at: T + 1 },
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", sessionId: "S2", at: T + 100 },
+    { event: "SubagentStop", workerId: "coding-specialist", tokens: 2500, sessionId: "S2", at: T + 101 },
+  ];
+  writeActivity(root, allRecords);
+
+  // The cumulative `state` argument mirrors what runtime.getState() produces
+  // in production: every record ever recorded, both sessions folded in.
+  const cumulativeState = computeStateFromRecords(allRecords, undefined);
+  const cumulativeCoder = cumulativeState.agentMetrics.find((m) => m.id === "coding-specialist");
+  assert.ok(cumulativeCoder, "sanity: coding-specialist should be in the cumulative fixture");
+  assert.equal(cumulativeCoder!.tokens, 3500, "sanity: cumulative fixture sums both sessions' SubagentStop tokens (1000 + 2500)");
+
+  const { fake, posted } = makeFakePanelForPostState(root);
+  (TycoonPanel.prototype as any)._postStateUpdate.call(fake, cumulativeState);
+
+  const msg = posted[0] as any;
+  assert.ok(msg.sessionMetrics.available, "two sessionIds are present in the log -> sessionMetrics must be available");
+  assert.equal(msg.sessionMetrics.sessionId, "S2", "must scope to the CURRENT (last) session, not the first one seen");
+
+  const sessionCoder = (msg.sessionMetrics.agentMetrics as AgentMetric[]).find((m) => m.id === "coding-specialist");
+  assert.ok(sessionCoder, "coding-specialist must appear in the session-scoped agentMetrics");
+  assert.equal(sessionCoder!.tokens, 2500, "session scope must cover ONLY S2's tokens, not S1's");
+
+  const postedCumulativeCoder = (msg.state.agentMetrics as AgentMetric[]).find((m) => m.id === "coding-specialist");
+  assert.ok(postedCumulativeCoder);
+  assert.equal(postedCumulativeCoder!.tokens, 3500, "the posted cumulative state.agentMetrics must still cover BOTH sessions");
+
+  assert.notEqual(
+    sessionCoder!.tokens,
+    postedCumulativeCoder!.tokens,
+    "session-scoped and cumulative totals must genuinely differ here -- if they were equal this test would pass trivially and prove nothing"
+  );
 });
 
 // ---------------------------------------------------------------------------

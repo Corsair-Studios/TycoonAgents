@@ -10,7 +10,7 @@ import * as os from "os";
 import * as path from "path";
 import type { Runtime } from "./runtime";
 import { computeDelegationModeStats, applyEvent, initialWorldState } from "../../core/state";
-import type { MetricsWorldState } from "../../core/state";
+import type { MetricsWorldState, AgentMetric } from "../../core/state";
 import type { HookRecord } from "../../providers/claude-code/hookRecord";
 import { mapHookRecord } from "../../providers/claude-code/mapHookRecord";
 import {
@@ -493,10 +493,21 @@ export class TycoonPanel {
    * (a throttled caller may skip calling _computeSessionDelegationHealth at
    * all for up to SESSION_HEALTH_THROTTLE_MS, even though that method itself
    * is now cheap when idle). `_cachedSessionDelegationHealthAt` of 0 means
-   * "never computed".
+   * "never computed". `sessionId`/`agentMetrics` (0.0.528) ride along on the
+   * same cached value/throttle window — they come from the same underlying
+   * _computeSessionDelegationHealth() call, so caching them separately would
+   * just be a second throttle over the same data.
    */
   private _cachedSessionDelegationHealth:
-    | { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number }
+    | {
+        directSearches: number;
+        directReads: number;
+        directEdits: number;
+        delegations: number;
+        tokens: number;
+        sessionId: string;
+        agentMetrics: AgentMetric[];
+      }
     | undefined;
   private _cachedSessionDelegationHealthAt = 0;
   /** Minimum interval between session-scoped delegationHealth recompute ATTEMPTS on the live runtime.onChange path (a stat() rate limit; each attempt itself is now cheap when the log hasn't grown, see _sessionHealthCache). */
@@ -7169,15 +7180,47 @@ export class TycoonPanel {
    * would have failed if just the `delegationHealth: {...}` line here had
    * been dropped/reverted, which the earlier (helpers-only) test suite would
    * NOT have caught.
+   *
+   * 0.0.528: also attaches `sessionMetrics` — the SAME session-scoped
+   * `agentMetrics` array `session` (above) already carries, promoted to its
+   * own top-level field so the Metrics tab can render a full per-agent table
+   * scoped to "this session" (Tasks/MCP/Time/Tokens columns), not just the
+   * orchestrator's narrow direct-tool-use counters `delegationHealth.session`
+   * exposes. `state`/`delegationHealth` (the cumulative fields) are
+   * UNCHANGED — `sessionMetrics` is purely additive so nothing that already
+   * consumes this payload changes behavior.
    */
   private _postStateUpdate(state: MetricsWorldState): void {
     const root = this._projectRoot();
     const cumulative = this._computeCumulativeDelegationHealth(state);
     const session = root !== "" ? this._sessionDelegationHealthThrottled(root) : undefined;
+    // sessionMetrics: the current session's agentMetrics, stamped with roster
+    // models the same way cumulative `state.agentMetrics` is (so the webview
+    // can render session rows through the exact same code path as cumulative
+    // ones). Built inline (not a separate helper) so this stays within the
+    // set of `this.*` members _postStateUpdate already depends on. Two
+    // honest "unavailable" cases — the webview's scope toggle must render the
+    // REASON, never a fabricated "0 tokens this session":
+    //   - no project folder open (`root === ""`) — nothing to scope to.
+    //   - no activity.jsonl yet, or it carries no sessionId yet (session ===
+    //     undefined) — the current session hasn't produced a taggable record.
+    const sessionMetrics:
+      | { available: true; sessionId: string; agentMetrics: AgentMetric[] }
+      | { available: false; reason: string } =
+      root === ""
+        ? { available: false, reason: "No project folder is open." }
+        : session === undefined
+          ? { available: false, reason: "This session hasn't recorded any activity yet." }
+          : {
+              available: true,
+              sessionId: session.sessionId,
+              agentMetrics: this._stampRosterModels({ agentMetrics: session.agentMetrics }).agentMetrics,
+            };
     void this._panel.webview.postMessage({
       type: MSG.STATE,
       state: this._stampRosterModels(this._applyTimeAdjustments(state)),
       delegationHealth: { ...cumulative, session },
+      sessionMetrics,
     });
   }
 
@@ -7252,13 +7295,24 @@ export class TycoonPanel {
     return { records, newOffset };
   }
 
-  /** Build the delegationHealth payload shape from a working state + the session id it's scoped to (undefined session id -> undefined result, matching "no session data yet"). */
+  /**
+   * Build the delegationHealth payload shape from a working state + the
+   * session id it's scoped to (undefined session id -> undefined result,
+   * matching "no session data yet"). `agentMetrics` is added as a sibling of
+   * `health` (0.0.528, per-agent session-scoped Metrics tab support): the
+   * incremental session rebuild already produces a full MetricsWorldState
+   * (see _computeSessionDelegationHealth's doc comment) with a per-agent
+   * `agentMetrics` array — `health` only ever read the orchestrator's slice
+   * of it plus a cross-agent token sum, so surfacing the whole array here is
+   * a read of already-computed data, not new folding work.
+   */
   private _sessionHealthResult(
     state: MetricsWorldState,
     sessionId: string | undefined
   ): {
     sessionId: string;
     health: { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number };
+    agentMetrics: AgentMetric[];
   } | undefined {
     if (sessionId === undefined) return undefined;
     const orchMetric = state.agentMetrics.find((m) => m.id === "orchestrator");
@@ -7271,6 +7325,7 @@ export class TycoonPanel {
         delegations: orchMetric?.delegations ?? 0,
         tokens: state.agentMetrics.reduce((sum, m) => sum + (m.tokens ?? 0), 0),
       },
+      agentMetrics: state.agentMetrics,
     };
   }
 
@@ -7304,6 +7359,7 @@ export class TycoonPanel {
   ): {
     sessionId: string;
     health: { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number };
+    agentMetrics: AgentMetric[];
   } | undefined {
     const activityPath = path.join(root, ".claude", "tycoon", "activity.jsonl");
     let stat: fs.Stats;
@@ -7370,16 +7426,36 @@ export class TycoonPanel {
    * SESSION_HEALTH_THROTTLE_MS, returning the cached value between
    * recomputes (undefined until the first successful compute, or if the
    * activity log carries no session id yet).
+   *
+   * `sessionId`/`agentMetrics` (0.0.528) are folded in alongside the
+   * pre-existing `health` fields rather than fetched via a second throttled
+   * call — both come from the SAME _computeSessionDelegationHealth() result,
+   * so this stays one stat()-rate-limited recompute per tick, not two. This
+   * is what feeds the Metrics tab's "This session" scope (see
+   * _postStateUpdate's `sessionMetrics` field).
    */
   private _sessionDelegationHealthThrottled(
     root: string
-  ): { directSearches: number; directReads: number; directEdits: number; delegations: number; tokens: number } | undefined {
+  ):
+    | {
+        directSearches: number;
+        directReads: number;
+        directEdits: number;
+        delegations: number;
+        tokens: number;
+        sessionId: string;
+        agentMetrics: AgentMetric[];
+      }
+    | undefined {
     const now = Date.now();
     if (
       this._cachedSessionDelegationHealthAt === 0 ||
       now - this._cachedSessionDelegationHealthAt >= TycoonPanel.SESSION_HEALTH_THROTTLE_MS
     ) {
-      this._cachedSessionDelegationHealth = this._computeSessionDelegationHealth(root)?.health;
+      const result = this._computeSessionDelegationHealth(root);
+      this._cachedSessionDelegationHealth = result
+        ? { ...result.health, sessionId: result.sessionId, agentMetrics: result.agentMetrics }
+        : undefined;
       this._cachedSessionDelegationHealthAt = now;
     }
     return this._cachedSessionDelegationHealth;
@@ -8891,6 +8967,28 @@ export class TycoonPanel {
         <button id="delegation-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="delegation-stats">Delegation</button>
       </div>
       <div id="metrics-body">
+        <!-- Scope toggle: "This session" vs "All time" — reuses the
+             .model-radio-group/.model-radio idiom from the Settings screen's
+             per-agent model picker (see agentsSection in media/main.js)
+             rather than inventing a new control. Defaults to "All time"
+             (input[value=all] checked) so existing behavior/numbers are
+             preserved on upgrade — see updateMetricsScopeUI() in
+             media/main.js, which also disables the "This session" option
+             (with a title explaining why, never silent zeros) when
+             sessionMetrics.available is false. #metrics-scope-caption states
+             the active scope in words at all times, not just via which radio
+             is checked. -->
+        <div id="metrics-scope-toggle" class="model-radio-group metrics-scope-toggle" role="radiogroup" aria-label="Metrics time range">
+          <label class="model-radio">
+            <input type="radio" name="metrics-scope" id="metrics-scope-session" value="session">
+            <span>This session</span>
+          </label>
+          <label class="model-radio">
+            <input type="radio" name="metrics-scope" id="metrics-scope-all" value="all" checked>
+            <span>All time</span>
+          </label>
+        </div>
+        <div id="metrics-scope-caption" class="delegation-stats-caption"></div>
         <div id="metrics-empty">No agents yet &mdash; start a session to see activity.</div>
         <table id="metrics-table" style="display:none">
           <thead>
@@ -8900,7 +8998,7 @@ export class TycoonPanel {
               <th class="col-tasks" title="Tasks completed BY this agent — work it actually finished, not tasks merely routed to it. The orchestrator's cell (marked *) shows the tasks it completed itself; hover it to see how many it dispatched to other agents.">Tasks</th>
               <th class="col-mcp" title="How many MCP tool calls this agent has made.">MCP</th>
               <th class="col-time" title="Active time this agent has spent working.">Time</th>
-              <th class="col-tokens" title="Total tokens this agent has used.">Tokens</th>
+              <th class="col-tokens" id="metrics-col-tokens" title="Total tokens this agent has used, since the last metrics reset.">Tokens (all time)</th>
             </tr>
           </thead>
           <tbody id="metrics-tbody"></tbody>

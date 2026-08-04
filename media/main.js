@@ -133,6 +133,12 @@
   // Delegation tab (promoted out of #metrics-body into its own peer panel).
   const delegationTabBtnEl = /** @type {HTMLElement} */ (document.getElementById("delegation-tab-btn"));
   const delegationStatsBodyEl = /** @type {HTMLElement} */ (document.getElementById("delegation-stats"));
+  // Metrics tab scope toggle (0.0.528): "This session" vs "All time" — see
+  // setMetricsScope()/updateMetricsScopeUI() and currentScopeMetrics().
+  const metricsScopeSessionEl = /** @type {HTMLInputElement} */ (document.getElementById("metrics-scope-session"));
+  const metricsScopeAllEl = /** @type {HTMLInputElement} */ (document.getElementById("metrics-scope-all"));
+  const metricsScopeCaptionEl = /** @type {HTMLElement} */ (document.getElementById("metrics-scope-caption"));
+  const metricsColTokensEl = /** @type {HTMLElement} */ (document.getElementById("metrics-col-tokens"));
 
   // The #metrics-table "Tokens/min" column header (static HTML in panel.ts) now
   // shows a dimensionless cost-ratio-vs-orchestrator lens instead — relabel it
@@ -160,6 +166,28 @@
   let delegationStatsHasData = false;
   /** Reference to the Settings screen's Project Plan checkbox, kept live so a PLAN_STATE update can sync its checked state without a full renderSettings() re-render. */
   let projectPlanCheckboxEl = null;
+  /**
+   * Which array the Metrics tab's TABLE currently displays: "all" (cumulative
+   * — totals since the last metrics reset) or "session" (current Claude Code
+   * session only). DEFAULT "all" so upgrading users see the exact same
+   * numbers they always have — see currentScopeMetrics()/setMetricsScope().
+   * Deliberately separate from `lastMetrics`, which always stays the
+   * CUMULATIVE array — the Delegation tab, Settings agent rows, and the
+   * roster-strip chips all read `lastMetrics` directly and must never change
+   * just because the Metrics tab's own scope toggle was flipped (see Part 3
+   * of the 0.0.528 session-scoping work: the Delegation tab states its own
+   * scope but has no toggle).
+   */
+  let metricsScope = "all";
+  /**
+   * Last `sessionMetrics` payload from MSG.STATE (0.0.528, see panel.ts's
+   * _postStateUpdate): `{available:true,sessionId,agentMetrics}` when the
+   * current session has been identified, or `{available:false,reason}`
+   * otherwise. Starts unavailable so the "This session" radio is disabled
+   * until the first state push confirms otherwise — never renders a
+   * fabricated "0 tokens this session".
+   */
+  let lastSessionMetrics = { available: false, reason: "Waiting for the first state update…" };
   /** Advisory-only threshold (ms): how long with no agent activity before the active task card shows a "may be stalled" note. Deterministic, no AI involved — purely a staleness signal off state.lastActivityAt. */
   const STALL_MS = 5 * 60 * 1000;
   /** Last computed isPlanStalled() result, used by the 1s ticker to re-render the plan section only when the stall state actually flips (not every tick). */
@@ -252,6 +280,98 @@
   // Paint the correct initial state before the first PLAN_STATE reply arrives
   // (projectPlanEnabled defaults false, so this just hides the tab bar).
   updateMetricsTabsUI();
+
+  // ── Metrics tab scope toggle: "This session" vs "All time" (0.0.528) ──
+  // Fixes the bug class where a correct-but-unlabelled cumulative token total
+  // read as "this session" to a reasonable user. See renderMetrics()/
+  // renderMetricsTable() below for how metricsScope actually changes what's
+  // painted; lastMetrics (the cumulative array used by the Delegation tab,
+  // Settings agent rows, and roster-strip chips) is never affected by this
+  // toggle.
+
+  /**
+   * The agentMetrics array the Metrics table should display right now, per
+   * `metricsScope`. Falls back to the cumulative array (`lastMetrics`)
+   * whenever "session" is selected but unavailable — updateMetricsScopeUI()
+   * is responsible for flipping metricsScope back to "all" in that case, so
+   * this is a defensive fallback, not the primary guard.
+   */
+  function currentScopeMetrics() {
+    if (
+      metricsScope === "session" &&
+      lastSessionMetrics &&
+      lastSessionMetrics.available &&
+      Array.isArray(lastSessionMetrics.agentMetrics)
+    ) {
+      return lastSessionMetrics.agentMetrics;
+    }
+    return lastMetrics;
+  }
+
+  /**
+   * Reflect (metricsScope, lastSessionMetrics) onto the toggle radios, the
+   * Tokens column header, and the always-visible scope caption. The active
+   * scope is stated in TWO places at once (header + caption) — never only
+   * implied by which radio happens to be checked — and "This session" is
+   * disabled with a reason (not hidden, not shown with fabricated zeros)
+   * whenever lastSessionMetrics.available is false.
+   */
+  function updateMetricsScopeUI() {
+    const available = !!(lastSessionMetrics && lastSessionMetrics.available);
+    const reason = (lastSessionMetrics && lastSessionMetrics.reason) || "Session data isn't available yet.";
+
+    // If session scope just became unavailable while selected, fall back to
+    // "all" rather than leaving the table on a scope that can no longer be
+    // reflected honestly.
+    if (!available && metricsScope === "session") {
+      metricsScope = "all";
+    }
+
+    if (metricsScopeSessionEl) {
+      metricsScopeSessionEl.disabled = !available;
+      metricsScopeSessionEl.title = available ? "" : reason;
+      metricsScopeSessionEl.checked = metricsScope === "session";
+    }
+    if (metricsScopeAllEl) {
+      metricsScopeAllEl.checked = metricsScope === "all";
+    }
+    if (metricsColTokensEl) {
+      metricsColTokensEl.textContent = metricsScope === "session" ? "Tokens (this session)" : "Tokens (all time)";
+      metricsColTokensEl.title =
+        metricsScope === "session"
+          ? "Total tokens this agent has used in the current Claude Code session only."
+          : "Total tokens this agent has used since the last metrics reset (all time).";
+    }
+    if (metricsScopeCaptionEl) {
+      metricsScopeCaptionEl.textContent =
+        metricsScope === "session"
+          ? "Showing this session only — activity from the current Claude Code session (sessionId " +
+            (lastSessionMetrics.sessionId || "unknown") +
+            ")."
+          : "Showing all time — totals since the last metrics reset." +
+            (available ? "" : " (\"This session\" is unavailable: " + reason + ")");
+    }
+  }
+
+  /** Switch the Metrics table's scope and re-render it immediately. */
+  function setMetricsScope(scope) {
+    metricsScope = scope === "session" ? "session" : "all";
+    updateMetricsScopeUI();
+    renderMetricsTable(currentScopeMetrics());
+  }
+
+  if (metricsScopeSessionEl) {
+    metricsScopeSessionEl.addEventListener("change", () => {
+      if (metricsScopeSessionEl.checked) setMetricsScope("session");
+    });
+  }
+  if (metricsScopeAllEl) {
+    metricsScopeAllEl.addEventListener("change", () => {
+      if (metricsScopeAllEl.checked) setMetricsScope("all");
+    });
+  }
+  // Paint the initial (disabled, "all") state before the first MSG.STATE push.
+  updateMetricsScopeUI();
 
   /** True when an earlier phase (lower num) still has a pending gate — mirrors src/host/vscode/projectPlan.ts's isPhaseUnblocked for read-only "locked" styling. No state is mutated client-side; the host is the source of truth. */
   function isProjectPlanPhaseLocked(plan, phase) {
@@ -11701,6 +11821,16 @@
           workerOrder.splice(i, 1);
         }
       }
+      // Session-scoped agentMetrics (0.0.528, see panel.ts's _postStateUpdate)
+      // for the Metrics tab's "This session" scope. Update BEFORE
+      // renderMetrics() so currentScopeMetrics() picks it up on this push,
+      // and BEFORE updateMetricsScopeUI() so the toggle/header/caption
+      // reflect the fresh availability immediately.
+      lastSessionMetrics =
+        msg.sessionMetrics && typeof msg.sessionMetrics === "object"
+          ? msg.sessionMetrics
+          : { available: false, reason: "Session data isn't available yet." };
+      updateMetricsScopeUI();
       // Update metrics panel
       renderMetrics(state.agentMetrics);
       renderDelegationStats(state.modeStats);
@@ -13042,11 +13172,7 @@
     return family;
   }
 
-  /**
-   * Render the agentMetrics array into the DOM table.
-   * @param {Array<{id:string,name:string,status:string,taskCount:number,mcpCount:number,activeMs:number,tokens:number,model?:string,description?:string,tier?:string,parentId?:string}>|undefined} metrics
-   */
-  /** Last metrics array received, re-rendered on a timer so live time ticks. */
+  /** Last CUMULATIVE metrics array received (state.agentMetrics), re-rendered on a timer so live time ticks. Always cumulative — see metricsScope's doc comment. */
   let lastMetrics = [];
 
   // Team Lead Mode Phase 3 previously nested workers under their lead
@@ -13186,8 +13312,25 @@
     return row;
   }
 
+  /**
+   * Record the CUMULATIVE agentMetrics array and paint the Metrics table for
+   * whichever scope is currently selected. `lastMetrics` always holds the
+   * cumulative array — see metricsScope's doc comment for why the Delegation
+   * tab/Settings/roster chips must never see the "This session" scope.
+   * @param {Array<Object>|undefined} metrics cumulative agentMetrics (state.agentMetrics)
+   */
   function renderMetrics(metrics) {
     lastMetrics = metrics || [];
+    renderMetricsTable(currentScopeMetrics());
+  }
+
+  /**
+   * Paint the Metrics table's DOM from an already-scope-resolved agentMetrics
+   * array (either the cumulative array or lastSessionMetrics.agentMetrics —
+   * see currentScopeMetrics()). Never touches `lastMetrics`.
+   * @param {Array<{id:string,name:string,status:string,taskCount:number,mcpCount:number,activeMs:number,tokens:number,model?:string,description?:string,tier?:string,parentId?:string}>|undefined} metrics
+   */
+  function renderMetricsTable(metrics) {
     const emptyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-empty"));
     const tableEl = /** @type {HTMLElement} */ (document.getElementById("metrics-table"));
     const tbodyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-tbody"));
@@ -13289,6 +13432,18 @@
     heading.className = "delegation-stats-heading";
     heading.textContent = "Delegation stats";
     el.appendChild(heading);
+
+    // Scope caption (0.0.528): this whole tab is always ALL TIME (since the
+    // last metrics reset) — it has no "This session"/"All time" toggle, only
+    // the Metrics tab does. State that explicitly, once, up top, so the two
+    // tabs can never be read as contradicting each other (e.g. a token total
+    // here looking "wrong" next to a smaller "This session" figure on the
+    // Metrics tab).
+    const scopeCaption = document.createElement("div");
+    scopeCaption.className = "delegation-stats-caption";
+    scopeCaption.textContent =
+      "All figures below are all time — totals since the last metrics reset, not scoped to the current session. Switch the Metrics tab to \"This session\" for current-session-only numbers.";
+    el.appendChild(scopeCaption);
 
     // ── 1. Hero savings ── how much cheaper the DELEGATED work (every
     // non-orchestrator agent) was than if the orchestrator's own model had

@@ -2996,3 +2996,127 @@ test('THEME_IMAGE_REVIEW: background_decor board renders a prefilled "Ranged pro
     h.win.close();
   }
 });
+
+// ── Metrics tab Session/All-time scope toggle (0.0.528) ─────────────────────
+// panel.ts's static HTML for the toggle radios lives at ~L8981-8990 inside
+// _getHtmlForWebview's template literal (id="metrics-scope-toggle", two
+// .model-radio labels) with the caption div (#metrics-scope-caption) right
+// after at ~L8991, and the "Tokens/min...Tokens (all time)" default header
+// text on the #metrics-col-tokens <th> at ~L9001. All of the actual scope
+// SWITCHING behavior these tests exercise — updateMetricsScopeUI(),
+// currentScopeMetrics(), setMetricsScope() — lives in media/main.js
+// (~L299-374), which is what these tests boot and drive.
+test('Metrics tab scope toggle: default scope is "all" on first render, before any state is ever received', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    // No dispatch yet — main.js's own module-init call to updateMetricsScopeUI()
+    // (media/main.js ~374) must already reflect metricsScope's "all" default.
+    const allEl = h.doc.getElementById('metrics-scope-all');
+    const sessionEl = h.doc.getElementById('metrics-scope-session');
+    assert.ok(allEl && sessionEl, 'both scope radios should exist in the skeleton');
+    assert.equal(allEl.checked, true, 'the "All time" radio must be checked by default');
+    assert.ok(!sessionEl.checked, 'the "This session" radio must NOT be checked by default');
+    const tokensHeader = h.doc.getElementById('metrics-col-tokens');
+    assert.ok(tokensHeader, 'the tokens column header should exist');
+    assert.equal(tokensHeader.textContent, 'Tokens (all time)', 'default header text must read "Tokens (all time)"');
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('Metrics tab scope toggle: token column header and scope caption change between "This session" and "All time", both non-empty', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 1,
+        workers: {},
+        agentMetrics: [{ id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', tokens: 3500, activeMs: 60000 }],
+      },
+      sessionMetrics: {
+        available: true,
+        sessionId: 'S2',
+        agentMetrics: [{ id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', tokens: 2500, activeMs: 40000 }],
+      },
+    });
+    await h.flush();
+    assert.equal(h.errors.length, 0, `post-dispatch errors: ${h.errors.map(String).join('; ')}`);
+
+    const tokensHeader = h.doc.getElementById('metrics-col-tokens');
+    const caption = h.doc.getElementById('metrics-scope-caption');
+    const allEl = h.doc.getElementById('metrics-scope-all');
+    const sessionEl = h.doc.getElementById('metrics-scope-session');
+
+    // Still "all" (default) right after this dispatch — nobody toggled yet.
+    assert.equal(tokensHeader.textContent, 'Tokens (all time)');
+    assert.ok(caption.textContent && caption.textContent.length > 0, 'caption must be non-empty while scope is "all"');
+    assert.match(caption.textContent, /all time/i);
+
+    // Switch to "This session" the same way a user click would: check the
+    // radio, then fire the 'change' event main.js listens for (media/main.js
+    // ~L363-367).
+    sessionEl.checked = true;
+    sessionEl.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors after switching to session scope: ${h.errors.map(String).join('; ')}`);
+
+    assert.equal(tokensHeader.textContent, 'Tokens (this session)', 'header text must switch when "This session" is selected');
+    assert.ok(caption.textContent && caption.textContent.length > 0, 'caption must be non-empty while scope is "session"');
+    assert.match(caption.textContent, /this session/i);
+    assert.match(caption.textContent, /S2/, 'the session caption should state the actual sessionId');
+
+    // Switch back to "All time".
+    allEl.checked = true;
+    allEl.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+    assert.equal(tokensHeader.textContent, 'Tokens (all time)', 'header text must switch back');
+    assert.ok(caption.textContent && caption.textContent.length > 0, 'caption must be non-empty again after switching back to "all"');
+    assert.match(caption.textContent, /all time/i);
+    assert.equal(h.errors.length, 0, `errors after switching back to all-time scope: ${h.errors.map(String).join('; ')}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('Delegation tab caption states its figures are all-time, with no Session/All-time toggle of its own', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    // A non-orchestrator agent with tokens > 0 makes delegationStatsHasData
+    // true (media/main.js renderDelegationStats, ~L13416-13419), which is
+    // what gates the Delegation tab button being offered at all.
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 1,
+        workers: {},
+        agentMetrics: [{ id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', tokens: 4000, activeMs: 90000, taskCount: 2 }],
+      },
+    });
+    await h.flush();
+    assert.equal(h.errors.length, 0, `post-dispatch errors: ${h.errors.map(String).join('; ')}`);
+
+    const delegationTabBtn = h.doc.getElementById('delegation-tab-btn');
+    assert.ok(delegationTabBtn, 'the Delegation tab button should exist');
+    delegationTabBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors after opening the Delegation tab: ${h.errors.map(String).join('; ')}`);
+
+    const delegationBody = h.doc.getElementById('delegation-stats');
+    assert.ok(delegationBody, 'delegation-stats body should exist');
+    const scopeCaption = delegationBody.querySelector('.delegation-stats-caption');
+    assert.ok(scopeCaption, 'the Delegation tab must render a scope caption');
+    assert.ok(scopeCaption.textContent && scopeCaption.textContent.length > 0, 'the caption must be non-empty');
+    assert.match(scopeCaption.textContent, /all time/i, 'the caption must state its figures are all-time');
+    assert.doesNotMatch(
+      (scopeCaption.textContent || '').toLowerCase(),
+      /this session only/,
+      'the Delegation tab has no session/all-time toggle of its own -- its caption must not claim to be session-scoped'
+    );
+  } finally {
+    h.win.close();
+  }
+});
