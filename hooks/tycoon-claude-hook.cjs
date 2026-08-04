@@ -590,6 +590,7 @@ function main(raw) {
 
     const tokens = extractSubagentTokens(payload);
     if (tokens !== undefined && tokens > 0) record.tokens = tokens;
+    if (payload.session_id) record.sessionId = payload.session_id;
 
     try {
       fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
@@ -764,6 +765,7 @@ function main(raw) {
     if (tokens !== undefined) record.tokens = tokens;
     if (model) record.model = model;
     if (delegationMode) record.delegationMode = delegationMode;
+    if (payload.session_id) record.sessionId = payload.session_id;
     try {
       fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
     } catch { /* ignore */ }

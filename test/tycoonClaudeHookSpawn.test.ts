@@ -418,3 +418,71 @@ test("Session Journal: a missing sessionJournalEntries key (execution.json absen
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// 0.0.531 fix: SubagentStop (~line 593) and Stop (~line 767) previously never
+// wrote `sessionId` onto their activity.jsonl record — the guard
+// `if (payload.session_id) record.sessionId = payload.session_id;` existed on
+// PreToolUse/UserPromptSubmit but was missing on these two branches. Because
+// panel.ts's session-scoped fold (_computeSessionDelegationHealth) could not
+// see a sessionId on these records, SubagentStop's taskCount/tokens never
+// landed in "This session" scope, and Stop never became a SessionStop event,
+// so the orchestrator's workStartAt was never cleared and activeMs compounded
+// across turns. These tests pin the hook-level half of the fix: both event
+// types now stamp the real session_id verbatim, and stamp NOTHING when the
+// payload has no session_id (no fabricated key).
+// ---------------------------------------------------------------------------
+
+test("hook stamps sessionId onto a SubagentStop record from payload.session_id", () => {
+  const root = setupProject();
+  try {
+    runHook(root, {
+      hook_event_name: "SubagentStop",
+      tool_input: { subagent_type: "coding-specialist" },
+      session_id: "sess-subagent-abc",
+    });
+    const records = readActivity(root);
+    const stop = records.find((r) => r.event === "SubagentStop");
+    assert.ok(stop, "expected a SubagentStop record");
+    assert.equal(stop!.sessionId, "sess-subagent-abc");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hook stamps sessionId onto a Stop record from payload.session_id", () => {
+  const root = setupProject();
+  try {
+    runHook(root, { hook_event_name: "Stop", session_id: "sess-stop-xyz" });
+    const records = readActivity(root);
+    const stop = records.find((r) => r.event === "Stop");
+    assert.ok(stop, "expected a Stop record");
+    assert.equal(stop!.sessionId, "sess-stop-xyz");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hook does not fabricate a sessionId key on SubagentStop or Stop when payload.session_id is absent", () => {
+  const root = setupProject();
+  try {
+    // No session_id field at all on either payload.
+    runHook(root, { hook_event_name: "SubagentStop", tool_input: { subagent_type: "coding-specialist" } });
+    runHook(root, { hook_event_name: "Stop" });
+    const records = readActivity(root);
+    const ssRecord = records.find((r) => r.event === "SubagentStop");
+    const stopRecord = records.find((r) => r.event === "Stop");
+    assert.ok(ssRecord, "expected a SubagentStop record");
+    assert.ok(stopRecord, "expected a Stop record");
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(ssRecord, "sessionId"),
+      "SubagentStop record must not carry a fabricated sessionId key when the payload omits session_id"
+    );
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(stopRecord, "sessionId"),
+      "Stop record must not carry a fabricated sessionId key when the payload omits session_id"
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

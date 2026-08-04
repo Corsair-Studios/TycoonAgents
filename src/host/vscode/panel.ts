@@ -7393,8 +7393,17 @@ export class TycoonPanel {
     const { records, newOffset } = this._readActivityRecordsSince(activityPath, fromOffset, stat.size);
     for (const record of records) {
       const sid = record.sessionId;
-      if (sid === undefined || sid === "") continue; // sessionId-less records never contribute to a session-scoped view
-      if (workingSessionId === undefined) {
+      if (sid === undefined || sid === "") {
+        // No sessionId on this record (older SubagentStop/Stop rows predate
+        // the fix that stamps them; some other event kind may still omit it).
+        // The log is append-only and chronological, so an unstamped record
+        // belongs to whichever session was already active when it was
+        // written -> inherit workingSessionId and let it contribute below.
+        // If no session has been identified yet, there is nothing to
+        // inherit into: the record precedes any known session and is
+        // skipped, same as before this fix.
+        if (workingSessionId === undefined) continue;
+      } else if (workingSessionId === undefined) {
         workingSessionId = sid;
       } else if (sid !== workingSessionId) {
         // Session boundary: everything folded so far belonged to the

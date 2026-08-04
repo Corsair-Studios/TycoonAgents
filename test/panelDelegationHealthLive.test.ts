@@ -12,6 +12,7 @@ import * as path from "node:path";
 import { initialWorldState, applyEvent, computeStateFromRecords } from "../src/core/state";
 import type { MetricsWorldState, AgentMetric } from "../src/core/state";
 import type { HookRecord } from "../src/providers/claude-code/hookRecord";
+import { mapHookRecord } from "../src/providers/claude-code/mapHookRecord";
 import { MSG } from "../src/host/vscode/messages";
 
 // Regression coverage for the v0.0.516 Delegation tab bug: the "Orchestrator
@@ -581,6 +582,182 @@ test("_postStateUpdate: sessionMetrics reflects ONLY the current session's token
     sessionCoder!.tokens,
     postedCumulativeCoder!.tokens,
     "session-scoped and cumulative totals must genuinely differ here -- if they were equal this test would pass trivially and prove nothing"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 0.0.531 fix, panel-level half: hooks/tycoon-claude-hook.cjs now stamps
+// sessionId onto SubagentStop and Stop records (see
+// test/tycoonClaudeHookSpawn.test.ts). This section pins what
+// _computeSessionDelegationHealth does with that: SubagentStop's
+// taskCount/tokens now fold into session scope, a record missing sessionId
+// inherits the already-known session (or is skipped if none is known yet),
+// a genuine session boundary still resets state, and none of this touches
+// the unrelated cumulative path.
+// ---------------------------------------------------------------------------
+
+test("_computeSessionDelegationHealth: SubagentStop's taskCount and tokens land in session scope with the exact reported numbers", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    { event: "UserPromptSubmit", sessionId: "S-task", at: T },
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", sessionId: "S-task", at: T + 1 },
+    { event: "SubagentStop", workerId: "coding-specialist", tokens: 4200, sessionId: "S-task", at: T + 2 },
+  ]);
+  const result = callSessionHealth(root);
+  assert.ok(result);
+  const coder = result.agentMetrics.find((m: AgentMetric) => m.id === "coding-specialist");
+  assert.ok(coder, "coding-specialist must appear in the session-scoped agentMetrics");
+  assert.equal(coder!.taskCount, 1, "SubagentStop's TaskCompleted must be counted -- was 0 before the fix");
+  assert.equal(coder!.tokens, 4200, "SubagentStop's tokens must be folded in -- was 0 before the fix (exact figure, not just > 0)");
+});
+
+test("_computeSessionDelegationHealth: a record with NO sessionId AFTER a session id is already known inherits into that session", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    { event: "PreToolUse", tool: "Grep", workerId: "orchestrator", sessionId: "S1", at: T },
+    // No sessionId here -- mirrors a pre-fix Stop/SubagentStop row written
+    // AFTER the session is already established. Must inherit "S1", not be dropped.
+    { event: "PreToolUse", tool: "Edit", workerId: "orchestrator", at: T + 1 },
+  ]);
+  const result = callSessionHealth(root);
+  assert.ok(result);
+  assert.equal(result.sessionId, "S1");
+  assert.equal(result.health.directSearches, 1, "Grep, tagged with S1");
+  assert.equal(result.health.directEdits, 1, "Edit with no sessionId must inherit S1 and be counted, not dropped");
+});
+
+test("_computeSessionDelegationHealth: a record with NO sessionId BEFORE any session id is known is skipped, not inherited backward", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    // No sessionId, and no session established yet -- nothing to inherit into.
+    { event: "PreToolUse", tool: "Edit", workerId: "orchestrator", at: T },
+    { event: "PreToolUse", tool: "Grep", workerId: "orchestrator", sessionId: "S1", at: T + 1 },
+  ]);
+  const result = callSessionHealth(root);
+  assert.ok(result);
+  assert.equal(result.sessionId, "S1");
+  assert.equal(result.health.directEdits, 0, "the sessionId-less Edit precedes any known session and must be skipped");
+  assert.equal(result.health.directSearches, 1, "Grep, tagged with S1, is counted");
+});
+
+test("_computeSessionDelegationHealth: a genuine session boundary (different non-empty sessionId) still resets -- prior session's tokens do not leak forward", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", sessionId: "S1", at: T },
+    { event: "SubagentStop", workerId: "coding-specialist", tokens: 999, sessionId: "S1", at: T + 1 },
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", sessionId: "S2", at: T + 2 },
+    { event: "SubagentStop", workerId: "coding-specialist", tokens: 111, sessionId: "S2", at: T + 3 },
+  ]);
+  const result = callSessionHealth(root);
+  assert.ok(result);
+  assert.equal(result.sessionId, "S2");
+  const coder = result.agentMetrics.find((m: AgentMetric) => m.id === "coding-specialist");
+  assert.ok(coder);
+  assert.equal(coder!.tokens, 111, "S1's 999 tokens must not leak into S2's total (would be 1110 if leaked)");
+  assert.equal(result.health.tokens, 111, "the aggregate session health.tokens must also exclude S1's 999");
+});
+
+test("computeStateFromRecords (cumulative path): the same two-session log's all-time total is unaffected by the session-path fix -- sums BOTH sessions", () => {
+  const allRecords: HookRecord[] = [
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", sessionId: "S1", at: T },
+    { event: "SubagentStop", workerId: "coding-specialist", tokens: 999, sessionId: "S1", at: T + 1 },
+    { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", sessionId: "S2", at: T + 2 },
+    { event: "SubagentStop", workerId: "coding-specialist", tokens: 111, sessionId: "S2", at: T + 3 },
+  ];
+  const cumulativeState = computeStateFromRecords(allRecords, undefined);
+  const coder = cumulativeState.agentMetrics.find((m) => m.id === "coding-specialist");
+  assert.ok(coder);
+  assert.equal(coder!.tokens, 1110, "cumulative/all-time must sum both sessions (999 + 111) -- proof only the session path moved");
+});
+
+// ---------------------------------------------------------------------------
+// 0.0.531 fix, THE headline regression: before the fix, Stop never carried
+// sessionId, so panel.ts's old unconditional "no sessionId -> skip" loop
+// dropped every Stop record from session scope. SessionStop therefore never
+// fired for the orchestrator, its workStartAt was never cleared, and each
+// SUBSEQUENT turn's SessionStart credited a stale, uncleared stretch to
+// activeMs instead of the new fix's clean per-turn finalize. Over many turns
+// this is unbounded: each turn boundary adds ~idleFreezeMs worth of phantom
+// credit regardless of how short the turn's real work was, which is how a
+// real activity.jsonl (many turns since project inception) reached the
+// reported ~7811 minutes for 0 real hours of matching work.
+//
+// This test constructs one session, 6 turns, each with exactly 60s of real
+// work (SessionStart -> PreToolUse 30s in -> Stop 60s in), separated by 1
+// hour idle gaps -- so total REAL elapsed work is exactly 6 * 60s = 360000ms
+// (6 min). Stop records omit sessionId (the exact pre-hook-fix shape) so the
+// CURRENT (fixed) panel.ts code path must inherit them into the session.
+//
+// The buggy comparison value is produced by re-running the same records
+// through the OLD unconditional-skip loop (no inheritance) using the real,
+// unmodified mapHookRecord/applyEvent/initialWorldState reducers -- only the
+// outer skip-vs-inherit loop differs, so the arithmetic is the genuine old
+// algorithm, not a guess.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reproduces the PRE-FIX outer loop from _computeSessionDelegationHealth:
+ * a record with no sessionId is unconditionally skipped, never inherited
+ * into the current session, regardless of whether a session is already
+ * known. Uses the real, unmodified reducer (mapHookRecord/applyEvent) --
+ * only this outer scoping loop is the old (buggy) shape.
+ */
+function foldOldBuggySessionState(records: HookRecord[]): MetricsWorldState {
+  let workingState: MetricsWorldState = initialWorldState();
+  let workingSessionId: string | undefined;
+  for (const record of records) {
+    const sid = record.sessionId;
+    if (sid === undefined || sid === "") continue; // OLD bug: unconditional skip, no inheritance
+    if (workingSessionId === undefined) {
+      workingSessionId = sid;
+    } else if (sid !== workingSessionId) {
+      workingState = initialWorldState();
+      workingSessionId = sid;
+    }
+    for (const event of mapHookRecord(record)) {
+      workingState = applyEvent(workingState, event);
+    }
+  }
+  return workingState;
+}
+
+test("_computeSessionDelegationHealth: activeMs across 6 turns is bounded by real elapsed work (360000ms), not the ~1050000ms the old skip-only fold produced", () => {
+  const SID = "S-compound";
+  const HOUR = 3600000;
+  const records: HookRecord[] = [];
+  let turnStart = T;
+  for (let i = 0; i < 6; i++) {
+    records.push({ event: "UserPromptSubmit", sessionId: SID, at: turnStart });
+    records.push({ event: "PreToolUse", tool: "Read", workerId: "orchestrator", sessionId: SID, at: turnStart + 30000 });
+    // Stop omits sessionId -- the exact pre-hook-fix shape this regression guards against.
+    records.push({ event: "Stop", at: turnStart + 60000 });
+    turnStart = turnStart + 60000 + HOUR; // 1 hour idle gap before the next turn
+  }
+
+  const root = tmpRoot();
+  writeActivity(root, records);
+  const fixed = callSessionHealth(root);
+  assert.ok(fixed, "6 turns all tagged with SID (directly or by inheritance) -- a session must be identified");
+  const fixedOrch = fixed.agentMetrics.find((m: AgentMetric) => m.id === "orchestrator");
+  assert.ok(fixedOrch);
+
+  const buggyState = foldOldBuggySessionState(records);
+  const buggyOrch = buggyState.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.ok(buggyOrch);
+
+  const REAL_ELAPSED_WORK_MS = 6 * 60000; // 360000ms = 6 minutes of actual turn spans
+  const OLD_BUGGY_ACTIVE_MS = 1050000; // 17.5 minutes -- computed by the same old-loop arithmetic above
+
+  assert.equal(fixedOrch!.activeMs, REAL_ELAPSED_WORK_MS, "fixed path: activeMs must equal exactly the real elapsed work across all 6 turns");
+  assert.equal(buggyOrch!.activeMs, OLD_BUGGY_ACTIVE_MS, "sanity: the old skip-only loop reproduces the known-buggy figure");
+  assert.notEqual(
+    fixedOrch!.activeMs,
+    buggyOrch!.activeMs,
+    "fixed and buggy totals must genuinely differ (360000ms vs 1050000ms) -- a trivially-equal test would prove nothing"
+  );
+  assert.ok(
+    fixedOrch!.activeMs <= REAL_ELAPSED_WORK_MS,
+    "fixed activeMs must never exceed the real elapsed work span -- it must not compound stale, uncleared stretches like the old bug did"
   );
 });
 
