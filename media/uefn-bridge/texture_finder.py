@@ -5,7 +5,7 @@ Browse and search all Texture2D assets in the Asset Registry, with a reverse
 reference map showing which Materials, MICs, and Niagara systems use each
 texture.  Runs inside UEFN's embedded Python 3.11 (requires ``unreal`` module).
 
-Provides four interfaces:
+Provides six interfaces:
   1. **find_texture_usage()**   — Asset Registry scan using get_dependencies(),
                                   returns structured dict (texture-centric)
   2. **find_texture_summary()** — compact grouped summary + unreal.log report
@@ -13,13 +13,22 @@ Provides four interfaces:
                                     (level scan — kept as-is)
   4. **browse_textures()**      — scan all project Texture2D assets and build a
                                   reverse reference map (used by the Explorer UI)
-  5. **show_texture_finder()** — Tkinter UI: browsable Texture Explorer with
-                                  live filter, orphan detection, and refresh
+  5. **show_texture_finder()** — standalone Tkinter window (own Toplevel,
+                                  tick-pump, and auto-refresh)
+  6. **build_texture_view(parent, status_callback=None)** — embeddable half of
+                                  the same UI: builds the treeview/filter
+                                  widgets directly into a caller-supplied
+                                  container (no window/mainloop/tick-pump of
+                                  its own) and returns a handle with a
+                                  ``.refresh()`` callable, for a future host
+                                  window that composes this alongside
+                                  material_browser.build_material_view() in a
+                                  tabbed layout.
 
 Usage:
     from texture_finder import find_texture_usage, find_texture_summary
     from texture_finder import list_textures_on_actor, browse_textures
-    from texture_finder import show_texture_finder
+    from texture_finder import show_texture_finder, build_texture_view
 """
 
 import os
@@ -28,6 +37,7 @@ import unreal
 import traceback
 import webbrowser
 from fnmatch import fnmatch
+from types import SimpleNamespace
 
 try:
     import tkinter as tk
@@ -929,19 +939,100 @@ def show_texture_finder():
     root.geometry("1100x640")
     root.minsize(800, 400)
 
+    handle = build_texture_view(root)
+
+    # ------------------------------------------------------------------
+    # Tick callback for tkinter event pump
+    # ------------------------------------------------------------------
+    def _tick(_delta):
+        try:
+            if root.winfo_exists():
+                root.update()
+            else:
+                _cleanup()
+        except tk.TclError:
+            _cleanup()
+        except Exception:
+            pass
+
+    def _cleanup():
+        if _tick_handle[0] is not None:
+            try:
+                unreal.unregister_slate_post_tick_callback(_tick_handle[0])
+            except Exception:
+                pass
+            _tick_handle[0] = None
+
+    def _on_close():
+        _cleanup()
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
+
+    _tick_handle[0] = unreal.register_slate_post_tick_callback(_tick)
+
+    # Auto-load all textures on open
+    handle.refresh()
+    root.update()  # force initial render with stats populated
+
+    unreal.log("texture_explorer: UI opened. Use show_texture_finder() to reopen if closed.")
+
+
+def build_texture_view(parent, status_callback=None):
+    """
+    Build the Texture Explorer view's widgets directly inside *parent*.
+
+    This is the extracted, embeddable half of the UI: it creates NO
+    top-level window, calls no ``mainloop()``, and registers no tick-pump
+    of its own — the caller owns all three (either :func:`show_texture_finder`
+    for the standalone window above, or a future composing host window that
+    embeds this alongside the Material Browser view in a tabbed layout).
+
+    Parameters
+    ----------
+    parent : tkinter widget
+        Container the view's widgets are packed into directly — a
+        Toplevel/Tk root for standalone use, or e.g. a ``ttk.Notebook`` tab
+        Frame when embedded in a composing window.
+    status_callback : callable(str) or None
+        When provided, every status-line update (the same text the
+        standalone window shows in its own status bar — see
+        :func:`show_texture_finder`'s docstring) is ALSO forwarded to this
+        callback, and this view does not pack/show its own status bar
+        widget (the host is expected to render the text itself). When None
+        (default), the view shows its own status bar exactly as it does
+        standalone today. The status TEXT itself is unchanged either way.
+
+    Returns
+    -------
+    types.SimpleNamespace
+        ``.refresh``   — callable(); re-runs :func:`browse_textures` and
+                         repopulates the view. This is exactly what the
+                         Refresh button calls, exposed so a composing host
+                         can trigger a rescan per tab.
+        ``.root``      — the resolved Tk/Toplevel window
+                         (``parent.winfo_toplevel()``), for callers that
+                         need a real window reference (dialogs, etc.).
+        ``.container`` — the *parent* widget passed in, echoed back.
+    """
+    _root = parent.winfo_toplevel()
+
     _logo_img = None
     try:
         _script_dir = os.path.dirname(os.path.abspath(__file__))
         _logo_path = os.path.join(_script_dir, "trashbyrd_40x40.png")
         if os.path.isfile(_logo_path):
-            _logo_img = tk.PhotoImage(file=_logo_path, master=root)
+            _logo_img = tk.PhotoImage(file=_logo_path, master=_root)
     except Exception:
         pass
 
     # ------------------------------------------------------------------
     # Style
     # ------------------------------------------------------------------
-    style = ttk.Style(root)
+    style = ttk.Style(_root)
     style.theme_use("clam")
 
     style.configure("Dark.TFrame", background=_BG)
@@ -1010,15 +1101,15 @@ def show_texture_finder():
         selectforeground=[("readonly", "#1A1A1A")],
     )
     # Force the dropdown listbox colors (tk, not ttk)
-    root.option_add("*TCombobox*Listbox.background", _ENTRY_BG)
-    root.option_add("*TCombobox*Listbox.foreground", _ENTRY_FG)
-    root.option_add("*TCombobox*Listbox.selectBackground", "#F6D9C9")
-    root.option_add("*TCombobox*Listbox.selectForeground", "#1A1A1A")
+    _root.option_add("*TCombobox*Listbox.background", _ENTRY_BG)
+    _root.option_add("*TCombobox*Listbox.foreground", _ENTRY_FG)
+    _root.option_add("*TCombobox*Listbox.selectBackground", "#F6D9C9")
+    _root.option_add("*TCombobox*Listbox.selectForeground", "#1A1A1A")
 
     # ------------------------------------------------------------------
     # Top bar: Filter | Project Only checkbox | Refresh button
     # ------------------------------------------------------------------
-    search_frame = ttk.Frame(root, style="Dark.TFrame", padding=(12, 10))
+    search_frame = ttk.Frame(parent, style="Dark.TFrame", padding=(12, 10))
     search_frame.pack(fill="x", side="top")
 
     ttk.Label(search_frame, text="Trashbyrd's Texture Explorer", style="Header.TLabel").pack(
@@ -1061,7 +1152,7 @@ def show_texture_finder():
     # Results treeview (two-level: Texture > Referencing asset)
     # Columns: Name (#0 tree) | Type | Refs | Path
     # ------------------------------------------------------------------
-    tree_frame = ttk.Frame(root, style="Section.TFrame")
+    tree_frame = ttk.Frame(parent, style="Section.TFrame")
     tree_frame.pack(fill="both", expand=True, padx=10, pady=(4, 0))
 
     columns = ("type_col", "refs_col", "path_col")
@@ -1095,7 +1186,7 @@ def show_texture_finder():
     # ------------------------------------------------------------------
     # Footer
     # ------------------------------------------------------------------
-    footer_frame = tk.Frame(root, bg=_SECTION_BG, padx=8, pady=2)
+    footer_frame = tk.Frame(parent, bg=_SECTION_BG, padx=8, pady=2)
     footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
     count_label_var = tk.StringVar(value="")
@@ -1128,9 +1219,25 @@ def show_texture_finder():
     # ------------------------------------------------------------------
     # Status bar (above footer)
     # ------------------------------------------------------------------
+    # status_var/status_bar hold the SAME text shown standalone today; when
+    # status_callback is supplied (embedded use) the host renders that text
+    # itself, so this view's own status bar is built (for _set_status below
+    # to stay unconditional) but not packed/shown, avoiding a duplicate.
     status_var = tk.StringVar(value="Loading textures...")
-    status_bar = ttk.Label(root, textvariable=status_var, style="Status.TLabel", anchor="w")
-    status_bar.pack(fill="x", side="bottom", padx=0)
+    status_bar = ttk.Label(parent, textvariable=status_var, style="Status.TLabel", anchor="w")
+    if status_callback is None:
+        status_bar.pack(fill="x", side="bottom", padx=0)
+
+    def _set_status(text):
+        """Update the status line text — always updates this view's own
+        status_var, and forwards to status_callback when the host supplied
+        one, so an embedded host can render the identical text itself."""
+        status_var.set(text)
+        if status_callback is not None:
+            try:
+                status_callback(text)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Browse cache and filter logic
@@ -1182,21 +1289,21 @@ def show_texture_finder():
         total   = result["total_textures"]
         shown   = len(textures)
         checked = result["total_assets_checked"]
-        status_var.set(f"Showing {shown} of {total} textures  [checked {checked} assets]")
+        _set_status(f"Showing {shown} of {total} textures  [checked {checked} assets]")
         count_label_var.set(f"{n_referenced} referenced | {n_orphaned} orphaned")
 
     def _on_refresh():
         """Re-scan the Asset Registry and refresh the view."""
         refresh_btn.configure(text="Scanning...", state="disabled")
-        status_var.set("Scanning Asset Registry...")
-        root.update_idletasks()
+        _set_status("Scanning Asset Registry...")
+        _root.update_idletasks()
         try:
             result = browse_textures(project_only=_project_only_state[0])
             _browse_cache[0] = result
             _apply_filter()
         except Exception as e:
             unreal.log_error(f"texture_explorer UI: scan failed — {traceback.format_exc()}")
-            status_var.set(f"Error during scan: {e}")
+            _set_status(f"Error during scan: {e}")
         finally:
             refresh_btn.configure(text="Refresh", state="normal")
 
@@ -1222,48 +1329,11 @@ def show_texture_finder():
         if not asset_path:
             return
         if _copy_text_to_system_clipboard(asset_path):
-            status_var.set(f"Copied to clipboard: {asset_path}")
+            _set_status(f"Copied to clipboard: {asset_path}")
             unreal.log(f"texture_explorer: Copied to clipboard — {asset_path}")
         else:
-            _show_copy_fallback_popup(root, asset_path, title="Copy asset path")
+            _show_copy_fallback_popup(_root, asset_path, title="Copy asset path")
 
     tree.bind("<Double-1>", _on_double_click)
 
-    # ------------------------------------------------------------------
-    # Tick callback for tkinter event pump
-    # ------------------------------------------------------------------
-    def _tick(_delta):
-        try:
-            if root.winfo_exists():
-                root.update()
-            else:
-                _cleanup()
-        except tk.TclError:
-            _cleanup()
-        except Exception:
-            pass
-
-    def _cleanup():
-        if _tick_handle[0] is not None:
-            try:
-                unreal.unregister_slate_post_tick_callback(_tick_handle[0])
-            except Exception:
-                pass
-            _tick_handle[0] = None
-
-    def _on_close():
-        _cleanup()
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
-    root.protocol("WM_DELETE_WINDOW", _on_close)
-
-    _tick_handle[0] = unreal.register_slate_post_tick_callback(_tick)
-
-    # Auto-load all textures on open
-    _on_refresh()
-    root.update()  # force initial render with stats populated
-
-    unreal.log("texture_explorer: UI opened. Use show_texture_finder() to reopen if closed.")
+    return SimpleNamespace(refresh=_on_refresh, root=_root, container=parent)

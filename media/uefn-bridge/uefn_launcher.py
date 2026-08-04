@@ -182,21 +182,15 @@ _TOOLS = [
     },
     {
         "icon": "\U0001f3a8",  # palette
-        "name": "Material Browser",
-        "description": "Browse materials, view textures, find unused",
-        "action": "material_browser",
+        "name": "Material & Texture Browser",
+        "description": "Browse materials and textures, see cross-references, find unused",
+        "action": "material_texture_browser",
     },
     {
         "icon": "\u2728",  # sparkles
         "name": "Niagara Inspector",
         "description": "Browse VFX systems, find dependencies and usage",
         "action": "niagara_inspector",
-    },
-    {
-        "icon": "\U0001f5bc",  # framed picture
-        "name": "Texture Explorer",
-        "description": "Browse textures, find references and orphans",
-        "action": "texture_finder",
     },
     {
         "icon": "\U0001f517",  # link
@@ -1005,8 +999,9 @@ def _launch_tag_inspect():
 # the original elif branch exactly, which never wrapped this one call.
 _TOOL_DISPATCH = {
     "device_audit": lambda: _launch_reloaded("device_audit", "run_audit", "Device Audit"),
-    "material_browser": lambda: _launch_reloaded("material_browser", "show_material_browser", "Material Browser"),
-    "texture_finder": lambda: _launch_reloaded("texture_finder", "show_texture_finder", "Texture Finder"),
+    "material_texture_browser": lambda: _launch_reloaded(
+        "material_texture_browser", "show_material_texture_browser", "Material & Texture Browser"
+    ),
     "niagara_inspector": lambda: _launch_reloaded("niagara_inspector", "show_niagara_inspector", "Niagara Inspector"),
     "dependency_viewer": lambda: _launch_reloaded("dependency_viewer", "show_dependency_viewer", "Dependency Viewer"),
     "health_scanner": lambda: _launch_reloaded("health_scanner", "show_health_scanner", "Project Health"),

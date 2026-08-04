@@ -5,20 +5,31 @@ Browse all project materials, inspect their texture dependencies, and find
 unused materials in the current level.  Runs inside UEFN's embedded
 Python 3.11 (requires the ``unreal`` module).
 
-Provides three interfaces:
+Provides four interfaces:
   1. **browse_materials()**        — Asset Registry scan; returns structured dict
   2. **find_unused_materials()**   — compare registry materials vs level actors
-  3. **show_material_browser()**   — Tkinter UI with treeview and live filter
+  3. **show_material_browser()**   — standalone Tkinter window (own Toplevel,
+                                     tick-pump, and auto-refresh)
+  4. **build_material_view(parent, status_callback=None)** — embeddable half
+                                     of the same UI: builds the treeview/filter
+                                     widgets directly into a caller-supplied
+                                     container (no window/mainloop/tick-pump
+                                     of its own) and returns a handle with a
+                                     ``.refresh()`` callable, for a future
+                                     host window that composes this alongside
+                                     texture_finder.build_texture_view() in a
+                                     tabbed layout.
 
 Usage:
     from material_browser import browse_materials, find_unused_materials
-    from material_browser import show_material_browser
+    from material_browser import show_material_browser, build_material_view
 """
 
 import os
 import subprocess
 import unreal
 import traceback
+from types import SimpleNamespace
 
 try:
     import tkinter as tk
@@ -605,57 +616,50 @@ def find_unused_materials(project_only=True):
 # Tkinter UI
 # ---------------------------------------------------------------------------
 
-def show_material_browser():
+def build_material_view(parent, status_callback=None):
     """
-    Open the Material Browser UI window.
+    Build the Material Browser view's widgets directly inside *parent*.
 
-    Features
-    --------
-    - Filter entry for real-time name substring filtering (no re-scan)
-    - "Project Only" checkbox — limits results to the project prefix
-    - "Show Unused Only" checkbox — filters to materials with no actor reference
-    - Refresh button — re-runs :func:`browse_materials` and optionally
-      :func:`find_unused_materials`
-    - Hierarchical treeview:
-        Level 1 — Material (Name | Type | Texture Count | Path)
-        Level 2 — Texture dependency (texture name | "Texture" | "" | path)
-    - Double-click a material/texture to select it in the Content Browser
-      (actor rows select the actor in the level; clipboard copy is the fallback)
-    - Status bar: "Showing X of Y <scope label> (Z unused within this same
-      scope) [N textures total]" — the scope label states whether results
-      are project-scoped (allow-listed to the detected project prefix),
-      deny-list-only (prefix undetected — may include non-project mounts),
-      or unfiltered (includes Engine/Fortnite content), so the count is
-      never mistaken for a project-wide figure it isn't.
-    - Tkinter event pump via ``unreal.register_slate_post_tick_callback``
+    This is the extracted, embeddable half of the UI: it creates NO
+    top-level window, calls no ``mainloop()``, and registers no tick-pump
+    of its own — the caller owns all three (either :func:`show_material_browser`
+    for the standalone window below, or a future composing host window that
+    embeds this alongside the Texture Explorer view in a tabbed layout).
+
+    Parameters
+    ----------
+    parent : tkinter widget
+        Container the view's widgets are packed into directly — a
+        Toplevel/Tk root for standalone use, or e.g. a ``ttk.Notebook`` tab
+        Frame when embedded in a composing window.
+    status_callback : callable(str) or None
+        When provided, every status-line update (the same text the
+        standalone window shows in its own status bar — see
+        :func:`show_material_browser`'s docstring) is ALSO forwarded to
+        this callback, and this view does not pack/show its own status bar
+        widget (the host is expected to render the text itself). When None
+        (default), the view shows its own status bar exactly as it does
+        standalone today. The status TEXT itself is unchanged either way.
+
+    Returns
+    -------
+    types.SimpleNamespace
+        ``.refresh``   — callable(); re-runs :func:`browse_materials` (and
+                         :func:`find_unused_materials`) and repopulates the
+                         view. This is exactly what the Refresh button
+                         calls, exposed so a composing host can trigger a
+                         rescan per tab.
+        ``.root``      — the resolved Tk/Toplevel window
+                         (``parent.winfo_toplevel()``), for callers that
+                         need a real window reference (dialogs, etc.).
+        ``.container`` — the *parent* widget passed in, echoed back.
     """
-    if not _HAS_TKINTER:
-        unreal.log_error("material_browser: tkinter is not available in this environment.")
-        return
-
-    # ------------------------------------------------------------------
-    # Root window
-    # ------------------------------------------------------------------
-    _master = tk._default_root
-    root = tk.Toplevel(_master) if _master is not None else tk.Tk()
-    root.title("Material Browser")
-    root.configure(bg=_BG)
-    root.geometry("1200x700")
-
-    _logo_img = None
-    try:
-        _script_dir = os.path.dirname(os.path.abspath(__file__))
-        _logo_path = os.path.join(_script_dir, "trashbyrd_40x40.png")
-        if os.path.isfile(_logo_path):
-            _logo_img = tk.PhotoImage(file=_logo_path, master=root)
-    except Exception:
-        pass
-    root.minsize(800, 400)
+    _root = parent.winfo_toplevel()
 
     # ------------------------------------------------------------------
     # Style
     # ------------------------------------------------------------------
-    style = ttk.Style(root)
+    style = ttk.Style(_root)
     style.theme_use("clam")
 
     style.configure("Dark.TFrame",   background=_BG)
@@ -723,15 +727,15 @@ def show_material_browser():
         selectbackground=[("readonly", "#F6D9C9")],
         selectforeground=[("readonly", "#1A1A1A")],
     )
-    root.option_add("*TCombobox*Listbox.background",       _ENTRY_BG)
-    root.option_add("*TCombobox*Listbox.foreground",       _ENTRY_FG)
-    root.option_add("*TCombobox*Listbox.selectBackground", "#F6D9C9")
-    root.option_add("*TCombobox*Listbox.selectForeground", "#1A1A1A")
+    _root.option_add("*TCombobox*Listbox.background",       _ENTRY_BG)
+    _root.option_add("*TCombobox*Listbox.foreground",       _ENTRY_FG)
+    _root.option_add("*TCombobox*Listbox.selectBackground", "#F6D9C9")
+    _root.option_add("*TCombobox*Listbox.selectForeground", "#1A1A1A")
 
     # ------------------------------------------------------------------
     # Top bar: title + controls
     # ------------------------------------------------------------------
-    top_frame = ttk.Frame(root, style="Dark.TFrame", padding=(12, 10))
+    top_frame = ttk.Frame(parent, style="Dark.TFrame", padding=(12, 10))
     top_frame.pack(fill="x", side="top")
 
     ttk.Label(top_frame, text="Material Browser", style="Header.TLabel").pack(
@@ -771,7 +775,7 @@ def show_material_browser():
     # Main treeview — 2 levels: material > texture dependency
     # Columns: Name (#0 tree) | Type | Tex Count | Path
     # ------------------------------------------------------------------
-    tree_frame = ttk.Frame(root, style="Section.TFrame")
+    tree_frame = ttk.Frame(parent, style="Section.TFrame")
     tree_frame.pack(fill="both", expand=True, padx=10, pady=(4, 0))
 
     columns = ("type_col", "tex_count_col", "path_col")
@@ -804,7 +808,7 @@ def show_material_browser():
     # ------------------------------------------------------------------
     # Status bar + footer
     # ------------------------------------------------------------------
-    footer_frame = tk.Frame(root, bg=_SECTION_BG, padx=8, pady=2)
+    footer_frame = tk.Frame(parent, bg=_SECTION_BG, padx=8, pady=2)
     footer_frame.pack(fill="x", side="bottom")
 
     count_label_var = tk.StringVar(value="")
@@ -817,9 +821,25 @@ def show_material_browser():
     )
     count_label.pack(side=tk.LEFT)
 
+    # status_var/status_bar hold the SAME text shown standalone today; when
+    # status_callback is supplied (embedded use) the host renders that text
+    # itself, so this view's own status bar is built (for _set_status below
+    # to stay unconditional) but not packed/shown, avoiding a duplicate.
     status_var = tk.StringVar(value="Click Refresh to load materials.")
-    status_bar = ttk.Label(root, textvariable=status_var, style="Status.TLabel", anchor="w")
-    status_bar.pack(fill="x", side="bottom")
+    status_bar = ttk.Label(parent, textvariable=status_var, style="Status.TLabel", anchor="w")
+    if status_callback is None:
+        status_bar.pack(fill="x", side="bottom")
+
+    def _set_status(text):
+        """Update the status line text — always updates this view's own
+        status_var, and forwards to status_callback when the host supplied
+        one, so an embedded host can render the identical text itself."""
+        status_var.set(text)
+        if status_callback is not None:
+            try:
+                status_callback(text)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Populate treeview from cached results + current filter state
@@ -920,7 +940,7 @@ def show_material_browser():
         else:
             scope_label = "ALL materials, INCLUDING Engine/Fortnite content"
 
-        status_var.set(
+        _set_status(
             f"Showing {shown} of {total} {scope_label}  "
             f"({unused_count} unused within this same scope)  "
             f"[{total_tex} texture refs total]"
@@ -931,8 +951,8 @@ def show_material_browser():
     # ------------------------------------------------------------------
     def _on_refresh():
         refresh_btn.configure(text="Scanning...", state="disabled")
-        status_var.set("Scanning Asset Registry...")
-        root.update_idletasks()
+        _set_status("Scanning Asset Registry...")
+        _root.update_idletasks()
 
         try:
             project_only = True
@@ -940,15 +960,15 @@ def show_material_browser():
             _last_browse_result[0] = browse_result
 
             # Also compute unused-material info
-            status_var.set("Checking level actors for unused materials...")
-            root.update_idletasks()
+            _set_status("Checking level actors for unused materials...")
+            _root.update_idletasks()
             unused_result = find_unused_materials(project_only=project_only)
             _last_unused_result[0] = unused_result
 
             _apply_filter()
         except Exception as e:
             unreal.log_error(f"material_browser UI: refresh failed — {traceback.format_exc()}")
-            status_var.set(f"Error during scan: {e}")
+            _set_status(f"Error during scan: {e}")
         finally:
             refresh_btn.configure(text="Refresh", state="normal")
 
@@ -1032,10 +1052,10 @@ def show_material_browser():
         if "actor" in tags and not path:
             label = text.strip()
             if _select_actor_by_label(label):
-                status_var.set(f"Selected actor in level: {label}")
+                _set_status(f"Selected actor in level: {label}")
                 unreal.log(f"material_browser: Selected actor — {label}")
             else:
-                status_var.set(f"Could not find actor in level: {label}")
+                _set_status(f"Could not find actor in level: {label}")
             return
 
         if not path:
@@ -1043,17 +1063,78 @@ def show_material_browser():
 
         # Asset rows (material or texture) — sync the Content Browser.
         if _select_in_content_browser(path):
-            status_var.set(f"Selected in Content Browser: {path}")
+            _set_status(f"Selected in Content Browser: {path}")
             unreal.log(f"material_browser: Selected in Content Browser — {path}")
         else:
             # Never a no-op: fall back to the old clipboard behaviour.
             if _copy_text_to_system_clipboard(path):
-                status_var.set(f"Content Browser API unavailable — copied path to clipboard: {path}")
+                _set_status(f"Content Browser API unavailable — copied path to clipboard: {path}")
                 unreal.log_warning(f"material_browser: CB sync unavailable, copied to clipboard — {path}")
             else:
-                _show_copy_fallback_popup(root, path, title="Copy asset path")
+                _show_copy_fallback_popup(_root, path, title="Copy asset path")
 
     tree.bind("<Double-1>", _on_double_click)
+
+    return SimpleNamespace(refresh=_on_refresh, root=_root, container=parent)
+
+
+# ---------------------------------------------------------------------------
+# Standalone window — thin wrapper around build_material_view()
+# ---------------------------------------------------------------------------
+
+def show_material_browser():
+    """
+    Open the Material Browser UI window.
+
+    Features
+    --------
+    - Filter entry for real-time name substring filtering (no re-scan)
+    - "Project Only" checkbox — limits results to the project prefix
+    - "Show Unused Only" checkbox — filters to materials with no actor reference
+    - Refresh button — re-runs :func:`browse_materials` and optionally
+      :func:`find_unused_materials`
+    - Hierarchical treeview:
+        Level 1 — Material (Name | Type | Texture Count | Path)
+        Level 2 — Texture dependency (texture name | "Texture" | "" | path)
+    - Double-click a material/texture to select it in the Content Browser
+      (actor rows select the actor in the level; clipboard copy is the fallback)
+    - Status bar: "Showing X of Y <scope label> (Z unused within this same
+      scope) [N textures total]" — the scope label states whether results
+      are project-scoped (allow-listed to the detected project prefix),
+      deny-list-only (prefix undetected — may include non-project mounts),
+      or unfiltered (includes Engine/Fortnite content), so the count is
+      never mistaken for a project-wide figure it isn't.
+    - Tkinter event pump via ``unreal.register_slate_post_tick_callback``
+
+    This function owns the top-level window, the tick-pump, and the initial
+    auto-refresh; the widgets themselves are built by
+    :func:`build_material_view`, which can also be embedded inside another
+    window's container (e.g. a combined Material/Texture browser tab).
+    """
+    if not _HAS_TKINTER:
+        unreal.log_error("material_browser: tkinter is not available in this environment.")
+        return
+
+    # ------------------------------------------------------------------
+    # Root window
+    # ------------------------------------------------------------------
+    _master = tk._default_root
+    root = tk.Toplevel(_master) if _master is not None else tk.Tk()
+    root.title("Material Browser")
+    root.configure(bg=_BG)
+    root.geometry("1200x700")
+
+    _logo_img = None
+    try:
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _logo_path = os.path.join(_script_dir, "trashbyrd_40x40.png")
+        if os.path.isfile(_logo_path):
+            _logo_img = tk.PhotoImage(file=_logo_path, master=root)
+    except Exception:
+        pass
+    root.minsize(800, 400)
+
+    handle = build_material_view(root)
 
     # ------------------------------------------------------------------
     # Tick pump — pump tkinter events from Unreal's Slate tick
@@ -1088,7 +1169,7 @@ def show_material_browser():
     _tick_handle[0] = unreal.register_slate_post_tick_callback(_tick)
 
     # Auto-load on open
-    _on_refresh()
+    handle.refresh()
     root.update()  # force initial render with stats populated
 
     unreal.log("material_browser: UI opened. Use show_material_browser() to reopen if closed.")
