@@ -1155,6 +1155,212 @@ class DeepProbeActorTests(unittest.TestCase):
         self.assertEqual(len(finding["tag_component"]["properties"]), cap)
 
 
+class _FakeContextActor:
+    """Fake actor exposing every signal _deep_probe_actor_context reads
+    (UE class, package, path_name, data_layers, folder), each
+    independently configurable to raise, so per-signal error isolation
+    can be tested precisely. Purely a plain object -- this function
+    touches no `unreal` name at all, so no patching is needed to call it."""
+    def __init__(
+        self, ue_class="SomeActor", package="/Game/Actor1", path_name="/Game/Level.Actor1",
+        data_layers=None, folder="/Rooms/R1",
+        raise_on_class=False, raise_on_package=False, raise_on_path_name=False,
+        raise_on_data_layers=False, raise_on_folder=False,
+    ):
+        self._ue_class = ue_class
+        self._package = package
+        self._path_name = path_name
+        self._data_layers = data_layers
+        self._folder = folder
+        self._raise_on_class = raise_on_class
+        self._raise_on_package = raise_on_package
+        self._raise_on_path_name = raise_on_path_name
+        self._raise_on_data_layers = raise_on_data_layers
+        self._raise_on_folder = raise_on_folder
+
+    def get_class(self):
+        if self._raise_on_class:
+            raise RuntimeError("boom class")
+        return _FakeClassInfo(self._ue_class)
+
+    def get_outermost(self):
+        if self._raise_on_package:
+            raise RuntimeError("boom package")
+        return _FakeClassInfo(self._package)
+
+    def get_path_name(self):
+        if self._raise_on_path_name:
+            raise RuntimeError("boom path")
+        return self._path_name
+
+    def get_editor_property(self, name):
+        if name in ("data_layer_assets", "data_layers", "actor_data_layers"):
+            if self._raise_on_data_layers:
+                raise RuntimeError("boom data layers")
+            return self._data_layers
+        raise AttributeError(name)
+
+    def get_folder_path(self):
+        if self._raise_on_folder:
+            raise RuntimeError("boom folder")
+        return self._folder
+
+
+class DeepProbeActorContextTests(unittest.TestCase):
+    def test_all_signals_succeed_populate_context_with_no_errors(self):
+        actor = _FakeContextActor(
+            ue_class="SGMarker", package="/Game/Rooms/R1/Actor1", path_name="/Game/Rooms/R1.Actor1",
+            data_layers=["LayerA", "LayerB"], folder="/Rooms/R1",
+        )
+        ctx = tag_inspect._deep_probe_actor_context(actor, component_count=5)
+        self.assertEqual(ctx["class_name"]["ue_class"], "SGMarker")
+        self.assertTrue(ctx["class_name"]["py_type"])
+        self.assertEqual(ctx["package"], "/Game/Rooms/R1/Actor1")
+        self.assertEqual(ctx["path_name"], "/Game/Rooms/R1.Actor1")
+        self.assertEqual(ctx["folder"], "/Rooms/R1")
+        self.assertEqual(ctx["component_count"], 5)
+        self.assertIn("LayerA", ctx["data_layers"][0])
+        self.assertIn("LayerB", ctx["data_layers"][1])
+        self.assertEqual(ctx["errors"], [])
+
+    def test_class_path_and_folder_raising_are_recorded_independently(self):
+        actor = _FakeContextActor(
+            package="/Game/Rooms/R1/Actor1", data_layers=["LayerA"],
+            raise_on_class=True, raise_on_path_name=True, raise_on_folder=True,
+        )
+        ctx = tag_inspect._deep_probe_actor_context(actor, component_count=3)
+        # py_type is read independently of ue_class and still succeeds
+        # even though the ue_class accessor raised.
+        self.assertTrue(ctx["class_name"]["py_type"])
+        self.assertIsNone(ctx["class_name"]["ue_class"])
+        self.assertEqual(ctx["path_name"], "unavailable")
+        self.assertEqual(ctx["folder"], "unavailable")
+        # Signals that did NOT raise still populate correctly -- one bad
+        # accessor must never blank the rest.
+        self.assertEqual(ctx["package"], "/Game/Rooms/R1/Actor1")
+        self.assertIn("LayerA", ctx["data_layers"][0])
+        wheres = {e["where"] for e in ctx["errors"]}
+        self.assertEqual(wheres, {"context.class_name(ue)", "context.path_name", "context.folder"})
+        self.assertTrue(all(e["exception_class"] == "RuntimeError" for e in ctx["errors"]))
+
+    def test_data_layers_get_editor_property_raising_for_all_attempts_falls_through_silently(self):
+        """Verified against the source: a get_editor_property() raise for
+        an attempt_name is a silent `continue` to the next attempt_name --
+        it is NOT recorded in context["errors"] (only a failure to
+        ITERATE an already-successfully-read value is)."""
+        actor = _FakeContextActor(raise_on_data_layers=True)
+        ctx = tag_inspect._deep_probe_actor_context(actor, component_count=1)
+        self.assertEqual(ctx["data_layers"], "unavailable")
+        self.assertEqual([e for e in ctx["errors"] if e["where"] == "context.data_layers"], [])
+
+    def test_data_layers_iteration_raising_is_recorded_with_repr_fallback(self):
+        class _BadIterable:
+            def __iter__(self):
+                raise RuntimeError("boom iterate")
+
+            def __repr__(self):
+                return "<BadIterable>"
+
+        actor = _FakeContextActor(data_layers=_BadIterable())
+        ctx = tag_inspect._deep_probe_actor_context(actor, component_count=1)
+        self.assertEqual(ctx["data_layers"], ["<BadIterable>"])
+        self.assertTrue(any(
+            e["where"] == "context.data_layers" and e["exception_class"] == "RuntimeError"
+            for e in ctx["errors"]
+        ))
+
+
+# ---------------------------------------------------------------------------
+# _values_effectively_differ / _compare_deep_probe_contexts -- pure dict-in,
+# string-out verdict logic; no `unreal` involved at all.
+# ---------------------------------------------------------------------------
+
+class ValuesEffectivelyDifferTests(unittest.TestCase):
+    def test_both_unavailable_is_not_a_difference(self):
+        self.assertFalse(tag_inspect._values_effectively_differ("unavailable", "unavailable"))
+
+    def test_one_unavailable_other_real_value_differs(self):
+        self.assertTrue(tag_inspect._values_effectively_differ("unavailable", "/Rooms/R1"))
+        self.assertTrue(tag_inspect._values_effectively_differ("/Rooms/R1", "unavailable"))
+
+    def test_equal_values_do_not_differ(self):
+        self.assertFalse(tag_inspect._values_effectively_differ(["LayerA"], ["LayerA"]))
+
+    def test_unequal_values_differ(self):
+        self.assertTrue(tag_inspect._values_effectively_differ(["LayerA"], ["LayerB"]))
+
+
+class CompareDeepProbeContextsTests(unittest.TestCase):
+    @staticmethod
+    def _finding(label, data_layers, folder, component_count, properties=None, package="ignored"):
+        return {
+            "actor_label": label,
+            "context": {
+                # "package" is deliberately never read by
+                # _compare_deep_probe_contexts -- see test (d) below.
+                "package": package,
+                "data_layers": data_layers,
+                "folder": folder,
+                "component_count": component_count,
+            },
+            "tag_component": {"properties": properties or []},
+        }
+
+    def test_data_layers_differ_yields_streaming_possible_verdict(self):
+        contrast = self._finding("Contrast", ["LayerA"], "/Rooms/R8", 5)
+        non_decoded = [self._finding("Actor1", ["LayerB"], "/Rooms/R8", 5)]
+        verdict = tag_inspect._compare_deep_probe_contexts(contrast, non_decoded)
+        self.assertIn("data_layers differ for Actor1", verdict)
+        self.assertTrue(verdict.startswith("context differs"))
+
+    def test_folder_differs_yields_streaming_possible_verdict(self):
+        contrast = self._finding("Contrast", ["LayerA"], "/Rooms/R8", 5)
+        non_decoded = [self._finding("Actor1", ["LayerA"], "/Rooms/R1", 5)]
+        verdict = tag_inspect._compare_deep_probe_contexts(contrast, non_decoded)
+        self.assertIn("folder differs for Actor1", verdict)
+
+    def test_hollow_via_low_component_count_threshold(self):
+        # threshold is max(1, contrast_comp_count // 2); contrast=10 -> 5.
+        # nd_count<=5 must trigger hollow, nd_count=6 must not.
+        contrast = self._finding("Contrast", ["LayerA"], "/Rooms/R8", 10)
+        hollow = [self._finding("Hollow", ["LayerA"], "/Rooms/R8", 5)]
+        not_hollow = [self._finding("NotHollow", ["LayerA"], "/Rooms/R8", 6)]
+        verdict_hollow = tag_inspect._compare_deep_probe_contexts(contrast, hollow)
+        verdict_not_hollow = tag_inspect._compare_deep_probe_contexts(contrast, not_hollow)
+        self.assertIn("hollow-actor signal", verdict_hollow)
+        self.assertIn("Hollow", verdict_hollow)
+        self.assertEqual(
+            verdict_not_hollow,
+            "contexts are identical — streaming is unlikely to explain the difference.",
+        )
+
+    def test_hollow_via_empty_property_ratio_threshold(self):
+        contrast_props = [
+            {"value_repr": "t_room_r1"}, {"value_repr": "SomeValue"}, {"value_repr": "AnotherValue"},
+        ]  # 0/3 empty -> ratio 0.0, well under the 0.5 contrast ceiling
+        nd_props = [
+            {"value_repr": ""}, {"value_repr": "None"}, {"value_repr": "[]"}, {"value_repr": "()"},
+            {"value_repr": "AnotherValue"},
+        ]  # 4/5 = 0.8 -- meets the >=0.8 threshold exactly
+        contrast = self._finding("Contrast", ["LayerA"], "/Rooms/R8", 5, properties=contrast_props)
+        non_decoded = [self._finding("Hollow", ["LayerA"], "/Rooms/R8", 5, properties=nd_props)]
+        verdict = tag_inspect._compare_deep_probe_contexts(contrast, non_decoded)
+        self.assertIn("hollow-actor signal", verdict)
+        self.assertIn("Hollow", verdict)
+
+    def test_only_package_differing_is_effectively_identical(self):
+        """The correction this test pins: package is deliberately NEVER
+        part of the verdict (see _deep_probe_actor_context's docstring --
+        every UE5 World Partition external actor lives in its own
+        package by design, so raw package inequality is meaningless).
+        Everything ELSE matching must yield "effectively identical" even
+        though package differs wildly."""
+        contrast = self._finding("Contrast", ["LayerA"], "/Rooms/R8", 5, package="/Game/PackageA")
+        non_decoded = [self._finding("Actor1", ["LayerA"], "/Rooms/R8", 5, package="/Game/PackageB_TotallyDifferent")]
+        verdict = tag_inspect._compare_deep_probe_contexts(contrast, non_decoded)
+        self.assertEqual(verdict, "contexts are identical — streaming is unlikely to explain the difference.")
+
+
 # ---------------------------------------------------------------------------
 # Actor-Tags decode primitives -- mirrors tag_inspect.py's actor-level tags
 # decode glue (roughly lines 1600-1618 inside _inspect_tags_live) by
@@ -1300,6 +1506,142 @@ class ActorLevelTagSourceMergeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Deep-probe trigger split (tag_inspect.py ~1984-2131 inside
+# _inspect_tags_live): fires whenever >=1 componented actor decoded
+# nothing, even when others decoded fine (PARTIAL mode) -- not only on
+# total systematic failure (FULL mode). Uses the same faked-unreal
+# inspect_tags() integration harness as ActorLevelTagSourceMergeTests
+# above (duplicated setUp/tearDown rather than shared, matching this
+# file's existing per-class-independent style).
+# ---------------------------------------------------------------------------
+
+class DeepProbeTriggerTests(unittest.TestCase):
+    def setUp(self):
+        self._had_unreal_attr = hasattr(tag_inspect, "unreal")
+        self._orig_unreal = getattr(tag_inspect, "unreal", None)
+        self._orig_has_unreal = tag_inspect._HAS_UNREAL
+        self._orig_report_path = tag_inspect.report_path
+        self._orig_get_bridge_dir = tag_inspect._get_bridge_dir
+
+        self._scratch = tempfile.mkdtemp(prefix="tag_inspect_deepprobe_trigger_test_")
+        primary = os.path.join(self._scratch, "primary", "tag_inspect_report.json")
+        fallback_dir = os.path.join(self._scratch, "fallback")
+        os.makedirs(fallback_dir, exist_ok=True)
+        tag_inspect.report_path = lambda: primary
+        tag_inspect._get_bridge_dir = lambda: fallback_dir
+
+        self._actors = []
+        subsystem = types.SimpleNamespace(get_all_level_actors=lambda: self._actors)
+        tag_inspect.unreal = types.SimpleNamespace(
+            ActorComponent=object(),
+            EditorActorSubsystem=object(),
+            ScopedSlowTask=lambda total, desc: tag_inspect._NullSlowTask(),
+            get_editor_subsystem=lambda cls: subsystem,
+            log_warning=lambda *a, **k: None,
+            log_error=lambda *a, **k: None,
+        )
+        tag_inspect._HAS_UNREAL = True
+
+    def tearDown(self):
+        if self._had_unreal_attr:
+            tag_inspect.unreal = self._orig_unreal
+        else:
+            del tag_inspect.unreal
+        tag_inspect._HAS_UNREAL = self._orig_has_unreal
+        tag_inspect.report_path = self._orig_report_path
+        tag_inspect._get_bridge_dir = self._orig_get_bridge_dir
+
+    @staticmethod
+    def _write_verse_dir_with_known_tag(tmp_dir):
+        with open(os.path.join(tmp_dir, "tags.verse"), "w", encoding="utf-8") as f:
+            f.write("t_room_r1 := class(tag)\n")
+
+    def test_all_actors_decode_no_deep_probe(self):
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            comp = _FakeComponentWithClass({"gameplay_tags_container": ["t_room_r1"]}, "VerseTagMarkupComponent")
+            actor = _FakeActor("DecodedActor", [comp], [])
+            self._actors = [actor]
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        self.assertNotIn("deep_probe", result)
+
+    def test_full_failure_mode_when_no_componented_actor_decodes(self):
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            actors = []
+            for i in range(4):  # more than _DEEP_PROBE_MAX_ACTORS -- proves the cap too
+                comp = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+                actors.append(_FakeActor("Empty{}".format(i), [comp], ["unrelated"]))
+            self._actors = actors
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        self.assertIn("deep_probe", result)
+        dp = result["deep_probe"]
+        self.assertEqual(len(dp["probed_labels"]), tag_inspect._DEEP_PROBE_MAX_ACTORS)
+        self.assertTrue(all(f.get("role") == "non_decoded" for f in dp["findings"]))
+        self.assertIn("FULL FAILURE", result["discovery"]["notes"])
+        self.assertNotIn("PARTIAL", result["discovery"]["notes"])
+
+    def test_partial_mode_with_exactly_one_contrast_sample(self):
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            comp_empty1 = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            comp_empty2 = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            comp_rescued = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            non_decoded_1 = _FakeActor("NonDecoded1", [comp_empty1], ["unrelated"])
+            non_decoded_2 = _FakeActor("NonDecoded2", [comp_empty2], ["unrelated"])
+            decoded_via_actor_tags = _FakeActor("RescuedActor", [comp_rescued], ["t_room_r1"])
+            self._actors = [non_decoded_1, non_decoded_2, decoded_via_actor_tags]
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        self.assertIn("deep_probe", result)
+        dp = result["deep_probe"]
+        self.assertEqual(len(dp["probed_labels"]), 3)  # 2 non-decoded + 1 contrast
+        contrast_findings = [f for f in dp["findings"] if f.get("role") == "contrast_decoded"]
+        non_decoded_findings = [f for f in dp["findings"] if f.get("role") == "non_decoded"]
+        self.assertEqual(len(contrast_findings), 1)
+        self.assertEqual(contrast_findings[0]["actor_label"], "RescuedActor")
+        self.assertEqual({f["actor_label"] for f in non_decoded_findings}, {"NonDecoded1", "NonDecoded2"})
+        self.assertIn("PARTIAL", result["discovery"]["notes"])
+        self.assertNotIn("FULL FAILURE", result["discovery"]["notes"])
+
+    def test_cancelled_scan_never_runs_deep_probe(self):
+        class _AlwaysCancelTask:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def make_dialog(self, *_a, **_k):
+                pass
+
+            def enter_progress_frame(self, *_a, **_k):
+                pass
+
+            def should_cancel(self):
+                return True
+
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            comp0 = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            comp1 = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            actor0 = _FakeActor("Actor0", [comp0], ["unrelated"])
+            actor1 = _FakeActor("Actor1", [comp1], ["unrelated"])
+            self._actors = [actor0, actor1]
+            # Actor0 gets fully processed (a non-decoded componented
+            # actor, so non_decoded_targets is non-empty) before the walk
+            # is cancelled at actor1 -- proving the skip is specifically
+            # due to `cancelled`, not an empty non_decoded_targets list.
+            tag_inspect.unreal.ScopedSlowTask = lambda total, desc: _AlwaysCancelTask()
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        self.assertTrue(result["cancelled"])
+        self.assertNotIn("deep_probe", result)
+
+
+# ---------------------------------------------------------------------------
 # _render_tag_report's empty-state placeholder logic -- exercised headlessly
 # via _FakeTree/_FakeLabel (no real Tk widget needed; the function only
 # calls .delete()/.get_children()/.insert() and .config(text=...)).
@@ -1425,6 +1767,76 @@ class RenderDeepProbeTests(unittest.TestCase):
         star_flags = [r["text"].startswith("★") for r in detail_rows]
         self.assertEqual(star_flags[:2], [True, True])
         self.assertTrue(all(not f for f in star_flags[2:]))
+
+    def test_context_rows_appear_before_property_and_hit_rows(self):
+        deep_probe = {
+            "findings": [{
+                "actor_label": "Actor1",
+                "role": "non_decoded",
+                "context": {
+                    "class_name": {"py_type": "FakeActor", "ue_class": "SGMarker"},
+                    "package": "/Game/PackageA",
+                    "path_name": "/Game/Level.Actor1",
+                    "folder": "/Rooms/R1",
+                    "component_count": 4,
+                    "data_layers": ["LayerA"],
+                },
+                "tag_component": {
+                    "class_name": "VerseTagMarkupComponent",
+                    "properties": [
+                        {"name": "prop1", "type_name": "str", "value_repr": "hi", "known_tag_hits": []},
+                    ],
+                },
+                "actor_tags_property": None,
+                "other_components_hits": [],
+                "errors": [],
+            }],
+        }
+        tree = _FakeTree()
+        uefn_launcher._render_deep_probe(tree, deep_probe)
+
+        header_rows = [r for r in tree.rows if r["parent"] == ""]
+        actor_rows = [r for r in tree.rows if r["parent"] == header_rows[0]["id"]]
+        self.assertEqual(len(actor_rows), 1)
+
+        children = [r for r in tree.rows if r["parent"] == actor_rows[0]["id"]]
+        self.assertGreaterEqual(len(children), 2)
+        self.assertEqual(children[0]["text"], "[context]")
+        self.assertTrue(all(c["text"] != "[context]" for c in children[1:]))
+
+        context_children = [r for r in tree.rows if r["parent"] == children[0]["id"]]
+        ctx_keys = [r["text"] for r in context_children]
+        self.assertEqual(
+            ctx_keys, ["class_name", "package", "path_name", "folder", "component_count", "data_layers"],
+        )
+
+    def test_old_shape_finding_without_context_does_not_crash(self):
+        """Pre-0.0.536 findings carry no "context" key at all -- must
+        render without raising, and (since context is absent) must never
+        emit a "[context]" row."""
+        deep_probe = {
+            "findings": [{
+                "actor_label": "LegacyActor",
+                "tag_component": {"class_name": "VerseTagMarkupComponent", "properties": [
+                    {"name": "prop1", "type_name": "str", "value_repr": "hi", "known_tag_hits": []},
+                ]},
+                "actor_tags_property": None,
+                "other_components_hits": [],
+                "errors": [],
+                # no "context" key, no "role" key.
+            }],
+        }
+        tree = _FakeTree()
+        try:
+            uefn_launcher._render_deep_probe(tree, deep_probe)
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"_render_deep_probe raised on an old-shape finding without context: {e!r}")
+
+        header_rows = [r for r in tree.rows if r["parent"] == ""]
+        actor_rows = [r for r in tree.rows if r["parent"] == header_rows[0]["id"]]
+        self.assertEqual(actor_rows[0]["text"], "LegacyActor")  # no role suffix
+        children = [r for r in tree.rows if r["parent"] == actor_rows[0]["id"]]
+        self.assertTrue(all(c["text"] != "[context]" for c in children))
 
 
 if __name__ == "__main__":

@@ -836,27 +836,59 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
 def _render_deep_probe(tree, deep_probe):
     """Render ``report["deep_probe"]`` (see tag_inspect.py's
     ``_deep_probe_actor``) as tree rows: one parent row per probed actor
-    label, children per property dumped — tag-component properties, then
-    the actor's own ``tags`` property, then any other-component known-tag
-    hit, then any probe read error — with entries carrying a known-tag hit
-    listed FIRST within each actor so the payload that actually answers
-    "where do the tags live" is not buried under a full property dump.
-    Guards every ``.get()`` so a missing/malformed ``deep_probe`` shape
-    (including a legacy report with no such key at all — the caller only
+    label, a ``[context]`` group FIRST (world-streaming/world-partition
+    diagnostic signals — class name, package, path, folder, component
+    count, data layers), THEN children per property dumped — tag-component
+    properties, then the actor's own ``tags`` property, then any other-
+    component known-tag hit, then any probe read error — with property
+    entries carrying a known-tag hit listed FIRST among themselves so the
+    payload that actually answers "where do the tags live" is not buried
+    under a full property dump. Guards every ``.get()`` so a missing/
+    malformed ``deep_probe`` shape (including a legacy report with no
+    ``context`` key, or no ``deep_probe`` key at all — the caller only
     invokes this when the key is present and truthy) can never crash the
     render. Never raises."""
     findings = deep_probe.get("findings") or []
     if not findings:
         return
+    # "role" (added alongside the 0.0.536 partial-failure trigger) is
+    # missing on reports from before that change -- default to
+    # "non_decoded" so an old-shape deep_probe still renders sensibly
+    # rather than crashing or mislabeling every row as a contrast sample.
+    non_decoded_n = sum(1 for f in findings if f.get("role", "non_decoded") != "contrast_decoded")
     header = tree.insert(
         "", tk.END,
-        text="DEEP PROBE — {} actor(s) probed (normal scan decoded 0 tags "
-             "from any source)".format(len(findings)),
+        text="DEEP PROBE — {} non-decoded actor(s) probed (plus {} contrast "
+             "sample(s) that DID decode, if any)".format(
+                 non_decoded_n, len(findings) - non_decoded_n
+             ),
         values=("",),
     )
     for finding in findings:
         label = finding.get("actor_label", "<unlabeled>")
-        actor_node = tree.insert(header, tk.END, text=str(label), values=("",))
+        role_suffix = "  [contrast — decoded ok]" if finding.get("role") == "contrast_decoded" else ""
+        actor_node = tree.insert(header, tk.END, text=str(label) + role_suffix, values=("",))
+
+        # CONTEXT rows (world-streaming/world-partition diagnostic signals
+        # — see tag_inspect.py's _deep_probe_actor_context) render FIRST,
+        # before the property-dump rows below. "context" is absent on a
+        # report predating this field, so this whole block is guarded and
+        # simply skipped for an old-shape finding.
+        context = finding.get("context")
+        if context:
+            class_name = context.get("class_name") or {}
+            context_node = tree.insert(actor_node, tk.END, text="[context]", values=("",))
+            for ctx_key, ctx_value in (
+                ("class_name", "{} ({})".format(
+                    class_name.get("py_type"), class_name.get("ue_class")
+                )),
+                ("package", context.get("package")),
+                ("path_name", context.get("path_name")),
+                ("folder", context.get("folder")),
+                ("component_count", context.get("component_count")),
+                ("data_layers", context.get("data_layers")),
+            ):
+                tree.insert(context_node, tk.END, text=str(ctx_key), values=(str(ctx_value),))
 
         rows = []  # [(has_hit, display_text, snippet_text), ...]
         comp = finding.get("tag_component") or {}
@@ -1039,8 +1071,25 @@ def _show_tag_inspect_window(tag_inspect_module):
 
     summary_label = tk.Label(
         win, text="", font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
+        wraplength=680,
     )
-    summary_label.pack(padx=16, pady=(4, 8), anchor=tk.W)
+    # Bottom status bar: previously had NO wraplength at all (unlike
+    # discovery_label/status_label above, which use a static wraplength=680
+    # — see those constructors), so a long line (a full verse_dir path, or
+    # the three-way hidden-count summary on a big scan) just ran off the
+    # visible window instead of wrapping — read by a user as truncated/
+    # clipped text. side=BOTTOM + fill=X (instead of the default top-down
+    # anchor=W packing) lets the label's own width track the window's
+    # actual client width, and the <Configure> binding below keeps
+    # wraplength in sync with that width on every resize — mirroring the
+    # static-wraplength idiom used elsewhere in this window/dependency_
+    # viewer.py, but driven dynamically since this label sits at a fixed
+    # edge rather than a fixed size.
+    summary_label.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(4, 8))
+    summary_label.bind(
+        "<Configure>",
+        lambda e: summary_label.config(wraplength=max(e.width - 8, 100)),
+    )
 
     # ------------------------------------------------------------------
     # Run Scan — guarded against double-clicks (see docstring above).

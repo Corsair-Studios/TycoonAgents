@@ -1184,6 +1184,189 @@ def _describe_value_for_deep_probe(value, known_tag_names):
     return info
 
 
+def _deep_probe_actor_context(actor, component_count):
+    """Cheap, guarded, best-effort per-actor context signals for the
+    world-streaming/world-partition hypothesis (a user suspected the
+    R8-only decode pattern was a streaming effect — only R8's cell fully
+    loaded, other rooms' actors enumerate but read hollow). Each signal is
+    read in its own try/except, appending ``{"where", "exception_class"}``
+    to this context's OWN ``"errors"`` list on failure rather than
+    raising — one unavailable signal must never blank the rest. Kept
+    separate from the caller's per-property ``finding["errors"]`` list
+    (rather than merged into it) so property-probe error counts stay
+    exactly what they were before this field existed. A signal this scan
+    could not read at all is recorded as the string ``"unavailable"``,
+    never silently omitted.
+
+    NOTE: raw package-name inequality is deliberately NOT treated as
+    streaming evidence anywhere this context feeds into (see
+    ``_compare_deep_probe_contexts``) — in UE5 World Partition, every
+    external actor lives in its OWN package (one file per actor) by
+    design, so package names differ between ANY two actors regardless of
+    streaming state; that signal would always fire and would be
+    meaningless. The package name is still recorded here as raw data for
+    completeness, just never used as the sole basis for a verdict.
+
+    Returns a context dict: ``{"class_name": {"py_type", "ue_class"},
+    "package", "path_name", "data_layers", "component_count", "folder",
+    "errors"}``. Never raises."""
+    context = {
+        "class_name": None,
+        "package": "unavailable",
+        "path_name": "unavailable",
+        "data_layers": "unavailable",
+        "component_count": component_count,
+        "folder": "unavailable",
+        "errors": [],
+    }
+    errors_out = context["errors"]
+
+    py_type = None
+    ue_class = None
+    try:
+        py_type = type(actor).__name__
+    except Exception as e:
+        errors_out.append({"where": "context.class_name(py)", "exception_class": type(e).__name__})
+    try:
+        ue_class = actor.get_class().get_name()
+    except Exception as e:
+        errors_out.append({"where": "context.class_name(ue)", "exception_class": type(e).__name__})
+    context["class_name"] = {"py_type": py_type, "ue_class": ue_class}
+
+    try:
+        outer_fn = getattr(actor, "get_outermost", None)
+        pkg_fn = getattr(actor, "get_package", None)
+        if outer_fn is not None:
+            context["package"] = outer_fn().get_name()
+        elif pkg_fn is not None:
+            context["package"] = pkg_fn().get_name()
+    except Exception as e:
+        errors_out.append({"where": "context.package", "exception_class": type(e).__name__})
+
+    try:
+        path_name_fn = getattr(actor, "get_path_name", None)
+        if path_name_fn is not None:
+            context["path_name"] = _truncate_diag(path_name_fn(), 200)
+    except Exception as e:
+        errors_out.append({"where": "context.path_name", "exception_class": type(e).__name__})
+
+    for attempt_name in ("data_layer_assets", "data_layers", "actor_data_layers"):
+        try:
+            value = actor.get_editor_property(attempt_name)
+        except Exception:
+            continue
+        if value is None:
+            continue
+        try:
+            if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
+                items = list(value)
+            else:
+                items = [value]
+            context["data_layers"] = [_truncate_diag(repr(item), 100) for item in items]
+        except Exception as e:
+            errors_out.append({"where": "context.data_layers", "exception_class": type(e).__name__})
+            context["data_layers"] = [_truncate_diag(repr(value), 150)]
+        break
+
+    try:
+        folder_fn = getattr(actor, "get_folder_path", None)
+        if folder_fn is not None:
+            context["folder"] = str(folder_fn())
+    except Exception as e:
+        errors_out.append({"where": "context.folder", "exception_class": type(e).__name__})
+
+    return context
+
+
+def _values_effectively_differ(a, b):
+    """True if context-signal values *a*/*b* meaningfully differ.
+    ``"unavailable"`` on BOTH sides is NOT a difference — nothing was
+    actually compared, so it must never read as streaming evidence."""
+    if a == "unavailable" and b == "unavailable":
+        return False
+    return a != b
+
+
+def _compare_deep_probe_contexts(contrast_finding, non_decoded_findings):
+    """Compare the contrast (decoded-ok) actor's deep-probe context
+    against the non-decoded actors' contexts to test the world-streaming/
+    world-partition hypothesis, returning a one-line discovery note.
+
+    Deliberately does NOT use raw package-name inequality as evidence —
+    see ``_deep_probe_actor_context``'s docstring for why that signal is
+    meaningless in World Partition. The verdict rests only on:
+      * ``data_layers`` differing between the contrast actor and a
+        non-decoded actor,
+      * ``folder`` differing (rooms are likely folder-organized, so this
+        also surfaces plain room-grouping),
+      * a "hollow actor" signal — a non-decoded actor's component_count
+        is at most half the contrast actor's, OR most of its tag-
+        component properties read empty/None/default where the contrast
+        actor's mostly don't (a plausible signature of an actor whose
+        streaming cell never fully loaded).
+    Never raises."""
+    contrast_ctx = contrast_finding.get("context") or {}
+    contrast_layers = contrast_ctx.get("data_layers")
+    contrast_folder = contrast_ctx.get("folder")
+    contrast_comp_count = contrast_ctx.get("component_count")
+    contrast_props = (contrast_finding.get("tag_component") or {}).get("properties") or []
+
+    def _looks_empty(prop):
+        vr = (prop.get("value_repr") or "").strip()
+        return vr in ("", "None", "[]", "()") or vr.lower().startswith("none")
+
+    contrast_empty_ratio = (
+        sum(1 for p in contrast_props if _looks_empty(p)) / len(contrast_props)
+        if contrast_props else None
+    )
+
+    layer_diff_labels = []
+    folder_diff_labels = []
+    hollow_labels = []
+
+    for f in non_decoded_findings:
+        ctx = f.get("context") or {}
+        label = f.get("actor_label", "<unlabeled>")
+
+        if _values_effectively_differ(ctx.get("data_layers"), contrast_layers):
+            layer_diff_labels.append(label)
+        if _values_effectively_differ(ctx.get("folder"), contrast_folder):
+            folder_diff_labels.append(label)
+
+        nd_count = ctx.get("component_count")
+        is_hollow = False
+        if isinstance(nd_count, int) and isinstance(contrast_comp_count, int) and contrast_comp_count > 0:
+            if nd_count <= max(1, contrast_comp_count // 2):
+                is_hollow = True
+
+        nd_props = (f.get("tag_component") or {}).get("properties") or []
+        if not is_hollow and nd_props and contrast_empty_ratio is not None:
+            nd_empty_ratio = sum(1 for p in nd_props if _looks_empty(p)) / len(nd_props)
+            if nd_empty_ratio >= 0.8 and contrast_empty_ratio < 0.5:
+                is_hollow = True
+
+        if is_hollow:
+            hollow_labels.append(label)
+
+    diff_bits = []
+    if layer_diff_labels:
+        diff_bits.append("data_layers differ for " + ", ".join(layer_diff_labels[:5]))
+    if folder_diff_labels:
+        diff_bits.append("folder differs for " + ", ".join(folder_diff_labels[:5]))
+    if hollow_labels:
+        diff_bits.append(
+            "hollow-actor signal (low component count or mostly-empty "
+            "properties vs the contrast actor) for " + ", ".join(sorted(set(hollow_labels))[:5])
+        )
+
+    if diff_bits:
+        return (
+            "context differs between decoded and non-decoded actors "
+            "(possible world streaming/partition effect): " + "; ".join(diff_bits) + "."
+        )
+    return "contexts are identical — streaming is unlikely to explain the difference."
+
+
 def _deep_probe_actor(label, actor, known_tag_names):
     """Deep-probe ONE matched actor for tag data outside the normal
     extraction path — a last-resort diagnostic triggered only when the
@@ -1206,12 +1389,19 @@ def _deep_probe_actor(label, actor, known_tag_names):
     this actor's probe or silently vanishing — one bad property must never
     blank the remaining diagnostics for the same actor.
 
+    Also captures ``"context"`` (see ``_deep_probe_actor_context``) — cheap
+    signals (class name, package, path, data layers, component count,
+    folder) used to test the world-streaming/world-partition hypothesis
+    for why some rooms' actors decode and others don't (see
+    ``_compare_deep_probe_contexts``).
+
     Returns a finding dict:
-      {"actor_label": str, "tag_component": {"class_name", "properties":
-       [...]} | None, "actor_tags_property": {...} | None,
-       "other_components_hits": [...], "errors": [...]}"""
+      {"actor_label": str, "context": {...}, "tag_component":
+       {"class_name", "properties": [...]} | None, "actor_tags_property":
+       {...} | None, "other_components_hits": [...], "errors": [...]}"""
     finding = {
         "actor_label": label,
+        "context": None,
         "tag_component": None,
         "actor_tags_property": None,
         "other_components_hits": [],
@@ -1224,6 +1414,8 @@ def _deep_probe_actor(label, actor, known_tag_names):
         finding["errors"].append({"where": "get_components_by_class", "exception_class": type(e).__name__})
         components = []
     components = components[:_MAX_COMPONENTS_PER_ACTOR]
+
+    finding["context"] = _deep_probe_actor_context(actor, len(components))
 
     tag_comp = None
     tag_comp_class = None
@@ -1790,20 +1982,48 @@ def _inspect_tags_live(label_pattern, project_dir):
         )
 
     # ------------------------------------------------------------------
-    # DEEP-PROBE FALLBACK: last resort when the normal walk found tag
-    # components on matched actors but decoded ZERO tags from ANY of them
-    # from ANY source (e.g. component_tags positively iterating to zero
-    # on every matched actor while ground truth says several carry tags —
-    # a real 0.0.534 field case). Bounded to the FIRST
-    # _DEEP_PROBE_MAX_ACTORS matched actors, run inside its own small
-    # cancellable ScopedSlowTask (same guaranteed-__exit__ with-block
-    # lifecycle as phases 1/2 — see _make_slow_task's docstring). Skipped
-    # if the scan itself was already cancelled, so a user's Cancel isn't
-    # followed by extra unrequested work.
+    # DEEP-PROBE FALLBACK: last resort when >=1 matched actor HAS a tag
+    # component but decoded NOTHING from any source. This fires on BOTH
+    # full systematic failure (zero of the componented actors decoded
+    # anything — the original 0.0.534 case) AND partial failure (some
+    # componented actors decoded fine, others didn't — a real 0.0.535
+    # field case: 22 Room-8 markers decoded via actor_tags while 367
+    # others across R1-R31 stayed confirmed-empty on both sources, and
+    # the old zero-"ok"-actors trigger suppressed the probe entirely,
+    # leaving the 367 undiagnosed). "Decoded nothing" is judged from the
+    # COMBINED per-actor status (component_tags OR actor_tags), so a
+    # rescue via actor_tags correctly removes that actor from the
+    # non-decoded pool. Non-decoded actors are preferred for probing;
+    # when at least one componented actor DID decode, one such actor is
+    # ALSO probed as a labeled contrast sample (total probed actors stays
+    # <= _DEEP_PROBE_MAX_ACTORS + 1). Run inside its own small cancellable
+    # ScopedSlowTask (same guaranteed-__exit__ with-block lifecycle as
+    # phases 1/2 — see _make_slow_task's docstring). Skipped if the scan
+    # itself was already cancelled, so a user's Cancel isn't followed by
+    # extra unrequested work.
     # ------------------------------------------------------------------
+    non_decoded_targets = []
+    decoded_targets = []
+    for _i, _a in enumerate(actors_out):
+        if not _a["has_verse_tag_component"]:
+            continue
+        _pair = matched_for_walk[_i]
+        if _a["extraction_status"] == "ok":
+            decoded_targets.append(_pair)
+        else:
+            non_decoded_targets.append(_pair)
+
     deep_probe_result = None
-    if found_count and combined_ok == 0 and not cancelled:
-        probe_targets = matched_for_walk[:_DEEP_PROBE_MAX_ACTORS]
+    if non_decoded_targets and not cancelled:
+        non_decoded_slice = non_decoded_targets[:_DEEP_PROBE_MAX_ACTORS]
+        probe_targets = list(non_decoded_slice)
+        contrast_added = False
+        contrast_label = None
+        if decoded_targets:
+            probe_targets.append(decoded_targets[0])
+            contrast_added = True
+            contrast_label = decoded_targets[0][0]
+
         findings = []
         deep_probe_cancelled = False
         with _make_slow_task(
@@ -1816,16 +2036,19 @@ def _inspect_tags_live(label_pattern, project_dir):
                     deep_probe_cancelled = True
                     break
                 _st_call(deep_probe_task, "enter_progress_frame", 1, dp_label)
+                is_contrast = contrast_added and idx == len(non_decoded_slice)
                 try:
                     finding = _deep_probe_actor(dp_label, dp_actor, known_tag_names)
                 except Exception as e:
                     finding = {
                         "actor_label": dp_label,
+                        "context": None,
                         "tag_component": None,
                         "actor_tags_property": None,
                         "other_components_hits": [],
                         "errors": [{"where": "_deep_probe_actor", "exception_class": type(e).__name__}],
                     }
+                finding["role"] = "contrast_decoded" if is_contrast else "non_decoded"
                 findings.append(finding)
         # deep_probe_task's __exit__ has run here regardless of how the
         # loop above ended.
@@ -1838,32 +2061,73 @@ def _inspect_tags_live(label_pattern, project_dir):
                     return True
             return bool(f.get("other_components_hits"))
 
-        any_hits = any(_finding_has_hits(f) for f in findings)
+        any_hits = any(
+            _finding_has_hits(f) for f in findings if f.get("role") == "non_decoded"
+        )
         deep_probe_result = {
             "probed_labels": [dp_label for dp_label, _ in probe_targets],
             "findings": findings,
             "cancelled": deep_probe_cancelled,
         }
-        hit_note = (
-            "deep probe found known-tag whole-word hit(s) in probed "
-            "property data — see report['deep_probe']['findings'] for "
-            "exactly where."
-            if any_hits else
-            "deep probe found NO known-tag hits anywhere probed (the tag "
-            "component's own properties, the actor's Tags array, or any "
-            "other component) — the tags may be applied at RUNTIME by "
-            "Verse code and never stored in editor data at all; an "
-            "editor-side scan can never see a purely runtime-applied tag."
-        )
-        notes_parts.append(
-            "DEEP PROBE: {} matched actor(s) have a tag component but 0 "
-            "decoded any tags from any source, so the first {} matched "
-            "actor(s) were deep-probed (every property on the tag "
-            "component, the actor's own Tags array, and any known-tag "
-            "hit on other components) — {}".format(
-                found_count, len(probe_targets), hit_note
+
+        is_full_failure = len(non_decoded_targets) == found_count
+        mode_note = (
+            "FULL FAILURE: all {} matched actor(s) with a tag component "
+            "decoded no tags from any source, so the first {} were "
+            "deep-probed.".format(found_count, len(non_decoded_slice))
+            if is_full_failure else
+            "PARTIAL: {} of {} matched actor(s) with a tag component "
+            "decoded no tags from any source; deep-probed the first {} of "
+            "those{}.".format(
+                len(non_decoded_targets), found_count, len(non_decoded_slice),
+                " plus 1 already-decoded actor ({!r}) included as a "
+                "contrast sample".format(contrast_label) if contrast_added else "",
             )
         )
+        if any_hits:
+            hit_note = (
+                "deep probe found known-tag whole-word hit(s) in probed "
+                "property data — see report['deep_probe']['findings'] for "
+                "exactly where."
+            )
+        elif contrast_added:
+            hit_note = (
+                "deep probe found NO known-tag hits on the non-decoded "
+                "actor(s) — compare their probed properties against the "
+                "included contrast actor ({!r}, which DID decode tags) to "
+                "spot where the non-decoded actors' authoring differs. If "
+                "nothing differs, the non-decoded actors' tags may be "
+                "applied at runtime by Verse — compare the probed actors "
+                "against a decoded one.".format(contrast_label)
+            )
+        else:
+            hit_note = (
+                "deep probe found NO known-tag hits anywhere probed (the "
+                "tag component's own properties, the actor's Tags array, "
+                "or any other component) — the non-decoded actors' tags "
+                "may be applied at RUNTIME by Verse code and never stored "
+                "in editor data at all; an editor-side scan can never see "
+                "a purely runtime-applied tag."
+            )
+        notes_parts.append("DEEP PROBE: " + mode_note + " " + hit_note)
+
+        # Automatic context comparison (world-streaming/world-partition
+        # hypothesis): only meaningful when a contrast (decoded-ok) actor
+        # was probed alongside non-decoded ones — nothing to compare
+        # against otherwise. See _compare_deep_probe_contexts's docstring
+        # for exactly which signals feed the verdict (raw package-name
+        # inequality is deliberately excluded — see its and
+        # _deep_probe_actor_context's docstrings for why).
+        if contrast_added:
+            contrast_finding = next(
+                (f for f in findings if f.get("role") == "contrast_decoded"), None
+            )
+            non_decoded_findings = [f for f in findings if f.get("role") == "non_decoded"]
+            if contrast_finding is not None and non_decoded_findings:
+                notes_parts.append(
+                    "DEEP PROBE CONTEXT: " +
+                    _compare_deep_probe_contexts(contrast_finding, non_decoded_findings)
+                )
 
     actors_out = sort_actors_flagged_first(actors_out)
     discovery["notes"] = " ".join(notes_parts)
@@ -2066,14 +2330,22 @@ def inspect_tags(label_pattern=None, project_dir=None):
     actionable rather than a dead end.
 
     ``deep_probe`` (top-level, sibling of ``actors``) is present ONLY when
-    the deep-probe fallback ran: at least one matched actor had a tag
-    component but ZERO actors decoded "ok" from any source. It full-dumps
-    every property on the FIRST few matched actors' tag components and
+    the deep-probe fallback ran: at least one matched actor with a tag
+    component decoded NOTHING from any source. This covers both FULL
+    failure (zero of the componented actors decoded anything) and PARTIAL
+    failure (some componented actors decoded fine, others didn't — e.g. a
+    real field case where 22 of 389 actors decoded via actor_tags while
+    367 stayed confirmed-empty on every source) — ``discovery.notes``
+    states which mode fired. Non-decoded actors are preferred for
+    probing; when at least one componented actor DID decode, ONE such
+    actor is also probed as a contrast sample (each finding carries
+    ``"role"``: ``"non_decoded"`` or ``"contrast_decoded"``). It
+    full-dumps every property on the probed actors' tag components and
     their own ``tags`` property, plus any known-tag hit found on their
-    OTHER components — see ``_deep_probe_actor`` — so a systematic
-    extraction failure (the container genuinely lives somewhere this scan
-    didn't look, or the tags are applied purely at runtime by Verse code
-    and never stored in editor data at all) is diagnosable from the report
+    OTHER components — see ``_deep_probe_actor`` — so an extraction
+    failure (the container genuinely lives somewhere this scan didn't
+    look, or the tags are applied purely at runtime by Verse code and
+    never stored in editor data at all) is diagnosable from the report
     itself instead of being a dead end.
 
     ``discovery.component_properties`` is populated in the failure cases
