@@ -190,3 +190,27 @@ search.
 7. The tool works unmodified on a UEFN project other than the one it was
    developed against — no hardcoded tag-declaration filename and no
    hardcoded tag-name prefix anywhere in `tag_inspect.py`.
+
+## 7. Live probe findings (recorded per acceptance criterion 1)
+
+> **FIELD-CONFIRMED, live editor run.** This section records the real
+> component/property-name probe (step 4.2 / acceptance criterion 1)
+> against a live UEFN editor, so the findings are written down rather than
+> assumed.
+
+- **Tag-bearing component class:** `VerseTagMarkupComponent` — confirmed on
+  a live editor run. (Note this is the `...Component`-suffixed class name,
+  not the `VerseTagMarkup` name assumed elsewhere in this document.)
+- **Tag-container property name:** still **UNRESOLVED** as of that run —
+  not yet identified by name; `tag_inspect.py`'s `_find_tag_component` /
+  `_extract_tags_from_component` fall back to a structural scan (any
+  component property whose value looks like a `GameplayTagContainer`, see
+  `_looks_like_tag_container`) rather than a hardcoded property name for
+  exactly this reason.
+- **Test actor:** `R1_P1 - SGMarker Rand 1`, whose four expected tags are
+  `t_area_hoth`, `t_phase_01`, `t_room_01`, `t_sg_random_guard_marker` —
+  the same four tags recorded in Section 5's offline-fallback field
+  validation.
+- **Verse tag classes parsed:** 629 tag classes parsed successfully from
+  the target project's own `*.verse` source via the Section 4.3 class-map
+  and parent-chain resolution.

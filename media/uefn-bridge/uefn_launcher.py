@@ -13,11 +13,12 @@ import unreal
 import json
 import os
 import datetime
+import subprocess
 import webbrowser
 
 try:
     import tkinter as tk
-    from tkinter import ttk, messagebox
+    from tkinter import ttk, messagebox, scrolledtext
     _HAS_TKINTER = True
 except ImportError:
     _HAS_TKINTER = False
@@ -532,6 +533,94 @@ def _launch_moderation_scan():
             messagebox.showerror("Error", "Failed to launch IP / Moderation Scan:\n" + str(e))
 
 
+# ---------------------------------------------------------------------------
+# Clipboard — Tk's clipboard API is FORBIDDEN in this file. Do not reintroduce
+# clipboard_clear() / clipboard_append() / clipboard_get() / selection_own() /
+# selection_handle() on any widget here.
+#
+# WHY: Tk's clipboard requires the window to take ownership of the system
+# CLIPBOARD selection and then service selection-request events from ITS OWN
+# Tk event loop. Every Power Tools window (this launcher included) is pumped
+# by UEFN's register_slate_post_tick_callback tick pump instead of running
+# mainloop(), so there is no owning event loop able to service a selection
+# request. That leaves Tcl/Tk unable to hand off the clipboard and it aborts
+# the whole host process — this is documented and confirmed in
+# moderation_scanner.py's identical module-level comment (real crash stack:
+# ucrtbase -> python311 -> _tkinter -> tcl86t (x5) -> tk86t -> user32 ...
+# Abort signal received), i.e. it used to crash UEFN itself, not just the
+# window. Reimplemented locally here (not imported from moderation_scanner.py)
+# to avoid pulling that ~4000-line module's heavier imports into this
+# launcher, which is loaded very early during UEFN startup — see
+# _mcp_command_entries()'s docstring for the same lazy-import reasoning.
+# ---------------------------------------------------------------------------
+
+def _copy_text_to_system_clipboard(text):
+    """Best-effort OS clipboard copy that never touches Tk's clipboard API.
+
+    Pipes `text` to the Windows `clip` console utility via subprocess; `clip`
+    owns and services the clipboard itself in its own separate process, so
+    this has nothing to do with Tk/Tcl and cannot reproduce the abort
+    described above. `startupinfo`/`CREATE_NO_WINDOW` keep the console
+    window hidden so nothing flashes over the editor.
+
+    Returns True on success, False if unavailable/failed (non-Windows, no
+    `clip` on PATH, timeout, etc.) — callers MUST have a no-clipboard
+    fallback for the False case (see `_show_copy_fallback_dialog`). Never
+    raises.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
+        proc = subprocess.run(
+            ["clip"],
+            input=text.encode("utf-16-le"),
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _show_copy_fallback_dialog(root, text, title="Copy this text"):
+    """No-clipboard-API fallback: a small Toplevel showing `text` pre-selected
+    in a ScrolledText widget so the user can press Ctrl+C themselves. Uses
+    zero Tk clipboard calls (no clipboard_get/selection_own either), so it
+    cannot reproduce the crash described above.
+    """
+    dlg = tk.Toplevel(root)
+    dlg.title(title)
+    dlg.configure(bg=_BG)
+    dlg.geometry("640x360")
+    tk.Label(
+        dlg,
+        text=(
+            "Clipboard copy is unavailable here — the text below is "
+            "pre-selected. Click inside it and press Ctrl+C to copy."
+        ),
+        font=("Segoe UI", 9, "bold"), fg=_HEADER_FG, bg=_BG,
+        wraplength=610, justify=tk.LEFT,
+    ).pack(fill=tk.X, padx=12, pady=(12, 6))
+
+    box = scrolledtext.ScrolledText(
+        dlg, wrap=tk.WORD, bg=_SECTION_BG, fg=_TEXT_FG,
+        insertbackground=_TEXT_FG, relief="flat", font=("Consolas", 9),
+    )
+    box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+    box.insert("1.0", text)
+    box.tag_add("sel", "1.0", "end")
+    box.focus_set()
+
+    tk.Button(
+        dlg, text="Close", font=("Segoe UI", 9), bg=_SECTION_BG, fg=_TEXT_FG,
+        relief="flat", padx=10, pady=4, command=dlg.destroy,
+    ).pack(pady=(0, 12))
+
+
 def _resolve_tag_inspect_report_path(module):
     """Best-effort resolution of tag_inspect's own report-path helper.
 
@@ -572,21 +661,111 @@ def _read_tag_inspect_report(module):
         return None, str(e)
 
 
+def _render_tag_report(tree, discovery_label, summary_label, data, source_label):
+    """Populate *tree*/*discovery_label*/*summary_label* from an
+    ``inspect_tags()``-shaped result dict (or ``None``). Clears the tree
+    first, so this is safe to call repeatedly (starting view, then again
+    after every "Run Scan" click) without leaking stale rows.
+
+    Actors with ``has_verse_tag_component`` False or an empty ``tags`` list
+    are inserted FIRST and flagged with a warning glyph — never dropped —
+    mirroring tag_inspect.sort_actors_flagged_first's own ordering intent.
+    Uses ``id()`` identity (not ``in``/equality) to split flagged vs. normal
+    so two actors that happen to have identical dict contents can't be
+    mis-bucketed. The ``discovery`` block (component class, tag property,
+    notes) is ALWAYS shown, not only on error/empty — when a scan finds a
+    component but zero tags, that block is the only thing that explains
+    why, and hiding it is what made the field failure this tool exists to
+    prevent so hard to diagnose."""
+    tree.delete(*tree.get_children())
+
+    if data is None:
+        discovery_label.config(text="")
+        summary_label.config(text="")
+        return
+
+    discovery = data.get("discovery") or {}
+    comp_class = discovery.get("component_class")
+    tag_prop = discovery.get("tag_property")
+    notes = discovery.get("notes") or ""
+    discovery_text = "Component class: {}  |  Tag property: {}".format(
+        comp_class if comp_class else "<none found>",
+        tag_prop if tag_prop else "<none found>",
+    )
+    if notes:
+        discovery_text += "\n" + str(notes)
+    discovery_label.config(text=discovery_text)
+
+    actors = list(data.get("actors") or [])
+
+    def _is_flagged(actor):
+        return (not actor.get("has_verse_tag_component")) or (not actor.get("tags"))
+
+    flagged_ids = {id(a) for a in actors if _is_flagged(a)}
+    flagged = [a for a in actors if id(a) in flagged_ids]
+    normal = [a for a in actors if id(a) not in flagged_ids]
+
+    def _insert_actor(actor, is_flagged):
+        label = actor.get("label", "<unlabeled>")
+        has_component = actor.get("has_verse_tag_component")
+        tags = actor.get("tags") or []
+        summary = ("⚠ " if is_flagged else "") + str(label)
+        if not has_component:
+            summary += "  (no tag component)"
+        elif not tags:
+            summary += "  (tag component, zero tags)"
+        node = tree.insert("", tk.END, text=summary, values=("",))
+        for tag in tags:
+            name = tag.get("name", "<unnamed>")
+            chain = " > ".join(tag.get("parent_chain") or [])
+            tree.insert(node, tk.END, text=str(name), values=(chain,))
+
+    for actor in flagged:
+        _insert_actor(actor, True)
+    for actor in normal:
+        _insert_actor(actor, False)
+
+    summary_bits = [
+        str(len(actors)) + " actor(s) scanned",
+        str(len(flagged)) + " flagged (no component / zero tags)",
+        str(data.get("tag_class_count", 0)) + " tag classes discovered",
+    ]
+    if data.get("verse_dir"):
+        summary_bits.append("verse_dir: " + str(data.get("verse_dir")))
+    summary_bits.append(source_label)
+    summary_label.config(text="  |  ".join(summary_bits))
+
+
 def _show_tag_inspect_window(tag_inspect_module):
-    """Render tag_inspect_report.json human-readably: per actor, its label,
-    whether it has a tag component, its tags, and each tag's parent chain
-    as a breadcrumb. Actors with no tag component (or a component with
-    zero tags) are listed FIRST and flagged with a warning glyph — omission
-    is exactly the failure mode this tool exists to prevent, so a missing
-    tag must never be buried at the bottom of a long report."""
+    """Verse Tag Inspector window.
+
+    ``inspect_tags()`` is pure local Python that runs entirely inside
+    UEFN's embedded interpreter and needs no AI round-trip (see
+    tag_inspect.py's module docstring) — so this window's PRIMARY
+    affordance is "Run Scan": it calls ``tag_inspect_module.inspect_tags``
+    directly and renders the result immediately, instead of requiring the
+    user to go run an MCP tool from an AI client first. A previously saved
+    tag_inspect_report.json, if one exists, is still shown as a starting
+    view on open (a convenience only — the window never DEPENDS on that
+    file existing). An optional "Copy MCP prompt" button remains for users
+    who'd rather have an AI assistant run/interpret the scan.
+
+    ``inspect_tags()`` walks every level actor and every ``*.verse`` file
+    synchronously on the calling thread — the UEFN main thread when invoked
+    from here — so it can take real time on a large project and freezes the
+    UI while it runs. The Run Scan button is disabled (and its label swapped
+    to "Scanning...") for the duration, guarded by the ``_scanning`` flag
+    below so a queued repeat click can't re-enter it. tag_inspect.py does
+    NOT use ``unreal.ScopedSlowTask`` anywhere (confirmed by reading the
+    module in full — see ``_inspect_tags_live`` in tag_inspect.py), so
+    there is no competing progress dialog to worry about duplicating here.
+    """
     if not _HAS_TKINTER:
         return
 
-    data, error = _read_tag_inspect_report(tag_inspect_module)
-
     win = tk.Tk()
     win.title("Verse Tag Inspector")
-    win.geometry("720x560")
+    win.geometry("720x640")
     win.configure(bg=_BG)
 
     style = ttk.Style(win)
@@ -618,30 +797,33 @@ def _show_tag_inspect_window(tag_inspect_module):
         font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
     ).pack(padx=16, pady=(0, 8), anchor=tk.W)
 
-    if error is not None:
-        tk.Label(
-            win, text="Failed to read tag_inspect_report.json:\n" + error,
-            font=("Segoe UI", 9), fg="#B23B2E", bg=_BG, justify=tk.LEFT, wraplength=680,
-        ).pack(padx=16, pady=8, anchor=tk.W)
-        return
+    # ------------------------------------------------------------------
+    # Controls: label-pattern filter + Run Scan + Copy MCP prompt
+    # ------------------------------------------------------------------
+    controls = tk.Frame(win, bg=_BG)
+    controls.pack(fill=tk.X, padx=16, pady=(0, 4))
 
-    if data is None:
-        tk.Label(
-            win,
-            text="No tag_inspect_report.json found yet.\n\n"
-                 "Run the scan first — call the uefn_tag_inspect MCP tool "
-                 "(or ask your AI assistant to run it), then reopen this "
-                 "window.",
-            font=("Segoe UI", 10), fg=_TEXT_FG, bg=_BG, justify=tk.LEFT, wraplength=680,
-        ).pack(padx=16, pady=24, anchor=tk.W)
-        return
+    tk.Label(
+        controls, text="Label pattern (blank = all actors):",
+        font=("Segoe UI", 9), fg=_TEXT_FG, bg=_BG,
+    ).pack(side=tk.LEFT)
 
-    discovery = data.get("discovery") or {}
-    if discovery.get("notes"):
-        tk.Label(
-            win, text=str(discovery.get("notes")),
-            font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT, wraplength=680,
-        ).pack(padx=16, pady=(0, 6), anchor=tk.W)
+    pattern_var = tk.StringVar(value="")
+    pattern_entry = tk.Entry(controls, textvariable=pattern_var, width=22, font=("Segoe UI", 9))
+    pattern_entry.pack(side=tk.LEFT, padx=(6, 10))
+
+    status_var = tk.StringVar(value="Ready.")
+    status_label = tk.Label(
+        win, textvariable=status_var, font=("Segoe UI", 9, "italic"),
+        fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT, wraplength=680,
+    )
+    status_label.pack(padx=16, pady=(0, 6), anchor=tk.W)
+
+    discovery_label = tk.Label(
+        win, text="", font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
+        justify=tk.LEFT, wraplength=680,
+    )
+    discovery_label.pack(padx=16, pady=(0, 6), anchor=tk.W)
 
     tree_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
     tree_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
@@ -654,47 +836,133 @@ def _show_tag_inspect_window(tag_inspect_module):
     tree.heading("value", text="Parent chain")
     tree.column("#0", width=320)
     tree.column("value", width=340)
-
-    actors = list(data.get("actors") or [])
-    # Flag actors with no tag component or zero tags and list them FIRST —
-    # this mirrors the JSON contract's ordering intent so a missing tag is
-    # never buried at the bottom of a long report.
-    flagged = [a for a in actors if not a.get("has_verse_tag_component") or not a.get("tags")]
-    normal = [a for a in actors if a not in flagged]
-
-    def _insert_actor(actor, is_flagged):
-        label = actor.get("label", "<unlabeled>")
-        has_component = actor.get("has_verse_tag_component")
-        tags = actor.get("tags") or []
-        summary = ("⚠ " if is_flagged else "") + str(label)
-        if not has_component:
-            summary += "  (no tag component)"
-        elif not tags:
-            summary += "  (tag component, zero tags)"
-        node = tree.insert("", tk.END, text=summary, values=("",))
-        for tag in tags:
-            name = tag.get("name", "<unnamed>")
-            chain = " > ".join(tag.get("parent_chain") or [])
-            tree.insert(node, tk.END, text=str(name), values=(chain,))
-
-    for actor in flagged:
-        _insert_actor(actor, True)
-    for actor in normal:
-        _insert_actor(actor, False)
-
     tree.pack(fill=tk.BOTH, expand=True)
 
-    summary_bits = [
-        str(len(actors)) + " actor(s) scanned",
-        str(len(flagged)) + " flagged (no component / zero tags)",
-        str(data.get("tag_class_count", 0)) + " tag classes discovered",
-    ]
-    if data.get("verse_dir"):
-        summary_bits.append("verse_dir: " + str(data.get("verse_dir")))
-    tk.Label(
-        win, text="  |  ".join(summary_bits),
-        font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
-    ).pack(padx=16, pady=(4, 8), anchor=tk.W)
+    summary_label = tk.Label(
+        win, text="", font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
+    )
+    summary_label.pack(padx=16, pady=(4, 8), anchor=tk.W)
+
+    # ------------------------------------------------------------------
+    # Run Scan — guarded against double-clicks (see docstring above).
+    # ------------------------------------------------------------------
+    _scanning = [False]
+
+    def _run_scan():
+        if _scanning[0]:
+            return
+        _scanning[0] = True
+        run_btn.configure(state=tk.DISABLED, text="Scanning...")
+        pattern_entry.configure(state=tk.DISABLED)
+        status_var.set(
+            "Scanning — this can take a while on large levels (walks "
+            "every level actor and every .verse file). The editor UI will "
+            "be unresponsive until it finishes."
+        )
+        try:
+            win.update()
+        except tk.TclError:
+            pass
+
+        pattern = pattern_var.get().strip()
+        try:
+            result = tag_inspect_module.inspect_tags(label_pattern=pattern or None)
+            _render_tag_report(tree, discovery_label, summary_label, result, "this scan, just now")
+            status_var.set("Scan complete.")
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: tag_inspect scan failed: " + str(e))
+            status_var.set("Scan failed: " + str(e))
+        finally:
+            _scanning[0] = False
+            run_btn.configure(state=tk.NORMAL, text="Run Scan")
+            pattern_entry.configure(state=tk.NORMAL)
+
+    run_btn = tk.Button(
+        controls, text="Run Scan", font=("Segoe UI", 9, "bold"),
+        bg=_ACCENT_GREEN, fg="#FFFFFF", activebackground="#256F32",
+        activeforeground="#FFFFFF", relief="flat", padx=10, pady=4,
+        command=_run_scan,
+    )
+    run_btn.pack(side=tk.LEFT)
+
+    # ------------------------------------------------------------------
+    # Copy MCP prompt — convenience only, per FIX 2: the AI path is no
+    # longer required to see results, just an alternative way to get them.
+    # ------------------------------------------------------------------
+    def _copy_mcp_prompt():
+        pattern = pattern_var.get().strip()
+        pattern_desc = "label_pattern=\"{}\"".format(pattern) if pattern else "no label_pattern (all actors)"
+        prompt = (
+            "Run the uefn_tag_inspect MCP tool with {}. Show me each "
+            "actor's tags and parent chains, flag any actor with no tag "
+            "component or zero tags, and include the discovery notes "
+            "(the component class and tag-container property it found)."
+        ).format(pattern_desc)
+        if _copy_text_to_system_clipboard(prompt):
+            copy_btn.configure(text="Copied!")
+            win.after(1500, lambda: copy_btn.configure(text="Copy MCP prompt"))
+        else:
+            _show_copy_fallback_dialog(win, prompt, title="Copy MCP prompt")
+
+    copy_btn = tk.Button(
+        controls, text="Copy MCP prompt", font=("Segoe UI", 9),
+        bg=_SECTION_BG, fg=_TEXT_FG, activebackground=_BG,
+        activeforeground=_TEXT_FG, relief="flat", padx=10, pady=4,
+        command=_copy_mcp_prompt,
+    )
+    copy_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+    # ------------------------------------------------------------------
+    # Starting view — a previously saved report, if any, shown purely as a
+    # convenience; never a hard dependency (see docstring above).
+    # ------------------------------------------------------------------
+    data, error = _read_tag_inspect_report(tag_inspect_module)
+    if error is not None:
+        status_var.set(
+            "Could not read a previously saved report (" + error + "). "
+            "Click Run Scan to scan now."
+        )
+    elif data is None:
+        status_var.set("No previously saved report yet. Click Run Scan to scan now.")
+    else:
+        _render_tag_report(
+            tree, discovery_label, summary_label, data,
+            "last saved report — click Run Scan to refresh",
+        )
+        status_var.set("Showing the last saved report. Click Run Scan to refresh.")
+
+    # ------------------------------------------------------------------
+    # Tick pump -- pump tkinter from the Unreal event loop, mirroring
+    # _show_mcp_info's tick pump exactly. This window creates its own
+    # independent tk.Tk() root (like _show_mcp_info, unlike the other
+    # sibling tool windows which each own their pump internally), so
+    # without this the Entry/Buttons above would never receive events.
+    # ------------------------------------------------------------------
+    _tag_tick = [None]
+
+    def _tick(_dt):
+        try:
+            if win.winfo_exists():
+                win.update()
+            else:
+                if _tag_tick[0]:
+                    unreal.unregister_slate_post_tick_callback(_tag_tick[0])
+                    _tag_tick[0] = None
+        except tk.TclError:
+            if _tag_tick[0]:
+                unreal.unregister_slate_post_tick_callback(_tag_tick[0])
+                _tag_tick[0] = None
+        except Exception:
+            pass
+
+    def _on_close():
+        if _tag_tick[0]:
+            unreal.unregister_slate_post_tick_callback(_tag_tick[0])
+            _tag_tick[0] = None
+        win.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", _on_close)
+    _tag_tick[0] = unreal.register_slate_post_tick_callback(_tick)
 
 
 def _launch_tag_inspect():
@@ -703,10 +971,11 @@ def _launch_tag_inspect():
     can be legitimately absent from an older/partial project sync, and that
     gets its own actionable message instead of the generic error. Unlike
     the moderation scan, tag inspection needs no AI round-trip —
-    inspect_tags() runs entirely locally and writes its own report — so this
-    just imports the module and hands it to the render window, which reads
-    the report back via tag_inspect's path helper (see
-    _resolve_tag_inspect_report_path)."""
+    inspect_tags() runs entirely locally and writes its own report as a side
+    effect — so this just imports the module and hands it to the render
+    window, which calls inspect_tags() directly on "Run Scan" (see
+    _show_tag_inspect_window) rather than depending on a report file having
+    been produced by an external MCP client first."""
     try:
         import importlib
         import tag_inspect

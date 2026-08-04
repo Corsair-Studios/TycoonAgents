@@ -27,7 +27,16 @@ Two things this module deliberately does NOT hardcode:
     named "VerseTagMarkup", a property literally named "Tags") have already
     failed as bare ``get_editor_property`` targets in the field. What is
     actually discovered is reported back in ``inspect_tags``'s
-    ``discovery`` block instead of being assumed.
+    ``discovery`` block instead of being assumed — including, when a
+    component IS found but no property on it is identified as the tag
+    container, a capped listing of every property this scan actually saw
+    on that component (name, type, truncated value repr) via
+    ``discovery.component_properties``. A field run once returned a real
+    component class (``VerseTagMarkupComponent``) with ``tag_property:
+    null`` for a demonstrably-tagged actor and nothing else to go on — see
+    ``_extract_tags_from_component``'s content+shape detection and this
+    field's own self-diagnosis contract, which exists so that exact
+    scenario is never a dead end again.
   * Any tag-declaration filename or tag-name prefix — the set of "real"
     Verse tag classes is derived purely from the target project's own
     ``*.verse`` source (see the "PURE" section below), so this module works
@@ -86,6 +95,16 @@ try:
     from property_inspector import _get_property_names as _pi_get_property_names
 except ImportError:
     _pi_get_property_names = None
+
+# device_audit._get_property_names (device_audit.py:252) is the SAME
+# dir()-based enumerator, already proven against 579/579 live classes for
+# CDO diffing (see device_audit's own field notes) -- it has only ever been
+# called with an ACTOR there. Pooled in here as a second independent source
+# and tried against the COMPONENT object instead. Resolved via getattr, not
+# a bare `from device_audit import ...`, so one missing/renamed symbol in a
+# stale device_audit.py copy degrades this to None rather than failing the
+# whole module import.
+_da_get_property_names = getattr(device_audit, "_get_property_names", None) if device_audit is not None else None
 
 
 def _fallback_label(actor):
@@ -382,41 +401,93 @@ def _read_verse_file_texts(paths):
 
 
 def _get_component_property_names(obj):
-    """Editor-gettable property names of *obj*, via property_inspector's
-    dir()-based enumerator when importable, else a local fallback
-    reproducing the same logic (filters private/dunder names and
-    callables)."""
-    if _pi_get_property_names is not None:
+    """Editor-gettable property names of *obj* (a component), pooled from
+    every enumeration source available in this sibling set -- union,
+    order-preserving, de-duplicated:
+      1. device_audit._get_property_names(obj) -- the CDO-diffing
+         enumerator, tried here against the COMPONENT rather than the
+         actor device_audit itself always calls it with.
+      2. property_inspector._get_property_names(obj) -- the Property
+         Inspector's own enumerator. Kept as an independent source (not
+         "if 1 fails use 2") in case either sibling module exposes a
+         property the other's identical dir()-filter happens to miss for
+         any reason (e.g. a getattr() that raises differently under one
+         call site's object state vs another's).
+      3. A local dir()-based LAST-RESORT fallback: same filter (skip
+         private/dunder names, skip callables) as both sibling
+         enumerators, used only when neither sibling source produced
+         anything -- e.g. both are unavailable in a version-skewed sibling
+         set, or genuinely raised for every name.
+    Any source that raises is skipped individually; this never raises."""
+    names = []
+    seen = set()
+
+    def _extend(source_names):
+        for n in source_names:
+            if n not in seen:
+                seen.add(n)
+                names.append(n)
+
+    if _da_get_property_names is not None:
         try:
-            return _pi_get_property_names(obj)
+            _extend(_da_get_property_names(obj))
         except Exception:
             pass
-    names = []
-    for name in dir(obj):
-        if name.startswith("_"):
-            continue
+
+    if _pi_get_property_names is not None:
         try:
-            attr = getattr(obj, name)
+            _extend(_pi_get_property_names(obj))
         except Exception:
-            continue
-        if callable(attr):
-            continue
-        names.append(name)
+            pass
+
+    if not names:
+        for name in dir(obj):
+            if name.startswith("_"):
+                continue
+            try:
+                attr = getattr(obj, name)
+            except Exception:
+                continue
+            if callable(attr):
+                continue
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+
     return names
 
 
 def _looks_like_tag_container(value):
     """Best-effort structural check: does *value* look like a
-    GameplayTagContainer-ish object? True if it exposes ``.gameplay_tags``,
-    or is itself a list/tuple (the plain-list fallback the spec calls
-    out)."""
+    GameplayTagContainer-ish object? Detected by SHAPE, never by property
+    NAME (see module docstring -- literal name guesses like "Tags" have
+    already failed as get_editor_property targets in the field):
+      * exposes ``.gameplay_tags`` (the FGameplayTagContainer Python
+        wrapper's own accessor), or
+      * is a plain list/tuple, or
+      * is any OTHER non-string, non-mapping iterable. This last branch is
+        the fix for a real gap: the UE Python API's ``unreal.Array`` wraps
+        a native TArray and supports the same iteration protocol as a
+        list, but is NOT itself a subclass of ``list``/``tuple`` -- the
+        previous isinstance-only check silently rejected exactly that
+        shape, which is a very plausible reason a real, populated tag
+        array property was never recognized (component_class discovered,
+        tag_property stayed null) against a live UEFN actor."""
     if value is None:
+        return False
+    if isinstance(value, (str, bytes)):
         return False
     if hasattr(value, "gameplay_tags"):
         return True
     if isinstance(value, (list, tuple)):
         return True
-    return False
+    if isinstance(value, dict):
+        return False
+    try:
+        iter(value)
+    except TypeError:
+        return False
+    return True
 
 
 def _iter_tag_container_values(container):
@@ -443,38 +514,168 @@ def _iter_tag_container_values(container):
         return
 
 
-def _extract_tags_from_component(comp):
-    """Scan *comp*'s editor properties for the first one whose value looks
-    like a GameplayTagContainer (see ``_looks_like_tag_container``), and
-    extract normalized tag names from it. Returns
-    ``(tag_property_name_or_None, [raw_tag_name, ...])``."""
+_MAX_DIAGNOSTIC_PROPERTIES = 40
+_DIAGNOSTIC_VALUE_MAX_LEN = 80
+
+
+def _truncate_diag(text):
+    """Hard-truncate *text* to _DIAGNOSTIC_VALUE_MAX_LEN characters (never a
+    full dump into the discovery report -- a component can carry large
+    struct/array reprs). Never raises."""
+    try:
+        text = text if isinstance(text, str) else str(text)
+    except Exception:
+        return "<unrepresentable>"
+    if len(text) > _DIAGNOSTIC_VALUE_MAX_LEN:
+        return text[: _DIAGNOSTIC_VALUE_MAX_LEN - 3] + "..."
+    return text
+
+
+def _value_contains_known_tag(value_repr, known_tag_names):
+    """True if *value_repr* (a property value's str()/repr() form) contains
+    one of *known_tag_names* as a whole-word substring. *known_tag_names*
+    is the set of tag class names this SAME project's own Verse source
+    actually declared (see ``build_tag_class_set``) -- grounded in real,
+    already-discovered project data, not a generic hardcoded prefix or
+    property-name guess. This is the strongest available detection signal:
+    a property whose printed value literally names a tag this project
+    declared almost certainly IS the tag container, regardless of its own
+    property name or exact Python type."""
+    if not value_repr or not known_tag_names:
+        return False
+    for tag_name in known_tag_names:
+        if tag_name and re.search(r"\b" + re.escape(tag_name) + r"\b", value_repr):
+            return True
+    return False
+
+
+def _extract_tags_from_component(comp, known_tag_names=None):
+    """Scan *comp*'s editor properties (via ``_get_component_property_names``,
+    the pooled multi-source enumerator) to find the tag-container property
+    and extract normalized tag names from it.
+
+    Two independent detection signals are tried, in order of confidence:
+      1. CONTENT match (``_value_contains_known_tag``) -- the property's
+         printed value contains one of *known_tag_names*, this project's
+         own discovered Verse tag class names. Strongest signal: grounded
+         in real project data, wins immediately when found.
+      2. SHAPE match (``_looks_like_tag_container``) -- the value looks
+         like a tag container structurally. Property NAME is never the
+         deciding factor for either signal; among MULTIPLE shape-only
+         candidates (no content match available, e.g. *known_tag_names* is
+         empty because verse_dir could not be resolved) a name containing
+         "tag" is used only as a last tie-break, never as the sole basis.
+
+    Returns ``(tag_property_name_or_None, [raw_tag_name, ...],
+    diagnostics)`` where ``diagnostics`` is
+    ``{"properties": [{"name", "type", "value_repr"}, ...], "capped": bool}``
+    covering EVERY property this scan saw on *comp* (capped at
+    ``_MAX_DIAGNOSTIC_PROPERTIES``, each value_repr hard-truncated to
+    ``_DIAGNOSTIC_VALUE_MAX_LEN`` chars) -- populated UNCONDITIONALLY, not
+    only on failure, so a caller can always surface it. This is what turns
+    a dead ``tag_property: null`` into an actionable report (see module
+    docstring's field case and ``inspect_tags``'s discovery contract)."""
+    known_tag_names = known_tag_names or ()
+    diagnostic_props = []
+    capped = False
+    content_hit_name = None
+    shape_candidates = []  # [(name, value), ...]
+
     for name in _get_component_property_names(comp):
         try:
             value = comp.get_editor_property(name)
         except Exception:
             continue
+
+        try:
+            value_repr = repr(value)
+        except Exception:
+            value_repr = "<unrepresentable>"
+        try:
+            type_name = type(value).__name__
+        except Exception:
+            type_name = "<unknown>"
+
+        if len(diagnostic_props) < _MAX_DIAGNOSTIC_PROPERTIES:
+            diagnostic_props.append({
+                "name": name,
+                "type": type_name,
+                "value_repr": _truncate_diag(value_repr),
+            })
+        else:
+            capped = True
+
+        if content_hit_name is None and _value_contains_known_tag(value_repr, known_tag_names):
+            content_hit_name = name
+
         if _looks_like_tag_container(value):
+            shape_candidates.append((name, value))
+
+    diagnostics = {"properties": diagnostic_props, "capped": capped}
+
+    winner_name = None
+    winner_value = None
+    if content_hit_name is not None:
+        winner_name = content_hit_name
+        for cand_name, cand_value in shape_candidates:
+            if cand_name == content_hit_name:
+                winner_value = cand_value
+                break
+        if winner_value is None:
+            # Content matched on a property that didn't also shape-match
+            # (e.g. a plain string field) -- still honor the content hit;
+            # re-fetch defensively rather than trusting a stale local.
+            try:
+                winner_value = comp.get_editor_property(content_hit_name)
+            except Exception:
+                winner_value = None
+    elif shape_candidates:
+        if len(shape_candidates) == 1:
+            winner_name, winner_value = shape_candidates[0]
+        else:
+            tag_named = [c for c in shape_candidates if "tag" in c[0].lower()]
+            winner_name, winner_value = tag_named[0] if tag_named else shape_candidates[0]
+
+    if winner_name is None:
+        return None, [], diagnostics
+
+    names = []
+    for raw in _iter_tag_container_values(winner_value):
+        try:
+            names.append(normalize_tag_name(str(raw)))
+        except Exception:
+            continue
+    if not names and winner_value is not None and winner_name == content_hit_name:
+        # Content-hit-but-non-iterable case (e.g. a single-tag string
+        # field) -- treat the value itself as one raw tag rather than
+        # reporting zero tags for a property we're confident is the
+        # right one.
+        try:
+            names = [normalize_tag_name(str(winner_value))]
+        except Exception:
             names = []
-            for raw in _iter_tag_container_values(value):
-                try:
-                    names.append(normalize_tag_name(str(raw)))
-                except Exception:
-                    continue
-            return name, names
-    return None, []
+
+    return winner_name, names, diagnostics
 
 
-def _find_tag_component(actor):
+def _find_tag_component(actor, known_tag_names=None):
     """Locate the Verse-tag-bearing component on *actor*, generically —
     the class/property names are NEVER hardcoded (see module docstring).
     Preference order:
       1. A component whose class name contains "VerseTag" (case-
-         insensitive).
+         insensitive) — e.g. the real, field-confirmed
+         ``VerseTagMarkupComponent``. Once such a component is found this
+         is returned IMMEDIATELY, whether or not property extraction on it
+         succeeds — its ``diagnostics`` are what lets a failed extraction
+         on the correct component still be actionable (see
+         ``_extract_tags_from_component``), rather than silently falling
+         through to a generic component that happens to shape-match.
       2. Any component exposing a property whose value looks like a
-         GameplayTagContainer (see ``_looks_like_tag_container``).
-    Returns ``(component, class_name, tag_property_name, [raw_tag_name,...])``
-    — component is None (has_verse_tag_component: False case) only if
-    neither preference found anything on this actor."""
+         GameplayTagContainer (see ``_looks_like_tag_container``) or whose
+         value contains a known tag name (see ``_value_contains_known_tag``).
+    Returns ``(component, class_name, tag_property_name, [raw_tag_name,...],
+    diagnostics)`` — component is None (has_verse_tag_component: False
+    case) only if neither preference found anything on this actor."""
     try:
         components = actor.get_components_by_class(unreal.ActorComponent)
     except Exception:
@@ -490,15 +691,15 @@ def _find_tag_component(actor):
 
     for comp, class_name in candidates:
         if "versetag" in class_name.lower():
-            prop_name, names = _extract_tags_from_component(comp)
-            return comp, class_name, prop_name, names
+            prop_name, names, diagnostics = _extract_tags_from_component(comp, known_tag_names)
+            return comp, class_name, prop_name, names, diagnostics
 
     for comp, class_name in candidates:
-        prop_name, names = _extract_tags_from_component(comp)
+        prop_name, names, diagnostics = _extract_tags_from_component(comp, known_tag_names)
         if prop_name is not None:
-            return comp, class_name, prop_name, names
+            return comp, class_name, prop_name, names, diagnostics
 
-    return None, None, None, []
+    return None, None, None, [], {"properties": [], "capped": False}
 
 
 def _get_all_actors():
@@ -516,7 +717,13 @@ def _get_all_actors():
 def _inspect_tags_live(label_pattern, project_dir):
     """The live (unreal-dependent) inspection path. Only called when
     ``_HAS_UNREAL`` is True; every editor call is individually guarded."""
-    discovery = {"component_class": None, "tag_property": None, "notes": ""}
+    discovery = {
+        "component_class": None,
+        "tag_property": None,
+        "component_properties": [],
+        "component_properties_capped": False,
+        "notes": "",
+    }
     notes_parts = []
 
     try:
@@ -526,6 +733,8 @@ def _inspect_tags_live(label_pattern, project_dir):
             "discovery": {
                 "component_class": None,
                 "tag_property": None,
+                "component_properties": [],
+                "component_properties_capped": False,
                 "notes": "actor enumeration failed: " + str(e),
             },
             "verse_dir": None,
@@ -533,52 +742,12 @@ def _inspect_tags_live(label_pattern, project_dir):
             "actors": [],
         }
 
-    label_of = _safe_label_fn if _safe_label_fn is not None else _fallback_label
-
-    matched = []
-    for actor in all_actors:
-        try:
-            label = label_of(actor)
-        except Exception:
-            continue
-        if match_label(label, label_pattern):
-            matched.append((label, actor))
-
-    raw_records = []
-    for label, actor in matched:
-        try:
-            comp, comp_class, tag_prop, raw_names = _find_tag_component(actor)
-        except Exception:
-            comp, comp_class, tag_prop, raw_names = None, None, None, []
-        if comp is not None and discovery["component_class"] is None:
-            discovery["component_class"] = comp_class
-            discovery["tag_property"] = tag_prop
-        raw_records.append({
-            "label": label,
-            "has_verse_tag_component": comp is not None,
-            "component_class": comp_class,
-            "raw_tag_names": raw_names,
-        })
-
-    found_count = sum(1 for r in raw_records if r["has_verse_tag_component"])
-    if discovery["component_class"] is not None:
-        notes_parts.append(
-            "discovered tag component class {!r}, tag-container property "
-            "{!r} (found on {} of {} matching actor(s)).".format(
-                discovery["component_class"], discovery["tag_property"],
-                found_count, len(raw_records),
-            )
-        )
-    elif raw_records:
-        notes_parts.append(
-            "no Verse-tag-bearing component found on any of the {} matching "
-            "actor(s) — looked for a component class name containing "
-            "'VerseTag', and for any component exposing a GameplayTag"
-            "Container-like property.".format(len(raw_records))
-        )
-    else:
-        notes_parts.append("no actors matched label_pattern={!r}.".format(label_pattern))
-
+    # Resolve verse_dir / tag_classes FIRST, independent of actor scanning,
+    # so the project's own discovered Verse tag class names (e.g.
+    # "t_area_hoth") are available as the CONTENT-based detection signal
+    # (see _value_contains_known_tag) while scanning each candidate
+    # component's properties below — grounded in real project data rather
+    # than a generic shape/name guess.
     if project_dir and not os.path.isdir(project_dir):
         notes_parts.append(
             "explicit project_dir={!r} is not a valid directory — falling "
@@ -618,6 +787,84 @@ def _inspect_tags_live(label_pattern, project_dir):
             "discovery ladder — tags are reported by name only, with empty "
             "parent_chain (never silently dropped)."
         )
+
+    known_tag_names = set(tag_classes.keys())
+
+    label_of = _safe_label_fn if _safe_label_fn is not None else _fallback_label
+
+    matched = []
+    for actor in all_actors:
+        try:
+            label = label_of(actor)
+        except Exception:
+            continue
+        if match_label(label, label_pattern):
+            matched.append((label, actor))
+
+    raw_records = []
+    first_component_diagnostics = None
+    for label, actor in matched:
+        try:
+            comp, comp_class, tag_prop, raw_names, diagnostics = _find_tag_component(
+                actor, known_tag_names
+            )
+        except Exception:
+            comp, comp_class, tag_prop, raw_names = None, None, None, []
+            diagnostics = {"properties": [], "capped": False}
+        if comp is not None and discovery["component_class"] is None:
+            discovery["component_class"] = comp_class
+            discovery["tag_property"] = tag_prop
+            first_component_diagnostics = diagnostics
+        raw_records.append({
+            "label": label,
+            "has_verse_tag_component": comp is not None,
+            "component_class": comp_class,
+            "raw_tag_names": raw_names,
+        })
+
+    found_count = sum(1 for r in raw_records if r["has_verse_tag_component"])
+    if discovery["component_class"] is not None and discovery["tag_property"] is not None:
+        notes_parts.append(
+            "discovered tag component class {!r}, tag-container property "
+            "{!r} (found on {} of {} matching actor(s)).".format(
+                discovery["component_class"], discovery["tag_property"],
+                found_count, len(raw_records),
+            )
+        )
+    elif discovery["component_class"] is not None:
+        # Component found, but no property on it matched a tag-container
+        # shape or content — the exact false-negative field case this
+        # module exists to eliminate (component_class discovered,
+        # tag_property stayed null even though the actor was demonstrably
+        # tagged). Surface EVERY property this scan actually saw on that
+        # component so the NEXT run needs no separate probe — a dead null
+        # is never returned without the evidence behind it.
+        if first_component_diagnostics is not None:
+            discovery["component_properties"] = first_component_diagnostics["properties"]
+            discovery["component_properties_capped"] = first_component_diagnostics["capped"]
+        notes_parts.append(
+            "component class {!r} was found on {} of {} matching actor(s), "
+            "but no property on it matched a tag-container shape (a "
+            "'.gameplay_tags' accessor, or a list/tuple/other iterable "
+            "value) or contained any of the {} tag class name(s) "
+            "discovered from Verse source. See "
+            "discovery.component_properties for every property name, "
+            "value type, and truncated value repr this scan actually saw "
+            "on that component — the component WAS found; only the "
+            "tag-container property within it was not identified.".format(
+                discovery["component_class"], found_count, len(raw_records),
+                len(known_tag_names),
+            )
+        )
+    elif raw_records:
+        notes_parts.append(
+            "no Verse-tag-bearing component found on any of the {} matching "
+            "actor(s) — looked for a component class name containing "
+            "'VerseTag', and for any component exposing a GameplayTag"
+            "Container-like property.".format(len(raw_records))
+        )
+    else:
+        notes_parts.append("no actors matched label_pattern={!r}.".format(label_pattern))
 
     actors_out = []
     for rec in raw_records:
@@ -786,12 +1033,26 @@ def inspect_tags(label_pattern=None, project_dir=None):
 
     Returns exactly:
         {"discovery": {"component_class": str|None, "tag_property": str|None,
+                        "component_properties": [{"name": str, "type": str,
+                                                    "value_repr": str}, ...],
+                        "component_properties_capped": bool,
                         "notes": str},
          "verse_dir": str|None,
          "tag_class_count": int,
          "actors": [{"label": str, "has_verse_tag_component": bool,
                       "component_class": str|None,
                       "tags": [{"name": str, "parent_chain": [str, ...]}]}]}
+
+    ``discovery.component_properties`` is populated ONLY in the specific
+    failure case that matters most: a tag-bearing component WAS found
+    (``component_class`` is set) but no property on it could be identified
+    as the tag container (``tag_property`` stayed ``None``). It lists
+    every editor-gettable property this scan actually saw on that
+    component — name, Python type name, and a value repr hard-truncated to
+    80 chars — capped at 40 entries (``component_properties_capped`` flags
+    truncation). This turns a dead ``tag_property: null`` into an
+    actionable report: the next probe of that project needs no separate
+    run, because what was actually seen on the component is right here.
 
     Actors with ``has_verse_tag_component: False`` OR an empty ``tags``
     list are sorted FIRST in ``actors`` (see ``sort_actors_flagged_first``)
@@ -804,19 +1065,25 @@ def inspect_tags(label_pattern=None, project_dir=None):
     ``device_audit._find_verse_dir()``'s discovery ladder resolves it. If
     it cannot be resolved at all, ``verse_dir`` is None and tags are still
     returned by name with an empty ``parent_chain`` — never a silently
-    empty/success-looking result (see docs/PATH-DISCOVERY.md).
+    empty/success-looking result (see docs/PATH-DISCOVERY.md). The tag
+    class names this resolves ALSO feed tag-property detection itself: a
+    property whose value contains one of the project's own known tag names
+    is the strongest signal tried (see ``_value_contains_known_tag``),
+    ahead of pure structural shape-matching.
 
     Never raises: with ``unreal`` unavailable, or on any unhandled
-    exception during the live path, this returns the same 4-key shape with
-    an explanatory ``discovery.notes`` string instead of crashing or
-    returning a misleadingly "clean" empty result. Also writes the result
-    to tag_inspect_report.json (see ``write_report``/``report_path``) as a
-    side effect, in every case."""
+    exception during the live path, this returns the same 5-key discovery
+    shape with an explanatory ``discovery.notes`` string instead of
+    crashing or returning a misleadingly "clean" empty result. Also writes
+    the result to tag_inspect_report.json (see
+    ``write_report``/``report_path``) as a side effect, in every case."""
     if not _HAS_UNREAL:
         result = {
             "discovery": {
                 "component_class": None,
                 "tag_property": None,
+                "component_properties": [],
+                "component_properties_capped": False,
                 "notes": (
                     "'unreal' module not available — this must run inside "
                     "UEFN's embedded Python to enumerate actors/components "
@@ -844,6 +1111,8 @@ def inspect_tags(label_pattern=None, project_dir=None):
             "discovery": {
                 "component_class": None,
                 "tag_property": None,
+                "component_properties": [],
+                "component_properties_capped": False,
                 "notes": "unhandled exception during inspection (see Output Log): " + last_line,
             },
             "verse_dir": None,
