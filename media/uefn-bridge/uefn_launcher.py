@@ -744,15 +744,32 @@ def _show_tag_inspect_window(tag_inspect_module):
     file existing). An optional "Copy MCP prompt" button remains for users
     who'd rather have an AI assistant run/interpret the scan.
 
-    ``inspect_tags()`` walks every level actor and every ``*.verse`` file
-    synchronously on the calling thread — the UEFN main thread when invoked
-    from here — so it can take real time on a large project and freezes the
-    UI while it runs. The Run Scan button is disabled (and its label swapped
-    to "Scanning...") for the duration, guarded by the ``_scanning`` flag
-    below so a queued repeat click can't re-enter it. tag_inspect.py does
-    NOT use ``unreal.ScopedSlowTask`` anywhere (confirmed by reading the
-    module in full — see ``_inspect_tags_live`` in tag_inspect.py), so
-    there is no competing progress dialog to worry about duplicating here.
+    ``inspect_tags()`` walks level actors and ``*.verse`` files on the
+    calling thread — the UEFN main thread when invoked from here — so it
+    can still take real time on a large project. It now wraps both heavy
+    phases in a cancellable ``unreal.ScopedSlowTask`` (see
+    ``_inspect_tags_live``/``_make_slow_task`` in tag_inspect.py) with
+    explicit caps on actors/components/properties examined — a FIELD
+    INCIDENT (a user's UEFN froze solid for 15+ minutes with no way out
+    after clicking Run Scan with a blank label pattern, which matches
+    EVERY actor) is why that dialog, those caps, and the confirmation
+    below all exist. The ScopedSlowTask dialog is the PRIMARY in-progress
+    UI (it owns the actual Cancel affordance), but this window must never
+    itself look idle while a scan runs — see the status text and window
+    title changes in ``_run_scan`` below. The Run Scan button is disabled
+    (and its label swapped to "Scanning...") for the duration, guarded by
+    the ``_scanning`` flag below so a queued repeat click can't re-enter
+    it.
+
+    An EMPTY label pattern matches every actor in the level — the exact
+    setting that froze the editor in the field incident above. ``_run_scan``
+    requires an explicit ``messagebox.askyesno`` confirmation before running
+    in that case; a non-empty pattern (which is normally a small, bounded
+    subset of actors) runs immediately with no extra prompt. This uses
+    ``messagebox`` (already used elsewhere in this file for error dialogs),
+    never Tk's own clipboard API — see the module-level clipboard warning
+    below for why that specific API is forbidden in a tick-pumped window;
+    ``messagebox`` dialogs are unaffected by that restriction.
     """
     if not _HAS_TKINTER:
         return
@@ -845,24 +862,65 @@ def _show_tag_inspect_window(tag_inspect_module):
     def _run_scan():
         if _scanning[0]:
             return
+
+        pattern = pattern_var.get().strip()
+
+        # FIELD INCIDENT this guards against: an empty label pattern
+        # matches EVERY actor in the level — the exact setting that froze
+        # a user's UEFN for 15+ minutes with no way to cancel. Even though
+        # tag_inspect.py now caps and bounds that walk (see
+        # _inspect_tags_live), an unscoped scan is still by far the most
+        # expensive thing this window can trigger, so it is never run
+        # silently — an explicit confirm is required first.
+        if not pattern:
+            proceed = messagebox.askyesno(
+                "Scan every actor?",
+                "The label pattern is blank, which matches EVERY actor in "
+                "the level. This can take a long time on a large level.\n\n"
+                "The scan is now bounded and cancellable (a progress "
+                "dialog with a Cancel button will appear), but it can "
+                "still run for a while and results may be truncated on a "
+                "very large project.\n\n"
+                "Continue scanning every actor?",
+                parent=win,
+            )
+            if not proceed:
+                status_var.set("Scan cancelled before starting — enter a label pattern to scope it.")
+                return
+
         _scanning[0] = True
         run_btn.configure(state=tk.DISABLED, text="Scanning...")
         pattern_entry.configure(state=tk.DISABLED)
+        try:
+            win.title("Verse Tag Inspector — Scanning…")
+        except tk.TclError:
+            pass
         status_var.set(
-            "Scanning — this can take a while on large levels (walks "
-            "every level actor and every .verse file). The editor UI will "
-            "be unresponsive until it finishes."
+            "Scanning — a cancellable progress dialog will appear over "
+            "the editor; use its Cancel button to stop early. This window "
+            "will stay disabled until the scan finishes or is cancelled."
         )
         try:
             win.update()
         except tk.TclError:
             pass
 
-        pattern = pattern_var.get().strip()
         try:
             result = tag_inspect_module.inspect_tags(label_pattern=pattern or None)
             _render_tag_report(tree, discovery_label, summary_label, result, "this scan, just now")
-            status_var.set("Scan complete.")
+            if result.get("cancelled"):
+                status_var.set(
+                    "Scan CANCELLED — showing the partial results gathered "
+                    "before cancellation, not a complete scan. See the "
+                    "notes above for exactly where it stopped."
+                )
+            elif result.get("truncated"):
+                status_var.set(
+                    "Scan complete, but truncated by a scan cap — see the "
+                    "notes above for what was left out."
+                )
+            else:
+                status_var.set("Scan complete.")
         except Exception as e:
             unreal.log_warning("uefn_launcher: tag_inspect scan failed: " + str(e))
             status_var.set("Scan failed: " + str(e))
@@ -870,6 +928,10 @@ def _show_tag_inspect_window(tag_inspect_module):
             _scanning[0] = False
             run_btn.configure(state=tk.NORMAL, text="Run Scan")
             pattern_entry.configure(state=tk.NORMAL)
+            try:
+                win.title("Verse Tag Inspector")
+            except tk.TclError:
+                pass
 
     run_btn = tk.Button(
         controls, text="Run Scan", font=("Segoe UI", 9, "bold"),

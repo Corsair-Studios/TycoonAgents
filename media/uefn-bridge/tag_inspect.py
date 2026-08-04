@@ -345,6 +345,111 @@ def sort_actors_flagged_first(actors):
 _VERSE_SCAN_SKIP = frozenset({"Saved", "Intermediate", "__pycache__", ".uefn_bridge"})
 _MAX_VERSE_FILES = 4000
 
+# ---------------------------------------------------------------------------
+# Unbounded-scan safety caps.
+#
+# FIELD INCIDENT this section exists to fix: with an empty label_pattern,
+# inspect_tags() walked EVERY level actor and, for every one of them, every
+# component, and for every component every discoverable property name via
+# get_editor_property — a reflection call. On a large project that is
+# potentially millions of synchronous calls on UEFN's main thread with no
+# ScopedSlowTask, no cancel, and no cap, so the editor froze solid for
+# 15+ minutes with no way out. dependency_viewer.py hit the equivalent
+# problem when its own enumeration went from six fixed classes to a full
+# path-scoped walk (see its _MAX_ENUMERATED_ASSETS / _make_slow_task /
+# _st_call / _NullSlowTask) — this section mirrors that fix rather than
+# inventing a new approach.
+#
+# _MAX_ACTORS_EXAMINED caps how many label-matched actors are actually put
+# through the expensive component/property walk. 5000 comfortably covers
+# every real project seen so far (the field case that motivated this whole
+# module had ~200 tagged actors) while still bounding an empty-pattern scan
+# on a huge level to a finite, reportable amount of work.
+#
+# _MAX_COMPONENTS_PER_ACTOR / _MAX_PROPERTIES_PER_COMPONENT cap the true hot
+# loop: per-actor, per-component, per-property reflection calls. 64
+# components and 150 properties are both generous versus anything a real
+# actor/component has been seen to carry, while turning the worst-case
+# per-actor cost from "unbounded" into "at most 64 * 150 = 9600 reflection
+# calls" — see _find_tag_component and _extract_tags_from_component.
+#
+# Every one of these, when hit, sets an explicit truncation/cap flag in the
+# result — NEVER a silent cut-off. Silently capping a tag scan would
+# recreate the exact false-negative this tool exists to prevent (see the
+# module docstring's field case).
+# ---------------------------------------------------------------------------
+_MAX_ACTORS_EXAMINED = 5000
+_MAX_COMPONENTS_PER_ACTOR = 64
+_MAX_PROPERTIES_PER_COMPONENT = 150
+
+# How often should_cancel() is polled inside the cheap loops (verse-file
+# discovery, actor-label matching). Cheap because each individual iteration
+# there is a single label read / filesystem stat, not a reflection call —
+# polling every iteration would be wasted work, but a large interval would
+# make Cancel feel unresponsive. The expensive actor/component walk below
+# polls every single actor instead (see _inspect_tags_live), since caps
+# already bound a single actor's worst-case cost to a small, fast unit of
+# work (at most 9600 reflection calls, not millions).
+_CANCEL_POLL_INTERVAL = 200
+
+
+class _NullSlowTask:
+    """No-op stand-in with the same call surface as unreal.ScopedSlowTask,
+    used whenever the real API is unavailable or fails — callers never need
+    to branch on which one they have. Copied verbatim from
+    dependency_viewer.py's identical helper (see that file's module-level
+    ScopedSlowTask comment) rather than reinventing it."""
+
+    def make_dialog(self, *_args, **_kwargs):
+        pass
+
+    def enter_progress_frame(self, *_args, **_kwargs):
+        pass
+
+    def should_cancel(self):
+        return False
+
+    def destroy(self):
+        pass
+
+
+def _st_call(slow_task, method_name, *args, **kwargs):
+    """Best-effort call of *method_name* on *slow_task*; swallows all
+    errors so a partial/broken ScopedSlowTask implementation can never
+    raise into the scan. Mirrors dependency_viewer.py's helper of the same
+    name exactly."""
+    try:
+        fn = getattr(slow_task, method_name, None)
+        if fn is None:
+            return None
+        return fn(*args, **kwargs)
+    except Exception:
+        return None
+
+
+def _make_slow_task(total_work, description):
+    """Best-effort unreal.ScopedSlowTask factory — returns a real
+    ScopedSlowTask with its dialog opened when the API is present and
+    construction succeeds; otherwise returns _NullSlowTask() so the rest of
+    inspect_tags() can call make_dialog/enter_progress_frame/should_cancel/
+    destroy unconditionally. Mirrors dependency_viewer.py's helper of the
+    same name exactly."""
+    try:
+        cls = getattr(unreal, "ScopedSlowTask", None)
+        if cls is not None:
+            task = cls(total_work, description)
+            _st_call(task, "make_dialog", True)
+            return task
+    except Exception as e:
+        try:
+            unreal.log_warning(
+                "tag_inspect: ScopedSlowTask unavailable ({}) — scanning "
+                "without a progress dialog.".format(e)
+            )
+        except Exception:
+            pass
+    return _NullSlowTask()
+
 
 def _resolve_verse_dir(project_dir):
     """Resolve the Verse source directory to scan. *project_dir* must
@@ -365,12 +470,26 @@ def _resolve_verse_dir(project_dir):
     return None, None
 
 
-def _find_verse_files(verse_dir):
+def _find_verse_files(verse_dir, should_cancel=None):
     """Walk *verse_dir* for *.verse files, skipping the same generated-file
     dirs as device_audit.py/moderation_scanner.py. Capped at
-    _MAX_VERSE_FILES; returns (paths, truncated)."""
+    _MAX_VERSE_FILES; returns (paths, truncated, truncation_reason,
+    cancelled).
+
+    *should_cancel*, if given, is a zero-arg callable (typically
+    ``lambda: _st_call(slow_task, "should_cancel")``) polled every
+    _CANCEL_POLL_INTERVAL files encountered — cheap enough (a filesystem
+    walk, no reflection calls) that polling every single file would be
+    wasted work, but frequent enough that Cancel stays responsive on a
+    project with a huge Content tree. On cancellation the walk stops
+    immediately and whatever paths were already found are returned —
+    partial data, never discarded (see module docstring's "never silently
+    truncate" contract)."""
     paths = []
     truncated = False
+    truncation_reason = None
+    cancelled = False
+    checked = 0
     try:
         for dirpath, dirnames, filenames in os.walk(verse_dir):
             dirnames[:] = [
@@ -380,24 +499,52 @@ def _find_verse_files(verse_dir):
             for fn in filenames:
                 if not fn.endswith(".verse"):
                     continue
+                checked += 1
+                if (
+                    should_cancel is not None
+                    and checked % _CANCEL_POLL_INTERVAL == 0
+                    and should_cancel()
+                ):
+                    cancelled = True
+                    truncation_reason = (
+                        "cancelled by user during .verse file discovery "
+                        "({} file(s) found so far)".format(len(paths))
+                    )
+                    return paths, truncated, truncation_reason, cancelled
                 if len(paths) >= _MAX_VERSE_FILES:
                     truncated = True
-                    return paths, truncated
+                    truncation_reason = (
+                        "hit the {}-file cap on .verse files scanned".format(_MAX_VERSE_FILES)
+                    )
+                    return paths, truncated, truncation_reason, cancelled
                 paths.append(os.path.join(dirpath, fn))
     except Exception:
         pass
-    return paths, truncated
+    return paths, truncated, truncation_reason, cancelled
 
 
-def _read_verse_file_texts(paths):
+def _read_verse_file_texts(paths, should_cancel=None):
+    """Read every path in *paths* as text. *should_cancel*, if given, is
+    polled every _CANCEL_POLL_INTERVAL files (same rationale as
+    _find_verse_files). Returns (texts, cancelled) — texts read before
+    cancellation are kept, not discarded."""
     texts = []
-    for p in paths:
+    cancelled = False
+    for idx, p in enumerate(paths):
+        if (
+            should_cancel is not None
+            and idx > 0
+            and idx % _CANCEL_POLL_INTERVAL == 0
+            and should_cancel()
+        ):
+            cancelled = True
+            break
         try:
             with open(p, "r", encoding="utf-8", errors="replace") as f:
                 texts.append(f.read())
         except Exception:
             continue
-    return texts
+    return texts, cancelled
 
 
 def _get_component_property_names(obj):
@@ -455,6 +602,32 @@ def _get_component_property_names(obj):
                 names.append(name)
 
     return names
+
+
+def _component_class_could_carry_tags(class_name):
+    """FAST REJECT gate: a single cheap, name-only check — one
+    case-insensitive substring test, zero ``get_editor_property`` calls —
+    used to decide whether a component is even worth the expensive
+    per-property probe in ``_extract_tags_from_component``. This is what
+    bounds the true hot loop: without it, EVERY component on EVERY matched
+    actor gets fully probed regardless of whether it has anything to do
+    with tags (the freeze this module exists to fix).
+
+    Deliberately widens this module's own pre-existing phase-1 "versetag"
+    substring heuristic (see ``_find_tag_component``) rather than inventing
+    an unrelated new one — the real, field-confirmed component is
+    ``VerseTagMarkupComponent``, an Epic-provided class whose name is not
+    something a project can rename, so "tag" appearing in a component's
+    class name is a safe, cheap, high-recall gate in practice. This is a
+    narrowing of the previous "probe literally every component" fallback
+    and trades a small amount of recall (a tag container living on a
+    component whose class name does not contain "tag" at all would now be
+    missed) for making an empty-label-pattern scan on a large level
+    tractable at all — see the module's field incident note in
+    ``_MAX_ACTORS_EXAMINED``'s comment block."""
+    if not class_name:
+        return False
+    return "tag" in class_name.lower()
 
 
 def _looks_like_tag_container(value):
@@ -568,20 +741,38 @@ def _extract_tags_from_component(comp, known_tag_names=None):
 
     Returns ``(tag_property_name_or_None, [raw_tag_name, ...],
     diagnostics)`` where ``diagnostics`` is
-    ``{"properties": [{"name", "type", "value_repr"}, ...], "capped": bool}``
-    covering EVERY property this scan saw on *comp* (capped at
+    ``{"properties": [{"name", "type", "value_repr"}, ...], "capped": bool,
+    "properties_probed": int, "properties_probe_capped": bool}`` covering
+    EVERY property this scan saw on *comp* (capped at
     ``_MAX_DIAGNOSTIC_PROPERTIES``, each value_repr hard-truncated to
     ``_DIAGNOSTIC_VALUE_MAX_LEN`` chars) -- populated UNCONDITIONALLY, not
     only on failure, so a caller can always surface it. This is what turns
     a dead ``tag_property: null`` into an actionable report (see module
-    docstring's field case and ``inspect_tags``'s discovery contract)."""
+    docstring's field case and ``inspect_tags``'s discovery contract).
+
+    ``properties_probe_capped`` is distinct from ``capped``: ``capped``
+    means the *diagnostics listing* stopped recording past
+    ``_MAX_DIAGNOSTIC_PROPERTIES`` entries (cosmetic — the probe kept
+    going), while ``properties_probe_capped`` means the actual
+    ``get_editor_property`` reflection-call loop itself stopped after
+    ``_MAX_PROPERTIES_PER_COMPONENT`` properties — the real hot-loop cap
+    this function exists to enforce (see the field incident described next
+    to ``_MAX_PROPERTIES_PER_COMPONENT``'s definition). A component with
+    more properties than that cap may have its true tag-container property
+    missed; this flag makes that possibility explicit rather than silent."""
     known_tag_names = known_tag_names or ()
     diagnostic_props = []
     capped = False
+    probed = 0
+    properties_probe_capped = False
     content_hit_name = None
     shape_candidates = []  # [(name, value), ...]
 
     for name in _get_component_property_names(comp):
+        if probed >= _MAX_PROPERTIES_PER_COMPONENT:
+            properties_probe_capped = True
+            break
+        probed += 1
         try:
             value = comp.get_editor_property(name)
         except Exception:
@@ -611,7 +802,12 @@ def _extract_tags_from_component(comp, known_tag_names=None):
         if _looks_like_tag_container(value):
             shape_candidates.append((name, value))
 
-    diagnostics = {"properties": diagnostic_props, "capped": capped}
+    diagnostics = {
+        "properties": diagnostic_props,
+        "capped": capped,
+        "properties_probed": probed,
+        "properties_probe_capped": properties_probe_capped,
+    }
 
     winner_name = None
     winner_value = None
@@ -670,16 +866,36 @@ def _find_tag_component(actor, known_tag_names=None):
          on the correct component still be actionable (see
          ``_extract_tags_from_component``), rather than silently falling
          through to a generic component that happens to shape-match.
-      2. Any component exposing a property whose value looks like a
-         GameplayTagContainer (see ``_looks_like_tag_container``) or whose
-         value contains a known tag name (see ``_value_contains_known_tag``).
+      2. FAST-REJECT-GATED fallback: any OTHER component whose class name
+         cheaply looks tag-related (see
+         ``_component_class_could_carry_tags`` — a single substring check,
+         zero reflection calls) is fully probed for a property whose value
+         looks like a GameplayTagContainer (``_looks_like_tag_container``)
+         or contains a known tag name (``_value_contains_known_tag``).
+         Components that fail the cheap gate are NEVER probed at all —
+         this is what bounds the true hot loop (see
+         ``_MAX_ACTORS_EXAMINED``'s comment block for the field incident
+         this fixes).
+
+    Also enforces ``_MAX_COMPONENTS_PER_ACTOR``: only the first N
+    components returned by the engine are considered at all;
+    ``diagnostics["components_examined_capped"]`` reports if this actor had
+    more than that.
+
     Returns ``(component, class_name, tag_property_name, [raw_tag_name,...],
     diagnostics)`` — component is None (has_verse_tag_component: False
-    case) only if neither preference found anything on this actor."""
+    case) when neither preference found anything on this actor.
+    ``diagnostics["fast_rejected"]`` is True specifically when phase 2 was
+    skipped entirely because no component passed the cheap class-name gate
+    — distinct from "phase 2 ran and genuinely found nothing"."""
     try:
-        components = actor.get_components_by_class(unreal.ActorComponent)
+        components = list(actor.get_components_by_class(unreal.ActorComponent))
     except Exception:
         components = []
+
+    components_capped = len(components) > _MAX_COMPONENTS_PER_ACTOR
+    if components_capped:
+        components = components[:_MAX_COMPONENTS_PER_ACTOR]
 
     candidates = []
     for comp in components:
@@ -689,17 +905,41 @@ def _find_tag_component(actor, known_tag_names=None):
             class_name = "<component>"
         candidates.append((comp, class_name))
 
+    base_diag_extra = {
+        "components_examined": len(candidates),
+        "components_examined_capped": components_capped,
+    }
+
     for comp, class_name in candidates:
         if "versetag" in class_name.lower():
             prop_name, names, diagnostics = _extract_tags_from_component(comp, known_tag_names)
+            diagnostics.update(base_diag_extra)
+            diagnostics["fast_rejected"] = False
             return comp, class_name, prop_name, names, diagnostics
 
-    for comp, class_name in candidates:
+    # FAST REJECT: cheap, class-name-only gate applied BEFORE any expensive
+    # per-property probing — see _component_class_could_carry_tags. An
+    # actor whose components all fail this gate never triggers a single
+    # get_editor_property call for phase 2.
+    tag_hint_candidates = [
+        (comp, class_name) for comp, class_name in candidates
+        if _component_class_could_carry_tags(class_name)
+    ]
+    if not tag_hint_candidates:
+        diagnostics = {"properties": [], "capped": False, "fast_rejected": True}
+        diagnostics.update(base_diag_extra)
+        return None, None, None, [], diagnostics
+
+    for comp, class_name in tag_hint_candidates:
         prop_name, names, diagnostics = _extract_tags_from_component(comp, known_tag_names)
+        diagnostics.update(base_diag_extra)
+        diagnostics["fast_rejected"] = False
         if prop_name is not None:
             return comp, class_name, prop_name, names, diagnostics
 
-    return None, None, None, [], {"properties": [], "capped": False}
+    diagnostics = {"properties": [], "capped": False, "fast_rejected": False}
+    diagnostics.update(base_diag_extra)
+    return None, None, None, [], diagnostics
 
 
 def _get_all_actors():
@@ -716,7 +956,18 @@ def _get_all_actors():
 
 def _inspect_tags_live(label_pattern, project_dir):
     """The live (unreal-dependent) inspection path. Only called when
-    ``_HAS_UNREAL`` is True; every editor call is individually guarded."""
+    ``_HAS_UNREAL`` is True; every editor call is individually guarded.
+
+    Wrapped end-to-end in a cancellable ``unreal.ScopedSlowTask`` (2 units
+    of work: the .verse file scan, then the actor/component walk — see
+    ``_make_slow_task``/``_st_call``/``_NullSlowTask``, mirroring
+    dependency_viewer.py's identical pattern) because both phases used to
+    run fully synchronously and unbounded on UEFN's main thread — the exact
+    cause of a real 15+ minute editor freeze with an empty label_pattern
+    (see ``_MAX_ACTORS_EXAMINED``'s comment block for the full incident).
+    should_cancel() is polled regularly in both phases; on cancellation this
+    returns the PARTIAL result gathered so far with ``cancelled: True`` —
+    never discarded, never presented as complete."""
     discovery = {
         "component_class": None,
         "tag_property": None,
@@ -725,10 +976,25 @@ def _inspect_tags_live(label_pattern, project_dir):
         "notes": "",
     }
     notes_parts = []
+    truncation_reasons = []
+    scan_stats = {
+        "actors_matched": 0,
+        "actors_examined": 0,
+        "actors_examined_capped": False,
+        "actors_fast_rejected": 0,
+        "actors_full_probed": 0,
+        "components_capped_actor_count": 0,
+    }
+
+    slow_task = _make_slow_task(2, "Inspecting Verse tags…")
+
+    def _cancel_requested():
+        return bool(_st_call(slow_task, "should_cancel"))
 
     try:
         all_actors = _get_all_actors()
     except Exception as e:
+        _st_call(slow_task, "destroy")
         return {
             "discovery": {
                 "component_class": None,
@@ -740,6 +1006,10 @@ def _inspect_tags_live(label_pattern, project_dir):
             "verse_dir": None,
             "tag_class_count": 0,
             "actors": [],
+            "cancelled": False,
+            "truncated": False,
+            "truncation_reasons": [],
+            "scan_stats": scan_stats,
         }
 
     # Resolve verse_dir / tag_classes FIRST, independent of actor scanning,
@@ -759,18 +1029,38 @@ def _inspect_tags_live(label_pattern, project_dir):
 
     verse_dir, verse_source = _resolve_verse_dir(project_dir_for_resolve)
 
+    _st_call(slow_task, "enter_progress_frame", 1, "Scanning .verse files…")
+
     class_map = {}
     tag_classes = {}
+    cancelled = False
     if verse_dir:
-        file_paths, truncated = _find_verse_files(verse_dir)
-        texts = _read_verse_file_texts(file_paths)
+        file_paths, files_truncated, files_reason, files_cancelled = _find_verse_files(
+            verse_dir, should_cancel=_cancel_requested
+        )
+        if files_truncated:
+            truncation_reasons.append(files_reason)
+        if files_cancelled:
+            cancelled = True
+            truncation_reasons.append(files_reason)
+            texts = []
+        else:
+            texts, texts_cancelled = _read_verse_file_texts(
+                file_paths, should_cancel=_cancel_requested
+            )
+            if texts_cancelled:
+                cancelled = True
+                truncation_reasons.append(
+                    "cancelled by user while reading .verse file contents "
+                    "({} of {} read)".format(len(texts), len(file_paths))
+                )
         class_map = build_class_map(texts)
         tag_classes = build_tag_class_set(class_map)
         notes_parts.append(
             "verse_dir resolved via {} ({} *.verse file(s) scanned{}, {} "
             "tag class(es) found).".format(
                 verse_source, len(file_paths),
-                " — TRUNCATED at the file-count cap" if truncated else "",
+                " — TRUNCATED at the file-count cap" if files_truncated else "",
                 len(tag_classes),
             )
         )
@@ -790,10 +1080,50 @@ def _inspect_tags_live(label_pattern, project_dir):
 
     known_tag_names = set(tag_classes.keys())
 
+    if cancelled:
+        _st_call(slow_task, "destroy")
+        notes_parts.append(
+            "SCAN CANCELLED during the .verse file scan phase — no actors "
+            "were examined; 'actors' below is empty. Verse tag-class data "
+            "above reflects only what was read before cancellation, not the "
+            "whole project."
+        )
+        discovery["notes"] = " ".join(notes_parts)
+        return {
+            "discovery": discovery,
+            "verse_dir": verse_dir,
+            "tag_class_count": len(tag_classes),
+            "actors": [],
+            "cancelled": True,
+            "truncated": bool(truncation_reasons),
+            "truncation_reasons": truncation_reasons,
+            "scan_stats": scan_stats,
+        }
+
+    _st_call(slow_task, "enter_progress_frame", 1, "Scanning actors and components…")
+
     label_of = _safe_label_fn if _safe_label_fn is not None else _fallback_label
 
+    # ------------------------------------------------------------------
+    # Label matching — cheap per-actor (a label read + string compare, no
+    # reflection), so no actor-count cap is applied here; only cancellation
+    # is polled, at _CANCEL_POLL_INTERVAL, so an empty label_pattern on a
+    # huge level still can't run away without a way out.
+    # ------------------------------------------------------------------
     matched = []
-    for actor in all_actors:
+    matching_cancelled = False
+    for idx, actor in enumerate(all_actors):
+        if (
+            idx > 0
+            and idx % _CANCEL_POLL_INTERVAL == 0
+            and _cancel_requested()
+        ):
+            matching_cancelled = True
+            truncation_reasons.append(
+                "cancelled by user while matching actor labels "
+                "({}/{} actor(s) checked)".format(idx, len(all_actors))
+            )
+            break
         try:
             label = label_of(actor)
         except Exception:
@@ -801,26 +1131,85 @@ def _inspect_tags_live(label_pattern, project_dir):
         if match_label(label, label_pattern):
             matched.append((label, actor))
 
+    scan_stats["actors_matched"] = len(matched)
+    if matching_cancelled:
+        cancelled = True
+
+    # ------------------------------------------------------------------
+    # Actor-count cap — this is the expensive phase (component/property
+    # reflection walk), so only the first _MAX_ACTORS_EXAMINED matched
+    # actors are actually deep-dived. Reported explicitly, never silently.
+    # ------------------------------------------------------------------
+    if len(matched) > _MAX_ACTORS_EXAMINED:
+        scan_stats["actors_examined_capped"] = True
+        truncation_reasons.append(
+            "{} actor(s) matched label_pattern={!r}, but only the first {} "
+            "were examined for tags (hit the actor-scan cap) — the "
+            "remaining {} are NOT included in 'actors' below.".format(
+                len(matched), label_pattern, _MAX_ACTORS_EXAMINED,
+                len(matched) - _MAX_ACTORS_EXAMINED,
+            )
+        )
+        matched_for_walk = matched[:_MAX_ACTORS_EXAMINED]
+    else:
+        matched_for_walk = matched
+
     raw_records = []
     first_component_diagnostics = None
-    for label, actor in matched:
-        try:
-            comp, comp_class, tag_prop, raw_names, diagnostics = _find_tag_component(
-                actor, known_tag_names
-            )
-        except Exception:
-            comp, comp_class, tag_prop, raw_names = None, None, None, []
-            diagnostics = {"properties": [], "capped": False}
-        if comp is not None and discovery["component_class"] is None:
-            discovery["component_class"] = comp_class
-            discovery["tag_property"] = tag_prop
-            first_component_diagnostics = diagnostics
-        raw_records.append({
-            "label": label,
-            "has_verse_tag_component": comp is not None,
-            "component_class": comp_class,
-            "raw_tag_names": raw_names,
-        })
+    walk_cancelled = False
+    if not matching_cancelled:
+        for idx, (label, actor) in enumerate(matched_for_walk):
+            # Cancellation is polled once per actor (not per component/
+            # property): caps above already bound a single actor's worst
+            # case to _MAX_COMPONENTS_PER_ACTOR * _MAX_PROPERTIES_PER_COMPONENT
+            # reflection calls (9600, not millions), so per-actor polling
+            # keeps Cancel responsive without adding overhead to the hot
+            # loop inside _extract_tags_from_component itself.
+            if idx > 0 and _cancel_requested():
+                walk_cancelled = True
+                truncation_reasons.append(
+                    "cancelled by user during the actor/component walk "
+                    "({}/{} matched actor(s) examined)".format(idx, len(matched_for_walk))
+                )
+                break
+            scan_stats["actors_examined"] += 1
+            try:
+                comp, comp_class, tag_prop, raw_names, diagnostics = _find_tag_component(
+                    actor, known_tag_names
+                )
+            except Exception:
+                comp, comp_class, tag_prop, raw_names = None, None, None, []
+                diagnostics = {"properties": [], "capped": False, "fast_rejected": False}
+            if diagnostics.get("fast_rejected"):
+                scan_stats["actors_fast_rejected"] += 1
+            else:
+                scan_stats["actors_full_probed"] += 1
+            if diagnostics.get("components_examined_capped"):
+                scan_stats["components_capped_actor_count"] += 1
+            if comp is not None and discovery["component_class"] is None:
+                discovery["component_class"] = comp_class
+                discovery["tag_property"] = tag_prop
+                first_component_diagnostics = diagnostics
+            raw_records.append({
+                "label": label,
+                "has_verse_tag_component": comp is not None,
+                "component_class": comp_class,
+                "raw_tag_names": raw_names,
+            })
+
+    if walk_cancelled:
+        cancelled = True
+
+    _st_call(slow_task, "destroy")
+
+    fast_reject_note = (
+        "fast-reject bound: {} of {} examined actor(s) had no candidate "
+        "tag-hinting component and skipped the expensive per-property "
+        "probe entirely; {} were fully probed.".format(
+            scan_stats["actors_fast_rejected"], scan_stats["actors_examined"],
+            scan_stats["actors_full_probed"],
+        )
+    )
 
     found_count = sum(1 for r in raw_records if r["has_verse_tag_component"])
     if discovery["component_class"] is not None and discovery["tag_property"] is not None:
@@ -858,13 +1247,23 @@ def _inspect_tags_live(label_pattern, project_dir):
         )
     elif raw_records:
         notes_parts.append(
-            "no Verse-tag-bearing component found on any of the {} matching "
+            "no Verse-tag-bearing component found on any of the {} examined "
             "actor(s) — looked for a component class name containing "
-            "'VerseTag', and for any component exposing a GameplayTag"
+            "'VerseTag', and (for components that cheaply looked "
+            "tag-related) any component exposing a GameplayTag"
             "Container-like property.".format(len(raw_records))
         )
-    else:
+    elif not matched:
         notes_parts.append("no actors matched label_pattern={!r}.".format(label_pattern))
+
+    notes_parts.append(fast_reject_note)
+    if cancelled or truncation_reasons:
+        notes_parts.append(
+            ("SCAN CANCELLED — " if cancelled else "SCAN TRUNCATED — ")
+            + "; ".join(truncation_reasons)
+            + " Results below reflect only the actors actually examined; "
+              "never treat this as a complete-project result."
+        )
 
     actors_out = []
     for rec in raw_records:
@@ -890,6 +1289,10 @@ def _inspect_tags_live(label_pattern, project_dir):
         "verse_dir": verse_dir,
         "tag_class_count": len(tag_classes),
         "actors": actors_out,
+        "cancelled": cancelled,
+        "truncated": bool(truncation_reasons),
+        "truncation_reasons": truncation_reasons,
+        "scan_stats": scan_stats,
     }
 
 
@@ -1057,8 +1460,28 @@ def inspect_tags(label_pattern=None, project_dir=None):
     Actors with ``has_verse_tag_component: False`` OR an empty ``tags``
     list are sorted FIRST in ``actors`` (see ``sort_actors_flagged_first``)
     — never silently omitted; this is the failure mode described in the
-    module docstring's field case. Every actor matching *label_pattern* is
-    always present in the result.
+    module docstring's field case. Every actor matching *label_pattern*
+    is present in the result UNLESS the actor-scan cap or a user
+    cancellation cut the walk short (see the next paragraph) — that is
+    always reported explicitly, never silent.
+
+    On the live path (``unreal`` available), the result additionally
+    carries: ``"cancelled"`` (bool — the user clicked Cancel on the
+    ScopedSlowTask progress dialog; ``"actors"`` is then a PARTIAL list of
+    whatever was examined before cancellation, never discarded and never
+    presented as complete), ``"truncated"`` (bool — a cap was hit, e.g.
+    ``_MAX_ACTORS_EXAMINED``/``_MAX_COMPONENTS_PER_ACTOR``/
+    ``_MAX_PROPERTIES_PER_COMPONENT``/``_MAX_VERSE_FILES``), and
+    ``"truncation_reasons"`` (list of human-readable strings, one per cap
+    or cancellation hit — also folded into ``discovery.notes``) plus
+    ``"scan_stats"`` (dict of actor counts: matched, examined, capped,
+    fast-rejected vs. fully-probed — see ``_inspect_tags_live``). These
+    keys are what turn an empty-label_pattern scan on a huge level from an
+    unbounded editor freeze into a bounded, cancellable, honestly-reported
+    partial scan (see ``_MAX_ACTORS_EXAMINED``'s comment block for the
+    field incident this fixes). Only present on the live path — the
+    ``unreal``-unavailable early return below keeps its original 4-key
+    shape unchanged.
 
     *project_dir*, if given, is used as the Verse source directory
     directly (validated as an existing directory); otherwise
@@ -1118,6 +1541,10 @@ def inspect_tags(label_pattern=None, project_dir=None):
             "verse_dir": None,
             "tag_class_count": 0,
             "actors": [],
+            "cancelled": False,
+            "truncated": False,
+            "truncation_reasons": [],
+            "scan_stats": None,
         }
 
     write_report(result)
