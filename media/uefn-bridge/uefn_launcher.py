@@ -662,15 +662,19 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
     after every "Run Scan" click) without leaking stale rows.
 
     Actors with ``has_verse_tag_component`` False or an empty ``tags`` list
-    are inserted FIRST and flagged with a warning glyph — never dropped —
-    mirroring tag_inspect.sort_actors_flagged_first's own ordering intent.
-    Uses ``id()`` identity (not ``in``/equality) to split flagged vs. normal
-    so two actors that happen to have identical dict contents can't be
-    mis-bucketed. The ``discovery`` block (component class, tag property,
-    notes) is ALWAYS shown, not only on error/empty — when a scan finds a
-    component but zero tags, that block is the only thing that explains
-    why, and hiding it is what made the field failure this tool exists to
-    prevent so hard to diagnose."""
+    are NOT inserted as rows — a level with tens of thousands of untagged
+    actors made the tree unusable and buried the handful of actors that
+    actually carried tags. They are never silently lost, though: the
+    summary line below states exactly how many were hidden and why, split
+    into "no tag component" vs. "tag component but zero tags", so the
+    counts still explain a report that renders an empty tree. ``actors`` is
+    already sorted flagged-first by tag_inspect.sort_actors_flagged_first,
+    so filtering it in place (rather than re-partitioning) preserves the
+    original relative order of the remaining rows. The ``discovery`` block
+    (component class, tag property, notes) is ALWAYS shown, not only on
+    error/empty — when a scan finds a component but zero tags, that block
+    is the only thing that explains why, and hiding it is what made the
+    field failure this tool exists to prevent so hard to diagnose."""
     tree.delete(*tree.get_children())
 
     if data is None:
@@ -692,36 +696,33 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
 
     actors = list(data.get("actors") or [])
 
-    def _is_flagged(actor):
-        return (not actor.get("has_verse_tag_component")) or (not actor.get("tags"))
+    def _has_tags(actor):
+        return bool(actor.get("has_verse_tag_component")) and bool(actor.get("tags"))
 
-    flagged_ids = {id(a) for a in actors if _is_flagged(a)}
-    flagged = [a for a in actors if id(a) in flagged_ids]
-    normal = [a for a in actors if id(a) not in flagged_ids]
+    shown = [a for a in actors if _has_tags(a)]
+    no_component_count = sum(1 for a in actors if not a.get("has_verse_tag_component"))
+    empty_tags_count = sum(
+        1 for a in actors
+        if a.get("has_verse_tag_component") and not a.get("tags")
+    )
 
-    def _insert_actor(actor, is_flagged):
+    def _insert_actor(actor):
         label = actor.get("label", "<unlabeled>")
-        has_component = actor.get("has_verse_tag_component")
         tags = actor.get("tags") or []
-        summary = ("⚠ " if is_flagged else "") + str(label)
-        if not has_component:
-            summary += "  (no tag component)"
-        elif not tags:
-            summary += "  (tag component, zero tags)"
-        node = tree.insert("", tk.END, text=summary, values=("",))
+        node = tree.insert("", tk.END, text=str(label), values=("",))
         for tag in tags:
             name = tag.get("name", "<unnamed>")
             chain = " > ".join(tag.get("parent_chain") or [])
             tree.insert(node, tk.END, text=str(name), values=(chain,))
 
-    for actor in flagged:
-        _insert_actor(actor, True)
-    for actor in normal:
-        _insert_actor(actor, False)
+    for actor in shown:
+        _insert_actor(actor)
 
     summary_bits = [
-        str(len(actors)) + " actor(s) scanned",
-        str(len(flagged)) + " flagged (no component / zero tags)",
+        "Showing " + str(len(shown)) + " actor(s) with tags — "
+        + str(no_component_count) + " examined actor(s) without a tag "
+        "component and " + str(empty_tags_count) + " with an empty tag "
+        "container are hidden",
         str(data.get("tag_class_count", 0)) + " tag classes discovered",
     ]
     if data.get("verse_dir"):
@@ -819,9 +820,18 @@ def _show_tag_inspect_window(tag_inspect_module):
         font=("Segoe UI", 9), fg=_TEXT_FG, bg=_BG,
     ).pack(side=tk.LEFT)
 
-    pattern_var = tk.StringVar(value="")
+    pattern_var = tk.StringVar(master=win, value="")
     pattern_entry = tk.Entry(controls, textvariable=pattern_var, width=22, font=("Segoe UI", 9))
     pattern_entry.pack(side=tk.LEFT, padx=(6, 10))
+    # Keep explicit strong references to both widgets on the window itself.
+    # FIELD BUG this guards against: a user typed "SGMarker" and Run Scan
+    # still matched all 44617 actors (label_pattern=None) because
+    # pattern_var.get() returned "" — UEFN's embedded Python has been
+    # observed to garbage-collect a StringVar that lives only in this
+    # closure. _run_scan / _copy_mcp_prompt below read pattern_entry.get()
+    # directly (the Entry's own text) rather than trusting the StringVar.
+    win._tag_pattern_var = pattern_var
+    win._tag_pattern_entry = pattern_entry
 
     status_var = tk.StringVar(value="Ready.")
     status_label = tk.Label(
@@ -847,6 +857,17 @@ def _show_tag_inspect_window(tag_inspect_module):
     tree.heading("value", text="Parent chain")
     tree.column("#0", width=320)
     tree.column("value", width=340)
+
+    # Scrollbars follow the established pattern in dependency_viewer.py
+    # (~lines 1413-1419): parented to tree_frame, vertical packed right/
+    # fill-y and horizontal bottom/fill-x BEFORE the tree itself claims the
+    # remaining space with fill=both/expand=True.
+    vsb_tree = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+    hsb_tree = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
+
+    vsb_tree.pack(side="right", fill="y")
+    hsb_tree.pack(side="bottom", fill="x")
     tree.pack(fill=tk.BOTH, expand=True)
 
     summary_label = tk.Label(
@@ -863,7 +884,11 @@ def _show_tag_inspect_window(tag_inspect_module):
         if _scanning[0]:
             return
 
-        pattern = pattern_var.get().strip()
+        # Read straight from the Entry widget, not the StringVar — see the
+        # comment where pattern_entry is created for why. One read, reused
+        # for both the empty-pattern confirmation below and the
+        # inspect_tags() call further down.
+        pattern = pattern_entry.get().strip()
 
         # FIELD INCIDENT this guards against: an empty label pattern
         # matches EVERY actor in the level — the exact setting that froze
@@ -946,7 +971,8 @@ def _show_tag_inspect_window(tag_inspect_module):
     # longer required to see results, just an alternative way to get them.
     # ------------------------------------------------------------------
     def _copy_mcp_prompt():
-        pattern = pattern_var.get().strip()
+        # Same Entry-not-StringVar read as _run_scan (see comment above).
+        pattern = pattern_entry.get().strip()
         pattern_desc = "label_pattern=\"{}\"".format(pattern) if pattern else "no label_pattern (all actors)"
         prompt = (
             "Run the uefn_tag_inspect MCP tool with {}. Show me each "
