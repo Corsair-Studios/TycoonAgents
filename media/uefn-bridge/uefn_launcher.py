@@ -216,6 +216,12 @@ _TOOLS = [
         "action": "moderation_scan",
     },
     {
+        "icon": "\U0001f3f7",  # label
+        "name": "Verse Tag Inspector",
+        "description": "Reads Verse gameplay tags from the tag component uefn_get_property can't see",
+        "action": "tag_inspect",
+    },
+    {
         "icon": "\U0001f4ca",  # bar chart
         "name": "Level Stats",
         "description": "Actor counts, class breakdown, device summary",
@@ -279,6 +285,7 @@ _MCP_METHOD_DESCRIPTIONS = {
     "moderation_report_save": "Save a moderation scan report for the in-editor review panel",
     "moderation_report_read": "Read back a previously saved moderation report",
     "asset_sweep": "Find unreferenced assets across all types",
+    "tag_inspect": "Read Verse gameplay tags from actors' tag components, with parent chains",
     "list_assets": "List assets under a content-browser path via the Asset Registry",
     "inspect_asset": "Load a single asset and reflect its editor-property values (experimental, read-only)",
     "spawn_actor": "Spawn an actor from an asset into the level — undoable with Ctrl+Z",
@@ -525,6 +532,202 @@ def _launch_moderation_scan():
             messagebox.showerror("Error", "Failed to launch IP / Moderation Scan:\n" + str(e))
 
 
+def _resolve_tag_inspect_report_path(module):
+    """Best-effort resolution of tag_inspect's own report-path helper.
+
+    tag_inspect.py's contract (docs/VERSE-TAG-INSPECTOR-SPEC.md) says it
+    "exposes a path helper for reading it back" without this file pinning
+    an exact name — probe the documented/likely names defensively instead
+    of hardcoding one that might not match its actual API, falling back to
+    reconstructing the primary next-to-script path (mirroring
+    ``_moderation_report_path`` in uefn_bridge.py) only if no helper is
+    found. Never raises.
+    """
+    for name in ("tag_inspect_report_path", "report_path", "get_report_path"):
+        fn = getattr(module, name, None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:
+                continue
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "tag_inspect_report.json")
+
+
+def _read_tag_inspect_report(module):
+    """Read back tag_inspect_report.json via the resolved path.
+
+    Returns ``(data, error)``. ``(None, None)`` means the file simply
+    doesn't exist yet — the caller shows an actionable "run the scan
+    first" message rather than an empty window, never a blank panel that
+    looks like a clean/empty result. ``error`` is set only on an actual
+    read/parse failure.
+    """
+    path = _resolve_tag_inspect_report_path(module)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f), None
+    except FileNotFoundError:
+        return None, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _show_tag_inspect_window(tag_inspect_module):
+    """Render tag_inspect_report.json human-readably: per actor, its label,
+    whether it has a tag component, its tags, and each tag's parent chain
+    as a breadcrumb. Actors with no tag component (or a component with
+    zero tags) are listed FIRST and flagged with a warning glyph — omission
+    is exactly the failure mode this tool exists to prevent, so a missing
+    tag must never be buried at the bottom of a long report."""
+    if not _HAS_TKINTER:
+        return
+
+    data, error = _read_tag_inspect_report(tag_inspect_module)
+
+    win = tk.Tk()
+    win.title("Verse Tag Inspector")
+    win.geometry("720x560")
+    win.configure(bg=_BG)
+
+    style = ttk.Style(win)
+    style.theme_use("clam")
+    style.configure(".", background=_BG, foreground=_TEXT_FG)
+    style.configure("TFrame", background=_BG)
+    style.configure(
+        "Tag.Treeview",
+        background=_SECTION_BG, foreground=_TEXT_FG,
+        fieldbackground=_SECTION_BG, rowheight=20,
+        font=("Consolas", 9),
+    )
+    style.configure(
+        "Tag.Treeview.Heading",
+        background=_BG, foreground=_HEADER_FG,
+        font=("Segoe UI", 9, "bold"), relief="flat",
+    )
+    style.map("Tag.Treeview", background=[("selected", _ACCENT_BLUE)], foreground=[("selected", "#FFFFFF")])
+
+    tk.Label(
+        win, text="Verse Tag Inspector",
+        font=("Segoe UI", 14, "bold"), fg=_HEADER_FG, bg=_BG,
+    ).pack(padx=16, pady=(12, 4), anchor=tk.W)
+
+    tk.Label(
+        win,
+        text="Reads Verse gameplay tags from the actor's tag COMPONENT —\n"
+             "uefn_get_property can't see these (flat actor-property read only).",
+        font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
+    ).pack(padx=16, pady=(0, 8), anchor=tk.W)
+
+    if error is not None:
+        tk.Label(
+            win, text="Failed to read tag_inspect_report.json:\n" + error,
+            font=("Segoe UI", 9), fg="#B23B2E", bg=_BG, justify=tk.LEFT, wraplength=680,
+        ).pack(padx=16, pady=8, anchor=tk.W)
+        return
+
+    if data is None:
+        tk.Label(
+            win,
+            text="No tag_inspect_report.json found yet.\n\n"
+                 "Run the scan first — call the uefn_tag_inspect MCP tool "
+                 "(or ask your AI assistant to run it), then reopen this "
+                 "window.",
+            font=("Segoe UI", 10), fg=_TEXT_FG, bg=_BG, justify=tk.LEFT, wraplength=680,
+        ).pack(padx=16, pady=24, anchor=tk.W)
+        return
+
+    discovery = data.get("discovery") or {}
+    if discovery.get("notes"):
+        tk.Label(
+            win, text=str(discovery.get("notes")),
+            font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT, wraplength=680,
+        ).pack(padx=16, pady=(0, 6), anchor=tk.W)
+
+    tree_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
+    tree_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+
+    tree = ttk.Treeview(
+        tree_frame, columns=("value",), show="tree headings",
+        style="Tag.Treeview",
+    )
+    tree.heading("#0", text="Actor / Tag")
+    tree.heading("value", text="Parent chain")
+    tree.column("#0", width=320)
+    tree.column("value", width=340)
+
+    actors = list(data.get("actors") or [])
+    # Flag actors with no tag component or zero tags and list them FIRST —
+    # this mirrors the JSON contract's ordering intent so a missing tag is
+    # never buried at the bottom of a long report.
+    flagged = [a for a in actors if not a.get("has_verse_tag_component") or not a.get("tags")]
+    normal = [a for a in actors if a not in flagged]
+
+    def _insert_actor(actor, is_flagged):
+        label = actor.get("label", "<unlabeled>")
+        has_component = actor.get("has_verse_tag_component")
+        tags = actor.get("tags") or []
+        summary = ("⚠ " if is_flagged else "") + str(label)
+        if not has_component:
+            summary += "  (no tag component)"
+        elif not tags:
+            summary += "  (tag component, zero tags)"
+        node = tree.insert("", tk.END, text=summary, values=("",))
+        for tag in tags:
+            name = tag.get("name", "<unnamed>")
+            chain = " > ".join(tag.get("parent_chain") or [])
+            tree.insert(node, tk.END, text=str(name), values=(chain,))
+
+    for actor in flagged:
+        _insert_actor(actor, True)
+    for actor in normal:
+        _insert_actor(actor, False)
+
+    tree.pack(fill=tk.BOTH, expand=True)
+
+    summary_bits = [
+        str(len(actors)) + " actor(s) scanned",
+        str(len(flagged)) + " flagged (no component / zero tags)",
+        str(data.get("tag_class_count", 0)) + " tag classes discovered",
+    ]
+    if data.get("verse_dir"):
+        summary_bits.append("verse_dir: " + str(data.get("verse_dir")))
+    tk.Label(
+        win, text="  |  ".join(summary_bits),
+        font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
+    ).pack(padx=16, pady=(4, 8), anchor=tk.W)
+
+
+def _launch_tag_inspect():
+    """Dedicated (not the generic _launch_reloaded), mirroring
+    _launch_moderation_scan's extra ModuleNotFoundError branch: tag_inspect.py
+    can be legitimately absent from an older/partial project sync, and that
+    gets its own actionable message instead of the generic error. Unlike
+    the moderation scan, tag inspection needs no AI round-trip —
+    inspect_tags() runs entirely locally and writes its own report — so this
+    just imports the module and hands it to the render window, which reads
+    the report back via tag_inspect's path helper (see
+    _resolve_tag_inspect_report_path)."""
+    try:
+        import importlib
+        import tag_inspect
+        importlib.reload(tag_inspect)
+    except ModuleNotFoundError:
+        msg = (
+            "tag_inspect.py is missing from your project's Content/Python/ folder.\n\n"
+            "Re-run the /uefn-bridge install to sync all tool files."
+        )
+        unreal.log_warning("uefn_launcher: tag_inspect module not found — " + msg)
+        if _HAS_TKINTER:
+            messagebox.showerror("Missing Module", msg)
+        return
+    except Exception as e:
+        unreal.log_warning("uefn_launcher: Failed to import tag_inspect: " + str(e))
+        if _HAS_TKINTER:
+            messagebox.showerror("Error", "Failed to launch Verse Tag Inspector:\n" + str(e))
+        return
+    _show_tag_inspect_window(tag_inspect)
+
+
 # Module-level action -> launch-callable dispatch. Keyed by the SAME
 # "action" strings used in the _TOOLS card list above, so a test can assert
 # parity (every _TOOLS action has a dispatch entry and vice versa) without
@@ -539,6 +742,7 @@ _TOOL_DISPATCH = {
     "dependency_viewer": lambda: _launch_reloaded("dependency_viewer", "show_dependency_viewer", "Dependency Viewer"),
     "health_scanner": lambda: _launch_reloaded("health_scanner", "show_health_scanner", "Project Health"),
     "moderation_scan": _launch_moderation_scan,
+    "tag_inspect": _launch_tag_inspect,
     "level_stats": lambda: _launch_reloaded("level_stats", "show_level_stats", "Level Stats"),
     "mcp_info": _show_mcp_info,
     "asset_sweep": lambda: _launch_reloaded("asset_sweep", "show_asset_sweep", "Dead Asset Sweep"),

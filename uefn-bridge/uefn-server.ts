@@ -1116,6 +1116,48 @@ server.registerTool(
     )
 );
 
+server.registerTool(
+  "uefn_tag_inspect",
+  {
+    description:
+      "Reads Verse gameplay tags from an actor's tag COMPONENT, not a flat actor property — `uefn_get_property` cannot see these tags, since it does a flat actor-property read and returns empty containers for tag fields even on a correctly-tagged actor. Returns each matching actor with its tags and each tag's full parent chain. Actors that have no tag component, or a component with zero tags, are LISTED FIRST and flagged, never silently omitted, so a missing tag is never dropped from the result.",
+    inputSchema: {
+      label_pattern: z
+        .string()
+        .optional()
+        .describe(
+          'Substring or wildcard filter over actor labels (e.g. "SGMarker", "R4_P1*"). Omit to scan every actor.'
+        ),
+      project_dir: z
+        .string()
+        .optional()
+        .describe(
+          "UEFN project to resolve Verse tag classes from; defaults to the resolved project root."
+        ),
+    },
+  },
+  async (args) => {
+    try {
+      // Scans every .verse file under the project plus every level actor's
+      // tag component — give this the same large budget as
+      // uefn_moderation_scan rather than the default 30s bridge timeout.
+      const raw = await callBridge(
+        "tag_inspect",
+        compact({
+          label_pattern: args.label_pattern,
+          project_dir: args.project_dir,
+        }),
+        180_000
+      );
+      return ok(raw);
+    } catch (e) {
+      if (e instanceof BridgeError) return err(`Bridge error: ${e.message}`);
+      if (e instanceof TimeoutError) return err(`Bridge error: ${e.message}`);
+      return err(`Bridge error: ${String(e)}`);
+    }
+  }
+);
+
 // ── uefn_verse_check — offline, direct-spawn Verse diagnostics ──────────────
 //
 // CRITICALLY DIFFERENT from every other uefn_* tool above: those relay

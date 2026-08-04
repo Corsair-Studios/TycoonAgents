@@ -46,3 +46,5 @@ media/uefn-bridge/bridge_sync_status.json
 media/uefn-bridge/moderation_report.json
 # runtime-generated moderation Licensed IP allowlist saved by the user (never commit/ship)
 media/uefn-bridge/moderation_allowlist.json
+# runtime-generated Verse tag inspector report written by the bridge (never commit/ship)
+media/uefn-bridge/tag_inspect_report.json

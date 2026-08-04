@@ -181,6 +181,19 @@ except ImportError:
     # uefn_asset_sweep MCP tool to an explicit "unavailable" response
     # rather than crashing the whole bridge on import.
     sweep_dead_assets = None
+try:
+    from tag_inspect import inspect_tags
+except ImportError as _ti_exc:
+    # Defensive: tag_inspect.py ships alongside this bridge, but if it (or a
+    # dependency it imports at module scope) ever fails to import, degrade
+    # only the uefn_tag_inspect MCP tool to an explicit "unavailable"
+    # response rather than crashing the whole bridge on import.
+    unreal.log_warning(
+        f"uefn_bridge: tag_inspect unavailable ({_ti_exc}) — tag_inspect "
+        "will return an explicit error naming this; the rest of the bridge "
+        "is unaffected."
+    )
+    inspect_tags = None
 
 
 # ---------------------------------------------------------------------------
@@ -1161,6 +1174,32 @@ def _handle_asset_sweep(params):
     return sweep_dead_assets(project_only=project_only)
 
 
+def _handle_tag_inspect(params):
+    """Inspect Verse gameplay tags on level actors via their tag component.
+
+    Verse tags live on a component, not a flat actor property, so
+    ``_handle_get_property`` reading 'const_tags'/'editor_only_instance_tags'
+    directly on the actor silently returns an empty container even on a
+    correctly-tagged actor — a false negative documented in
+    docs/VERSE-TAG-INSPECTOR-SPEC.md. Delegates to ``tag_inspect.inspect_tags``,
+    which does the component-aware read.
+
+    If tag_inspect failed to import, raise an explicit error naming the
+    missing module rather than return a success-shaped empty result — this
+    repo has a documented history of exactly that failure shape (see
+    docs/PATH-DISCOVERY.md).
+    """
+    if inspect_tags is None:
+        raise RuntimeError(
+            "tag_inspect unavailable: tag_inspect.py failed to import (see "
+            "the uefn_bridge startup warning for the reason). Re-run the "
+            "/uefn-bridge install to sync tag_inspect.py into Content/Python."
+        )
+    label_pattern = params.get("label_pattern")
+    project_dir = params.get("project_dir")
+    return inspect_tags(label_pattern=label_pattern, project_dir=project_dir)
+
+
 def _handle_list_assets(params):
     """List assets under a content-browser path via the Asset Registry.
 
@@ -1665,6 +1704,7 @@ _METHODS = {
     "moderation_report_save": _handle_moderation_report_save,
     "moderation_report_read": _handle_moderation_report_read,
     "asset_sweep": _handle_asset_sweep,
+    "tag_inspect": _handle_tag_inspect,
     "list_assets": _handle_list_assets,
     "inspect_asset": _handle_inspect_asset,
     "spawn_actor": _handle_spawn_actor,
