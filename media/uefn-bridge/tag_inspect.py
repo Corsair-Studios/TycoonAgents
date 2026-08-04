@@ -398,7 +398,12 @@ class _NullSlowTask:
     used whenever the real API is unavailable or fails — callers never need
     to branch on which one they have. Copied verbatim from
     dependency_viewer.py's identical helper (see that file's module-level
-    ScopedSlowTask comment) rather than reinventing it."""
+    ScopedSlowTask comment) rather than reinventing it.
+
+    Also a context manager (``__enter__``/``__exit__``) so it can stand in
+    for ``unreal.ScopedSlowTask`` at a ``with`` call site without branching
+    — see ``_make_slow_task``'s docstring for why ``destroy()`` was removed
+    from this surface entirely rather than kept as another no-op."""
 
     def make_dialog(self, *_args, **_kwargs):
         pass
@@ -409,8 +414,11 @@ class _NullSlowTask:
     def should_cancel(self):
         return False
 
-    def destroy(self):
-        pass
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
 
 
 def _st_call(slow_task, method_name, *args, **kwargs):
@@ -428,18 +436,32 @@ def _st_call(slow_task, method_name, *args, **kwargs):
 
 
 def _make_slow_task(total_work, description):
-    """Best-effort unreal.ScopedSlowTask factory — returns a real
-    ScopedSlowTask with its dialog opened when the API is present and
-    construction succeeds; otherwise returns _NullSlowTask() so the rest of
-    inspect_tags() can call make_dialog/enter_progress_frame/should_cancel/
-    destroy unconditionally. Mirrors dependency_viewer.py's helper of the
-    same name exactly."""
+    """Best-effort unreal.ScopedSlowTask factory — returns a context
+    manager, either a freshly-constructed (but NOT yet entered)
+    ``unreal.ScopedSlowTask`` when the real API is present and construction
+    succeeds, or ``_NullSlowTask()`` otherwise. Mirrors dependency_viewer.py's
+    helper of the same name exactly.
+
+    CRITICAL: ``unreal.ScopedSlowTask`` has NO ``destroy()`` method — it is
+    a context manager (``__enter__`` opens the dialog machinery,
+    ``__exit__`` tears it down). A previous version of this module called
+    ``_st_call(task, "destroy")`` on every exit path; because ``_st_call``
+    swallows exceptions, the missing-attribute failure was silently
+    absorbed, so ``__exit__`` never ran, the progress dialog was never
+    closed (orphaned on screen after the scan finished), and — since
+    ``__enter__`` never ran either — ``enter_progress_frame``/
+    ``should_cancel`` operated on a task that was never actually started,
+    which is what produced a dialog stuck at 0% with an unresponsive
+    Cancel button. Callers MUST consume this return value via a ``with``
+    statement (never call ``.destroy()`` on it) so ``__exit__`` is
+    guaranteed on every path — normal, cancel, or exception. ``make_dialog``
+    is intentionally NOT called here; call it as the first statement inside
+    the caller's own ``with`` block instead, once the task is actually
+    entered."""
     try:
         cls = getattr(unreal, "ScopedSlowTask", None)
         if cls is not None:
-            task = cls(total_work, description)
-            _st_call(task, "make_dialog", True)
-            return task
+            return cls(total_work, description)
     except Exception as e:
         try:
             unreal.log_warning(
@@ -665,7 +687,18 @@ def _looks_like_tag_container(value):
 
 def _iter_tag_container_values(container):
     """Yield raw tag values out of *container*, handling both a
-    ``.gameplay_tags``-bearing container object and a plain list/tuple."""
+    ``.gameplay_tags``-bearing container object and a plain list/tuple.
+
+    Deliberately does NOT swallow a ``TypeError`` raised while iterating
+    *container* itself (only the ``.gameplay_tags``-accessor attempt is
+    guarded, as a fall-through to the direct-iteration attempt below) --
+    letting it propagate is what lets ``_try_iter_tag_container_values``
+    distinguish "iterated fine, zero items" from "could not iterate at
+    all" instead of both cases masquerading as an empty container. A bare
+    ``str``/``bytes`` value is technically iterable character-by-character
+    but is never a real tag list, so it is rejected the same way (raises
+    ``TypeError``) rather than silently yielding individual characters as
+    "tags"."""
     if container is None:
         return
     inner = getattr(container, "gameplay_tags", None)
@@ -680,28 +713,59 @@ def _iter_tag_container_values(container):
         for t in container:
             yield t
         return
+    if isinstance(container, (str, bytes)):
+        raise TypeError("string/bytes value is not a tag container")
+    for t in container:
+        yield t
+
+
+def _try_iter_tag_container_values(container):
+    """Materialize ``_iter_tag_container_values(container)`` into a list,
+    distinguishing "iterated fine, zero items" (``iterated_ok=True``,
+    ``items=[]``) from "could not iterate at all" (``iterated_ok=False``,
+    ``items=[]``). A bare ``try/except`` around just the generator *call*
+    cannot make this distinction -- a generator function does not run any
+    of its body (and so cannot raise) until its first ``next()`` -- which
+    is exactly the bug this wrapper exists to close: a previous version's
+    ``except TypeError: return`` inside the generator itself reported
+    "could not iterate" as "iterated fine, zero tags", the identical
+    false-negative shape this module exists to prevent. Returns
+    ``(items, iterated_ok)``; never raises."""
+    items = []
     try:
-        for t in container:
-            yield t
+        for value in _iter_tag_container_values(container):
+            items.append(value)
+        return items, True
     except TypeError:
-        return
+        return items, False
+    except Exception:
+        return items, False
 
 
 _MAX_DIAGNOSTIC_PROPERTIES = 40
 _DIAGNOSTIC_VALUE_MAX_LEN = 80
+_EXTRACTION_DEBUG_MAX_LEN = 200
 
 
-def _truncate_diag(text):
-    """Hard-truncate *text* to _DIAGNOSTIC_VALUE_MAX_LEN characters (never a
-    full dump into the discovery report -- a component can carry large
+def _truncate_diag(text, max_len=_DIAGNOSTIC_VALUE_MAX_LEN):
+    """Hard-truncate *text* to *max_len* characters (never a full dump into
+    the discovery/extraction-debug report -- a component can carry large
     struct/array reprs). Never raises."""
     try:
         text = text if isinstance(text, str) else str(text)
     except Exception:
         return "<unrepresentable>"
-    if len(text) > _DIAGNOSTIC_VALUE_MAX_LEN:
-        return text[: _DIAGNOSTIC_VALUE_MAX_LEN - 3] + "..."
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
     return text
+
+
+def _safe_str(value):
+    """Best-effort ``str(value)``; never raises."""
+    try:
+        return str(value)
+    except Exception:
+        return None
 
 
 def _value_contains_known_tag(value_repr, known_tag_names):
@@ -722,12 +786,121 @@ def _value_contains_known_tag(value_repr, known_tag_names):
     return False
 
 
+_EXPORT_TEXT_TAGNAME_RE = re.compile(r'TagName\s*=\s*"([^"]+)"')
+
+
+def _decode_winner_tags(winner_value, known_tag_names, refetch_error=None):
+    """Multi-strategy decode of raw tag names out of *winner_value* (the
+    already-selected tag-container property value), tried in order,
+    stopping at the first strategy that positively yields >=1 tag name:
+
+      (a)/(b) Iterate ``.gameplay_tags`` if present, else iterate the value
+          directly (``_try_iter_tag_container_values`` — see that
+          function's docstring for why it, not a bare ``_iter_tag_container
+          _values`` call, is what makes "iterated fine, zero items" a
+          distinct outcome from "could not iterate at all").
+      (c) ``unreal.StructBase.export_text()`` (guarded — may not exist on
+          this value's type at all): parsed both for ``TagName="..."``
+          occurrences and, if none matched, for whole-word hits against
+          *known_tag_names* within the exported text.
+      (d) Whole-word match of *known_tag_names* against the value's own
+          repr/str form — the same signal ``_value_contains_known_tag``
+          uses for property SELECTION, now applied to VALUE decoding. This
+          is what recovers a single-tag plain-string property (the old
+          "content-hit-but-non-iterable" special case), and — unlike the
+          old special case — applies uniformly whether the winner was
+          selected via content match or shape match.
+
+    *refetch_error*, if given, is the exception CLASS NAME from a caller's
+    defensive re-fetch of the winner property that raised (see
+    ``_extract_tags_from_component``) -- folded into ``debug["note"]`` so
+    a ``winner_value is None`` case is traceable to why.
+
+    Returns ``(raw_names, status, debug)`` where *status* is:
+      "ok"         -- >=1 tag decoded by some strategy.
+      "empty"      -- a strategy POSITIVELY iterated the container and
+                       found zero entries (container genuinely empty, not
+                       merely unreadable).
+      "unreadable" -- no strategy could decode anything; *debug* carries
+                       the value's python type name, a repr truncated to
+                       ``_EXTRACTION_DEBUG_MAX_LEN`` chars, and (if
+                       available) a truncated export_text() snippet, so
+                       the NEXT run's report is actionable instead of a
+                       dead end (see module docstring's field case).
+                       ``winner_value is None`` ALWAYS lands here, never
+                       "empty" -- "empty" is reserved for a strategy that
+                       POSITIVELY iterated a real container down to zero
+                       entries, which cannot happen when there was no
+                       value to iterate at all (e.g. a failed defensive
+                       re-fetch — see *refetch_error*)."""
+    debug = {
+        "type_name": type(winner_value).__name__ if winner_value is not None else None,
+        "value_repr": _truncate_diag(repr(winner_value), _EXTRACTION_DEBUG_MAX_LEN) if winner_value is not None else None,
+    }
+    if refetch_error is not None:
+        debug["note"] = "defensive re-fetch of the winner property raised {}".format(refetch_error)
+
+    if winner_value is None:
+        return [], "unreadable", debug
+
+    items, iterated_ok = _try_iter_tag_container_values(winner_value)
+    if iterated_ok:
+        names = []
+        for raw in items:
+            try:
+                normalized = normalize_tag_name(str(raw))
+            except Exception:
+                continue
+            if normalized:
+                names.append(normalized)
+        if names:
+            return names, "ok", debug
+        if items:
+            # Iterated fine and produced entries, but every one normalized
+            # to an empty string -- that is an opaque/unreadable entry
+            # shape, not a genuinely empty container.
+            return [], "unreadable", debug
+        return [], "empty", debug
+
+    export_fn = getattr(winner_value, "export_text", None)
+    if export_fn is not None:
+        try:
+            export_text = export_fn()
+        except Exception:
+            export_text = None
+        if export_text:
+            debug["export_text"] = _truncate_diag(export_text, _EXTRACTION_DEBUG_MAX_LEN)
+            names = [normalize_tag_name(n) for n in _EXPORT_TEXT_TAGNAME_RE.findall(export_text)]
+            names = [n for n in names if n]
+            if not names and known_tag_names:
+                names = [
+                    t for t in known_tag_names
+                    if t and re.search(r"\b" + re.escape(t) + r"\b", export_text)
+                ]
+            if names:
+                return names, "ok", debug
+
+    if known_tag_names:
+        for source in (debug.get("value_repr"), _safe_str(winner_value)):
+            if not source:
+                continue
+            hits = [
+                t for t in known_tag_names
+                if t and re.search(r"\b" + re.escape(t) + r"\b", source)
+            ]
+            if hits:
+                return hits, "ok", debug
+
+    return [], "unreadable", debug
+
+
 def _extract_tags_from_component(comp, known_tag_names=None):
     """Scan *comp*'s editor properties (via ``_get_component_property_names``,
     the pooled multi-source enumerator) to find the tag-container property
-    and extract normalized tag names from it.
+    and extract normalized tag names from it via ``_decode_winner_tags``.
 
-    Two independent detection signals are tried, in order of confidence:
+    Two independent detection signals select the WINNER property, in order
+    of confidence:
       1. CONTENT match (``_value_contains_known_tag``) -- the property's
          printed value contains one of *known_tag_names*, this project's
          own discovered Verse tag class names. Strongest signal: grounded
@@ -742,13 +915,28 @@ def _extract_tags_from_component(comp, known_tag_names=None):
     Returns ``(tag_property_name_or_None, [raw_tag_name, ...],
     diagnostics)`` where ``diagnostics`` is
     ``{"properties": [{"name", "type", "value_repr"}, ...], "capped": bool,
-    "properties_probed": int, "properties_probe_capped": bool}`` covering
-    EVERY property this scan saw on *comp* (capped at
+    "properties_probed": int, "properties_probe_capped": bool,
+    "property_read_errors": [{"name", "exception_class"}, ...],
+    "extraction_status": "ok"|"empty"|"unreadable"|None,
+    "extraction_debug": {...}|None}``.
+
+    ``properties`` covers EVERY property this scan saw on *comp* (capped at
     ``_MAX_DIAGNOSTIC_PROPERTIES``, each value_repr hard-truncated to
     ``_DIAGNOSTIC_VALUE_MAX_LEN`` chars) -- populated UNCONDITIONALLY, not
-    only on failure, so a caller can always surface it. This is what turns
-    a dead ``tag_property: null`` into an actionable report (see module
-    docstring's field case and ``inspect_tags``'s discovery contract).
+    only on failure, so a caller can always surface it. ``property_read_
+    errors`` records every ``get_editor_property`` call that raised
+    (property name + exception class name) instead of silently skipping it
+    (a bare ``except Exception: continue`` previously discarded these).
+    This is what turns a dead ``tag_property: null`` into an actionable
+    report (see module docstring's field case and ``inspect_tags``'s
+    discovery contract).
+
+    ``extraction_status``/``extraction_debug`` are set from
+    ``_decode_winner_tags`` once a winner property is identified; both stay
+    ``None`` when no property was identified as the tag container at all
+    (``tag_property_name_or_None`` is also ``None`` in that case — the
+    caller distinguishes "no candidate property" from "candidate property
+    found but unreadable").
 
     ``properties_probe_capped`` is distinct from ``capped``: ``capped``
     means the *diagnostics listing* stopped recording past
@@ -765,6 +953,7 @@ def _extract_tags_from_component(comp, known_tag_names=None):
     capped = False
     probed = 0
     properties_probe_capped = False
+    property_read_errors = []
     content_hit_name = None
     shape_candidates = []  # [(name, value), ...]
 
@@ -775,7 +964,8 @@ def _extract_tags_from_component(comp, known_tag_names=None):
         probed += 1
         try:
             value = comp.get_editor_property(name)
-        except Exception:
+        except Exception as e:
+            property_read_errors.append({"name": name, "exception_class": type(e).__name__})
             continue
 
         try:
@@ -807,10 +997,14 @@ def _extract_tags_from_component(comp, known_tag_names=None):
         "capped": capped,
         "properties_probed": probed,
         "properties_probe_capped": properties_probe_capped,
+        "property_read_errors": property_read_errors,
+        "extraction_status": None,
+        "extraction_debug": None,
     }
 
     winner_name = None
     winner_value = None
+    refetch_error = None
     if content_hit_name is not None:
         winner_name = content_hit_name
         for cand_name, cand_value in shape_candidates:
@@ -823,8 +1017,10 @@ def _extract_tags_from_component(comp, known_tag_names=None):
             # re-fetch defensively rather than trusting a stale local.
             try:
                 winner_value = comp.get_editor_property(content_hit_name)
-            except Exception:
+            except Exception as e:
+                property_read_errors.append({"name": content_hit_name, "exception_class": type(e).__name__})
                 winner_value = None
+                refetch_error = type(e).__name__
     elif shape_candidates:
         if len(shape_candidates) == 1:
             winner_name, winner_value = shape_candidates[0]
@@ -835,21 +1031,10 @@ def _extract_tags_from_component(comp, known_tag_names=None):
     if winner_name is None:
         return None, [], diagnostics
 
-    names = []
-    for raw in _iter_tag_container_values(winner_value):
-        try:
-            names.append(normalize_tag_name(str(raw)))
-        except Exception:
-            continue
-    if not names and winner_value is not None and winner_name == content_hit_name:
-        # Content-hit-but-non-iterable case (e.g. a single-tag string
-        # field) -- treat the value itself as one raw tag rather than
-        # reporting zero tags for a property we're confident is the
-        # right one.
-        try:
-            names = [normalize_tag_name(str(winner_value))]
-        except Exception:
-            names = []
+    names, status, debug = _decode_winner_tags(winner_value, known_tag_names, refetch_error=refetch_error)
+    diagnostics["extraction_status"] = status
+    if status == "unreadable":
+        diagnostics["extraction_debug"] = debug
 
     return winner_name, names, diagnostics
 
@@ -958,13 +1143,21 @@ def _inspect_tags_live(label_pattern, project_dir):
     """The live (unreal-dependent) inspection path. Only called when
     ``_HAS_UNREAL`` is True; every editor call is individually guarded.
 
-    Wrapped end-to-end in a cancellable ``unreal.ScopedSlowTask`` (2 units
-    of work: the .verse file scan, then the actor/component walk — see
-    ``_make_slow_task``/``_st_call``/``_NullSlowTask``, mirroring
-    dependency_viewer.py's identical pattern) because both phases used to
-    run fully synchronously and unbounded on UEFN's main thread — the exact
-    cause of a real 15+ minute editor freeze with an empty label_pattern
-    (see ``_MAX_ACTORS_EXAMINED``'s comment block for the full incident).
+    Runs in TWO SEQUENTIAL ``with unreal.ScopedSlowTask(...) as task:``
+    blocks — phase 1 (verse-file scan + actor-label matching) and phase 2
+    (the expensive actor/component walk) — each with its OWN progress
+    dialog. This is a deliberate rewrite of a previous single-task version
+    that called ``_st_call(slow_task, "destroy")`` on every exit path:
+    ``unreal.ScopedSlowTask`` has NO ``destroy()`` method (see
+    ``_make_slow_task``'s docstring), so that call always silently no-op'd
+    through ``_st_call``'s exception-swallowing, the dialog's ``__exit__``
+    never ran, and the task was never ``__enter__``'d either — producing a
+    progress dialog stuck at 0% that outlived the scan, with a Cancel
+    button wired to a ``should_cancel()`` that likewise never worked. A
+    ``with`` block guarantees ``__exit__`` runs on every path out of it —
+    normal return, ``break``, or exception — so no manual cleanup call is
+    needed or made anywhere in this function.
+
     should_cancel() is polled regularly in both phases; on cancellation this
     returns the PARTIAL result gathered so far with ``cancelled: True`` —
     never discarded, never presented as complete."""
@@ -986,15 +1179,9 @@ def _inspect_tags_live(label_pattern, project_dir):
         "components_capped_actor_count": 0,
     }
 
-    slow_task = _make_slow_task(2, "Inspecting Verse tags…")
-
-    def _cancel_requested():
-        return bool(_st_call(slow_task, "should_cancel"))
-
     try:
         all_actors = _get_all_actors()
     except Exception as e:
-        _st_call(slow_task, "destroy")
         return {
             "discovery": {
                 "component_class": None,
@@ -1012,12 +1199,12 @@ def _inspect_tags_live(label_pattern, project_dir):
             "scan_stats": scan_stats,
         }
 
-    # Resolve verse_dir / tag_classes FIRST, independent of actor scanning,
-    # so the project's own discovered Verse tag class names (e.g.
-    # "t_area_hoth") are available as the CONTENT-based detection signal
-    # (see _value_contains_known_tag) while scanning each candidate
-    # component's properties below — grounded in real project data rather
-    # than a generic shape/name guess.
+    # Resolve verse_dir FIRST (cheap, no dialog needed), independent of
+    # actor scanning, so the project's own discovered Verse tag class names
+    # (e.g. "t_area_hoth") are available as the CONTENT-based detection
+    # signal (see _value_contains_known_tag) while scanning each candidate
+    # component's properties in phase 2 below — grounded in real project
+    # data rather than a generic shape/name guess.
     if project_dir and not os.path.isdir(project_dir):
         notes_parts.append(
             "explicit project_dir={!r} is not a valid directory — falling "
@@ -1029,59 +1216,108 @@ def _inspect_tags_live(label_pattern, project_dir):
 
     verse_dir, verse_source = _resolve_verse_dir(project_dir_for_resolve)
 
-    _st_call(slow_task, "enter_progress_frame", 1, "Scanning .verse files…")
-
     class_map = {}
     tag_classes = {}
     cancelled = False
-    if verse_dir:
-        file_paths, files_truncated, files_reason, files_cancelled = _find_verse_files(
-            verse_dir, should_cancel=_cancel_requested
-        )
-        if files_truncated:
-            truncation_reasons.append(files_reason)
-        if files_cancelled:
-            cancelled = True
-            truncation_reasons.append(files_reason)
-            texts = []
-        else:
-            texts, texts_cancelled = _read_verse_file_texts(
-                file_paths, should_cancel=_cancel_requested
+    matched = []
+    matching_cancelled = False
+
+    # ------------------------------------------------------------------
+    # Phase 1: .verse file scan + actor-label matching, under one
+    # cancellable ScopedSlowTask (2 units of work). Label matching is
+    # cheap per-actor (a label read + string compare, no reflection) but
+    # is still polled at _CANCEL_POLL_INTERVAL — see the field incident in
+    # _MAX_ACTORS_EXAMINED's comment block — so it stays inside this same
+    # dialog rather than running unmonitored between the two phases.
+    # ------------------------------------------------------------------
+    with _make_slow_task(2, "Inspecting Verse tags…") as phase1_task:
+        _st_call(phase1_task, "make_dialog", True)
+
+        def _phase1_cancel_requested():
+            return bool(_st_call(phase1_task, "should_cancel"))
+
+        _st_call(phase1_task, "enter_progress_frame", 1, "Scanning .verse files…")
+
+        if verse_dir:
+            file_paths, files_truncated, files_reason, files_cancelled = _find_verse_files(
+                verse_dir, should_cancel=_phase1_cancel_requested
             )
-            if texts_cancelled:
+            if files_truncated:
+                truncation_reasons.append(files_reason)
+            if files_cancelled:
                 cancelled = True
-                truncation_reasons.append(
-                    "cancelled by user while reading .verse file contents "
-                    "({} of {} read)".format(len(texts), len(file_paths))
+                truncation_reasons.append(files_reason)
+                texts = []
+            else:
+                texts, texts_cancelled = _read_verse_file_texts(
+                    file_paths, should_cancel=_phase1_cancel_requested
                 )
-        class_map = build_class_map(texts)
-        tag_classes = build_tag_class_set(class_map)
-        notes_parts.append(
-            "verse_dir resolved via {} ({} *.verse file(s) scanned{}, {} "
-            "tag class(es) found).".format(
-                verse_source, len(file_paths),
-                " — TRUNCATED at the file-count cap" if files_truncated else "",
-                len(tag_classes),
+                if texts_cancelled:
+                    cancelled = True
+                    truncation_reasons.append(
+                        "cancelled by user while reading .verse file contents "
+                        "({} of {} read)".format(len(texts), len(file_paths))
+                    )
+            class_map = build_class_map(texts)
+            tag_classes = build_tag_class_set(class_map)
+            notes_parts.append(
+                "verse_dir resolved via {} ({} *.verse file(s) scanned{}, {} "
+                "tag class(es) found).".format(
+                    verse_source, len(file_paths),
+                    " — TRUNCATED at the file-count cap" if files_truncated else "",
+                    len(tag_classes),
+                )
             )
-        )
-    elif device_audit is None:
-        notes_parts.append(
-            "verse_dir could not be resolved — device_audit is unavailable "
-            "({}), so the discovery ladder could not run. Tags are "
-            "reported by name only, with empty parent_chain (never "
-            "silently dropped).".format(_DEVICE_AUDIT_IMPORT_ERROR)
-        )
-    else:
-        notes_parts.append(
-            "verse_dir could not be resolved by device_audit._find_verse_dir()'s "
-            "discovery ladder — tags are reported by name only, with empty "
-            "parent_chain (never silently dropped)."
-        )
+        elif device_audit is None:
+            notes_parts.append(
+                "verse_dir could not be resolved — device_audit is unavailable "
+                "({}), so the discovery ladder could not run. Tags are "
+                "reported by name only, with empty parent_chain (never "
+                "silently dropped).".format(_DEVICE_AUDIT_IMPORT_ERROR)
+            )
+        else:
+            notes_parts.append(
+                "verse_dir could not be resolved by device_audit._find_verse_dir()'s "
+                "discovery ladder — tags are reported by name only, with empty "
+                "parent_chain (never silently dropped)."
+            )
 
-    known_tag_names = set(tag_classes.keys())
+        known_tag_names = set(tag_classes.keys())
 
-    if cancelled:
-        _st_call(slow_task, "destroy")
+        if not cancelled:
+            _st_call(phase1_task, "enter_progress_frame", 1, "Matching actor labels…")
+
+            label_of = _safe_label_fn if _safe_label_fn is not None else _fallback_label
+
+            for idx, actor in enumerate(all_actors):
+                if (
+                    idx > 0
+                    and idx % _CANCEL_POLL_INTERVAL == 0
+                    and _phase1_cancel_requested()
+                ):
+                    matching_cancelled = True
+                    truncation_reasons.append(
+                        "cancelled by user while matching actor labels "
+                        "({}/{} actor(s) checked)".format(idx, len(all_actors))
+                    )
+                    break
+                try:
+                    label = label_of(actor)
+                except Exception:
+                    continue
+                if match_label(label, label_pattern):
+                    matched.append((label, actor))
+
+            scan_stats["actors_matched"] = len(matched)
+            if matching_cancelled:
+                cancelled = True
+    # phase1_task's __exit__ has run here — dialog closed on every path
+    # taken above, including the verse-scan-cancelled and matching-
+    # cancelled branches.
+
+    if cancelled and not matched and not matching_cancelled:
+        # Cancelled during the .verse file scan itself — never reached
+        # label matching at all.
         notes_parts.append(
             "SCAN CANCELLED during the .verse file scan phase — no actors "
             "were examined; 'actors' below is empty. Verse tag-class data "
@@ -1099,41 +1335,6 @@ def _inspect_tags_live(label_pattern, project_dir):
             "truncation_reasons": truncation_reasons,
             "scan_stats": scan_stats,
         }
-
-    _st_call(slow_task, "enter_progress_frame", 1, "Scanning actors and components…")
-
-    label_of = _safe_label_fn if _safe_label_fn is not None else _fallback_label
-
-    # ------------------------------------------------------------------
-    # Label matching — cheap per-actor (a label read + string compare, no
-    # reflection), so no actor-count cap is applied here; only cancellation
-    # is polled, at _CANCEL_POLL_INTERVAL, so an empty label_pattern on a
-    # huge level still can't run away without a way out.
-    # ------------------------------------------------------------------
-    matched = []
-    matching_cancelled = False
-    for idx, actor in enumerate(all_actors):
-        if (
-            idx > 0
-            and idx % _CANCEL_POLL_INTERVAL == 0
-            and _cancel_requested()
-        ):
-            matching_cancelled = True
-            truncation_reasons.append(
-                "cancelled by user while matching actor labels "
-                "({}/{} actor(s) checked)".format(idx, len(all_actors))
-            )
-            break
-        try:
-            label = label_of(actor)
-        except Exception:
-            continue
-        if match_label(label, label_pattern):
-            matched.append((label, actor))
-
-    scan_stats["actors_matched"] = len(matched)
-    if matching_cancelled:
-        cancelled = True
 
     # ------------------------------------------------------------------
     # Actor-count cap — this is the expensive phase (component/property
@@ -1156,51 +1357,94 @@ def _inspect_tags_live(label_pattern, project_dir):
 
     raw_records = []
     first_component_diagnostics = None
+    all_property_read_errors = []
     walk_cancelled = False
+
+    # ------------------------------------------------------------------
+    # Phase 2: the actor/component reflection walk — the truly expensive
+    # part. Its OWN ScopedSlowTask, sized to the actual number of actors
+    # about to be examined, gives real per-actor percentage progress
+    # (enter_progress_frame(1, ...) per actor) rather than the coarse
+    # 2-unit progress phase 1 used. Skipped entirely if matching itself
+    # was cancelled — matches the pre-existing "no partial actor walk on a
+    # partial actor list" contract.
+    # ------------------------------------------------------------------
     if not matching_cancelled:
-        for idx, (label, actor) in enumerate(matched_for_walk):
-            # Cancellation is polled once per actor (not per component/
-            # property): caps above already bound a single actor's worst
-            # case to _MAX_COMPONENTS_PER_ACTOR * _MAX_PROPERTIES_PER_COMPONENT
-            # reflection calls (9600, not millions), so per-actor polling
-            # keeps Cancel responsive without adding overhead to the hot
-            # loop inside _extract_tags_from_component itself.
-            if idx > 0 and _cancel_requested():
-                walk_cancelled = True
-                truncation_reasons.append(
-                    "cancelled by user during the actor/component walk "
-                    "({}/{} matched actor(s) examined)".format(idx, len(matched_for_walk))
-                )
-                break
-            scan_stats["actors_examined"] += 1
-            try:
-                comp, comp_class, tag_prop, raw_names, diagnostics = _find_tag_component(
-                    actor, known_tag_names
-                )
-            except Exception:
-                comp, comp_class, tag_prop, raw_names = None, None, None, []
-                diagnostics = {"properties": [], "capped": False, "fast_rejected": False}
-            if diagnostics.get("fast_rejected"):
-                scan_stats["actors_fast_rejected"] += 1
-            else:
-                scan_stats["actors_full_probed"] += 1
-            if diagnostics.get("components_examined_capped"):
-                scan_stats["components_capped_actor_count"] += 1
-            if comp is not None and discovery["component_class"] is None:
-                discovery["component_class"] = comp_class
-                discovery["tag_property"] = tag_prop
-                first_component_diagnostics = diagnostics
-            raw_records.append({
-                "label": label,
-                "has_verse_tag_component": comp is not None,
-                "component_class": comp_class,
-                "raw_tag_names": raw_names,
-            })
+        walk_total = len(matched_for_walk) or 1
+        with _make_slow_task(
+            walk_total, "Scanning {} actor(s) for Verse tags…".format(len(matched_for_walk))
+        ) as phase2_task:
+            _st_call(phase2_task, "make_dialog", True)
+
+            for idx, (label, actor) in enumerate(matched_for_walk):
+                # Cancellation is polled once per actor (not per component/
+                # property): caps above already bound a single actor's worst
+                # case to _MAX_COMPONENTS_PER_ACTOR * _MAX_PROPERTIES_PER_COMPONENT
+                # reflection calls (9600, not millions), so per-actor polling
+                # keeps Cancel responsive without adding overhead to the hot
+                # loop inside _extract_tags_from_component itself.
+                if idx > 0 and bool(_st_call(phase2_task, "should_cancel")):
+                    walk_cancelled = True
+                    truncation_reasons.append(
+                        "cancelled by user during the actor/component walk "
+                        "({}/{} matched actor(s) examined)".format(idx, len(matched_for_walk))
+                    )
+                    break
+                _st_call(phase2_task, "enter_progress_frame", 1, label)
+                scan_stats["actors_examined"] += 1
+                try:
+                    comp, comp_class, tag_prop, raw_names, diagnostics = _find_tag_component(
+                        actor, known_tag_names
+                    )
+                except Exception:
+                    comp, comp_class, tag_prop, raw_names = None, None, None, []
+                    diagnostics = {"properties": [], "capped": False, "fast_rejected": False}
+                if diagnostics.get("fast_rejected"):
+                    scan_stats["actors_fast_rejected"] += 1
+                else:
+                    scan_stats["actors_full_probed"] += 1
+                if diagnostics.get("components_examined_capped"):
+                    scan_stats["components_capped_actor_count"] += 1
+                if comp is not None and discovery["component_class"] is None:
+                    discovery["component_class"] = comp_class
+                    discovery["tag_property"] = tag_prop
+                    first_component_diagnostics = diagnostics
+                if diagnostics.get("property_read_errors"):
+                    all_property_read_errors.extend(diagnostics["property_read_errors"])
+
+                # extraction_status/extraction_debug: NEVER a bare
+                # tags:[] without one of "ok"/"empty"/"unreadable" — see
+                # module docstring's field case and _decode_winner_tags.
+                if comp is None:
+                    extraction_status = None
+                    extraction_debug = None
+                elif tag_prop is None:
+                    # Component found, but no property on it could even be
+                    # identified as the tag container — opaque, same as a
+                    # decode failure on an identified property.
+                    extraction_status = "unreadable"
+                    extraction_debug = {
+                        "type_name": None,
+                        "value_repr": None,
+                        "note": "no property on this component was identified as the tag container",
+                    }
+                else:
+                    extraction_status = diagnostics.get("extraction_status") or "unreadable"
+                    extraction_debug = diagnostics.get("extraction_debug")
+
+                raw_records.append({
+                    "label": label,
+                    "has_verse_tag_component": comp is not None,
+                    "component_class": comp_class,
+                    "raw_tag_names": raw_names,
+                    "extraction_status": extraction_status,
+                    "extraction_debug": extraction_debug,
+                })
+        # phase2_task's __exit__ has run here regardless of how the loop
+        # above ended.
 
     if walk_cancelled:
         cancelled = True
-
-    _st_call(slow_task, "destroy")
 
     fast_reject_note = (
         "fast-reject bound: {} of {} examined actor(s) had no candidate "
@@ -1212,6 +1456,10 @@ def _inspect_tags_live(label_pattern, project_dir):
     )
 
     found_count = sum(1 for r in raw_records if r["has_verse_tag_component"])
+    status_ok = sum(1 for r in raw_records if r.get("extraction_status") == "ok")
+    status_empty = sum(1 for r in raw_records if r.get("extraction_status") == "empty")
+    status_unreadable = sum(1 for r in raw_records if r.get("extraction_status") == "unreadable")
+
     if discovery["component_class"] is not None and discovery["tag_property"] is not None:
         notes_parts.append(
             "discovered tag component class {!r}, tag-container property "
@@ -1221,16 +1469,6 @@ def _inspect_tags_live(label_pattern, project_dir):
             )
         )
     elif discovery["component_class"] is not None:
-        # Component found, but no property on it matched a tag-container
-        # shape or content — the exact false-negative field case this
-        # module exists to eliminate (component_class discovered,
-        # tag_property stayed null even though the actor was demonstrably
-        # tagged). Surface EVERY property this scan actually saw on that
-        # component so the NEXT run needs no separate probe — a dead null
-        # is never returned without the evidence behind it.
-        if first_component_diagnostics is not None:
-            discovery["component_properties"] = first_component_diagnostics["properties"]
-            discovery["component_properties_capped"] = first_component_diagnostics["capped"]
         notes_parts.append(
             "component class {!r} was found on {} of {} matching actor(s), "
             "but no property on it matched a tag-container shape (a "
@@ -1256,6 +1494,44 @@ def _inspect_tags_live(label_pattern, project_dir):
     elif not matched:
         notes_parts.append("no actors matched label_pattern={!r}.".format(label_pattern))
 
+    # component_properties diagnostics: populated whenever a component was
+    # found and its property probe left evidence, whether the failure mode
+    # was "no property identified at all" (tag_property is None) OR
+    # "property identified but decode failed/empty" (tag_property found,
+    # extraction_status != "ok") — never leave this an empty [] alongside
+    # a reported failure (see module docstring's field case).
+    if first_component_diagnostics is not None and (
+        discovery["tag_property"] is None or status_ok == 0
+    ):
+        discovery["component_properties"] = first_component_diagnostics.get("properties", [])
+        discovery["component_properties_capped"] = first_component_diagnostics.get("capped", False)
+
+    if all_property_read_errors:
+        # Deduplicate by (name, exception_class) — the same property can
+        # fail identically across many actors on a repeated component type.
+        seen_errors = set()
+        deduped_errors = []
+        for err in all_property_read_errors:
+            key = (err.get("name"), err.get("exception_class"))
+            if key not in seen_errors:
+                seen_errors.add(key)
+                deduped_errors.append(err)
+        discovery["property_read_errors"] = deduped_errors
+        notes_parts.append(
+            "{} distinct get_editor_property() failure(s) encountered while "
+            "probing components (recorded in discovery.property_read_errors, "
+            "not silently skipped).".format(len(deduped_errors))
+        )
+
+    if found_count:
+        notes_parts.append(
+            "{} with tag component: {} decoded, {} confirmed-empty, {} "
+            "unreadable{}.".format(
+                found_count, status_ok, status_empty, status_unreadable,
+                " — extraction debug attached" if status_unreadable else "",
+            )
+        )
+
     notes_parts.append(fast_reject_note)
     if cancelled or truncation_reasons:
         notes_parts.append(
@@ -1274,12 +1550,16 @@ def _inspect_tags_live(label_pattern, project_dir):
                 "name": raw_name,
                 "parent_chain": list(chain) if chain else [],
             })
-        actors_out.append({
+        actor_entry = {
             "label": rec["label"],
             "has_verse_tag_component": rec["has_verse_tag_component"],
             "component_class": rec["component_class"],
             "tags": tags_out,
-        })
+            "extraction_status": rec.get("extraction_status"),
+        }
+        if rec.get("extraction_status") == "unreadable" and rec.get("extraction_debug"):
+            actor_entry["extraction_debug"] = rec["extraction_debug"]
+        actors_out.append(actor_entry)
 
     actors_out = sort_actors_flagged_first(actors_out)
     discovery["notes"] = " ".join(notes_parts)
@@ -1444,13 +1724,29 @@ def inspect_tags(label_pattern=None, project_dir=None):
          "tag_class_count": int,
          "actors": [{"label": str, "has_verse_tag_component": bool,
                       "component_class": str|None,
-                      "tags": [{"name": str, "parent_chain": [str, ...]}]}]}
+                      "tags": [{"name": str, "parent_chain": [str, ...]}],
+                      "extraction_status": "ok"|"empty"|"unreadable"|None,
+                      "extraction_debug": {...} (only when "unreadable")}]}
 
-    ``discovery.component_properties`` is populated ONLY in the specific
-    failure case that matters most: a tag-bearing component WAS found
-    (``component_class`` is set) but no property on it could be identified
-    as the tag container (``tag_property`` stayed ``None``). It lists
-    every editor-gettable property this scan actually saw on that
+    ``extraction_status`` is ``None`` only when ``has_verse_tag_component``
+    is False (nothing to extract from); otherwise it is always one of
+    "ok" (>=1 tag decoded), "empty" (the container was positively iterated
+    and found to have zero entries), or "unreadable" (a tag component was
+    present but no strategy could decode any tags from it — see
+    ``_decode_winner_tags``). An actor's ``tags`` list is NEVER bare ``[]``
+    without one of these statuses attached, so an "unreadable" read can
+    never be misread as "confirmed no tags" (see module docstring's field
+    case). "unreadable" actors additionally carry ``extraction_debug``
+    (python type name, truncated value repr, and an export_text() snippet
+    when available) so the report is actionable rather than a dead end.
+
+    ``discovery.component_properties`` is populated in the failure cases
+    that matter most: a tag-bearing component WAS found
+    (``component_class`` is set) but either no property on it could be
+    identified as the tag container (``tag_property`` stayed ``None``), or
+    a property WAS identified yet decoding it never yielded "ok" for any
+    examined actor. It lists every editor-gettable property this scan
+    actually saw on that
     component — name, Python type name, and a value repr hard-truncated to
     80 chars — capped at 40 entries (``component_properties_capped`` flags
     truncation). This turns a dead ``tag_property: null`` into an

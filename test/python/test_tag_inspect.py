@@ -36,10 +36,21 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _bridge_helpers import ensure_bridge_on_path  # noqa: E402
+from _bridge_helpers import ensure_bridge_on_path, stub_unreal  # noqa: E402
 
 ensure_bridge_on_path()
 import tag_inspect  # noqa: E402
+
+# uefn_launcher.py does an UNGUARDED `import unreal` at module scope (unlike
+# tag_inspect.py's own guarded import), so it needs the stub in place first
+# -- same technique as test_uefn_launcher_mcp_panel.py. This does not affect
+# tag_inspect's own already-imported module object above (its _HAS_UNREAL
+# flag was already latched at the `import tag_inspect` line before this
+# runs), and InspectTagsUnrealAbsentTests below pops sys.modules["unreal"]
+# itself before doing its own fresh import, so it is unaffected by this stub
+# being installed here regardless of file/test ordering.
+stub_unreal()
+import uefn_launcher  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +555,323 @@ class InspectTagsUnrealAbsentTests(unittest.TestCase):
         notes_lower = discovery["notes"].lower()
         self.assertIn("unreal", notes_lower)
         self.assertIn("not available", notes_lower)
+
+
+# ---------------------------------------------------------------------------
+# _try_iter_tag_container_values -- must distinguish "iterated successfully
+# with zero items" (iterated_ok=True, items=[]) from "could not iterate at
+# all" (iterated_ok=False, items=[]). See _iter_tag_container_values' and
+# _try_iter_tag_container_values' own docstrings for the false-negative bug
+# this closes: a previous version's bare `except TypeError: return` inside
+# the generator itself collapsed both cases into "zero tags".
+# ---------------------------------------------------------------------------
+
+class TryIterTagContainerValuesTests(unittest.TestCase):
+    def test_list_with_items_iterates_ok(self):
+        items, ok = tag_inspect._try_iter_tag_container_values(["t_room_r1", "t_spawn_rand"])
+        self.assertTrue(ok)
+        self.assertEqual(items, ["t_room_r1", "t_spawn_rand"])
+
+    def test_empty_list_iterates_ok_with_zero_items(self):
+        items, ok = tag_inspect._try_iter_tag_container_values([])
+        self.assertTrue(ok)
+        self.assertEqual(items, [])
+
+    def test_object_with_gameplay_tags_attribute_iterates_ok(self):
+        class Container:
+            def __init__(self, tags):
+                self.gameplay_tags = tags
+
+        items, ok = tag_inspect._try_iter_tag_container_values(Container(["t_room_r1"]))
+        self.assertTrue(ok)
+        self.assertEqual(items, ["t_room_r1"])
+
+    def test_non_iterable_object_reports_could_not_iterate_not_empty(self):
+        class Opaque:
+            """No __iter__, no gameplay_tags attribute -- genuinely
+            unreadable, must NOT be reported as an empty container."""
+            def __repr__(self):
+                return "<Opaque object at 0xDEADBEEF>"
+
+        items, ok = tag_inspect._try_iter_tag_container_values(Opaque())
+        self.assertFalse(ok, "a non-iterable object must report could-not-iterate, not empty")
+        self.assertEqual(items, [])
+
+
+# ---------------------------------------------------------------------------
+# _decode_winner_tags -- multi-strategy decode of the already-selected
+# tag-container property value. known_tag_names below mirrors what
+# build_tag_class_set() would derive from a real project's own Verse
+# source.
+# ---------------------------------------------------------------------------
+
+_KNOWN_TAG_NAMES = {"t_room_r1", "t_spawn_rand"}
+
+
+class DecodeWinnerTagsTests(unittest.TestCase):
+    def test_gameplay_tags_list_of_objects_str_gives_tag_names(self):
+        class TagValue:
+            def __init__(self, name):
+                self._name = name
+
+            def __str__(self):
+                return self._name
+
+        class Container:
+            def __init__(self, tags):
+                self.gameplay_tags = tags
+
+        winner = Container([TagValue("GameplayTag't_room_r1'"), TagValue("t_spawn_rand")])
+        names, status, debug = tag_inspect._decode_winner_tags(winner, _KNOWN_TAG_NAMES)
+        self.assertEqual(status, "ok")
+        # normalize_tag_name must have been applied: the repr-style wrapper
+        # is stripped.
+        self.assertEqual(names, ["t_room_r1", "t_spawn_rand"])
+
+    def test_plain_list_of_strings(self):
+        names, status, debug = tag_inspect._decode_winner_tags(
+            ["t_room_r1", "t_spawn_rand"], _KNOWN_TAG_NAMES
+        )
+        self.assertEqual(status, "ok")
+        self.assertEqual(names, ["t_room_r1", "t_spawn_rand"])
+
+    def test_export_text_tagname_pattern_is_parsed(self):
+        class ExportTextOnly:
+            """No iteration, no gameplay_tags -- only export_text()."""
+            def export_text(self):
+                return '(GameplayTags=((TagName="t_room_r1"),(TagName="t_spawn_rand")))'
+
+        names, status, debug = tag_inspect._decode_winner_tags(ExportTextOnly(), _KNOWN_TAG_NAMES)
+        self.assertEqual(status, "ok")
+        self.assertEqual(names, ["t_room_r1", "t_spawn_rand"])
+        self.assertIn("export_text", debug)
+
+    def test_export_text_without_tagname_pattern_falls_back_to_known_tag_whole_word_match(self):
+        class ExportTextOnly:
+            def export_text(self):
+                return "some exported blob that happens to mention t_room_r1 in free text"
+
+        names, status, debug = tag_inspect._decode_winner_tags(ExportTextOnly(), _KNOWN_TAG_NAMES)
+        self.assertEqual(status, "ok")
+        self.assertEqual(names, ["t_room_r1"])
+
+    def test_opaque_object_matched_via_known_tag_whole_word_in_repr(self):
+        class Opaque:
+            """No iteration, no export_text -- only a repr with an
+            address-style suffix, like a real unreadable UE wrapper
+            object. Whole-word match against known_tag_names is the last
+            resort strategy (d)."""
+            def __repr__(self):
+                return "<VerseTagWrapper t_room_r1 object at 0x0000023B4D8B2340>"
+
+        names, status, debug = tag_inspect._decode_winner_tags(Opaque(), _KNOWN_TAG_NAMES)
+        self.assertEqual(status, "ok")
+        self.assertEqual(names, ["t_room_r1"])
+
+    def test_fully_opaque_object_with_no_known_tag_hits_yields_no_tags(self):
+        class Opaque:
+            def __repr__(self):
+                return "<Opaque object at 0xDEADBEEF>"
+
+        names, status, debug = tag_inspect._decode_winner_tags(Opaque(), _KNOWN_TAG_NAMES)
+        self.assertEqual(status, "unreadable")
+        self.assertEqual(names, [])
+        self.assertEqual(debug["type_name"], "Opaque")
+        self.assertIn("Opaque object at", debug["value_repr"])
+
+    def test_iterated_ok_zero_items_is_empty_not_unreadable(self):
+        names, status, debug = tag_inspect._decode_winner_tags([], _KNOWN_TAG_NAMES)
+        self.assertEqual(status, "empty")
+        self.assertEqual(names, [])
+
+    def test_none_winner_value_is_unreadable_not_empty(self):
+        # A None winner_value (e.g. a failed defensive re-fetch in
+        # _extract_tags_from_component) must never be reported as "empty"
+        # -- "empty" is reserved for a strategy that POSITIVELY iterated a
+        # real container down to zero entries, which cannot happen when
+        # there was no value to iterate at all.
+        names, status, debug = tag_inspect._decode_winner_tags(None, _KNOWN_TAG_NAMES)
+        self.assertEqual(status, "unreadable")
+        self.assertEqual(names, [])
+
+    def test_none_winner_value_with_refetch_error_notes_exception_class(self):
+        names, status, debug = tag_inspect._decode_winner_tags(
+            None, _KNOWN_TAG_NAMES, refetch_error="RuntimeError"
+        )
+        self.assertEqual(status, "unreadable")
+        self.assertIn("RuntimeError", debug.get("note", ""))
+
+
+# ---------------------------------------------------------------------------
+# extraction_status through _extract_tags_from_component -- exercised with a
+# minimal fake "component" whose get_editor_property() returns crafted
+# values (and can raise) so this stays headless / unreal-free.
+# ---------------------------------------------------------------------------
+
+class _FakeComponent:
+    """Minimal stand-in for a UE component object: dir()-discoverable,
+    non-underscore, non-callable instance attributes are its "editor
+    properties" (matching _get_component_property_names' dir()-based
+    last-resort fallback, which is what actually enumerates it in this
+    headless test environment where device_audit/property_inspector's own
+    enumerators are unavailable without a real `unreal`). Real values come
+    back through get_editor_property(name); a value that is an Exception
+    subclass in *properties* is raised instead of returned, exercising the
+    property_read_error path."""
+
+    def __init__(self, properties):
+        self._properties = properties
+        for name in properties:
+            setattr(self, name, None)
+
+    def get_editor_property(self, name):
+        value = self._properties[name]
+        if isinstance(value, type) and issubclass(value, Exception):
+            raise value("boom")
+        return value
+
+
+class ExtractTagsFromComponentTests(unittest.TestCase):
+    def test_status_ok_when_tags_decode(self):
+        comp = _FakeComponent({"gameplay_tags_container": ["t_room_r1"]})
+        prop_name, names, diagnostics = tag_inspect._extract_tags_from_component(comp, _KNOWN_TAG_NAMES)
+        self.assertEqual(prop_name, "gameplay_tags_container")
+        self.assertEqual(names, ["t_room_r1"])
+        self.assertEqual(diagnostics["extraction_status"], "ok")
+        self.assertIsNone(diagnostics["extraction_debug"])
+
+    def test_status_empty_when_container_positively_iterates_to_zero(self):
+        comp = _FakeComponent({"gameplay_tags_container": []})
+        prop_name, names, diagnostics = tag_inspect._extract_tags_from_component(comp, _KNOWN_TAG_NAMES)
+        self.assertEqual(prop_name, "gameplay_tags_container")
+        self.assertEqual(names, [])
+        self.assertEqual(diagnostics["extraction_status"], "empty")
+        self.assertIsNone(diagnostics["extraction_debug"])
+
+    def test_status_unreadable_carries_extraction_debug_with_type_and_repr(self):
+        class OpaqueTagContainer:
+            """Shape-matches (has .gameplay_tags) but that attribute is not
+            itself iterable, and neither export_text() nor a known-tag
+            repr match can recover anything -- genuinely unreadable."""
+            def __init__(self):
+                self.gameplay_tags = 5
+
+            def __repr__(self):
+                return "<OpaqueTagContainer object at 0xDEADBEEF>"
+
+        comp = _FakeComponent({"weird_tags": OpaqueTagContainer()})
+        prop_name, names, diagnostics = tag_inspect._extract_tags_from_component(comp, _KNOWN_TAG_NAMES)
+        self.assertEqual(prop_name, "weird_tags")
+        self.assertEqual(names, [])
+        self.assertEqual(diagnostics["extraction_status"], "unreadable")
+        debug = diagnostics["extraction_debug"]
+        self.assertIsNotNone(debug)
+        self.assertEqual(debug["type_name"], "OpaqueTagContainer")
+        self.assertIn("OpaqueTagContainer object at", debug["value_repr"])
+
+    def test_get_editor_property_raising_records_property_read_error_not_silent_skip(self):
+        comp = _FakeComponent({
+            "boom_prop": RuntimeError,
+            "gameplay_tags_container": ["t_room_r1"],
+        })
+        prop_name, names, diagnostics = tag_inspect._extract_tags_from_component(comp, _KNOWN_TAG_NAMES)
+        # The raising property must not abort the scan of the other one.
+        self.assertEqual(prop_name, "gameplay_tags_container")
+        self.assertEqual(names, ["t_room_r1"])
+        errors = diagnostics["property_read_errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["name"], "boom_prop")
+        self.assertEqual(errors[0]["exception_class"], "RuntimeError")
+
+
+# ---------------------------------------------------------------------------
+# _NullSlowTask -- context-manager protocol, no-op call surface, and no
+# destroy() method (see _make_slow_task's docstring for why destroy() was
+# removed from this surface entirely rather than kept as another no-op).
+# ---------------------------------------------------------------------------
+
+class NullSlowTaskTests(unittest.TestCase):
+    def test_context_manager_protocol_works(self):
+        with tag_inspect._NullSlowTask() as task:
+            self.assertIsInstance(task, tag_inspect._NullSlowTask)
+
+    def test_call_surface_is_callable_and_should_cancel_is_falsy(self):
+        task = tag_inspect._NullSlowTask()
+        task.enter_progress_frame(1, "doing work")
+        task.make_dialog(True)
+        self.assertFalse(task.should_cancel())
+
+    def test_no_destroy_attribute_needed(self):
+        self.assertFalse(hasattr(tag_inspect._NullSlowTask(), "destroy"))
+
+
+# ---------------------------------------------------------------------------
+# uefn_launcher._classify_tag_actor -- headless-importable (see the module
+# top for the stub_unreal() this needed). Classifies one `actors` entry from
+# an inspect_tags() result into no_component/empty/unreadable/ok, plus the
+# legacy_empty compatibility case for reports written before
+# extraction_status existed.
+# ---------------------------------------------------------------------------
+
+class ClassifyTagActorTests(unittest.TestCase):
+    def test_no_component(self):
+        actor = {"has_verse_tag_component": False, "tags": []}
+        self.assertEqual(uefn_launcher._classify_tag_actor(actor), "no_component")
+
+    def test_empty_status(self):
+        actor = {"has_verse_tag_component": True, "tags": [], "extraction_status": "empty"}
+        self.assertEqual(uefn_launcher._classify_tag_actor(actor), "empty")
+
+    def test_unreadable_status(self):
+        actor = {"has_verse_tag_component": True, "tags": [], "extraction_status": "unreadable"}
+        self.assertEqual(uefn_launcher._classify_tag_actor(actor), "unreadable")
+
+    def test_ok_status_with_tags(self):
+        actor = {
+            "has_verse_tag_component": True,
+            "tags": [{"name": "t_room_r1", "parent_chain": []}],
+            "extraction_status": "ok",
+        }
+        self.assertEqual(uefn_launcher._classify_tag_actor(actor), "ok")
+
+    def test_legacy_report_missing_extraction_status_key_with_empty_tags_is_legacy_empty(self):
+        # extraction_status key genuinely absent (not just falsy) -- a
+        # report written before 0.0.534.
+        actor = {"has_verse_tag_component": True, "tags": []}
+        self.assertNotIn("extraction_status", actor)
+        self.assertEqual(uefn_launcher._classify_tag_actor(actor), "legacy_empty")
+
+    def test_legacy_report_missing_extraction_status_key_with_tags_is_ok(self):
+        actor = {"has_verse_tag_component": True, "tags": [{"name": "t_room_r1", "parent_chain": []}]}
+        self.assertNotIn("extraction_status", actor)
+        self.assertEqual(uefn_launcher._classify_tag_actor(actor), "ok")
+
+    def test_never_raises_on_a_minimal_actor_dict(self):
+        try:
+            result = uefn_launcher._classify_tag_actor({})
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"_classify_tag_actor raised on a minimal dict: {e!r}")
+        self.assertEqual(result, "no_component")
+
+    def test_legacy_empty_and_empty_are_both_hidden_ok_and_unreadable_are_shown(self):
+        """Mirrors the exact predicate _render_tag_report uses to decide
+        which classified actors are inserted into the tree
+        (`statuses[id(a)] in ("ok", "unreadable")`) -- legacy_empty and
+        empty must both be excluded (hidden) without raising."""
+        actors = [
+            {"has_verse_tag_component": False, "tags": []},  # no_component
+            {"has_verse_tag_component": True, "tags": [], "extraction_status": "empty"},  # empty
+            {"has_verse_tag_component": True, "tags": [], "extraction_status": "unreadable"},  # unreadable
+            {"has_verse_tag_component": True, "tags": [{"name": "t1", "parent_chain": []}], "extraction_status": "ok"},  # ok
+            {"has_verse_tag_component": True, "tags": []},  # legacy_empty
+        ]
+        statuses = [uefn_launcher._classify_tag_actor(a) for a in actors]
+        shown = [s in ("ok", "unreadable") for s in statuses]
+        self.assertEqual(
+            statuses,
+            ["no_component", "empty", "unreadable", "ok", "legacy_empty"],
+        )
+        self.assertEqual(shown, [False, False, True, True, False])
 
 
 if __name__ == "__main__":

@@ -655,22 +655,63 @@ def _read_tag_inspect_report(module):
         return None, str(e)
 
 
+def _classify_tag_actor(actor):
+    """Classify *actor* (one entry of an ``inspect_tags()`` ``actors``
+    list) into one of:
+      "no_component"   -- has_verse_tag_component is False. Always hidden.
+      "empty"          -- extraction_status == "empty": a strategy
+                           POSITIVELY iterated the tag container and found
+                           zero entries. Confirmed-empty; hidden.
+      "unreadable"     -- extraction_status == "unreadable": a tag
+                           component was present but no decode strategy
+                           could read it. MUST be shown, flagged -- hiding
+                           this would present a failed read as a clean
+                           empty result, the exact false negative this
+                           tool exists to prevent (see tag_inspect.py's
+                           module docstring field case).
+      "ok"             -- >=1 tag decoded. Shown.
+      "legacy_empty"   -- a report written before ``extraction_status``
+                           existed (the key is absent entirely, not just
+                           falsy) with has_verse_tag_component True and an
+                           empty ``tags`` list. There is no way to tell a
+                           legacy confirmed-empty read from a legacy
+                           unreadable one, so this is treated the same as
+                           the pre-0.0.534 behavior (hidden) rather than
+                           guessing -- re-running the scan against the
+                           current tag_inspect.py resolves the ambiguity.
+    Never raises."""
+    if not actor.get("has_verse_tag_component"):
+        return "no_component"
+    if "extraction_status" not in actor:
+        return "ok" if actor.get("tags") else "legacy_empty"
+    status = actor.get("extraction_status")
+    if status == "unreadable":
+        return "unreadable"
+    if status == "empty":
+        return "empty"
+    return "ok" if actor.get("tags") else "empty"
+
+
 def _render_tag_report(tree, discovery_label, summary_label, data, source_label):
     """Populate *tree*/*discovery_label*/*summary_label* from an
     ``inspect_tags()``-shaped result dict (or ``None``). Clears the tree
     first, so this is safe to call repeatedly (starting view, then again
     after every "Run Scan" click) without leaking stale rows.
 
-    Actors with ``has_verse_tag_component`` False or an empty ``tags`` list
+    Actors classified "no_component" or "empty" by ``_classify_tag_actor``
     are NOT inserted as rows — a level with tens of thousands of untagged
     actors made the tree unusable and buried the handful of actors that
-    actually carried tags. They are never silently lost, though: the
-    summary line below states exactly how many were hidden and why, split
-    into "no tag component" vs. "tag component but zero tags", so the
-    counts still explain a report that renders an empty tree. ``actors`` is
-    already sorted flagged-first by tag_inspect.sort_actors_flagged_first,
-    so filtering it in place (rather than re-partitioning) preserves the
-    original relative order of the remaining rows. The ``discovery`` block
+    actually carried tags. "unreadable" actors ARE inserted (flagged with
+    a "(tags unreadable — see debug)" label suffix and their decode debug
+    as a child row) even though their ``tags`` list is also empty --
+    hiding a failed read next to a confirmed-empty one would recreate the
+    exact false negative this tool exists to prevent. Hidden counts are
+    never silently lost: the summary line below states the three-way
+    split (no component / confirmed-empty / shown, with however many of
+    those shown are flagged unreadable). ``actors`` is already sorted
+    flagged-first by tag_inspect.sort_actors_flagged_first, so filtering
+    it in place (rather than re-partitioning) preserves the original
+    relative order of the remaining rows. The ``discovery`` block
     (component class, tag property, notes) is ALWAYS shown, not only on
     error/empty — when a scan finds a component but zero tags, that block
     is the only thing that explains why, and hiding it is what made the
@@ -695,34 +736,45 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
     discovery_label.config(text=discovery_text)
 
     actors = list(data.get("actors") or [])
+    statuses = {id(a): _classify_tag_actor(a) for a in actors}
 
-    def _has_tags(actor):
-        return bool(actor.get("has_verse_tag_component")) and bool(actor.get("tags"))
+    shown = [a for a in actors if statuses[id(a)] in ("ok", "unreadable")]
+    no_component_count = sum(1 for a in actors if statuses[id(a)] == "no_component")
+    empty_count = sum(1 for a in actors if statuses[id(a)] in ("empty", "legacy_empty"))
+    unreadable_count = sum(1 for a in shown if statuses[id(a)] == "unreadable")
 
-    shown = [a for a in actors if _has_tags(a)]
-    no_component_count = sum(1 for a in actors if not a.get("has_verse_tag_component"))
-    empty_tags_count = sum(
-        1 for a in actors
-        if a.get("has_verse_tag_component") and not a.get("tags")
-    )
-
-    def _insert_actor(actor):
+    def _insert_actor(actor, unreadable):
         label = actor.get("label", "<unlabeled>")
+        display_label = str(label)
+        if unreadable:
+            display_label += "  (tags unreadable — see debug)"
         tags = actor.get("tags") or []
-        node = tree.insert("", tk.END, text=str(label), values=("",))
+        node = tree.insert("", tk.END, text=display_label, values=("",))
         for tag in tags:
             name = tag.get("name", "<unnamed>")
             chain = " > ".join(tag.get("parent_chain") or [])
             tree.insert(node, tk.END, text=str(name), values=(chain,))
+        if unreadable:
+            debug = actor.get("extraction_debug") or {}
+            debug_bits = []
+            for key in ("type_name", "value_repr", "export_text", "note"):
+                if debug.get(key):
+                    debug_bits.append("{}={}".format(key, debug[key]))
+            debug_text = "; ".join(debug_bits) if debug_bits else "<no debug captured>"
+            tree.insert(node, tk.END, text="<unreadable>", values=(debug_text,))
 
     for actor in shown:
-        _insert_actor(actor)
+        _insert_actor(actor, unreadable=(statuses[id(actor)] == "unreadable"))
 
     summary_bits = [
-        "Showing " + str(len(shown)) + " actor(s) with tags — "
-        + str(no_component_count) + " examined actor(s) without a tag "
-        "component and " + str(empty_tags_count) + " with an empty tag "
-        "container are hidden",
+        "Showing " + str(len(shown)) + " actor(s)"
+        + (
+            " (" + str(unreadable_count) + " flagged unreadable — see debug)"
+            if unreadable_count else ""
+        )
+        + " — " + str(no_component_count) + " examined actor(s) without a "
+        "tag component and " + str(empty_count) + " with a confirmed-empty "
+        "tag container are hidden",
         str(data.get("tag_class_count", 0)) + " tag classes discovered",
     ]
     if data.get("verse_dir"):

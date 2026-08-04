@@ -343,7 +343,12 @@ def _detect_project_scope():
 class _NullSlowTask:
     """No-op stand-in with the same call surface as unreal.ScopedSlowTask,
     used whenever the real API is unavailable or fails — callers never need
-    to branch on which one they have."""
+    to branch on which one they have.
+
+    Also a context manager (``__enter__``/``__exit__``) so it can stand in
+    for ``unreal.ScopedSlowTask`` at a ``with`` call site without branching
+    — see ``_make_slow_task``'s docstring for why ``destroy()`` was removed
+    from this surface entirely rather than kept as another no-op."""
 
     def make_dialog(self, *_args, **_kwargs):
         pass
@@ -354,8 +359,11 @@ class _NullSlowTask:
     def should_cancel(self):
         return False
 
-    def destroy(self):
-        pass
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
 
 
 def _st_call(slow_task, method_name, *args, **kwargs):
@@ -372,17 +380,29 @@ def _st_call(slow_task, method_name, *args, **kwargs):
 
 
 def _make_slow_task(total_work, description):
-    """Best-effort unreal.ScopedSlowTask factory. Returns a real
-    ScopedSlowTask with its dialog opened when the API is present and
-    construction succeeds; otherwise returns _NullSlowTask() so the rest of
-    scan_dependencies() can call make_dialog/enter_progress_frame/
-    should_cancel/destroy unconditionally."""
+    """Best-effort unreal.ScopedSlowTask factory — returns a context
+    manager, either a freshly-constructed (but NOT yet entered)
+    ``unreal.ScopedSlowTask`` when the real API is present and construction
+    succeeds, or ``_NullSlowTask()`` otherwise.
+
+    CRITICAL: ``unreal.ScopedSlowTask`` has NO ``destroy()`` method — it is
+    a context manager (``__enter__`` opens the dialog machinery,
+    ``__exit__`` tears it down). A previous version of this module called
+    ``_st_call(slow_task, "destroy")`` on exit; because ``_st_call``
+    swallows exceptions, the missing-attribute failure was silently
+    absorbed, so ``__exit__`` never ran, the progress dialog was never
+    closed, and — since ``__enter__`` never ran either — ``enter_progress_
+    frame``/``should_cancel`` operated on a task that was never actually
+    started (stuck-at-0%, unresponsive-Cancel symptom). Callers MUST
+    consume this return value via a ``with`` statement (never call
+    ``.destroy()`` on it) so ``__exit__`` is guaranteed on every path —
+    normal, cancel, or exception. ``make_dialog`` is intentionally NOT
+    called here; call it as the first statement inside the caller's own
+    ``with`` block instead, once the task is actually entered."""
     try:
         cls = getattr(unreal, "ScopedSlowTask", None)
         if cls is not None:
-            task = cls(total_work, description)
-            _st_call(task, "make_dialog", True)
-            return task
+            return cls(total_work, description)
     except Exception as e:
         unreal.log_warning(
             f"dependency_viewer: ScopedSlowTask unavailable ({e}) — "
@@ -756,11 +776,16 @@ def scan_dependencies(project_only=True):
     # concern now that enumeration is path-scoped (unbounded) instead of six
     # fixed classes. ScopedSlowTask gives the user a cancellable progress
     # dialog; _make_slow_task() degrades to a no-op if the API is unavailable.
-    slow_task = _make_slow_task(2, "Scanning project dependencies…")
+    #
+    # Runs in TWO SEQUENTIAL `with unreal.ScopedSlowTask(...) as task:`
+    # blocks (this one — asset enumeration — then a second one below for
+    # dependency-graph building), each with guaranteed __exit__ on every
+    # path. A previous single-task version called _st_call(slow_task,
+    # "destroy") on exit; ScopedSlowTask has no destroy() method, so that
+    # call silently no-op'd through _st_call's exception-swallowing,
+    # __exit__ never ran, and the dialog was orphaned on screen at 0% with
+    # an unresponsive Cancel (see _make_slow_task's docstring).
 
-    # ------------------------------------------------------------------
-    # Step 1 — collect project assets
-    # ------------------------------------------------------------------
     # path_str -> {"name": str, "type": str}
     all_assets_info = {}
 
@@ -773,91 +798,98 @@ def scan_dependencies(project_only=True):
     truncated          = False
     truncation_reason  = None
 
-    _st_call(slow_task, "enter_progress_frame", 1, "Enumerating project assets…")
+    # ------------------------------------------------------------------
+    # Step 1 — collect project assets
+    # ------------------------------------------------------------------
+    with _make_slow_task(1, "Enumerating project assets…") as phase1_task:
+        _st_call(phase1_task, "make_dialog", True)
+        _st_call(phase1_task, "enter_progress_frame", 1, "Enumerating project assets…")
 
-    if project_only:
-        # PRIMARY enumeration (the fix) — path-scoped over the project's own
-        # content root, so every asset type is included by default and
-        # nothing is invisible to a fixed class list.
-        try:
-            project_assets = registry.get_assets_by_path(project_prefix, recursive=True)
-        except Exception as e:
-            unreal.log_error(f"dependency_viewer: get_assets_by_path({project_prefix}) failed — {e}")
-            project_assets = []
-
-        for idx, asset_data in enumerate(project_assets):
-            if idx > 0 and idx % 500 == 0 and bool(_st_call(slow_task, "should_cancel")):
-                truncated = True
-                truncation_reason = f"cancelled by user after {len(all_assets_info)} asset(s)"
-                unreal.log_warning(f"dependency_viewer: Scan cancelled — {truncation_reason}")
-                break
-
-            pkg = str(asset_data.package_name)   # Name → str
-            if any(pkg.startswith(p) for p in _SKIP_PREFIXES):
-                continue
-            if not pkg.startswith(project_prefix):
-                continue
-            if pkg in all_assets_info:
-                continue
-
-            if len(all_assets_info) >= _MAX_ENUMERATED_ASSETS:
-                truncated = True
-                truncation_reason = f"hit the {_MAX_ENUMERATED_ASSETS}-asset scan cap"
-                unreal.log_warning(f"dependency_viewer: Scan truncated — {truncation_reason}")
-                break
-
-            cls_str = str(asset_data.asset_class_path)
-            if "world" in cls_str.lower():
-                _level_packages.add(pkg)
-            all_assets_info[pkg] = {
-                "name": str(asset_data.asset_name),
-                "type": _asset_type_label(cls_str),
-            }
-
-        unreal.log(
-            f"dependency_viewer: Path-scoped enumeration under '{project_prefix}' "
-            f"found {len(all_assets_info)} asset(s) across every asset type"
-            + (f" — TRUNCATED ({truncation_reason})" if truncated else "")
-        )
-    else:
-        # project_only=False — explicit opt-in to an UNSCOPED scan. There is
-        # no project prefix to scope a path query by here, and a registry-
-        # wide get_assets_by_path("/") would be the ~99k-mounted-assets
-        # failure mode this fix exists to avoid; kept as the original
-        # fixed-class enumeration. The UI never calls this branch.
-        scan_classes = list(_ASSET_CLASSES) + [("World", "/Script/Engine")]
-
-        for cls_name, module in scan_classes:
+        if project_only:
+            # PRIMARY enumeration (the fix) — path-scoped over the project's own
+            # content root, so every asset type is included by default and
+            # nothing is invisible to a fixed class list.
             try:
-                class_path = unreal.TopLevelAssetPath(module, cls_name)
-                assets = registry.get_assets_by_class(class_path)
+                project_assets = registry.get_assets_by_path(project_prefix, recursive=True)
             except Exception as e:
-                unreal.log_warning(f"dependency_viewer: Could not fetch {cls_name} — {e}")
-                continue
+                unreal.log_error(f"dependency_viewer: get_assets_by_path({project_prefix}) failed — {e}")
+                project_assets = []
 
-            count_before = len(all_assets_info)
-            for asset_data in assets:
+            for idx, asset_data in enumerate(project_assets):
+                if idx > 0 and idx % 500 == 0 and bool(_st_call(phase1_task, "should_cancel")):
+                    truncated = True
+                    truncation_reason = f"cancelled by user after {len(all_assets_info)} asset(s)"
+                    unreal.log_warning(f"dependency_viewer: Scan cancelled — {truncation_reason}")
+                    break
+
                 pkg = str(asset_data.package_name)   # Name → str
                 if any(pkg.startswith(p) for p in _SKIP_PREFIXES):
                     continue
-                if cls_name == "World":
-                    _level_packages.add(pkg)
-                    # Register level in the info map so it can appear in
-                    # reverse_map, but mark it so it won't be an orphan candidate.
-                    if pkg not in all_assets_info:
-                        all_assets_info[pkg] = {
-                            "name": str(asset_data.asset_name),
-                            "type": "World",
-                        }
-                else:
-                    if pkg not in all_assets_info:
-                        all_assets_info[pkg] = {
-                            "name": str(asset_data.asset_name),
-                            "type": _asset_type_label(asset_data.asset_class_path),
-                        }
+                if not pkg.startswith(project_prefix):
+                    continue
+                if pkg in all_assets_info:
+                    continue
 
-            added = len(all_assets_info) - count_before
-            unreal.log(f"dependency_viewer: {added} {cls_name} asset(s) added (total so far: {len(all_assets_info)})")
+                if len(all_assets_info) >= _MAX_ENUMERATED_ASSETS:
+                    truncated = True
+                    truncation_reason = f"hit the {_MAX_ENUMERATED_ASSETS}-asset scan cap"
+                    unreal.log_warning(f"dependency_viewer: Scan truncated — {truncation_reason}")
+                    break
+
+                cls_str = str(asset_data.asset_class_path)
+                if "world" in cls_str.lower():
+                    _level_packages.add(pkg)
+                all_assets_info[pkg] = {
+                    "name": str(asset_data.asset_name),
+                    "type": _asset_type_label(cls_str),
+                }
+
+            unreal.log(
+                f"dependency_viewer: Path-scoped enumeration under '{project_prefix}' "
+                f"found {len(all_assets_info)} asset(s) across every asset type"
+                + (f" — TRUNCATED ({truncation_reason})" if truncated else "")
+            )
+        else:
+            # project_only=False — explicit opt-in to an UNSCOPED scan. There is
+            # no project prefix to scope a path query by here, and a registry-
+            # wide get_assets_by_path("/") would be the ~99k-mounted-assets
+            # failure mode this fix exists to avoid; kept as the original
+            # fixed-class enumeration. The UI never calls this branch.
+            scan_classes = list(_ASSET_CLASSES) + [("World", "/Script/Engine")]
+
+            for cls_name, module in scan_classes:
+                try:
+                    class_path = unreal.TopLevelAssetPath(module, cls_name)
+                    assets = registry.get_assets_by_class(class_path)
+                except Exception as e:
+                    unreal.log_warning(f"dependency_viewer: Could not fetch {cls_name} — {e}")
+                    continue
+
+                count_before = len(all_assets_info)
+                for asset_data in assets:
+                    pkg = str(asset_data.package_name)   # Name → str
+                    if any(pkg.startswith(p) for p in _SKIP_PREFIXES):
+                        continue
+                    if cls_name == "World":
+                        _level_packages.add(pkg)
+                        # Register level in the info map so it can appear in
+                        # reverse_map, but mark it so it won't be an orphan candidate.
+                        if pkg not in all_assets_info:
+                            all_assets_info[pkg] = {
+                                "name": str(asset_data.asset_name),
+                                "type": "World",
+                            }
+                    else:
+                        if pkg not in all_assets_info:
+                            all_assets_info[pkg] = {
+                                "name": str(asset_data.asset_name),
+                                "type": _asset_type_label(asset_data.asset_class_path),
+                            }
+
+                added = len(all_assets_info) - count_before
+                unreal.log(f"dependency_viewer: {added} {cls_name} asset(s) added (total so far: {len(all_assets_info)})")
+    # phase1_task's __exit__ has run here — dialog closed on every path
+    # taken above (normal completion, break-on-cancel, or exception).
 
     total = len(all_assets_info)
     unreal.log(f"dependency_viewer: {total} project asset(s) in scope — building dependency graph…")
@@ -935,36 +967,43 @@ def scan_dependencies(project_only=True):
 
     asset_paths = list(all_assets_info.keys())
 
-    _st_call(slow_task, "enter_progress_frame", 1, "Building dependency graph…")
+    # ------------------------------------------------------------------
+    # Phase 2: dependency-graph building — its own ScopedSlowTask/dialog,
+    # guaranteed __exit__ via `with` on every path (see Step 1's block
+    # above and _make_slow_task's docstring for why).
+    # ------------------------------------------------------------------
+    with _make_slow_task(1, "Building dependency graph…") as phase2_task:
+        _st_call(phase2_task, "make_dialog", True)
+        _st_call(phase2_task, "enter_progress_frame", 1, "Building dependency graph…")
 
-    for idx, pkg in enumerate(asset_paths):
-        if idx > 0 and idx % 100 == 0:
-            unreal.log(f"dependency_viewer: Progress — {idx}/{total} assets processed…")
-            if bool(_st_call(slow_task, "should_cancel")):
-                truncated = True
-                truncation_reason = (
-                    f"cancelled by user while building the dependency graph "
-                    f"({idx}/{total} processed)"
-                )
-                unreal.log_warning(f"dependency_viewer: Scan cancelled — {truncation_reason}")
-                break
+        for idx, pkg in enumerate(asset_paths):
+            if idx > 0 and idx % 100 == 0:
+                unreal.log(f"dependency_viewer: Progress — {idx}/{total} assets processed…")
+                if bool(_st_call(phase2_task, "should_cancel")):
+                    truncated = True
+                    truncation_reason = (
+                        f"cancelled by user while building the dependency graph "
+                        f"({idx}/{total} processed)"
+                    )
+                    unreal.log_warning(f"dependency_viewer: Scan cancelled — {truncation_reason}")
+                    break
 
-        try:
-            deps = registry.get_dependencies(pkg, dep_options)
-        except Exception:
-            continue
+            try:
+                deps = registry.get_dependencies(pkg, dep_options)
+            except Exception:
+                continue
 
-        if deps is None:
-            continue
+            if deps is None:
+                continue
 
-        for dep in deps:
-            dep_str = str(dep)   # Name → str
-            # Only include deps that are themselves in the project asset set
-            if dep_str in all_assets_info:
-                forward_map[pkg].append(dep_str)
-                reverse_map[dep_str].append(pkg)
-
-    _st_call(slow_task, "destroy")
+            for dep in deps:
+                dep_str = str(dep)   # Name → str
+                # Only include deps that are themselves in the project asset set
+                if dep_str in all_assets_info:
+                    forward_map[pkg].append(dep_str)
+                    reverse_map[dep_str].append(pkg)
+    # phase2_task's __exit__ has run here regardless of how the loop above
+    # ended.
 
     # ------------------------------------------------------------------
     # Step 3 — build the output structure
