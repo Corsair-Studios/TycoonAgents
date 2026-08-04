@@ -33,6 +33,7 @@ _fresh_import_with_decoy_path_entry.
 import os
 import sys
 import tempfile
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -731,6 +732,96 @@ class _FakeComponent:
         return value
 
 
+class _FakeClassInfo:
+    """Stand-in for comp.get_class() -- only .get_name() is ever called
+    on it by the functions under test below."""
+    def __init__(self, name):
+        self._name = name
+
+    def get_name(self):
+        return self._name
+
+
+class _FakeComponentWithClass(_FakeComponent):
+    """_FakeComponent plus a get_class().get_name(), so it can stand in
+    for a real UE component in the higher-level walk functions
+    (_find_tag_component, _deep_probe_actor) that key off the
+    component's class name (e.g. the "versetag" substring check)."""
+    def __init__(self, properties, class_name):
+        super().__init__(properties)
+        self._class_name = class_name
+
+    def get_class(self):
+        return _FakeClassInfo(self._class_name)
+
+
+class _FakeActor:
+    """Minimal stand-in for a UE actor object: get_actor_label() (read
+    by both device_audit._safe_label and tag_inspect._fallback_label --
+    identical get_actor_label()-then-get_name() logic, so this works
+    regardless of which one this test run resolves to),
+    get_components_by_class() (ignores the class argument, returns
+    whatever components this actor was constructed with), and
+    get_editor_property("tags") for AActor::Tags. *tags_value* may be an
+    Exception subclass to simulate a raising read."""
+    def __init__(self, label, components, tags_value):
+        self._label = label
+        self._components = components
+        self._tags_value = tags_value
+
+    def get_actor_label(self):
+        return self._label
+
+    def get_name(self):
+        return self._label
+
+    def get_components_by_class(self, _cls):
+        return list(self._components)
+
+    def get_editor_property(self, name):
+        if name == "tags":
+            if isinstance(self._tags_value, type) and issubclass(self._tags_value, Exception):
+                raise self._tags_value("boom")
+            return self._tags_value
+        raise AttributeError(name)
+
+
+class _FakeTree:
+    """Records every tree.insert() call without any real Tk widget, so
+    uefn_launcher's tree-rendering functions (_render_tag_report,
+    _render_deep_probe) -- which only ever call .delete(), .get_children(),
+    and .insert(parent, index, text=, values=) on their `tree` argument --
+    can be exercised headlessly. Each row is stored with its own
+    generated id and its parent's id, so a test can reconstruct parent/
+    child structure by id."""
+    def __init__(self):
+        self.rows = []
+        self._next_id = 0
+
+    def get_children(self, *_args):
+        return []
+
+    def delete(self, *_args):
+        pass
+
+    def insert(self, parent, _index, text="", values=()):
+        self._next_id += 1
+        node_id = "node{}".format(self._next_id)
+        self.rows.append({"id": node_id, "parent": parent, "text": text, "values": values})
+        return node_id
+
+
+class _FakeLabel:
+    """Records the last .config(text=...) call -- stands in for the real
+    tk.Label discovery_label/summary_label widgets."""
+    def __init__(self):
+        self.text = None
+
+    def config(self, **kwargs):
+        if "text" in kwargs:
+            self.text = kwargs["text"]
+
+
 class ExtractTagsFromComponentTests(unittest.TestCase):
     def test_status_ok_when_tags_decode(self):
         comp = _FakeComponent({"gameplay_tags_container": ["t_room_r1"]})
@@ -846,6 +937,20 @@ class ClassifyTagActorTests(unittest.TestCase):
         self.assertNotIn("extraction_status", actor)
         self.assertEqual(uefn_launcher._classify_tag_actor(actor), "ok")
 
+    def test_tags_present_with_no_component_classifies_ok_never_hidden(self):
+        """tags presence is now checked BEFORE has_verse_tag_component
+        (uefn_launcher.py ~691-694): an actor rescued entirely via
+        tag_inspect.py's actor_tags source (AActor::Tags) can have
+        has_verse_tag_component False and still carry decoded tags -- it
+        must classify "ok", never "no_component" (which would hide it)."""
+        actor = {
+            "has_verse_tag_component": False,
+            "tags": [{"name": "t_room_r1", "parent_chain": ["tag"], "source": "actor_tags"}],
+            "extraction_status": "ok",
+            "actor_tags": ["t_room_r1"],
+        }
+        self.assertEqual(uefn_launcher._classify_tag_actor(actor), "ok")
+
     def test_never_raises_on_a_minimal_actor_dict(self):
         try:
             result = uefn_launcher._classify_tag_actor({})
@@ -872,6 +977,454 @@ class ClassifyTagActorTests(unittest.TestCase):
             ["no_component", "empty", "unreadable", "ok", "legacy_empty"],
         )
         self.assertEqual(shown, [False, False, True, True, False])
+
+
+# ---------------------------------------------------------------------------
+# _known_tag_hits -- whole-word semantics: t_room_r1 must NOT hit inside
+# t_room_r10 (same \b-anchored regex signal used for property/value
+# selection elsewhere in this module).
+# ---------------------------------------------------------------------------
+
+class KnownTagHitsTests(unittest.TestCase):
+    def test_whole_word_hit(self):
+        hits = tag_inspect._known_tag_hits("prefix t_room_r1 suffix", {"t_room_r1"})
+        self.assertEqual(hits, ["t_room_r1"])
+
+    def test_no_match_inside_longer_name(self):
+        hits = tag_inspect._known_tag_hits("actor has t_room_r10 applied", {"t_room_r1"})
+        self.assertEqual(hits, [])
+
+    def test_empty_text_or_known_tag_names_returns_empty_never_raises(self):
+        self.assertEqual(tag_inspect._known_tag_hits("", {"t_room_r1"}), [])
+        self.assertEqual(tag_inspect._known_tag_hits(None, {"t_room_r1"}), [])
+        self.assertEqual(tag_inspect._known_tag_hits("t_room_r1", set()), [])
+        self.assertEqual(tag_inspect._known_tag_hits("t_room_r1", None), [])
+
+
+# ---------------------------------------------------------------------------
+# _describe_value_for_deep_probe -- bounded {"type_name", "value_repr",
+# "export_text", "known_tag_hits"} snippet.
+# ---------------------------------------------------------------------------
+
+class DescribeValueForDeepProbeTests(unittest.TestCase):
+    def test_type_name_and_repr_are_truncated(self):
+        class Foo:
+            def __repr__(self):
+                return "x" * 300
+
+        desc = tag_inspect._describe_value_for_deep_probe(Foo(), set())
+        self.assertEqual(desc["type_name"], "Foo")
+        self.assertLessEqual(len(desc["value_repr"]), tag_inspect._DEEP_PROBE_SNIPPET_LEN)
+        self.assertTrue(desc["value_repr"].endswith("..."))
+
+    def test_export_text_included_and_feeds_known_tag_hits(self):
+        class WithExportText:
+            def __repr__(self):
+                return "<WithExportText>"
+
+            def export_text(self):
+                return "blob mentioning t_room_r1"
+
+        desc = tag_inspect._describe_value_for_deep_probe(WithExportText(), {"t_room_r1"})
+        self.assertEqual(desc["export_text"], "blob mentioning t_room_r1")
+        self.assertEqual(desc["known_tag_hits"], ["t_room_r1"])
+
+    def test_export_text_raising_is_swallowed_not_propagated(self):
+        """Verified against the actual source (tag_inspect.py
+        ~1172-1179), not assumed: _describe_value_for_deep_probe's own
+        try/except around export_text() swallows any exception and
+        simply omits the "export_text" key -- it is NOT recorded as an
+        exception_class anywhere at THIS layer. A raising
+        get_editor_property() read one level up, in _deep_probe_actor
+        itself, IS recorded in the finding's "errors" list -- see
+        DeepProbeActorTests.test_raising_property_is_recorded_as_an_error
+        below for that distinct, correctly-recorded case."""
+        class RaisesOnExportText:
+            def __repr__(self):
+                return "<RaisesOnExportText>"
+
+            def export_text(self):
+                raise RuntimeError("boom")
+
+        try:
+            desc = tag_inspect._describe_value_for_deep_probe(RaisesOnExportText(), set())
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"_describe_value_for_deep_probe propagated an export_text() exception: {e!r}")
+        self.assertNotIn("export_text", desc)
+
+    def test_none_value(self):
+        desc = tag_inspect._describe_value_for_deep_probe(None, {"t_room_r1"})
+        self.assertIsNone(desc["type_name"])
+        self.assertIsNone(desc["value_repr"])
+        self.assertEqual(desc["known_tag_hits"], [])
+
+
+# ---------------------------------------------------------------------------
+# _deep_probe_actor -- needs `unreal.ActorComponent` to exist as a module
+# attribute (only ever passed through to the fake actor's
+# get_components_by_class, never inspected), so tag_inspect.unreal is
+# monkeypatched to a minimal types.SimpleNamespace for the duration of each
+# test and restored in tearDown. This never touches the shared
+# sys.modules["unreal"] stub, so it cannot leak into any other test file.
+# ---------------------------------------------------------------------------
+
+class DeepProbeActorTests(unittest.TestCase):
+    def setUp(self):
+        self._had_unreal_attr = hasattr(tag_inspect, "unreal")
+        self._orig_unreal = getattr(tag_inspect, "unreal", None)
+        tag_inspect.unreal = types.SimpleNamespace(ActorComponent=object())
+
+    def tearDown(self):
+        if self._had_unreal_attr:
+            tag_inspect.unreal = self._orig_unreal
+        else:
+            del tag_inspect.unreal
+
+    def test_findings_shape_mixes_hit_raising_and_opaque_properties(self):
+        tag_comp = _FakeComponentWithClass(
+            {"prop_hit": "<Wrapper t_room_r1 at 0x1>", "prop_boom": RuntimeError},
+            "VerseTagMarkupComponent",
+        )
+        other_hit = _FakeComponentWithClass({"weird": "mentions t_room_r1 somewhere"}, "SomeOtherComponent")
+        other_no_hit = _FakeComponentWithClass({"boring": "nothing interesting"}, "AnotherComponent")
+        actor = _FakeActor("Actor1", [tag_comp, other_hit, other_no_hit], ["t_spawn_rand"])
+
+        finding = tag_inspect._deep_probe_actor("Actor1", actor, {"t_room_r1", "t_spawn_rand"})
+
+        self.assertEqual(finding["actor_label"], "Actor1")
+
+        self.assertEqual(finding["tag_component"]["class_name"], "VerseTagMarkupComponent")
+        probed_names = {p["name"] for p in finding["tag_component"]["properties"]}
+        self.assertEqual(probed_names, {"prop_hit"})  # prop_boom raised, excluded from the dump
+        hit_prop = finding["tag_component"]["properties"][0]
+        self.assertEqual(hit_prop["known_tag_hits"], ["t_room_r1"])
+
+        self.assertEqual(finding["actor_tags_property"]["known_tag_hits"], ["t_spawn_rand"])
+
+        self.assertEqual(len(finding["other_components_hits"]), 1)
+        hit = finding["other_components_hits"][0]
+        self.assertEqual(hit["component_class"], "SomeOtherComponent")
+        self.assertEqual(hit["property"], "weird")
+        self.assertEqual(hit["known_tag_hits"], ["t_room_r1"])
+
+    def test_raising_property_is_recorded_as_an_error(self):
+        tag_comp = _FakeComponentWithClass({"prop_boom": RuntimeError}, "VerseTagMarkupComponent")
+        actor = _FakeActor("Actor1", [tag_comp], [])
+        finding = tag_inspect._deep_probe_actor("Actor1", actor, set())
+        errors = finding["errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["where"], "tag_component.prop_boom")
+        self.assertEqual(errors[0]["exception_class"], "RuntimeError")
+
+    def test_actor_tags_read_error_is_recorded_not_silently_dropped(self):
+        tag_comp = _FakeComponentWithClass({}, "VerseTagMarkupComponent")
+        actor = _FakeActor("Actor1", [tag_comp], RuntimeError)  # get_editor_property("tags") raises
+        finding = tag_inspect._deep_probe_actor("Actor1", actor, set())
+        self.assertIsNone(finding["actor_tags_property"])
+        self.assertTrue(any(e["where"] == "actor.tags" and e["exception_class"] == "RuntimeError" for e in finding["errors"]))
+
+    def test_max_components_per_actor_cap_is_respected(self):
+        """Components beyond _MAX_COMPONENTS_PER_ACTOR are truncated
+        BEFORE any per-component probing (tag_inspect.py's
+        `components = components[:_MAX_COMPONENTS_PER_ACTOR]`) -- give 3
+        components with a known-tag hit only AFTER that boundary and
+        confirm none of their hits ever surface."""
+        cap = tag_inspect._MAX_COMPONENTS_PER_ACTOR
+        tag_comp = _FakeComponentWithClass({}, "VerseTagMarkupComponent")
+        filler = [_FakeComponentWithClass({}, "FillerComponent") for _ in range(cap - 1)]
+        beyond_cap_hits = [
+            _FakeComponentWithClass({"prop": "contains t_room_r1 here"}, "ShouldBeTruncated{}".format(i))
+            for i in range(3)
+        ]
+        components = [tag_comp] + filler + beyond_cap_hits
+        actor = _FakeActor("CappedActor", components, [])
+
+        finding = tag_inspect._deep_probe_actor("CappedActor", actor, {"t_room_r1"})
+
+        self.assertEqual(finding["tag_component"]["class_name"], "VerseTagMarkupComponent")
+        self.assertEqual(finding["other_components_hits"], [])
+
+    def test_max_properties_per_component_cap_is_respected(self):
+        cap = tag_inspect._MAX_PROPERTIES_PER_COMPONENT
+        properties = {"prop_{}".format(i): "no hits here" for i in range(cap + 5)}
+        tag_comp = _FakeComponentWithClass(properties, "VerseTagMarkupComponent")
+        actor = _FakeActor("Actor1", [tag_comp], [])
+
+        finding = tag_inspect._deep_probe_actor("Actor1", actor, set())
+
+        self.assertEqual(len(finding["tag_component"]["properties"]), cap)
+
+
+# ---------------------------------------------------------------------------
+# Actor-Tags decode primitives -- mirrors tag_inspect.py's actor-level tags
+# decode glue (roughly lines 1600-1618 inside _inspect_tags_live) by
+# chaining the REAL _try_iter_tag_container_values + normalize_tag_name
+# primitives -- not a reimplementation of those functions, just the same
+# short call sequence the module itself performs, so it is testable without
+# mocking `unreal`/actors at all. The full merge/dedup/status-upgrade
+# behavior those decoded names feed into is covered end-to-end through a
+# real tag_inspect.inspect_tags() call in ActorLevelTagSourceMergeTests
+# below.
+# ---------------------------------------------------------------------------
+
+class ActorTagsDecodePrimitivesTests(unittest.TestCase):
+    @staticmethod
+    def _decode_actor_tags(actor_tags_value, known_tag_names):
+        items, _iterated_ok = tag_inspect._try_iter_tag_container_values(actor_tags_value)
+        raw = []
+        for item in items:
+            normalized = tag_inspect.normalize_tag_name(str(item))
+            if normalized:
+                raw.append(normalized)
+        matched = [t for t in raw if t in known_tag_names]
+        return raw, matched
+
+    def test_wrapped_and_dotted_actor_tag_values_normalize_and_match(self):
+        raw, matched = self._decode_actor_tags(
+            ["GameplayTag't_room_r1'", "Verse.t_spawn_rand", "totally_unrelated"],
+            {"t_room_r1", "t_spawn_rand"},
+        )
+        self.assertEqual(raw, ["t_room_r1", "t_spawn_rand", "totally_unrelated"])
+        self.assertEqual(matched, ["t_room_r1", "t_spawn_rand"])
+
+    def test_no_match_when_no_known_tag_names_present(self):
+        raw, matched = self._decode_actor_tags(["random_value"], {"t_room_r1"})
+        self.assertEqual(raw, ["random_value"])
+        self.assertEqual(matched, [])
+
+    def test_non_iterable_actor_tags_value_yields_no_matches_not_crash(self):
+        class Opaque:
+            pass
+
+        raw, matched = self._decode_actor_tags(Opaque(), {"t_room_r1"})
+        self.assertEqual(raw, [])
+        self.assertEqual(matched, [])
+
+
+# ---------------------------------------------------------------------------
+# Actor-level tag source merge -- the inline block inside _inspect_tags_live
+# (tag_inspect.py ~1732-1770) that folds actor_tags_matched hits into each
+# actor's tags list (source="actor_tags"), dedups against component-sourced
+# names, and upgrades extraction_status to "ok" whenever either source
+# produced tags. This is inline code inside a large unreal-dependent
+# function, not a standalone helper -- the only way to exercise the REAL
+# logic (not a hand-copied reimplementation of it) is to drive
+# tag_inspect.inspect_tags() itself with a fully faked `unreal`, actor, and
+# component. tag_inspect.unreal/_HAS_UNREAL/report_path/_get_bridge_dir are
+# monkeypatched and restored per-test; report_path/_get_bridge_dir are
+# redirected to a scratch temp dir so this never writes into media/.
+# ---------------------------------------------------------------------------
+
+class ActorLevelTagSourceMergeTests(unittest.TestCase):
+    def setUp(self):
+        self._had_unreal_attr = hasattr(tag_inspect, "unreal")
+        self._orig_unreal = getattr(tag_inspect, "unreal", None)
+        self._orig_has_unreal = tag_inspect._HAS_UNREAL
+        self._orig_report_path = tag_inspect.report_path
+        self._orig_get_bridge_dir = tag_inspect._get_bridge_dir
+
+        self._scratch = tempfile.mkdtemp(prefix="tag_inspect_merge_test_")
+        primary = os.path.join(self._scratch, "primary", "tag_inspect_report.json")
+        fallback_dir = os.path.join(self._scratch, "fallback")
+        os.makedirs(fallback_dir, exist_ok=True)
+        tag_inspect.report_path = lambda: primary
+        tag_inspect._get_bridge_dir = lambda: fallback_dir
+
+        self._actors = []
+        subsystem = types.SimpleNamespace(get_all_level_actors=lambda: self._actors)
+        tag_inspect.unreal = types.SimpleNamespace(
+            ActorComponent=object(),
+            EditorActorSubsystem=object(),
+            ScopedSlowTask=lambda total, desc: tag_inspect._NullSlowTask(),
+            get_editor_subsystem=lambda cls: subsystem,
+            log_warning=lambda *a, **k: None,
+            log_error=lambda *a, **k: None,
+        )
+        tag_inspect._HAS_UNREAL = True
+
+    def tearDown(self):
+        if self._had_unreal_attr:
+            tag_inspect.unreal = self._orig_unreal
+        else:
+            del tag_inspect.unreal
+        tag_inspect._HAS_UNREAL = self._orig_has_unreal
+        tag_inspect.report_path = self._orig_report_path
+        tag_inspect._get_bridge_dir = self._orig_get_bridge_dir
+
+    @staticmethod
+    def _write_verse_dir_with_known_tag(tmp_dir):
+        with open(os.path.join(tmp_dir, "tags.verse"), "w", encoding="utf-8") as f:
+            f.write("t_room_r1 := class(tag)\n")
+
+    def test_actor_level_tag_rescues_a_confirmed_empty_component_to_ok(self):
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            comp = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            actor = _FakeActor("RescuedActor", [comp], ["GameplayTag't_room_r1'"])
+            self._actors = [actor]
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        self.assertEqual(len(result["actors"]), 1)
+        entry = result["actors"][0]
+        self.assertEqual(entry["extraction_status"], "ok")
+        self.assertEqual(entry["tags"], [{"name": "t_room_r1", "parent_chain": ["tag"], "source": "actor_tags"}])
+        self.assertEqual(entry["actor_tags"], ["t_room_r1"])
+        self.assertIn("actor's own Tags property", result["discovery"]["notes"])
+
+    def test_component_and_actor_tags_agreeing_on_same_name_dedup_to_one_entry(self):
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            comp = _FakeComponentWithClass({"gameplay_tags_container": ["t_room_r1"]}, "VerseTagMarkupComponent")
+            actor = _FakeActor("DedupActor", [comp], ["t_room_r1"])
+            self._actors = [actor]
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        entry = result["actors"][0]
+        self.assertEqual(entry["extraction_status"], "ok")
+        self.assertEqual(len(entry["tags"]), 1)
+        self.assertEqual(entry["tags"][0]["source"], "component_tags")
+        self.assertNotIn("actor's own Tags property", result["discovery"]["notes"])
+
+    def test_actor_tags_not_matching_any_known_tag_name_never_rescues(self):
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            comp = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            actor = _FakeActor("UnmatchedActor", [comp], ["totally_unrelated_name"])
+            self._actors = [actor]
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        entry = result["actors"][0]
+        self.assertEqual(entry["extraction_status"], "empty")
+        self.assertEqual(entry["tags"], [])
+        self.assertEqual(entry["actor_tags"], ["totally_unrelated_name"])
+
+
+# ---------------------------------------------------------------------------
+# _render_tag_report's empty-state placeholder logic -- exercised headlessly
+# via _FakeTree/_FakeLabel (no real Tk widget needed; the function only
+# calls .delete()/.get_children()/.insert() and .config(text=...)).
+# ---------------------------------------------------------------------------
+
+class RenderTagReportEmptyStatePlaceholderTests(unittest.TestCase):
+    def test_placeholder_shown_when_all_matched_actors_are_hidden(self):
+        data = {
+            "discovery": {"component_class": "VerseTagMarkupComponent", "tag_property": "gameplay_tags_container", "notes": "n/a"},
+            "actors": [
+                {"label": "A", "has_verse_tag_component": True, "tags": [], "extraction_status": "empty"},
+                {"label": "B", "has_verse_tag_component": False, "tags": []},
+            ],
+            "tag_class_count": 1,
+        }
+        tree, discovery_label, summary_label = _FakeTree(), _FakeLabel(), _FakeLabel()
+        uefn_launcher._render_tag_report(tree, discovery_label, summary_label, data, "test source")
+
+        placeholder_rows = [r for r in tree.rows if "No rows" in r["text"]]
+        self.assertEqual(len(placeholder_rows), 1)
+        self.assertIn("1 with a confirmed-empty tag container", placeholder_rows[0]["text"])
+        self.assertIn("1 without a tag component", placeholder_rows[0]["text"])
+        self.assertIn("Copy the MCP prompt", placeholder_rows[0]["text"])
+
+    def test_placeholder_mentions_deep_probe_rows_when_deep_probe_present(self):
+        data = {
+            "discovery": {"component_class": None, "tag_property": None, "notes": ""},
+            "actors": [
+                {"label": "A", "has_verse_tag_component": True, "tags": [], "extraction_status": "empty"},
+            ],
+            "tag_class_count": 0,
+            "deep_probe": {"probed_labels": ["A"], "findings": []},
+        }
+        tree, discovery_label, summary_label = _FakeTree(), _FakeLabel(), _FakeLabel()
+        uefn_launcher._render_tag_report(tree, discovery_label, summary_label, data, "test source")
+
+        placeholder_rows = [r for r in tree.rows if "No rows" in r["text"]]
+        self.assertEqual(len(placeholder_rows), 1)
+        self.assertIn("deep probe rows below", placeholder_rows[0]["text"])
+
+    def test_no_placeholder_when_at_least_one_actor_is_shown(self):
+        data = {
+            "discovery": {"component_class": None, "tag_property": None, "notes": ""},
+            "actors": [
+                {"label": "A", "has_verse_tag_component": True, "tags": [{"name": "t1", "parent_chain": []}], "extraction_status": "ok"},
+            ],
+            "tag_class_count": 1,
+        }
+        tree, discovery_label, summary_label = _FakeTree(), _FakeLabel(), _FakeLabel()
+        uefn_launcher._render_tag_report(tree, discovery_label, summary_label, data, "test source")
+
+        self.assertEqual([r for r in tree.rows if "No rows" in r["text"]], [])
+
+    def test_old_shape_report_without_extraction_status_or_deep_probe_does_not_crash(self):
+        """Old-shape reports (no extraction_status key, no source field on
+        individual tags, no top-level deep_probe key) must still render
+        without raising -- _classify_tag_actor's legacy_empty fallback is
+        what makes this safe."""
+        data = {
+            "discovery": {"component_class": "VerseTagMarkupComponent", "tag_property": "Tags", "notes": ""},
+            "actors": [
+                {"label": "A", "has_verse_tag_component": True, "tags": [{"name": "t1", "parent_chain": ["tag"]}]},  # legacy ok
+                {"label": "B", "has_verse_tag_component": True, "tags": []},  # legacy_empty
+                {"label": "C", "has_verse_tag_component": False, "tags": []},  # no_component
+            ],
+            "tag_class_count": 1,
+        }
+        tree, discovery_label, summary_label = _FakeTree(), _FakeLabel(), _FakeLabel()
+        try:
+            uefn_launcher._render_tag_report(tree, discovery_label, summary_label, data, "legacy report")
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"_render_tag_report raised on an old-shape report: {e!r}")
+
+        shown_top_level_texts = [r["text"] for r in tree.rows if r["parent"] == ""]
+        self.assertIn("A", shown_top_level_texts)
+        self.assertNotIn("B", shown_top_level_texts)
+        self.assertNotIn("C", shown_top_level_texts)
+
+
+# ---------------------------------------------------------------------------
+# _render_deep_probe -- known-tag-hit rows must sort before non-hit rows
+# and error rows within each probed actor.
+# ---------------------------------------------------------------------------
+
+class RenderDeepProbeTests(unittest.TestCase):
+    def test_no_findings_is_a_no_op(self):
+        tree = _FakeTree()
+        uefn_launcher._render_deep_probe(tree, {"findings": []})
+        self.assertEqual(tree.rows, [])
+
+    def test_known_tag_hit_rows_sort_before_non_hit_and_error_rows(self):
+        deep_probe = {
+            "findings": [{
+                "actor_label": "Actor1",
+                "tag_component": {
+                    "class_name": "VerseTagMarkupComponent",
+                    "properties": [
+                        {"name": "boring", "type_name": "list", "value_repr": "[]", "known_tag_hits": []},
+                        {"name": "hitprop", "type_name": "str", "value_repr": "t_room_r1", "known_tag_hits": ["t_room_r1"]},
+                    ],
+                },
+                "actor_tags_property": {"type_name": "list", "value_repr": "[]", "known_tag_hits": []},
+                "other_components_hits": [
+                    {"component_class": "Other", "property": "weird", "value_repr": "...", "known_tag_hits": ["t_spawn_rand"]},
+                ],
+                "errors": [{"where": "tag_component.boom", "exception_class": "RuntimeError"}],
+            }],
+        }
+        tree = _FakeTree()
+        uefn_launcher._render_deep_probe(tree, deep_probe)
+
+        header_rows = [r for r in tree.rows if r["parent"] == ""]
+        self.assertEqual(len(header_rows), 1)
+        self.assertIn("DEEP PROBE", header_rows[0]["text"])
+
+        actor_rows = [r for r in tree.rows if r["parent"] == header_rows[0]["id"]]
+        self.assertEqual(len(actor_rows), 1)
+        self.assertEqual(actor_rows[0]["text"], "Actor1")
+
+        detail_rows = [r for r in tree.rows if r["parent"] == actor_rows[0]["id"]]
+        # 2 tag_component props + 1 actor_tags_property + 1 other-hit + 1 error = 5
+        self.assertEqual(len(detail_rows), 5)
+        star_flags = [r["text"].startswith("★") for r in detail_rows]
+        self.assertEqual(star_flags[:2], [True, True])
+        self.assertTrue(all(not f for f in star_flags[2:]))
 
 
 if __name__ == "__main__":

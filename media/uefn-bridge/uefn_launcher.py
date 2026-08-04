@@ -658,18 +658,26 @@ def _read_tag_inspect_report(module):
 def _classify_tag_actor(actor):
     """Classify *actor* (one entry of an ``inspect_tags()`` ``actors``
     list) into one of:
-      "no_component"   -- has_verse_tag_component is False. Always hidden.
+      "ok"             -- >=1 tag decoded, from EITHER source (checked
+                           FIRST, before has_verse_tag_component, because
+                           0.0.534's actor-level tag source can decode a
+                           tag from AActor::Tags on an actor that has no
+                           tag component at all -- see tag_inspect.py's
+                           "source": "actor_tags" entries). Shown.
+      "no_component"   -- has_verse_tag_component is False and no tag was
+                           decoded from any source. Hidden.
       "empty"          -- extraction_status == "empty": a strategy
                            POSITIVELY iterated the tag container and found
-                           zero entries. Confirmed-empty; hidden.
+                           zero entries, and no actor-level tag rescued
+                           it. Confirmed-empty; hidden.
       "unreadable"     -- extraction_status == "unreadable": a tag
                            component was present but no decode strategy
-                           could read it. MUST be shown, flagged -- hiding
-                           this would present a failed read as a clean
-                           empty result, the exact false negative this
-                           tool exists to prevent (see tag_inspect.py's
-                           module docstring field case).
-      "ok"             -- >=1 tag decoded. Shown.
+                           could read it, and no actor-level tag rescued
+                           it. MUST be shown, flagged -- hiding this would
+                           present a failed read as a clean empty result,
+                           the exact false negative this tool exists to
+                           prevent (see tag_inspect.py's module docstring
+                           field case).
       "legacy_empty"   -- a report written before ``extraction_status``
                            existed (the key is absent entirely, not just
                            falsy) with has_verse_tag_component True and an
@@ -680,16 +688,16 @@ def _classify_tag_actor(actor):
                            guessing -- re-running the scan against the
                            current tag_inspect.py resolves the ambiguity.
     Never raises."""
+    if actor.get("tags"):
+        return "ok"
     if not actor.get("has_verse_tag_component"):
         return "no_component"
     if "extraction_status" not in actor:
-        return "ok" if actor.get("tags") else "legacy_empty"
+        return "legacy_empty"
     status = actor.get("extraction_status")
     if status == "unreadable":
         return "unreadable"
-    if status == "empty":
-        return "empty"
-    return "ok" if actor.get("tags") else "empty"
+    return "empty"
 
 
 def _render_tag_report(tree, discovery_label, summary_label, data, source_label):
@@ -753,6 +761,11 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
         for tag in tags:
             name = tag.get("name", "<unnamed>")
             chain = " > ".join(tag.get("parent_chain") or [])
+            # source distinguishes the normal tag-component container from
+            # the 0.0.535 actor-level AActor::Tags rescue path -- surfaced
+            # here so a decoded tag's true origin is never ambiguous.
+            if tag.get("source") == "actor_tags":
+                chain = (chain + "  " if chain else "") + "[from actor Tags]"
             tree.insert(node, tk.END, text=str(name), values=(chain,))
         if unreadable:
             debug = actor.get("extraction_debug") or {}
@@ -766,6 +779,39 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
     for actor in shown:
         _insert_actor(actor, unreadable=(statuses[id(actor)] == "unreadable"))
 
+    deep_probe = data.get("deep_probe")
+
+    # EMPTY-STATE placeholder: a blank tree with no explanation inside it
+    # reads as "the panel is broken", not "the scan ran and found nothing
+    # to show" -- a real field run had a user re-run the scan twice for
+    # exactly that reason. Only inserted when actors WERE matched/examined
+    # but every one of them is hidden; a genuinely empty actors list (no
+    # actors matched label_pattern) is already explained by discovery.notes
+    # above the tree, so this stays specific to the "hidden, not absent"
+    # case.
+    if not shown and actors:
+        reason_bits = []
+        if empty_count:
+            reason_bits.append(str(empty_count) + " with a confirmed-empty tag container")
+        if no_component_count:
+            reason_bits.append(str(no_component_count) + " without a tag component")
+        reason_text = " and ".join(reason_bits) if reason_bits else "hidden"
+        placeholder_text = (
+            "No rows: all " + str(len(actors)) + " matched actor(s) are hidden ("
+            + reason_text + ") — tags were not found in editor data by the "
+            "normal scan. "
+            + (
+                "See the deep probe rows below for where (if anywhere) tag "
+                "data was actually found."
+                if deep_probe else
+                "Copy the MCP prompt for AI-assisted diagnosis."
+            )
+        )
+        tree.insert("", tk.END, text=placeholder_text, values=("",))
+
+    if deep_probe:
+        _render_deep_probe(tree, deep_probe)
+
     summary_bits = [
         "Showing " + str(len(shown)) + " actor(s)"
         + (
@@ -777,10 +823,79 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
         "tag container are hidden",
         str(data.get("tag_class_count", 0)) + " tag classes discovered",
     ]
+    if deep_probe:
+        summary_bits.append(
+            "deep probe ran on " + str(len(deep_probe.get("probed_labels") or [])) + " actor(s)"
+        )
     if data.get("verse_dir"):
         summary_bits.append("verse_dir: " + str(data.get("verse_dir")))
     summary_bits.append(source_label)
     summary_label.config(text="  |  ".join(summary_bits))
+
+
+def _render_deep_probe(tree, deep_probe):
+    """Render ``report["deep_probe"]`` (see tag_inspect.py's
+    ``_deep_probe_actor``) as tree rows: one parent row per probed actor
+    label, children per property dumped — tag-component properties, then
+    the actor's own ``tags`` property, then any other-component known-tag
+    hit, then any probe read error — with entries carrying a known-tag hit
+    listed FIRST within each actor so the payload that actually answers
+    "where do the tags live" is not buried under a full property dump.
+    Guards every ``.get()`` so a missing/malformed ``deep_probe`` shape
+    (including a legacy report with no such key at all — the caller only
+    invokes this when the key is present and truthy) can never crash the
+    render. Never raises."""
+    findings = deep_probe.get("findings") or []
+    if not findings:
+        return
+    header = tree.insert(
+        "", tk.END,
+        text="DEEP PROBE — {} actor(s) probed (normal scan decoded 0 tags "
+             "from any source)".format(len(findings)),
+        values=("",),
+    )
+    for finding in findings:
+        label = finding.get("actor_label", "<unlabeled>")
+        actor_node = tree.insert(header, tk.END, text=str(label), values=("",))
+
+        rows = []  # [(has_hit, display_text, snippet_text), ...]
+        comp = finding.get("tag_component") or {}
+        comp_class = comp.get("class_name")
+        for prop in comp.get("properties") or []:
+            hits = prop.get("known_tag_hits") or []
+            name = prop.get("name", "<unnamed>")
+            type_name = prop.get("type_name", "<unknown>")
+            text = "[component:{}] {} ({})".format(comp_class or "?", name, type_name)
+            snippet = prop.get("value_repr") or ""
+            if hits:
+                snippet += "  HITS: " + ", ".join(hits)
+            rows.append((bool(hits), text, snippet))
+
+        actor_tags_prop = finding.get("actor_tags_property")
+        if actor_tags_prop:
+            hits = actor_tags_prop.get("known_tag_hits") or []
+            text = "[actor.tags] ({})".format(actor_tags_prop.get("type_name", "<unknown>"))
+            snippet = actor_tags_prop.get("value_repr") or ""
+            if hits:
+                snippet += "  HITS: " + ", ".join(hits)
+            rows.append((bool(hits), text, snippet))
+
+        for hit in finding.get("other_components_hits") or []:
+            text = "[component:{}] {}".format(hit.get("component_class", "?"), hit.get("property", "?"))
+            snippet = hit.get("value_repr") or ""
+            hits = hit.get("known_tag_hits") or []
+            if hits:
+                snippet += "  HITS: " + ", ".join(hits)
+            rows.append((True, text, snippet))
+
+        for err in finding.get("errors") or []:
+            rows.append((False, "[error] " + str(err.get("where")), str(err.get("exception_class"))))
+
+        rows.sort(key=lambda r: not r[0])  # known-tag hits first, stable otherwise
+
+        for has_hit, text, snippet in rows:
+            display = ("★ " if has_hit else "") + text
+            tree.insert(actor_node, tk.END, text=display, values=(snippet,))
 
 
 def _show_tag_inspect_window(tag_inspect_module):

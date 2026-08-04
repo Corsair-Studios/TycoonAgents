@@ -1139,6 +1139,161 @@ def _get_all_actors():
     return subsystem.get_all_level_actors()
 
 
+_DEEP_PROBE_MAX_ACTORS = 3
+_DEEP_PROBE_SNIPPET_LEN = 200
+
+
+def _known_tag_hits(text, known_tag_names):
+    """Every entry of *known_tag_names* that whole-word-matches *text* --
+    same signal as ``_value_contains_known_tag``, but returning the actual
+    list of hits (not just a bool) for deep-probe diagnostics. Never
+    raises."""
+    if not text or not known_tag_names:
+        return []
+    hits = []
+    for tag_name in known_tag_names:
+        if tag_name and re.search(r"\b" + re.escape(tag_name) + r"\b", text):
+            hits.append(tag_name)
+    return hits
+
+
+def _describe_value_for_deep_probe(value, known_tag_names):
+    """Best-effort ``{"type_name", "value_repr", "export_text",
+    "known_tag_hits"}`` description of *value* for deep-probe diagnostics.
+    ``"export_text"`` is present only when the value exposes a working
+    ``export_text()`` (guarded — may not exist on this type at all).
+    ``known_tag_hits`` is computed over the repr + export_text text so a
+    hit is found regardless of which representation actually carries it.
+    Never raises."""
+    info = {
+        "type_name": type(value).__name__ if value is not None else None,
+        "value_repr": _truncate_diag(repr(value), _DEEP_PROBE_SNIPPET_LEN) if value is not None else None,
+    }
+    export_text = None
+    if value is not None:
+        export_fn = getattr(value, "export_text", None)
+        if export_fn is not None:
+            try:
+                export_text = export_fn()
+            except Exception:
+                export_text = None
+    if export_text:
+        info["export_text"] = _truncate_diag(export_text, _DEEP_PROBE_SNIPPET_LEN)
+    hit_source = " ".join(filter(None, [info.get("value_repr"), info.get("export_text")]))
+    info["known_tag_hits"] = _known_tag_hits(hit_source, known_tag_names)
+    return info
+
+
+def _deep_probe_actor(label, actor, known_tag_names):
+    """Deep-probe ONE matched actor for tag data outside the normal
+    extraction path — a last-resort diagnostic triggered only when the
+    normal walk found tag components on matched actors but decoded ZERO
+    tags from ANY of them, from ANY source (see ``_inspect_tags_live``'s
+    deep-probe trigger). Records, bounded by the SAME caps as the normal
+    walk (``_MAX_COMPONENTS_PER_ACTOR`` / ``_MAX_PROPERTIES_PER_COMPONENT``
+    — no new unbounded reflection loop):
+      1. EVERY probed property on the actor's tag component (if any),
+         full dump — name/type/repr/export_text/known_tag_hits.
+      2. The actor's own ``tags`` property (AActor::Tags), same full
+         dump treatment.
+      3. Every OTHER component's properties, but only entries that
+         POSITIVELY hit a known tag name are kept (unlike 1/2, this is
+         not a full dump — otherwise 63 other components * 150
+         properties would be reported in full for no diagnostic value).
+
+    A probe read that raises is recorded in the finding's ``errors`` list
+    (``{"where", "exception_class"}``) rather than aborting the rest of
+    this actor's probe or silently vanishing — one bad property must never
+    blank the remaining diagnostics for the same actor.
+
+    Returns a finding dict:
+      {"actor_label": str, "tag_component": {"class_name", "properties":
+       [...]} | None, "actor_tags_property": {...} | None,
+       "other_components_hits": [...], "errors": [...]}"""
+    finding = {
+        "actor_label": label,
+        "tag_component": None,
+        "actor_tags_property": None,
+        "other_components_hits": [],
+        "errors": [],
+    }
+
+    try:
+        components = list(actor.get_components_by_class(unreal.ActorComponent))
+    except Exception as e:
+        finding["errors"].append({"where": "get_components_by_class", "exception_class": type(e).__name__})
+        components = []
+    components = components[:_MAX_COMPONENTS_PER_ACTOR]
+
+    tag_comp = None
+    tag_comp_class = None
+    other_comps = []
+    for comp in components:
+        try:
+            class_name = comp.get_class().get_name()
+        except Exception as e:
+            finding["errors"].append({"where": "component.get_class", "exception_class": type(e).__name__})
+            continue
+        if tag_comp is None and "versetag" in class_name.lower():
+            tag_comp = comp
+            tag_comp_class = class_name
+        else:
+            other_comps.append((comp, class_name))
+
+    if tag_comp is not None:
+        properties = []
+        probed = 0
+        for name in _get_component_property_names(tag_comp):
+            if probed >= _MAX_PROPERTIES_PER_COMPONENT:
+                break
+            probed += 1
+            try:
+                value = tag_comp.get_editor_property(name)
+            except Exception as e:
+                finding["errors"].append({
+                    "where": "tag_component.{}".format(name),
+                    "exception_class": type(e).__name__,
+                })
+                continue
+            desc = _describe_value_for_deep_probe(value, known_tag_names)
+            desc["name"] = name
+            properties.append(desc)
+        finding["tag_component"] = {"class_name": tag_comp_class, "properties": properties}
+
+    try:
+        actor_tags_value = actor.get_editor_property("tags")
+    except Exception as e:
+        finding["errors"].append({"where": "actor.tags", "exception_class": type(e).__name__})
+    else:
+        finding["actor_tags_property"] = _describe_value_for_deep_probe(actor_tags_value, known_tag_names)
+
+    for comp, class_name in other_comps:
+        probed = 0
+        for name in _get_component_property_names(comp):
+            if probed >= _MAX_PROPERTIES_PER_COMPONENT:
+                break
+            probed += 1
+            try:
+                value = comp.get_editor_property(name)
+            except Exception as e:
+                finding["errors"].append({
+                    "where": "{}.{}".format(class_name, name),
+                    "exception_class": type(e).__name__,
+                })
+                continue
+            desc = _describe_value_for_deep_probe(value, known_tag_names)
+            if desc["known_tag_hits"]:
+                finding["other_components_hits"].append({
+                    "component_class": class_name,
+                    "property": name,
+                    "value_repr": desc.get("value_repr"),
+                    "export_text": desc.get("export_text"),
+                    "known_tag_hits": desc["known_tag_hits"],
+                })
+
+    return finding
+
+
 def _inspect_tags_live(label_pattern, project_dir):
     """The live (unreal-dependent) inspection path. Only called when
     ``_HAS_UNREAL`` is True; every editor call is individually guarded.
@@ -1432,6 +1587,36 @@ def _inspect_tags_live(label_pattern, project_dir):
                     extraction_status = diagnostics.get("extraction_status") or "unreadable"
                     extraction_debug = diagnostics.get("extraction_debug")
 
+                # ACTOR-LEVEL TAG SOURCE: read AActor's own "tags" editor
+                # property (a plain Name array, distinct from the
+                # VerseTagMarkupComponent's container) for EVERY matched
+                # actor, not only ones with a tag component — a real
+                # 0.0.534 field run showed component_tags positively
+                # iterating to zero on all 389 matched actors while ground
+                # truth said several carried tags, so the tags may live on
+                # the actor itself instead. One extra get_editor_property
+                # call per actor is cheap relative to the component walk
+                # already paid for above.
+                try:
+                    actor_tags_value = actor.get_editor_property("tags")
+                except Exception as e:
+                    actor_tags_value = None
+                    all_property_read_errors.append({
+                        "name": "AActor.Tags", "exception_class": type(e).__name__,
+                    })
+                    actor_tags_raw = []
+                else:
+                    actor_tags_items, _actor_tags_iterated_ok = _try_iter_tag_container_values(actor_tags_value)
+                    actor_tags_raw = []
+                    for raw in actor_tags_items:
+                        try:
+                            normalized = normalize_tag_name(str(raw))
+                        except Exception:
+                            continue
+                        if normalized:
+                            actor_tags_raw.append(normalized)
+                actor_tags_matched = [t for t in actor_tags_raw if t in known_tag_names]
+
                 raw_records.append({
                     "label": label,
                     "has_verse_tag_component": comp is not None,
@@ -1439,6 +1624,8 @@ def _inspect_tags_live(label_pattern, project_dir):
                     "raw_tag_names": raw_names,
                     "extraction_status": extraction_status,
                     "extraction_debug": extraction_debug,
+                    "actor_tags_raw": actor_tags_raw,
+                    "actor_tags_matched": actor_tags_matched,
                 })
         # phase2_task's __exit__ has run here regardless of how the loop
         # above ended.
@@ -1532,6 +1719,67 @@ def _inspect_tags_live(label_pattern, project_dir):
             )
         )
 
+    # ------------------------------------------------------------------
+    # ACTOR-LEVEL TAG SOURCE merge: fold any actor_tags_matched hits into
+    # each actor's tags list (source="actor_tags", alongside existing
+    # component-sourced entries tagged source="component_tags"), and
+    # recompute each actor's extraction_status as "ok" whenever ANY
+    # source produced tags -- an actor whose component container
+    # positively iterated to zero must still read "ok" if its own
+    # AActor::Tags array carried a known Verse tag name (see the 0.0.534
+    # field case in the actor_tags read comment above, in the walk loop).
+    # ------------------------------------------------------------------
+    actors_out = []
+    actor_tags_rescued = 0
+    for rec in raw_records:
+        tags_out = []
+        seen_names = set()
+        for raw_name in rec["raw_tag_names"]:
+            chain = tag_classes.get(raw_name)
+            tags_out.append({
+                "name": raw_name,
+                "parent_chain": list(chain) if chain else [],
+                "source": "component_tags",
+            })
+            seen_names.add(raw_name)
+        for raw_name in rec.get("actor_tags_matched", []):
+            if raw_name in seen_names:
+                continue
+            chain = tag_classes.get(raw_name)
+            tags_out.append({
+                "name": raw_name,
+                "parent_chain": list(chain) if chain else [],
+                "source": "actor_tags",
+            })
+            seen_names.add(raw_name)
+
+        combined_status = "ok" if tags_out else rec.get("extraction_status")
+        if combined_status == "ok" and rec.get("extraction_status") != "ok":
+            actor_tags_rescued += 1
+
+        actor_entry = {
+            "label": rec["label"],
+            "has_verse_tag_component": rec["has_verse_tag_component"],
+            "component_class": rec["component_class"],
+            "tags": tags_out,
+            "extraction_status": combined_status,
+            "actor_tags": rec.get("actor_tags_raw", []),
+        }
+        if combined_status == "unreadable" and rec.get("extraction_debug"):
+            actor_entry["extraction_debug"] = rec["extraction_debug"]
+        actors_out.append(actor_entry)
+
+    combined_ok = sum(1 for a in actors_out if a["extraction_status"] == "ok")
+
+    if actor_tags_rescued:
+        notes_parts.append(
+            "{} actor(s) additionally decoded via the actor's own Tags "
+            "property (AActor::Tags), not the tag component — see each "
+            "such tag's \"source\": \"actor_tags\" in the report.".format(
+                actor_tags_rescued
+            )
+        )
+
     notes_parts.append(fast_reject_note)
     if cancelled or truncation_reasons:
         notes_parts.append(
@@ -1541,30 +1789,86 @@ def _inspect_tags_live(label_pattern, project_dir):
               "never treat this as a complete-project result."
         )
 
-    actors_out = []
-    for rec in raw_records:
-        tags_out = []
-        for raw_name in rec["raw_tag_names"]:
-            chain = tag_classes.get(raw_name)
-            tags_out.append({
-                "name": raw_name,
-                "parent_chain": list(chain) if chain else [],
-            })
-        actor_entry = {
-            "label": rec["label"],
-            "has_verse_tag_component": rec["has_verse_tag_component"],
-            "component_class": rec["component_class"],
-            "tags": tags_out,
-            "extraction_status": rec.get("extraction_status"),
+    # ------------------------------------------------------------------
+    # DEEP-PROBE FALLBACK: last resort when the normal walk found tag
+    # components on matched actors but decoded ZERO tags from ANY of them
+    # from ANY source (e.g. component_tags positively iterating to zero
+    # on every matched actor while ground truth says several carry tags —
+    # a real 0.0.534 field case). Bounded to the FIRST
+    # _DEEP_PROBE_MAX_ACTORS matched actors, run inside its own small
+    # cancellable ScopedSlowTask (same guaranteed-__exit__ with-block
+    # lifecycle as phases 1/2 — see _make_slow_task's docstring). Skipped
+    # if the scan itself was already cancelled, so a user's Cancel isn't
+    # followed by extra unrequested work.
+    # ------------------------------------------------------------------
+    deep_probe_result = None
+    if found_count and combined_ok == 0 and not cancelled:
+        probe_targets = matched_for_walk[:_DEEP_PROBE_MAX_ACTORS]
+        findings = []
+        deep_probe_cancelled = False
+        with _make_slow_task(
+            len(probe_targets) or 1,
+            "Deep-probing {} actor(s) for tag data…".format(len(probe_targets)),
+        ) as deep_probe_task:
+            _st_call(deep_probe_task, "make_dialog", True)
+            for idx, (dp_label, dp_actor) in enumerate(probe_targets):
+                if idx > 0 and bool(_st_call(deep_probe_task, "should_cancel")):
+                    deep_probe_cancelled = True
+                    break
+                _st_call(deep_probe_task, "enter_progress_frame", 1, dp_label)
+                try:
+                    finding = _deep_probe_actor(dp_label, dp_actor, known_tag_names)
+                except Exception as e:
+                    finding = {
+                        "actor_label": dp_label,
+                        "tag_component": None,
+                        "actor_tags_property": None,
+                        "other_components_hits": [],
+                        "errors": [{"where": "_deep_probe_actor", "exception_class": type(e).__name__}],
+                    }
+                findings.append(finding)
+        # deep_probe_task's __exit__ has run here regardless of how the
+        # loop above ended.
+
+        def _finding_has_hits(f):
+            if (f.get("actor_tags_property") or {}).get("known_tag_hits"):
+                return True
+            for prop in (f.get("tag_component") or {}).get("properties", []):
+                if prop.get("known_tag_hits"):
+                    return True
+            return bool(f.get("other_components_hits"))
+
+        any_hits = any(_finding_has_hits(f) for f in findings)
+        deep_probe_result = {
+            "probed_labels": [dp_label for dp_label, _ in probe_targets],
+            "findings": findings,
+            "cancelled": deep_probe_cancelled,
         }
-        if rec.get("extraction_status") == "unreadable" and rec.get("extraction_debug"):
-            actor_entry["extraction_debug"] = rec["extraction_debug"]
-        actors_out.append(actor_entry)
+        hit_note = (
+            "deep probe found known-tag whole-word hit(s) in probed "
+            "property data — see report['deep_probe']['findings'] for "
+            "exactly where."
+            if any_hits else
+            "deep probe found NO known-tag hits anywhere probed (the tag "
+            "component's own properties, the actor's Tags array, or any "
+            "other component) — the tags may be applied at RUNTIME by "
+            "Verse code and never stored in editor data at all; an "
+            "editor-side scan can never see a purely runtime-applied tag."
+        )
+        notes_parts.append(
+            "DEEP PROBE: {} matched actor(s) have a tag component but 0 "
+            "decoded any tags from any source, so the first {} matched "
+            "actor(s) were deep-probed (every property on the tag "
+            "component, the actor's own Tags array, and any known-tag "
+            "hit on other components) — {}".format(
+                found_count, len(probe_targets), hit_note
+            )
+        )
 
     actors_out = sort_actors_flagged_first(actors_out)
     discovery["notes"] = " ".join(notes_parts)
 
-    return {
+    result = {
         "discovery": discovery,
         "verse_dir": verse_dir,
         "tag_class_count": len(tag_classes),
@@ -1574,6 +1878,9 @@ def _inspect_tags_live(label_pattern, project_dir):
         "truncation_reasons": truncation_reasons,
         "scan_stats": scan_stats,
     }
+    if deep_probe_result is not None:
+        result["deep_probe"] = deep_probe_result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1724,21 +2031,50 @@ def inspect_tags(label_pattern=None, project_dir=None):
          "tag_class_count": int,
          "actors": [{"label": str, "has_verse_tag_component": bool,
                       "component_class": str|None,
-                      "tags": [{"name": str, "parent_chain": [str, ...]}],
+                      "tags": [{"name": str, "parent_chain": [str, ...],
+                                 "source": "component_tags"|"actor_tags"}],
+                      "actor_tags": [str, ...],
                       "extraction_status": "ok"|"empty"|"unreadable"|None,
-                      "extraction_debug": {...} (only when "unreadable")}]}
+                      "extraction_debug": {...} (only when "unreadable")}],
+         "deep_probe": {"probed_labels": [str, ...], "findings": [...],
+                          "cancelled": bool} (present only when the
+                          deep-probe fallback ran — see below)}
+
+    Each ``tags`` entry carries a ``source``: ``"component_tags"`` when
+    decoded from the tag component's container (the normal path), or
+    ``"actor_tags"`` when decoded instead from the ACTOR's own ``tags``
+    editor property (``AActor::Tags``, a plain Name array checked for
+    EVERY matched actor regardless of whether it also has a tag
+    component) and found to whole-word-match one of this project's known
+    Verse tag class names. ``actor_tags`` on the actor entry is the full
+    raw list read from that property (informational, independent of
+    whether any entry matched a known tag name).
 
     ``extraction_status`` is ``None`` only when ``has_verse_tag_component``
-    is False (nothing to extract from); otherwise it is always one of
-    "ok" (>=1 tag decoded), "empty" (the container was positively iterated
-    and found to have zero entries), or "unreadable" (a tag component was
-    present but no strategy could decode any tags from it — see
-    ``_decode_winner_tags``). An actor's ``tags`` list is NEVER bare ``[]``
-    without one of these statuses attached, so an "unreadable" read can
-    never be misread as "confirmed no tags" (see module docstring's field
-    case). "unreadable" actors additionally carry ``extraction_debug``
-    (python type name, truncated value repr, and an export_text() snippet
-    when available) so the report is actionable rather than a dead end.
+    is False AND no actor-level tag matched (nothing decoded from any
+    source); otherwise it is always one of "ok" (>=1 tag decoded from
+    EITHER source), "empty" (the component's container was positively
+    iterated and found to have zero entries, and no actor-level tag
+    rescued it), or "unreadable" (a tag component was present but no
+    strategy could decode any tags from it, and no actor-level tag
+    rescued it — see ``_decode_winner_tags``). An actor's ``tags`` list is
+    NEVER bare ``[]`` without one of these statuses attached, so an
+    "unreadable" read can never be misread as "confirmed no tags" (see
+    module docstring's field case). "unreadable" actors additionally
+    carry ``extraction_debug`` (python type name, truncated value repr,
+    and an export_text() snippet when available) so the report is
+    actionable rather than a dead end.
+
+    ``deep_probe`` (top-level, sibling of ``actors``) is present ONLY when
+    the deep-probe fallback ran: at least one matched actor had a tag
+    component but ZERO actors decoded "ok" from any source. It full-dumps
+    every property on the FIRST few matched actors' tag components and
+    their own ``tags`` property, plus any known-tag hit found on their
+    OTHER components — see ``_deep_probe_actor`` — so a systematic
+    extraction failure (the container genuinely lives somewhere this scan
+    didn't look, or the tags are applied purely at runtime by Verse code
+    and never stored in editor data at all) is diagnosable from the report
+    itself instead of being a dead end.
 
     ``discovery.component_properties`` is populated in the failure cases
     that matter most: a tag-bearing component WAS found
