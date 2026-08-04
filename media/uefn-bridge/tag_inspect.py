@@ -54,6 +54,7 @@ Usage:
 """
 
 import fnmatch
+import glob
 import json
 import os
 import re
@@ -336,6 +337,298 @@ def sort_actors_flagged_first(actors):
             return 0
         return 1
     return sorted(actors, key=_flagged_last)
+
+
+# ---------------------------------------------------------------------------
+# Offline __ExternalActors__ scan — the PRIMARY tag-extraction source.
+#
+# Three consecutive live runs (0.0.534-536) proved the live component read
+# is a dead end on real projects: VerseTagMarkupComponent.component_tags
+# positively iterates to ZERO on every matched actor, on markers known to
+# carry real tags. The only tags ever decoded live came from AActor::Tags
+# (the actor-level fallback above), and only on a fraction of actors. The
+# field-validated ground truth (docs/VERSE-TAG-INSPECTOR-SPEC.md section 5,
+# lines 149-171): UEFN's world-partition actors each live in their OWN
+# one-file-per-actor .uasset under the project's Content/__ExternalActors__
+# tree, and the exact editor-visible Verse tags are recoverable straight
+# from those files' bytes via a plain printable-ASCII-run extraction
+# intersected against this project's own known tag-class names — recovered
+# 4/4 ground-truth tags, zero false positives, ~46,000 files scanned in
+# under 2 minutes. No live editor object state is involved at all, so this
+# works even when the live component read is provably blind — which is why
+# it runs as the PRIMARY source in inspect_tags() (see the "OFFLINE
+# __EXTERNALACTORS__ SCAN"/"SOURCE merge" sections in _inspect_tags_live
+# below), not a last-resort fallback.
+#
+# Headless by design: nothing below touches `unreal` — this section is
+# importable and unit-testable without a live editor, mirroring the rest
+# of the PURE section above this banner (see module docstring's import-
+# safety contract). It is placed here rather than after the "Live" banner
+# below purely for grouping (offline == pure); a few helpers it calls
+# (`_known_tag_hits`, `_CANCEL_POLL_INTERVAL`) happen to be *defined*
+# textually after the Live banner even though they are themselves also
+# unreal-free — Python resolves module-level names at call time, not
+# def-time, so this ordering is safe.
+# ---------------------------------------------------------------------------
+
+_PRINTABLE_RUN_RE = re.compile(r"[\x20-\x7E]{4,}")
+_EXTERNAL_ACTORS_DIRNAME = "__ExternalActors__"
+_MAX_ROOT_WALKUP = 12
+_MAX_ROOT_GLOB_DEPTH = 3
+
+_OFFLINE_UNSAVED_CAVEAT = (
+    "The offline __ExternalActors__ scan reads each actor's last-SAVED "
+    ".uasset state on disk — any UNSAVED changes made in the editor since "
+    "the last save are invisible to it."
+)
+
+
+def _find_uefn_project_root(start_dir):
+    """Walk upward from *start_dir* until a directory containing a
+    ``*.uefnproject`` file is found (content-based signal, per
+    docs/PATH-DISCOVERY.md) — same walkup shape as health_scanner.py's
+    ``_get_project_root()``, but returns ``None`` (never a best-guess
+    fallback) when nothing is found: callers here must be able to report
+    an honest discovery failure with the paths they tried, not silently
+    trust a wrong guess. Bounded to ``_MAX_ROOT_WALKUP`` levels so a
+    pathological filesystem layout can never hang this. Never raises."""
+    if not start_dir:
+        return None
+    candidate = os.path.normpath(start_dir)
+    for _ in range(_MAX_ROOT_WALKUP):
+        try:
+            entries = os.listdir(candidate)
+        except Exception:
+            entries = []
+        if any(e.endswith(".uefnproject") for e in entries):
+            return candidate
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            break
+        candidate = parent
+    return None
+
+
+def _discover_external_actors_dirs(verse_dir):
+    """Discovery ladder (docs/PATH-DISCOVERY.md) for the project's
+    __ExternalActors__ tree, most-authoritative signal first:
+      1. ``UEFN_VERSE_PROJECT_DIR`` env override, if set — tried verbatim,
+         both with and without a ``Content`` segment, before anything
+         else.
+      2. Walk *verse_dir* up to its ``.uefnproject`` root (see
+         ``_find_uefn_project_root``), then probe
+         ``<root>/Content/__ExternalActors__``,
+         ``<root>/__ExternalActors__``, and a shallow (depth <=
+         ``_MAX_ROOT_GLOB_DEPTH``) glob for any ``__ExternalActors__``
+         folder under root — covers layouts where Content isn't the
+         direct child.
+
+    Returns every candidate probed, de-duplicated and order-preserved,
+    whether or not it actually exists — this is exactly what a total
+    discovery failure reports back (see ``scan_external_actors``), never a
+    silent empty result. Never raises."""
+    candidates = []
+    env_dir = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+    if env_dir:
+        candidates.append(os.path.join(env_dir, "Content", _EXTERNAL_ACTORS_DIRNAME))
+        candidates.append(os.path.join(env_dir, _EXTERNAL_ACTORS_DIRNAME))
+
+    root = _find_uefn_project_root(verse_dir) if verse_dir else None
+    if root:
+        candidates.append(os.path.join(root, "Content", _EXTERNAL_ACTORS_DIRNAME))
+        candidates.append(os.path.join(root, _EXTERNAL_ACTORS_DIRNAME))
+        for depth in range(1, _MAX_ROOT_GLOB_DEPTH + 1):
+            pattern = os.path.join(root, *(["*"] * depth), _EXTERNAL_ACTORS_DIRNAME)
+            try:
+                candidates.extend(glob.glob(pattern))
+            except Exception:
+                pass
+
+    seen = set()
+    deduped = []
+    for c in candidates:
+        norm = os.path.normpath(c)
+        if norm not in seen:
+            seen.add(norm)
+            deduped.append(norm)
+    return deduped
+
+
+def scan_external_actors(verse_dir, tag_class_set, class_map, label_pattern=None,
+                          live_labels=None, progress_cb=None, should_cancel=None):
+    r"""Scan the project's __ExternalActors__ tree of one-file-per-actor
+    .uasset files for Verse tags, entirely offline — no ``unreal`` import,
+    no live object state (see the banner above for why this is the
+    PRIMARY tag-extraction source, not a fallback).
+
+    For every ``*.uasset`` under the discovered directory: read the raw
+    bytes once, decode latin-1 (never raises — latin-1 maps every byte
+    value), and extract printable-ASCII runs (``[\x20-\x7E]{4,}``).
+    *label_pattern* gates which files proceed to the expensive tag-name
+    work — reusing ``match_label()``'s exact substring/fnmatch semantics,
+    applied per extracted run (a file "matches" if ANY of its runs
+    matches the pattern) — keeping tag-decoding down to the hundreds of
+    matched files instead of every file in the tree. For matched files,
+    decoded tag names are the union of: an exact-set intersection between
+    the file's extracted runs and *tag_class_set*'s keys, and a
+    whole-word regex hit of any known tag name within the joined
+    extracted text (via ``_known_tag_hits`` — the same signal the deep
+    probe uses). Each hit's parents are resolved via
+    ``resolve_parent_chain(name, class_map)``.
+
+    Label attribution: if *live_labels* (exact label strings from a live
+    scan) is given, a file is attributed to whichever of those strings
+    appears EXACTLY as one of its extracted runs; multiple matches are
+    ALL recorded (``actor_entry["ambiguous_labels"]``) rather than
+    silently picking one. Otherwise (no *live_labels* — e.g. a headless
+    run with no editor), the label is the best-effort pattern-matched
+    extracted run itself. Every pattern-matched file becomes its own
+    actor entry, even with zero tags decoded — never silently dropped.
+
+    *progress_cb(done, total, path)* and *should_cancel()* are polled
+    together every ``_CANCEL_POLL_INTERVAL`` files (same cheap-loop
+    cadence as ``_find_verse_files`` — a plain byte-read + regex per
+    file, no reflection calls, so per-file polling would be wasted
+    overhead). Cancellation stops the walk immediately and returns
+    whatever was already decoded, flagged ``cancelled: True`` — never
+    discarded.
+
+    Returns:
+        ``{"status": "ok"|"error", "external_actors_dir": str|None,
+        "dirs_tried": [str, ...], "files_total": int, "files_matched": int,
+        "actors": [{"label", "file", "tags": [{"name", "parents",
+        "source": "external_actors"}], "ambiguous_labels"?: [str,...]}],
+        "cancelled": bool, "error": str|None}``
+
+    On total discovery failure (no __ExternalActors__ directory found by
+    any rung of the ladder), ``status`` is ``"error"``, ``actors`` is
+    ``[]``, and *error* names every directory tried plus the
+    ``UEFN_VERSE_PROJECT_DIR`` override — NEVER a clean/empty success
+    shape (see docs/PATH-DISCOVERY.md). Never raises."""
+    tag_class_set = tag_class_set or {}
+    class_map = class_map or {}
+    known_tag_names = list(tag_class_set.keys())
+    live_label_set = set(live_labels) if live_labels else None
+
+    dirs_tried = _discover_external_actors_dirs(verse_dir)
+    external_actors_dir = next((d for d in dirs_tried if os.path.isdir(d)), None)
+
+    if external_actors_dir is None:
+        tried_desc = ", ".join(dirs_tried) if dirs_tried else "<no candidates — verse_dir was not resolved>"
+        return {
+            "status": "error",
+            "external_actors_dir": None,
+            "dirs_tried": dirs_tried,
+            "files_total": 0,
+            "files_matched": 0,
+            "actors": [],
+            "cancelled": False,
+            "error": (
+                "could not locate a __ExternalActors__ directory — tried: "
+                + tried_desc + ". Set UEFN_VERSE_PROJECT_DIR to the "
+                "project's VerseProject data root to override discovery."
+            ),
+        }
+
+    all_files = []
+    try:
+        for dirpath, _dirnames, filenames in os.walk(external_actors_dir):
+            for fn in filenames:
+                if fn.endswith(".uasset"):
+                    all_files.append(os.path.join(dirpath, fn))
+    except Exception as e:
+        return {
+            "status": "error",
+            "external_actors_dir": external_actors_dir,
+            "dirs_tried": dirs_tried,
+            "files_total": 0,
+            "files_matched": 0,
+            "actors": [],
+            "cancelled": False,
+            "error": "walking {!r} failed: {}".format(external_actors_dir, e),
+        }
+
+    files_total = len(all_files)
+    files_matched = 0
+    actors_out = []
+    cancelled = False
+
+    if progress_cb is not None:
+        try:
+            progress_cb(0, files_total, None)
+        except Exception:
+            pass
+
+    for idx, fpath in enumerate(all_files):
+        if idx > 0 and idx % _CANCEL_POLL_INTERVAL == 0:
+            if should_cancel is not None and should_cancel():
+                cancelled = True
+                break
+            if progress_cb is not None:
+                try:
+                    progress_cb(idx, files_total, fpath)
+                except Exception:
+                    pass
+
+        try:
+            with open(fpath, "rb") as f:
+                raw_bytes = f.read()
+        except Exception:
+            continue
+
+        text = raw_bytes.decode("latin-1", errors="ignore")
+        runs = _PRINTABLE_RUN_RE.findall(text)
+        if not runs:
+            continue
+        if not any(match_label(r, label_pattern) for r in runs):
+            continue
+
+        files_matched += 1
+        run_set = set(runs)
+        joined_text = "\n".join(runs)
+
+        hit_names = run_set & set(known_tag_names)
+        hit_names |= set(_known_tag_hits(joined_text, known_tag_names))
+
+        tags_out = []
+        for name in sorted(hit_names):
+            chain = resolve_parent_chain(name, class_map, base="tag")
+            tags_out.append({
+                "name": name,
+                "parents": list(chain) if chain else [],
+                "source": "external_actors",
+            })
+
+        matched_live_labels = []
+        if live_label_set:
+            matched_live_labels = sorted(l for l in live_label_set if l in run_set)
+
+        if matched_live_labels:
+            label = matched_live_labels[0]
+        else:
+            label = next((r for r in runs if match_label(r, label_pattern)), runs[0])
+
+        actor_entry = {"label": label, "file": fpath, "tags": tags_out}
+        if len(matched_live_labels) > 1:
+            actor_entry["ambiguous_labels"] = matched_live_labels
+        actors_out.append(actor_entry)
+
+    if progress_cb is not None and not cancelled:
+        try:
+            progress_cb(files_total, files_total, None)
+        except Exception:
+            pass
+
+    return {
+        "status": "ok",
+        "external_actors_dir": external_actors_dir,
+        "dirs_tried": dirs_tried,
+        "files_total": files_total,
+        "files_matched": files_matched,
+        "actors": actors_out,
+        "cancelled": cancelled,
+        "error": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1544,6 +1837,7 @@ def _inspect_tags_live(label_pattern, project_dir):
             "truncated": False,
             "truncation_reasons": [],
             "scan_stats": scan_stats,
+            "offline": None,
         }
 
     # Resolve verse_dir FIRST (cheap, no dialog needed), independent of
@@ -1681,7 +1975,79 @@ def _inspect_tags_live(label_pattern, project_dir):
             "truncated": bool(truncation_reasons),
             "truncation_reasons": truncation_reasons,
             "scan_stats": scan_stats,
+            "offline": None,
         }
+
+    # ------------------------------------------------------------------
+    # OFFLINE __EXTERNALACTORS__ SCAN — PRIMARY source, run before the
+    # expensive live actor/component walk below (see the banner above
+    # scan_external_actors for the field evidence this is grounded in:
+    # the live component read has proven blind on real projects, so the
+    # offline scan is what actually answers "what tags does this actor
+    # carry", not a fallback for when the live read fails). live_labels
+    # uses the FULL matched list (not the capped matched_for_walk
+    # computed below) so attribution isn't limited by the actor-scan cap.
+    # Runs in its own genuine with-block (0.0.534 lesson: real
+    # __enter__/__exit__ lifecycle, cancel polled through the live task,
+    # never a manual "destroy()" call) — skipped entirely if an earlier
+    # phase was already cancelled, so a user's Cancel isn't followed by
+    # an unrequested walk of the whole __ExternalActors__ tree.
+    # ------------------------------------------------------------------
+    offline_result = None
+    if not cancelled:
+        with _make_slow_task(
+            1, "Scanning __ExternalActors__ for Verse tags (offline)…"
+        ) as offline_task:
+            _st_call(offline_task, "make_dialog", True)
+            _st_call(offline_task, "enter_progress_frame", 1, "Scanning __ExternalActors__…")
+
+            def _offline_cancel_requested():
+                return bool(_st_call(offline_task, "should_cancel"))
+
+            def _offline_progress(done, total, path):
+                # Zero-cost frames: the ScopedSlowTask above is
+                # constructed with a single placeholder work unit (the
+                # true file count isn't known until the directory walk
+                # completes), so each throttled tick (every
+                # _CANCEL_POLL_INTERVAL files — see scan_external_actors)
+                # updates only the description text via a 0-work frame,
+                # keeping the dialog visibly alive and Cancel responsive
+                # without a two-pass file count.
+                desc = "Offline scan: {}/{} .uasset file(s){}".format(
+                    done, total,
+                    " — " + os.path.basename(path) if path else "",
+                )
+                _st_call(offline_task, "enter_progress_frame", 0, desc)
+
+            offline_result = scan_external_actors(
+                verse_dir, tag_classes, class_map,
+                label_pattern=label_pattern,
+                live_labels=[lbl for lbl, _ in matched],
+                progress_cb=_offline_progress,
+                should_cancel=_offline_cancel_requested,
+            )
+        # offline_task's __exit__ has run here regardless of outcome.
+    else:
+        notes_parts.append(
+            "offline __ExternalActors__ scan skipped — an earlier phase "
+            "was already cancelled."
+        )
+
+    # Fold the offline scan's own cancellation into the overall `cancelled`
+    # flag -- mirrors matching_cancelled/walk_cancelled's exact pattern
+    # elsewhere in this function. Without this fold, a Cancel clicked
+    # during the offline scan was silently swallowed: Phase 2's actor/
+    # component reflection walk still ran to completion and the top-level
+    # report read cancelled=False -- the 0.0.534 "Cancel doesn't cancel"
+    # regression class.
+    offline_cancelled = bool(offline_result.get("cancelled")) if offline_result else False
+    if offline_cancelled:
+        cancelled = True
+        truncation_reasons.append(
+            "cancelled by user during the offline __ExternalActors__ scan "
+            "— partial results (if any) are in result['offline']; the live "
+            "actor/component walk below was skipped entirely."
+        )
 
     # ------------------------------------------------------------------
     # Actor-count cap — this is the expensive phase (component/property
@@ -1713,10 +2079,13 @@ def _inspect_tags_live(label_pattern, project_dir):
     # about to be examined, gives real per-actor percentage progress
     # (enter_progress_frame(1, ...) per actor) rather than the coarse
     # 2-unit progress phase 1 used. Skipped entirely if matching itself
-    # was cancelled — matches the pre-existing "no partial actor walk on a
-    # partial actor list" contract.
+    # was cancelled, OR if the offline __ExternalActors__ scan (which now
+    # runs first — see above) was itself cancelled — matches the
+    # pre-existing "no partial actor walk on a partial actor list"
+    # contract; a Cancel during the offline scan must not be followed by
+    # the live walk running anyway.
     # ------------------------------------------------------------------
-    if not matching_cancelled:
+    if not matching_cancelled and not offline_cancelled:
         walk_total = len(matched_for_walk) or 1
         with _make_slow_task(
             walk_total, "Scanning {} actor(s) for Verse tags…".format(len(matched_for_walk))
@@ -1972,6 +2341,64 @@ def _inspect_tags_live(label_pattern, project_dir):
             )
         )
 
+    # ------------------------------------------------------------------
+    # OFFLINE __EXTERNALACTORS__ SOURCE merge: fold offline-decoded tags
+    # into every actor whose combined component_tags/actor_tags read was
+    # NOT "ok" — mirrors the actor_tags rescue immediately above exactly
+    # (dedup by tag name, source marker, status rescued to "ok"). This is
+    # the PRIMARY source (see the banner above scan_external_actors), so
+    # it is applied even when the live read already succeeded — new,
+    # not-yet-seen tag names from the offline source are still merged in
+    # (only exact-name duplicates are skipped), never overriding an
+    # already-decoded live tag's presence.
+    # ------------------------------------------------------------------
+    offline_tags_by_label = {}
+    if offline_result and offline_result.get("status") == "ok":
+        for oa in offline_result.get("actors") or []:
+            offline_tags_by_label.setdefault(oa.get("label"), []).extend(oa.get("tags") or [])
+
+    external_actors_rescued = 0
+    for actor_entry in actors_out:
+        off_tags = offline_tags_by_label.get(actor_entry["label"])
+        if not off_tags:
+            continue
+        was_ok = actor_entry["extraction_status"] == "ok"
+        existing_names = {t["name"] for t in actor_entry["tags"]}
+        added_any = False
+        for t in off_tags:
+            name = t.get("name")
+            if not name or name in existing_names:
+                continue
+            actor_entry["tags"].append({
+                "name": name,
+                "parent_chain": list(t.get("parents") or []),
+                "source": "external_actors",
+            })
+            existing_names.add(name)
+            added_any = True
+        if added_any:
+            actor_entry["extraction_status"] = "ok"
+            # An "unreadable" debug snapshot from the dead live read is no
+            # longer the honest story once a real source (offline)
+            # decoded this actor successfully.
+            actor_entry.pop("extraction_debug", None)
+            if not was_ok:
+                external_actors_rescued += 1
+
+    if external_actors_rescued:
+        notes_parts.append(
+            "{} actor(s) additionally decoded via the offline "
+            "__ExternalActors__ .uasset scan (source \"external_actors\") "
+            "— the live editor read stayed empty/unreadable for these; "
+            "see result['offline'] for the scan that found them.".format(
+                external_actors_rescued
+            )
+        )
+    elif offline_result and offline_result.get("status") == "error":
+        notes_parts.append(
+            "offline __ExternalActors__ scan FAILED: " + str(offline_result.get("error"))
+        )
+
     notes_parts.append(fast_reject_note)
     if cancelled or truncation_reasons:
         notes_parts.append(
@@ -2014,7 +2441,21 @@ def _inspect_tags_live(label_pattern, project_dir):
             non_decoded_targets.append(_pair)
 
     deep_probe_result = None
-    if non_decoded_targets and not cancelled:
+    deep_probe_skipped_reason = None
+    if external_actors_rescued:
+        # The mystery the deep probe exists to investigate — "why does
+        # the live read decode nothing" — is already answered once the
+        # offline __ExternalActors__ scan rescued >=1 live-empty actor:
+        # further probing of the same live-blind read would tell us
+        # nothing new.
+        deep_probe_skipped_reason = "offline scan resolved the live-empty actors"
+        notes_parts.append(
+            "DEEP PROBE SKIPPED: " + deep_probe_skipped_reason + " — no "
+            "further diagnostic probing needed once a real source (the "
+            "offline __ExternalActors__ scan) explained the live-empty "
+            "actors."
+        )
+    elif non_decoded_targets and not cancelled:
         non_decoded_slice = non_decoded_targets[:_DEEP_PROBE_MAX_ACTORS]
         probe_targets = list(non_decoded_slice)
         contrast_added = False
@@ -2129,6 +2570,52 @@ def _inspect_tags_live(label_pattern, project_dir):
                     _compare_deep_probe_contexts(contrast_finding, non_decoded_findings)
                 )
 
+    # Offline-only actors: a label the __ExternalActors__ scan decoded
+    # tags for but that never matched a LIVE actor at all (a headless run
+    # with no editor, or a label-form mismatch) — never silently dropped,
+    # same never-omit doctrine as every other actor class in this module.
+    matched_live_labels = {lbl for lbl, _ in matched}
+    for label, off_tags in offline_tags_by_label.items():
+        if label in matched_live_labels:
+            continue
+        seen_names = set()
+        tags_out = []
+        for t in off_tags:
+            name = t.get("name")
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            tags_out.append({
+                "name": name,
+                "parent_chain": list(t.get("parents") or []),
+                "source": "external_actors",
+            })
+        actors_out.append({
+            "label": label,
+            "has_verse_tag_component": False,
+            "component_class": None,
+            "tags": tags_out,
+            "extraction_status": "ok" if tags_out else "empty",
+            "actor_tags": [],
+        })
+
+    # Summary counts: which source produced how many decoded tags —
+    # stated out loud rather than left implicit in per-actor "source"
+    # fields a reader would have to tally themselves.
+    source_counts = {"component_tags": 0, "actor_tags": 0, "external_actors": 0}
+    for a in actors_out:
+        for t in a.get("tags") or []:
+            src = t.get("source")
+            if src in source_counts:
+                source_counts[src] += 1
+    notes_parts.append(
+        "tag source split: {} from component_tags, {} from actor_tags, "
+        "{} from external_actors.".format(
+            source_counts["component_tags"], source_counts["actor_tags"],
+            source_counts["external_actors"],
+        )
+    )
+
     actors_out = sort_actors_flagged_first(actors_out)
     discovery["notes"] = " ".join(notes_parts)
 
@@ -2141,7 +2628,12 @@ def _inspect_tags_live(label_pattern, project_dir):
         "truncated": bool(truncation_reasons),
         "truncation_reasons": truncation_reasons,
         "scan_stats": scan_stats,
+        "offline": offline_result,
     }
+    if offline_result is not None:
+        result["offline_caveat"] = _OFFLINE_UNSAVED_CAVEAT
+    if deep_probe_skipped_reason is not None:
+        result["deep_probe_skipped_reason"] = deep_probe_skipped_reason
     if deep_probe_result is not None:
         result["deep_probe"] = deep_probe_result
     return result
@@ -2449,6 +2941,7 @@ def inspect_tags(label_pattern=None, project_dir=None):
             "truncated": False,
             "truncation_reasons": [],
             "scan_stats": None,
+            "offline": None,
         }
 
     write_report(result)

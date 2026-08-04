@@ -761,11 +761,17 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
         for tag in tags:
             name = tag.get("name", "<unnamed>")
             chain = " > ".join(tag.get("parent_chain") or [])
-            # source distinguishes the normal tag-component container from
-            # the 0.0.535 actor-level AActor::Tags rescue path -- surfaced
-            # here so a decoded tag's true origin is never ambiguous.
-            if tag.get("source") == "actor_tags":
+            # source distinguishes the normal tag-component container, the
+            # 0.0.535 actor-level AActor::Tags rescue path, and the 0.0.537
+            # offline __ExternalActors__ .uasset scan (now the PRIMARY
+            # source -- see tag_inspect.py's scan_external_actors) --
+            # surfaced here so a decoded tag's true origin is never
+            # ambiguous.
+            source = tag.get("source")
+            if source == "actor_tags":
                 chain = (chain + "  " if chain else "") + "[from actor Tags]"
+            elif source == "external_actors":
+                chain = (chain + "  " if chain else "") + "[from __ExternalActors__ .uasset]"
             tree.insert(node, tk.END, text=str(name), values=(chain,))
         if unreadable:
             debug = actor.get("extraction_debug") or {}
@@ -827,8 +833,51 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
         summary_bits.append(
             "deep probe ran on " + str(len(deep_probe.get("probed_labels") or [])) + " actor(s)"
         )
+    dp_skip_reason = data.get("deep_probe_skipped_reason")
+    if dp_skip_reason:
+        summary_bits.append("deep probe skipped: " + str(dp_skip_reason))
     if data.get("verse_dir"):
         summary_bits.append("verse_dir: " + str(data.get("verse_dir")))
+
+    # Offline __ExternalActors__ scan (0.0.537, now the PRIMARY tag source
+    # -- see tag_inspect.py's scan_external_actors) -- reported here
+    # whether it succeeded or failed, and never silently: a discovery
+    # failure surfaces its error + every directory it tried, out loud
+    # (see docs/PATH-DISCOVERY.md), same as every other honest-failure
+    # contract in this module.
+    src_counts = {"component_tags": 0, "actor_tags": 0, "external_actors": 0}
+    for a in actors:
+        for t in a.get("tags") or []:
+            s = t.get("source")
+            if s in src_counts:
+                src_counts[s] += 1
+    if any(src_counts.values()):
+        summary_bits.append(
+            "tag sources: {} component, {} actor, {} external_actors".format(
+                src_counts["component_tags"], src_counts["actor_tags"], src_counts["external_actors"],
+            )
+        )
+
+    offline = data.get("offline")
+    if offline:
+        if offline.get("status") == "ok":
+            summary_bits.append(
+                "offline __ExternalActors__ scan: {} of {} .uasset file(s) "
+                "matched under {}".format(
+                    offline.get("files_matched", 0), offline.get("files_total", 0),
+                    offline.get("external_actors_dir") or "<unknown>",
+                )
+            )
+        else:
+            summary_bits.append(
+                "offline __ExternalActors__ scan FAILED: "
+                + str(offline.get("error") or "unknown error")
+            )
+
+    offline_caveat = data.get("offline_caveat")
+    if offline_caveat:
+        summary_bits.append(str(offline_caveat))
+
     summary_bits.append(source_label)
     summary_label.config(text="  |  ".join(summary_bits))
 
@@ -1003,8 +1052,10 @@ def _show_tag_inspect_window(tag_inspect_module):
 
     tk.Label(
         win,
-        text="Reads Verse gameplay tags from the actor's tag COMPONENT —\n"
-             "uefn_get_property can't see these (flat actor-property read only).",
+        text="PRIMARY source: an offline scan of the project's on-disk\n"
+             "__ExternalActors__ .uasset files (see the summary line below).\n"
+             "The live tag-component / actor-Tags read runs as corroboration —\n"
+             "uefn_get_property can't see any of these (flat actor-property read only).",
         font=("Segoe UI", 9), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
     ).pack(padx=16, pady=(0, 8), anchor=tk.W)
 

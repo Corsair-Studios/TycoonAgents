@@ -1839,5 +1839,682 @@ class RenderDeepProbeTests(unittest.TestCase):
         self.assertTrue(all(c["text"] != "[context]" for c in children))
 
 
+# ---------------------------------------------------------------------------
+# Offline __ExternalActors__ tag extraction -- the PRIMARY tag-extraction
+# source (see the banner above scan_external_actors in tag_inspect.py):
+# one-file-per-actor .uasset files under the project's __ExternalActors__
+# tree are scanned directly off disk, entirely without `unreal`. Covers
+# _find_uefn_project_root, _discover_external_actors_dirs,
+# scan_external_actors itself, and the merge/rescue + deep-probe-suppression
+# integration inside inspect_tags().
+# ---------------------------------------------------------------------------
+
+_UASSET_SEPARATOR = b"\x00\x00"
+
+
+def _make_uasset_bytes(*printable_segments):
+    """Builds fake binary .uasset content: non-printable separator bytes
+    (outside tag_inspect._PRINTABLE_RUN_RE's [\\x20-\\x7E] range) around
+    each *printable_segments* entry, so the extractor recovers exactly the
+    given strings as distinct printable-ASCII runs -- never merged into one
+    run, never split mid-word."""
+    parts = [b"\x01\x02\x03"]
+    for seg in printable_segments:
+        parts.append(seg.encode("ascii"))
+        parts.append(_UASSET_SEPARATOR)
+    parts.append(b"\xff\xfe\xfd")
+    return b"".join(parts)
+
+
+class FindUefnProjectRootTests(unittest.TestCase):
+    def test_finds_root_when_uefnproject_present_in_an_ancestor(self):
+        with tempfile.TemporaryDirectory() as base:
+            root = os.path.join(base, "ProjectRoot")
+            nested = os.path.join(root, "Content", "Verse", "Deep")
+            os.makedirs(nested)
+            open(os.path.join(root, "MyProject.uefnproject"), "w").close()
+            found = tag_inspect._find_uefn_project_root(nested)
+        self.assertEqual(os.path.normpath(found), os.path.normpath(root))
+
+    def test_returns_none_when_no_uefnproject_found(self):
+        with tempfile.TemporaryDirectory() as base:
+            nested = os.path.join(base, "a", "b", "c")
+            os.makedirs(nested)
+            self.assertIsNone(tag_inspect._find_uefn_project_root(nested))
+
+    def test_none_start_dir_returns_none_without_raising(self):
+        self.assertIsNone(tag_inspect._find_uefn_project_root(None))
+
+    def test_never_raises_when_os_listdir_raises(self):
+        orig_listdir = os.listdir
+
+        def _raising_listdir(_path):
+            raise PermissionError("denied")
+
+        os.listdir = _raising_listdir
+        try:
+            result = tag_inspect._find_uefn_project_root(
+                os.path.join(tempfile.gettempdir(), "tag_inspect_unreadable_probe")
+            )
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"_find_uefn_project_root raised on an unreadable dir: {e!r}")
+        finally:
+            os.listdir = orig_listdir
+        self.assertIsNone(result)
+
+
+class DiscoverExternalActorsDirsTests(unittest.TestCase):
+    def setUp(self):
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+    def tearDown(self):
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    def test_env_override_candidates_come_first(self):
+        with tempfile.TemporaryDirectory() as base:
+            env_target = os.path.join(base, "EnvOverrideProject")
+            os.makedirs(env_target)
+            root = os.path.join(base, "ProjectRoot")
+            verse_dir = os.path.join(root, "Content", "Verse")
+            os.makedirs(verse_dir)
+            open(os.path.join(root, "MyProject.uefnproject"), "w").close()
+
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_target
+            dirs = tag_inspect._discover_external_actors_dirs(verse_dir)
+
+        expected_first = os.path.normpath(
+            os.path.join(env_target, "Content", tag_inspect._EXTERNAL_ACTORS_DIRNAME)
+        )
+        expected_second = os.path.normpath(
+            os.path.join(env_target, tag_inspect._EXTERNAL_ACTORS_DIRNAME)
+        )
+        self.assertEqual(dirs[0], expected_first)
+        self.assertEqual(dirs[1], expected_second)
+        root_candidate = os.path.normpath(
+            os.path.join(root, "Content", tag_inspect._EXTERNAL_ACTORS_DIRNAME)
+        )
+        self.assertIn(root_candidate, dirs[2:])
+
+    def test_dedup_preserves_order_when_direct_and_glob_probes_find_same_dir(self):
+        os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+        with tempfile.TemporaryDirectory() as base:
+            root = os.path.join(base, "ProjectRoot")
+            ext_dir = os.path.join(root, "Content", tag_inspect._EXTERNAL_ACTORS_DIRNAME)
+            os.makedirs(ext_dir)
+            open(os.path.join(root, "MyProject.uefnproject"), "w").close()
+            dirs = tag_inspect._discover_external_actors_dirs(os.path.join(root, "Content"))
+
+        normalized_ext_dir = os.path.normpath(ext_dir)
+        self.assertEqual(dirs.count(normalized_ext_dir), 1)
+        self.assertEqual(len(dirs), len(set(dirs)))
+
+    def test_verse_dir_none_never_raises_and_only_env_candidates_when_set(self):
+        os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+        try:
+            dirs = tag_inspect._discover_external_actors_dirs(None)
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"_discover_external_actors_dirs raised with verse_dir=None: {e!r}")
+        self.assertEqual(dirs, [])
+
+        os.environ["UEFN_VERSE_PROJECT_DIR"] = "C:\\FakeEnvOnlyProject"
+        dirs2 = tag_inspect._discover_external_actors_dirs(None)
+        self.assertEqual(len(dirs2), 2)
+
+
+class ScanExternalActorsDiscoveryFailureTests(unittest.TestCase):
+    def setUp(self):
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+        os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    def tearDown(self):
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    def test_no_external_actors_dir_found_returns_error_with_populated_dirs_tried(self):
+        with tempfile.TemporaryDirectory() as base:
+            root = os.path.join(base, "SomeProject")
+            verse_dir = os.path.join(root, "Content", "Verse")
+            os.makedirs(verse_dir)
+            open(os.path.join(root, "SomeProject.uefnproject"), "w").close()
+            # __ExternalActors__ is deliberately never created anywhere.
+            result = tag_inspect.scan_external_actors(verse_dir, {}, {})
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["actors"], [])
+        self.assertTrue(result["dirs_tried"])
+        self.assertIn("UEFN_VERSE_PROJECT_DIR", result["error"])
+        self.assertFalse(result["cancelled"])
+
+    def test_verse_dir_none_returns_error_not_raise(self):
+        try:
+            result = tag_inspect.scan_external_actors(None, {}, {})
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"scan_external_actors raised with verse_dir=None: {e!r}")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["actors"], [])
+
+
+class ScanExternalActorsHappyPathTests(unittest.TestCase):
+    def setUp(self):
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+    def tearDown(self):
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    def test_ground_truth_tags_decode_no_false_positives_from_unmatched_decoy(self):
+        class_map = {
+            "t_room_r1": "tag",
+            "t_spawn_rand": "t_spawn_base",
+            "t_spawn_base": "tag",
+        }
+        tag_class_set = tag_inspect.build_tag_class_set(class_map)
+
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__", "AB", "CD")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes(
+                    "R8_P1_SGMarker_Actor1",
+                    "garbage_prefix t_room_r1 garbage_suffix",
+                    "moretext t_spawn_rand tail",
+                ))
+            # Decoy contains a real tag name but its only run never matches
+            # the label pattern, so it must be gated out entirely -- not
+            # even examined for tags.
+            with open(os.path.join(ext_dir, "Decoy.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes(
+                    "R1_P1_OtherActor_NoMatch",
+                    "unrelated t_room_r1 present but hidden",
+                ))
+
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["files_total"], 2)
+        self.assertEqual(result["files_matched"], 1)
+        self.assertEqual(len(result["actors"]), 1)
+
+        actor = result["actors"][0]
+        self.assertEqual(actor["label"], "R8_P1_SGMarker_Actor1")
+        by_name = {t["name"]: t for t in actor["tags"]}
+        self.assertEqual(set(by_name), {"t_room_r1", "t_spawn_rand"})
+        self.assertEqual(by_name["t_room_r1"]["parents"], ["tag"])
+        self.assertEqual(by_name["t_spawn_rand"]["parents"], ["t_spawn_base", "tag"])
+        self.assertEqual(by_name["t_room_r1"]["source"], "external_actors")
+        self.assertEqual(by_name["t_spawn_rand"]["source"], "external_actors")
+        self.assertFalse(result["cancelled"])
+
+    def test_zero_tag_matched_file_still_produces_actor_entry(self):
+        class_map = {"t_room_r1": "tag"}
+        tag_class_set = tag_inspect.build_tag_class_set(class_map)
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_NoTagsHere", "just some unrelated content"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["actors"]), 1)
+        self.assertEqual(result["actors"][0]["tags"], [])
+
+
+class ScanExternalActorsLabelAttributionTests(unittest.TestCase):
+    def setUp(self):
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+    def tearDown(self):
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    @staticmethod
+    def _class_map_and_tag_set():
+        class_map = {"t_room_r1": "tag"}
+        return class_map, tag_inspect.build_tag_class_set(class_map)
+
+    def test_live_labels_exact_match_wins_over_pattern_matched_run(self):
+        class_map, tag_class_set = self._class_map_and_tag_set()
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_GenericRun", "ExactLiveLabel", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+                live_labels=["ExactLiveLabel"],
+            )
+
+        actor = result["actors"][0]
+        self.assertEqual(actor["label"], "ExactLiveLabel")
+        self.assertNotIn("ambiguous_labels", actor)
+
+    def test_two_live_labels_in_one_file_record_ambiguous_labels_and_use_first_sorted(self):
+        class_map, tag_class_set = self._class_map_and_tag_set()
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_GenericRun", "ZLabel", "ALabel", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+                live_labels=["ZLabel", "ALabel"],
+            )
+
+        actor = result["actors"][0]
+        self.assertEqual(actor["label"], "ALabel")
+        self.assertEqual(actor["ambiguous_labels"], ["ALabel", "ZLabel"])
+
+    def test_headless_no_live_labels_uses_pattern_matched_run(self):
+        class_map, tag_class_set = self._class_map_and_tag_set()
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_TheLabel", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+            )
+
+        actor = result["actors"][0]
+        self.assertEqual(actor["label"], "SGMarker_TheLabel")
+        self.assertNotIn("ambiguous_labels", actor)
+
+
+class ScanExternalActorsCancellationTests(unittest.TestCase):
+    def setUp(self):
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+    def tearDown(self):
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    def test_cancellation_after_first_poll_returns_partial_flagged_results(self):
+        class_map = {"t_room_r1": "tag"}
+        tag_class_set = tag_inspect.build_tag_class_set(class_map)
+        n_files = tag_inspect._CANCEL_POLL_INTERVAL + 10
+
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            for i in range(n_files):
+                with open(os.path.join(ext_dir, "Actor{}.uasset".format(i)), "wb") as f:
+                    f.write(_make_uasset_bytes("SGMarker_Actor{}".format(i), "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+
+            cancel_calls = []
+
+            def _should_cancel():
+                cancel_calls.append(True)
+                return True
+
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+                should_cancel=_should_cancel,
+            )
+
+        self.assertTrue(result["cancelled"])
+        self.assertTrue(cancel_calls, "should_cancel was never polled")
+        self.assertEqual(len(result["actors"]), tag_inspect._CANCEL_POLL_INTERVAL)
+        self.assertLess(len(result["actors"]), n_files)
+
+
+class ScanExternalActorsTagClassSetTypeShapeTests(unittest.TestCase):
+    """Pins the integration contract between build_tag_class_set() and
+    scan_external_actors(): scan_external_actors calls
+    ``tag_class_set.keys()`` (tag_inspect.py's scan_external_actors, ~line
+    510). build_tag_class_set() (tag_inspect.py:287-299, exercised above by
+    BuildTagClassSetTests) returns a ``dict`` of
+    ``{class_name: parent_chain}`` — NOT a set — so ``.keys()`` is a valid
+    call and this is not a bug. This test drives scan_external_actors with
+    the REAL return value of build_tag_class_set() (not a hand-built
+    stand-in dict) to pin that shape; if a future change ever turned
+    build_tag_class_set() into a set-returning function, this test would
+    fail with an AttributeError, which is exactly the "type-shape" signal
+    it exists to catch."""
+
+    def setUp(self):
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+    def tearDown(self):
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    def test_real_build_tag_class_set_return_value_works_through_scan_external_actors(self):
+        class_map = tag_inspect.build_class_map(["t_room_r1 := class(tag)\n"])
+        tag_class_set = tag_inspect.build_tag_class_set(class_map)
+        self.assertIsInstance(tag_class_set, dict)
+
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_Actor1", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            try:
+                result = tag_inspect.scan_external_actors(
+                    None, tag_class_set, class_map, label_pattern="SGMarker",
+                )
+            except AttributeError as e:  # pragma: no cover - would mean a real bug
+                self.fail(
+                    "scan_external_actors raised AttributeError against the "
+                    "real build_tag_class_set() return type -- {!r}".format(e)
+                )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([t["name"] for t in result["actors"][0]["tags"]], ["t_room_r1"])
+
+
+# ---------------------------------------------------------------------------
+# Merge/rescue + deep-probe-suppression integration through inspect_tags()
+# itself -- same faked-unreal harness as ActorLevelTagSourceMergeTests /
+# DeepProbeTriggerTests above, plus UEFN_VERSE_PROJECT_DIR env patching so
+# the offline scan can find a real (temp-dir) __ExternalActors__ tree
+# independent of whatever verse_dir/project_dir gets passed in.
+# ---------------------------------------------------------------------------
+
+class ExternalActorsRescueAndSuppressionTests(unittest.TestCase):
+    def setUp(self):
+        self._had_unreal_attr = hasattr(tag_inspect, "unreal")
+        self._orig_unreal = getattr(tag_inspect, "unreal", None)
+        self._orig_has_unreal = tag_inspect._HAS_UNREAL
+        self._orig_report_path = tag_inspect.report_path
+        self._orig_get_bridge_dir = tag_inspect._get_bridge_dir
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+        self._scratch = tempfile.mkdtemp(prefix="tag_inspect_external_actors_test_")
+        primary = os.path.join(self._scratch, "primary", "tag_inspect_report.json")
+        fallback_dir = os.path.join(self._scratch, "fallback")
+        os.makedirs(fallback_dir, exist_ok=True)
+        tag_inspect.report_path = lambda: primary
+        tag_inspect._get_bridge_dir = lambda: fallback_dir
+
+        self._actors = []
+        subsystem = types.SimpleNamespace(get_all_level_actors=lambda: self._actors)
+        tag_inspect.unreal = types.SimpleNamespace(
+            ActorComponent=object(),
+            EditorActorSubsystem=object(),
+            ScopedSlowTask=lambda total, desc: tag_inspect._NullSlowTask(),
+            get_editor_subsystem=lambda cls: subsystem,
+            log_warning=lambda *a, **k: None,
+            log_error=lambda *a, **k: None,
+        )
+        tag_inspect._HAS_UNREAL = True
+
+    def tearDown(self):
+        if self._had_unreal_attr:
+            tag_inspect.unreal = self._orig_unreal
+        else:
+            del tag_inspect.unreal
+        tag_inspect._HAS_UNREAL = self._orig_has_unreal
+        tag_inspect.report_path = self._orig_report_path
+        tag_inspect._get_bridge_dir = self._orig_get_bridge_dir
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    @staticmethod
+    def _write_verse_dir_with_known_tag(tmp_dir):
+        with open(os.path.join(tmp_dir, "tags.verse"), "w", encoding="utf-8") as f:
+            f.write("t_room_r1 := class(tag)\n")
+
+    def test_live_empty_actor_rescued_by_offline_tags_and_deep_probe_skipped(self):
+        with tempfile.TemporaryDirectory() as verse_dir, tempfile.TemporaryDirectory() as env_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("RescuedActor", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+
+            comp = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            actor = _FakeActor("RescuedActor", [comp], [])  # empty on BOTH component and actor tags
+            self._actors = [actor]
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        self.assertEqual(result["offline"]["status"], "ok")
+        self.assertEqual(
+            set(result["offline"].keys()),
+            {"status", "external_actors_dir", "dirs_tried", "files_total",
+             "files_matched", "actors", "cancelled", "error"},
+        )
+        self.assertIn("offline_caveat", result)
+
+        entry = result["actors"][0]
+        self.assertEqual(entry["label"], "RescuedActor")
+        self.assertEqual(entry["extraction_status"], "ok")
+        self.assertEqual({t["source"] for t in entry["tags"]}, {"external_actors"})
+        self.assertEqual({t["name"] for t in entry["tags"]}, {"t_room_r1"})
+
+        self.assertNotIn("deep_probe", result)
+        self.assertEqual(
+            result["deep_probe_skipped_reason"],
+            "offline scan resolved the live-empty actors",
+        )
+
+    def test_offline_discovery_failure_leaves_probe_trigger_behavior_unchanged(self):
+        os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            actors = []
+            for i in range(2):  # no __ExternalActors__ anywhere -> offline scan fails
+                comp = _FakeComponentWithClass({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+                actors.append(_FakeActor("Empty{}".format(i), [comp], ["unrelated"]))
+            self._actors = actors
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        self.assertEqual(result["offline"]["status"], "error")
+        self.assertIn("offline_caveat", result)
+        self.assertIn("deep_probe", result)
+        dp = result["deep_probe"]
+        self.assertTrue(all(f.get("role") == "non_decoded" for f in dp["findings"]))
+        self.assertIn("FULL FAILURE", result["discovery"]["notes"])
+
+    def test_offline_only_actor_with_no_live_counterpart_appears_in_report(self):
+        with tempfile.TemporaryDirectory() as verse_dir, tempfile.TemporaryDirectory() as env_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "GhostActor.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("OfflineOnlyGhostActor", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+
+            self._actors = []  # no live actors at all
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        self.assertEqual(result["offline"]["status"], "ok")
+        offline_only = next(
+            (a for a in result["actors"] if a["label"] == "OfflineOnlyGhostActor"), None,
+        )
+        self.assertIsNotNone(offline_only, "offline-only actor was silently dropped from the report")
+        self.assertFalse(offline_only["has_verse_tag_component"])
+        self.assertEqual(offline_only["extraction_status"], "ok")
+        self.assertEqual({t["name"] for t in offline_only["tags"]}, {"t_room_r1"})
+        self.assertEqual({t["source"] for t in offline_only["tags"]}, {"external_actors"})
+
+
+# ---------------------------------------------------------------------------
+# Cancellation DURING the offline __ExternalActors__ scan phase, exercised
+# through inspect_tags() itself -- not scan_external_actors() in isolation
+# (ScanExternalActorsCancellationTests above already pins that
+# scan_external_actors() correctly reports cancelled:True with partial
+# results on its own). The uefn-auditor found the coverage hole this class
+# closes: _inspect_tags_live() never read offline_result["cancelled"], so a
+# user cancelling mid-offline-scan did NOT stop Phase 2 (the live actor/
+# component reflection walk) from running anyway, and the top-level
+# "cancelled" key stayed False for a scan the user had explicitly cancelled.
+# A fake ScopedSlowTask factory keyed off each phase's description text lets
+# Phase 1 complete normally (so an actor is actually matched and available
+# for Phase 2 to WRONGLY walk pre-fix) while cancelling only the offline
+# phase's task -- same technique DeepProbeTriggerTests' _AlwaysCancelTask
+# uses, but scoped to one phase instead of every ScopedSlowTask call.
+# ---------------------------------------------------------------------------
+
+class InspectTagsCancelDuringOfflineScanTests(unittest.TestCase):
+    def setUp(self):
+        self._had_unreal_attr = hasattr(tag_inspect, "unreal")
+        self._orig_unreal = getattr(tag_inspect, "unreal", None)
+        self._orig_has_unreal = tag_inspect._HAS_UNREAL
+        self._orig_report_path = tag_inspect.report_path
+        self._orig_get_bridge_dir = tag_inspect._get_bridge_dir
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+        self._scratch = tempfile.mkdtemp(prefix="tag_inspect_cancel_offline_test_")
+        primary = os.path.join(self._scratch, "primary", "tag_inspect_report.json")
+        fallback_dir = os.path.join(self._scratch, "fallback")
+        os.makedirs(fallback_dir, exist_ok=True)
+        tag_inspect.report_path = lambda: primary
+        tag_inspect._get_bridge_dir = lambda: fallback_dir
+
+        self._actors = []
+        subsystem = types.SimpleNamespace(get_all_level_actors=lambda: self._actors)
+
+        class _AlwaysCancelTask:
+            """Cancels on every should_cancel() poll -- used ONLY for the
+            offline-scan ScopedSlowTask below, never for phase 1/2."""
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def make_dialog(self, *_a, **_k):
+                pass
+
+            def enter_progress_frame(self, *_a, **_k):
+                pass
+
+            def should_cancel(self):
+                return True
+
+        def _scoped_slow_task_factory(total, desc):
+            # Only the offline __ExternalActors__ phase's task cancels;
+            # phase 1 ("Inspecting Verse tags…") and phase 2 ("Scanning N
+            # actor(s) for Verse tags…") get a real (never-cancelling)
+            # _NullSlowTask so this test isolates cancellation to exactly
+            # the offline phase.
+            if "__ExternalActors__" in desc:
+                return _AlwaysCancelTask()
+            return tag_inspect._NullSlowTask()
+
+        tag_inspect.unreal = types.SimpleNamespace(
+            ActorComponent=object(),
+            EditorActorSubsystem=object(),
+            ScopedSlowTask=_scoped_slow_task_factory,
+            get_editor_subsystem=lambda cls: subsystem,
+            log_warning=lambda *a, **k: None,
+            log_error=lambda *a, **k: None,
+        )
+        tag_inspect._HAS_UNREAL = True
+
+    def tearDown(self):
+        if self._had_unreal_attr:
+            tag_inspect.unreal = self._orig_unreal
+        else:
+            del tag_inspect.unreal
+        tag_inspect._HAS_UNREAL = self._orig_has_unreal
+        tag_inspect.report_path = self._orig_report_path
+        tag_inspect._get_bridge_dir = self._orig_get_bridge_dir
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    def test_cancel_during_offline_scan_skips_phase_two_and_propagates_top_level_cancelled(self):
+        component_reads = []
+
+        class _TrackingComponent(_FakeComponentWithClass):
+            """Records every get_editor_property() call so Phase 2's live
+            component reflection walk running (or not) is directly
+            observable, rather than inferred from extraction_status."""
+            def get_editor_property(self, name):
+                component_reads.append(name)
+                return super().get_editor_property(name)
+
+        with tempfile.TemporaryDirectory() as verse_dir, tempfile.TemporaryDirectory() as env_dir:
+            with open(os.path.join(verse_dir, "tags.verse"), "w", encoding="utf-8") as f:
+                f.write("t_room_r1 := class(tag)\n")
+
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            # Enough files to cross _CANCEL_POLL_INTERVAL so the offline
+            # scan's should_cancel() actually gets polled and trips mid-walk
+            # (not before any work, not after it already finished).
+            n_files = tag_inspect._CANCEL_POLL_INTERVAL + 10
+            for i in range(n_files):
+                with open(os.path.join(ext_dir, "Actor{}.uasset".format(i)), "wb") as f:
+                    f.write(_make_uasset_bytes("ExternalActor{}".format(i), "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+
+            # Empty component container + no actor-level tags: nothing
+            # rescues this actor, so pre-fix it lands in non_decoded_targets
+            # and (wrongly, since the scan was cancelled) becomes eligible
+            # for the deep probe too -- a stronger pin than an "ok" actor
+            # would give assertion (4) below.
+            comp = _TrackingComponent({"gameplay_tags_container": []}, "VerseTagMarkupComponent")
+            live_actor = _FakeActor("LiveActor", [comp], [])
+            self._actors = [live_actor]
+
+            result = tag_inspect.inspect_tags(label_pattern=None, project_dir=verse_dir)
+
+        # (1) offline retains partial results, flagged cancelled -- never
+        # discarded just because the user clicked Cancel.
+        self.assertIsNotNone(result["offline"])
+        self.assertTrue(result["offline"]["cancelled"])
+        self.assertGreater(len(result["offline"]["actors"]), 0)
+        self.assertLess(len(result["offline"]["actors"]), n_files)
+
+        # (2) Phase 2 (the live actor/component reflection walk) must be
+        # SKIPPED once the offline phase was cancelled -- the tracking
+        # component's get_editor_property must never be called.
+        self.assertEqual(
+            component_reads, [],
+            "Phase 2 (live component reflection walk) ran despite the scan "
+            "being cancelled during the offline __ExternalActors__ phase",
+        )
+
+        # (3) top-level cancelled must propagate from the offline phase's
+        # cancellation, not stay False just because phase 1 itself wasn't
+        # cancelled.
+        self.assertTrue(result["cancelled"])
+
+        # (4) a cancelled run must neither run the deep probe nor claim the
+        # "offline scan resolved the live-empty actors" suppression
+        # rationale for a scan that never even finished.
+        self.assertNotIn("deep_probe", result)
+        self.assertNotIn("deep_probe_skipped_reason", result)
+
+
 if __name__ == "__main__":
     unittest.main()
