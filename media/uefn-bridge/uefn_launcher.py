@@ -12,6 +12,7 @@ Usage:
 import unreal
 import json
 import os
+import re
 import datetime
 import subprocess
 import webbrowser
@@ -700,6 +701,32 @@ def _classify_tag_actor(actor):
     return "empty"
 
 
+# Row tags (ttk.Treeview `tags=` on insert) distinguishing an actor row from
+# a special row (deep-probe header, empty-state placeholder) -- used by the
+# "Actor / Tag" heading click-to-sort in _show_tag_inspect_window below to
+# sort only actor rows and pin special rows after them, robustly (not by
+# guessing off display text).
+_TAG_ACTOR_ROW = "tag_actor_row"
+_TAG_SPECIAL_ROW = "tag_special_row"
+
+
+def _natural_sort_key(label):
+    """Case-insensitive, numeric-aware sort key for an actor label (or any
+    string), e.g. ``"R2_P1"`` sorts before ``"R10_P1"`` instead of a plain
+    ASCII sort interleaving them (``"R10_P1" < "R2_P1"`` lexicographically
+    because ``"1" < "2"``). Splits the string on digit runs, lowercasing the
+    text chunks and converting the digit chunks to ``int`` so numeric
+    comparison is used where it matters. Pure string/``re`` logic only --
+    no tkinter or unreal dependency -- so it imports and calls headlessly
+    for direct unit testing. Never raises on a non-string input; coerces via
+    ``str()`` first."""
+    text = str(label)
+    return [
+        int(chunk) if chunk.isdigit() else chunk.lower()
+        for chunk in re.split(r"(\d+)", text)
+    ]
+
+
 def _render_tag_report(tree, discovery_label, summary_label, data, source_label):
     """Populate *tree*/*discovery_label*/*summary_label* from an
     ``inspect_tags()``-shaped result dict (or ``None``). Clears the tree
@@ -757,7 +784,7 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
         if unreadable:
             display_label += "  (tags unreadable — see debug)"
         tags = actor.get("tags") or []
-        node = tree.insert("", tk.END, text=display_label, values=("",))
+        node = tree.insert("", tk.END, text=display_label, values=("",), tags=(_TAG_ACTOR_ROW,))
         for tag in tags:
             name = tag.get("name", "<unnamed>")
             chain = " > ".join(tag.get("parent_chain") or [])
@@ -813,7 +840,7 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
                 "Copy the MCP prompt for AI-assisted diagnosis."
             )
         )
-        tree.insert("", tk.END, text=placeholder_text, values=("",))
+        tree.insert("", tk.END, text=placeholder_text, values=("",), tags=(_TAG_SPECIAL_ROW,))
 
     if deep_probe:
         _render_deep_probe(tree, deep_probe)
@@ -912,6 +939,7 @@ def _render_deep_probe(tree, deep_probe):
                  non_decoded_n, len(findings) - non_decoded_n
              ),
         values=("",),
+        tags=(_TAG_SPECIAL_ROW,),
     )
     for finding in findings:
         label = finding.get("actor_label", "<unlabeled>")
@@ -1096,30 +1124,6 @@ def _show_tag_inspect_window(tag_inspect_module):
     )
     discovery_label.pack(padx=16, pady=(0, 6), anchor=tk.W)
 
-    tree_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
-    tree_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
-
-    tree = ttk.Treeview(
-        tree_frame, columns=("value",), show="tree headings",
-        style="Tag.Treeview",
-    )
-    tree.heading("#0", text="Actor / Tag")
-    tree.heading("value", text="Parent chain")
-    tree.column("#0", width=320)
-    tree.column("value", width=340)
-
-    # Scrollbars follow the established pattern in dependency_viewer.py
-    # (~lines 1413-1419): parented to tree_frame, vertical packed right/
-    # fill-y and horizontal bottom/fill-x BEFORE the tree itself claims the
-    # remaining space with fill=both/expand=True.
-    vsb_tree = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-    hsb_tree = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
-    tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
-
-    vsb_tree.pack(side="right", fill="y")
-    hsb_tree.pack(side="bottom", fill="x")
-    tree.pack(fill=tk.BOTH, expand=True)
-
     summary_label = tk.Label(
         win, text="", font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
         wraplength=680,
@@ -1136,11 +1140,101 @@ def _show_tag_inspect_window(tag_inspect_module):
     # static-wraplength idiom used elsewhere in this window/dependency_
     # viewer.py, but driven dynamically since this label sits at a fixed
     # edge rather than a fixed size.
+    #
+    # PACKED HERE — before tree_frame below — is load-bearing, not
+    # cosmetic. Tk's packer carves each slave's parcel from the shared
+    # cavity in the ORDER pack() is called, regardless of side=; tree_frame
+    # below uses fill=BOTH/expand=True, which (if packed first) claims the
+    # ENTIRE remaining cavity immediately, leaving nothing for a
+    # side=BOTTOM widget packed afterward — that was the field bug: the
+    # multi-line word-wrapped summary got clipped at the window's bottom
+    # edge because tree_frame had already consumed all the space before
+    # summary_label ever got a parcel. Packing summary_label FIRST (still
+    # side=BOTTOM, so it still visually pins to the bottom edge) reserves
+    # its full wrapped-text height out of the cavity up front; tree_frame,
+    # packed after, only gets what's left and shrinks first on a small
+    # window instead of the summary clipping.
     summary_label.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(4, 8))
     summary_label.bind(
         "<Configure>",
         lambda e: summary_label.config(wraplength=max(e.width - 8, 100)),
     )
+
+    tree_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
+    tree_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+
+    tree = ttk.Treeview(
+        tree_frame, columns=("value",), show="tree headings",
+        style="Tag.Treeview",
+    )
+    _ACTOR_COL_HEADING = "Actor / Tag"
+    tree.heading("#0", text=_ACTOR_COL_HEADING)
+    tree.heading("value", text="Parent chain")
+    tree.column("#0", width=320)
+    tree.column("value", width=340)
+
+    # Scrollbars follow the established pattern in dependency_viewer.py
+    # (~lines 1413-1419): parented to tree_frame, vertical packed right/
+    # fill-y and horizontal bottom/fill-x BEFORE the tree itself claims the
+    # remaining space with fill=both/expand=True.
+    vsb_tree = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+    hsb_tree = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=vsb_tree.set, xscrollcommand=hsb_tree.set)
+
+    vsb_tree.pack(side="right", fill="y")
+    hsb_tree.pack(side="bottom", fill="x")
+    tree.pack(fill=tk.BOTH, expand=True)
+
+    # ------------------------------------------------------------------
+    # Click-to-sort on the "Actor / Tag" heading — top-level ACTOR rows
+    # only (tagged _TAG_ACTOR_ROW at insert, see _render_tag_report), using
+    # the natural/numeric-aware _natural_sort_key so "R2_P1" sorts before
+    # "R10_P1". Special rows (deep-probe header, empty-state placeholder —
+    # tagged _TAG_SPECIAL_ROW) are excluded from the shuffle and pinned
+    # after the actor block in their original relative order, regardless
+    # of direction. Children (tag rows / probe context rows) move with
+    # their parent automatically — ttk.Treeview.move() on a top-level item
+    # carries its whole subtree. Mirrors dependency_viewer.py's
+    # heading(..., command=...) click-to-sort binding.
+    # ------------------------------------------------------------------
+    _sort_dir = [None]  # None (scan order) -> "asc" -> "desc" -> "asc" ...
+
+    def _toggle_sort():
+        top_ids = list(tree.get_children(""))
+
+        def _row_tags(iid):
+            t = tree.item(iid, "tags")
+            if isinstance(t, str):
+                return (t,)
+            return t or ()
+
+        actor_ids = [iid for iid in top_ids if _TAG_ACTOR_ROW in _row_tags(iid)]
+        if not actor_ids:
+            return
+        special_ids = [iid for iid in top_ids if iid not in actor_ids]
+
+        _sort_dir[0] = "desc" if _sort_dir[0] == "asc" else "asc"
+        reverse = _sort_dir[0] == "desc"
+
+        actor_ids.sort(key=lambda iid: _natural_sort_key(tree.item(iid, "text")), reverse=reverse)
+        for index, iid in enumerate(actor_ids):
+            tree.move(iid, "", index)
+        for offset, iid in enumerate(special_ids):
+            tree.move(iid, "", len(actor_ids) + offset)
+
+        arrow = " ▲" if _sort_dir[0] == "asc" else " ▼"
+        tree.heading("#0", text=_ACTOR_COL_HEADING + arrow)
+
+    tree.heading("#0", command=_toggle_sort)
+
+    def _render_and_reset_sort(data, source_label):
+        """Wraps _render_tag_report with the sort-state reset it needs:
+        a fresh render (new scan or the initial saved-report view) always
+        starts in scan order with no stale sort arrow left over from a
+        previous render's heading click."""
+        _render_tag_report(tree, discovery_label, summary_label, data, source_label)
+        _sort_dir[0] = None
+        tree.heading("#0", text=_ACTOR_COL_HEADING)
 
     # ------------------------------------------------------------------
     # Run Scan — guarded against double-clicks (see docstring above).
@@ -1199,7 +1293,7 @@ def _show_tag_inspect_window(tag_inspect_module):
 
         try:
             result = tag_inspect_module.inspect_tags(label_pattern=pattern or None)
-            _render_tag_report(tree, discovery_label, summary_label, result, "this scan, just now")
+            _render_and_reset_sort(result, "this scan, just now")
             if result.get("cancelled"):
                 status_var.set(
                     "Scan CANCELLED — showing the partial results gathered "
@@ -1274,10 +1368,7 @@ def _show_tag_inspect_window(tag_inspect_module):
     elif data is None:
         status_var.set("No previously saved report yet. Click Run Scan to scan now.")
     else:
-        _render_tag_report(
-            tree, discovery_label, summary_label, data,
-            "last saved report — click Run Scan to refresh",
-        )
+        _render_and_reset_sort(data, "last saved report — click Run Scan to refresh")
         status_var.set("Showing the last saved report. Click Run Scan to refresh.")
 
     # ------------------------------------------------------------------

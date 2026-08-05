@@ -30,6 +30,7 @@ first and does a brand-new import, then restores prior state -- same
 technique as test_bridge_sys_path_shield.py's
 _fresh_import_with_decoy_path_entry.
 """
+import json
 import os
 import sys
 import tempfile
@@ -789,26 +790,120 @@ class _FakeActor:
 class _FakeTree:
     """Records every tree.insert() call without any real Tk widget, so
     uefn_launcher's tree-rendering functions (_render_tag_report,
-    _render_deep_probe) -- which only ever call .delete(), .get_children(),
-    and .insert(parent, index, text=, values=) on their `tree` argument --
-    can be exercised headlessly. Each row is stored with its own
-    generated id and its parent's id, so a test can reconstruct parent/
-    child structure by id."""
+    _render_deep_probe) AND the "Actor / Tag" heading click-to-sort
+    closures nested inside _show_tag_inspect_window (_toggle_sort,
+    _render_and_reset_sort -- uefn_launcher.py ~1202/~1230) -- which
+    between them call .delete(), .get_children(parent), .insert(parent,
+    index, text=, values=, tags=), .move(iid, parent, index),
+    .item(iid, option), .heading(column, **kwargs), plus a handful of
+    real-Treeview calls this fake never needs to model precisely
+    (.column(), .configure(), .pack(), .bind(), .xview/.yview used only
+    as a Scrollbar `command=` target) -- can be exercised headlessly.
+
+    Unlike a flat insertion log, this maintains REAL parent/children
+    structure (``_children``: parent id -> ordered list of child ids) so
+    .get_children()/.move()/.item() are faithful to ttk.Treeview
+    semantics: .move(iid, parent, index) reorders *iid* among *parent*'s
+    children -- when *parent* is unchanged (the only case _toggle_sort
+    ever uses: every call passes "" as the target parent) this is a pure
+    reorder, and *iid*'s OWN children stay attached to *iid* the whole
+    time, so a top-level actor row's tag/child rows automatically "ride
+    along" when the row itself is repositioned, exactly like a real
+    ttk.Treeview.move() carrying its subtree. ``self.rows`` is kept as a
+    flat, insertion-ordered log of live row dicts (mutated in place, not
+    just appended-and-forgotten) so every existing assertion that reads
+    ``tree.rows`` directly keeps working unchanged; deleted rows are
+    removed from it, matching a real .delete() call."""
     def __init__(self):
         self.rows = []
         self._next_id = 0
+        self._nodes = {}              # id -> row dict (same object as in self.rows)
+        self._children = {"": []}     # parent id ("" = root) -> ordered list of child ids
+        self._headings = {}           # column -> dict of accumulated heading(**kwargs)
 
-    def get_children(self, *_args):
-        return []
+    def get_children(self, parent=""):
+        return list(self._children.get(parent, []))
 
-    def delete(self, *_args):
-        pass
+    def delete(self, *ids):
+        for iid in ids:
+            self._delete_one(iid)
 
-    def insert(self, parent, _index, text="", values=()):
+    def _delete_one(self, iid):
+        for child in list(self._children.get(iid, [])):
+            self._delete_one(child)
+        node = self._nodes.pop(iid, None)
+        if node is not None:
+            parent = node["parent"]
+            if iid in self._children.get(parent, []):
+                self._children[parent].remove(iid)
+            if node in self.rows:
+                self.rows.remove(node)
+        self._children.pop(iid, None)
+
+    def insert(self, parent, index, text="", values=(), tags=()):
         self._next_id += 1
         node_id = "node{}".format(self._next_id)
-        self.rows.append({"id": node_id, "parent": parent, "text": text, "values": values})
+        row = {
+            "id": node_id, "parent": parent, "text": text, "values": values,
+            "tags": tuple(tags) if tags else (),
+        }
+        self._nodes[node_id] = row
+        self._children.setdefault(node_id, [])
+        self._children.setdefault(parent, [])
+        if isinstance(index, int):
+            self._children[parent].insert(index, node_id)
+        else:
+            self._children[parent].append(node_id)  # tk.END or "end"
+        self.rows.append(row)
         return node_id
+
+    def move(self, iid, parent, index):
+        node = self._nodes.get(iid)
+        if node is None:
+            return
+        old_parent = node["parent"]
+        if iid in self._children.get(old_parent, []):
+            self._children[old_parent].remove(iid)
+        node["parent"] = parent
+        self._children.setdefault(parent, [])
+        if isinstance(index, int):
+            self._children[parent].insert(index, iid)
+        else:
+            self._children[parent].append(iid)
+
+    def item(self, iid, option=None):
+        node = self._nodes.get(iid, {})
+        if option is None:
+            return dict(node)
+        return node.get(option)
+
+    def heading(self, column, **kwargs):
+        info = self._headings.setdefault(column, {})
+        if not kwargs:
+            return dict(info)
+        info.update(kwargs)
+        return None
+
+    def column(self, *_a, **_k):
+        pass
+
+    def configure(self, *_a, **_k):
+        pass
+
+    def pack(self, *_a, **_k):
+        pass
+
+    def bind(self, *_a, **_k):
+        pass
+
+    def __getattr__(self, name):
+        # Permissive fallback for any real ttk.Treeview attribute this
+        # fake doesn't model explicitly (e.g. .xview/.yview, referenced
+        # only as a Scrollbar `command=` target and never actually
+        # invoked by the code under test) -- never raises AttributeError.
+        def _noop(*_a, **_k):
+            return None
+        return _noop
 
 
 class _FakeLabel:
@@ -2514,6 +2609,244 @@ class InspectTagsCancelDuringOfflineScanTests(unittest.TestCase):
         # rationale for a scan that never even finished.
         self.assertNotIn("deep_probe", result)
         self.assertNotIn("deep_probe_skipped_reason", result)
+
+
+# ---------------------------------------------------------------------------
+# _natural_sort_key (uefn_launcher.py ~713) -- pure, module-level, no
+# tkinter/unreal dependency at all: digit-run-aware, case-insensitive sort
+# key for an actor label, e.g. "R2_P1" before "R10_P1".
+# ---------------------------------------------------------------------------
+
+class NaturalSortKeyTests(unittest.TestCase):
+    def test_numeric_run_sorts_before_larger_numeric_run(self):
+        self.assertEqual(
+            sorted(["R10_P1", "R2_P1"], key=uefn_launcher._natural_sort_key),
+            ["R2_P1", "R10_P1"],
+        )
+
+    def test_case_insensitive(self):
+        self.assertEqual(
+            uefn_launcher._natural_sort_key("AbC123"),
+            uefn_launcher._natural_sort_key("abc123"),
+        )
+
+    def test_pure_string_labels_sort_case_insensitively(self):
+        self.assertEqual(
+            sorted(["Charlie", "alpha", "Bravo"], key=uefn_launcher._natural_sort_key),
+            ["alpha", "Bravo", "Charlie"],
+        )
+
+    def test_digits_only_labels_sort_numerically_not_lexicographically(self):
+        # A plain ASCII/lexicographic sort would put "100" before "20"
+        # before "3" (comparing the leading character "1" < "2" < "3");
+        # numeric-aware comparison of the whole digit run must not.
+        self.assertEqual(
+            sorted(["100", "20", "3"], key=uefn_launcher._natural_sort_key),
+            ["3", "20", "100"],
+        )
+
+    def test_empty_string_never_raises(self):
+        try:
+            key = uefn_launcher._natural_sort_key("")
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"_natural_sort_key raised on an empty string: {e!r}")
+        self.assertEqual(key, [""])
+
+    def test_non_string_input_is_coerced_via_str_never_raises(self):
+        try:
+            key = uefn_launcher._natural_sort_key(42)
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"_natural_sort_key raised on a non-string input: {e!r}")
+        self.assertEqual(key, ["", 42, ""])
+
+
+try:
+    import tkinter as _real_tkinter_for_tests
+except ImportError:  # pragma: no cover - environment-dependent
+    _real_tkinter_for_tests = None
+
+
+def _find_descendant_widget(widget, predicate):
+    """Depth-first search of *widget*'s real Tk widget subtree for the
+    first descendant matching *predicate* -- used only to locate the real
+    "Run Scan" tk.Button inside a constructed _show_tag_inspect_window,
+    since (unlike pattern_entry, see win._tag_pattern_entry) it is never
+    attached to `win` for external access. Never raises; a widget whose
+    .winfo_children() or *predicate* itself raises is simply skipped."""
+    try:
+        if predicate(widget):
+            return widget
+    except Exception:
+        pass
+    try:
+        children = widget.winfo_children()
+    except Exception:
+        return None
+    for child in children:
+        found = _find_descendant_widget(child, predicate)
+        if found is not None:
+            return found
+    return None
+
+
+# ---------------------------------------------------------------------------
+# _toggle_sort / _render_and_reset_sort -- private closures nested inside
+# uefn_launcher._show_tag_inspect_window (~1202/~1230), not reachable as
+# module-level names (unlike _natural_sort_key above). The ONLY way to
+# exercise the REAL closures -- not a hand-copied reimplementation of the
+# sort algorithm -- is to actually construct the window. Every widget
+# EXCEPT ttk.Treeview is real tkinter (Tk/Label/Frame/Entry/Button/
+# StringVar/Style/Scrollbar); only ttk.Treeview is temporarily swapped for
+# the _FakeTree above (restored in tearDown, the same save-and-restore
+# idiom this file uses throughout for tag_inspect.report_path/
+# _get_bridge_dir/unreal), so the closures' tree.get_children()/.item()/
+# .move()/.heading() calls run against the same faithful fake
+# RenderTagReportEmptyStatePlaceholderTests/RenderDeepProbeTests above use,
+# giving direct inspectable access to sort results.
+#
+# Constructing a real (hidden) Tk root is unavoidable to reach these
+# closures without modifying uefn_launcher.py (out of scope for this
+# task). setUp SKIPS (does not fail) whenever tkinter -- or an actual
+# Tk/Tcl backend -- is unavailable, so this suite stays green on any
+# machine without a usable Tk backend; the real root is located via
+# tkinter._default_root (the same stable introspection point IDLE and
+# other tools use) and withdrawn immediately after construction, so no
+# window is ever visibly shown during a test run.
+# ---------------------------------------------------------------------------
+
+class ShowTagInspectWindowSortIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        if not getattr(uefn_launcher, "_HAS_TKINTER", False) or _real_tkinter_for_tests is None:
+            self.skipTest("tkinter not available in this interpreter")
+
+        self._orig_treeview = uefn_launcher.ttk.Treeview
+        self._fake_tree = _FakeTree()
+        uefn_launcher.ttk.Treeview = lambda *a, **k: self._fake_tree
+
+        self._scratch = tempfile.mkdtemp(prefix="uefn_launcher_tag_sort_test_")
+        self._report_path = os.path.join(self._scratch, "tag_inspect_report.json")
+
+    def tearDown(self):
+        uefn_launcher.ttk.Treeview = self._orig_treeview
+        root = getattr(_real_tkinter_for_tests, "_default_root", None)
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _actor(label):
+        return {
+            "label": label,
+            "has_verse_tag_component": True,
+            "tags": [{"name": "t_room_r1", "parent_chain": ["tag"]}],
+            "extraction_status": "ok",
+        }
+
+    def _write_report(self, labels, deep_probe=None):
+        data = {
+            "discovery": {
+                "component_class": "VerseTagMarkupComponent",
+                "tag_property": "gameplay_tags_container", "notes": "",
+            },
+            "actors": [self._actor(l) for l in labels],
+            "tag_class_count": 1,
+        }
+        if deep_probe is not None:
+            data["deep_probe"] = deep_probe
+        with open(self._report_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return data
+
+    def _open_window(self, labels, deep_probe=None):
+        self._write_report(labels, deep_probe=deep_probe)
+        fake_module = types.SimpleNamespace(
+            report_path=lambda: self._report_path,
+            # A second, distinct scan-order result for the Run Scan ->
+            # _render_and_reset_sort trigger path exercised below.
+            inspect_tags=lambda **kwargs: self._write_report(["R3_P1", "R1_P1"]),
+        )
+        try:
+            uefn_launcher._show_tag_inspect_window(fake_module)
+        except Exception as e:  # pragma: no cover - environment-dependent
+            self.skipTest(
+                "could not construct a real Tk window in this environment: {!r}".format(e)
+            )
+        root = getattr(_real_tkinter_for_tests, "_default_root", None)
+        if root is not None:
+            try:
+                root.withdraw()
+            except Exception:
+                pass
+        return root
+
+    def test_toggle_sort_partitions_actor_rows_and_pins_special_rows_both_directions(self):
+        deep_probe = {
+            "probed_labels": ["R10_P1"],
+            "findings": [{
+                "actor_label": "R10_P1",
+                "tag_component": {"class_name": "VerseTagMarkupComponent", "properties": []},
+                "actor_tags_property": None,
+                "other_components_hits": [],
+                "errors": [],
+            }],
+        }
+        self._open_window(["R10_P1", "R2_P1", "r1_p1"], deep_probe=deep_probe)
+        tree = self._fake_tree
+
+        top_ids = tree.get_children("")
+        self.assertEqual(len(top_ids), 4)  # 3 actor rows + 1 deep-probe header
+        scan_order_texts = [tree.item(iid, "text") for iid in top_ids]
+        self.assertEqual(scan_order_texts[:3], ["R10_P1", "R2_P1", "r1_p1"])
+        self.assertIn("DEEP PROBE", scan_order_texts[3])
+        special_id = top_ids[3]
+        children_before = {iid: tree.get_children(iid) for iid in top_ids[:3]}
+        self.assertTrue(all(children_before[iid] for iid in top_ids[:3]))  # each actor has its tag child
+
+        toggle = tree._headings["#0"].get("command")
+        self.assertIsNotNone(toggle, "tree.heading('#0', command=_toggle_sort) was never registered")
+
+        toggle()  # first click -> ascending
+        asc_ids = tree.get_children("")
+        asc_texts = [tree.item(iid, "text") for iid in asc_ids]
+        self.assertEqual(asc_texts, ["r1_p1", "R2_P1", "R10_P1", scan_order_texts[3]])
+        self.assertEqual(asc_ids[3], special_id)  # special row pinned after the actor block
+        self.assertIn("▲", tree._headings["#0"]["text"])
+        for iid in asc_ids[:3]:
+            self.assertEqual(tree.get_children(iid), children_before[iid])  # children rode along
+
+        toggle()  # second click -> descending
+        desc_ids = tree.get_children("")
+        desc_texts = [tree.item(iid, "text") for iid in desc_ids]
+        self.assertEqual(desc_texts, ["R10_P1", "R2_P1", "r1_p1", scan_order_texts[3]])
+        self.assertEqual(desc_ids[3], special_id)  # still pinned last, both directions
+        self.assertIn("▼", tree._headings["#0"]["text"])
+        for iid in desc_ids[:3]:
+            self.assertEqual(tree.get_children(iid), children_before[iid])
+
+    def test_render_and_reset_sort_clears_sort_state_after_run_scan(self):
+        root = self._open_window(["R10_P1", "R2_P1"])
+        tree = self._fake_tree
+        toggle = tree._headings["#0"]["command"]
+        toggle()
+        self.assertIn("▲", tree._headings["#0"]["text"])  # sorted state established
+
+        run_btn = _find_descendant_widget(
+            root, lambda w: isinstance(w, uefn_launcher.tk.Button) and w.cget("text") == "Run Scan",
+        )
+        self.assertIsNotNone(run_btn, "could not locate the Run Scan button in the constructed window")
+        entry = getattr(root, "_tag_pattern_entry", None)
+        self.assertIsNotNone(entry, "win._tag_pattern_entry was not attached to the window")
+        entry.delete(0, uefn_launcher.tk.END)
+        entry.insert(0, "SGMarker")  # non-blank -- skips the blocking "scan everything?" confirm dialog
+
+        run_btn.invoke()  # synchronously runs _run_scan -> _render_and_reset_sort(result, ...)
+
+        self.assertEqual(tree._headings["#0"]["text"], "Actor / Tag")  # arrow stripped
+        fresh_ids = tree.get_children("")
+        fresh_texts = [tree.item(iid, "text") for iid in fresh_ids]
+        self.assertEqual(fresh_texts, ["R3_P1", "R1_P1"])  # the new scan's own scan order, unsorted
 
 
 if __name__ == "__main__":
