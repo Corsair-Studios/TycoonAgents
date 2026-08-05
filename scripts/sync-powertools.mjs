@@ -32,6 +32,12 @@ const SERVER_SRC = join(ROOT, 'uefn-bridge', 'uefn-server.ts');
 // Adapted from this repo's own LICENSE (same terms, renamed for the Power
 // Tools project; see scripts/powertools-assets/LICENSE for the diff notes).
 const LICENSE_SRC = join(SCRIPT_DIR, 'powertools-assets', 'LICENSE');
+// README.md and INSTALL.md are authored here (scripts/powertools-assets/)
+// and mirrored verbatim into the target repo root on every sync, same as
+// LICENSE — this repo is their source of truth; the target repo's copies
+// must never be hand-edited there.
+const README_SRC = join(SCRIPT_DIR, 'powertools-assets', 'README.md');
+const INSTALL_SRC = join(SCRIPT_DIR, 'powertools-assets', 'INSTALL.md');
 
 // Files that must never be synced even though they live alongside the .py
 // tools in media/uefn-bridge/ (build artifacts / caches, not source).
@@ -162,6 +168,24 @@ function copyLicense(targetDir) {
     return true;
   } catch (err) {
     console.log(`[sync-powertools] Could not copy LICENSE (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+// Copies README.md and INSTALL.md (see scripts/powertools-assets/) into
+// <target>/README.md and <target>/INSTALL.md on every sync, mirroring
+// copyLicense() above. Non-fatal on any failure — a missing or unwritable
+// doc file must never block the rest of the sync.
+function copyDoc(srcPath, destName, targetDir) {
+  if (!existsSync(srcPath)) {
+    console.log(`[sync-powertools] Warning: ${srcPath} not found; skipped ${destName}.`);
+    return false;
+  }
+  try {
+    copyFileSync(srcPath, join(targetDir, destName));
+    return true;
+  } catch (err) {
+    console.log(`[sync-powertools] Could not copy ${destName} (non-fatal): ${err.message}`);
     return false;
   }
 }
@@ -456,6 +480,13 @@ function main() {
 
   if (copyLicense(targetDir)) {
     console.log('[sync-powertools] Copied LICENSE into target repo.');
+  }
+
+  if (copyDoc(README_SRC, 'README.md', targetDir)) {
+    console.log('[sync-powertools] Copied README.md into target repo.');
+  }
+  if (copyDoc(INSTALL_SRC, 'INSTALL.md', targetDir)) {
+    console.log('[sync-powertools] Copied INSTALL.md into target repo.');
   }
 
   if (updateTargetPackageVersion(targetDir, version)) {

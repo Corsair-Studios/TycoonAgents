@@ -413,12 +413,13 @@ def _show_mcp_info():
     ).pack(anchor=tk.W)
 
     clients = [
-        ("Claude Code", "Auto-configured (.mcp.json)"),
-        ("Codex CLI", "MCP via stdio (manual config)"),
-        ("Gemini CLI", "MCP via stdio (manual config)"),
-        ("Cursor IDE", "Built-in MCP (manual config)"),
-        ("Windsurf", "MCP via config (manual)"),
-        ("VS Code Copilot", "MCP via extension (manual)"),
+        ("Claude Code", "Auto-configured (.mcp.json)", "claude-code"),
+        ("Codex CLI", "MCP via stdio (manual config)", "codex-cli"),
+        ("Gemini CLI", "MCP via stdio (manual config)", "gemini-cli"),
+        ("Cursor IDE", "Built-in MCP (manual config)", "cursor"),
+        ("Windsurf", "MCP via config (manual)", "windsurf"),
+        ("Antigravity IDE", "MCP via config (manual)", "antigravity"),
+        ("VS Code Copilot", "MCP via extension (manual)", "vscode-copilot"),
     ]
 
     ai_list_frame = tk.Frame(ai_frame, bg=_SECTION_BG, padx=4, pady=4)
@@ -426,15 +427,18 @@ def _show_mcp_info():
 
     ai_tree = ttk.Treeview(
         ai_list_frame, columns=("client", "notes"), show="headings",
-        style="MCP.Treeview", height=min(len(clients), 6),
+        style="MCP.Treeview", height=min(len(clients), 7),
     )
     ai_tree.heading("client", text="Client")
     ai_tree.heading("notes", text="Integration")
     ai_tree.column("client", width=200)
     ai_tree.column("notes", width=360)
 
-    for client, notes in clients:
-        ai_tree.insert("", tk.END, values=(client, notes))
+    # iid == client_id so selection lookups below need no extra map — the
+    # Treeview's own id doubles as the value build_client_config_snippet()
+    # expects.
+    for client, notes, client_id in clients:
+        ai_tree.insert("", tk.END, iid=client_id, values=(client, notes))
 
     ai_tree.pack(fill=tk.X)
 
@@ -443,6 +447,32 @@ def _show_mcp_info():
         text="Any MCP-compatible client using stdio transport should work.",
         font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
     ).pack(anchor=tk.W, pady=(4, 0))
+
+    # Copy-config: builds the ready-to-paste config for whichever client row
+    # is selected (or the first row if none is), using the real, discovered
+    # server/bridge paths — see build_client_config_snippet()'s docstring for
+    # why an unresolved path renders as an explicit placeholder rather than a
+    # guess. Routes through the same clipboard helper (and its Tk-clipboard-
+    # free fallback dialog) every other copy action in this window uses.
+    def _on_copy_client_config():
+        selection = ai_tree.selection()
+        selected_id = selection[0] if selection else clients[0][2]
+        try:
+            server_path, bridge_dir = _discover_server_and_bridge_dir()
+            snippet = build_client_config_snippet(selected_id, server_path, bridge_dir)
+        except Exception as e:
+            unreal.log_warning("uefn_launcher: failed to build client config snippet: " + str(e))
+            if _HAS_TKINTER:
+                messagebox.showerror("Error", "Failed to build config snippet:\n" + str(e))
+            return
+        if not _copy_text_to_system_clipboard(snippet):
+            _show_copy_fallback_dialog(win, snippet, title="Copy MCP config")
+
+    tk.Button(
+        ai_frame, text="Copy config for selected client",
+        font=("Segoe UI", 9), bg=_SECTION_BG, fg=_TEXT_FG,
+        relief="flat", padx=10, pady=4, command=_on_copy_client_config,
+    ).pack(anchor=tk.W, pady=(6, 0))
 
     # Footer
     footer = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=2)
@@ -614,6 +644,159 @@ def _show_copy_fallback_dialog(root, text, title="Copy this text"):
         dlg, text="Close", font=("Segoe UI", 9), bg=_SECTION_BG, fg=_TEXT_FG,
         relief="flat", padx=10, pady=4, command=dlg.destroy,
     ).pack(pady=(0, 12))
+
+
+# ---------------------------------------------------------------------------
+# Per-client MCP config snippet generator (Copy-config button in the MCP
+# Bridge window). ``build_client_config_snippet`` is a pure, module-level
+# function with no unreal/tkinter calls of its own — it only formats text —
+# so it can be unit-tested headlessly. ``_discover_server_and_bridge_dir``
+# does the (side-effecting) runtime discovery; it never guesses: a server
+# path that doesn't exist on disk comes back as None, and the generator
+# substitutes an explicit placeholder rather than a wrong real-looking path.
+# ---------------------------------------------------------------------------
+
+_PLACEHOLDER_SERVER_PATH = "<path-to-uefn-server.mjs>"
+_PLACEHOLDER_BRIDGE_DIR = "<path-to-bridge-dir>"
+
+# The client_ids build_client_config_snippet() accepts, in the order the MCP
+# info window lists them.
+CLIENT_IDS = (
+    "claude-code",
+    "gemini-cli",
+    "codex-cli",
+    "cursor",
+    "windsurf",
+    "antigravity",
+    "vscode-copilot",
+)
+
+
+def _discover_server_and_bridge_dir():
+    """Locate the real ``uefn-server`` entry point and the bridge IPC dir,
+    for the per-client Copy-config generator below.
+
+    Server discovery walks up from THIS file's own directory only (never a
+    hardcoded absolute path — see docs/PATH-DISCOVERY.md) to cover both
+    shipped layouts:
+
+    - Staged/VSIX layout: ``uefn-server.mjs`` sits alongside this file
+      (``media/uefn-bridge/`` is flat).
+    - Standalone repo layout: this file lives in ``<repo>/python/``, and the
+      TypeScript entry point is ``<repo>/uefn-server.ts``.
+
+    Returns ``(server_path, bridge_dir)``. ``server_path`` is ``None`` when
+    neither candidate exists on disk — never a guess. ``bridge_dir`` always
+    resolves via ``_get_bridge_dir()`` (env override or temp fallback, same
+    as the rest of this launcher), so it is ``None`` only if that call
+    itself raises.
+    """
+    server_path = None
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        staged_candidate = os.path.join(script_dir, "uefn-server.mjs")
+        standalone_candidate = os.path.join(os.path.dirname(script_dir), "uefn-server.ts")
+        if os.path.isfile(staged_candidate):
+            server_path = staged_candidate
+        elif os.path.isfile(standalone_candidate):
+            server_path = standalone_candidate
+    except Exception:
+        server_path = None
+
+    try:
+        bridge_dir = _get_bridge_dir()
+    except Exception:
+        bridge_dir = None
+
+    return server_path, bridge_dir
+
+
+def _resolve_command_and_args(server_path):
+    """Map a discovered (or None) server path to a (command, args) pair.
+
+    A ``.ts`` path (standalone repo, source-only) must run through ``tsx``
+    the same way this project's own README/INSTALL docs and
+    ``package.json``'s ``start`` script do — ``node`` cannot execute
+    TypeScript directly. Anything else (a built ``.mjs``, or the unresolved
+    placeholder) runs directly under ``node``.
+    """
+    if not server_path:
+        return "node", [_PLACEHOLDER_SERVER_PATH]
+    if server_path.endswith(".ts"):
+        return "npx", ["tsx", server_path]
+    return "node", [server_path]
+
+
+def _toml_escape(value):
+    """Escape a string for use inside a TOML basic (double-quoted) string."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_codex_snippet(command, args, bridge_dir):
+    """Codex CLI's ``config.toml`` table for the bridge. Codex CLI documents
+    env passing for stdio MCP servers via a ``[mcp_servers.<name>.env]``
+    TOML sub-table (learn.chatgpt.com/docs/extend/mcp) — emit it whenever a
+    real ``bridge_dir`` is known. ``bridge_dir`` is ``None`` only when the
+    caller already substituted the placeholder text (see
+    ``build_client_config_snippet``); in that case no env sub-table is
+    emitted, matching the "never a guessed path" rule.
+    """
+    args_toml = ", ".join('"{}"'.format(_toml_escape(a)) for a in args)
+    lines = [
+        "# ~/.codex/config.toml",
+        "[mcp_servers.uefn]",
+        'command = "{}"'.format(_toml_escape(command)),
+        "args = [{}]".format(args_toml),
+    ]
+    if bridge_dir:
+        lines.append("")
+        lines.append("[mcp_servers.uefn.env]")
+        lines.append('UEFN_BRIDGE_DIR = "{}"'.format(_toml_escape(bridge_dir)))
+    return "\n".join(lines)
+
+
+def build_client_config_snippet(client_id, server_path, bridge_dir):
+    """Build the ready-to-paste MCP config text for ``client_id``.
+
+    ``server_path``/``bridge_dir`` are the values ``_discover_server_and_
+    bridge_dir()`` returns (or None) — this function does no filesystem
+    access of its own and makes no unreal/tkinter calls, so it is safe to
+    call, and to unit test, headlessly.
+
+    Unknown ``client_id`` raises ``ValueError`` — never a silent empty
+    string; see CLIENT_IDS for the accepted set.
+    """
+    if client_id not in CLIENT_IDS:
+        raise ValueError(
+            "Unknown client_id {!r}; expected one of {}".format(client_id, CLIENT_IDS)
+        )
+
+    command, args = _resolve_command_and_args(server_path)
+    bridge_dir_display = bridge_dir if bridge_dir else _PLACEHOLDER_BRIDGE_DIR
+
+    if client_id == "codex-cli":
+        return _build_codex_snippet(command, args, bridge_dir)
+
+    if client_id == "vscode-copilot":
+        # Field order matches the docs example: type, command, args, env.
+        entry = {
+            "type": "stdio",
+            "command": command,
+            "args": args,
+            "env": {"UEFN_BRIDGE_DIR": bridge_dir_display},
+        }
+        payload = {"servers": {"uefn": entry}}
+    else:
+        # claude-code, gemini-cli, cursor, windsurf, antigravity all share
+        # the same mcpServers-keyed shape.
+        entry = {
+            "command": command,
+            "args": args,
+            "env": {"UEFN_BRIDGE_DIR": bridge_dir_display},
+        }
+        payload = {"mcpServers": {"uefn": entry}}
+
+    return json.dumps(payload, indent=2)
 
 
 def _resolve_tag_inspect_report_path(module):
