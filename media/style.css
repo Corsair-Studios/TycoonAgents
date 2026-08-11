@@ -775,6 +775,15 @@ body {
   margin: 0;
 }
 
+/* "Model not detected" variant (mutually exclusive with the Sonnet/Haiku
+   warning above) — informational rather than a cost warning, so it uses the
+   cooler --accent-info blue instead of the amber --accent and drops the
+   bold weight. */
+.orchestrator-model-warning--info {
+  color: var(--accent-info);
+  font-weight: 400;
+}
+
 .model-radio-group {
   display: flex;
   gap: 8px;

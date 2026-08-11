@@ -11980,6 +11980,36 @@
         pendingUploadBtn = null;
       }
     } else if (msg && msg.type === "state") {
+      // First GENUINE agent-activity observation: flips the "has work
+      // actually run this session" flag and arms the grace-period timer
+      // exactly once (see agentActivityObserved/orchestratorModelGraceTimer
+      // above). Guarded so every later "state" message is a no-op here.
+      // Deliberately reads msg.sessionMetrics, NOT msg.state.agentMetrics:
+      // state.agentMetrics is cumulative across ALL past sessions, so it's
+      // already populated on panel open for any returning user — using it
+      // here would arm the grace timer (and 5s later show the warning) on
+      // every panel open regardless of whether anything actually ran this
+      // time, which is the exact false-positive this trigger exists to
+      // avoid. msg.sessionMetrics is scoped to the CURRENT session id only
+      // (reset at the session boundary — see panel.ts's
+      // _computeSessionDelegationHealth) and only reports `available: true`
+      // once activity.jsonl has an actual record for this session, so a
+      // non-empty agentMetrics here means real work happened, not just that
+      // the panel was opened.
+      if (
+        !agentActivityObserved &&
+        msg.sessionMetrics &&
+        msg.sessionMetrics.available &&
+        Array.isArray(msg.sessionMetrics.agentMetrics) &&
+        msg.sessionMetrics.agentMetrics.length > 0
+      ) {
+        agentActivityObserved = true;
+        orchestratorModelGraceTimer = setTimeout(() => {
+          orchestratorModelGraceElapsed = true;
+          orchestratorModelGraceTimer = null;
+          renderSettings();
+        }, 5000);
+      }
       state = msg.state;
       idleFreezeMs = state.idleFreezeMs ?? 180000;
       sanityCapMs = state.sanityCapMs ?? 900000;
@@ -13348,6 +13378,31 @@
 
   /** Last CUMULATIVE metrics array received (state.agentMetrics), re-rendered on a timer so live time ticks. Always cumulative — see metricsScope's doc comment. */
   let lastMetrics = [];
+
+  // Orchestrator "model not detected" warning (see renderSettings's
+  // isOrchestrator branch): lastMetrics starts as [] and a "state" push with
+  // no orchestrator entry looks identical to never having received one, so
+  // there's no way to tell "haven't looked yet" from "looked and found
+  // nothing" from lastMetrics alone. agentActivityObserved is set the first
+  // time a "state" message arrives carrying GENUINE this-session activity —
+  // msg.sessionMetrics.available with a non-empty agentMetrics array (see
+  // the msg.type === "state" handler) — and is the only source of that
+  // distinction. Deliberately NOT keyed off msg.state.agentMetrics (or its
+  // mere presence at panel open): that array is cumulative across every
+  // past session, so a returning user with prior history would arm the
+  // grace timer on every panel open even when nothing ran this time — the
+  // exact false-positive ("you opened the panel and waited") this flag
+  // exists to rule out. The name reflects that: this is "has agent work
+  // actually run in this session", not "have we received a metrics blob".
+  let agentActivityObserved = false;
+  // Short grace period after agent activity is first observed before the
+  // undetected-model warning may show, so the panel doesn't flash a warning
+  // while a just-started task hasn't yet had a moment to report the
+  // orchestrator's model. Single-armed: the agentActivityObserved guard
+  // above ensures this setTimeout only ever runs once, so no
+  // clearTimeout/re-arm dance is needed here.
+  let orchestratorModelGraceTimer = null;
+  let orchestratorModelGraceElapsed = false;
 
   // Team Lead Mode Phase 3 previously nested workers under their lead
   // (expand/collapse rollup row). Retired in favor of a flat per-agent list
@@ -15050,6 +15105,20 @@
           warn.className = "orchestrator-model-warning";
           warn.textContent =
             `TycoonAgents expects Opus or above as the orchestrator — it distills and delegates cheap work to Sonnet/Haiku workers. Running the orchestrator itself on ${observedFamily} removes those savings. Fix: run /model opus.`;
+          row.appendChild(warn);
+        } else if (!observedFamily && agentActivityObserved && orchestratorModelGraceElapsed) {
+          // Mutually exclusive with the Sonnet/Haiku warning above (that one
+          // means "detected and too small"; this one means "never detected
+          // at all") — purely derived from observedFamily/agentActivityObserved/
+          // orchestratorModelGraceElapsed each render, so it disappears the
+          // moment a model is observed on a later settings push. Gated on
+          // both flags so it never appears on a cold start, mid-warm-up, or
+          // a panel open with no activity this session (see the "state"
+          // handler and grace timer above).
+          const warn = document.createElement("p");
+          warn.className = "orchestrator-model-warning orchestrator-model-warning--info";
+          warn.textContent =
+            "TycoonAgents hasn't detected the orchestrator's model yet. This is read from Claude Code's session model, not a TycoonAgents setting — check it with /model, the VS Code chat model selector, or the ANTHROPIC_MODEL environment variable. TycoonAgents expects Opus or above for the orchestrator, since it distills and delegates cheap work to smaller models. Detection populates once agent activity has been observed, so running a task may resolve this.";
           row.appendChild(warn);
         }
 
