@@ -1050,7 +1050,7 @@ function buildHostHtml() {
         <a href="https://x.com/thetrashbyrd" target="_blank" rel="noopener noreferrer">@thetrashbyrd</a>
       </p>
       <p>
-        <a href="https://github.com/Corsair-Studios/TycoonAgents" target="_blank" rel="noopener noreferrer">GitHub repository</a>
+        <a href="https://corsairstudios.com" target="_blank" rel="noopener noreferrer">corsairstudios.com</a>
       </p>
     </div>
   </div>
