@@ -1132,7 +1132,12 @@ body {
   background-image: radial-gradient(ellipse at 50% 60%, #14183a 0%, #080a10 100%);
 }
 
-/* Hamburger menu button */
+/* Hamburger menu button. DOM parent is #app, not #stage-area (see panel.ts) —
+   #stage-area is `position: relative` + `overflow: hidden`, which creates a
+   stacking context that would trap this element's z-index against only its
+   #stage-area siblings, never against #metrics-panel. #app is `position:
+   fixed; inset: 0` and #stage-area is its first, unoffset child, so these
+   top/right values stay pixel-identical to before the move. */
 #menu-btn {
   position: absolute;
   top: 10px;
@@ -1433,14 +1438,19 @@ body {
   line-height: 1;
 }
 
-/* Menu popover dropdown. Appended directly to <body> (media/main.js ~801) with
-   no clipping ancestor, so it already paints above the canvas/scene content —
-   the width was the real complaint (issue #27). min-width raised from a
-   cramped 150px and a responsive max-width added so it stays comfortable on
-   a wide panel without ever overflowing a narrow one. z-index raised from 20
-   to sit above the other floating overlays in this file (.legacy-artifacts-
-   notice / .orchestrator-model-notice both use 500) so the popover is never
-   occluded by a notice that happens to be showing at the same time. */
+/* Menu popover dropdown. DOM parent is #app, not #stage-area (see panel.ts) —
+   #stage-area is `position: relative` + `overflow: hidden`, a stacking
+   context that trapped this popover's z-index against only its #stage-area
+   siblings, so it could never out-rank #metrics-panel (a later #app sibling
+   of #stage-area) no matter how high the number went; that was the popover
+   getting sliced off under the metrics panel. Living directly under #app
+   (fixed; inset:0, no overflow clip) it now paints above the whole panel.
+   min-width raised from a cramped 150px and a responsive max-width added so
+   it stays comfortable on a wide panel without ever overflowing a narrow
+   one (issue #27). z-index kept at 501 to stay above the other floating
+   overlays in this file (.legacy-artifacts-notice / .orchestrator-model-
+   notice both use 500) so the popover is never occluded by a notice that
+   happens to be showing at the same time. */
 #menu-popover {
   position: absolute;
   top: 38px;
