@@ -4043,19 +4043,26 @@
 
   /**
    * Builds the per-frame regeneration picker (feedback #18): a clickable grid
-   * of the board's individual frame_keys entries, each thumbnailed from
-   * item.frame_slots[i].data (the first stored image for that key — see
-   * panel.ts's _postThemeImageReview). Clicking a tile toggles it in/out of
-   * themeReviewSelectedFrameSlots[item.id]; the existing whole-board Retry
-   * button (unchanged) reads that selection at click time and includes it as
-   * `slots` on the RETRY_THEME_IMAGE payload. A full board is ALWAYS
-   * generated behind the scenes — image models produce a board atomically,
-   * there is no per-cell API — this picker only controls what gets KEPT from
-   * the result, so the hint text below says so explicitly rather than
-   * implying a cheaper/faster partial regeneration.
+   * of the board's individual frame_slots entries, each thumbnailed from
+   * item.frame_slots[i].data — see panel.ts's _postThemeImageReview. For
+   * multi-key boards (objects/decor/rivals) each entry is one frame_keys
+   * entry (its first stored frame). For character boards, which own exactly
+   * one frame_keys entry holding ALL poses, each entry instead enumerates one
+   * pose WITHIN that key (slot.index set, see the isWithinKeyPose branch
+   * below) — otherwise the array would always be length 1 and never clear the
+   * `slots.length < 2` gate below. Either way, a tile's POSITION in the array
+   * is what gets toggled and sent as `slots` on the RETRY_THEME_IMAGE
+   * payload; the host (retryThemeImage) decides whether that position
+   * addresses a key or a within-key pose from the item's own stored shape.
+   * Clicking a tile toggles it in/out of themeReviewSelectedFrameSlots[item.id];
+   * the existing whole-board Retry button (unchanged) reads that selection at
+   * click time. A full board is ALWAYS generated behind the scenes — image
+   * models produce a board atomically, there is no per-cell API — this picker
+   * only controls what gets KEPT from the result, so the hint text below says
+   * so explicitly rather than implying a cheaper/faster partial regeneration.
    * Returns null when the item has fewer than 2 frame slots (nothing to pick
-   * between) or no image yet, so single-key boards (environment) and
-   * not-yet-generated cards are unaffected — this is purely additive.
+   * between) or no image yet, so genuinely single-frame boards (environment)
+   * and not-yet-generated cards are unaffected — this is purely additive.
    * @param {any} item
    * @param {boolean} disabledForGeneration true while an unrelated active generation run blocks edits
    */
@@ -4079,8 +4086,8 @@
     const hint = document.createElement("div");
     hint.className = "theme-review-names-descriptions-hint";
     hint.textContent = "Select the frame(s) to fix, then use Retry image below. The whole board is regenerated "
-      + "either way (same cost/time) — only the frame(s) you select are kept from the new result; every other "
-      + "frame stays exactly as it is now.";
+      + "either way (same cost/time) — only the frame(s) you select are kept from the new result, unless the "
+      + "regenerated board's layout doesn't match the current one, in which case the whole board is replaced.";
     details.appendChild(hint);
 
     const grid = document.createElement("div");
@@ -4093,13 +4100,20 @@
       const isSelected = selected.has(index);
       tile.classList.toggle("theme-review-frame-tile--selected", isSelected);
       tile.setAttribute("aria-pressed", String(isSelected));
-      tile.title = slot.key
-        ? `${slot.key} (frame ${index + 1} of ${slots.length}) — click to ${isSelected ? "deselect" : "select for regeneration"}`
-        : `Frame ${index + 1} of ${slots.length}`;
+      // Character boards enumerate WITHIN one key's pose array (see panel.ts's
+      // _postThemeImageReview): slot.index is set there, distinguishing "pose N of
+      // this character" from the normal "key N of this board" phrasing used by
+      // multi-key boards (objects/decor/rivals), where each entry is its own key.
+      const isWithinKeyPose = typeof slot.index === "number";
+      tile.title = isWithinKeyPose
+        ? `Pose ${index + 1} of ${slots.length} — click to ${isSelected ? "deselect" : "select for regeneration"}`
+        : slot.key
+          ? `${slot.key} (frame ${index + 1} of ${slots.length}) — click to ${isSelected ? "deselect" : "select for regeneration"}`
+          : `Frame ${index + 1} of ${slots.length}`;
       if (slot.data) {
         const img = document.createElement("img");
         img.src = slot.data;
-        img.alt = slot.key || `Frame ${index + 1}`;
+        img.alt = isWithinKeyPose ? `Pose ${index + 1}` : slot.key || `Frame ${index + 1}`;
         tile.appendChild(img);
       } else {
         tile.classList.add("theme-review-frame-tile--empty");

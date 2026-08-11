@@ -2860,19 +2860,44 @@ export class TycoonPanel {
           has_raw_atlas: item.kind === "environment"
             ? false
             : await this._uriExists(vscode.Uri.joinPath(rawDirectoryUri, item.filename)),
-          // Per-frame regeneration (feedback #18): one entry per frame_keys[i],
-          // using that key's first stored image as the representative thumbnail
-          // (a clip key like "rival_x" holds several animation frames under one
-          // key — the whole clip is the addressable "slot" server-side, so one
-          // thumbnail per key is enough for the picker UI). Absent/empty frames
-          // for a key render as no thumbnail; the webview shows those as blank.
-          // Only meaningful for sliced atlas boards with >1 key — environment/
-          // single-key boards still get a 1-entry array, which the webview
-          // simply won't render a picker for (see renderThemeReviewFrameGrid).
-          frame_slots: (item.frame_keys ?? []).map((key) => ({
-            key,
-            data: loadedTheme?.frames?.[key]?.[0] ?? "",
-          })),
+          // Per-frame regeneration (feedback #18): normally one entry per
+          // frame_keys[i], using that key's first stored image as the
+          // representative thumbnail (a clip key like "rival_x" holds several
+          // animation frames under one key — the whole clip is the
+          // addressable "slot" server-side, so one thumbnail per key is
+          // enough for the picker UI). Absent/empty frames for a key render
+          // as no thumbnail; the webview shows those as blank. Meaningful for
+          // sliced atlas boards with >1 key — environment/single-key boards
+          // with only one stored frame still get a 1-entry array, which the
+          // webview simply won't render a picker for (see
+          // renderThemeReviewFrameGrid).
+          //
+          // Character boards are the one exception: they own exactly ONE
+          // frame_keys entry, but that single key's stored array holds all
+          // 16 poses (see themeService.ts's character_atlas branch of
+          // applySlicedAtlasFromBuffer). Emitting one key-level entry there
+          // would always yield a 1-entry array and the grid would never show
+          // (slots.length < 2 gate in buildThemeReviewFrameGrid) — so for
+          // this shape, enumerate WITHIN-key frames instead: one entry per
+          // stored pose, each carrying the same `key` plus its own `index`
+          // into that key's array. `index` is 0/omitted for the normal
+          // one-entry-per-key case so multi-key boards are unaffected, and
+          // retryThemeImage below distinguishes the two shapes the same way
+          // (single key, multiple stored frames) rather than trusting a flag
+          // from the client.
+          frame_slots: (() => {
+            const keys = item.frame_keys ?? [];
+            if (keys.length === 1) {
+              const soleKeyFrames = loadedTheme?.frames?.[keys[0]] ?? [];
+              if (soleKeyFrames.length > 1) {
+                return soleKeyFrames.map((data, index) => ({ key: keys[0], index, data: data ?? "" }));
+              }
+            }
+            return keys.map((key) => ({
+              key,
+              data: loadedTheme?.frames?.[key]?.[0] ?? "",
+            }));
+          })(),
           image_src: imageUri
             ? this._panel.webview.asWebviewUri(
                 // See the ThemeFileHandle note above: the extension's store

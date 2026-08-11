@@ -2307,13 +2307,22 @@ export async function retryThemeImage(
   mode: ThemeImageRetryMode,
   imageGenerationOptions: ThemeImageGenerationOptions,
   onProgress?: (message: string) => void,
-  // Per-frame regeneration (feedback #18): indices into item.frame_keys the
-  // caller wants to KEEP from the freshly-generated board. A full board is
-  // ALWAYS generated — image models produce a board atomically, there is no
-  // API to regenerate a single cell — this only changes what gets kept
-  // afterward. Absent/empty is the regression guarantee: behavior is then
-  // byte-identical to a full-board replace (see the merge below, which is a
-  // pure no-op when `slots` is empty).
+  // Per-frame regeneration (feedback #18): indices of the frames the caller
+  // wants to KEEP from the freshly-generated board. What an index addresses
+  // depends on this item's stored shape (decided further down from
+  // priorFrameKeys/priorFrames, never from item.kind, so it can't drift from
+  // what was actually on disk):
+  //   - multi-key boards (objects/decor/rivals): an index into item.frame_keys
+  //     — the addressable unit is a whole KEY, because a key can hold a
+  //     multi-frame clip that must not be split mid-animation.
+  //   - single-key, multi-frame boards (character atlases: one frame_keys
+  //     entry whose stored array holds all poses): an index WITHIN that
+  //     key's frame array, i.e. a single pose.
+  // A full board is ALWAYS generated either way — image models produce a
+  // board atomically, there is no API to regenerate a single cell — this
+  // only changes what gets kept afterward. Absent/empty is the regression
+  // guarantee: behavior is then byte-identical to a full-board replace (see
+  // the merge below, which is a pure no-op when `slots` is empty).
   slots?: readonly number[],
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> }> {
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
@@ -2323,14 +2332,16 @@ export async function retryThemeImage(
   if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be retried yet.');
   const notes = feedback.trim();
 
-  // Snapshot the frame keys/data this item owns BEFORE regeneration, keyed by
-  // frame_keys index — the addressable "slot" for partial-keep purposes (a
-  // clip key like "rival_x" holds several animation frames under one key;
-  // the whole clip is the unit that gets kept or replaced, not individual
-  // frames within it). Only meaningful when `slots` is non-empty AND this
-  // item already has stored frames for its keys (first generation has
-  // nothing to preserve, so partial-keep is meaningless there — falls back
-  // to a full replace below).
+  // Snapshot the frame keys/data this item owns BEFORE regeneration. For
+  // multi-key boards, frame_keys index is the addressable "slot" (a clip key
+  // like "rival_x" holds several animation frames under one key; the whole
+  // clip is the unit that gets kept or replaced, not individual frames
+  // within it). For single-key multi-frame boards (character atlases), this
+  // same snapshot instead supplies the prior POSE array that the within-key
+  // merge branch below indexes into. Only meaningful when `slots` is
+  // non-empty AND this item already has stored frames for its keys (first
+  // generation has nothing to preserve, so partial-keep is meaningless there
+  // — falls back to a full replace below).
   const priorFrameKeys = item.frame_keys ?? [];
   const priorFrames: Record<string, string[] | undefined> = {};
   for (const key of priorFrameKeys) priorFrames[key] = loadedTheme.frames[key];
@@ -2375,7 +2386,7 @@ export async function retryThemeImage(
   const wantsPartialKeep = requestedSlots.length > 0 && hasPriorFrames;
   onProgress?.(
     wantsPartialKeep
-      ? `Regenerating the full ${item.label} board (selected frame${requestedSlots.length === 1 ? '' : 's'} only will be kept)...`
+      ? `Regenerating the full ${item.label} board (trying to keep the selected frame${requestedSlots.length === 1 ? '' : 's'} only)...`
       : `Regenerating ${item.label}...`,
   );
 
@@ -2415,19 +2426,58 @@ export async function retryThemeImage(
     wantsPartialKeep,
   );
 
-  // Merge step: restore every NON-selected key to its pre-retry stored value,
-  // keeping only the requested indices from the freshly-sliced board, ALL IN
-  // MEMORY before anything is written. Two edge cases fall back to a full
-  // replace:
-  //   - !wantsPartialKeep (no slots requested, or first generation with
-  //     nothing stored yet) — frames/frameKeys are left exactly as
-  //     applySlicedAtlasFromBuffer produced them.
-  //   - frameKeys.length !== priorFrameKeys.length (the new board sliced to
-  //     a DIFFERENT key count than what was stored — a grid/manifest
-  //     mismatch). Indices are only meaningful when both boards share the
-  //     same shape, so treat this as unsafe to partially merge and keep the
-  //     full new board instead, same as an ordinary retry.
-  if (wantsPartialKeep && frameKeys.length === priorFrameKeys.length) {
+  // Character atlases are the one board shape with exactly ONE frame_keys
+  // entry whose stored array holds MANY frames (all poses under one key —
+  // see applySlicedAtlasFromBuffer's character_atlas branch). For every
+  // other kind, `frame_keys.length` keys each hold one clip, so a slot index
+  // addresses a KEY (a clip is unsplittable — see the multi-key branch
+  // below). Detected structurally from what was actually stored before this
+  // retry (priorFrameKeys/priorFrames), never from item.kind, so this stays
+  // correct even for legacy/edge-case documents.
+  const singleKeyMultiFrame = wantsPartialKeep
+    && priorFrameKeys.length === 1
+    && (priorFrames[priorFrameKeys[0]]?.length ?? 0) > 1;
+
+  // Merge step: restore either the non-selected WITHIN-KEY frames (character
+  // boards) or the non-selected KEYS (every other board) to their pre-retry
+  // stored values, keeping only the requested indices from the freshly-sliced
+  // board, ALL IN MEMORY before anything is written.
+  // Tracks whether the partial-keep merge actually applied (as opposed to
+  // falling back to a full-board replace below because the regenerated
+  // board's shape didn't match what was stored). Feeds the honesty check
+  // right before the write, which corrects the optimistic up-front message
+  // above when this stays false.
+  let partialKeepApplied = false;
+  if (singleKeyMultiFrame) {
+    // Character path: index into the sole key's frame array, not into
+    // frameKeys (which is always length 1 here and useless as an address).
+    const key = priorFrameKeys[0];
+    const priorPoses = priorFrames[key] ?? [];
+    const newPoses = frames[key] ?? [];
+    // Edge case: the freshly-sliced board didn't produce the same pose count
+    // as what was stored (e.g. a slicing-contract change). Indices are only
+    // meaningful when both pose arrays share the same shape, so fall back to
+    // the full new board, same as an ordinary retry — matches the ordinary
+    // key-count-mismatch fallback below.
+    if (newPoses.length === priorPoses.length) {
+      const keepIndices = new Set(requestedSlots.filter((index) => index >= 0 && index < newPoses.length));
+      // Out-of-range indices are dropped by the filter above rather than
+      // throwing, so one bad index from a stale client doesn't fail the
+      // whole retry.
+      const merged = newPoses.map((newPose, index) => (keepIndices.has(index) ? newPose : priorPoses[index]));
+      frames[key] = merged;
+      partialKeepApplied = true;
+    }
+  } else if (wantsPartialKeep && frameKeys.length === priorFrameKeys.length) {
+    // Two edge cases fall back to a full replace:
+    //   - !wantsPartialKeep (no slots requested, or first generation with
+    //     nothing stored yet) — frames/frameKeys are left exactly as
+    //     applySlicedAtlasFromBuffer produced them.
+    //   - frameKeys.length !== priorFrameKeys.length (the new board sliced to
+    //     a DIFFERENT key count than what was stored — a grid/manifest
+    //     mismatch). Indices are only meaningful when both boards share the
+    //     same shape, so treat this as unsafe to partially merge and keep the
+    //     full new board instead, same as an ordinary retry.
     const keepIndices = new Set(requestedSlots.filter((index) => index >= 0 && index < frameKeys.length));
     // Out-of-range indices are dropped by the filter above (never touch a
     // key outside the board's own key list) rather than throwing, so one bad
@@ -2441,6 +2491,19 @@ export async function retryThemeImage(
       // hasPriorFrames/length-match guards above) — leave the new slice in
       // place rather than deleting a key the board contract still expects.
     }
+    partialKeepApplied = true;
+  }
+  // Honesty check for the optimistic up-front message above: partial-keep
+  // was REQUESTED but neither merge branch's eligibility guard passed (a
+  // pose-count or key-count mismatch against what was stored). The full new
+  // board is still kept and written below — never silently discarded — but
+  // the user was told their selected frames would survive, so say plainly
+  // that they didn't.
+  if (wantsPartialKeep && !partialKeepApplied) {
+    onProgress?.(
+      `Couldn't preserve the selected frame${requestedSlots.length === 1 ? '' : 's'} for ${item.label} — the `
+      + 'regenerated board\'s frame layout did not match the previous one, so the whole board was replaced.',
+    );
   }
   // Single write for BOTH branches (merged partial-keep result, or the
   // untouched full new board when partial-keep wasn't requested/eligible) —
