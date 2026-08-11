@@ -2438,6 +2438,60 @@
     const prev = vscode.getState() || {};
     vscode.setState({ ...prev, legacyArtifactsNoticeDismissed: true });
   }
+
+  /**
+   * Issue #25 — dismissible banner warning that the observed orchestrator
+   * model is Sonnet or Haiku (never Opus/Fable/Unknown; see modelFamily,
+   * ~line 13185, which returns "Opus"/"Sonnet"/"Haiku"/"Fable"/null).
+   * Same fixed-overlay pattern as showLegacyArtifactsNotice/
+   * dismissLegacyArtifactsNotice above — reused deliberately, not
+   * reinvented. Dismissal is keyed BY MODEL FAMILY (not a bare boolean) so
+   * switching away and back to a sub-Opus model, or switching to a
+   * *different* sub-Opus model, re-surfaces the banner rather than being
+   * silenced forever by one dismissal.
+   * @param {"Opus"|"Sonnet"|"Haiku"|"Fable"|null} family
+   */
+  function showOrchestratorModelBanner(family) {
+    const existing = document.getElementById("orchestrator-model-notice");
+    if (existing) existing.remove(); // re-render clean each settings paint
+
+    if (family !== "Sonnet" && family !== "Haiku") return; // opus/fable/unknown never warn
+
+    const dismissedFamily = (vscode.getState() || {}).orchestratorModelNoticeDismissedFor;
+    if (dismissedFamily === family) return;
+
+    const notice = document.createElement("div");
+    notice.id = "orchestrator-model-notice";
+    notice.className = "catalog-notice orchestrator-model-notice";
+
+    const text = document.createElement("span");
+    text.className = "orchestrator-model-notice-text";
+    text.textContent =
+      `Orchestrator is running on ${family}. TycoonAgents expects Opus or above at the top so it can distill and delegate cheap work — Sonnet/Haiku here loses the savings. Run /model opus to fix.`;
+    notice.appendChild(text);
+
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "orchestrator-model-notice-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss");
+    dismissBtn.textContent = "×";
+    dismissBtn.addEventListener("click", () => dismissOrchestratorModelBanner(family));
+    notice.appendChild(dismissBtn);
+
+    document.body.appendChild(notice);
+  }
+
+  /**
+   * Dismiss the orchestrator-model banner for the given model family. See
+   * showOrchestratorModelBanner for why dismissal is keyed by family rather
+   * than a single flag.
+   * @param {"Sonnet"|"Haiku"} family
+   */
+  function dismissOrchestratorModelBanner(family) {
+    const notice = document.getElementById("orchestrator-model-notice");
+    if (notice) notice.remove();
+    const prev = vscode.getState() || {};
+    vscode.setState({ ...prev, orchestratorModelNoticeDismissedFor: family });
+  }
   
   // Themes Modal Elements
   const themesModalEl       = /** @type {HTMLElement} */ (document.getElementById("themes-modal"));
@@ -14847,10 +14901,39 @@
       head.appendChild(nameEl);
 
       if (agent.isOrchestrator) {
+        // Issue #24/#25: show the ACTUAL observed orchestrator model, read
+        // straight from the metrics entry (m.model) — never from this
+        // agent's markdown frontmatter (the session model doesn't obey it)
+        // and never defaulted to Opus when nothing has been observed yet.
+        // `m` is metricsFor(agent.id) from the loop above. modelFamily()
+        // (existing helper, ~line 13185) returns "Opus"/"Sonnet"/"Haiku"/
+        // "Fable" or null — reused as-is rather than adding a competing
+        // matcher.
+        const observedFamily = modelFamily(m && m.model);
         const ro = document.createElement("span");
         ro.className = "agent-model-readonly";
-        ro.textContent = "session model (set by Claude Code)";
+        ro.textContent = observedFamily
+          ? `Session model: ${observedFamily}`
+          : "Session model: Unknown yet";
         head.appendChild(ro);
+        row.appendChild(head);
+
+        const roHelp = document.createElement("p");
+        roHelp.className = "delegation-mode-option-help orchestrator-model-help";
+        roHelp.textContent = observedFamily
+          ? "Read from Claude Code's session model — set via /model, VS Code chat settings, or ANTHROPIC_MODEL. Not a TycoonAgents setting, so there's no picker here."
+          : "Read from Claude Code's session model (set via /model, VS Code chat settings, or ANTHROPIC_MODEL) once observed from activity — not a TycoonAgents setting. Run a task to populate this.";
+        row.appendChild(roHelp);
+
+        if (observedFamily === "Sonnet" || observedFamily === "Haiku") {
+          const warn = document.createElement("p");
+          warn.className = "orchestrator-model-warning";
+          warn.textContent =
+            `TycoonAgents expects Opus or above as the orchestrator — it distills and delegates cheap work to Sonnet/Haiku workers. Running the orchestrator itself on ${observedFamily} removes those savings. Fix: run /model opus.`;
+          row.appendChild(warn);
+        }
+
+        showOrchestratorModelBanner(observedFamily);
       } else {
         const group = document.createElement("div");
         group.className = "model-radio-group";
@@ -14893,8 +14976,8 @@
           vscode.postMessage({ type: "removeAgent", id: agent.id });
         });
         head.appendChild(removeBtn);
+        row.appendChild(head);
       }
-      row.appendChild(head);
 
       // Stats from matched metrics
       const stats = document.createElement("div");

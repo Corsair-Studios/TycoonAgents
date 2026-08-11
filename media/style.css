@@ -758,6 +758,23 @@ body {
   font-style: italic;
 }
 
+/* Orchestrator row help text (issue #24) reuses .delegation-mode-option-help
+   directly via a second class; only the orchestrator-specific spacing lives
+   here. */
+.orchestrator-model-help {
+  margin: 0;
+}
+
+/* Inline warning under the orchestrator row (issue #25) — same amber accent
+   as .hook-warn, shown only when the observed model is Sonnet/Haiku. */
+.orchestrator-model-warning {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--accent);
+  font-weight: 600;
+  margin: 0;
+}
+
 .model-radio-group {
   display: flex;
   gap: 8px;
@@ -2456,6 +2473,38 @@ body {
 }
 
 .legacy-artifacts-notice-dismiss:hover {
+  color: var(--text);
+}
+
+/* Orchestrator model warning (issue #25) — same fixed-overlay notice
+   pattern as .legacy-artifacts-notice, distinct id/class so the two never
+   collide when both conditions are true at once. */
+.orchestrator-model-notice {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 500;
+  max-width: 320px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.orchestrator-model-notice-text {
+  flex: 1;
+}
+
+.orchestrator-model-notice-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.orchestrator-model-notice-dismiss:hover {
   color: var(--text);
 }
 
