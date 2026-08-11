@@ -4626,6 +4626,94 @@ button.theme-review-preview:focus-visible::after {
   margin-bottom: 2px;
 }
 
+/* Per-frame regeneration picker (feedback #18) — reuses the same boxed
+   .theme-review-names-descriptions look/collapse pattern as the Names &
+   descriptions editor above; see buildThemeReviewFrameGrid in main.js. */
+.theme-review-frame-grid-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--vscode-panel-border, var(--border));
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.theme-review-frame-grid-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.theme-review-frame-grid-details > summary {
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground, #4daafc);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.theme-review-frame-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: 6px;
+}
+
+.theme-review-frame-tile {
+  position: relative;
+  display: block;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid var(--vscode-panel-border, var(--border));
+  border-radius: 4px;
+  cursor: pointer;
+  background:
+    linear-gradient(45deg, #20242a 25%, transparent 25%),
+    linear-gradient(-45deg, #20242a 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #20242a 75%),
+    linear-gradient(-45deg, transparent 75%, #20242a 75%),
+    #15181d;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-size: 12px 12px;
+}
+
+.theme-review-frame-tile:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.theme-review-frame-tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.theme-review-frame-tile--empty {
+  border-style: dashed;
+}
+
+.theme-review-frame-tile--selected {
+  border-color: var(--vscode-focusBorder, #007fd4);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
+}
+
+.theme-review-frame-tile--selected::after {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  content: "✓";
+  color: #fff;
+  background: var(--vscode-focusBorder, #007fd4);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
+
 /* Whole-theme Creative Direction panel — a dedicated, always-visible section
    (no <details>/collapse) rendered once at the TOP of the theme review, above
    every board card, so the theme's original/current creative direction is

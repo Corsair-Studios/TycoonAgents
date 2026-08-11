@@ -1962,6 +1962,11 @@ export class TycoonPanel {
                 type: MSG.THEME_IMAGE_RETRY_STATE,
                 payload: { item_id: itemId, busy: true, message },
               }),
+              // Per-frame regeneration (feedback #18): absent/empty is the
+              // regression guarantee — retryThemeImage treats that identically
+              // to a full-board replace, unchanged from before this field
+              // existed.
+              payload.slots,
             );
             if (retryingDuringActiveGeneration
                 && this._themeGenerationReviewGate?.themeId === themeId) {
@@ -2855,6 +2860,19 @@ export class TycoonPanel {
           has_raw_atlas: item.kind === "environment"
             ? false
             : await this._uriExists(vscode.Uri.joinPath(rawDirectoryUri, item.filename)),
+          // Per-frame regeneration (feedback #18): one entry per frame_keys[i],
+          // using that key's first stored image as the representative thumbnail
+          // (a clip key like "rival_x" holds several animation frames under one
+          // key — the whole clip is the addressable "slot" server-side, so one
+          // thumbnail per key is enough for the picker UI). Absent/empty frames
+          // for a key render as no thumbnail; the webview shows those as blank.
+          // Only meaningful for sliced atlas boards with >1 key — environment/
+          // single-key boards still get a 1-entry array, which the webview
+          // simply won't render a picker for (see renderThemeReviewFrameGrid).
+          frame_slots: (item.frame_keys ?? []).map((key) => ({
+            key,
+            data: loadedTheme?.frames?.[key]?.[0] ?? "",
+          })),
           image_src: imageUri
             ? this._panel.webview.asWebviewUri(
                 // See the ThemeFileHandle note above: the extension's store

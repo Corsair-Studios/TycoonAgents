@@ -549,6 +549,15 @@ export const MSG_SCHEMAS = {
       mode: z.string().optional(),
       image_provider: z.string().optional(),
       character_name: z.string().optional(),
+      // Per-frame regeneration (feedback #18): indices into the item's
+      // frame_keys array to KEEP from the newly-generated board, discarding
+      // the rest of the new board and preserving every other existing frame
+      // unchanged. Absent/empty means "no selection" — the retry behaves
+      // EXACTLY as a full-board replace, unchanged from before this field
+      // existed. Image models generate a board atomically; there is no way to
+      // regenerate a single cell, so a full generation still always happens —
+      // this only changes what is KEPT from the result.
+      slots: z.array(z.number().int().nonnegative()).optional(),
     })
     .passthrough(),
 

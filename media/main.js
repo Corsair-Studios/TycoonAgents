@@ -2702,6 +2702,13 @@
    * for that item — it must survive the busy → progress → done sequence and
    * the full-list re-render that happens along the way. */
   const themeReviewRetryWarnings = new Map();
+  /** Per-frame regeneration (feedback #18): item.id -> Set of selected
+   * frame_keys indices to keep from the next retry's freshly-generated
+   * board. Persisted here (not in the DOM) so selections survive the
+   * full-list re-render a retry triggers; cleared for an item once its retry
+   * request is sent (see the retry button handler) so a finished retry
+   * starts the next selection fresh. */
+  const themeReviewSelectedFrameSlots = new Map();
   /** The review-card "Upload" button awaiting a host result (for busy reset). */
   let pendingUploadBtn = null;
   /** Maps a theme-review item's `kind` to the REGENERATE_BOARD board string.
@@ -4035,6 +4042,82 @@
   }
 
   /**
+   * Builds the per-frame regeneration picker (feedback #18): a clickable grid
+   * of the board's individual frame_keys entries, each thumbnailed from
+   * item.frame_slots[i].data (the first stored image for that key — see
+   * panel.ts's _postThemeImageReview). Clicking a tile toggles it in/out of
+   * themeReviewSelectedFrameSlots[item.id]; the existing whole-board Retry
+   * button (unchanged) reads that selection at click time and includes it as
+   * `slots` on the RETRY_THEME_IMAGE payload. A full board is ALWAYS
+   * generated behind the scenes — image models produce a board atomically,
+   * there is no per-cell API — this picker only controls what gets KEPT from
+   * the result, so the hint text below says so explicitly rather than
+   * implying a cheaper/faster partial regeneration.
+   * Returns null when the item has fewer than 2 frame slots (nothing to pick
+   * between) or no image yet, so single-key boards (environment) and
+   * not-yet-generated cards are unaffected — this is purely additive.
+   * @param {any} item
+   * @param {boolean} disabledForGeneration true while an unrelated active generation run blocks edits
+   */
+  function buildThemeReviewFrameGrid(item, disabledForGeneration) {
+    const slots = Array.isArray(item.frame_slots) ? item.frame_slots : [];
+    if (slots.length < 2 || !item.image_src) return null;
+    if (!themeReviewSelectedFrameSlots.has(item.id)) {
+      themeReviewSelectedFrameSlots.set(item.id, new Set());
+    }
+    const selected = themeReviewSelectedFrameSlots.get(item.id);
+
+    const section = document.createElement("div");
+    section.className = "theme-review-frame-grid-section";
+    const details = document.createElement("details");
+    details.className = "theme-review-frame-grid-details";
+    details.open = selected.size > 0;
+    const summary = document.createElement("summary");
+    summary.textContent = "Regenerate individual frames";
+    details.appendChild(summary);
+
+    const hint = document.createElement("div");
+    hint.className = "theme-review-names-descriptions-hint";
+    hint.textContent = "Select the frame(s) to fix, then use Retry image below. The whole board is regenerated "
+      + "either way (same cost/time) — only the frame(s) you select are kept from the new result; every other "
+      + "frame stays exactly as it is now.";
+    details.appendChild(hint);
+
+    const grid = document.createElement("div");
+    grid.className = "theme-review-frame-grid";
+    slots.forEach((slot, index) => {
+      const tile = document.createElement("button");
+      tile.type = "button";
+      tile.className = "theme-review-frame-tile";
+      tile.disabled = disabledForGeneration;
+      const isSelected = selected.has(index);
+      tile.classList.toggle("theme-review-frame-tile--selected", isSelected);
+      tile.setAttribute("aria-pressed", String(isSelected));
+      tile.title = slot.key
+        ? `${slot.key} (frame ${index + 1} of ${slots.length}) — click to ${isSelected ? "deselect" : "select for regeneration"}`
+        : `Frame ${index + 1} of ${slots.length}`;
+      if (slot.data) {
+        const img = document.createElement("img");
+        img.src = slot.data;
+        img.alt = slot.key || `Frame ${index + 1}`;
+        tile.appendChild(img);
+      } else {
+        tile.classList.add("theme-review-frame-tile--empty");
+      }
+      tile.addEventListener("click", () => {
+        if (selected.has(index)) selected.delete(index);
+        else selected.add(index);
+        tile.classList.toggle("theme-review-frame-tile--selected", selected.has(index));
+        tile.setAttribute("aria-pressed", String(selected.has(index)));
+      });
+      grid.appendChild(tile);
+    });
+    details.appendChild(grid);
+    section.appendChild(details);
+    return section;
+  }
+
+  /**
    * Builds the single, merged "Names & descriptions" editor: one block per
    * unioned row (see themeReviewNamesDescriptionsRows) with the name <input>
    * directly above the description <textarea> — omitting whichever field the
@@ -4914,6 +4997,10 @@
         themeReviewBusyItems.get(item.id) === "names_descriptions",
         Boolean(payload.generation_active && !isCurrentReviewGate),
       );
+      const frameGridSection = buildThemeReviewFrameGrid(
+        item,
+        Boolean(payload.generation_active && !isCurrentReviewGate),
+      );
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
       // Single retry action — no mode dropdown, no notes channel. Always sends
@@ -4952,6 +5039,12 @@
         themeReviewRetryWarnings.delete(item.id);
         retryWarning.textContent = "";
         retryWarning.hidden = true;
+        // Per-frame regeneration (feedback #18): forward whichever frame_keys
+        // indices are currently selected in the picker above. Empty/absent
+        // when nothing is selected — the host then does an ordinary
+        // full-board replace, unchanged from before this feature existed.
+        const selectedSlots = themeReviewSelectedFrameSlots.get(item.id);
+        const slots = selectedSlots && selectedSlots.size ? Array.from(selectedSlots) : undefined;
         vscode.postMessage({
           type: 'RETRY_THEME_IMAGE',
           payload: {
@@ -4960,8 +5053,14 @@
             mode: "retry",
             image_provider: selectedThemeImageProvider(),
             character_name: characterNameInput ? characterNameInput.value.trim() : undefined,
+            ...(slots ? { slots } : {}),
           },
         });
+        // Clear the selection now that it has been sent — the next render
+        // (once the retry resolves) will reflect the regenerated board fresh,
+        // and a stale selection referring to the OLD frame_keys indices would
+        // be misleading to leave checked.
+        if (selectedSlots) selectedSlots.clear();
       });
       // Re-slice re-runs slicing on the saved raw atlas with no image-API cost.
       // Only available when the theme saved its original atlas (older themes did not).
@@ -5001,6 +5100,7 @@
       if (generationError) body.appendChild(generationError);
       if (nameRow) body.appendChild(nameRow);
       if (namesDescriptionsSection) body.appendChild(namesDescriptionsSection);
+      if (frameGridSection) body.appendChild(frameGridSection);
       body.appendChild(decisionRow);
       body.appendChild(retryGuidanceHint);
       body.appendChild(retryRow);

@@ -2102,6 +2102,16 @@ async function applySlicedAtlasFromBuffer(
   buffer: Buffer,
   signal?: AbortSignal,
   persistRaw: boolean = true,
+  // When true, skip this function's own frames.json/manifest write and just
+  // return the sliced frameKeys, leaving `frames`/`manifest` mutated in
+  // memory only. Used by retryThemeImage's partial-keep path: it needs to
+  // merge the freshly-sliced keys with the pre-retry stored values BEFORE
+  // anything touches disk, so there is exactly one mutex-protected write for
+  // the whole retry instead of a full-board write followed by a corrective
+  // merge write. All other callers (resliceThemeImageFromRaw, the
+  // recover-by-reslice path in generateOrResumeThemeItem, and a full/no-slots
+  // retry) leave this false and get the original write-here behavior.
+  skipWrite: boolean = false,
 ): Promise<{ output: Buffer; frameKeys: string[] }> {
   let output = buffer;
   let frameKeys = item.frame_keys;
@@ -2192,9 +2202,16 @@ async function applySlicedAtlasFromBuffer(
   // a slower, later-finishing object-board regen. Scoping the write to just
   // the keys THIS item owns (its new frame keys plus any it just dropped)
   // avoids that lost-update race; every other key defers to disk.
-  await writeThemeFiles(globalStorageUri, manifest, frames, [
-    ...new Set([...frameKeys, ...previousFrameKeys]),
-  ]);
+  //
+  // Skipped when skipWrite is set: the caller (retryThemeImage's partial-keep
+  // path) still needs this exact same key scope for ITS OWN single write, so
+  // it recomputes the identical `[...new Set([...frameKeys, ...previousFrameKeys])]`
+  // expression after merging — see retryThemeImage below.
+  if (!skipWrite) {
+    await writeThemeFiles(globalStorageUri, manifest, frames, [
+      ...new Set([...frameKeys, ...previousFrameKeys]),
+    ]);
+  }
   return { output, frameKeys };
 }
 
@@ -2290,6 +2307,14 @@ export async function retryThemeImage(
   mode: ThemeImageRetryMode,
   imageGenerationOptions: ThemeImageGenerationOptions,
   onProgress?: (message: string) => void,
+  // Per-frame regeneration (feedback #18): indices into item.frame_keys the
+  // caller wants to KEEP from the freshly-generated board. A full board is
+  // ALWAYS generated — image models produce a board atomically, there is no
+  // API to regenerate a single cell — this only changes what gets kept
+  // afterward. Absent/empty is the regression guarantee: behavior is then
+  // byte-identical to a full-board replace (see the merge below, which is a
+  // pure no-op when `slots` is empty).
+  slots?: readonly number[],
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> }> {
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
   const item = document?.items.find((candidate) => candidate.id === itemId);
@@ -2297,6 +2322,20 @@ export async function retryThemeImage(
   const loadedTheme = await loadTheme(globalStorageUri, themeId);
   if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be retried yet.');
   const notes = feedback.trim();
+
+  // Snapshot the frame keys/data this item owns BEFORE regeneration, keyed by
+  // frame_keys index — the addressable "slot" for partial-keep purposes (a
+  // clip key like "rival_x" holds several animation frames under one key;
+  // the whole clip is the unit that gets kept or replaced, not individual
+  // frames within it). Only meaningful when `slots` is non-empty AND this
+  // item already has stored frames for its keys (first generation has
+  // nothing to preserve, so partial-keep is meaningless there — falls back
+  // to a full replace below).
+  const priorFrameKeys = item.frame_keys ?? [];
+  const priorFrames: Record<string, string[] | undefined> = {};
+  for (const key of priorFrameKeys) priorFrames[key] = loadedTheme.frames[key];
+  const hasPriorFrames = priorFrameKeys.some((key) => priorFrames[key]?.length);
+  const requestedSlots = Array.from(new Set(slots ?? [])); // de-dupe indices
 
   // Legacy themes (pre-animated boards) stored object-atlas items without
   // object_rows. Reconstruct a 5-row animated board so every object-atlas retry
@@ -2329,7 +2368,16 @@ export async function retryThemeImage(
     ? buildReplacementPrompt(item, themePlanCreativeDirection(currentPlan), loadedTheme.manifest, currentPlan, backgroundMode)
     : item.prompt;
   const prompt = selectThemeImageRetryPrompt(freshBasePrompt, replacementPrompt, feedback, mode);
-  onProgress?.(`Regenerating ${item.label}...`);
+  // Partial-keep only applies when the caller asked for it AND there is
+  // something on disk worth preserving. Honest framing: the full board is
+  // generated either way (same cost/time as a full retry) — only what gets
+  // KEPT afterward differs. Never imply this is cheaper or faster.
+  const wantsPartialKeep = requestedSlots.length > 0 && hasPriorFrames;
+  onProgress?.(
+    wantsPartialKeep
+      ? `Regenerating the full ${item.label} board (selected frame${requestedSlots.length === 1 ? '' : 's'} only will be kept)...`
+      : `Regenerating ${item.label}...`,
+  );
 
   let generated: Buffer;
   try {
@@ -2342,6 +2390,19 @@ export async function retryThemeImage(
   }
   throwIfCancelled(undefined, imageGenerationOptions.signal);
   const { manifest, frames } = loadedTheme;
+  // Captured before the slice call, same as applySlicedAtlasFromBuffer's own
+  // `previousFrameKeys` — needed below to reproduce its merge-safe write key
+  // scope once retryThemeImage takes over the write.
+  const previousFrameKeys = item.frame_keys;
+  // skipWrite: true whenever partial-keep was requested. At this point we
+  // don't yet know if it's actually ELIGIBLE (that needs frameKeys, which
+  // only exists after slicing) — but deferring the write is always safe: on
+  // the ineligible path below we immediately perform the exact same
+  // full-replace write applySlicedAtlasFromBuffer would have done itself, so
+  // behavior there is unchanged. This is what closes the data-loss window:
+  // the full new board is never persisted on its own; only the FINAL
+  // (possibly merged) frame set ever reaches disk, in one mutex-protected
+  // writeThemeFiles call.
   const { frameKeys } = await applySlicedAtlasFromBuffer(
     globalStorageUri,
     themeId,
@@ -2350,7 +2411,49 @@ export async function retryThemeImage(
     item,
     generated,
     imageGenerationOptions.signal,
+    true,
+    wantsPartialKeep,
   );
+
+  // Merge step: restore every NON-selected key to its pre-retry stored value,
+  // keeping only the requested indices from the freshly-sliced board, ALL IN
+  // MEMORY before anything is written. Two edge cases fall back to a full
+  // replace:
+  //   - !wantsPartialKeep (no slots requested, or first generation with
+  //     nothing stored yet) — frames/frameKeys are left exactly as
+  //     applySlicedAtlasFromBuffer produced them.
+  //   - frameKeys.length !== priorFrameKeys.length (the new board sliced to
+  //     a DIFFERENT key count than what was stored — a grid/manifest
+  //     mismatch). Indices are only meaningful when both boards share the
+  //     same shape, so treat this as unsafe to partially merge and keep the
+  //     full new board instead, same as an ordinary retry.
+  if (wantsPartialKeep && frameKeys.length === priorFrameKeys.length) {
+    const keepIndices = new Set(requestedSlots.filter((index) => index >= 0 && index < frameKeys.length));
+    // Out-of-range indices are dropped by the filter above (never touch a
+    // key outside the board's own key list) rather than throwing, so one bad
+    // index from a stale client doesn't fail the whole retry.
+    for (let index = 0; index < frameKeys.length; index++) {
+      if (keepIndices.has(index)) continue; // selected: keep the NEW slice already in `frames`
+      const key = frameKeys[index];
+      const priorValue = priorFrames[key];
+      if (priorValue) frames[key] = priorValue;
+      // else: this key had no prior stored value (shouldn't happen given
+      // hasPriorFrames/length-match guards above) — leave the new slice in
+      // place rather than deleting a key the board contract still expects.
+    }
+  }
+  // Single write for BOTH branches (merged partial-keep result, or the
+  // untouched full new board when partial-keep wasn't requested/eligible) —
+  // this is the one and only persist for the whole retry. Key scope matches
+  // applySlicedAtlasFromBuffer's own merge-safe write exactly (new keys plus
+  // anything this item just dropped), so the lost-update protection against a
+  // concurrently-retrying different board is unchanged.
+  if (wantsPartialKeep) {
+    await writeThemeFiles(globalStorageUri, manifest, frames, [
+      ...new Set([...frameKeys, ...previousFrameKeys]),
+    ]);
+  }
+
   await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
     ...item,
     status: 'pending',
