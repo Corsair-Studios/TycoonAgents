@@ -6,7 +6,7 @@
 
 import { findGeminiInlineImage, summarizeGeminiImageResponse } from './geminiImageResponse';
 import { parseOpenAIImageError } from './imageGenerationError';
-import { resolveImageModel } from './imageModels';
+import { resolveImageModel, resolveImageQuality } from './imageModels';
 import type { ThemeImageProvider } from './themeImageSettings';
 
 /**
@@ -29,6 +29,12 @@ export interface ThemeImageConfig {
    */
   geminiModel?: string;
   openaiModel?: string;
+  /**
+   * OpenAI image `quality` override to use when options.quality is not set.
+   * Empty/unset means "medium" — see imageModels.ts's IMAGE_QUALITY_OPTIONS.
+   * OpenAI-only; Gemini has no equivalent parameter.
+   */
+  openaiImageQuality?: string;
 }
 
 export interface ThemeImageGenerationOptions {
@@ -41,6 +47,14 @@ export interface ThemeImageGenerationOptions {
    * recommended model for the resolved provider — see imageModels.ts.
    */
   model?: string;
+  /**
+   * OpenAI image `quality` override ('low' | 'medium' | 'high'). Takes
+   * precedence over {@link ThemeImageConfig.openaiImageQuality}. Empty/unset
+   * falls back to the config-level override, then 'medium' — see
+   * imageModels.ts's resolveImageQuality. OpenAI-only; the Gemini request
+   * path ignores this entirely (Gemini has no `quality` parameter).
+   */
+  quality?: string;
   aspectRatio?: '1:1' | '3:4';
   /** Cancels the in-flight provider request when a theme generation is stopped. */
   signal?: AbortSignal;
@@ -141,9 +155,11 @@ export async function generateThemeImage(
     options.model || (provider === 'gemini' ? config.geminiModel : config.openaiModel),
   );
 
-  return provider === 'openai'
-    ? generateWithOpenAI(prompt, apiKey, options, model)
-    : generateWithImagen3(prompt, apiKey, options, model);
+  if (provider === 'openai') {
+    const quality = resolveImageQuality(options.quality || config.openaiImageQuality);
+    return generateWithOpenAI(prompt, apiKey, options, model, quality);
+  }
+  return generateWithImagen3(prompt, apiKey, options, model);
 }
 
 /**
@@ -258,6 +274,7 @@ async function generateWithOpenAI(
   apiKey: string,
   options: ThemeImageGenerationOptions,
   model: string,
+  quality: string,
 ): Promise<Buffer> {
   const hasReferences = (options.referenceImages?.length ?? 0) > 0;
   const url = hasReferences
@@ -269,7 +286,7 @@ async function generateWithOpenAI(
     prompt,
     n: 1,
     size,
-    quality: 'medium',
+    quality,
     background: options.transparentBackground ? 'transparent' : 'opaque',
   };
 

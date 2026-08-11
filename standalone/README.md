@@ -58,7 +58,15 @@ e.g. for a headless/CI/SSH environment.
 
 `npm start` (i.e. `node src/server.mjs`) is the plain dev/dogfood entry
 point: it starts the server against the repo root itself without the CLI's
-argument parsing or browser auto-open.
+argument parsing or browser auto-open. `npm start` runs a `prestart` hook
+(`npm --prefix .. run build`, i.e. `tsc -p .` from the repo root) first, so
+`out/` is always rebuilt before the server starts — you no longer have to
+remember the "Build `out/` first" step above when using `npm start`.
+`node src/cli.mjs watch` / `npx tycoonagents-standalone watch` are separate
+Node entry points that do NOT go through npm's `start` lifecycle, so they
+still require the manual `npx tsc -p .` step from Prerequisites; if you skip
+it, the descriptive "run `npx tsc -p .`" error below still fires as a safety
+net on the first theme-generation call.
 
 ## Environment variables
 

@@ -50,7 +50,16 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { saveThemeImagePreference } = require("../src/extension/themeImageSettings") as typeof import("../src/extension/themeImageSettings");
+const themeImageSettingsModule = require("../src/extension/themeImageSettings") as typeof import("../src/extension/themeImageSettings") & {
+  // resolveThemeImageQuality is not yet implemented as of this writing. Its
+  // name and shape are specified by the contract: "A resolver in
+  // themeImageSettings.ts mirrors the existing resolveThemeImageModel()...
+  // reads the config key, and falls back to 'medium' when blank, missing,
+  // OR INVALID." It takes no provider argument (quality is OpenAI-only, not
+  // per-provider) per the contract's OPENAI ONLY clause.
+  resolveThemeImageQuality?: () => string;
+};
+const { saveThemeImagePreference } = themeImageSettingsModule;
 
 function makeFakeSecrets() {
   const store: Record<string, string> = {};
@@ -123,4 +132,41 @@ test("saveThemeImagePreference trims the model id and normalizes an unrecognized
   assert.equal(provider, "openai");
   const modelUpdate = configUpdates.find((u) => u.key === "openaiModel");
   assert.equal(modelUpdate?.value, "some-id");
+});
+
+// --- resolveThemeImageQuality (OpenAI image `quality` setting) ---
+// Contract: mirrors resolveThemeImageModel -- reads config key
+// `tycoonagents.openaiImageQuality`, falls back to 'medium' when blank,
+// missing, OR INVALID. Config key read via the same
+// workspace.getConfiguration('tycoonagents').get(...) stub used everywhere
+// else in this file (configStore), so this exercises the REAL resolver
+// against the REAL vscode-config stub, not a local reimplementation.
+
+test("resolveThemeImageQuality falls back to 'medium' when the config key is missing entirely", () => {
+  configStore = {};
+  assert.equal(themeImageSettingsModule.resolveThemeImageQuality!(), "medium");
+});
+
+test("resolveThemeImageQuality falls back to 'medium' when the config value is blank", () => {
+  configStore = { openaiImageQuality: "" };
+  assert.equal(themeImageSettingsModule.resolveThemeImageQuality!(), "medium");
+});
+
+test("resolveThemeImageQuality returns an explicit 'low' unchanged", () => {
+  configStore = { openaiImageQuality: "low" };
+  assert.equal(themeImageSettingsModule.resolveThemeImageQuality!(), "low");
+});
+
+test("resolveThemeImageQuality returns an explicit 'high' unchanged", () => {
+  configStore = { openaiImageQuality: "high" };
+  assert.equal(themeImageSettingsModule.resolveThemeImageQuality!(), "high");
+});
+
+test("resolveThemeImageQuality falls back to 'medium' for a GARBAGE config value -- never passed through to the API", () => {
+  configStore = { openaiImageQuality: "ultra" };
+  assert.equal(
+    themeImageSettingsModule.resolveThemeImageQuality!(),
+    "medium",
+    "an invalid stored quality string must never reach the OpenAI API unvalidated",
+  );
 });

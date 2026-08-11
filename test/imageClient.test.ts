@@ -288,6 +288,231 @@ test('generateThemeImage (openai) prompt is sent verbatim, with no Gemini no-tex
   }
 });
 
+// --- OpenAI image `quality` setting (low/medium/high, default medium) ---
+// Contract: quality is threaded through ThemeImageGenerationOptions
+// (alongside transparentBackground) and used in generateWithOpenAI on BOTH
+// send paths -- the JSON body (/v1/images/generations) and the FormData
+// append (/v1/images/edits, used when referenceImages are supplied).
+// Precedence: explicit option > configured setting ('quality' on
+// ThemeImageConfig) > 'medium'. OPENAI ONLY -- Gemini must never receive it.
+
+test('REGRESSION ANCHOR: generateThemeImage (openai, JSON path) with NO quality configured anywhere still sends exactly quality:"medium" -- byte-identical to the pre-existing hardcoded behavior', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('a test prompt', {
+      provider: 'openai',
+      apiKey: 'test-key',
+    });
+    assert.equal(capturedBody.quality, 'medium');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage (openai, JSON path /v1/images/generations) sends an explicit options.quality of "low" in the request body', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl: string | undefined;
+  let capturedBody: any;
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    capturedUrl = String(url);
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('a test prompt', {
+      provider: 'openai',
+      apiKey: 'test-key',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      quality: 'low',
+    } as any);
+    assert.equal(capturedUrl, 'https://api.openai.com/v1/images/generations');
+    assert.equal(capturedBody.quality, 'low');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage (openai, JSON path) sends an explicit options.quality of "high" in the request body', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('a test prompt', {
+      provider: 'openai',
+      apiKey: 'test-key',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      quality: 'high',
+    } as any);
+    assert.equal(capturedBody.quality, 'high');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage (openai, FormData path /v1/images/edits) sends quality:"low" as a form field when referenceImages are supplied', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl: string | undefined;
+  let capturedQuality: string | undefined | null;
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    capturedUrl = String(url);
+    const form = init?.body as FormData;
+    capturedQuality = form.get('quality') as string | null;
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('a test prompt', {
+      provider: 'openai',
+      apiKey: 'test-key',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      quality: 'low',
+      referenceImages: [{ data: Buffer.from('ref-png'), mimeType: 'image/png', filename: 'ref.png' }],
+    } as any);
+    assert.equal(capturedUrl, 'https://api.openai.com/v1/images/edits');
+    assert.equal(capturedQuality, 'low');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage (openai, FormData path) with NO quality configured still sends the form field quality:"medium" -- both send paths must agree on the default', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedQuality: string | undefined | null;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    const form = init?.body as FormData;
+    capturedQuality = form.get('quality') as string | null;
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('a test prompt', {
+      provider: 'openai',
+      apiKey: 'test-key',
+      referenceImages: [{ data: Buffer.from('ref-png'), mimeType: 'image/png', filename: 'ref.png' }],
+    });
+    assert.equal(capturedQuality, 'medium');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage: explicit options.quality overrides config.openaiImageQuality (precedence: option > config > medium)', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage(
+      'a test prompt',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { provider: 'openai', apiKey: 'test-key', quality: 'high' } as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { provider: 'openai', openaiApiKey: 'unused', openaiImageQuality: 'low' } as any,
+    );
+    assert.equal(capturedBody.quality, 'high', 'explicit options.quality must win over the configured setting');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage: config.openaiImageQuality is used when options.quality is unset (precedence: config > medium)', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    await generateThemeImage(
+      'a test prompt',
+      { provider: 'openai', apiKey: 'test-key' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { provider: 'openai', openaiApiKey: 'unused', openaiImageQuality: 'low' } as any,
+    );
+    assert.equal(capturedBody.quality, 'low');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage (gemini) request body NEVER includes a quality field, even when a quality option is explicitly (and incorrectly) supplied', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(
+      JSON.stringify({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: Buffer.from('fake-png').toString('base64') } }] } }],
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  try {
+    await generateThemeImage('a test prompt', {
+      provider: 'gemini',
+      apiKey: 'test-key',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      quality: 'high',
+    } as any);
+    assert.equal(capturedBody.quality, undefined, 'Gemini has no quality parameter -- it must never appear top-level in the request body');
+    assert.equal(
+      capturedBody.generationConfig?.quality,
+      undefined,
+      'Gemini has no quality parameter -- it must never appear nested in generationConfig either',
+    );
+    assert.equal(JSON.stringify(capturedBody).toLowerCase().includes('"quality"'), false, 'the string "quality" must not appear anywhere in the Gemini request body');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generateThemeImage (gemini) request body never includes quality even when config carries an openaiImageQuality value', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody: any;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    capturedBody = JSON.parse(String(init?.body));
+    return new Response(
+      JSON.stringify({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: Buffer.from('fake-png').toString('base64') } }] } }],
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  try {
+    await generateThemeImage(
+      'a test prompt',
+      { provider: 'gemini', apiKey: 'test-key' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { provider: 'gemini', geminiApiKey: 'unused', openaiImageQuality: 'high' } as any,
+    );
+    assert.equal(JSON.stringify(capturedBody).toLowerCase().includes('"quality"'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('generateThemeImage watchdog timer does not fire after a request settles normally', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>

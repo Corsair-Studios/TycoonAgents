@@ -6,7 +6,21 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { IMAGE_MODELS, defaultImageModel, resolveImageModel } from "../src/extension/imageModels";
+import {
+  IMAGE_MODELS,
+  defaultImageModel,
+  resolveImageModel,
+  // The quality-options contract (OpenAI-only low/medium/high, default
+  // medium) is not yet implemented as of this writing — these three names
+  // follow the exact naming convention already established by this same
+  // file (IMAGE_MODELS / defaultImageModel / resolveImageModel). If the
+  // implementing agent names them differently, update these imports to
+  // match rather than the reverse — the behavior contract below is what
+  // matters, not these particular identifiers.
+  IMAGE_QUALITY_OPTIONS,
+  defaultImageQuality,
+  resolveImageQuality,
+} from "../src/extension/imageModels";
 
 test("defaultImageModel('gemini') returns the latest Gemini model id", () => {
   assert.equal(defaultImageModel("gemini"), "gemini-3.1-flash-image");
@@ -68,4 +82,40 @@ test("resolveImageModel is permissive: an unknown/brand-new model id not present
     "sanity check: this id must not already be in IMAGE_MODELS.gemini",
   );
   assert.equal(resolveImageModel("gemini", unknownId), unknownId);
+});
+
+// --- OpenAI image `quality` setting (low/medium/high, default medium) ---
+// Contract: a quality options list lives alongside IMAGE_MODELS, OpenAI-only,
+// default 'medium'. Unlike resolveImageModel (permissive passthrough),
+// resolveImageQuality MUST reject invalid values -- an unvalidated quality
+// string reaching the OpenAI API would be a request-time error.
+
+test("defaultImageQuality is 'medium'", () => {
+  assert.equal(defaultImageQuality(), "medium");
+});
+
+test("IMAGE_QUALITY_OPTIONS contains exactly low, medium, high", () => {
+  assert.ok(Array.isArray(IMAGE_QUALITY_OPTIONS), "IMAGE_QUALITY_OPTIONS must be an array");
+  const ids = IMAGE_QUALITY_OPTIONS.map((o: { id: string }) => o.id).sort();
+  assert.deepEqual(ids, ["high", "low", "medium"]);
+});
+
+test("resolveImageQuality returns a valid explicit value unchanged", () => {
+  assert.equal(resolveImageQuality("low"), "low");
+  assert.equal(resolveImageQuality("medium"), "medium");
+  assert.equal(resolveImageQuality("high"), "high");
+});
+
+test("resolveImageQuality falls back to 'medium' for empty/whitespace/undefined/null", () => {
+  assert.equal(resolveImageQuality(""), "medium");
+  assert.equal(resolveImageQuality("   "), "medium");
+  assert.equal(resolveImageQuality(undefined), "medium");
+  assert.equal(resolveImageQuality(null), "medium");
+});
+
+test("resolveImageQuality falls back to 'medium' for a GARBAGE/invalid value -- never passes it through to the API", () => {
+  assert.equal(resolveImageQuality("ultra"), "medium");
+  assert.equal(resolveImageQuality("low-ish"), "medium");
+  assert.equal(resolveImageQuality(123 as unknown as string), "medium");
+  assert.equal(resolveImageQuality({} as unknown as string), "medium");
 });

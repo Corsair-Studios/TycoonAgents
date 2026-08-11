@@ -2646,6 +2646,8 @@
   const themeReviewImagesBtn = /** @type {HTMLElement} */ (document.getElementById("theme-review-images-btn"));
   const themeImageProvider  = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-provider"));
   const themeImageModelEl   = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-model"));
+  const themeImageQualityRow = /** @type {HTMLElement} */ (document.getElementById("theme-image-quality-row"));
+  const themeImageQualityEl = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-quality"));
   const themeApiKeyInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-api-key-input"));
   const themeApiKeyLabel    = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-label"));
   const themeApiKeySave     = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-save"));
@@ -2680,6 +2682,10 @@
   let themeImageModels = { gemini: [], openai: [] };
   /** @type {{gemini: string, openai: string}} Saved model id per provider ('' = Latest). */
   let themeImageSelectedModels = { gemini: "", openai: "" };
+  /** @type {Array<{id:string,label:string,note?:string}>} OpenAI-only quality options ('low'|'medium'|'high'). */
+  let themeImageQualityOptions = [];
+  /** Saved OpenAI quality override ('' = medium/default). Gemini has no quality parameter. */
+  let themeImageSelectedQuality = "";
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
   /** True while a SET_THEME_CREATIVE_DIRECTION save is in flight. Whole-theme
@@ -3002,15 +3008,39 @@
     themeImageModelEl.value = themeImageSelectedModels[provider] || "";
   }
 
+  /**
+   * Rebuild the #theme-image-quality options from the last-received
+   * IMAGE_QUALITY_OPTIONS list and select the saved override (or "Default"
+   * when unset), same construction style as populateModelSelect. OpenAI
+   * only — Gemini has no `quality` parameter, so the whole row is hidden
+   * for that provider instead of being populated empty.
+   * @param {string} provider
+   */
+  function populateQualitySelect(provider) {
+    if (themeImageQualityRow) themeImageQualityRow.hidden = provider !== "openai";
+    if (!themeImageQualityEl) return;
+    if (provider !== "openai") return;
+    themeImageQualityEl.textContent = "";
+    themeImageQualityEl.appendChild(new Option("Default (medium)", ""));
+    for (const quality of themeImageQualityOptions) {
+      if (!quality || !quality.id) continue;
+      const text = quality.note ? quality.label + " — " + quality.note : quality.label;
+      themeImageQualityEl.appendChild(new Option(text, quality.id));
+    }
+    themeImageQualityEl.value = themeImageSelectedQuality || "";
+  }
+
   if (themeImageProvider) {
     themeImageProvider.addEventListener("change", () => {
       updateThemeApiKeyUi("", false);
       populateModelSelect(selectedThemeImageProvider());
+      populateQualitySelect(selectedThemeImageProvider());
       vscode.postMessage({
         type: 'SET_THEME_IMAGE_PREFERENCE',
         payload: {
           provider: selectedThemeImageProvider(),
           model: themeImageModelEl ? themeImageModelEl.value : "",
+          quality: themeImageQualityEl ? themeImageQualityEl.value : "",
         },
       });
     });
@@ -3023,6 +3053,20 @@
         payload: {
           provider: selectedThemeImageProvider(),
           model: themeImageModelEl.value,
+          quality: themeImageQualityEl ? themeImageQualityEl.value : "",
+        },
+      });
+    });
+  }
+
+  if (themeImageQualityEl) {
+    themeImageQualityEl.addEventListener("change", () => {
+      vscode.postMessage({
+        type: 'SET_THEME_IMAGE_PREFERENCE',
+        payload: {
+          provider: selectedThemeImageProvider(),
+          model: themeImageModelEl ? themeImageModelEl.value : "",
+          quality: themeImageQualityEl.value,
         },
       });
     });
@@ -3040,7 +3084,12 @@
       themeApiKeySave.textContent = "Saving...";
       vscode.postMessage({
         type: 'SAVE_THEME_IMAGE_SETTINGS',
-        payload: { provider, api_key: apiKey, model: themeImageModelEl ? themeImageModelEl.value : "" },
+        payload: {
+          provider,
+          api_key: apiKey,
+          model: themeImageModelEl ? themeImageModelEl.value : "",
+          quality: themeImageQualityEl ? themeImageQualityEl.value : "",
+        },
       });
     });
   }
@@ -11127,10 +11176,15 @@
             openai: typeof payload.selectedModels.openai === "string" ? payload.selectedModels.openai : "",
           };
         }
+        if (Array.isArray(payload.qualityOptions)) {
+          themeImageQualityOptions = payload.qualityOptions;
+        }
+        themeImageSelectedQuality = typeof payload.selectedQuality === "string" ? payload.selectedQuality : "";
         if (themeImageProvider && (payload.provider === "gemini" || payload.provider === "openai")) {
           themeImageProvider.value = payload.provider;
         }
         populateModelSelect(selectedThemeImageProvider());
+        populateQualitySelect(selectedThemeImageProvider());
         if (themeApiKeyInput) themeApiKeyInput.value = "";
         if (themeApiKeySave) {
           themeApiKeySave.removeAttribute("disabled");

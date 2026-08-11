@@ -44,8 +44,42 @@
 // themeGenerationBridge.mjs's header for the load-time guarantee this relies
 // on).
 
+import fsSync from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import * as genBridge from './themeGenerationBridge.mjs';
 import { MSG_WIRE, handleGetThemeImageReview, listThemesFromStore } from './themeMessages.mjs';
+
+// ── imageModels.ts bridge (out/src/extension/imageModels.js) ───────────────
+// Same lazy-createRequire posture as themeGenerationBridge.mjs/server.mjs's
+// imageModelsModule() (see their module headers): this module never touches
+// 'out/' at import time, only the first call that actually needs
+// resolveImageQuality() pays the require() cost. Reused here (rather than
+// reimplementing the low/medium/high allowlist) so buildImageOptions()'s
+// quality validation can never drift from imageClient.ts's
+// generateThemeImage()/resolveImageQuality() — the same function the VS Code
+// extension host calls.
+const __themeGenMsgFilename = fileURLToPath(import.meta.url);
+const __themeGenMsgDirname = path.dirname(__themeGenMsgFilename);
+const REPO_ROOT = path.resolve(__themeGenMsgDirname, '..', '..');
+const IMAGE_MODELS_JS = path.join(REPO_ROOT, 'out', 'src', 'extension', 'imageModels.js');
+const requireCompiledModule = createRequire(import.meta.url);
+
+let _imageModelsModule;
+function imageModelsModule() {
+  if (!_imageModelsModule) {
+    if (!fsSync.existsSync(IMAGE_MODELS_JS)) {
+      throw new Error(
+        `[tycoonagents-standalone] themeGenerationMessages: out/src/extension/imageModels.js not found at ${IMAGE_MODELS_JS}. ` +
+          'The compiled `out/` directory is missing or stale — run `npx tsc -p .` from the repo root first, then ' +
+          'restart the standalone server.',
+      );
+    }
+    _imageModelsModule = requireCompiledModule(IMAGE_MODELS_JS);
+  }
+  return _imageModelsModule;
+}
 
 // ── Module-level generation state (single in-flight generation, mirrors
 // panel.ts's per-panel-instance fields — see module header) ────────────────
@@ -91,7 +125,14 @@ function buildThemeInitPayload(manifest, frames, isEditorMode) {
  * field) overrides the configured default, same as panel.ts's
  * `resolveThemeImageSettings(secrets, payload?.image_provider)`.
  *
- * @param {() => { provider: 'openai'|'gemini', openaiApiKey?: string, geminiApiKey?: string }} getThemeImageConfig
+ * Also resolves the OpenAI-only `quality` field (mirrors panel.ts's
+ * `resolveThemeImageSettings()` -> `imageOptions.quality = imageSettings.quality`
+ * — see src/host/vscode/panel.ts's GENERATE_THEME branch): 'low' | 'medium' |
+ * 'high', validated via the same resolveImageQuality() the extension uses
+ * (never reimplemented), and left `undefined` for 'gemini' since Gemini has
+ * no `quality` parameter and must never receive one.
+ *
+ * @param {() => { provider: 'openai'|'gemini', openaiApiKey?: string, geminiApiKey?: string, openaiQuality?: string }} getThemeImageConfig
  * @param {unknown} requestedProvider
  * @param {object} [extra] merged in last (e.g. `{ signal }`)
  */
@@ -99,7 +140,8 @@ function buildImageOptions(getThemeImageConfig, requestedProvider, extra = {}) {
   const config = getThemeImageConfig();
   const provider = requestedProvider === 'gemini' || requestedProvider === 'openai' ? requestedProvider : config.provider;
   const apiKey = provider === 'gemini' ? config.geminiApiKey : config.openaiApiKey;
-  return { provider, apiKey, ...extra };
+  const quality = provider === 'openai' ? imageModelsModule().resolveImageQuality(config.openaiQuality) : undefined;
+  return { provider, apiKey, quality, ...extra };
 }
 
 function requireApiKey(imageOptions) {

@@ -9,6 +9,7 @@
     "tycoonagents-standalone": "./src/cli.mjs"
   },
   "scripts": {
+    "prestart": "npm --prefix .. run build",
     "start": "node src/server.mjs",
     "build": "tsc -p tsconfig.json --noEmit",
     "test": "node --test \"test/**/*.test.mjs\""

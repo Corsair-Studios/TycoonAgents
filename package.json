@@ -94,6 +94,11 @@
           "type": "string",
           "default": "",
           "description": "Image model override for OpenAI. Leave blank to always use the latest recommended model."
+        },
+        "tycoonagents.openaiImageQuality": {
+          "type": "string",
+          "default": "",
+          "description": "Image quality for OpenAI (low, medium, high). Leave blank to use medium. No effect on Google Gemini."
         }
       }
     }

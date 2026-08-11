@@ -110,7 +110,7 @@ import {
   saveThemeImageSettings,
   saveThemeImagePreference,
 } from "../../extension/themeImageSettings";
-import { IMAGE_MODELS } from "../../extension/imageModels";
+import { IMAGE_MODELS, IMAGE_QUALITY_OPTIONS } from "../../extension/imageModels";
 import { MSG, MSG_SCHEMAS } from "./messages";
 import {
   readPlanSafe,
@@ -1085,10 +1085,12 @@ export class TycoonPanel {
                 gemini: imageConfig.get<string>("geminiModel") ?? "",
                 openai: imageConfig.get<string>("openaiModel") ?? "",
               },
+              qualityOptions: IMAGE_QUALITY_OPTIONS,
+              selectedQuality: imageConfig.get<string>("openaiImageQuality") ?? "",
             },
           });
         } else if (message.type === MSG.SAVE_THEME_IMAGE_SETTINGS) {
-          const payload = (message as any).payload as { provider?: string; api_key?: string; model?: string } | undefined;
+          const payload = (message as any).payload as { provider?: string; api_key?: string; model?: string; quality?: string } | undefined;
           try {
             const provider = await saveThemeImageSettings(
               this._secrets,
@@ -1105,6 +1107,21 @@ export class TycoonPanel {
                 console.warn(`TycoonAgents: Could not save ${modelConfigKey} to User Settings:`, err);
               }
             }
+            // Quality is OpenAI-only (Gemini has no `quality` parameter — see
+            // imageModels.ts's IMAGE_QUALITY_OPTIONS doc comment), so it's
+            // only persisted when the provider being saved is 'openai'; a
+            // quality value submitted for 'gemini' (the UI hides the control
+            // in that case, but be defensive) is ignored rather than stored.
+            if (provider === "openai") {
+              const qualityValue = typeof payload?.quality === "string" ? payload.quality.trim() : "";
+              if (modelConfig.inspect<string>("openaiImageQuality")) {
+                try {
+                  await modelConfig.update("openaiImageQuality", qualityValue, vscode.ConfigurationTarget.Global);
+                } catch (err) {
+                  console.warn("TycoonAgents: Could not save openaiImageQuality to User Settings:", err);
+                }
+              }
+            }
             const providers = await getThemeImageConfigurationStatus(this._secrets);
             const refreshedConfig = vscode.workspace.getConfiguration("tycoonagents");
             void this._panel.webview.postMessage({
@@ -1118,6 +1135,8 @@ export class TycoonPanel {
                   gemini: refreshedConfig.get<string>("geminiModel") ?? "",
                   openai: refreshedConfig.get<string>("openaiModel") ?? "",
                 },
+                qualityOptions: IMAGE_QUALITY_OPTIONS,
+                selectedQuality: refreshedConfig.get<string>("openaiImageQuality") ?? "",
               },
             });
           } catch (err) {
@@ -1131,11 +1150,12 @@ export class TycoonPanel {
           // dropdown change: persists provider + model only, never the
           // api_key, and swallows errors non-throwing (no reply needed —
           // the webview already reflects the change locally).
-          const payload = (message as any).payload as { provider?: string; model?: string } | undefined;
+          const payload = (message as any).payload as { provider?: string; model?: string; quality?: string } | undefined;
           try {
             await saveThemeImagePreference(this._secrets, {
               provider: payload?.provider,
               model: payload?.model,
+              quality: payload?.quality,
             });
           } catch (err) {
             console.warn("TycoonAgents: Could not persist theme image preference:", err);
@@ -1817,6 +1837,7 @@ export class TycoonPanel {
                 provider: imageSettings.provider,
                 apiKey: imageSettings.apiKey,
                 model: imageSettings.model,
+                quality: imageSettings.quality,
                 signal: normalizingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
               },
               (message) => void this._panel.webview.postMessage({
@@ -1934,6 +1955,7 @@ export class TycoonPanel {
                 provider: imageSettings.provider,
                 apiKey: imageSettings.apiKey,
                 model: imageSettings.model,
+                quality: imageSettings.quality,
                 signal: retryingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
               },
               (message) => void this._panel.webview.postMessage({
@@ -2037,6 +2059,7 @@ export class TycoonPanel {
               provider: imageSettings.provider,
               apiKey: imageSettings.apiKey,
               model: imageSettings.model,
+              quality: imageSettings.quality,
             });
             void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_READY, payload: { plan } });
           } catch (err) {
@@ -2106,6 +2129,7 @@ export class TycoonPanel {
               provider: imageSettings.provider,
               apiKey: imageSettings.apiKey,
               model: imageSettings.model,
+              quality: imageSettings.quality,
               signal: abortController.signal,
             };
             const waitForReview = async (themeId: string, itemId: string, reviewOptions?: ThemeImageReviewWaitOptions) => (
@@ -2190,6 +2214,7 @@ export class TycoonPanel {
               provider: imageSettings.provider,
               apiKey: imageSettings.apiKey,
               model: imageSettings.model,
+              quality: imageSettings.quality,
             };
             await regenerateThemeBoard(
               this._globalStorageUri,
@@ -9226,6 +9251,10 @@ export class TycoonPanel {
           <div class="theme-image-settings-row">
             <label for="theme-image-model">Model</label>
             <select id="theme-image-model"></select>
+          </div>
+          <div class="theme-image-settings-row" id="theme-image-quality-row">
+            <label for="theme-image-quality">Quality</label>
+            <select id="theme-image-quality"></select>
           </div>
           <div class="theme-image-settings-row theme-api-key-row">
             <label for="theme-api-key-input" id="theme-api-key-label">Google Gemini API key</label>

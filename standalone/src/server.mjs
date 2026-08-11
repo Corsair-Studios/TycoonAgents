@@ -1102,6 +1102,10 @@ function buildHostHtml() {
             <label for="theme-image-model">Model</label>
             <select id="theme-image-model"></select>
           </div>
+          <div class="theme-image-settings-row" id="theme-image-quality-row">
+            <label for="theme-image-quality">Quality</label>
+            <select id="theme-image-quality"></select>
+          </div>
           <div class="theme-image-settings-row theme-api-key-row">
             <label for="theme-api-key-input" id="theme-api-key-label">Google Gemini API key</label>
             <input
@@ -1388,6 +1392,14 @@ const THEME_IMAGE_PROVIDER_FILE = 'themeImageProvider.json';
 // pattern. See imageModels.ts (out/src/extension/imageModels.js, bridged via
 // imageModelsModule() above) for the model catalog and "empty = latest"
 // resolution rule these ids feed into.
+//
+// Also carries the OpenAI-only `openaiQuality` override
+// ('low' | 'medium' | 'high', empty/absent means "medium") as a third key on
+// the same JSON object — no separate file, since it follows the identical
+// persisted-appData-wins-over-env-fallback resolution rule as the model
+// overrides and is just as small. See imageModels.ts's IMAGE_QUALITY_OPTIONS/
+// resolveImageQuality (mirrored via imageModelsModule() below) — Gemini has
+// no equivalent parameter, so there is no `geminiQuality` counterpart.
 const THEME_IMAGE_MODELS_FILE = 'themeImageModels.json';
 
 function normalizeThemeImageProvider(value) {
@@ -1409,9 +1421,9 @@ function normalizeThemeImageProvider(value) {
  * @param {Record<string, string | undefined>} [opts.env] defaults to
  *   `process.env`.
  * @param {{ readJson: (name: string, fallback?: unknown) => unknown }} [opts.appData]
- *   optional — when provided, a persisted `{ provider }` / `{ gemini, openai }`
+ *   optional — when provided, a persisted `{ provider }` / `{ gemini, openai, openaiQuality }`
  *   is consulted as the fallback when the corresponding env var is unset.
- * @returns {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string, geminiModel: string, openaiModel: string }}
+ * @returns {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string, geminiModel: string, openaiModel: string, openaiQuality: string }}
  */
 export function getThemeImageConfig({ env = process.env, appData } = {}) {
   let persistedProvider;
@@ -1432,7 +1444,7 @@ export function getThemeImageConfig({ env = process.env, appData } = {}) {
       ? env.TYCOON_THEME_IMAGE_PROVIDER.trim()
       : undefined;
 
-  /** @type {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string, geminiModel: string, openaiModel: string }} */
+  /** @type {{ provider: 'openai' | 'gemini', openaiApiKey?: string, geminiApiKey?: string, geminiModel: string, openaiModel: string, openaiQuality: string }} */
   const config = { provider: normalizeThemeImageProvider(envProvider ?? persistedProvider) };
 
   if (typeof env.TYCOON_OPENAI_API_KEY === 'string' && env.TYCOON_OPENAI_API_KEY.trim() !== '') {
@@ -1453,6 +1465,22 @@ export function getThemeImageConfig({ env = process.env, appData } = {}) {
   const envOpenaiModel = typeof env.TYCOON_OPENAI_MODEL === 'string' ? env.TYCOON_OPENAI_MODEL.trim() : '';
   config.geminiModel = persistedGeminiModel || envGeminiModel || '';
   config.openaiModel = persistedOpenaiModel || envOpenaiModel || '';
+
+  // OpenAI-only `quality` override ('low' | 'medium' | 'high'; see
+  // imageModels.ts's IMAGE_QUALITY_OPTIONS doc comment — Gemini has no
+  // equivalent parameter). Same persisted-wins-over-env-fallback rule as the
+  // model overrides above. The RAW candidate (still possibly blank/garbage)
+  // is what's stored here — resolveImageQuality() is applied by callers at
+  // the point they actually need a request-ready value (mirrors how
+  // config.openaiModel/geminiModel are also left unresolved, "" meaning
+  // "latest", until resolveImageModel() is called), so getThemeImageConfig()
+  // stays a pure "what's configured" read with no IMAGE_QUALITY_OPTIONS
+  // dependency of its own.
+  const persistedOpenaiQuality =
+    persistedModels && typeof persistedModels.openaiQuality === 'string' ? persistedModels.openaiQuality.trim() : '';
+  const envOpenaiQuality =
+    typeof env.TYCOON_OPENAI_IMAGE_QUALITY === 'string' ? env.TYCOON_OPENAI_IMAGE_QUALITY.trim() : '';
+  config.openaiQuality = persistedOpenaiQuality || envOpenaiQuality || '';
 
   return config;
 }
@@ -1484,6 +1512,12 @@ function handleGetThemeImageSettings(broadcastFn) {
           gemini: config.geminiModel || '',
           openai: config.openaiModel || '',
         },
+        // OpenAI-only quality catalog + saved override, same field names as
+        // panel.ts's GET_THEME_IMAGE_SETTINGS reply — media/main.js's
+        // populateQualitySelect()/THEME_IMAGE_SETTINGS handler is unmodified
+        // and already reads payload.qualityOptions/payload.selectedQuality.
+        qualityOptions: imageModelsModule().IMAGE_QUALITY_OPTIONS,
+        selectedQuality: config.openaiQuality || '',
       },
     });
   } catch (err) {
@@ -1502,8 +1536,21 @@ function handleGetThemeImageSettings(broadcastFn) {
  * `payload.api_key` is intentionally ignored; keys stay env-only
  * (TYCOON_OPENAI_API_KEY/TYCOON_GEMINI_API_KEY).
  *
+ * Quality ('low' | 'medium' | 'high') is OpenAI-only (Gemini has no
+ * equivalent parameter — see imageModels.ts's IMAGE_QUALITY_OPTIONS doc
+ * comment), so `payload.quality` is only validated/persisted when the
+ * provider being saved is 'openai'; a value submitted alongside a 'gemini'
+ * save (the UI hides the control in that case, but be defensive same as
+ * panel.ts) is ignored rather than stored. Validation reuses the compiled
+ * resolveImageQuality() (out/src/extension/imageModels.js, bridged via
+ * imageModelsModule() — same module GET/SAVE already require for
+ * IMAGE_MODELS/IMAGE_QUALITY_OPTIONS) rather than reimplementing the
+ * low/medium/high allowlist here, so the two hosts can never drift: any
+ * blank/invalid/non-string value falls back to 'medium', never passed
+ * through raw.
+ *
  * @param {(eventName: string, data: object) => void} broadcastFn
- * @param {{ provider?: unknown, api_key?: unknown, model?: unknown }} payload
+ * @param {{ provider?: unknown, api_key?: unknown, model?: unknown, quality?: unknown }} payload
  */
 function handleSaveThemeImageSettings(broadcastFn, payload) {
   try {
@@ -1516,8 +1563,16 @@ function handleSaveThemeImageSettings(broadcastFn, payload) {
       const nextModels = {
         gemini: typeof existingModels.gemini === 'string' ? existingModels.gemini : '',
         openai: typeof existingModels.openai === 'string' ? existingModels.openai : '',
+        openaiQuality: typeof existingModels.openaiQuality === 'string' ? existingModels.openaiQuality : '',
       };
       nextModels[provider] = modelValue;
+      if (provider === 'openai') {
+        const rawQuality = payload && typeof payload.quality === 'string' ? payload.quality.trim() : '';
+        // resolveImageQuality() always returns a valid low/medium/high
+        // value (defaulting to 'medium'), so what's persisted is already
+        // validated — never the raw/garbage input.
+        nextModels.openaiQuality = imageModelsModule().resolveImageQuality(rawQuality);
+      }
       themeImageAppData.writeJson(THEME_IMAGE_MODELS_FILE, nextModels);
     }
 
@@ -1536,6 +1591,8 @@ function handleSaveThemeImageSettings(broadcastFn, payload) {
           gemini: config.geminiModel || '',
           openai: config.openaiModel || '',
         },
+        qualityOptions: imageModelsModule().IMAGE_QUALITY_OPTIONS,
+        selectedQuality: config.openaiQuality || '',
       },
     });
   } catch (err) {

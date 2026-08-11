@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { resolveImageModel } from './imageModels';
+import { resolveImageModel, resolveImageQuality } from './imageModels';
 
 export type ThemeImageProvider = 'gemini' | 'openai';
 
@@ -9,6 +9,12 @@ export interface ResolvedThemeImageSettings {
   configured: boolean;
   /** Resolved model id to request — the user's override, or the latest default. */
   model: string;
+  /**
+   * Resolved OpenAI image `quality` ('low' | 'medium' | 'high') — the user's
+   * override, or 'medium'. OpenAI-only: undefined when provider is 'gemini',
+   * since Gemini has no `quality` parameter and must never receive one.
+   */
+  quality: string | undefined;
 }
 
 const SECRET_KEYS: Record<ThemeImageProvider, string> = {
@@ -28,6 +34,15 @@ const MODEL_SETTING_KEYS: Record<ThemeImageProvider, string> = {
   gemini: 'geminiModel',
   openai: 'openaiModel',
 };
+
+/**
+ * Settings key holding the user's OpenAI image `quality` override
+ * ('low' | 'medium' | 'high'). OpenAI-only — Gemini has no equivalent
+ * parameter, see imageModels.ts's IMAGE_QUALITY_OPTIONS doc comment. Empty/
+ * unset means "medium", matching the value this replaced when quality was
+ * hardcoded.
+ */
+const OPENAI_QUALITY_SETTING_KEY = 'openaiImageQuality';
 
 export function normalizeThemeImageProvider(value: unknown): ThemeImageProvider {
   return value === 'gemini' ? 'gemini' : 'openai';
@@ -54,7 +69,8 @@ export async function resolveThemeImageSettings(
     : normalizeThemeImageProvider(requestedProvider);
   const apiKey = await resolveThemeImageApiKey(secrets, provider);
   const model = resolveThemeImageModel(provider);
-  return { provider, apiKey, configured: Boolean(apiKey), model };
+  const quality = provider === 'openai' ? resolveThemeImageQuality() : undefined;
+  return { provider, apiKey, configured: Boolean(apiKey), model, quality };
 }
 
 /**
@@ -67,6 +83,17 @@ export function resolveThemeImageModel(provider: ThemeImageProvider): string {
   const config = vscode.workspace.getConfiguration('tycoonagents');
   const stored = config.get<string>(MODEL_SETTING_KEYS[provider]);
   return resolveImageModel(provider, stored);
+}
+
+/**
+ * Resolve the configured OpenAI image `quality` override, falling back to
+ * 'medium' when unset/blank/unrecognized (see {@link resolveImageQuality}).
+ * OpenAI-only — callers must not apply this to Gemini requests.
+ */
+export function resolveThemeImageQuality(): string {
+  const config = vscode.workspace.getConfiguration('tycoonagents');
+  const stored = config.get<string>(OPENAI_QUALITY_SETTING_KEY);
+  return resolveImageQuality(stored);
 }
 
 export async function getThemeImageConfigurationStatus(
@@ -122,7 +149,7 @@ export async function saveThemeImageSettings(
  */
 export async function saveThemeImagePreference(
   secrets: vscode.SecretStorage,
-  { provider: providerValue, model: modelValue }: { provider: unknown; model: unknown },
+  { provider: providerValue, model: modelValue, quality: qualityValue }: { provider: unknown; model: unknown; quality?: unknown },
 ): Promise<ThemeImageProvider> {
   const provider = normalizeThemeImageProvider(providerValue);
   await secrets.store(PROVIDER_STORAGE_KEY, provider);
@@ -143,6 +170,20 @@ export async function saveThemeImagePreference(
       await config.update(modelConfigKey, model, vscode.ConfigurationTarget.Global);
     } catch (err) {
       console.warn(`TycoonAgents: Could not save ${modelConfigKey} to User Settings:`, err);
+    }
+  }
+
+  // Quality is OpenAI-only (see OPENAI_QUALITY_SETTING_KEY doc comment) — a
+  // quality value is only persisted when the preference being saved is for
+  // 'openai'; the Gemini branch never writes this key.
+  if (provider === 'openai') {
+    const quality = typeof qualityValue === 'string' ? qualityValue.trim() : '';
+    if (config.inspect<string>(OPENAI_QUALITY_SETTING_KEY)) {
+      try {
+        await config.update(OPENAI_QUALITY_SETTING_KEY, quality, vscode.ConfigurationTarget.Global);
+      } catch (err) {
+        console.warn(`TycoonAgents: Could not save ${OPENAI_QUALITY_SETTING_KEY} to User Settings:`, err);
+      }
     }
   }
 
