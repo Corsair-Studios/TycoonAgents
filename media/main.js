@@ -336,11 +336,15 @@
       metricsScopeAllEl.checked = metricsScope === "all";
     }
     if (metricsColTokensEl) {
-      metricsColTokensEl.textContent = metricsScope === "session" ? "Tokens (this session)" : "Tokens (all time)";
+      metricsColTokensEl.textContent = "Tokens*";
       metricsColTokensEl.title =
         metricsScope === "session"
-          ? "Total tokens this agent has used in the current Claude Code session only."
-          : "Total tokens this agent has used since the last metrics reset (all time).";
+          ? "Tokens used this session. Total tokens this agent has used in the current Claude Code session only."
+          : "Tokens used all time. Total tokens this agent has used since the last metrics reset (all time).";
+      metricsColTokensEl.setAttribute(
+        "aria-label",
+        metricsScope === "session" ? "Tokens used this session" : "Tokens used all time"
+      );
     }
     if (metricsScopeCaptionEl) {
       metricsScopeCaptionEl.textContent =
@@ -935,7 +939,7 @@
     menuCatalogBtn.addEventListener("click", () => {
       closeMenu();
       openModal(skillsModalEl, skillsCloseBtn);
-      showCatalogTab("skills");
+      showCatalogTab("packs");
       vscode.postMessage({ type: "getSkills" });
     });
   }
@@ -952,7 +956,11 @@
   // it was opened more recently, then about modal, then menu.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (resetConfirmModalEl && !resetConfirmModalEl.hasAttribute("hidden")) {
+      if (themeSwitchConfirmModalEl && !themeSwitchConfirmModalEl.hasAttribute("hidden")) {
+        closeThemeSwitchConfirmModal();
+        selectedThemeId = themeSwitchConfirmPreviousId;
+        renderThemesList(lastThemesList);
+      } else if (resetConfirmModalEl && !resetConfirmModalEl.hasAttribute("hidden")) {
         closeResetConfirmModal();
       } else if (badgeDetailModalEl && !badgeDetailModalEl.hasAttribute("hidden")) {
         closeBadgeDetail();
@@ -1649,6 +1657,114 @@
     resetConfirmModalEl.removeAttribute("hidden");
     try {
       if (resetConfirmCancelBtn) resetConfirmCancelBtn.focus();
+    } catch (_e) { /* noop */ }
+  }
+
+  // ── Theme-switch confirm modal (issue #28: in-panel replacement for the
+  // host's native VS Code showWarningMessage confirm) ─────────────────────
+  // The host still decides WHETHER a warning is needed (it owns the
+  // per-project persisted badge counts via shouldWarnOnThemeSwitch —
+  // progressScope.ts — the webview has no live view of that data). When a
+  // warning is needed the host sends CONFIRM_THEME_SWITCH instead of
+  // switching immediately; this modal shows the same wording the host's
+  // showWarningMessage used to show, and only on "Switch theme" does the
+  // webview post SELECT_THEME_CONFIRMED to tell the host to actually
+  // proceed. Cancelling closes the modal and reverts the optimistic
+  // selectedThemeId locally — no host round-trip needed, since the host
+  // never touched anything yet. Built the same lazy way as
+  // resetConfirmModalEl, mirroring its backdrop/dialog/hidden mechanism.
+  /** @type {HTMLElement|null} */ let themeSwitchConfirmModalEl = null;
+  /** @type {HTMLElement|null} */ let themeSwitchConfirmMessageEl = null;
+  /** @type {HTMLElement|null} */ let themeSwitchConfirmCancelBtn = null;
+  /** Theme id still actually loaded — restored on cancel. */
+  let themeSwitchConfirmPreviousId = "";
+
+  function closeThemeSwitchConfirmModal() {
+    if (themeSwitchConfirmModalEl) themeSwitchConfirmModalEl.setAttribute("hidden", "");
+  }
+
+  function buildThemeSwitchConfirmModal() {
+    if (themeSwitchConfirmModalEl) return;
+
+    const modal = document.createElement("div");
+    modal.id = "theme-switch-confirm-modal";
+    modal.setAttribute("hidden", "");
+
+    const backdrop = document.createElement("div");
+    backdrop.id = "theme-switch-confirm-backdrop";
+    backdrop.addEventListener("click", () => {
+      closeThemeSwitchConfirmModal();
+      selectedThemeId = themeSwitchConfirmPreviousId;
+      renderThemesList(lastThemesList);
+    });
+    modal.appendChild(backdrop);
+
+    const dialog = document.createElement("div");
+    dialog.id = "theme-switch-confirm-dialog";
+
+    const title = document.createElement("div");
+    title.id = "theme-switch-confirm-title";
+    title.textContent = "Switch theme?";
+    dialog.appendChild(title);
+
+    themeSwitchConfirmMessageEl = document.createElement("p");
+    themeSwitchConfirmMessageEl.id = "theme-switch-confirm-message";
+    dialog.appendChild(themeSwitchConfirmMessageEl);
+
+    const actions = document.createElement("div");
+    actions.className = "reset-confirm-actions";
+
+    themeSwitchConfirmCancelBtn = document.createElement("button");
+    themeSwitchConfirmCancelBtn.type = "button";
+    themeSwitchConfirmCancelBtn.className = "skill-btn settings-btn";
+    themeSwitchConfirmCancelBtn.textContent = "Cancel";
+    themeSwitchConfirmCancelBtn.addEventListener("click", () => {
+      closeThemeSwitchConfirmModal();
+      // Revert the optimistic highlight set by the theme-picker click
+      // handler back to the theme that's still actually loaded.
+      selectedThemeId = themeSwitchConfirmPreviousId;
+      renderThemesList(lastThemesList);
+    });
+    actions.appendChild(themeSwitchConfirmCancelBtn);
+
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "skill-btn settings-btn danger-btn";
+    confirmBtn.textContent = "Switch theme";
+    confirmBtn.addEventListener("click", () => {
+      closeThemeSwitchConfirmModal();
+      vscode.postMessage({ type: "SELECT_THEME_CONFIRMED", payload: { theme_id: pendingThemeSwitchTargetId } });
+    });
+    actions.appendChild(confirmBtn);
+
+    dialog.appendChild(actions);
+    modal.appendChild(dialog);
+    document.body.appendChild(modal);
+    themeSwitchConfirmModalEl = modal;
+  }
+
+  /** Target theme id the pending confirm modal would switch to, if confirmed. */
+  let pendingThemeSwitchTargetId = "";
+
+  /**
+   * Show the in-panel "switch theme" confirmation. Called when the host
+   * responds to SELECT_THEME with CONFIRM_THEME_SWITCH instead of switching
+   * immediately. Mirrors the wording the host's showWarningMessage used to
+   * show (see the removed inline confirm in panel.ts's MSG.SELECT_THEME
+   * handler).
+   * @param {{targetThemeId: string, targetName: string, previousThemeId: string, previousName: string, previousBadgeCount: number}} info
+   */
+  function showThemeSwitchConfirmModal(info) {
+    buildThemeSwitchConfirmModal();
+    if (!themeSwitchConfirmModalEl || !themeSwitchConfirmMessageEl) return;
+    pendingThemeSwitchTargetId = info.targetThemeId;
+    themeSwitchConfirmPreviousId = info.previousThemeId;
+    themeSwitchConfirmMessageEl.textContent =
+      `Switching to "${info.targetName}". Each theme tracks its own badges — it starts fresh here. ` +
+      `Your "${info.previousName}" progress (${info.previousBadgeCount} badges) is saved and comes back when you switch to it again.`;
+    themeSwitchConfirmModalEl.removeAttribute("hidden");
+    try {
+      if (themeSwitchConfirmCancelBtn) themeSwitchConfirmCancelBtn.focus();
     } catch (_e) { /* noop */ }
   }
 
@@ -11820,15 +11936,19 @@
       // the no-theme placeholder scene the moment render() actually draws
       // it, instead of idling for LOADING_TIMEOUT_MS/the 12s hard failsafe.
       noThemeSignaled = true;
-    } else if (msg && msg.type === "THEME_SELECT_ABORTED") {
-      // Host declined the switch (theme-switch warning modal was dismissed
-      // instead of confirmed) — revert the optimistic selectedThemeId set on
-      // click (theme-picker click handler, ~line 2952) back to the theme
-      // that's still actually loaded, and re-render the picker's highlight.
-      const stillLoadedId = msg.payload && msg.payload.theme_id;
-      if (typeof stillLoadedId === "string") {
-        selectedThemeId = stillLoadedId;
-        renderThemesList(lastThemesList);
+    } else if (msg && msg.type === "CONFIRM_THEME_SWITCH") {
+      // Host determined (via shouldWarnOnThemeSwitch, using its persisted
+      // per-project badge counts the webview doesn't have) that switching
+      // away from the current theme would drop badge visibility, and has
+      // NOT switched yet — it's waiting on our decision. Show the in-panel
+      // confirm modal (issue #28); "Switch theme" posts
+      // SELECT_THEME_CONFIRMED to tell the host to actually proceed,
+      // "Cancel"/Escape/backdrop just revert the optimistic selectedThemeId
+      // set by the theme-picker click handler (~line 5006) with no host
+      // round-trip, since the host never touched anything yet.
+      const info = msg.payload;
+      if (info && typeof info.targetThemeId === "string") {
+        showThemeSwitchConfirmModal(info);
       }
     } else if (msg && msg.type === "STAGE_TUNING_SAVED") {
       if (stageEditEls && stageEditEls.status) {
@@ -19183,6 +19303,39 @@
         // shoot/melee one-shots both re-loop during sustained in-range combat
         // via the reset-on-completion branch below.
         desiredClip = engageInRange ? (rangedUnlocked ? "shoot" : "melee") : "walk";
+      }
+      // STALE-HOST-ACTIVITY guard: the host has no combat concept (see
+      // state.ts) and can hand us any of its activity-clip WORKER states
+      // ("build"/"haul" -> build, "survey" -> tool_idle, "celebrate" -> cheer,
+      // see workerStateToClip) at any time, including while this agent is
+      // standing at a rival — e.g. a preempting social state (sparring, conga,
+      // etc.) suppressed isEngaging above and the melee override never ran.
+      // Any such clip that outlives the activity backing it reads as a stale
+      // pose (an agent frozen mid-survey or stuck cheering). HOST_ACTIVITY_
+      // CLIP_ACTIVE below states, per clip, what "genuinely active" means:
+      //  - "build": isBuilding already accounts for !isEngaging and requires
+      //    an actual build target; the extinguish path legitimately drives
+      //    the same clip and is exempted the same way the old build-only
+      //    guard was.
+      //  - "tool_idle": survey has no in-webview driver at all (no ambient
+      //    system ever plays it), so it is never genuinely active here.
+      //  - "cheer": conga/dance-off/sparring are its only genuine drivers,
+      //    and each overrides desiredClip unconditionally further below in
+      //    this same chain — so knocking a stale host "cheer" down here does
+      //    not block them; they simply reassert it when their own condition
+      //    is true.
+      // Runs before emote/conga/dance so those still win. Written as a
+      // direct conditional (no per-iteration object literal) since this
+      // runs once per character per render frame; "genuinely active" per
+      // clip is exactly as it was: "build" needs isBuilding or the
+      // extinguish exemption, "tool_idle" and "cheer" have no genuine
+      // driver here (see above) and are always knocked down.
+      if (
+        (desiredClip === "build" && !(isBuilding || (isExtinguishing && extinguishArrived))) ||
+        desiredClip === "tool_idle" ||
+        desiredClip === "cheer"
+      ) {
+        desiredClip = isMoving ? "walk" : "idle";
       }
       // CONGA override: line members walk (or briefly cheer) — takes priority
       // over build/idle since inConga preempted those blocks above.

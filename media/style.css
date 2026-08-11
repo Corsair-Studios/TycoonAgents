@@ -1424,7 +1424,14 @@ body {
   line-height: 1;
 }
 
-/* Menu popover dropdown */
+/* Menu popover dropdown. Appended directly to <body> (media/main.js ~801) with
+   no clipping ancestor, so it already paints above the canvas/scene content —
+   the width was the real complaint (issue #27). min-width raised from a
+   cramped 150px and a responsive max-width added so it stays comfortable on
+   a wide panel without ever overflowing a narrow one. z-index raised from 20
+   to sit above the other floating overlays in this file (.legacy-artifacts-
+   notice / .orchestrator-model-notice both use 500) so the popover is never
+   occluded by a notice that happens to be showing at the same time. */
 #menu-popover {
   position: absolute;
   top: 38px;
@@ -1432,8 +1439,9 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
-  min-width: 150px;
-  z-index: 20;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 24px));
+  z-index: 501;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   padding: 4px 0;
 }
@@ -1958,6 +1966,57 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* ── Theme-switch confirm modal (in-panel replacement for the host's native
+   VS Code showWarningMessage confirm) ─────────────────────────────────────
+   Identical structure/z-index language to #reset-confirm-modal above —
+   reuses .reset-confirm-actions for its button row rather than duplicating
+   it. Built lazily in JS (media/main.js's buildThemeSwitchConfirmModal) and
+   appended to <body>. */
+#theme-switch-confirm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#theme-switch-confirm-modal[hidden] {
+  display: none;
+}
+
+#theme-switch-confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+#theme-switch-confirm-dialog {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px 24px;
+  min-width: 260px;
+  max-width: 360px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+#theme-switch-confirm-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+#theme-switch-confirm-message {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
 }
 
 /* ── Rebirth prestige panel (sits above #badge-list, same dark-glass +

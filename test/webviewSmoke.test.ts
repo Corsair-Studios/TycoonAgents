@@ -3001,9 +3001,11 @@ test('THEME_IMAGE_REVIEW: background_decor board renders a prefilled "Ranged pro
 // panel.ts's static HTML for the toggle radios lives at ~L8981-8990 inside
 // _getHtmlForWebview's template literal (id="metrics-scope-toggle", two
 // .model-radio labels) with the caption div (#metrics-scope-caption) right
-// after at ~L8991, and the "Tokens/min...Tokens (all time)" default header
-// text on the #metrics-col-tokens <th> at ~L9001. All of the actual scope
-// SWITCHING behavior these tests exercise — updateMetricsScopeUI(),
+// after at ~L8991, and the #metrics-col-tokens <th> at ~L9001. Since feedback
+// issue #26, that header's visible textContent is the fixed short form
+// "Tokens*" in both scopes; the scope-dependent explanation moved to the
+// `title` and `aria-label` attributes (media/main.js ~L338-347). All of the
+// actual scope SWITCHING behavior these tests exercise — updateMetricsScopeUI(),
 // currentScopeMetrics(), setMetricsScope() — lives in media/main.js
 // (~L299-374), which is what these tests boot and drive.
 test('Metrics tab scope toggle: default scope is "all" on first render, before any state is ever received', async () => {
@@ -3018,7 +3020,17 @@ test('Metrics tab scope toggle: default scope is "all" on first render, before a
     assert.ok(!sessionEl.checked, 'the "This session" radio must NOT be checked by default');
     const tokensHeader = h.doc.getElementById('metrics-col-tokens');
     assert.ok(tokensHeader, 'the tokens column header should exist');
-    assert.equal(tokensHeader.textContent, 'Tokens (all time)', 'default header text must read "Tokens (all time)"');
+    assert.equal(tokensHeader.textContent, 'Tokens*', 'header text is now the short "Tokens*" form in both scopes');
+    assert.equal(
+      tokensHeader.title,
+      'Tokens used all time. Total tokens this agent has used since the last metrics reset (all time).',
+      'default title must explain the "all time" scope'
+    );
+    assert.equal(
+      tokensHeader.getAttribute('aria-label'),
+      'Tokens used all time',
+      'default aria-label must state the "all time" scope'
+    );
     assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
   } finally {
     h.win.close();
@@ -3051,7 +3063,12 @@ test('Metrics tab scope toggle: token column header and scope caption change bet
     const sessionEl = h.doc.getElementById('metrics-scope-session');
 
     // Still "all" (default) right after this dispatch — nobody toggled yet.
-    assert.equal(tokensHeader.textContent, 'Tokens (all time)');
+    // Visible textContent is now the scope-invariant "Tokens*" short form, so
+    // scope is pinned via the title/aria-label instead (the tooltip the
+    // asterisk points to).
+    assert.equal(tokensHeader.textContent, 'Tokens*');
+    assert.match(tokensHeader.title, /all time/i, 'title must explain the "all time" scope');
+    assert.equal(tokensHeader.getAttribute('aria-label'), 'Tokens used all time');
     assert.ok(caption.textContent && caption.textContent.length > 0, 'caption must be non-empty while scope is "all"');
     assert.match(caption.textContent, /all time/i);
 
@@ -3063,7 +3080,17 @@ test('Metrics tab scope toggle: token column header and scope caption change bet
     await h.flush();
     assert.equal(h.errors.length, 0, `errors after switching to session scope: ${h.errors.map(String).join('; ')}`);
 
-    assert.equal(tokensHeader.textContent, 'Tokens (this session)', 'header text must switch when "This session" is selected');
+    assert.equal(tokensHeader.textContent, 'Tokens*', 'header text stays the short "Tokens*" form after switching scope');
+    assert.match(
+      tokensHeader.title,
+      /this session/i,
+      'title must switch to explain the "this session" scope when "This session" is selected'
+    );
+    assert.equal(
+      tokensHeader.getAttribute('aria-label'),
+      'Tokens used this session',
+      'aria-label must switch when "This session" is selected'
+    );
     assert.ok(caption.textContent && caption.textContent.length > 0, 'caption must be non-empty while scope is "session"');
     assert.match(caption.textContent, /this session/i);
     assert.match(caption.textContent, /S2/, 'the session caption should state the actual sessionId');
@@ -3072,7 +3099,13 @@ test('Metrics tab scope toggle: token column header and scope caption change bet
     allEl.checked = true;
     allEl.dispatchEvent(new h.win.Event('change', { bubbles: true }));
     await h.flush();
-    assert.equal(tokensHeader.textContent, 'Tokens (all time)', 'header text must switch back');
+    assert.equal(tokensHeader.textContent, 'Tokens*', 'header text stays the short "Tokens*" form after switching back');
+    assert.match(tokensHeader.title, /all time/i, 'title must switch back to explain the "all time" scope');
+    assert.equal(
+      tokensHeader.getAttribute('aria-label'),
+      'Tokens used all time',
+      'aria-label must switch back when "All time" is selected'
+    );
     assert.ok(caption.textContent && caption.textContent.length > 0, 'caption must be non-empty again after switching back to "all"');
     assert.match(caption.textContent, /all time/i);
     assert.equal(h.errors.length, 0, `errors after switching back to all-time scope: ${h.errors.map(String).join('; ')}`);
