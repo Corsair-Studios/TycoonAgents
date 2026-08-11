@@ -10,24 +10,27 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 /*
- * Coverage for scripts/release.mjs's handbook crumb version-stamp loop
- * (~lines 83-112): CRUMB_VERSION_RE, the per-file stamp-and-fail-loud logic,
- * and the shipped media/handbook/*.html content that loop stamps. Also
- * covers, as source-text anchor checks only (see the "Tag + best-effort
- * GitHub Release anchors" section below), the annotated-tag creation,
- * existing-tag guard, `--follow-tags` push, and best-effort `gh release
- * create` steps added after the commit/push logic.
+ * Coverage for scripts/release.mjs's tag/push/GitHub-Release steps, as
+ * source-text anchor checks only (see the "Tag + best-effort GitHub Release
+ * anchors" section below), and HTML sanity/content-smoke checks on the
+ * shipped media/handbook/*.html pages.
+ *
+ * The handbook pages no longer carry a version stamp — the release script
+ * used to rewrite every page's `class="crumb"` element on every version
+ * bump (via a `CRUMB_VERSION_RE` regex) purely to update a version number
+ * nobody relied on, which meant a diff across all 14 pages on every single
+ * release. That stamping loop was removed; the handbook is now
+ * version-agnostic and untouched by `npm run release`.
  *
  * This is a pure-data suite: no vscode stub needed, nothing under test runs
  * at module scope with side effects. It works off the REAL files on disk —
- * package.json, scripts/release.mjs, and every media/handbook/*.html page —
- * not a reimplementation of any of them. It does NOT invoke git or gh, so it
- * cannot verify actual tag/push/release behavior end-to-end — see the task
- * report for the list of behaviors that remain unverified by automation.
+ * scripts/release.mjs and every media/handbook/*.html page — not a
+ * reimplementation of either. It does NOT invoke git or gh, so it cannot
+ * verify actual tag/push/release behavior end-to-end — see the task report
+ * for the list of behaviors that remain unverified by automation.
  */
 
 const ROOT = process.cwd();
-const PKG_PATH = join(ROOT, "package.json");
 const RELEASE_SCRIPT_PATH = join(ROOT, "scripts", "release.mjs");
 const HANDBOOK_DIR = join(ROOT, "media", "handbook");
 
@@ -37,13 +40,6 @@ function requireAnchorOnce(fullSource: string, label: string, needle: string): n
   const count = fullSource.split(needle).length - 1;
   assert.equal(count, 1, `scripts/release.mjs layout changed: "${label}" anchor expected exactly once, found ${count}`);
   return idx;
-}
-
-function readPkgVersion(): string {
-  const raw = readFileSync(PKG_PATH, "utf8");
-  const match = /"version"\s*:\s*"(\d+\.\d+\.\d+)"/.exec(raw);
-  assert.ok(match, "package.json: could not find a \"version\": \"x.y.z\" field");
-  return match![1];
 }
 
 function listHandbookFiles(): string[] {
@@ -56,32 +52,30 @@ function readHandbookFile(file: string): string {
   return readFileSync(join(HANDBOOK_DIR, file), "utf8");
 }
 
-// ── CRUMB_VERSION_RE extracted from the real release script, not hand-copied ──
-
-const CRUMB_CONST_START = "const CRUMB_VERSION_RE = ";
-
-function extractCrumbVersionRegex(): RegExp {
+test("scripts/release.mjs no longer stamps a version into the handbook pages", () => {
   const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
-  const startIdx = requireAnchorOnce(fullSource, "CRUMB_CONST_START", CRUMB_CONST_START);
-  const lineEndIdx = fullSource.indexOf(";", startIdx);
-  assert.ok(lineEndIdx > startIdx, "could not find end of CRUMB_VERSION_RE declaration — release.mjs layout changed");
-  const literalText = fullSource.slice(startIdx + CRUMB_CONST_START.length, lineEndIdx).trim();
-  assert.ok(
-    literalText.startsWith("/") && literalText.lastIndexOf("/") > 0,
-    `CRUMB_VERSION_RE literal doesn't look like a regex literal: ${literalText}`,
+  assert.doesNotMatch(
+    fullSource,
+    /CRUMB_VERSION_RE/,
+    "release.mjs still references CRUMB_VERSION_RE — the handbook version-stamping loop should have been removed",
   );
-  // Evaluate the REAL literal text pulled from the source (not an
-  // independently hand-copied pattern in this test) so a future edit to the
-  // regex in release.mjs is exercised here automatically.
-  // eslint-disable-next-line no-eval
-  const regex = (0, eval)(literalText);
-  assert.ok(regex instanceof RegExp, "extracted CRUMB_VERSION_RE literal did not evaluate to a RegExp");
-  return regex as RegExp;
-}
+  assert.doesNotMatch(
+    fullSource,
+    /HANDBOOK_DIR/,
+    "release.mjs still references HANDBOOK_DIR — the handbook version-stamping loop should have been removed",
+  );
+});
 
-test("CRUMB_VERSION_RE extracted from scripts/release.mjs is a usable RegExp", () => {
-  const regex = extractCrumbVersionRegex();
-  assert.ok(regex.source.length > 0);
+test("no media/handbook/*.html page contains a vX.Y.Z-style version stamp", () => {
+  const versionStampRe = /\bv\d+\.\d+\.\d+\b/;
+  for (const file of listHandbookFiles()) {
+    const content = readHandbookFile(file);
+    assert.doesNotMatch(
+      content,
+      versionStampRe,
+      `${file}: still contains a vX.Y.Z-style version stamp — the handbook should no longer carry a version`,
+    );
+  }
 });
 
 // ── Tag + best-effort GitHub Release anchors (added alongside the tag/gh
@@ -224,43 +218,7 @@ test("release.mjs's GitHub Release step is best-effort: try/catch + console.warn
   );
 });
 
-// ── 1. Stamp parity: every handbook file's crumb equals v<package.json version> ──
-
-test("every media/handbook/*.html has exactly one crumb version stamp", () => {
-  const pkgVersion = readPkgVersion();
-  const stampRe = /<(?:div|p) class="crumb">[^<]*?v(\d+\.\d+\.\d+)/g;
-  for (const file of listHandbookFiles()) {
-    const content = readHandbookFile(file);
-    const matches = [...content.matchAll(stampRe)];
-    assert.equal(
-      matches.length,
-      1,
-      `${file}: expected exactly one class="crumb" ... vX.Y.Z stamp, found ${matches.length}`,
-    );
-    assert.equal(
-      matches[0][1],
-      pkgVersion,
-      `${file}: crumb stamp is v${matches[0][1]} but package.json version is ${pkgVersion} — release stamping drifted`,
-    );
-  }
-});
-
-// ── 2. Release-regex coverage: the real CRUMB_VERSION_RE matches every file ──
-
-test("release.mjs CRUMB_VERSION_RE matches at least once in every handbook file (hard-fail can't trigger on current tree)", () => {
-  for (const file of listHandbookFiles()) {
-    const content = readHandbookFile(file);
-    const regex = extractCrumbVersionRegex();
-    const globalRegex = new RegExp(regex.source, regex.flags.includes("g") ? regex.flags : `${regex.flags}g`);
-    const matches = [...content.matchAll(globalRegex)];
-    assert.ok(
-      matches.length >= 1,
-      `${file}: CRUMB_VERSION_RE (from scripts/release.mjs) found 0 matches — a release would process.exit(1) on this file`,
-    );
-  }
-});
-
-// ── 3. HTML sanity: balanced tags, unique ids, no duplicate step numbers ──
+// ── 1. HTML sanity: balanced tags, unique ids, no duplicate step numbers ──
 
 function countOccurrences(haystack: string, needle: RegExp): number {
   return (haystack.match(needle) ?? []).length;
@@ -312,7 +270,7 @@ test("ch-09.html's step renumbering left no duplicate <span class=\"stepno\"> va
   );
 });
 
-// ── 4. Content smoke: cheap, stable-string checks on the new sections ──
+// ── 2. Content smoke: cheap, stable-string checks on the new sections ──
 
 test("ch-03.html has the Rebirth section with a 6-row tier table (sparring at tier 6, huddles at tier 2)", () => {
   const content = readHandbookFile("ch-03.html");
