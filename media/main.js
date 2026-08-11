@@ -6211,6 +6211,16 @@
   // full-scene lighting overlay's eased intensity.
   /** True while the disco party is active. */
   let discoPartyActive = false;
+  /** "gather" (walking to the ring, not yet dancing) or "dance" (arrived,
+   *  dancing via the existing mechanism). Mirrors huddle's walkin/active
+   *  split so gathering reuses that same pattern rather than a new one. */
+  let discoPartyPhase = "gather";
+  /** Seconds elapsed in the current "gather" phase — same purpose as
+   *  huddleWalkinElapsed, capped by DISCO_GATHER_TIMEOUT_SEC. */
+  let discoGatherElapsed = 0;
+  /** Ring anchor (native coords) picked once per party via pickHuddleAnchor(). */
+  let discoAnchorNx = 0;
+  let discoAnchorNy = 0;
   /** Seconds remaining in the current party. */
   let discoPartyTimeLeft = 0;
   /** Wall-clock ms the CURRENT party (conga OR disco) started — drives the
@@ -6233,18 +6243,31 @@
   let discoCheckTimer = 0;
   /** Cooldown (seconds) remaining before another party may start. */
   let discoCooldown = 0;
-  /** Party duration (product spec: "about five seconds", +2s per follow-up ask). */
-  const DISCO_PARTY_SECONDS = 7;
+  /** Party duration (feedback #21: "~10 seconds" so the celebration reads as
+   *  deliberate rather than a blip — was 7s/five-plus-two). Covers the DANCE
+   *  phase only; the GATHER walk-in (see DISCO_GATHER_TIMEOUT_SEC) runs
+   *  before this timer starts, same as huddle's walkin/active split. */
+  const DISCO_PARTY_SECONDS = 10;
   /** Ease-in/ease-out window for the lighting overlay (not used on the
    *  rival-cancel path, which snaps off immediately — see cancelDiscoParty). */
   const DISCO_EASE_SECONDS = 0.4;
+  /** Sane upper bound (seconds) on the gather/walk-in phase before every
+   *  participant snaps straight to its ring slot — mirrors
+   *  HUDDLE_WALKIN_TIMEOUT_SEC so a straggler can never indefinitely delay
+   *  the dancing from starting. */
+  const DISCO_GATHER_TIMEOUT_SEC = 6;
   /** Seconds between random-trigger eligibility rolls. */
   const DISCO_CHECK_SECONDS = 45;
   /** Chance per eligibility check that a party starts. Mean interval ≈
-   *  DISCO_CHECK_SECONDS / DISCO_CHANCE ≈ 1125s (~19 min) of continuous
-   *  visible runtime — "on the order of once per several minutes", per spec.
+   *  DISCO_CHECK_SECONDS / DISCO_CHANCE (feedback #21: raise so a user idling
+   *  a few minutes plausibly sees one, without it becoming noise). Old:
+   *  45/0.04 = 1125s (~19 min). New: 45/0.15 = 300s (5 min) — a user idling
+   *  for "a few minutes" has a good chance of catching one (~63% within 5
+   *  min, ~86% within 10 min, via 1-(1-0.15)^n checks), while
+   *  DISCO_COOLDOWN_SECONDS (300s) still guarantees at least 5 minutes
+   *  between any two parties so it can't fire back-to-back and become noise.
    *  Time-based (not a per-frame roll) so the rate is frame-rate independent. */
-  const DISCO_CHANCE = 0.04;
+  const DISCO_CHANCE = 0.15;
   /** Minimum cooldown (seconds) after a party ends before another may start
    *  via the random trigger (the D-key debug trigger ignores this, mirroring
    *  the 'c' conga hotkey precedent — see the keydown handler). */
@@ -16518,18 +16541,25 @@
   }
 
   /**
-   * Start a disco party: every agentCharMap entry gets set dancing for
-   * DISCO_PARTY_SECONDS via the EXISTING dance mechanism
-   * (charEntry.dancing/danceTimeLeft — same fields startAgentDance uses), so
-   * the per-frame dance-countdown loop naturally reverts each character back
-   * to normal behavior when the party ends — no parallel state machine.
-   * Rivals are never entries in agentCharMap (see activeEnemies), so this
-   * can't sweep one in; callers (updateDiscoParty's random trigger, the D-key
-   * handler) already refuse to start while any rival is present or a conga
-   * is running.
+   * Start a disco party: GATHER first, then dance. Every agentCharMap entry
+   * is sent walking to a ring slot around one shared anchor — same pattern
+   * as startHuddle (pickHuddleAnchor + one ring position per participant at
+   * HUDDLE_RING_RADIUS via destNx/destNy) — so the cast visibly converges on
+   * one spot instead of dancing wherever it already stood (feedback #21:
+   * "gather and celebrate"). Dancing itself (charEntry.dancing/danceTimeLeft,
+   * same fields startAgentDance uses) only starts once updateDiscoParty's
+   * "gather" phase sees everyone arrived (or the DISCO_GATHER_TIMEOUT_SEC
+   * timeout), exactly like huddle's walkin→active handoff — no parallel
+   * state machine, just huddle's existing shape reused for a different mover
+   * set. Rivals are never entries in agentCharMap (see activeEnemies), so
+   * this can't sweep one in; callers (updateDiscoParty's random trigger, the
+   * D-key handler) already refuse to start while any rival is present or a
+   * conga is running.
    */
   function startDiscoParty() {
     discoPartyActive = true;
+    discoPartyPhase = "gather";
+    discoGatherElapsed = 0;
     discoPartyTimeLeft = DISCO_PARTY_SECONDS;
     partyVisualStartMs = nowMs();
     if (goldPalettePreviewActive) {
@@ -16540,20 +16570,39 @@
     } else {
       partyVisualIntensity = 0; // eases in over DISCO_EASE_SECONDS via updateDiscoParty
     }
+    // One shared anchor for the whole cast (pickHuddleAnchor — near a built
+    // object or an open nav point, same selection huddle uses) and one ring
+    // slot per participant around it, spaced HUDDLE_RING_RADIUS out. Reusing
+    // huddle's anchor/ring math rather than inventing new pathing.
+    const anchor = pickHuddleAnchor();
+    discoAnchorNx = anchor[0];
+    discoAnchorNy = anchor[1];
+    const ids = Object.keys(agentCharMap);
     // Slight per-character stagger for the music bubble (product ask: "show
     // the music emoji over their heads for a moment before they start
     // dancing... just like the conga line"), so the whole roster doesn't pop
     // the bubble on the exact same frame. Seeded here, consumed frame-by-frame
-    // by updateDiscoParty's active branch below.
+    // by updateDiscoParty's dance-phase branch below.
     let bubbleIdx = 0;
-    for (const id of Object.keys(agentCharMap)) {
-      const e = agentCharMap[id];
+    for (let i = 0; i < ids.length; i++) {
+      const e = agentCharMap[ids[i]];
       if (!e) continue;
       freeAgentSeat(e);
-      e.dancing = true;
-      e.danceTimeLeft = DISCO_PARTY_SECONDS;
-      e.danceFrameTimer = 0;
-      e.lastDanceIdx = -1;
+      const angle = (i / ids.length) * Math.PI * 2;
+      const pos = clampToPolygon(
+        discoAnchorNx + Math.cos(angle) * HUDDLE_RING_RADIUS,
+        discoAnchorNy + Math.sin(angle) * HUDDLE_RING_RADIUS,
+        walkablePolygon
+      );
+      // Walk-in only — NOT dancing yet, so the FINAL MOVEMENT GUARD
+      // (~movement-clip resolution below) naturally plays "walk" while
+      // isMoving, same as any other destNx/destNy move. Dancing starts once
+      // updateDiscoParty's gather phase sees everyone arrived.
+      e.destNx = pos[0];
+      e.destNy = pos[1];
+      e.settled = false;
+      e.dancing = false;
+      e.danceTimeLeft = 0;
       e.discoBubbleDelay = Math.min(bubbleIdx * DISCO_BUBBLE_STAGGER_SEC, DISCO_BUBBLE_STAGGER_MAX_SEC) + Math.random() * DISCO_BUBBLE_STAGGER_JITTER_SEC;
       e.discoBubbleFired = false;
       bubbleIdx++;
@@ -16588,6 +16637,8 @@
    */
   function cancelDiscoParty() {
     discoPartyActive = false;
+    discoPartyPhase = "gather";
+    discoGatherElapsed = 0;
     discoPartyTimeLeft = 0;
     partyVisualIntensity = 0; // snap off, no ease-out
     discoCooldown = DISCO_COOLDOWN_SECONDS;
@@ -16632,6 +16683,41 @@
       // owns these characters" situation as a rival arriving.
       if (congaActive || danceOffActive) {
         cancelDiscoParty();
+        return;
+      }
+      // GATHER phase: walk everyone to their ring slot (set by
+      // startDiscoParty) before any dancing starts — same walkin→active
+      // handoff shape as updateHuddle. No dance-timer/lighting math runs yet:
+      // discoPartyTimeLeft is still seeded to the full DISCO_PARTY_SECONDS
+      // (unchanged since startDiscoParty), so partyEaseIntensity's elapsed
+      // (totalSeconds - timeLeft) is 0 and intensity stays at 0 — the
+      // lights/ball only start easing in once we flip to "dance" below and
+      // discoPartyTimeLeft begins counting down.
+      if (discoPartyPhase === "gather") {
+        let allArrived = true;
+        for (const id of Object.keys(agentCharMap)) {
+          const e = agentCharMap[id];
+          if (!e) continue;
+          const dx = e.destNx - e.nx, dy = e.destNy - e.ny;
+          if (Math.sqrt(dx * dx + dy * dy) > WANDER_ARRIVED_EPS + 2) { allArrived = false; break; }
+        }
+        discoGatherElapsed += delta;
+        const timedOut = discoGatherElapsed >= DISCO_GATHER_TIMEOUT_SEC;
+        if (allArrived || timedOut) {
+          for (const id of Object.keys(agentCharMap)) {
+            const e = agentCharMap[id];
+            if (!e) continue;
+            // Snap stragglers to their slot on timeout, same as huddle's
+            // walkin timeout — every dancer starts the dance clip from the
+            // same ring position, none left mid-walk into "dance".
+            e.nx = e.destNx; e.ny = e.destNy; e.settled = true;
+            e.dancing = true;
+            e.danceTimeLeft = DISCO_PARTY_SECONDS;
+            e.danceFrameTimer = 0;
+            e.lastDanceIdx = -1;
+          }
+          discoPartyPhase = "dance";
+        }
         return;
       }
       // Staggered music bubble (see startDiscoParty's discoBubbleDelay seed).
