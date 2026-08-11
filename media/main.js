@@ -478,7 +478,7 @@
       stallNote.className = "plan-stall-note";
       stallNote.textContent =
         "⏸ No agent activity since " + new Date(state.lastActivityAt).toLocaleTimeString() +
-        " — this task may be stalled. Ask Claude to resume the plan.";
+        " — this task may be stalled. Ask Claude to \"resume the project plan\", or run /project-plan.";
       card.appendChild(stallNote);
     }
 
@@ -521,7 +521,7 @@
 
     const guidance = document.createElement("p");
     guidance.className = "plan-corrupt-guidance";
-    guidance.textContent = "Ask Claude to repair and resume the plan (the plan skill will rewrite the whole file), or restore the last good copy.";
+    guidance.textContent = "Ask Claude to \"resume the project plan\", or run /project-plan — it will repair and rewrite the file. Or restore the last good copy.";
     card.appendChild(guidance);
 
     if (currentPlanHasBackup) {

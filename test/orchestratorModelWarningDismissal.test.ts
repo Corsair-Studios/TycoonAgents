@@ -27,7 +27,7 @@
 // There is no self-skip path: if the real script fails to boot, the test
 // throws instead of logging and returning.
 
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -111,6 +111,25 @@ function makeFakeImage(win: any) {
   };
 }
 
+// This file boots a fresh JSDOM window per test/boot call (many across the
+// suite, including the two-boot reload simulations). jsdom's
+// `pretendToBeVisual` window keeps internal timers/resources alive until
+// explicitly closed (same requirement documented and applied by the
+// precedent, test/webviewSmoke.test.ts:1776 `dom.window.close()`) — without
+// closing each one, node:test's process never goes idle and the run hangs
+// after all assertions have already passed. Every window created here is
+// tracked and closed once in the module-level `after()` below.
+const openWindows: any[] = [];
+after(() => {
+  for (const w of openWindows.splice(0)) {
+    try {
+      w.close();
+    } catch {
+      // best-effort cleanup only
+    }
+  }
+});
+
 /**
  * Boots real media/main.js. `externalState`, when provided, seeds/shares the
  * vscode state store object identity with the caller (so a caller can pass
@@ -128,6 +147,7 @@ function bootMainJs(externalState?: { value: Record<string, unknown> }) {
     url: "https://webview.local/",
   });
   const win: any = dom.window;
+  openWindows.push(win);
   const doc = win.document;
 
   const ids = scanElementIds(src);

@@ -66,7 +66,7 @@
 //      (`orchestratorModelNoticeDismissedFor`) — covered in
 //      test/orchestratorModelWarningDismissal.test.ts, not duplicated here.
 
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -154,6 +154,24 @@ function makeFakeImage(win: any) {
   };
 }
 
+// This file boots a fresh JSDOM window per test (dozens across the suite).
+// jsdom's `pretendToBeVisual` window keeps internal timers/resources alive
+// until explicitly closed (same requirement documented and applied by the
+// precedent, test/webviewSmoke.test.ts:1776 `dom.window.close()`) — without
+// closing each one, node:test's process never goes idle and the run hangs
+// after all assertions have already passed. Every window created here is
+// tracked and closed once in the module-level `after()` below.
+const openWindows: any[] = [];
+after(() => {
+  for (const w of openWindows.splice(0)) {
+    try {
+      w.close();
+    } catch {
+      // best-effort cleanup only
+    }
+  }
+});
+
 /** Boots real media/main.js in a fresh jsdom + vm context. Throws (fails loudly) if the boot itself errors. */
 function bootMainJs() {
   const src = readFileSync(MAIN_JS_PATH, "utf8");
@@ -164,6 +182,7 @@ function bootMainJs() {
     url: "https://webview.local/",
   });
   const win: any = dom.window;
+  openWindows.push(win);
   const doc = win.document;
 
   const ids = scanElementIds(src);
