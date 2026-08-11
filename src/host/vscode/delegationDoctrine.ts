@@ -35,6 +35,18 @@ export interface ExecutionConfig {
    * else is coerced to `0` — see {@link readExecutionConfig}.
    */
   sessionJournalEntries?: number;
+  /**
+   * Optional "Project Plan" feature flag. NOTE: this is panel.ts's
+   * `projectPlanEnabled` flag (see `readProjectPlanEnabled`/
+   * `writeProjectPlanEnabled` there), stored in the SAME execution.json file
+   * but read/written directly via raw JSON rather than through this typed
+   * config — it is NOT part of `readExecutionConfig`/`writeExecutionConfig`'s
+   * round-trip. It's declared here only as documentation of the shared file;
+   * {@link renderDelegationDoctrine}'s `projectPlanEnabled` param is what
+   * actually drives doctrine rendering, and panel.ts passes it in directly
+   * via its own `readProjectPlanEnabled(root)` read.
+   */
+  projectPlanEnabled?: boolean;
 }
 
 /** Markers wrapping the managed delegation section inside a project's CLAUDE.md. */
@@ -393,6 +405,42 @@ The hook appends entries and trims to the last ${entries} automatically.`;
 }
 
 /**
+ * Optional "Project Plan routing" framing (composes with either base mode —
+ * appended when the caller's `projectPlanEnabled` is `true`; mirrors
+ * {@link renderReviewSection}/{@link renderSessionJournalSection}'s
+ * on/off-by-value shape). Fixes the bug where a large-feature/GDD/PRD
+ * request got routed to the edit-target specialist as a doc-writing task
+ * (via the PREAMBLE's general "any file edit or creation ... → specialist"
+ * rule) and produced a free-form markdown plan nothing ever reads, instead
+ * of a REGISTERED plan the panel can track. This section OVERRIDES that
+ * general rule for plan-shaped requests — without an explicit override, the
+ * preamble rule wins again and the bug returns.
+ */
+const PROJECT_PLAN_SECTION = `## Project Plan routing (feature enabled)
+
+A request for a large multi-phase feature, a GDD, a PRD, a milestone/sprint/
+delivery plan, or "plan this project" MUST go through the \`project-plan\`
+skill, not a specialist. This OVERRIDES the general "any file edit or
+creation, including docs and markdown → specialist" rule above for
+plan-shaped requests — the plan skill takes precedence, or that rule wins
+again and reproduces this exact bug.
+
+Writing a free-form markdown plan (e.g. \`docs/project-plan.md\`) does NOT
+create a plan: the panel never reads it, no phases or gates exist, and no
+human checkpoints fire.
+
+The \`project-plan\` skill decomposes work into a REGISTERED plan at
+\`.claude/tycoon/plan.json\`, with phases, tasks, and human gates the panel
+tracks. When a design doc is involved, the \`design-doc\` skill's
+milestone-plan template is written to be consumed by \`project-plan\`:
+produce or locate the design doc first, then decompose it into plan.json via
+the skill — never hand-write plan.json.
+
+Resuming: if \`.claude/tycoon/plan.json\` already exists, re-read it and
+continue from its recorded position — do not re-decompose an existing plan
+unless the user explicitly asks to re-plan.`;
+
+/**
  * Orchestrator-side verification discipline, always included in the doctrine
  * (independent of the review gate). Mitigates a Claude Code Task-tool
  * limitation: sub-agents don't block on nested children and can return
@@ -438,13 +486,24 @@ never runs two writers on the same file at once.`;
  *
  * `sessionJournalEntries` (default `0`, matching execution.json's default —
  * OFF) appends {@link renderSessionJournalSection} last, only when `> 0`.
+ *
+ * `projectPlanEnabled` (default `false`, matching a fresh/never-toggled read
+ * of panel.ts's `projectPlanEnabled` flag as `false`) appends
+ * {@link PROJECT_PLAN_SECTION} — after the review/session-journal sections,
+ * same append-last shape — only when `true`. NOTE: unlike `reviewEnabled`
+ * and `sessionJournalEntries`, this flag is NOT part of `ExecutionConfig`'s
+ * own default (panel.ts seeds `projectPlanEnabled` ON for fresh installs via
+ * `seedProjectPlanEnabledDefault`, a decision made at the panel layer, not
+ * here) — callers must read panel.ts's actual on-disk value and pass it in
+ * explicitly rather than relying on this function's own default.
  */
 export function renderDelegationDoctrine(
   mode: DelegationMode,
   reviewEnabled = true,
   rosterAgents?: DoctrineRosterAgent[],
   reviewAgentId?: string,
-  sessionJournalEntries = 0
+  sessionJournalEntries = 0,
+  projectPlanEnabled = false
 ): string {
   const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents) : DIRECT_SECTION;
   const parts = [renderPreamble(rosterAgents), renderRosterTable(rosterAgents), modeSection, VERIFICATION_SECTION];
@@ -453,6 +512,9 @@ export function renderDelegationDoctrine(
   }
   if (sessionJournalEntries > 0) {
     parts.push(renderSessionJournalSection(sessionJournalEntries));
+  }
+  if (projectPlanEnabled) {
+    parts.push(PROJECT_PLAN_SECTION);
   }
   return parts.join("\n\n");
 }

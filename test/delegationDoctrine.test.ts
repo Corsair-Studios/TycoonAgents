@@ -785,3 +785,49 @@ test("renderDelegationDoctrine's Session Journal section, once spliced via upser
   const span = out.slice(startIdx, endIdx);
   assert.ok(span.includes("## Session Journal"), "Session Journal section must land inside the managed span");
 });
+
+// ---------------------------------------------------------------------------
+// renderDelegationDoctrine: optional Project Plan routing section (composes
+// with either base mode; off by default — additive, so omitting the 6th arg
+// must be byte-identical to passing false explicitly). Fixes the bug where a
+// large-feature/GDD/PRD request got routed to a specialist as a doc-writing
+// task and produced a free-form markdown plan nothing ever reads.
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine omits the Project Plan routing section when projectPlanEnabled is false (default)", () => {
+  const out = renderDelegationDoctrine("flat");
+  assert.equal(out.includes("## Project Plan routing"), false, "section must be absent by default");
+});
+
+test("renderDelegationDoctrine includes the Project Plan routing section when projectPlanEnabled is true, naming plan.json and the project-plan skill", () => {
+  const out = renderDelegationDoctrine("flat", true, undefined, undefined, 0, true);
+  assert.ok(out.includes("## Project Plan routing"), "section must be present when the flag is true");
+  assert.ok(out.includes("`project-plan`"), "must name the project-plan skill");
+  assert.ok(out.includes(".claude/tycoon/plan.json"), "must name the registered plan file path");
+  assert.ok(
+    /free-form markdown plan/i.test(out) && /panel never reads it/i.test(out),
+    "must explicitly state that a free-form markdown plan is not a registered plan"
+  );
+  assert.ok(
+    /OVERRIDES the general/i.test(out),
+    "must explicitly state this routing overrides the general edit-to-specialist rule"
+  );
+});
+
+test("renderDelegationDoctrine with the 6th arg omitted is byte-identical to explicitly passing projectPlanEnabled:false", () => {
+  const omitted = renderDelegationDoctrine("flat", true, undefined, undefined, 0);
+  const explicitFalse = renderDelegationDoctrine("flat", true, undefined, undefined, 0, false);
+  assert.equal(omitted, explicitFalse, "omitting the 6th arg must produce byte-identical output to projectPlanEnabled=false");
+});
+
+test("renderDelegationDoctrine's Project Plan routing section, once spliced via upsertDelegationSection, lands between the managed sentinels", () => {
+  const body = renderDelegationDoctrine("flat", true, undefined, undefined, 0, true);
+  const out = upsertDelegationSection(null, body);
+
+  const startIdx = out.indexOf(DELEGATION_SECTION_START);
+  const endIdx = out.indexOf(DELEGATION_SECTION_END);
+  assert.ok(startIdx !== -1 && endIdx !== -1 && endIdx > startIdx, "both sentinels must be present in order");
+
+  const span = out.slice(startIdx, endIdx);
+  assert.ok(span.includes("## Project Plan routing"), "Project Plan routing section must land inside the managed span");
+});
