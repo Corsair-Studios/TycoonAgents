@@ -206,10 +206,20 @@ export const MSG = {
   SELECT_THEME: "SELECT_THEME",
   THEME_INITIALIZED: "THEME_INITIALIZED",
   THEME_NONE: "THEME_NONE",
-  // Sent instead of THEME_INITIALIZED when the user cancels the
-  // theme-switch warning modal — lets the webview revert its optimistic
-  // "selected" highlight back to the theme that's still actually loaded.
-  THEME_SELECT_ABORTED: "THEME_SELECT_ABORTED",
+  // Host -> webview (issue #28). Sent instead of switching immediately when
+  // shouldWarnOnThemeSwitch (progressScope.ts) says the current theme would
+  // lose badge visibility — the host has NOT switched yet. The webview shows
+  // its in-panel confirm modal and, only if the user confirms, posts
+  // SELECT_THEME_CONFIRMED back to actually proceed. Replaces the old
+  // host-side native showWarningMessage confirm; THEME_SELECT_ABORTED (the
+  // message that used to accompany a dismissed native dialog) is gone —
+  // cancelling now resolves entirely webview-side before the host is ever
+  // asked to proceed, so there's nothing left for the host to "abort".
+  CONFIRM_THEME_SWITCH: "CONFIRM_THEME_SWITCH",
+  // Webview -> host (issue #28). Sent only after the user confirms the
+  // in-panel theme-switch modal shown for CONFIRM_THEME_SWITCH; tells the
+  // host to actually activate the target theme. Payload: { theme_id }.
+  SELECT_THEME_CONFIRMED: "SELECT_THEME_CONFIRMED",
 
   // ---- badges / rebirth persistence --------------------------------------
   BADGE_UNLOCKED: "BADGE_UNLOCKED",

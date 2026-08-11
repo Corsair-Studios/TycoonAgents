@@ -545,6 +545,16 @@ export class TycoonPanel {
    * this panel doesn't otherwise track active theme state host-side.
    */
   private _currentThemeId: string | undefined;
+  /**
+   * Theme id offered in the most recent CONFIRM_THEME_SWITCH prompt, or
+   * undefined when no confirmation is outstanding. SELECT_THEME_CONFIRMED
+   * must match this before activating (see handler below) — otherwise a
+   * stale or mismatched confirm message could silently activate a theme
+   * that was never actually offered for confirmation. Cleared on
+   * activation and superseded by any new SELECT_THEME (a second theme
+   * click supersedes the first offer).
+   */
+  private _pendingThemeSwitchId: string | undefined;
   private _themeGenerationAbortController: AbortController | undefined;
   /**
    * ticketId -> { body, storedAt } for the exact JSON body string built by
@@ -1364,27 +1374,53 @@ export class TycoonPanel {
           // unlocked badges in THIS project — each theme's progress is
           // tracked independently, so switching starts the target theme
           // fresh (its own saved progress, if any, comes back untouched).
+          // The host still owns this decision (it's the only side with the
+          // persisted per-project badge counts) but no longer shows its own
+          // confirm dialog for it (issue #28) — that would double-prompt
+          // the user on top of the webview's in-panel modal. Instead it
+          // asks the webview to confirm via CONFIRM_THEME_SWITCH and does
+          // NOT activate the theme yet; activation only happens if the
+          // webview posts back SELECT_THEME_CONFIRMED (below).
+          // A new SELECT_THEME supersedes any confirmation previously
+          // offered — a second theme click invalidates the first offer, so
+          // a stale SELECT_THEME_CONFIRMED for it can no longer fire.
+          this._pendingThemeSwitchId = undefined;
+
           if (previousThemeId && previousThemeId !== targetThemeId) {
             const previousBadgeCount = (await this.getUnlockedBadges(previousThemeId)).length;
             if (shouldWarnOnThemeSwitch(previousThemeId, targetThemeId, previousBadgeCount)) {
               const themes = await listThemes(this._globalStorageUri);
               const targetName = themes.find((th) => th.theme_id === targetThemeId)?.display_name ?? targetThemeId;
               const previousName = themes.find((th) => th.theme_id === previousThemeId)?.display_name ?? previousThemeId;
-              const answer = await vscode.window.showWarningMessage(
-                `Switching to "${targetName}". Each theme tracks its own badges — it starts fresh here. Your "${previousName}" progress (${previousBadgeCount} badges) is saved and comes back when you switch to it again.`,
-                { modal: true },
-                "Switch theme",
-              );
-              if (answer !== "Switch theme") {
-                void this._panel.webview.postMessage({
-                  type: MSG.THEME_SELECT_ABORTED,
-                  payload: { theme_id: previousThemeId },
-                });
-                return;
-              }
+              this._pendingThemeSwitchId = targetThemeId;
+              void this._panel.webview.postMessage({
+                type: MSG.CONFIRM_THEME_SWITCH,
+                payload: { targetThemeId, targetName, previousThemeId, previousName, previousBadgeCount },
+              });
+              return;
             }
           }
 
+          await this._activateTheme(targetThemeId);
+        } else if (message.type === MSG.SELECT_THEME_CONFIRMED) {
+          // Webview confirmed the in-panel theme-switch modal (issue #28) —
+          // proceed exactly as the no-warning-needed path of MSG.SELECT_THEME
+          // above does. No re-check of shouldWarnOnThemeSwitch here: the
+          // webview already showed the warning and the user already agreed
+          // to it for this specific target. Only activate if this matches
+          // the theme actually offered via CONFIRM_THEME_SWITCH — a
+          // mismatched or unsolicited confirm (nothing pending, or a stale
+          // confirm superseded by a later SELECT_THEME) is ignored rather
+          // than silently activating an unintended theme.
+          const payload = (message as any).payload as { theme_id?: string } | undefined;
+          const targetThemeId = payload?.theme_id ?? "";
+          if (!this._pendingThemeSwitchId || targetThemeId !== this._pendingThemeSwitchId) {
+            console.warn(
+              `TycoonAgents: Ignoring SELECT_THEME_CONFIRMED for "${targetThemeId}" — no matching pending theme switch (expected "${this._pendingThemeSwitchId ?? "none"}").`,
+            );
+            return;
+          }
+          this._pendingThemeSwitchId = undefined;
           await this._activateTheme(targetThemeId);
         } else if (message.type === MSG.OPEN_THEME_IMAGES) {
           const payload = (message as any).payload as { theme_id?: string } | undefined;
@@ -2341,6 +2377,37 @@ export class TycoonPanel {
                 "TycoonAgents: project-plan skill install (via enable toggle) had failures:",
                 enableResult.failed
               );
+            }
+          }
+          // Re-render the managed CLAUDE.md doctrine so the "Project Plan
+          // routing" section appears/disappears immediately on toggle,
+          // rather than waiting for the next _ensureDelegationDoctrineCurrent
+          // auto-heal on panel reopen. Gated on hooks being installed for
+          // this root (same consent proxy _ensureDelegationDoctrineCurrent
+          // uses) — best-effort, never blocks PLAN_STATE below.
+          if (this._hooksInstalledForRoot(root)) {
+            try {
+              const claudeDir = path.join(root, ".claude");
+              const { delegation_mode, reviewEnabled, sessionJournalEntries } = readExecutionConfig(claudeDir);
+              const claudeMdPath = path.join(root, "CLAUDE.md");
+              let existingClaudeMd: string | null = null;
+              try {
+                existingClaudeMd = fs.readFileSync(claudeMdPath, "utf8");
+              } catch {
+                existingClaudeMd = null;
+              }
+              const updated = this._buildClaudeMdDoctrine(
+                existingClaudeMd,
+                delegation_mode,
+                reviewEnabled ?? true,
+                root,
+                sessionJournalEntries ?? 0
+              );
+              if (existingClaudeMd === null || updated !== existingClaudeMd) {
+                fs.writeFileSync(claudeMdPath, updated);
+              }
+            } catch (err) {
+              console.error("TycoonAgents: CLAUDE.md refresh after Project Plan toggle failed:", err);
             }
           }
           // _postPlanState recomputes enabled/plan/archivedPlans (plus
@@ -6502,9 +6569,15 @@ export class TycoonPanel {
     const roster = this._buildDoctrineRoster(root);
     const isUefn = detectUefnProject(root).detected;
     const reviewAgentId = this._resolveReviewAgentId(root);
+    // projectPlanEnabled is read fresh from execution.json (via panel.ts's
+    // own readProjectPlanEnabled) rather than threaded in as a param — this
+    // builder already has `root` in scope, and every call site here shares
+    // the same file the toggle handler writes, so a direct read keeps this
+    // in sync without touching every caller's signature.
+    const projectPlanEnabled = readProjectPlanEnabled(root);
     const withDelegation = upsertDelegationSection(
       existingContent,
-      renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId, sessionJournalEntries)
+      renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId, sessionJournalEntries, projectPlanEnabled)
     );
     return upsertCodeRulesSection(withDelegation, renderCodeRules(isUefn));
   }
@@ -6940,7 +7013,8 @@ export class TycoonPanel {
           reviewEnabled,
           this._buildDoctrineRoster(root),
           this._resolveReviewAgentId(root),
-          sessionJournalEntries
+          sessionJournalEntries,
+          readProjectPlanEnabled(root)
         )
       );
       fs.writeFileSync(claudeMdPath, updated);
@@ -7020,7 +7094,8 @@ export class TycoonPanel {
           enabled,
           this._buildDoctrineRoster(root),
           this._resolveReviewAgentId(root),
-          sessionJournalEntries
+          sessionJournalEntries,
+          readProjectPlanEnabled(root)
         )
       );
       fs.writeFileSync(claudeMdPath, updated);
@@ -7117,7 +7192,8 @@ export class TycoonPanel {
           reviewEnabled,
           this._buildDoctrineRoster(root),
           this._resolveReviewAgentId(root),
-          clamped
+          clamped,
+          readProjectPlanEnabled(root)
         )
       );
       fs.writeFileSync(claudeMdPath, updated);
