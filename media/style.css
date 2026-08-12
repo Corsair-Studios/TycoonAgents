@@ -758,6 +758,24 @@ body {
   font-style: italic;
 }
 
+/* Colour modifiers layered on .agent-model-readonly once the orchestrator's
+   session model is observed and judged. Reuses the existing status tokens
+   (--status-error rose / --status-active lime) rather than introducing new
+   ones — same tokens other status text uses elsewhere in this file. Colour
+   is a reinforcing signal only: the warning/help paragraphs beside this span
+   already carry the verdict in text. */
+.agent-model-readonly--bad {
+  color: var(--status-error);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.agent-model-readonly--good {
+  color: var(--status-active);
+  font-style: normal;
+  font-weight: 600;
+}
+
 /* Orchestrator row help text (issue #24) reuses .delegation-mode-option-help
    directly via a second class; only the orchestrator-specific spacing lives
    here. */

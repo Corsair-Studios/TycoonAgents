@@ -15662,7 +15662,17 @@
 
     // ── 2. Agents ──
     const agentsSection = buildSection("Agents");
-    for (const agent of agents) {
+    // Orchestrator row renders first, then the rest in their existing
+    // relative order. `agents` is host-supplied (lastSettings.agents) and
+    // may be reused elsewhere, so derive a new ordered array rather than
+    // mutating it in place (e.g. via .sort(), which would sort in-place).
+    // If no agent is flagged isOrchestrator, orchestratorAgents is empty and
+    // orderedAgents === the original relative order — loop still renders
+    // every agent correctly.
+    const orchestratorAgents = agents.filter((agent) => agent.isOrchestrator);
+    const otherAgents = agents.filter((agent) => !agent.isOrchestrator);
+    const orderedAgents = [...orchestratorAgents, ...otherAgents];
+    for (const agent of orderedAgents) {
       const m = metricsFor(agent.id);
       const row = document.createElement("div");
       row.className = "settings-row agent-row";
@@ -15687,7 +15697,22 @@
         // matcher.
         const observedFamily = modelFamily(m && m.model);
         const ro = document.createElement("span");
+        // Base class always applied; a colour modifier is layered on top for
+        // the two detected-and-judged states so the model text itself reads
+        // red (too small) or green (Opus/Fable, both intended orchestrator
+        // tiers — Fable ranks above Opus in this project's cost lens, so it
+        // is never a warning state). The not-detected state keeps the plain
+        // --muted italic look (no colour verdict to render yet). Colour is
+        // never the only signal: the accompanying warning/help text below
+        // spells out the same verdict in words for the bad and unknown
+        // states, and the good state's own text names the model, so it reads
+        // fine without colour too.
         ro.className = "agent-model-readonly";
+        if (observedFamily === "Sonnet" || observedFamily === "Haiku") {
+          ro.className += " agent-model-readonly--bad";
+        } else if (observedFamily === "Opus" || observedFamily === "Fable") {
+          ro.className += " agent-model-readonly--good";
+        }
         ro.textContent = observedFamily
           ? `Session model: ${observedFamily}`
           : "Session model: Unknown yet";
