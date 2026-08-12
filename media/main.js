@@ -2934,6 +2934,60 @@
     themesFooterCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
   }
 
+  // ── UEFN / Verse modal (Path Health, split out of Settings) ────────
+  const menuUefnBtn      = /** @type {HTMLElement} */ (document.getElementById("menu-uefn"));
+  const uefnModalEl      = /** @type {HTMLElement} */ (document.getElementById("uefn-modal"));
+  const uefnBackdrop     = /** @type {HTMLElement} */ (document.getElementById("uefn-backdrop"));
+  const uefnModalCloseBtn = /** @type {HTMLElement} */ (document.getElementById("uefn-modal-close"));
+
+  if (menuUefnBtn) {
+    menuUefnBtn.addEventListener("click", () => {
+      closeMenu();
+      // openUefnModal() (defined below, hoisted) re-renders the body then
+      // opens — renderUefnModalBody() also runs on every installState/
+      // settings push (see the message dispatch below) so it stays live
+      // while open, but a fresh render on open covers the case where those
+      // pushes haven't happened yet this panel session. Shared with the
+      // Settings "UEFN health" summary button (buildUefnHealthSummaryRow)
+      // so both entry points open the modal identically.
+      openUefnModal();
+    });
+  }
+
+  if (uefnModalCloseBtn) {
+    uefnModalCloseBtn.addEventListener("click", () => closeModal(uefnModalEl));
+  }
+
+  if (uefnBackdrop) {
+    uefnBackdrop.addEventListener("click", () => closeModal(uefnModalEl));
+  }
+
+  // ── Feedback modal (Submit feedback, split out of Settings) ────────
+  const menuFeedbackBtn      = /** @type {HTMLElement} */ (document.getElementById("menu-feedback"));
+  const feedbackModalEl      = /** @type {HTMLElement} */ (document.getElementById("feedback-modal"));
+  const feedbackModalBackdrop = /** @type {HTMLElement} */ (document.getElementById("feedback-backdrop"));
+  const feedbackModalCloseBtn = /** @type {HTMLElement} */ (document.getElementById("feedback-modal-close"));
+
+  if (menuFeedbackBtn) {
+    menuFeedbackBtn.addEventListener("click", () => {
+      closeMenu();
+      // The feedback form is static (doesn't read lastSettings), so a
+      // single render on open is enough to keep it fresh — see
+      // renderFeedbackModalBody()'s doc comment for why this differs from
+      // renderUefnModalBody() above.
+      renderFeedbackModalBody();
+      openModal(feedbackModalEl, feedbackModalCloseBtn);
+    });
+  }
+
+  if (feedbackModalCloseBtn) {
+    feedbackModalCloseBtn.addEventListener("click", () => closeModal(feedbackModalEl));
+  }
+
+  if (feedbackModalBackdrop) {
+    feedbackModalBackdrop.addEventListener("click", () => closeModal(feedbackModalEl));
+  }
+
   if (themeImportBtn) {
     themeImportBtn.addEventListener("click", () => {
       themeImportBtn.disabled = true;
@@ -12253,24 +12307,33 @@
       lastUefnBridgeSetUp = Boolean(msg.uefnBridgeSetUp);
       // Path Health (see src/host/vscode/pathHealth.ts) piggybacks on this
       // same push rather than a separate round trip — capture it here and
-      // re-render Settings so a Save/Clear/Refresh's fresh re-probe (which
-      // re-invokes _handleCheckInstall host-side) shows up immediately even
-      // though it arrived on "installState", not "settings". renderSettings()
-      // itself no-ops until lastSettings has loaded, so this is safe to call
-      // on every installState push (including the very first one at panel
-      // load, before Settings has ever been opened).
+      // re-render the UEFN/Verse modal body so a Save/Clear/Refresh's fresh
+      // re-probe (which re-invokes _handleCheckInstall host-side) shows up
+      // immediately even though it arrived on "installState", not
+      // "settings". Path Health moved out of renderSettings() into its own
+      // modal (see renderUefnModalBody()); that function no-ops via its own
+      // getElementById guard when the modal body isn't in the DOM yet, so
+      // this is safe to call on every installState push (including the very
+      // first one at panel load, before the modal has ever been opened) —
+      // it just won't have visible effect until the modal is open, at which
+      // point the "menu-uefn" click handler also renders it fresh on open.
       lastPathHealth = Array.isArray(msg.pathHealth) ? msg.pathHealth : [];
       lastPathOverridesFilePath = msg.pathOverridesFilePath || null;
       lastPathOverridesFileExists = Boolean(msg.pathOverridesFileExists);
       lastVerseExtensionState = msg.verseExtensionState || null;
-      // Gate the rebuild to genuine changes only — renderSettings() does a
-      // full setupConfigEl.innerHTML="" rebuild, which would otherwise wipe
-      // unsaved text in any other open Settings input (e.g. a keyword-
-      // routing box mid-edit) on every installState push, most of which
-      // carry no path-health change at all.
-      const pathHealthSnapshot = JSON.stringify([lastPathHealth, lastPathOverridesFilePath, lastPathOverridesFileExists, lastVerseExtensionState]);
+      lastUefnInstalled = Boolean(msg.uefnInstalled);
+      // Gate the rebuild to genuine changes only — mirrors the same guard
+      // renderSettings() itself uses elsewhere, so an installState push with
+      // no path-health change doesn't rebuild the modal body (and, if it's
+      // open, wipe focus/scroll position) for no reason. Also re-renders
+      // Settings itself (wiped/rebuilt the same way a "settings" push does)
+      // so the compact "UEFN health" summary line (buildUefnHealthSummaryRow)
+      // stays in sync with the modal instead of only updating on the next
+      // unrelated "settings" push.
+      const pathHealthSnapshot = JSON.stringify([lastPathHealth, lastPathOverridesFilePath, lastPathOverridesFileExists, lastVerseExtensionState, lastUefnInstalled]);
       if (pathHealthSnapshot !== lastPathHealthSnapshot) {
         lastPathHealthSnapshot = pathHealthSnapshot;
+        renderUefnModalBody();
         renderSettings();
       }
       handleInstallState(msg);
@@ -14205,13 +14268,23 @@
    */
   let lastVerseExtensionState = null;
   /**
+   * Machine-level "is UEFN installed on this machine" signal from
+   * installState's `uefnInstalled` field (see panel.ts's detectUefnProject) —
+   * distinct from `uefnDetected` (this PROJECT has UEFN files). Gates the
+   * compact "UEFN health" summary line in Settings (see
+   * buildUefnHealthSummaryRow): when false, nothing UEFN-related renders in
+   * Settings at all, so a non-UEFN project never sees UEFN content.
+   * @type {boolean}
+   */
+  let lastUefnInstalled = false;
+  /**
    * Serialized snapshot of the last-applied pathHealth/pathOverridesFilePath/
-   * pathOverridesFileExists/verseExtensionState, used to gate the
-   * "installState" handler's renderSettings() call to genuine changes only —
-   * see that handler below. A full rebuild on every installState push would
-   * wipe unsaved text in any other open Settings input (e.g. a keyword-
-   * routing box mid-edit); a NOP-only push (nothing about paths changed)
-   * must not trigger one.
+   * pathOverridesFileExists/verseExtensionState/uefnInstalled, used to gate
+   * the "installState" handler's renderSettings()/renderUefnModalBody() calls
+   * to genuine changes only — see that handler below. A full rebuild on
+   * every installState push would wipe unsaved text in any other open
+   * Settings input (e.g. a keyword-routing box mid-edit); a NOP-only push
+   * (nothing about paths/UEFN changed) must not trigger one.
    * @type {string|null}
    */
   let lastPathHealthSnapshot = null;
@@ -14565,6 +14638,28 @@
   }
 
   /**
+   * Shared Path Health rollup — the single source of truth for "is
+   * everything OK" that both the UEFN/Verse modal's own rollup line AND the
+   * compact Settings summary line (buildUefnHealthSummaryRow, below) read
+   * from, so the two can never drift into disagreeing with each other.
+   * `notFoundCount` counts entries the override->env->auto-detect ladder
+   * couldn't resolve; `verseNeedsAttention` is true whenever the Verse
+   * extension report exists and isn't in the "enabled" state.
+   * @param {Array<{source:string,exists:boolean}>} entries
+   * @param {{state:string}|null} verse
+   * @returns {{healthy:boolean, notFoundCount:number, verseNeedsAttention:boolean, text:string}}
+   */
+  function computePathHealthRollup(entries, verse) {
+    const notFoundCount = entries.filter((e) => e.source === "not-found" || !e.exists).length;
+    const verseNeedsAttention = verse !== null && verse.state !== "enabled";
+    const healthy = notFoundCount === 0 && !verseNeedsAttention;
+    const text = healthy
+      ? "✓ All required paths detected"
+      : `⚠ ${notFoundCount} path${notFoundCount === 1 ? "" : "s"} not detected${verseNeedsAttention ? " · Verse extension needs attention" : ""}`;
+    return { healthy, notFoundCount, verseNeedsAttention, text };
+  }
+
+  /**
    * Build the whole "Path Health" settings section — the visible half of
    * this repo's Path & Environment Discovery core principle (see CLAUDE.md
    * and src/host/vscode/pathHealth.ts). Reads lastPathHealth/
@@ -14588,15 +14683,11 @@
       return section;
     }
 
-    const notFoundCount = entries.filter((e) => e.source === "not-found" || !e.exists).length;
-    const verseNeedsAttention = verse !== null && verse.state !== "enabled";
+    const pathRollup = computePathHealthRollup(entries, verse);
 
     const rollup = document.createElement("div");
-    rollup.className = (notFoundCount === 0 && !verseNeedsAttention) ? "hook-ok" : "hook-bad";
-    rollup.textContent =
-      notFoundCount === 0 && !verseNeedsAttention
-        ? "✓ All required paths detected"
-        : `⚠ ${notFoundCount} path${notFoundCount === 1 ? "" : "s"} not detected${verseNeedsAttention ? " · Verse extension needs attention" : ""}`;
+    rollup.className = pathRollup.healthy ? "hook-ok" : "hook-bad";
+    rollup.textContent = pathRollup.text;
     section.appendChild(rollup);
 
     if (lastPathOverridesFilePath) {
@@ -14641,6 +14732,78 @@
   }
 
   /**
+   * Open the UEFN/Verse modal, re-rendering its body first so it never shows
+   * stale data — the exact same open path the "menu-uefn" hamburger item
+   * uses (see that click handler above), extracted so the Settings summary
+   * button below and the menu item can't drift into opening the modal two
+   * different ways.
+   */
+  function openUefnModal() {
+    renderUefnModalBody();
+    openModal(uefnModalEl, uefnModalCloseBtn);
+  }
+
+  /**
+   * Build the compact "UEFN health" summary row for Settings — a single
+   * line (green/yellow only, no red state here) plus a button that opens
+   * the full "UEFN / Verse" modal (#uefn-modal) for detail. Replaces the
+   * full Path Health section that used to render inline in Settings (see
+   * the "1a. Path Health" comment below); this line and the modal's own
+   * rollup both read computePathHealthRollup() so they can't disagree.
+   * Rendered ONLY when lastUefnInstalled is true (installState's
+   * `uefnInstalled` — UEFN present on this machine) — a non-UEFN project
+   * must see nothing here at all (feedback issue #16).
+   * @returns {HTMLElement|null}
+   */
+  function buildUefnHealthSummaryRow() {
+    if (!lastUefnInstalled) return null;
+
+    const entries = Array.isArray(lastPathHealth) ? lastPathHealth : [];
+    if (entries.length === 0) return null;
+
+    const rollup = computePathHealthRollup(entries, lastVerseExtensionState);
+
+    const row = document.createElement("div");
+    row.className = "settings-row hook-row";
+    const line = document.createElement("div");
+    line.className = rollup.healthy ? "hook-ok" : "hook-warn";
+    line.textContent = rollup.healthy ? "✓ UEFN paths healthy" : rollup.text;
+    const detailsBtn = document.createElement("button");
+    detailsBtn.className = "skill-btn settings-btn";
+    detailsBtn.textContent = "UEFN / Verse details";
+    detailsBtn.addEventListener("click", openUefnModal);
+    row.appendChild(line);
+    row.appendChild(detailsBtn);
+    return row;
+  }
+
+  /**
+   * Populate the "UEFN / Verse" modal body (#uefn-modal-body) with a fresh
+   * Path Health section. This is the modal-ized replacement for the old
+   * inline "── 1a. Path Health ──" block in renderSettings() — Path Health
+   * used to rebuild automatically on every "settings"/"installState" push
+   * because renderSettings() rebuilt it as a side effect. Now that it lives
+   * in its own modal container (not #setup-config), it needs its own calls
+   * at the same two trigger points so it never goes stale while open:
+   *   1. The "installState" handler (~ where lastPathHealthSnapshot is
+   *      diffed) — a Refresh/Save/Clear re-probe.
+   *   2. The "settings" handler — kept for parity even though Path Health
+   *      itself doesn't read lastSettings, so any future field that does
+   *      doesn't silently go stale.
+   * Also called directly from the "menu-uefn" click handler so opening the
+   * modal always shows current data immediately, not stale data from
+   * whenever it last happened to rebuild in the background.
+   * No-ops if the modal body node isn't in the DOM yet (defensive; it's a
+   * static element in panel.ts's HTML so this should never actually fire).
+   */
+  function renderUefnModalBody() {
+    const bodyEl = document.getElementById("uefn-modal-body");
+    if (!bodyEl) return;
+    bodyEl.innerHTML = "";
+    bodyEl.appendChild(buildPathHealthSection());
+  }
+
+  /**
    * Handle a settingsUpdated ack from the host.
    * @param {{ok:boolean, id?:string, field?:string, error?:string}} msg
    */
@@ -14680,8 +14843,15 @@
    * @param {{key:string, ok:boolean, error?:string}} msg
    */
   function handlePathOverrideResult(msg) {
+    // Bug fix: Path Health rows render inside #uefn-modal-body, a sibling of
+    // setupConfigEl (#setup-config) — not a descendant of it. Querying from
+    // setupConfigEl always returned null here, so the guard below fired and
+    // the Save/Clear buttons never re-enabled / never showed saved/error
+    // feedback (the override still saved host-side; only the in-flight UI
+    // feedback was lost). Query from document instead, matching how
+    // handleSettingsUpdated's row lookup already works for setupConfigEl.
     const row = msg.key
-      ? setupConfigEl.querySelector(`[data-agent-row="path-${CSS.escape(msg.key)}"]`)
+      ? document.querySelector(`[data-agent-row="path-${CSS.escape(msg.key)}"]`)
       : null;
     if (!row) return;
     row.querySelectorAll("button").forEach((el) => { el.disabled = false; });
@@ -14939,6 +15109,240 @@
     }
   }
 
+  /**
+   * Populate the "Feedback" modal body (#feedback-modal-body) with the
+   * Submit Feedback form. Moved out of renderSettings() into its own modal
+   * so Settings is less overwhelming — this used to be section "── 5b.
+   * Submit feedback ──" inside renderSettings(), rebuilt as a side effect of
+   * every "settings" push. It doesn't read lastSettings at all (a static
+   * form), so unlike renderUefnModalBody() it's only called once per modal
+   * open (from the "menu-feedback" click handler), not wired to any
+   * settings/installState push. All feedbackXEl module-level refs are
+   * reassigned here exactly as they were inside renderSettings() — every
+   * function that touches them (setFeedbackFieldsDisabled,
+   * updateFeedbackCharCounter, resetFeedbackForm, cancelFeedbackPreview,
+   * requestFeedbackPreview, handleFeedbackPreview, sendFeedbackConfirmed,
+   * handleFeedbackResult above) reads them through the same null-checked
+   * module variables, so they keep working unchanged regardless of which
+   * container the nodes live in.
+   */
+  function renderFeedbackModalBody() {
+    const bodyEl = document.getElementById("feedback-modal-body");
+    if (!bodyEl) return;
+    bodyEl.innerHTML = "";
+
+    // Two-step preview-then-send flow to a private GitHub-issue-backed
+    // intake pipeline; see docs/FEEDBACK-PIPELINE-SPEC.md. The webview never
+    // sends anything on its own — "submitFeedback" only asks the host to
+    // build a preview, and "confirmFeedbackSend" (posted only from the Send
+    // button below, after a preview has been shown) is the sole message
+    // that triggers a network call, made host-side.
+    const feedbackSection = buildSection("Submit feedback");
+
+    const feedbackIntro = document.createElement("p");
+    feedbackIntro.className = "settings-empty";
+    feedbackIntro.textContent = "Report a bug, share an idea, or ask a question. Nothing is sent until you review the exact preview below and press Send.";
+    feedbackSection.appendChild(feedbackIntro);
+
+    // Plain-language disclosure — VERBATIM copy from
+    // docs/FEEDBACK-PIPELINE-SPEC.md §7 "Plain-language disclosure (what
+    // gets sent)". That section is the single source of truth for this
+    // text; do not reword, reorder, or summarize it here — update this
+    // block only by copying the spec's text again if it ever changes.
+    const feedbackDisclosure = document.createElement("div");
+    feedbackDisclosure.className = "feedback-disclosure";
+
+    const discTitle = document.createElement("p");
+    discTitle.textContent = "Here's exactly what this form sends when you press Send:";
+    feedbackDisclosure.appendChild(discTitle);
+
+    const discList = document.createElement("ul");
+
+    // Each area collapses into its own <details>/<summary> — same
+    // construction technique as buildProjectPlanTaskCard's collapsible
+    // detail block (createElement, className set, summary created and
+    // appended BEFORE the body content, no `open` attribute so it defaults
+    // closed). Mirroring that order avoids a known webview quirk where a
+    // closed <details> built a different way renders wrong. The verbatim
+    // disclosure text from docs/FEEDBACK-PIPELINE-SPEC.md §7 moves into the
+    // details body unchanged — only the one-line <summary> is new copy.
+
+    const discLi1 = document.createElement("li");
+    const discDetails1 = document.createElement("details");
+    discDetails1.className = "feedback-disclosure-details";
+    const discSummary1 = document.createElement("summary");
+    discSummary1.textContent = "Your description and contact info are sent, with secrets automatically removed.";
+    discDetails1.appendChild(discSummary1);
+    const discBody1 = document.createElement("p");
+    discBody1.textContent = "Your description and (if you add one) your contact info, exactly as you typed them — local file paths and recognizable API keys or tokens are automatically removed before anything is sent.";
+    discDetails1.appendChild(discBody1);
+    discLi1.appendChild(discDetails1);
+    discList.appendChild(discLi1);
+
+    const discLi2 = document.createElement("li");
+    const discDetails2 = document.createElement("details");
+    discDetails2.className = "feedback-disclosure-details";
+    const discSummary2 = document.createElement("summary");
+    discSummary2.textContent = "Six additional setup details are sent if you include diagnostics.";
+    discDetails2.appendChild(discSummary2);
+    const discBody2 = document.createElement("p");
+    discBody2.textContent = "If \"Include diagnostic report\" is checked, it also sends:";
+    discDetails2.appendChild(discBody2);
+    const discSubList = document.createElement("ul");
+    [
+      "Your extension version, operating system, IDE name and variant, and when the report was generated",
+      "Whether the background hook is installed, whether it's working, and when it last ran",
+      "Your delegation settings",
+      "A list of your agent names and whether each one has routing configured",
+      "Whether your project's instructions file (CLAUDE.md) has any leftover sections from an older format",
+      "A size check of your instructions and agent files (so we can tell if they're getting too long)",
+      "The connection status of any configured engines (like UEFN). For MCP servers, only which ones are configured — not their connection status",
+    ].forEach((t) => {
+      const sub = document.createElement("li");
+      sub.textContent = t;
+      discSubList.appendChild(sub);
+    });
+    discDetails2.appendChild(discSubList);
+    discLi2.appendChild(discDetails2);
+    discList.appendChild(discLi2);
+
+    const discLi3 = document.createElement("li");
+    const discDetails3 = document.createElement("details");
+    discDetails3.className = "feedback-disclosure-details";
+    const discSummary3 = document.createElement("summary");
+    discSummary3.textContent = "What's never sent: your code, files, project names, or API keys.";
+    discDetails3.appendChild(discSummary3);
+    const discBody3 = document.createElement("p");
+    const discNeverStrong = document.createElement("strong");
+    discNeverStrong.textContent = "What's never sent:";
+    discBody3.appendChild(discNeverStrong);
+    discBody3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens."));
+    discDetails3.appendChild(discBody3);
+    discLi3.appendChild(discDetails3);
+    discList.appendChild(discLi3);
+
+    feedbackDisclosure.appendChild(discList);
+    feedbackSection.appendChild(feedbackDisclosure);
+
+    // Category
+    const feedbackCatRow = document.createElement("div");
+    feedbackCatRow.className = "settings-row feedback-field";
+    const feedbackCatLabel = document.createElement("label");
+    feedbackCatLabel.textContent = "Category";
+    feedbackCatLabel.setAttribute("for", "feedback-category");
+    feedbackCatRow.appendChild(feedbackCatLabel);
+    feedbackCategoryEl = document.createElement("select");
+    feedbackCategoryEl.id = "feedback-category";
+    [["bug", "Bug"], ["idea", "Idea"], ["question", "Question"], ["other", "Other"]].forEach(([v, l]) => {
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = l;
+      feedbackCategoryEl.appendChild(opt);
+    });
+    feedbackCatRow.appendChild(feedbackCategoryEl);
+    feedbackSection.appendChild(feedbackCatRow);
+
+    // Description
+    const feedbackDescRow = document.createElement("div");
+    feedbackDescRow.className = "settings-row feedback-field";
+    const feedbackDescLabel = document.createElement("label");
+    feedbackDescLabel.textContent = "Description";
+    feedbackDescLabel.setAttribute("for", "feedback-description");
+    feedbackDescRow.appendChild(feedbackDescLabel);
+    feedbackDescEl = document.createElement("textarea");
+    feedbackDescEl.id = "feedback-description";
+    feedbackDescEl.rows = 5;
+    feedbackDescEl.maxLength = 4000;
+    feedbackDescEl.placeholder = "What happened, or what would you like to see?";
+    feedbackDescRow.appendChild(feedbackDescEl);
+    feedbackCharCounterEl = document.createElement("span");
+    feedbackCharCounterEl.className = "feedback-char-counter";
+    feedbackDescRow.appendChild(feedbackCharCounterEl);
+    feedbackDescEl.addEventListener("input", updateFeedbackCharCounter);
+    feedbackSection.appendChild(feedbackDescRow);
+
+    // Include diagnostics (default checked)
+    const feedbackDiagRow = document.createElement("label");
+    feedbackDiagRow.className = "feedback-checkbox-row";
+    feedbackDiagCheckbox = document.createElement("input");
+    feedbackDiagCheckbox.type = "checkbox";
+    feedbackDiagCheckbox.checked = true;
+    feedbackDiagRow.appendChild(feedbackDiagCheckbox);
+    feedbackDiagRow.appendChild(document.createTextNode("Include diagnostic report"));
+    feedbackSection.appendChild(feedbackDiagRow);
+
+    // Contact (optional)
+    const feedbackContactRow = document.createElement("div");
+    feedbackContactRow.className = "settings-row feedback-field";
+    const feedbackContactLabel = document.createElement("label");
+    feedbackContactLabel.textContent = "Contact (optional)";
+    feedbackContactLabel.setAttribute("for", "feedback-contact");
+    feedbackContactRow.appendChild(feedbackContactLabel);
+    feedbackContactEl = document.createElement("input");
+    feedbackContactEl.type = "text";
+    feedbackContactEl.id = "feedback-contact";
+    feedbackContactEl.maxLength = 500;
+    feedbackContactEl.placeholder = "Email or Discord handle, if you'd like a reply";
+    feedbackContactRow.appendChild(feedbackContactEl);
+    feedbackSection.appendChild(feedbackContactRow);
+
+    feedbackFormStatusEl = document.createElement("p");
+    feedbackFormStatusEl.className = "feedback-status";
+    feedbackSection.appendChild(feedbackFormStatusEl);
+
+    feedbackPreviewBtn = document.createElement("button");
+    feedbackPreviewBtn.className = "skill-btn settings-btn";
+    feedbackPreviewBtn.textContent = "Preview";
+    feedbackPreviewBtn.disabled = true; // gated on non-empty description by updateFeedbackCharCounter
+    feedbackPreviewBtn.addEventListener("click", requestFeedbackPreview);
+    feedbackSection.appendChild(feedbackPreviewBtn);
+
+    // Preview step (hidden until the host replies with feedbackPreview).
+    // The Send action does not exist/isn't reachable until this is shown.
+    feedbackPreviewSection = document.createElement("div");
+    feedbackPreviewSection.className = "feedback-preview";
+    feedbackPreviewSection.setAttribute("hidden", "");
+
+    const feedbackPreviewHeading = document.createElement("p");
+    feedbackPreviewHeading.className = "settings-empty";
+    feedbackPreviewHeading.textContent = "Nothing has been sent yet — this is the exact JSON that will be POSTed if you press Send.";
+    feedbackPreviewSection.appendChild(feedbackPreviewHeading);
+
+    feedbackPreviewTicketEl = document.createElement("p");
+    feedbackPreviewTicketEl.className = "settings-empty";
+    feedbackPreviewSection.appendChild(feedbackPreviewTicketEl);
+
+    feedbackPreviewJsonEl = document.createElement("pre");
+    feedbackPreviewJsonEl.className = "feedback-preview-json";
+    feedbackPreviewJsonEl.tabIndex = 0;
+    feedbackPreviewSection.appendChild(feedbackPreviewJsonEl);
+
+    const feedbackPreviewActions = document.createElement("div");
+    feedbackPreviewActions.className = "feedback-preview-actions";
+
+    feedbackSendBtn = document.createElement("button");
+    feedbackSendBtn.className = "skill-btn settings-btn";
+    feedbackSendBtn.textContent = "Send";
+    feedbackSendBtn.addEventListener("click", sendFeedbackConfirmed);
+    feedbackPreviewActions.appendChild(feedbackSendBtn);
+
+    feedbackBackBtn = document.createElement("button");
+    feedbackBackBtn.className = "skill-btn settings-btn";
+    feedbackBackBtn.textContent = "Back to edit";
+    feedbackBackBtn.addEventListener("click", cancelFeedbackPreview);
+    feedbackPreviewActions.appendChild(feedbackBackBtn);
+
+    feedbackPreviewSection.appendChild(feedbackPreviewActions);
+    feedbackSection.appendChild(feedbackPreviewSection);
+
+    feedbackResultEl = document.createElement("p");
+    feedbackResultEl.className = "feedback-status";
+    feedbackSection.appendChild(feedbackResultEl);
+
+    bodyEl.appendChild(feedbackSection);
+    updateFeedbackCharCounter();
+  }
+
   /** Render all settings sections into #setup-config from lastSettings. */
   function renderSettings() {
     if (!setupConfigEl) return;
@@ -15047,12 +15451,18 @@
     setupConfigEl.appendChild(hookSection);
 
     // ── 1a. Path Health ──
-    // The visible half of this repo's Path & Environment Discovery core
-    // principle (see CLAUDE.md and src/host/vscode/pathHealth.ts) — placed
-    // right after Hook health so a NOT FOUND path or a non-enabled Verse
-    // extension is proactively visible near the top of Settings rather than
-    // buried below the roster/routing sections.
-    setupConfigEl.appendChild(buildPathHealthSection());
+    // Moved out of Settings into its own "UEFN / Verse" modal (see
+    // renderUefnModalBody()) so the Settings screen is less overwhelming.
+    // renderUefnModalBody() is called independently wherever this data
+    // changes (installState/settings pushes) and on modal open — see the
+    // "UEFN / Verse modal" wiring block for the full render-timing story.
+    // In its place, a single compact "UEFN health" summary line (green/
+    // yellow only) plus a button to open that modal — rendered ONLY when
+    // lastUefnInstalled is true, so a non-UEFN project sees nothing here.
+    const uefnHealthRow = buildUefnHealthSummaryRow();
+    if (uefnHealthRow) {
+      setupConfigEl.appendChild(uefnHealthRow);
+    }
 
     // ── 1.5. Delegation style (Team Lead Mode, Phase 2) ──
     // Same radio block + exact copy as the pre-install setup-view picker
@@ -15656,216 +16066,11 @@
     setupConfigEl.appendChild(diagSection);
 
     // ── 5b. Submit feedback ──
-    // Two-step preview-then-send flow to a private GitHub-issue-backed
-    // intake pipeline; see docs/FEEDBACK-PIPELINE-SPEC.md. The webview never
-    // sends anything on its own — "submitFeedback" only asks the host to
-    // build a preview, and "confirmFeedbackSend" (posted only from the Send
-    // button below, after a preview has been shown) is the sole message
-    // that triggers a network call, made host-side.
-    const feedbackSection = buildSection("Submit feedback");
-
-    const feedbackIntro = document.createElement("p");
-    feedbackIntro.className = "settings-empty";
-    feedbackIntro.textContent = "Report a bug, share an idea, or ask a question. Nothing is sent until you review the exact preview below and press Send.";
-    feedbackSection.appendChild(feedbackIntro);
-
-    // Plain-language disclosure — VERBATIM copy from
-    // docs/FEEDBACK-PIPELINE-SPEC.md §7 "Plain-language disclosure (what
-    // gets sent)". That section is the single source of truth for this
-    // text; do not reword, reorder, or summarize it here — update this
-    // block only by copying the spec's text again if it ever changes.
-    const feedbackDisclosure = document.createElement("div");
-    feedbackDisclosure.className = "feedback-disclosure";
-
-    const discTitle = document.createElement("p");
-    discTitle.textContent = "Here's exactly what this form sends when you press Send:";
-    feedbackDisclosure.appendChild(discTitle);
-
-    const discList = document.createElement("ul");
-
-    // Each area collapses into its own <details>/<summary> — same
-    // construction technique as buildProjectPlanTaskCard's collapsible
-    // detail block (createElement, className set, summary created and
-    // appended BEFORE the body content, no `open` attribute so it defaults
-    // closed). Mirroring that order avoids a known webview quirk where a
-    // closed <details> built a different way renders wrong. The verbatim
-    // disclosure text from docs/FEEDBACK-PIPELINE-SPEC.md §7 moves into the
-    // details body unchanged — only the one-line <summary> is new copy.
-
-    const discLi1 = document.createElement("li");
-    const discDetails1 = document.createElement("details");
-    discDetails1.className = "feedback-disclosure-details";
-    const discSummary1 = document.createElement("summary");
-    discSummary1.textContent = "Your description and contact info are sent, with secrets automatically removed.";
-    discDetails1.appendChild(discSummary1);
-    const discBody1 = document.createElement("p");
-    discBody1.textContent = "Your description and (if you add one) your contact info, exactly as you typed them — local file paths and recognizable API keys or tokens are automatically removed before anything is sent.";
-    discDetails1.appendChild(discBody1);
-    discLi1.appendChild(discDetails1);
-    discList.appendChild(discLi1);
-
-    const discLi2 = document.createElement("li");
-    const discDetails2 = document.createElement("details");
-    discDetails2.className = "feedback-disclosure-details";
-    const discSummary2 = document.createElement("summary");
-    discSummary2.textContent = "Six additional setup details are sent if you include diagnostics.";
-    discDetails2.appendChild(discSummary2);
-    const discBody2 = document.createElement("p");
-    discBody2.textContent = "If \"Include diagnostic report\" is checked, it also sends:";
-    discDetails2.appendChild(discBody2);
-    const discSubList = document.createElement("ul");
-    [
-      "Your extension version, operating system, IDE name and variant, and when the report was generated",
-      "Whether the background hook is installed, whether it's working, and when it last ran",
-      "Your delegation settings",
-      "A list of your agent names and whether each one has routing configured",
-      "Whether your project's instructions file (CLAUDE.md) has any leftover sections from an older format",
-      "A size check of your instructions and agent files (so we can tell if they're getting too long)",
-      "The connection status of any configured engines (like UEFN). For MCP servers, only which ones are configured — not their connection status",
-    ].forEach((t) => {
-      const sub = document.createElement("li");
-      sub.textContent = t;
-      discSubList.appendChild(sub);
-    });
-    discDetails2.appendChild(discSubList);
-    discLi2.appendChild(discDetails2);
-    discList.appendChild(discLi2);
-
-    const discLi3 = document.createElement("li");
-    const discDetails3 = document.createElement("details");
-    discDetails3.className = "feedback-disclosure-details";
-    const discSummary3 = document.createElement("summary");
-    discSummary3.textContent = "What's never sent: your code, files, project names, or API keys.";
-    discDetails3.appendChild(discSummary3);
-    const discBody3 = document.createElement("p");
-    const discNeverStrong = document.createElement("strong");
-    discNeverStrong.textContent = "What's never sent:";
-    discBody3.appendChild(discNeverStrong);
-    discBody3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens."));
-    discDetails3.appendChild(discBody3);
-    discLi3.appendChild(discDetails3);
-    discList.appendChild(discLi3);
-
-    feedbackDisclosure.appendChild(discList);
-    feedbackSection.appendChild(feedbackDisclosure);
-
-    // Category
-    const feedbackCatRow = document.createElement("div");
-    feedbackCatRow.className = "settings-row feedback-field";
-    const feedbackCatLabel = document.createElement("label");
-    feedbackCatLabel.textContent = "Category";
-    feedbackCatLabel.setAttribute("for", "feedback-category");
-    feedbackCatRow.appendChild(feedbackCatLabel);
-    feedbackCategoryEl = document.createElement("select");
-    feedbackCategoryEl.id = "feedback-category";
-    [["bug", "Bug"], ["idea", "Idea"], ["question", "Question"], ["other", "Other"]].forEach(([v, l]) => {
-      const opt = document.createElement("option");
-      opt.value = v;
-      opt.textContent = l;
-      feedbackCategoryEl.appendChild(opt);
-    });
-    feedbackCatRow.appendChild(feedbackCategoryEl);
-    feedbackSection.appendChild(feedbackCatRow);
-
-    // Description
-    const feedbackDescRow = document.createElement("div");
-    feedbackDescRow.className = "settings-row feedback-field";
-    const feedbackDescLabel = document.createElement("label");
-    feedbackDescLabel.textContent = "Description";
-    feedbackDescLabel.setAttribute("for", "feedback-description");
-    feedbackDescRow.appendChild(feedbackDescLabel);
-    feedbackDescEl = document.createElement("textarea");
-    feedbackDescEl.id = "feedback-description";
-    feedbackDescEl.rows = 5;
-    feedbackDescEl.maxLength = 4000;
-    feedbackDescEl.placeholder = "What happened, or what would you like to see?";
-    feedbackDescRow.appendChild(feedbackDescEl);
-    feedbackCharCounterEl = document.createElement("span");
-    feedbackCharCounterEl.className = "feedback-char-counter";
-    feedbackDescRow.appendChild(feedbackCharCounterEl);
-    feedbackDescEl.addEventListener("input", updateFeedbackCharCounter);
-    feedbackSection.appendChild(feedbackDescRow);
-
-    // Include diagnostics (default checked)
-    const feedbackDiagRow = document.createElement("label");
-    feedbackDiagRow.className = "feedback-checkbox-row";
-    feedbackDiagCheckbox = document.createElement("input");
-    feedbackDiagCheckbox.type = "checkbox";
-    feedbackDiagCheckbox.checked = true;
-    feedbackDiagRow.appendChild(feedbackDiagCheckbox);
-    feedbackDiagRow.appendChild(document.createTextNode("Include diagnostic report"));
-    feedbackSection.appendChild(feedbackDiagRow);
-
-    // Contact (optional)
-    const feedbackContactRow = document.createElement("div");
-    feedbackContactRow.className = "settings-row feedback-field";
-    const feedbackContactLabel = document.createElement("label");
-    feedbackContactLabel.textContent = "Contact (optional)";
-    feedbackContactLabel.setAttribute("for", "feedback-contact");
-    feedbackContactRow.appendChild(feedbackContactLabel);
-    feedbackContactEl = document.createElement("input");
-    feedbackContactEl.type = "text";
-    feedbackContactEl.id = "feedback-contact";
-    feedbackContactEl.maxLength = 500;
-    feedbackContactEl.placeholder = "Email or Discord handle, if you'd like a reply";
-    feedbackContactRow.appendChild(feedbackContactEl);
-    feedbackSection.appendChild(feedbackContactRow);
-
-    feedbackFormStatusEl = document.createElement("p");
-    feedbackFormStatusEl.className = "feedback-status";
-    feedbackSection.appendChild(feedbackFormStatusEl);
-
-    feedbackPreviewBtn = document.createElement("button");
-    feedbackPreviewBtn.className = "skill-btn settings-btn";
-    feedbackPreviewBtn.textContent = "Preview";
-    feedbackPreviewBtn.disabled = true; // gated on non-empty description by updateFeedbackCharCounter
-    feedbackPreviewBtn.addEventListener("click", requestFeedbackPreview);
-    feedbackSection.appendChild(feedbackPreviewBtn);
-
-    // Preview step (hidden until the host replies with feedbackPreview).
-    // The Send action does not exist/isn't reachable until this is shown.
-    feedbackPreviewSection = document.createElement("div");
-    feedbackPreviewSection.className = "feedback-preview";
-    feedbackPreviewSection.setAttribute("hidden", "");
-
-    const feedbackPreviewHeading = document.createElement("p");
-    feedbackPreviewHeading.className = "settings-empty";
-    feedbackPreviewHeading.textContent = "Nothing has been sent yet — this is the exact JSON that will be POSTed if you press Send.";
-    feedbackPreviewSection.appendChild(feedbackPreviewHeading);
-
-    feedbackPreviewTicketEl = document.createElement("p");
-    feedbackPreviewTicketEl.className = "settings-empty";
-    feedbackPreviewSection.appendChild(feedbackPreviewTicketEl);
-
-    feedbackPreviewJsonEl = document.createElement("pre");
-    feedbackPreviewJsonEl.className = "feedback-preview-json";
-    feedbackPreviewJsonEl.tabIndex = 0;
-    feedbackPreviewSection.appendChild(feedbackPreviewJsonEl);
-
-    const feedbackPreviewActions = document.createElement("div");
-    feedbackPreviewActions.className = "feedback-preview-actions";
-
-    feedbackSendBtn = document.createElement("button");
-    feedbackSendBtn.className = "skill-btn settings-btn";
-    feedbackSendBtn.textContent = "Send";
-    feedbackSendBtn.addEventListener("click", sendFeedbackConfirmed);
-    feedbackPreviewActions.appendChild(feedbackSendBtn);
-
-    feedbackBackBtn = document.createElement("button");
-    feedbackBackBtn.className = "skill-btn settings-btn";
-    feedbackBackBtn.textContent = "Back to edit";
-    feedbackBackBtn.addEventListener("click", cancelFeedbackPreview);
-    feedbackPreviewActions.appendChild(feedbackBackBtn);
-
-    feedbackPreviewSection.appendChild(feedbackPreviewActions);
-    feedbackSection.appendChild(feedbackPreviewSection);
-
-    feedbackResultEl = document.createElement("p");
-    feedbackResultEl.className = "feedback-status";
-    feedbackSection.appendChild(feedbackResultEl);
-
-    setupConfigEl.appendChild(feedbackSection);
-    updateFeedbackCharCounter();
+    // Moved out of Settings into its own "Feedback" modal — see
+    // renderFeedbackModalBody() (defined near the other feedback helpers
+    // above), called from the "menu-feedback" click handler. Doesn't read
+    // lastSettings, so unlike Path Health it only needs to build once per
+    // modal open, not on every settings/installState push.
 
     // ── 6. Danger zone ──
     const dangerSection = buildSection("Danger zone");

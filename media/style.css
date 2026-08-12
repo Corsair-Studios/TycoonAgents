@@ -1641,6 +1641,99 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* ── Settings "subpage" modals (UEFN/Verse, Feedback) ─────────────────── */
+/* Shared classes (not per-id like #about-modal/#badge-modal above) since
+   #uefn-modal and #feedback-modal are structurally identical: a scrollable
+   body with no tabs. Mirrors the same backdrop/dialog/close language as the
+   other modals so it matches visually. */
+#uefn-modal[hidden],
+#feedback-modal[hidden] {
+  display: none;
+}
+
+#uefn-modal,
+#feedback-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-subpage-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.settings-subpage-dialog {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px 24px;
+  min-width: 320px;
+  max-width: 560px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-subpage-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.settings-subpage-close {
+  position: sticky;
+  top: 0;
+  align-self: flex-end;
+  z-index: 6;
+  background: var(--surface);
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.settings-subpage-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.settings-subpage-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 176, 32, 0.4) transparent;
+}
+
+.settings-subpage-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.settings-subpage-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 176, 32, 0.4);
+  border-radius: 4px;
+}
+
+.settings-subpage-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 #badge-list {
   display: flex;
   flex-direction: column;

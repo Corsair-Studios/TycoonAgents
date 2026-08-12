@@ -9054,7 +9054,9 @@ export class TycoonPanel {
     <div id="menu-popover" role="menu" hidden>
       <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
       <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
+      <button class="menu-item" role="menuitem" id="menu-uefn">UEFN / Verse</button>
       <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
+      <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
       <button class="menu-item" role="menuitem" id="menu-about">About</button>
       ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ""}
     </div>
@@ -9442,6 +9444,31 @@ export class TycoonPanel {
       <div class="theme-image-lightbox-viewport">
         <img id="theme-image-lightbox-image" alt="" />
       </div>
+    </div>
+  </div>
+
+  <!-- UEFN / Verse modal overlay: houses the "Path Health" section moved out
+       of Settings (see buildPathHealthSection() in media/main.js). Uses the
+       shared .settings-subpage-* modal classes (see #feedback-modal below)
+       rather than #about-modal's per-id styling, since these two are the
+       first "subpage" modals split out of the Settings screen. -->
+  <div id="uefn-modal" role="dialog" aria-modal="true" aria-labelledby="uefn-modal-title" hidden>
+    <div id="uefn-backdrop" class="settings-subpage-backdrop"></div>
+    <div id="uefn-dialog" class="settings-subpage-dialog">
+      <button id="uefn-modal-close" class="settings-subpage-close" aria-label="Close dialog">&times;</button>
+      <h2 id="uefn-modal-title" class="settings-subpage-title">UEFN / Verse</h2>
+      <div id="uefn-modal-body" class="settings-subpage-body"></div>
+    </div>
+  </div>
+
+  <!-- Feedback modal overlay: houses the "Submit feedback" section moved out
+       of Settings (see the feedback-section builder in media/main.js). -->
+  <div id="feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title" hidden>
+    <div id="feedback-backdrop" class="settings-subpage-backdrop"></div>
+    <div id="feedback-dialog" class="settings-subpage-dialog">
+      <button id="feedback-modal-close" class="settings-subpage-close" aria-label="Close dialog">&times;</button>
+      <h2 id="feedback-modal-title" class="settings-subpage-title">Feedback</h2>
+      <div id="feedback-modal-body" class="settings-subpage-body"></div>
     </div>
   </div>
 
