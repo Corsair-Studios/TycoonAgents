@@ -443,6 +443,11 @@ function makeFakePanelForPostState(root: string): { fake: any; posted: any[] } {
     _sessionHealthCache: undefined,
     _cachedSessionDelegationHealth: undefined,
     _cachedSessionDelegationHealthAt: 0,
+    _toolComplianceThrottled: (TycoonPanel.prototype as any)._toolComplianceThrottled,
+    _computeToolCompliance: (TycoonPanel.prototype as any)._computeToolCompliance,
+    _toolComplianceCache: undefined,
+    _cachedToolCompliance: undefined,
+    _cachedToolComplianceAt: 0,
   };
   return { fake, posted };
 }
@@ -777,3 +782,168 @@ test("_computeSessionDelegationHealth: activeMs across 6 turns is bounded by rea
 // display bug these tests target (that one was pure UI staleness; this one
 // is potential MISATTRIBUTION in the source records) — reported, not fixed,
 // as part of this investigation.
+
+// ---------------------------------------------------------------------------
+// _computeToolCompliance / _toolComplianceThrottled: the Delegation tab's
+// "Orchestrator ran N% of tool calls directly" compliance line. ALL-TIME
+// (never resets on a session boundary, unlike _computeSessionDelegationHealth
+// above) — deliberately a raw PreToolUse tally over
+// Read/Grep/Glob/Edit/Write/Bash, not a re-read of the AgentMetric reducer's
+// directSearches/directReads/directEdits counters, because those never track
+// Bash/PowerShell at all (mapHookRecord maps them to ActivityKind "shell",
+// which applyEvent's WorkerActivity case doesn't add to any direct-* field).
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeFakeCompliancePanel(): any {
+  return {
+    _readActivityRecordsSince: (TycoonPanel.prototype as any)._readActivityRecordsSince,
+    _computeToolCompliance: (TycoonPanel.prototype as any)._computeToolCompliance,
+    _toolComplianceThrottled: (TycoonPanel.prototype as any)._toolComplianceThrottled,
+    _toolComplianceCache: undefined,
+    _cachedToolCompliance: undefined,
+    _cachedToolComplianceAt: 0,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function callToolCompliance(root: string): any {
+  return (TycoonPanel.prototype as any)._computeToolCompliance.call(makeFakeCompliancePanel(), root);
+}
+
+test("_computeToolCompliance: splits Read/Grep/Glob/Edit/Write/Bash PreToolUse calls by workerId === orchestrator vs. any other", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    { event: "PreToolUse", tool: "Grep", workerId: "orchestrator", at: T },
+    { event: "PreToolUse", tool: "Read", at: T + 1 }, // omitted workerId -> orchestrator
+    { event: "PreToolUse", tool: "Bash", workerId: "orchestrator", at: T + 2 },
+    { event: "PreToolUse", tool: "Edit", workerId: "coding-specialist", at: T + 3 },
+    { event: "PreToolUse", tool: "Write", workerId: "coding-specialist", at: T + 4 },
+    { event: "PreToolUse", tool: "Glob", workerId: "search-retrieval", at: T + 5 },
+  ]);
+  const result = callToolCompliance(root);
+  assert.ok(result);
+  assert.equal(result.orchestratorDirectCalls, 3, "Grep + omitted-workerId Read + Bash");
+  assert.equal(result.workerToolCalls, 3, "Edit + Write + Glob, all non-orchestrator workerIds");
+});
+
+test("_computeToolCompliance: Bash counts toward the tally even though it is NOT tracked by directEdits/directSearches/directReads elsewhere", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    { event: "PreToolUse", tool: "Bash", workerId: "orchestrator", at: T },
+    { event: "PreToolUse", tool: "Bash", workerId: "orchestrator", at: T + 1 },
+  ]);
+  const result = callToolCompliance(root);
+  assert.equal(result.orchestratorDirectCalls, 2);
+  // Sanity cross-check: the AgentMetric reducer used elsewhere on the
+  // Delegation tab does NOT count these two Bash calls at all.
+  let state = initialWorldState();
+  for (const event of mapHookRecord({ event: "PreToolUse", tool: "Bash", workerId: "orchestrator", at: T })) {
+    state = applyEvent(state, event);
+  }
+  const orch = state.agentMetrics.find((m) => m.id === "orchestrator");
+  assert.equal(orch ? orch.directEdits + orch.directSearches + orch.directReads : 0, 0, "confirms Bash is genuinely invisible to the existing reducer -- this tally is not redundant with it");
+});
+
+test("_computeToolCompliance: ignores non-PreToolUse events and tools outside the compliance set", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    { event: "PreToolUse", tool: "Grep", workerId: "orchestrator", at: T },
+    { event: "PreToolUse", tool: "mcp__uefn__status", workerId: "orchestrator", at: T + 1 }, // not in the tool set
+    { event: "PreToolUse", tool: "Task", workerId: "orchestrator", at: T + 2 }, // a delegation, not a direct call
+    { event: "SubagentStop", workerId: "coding-specialist", at: T + 3 },
+    { event: "Stop", at: T + 4 },
+  ]);
+  const result = callToolCompliance(root);
+  assert.equal(result.orchestratorDirectCalls, 1);
+  assert.equal(result.workerToolCalls, 0);
+});
+
+test("_computeToolCompliance: a UUID-format workerId (legacy/malformed record) is skipped, matching mapHookRecord's own skip", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    { event: "PreToolUse", tool: "Read", workerId: "3fa85f64-5717-4562-b3fc-2c963f66afa6", at: T },
+    { event: "PreToolUse", tool: "Read", workerId: "orchestrator", at: T + 1 },
+  ]);
+  const result = callToolCompliance(root);
+  assert.equal(result.orchestratorDirectCalls, 1, "the UUID-workerId record must not be folded into orchestrator");
+  assert.equal(result.workerToolCalls, 0);
+});
+
+test("_computeToolCompliance: missing activity.jsonl -> undefined, does not throw", () => {
+  const root = tmpRoot();
+  assert.doesNotThrow(() => callToolCompliance(root));
+  assert.equal(callToolCompliance(root), undefined);
+});
+
+test("_computeToolCompliance: NEVER resets across a session boundary -- all-time, unlike _computeSessionDelegationHealth", () => {
+  const root = tmpRoot();
+  writeActivity(root, [{ event: "PreToolUse", tool: "Grep", workerId: "orchestrator", sessionId: "S1", at: T }]);
+  const fakePanel = makeFakeCompliancePanel();
+  const first = (TycoonPanel.prototype as any)._computeToolCompliance.call(fakePanel, root);
+  assert.equal(first.orchestratorDirectCalls, 1);
+
+  appendActivity(root, [{ event: "PreToolUse", tool: "Read", workerId: "orchestrator", sessionId: "S2", at: T + 1 }]);
+  const second = (TycoonPanel.prototype as any)._computeToolCompliance.call(fakePanel, root);
+  assert.equal(second.orchestratorDirectCalls, 2, "S1's Grep + S2's Read must BOTH count -- a session boundary must not reset this all-time tally");
+});
+
+test("_computeToolCompliance: second call reads only appended bytes (incremental, not a full re-read)", () => {
+  const root = tmpRoot();
+  writeActivity(root, [{ event: "PreToolUse", tool: "Grep", workerId: "orchestrator", at: T }]);
+  const fakePanel = makeFakeCompliancePanel();
+
+  const calls: Array<{ fromOffset: number; uptoSize: number }> = [];
+  const realReadSince = fakePanel._readActivityRecordsSince;
+  fakePanel._readActivityRecordsSince = function (this: unknown, activityPath: string, fromOffset: number, uptoSize: number) {
+    calls.push({ fromOffset, uptoSize });
+    return realReadSince.call(this, activityPath, fromOffset, uptoSize);
+  };
+
+  (TycoonPanel.prototype as any)._computeToolCompliance.call(fakePanel, root);
+  assert.equal(calls.length, 1);
+  const firstSize = calls[0].uptoSize;
+
+  appendActivity(root, [{ event: "PreToolUse", tool: "Read", workerId: "orchestrator", at: T + 1 }]);
+  (TycoonPanel.prototype as any)._computeToolCompliance.call(fakePanel, root);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].fromOffset, firstSize, "second call must start from where the first left off");
+});
+
+test("_toolComplianceThrottled: returns a cached value within the throttle window, even if the file changed underneath it", () => {
+  const root = tmpRoot();
+  writeActivity(root, [{ event: "PreToolUse", tool: "Grep", workerId: "orchestrator", at: T }]);
+  const fakePanel = makeFakeCompliancePanel();
+
+  const first = (TycoonPanel.prototype as any)._toolComplianceThrottled.call(fakePanel, root);
+  assert.equal(first.orchestratorDirectCalls, 1);
+
+  appendActivity(root, [{ event: "PreToolUse", tool: "Read", workerId: "orchestrator", at: T + 1 }]);
+  const stillCached = (TycoonPanel.prototype as any)._toolComplianceThrottled.call(fakePanel, root);
+  assert.equal(stillCached.orchestratorDirectCalls, 1, "within the throttle window, the cached value must be returned even though the file grew");
+});
+
+test("_postStateUpdate: the posted MSG.STATE payload carries toolCompliance computed from activity.jsonl", () => {
+  const root = tmpRoot();
+  writeActivity(root, [
+    { event: "PreToolUse", tool: "Grep", workerId: "orchestrator", at: T },
+    { event: "PreToolUse", tool: "Edit", workerId: "coding-specialist", at: T + 1 },
+  ]);
+  let state = initialWorldState();
+
+  const { fake, posted } = makeFakePanelForPostState(root);
+  (TycoonPanel.prototype as any)._postStateUpdate.call(fake, state);
+
+  const msg = posted[0] as any;
+  assert.ok("toolCompliance" in msg, "toolCompliance must be a top-level field on the STATE payload");
+  assert.equal(msg.toolCompliance.orchestratorDirectCalls, 1);
+  assert.equal(msg.toolCompliance.workerToolCalls, 1);
+});
+
+test("_postStateUpdate: no project folder open -> toolCompliance is undefined, never a fabricated zero", () => {
+  const state = initialWorldState();
+  const { fake, posted } = makeFakePanelForPostState(""); // root === ""
+  (TycoonPanel.prototype as any)._postStateUpdate.call(fake, state);
+  const msg = posted[0] as any;
+  assert.equal(msg.toolCompliance, undefined);
+});

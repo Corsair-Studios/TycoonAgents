@@ -1,8 +1,18 @@
-# Known Bug: `resolveOrchestratorPrice` silently falls back to Opus pricing
+# FIXED (2026-08-13): `resolveOrchestratorPrice` silently fell back to Opus pricing
+
+**Status: FIXED 2026-08-13.** `resolveOrchestratorPrice()` now returns `null`
+when no orchestrator metrics entry exists or its model is unpriced, instead
+of fabricating Opus's $/Mtok rate. Every call site now branches on `null`
+and renders an honest unknown state instead of a computed ratio. See "Fix
+applied" below for the exact behavior. The rest of this doc is kept as-is
+for historical context on the bug and the options considered.
+
+---
 
 When no orchestrator metrics entry exists, or its model is unknown/unpriced,
-`resolveOrchestratorPrice` returns Opus's $/Mtok rate instead of signaling
-"unknown" — silently inflating every "Nx cheaper" figure derived from it.
+`resolveOrchestratorPrice` used to return Opus's $/Mtok rate instead of
+signaling "unknown" — silently inflating every "Nx cheaper" figure derived
+from it.
 
 ## Location (current, verified 2026-08-11)
 
@@ -59,6 +69,41 @@ divide-by-zero, not just a missing number. Options:
   `resolveOrchestratorPrice` and have each of the three call sites branch
   on it) rather than assuming the most expensive model by default.
 
+## Fix applied (2026-08-13)
+
+Option 2 from "Fix options" above was chosen: propagate the uncertainty
+explicitly.
+
+- `resolveOrchestratorPrice(metrics)` (`media/main.js` ~13508-13521) now
+  returns `number|null` — `null` when no orchestrator entry is found or its
+  model is unpriced, never `MODEL_PRICE_PER_MTOK.opus` as a silent default.
+- Delegation-stats hero savings headline (`media/main.js` ~13955-13990):
+  when `orchestratorPrice` is `null`, the hero renders no
+  `.delegation-hero-num` percentage at all — only a
+  `.delegation-hero-label` reading "Savings unavailable — orchestrator
+  model not detected yet." The counterfactual-cost loop is skipped entirely
+  in this case (no division against a null price).
+- Per-agent Settings "vs. orch." stat chip (`media/main.js` ~15868-15884):
+  now additionally guards `chipOrchestratorPrice != null` before computing
+  the ratio; renders "—" when null instead of dividing by/against a
+  fabricated or missing price.
+- Per-agent Metrics table "vs. orch." status-bar label
+  (`buildMetricsRow`, `media/main.js` ~13756-13770): already guarded
+  `orchestratorPrice != null` before this fix and needed no change — kept
+  as the reference pattern the other two call sites now match.
+
+`MODEL_PRICE_PER_MTOK` and `modelPricePerMtok()` were left untouched, per
+scope.
+
+Tests added in `test/resolveOrchestratorPrice.test.ts` (jsdom + `node:vm`
+harness booting the real `media/main.js`, same technique as
+`test/orchestratorModelWarning.test.ts`): a detected-Opus-orchestrator
+regression check (savings percentage still renders), three "no orchestrator
+detected" negative anchors (hero, stat chip, metrics-table label all read
+"—"/an explanatory line, never "Opus", never NaN/Infinity), and an
+unpriced-orchestrator-model variant of the hero case.
+
 ## Provenance
 
-Found during feedback triage on 2026-08-11. Not yet filed upstream.
+Found during feedback triage on 2026-08-11. Not yet filed upstream. Fixed
+2026-08-13.

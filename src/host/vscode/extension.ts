@@ -65,6 +65,17 @@ export function activate(context: vscode.ExtensionContext): void {
       const projectRoot = resolveProjectRoot(workspacePaths, process.env["CLAUDE_PROJECT_DIR"]);
       const activityFile = path.join(projectRoot, ".claude", "tycoon", "activity.jsonl");
 
+      // Reset accumulated metrics state FIRST: a fresh ClaudeCodeProvider below
+      // replays the ENTIRE activity.jsonl from byte 0 into `runtime`. Without
+      // this, closing and reopening the panel re-ingests the same records into
+      // the still-populated runtime, doubling every agent's taskCount/tokens/
+      // activeMs on each reopen (tripling on a third reopen, etc). `runtime` is
+      // a single long-lived instance held by TycoonPanel across reopens, so
+      // reset() mutates it in place rather than the caller reassigning a new
+      // Runtime object. Must run BEFORE roster seeding below, or the reset
+      // would immediately erase the freshly-seeded WorkerRegistered rows.
+      runtime.reset();
+
       // Seed the full installed-agent roster so every agent appears as an idle
       // row from the start, regardless of whether it has done any work yet.
       const agentsDir = path.join(projectRoot, ".claude", "agents");

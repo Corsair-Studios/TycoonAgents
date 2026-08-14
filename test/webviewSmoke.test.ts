@@ -3153,3 +3153,134 @@ test('Delegation tab caption states its figures are all-time, with no Session/Al
     h.win.close();
   }
 });
+
+// Delegation compliance line ("Orchestrator ran N% of tool calls directly").
+// toolCompliance rides as a SIBLING of `state` on the posted message (see
+// panel.ts's _postStateUpdate: `{ type: MSG.STATE, state, ..., toolCompliance }`),
+// matching how sessionMetrics/delegationHealth are already attached — so
+// every dispatch below sets it at the top level, not nested under `state`.
+function dispatchDelegationCompliancePayload(h: any, toolCompliance: unknown) {
+  h.dispatch({
+    type: 'state',
+    state: {
+      sessionActive: true,
+      completedTasks: 1,
+      workers: {},
+      // A non-orchestrator agent with tokens > 0 so delegationStatsHasData is
+      // true and the Delegation tab actually renders (see the "all-time
+      // caption" test above for the same gating requirement).
+      agentMetrics: [{ id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', tokens: 4000, activeMs: 90000, taskCount: 2 }],
+    },
+    toolCompliance,
+  });
+}
+
+function openDelegationTab(h: any) {
+  const delegationTabBtn = h.doc.getElementById('delegation-tab-btn');
+  assert.ok(delegationTabBtn, 'the Delegation tab button should exist');
+  delegationTabBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+}
+
+test('Delegation compliance: 60% direct share renders the red/bad line and the sub-caption', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchDelegationCompliancePayload(h, { orchestratorDirectCalls: 60, workerToolCalls: 40 });
+    await h.flush();
+    assert.equal(h.errors.length, 0, `post-dispatch errors: ${h.errors.map(String).join('; ')}`);
+    openDelegationTab(h);
+    await h.flush();
+
+    const delegationBody = h.doc.getElementById('delegation-stats');
+    const line = delegationBody.querySelector('.delegation-compliance-line');
+    assert.ok(line, 'the compliance line must render (100 total calls >= 20 threshold)');
+    assert.match(line.textContent, /Orchestrator ran 60% of tool calls directly \(60 of 100\)\./);
+    assert.ok(line.classList.contains('hook-bad'), 'over 50% must use the red/bad style');
+    assert.ok(!line.classList.contains('hook-warn'), 'must not ALSO carry the yellow/warn style');
+
+    const caption = [...delegationBody.querySelectorAll('.delegation-stats-caption')].find((c: any) =>
+      /doctrine and keyword routing/i.test(c.textContent || '')
+    );
+    assert.ok(caption, 'the high-share sub-caption must render below the bad/warn line');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('Delegation compliance: 10% direct share renders without warn/bad class and without the sub-caption', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchDelegationCompliancePayload(h, { orchestratorDirectCalls: 10, workerToolCalls: 90 });
+    await h.flush();
+    openDelegationTab(h);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const delegationBody = h.doc.getElementById('delegation-stats');
+    const line = delegationBody.querySelector('.delegation-compliance-line');
+    assert.ok(line, 'the compliance line must render (100 total calls >= 20 threshold)');
+    assert.match(line.textContent, /Orchestrator ran 10% of tool calls directly \(10 of 100\)\./);
+    assert.ok(!line.classList.contains('hook-warn'), 'under 25% must not carry the yellow/warn style');
+    assert.ok(!line.classList.contains('hook-bad'), 'under 25% must not carry the red/bad style');
+
+    const caption = [...delegationBody.querySelectorAll('.delegation-stats-caption')].find((c: any) =>
+      /doctrine and keyword routing/i.test(c.textContent || '')
+    );
+    assert.ok(!caption, 'the sub-caption must be absent below the compliance threshold');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('Delegation compliance: fewer than 20 total calls -> the line is absent entirely', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchDelegationCompliancePayload(h, { orchestratorDirectCalls: 15, workerToolCalls: 4 }); // 19 total
+    await h.flush();
+    openDelegationTab(h);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const delegationBody = h.doc.getElementById('delegation-stats');
+    const line = delegationBody.querySelector('.delegation-compliance-line');
+    assert.ok(!line, '19 total calls is below the 20-call noise threshold -- nothing should render');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('Delegation compliance: zero totals (or toolCompliance absent) -> nothing renders, no NaN anywhere in the panel', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    dispatchDelegationCompliancePayload(h, { orchestratorDirectCalls: 0, workerToolCalls: 0 });
+    await h.flush();
+    openDelegationTab(h);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    let delegationBody = h.doc.getElementById('delegation-stats');
+    let line = delegationBody.querySelector('.delegation-compliance-line');
+    assert.ok(!line, 'zero total calls -> no compliance line');
+    assert.doesNotMatch(delegationBody.innerHTML, /NaN/, 'panel HTML must never contain a literal NaN');
+
+    // toolCompliance omitted entirely (undefined) -- same as panel.ts's
+    // "no project folder open" case -- must also render nothing, not throw.
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 1,
+        workers: {},
+        agentMetrics: [{ id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', tokens: 4000, activeMs: 90000, taskCount: 2 }],
+      },
+    });
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors after omitted toolCompliance: ${h.errors.map(String).join('; ')}`);
+
+    delegationBody = h.doc.getElementById('delegation-stats');
+    line = delegationBody.querySelector('.delegation-compliance-line');
+    assert.ok(!line, 'toolCompliance undefined -> no compliance line, no crash');
+    assert.doesNotMatch(delegationBody.innerHTML, /NaN/, 'panel HTML must never contain a literal NaN');
+  } finally {
+    h.win.close();
+  }
+});

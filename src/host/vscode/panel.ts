@@ -512,6 +512,29 @@ export class TycoonPanel {
   private _cachedSessionDelegationHealthAt = 0;
   /** Minimum interval between session-scoped delegationHealth recompute ATTEMPTS on the live runtime.onChange path (a stat() rate limit; each attempt itself is now cheap when the log hasn't grown, see _sessionHealthCache). */
   private static readonly SESSION_HEALTH_THROTTLE_MS = 4000;
+  /**
+   * Incremental read state for the ALL-TIME (never session-reset, unlike
+   * _sessionHealthCache) delegation-compliance tally: how many direct
+   * PreToolUse calls (Read/Grep/Glob/Edit/Write/Bash) the orchestrator made
+   * itself vs. every other workerId. Mirrors _sessionHealthCache's
+   * byte-offset/idle-shortcut shape exactly (see _computeToolCompliance) but
+   * folds records into two running counters instead of a MetricsWorldState —
+   * the orchestrator/worker split is a raw tool-set membership test on
+   * `record.tool`, not something the AgentMetric reducer tracks (it never
+   * counts Bash/PowerShell at all — those map to ActivityKind "shell", which
+   * applyEvent's WorkerActivity case does not add to directEdits). This is
+   * DELIBERATELY a second incremental cache rather than folded into
+   * _sessionHealthCache's loop: that cache resets on every session boundary
+   * (by design, for session-scoped delegationHealth), which would make an
+   * all-time compliance counter wrong every time a new session starts.
+   */
+  private _toolComplianceCache:
+    | { size: number; mtimeMs: number; offset: number; orchestratorDirectCalls: number; workerToolCalls: number }
+    | undefined;
+  private _cachedToolCompliance: { orchestratorDirectCalls: number; workerToolCalls: number } | undefined;
+  private _cachedToolComplianceAt = 0;
+  /** Tool names counted toward the delegation-compliance meter (Delegation tab). Matches CLAUDE.md's "must delegate" set: Bash included even though the AgentMetric reducer's directEdits does not track it. */
+  private static readonly TOOL_COMPLIANCE_TOOLS = new Set<string>(["Read", "Grep", "Glob", "Edit", "Write", "Bash"]);
   /** Cached "connected" results for HTTP-probeable engine MCP entries (e.g. unreal-engine-mcp), keyed by engine id. */
   private _engineProbeCache: Map<string, boolean> = new Map();
   /**
@@ -7333,11 +7356,18 @@ export class TycoonPanel {
    * exposes. `state`/`delegationHealth` (the cumulative fields) are
    * UNCHANGED — `sessionMetrics` is purely additive so nothing that already
    * consumes this payload changes behavior.
+   *
+   * Also attaches `toolCompliance` (orchestratorDirectCalls/workerToolCalls,
+   * ALL-TIME — see _computeToolCompliance) for the Delegation tab's
+   * compliance line. Undefined when there's no project folder open or no
+   * activity.jsonl yet; the webview renders nothing in that case rather than
+   * a fabricated 0%.
    */
   private _postStateUpdate(state: MetricsWorldState): void {
     const root = this._projectRoot();
     const cumulative = this._computeCumulativeDelegationHealth(state);
     const session = root !== "" ? this._sessionDelegationHealthThrottled(root) : undefined;
+    const toolCompliance = root !== "" ? this._toolComplianceThrottled(root) : undefined;
     // sessionMetrics: the current session's agentMetrics, stamped with roster
     // models the same way cumulative `state.agentMetrics` is (so the webview
     // can render session rows through the exact same code path as cumulative
@@ -7365,6 +7395,7 @@ export class TycoonPanel {
       state: this._stampRosterModels(this._applyTimeAdjustments(state)),
       delegationHealth: { ...cumulative, session },
       sessionMetrics,
+      toolCompliance,
     });
   }
 
@@ -7612,6 +7643,84 @@ export class TycoonPanel {
       this._cachedSessionDelegationHealthAt = now;
     }
     return this._cachedSessionDelegationHealth;
+  }
+
+  /**
+   * ALL-TIME delegation-compliance tally: how many PreToolUse records for a
+   * tool in TOOL_COMPLIANCE_TOOLS (Read/Grep/Glob/Edit/Write/Bash) were made
+   * directly by `workerId === "orchestrator"` (or an omitted workerId, which
+   * mapHookRecord treats identically — see hookRecord.ts) vs. by any other
+   * workerId. A UUID-format workerId is a legacy/malformed record, same skip
+   * mapHookRecord applies elsewhere — see this method's UUID_RE note.
+   *
+   * Unlike _computeSessionDelegationHealth, this NEVER resets on a session
+   * boundary — the Delegation tab's compliance line is deliberately all-time
+   * (matching every other figure on that tab; see its
+   * "All figures below are all time" caption in media/main.js). It otherwise
+   * mirrors that method's incremental-read shape exactly: idle (unchanged
+   * size+mtime) short-circuits to zero reads, growth reads only the
+   * newly-appended bytes via _readActivityRecordsSince, and a shrink/replace
+   * (rotation, deletion+recreation, different project root) falls back to a
+   * clean full read from offset 0.
+   */
+  private _computeToolCompliance(
+    root: string
+  ): { orchestratorDirectCalls: number; workerToolCalls: number } | undefined {
+    const activityPath = path.join(root, ".claude", "tycoon", "activity.jsonl");
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(activityPath);
+    } catch {
+      this._toolComplianceCache = undefined;
+      return undefined;
+    }
+
+    const cache = this._toolComplianceCache;
+    if (cache !== undefined && cache.size === stat.size && cache.mtimeMs === stat.mtimeMs) {
+      return { orchestratorDirectCalls: cache.orchestratorDirectCalls, workerToolCalls: cache.workerToolCalls };
+    }
+
+    const shrankOrReplaced = cache === undefined || stat.size < cache.size;
+    let orchestratorDirectCalls = shrankOrReplaced ? 0 : cache!.orchestratorDirectCalls;
+    let workerToolCalls = shrankOrReplaced ? 0 : cache!.workerToolCalls;
+    const fromOffset = shrankOrReplaced ? 0 : cache!.offset;
+
+    const { records, newOffset } = this._readActivityRecordsSince(activityPath, fromOffset, stat.size);
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const record of records) {
+      if (record.event !== "PreToolUse") continue;
+      if (!record.tool || !TycoonPanel.TOOL_COMPLIANCE_TOOLS.has(record.tool)) continue;
+      // Mirrors mapHookRecord's own UUID-workerId skip (legacy/malformed
+      // record from an old hook version) so this tally never over-credits
+      // "orchestrator" the same way that reducer avoids doing.
+      if (record.workerId !== undefined && UUID_RE.test(record.workerId)) continue;
+      const workerId = record.workerId ?? "orchestrator";
+      if (workerId === "orchestrator") orchestratorDirectCalls++;
+      else workerToolCalls++;
+    }
+
+    this._toolComplianceCache = { size: stat.size, mtimeMs: stat.mtimeMs, offset: newOffset, orchestratorDirectCalls, workerToolCalls };
+    return { orchestratorDirectCalls, workerToolCalls };
+  }
+
+  /**
+   * Throttled wrapper around _computeToolCompliance for the hot
+   * runtime.onChange path — same SESSION_HEALTH_THROTTLE_MS cadence and
+   * "return cached value between recomputes" contract as
+   * _sessionDelegationHealthThrottled, kept as an independent throttle
+   * timestamp since the two caches (session-scoped vs. all-time) rebuild on
+   * different triggers (session boundaries vs. never).
+   */
+  private _toolComplianceThrottled(root: string): { orchestratorDirectCalls: number; workerToolCalls: number } | undefined {
+    const now = Date.now();
+    if (
+      this._cachedToolComplianceAt === 0 ||
+      now - this._cachedToolComplianceAt >= TycoonPanel.SESSION_HEALTH_THROTTLE_MS
+    ) {
+      this._cachedToolCompliance = this._computeToolCompliance(root);
+      this._cachedToolComplianceAt = now;
+    }
+    return this._cachedToolCompliance;
   }
 
   /** Post the current settings snapshot (hook + per-agent model/keywords). */

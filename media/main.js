@@ -12282,7 +12282,7 @@
       updateMetricsScopeUI();
       // Update metrics panel
       renderMetrics(state.agentMetrics);
-      renderDelegationStats(state.modeStats);
+      renderDelegationStats(state.modeStats, msg.toolCompliance);
     } else if (msg && msg.type === "skills") {
       renderSkillsList(msg.skills, msg.error);
       // Skills/MCP/Packs installed state feeds buildUefnHealthSummaryRow's
@@ -13506,17 +13506,21 @@
   }
 
   /**
-   * Resolve the orchestrator's blended $/Mtok price from a metrics array,
-   * falling back to opus (10) when no orchestrator entry is found or its
-   * model is unpriced. Shared by the per-agent "vs. orch." column and the
-   * delegation-stats savings headline.
+   * Resolve the orchestrator's blended $/Mtok price from a metrics array.
+   * Returns `null` — never a fabricated fallback price — when no
+   * orchestrator entry is found or its model is unpriced; the metrics panel
+   * must never invent a model/price to keep a ratio computable. Shared by
+   * the per-agent "vs. orch." column and the delegation-stats savings
+   * headline; every caller MUST branch on `null` and render an honest
+   * unknown state (e.g. "—" or an explanatory line) instead of computing a
+   * ratio against it. See docs/KNOWN-BUG-orchestrator-price-fallback.md.
    * @param {Array<{id?:string, model?:string}>|undefined} metrics
-   * @returns {number}
+   * @returns {number|null}
    */
   function resolveOrchestratorPrice(metrics) {
     const orch = Array.isArray(metrics) ? metrics.find((a) => a && a.id === "orchestrator") : null;
     const price = orch ? modelPricePerMtok(orch.model) : null;
-    return price != null ? price : MODEL_PRICE_PER_MTOK.opus;
+    return price != null ? price : null;
   }
 
   /**
@@ -13908,8 +13912,9 @@
    * meter. Also sets delegationStatsHasData, which gates whether the
    * Delegation tab button is offered at all — see updateMetricsTabsUI().
    * @param {Array<{mode:string,completedTasks:number,totalTokens:number,activeMs:number,leadTokens:number,teamTokens:number,leadOverheadPct:number|null,wallClockMs?:number}>|undefined} modeStats
+   * @param {{orchestratorDirectCalls:number,workerToolCalls:number}|undefined} toolCompliance ALL-TIME (see panel.ts's _computeToolCompliance) counts of PreToolUse Read/Grep/Glob/Edit/Write/Bash calls, split orchestrator vs. every other workerId.
    */
-  function renderDelegationStats(modeStats) {
+  function renderDelegationStats(modeStats, toolCompliance) {
     const el = delegationStatsBodyEl;
     if (!el) return;
 
@@ -13955,16 +13960,27 @@
     const orchestratorPrice = resolveOrchestratorPrice(lastMetrics);
     let actual = 0;
     let counterfactual = 0;
-    for (const a of delegatedAgents) {
-      if (!(a.tokens > 0)) continue;
-      const cost = estCostUSD(a.tokens, a.model);
-      if (cost == null) continue;
-      actual += cost;
-      counterfactual += (a.tokens / 1e6) * orchestratorPrice;
+    if (orchestratorPrice != null) {
+      for (const a of delegatedAgents) {
+        if (!(a.tokens > 0)) continue;
+        const cost = estCostUSD(a.tokens, a.model);
+        if (cost == null) continue;
+        actual += cost;
+        counterfactual += (a.tokens / 1e6) * orchestratorPrice;
+      }
     }
     const hero = document.createElement("div");
     hero.className = "delegation-hero";
-    if (counterfactual > 0 && actual > 0 && actual < counterfactual) {
+    if (orchestratorPrice == null) {
+      // Orchestrator's model hasn't been observed yet (or is unpriced) — do
+      // NOT fabricate a baseline price to compute a ratio against. Honest
+      // unknown, not an error: this resolves itself once the orchestrator
+      // completes a task and its model is recorded.
+      const heroLabel = document.createElement("div");
+      heroLabel.className = "delegation-hero-label";
+      heroLabel.textContent = "Savings unavailable — orchestrator model not detected yet.";
+      hero.appendChild(heroLabel);
+    } else if (counterfactual > 0 && actual > 0 && actual < counterfactual) {
       const savedPct = Math.round((1 - actual / counterfactual) * 100);
       const heroNum = document.createElement("div");
       heroNum.className = "delegation-hero-num";
@@ -13976,7 +13992,7 @@
       hero.appendChild(heroLabel);
       const heroSub = document.createElement("div");
       heroSub.className = "delegation-hero-sub";
-      heroSub.textContent = "Work runs on cheaper specialist models instead of the orchestrator's Opus.";
+      heroSub.textContent = "Work runs on cheaper specialist models instead of the orchestrator's model.";
       hero.appendChild(heroSub);
     } else {
       const heroLabel = document.createElement("div");
@@ -14091,7 +14107,7 @@
       const coordSub = document.createElement("div");
       coordSub.className = "delegation-stats-detail";
       coordSub.textContent =
-        "The orchestrator itself runs on Opus. Delegation lowers the cost of the WORK, not the coordinator — so this is the biggest single token bucket, and it is expected.";
+        "The orchestrator should run on Opus or higher. Delegation lowers the cost of the WORK, not the coordinator — so this is the biggest single token bucket, and it is expected.";
       coordSection.appendChild(coordSub);
 
       // This used to be a separate "Orchestrator direct tool use" section
@@ -14226,6 +14242,46 @@
         modeSection.appendChild(row);
       }
       el.appendChild(modeSection);
+    }
+
+    // ── 5. Delegation compliance ── the orchestrator's share of direct
+    // PreToolUse tool calls (Read/Grep/Glob/Edit/Write/Bash) vs. every other
+    // workerId, ALL-TIME (see panel.ts's _computeToolCompliance — a
+    // dedicated raw-record tally, distinct from the per-agent
+    // directSearches/directReads/directEdits counters used elsewhere on this
+    // tab, because those never count Bash at all). Below 20 combined calls
+    // the ratio is noise, so nothing renders rather than a misleading
+    // percentage off a handful of calls.
+    if (toolCompliance && typeof toolCompliance === "object") {
+      const direct = toolCompliance.orchestratorDirectCalls ?? 0;
+      const worker = toolCompliance.workerToolCalls ?? 0;
+      const total = direct + worker;
+      if (total >= 20) {
+        const pct = Math.round((direct / total) * 100);
+        const complianceSection = document.createElement("div");
+        complianceSection.className = "delegation-section";
+        const complianceHeading = document.createElement("div");
+        complianceHeading.className = "delegation-stats-heading";
+        complianceHeading.textContent = "Delegation compliance";
+        complianceSection.appendChild(complianceHeading);
+
+        const complianceLine = document.createElement("div");
+        complianceLine.className = "delegation-stats-row delegation-compliance-line";
+        if (pct > 50) complianceLine.classList.add("hook-bad");
+        else if (pct >= 25) complianceLine.classList.add("hook-warn");
+        complianceLine.textContent = `Orchestrator ran ${pct}% of tool calls directly (${direct} of ${total}).`;
+        complianceSection.appendChild(complianceLine);
+
+        if (pct >= 25) {
+          const complianceSub = document.createElement("div");
+          complianceSub.className = "delegation-stats-caption";
+          complianceSub.textContent =
+            "High direct-tool share usually means searches and edits are not being delegated. Doctrine and keyword routing may need a look.";
+          complianceSection.appendChild(complianceSub);
+        }
+
+        el.appendChild(complianceSection);
+      }
     }
 
     const pricingCaption = document.createElement("div");
@@ -15871,8 +15927,8 @@
       } else {
         const chipModel = m ? (m.model || agent.model) : agent.model;
         const chipAgentPrice = modelPricePerMtok(chipModel);
-        if (chipAgentPrice != null && m && m.tokens > 0) {
-          const chipOrchestratorPrice = resolveOrchestratorPrice(lastMetrics);
+        const chipOrchestratorPrice = resolveOrchestratorPrice(lastMetrics);
+        if (chipAgentPrice != null && m && m.tokens > 0 && chipOrchestratorPrice != null) {
           const ratio = chipOrchestratorPrice / chipAgentPrice;
           if (ratio >= 1.05) chipVsOrchText = `${fmtRatio(ratio)}× cheaper`;
           else if (ratio <= 0.95) chipVsOrchText = `${fmtRatio(1 / ratio)}× pricier`;
