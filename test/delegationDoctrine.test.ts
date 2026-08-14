@@ -116,7 +116,7 @@ test("renderDelegationDoctrine always includes the verify-on-disk section, with 
 test("renderDelegationDoctrine caps the review fan-out when the review gate is enabled", () => {
   const withReview = renderDelegationDoctrine("flat", true);
   assert.ok(withReview.includes("not a fan-out"), "review-cap phrasing present");
-  assert.ok(withReview.includes("must not spawn"), "no-nested-spawn guidance present");
+  assert.ok(withReview.includes("do not spawn further sub-agents"), "no-nested-spawn guidance present");
   const noReview = renderDelegationDoctrine("flat", false);
   assert.ok(!noReview.includes("not a fan-out"), "review-cap text only appears with the review gate");
 });
@@ -470,6 +470,48 @@ test("renderDelegationDoctrine falls back to the generic edit-target phrase when
   );
   assert.equal(out.includes("coding-specialist"), false);
   assert.equal(out.includes("verse-expert"), false);
+});
+
+// ---------------------------------------------------------------------------
+// renderDelegationDoctrine: "Who 'you' means in this file" worker-leaf
+// section (root-cause fix for recursive-delegation loops — every other
+// section addresses the orchestrator with no signal telling a spawned
+// worker it is a leaf). Inserted after the mode section, before
+// VERIFICATION_SECTION, in both modes.
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine (direct mode) tells spawned workers they are a LEAF and must not spawn sub-agents", () => {
+  const out = renderDelegationDoctrine("flat", false);
+  assert.ok(out.includes("you are a LEAF"), "direct mode must state the worker-leaf rule");
+  assert.ok(out.includes("Do NOT spawn Task or sub-agents"), "direct mode must forbid nested spawning");
+});
+
+test("renderDelegationDoctrine (team_leads mode) carves out an explicitly-designated team lead", () => {
+  const out = renderDelegationDoctrine("team_leads", false).replace(/\s+/g, " ");
+  assert.ok(
+    out.includes("UNLESS your brief explicitly designates you a TEAM LEAD"),
+    "team_leads mode must carve out designated team leads from the leaf rule"
+  );
+});
+
+test("renderDelegationDoctrine (direct mode) never mentions TEAM LEAD in the worker-leaf section", () => {
+  const out = renderDelegationDoctrine("flat", false);
+  assert.equal(out.includes("TEAM LEAD"), false, "direct mode must not reference a TEAM LEAD carve-out");
+});
+
+test("renderDelegationDoctrine's worker-leaf section lands after the mode section and before the verify-on-disk section, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false);
+    const modeHeadingIdx =
+      mode === "team_leads"
+        ? out.indexOf("## Team Leads delegation (current mode)")
+        : out.indexOf("## Direct delegation (current mode)");
+    const leafIdx = out.indexOf('## Who "you" means in this file');
+    const verifyIdx = out.indexOf('## A "completed" notification is not proof');
+    assert.ok(modeHeadingIdx !== -1 && leafIdx !== -1 && verifyIdx !== -1, `mode=${mode}: all three sections must be present`);
+    assert.ok(modeHeadingIdx < leafIdx, `mode=${mode}: mode section must come before the worker-leaf section`);
+    assert.ok(leafIdx < verifyIdx, `mode=${mode}: worker-leaf section must come before the verify-on-disk section`);
+  }
 });
 
 // ---------------------------------------------------------------------------

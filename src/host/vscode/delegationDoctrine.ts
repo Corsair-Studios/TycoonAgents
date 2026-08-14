@@ -328,6 +328,71 @@ and go straight from the orchestrator to the worker, same as Direct mode.`;
 }
 
 /**
+ * Renders a section clarifying WHO the doctrine's "you" refers to: the
+ * ORCHESTRATOR, not a spawned sub-agent. Root-cause fix for recursive
+ * delegation loops — every other section in this file addresses the
+ * orchestrator with no signal telling a spawned worker it is a LEAF (that
+ * leaf rule previously existed only in packCatalog.ts's
+ * `WORKING_DISCIPLINE_BODY`, appended to generated agent files, never in this
+ * CLAUDE.md doctrine). Two variants: DIRECT mode has no team-lead carve-out
+ * (every spawned worker is unconditionally a leaf); TEAM_LEADS mode carves
+ * out an explicitly-briefed team lead, whose own workers are the leaves.
+ * Inserted immediately after the mode section (DIRECT_SECTION /
+ * renderTeamLeadsSection) and before {@link VERIFICATION_SECTION} in
+ * {@link renderDelegationDoctrine}.
+ */
+function renderWorkerLeafSection(mode: DelegationMode): string {
+  if (mode === "team_leads") {
+    return `## Who "you" means in this file — orchestrator and team leads
+
+Every rule above is addressed to the ORCHESTRATOR, the top-level agent
+talking to the user. If you were spawned as a sub-agent, the delegation
+mandates above are not yours — UNLESS your brief explicitly designates you
+a TEAM LEAD. Team leads may delegate to their own workers; their workers
+are leaves. Scope rules still bind everyone: touch only what your brief
+names.
+
+If you are a spawned worker and NOT a designated team lead, you are a LEAF:
+
+- Do the assigned task YOURSELF — reads, searches, greps, and edits — with
+  your own tools. Do NOT spawn Task or sub-agents. There is no delegation
+  below you.
+- The "NEVER grep/read/edit yourself" rules above are the opposite of your
+  job. Searching and editing directly is exactly what you were spawned to
+  do, and doing it is correct, not a violation.
+- Never end your turn reporting work as "running in the background" — finish
+  it or report failure.
+
+A worker that delegates instead of working creates a chain of agents that
+each wait on the next, burning tokens while nothing gets done. If a
+Task-tool prompt spawned you and no brief made you a team lead, you are not
+an orchestrator. Do the work.`;
+  }
+  return `## Who "you" means in this file — orchestrator only
+
+Every rule above is addressed to the ORCHESTRATOR, the top-level agent
+talking to the user. If you were spawned as a sub-agent — a specialist, a
+worker, an Explore agent, anything launched via the Task tool — the
+delegation mandates above are not yours. Scope rules still bind you: touch
+only what your brief names.
+
+If you are a spawned worker, you are a LEAF:
+
+- Do the assigned task YOURSELF — reads, searches, greps, and edits — with
+  your own tools. Do NOT spawn Task or sub-agents. There is no delegation
+  below you.
+- The "NEVER grep/read/edit yourself" rules above are the opposite of your
+  job. Searching and editing directly is exactly what you were spawned to
+  do, and doing it is correct, not a violation.
+- Never end your turn reporting work as "running in the background" — finish
+  it or report failure.
+
+A worker that delegates instead of working creates a chain of agents that
+each wait on the next, burning tokens while nothing gets done. If a
+Task-tool prompt spawned you, you are not the orchestrator. Do the work.`;
+}
+
+/**
  * Optional "Review pass" framing (composes with either base mode — appended
  * regardless of whether the orchestrator is briefing workers directly or
  * routing through team leads). A SINGLE review gate: one round of
@@ -374,9 +439,9 @@ If ${reviewAgentPhrase} requires changes, the orchestrator sends them back to th
 original specialist to fix, then re-checks with ${reviewAgentPhrase} once more. This
 is a single review gate, not an open-ended loop — after that one round of
 fixes the orchestrator reports the outcome rather than cycling further. The
-review stays a single pass, not a fan-out: ${reviewAgentPhrase} must not spawn
-further sub-agents, and the orchestrator does not start the review while
-writers touching the same files are still in flight.
+review stays a single pass, not a fan-out: if you are ${reviewAgentPhrase},
+do not spawn further sub-agents. The orchestrator does not start the review
+while writers touching the same files are still in flight.
 
 ${reviewAgentPhraseCap} pass is a quality assist, not a sign-off: it catches bugs and
 regressions BEFORE the change reaches the user, so the human reviews cleaner
@@ -506,7 +571,13 @@ export function renderDelegationDoctrine(
   projectPlanEnabled = false
 ): string {
   const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents) : DIRECT_SECTION;
-  const parts = [renderPreamble(rosterAgents), renderRosterTable(rosterAgents), modeSection, VERIFICATION_SECTION];
+  const parts = [
+    renderPreamble(rosterAgents),
+    renderRosterTable(rosterAgents),
+    modeSection,
+    renderWorkerLeafSection(mode),
+    VERIFICATION_SECTION,
+  ];
   if (reviewEnabled) {
     parts.push(renderReviewSection(rosterAgents, reviewAgentId));
   }
