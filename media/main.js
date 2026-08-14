@@ -13894,7 +13894,7 @@
       pricingCaption.id = "metrics-stats-caption";
       pricingCaption.className = "delegation-stats-caption";
       pricingCaption.textContent =
-        "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token.";
+        "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Token totals count input, output, and cache reads at face value; cache reads dominate long sessions yet bill at ~0.1x the input rate, so a real API bill would run well below what raw totals suggest.";
       metricsBodyEl.appendChild(pricingCaption);
     }
   }
@@ -14287,7 +14287,7 @@
     const pricingCaption = document.createElement("div");
     pricingCaption.className = "delegation-stats-caption";
     pricingCaption.textContent =
-      "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token.";
+      "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Token totals count input, output, and cache reads at face value; cache reads dominate long sessions yet bill at ~0.1x the input rate, so a real API bill would run well below what raw totals suggest.";
     el.appendChild(pricingCaption);
 
     updateMetricsTabsUI();
