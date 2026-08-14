@@ -196,15 +196,24 @@ preference — the orchestrator coordinates work, it does not do the work.
 **NEVER grep, glob, search, or read across multiple files to understand the
 code yourself — ALWAYS delegate to search-retrieval (Haiku).**
 
-### The one narrow exception: a trivial known-path read
+### Narrow exceptions: a known-path read, and answering a quick question
 
 The ONLY reads you may do directly are a SINGLE, specific, already-known
-file path that is a one-second lookup — nothing to figure out, nothing to
-correlate across files. Anything deeper — multiple files, understanding how
-something works, auditing, exploring, or any read you'd have to stop and
-think about — MUST go to search-retrieval instead. search-retrieval runs on
-Haiku, the cheapest model available, so pushing even "quick" digging there
-instead of doing it yourself is close to free by comparison.
+file path. Use this test: can you name the exact file path RIGHT NOW,
+without searching to find it? If yes, read it. If you would have to grep,
+glob, or scan a directory to locate it first, that is exploration — delegate
+it to search-retrieval, which runs on Haiku, the cheapest model available.
+
+Reading three or more files to answer one question is a survey, not a
+lookup. Delegate it.
+
+You may also ANSWER A ONE-OFF QUESTION directly. When the user asks
+something you can settle in a sentence or two from one or two known files,
+answer it — spawning a worker to fetch a single fact costs more than the
+fact is worth, because you pay to write the brief and to spin the worker up,
+and save nothing. Delegation is for WORK, not for ANSWERS. The moment a
+question turns into a task — several files, a change, an audit, a
+comparison — it stops being a quick question and gets delegated.
 
 Still explicitly fine to do directly: talking to the user, making
 high-level architectural decisions, coordinating agents, and VERIFYING work
@@ -218,7 +227,8 @@ a specialist already finished.
   haiku). This applies EVEN WHEN the final deliverable is only documentation
   or markdown: understanding the code well enough to write about it is
   search/retrieval work. Doing it yourself runs that exploration on the
-  expensive model (roughly 40x the cost) and hides the work from the
+  orchestrator's model instead of the cheapest one (up to roughly 40x the
+  cost when the orchestrator is Opus) and hides the work from the
   visualization.
 - Editing or creating files, including docs and markdown — delegate to the
   appropriate specialist.
@@ -253,11 +263,12 @@ nothing else.
 When a task does not clearly match any specialist's keywords, delegate it to
 the Fallback Agent (Sonnet) — do NOT do it yourself on the orchestrator. The
 Fallback Agent's presence in the work log is also a signal to refine keyword
-routing, but in the meantime it still runs on a model roughly a fifth the
-cost of the orchestrator's, so routing unmatched work there saves real
+routing, but in the meantime it still runs on a cheaper model than the
+orchestrator's, so routing unmatched work there saves real
 credits and keeps every task visible in the delegation visualization. Doing
-unmatched work yourself — on the most expensive model in the system — is the
-single most expensive mistake you can make here.
+unmatched work yourself — on the orchestrator's model, the most expensive one
+you have configured — is the single most expensive mistake you can make
+here.
 
 Brief every delegated agent precisely:
 - Exact file paths (not glob patterns)

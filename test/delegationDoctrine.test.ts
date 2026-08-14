@@ -371,6 +371,39 @@ test("renderDelegationDoctrine states the narrow known-path-read carve-out and p
   }
 });
 
+test("renderDelegationDoctrine states the one-off-question carve-out and the name-the-path test, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(
+      out.includes("ANSWER A ONE-OFF QUESTION"),
+      `mode=${mode} must state the one-off-question carve-out`
+    );
+    assert.ok(
+      out.includes("Delegation is for WORK"),
+      `mode=${mode} must state delegation is for work, not answers`
+    );
+    assert.ok(
+      out.includes("without searching to find it"),
+      `mode=${mode} must state the checkable name-the-path test`
+    );
+  }
+});
+
+test("renderDelegationDoctrine no longer claims the orchestrator is on the most expensive model in the system, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.equal(
+      out.includes("the most expensive model in the system"),
+      false,
+      `mode=${mode} must not falsely assume the orchestrator runs on a fixed "most expensive" model`
+    );
+    assert.ok(
+      out.includes("the orchestrator's model, the most expensive one"),
+      `mode=${mode} must rephrase the Fallback Rule's cost claim to be model-agnostic`
+    );
+  }
+});
+
 test("renderDelegationDoctrine states the MANDATORY DELEGATION RULES checklist and the Fallback Rule, for both modes", () => {
   for (const mode of DELEGATION_MODES) {
     const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");

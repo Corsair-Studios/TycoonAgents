@@ -8,13 +8,13 @@ Sitting on top of that harness is a live, game-style visualization of your agent
 
 ## Mandatory delegation & orchestration
 
-TycoonAgents installs a **delegation doctrine** into your project's `CLAUDE.md` and a roster of specialist sub-agents into `.claude/agents/`. The rule it establishes is simple: **the orchestrator coordinates work — it does not do the work.** Implementation, searching, and exploration are all delegated via the Task tool to the specialist best suited to each job. Doing that work directly on the orchestrator's model costs roughly **40× more** and hides the work from the visualization.
+TycoonAgents installs a **delegation doctrine** into your project's `CLAUDE.md` and a roster of specialist sub-agents into `.claude/agents/`. The rule it establishes is simple: **the orchestrator coordinates work — it does not do the work.** Implementation, searching, and exploration are all delegated via the Task tool to the specialist best suited to each job. Doing that work directly on the orchestrator's model costs roughly **40× more when the orchestrator is Opus** (less if you've configured a cheaper orchestrator model) and hides the work from the visualization.
 
 The roster the extension seeds (all model tiers are configurable):
 
 | Agent | Model | Handles |
 | --- | --- | --- |
-| **orchestrator** | Opus | Coordinates and delegates; never implements directly |
+| **orchestrator** | Opus or higher (recommended) | Coordinates and delegates; never implements directly |
 | **search-retrieval** | Haiku | File/code search, grep/glob, lookups — the cheapest tier |
 | **coding-specialist** | Sonnet | Implementation, edits, bug fixes, refactoring |
 | **testing-specialist** | Sonnet | Tests, specs, coverage |
@@ -29,7 +29,7 @@ The doctrine also builds in **verification discipline**: a "completed" notificat
 
 ## Token savings you can see
 
-Because searches run on Haiku and implementation on Sonnet instead of everything on Opus, most of your work runs on models that are **several times cheaper** — Haiku is about **5× cheaper than Opus** per token. The metrics panel makes that concrete, without pretending to be a billing statement:
+Because searches run on Haiku and implementation on Sonnet instead of everything on the orchestrator's (recommended: Opus or higher) model, most of your work runs on models that are **several times cheaper** — Haiku is about **5× cheaper than Opus** per token. The metrics panel makes that concrete, without pretending to be a billing statement:
 
 - **Per-agent "vs. orch." badge** — each delegated agent shows how much cheaper (or pricier) its model is than the orchestrator's, e.g. *"5× cheaper."*
 - **Cost-share bar** — each agent's row fills in proportion to its estimated share of the run's blended cost, so you can see at a glance where the spend went.
