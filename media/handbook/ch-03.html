@@ -75,7 +75,12 @@
     completed relative to the busiest agent &mdash; paired with an
     <strong>"Nx cheaper"</strong> badge that expresses how much less that
     agent's model costs relative to the orchestrator's, without ever
-    showing a dollar figure. See Chapter 10 for how to read the cost lens
+    showing a dollar figure. These comparisons use Anthropic API token
+    rates and are informational only &mdash; Claude subscriptions (Max/Pro)
+    bill by plan, not per token. Token totals count input, output, and
+    cache reads at face value; cache reads dominate long sessions yet bill
+    at roughly 0.1x the input rate, so a real API bill would run well below
+    what raw totals suggest. See Chapter 10 for how to read the cost lens
     in full.
   </p>
 
