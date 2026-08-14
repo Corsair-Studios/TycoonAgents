@@ -14761,6 +14761,21 @@
   }
 
   /**
+   * Settings-only entry point for the UEFN/Verse modal: closes the full-bleed
+   * #setup-view (via the existing showMain() toggle) BEFORE opening the
+   * modal, so the two full-screen overlays switch instead of stacking —
+   * #setup-view is z-index:200, above the modal's z-index:100/501, so
+   * leaving Settings open left the modal opened-but-invisible behind it.
+   * The "menu-uefn" hamburger path calls openUefnModal() directly and is
+   * untouched — Settings isn't open on that path, so there's nothing to
+   * close first.
+   */
+  function openUefnModalFromSettings() {
+    showMain();
+    openUefnModal();
+  }
+
+  /**
    * True when UEFN support is installed IN THIS PROJECT — the UEFN skill
    * (catalog id "uefn" in lastSkills), the UEFN pack (catalog id "uefn" in
    * lastPacks, via packAnyInstalled so a partially-installed pack still
@@ -14809,7 +14824,12 @@
     const detailsBtn = document.createElement("button");
     detailsBtn.className = "skill-btn settings-btn";
     detailsBtn.textContent = "UEFN / Verse details";
-    detailsBtn.addEventListener("click", openUefnModal);
+    // Settings is open on this path (this row only renders inside it), so
+    // use the Settings-aware wrapper that closes #setup-view first — see
+    // openUefnModalFromSettings() doc comment for why (z-index switch, not
+    // stack). The "menu-uefn" hamburger handler above still calls
+    // openUefnModal() directly since Settings isn't open on that path.
+    detailsBtn.addEventListener("click", openUefnModalFromSettings);
     row.appendChild(line);
     row.appendChild(detailsBtn);
     return row;

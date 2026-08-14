@@ -1673,7 +1673,13 @@ body {
 #feedback-modal {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  /* Raised from 100 to sit above #setup-view (z-index:200) — the
+     Settings-summary "UEFN / Verse details" button now closes #setup-view
+     before opening this modal (see openUefnModalFromSettings() in
+     media/main.js), but this is defense-in-depth: 501 matches
+     #menu-popover so neither modal can end up opened-but-invisible behind
+     Settings (or any other z:200-or-below overlay) via some other path. */
+  z-index: 501;
   display: flex;
   align-items: center;
   justify-content: center;
