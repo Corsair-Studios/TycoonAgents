@@ -126,12 +126,12 @@ test("renderDelegationDoctrine caps the review fan-out when the review gate is e
 // review-vs-explore disambiguation (shared PREAMBLE, so present in both modes)
 // ---------------------------------------------------------------------------
 
-test("renderDelegationDoctrine states the MUST-NOT-explore-yourself mandate and the ~40x cost line, for both modes", () => {
+test("renderDelegationDoctrine states the MUST-NOT-explore-yourself mandate and the ~5x cost line, for both modes", () => {
   for (const mode of DELEGATION_MODES) {
     const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
     assert.ok(out.includes("What you MUST NOT do yourself"), `mode=${mode} must include the MUST-NOT heading`);
     assert.ok(/search-retrieval agent/i.test(out), `mode=${mode} must route exploration to search-retrieval`);
-    assert.ok(/40x the cost/i.test(out), `mode=${mode} must state the ~40x expensive-model cost`);
+    assert.ok(/5x the per-token cost/i.test(out), `mode=${mode} must state the ~5x expensive-model cost`);
     assert.ok(
       /even when the final deliverable is only documentation or markdown/i.test(out),
       `mode=${mode} must cover doc-only deliverables explicitly`

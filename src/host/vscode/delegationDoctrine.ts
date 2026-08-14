@@ -227,8 +227,10 @@ a specialist already finished.
   haiku). This applies EVEN WHEN the final deliverable is only documentation
   or markdown: understanding the code well enough to write about it is
   search/retrieval work. Doing it yourself runs that exploration on the
-  orchestrator's model instead of the cheapest one (up to roughly 40x the
-  cost when the orchestrator is Opus) and hides the work from the
+  orchestrator's model instead of the cheapest one (roughly 5x the
+  per-token cost when the orchestrator is Opus — and more in practice,
+  since the orchestrator re-reads its large accumulated context on every
+  turn while a worker starts fresh) and hides the work from the
   visualization.
 - Editing or creating files, including docs and markdown — delegate to the
   appropriate specialist.

@@ -64,7 +64,7 @@ Read the project's `CLAUDE.md` in full, with line numbers, and check for:
 2. **Duplicated delegation rules.** Look for the same rule or sentence
    appearing more than once — inside `CLAUDE.md` alone, and across
    `CLAUDE.md` + `.claude/agents/*.md`. Known repeat offenders to check by
-   name: the "~40x cheaper" claim, the "NEVER use Grep or Glob directly"
+   name: the "~5x cheaper" claim, the "NEVER use Grep or Glob directly"
    rule, and the "What You Can/Cannot Do Directly" bullet lists. Record every
    occurrence with its file and line number. Distinguish *load-bearing*
    repetition (the same mandatory rule reinforced inside a single block,
