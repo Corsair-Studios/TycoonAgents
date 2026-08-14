@@ -467,6 +467,60 @@ function peekActiveAgent(activeAgentFile) {
 }
 
 // ---------------------------------------------------------------------------
+// Compliance nudge (orchestrator-only): a non-blocking additionalContext
+// message surfaced on Grep/Glob/Edit/Write/Read when the orchestrator (not a
+// spawned worker) calls them directly. Never fires for a tool call made while
+// a sub-agent is active on the stack — workers ARE the leaves and are
+// SUPPOSED to grep/edit; warning them would contradict their own doctrine.
+//
+// Read gets a per-turn counter (orchestrator-turn-reads.json) instead of an
+// always-on warning: doctrine explicitly allows a known-path read, verifying
+// a specialist's work, or a one-off lookup, so the 1st and 2nd orchestrator
+// Read in a turn stay silent; only the 3rd-and-onward nags. The counter
+// resets to 0 on Stop (end of the assistant turn). Fully defensive: a
+// missing/corrupt counter file degrades to "don't warn", never to crashing.
+// ---------------------------------------------------------------------------
+function readOrchestratorTurnReads(tycoonDir) {
+  try {
+    const parsed = readJsonSafe(path.join(tycoonDir, "orchestrator-turn-reads.json"));
+    const n = parsed && parsed.count;
+    if (typeof n === "number" && Number.isFinite(n) && n >= 0) return n;
+  } catch { /* fall through to 0 */ }
+  return 0;
+}
+
+function writeOrchestratorTurnReads(tycoonDir, count) {
+  try {
+    const filePath = path.join(tycoonDir, "orchestrator-turn-reads.json");
+    atomicWriteSync(filePath, JSON.stringify({ count }));
+  } catch { /* best-effort: a stuck counter must never break the hook */ }
+}
+
+function resetOrchestratorTurnReads(tycoonDir) {
+  writeOrchestratorTurnReads(tycoonDir, 0);
+}
+
+// Returns a warning message string, or undefined when no nudge should fire.
+// Only ever called when workerId === "orchestrator".
+function computeComplianceNudge(toolName, tycoonDir) {
+  if (toolName === "Grep" || toolName === "Glob") {
+    return `${toolName} ran directly on the orchestrator. Searches belong to search-retrieval (Haiku) — cheaper, and the work stays visible in the delegation view.`;
+  }
+  if (toolName === "Edit" || toolName === "Write") {
+    return `${toolName} ran directly on the orchestrator. File changes belong to a specialist (coding-specialist) — the orchestrator coordinates, it does not implement.`;
+  }
+  if (toolName === "Read") {
+    const nextCount = readOrchestratorTurnReads(tycoonDir) + 1;
+    writeOrchestratorTurnReads(tycoonDir, nextCount);
+    if (nextCount >= 3) {
+      return `That is ${nextCount} direct reads this turn — this is becoming a survey, not a known-path lookup. Multi-file reading belongs to search-retrieval (Haiku).`;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator per-turn token delta (main session has no SubagentStop, so we
 // read the transcript on Stop and diff against the previous turn's cumulative).
 // ---------------------------------------------------------------------------
@@ -737,6 +791,14 @@ function main(raw) {
         ? top.agentId
         : "orchestrator";
 
+      // Compliance nudge: ONLY ever computed for the orchestrator itself.
+      // Spawned workers are leaves and are supposed to grep/edit directly —
+      // never nag them.
+      let nudge;
+      if (workerId === "orchestrator") {
+        nudge = computeComplianceNudge(toolName, tycoonDir);
+      }
+
       /** @type {Record<string, unknown>} */
       const record = {
         event: hookEvent,
@@ -746,10 +808,17 @@ function main(raw) {
       };
       if (delegationMode) record.delegationMode = delegationMode;
       if (payload.session_id) record.sessionId = payload.session_id;
+      if (nudge) record.warned = true;
 
       try {
         fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
       } catch { /* ignore */ }
+
+      if (nudge) {
+        try {
+          process.stdout.write(JSON.stringify({ additionalContext: nudge }));
+        } catch { /* never let output construction break the hook */ }
+      }
     }
     process.exit(0);
   }
@@ -759,6 +828,7 @@ function main(raw) {
   // token delta + model so its row shows real usage (not 0).
   // -------------------------------------------------------------------------
   if (hookEvent === "Stop") {
+    resetOrchestratorTurnReads(tycoonDir);
     const { tokens, model } = captureOrchestratorTokens(payload, tycoonDir);
     /** @type {Record<string, unknown>} */
     const record = { event: hookEvent, workerId: "orchestrator", at };

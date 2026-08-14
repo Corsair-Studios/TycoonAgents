@@ -486,3 +486,163 @@ test("hook does not fabricate a sessionId key on SubagentStop or Stop when paylo
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Compliance nudge: non-blocking additionalContext warning on direct
+// Grep/Glob/Edit/Write/Read calls made by the orchestrator (never a spawned
+// worker). Mirrors runHook's spawnSync pattern but captures stdout directly
+// since runHook() only asserts exit status.
+// ---------------------------------------------------------------------------
+
+interface HookResult {
+  status: number | null;
+  stdout: string;
+}
+
+function runHookCapture(projectRoot: string, payload: Record<string, unknown>): HookResult {
+  const result = spawnSync(process.execPath, [HOOK_PATH], {
+    input: JSON.stringify(payload),
+    encoding: "utf8",
+    env: { ...process.env, CLAUDE_PROJECT_DIR: projectRoot },
+  });
+  assert.equal(result.status, 0, `hook exited non-zero: ${result.stderr}`);
+  return { status: result.status, stdout: result.stdout };
+}
+
+function preToolUse(tool: string, sessionId = "nudge-session"): Record<string, unknown> {
+  return { hook_event_name: "PreToolUse", tool_name: tool, tool_input: {}, session_id: sessionId };
+}
+
+test("Compliance nudge: orchestrator Grep gets additionalContext pointing to search-retrieval, exit 0, warned:true", () => {
+  const root = setupProject();
+  try {
+    const { stdout } = runHookCapture(root, preToolUse("Grep"));
+    assert.ok(stdout.includes("additionalContext"), "expected additionalContext in stdout");
+    assert.ok(stdout.includes("search-retrieval"), "expected search-retrieval mention");
+    const parsed = JSON.parse(stdout);
+    assert.ok(typeof parsed.additionalContext === "string" && parsed.additionalContext.length > 0);
+    assert.equal(parsed.permissionDecision, undefined, "must never set permissionDecision");
+
+    const records = readActivity(root);
+    const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "Grep");
+    assert.ok(rec, "expected an activity record for Grep");
+    assert.equal(rec!.warned, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Compliance nudge: orchestrator Edit gets additionalContext pointing to coding-specialist", () => {
+  const root = setupProject();
+  try {
+    const { stdout } = runHookCapture(root, preToolUse("Edit"));
+    assert.ok(stdout.includes("coding-specialist"), "expected coding-specialist mention");
+    const records = readActivity(root);
+    const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "Edit");
+    assert.equal(rec!.warned, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Compliance nudge: orchestrator Read #1 and #2 stay silent, Read #3 warns with the count", () => {
+  const root = setupProject();
+  try {
+    const r1 = runHookCapture(root, preToolUse("Read"));
+    assert.equal(r1.stdout, "", "1st Read must stay silent");
+    const r2 = runHookCapture(root, preToolUse("Read"));
+    assert.equal(r2.stdout, "", "2nd Read must stay silent");
+    const r3 = runHookCapture(root, preToolUse("Read"));
+    assert.ok(r3.stdout.includes("additionalContext"), "3rd Read must warn");
+    assert.ok(r3.stdout.includes("3"), "warning text must include the count");
+
+    const records = readActivity(root);
+    const reads = records.filter((r) => r.event === "PreToolUse" && r.tool === "Read");
+    assert.equal(reads.length, 3);
+    assert.equal(reads[0].warned, undefined);
+    assert.equal(reads[1].warned, undefined);
+    assert.equal(reads[2].warned, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Compliance nudge: Stop resets the per-turn read counter", () => {
+  const root = setupProject();
+  try {
+    runHookCapture(root, preToolUse("Read"));
+    runHookCapture(root, preToolUse("Read"));
+    runHook(root, { hook_event_name: "Stop", session_id: "nudge-session" });
+    const r1 = runHookCapture(root, preToolUse("Read"));
+    const r2 = runHookCapture(root, preToolUse("Read"));
+    assert.equal(r1.stdout, "", "post-reset 1st Read must stay silent");
+    assert.equal(r2.stdout, "", "post-reset 2nd Read must stay silent");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Compliance nudge: never fires for a worker active on the stack (Grep, Edit, Read x3)", () => {
+  const root = setupProject();
+  try {
+    // Push a worker onto the active-agent stack, as existing tests do.
+    runHook(root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Task",
+      tool_input: { subagent_type: "coding-specialist" },
+      session_id: "nudge-worker-session",
+    });
+
+    const g = runHookCapture(root, preToolUse("Grep", "nudge-worker-session"));
+    assert.equal(g.stdout, "", "worker Grep must never be nagged");
+    const e = runHookCapture(root, preToolUse("Edit", "nudge-worker-session"));
+    assert.equal(e.stdout, "", "worker Edit must never be nagged");
+    for (let i = 0; i < 3; i++) {
+      const r = runHookCapture(root, preToolUse("Read", "nudge-worker-session"));
+      assert.equal(r.stdout, "", `worker Read #${i + 1} must never be nagged`);
+    }
+
+    const records = readActivity(root);
+    const workerRecords = records.filter(
+      (r) => r.event === "PreToolUse" && (r.tool === "Grep" || r.tool === "Edit" || r.tool === "Read")
+    );
+    assert.ok(workerRecords.length > 0, "expected worker tool records");
+    for (const rec of workerRecords) {
+      assert.equal(rec.warned, undefined, "worker records must never carry warned:true");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Compliance nudge: Bash on the orchestrator never warns", () => {
+  const root = setupProject();
+  try {
+    const { stdout } = runHookCapture(root, preToolUse("Bash"));
+    assert.equal(stdout, "", "Bash must never trigger a nudge");
+    const records = readActivity(root);
+    const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "Bash");
+    assert.equal(rec!.warned, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Compliance nudge: a corrupt orchestrator-turn-reads.json degrades to no warning, no crash", () => {
+  const root = setupProject();
+  try {
+    const tycoonDir = join(root, ".claude", "tycoon");
+    mkdirSync(tycoonDir, { recursive: true });
+    writeFileSync(join(tycoonDir, "orchestrator-turn-reads.json"), "{ not valid json", "utf8");
+
+    const result = spawnSync(process.execPath, [HOOK_PATH], {
+      input: JSON.stringify(preToolUse("Read")),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    });
+    assert.equal(result.status, 0, `hook exited non-zero: ${result.stderr}`);
+    assert.equal(result.stdout, "", "corrupt counter must fail open (no warning), not crash");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
