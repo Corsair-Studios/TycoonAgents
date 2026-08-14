@@ -12285,18 +12285,28 @@
       renderDelegationStats(state.modeStats);
     } else if (msg && msg.type === "skills") {
       renderSkillsList(msg.skills, msg.error);
+      // Skills/MCP/Packs installed state feeds buildUefnHealthSummaryRow's
+      // install-based gate (see that function) — re-render Settings so the
+      // compact "UEFN health" line appears/disappears immediately when the
+      // UEFN skill/pack/MCP is installed or removed mid-session, without
+      // waiting for an unrelated "settings"/"installState" push.
+      renderSettings();
     } else if (msg && msg.type === "skillInstalled") {
       handleSkillInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error);
     } else if (msg && msg.type === "skillRemoved") {
       handleSkillRemoved(msg.id, msg.ok, msg.error, msg.cancelled);
     } else if (msg && msg.type === "mcp") {
       renderMcpList(msg.servers, msg.error);
+      // See the "skills" branch above — same install-based gate refresh.
+      renderSettings();
     } else if (msg && msg.type === "mcpInstalled") {
       handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled);
     } else if (msg && msg.type === "mcpRemoved") {
       handleMcpRemoved(msg.id, msg.ok, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packs") {
       renderPacksList(msg.packs, msg.error);
+      // See the "skills" branch above — same install-based gate refresh.
+      renderSettings();
     } else if (msg && msg.type === "packInstalled") {
       handlePackInstalled(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packRemoved") {
@@ -12593,6 +12603,12 @@
   let lastMcpServers = [];
   /** Last packs array received, for disclosure lookup in the click handler. */
   let lastPacks = [];
+  /**
+   * Last skills catalog array received (see renderSkillsList) — read by
+   * buildUefnHealthSummaryRow to check whether the UEFN skill is installed
+   * IN THIS PROJECT, mirroring lastMcpServers/lastPacks above.
+   */
+  let lastSkills = [];
 
   /**
    * Build the standing notice for a catalog list.
@@ -12696,6 +12712,7 @@
    * @param {string|undefined} error
    */
   function renderSkillsList(skills, error) {
+    lastSkills = Array.isArray(skills) ? skills : [];
     skillsListEl.innerHTML = "";
     skillsListEl.appendChild(buildCatalogNotice("local"));
     if (error) {
@@ -14744,19 +14761,40 @@
   }
 
   /**
+   * True when UEFN support is installed IN THIS PROJECT — the UEFN skill
+   * (catalog id "uefn" in lastSkills), the UEFN pack (catalog id "uefn" in
+   * lastPacks, via packAnyInstalled so a partially-installed pack still
+   * counts), or the UEFN Bridge MCP server (catalog id "uefn-bridge" in
+   * lastMcpServers). Deliberately NOT lastUefnInstalled — that flag is
+   * installState's `uefnInstalled`, a MACHINE-LEVEL check (does
+   * %LOCALAPPDATA%\UnrealEditorFortnite exist) that says nothing about
+   * whether THIS project uses UEFN, so it warned in every project on a
+   * machine with UEFN installed (feedback issue #16 all over again).
+   * @returns {boolean}
+   */
+  function isUefnInstalledInProject() {
+    const skillInstalled = Array.isArray(lastSkills) &&
+      lastSkills.some((s) => s && s.id === "uefn" && s.installed);
+    const mcpInstalled = Array.isArray(lastMcpServers) &&
+      lastMcpServers.some((s) => s && s.id === "uefn-bridge" && s.installed);
+    const packInstalled = Array.isArray(lastPacks) &&
+      lastPacks.some((p) => p && p.id === "uefn" && packAnyInstalled(p));
+    return skillInstalled || mcpInstalled || packInstalled;
+  }
+
+  /**
    * Build the compact "UEFN health" summary row for Settings — a single
    * line (green/yellow only, no red state here) plus a button that opens
    * the full "UEFN / Verse" modal (#uefn-modal) for detail. Replaces the
    * full Path Health section that used to render inline in Settings (see
    * the "1a. Path Health" comment below); this line and the modal's own
    * rollup both read computePathHealthRollup() so they can't disagree.
-   * Rendered ONLY when lastUefnInstalled is true (installState's
-   * `uefnInstalled` — UEFN present on this machine) — a non-UEFN project
-   * must see nothing here at all (feedback issue #16).
+   * Rendered ONLY when isUefnInstalledInProject() is true — a non-UEFN
+   * project must see nothing here at all (feedback issue #16).
    * @returns {HTMLElement|null}
    */
   function buildUefnHealthSummaryRow() {
-    if (!lastUefnInstalled) return null;
+    if (!isUefnInstalledInProject()) return null;
 
     const entries = Array.isArray(lastPathHealth) ? lastPathHealth : [];
     if (entries.length === 0) return null;
@@ -15458,7 +15496,8 @@
     // "UEFN / Verse modal" wiring block for the full render-timing story.
     // In its place, a single compact "UEFN health" summary line (green/
     // yellow only) plus a button to open that modal — rendered ONLY when
-    // lastUefnInstalled is true, so a non-UEFN project sees nothing here.
+    // isUefnInstalledInProject() is true (UEFN skill/pack/MCP installed in
+    // THIS project), so a non-UEFN project sees nothing here.
     const uefnHealthRow = buildUefnHealthSummaryRow();
     if (uefnHealthRow) {
       setupConfigEl.appendChild(uefnHealthRow);
