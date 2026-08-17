@@ -7881,12 +7881,25 @@ export class TycoonPanel {
       const filePath = path.join(root, ".claude", "agents", `${id}.md`);
       const content = fs.readFileSync(filePath, "utf8");
       fs.writeFileSync(filePath, setFrontmatterModel(content, fullId));
+      // The roster model map (_getRosterModelMap) is cached and re-stamps
+      // every subsequent activity-driven STATE push (_stampRosterModels) —
+      // without invalidating it here, the next hook event overwrites the
+      // panel's displayed model with the stale pre-change value, making a
+      // just-applied change appear to silently revert once the agent runs
+      // again. Every other roster-mutating handler (_handleRemoveAgent,
+      // _handleResetMetrics) already invalidates this cache; this one must
+      // too.
+      this._rosterModelCache = undefined;
       void this._panel.webview.postMessage({
         type: MSG.SETTINGS_UPDATED,
         ok: true,
         id,
         field: "model",
       });
+      // Re-post the fresh settings/roster immediately so the panel reflects
+      // the change without requiring a reopen (mirrors _handleRemoveAgent's
+      // post-mutation refresh).
+      this._handleGetSettings();
     } catch (err) {
       void this._panel.webview.postMessage({
         type: MSG.SETTINGS_UPDATED,
