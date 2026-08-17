@@ -83,6 +83,17 @@ export interface AgentMetric {
   directEdits: number;
   /** Task/Agent spawns credited to the orchestrator. */
   delegations: number;
+  /**
+   * Orchestrator-only: cumulative coordination tokens bucketed by the model
+   * that was active when each SessionStop's token delta was recorded (keyed
+   * by the same model id string as `model`). Lets the delegation-savings
+   * counterfactual price each historical bucket at the model that actually
+   * coordinated it, instead of retroactively repricing all-time history at
+   * whatever model is current now (see docs/KNOWN-BUG... orchestrator model
+   * switch mispricing). Undefined/empty on legacy records or non-orchestrator
+   * agents; callers must fall back to the scalar `model`/`tokens` fields.
+   */
+  modelBreakdown?: Record<string, number>;
 }
 
 /** Internal tracking record (kept as an alias now that workStartAt is public). */
@@ -186,6 +197,7 @@ function upsertMetric(
     directReads: 0,
     directEdits: 0,
     delegations: 0,
+    modelBreakdown: undefined,
   };
   return [...internals, updater(fresh)];
 }
@@ -270,15 +282,33 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
       const afterOrchestrator = upsertMetric(
         state._agentMetricsInternal,
         ORCHESTRATOR_ID,
-        (m) => ({
-          ...m,
-          status: "idle" as const,
-          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
-          tokens: m.tokens + (event.tokens ?? 0),
-          model: event.model ?? m.model,
-          delegationMode: event.delegationMode ?? m.delegationMode,
-          workStartAt: null,
-        }),
+        (m) => {
+          const tokenDelta = event.tokens ?? 0;
+          // Attribute this delta to whichever model actually coordinated it
+          // (the model on THIS event, falling back to the entry's prior
+          // model) rather than whatever model is current when the panel
+          // later reprices history -- this is what lets the delegation tab's
+          // counterfactual price each bucket correctly even after the user
+          // switches the orchestrator's session model.
+          const activeModel = event.model ?? m.model;
+          const nextBreakdown =
+            tokenDelta > 0 && activeModel
+              ? {
+                  ...m.modelBreakdown,
+                  [activeModel]: (m.modelBreakdown?.[activeModel] ?? 0) + tokenDelta,
+                }
+              : m.modelBreakdown;
+          return {
+            ...m,
+            status: "idle" as const,
+            activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+            tokens: m.tokens + tokenDelta,
+            model: event.model ?? m.model,
+            delegationMode: event.delegationMode ?? m.delegationMode,
+            workStartAt: null,
+            modelBreakdown: nextBreakdown,
+          };
+        },
       );
       // Sweep: finalize any non-orchestrator agents that are still active due to
       // a missed SubagentStop (e.g. process died before the hook fired).

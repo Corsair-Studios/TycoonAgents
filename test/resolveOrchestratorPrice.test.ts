@@ -353,3 +353,145 @@ test("metrics table row: NEGATIVE ANCHOR -- no orchestrator metrics entry -> 'vs
   }
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
+
+// ---------------------------------------------------------------------------
+// (d) modelBreakdown token-weighted average pricing (2026-08-16 addition).
+// MODEL_PRICE_PER_MTOK (media/main.js ~13442): opus=10, sonnet=4, haiku=2,
+// fable=20 $/Mtok. resolveOrchestratorPrice (~13529) computes
+// sum(tokens_i * price_i) / sum(tokens_i) over priced entries in
+// orch.modelBreakdown, skipping unpriced models from both sums, and falls
+// back to modelPricePerMtok(orch.model) when the breakdown is absent, empty,
+// or fully unpriced.
+// ---------------------------------------------------------------------------
+
+test("delegation hero: modelBreakdown {opus:1000, sonnet:1000} blends to a token-weighted price between the opus-only and sonnet-only edges", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  // Blended price = (1000*10 + 1000*4) / 2000 = 7 $/Mtok (halfway between
+  // opus=10 and sonnet=4). Delegated agent: coding-specialist, sonnet,
+  // 100000 tokens -> actual cost = 0.4, counterfactual = 0.7 at price 7 ->
+  // savedPct = round((1 - 0.4/0.7) * 100) = 43%. Pure-opus (price 10) on the
+  // same agent numbers yields 60% (see test (a)) and pure-sonnet (price 4)
+  // yields 0% savings (actual == counterfactual, falls to the "not enough"
+  // branch) -- 43% must land strictly below the opus edge, proving the
+  // blend actually moved the price rather than ignoring modelBreakdown.
+  dispatchMetrics(dispatch, [
+    {
+      id: "orchestrator",
+      name: "Orchestrator",
+      status: "idle",
+      model: "opus",
+      tokens: 2000,
+      activeMs: 1000,
+      taskCount: 1,
+      modelBreakdown: { opus: 1000, sonnet: 1000 },
+    },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const body = openDelegationTab(doc);
+  const heroNum = body.querySelector(".delegation-hero-num");
+
+  assert.ok(heroNum, "a blended, priced modelBreakdown should render a hero percentage");
+  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
+  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
+  assert.equal(pct, 43, `expected the token-weighted blended price (7 $/Mtok) to yield ~43%, got ${pct}%`);
+  assert.ok(pct < 60, "blended 50/50 opus+sonnet must save LESS than the pure-opus 60% baseline");
+  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("delegation hero: modelBreakdown {} (empty) behaves identically to no modelBreakdown at all, falling back to scalar model", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    {
+      id: "orchestrator",
+      name: "Orchestrator",
+      status: "idle",
+      model: "opus",
+      tokens: 2000,
+      activeMs: 1000,
+      taskCount: 1,
+      modelBreakdown: {},
+    },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const body = openDelegationTab(doc);
+  const heroNum = body.querySelector(".delegation-hero-num");
+
+  assert.ok(heroNum, "empty modelBreakdown must still fall back to scalar model and render a hero percentage");
+  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
+  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
+  // Same agent numbers as test (a) (model:"opus", tokens:2000 orchestrator /
+  // coding-specialist tokens:100000) with no modelBreakdown yields 60% —
+  // an empty breakdown object must render the exact same figure.
+  assert.equal(pct, 60, `empty modelBreakdown should match the no-breakdown opus baseline of 60%, got ${pct}%`);
+  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("delegation hero: modelBreakdown with a partially unpriced model excludes only that entry's tokens, matching a pure-opus-only breakdown", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  // { opus: 1000, "some-unknown-model-xyz": 5000 } -- the unknown model's
+  // 5000 tokens must be excluded from BOTH the weighted sum and the token
+  // denominator (not treated as free/zero-price, which would dilute the
+  // price toward 0). Only the 1000 opus tokens are priceable, so the
+  // resulting blended price must equal pure opus (10 $/Mtok) exactly.
+  dispatchMetrics(dispatch, [
+    {
+      id: "orchestrator",
+      name: "Orchestrator",
+      status: "idle",
+      model: "opus",
+      tokens: 6000,
+      activeMs: 1000,
+      taskCount: 1,
+      modelBreakdown: { opus: 1000, "some-unknown-model-xyz": 5000 },
+    },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const body = openDelegationTab(doc);
+  const heroNum = body.querySelector(".delegation-hero-num");
+
+  assert.ok(heroNum, "a partially-priced modelBreakdown should still render a hero percentage");
+  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
+  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
+  assert.equal(pct, 60, `unpriced entry's tokens must be excluded (not zero-priced) -- expected pure-opus 60%, got ${pct}%`);
+  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text (unpriced tokens must not corrupt the average)");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("delegation hero: modelBreakdown fully unpriced falls back gracefully to scalar model instead of null/NaN", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  // { "unknown-a": 500, "unknown-b": 500 } -- nothing in the breakdown is
+  // priceable, so resolveOrchestratorPrice must fall through to the scalar
+  // orch.model ("opus") rather than returning null outright.
+  dispatchMetrics(dispatch, [
+    {
+      id: "orchestrator",
+      name: "Orchestrator",
+      status: "idle",
+      model: "opus",
+      tokens: 1000,
+      activeMs: 1000,
+      taskCount: 1,
+      modelBreakdown: { "unknown-a": 500, "unknown-b": 500 },
+    },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const body = openDelegationTab(doc);
+  const heroNum = body.querySelector(".delegation-hero-num");
+
+  assert.ok(heroNum, "a fully-unpriced modelBreakdown must still fall back to the scalar model and render a percentage (not null/NaN)");
+  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
+  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
+  assert.equal(pct, 60, `fully-unpriced breakdown should fall back to the scalar opus model and match the 60% baseline, got ${pct}%`);
+  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});

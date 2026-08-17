@@ -13514,12 +13514,41 @@
    * headline; every caller MUST branch on `null` and render an honest
    * unknown state (e.g. "—" or an explanatory line) instead of computing a
    * ratio against it. See docs/KNOWN-BUG-orchestrator-price-fallback.md.
-   * @param {Array<{id?:string, model?:string}>|undefined} metrics
+   *
+   * Token-weighted across `orch.modelBreakdown` (model id -> cumulative
+   * coordination tokens under that model) when present, rather than the
+   * single scalar `orch.model` (most-recent model only) — otherwise
+   * switching the orchestrator's session model retroactively reprices every
+   * historical delegated-agent counterfactual at whatever model is current
+   * NOW, which is wrong: past coordination happened under past models. Falls
+   * back to `modelPricePerMtok(orch.model)` when `modelBreakdown` is absent
+   * or empty (legacy records, or a metrics entry that predates the field).
+   * @param {Array<{id?:string, model?:string, modelBreakdown?:Record<string, number>}>|undefined} metrics
    * @returns {number|null}
    */
   function resolveOrchestratorPrice(metrics) {
     const orch = Array.isArray(metrics) ? metrics.find((a) => a && a.id === "orchestrator") : null;
-    const price = orch ? modelPricePerMtok(orch.model) : null;
+    if (!orch) return null;
+
+    const breakdown = orch.modelBreakdown;
+    if (breakdown && typeof breakdown === "object") {
+      let pricedTokens = 0;
+      let weightedSum = 0;
+      for (const [model, tokens] of Object.entries(breakdown)) {
+        if (!(tokens > 0)) continue;
+        const price = modelPricePerMtok(model);
+        if (price == null) continue;
+        pricedTokens += tokens;
+        weightedSum += tokens * price;
+      }
+      if (pricedTokens > 0) return weightedSum / pricedTokens;
+      // Breakdown existed but had nothing priceable (e.g. all-unpriced
+      // models, or empty) — fall through to the scalar fallback below
+      // rather than returning null outright, since orch.model may still be
+      // a priced, more-recent signal.
+    }
+
+    const price = modelPricePerMtok(orch.model);
     return price != null ? price : null;
   }
 
