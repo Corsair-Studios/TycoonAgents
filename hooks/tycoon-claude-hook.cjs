@@ -400,20 +400,18 @@ function popMatchedAgent(activeAgentFile, opts) {
   }
 }
 
-// 4-priority sub-agent token extraction: total_tokens verbatim -> component sum
-// -> last transcript usage line -> regex on tool_response. SubagentStop payloads
-// usually omit `usage`, so the transcript fallback (priority 3) is what actually
-// yields a number.
+// 4-priority sub-agent token extraction, ordered to prefer SPLITTABLE component
+// data over PRE-SUMMED scalars: component sum on payload.usage/tool_usage ->
+// last transcript usage line (component sum) -> total_tokens verbatim -> regex
+// on tool_response. The first two paths expose cache_read_input_tokens
+// separately from billable tokens, so the metrics panel can show cache-read
+// consumption. The last two only ever see an already-summed total_tokens
+// number with no way to recover the split, so they are last-resort fallbacks
+// used only when no component data exists anywhere.
 function extractSubagentTokens(payload) {
   try {
     const usageObj = payload.usage || payload.tool_usage;
     if (usageObj && typeof usageObj === "object") {
-      if (typeof usageObj.total_tokens === "number" && usageObj.total_tokens > 0) {
-        // total_tokens arrives pre-summed by the caller — the source doesn't
-        // expose billable vs cache-read components separately, so cache-read
-        // cannot be split out here.
-        return { tokens: usageObj.total_tokens, cacheReadTokens: undefined };
-      }
       const sum =
         Number(usageObj.input_tokens || 0) +
         Number(usageObj.output_tokens || 0) +
@@ -444,15 +442,27 @@ function extractSubagentTokens(payload) {
                 Number(u.output_tokens || 0) +
                 Number(u.cache_creation_input_tokens || 0);
               const cacheReadTokens = Number(u.cache_read_input_tokens || 0);
-              if (sum <= 0 && cacheReadTokens <= 0) return { tokens: undefined, cacheReadTokens: undefined };
-              return {
-                tokens: sum > 0 ? sum : undefined,
-                cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
-              };
+              // Do NOT return early here when both are <= 0 — fall through so
+              // the pre-summed scalar fallbacks below still get a chance to run.
+              if (sum > 0 || cacheReadTokens > 0) {
+                return {
+                  tokens: sum > 0 ? sum : undefined,
+                  cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+                };
+              }
+              break;
             }
           } catch { /* skip malformed line */ }
         }
       } catch { /* transcript not accessible */ }
+    }
+
+    if (usageObj && typeof usageObj === "object" && typeof usageObj.total_tokens === "number" && usageObj.total_tokens > 0) {
+      // total_tokens arrives pre-summed by the caller — the source doesn't
+      // expose billable vs cache-read components separately, so cache-read
+      // cannot be split out here. Last resort: only used when no component
+      // data was available above.
+      return { tokens: usageObj.total_tokens, cacheReadTokens: undefined };
     }
 
     const toolResponse =

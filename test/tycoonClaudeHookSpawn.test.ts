@@ -628,6 +628,71 @@ test("Compliance nudge: Bash on the orchestrator never warns", () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// extractSubagentTokens reordering: component-level (splittable) usage data
+// must win over a pre-summed total_tokens scalar, so cache-read consumption
+// is never silently dropped. extractSubagentTokens is not exported (the
+// script has no module.exports — see file header), so it is exercised the
+// same way as the rest of this suite: spawn the hook, send a SubagentStop
+// payload, and inspect the tokens/cacheReadTokens fields it writes onto the
+// activity.jsonl record (hooks/tycoon-claude-hook.cjs:691-693).
+// ---------------------------------------------------------------------------
+
+test("SubagentStop: component fields win over a co-present total_tokens scalar, preserving cacheReadTokens", () => {
+  const root = setupProject();
+  try {
+    runHook(root, {
+      hook_event_name: "SubagentStop",
+      tool_input: { subagent_type: "coding-specialist" },
+      session_id: "sess-token-order-1",
+      usage: {
+        // Pre-summed scalar that would have won under the old priority order
+        // (and returned cacheReadTokens: undefined).
+        total_tokens: 999999,
+        // Splittable components co-present on the same usage object.
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 4000,
+      },
+    });
+    const records = readActivity(root);
+    const stop = records.find((r) => r.event === "SubagentStop");
+    assert.ok(stop, "expected a SubagentStop record");
+    // Component sum (100 + 50 + 10 = 160), NOT the total_tokens scalar (999999).
+    assert.equal(stop!.tokens, 160, "component sum must win over the pre-summed total_tokens scalar");
+    assert.equal(stop!.cacheReadTokens, 4000, "cache-read tokens must survive when component data is present");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("SubagentStop: total_tokens scalar is used only when no component data is present anywhere", () => {
+  const root = setupProject();
+  try {
+    runHook(root, {
+      hook_event_name: "SubagentStop",
+      tool_input: { subagent_type: "coding-specialist" },
+      session_id: "sess-token-order-2",
+      usage: {
+        total_tokens: 777,
+        // No input_tokens/output_tokens/cache_creation_input_tokens/cache_read_input_tokens.
+      },
+    });
+    const records = readActivity(root);
+    const stop = records.find((r) => r.event === "SubagentStop");
+    assert.ok(stop, "expected a SubagentStop record");
+    assert.equal(stop!.tokens, 777, "must fall back to total_tokens when no component data exists");
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(stop, "cacheReadTokens"),
+      false,
+      "cacheReadTokens must be absent (undefined) when only a pre-summed scalar is available"
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Compliance nudge: a corrupt orchestrator-turn-reads.json degrades to no warning, no crash", () => {
   const root = setupProject();
   try {
