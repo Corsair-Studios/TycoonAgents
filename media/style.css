@@ -873,6 +873,15 @@ body {
   margin-left: auto;
 }
 
+/* Extra breathing room above the per-agent recommendation badge so it reads
+   as a separate line beneath the model radios/remove button (.agent-row-head)
+   and stats chips (.agent-stats), not as part of either control group above
+   it. Modest spacing only — the badge already lays out as its own block-level
+   child of .agent-row; this just widens the visual gap. */
+.rec-badge--detached {
+  margin-top: 4px;
+}
+
 /* Keyword routing */
 .routing-note {
   display: flex;

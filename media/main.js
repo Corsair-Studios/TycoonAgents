@@ -14400,6 +14400,20 @@
   let lastSettings = null;
 
   /**
+   * Id of the agent whose model radio the user JUST clicked, if any. Set the
+   * instant a model radio's change handler fires and consumed (read once,
+   * then cleared) the next time the agent rows re-render. Purpose: suppress
+   * that one agent's "Could run on X" recommendation badge for exactly the
+   * render immediately following the user's own explicit pick, so the
+   * suggestion never appears in the same instant as — and right next to —
+   * the choice the user just made. Deliberately not a timer/TTL: it is
+   * cleared on the very next render regardless of how much time passed,
+   * and it is not persisted across panel reloads.
+   * @type {string|null}
+   */
+  let justSetAgentModelId = null;
+
+  /**
    * Most recent Path Health probe results, pushed alongside "installState"
    * (see src/host/vscode/pathHealth.ts's probePathHealth /
    * detectVerseExtensionState, wired through panel.ts's
@@ -14451,11 +14465,16 @@
   /**
    * Highest model an agent should normally need. When an agent is set above
    * its floor we proactively suggest stepping down to the cheaper model.
+   * NOT exhaustive — only agents with a genuinely cheap, read-only default
+   * appear here. An entry's floor must never rank below that agent's
+   * roster default in packCatalog.ts: testing-specialist was removed from
+   * this table because its "haiku" floor contradicted the roster's
+   * "sonnet" default, producing a user-visible bug where choosing Sonnet
+   * immediately surfaced an "Apply Haiku" suggestion that reverted the
+   * pick. Keep this table and packCatalog.ts's roster models in agreement.
    */
   const SUGGESTED_MAX = {
     "search-retrieval": "haiku",
-    "testing-specialist": "haiku",
-    "workspace-monitor": "haiku",
   };
 
   /**
@@ -15959,6 +15978,11 @@
           if (agent.model === model) input.checked = true;
           input.addEventListener("change", () => {
             if (input.checked) {
+              // Suppress this agent's recommendation badge on the very next
+              // re-render so a "Could run on X" suggestion never appears in
+              // the same instant as, and right next to, the pick the user
+              // just made themselves. See justSetAgentModelId doc above.
+              justSetAgentModelId = agent.id;
               vscode.postMessage({ type: "setAgentModel", id: agent.id, model });
             }
           });
@@ -16033,19 +16057,42 @@
       stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));
       row.appendChild(stats);
 
-      // Recommendation badge
-      const rec = recommendationFor(agent, m);
+      // Recommendation badge. Suppressed for exactly one render right after
+      // the user has just explicitly picked this agent's model themselves —
+      // see justSetAgentModelId doc above. The flag is read-once: whether or
+      // not it matched this agent, it must not leak into later renders.
+      const suppressRecFor = justSetAgentModelId;
+      if (agent === orderedAgents[orderedAgents.length - 1]) {
+        // Last agent in this render pass — clear after use regardless of
+        // match so a stale id never survives past the render it was meant
+        // to affect. (Cleared here rather than eagerly at read time so every
+        // agent in this same pass still gets to check it.)
+        justSetAgentModelId = null;
+      }
+      const rec = suppressRecFor === agent.id ? null : recommendationFor(agent, m);
       if (rec) {
         const badge = document.createElement("div");
-        badge.className = `rec-badge rec-${rec.kind}`;
+        badge.className = `rec-badge rec-${rec.kind} rec-badge--detached`;
         const txt = document.createElement("span");
         txt.className = "rec-text";
         txt.textContent = rec.text;
         badge.appendChild(txt);
         if (rec.suggest) {
+          // Deliberately NOT labeled "Apply": this button does not confirm
+          // the selection the user just made in the radio group above — it
+          // OVERRIDES it with a different, system-suggested model. "Apply"
+          // reads as confirmation in this context and caused a real bug
+          // (user picks Sonnet, sees "Apply" next to it, clicks it assuming
+          // it applies their pick, and it silently reverts to the cheaper
+          // suggested model instead). The visible label names the actual
+          // destination model so the action is self-describing regardless
+          // of which agent/model this renders for, and the accessible name
+          // mirrors the visible text via textContent (no separate aria-label
+          // needed — the label already says exactly what happens).
+          const targetLabel = rec.suggest.charAt(0).toUpperCase() + rec.suggest.slice(1);
           const apply = document.createElement("button");
           apply.className = "skill-btn settings-btn rec-apply";
-          apply.textContent = "Apply";
+          apply.textContent = `Switch to ${targetLabel}`;
           apply.addEventListener("click", () => {
             vscode.postMessage({ type: "setAgentModel", id: agent.id, model: rec.suggest });
           });
