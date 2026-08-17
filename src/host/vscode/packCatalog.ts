@@ -90,6 +90,11 @@ export function buildAgentMarkdown(agent: {
     `name: ${agent.id}\n` +
     `description: ${JSON.stringify(description)}\n` +
     `model: ${agent.model}\n` +
+    // Config-level enforcement of the leaf-worker rule: the prose-only
+    // "Working discipline" section below could be ignored, so every
+    // non-orchestrator agent also gets a first-class denylist on the
+    // sub-agent-spawning tool (named `Agent` since Claude Code v2.1.63).
+    (agent.id !== "orchestrator" ? "disallowedTools: Agent\n" : "") +
     (agent.tier ? `tier: ${agent.tier}\n` : "") +
     (packId ? `tycoon_pack: ${packId}\n` : "") +
     "---\n" +

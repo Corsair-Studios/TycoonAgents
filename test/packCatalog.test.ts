@@ -36,7 +36,7 @@ const agent = {
 test("output starts with frontmatter containing name, description, and model", () => {
   const md = buildAgentMarkdown(agent);
   assert.ok(
-    md.startsWith(`---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---`),
+    md.startsWith(`---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\ndisallowedTools: Agent\n---`),
     "must start with frontmatter + name + description + model"
   );
 });
@@ -80,7 +80,7 @@ test("a regular agent (no tier) renders full expected frontmatter — no tier li
   const md = buildAgentMarkdown(agent);
   assert.equal(
     md,
-    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n\n## Working discipline\n${WORKING_DISCIPLINE_BODY}\n`
+    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\ndisallowedTools: Agent\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n\n## Working discipline\n${WORKING_DISCIPLINE_BODY}\n`
   );
   assert.ok(!md.includes("tier:"), "regular agents must not emit a tier line");
 });
@@ -89,7 +89,7 @@ test("a lead-tier agent emits a `tier: lead` frontmatter line after name/descrip
   const leadAgent = { ...agent, id: "some-lead", name: "Some Lead", tier: "lead" as const };
   const md = buildAgentMarkdown(leadAgent);
   assert.ok(
-    md.startsWith(`---\nname: ${leadAgent.id}\ndescription: ${JSON.stringify(leadAgent.role)}\nmodel: ${leadAgent.model}\ntier: lead\n---`),
+    md.startsWith(`---\nname: ${leadAgent.id}\ndescription: ${JSON.stringify(leadAgent.role)}\nmodel: ${leadAgent.model}\ndisallowedTools: Agent\ntier: lead\n---`),
     "must emit tier: lead right after model"
   );
 });
@@ -254,7 +254,7 @@ test("buildAgentMarkdown(agent, packId) emits a tycoon_pack frontmatter line and
 test("buildAgentMarkdown(agent, packId) places tycoon_pack after model (and after tier, if present)", () => {
   const md = buildAgentMarkdown(agent, "uefn");
   assert.ok(
-    md.startsWith(`---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\ntycoon_pack: uefn\n---`),
+    md.startsWith(`---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\ndisallowedTools: Agent\ntycoon_pack: uefn\n---`),
     "tycoon_pack must follow model directly when there is no tier"
   );
 });
@@ -263,7 +263,7 @@ test("buildAgentMarkdown(agent) without packId omits tycoon_pack but still has n
   const md = buildAgentMarkdown(agent);
   assert.equal(
     md,
-    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n\n## Working discipline\n${WORKING_DISCIPLINE_BODY}\n`
+    `---\nname: ${agent.id}\ndescription: ${JSON.stringify(agent.role)}\nmodel: ${agent.model}\ndisallowedTools: Agent\n---\n\n# ${agent.name}\n\n## Role\n${agent.role}\n\n## Keywords (for task routing)\n${agent.keywords}\n\n## Working discipline\n${WORKING_DISCIPLINE_BODY}\n`
   );
   assert.ok(!md.includes("tycoon_pack"), "no packId means no tycoon_pack line");
 });
@@ -303,6 +303,21 @@ test("buildAgentMarkdown omits the Working discipline section for the orchestrat
   const orch = { ...agent, id: "orchestrator", name: "Orchestrator" };
   const md = buildAgentMarkdown(orch);
   assert.ok(!md.includes("## Working discipline"), "the orchestrator delegates — it carries no leaf-worker discipline");
+});
+
+test("buildAgentMarkdown emits disallowedTools: Agent for a worker but never for the orchestrator", () => {
+  const workerMd = buildAgentMarkdown(agent);
+  assert.ok(
+    workerMd.includes("disallowedTools: Agent\n"),
+    "a worker must be config-level blocked from spawning its own sub-agents"
+  );
+
+  const orch = { ...agent, id: "orchestrator", name: "Orchestrator" };
+  const orchMd = buildAgentMarkdown(orch);
+  assert.ok(
+    !orchMd.includes("disallowedTools"),
+    "the orchestrator must retain the ability to delegate via the Agent tool"
+  );
 });
 
 test("resyncAgentDisciplineSection inserts the section when absent, then is idempotent", () => {
