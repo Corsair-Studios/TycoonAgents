@@ -409,13 +409,22 @@ function extractSubagentTokens(payload) {
     const usageObj = payload.usage || payload.tool_usage;
     if (usageObj && typeof usageObj === "object") {
       if (typeof usageObj.total_tokens === "number" && usageObj.total_tokens > 0) {
-        return usageObj.total_tokens;
+        // total_tokens arrives pre-summed by the caller — the source doesn't
+        // expose billable vs cache-read components separately, so cache-read
+        // cannot be split out here.
+        return { tokens: usageObj.total_tokens, cacheReadTokens: undefined };
       }
       const sum =
         Number(usageObj.input_tokens || 0) +
         Number(usageObj.output_tokens || 0) +
         Number(usageObj.cache_creation_input_tokens || 0);
-      if (sum > 0) return sum;
+      const cacheReadTokens = Number(usageObj.cache_read_input_tokens || 0);
+      if (sum > 0 || cacheReadTokens > 0) {
+        return {
+          tokens: sum > 0 ? sum : undefined,
+          cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+        };
+      }
     }
 
     const transcriptPath = payload.agent_transcript_path || payload.transcript_path;
@@ -433,9 +442,13 @@ function extractSubagentTokens(payload) {
               const sum =
                 Number(u.input_tokens || 0) +
                 Number(u.output_tokens || 0) +
-                Number(u.cache_creation_input_tokens || 0) +
-                Number(u.cache_read_input_tokens || 0);
-              return sum > 0 ? sum : undefined;
+                Number(u.cache_creation_input_tokens || 0);
+              const cacheReadTokens = Number(u.cache_read_input_tokens || 0);
+              if (sum <= 0 && cacheReadTokens <= 0) return { tokens: undefined, cacheReadTokens: undefined };
+              return {
+                tokens: sum > 0 ? sum : undefined,
+                cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+              };
             }
           } catch { /* skip malformed line */ }
         }
@@ -449,10 +462,12 @@ function extractSubagentTokens(payload) {
     const m = toolResponse.match(/total_tokens[:\s]+(\d+)/i);
     if (m) {
       const n = parseInt(m[1], 10);
-      if (!isNaN(n) && n > 0) return n;
+      // Regex match on a pre-summed total_tokens field — same limitation as
+      // the total_tokens-verbatim path above: no billable/cache-read split available.
+      if (!isNaN(n) && n > 0) return { tokens: n, cacheReadTokens: undefined };
     }
   } catch { /* never crash the hook over token extraction */ }
-  return undefined;
+  return { tokens: undefined, cacheReadTokens: undefined };
 }
 
 function peekActiveAgent(activeAgentFile) {
@@ -531,6 +546,7 @@ function captureOrchestratorTokens(payload, tycoonDir) {
     const lines = fs.readFileSync(transcriptPath, "utf8").split("\n");
 
     let total = 0;
+    let cacheReadTotal = 0;
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
@@ -541,6 +557,10 @@ function captureOrchestratorTokens(payload, tycoonDir) {
             Number(u.input_tokens || 0) +
             Number(u.output_tokens || 0) +
             Number(u.cache_creation_input_tokens || 0);
+          // Cache reads are tracked separately (not folded into the billable
+          // total above) — they dominate long sessions and would otherwise
+          // need their own accounting to reconcile against the Console.
+          cacheReadTotal += Number(u.cache_read_input_tokens || 0);
         }
       } catch { /* skip malformed line */ }
     }
@@ -567,9 +587,25 @@ function captureOrchestratorTokens(payload, tycoonDir) {
     ) {
       delta = total - prev.lastTotal;
     }
-    atomicWriteSync(stateFile, JSON.stringify({ transcriptPath, lastTotal: total }));
+    let cacheReadDelta = cacheReadTotal;
+    if (
+      prev &&
+      prev.transcriptPath === transcriptPath &&
+      typeof prev.lastCacheReadTotal === "number" &&
+      cacheReadTotal >= prev.lastCacheReadTotal
+    ) {
+      cacheReadDelta = cacheReadTotal - prev.lastCacheReadTotal;
+    }
+    atomicWriteSync(
+      stateFile,
+      JSON.stringify({ transcriptPath, lastTotal: total, lastCacheReadTotal: cacheReadTotal })
+    );
 
-    return { tokens: delta > 0 ? delta : undefined, model };
+    return {
+      tokens: delta > 0 ? delta : undefined,
+      cacheReadTokens: cacheReadDelta > 0 ? cacheReadDelta : undefined,
+      model,
+    };
   } catch {
     return {};
   }
@@ -642,8 +678,9 @@ function main(raw) {
 
     if (popped && popped.model) record.model = popped.model;
 
-    const tokens = extractSubagentTokens(payload);
+    const { tokens, cacheReadTokens } = extractSubagentTokens(payload);
     if (tokens !== undefined && tokens > 0) record.tokens = tokens;
+    if (cacheReadTokens !== undefined && cacheReadTokens > 0) record.cacheReadTokens = cacheReadTokens;
     if (payload.session_id) record.sessionId = payload.session_id;
 
     try {
@@ -829,10 +866,11 @@ function main(raw) {
   // -------------------------------------------------------------------------
   if (hookEvent === "Stop") {
     resetOrchestratorTurnReads(tycoonDir);
-    const { tokens, model } = captureOrchestratorTokens(payload, tycoonDir);
+    const { tokens, cacheReadTokens, model } = captureOrchestratorTokens(payload, tycoonDir);
     /** @type {Record<string, unknown>} */
     const record = { event: hookEvent, workerId: "orchestrator", at };
     if (tokens !== undefined) record.tokens = tokens;
+    if (cacheReadTokens !== undefined) record.cacheReadTokens = cacheReadTokens;
     if (model) record.model = model;
     if (delegationMode) record.delegationMode = delegationMode;
     if (payload.session_id) record.sessionId = payload.session_id;
