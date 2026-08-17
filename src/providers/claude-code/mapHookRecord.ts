@@ -60,6 +60,7 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
           type: "SessionStop",
           at: record.at,
           ...(record.tokens !== undefined ? { tokens: record.tokens } : {}),
+          ...(record.cacheReadTokens !== undefined ? { cacheReadTokens: record.cacheReadTokens } : {}),
           ...(record.model !== undefined ? { model: record.model } : {}),
           ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
         },
@@ -74,6 +75,7 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
           at: record.at,
           workerId,
           ...(record.tokens !== undefined ? { tokens: record.tokens } : {}),
+          ...(record.cacheReadTokens !== undefined ? { cacheReadTokens: record.cacheReadTokens } : {}),
         },
       ];
     case "PreToolUse": {

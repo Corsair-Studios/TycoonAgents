@@ -12,6 +12,8 @@ export interface HookRecord {
   tool?: string;             // PreToolUse only, e.g. "Task", "Read", "mcp__server__tool"
   workerId?: string;         // resolved agent id (or session id fallback)
   tokens?: number;           // SubagentStop only: total tokens consumed by the subagent session
+  cacheReadTokens?: number;  // SubagentStop/Stop: cache-read tokens, tracked separately from `tokens`
+                              // because they price at ~0.1x the model's input rate rather than full rate.
   model?: string;            // full model id resolved at spawn time, e.g. "claude-sonnet-4-6"
   agentDescription?: string; // description from agent .md frontmatter, if found
   tier?: string;             // agent tier from .md frontmatter, e.g. "lead" (PreToolUse spawn only)

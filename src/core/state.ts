@@ -64,6 +64,13 @@ export interface AgentMetric {
   /** Cumulative tokens consumed by this agent, summed from SubagentStop events. */
   tokens: number;
   /**
+   * Cumulative cache-read tokens consumed by this agent, summed separately
+   * from `tokens` because cache reads price at ~0.1x the model's input rate
+   * rather than full rate (see media/main.js's cost-lens math). 0 for
+   * records that never carried the field.
+   */
+  cacheReadTokens: number;
+  /**
    * Epoch-ms timestamp of when this agent last became active, or null if not
    * currently active. Exposed so the webview can show live elapsed time while
    * an agent is still working (activeMs only finalizes on WorkerStopped).
@@ -94,6 +101,17 @@ export interface AgentMetric {
    * agents; callers must fall back to the scalar `model`/`tokens` fields.
    */
   modelBreakdown?: Record<string, number>;
+  /**
+   * Orchestrator-only: same shape and purpose as `modelBreakdown`, but for
+   * cache-read tokens. Tracked as its OWN per-model map (not folded into
+   * `modelBreakdown`) because a cache read can be served under a different
+   * active model than the one that originally created the cache entry, and
+   * cache reads price at ~0.1x the model's input rate — mixing the two
+   * buckets would make downstream per-model repricing (media/main.js's
+   * resolveOrchestratorPrice and the delegation-savings counterfactual)
+   * incorrect. Undefined/empty on legacy records or non-orchestrator agents.
+   */
+  cacheReadModelBreakdown?: Record<string, number>;
 }
 
 /** Internal tracking record (kept as an alias now that workStartAt is public). */
@@ -191,6 +209,7 @@ function upsertMetric(
     mcpCount: 0,
     activeMs: 0,
     tokens: 0,
+    cacheReadTokens: 0,
     workStartAt: null,
     lastActivityAt: null,
     directSearches: 0,
@@ -198,6 +217,7 @@ function upsertMetric(
     directEdits: 0,
     delegations: 0,
     modelBreakdown: undefined,
+    cacheReadModelBreakdown: undefined,
   };
   return [...internals, updater(fresh)];
 }
@@ -284,6 +304,7 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
         ORCHESTRATOR_ID,
         (m) => {
           const tokenDelta = event.tokens ?? 0;
+          const cacheReadDelta = event.cacheReadTokens ?? 0;
           // Attribute this delta to whichever model actually coordinated it
           // (the model on THIS event, falling back to the entry's prior
           // model) rather than whatever model is current when the panel
@@ -298,15 +319,28 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
                   [activeModel]: (m.modelBreakdown?.[activeModel] ?? 0) + tokenDelta,
                 }
               : m.modelBreakdown;
+          // Cache reads get their OWN per-model breakdown (see AgentMetric's
+          // cacheReadModelBreakdown doc) since they price at ~0.1x rather
+          // than full rate and may be served under a different active model
+          // than the one that created the cache entry.
+          const nextCacheReadBreakdown =
+            cacheReadDelta > 0 && activeModel
+              ? {
+                  ...m.cacheReadModelBreakdown,
+                  [activeModel]: (m.cacheReadModelBreakdown?.[activeModel] ?? 0) + cacheReadDelta,
+                }
+              : m.cacheReadModelBreakdown;
           return {
             ...m,
             status: "idle" as const,
             activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
             tokens: m.tokens + tokenDelta,
+            cacheReadTokens: m.cacheReadTokens + cacheReadDelta,
             model: event.model ?? m.model,
             delegationMode: event.delegationMode ?? m.delegationMode,
             workStartAt: null,
             modelBreakdown: nextBreakdown,
+            cacheReadModelBreakdown: nextCacheReadBreakdown,
           };
         },
       );
@@ -478,6 +512,7 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           status: "idle" as const,
           activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
           tokens: m.tokens + (event.tokens ?? 0),
+          cacheReadTokens: m.cacheReadTokens + (event.cacheReadTokens ?? 0),
           workStartAt: null,
         }),
       );
@@ -526,7 +561,12 @@ export interface DelegationModeStats {
   mode: string;
   /** Sum of taskCount across every agent recorded under this mode. */
   completedTasks: number;
-  /** Sum of tokens across every agent recorded under this mode. */
+  /**
+   * Sum of tokens + cacheReadTokens across every agent recorded under this
+   * mode — the same combined (billable + cache-read) basis used everywhere
+   * else in the panel (see media/main.js's TOKENS column), not billable
+   * tokens alone.
+   */
   totalTokens: number;
   /** Sum of activeMs across every agent recorded under this mode. */
   activeMs: number;
@@ -539,16 +579,17 @@ export interface DelegationModeStats {
    */
   wallClockMs: number;
   /**
-   * team_leads only: tokens consumed by tier==="lead" agents. 0 for "flat"
-   * (leads only exist under Team Leads mode, per doctrine).
+   * team_leads only: tokens + cacheReadTokens consumed by tier==="lead"
+   * agents. 0 for "flat" (leads only exist under Team Leads mode, per
+   * doctrine).
    */
   leadTokens: number;
   /**
-   * team_leads only: leadTokens plus tokens consumed by every agent whose
-   * parentId points at one of those leads (i.e. leads + their workers, NOT
-   * every agent recorded under team_leads mode — small-task work that skips
-   * a lead per doctrine is excluded from this denominator, since it was
-   * never part of a team). 0 for "flat".
+   * team_leads only: leadTokens plus tokens + cacheReadTokens consumed by
+   * every agent whose parentId points at one of those leads (i.e. leads +
+   * their workers, NOT every agent recorded under team_leads mode —
+   * small-task work that skips a lead per doctrine is excluded from this
+   * denominator, since it was never part of a team). 0 for "flat".
    */
   teamTokens: number;
   /**
@@ -590,7 +631,7 @@ export function computeDelegationModeStats(agentMetrics: AgentMetric[]): Delegat
       maxLast: -Infinity,
     };
     bucket.completedTasks += m.taskCount;
-    bucket.totalTokens += m.tokens;
+    bucket.totalTokens += m.tokens + m.cacheReadTokens;
     bucket.activeMs += m.activeMs;
     if (typeof m.workStartAt === "number" && isFinite(m.workStartAt) && m.workStartAt > 0) {
       bucket.minStart = Math.min(bucket.minStart, m.workStartAt);
@@ -610,10 +651,10 @@ export function computeDelegationModeStats(agentMetrics: AgentMetric[]): Delegat
   let teamTokens = 0;
   for (const m of agentMetrics) {
     if (leadIds.has(m.id)) {
-      leadTokens += m.tokens;
-      teamTokens += m.tokens;
+      leadTokens += m.tokens + m.cacheReadTokens;
+      teamTokens += m.tokens + m.cacheReadTokens;
     } else if (m.parentId !== undefined && leadIds.has(m.parentId)) {
-      teamTokens += m.tokens;
+      teamTokens += m.tokens + m.cacheReadTokens;
     }
   }
 

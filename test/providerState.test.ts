@@ -990,6 +990,7 @@ describe("computeDelegationModeStats", () => {
       mcpCount: 0,
       activeMs: 0,
       tokens: 0,
+      cacheReadTokens: 0,
       workStartAt: null,
       lastActivityAt: null,
       directSearches: 0,

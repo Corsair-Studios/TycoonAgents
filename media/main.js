@@ -13474,6 +13474,27 @@
   }
 
   /**
+   * Same as estCostUSD, but adds a cache-read component priced at ~0.1x the
+   * model's input rate (cache reads are cheaper than a fresh billable token).
+   * Returns null under the same conditions as estCostUSD when there are no
+   * billable tokens to price from; a cache-read amount with no billable
+   * tokens still returns null since the model's price can't be resolved
+   * without at least one priced bucket present.
+   * @param {number|undefined} tokens billable tokens (input + output + cache-creation)
+   * @param {number|undefined} cacheReadTokens cache-read tokens, priced separately at 0.1x
+   * @param {string|null|undefined} model
+   * @returns {number|null}
+   */
+  function estCostUSDWithCache(tokens, cacheReadTokens, model) {
+    const price = modelPricePerMtok(model);
+    if (price == null) return null;
+    const billable = tokens > 0 ? tokens : 0;
+    const cacheRead = cacheReadTokens > 0 ? cacheReadTokens : 0;
+    if (billable <= 0 && cacheRead <= 0) return null;
+    return (billable / 1e6) * price + (cacheRead / 1e6) * price * 0.1;
+  }
+
+  /**
    * Format an estimated $ figure. Prefixed with "~" by default (this is a
    * rough blended estimate, never a billed/exact amount), e.g. "~$0.42",
    * "<$0.01", "~$128". Returns "—" for null (unknown model / no tokens).
@@ -13516,14 +13537,16 @@
    * ratio against it. See docs/KNOWN-BUG-orchestrator-price-fallback.md.
    *
    * Token-weighted across `orch.modelBreakdown` (model id -> cumulative
-   * coordination tokens under that model) when present, rather than the
+   * billable coordination tokens under that model) and `orch.cacheReadModelBreakdown`
+   * (same shape, for cache-read tokens, weighted at 0.1x since cache reads
+   * price at ~0.1x the model's input rate) when present, rather than the
    * single scalar `orch.model` (most-recent model only) — otherwise
    * switching the orchestrator's session model retroactively reprices every
    * historical delegated-agent counterfactual at whatever model is current
    * NOW, which is wrong: past coordination happened under past models. Falls
-   * back to `modelPricePerMtok(orch.model)` when `modelBreakdown` is absent
-   * or empty (legacy records, or a metrics entry that predates the field).
-   * @param {Array<{id?:string, model?:string, modelBreakdown?:Record<string, number>}>|undefined} metrics
+   * back to `modelPricePerMtok(orch.model)` when both breakdowns are absent
+   * or empty (legacy records, or a metrics entry that predates the fields).
+   * @param {Array<{id?:string, model?:string, modelBreakdown?:Record<string, number>, cacheReadModelBreakdown?:Record<string, number>}>|undefined} metrics
    * @returns {number|null}
    */
   function resolveOrchestratorPrice(metrics) {
@@ -13531,9 +13554,10 @@
     if (!orch) return null;
 
     const breakdown = orch.modelBreakdown;
+    const cacheBreakdown = orch.cacheReadModelBreakdown;
+    let pricedTokens = 0;
+    let weightedSum = 0;
     if (breakdown && typeof breakdown === "object") {
-      let pricedTokens = 0;
-      let weightedSum = 0;
       for (const [model, tokens] of Object.entries(breakdown)) {
         if (!(tokens > 0)) continue;
         const price = modelPricePerMtok(model);
@@ -13541,12 +13565,22 @@
         pricedTokens += tokens;
         weightedSum += tokens * price;
       }
-      if (pricedTokens > 0) return weightedSum / pricedTokens;
-      // Breakdown existed but had nothing priceable (e.g. all-unpriced
-      // models, or empty) — fall through to the scalar fallback below
-      // rather than returning null outright, since orch.model may still be
-      // a priced, more-recent signal.
     }
+    if (cacheBreakdown && typeof cacheBreakdown === "object") {
+      for (const [model, tokens] of Object.entries(cacheBreakdown)) {
+        if (!(tokens > 0)) continue;
+        const price = modelPricePerMtok(model);
+        if (price == null) continue;
+        // Cache reads bill at ~0.1x the model's input rate.
+        pricedTokens += tokens;
+        weightedSum += tokens * price * 0.1;
+      }
+    }
+    if (pricedTokens > 0) return weightedSum / pricedTokens;
+    // Neither breakdown had anything priceable (e.g. all-unpriced models, or
+    // both empty) — fall through to the scalar fallback below rather than
+    // returning null outright, since orch.model may still be a priced,
+    // more-recent signal.
 
     const price = modelPricePerMtok(orch.model);
     return price != null ? price : null;
@@ -13790,9 +13824,21 @@
     if (agent.id === "orchestrator") {
       vsOrchText = "baseline";
     } else {
-      const agentPrice = modelPricePerMtok(agent.model);
+      const agentRate = modelPricePerMtok(agent.model);
       const orchestratorPrice = opts.orchestratorPrice;
-      if (agentPrice != null && agent.tokens > 0 && orchestratorPrice != null) {
+      if (agentRate != null && agent.tokens > 0 && orchestratorPrice != null) {
+        // Blend this agent's own billable + cache-read tokens into an
+        // effective $/Mtok rate (cache reads at 0.1x) rather than the
+        // model's raw rate — mirrors the Settings "vs. orch." chip's
+        // weighting (~15992-16011) and resolveOrchestratorPrice's, so the
+        // ratio compares like-for-like effective cost.
+        const billable = agent.tokens ?? 0;
+        const cacheRead = agent.cacheReadTokens ?? 0;
+        const pricedTokens = billable + cacheRead;
+        const agentPrice =
+          pricedTokens > 0
+            ? (billable * agentRate + cacheRead * agentRate * 0.1) / pricedTokens
+            : agentRate;
         const ratio = orchestratorPrice / agentPrice;
         if (ratio >= 1.05) vsOrchText = `${fmtRatio(ratio)}× cheaper`;
         else if (ratio <= 0.95) vsOrchText = `${fmtRatio(1 / ratio)}× pricier`;
@@ -13838,8 +13884,8 @@
 
     const tokensTd = document.createElement("td");
     tokensTd.className = "col-tokens";
-    tokensTd.title = "Total tokens this agent has consumed.";
-    tokensTd.textContent = fmtTokens(agent.tokens ?? 0);
+    tokensTd.title = "Total tokens this agent has consumed, including cache reads (cache reads are billed at ~0.1x the input rate — see the cost note below the table).";
+    tokensTd.textContent = fmtTokens((agent.tokens ?? 0) + (agent.cacheReadTokens ?? 0));
     row.appendChild(tokensTd);
 
     return row;
@@ -13923,7 +13969,7 @@
       pricingCaption.id = "metrics-stats-caption";
       pricingCaption.className = "delegation-stats-caption";
       pricingCaption.textContent =
-        "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Token totals count input, output, and cache reads at face value; cache reads dominate long sessions yet bill at ~0.1x the input rate, so a real API bill would run well below what raw totals suggest.";
+        "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Cache reads are tracked separately and priced at ~0.1x the input rate in the estimate shown, so these figures already reflect the discount rather than overstating cost.";
       metricsBodyEl.appendChild(pricingCaption);
     }
   }
@@ -13991,11 +14037,16 @@
     let counterfactual = 0;
     if (orchestratorPrice != null) {
       for (const a of delegatedAgents) {
-        if (!(a.tokens > 0)) continue;
-        const cost = estCostUSD(a.tokens, a.model);
+        const billable = a.tokens ?? 0;
+        const cacheRead = a.cacheReadTokens ?? 0;
+        if (!(billable > 0) && !(cacheRead > 0)) continue;
+        const cost = estCostUSDWithCache(billable, cacheRead, a.model);
         if (cost == null) continue;
         actual += cost;
-        counterfactual += (a.tokens / 1e6) * orchestratorPrice;
+        // Counterfactual: what it would have cost had the orchestrator's own
+        // model done this work instead — billable at full rate, cache reads
+        // at 0.1x, same as estCostUSDWithCache's weighting.
+        counterfactual += (billable / 1e6) * orchestratorPrice + (cacheRead / 1e6) * orchestratorPrice * 0.1;
       }
     }
     const hero = document.createElement("div");
@@ -14067,7 +14118,7 @@
     for (const a of delegatedAgents) {
       if (!a) continue;
       const tasks = a.taskCount ?? 0;
-      const tokens = a.tokens ?? 0;
+      const tokens = (a.tokens ?? 0) + (a.cacheReadTokens ?? 0);
       if (tasks === 0 && tokens === 0) continue;
       const family = a.model ? prettyModel(a.model, a.observedModel).split(" ")[0] : "Unknown";
       const entry = tierMap.get(family) || { tasks: 0, tokens: 0 };
@@ -14130,7 +14181,7 @@
       const coordLine = document.createElement("div");
       coordLine.className = "delegation-stats-row";
       const orchTasks = orch.taskCount ?? 0;
-      coordLine.textContent = `${orch.model ? prettyModel(orch.model, orch.observedModel) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens(orch.tokens ?? 0)} tokens`;
+      coordLine.textContent = `${orch.model ? prettyModel(orch.model, orch.observedModel) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
       coordSection.appendChild(coordLine);
 
       const coordSub = document.createElement("div");
@@ -14174,7 +14225,7 @@
       agentHeading.textContent = "By agent";
       agentSection.appendChild(agentHeading);
 
-      const totalCost = tableAgents.reduce((sum, a) => sum + (estCostUSD(a.tokens, a.model) ?? 0), 0);
+      const totalCost = tableAgents.reduce((sum, a) => sum + (estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model) ?? 0), 0);
 
       const table = document.createElement("table");
       table.className = "delegation-agent-table";
@@ -14208,11 +14259,11 @@
 
         const tokensTd = document.createElement("td");
         tokensTd.className = "col-tokens";
-        tokensTd.textContent = fmtTokens(a.tokens ?? 0);
+        tokensTd.textContent = fmtTokens((a.tokens ?? 0) + (a.cacheReadTokens ?? 0));
         tr.appendChild(tokensTd);
 
         const shareTd = document.createElement("td");
-        const cost = estCostUSD(a.tokens, a.model);
+        const cost = estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model);
         shareTd.textContent = cost != null && totalCost > 0 ? `${Math.round((cost / totalCost) * 100)}%` : "—";
         tr.appendChild(shareTd);
 
@@ -14316,7 +14367,7 @@
     const pricingCaption = document.createElement("div");
     pricingCaption.className = "delegation-stats-caption";
     pricingCaption.textContent =
-      "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Token totals count input, output, and cache reads at face value; cache reads dominate long sessions yet bill at ~0.1x the input rate, so a real API bill would run well below what raw totals suggest.";
+      "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Cache reads are tracked separately and priced at ~0.1x the input rate in the estimate shown, so these figures already reflect the discount rather than overstating cost.";
     el.appendChild(pricingCaption);
 
     updateMetricsTabsUI();
@@ -15955,9 +16006,20 @@
         chipVsOrchText = "baseline";
       } else {
         const chipModel = m ? (m.model || agent.model) : agent.model;
-        const chipAgentPrice = modelPricePerMtok(chipModel);
+        const chipAgentRate = modelPricePerMtok(chipModel);
         const chipOrchestratorPrice = resolveOrchestratorPrice(lastMetrics);
-        if (chipAgentPrice != null && m && m.tokens > 0 && chipOrchestratorPrice != null) {
+        if (chipAgentRate != null && m && m.tokens > 0 && chipOrchestratorPrice != null) {
+          // Blend the agent's own billable + cache-read tokens into an
+          // effective $/Mtok rate (cache reads at 0.1x) rather than using
+          // the model's raw rate — mirrors resolveOrchestratorPrice's
+          // weighting so the ratio compares like-for-like effective cost.
+          const chipBillable = m.tokens ?? 0;
+          const chipCacheRead = m.cacheReadTokens ?? 0;
+          const chipPricedTokens = chipBillable + chipCacheRead;
+          const chipAgentPrice =
+            chipPricedTokens > 0
+              ? (chipBillable * chipAgentRate + chipCacheRead * chipAgentRate * 0.1) / chipPricedTokens
+              : chipAgentRate;
           const ratio = chipOrchestratorPrice / chipAgentPrice;
           if (ratio >= 1.05) chipVsOrchText = `${fmtRatio(ratio)}× cheaper`;
           else if (ratio <= 0.95) chipVsOrchText = `${fmtRatio(1 / ratio)}× pricier`;

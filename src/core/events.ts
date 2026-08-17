@@ -22,10 +22,13 @@ export type NormalizedEvent =
   | { type: "SessionStart"; at: number }
   // SessionStop carries the orchestrator's per-turn token delta + model (from the
   // Stop hook's transcript read) so the orchestrator row shows real token usage.
+  // cacheReadTokens is a SEPARATE bucket for cache-read tokens (priced at ~0.1x
+  // the model's input rate, unlike billable `tokens`); undefined on records
+  // written by hook versions predating this field.
   // delegationMode (Team Lead Mode Phase 4) is the .claude/tycoon/execution.json
   // "flat"|"team_leads" value the hook read at Stop time; undefined on records
   // written by hook versions predating this field.
-  | { type: "SessionStop"; at: number; tokens?: number; model?: string; delegationMode?: string }
+  | { type: "SessionStop"; at: number; tokens?: number; cacheReadTokens?: number; model?: string; delegationMode?: string }
   // Identity-only registration: seeds an idle roster entry without marking it active.
   | { type: "WorkerRegistered"; at: number; workerId: WorkerId; name?: string; model?: string; description?: string }
   // parentId/tier are approximate hierarchy telemetry (Team Lead Mode Phase 3): parentId
@@ -37,7 +40,7 @@ export type NormalizedEvent =
   | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string; delegationMode?: string }
   | { type: "WorkerActivity"; at: number; workerId: WorkerId; kind: ActivityKind; detail?: string }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string }
-  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number }
+  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number }
   | { type: "ProviderError"; at: number; workerId?: WorkerId; message: string };
 
 export type EventSink = (event: NormalizedEvent) => void;
