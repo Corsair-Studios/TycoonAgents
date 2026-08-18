@@ -76,7 +76,10 @@ export const WORKING_DISCIPLINE_BODY =
   "- BLOCK until the work is actually finished. Never end with a \"running in the background\", \"I'll report when it's done\", or \"waiting for another agent\" message — that is not a valid result. Return only once the files are written and verified.\n" +
   "- If the work genuinely cannot finish in one tool call, split it into bounded sequential calls run to completion in this same turn (chunking knobs, per-call timeout) — never end the turn to \"wait\" and never spawn a helper to do it.\n" +
   "- Never delete a temp or evidence file until, in this same turn, you have verified on disk that its durable destination (a doc comment, a report file, a commit) already holds the data it captured.\n" +
-  "- Report the concrete outcome in under 250 words: what changed (file:line), how you verified it, and any open issues. State your actual sample size or coverage limit when it differs from what was asked — an honest smaller result is acceptable; an overclaimed one is a failure.";
+  "- Report the concrete outcome in under 250 words: what changed (file:line), how you verified it, and any open issues. State your actual sample size or coverage limit when it differs from what was asked — an honest smaller result is acceptable; an overclaimed one is a failure.\n" +
+  "- Open with the outcome — what changed and whether it verified — never with restated context or process narration.\n" +
+  "- Keep it plain prose plus file:line: no headings, no bullet-theater, no flattery or self-assessment adjectives. Every word costs orchestrator context at the most expensive model's price.\n" +
+  "- Deliver exactly what the brief asked, at the scope it asked. Do not widen into cleanup, refactoring, documentation, or adjacent features — name anything adjacent worth doing in one line under open issues instead of doing it.";
 
 export function buildAgentMarkdown(agent: {
   id: string;

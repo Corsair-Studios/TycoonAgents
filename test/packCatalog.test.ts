@@ -659,3 +659,38 @@ test("the orchestrator's markdown carries neither the Working discipline section
 // covered by the pre-existing test above,
 // "buildAgentMarkdown emits disallowedTools: Agent for a worker but never
 // for the orchestrator" — not duplicated here.
+
+// ---------------------------------------------------------------------------
+// Report-shape directives (answer-first opening, no-decoration plain prose,
+// worker-side scope discipline) — WORKING_DISCIPLINE_BODY:80-82. Each bullet
+// is a single unbroken JS string-literal line (no hard-wrap concern at the
+// source level, unlike delegationDoctrine.ts's template-literal prose), but
+// the same short "bullet-theater" / "widen into cleanup" fragments are reused
+// here for consistency with the delegationDoctrine.test.ts pins.
+// ---------------------------------------------------------------------------
+
+test("WORKING_DISCIPLINE_BODY states the three report-shape directives (answer-first, no decoration, scope discipline)", () => {
+  assert.ok(WORKING_DISCIPLINE_BODY.includes("Open with the outcome"), "missing the answer-first opening line");
+  assert.ok(WORKING_DISCIPLINE_BODY.includes("bullet-theater"), "missing the no-decoration line");
+  assert.ok(WORKING_DISCIPLINE_BODY.includes("widen into cleanup"), "missing the worker-scope-discipline line");
+});
+
+test("every REGULAR_AGENTS (minus orchestrator)/LEAD_AGENTS/REVIEWER_AGENTS worker markdown carries the three report-shape directives; the orchestrator's markdown carries none", () => {
+  for (const a of [...REGULAR_AGENTS, ...LEAD_AGENTS, ...REVIEWER_AGENTS].filter((x) => x.id !== "orchestrator")) {
+    const md = buildAgentMarkdown(a);
+    assert.ok(md.includes("Open with the outcome"), `${a.id}: missing the answer-first opening line`);
+    assert.ok(md.includes("bullet-theater"), `${a.id}: missing the no-decoration line`);
+    assert.ok(md.includes("widen into cleanup"), `${a.id}: missing the worker-scope-discipline line`);
+  }
+
+  const orchMd = buildAgentMarkdown({
+    id: "orchestrator",
+    name: "Orchestrator",
+    model: "claude-opus-4-1",
+    role: "Coordinates the team.",
+    keywords: "n/a",
+  });
+  assert.equal(orchMd.includes("Open with the outcome"), false, "orchestrator must not carry the answer-first line");
+  assert.equal(orchMd.includes("bullet-theater"), false, "orchestrator must not carry the no-decoration line");
+  assert.equal(orchMd.includes("widen into cleanup"), false, "orchestrator must not carry the scope-discipline line");
+});

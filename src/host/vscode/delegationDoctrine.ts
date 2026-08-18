@@ -286,6 +286,15 @@ A report must state its actual sample size or coverage limit whenever it
 differs from what was asked — an honest smaller result is acceptable; an
 overclaimed one is a failure.
 
+A report opens with the outcome — what changed and whether it verified —
+never with restated context or process narration. It stays plain prose plus
+file:line: no headings, no decorative bullets, no flattery or
+self-assessment adjectives, since every word lands in the orchestrator's
+context at the most expensive model's price. Delegated work stays at the
+scope the brief asked for — a worker that notices adjacent cleanup,
+refactoring, or documentation work names it in one line under open issues
+instead of doing it.
+
 A change is always verified by someone other than the agent that authored
 it, never self-certified by the agent that wrote it.
 
@@ -388,6 +397,17 @@ If you are a spawned worker and NOT a designated team lead, you are a LEAF:
 - Never delete a temp or evidence file until, in this same turn, you have
   verified ON DISK that its durable destination (a doc comment, a report
   file, a commit) already holds the data it captured.
+- Open your report with the outcome — what changed and whether it
+  verified. Never start with restated context, process narration, or
+  throat-clearing.
+- Keep your report plain prose plus file:line: no headings, no
+  bullet-theater, no flattery or self-assessment adjectives. Every word
+  costs orchestrator context at the most expensive model's price — spend
+  it on substance only.
+- Deliver exactly what the brief asked, at the scope it asked. Do not
+  widen into cleanup, refactoring, documentation, or adjacent features —
+  name anything adjacent worth doing in one line under open issues instead
+  of doing it.
 
 A worker that delegates instead of working creates a chain of agents that
 each wait on the next, burning tokens while nothing gets done. If a
@@ -421,6 +441,17 @@ If you are a spawned worker, you are a LEAF:
 - Never delete a temp or evidence file until, in this same turn, you have
   verified ON DISK that its durable destination (a doc comment, a report
   file, a commit) already holds the data it captured.
+- Open your report with the outcome — what changed and whether it
+  verified. Never start with restated context, process narration, or
+  throat-clearing.
+- Keep your report plain prose plus file:line: no headings, no
+  bullet-theater, no flattery or self-assessment adjectives. Every word
+  costs orchestrator context at the most expensive model's price — spend
+  it on substance only.
+- Deliver exactly what the brief asked, at the scope it asked. Do not
+  widen into cleanup, refactoring, documentation, or adjacent features —
+  name anything adjacent worth doing in one line under open issues instead
+  of doing it.
 
 A worker that delegates instead of working creates a chain of agents that
 each wait on the next, burning tokens while nothing gets done. If a

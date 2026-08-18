@@ -992,3 +992,46 @@ test("the four new leaf-spawn-guard doctrine additions are purely additive: prev
     assert.ok(out.includes("DISJOINT"), `mode=${mode}: pre-existing disjoint-file-ownership guidance must survive`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Report-shape directives (answer-first opening, no-decoration plain prose,
+// worker-side scope discipline): renderPreamble ~288-296 (shared, both
+// modes) and both renderWorkerLeafSection variants (identical bullet block).
+// Substrings below are deliberately SHORT and chosen to sit entirely within
+// one hard-wrapped source line each (verified against the actual source) —
+// the project's known false-BLOCKER lesson: a longer phrase spanning a
+// wrap point would fail a plain .includes() check even though the rendered
+// prose is correct, since the wrap inserts a newline mid-phrase.
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine's report-shape directives (answer-first, no decoration, worker scope discipline) render for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false);
+    // renderPreamble (shared).
+    assert.ok(out.includes("opens with the outcome"), `mode=${mode}: preamble answer-first line must render`);
+    assert.ok(out.includes("no decorative bullets"), `mode=${mode}: preamble no-decoration line must render`);
+    assert.ok(out.includes("under open issues"), `mode=${mode}: preamble scope-discipline line must render`);
+    // renderWorkerLeafSection (identical bullets in both mode variants).
+    assert.ok(out.includes("Open your report with the outcome"), `mode=${mode}: worker-leaf answer-first bullet must render`);
+    assert.ok(out.includes("bullet-theater"), `mode=${mode}: worker-leaf no-decoration bullet must render`);
+    assert.ok(out.includes("widen into cleanup"), `mode=${mode}: worker-leaf scope-discipline bullet must render`);
+  }
+});
+
+test("the new report-shape substrings do not reintroduce the word 'lead' into flat mode (renderDelegationDoctrine('flat') stays lead-free)", () => {
+  const out = renderDelegationDoctrine("flat", false);
+  assert.equal(/lead/i.test(out), false, "flat mode output must not mention leads at all — new report-shape lines were worded to keep it that way");
+  // Direct pin on the new lines themselves, independent of the whole-output
+  // check above, so a future edit to just these lines can't silently
+  // reintroduce "lead" without failing here specifically.
+  for (const fragment of [
+    "opens with the outcome",
+    "no decorative bullets",
+    "under open issues",
+    "Open your report with the outcome",
+    "bullet-theater",
+    "widen into cleanup",
+  ]) {
+    assert.equal(/lead/i.test(fragment), false, `fragment ${JSON.stringify(fragment)} must not itself contain "lead"`);
+  }
+});
