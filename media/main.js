@@ -13587,6 +13587,58 @@
   }
 
   /**
+   * Resolve the orchestrator's raw model $/Mtok rate — NOT its blended
+   * effective rate — from a metrics array. Returns `null` when no
+   * orchestrator entry is found or its model is unpriced.
+   *
+   * This is deliberately a SEPARATE helper from resolveOrchestratorPrice,
+   * not a shared implementation, because the two callers want different
+   * quantities: the delegation-savings counterfactual (~14035-14049) wants
+   * "what would these tokens have cost the orchestrator's actual access
+   * pattern", which legitimately includes the 0.1x cache-read discount the
+   * orchestrator earns by re-reading its own huge context every turn. The
+   * "vs. orch." badge instead promises a MODEL-rate comparison ("how much
+   * cheaper this agent's model is per token than the orchestrator's") — the
+   * cache discount is a property of the orchestrator's access pattern, not
+   * of its model, so blending it in there previously made Sonnet/Haiku
+   * workers (near-0% cache hit, cold-start each task) show as "pricier"
+   * than an Opus orchestrator that is ~97% cache reads. Folding the cache
+   * term out of resolveOrchestratorPrice would fix the badge but silently
+   * change the counterfactual's math too, which is explicitly out of scope.
+   *
+   * Token-weighted across `orch.modelBreakdown` (model id -> cumulative
+   * billable coordination tokens under that model), WITHOUT the
+   * cache-read breakdown or its 0.1x term, so a model switch mid-session is
+   * still weighted by how much coordination actually happened under each
+   * model rather than only the most recent one. Falls back to
+   * `modelPricePerMtok(orch.model)` when the breakdown is absent, empty, or
+   * entirely unpriced.
+   * @param {Array<{id?:string, model?:string, modelBreakdown?:Record<string, number>}>|undefined} metrics
+   * @returns {number|null}
+   */
+  function resolveOrchestratorModelRate(metrics) {
+    const orch = Array.isArray(metrics) ? metrics.find((a) => a && a.id === "orchestrator") : null;
+    if (!orch) return null;
+
+    const breakdown = orch.modelBreakdown;
+    let pricedTokens = 0;
+    let weightedSum = 0;
+    if (breakdown && typeof breakdown === "object") {
+      for (const [model, tokens] of Object.entries(breakdown)) {
+        if (!(tokens > 0)) continue;
+        const price = modelPricePerMtok(model);
+        if (price == null) continue;
+        pricedTokens += tokens;
+        weightedSum += tokens * price;
+      }
+    }
+    if (pricedTokens > 0) return weightedSum / pricedTokens;
+
+    const price = modelPricePerMtok(orch.model);
+    return price != null ? price : null;
+  }
+
+  /**
    * Conjugate a verb into its third-person singular form.
    * @param {string} verb
    * @returns {string}
@@ -13826,20 +13878,15 @@
     } else {
       const agentRate = modelPricePerMtok(agent.model);
       const orchestratorPrice = opts.orchestratorPrice;
-      if (agentRate != null && agent.tokens > 0 && orchestratorPrice != null) {
-        // Blend this agent's own billable + cache-read tokens into an
-        // effective $/Mtok rate (cache reads at 0.1x) rather than the
-        // model's raw rate — mirrors the Settings "vs. orch." chip's
-        // weighting (~15992-16011) and resolveOrchestratorPrice's, so the
-        // ratio compares like-for-like effective cost.
-        const billable = agent.tokens ?? 0;
-        const cacheRead = agent.cacheReadTokens ?? 0;
-        const pricedTokens = billable + cacheRead;
-        const agentPrice =
-          pricedTokens > 0
-            ? (billable * agentRate + cacheRead * agentRate * 0.1) / pricedTokens
-            : agentRate;
-        const ratio = orchestratorPrice / agentPrice;
+      if (agentRate != null && orchestratorPrice != null) {
+        // Raw model-rate comparison — NOT a token-volume-weighted blend.
+        // The badge promises "how much cheaper this agent's MODEL is per
+        // token than the orchestrator's" (a model-rate comparison), and a
+        // priced model has a well-defined rate ratio even with zero
+        // recorded tokens so far; gating on agent.tokens > 0 would hide an
+        // honest, already-computable ratio for no reason once the
+        // comparison no longer depends on token volume.
+        const ratio = orchestratorPrice / agentRate;
         if (ratio >= 1.05) vsOrchText = `${fmtRatio(ratio)}× cheaper`;
         else if (ratio <= 0.95) vsOrchText = `${fmtRatio(1 / ratio)}× pricier`;
         else vsOrchText = "same cost";
@@ -13929,7 +13976,10 @@
     // bar as a tasks-completed share, not tokens or cost — cost is carried
     // by the "Nx cheaper" badge instead (see buildMetricsRow).
     const maxAgentTasks = Math.max(1, ...metrics.map(a => (a && typeof a.taskCount === "number") ? a.taskCount : 0));
-    const orchestratorPrice = resolveOrchestratorPrice(metrics);
+    // Raw model-rate helper, NOT resolveOrchestratorPrice's blended rate —
+    // the badge promises a model-rate comparison; see
+    // resolveOrchestratorModelRate's doc for why the two must stay separate.
+    const orchestratorPrice = resolveOrchestratorModelRate(metrics);
 
     // Flat list: every agent (lead or worker) gets its own equal top-level
     // row, in the existing sort order, no nesting/indentation/grouping. The
@@ -16031,20 +16081,12 @@
       } else {
         const chipModel = m ? (m.model || agent.model) : agent.model;
         const chipAgentRate = modelPricePerMtok(chipModel);
-        const chipOrchestratorPrice = resolveOrchestratorPrice(lastMetrics);
-        if (chipAgentRate != null && m && m.tokens > 0 && chipOrchestratorPrice != null) {
-          // Blend the agent's own billable + cache-read tokens into an
-          // effective $/Mtok rate (cache reads at 0.1x) rather than using
-          // the model's raw rate — mirrors resolveOrchestratorPrice's
-          // weighting so the ratio compares like-for-like effective cost.
-          const chipBillable = m.tokens ?? 0;
-          const chipCacheRead = m.cacheReadTokens ?? 0;
-          const chipPricedTokens = chipBillable + chipCacheRead;
-          const chipAgentPrice =
-            chipPricedTokens > 0
-              ? (chipBillable * chipAgentRate + chipCacheRead * chipAgentRate * 0.1) / chipPricedTokens
-              : chipAgentRate;
-          const ratio = chipOrchestratorPrice / chipAgentPrice;
+        // Raw model-rate helper, matching the metrics table's "vs. orch."
+        // badge — see resolveOrchestratorModelRate's doc for why this is
+        // deliberately not resolveOrchestratorPrice's blended rate.
+        const chipOrchestratorPrice = resolveOrchestratorModelRate(lastMetrics);
+        if (chipAgentRate != null && chipOrchestratorPrice != null) {
+          const ratio = chipOrchestratorPrice / chipAgentRate;
           if (ratio >= 1.05) chipVsOrchText = `${fmtRatio(ratio)}× cheaper`;
           else if (ratio <= 0.95) chipVsOrchText = `${fmtRatio(1 / ratio)}× pricier`;
           else chipVsOrchText = "same cost";

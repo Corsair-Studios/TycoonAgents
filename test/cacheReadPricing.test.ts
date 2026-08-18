@@ -333,46 +333,16 @@ test("delegation hero: NEGATIVE ANCHOR -- billable=0 and cacheReadTokens=0 is sk
 });
 
 // ---------------------------------------------------------------------------
-// (c) Per-agent "vs. orch." status-bar label (Metrics table) blends
-// billable + cache-read into an effective rate before computing the ratio.
+// (c) Per-agent "vs. orch." status-bar label (Metrics table) now compares
+// RAW model rates, deliberately independent of cache-read volume. Blending
+// cache reads into an "effective" rate here (as this section used to test)
+// was the bug: the orchestrator runs ~97% cache reads in production, so its
+// effective rate collapsed and Sonnet workers rendered as pricier instead of
+// cheaper. See resolveOrchestratorModelRate (media/main.js:13619) and the
+// badge computation (media/main.js ~13875-13897). The correct behavior is
+// pinned in test/vsOrchRawRateBadge.test.ts across a range of cache-read
+// volumes -- do not reintroduce a cache-read blend into this badge.
 // ---------------------------------------------------------------------------
-
-test("metrics table row 'vs. orch.': heavy cache-read usage makes an agent look cheaper than billable-only pricing would suggest", () => {
-  const { doc, dispatch, errors } = bootMainJs();
-  // Orchestrator: opus (10 $/Mtok). Agent: sonnet (4 $/Mtok raw), but with
-  // 9x more cache-read tokens than billable ones, its EFFECTIVE rate should
-  // sit well below the raw 4 $/Mtok sonnet rate (since 90% of its tokens are
-  // priced at 0.1x), so the "cheaper" ratio must be visibly larger than the
-  // billable-only opus/sonnet ratio (10/4 = 2.5x).
-  dispatchMetrics(dispatch, [
-    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
-    {
-      id: "coding-specialist",
-      name: "Coding Specialist",
-      status: "idle",
-      model: "sonnet",
-      tokens: 100000,
-      cacheReadTokens: 900000,
-      activeMs: 5000,
-      taskCount: 4,
-    },
-  ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
-
-  const labels = [...doc.querySelectorAll("#metrics-tbody .status-bar-label")];
-  const texts = labels.map((l: any) => l.textContent || "");
-  const cheaperLabel = texts.find((t: string) => /cheaper/.test(t));
-  assert.ok(cheaperLabel, `expected a "...x cheaper" label, got: ${JSON.stringify(texts)}`);
-  const ratio = Number(cheaperLabel.replace(/[^\d.]/g, ""));
-  // Effective sonnet rate = (100000*4 + 900000*0.4) / 1000000 = 0.76 $/Mtok.
-  // Ratio vs opus(10) = 10 / 0.76 ≈ 13.16x -- must be well above the
-  // billable-only 2.5x (10/4) baseline.
-  assert.ok(ratio > 5, `cache-read-heavy agent should show a much larger cheaper-ratio than the billable-only 2.5x baseline, got ${ratio}x`);
-  for (const t of texts) {
-    assert.doesNotMatch(t, /nan|infinity/i, `status-bar label must never contain NaN/Infinity, got "${t}"`);
-  }
-  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
-});
 
 // ---------------------------------------------------------------------------
 // (d) Footer disclaimer text: both occurrences (Metrics tab caption,
