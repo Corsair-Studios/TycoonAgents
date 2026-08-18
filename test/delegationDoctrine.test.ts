@@ -906,3 +906,89 @@ test("renderDelegationDoctrine's Project Plan routing section, once spliced via 
   const span = out.slice(startIdx, endIdx);
   assert.ok(span.includes("## Project Plan routing"), "Project Plan routing section must land inside the managed span");
 });
+
+// ---------------------------------------------------------------------------
+// Leaf-spawn guard doctrine package (hooks/tycoon-claude-hook.cjs's
+// PreToolUse spawn guard): four additive doctrine passages backing the
+// structural enforcement. Two live in renderWorkerLeafSection (both mode
+// variants); two live in module-level constants appended regardless of mode
+// (VERIFICATION_SECTION, renderPreamble's report spec) — so all four are
+// asserted for BOTH DELEGATION_MODES. Nothing pre-existing is expected to
+// have been removed; the last test below pins that explicitly.
+// ---------------------------------------------------------------------------
+
+test("renderDelegationDoctrine states the batch-splitting sanctioned alternative in the worker-leaf section, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(
+      /chunking in-turn is the only sanctioned move/i.test(out),
+      `mode=${mode} must state that chunking in-turn is the sanctioned alternative to spawning a helper`
+    );
+    assert.ok(
+      /sample-size env vars, batch\s*flags/i.test(out),
+      `mode=${mode} must mention the harness's own chunking knobs (sample-size env vars, batch flags)`
+    );
+  }
+});
+
+test("renderDelegationDoctrine states the delete-only-after-verified-capture rule in the worker-leaf section, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(
+      /Never delete a temp or evidence file until.*verified ON DISK/i.test(out),
+      `mode=${mode} must state the delete-only-after-verified-capture rule`
+    );
+  }
+});
+
+test("renderDelegationDoctrine states kill-superseded-lineages and denied-spawn-means-not-done in the verify-on-disk section, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(
+      /kill any processes that\s*agent left running/i.test(out),
+      `mode=${mode} must state the kill-superseded-lineages instruction`
+    );
+    assert.ok(
+      /superseded lineage\s*must never keep writing/i.test(out),
+      `mode=${mode} must explain WHY (a superseded lineage still writing into shared files)`
+    );
+    assert.ok(
+      /After\s*any denied or abandoned spawn, treat the task as NOT done/i.test(out),
+      `mode=${mode} must state denied-spawn-means-not-done`
+    );
+  }
+});
+
+test("renderDelegationDoctrine states honest-sample-size reporting in the report spec, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    assert.ok(
+      /actual sample size or coverage limit whenever it\s*differs from what was asked/i.test(out),
+      `mode=${mode} must state the honest-sample-size-reporting rule`
+    );
+    assert.ok(
+      /an honest smaller result is acceptable; an\s*overclaimed one is a failure/i.test(out),
+      `mode=${mode} must state the honest-vs-overclaimed framing`
+    );
+  }
+});
+
+test("the four new leaf-spawn-guard doctrine additions are purely additive: previously-existing worker-leaf and verify-on-disk sentences still render, for both modes", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false).replace(/\s+/g, " ");
+    // Pre-existing worker-leaf section sentences.
+    assert.ok(out.includes("you are a LEAF"), `mode=${mode}: pre-existing LEAF sentence must survive`);
+    assert.ok(
+      out.includes("Do NOT spawn Task or sub-agents"),
+      `mode=${mode}: pre-existing no-nested-spawn sentence must survive`
+    );
+    assert.ok(
+      out.includes('Never end your turn reporting work as "running in the background"'),
+      `mode=${mode}: pre-existing never-report-as-background sentence must survive`
+    );
+    // Pre-existing verify-on-disk section sentences.
+    assert.ok(out.includes("is not proof"), `mode=${mode}: pre-existing verify-on-disk heading text must survive`);
+    assert.ok(out.includes("re-reads a file from disk"), `mode=${mode}: pre-existing re-read guidance must survive`);
+    assert.ok(out.includes("DISJOINT"), `mode=${mode}: pre-existing disjoint-file-ownership guidance must survive`);
+  }
+});

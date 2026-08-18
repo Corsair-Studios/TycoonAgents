@@ -220,6 +220,49 @@ export function mergeTycoonHooks(
   return result;
 }
 
+/**
+ * Pure merge of TycoonAgents' managed `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`
+ * env var into an existing Claude Code settings object's top-level `env`
+ * block. Belt-and-braces for the PreToolUse spawn guard (see
+ * `hooks/tycoon-claude-hook.cjs`): even if a guard bug ever let a denied
+ * spawn through, Claude Code's own harness-level nesting cap still stops it
+ * from going deeper than intended. `desiredDepth` should be `"1"` for
+ * flat/direct delegation (orchestrator -> worker, one hop) and `"2"` for
+ * team_leads (orchestrator -> lead -> worker, two hops).
+ *
+ * Ownership caveat: `settings.local.json` carries no provenance marker for
+ * individual env keys, so there is no reliable way to tell "the user set
+ * this deliberately" apart from "we wrote it on a previous install/mode
+ * switch". Rather than risk clobbering a value a user set on purpose, this
+ * ONLY EVER writes when the key is entirely ABSENT — any existing value
+ * (user-set or ours from an earlier install) is left completely untouched,
+ * even when it no longer matches `desiredDepth` (e.g. after a later mode
+ * switch). Known gap: switching flat -> team_leads on a project that
+ * already has the env key set from a flat install does NOT raise the cap
+ * from 1 to 2 automatically — see the call site in panel.ts.
+ *
+ * No fs/vscode usage, so this is unit-testable like {@link mergeTycoonHooks}.
+ */
+export function mergeManagedSubagentDepthEnv(
+  existing: Record<string, unknown>,
+  desiredDepth: "1" | "2"
+): Record<string, unknown> {
+  const srcEnv = existing.env;
+  const env: Record<string, unknown> =
+    srcEnv !== null && typeof srcEnv === "object" && !Array.isArray(srcEnv)
+      ? (srcEnv as Record<string, unknown>)
+      : {};
+
+  if (Object.prototype.hasOwnProperty.call(env, "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH")) {
+    return existing; // already set (user or a prior install) — never overwrite
+  }
+
+  return {
+    ...existing,
+    env: { ...env, CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: desiredDepth },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Leftover legacy agent-hook system cleanup
 //

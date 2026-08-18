@@ -282,6 +282,10 @@ Brief every delegated agent precisely:
 Require every delegated agent to report back in under 250 words: what
 changed (file:line), verification result, open issues.
 
+A report must state its actual sample size or coverage limit whenever it
+differs from what was asked — an honest smaller result is acceptable; an
+overclaimed one is a failure.
+
 A change is always verified by someone other than the agent that authored
 it, never self-certified by the agent that wrote it.
 
@@ -375,6 +379,15 @@ If you are a spawned worker and NOT a designated team lead, you are a LEAF:
   do, and doing it is correct, not a violation.
 - Never end your turn reporting work as "running in the background" — finish
   it or report failure.
+- If the assigned work genuinely cannot finish inside one tool call, split
+  it into bounded sequential calls run to completion in THIS SAME turn —
+  using the harness's own chunking knobs (sample-size env vars, batch
+  flags) and an explicit per-call timeout (the Bash tool accepts up to 10
+  minutes). Ending the turn to "wait", or spawning a helper to do it, are
+  both violations; chunking in-turn is the only sanctioned move.
+- Never delete a temp or evidence file until, in this same turn, you have
+  verified ON DISK that its durable destination (a doc comment, a report
+  file, a commit) already holds the data it captured.
 
 A worker that delegates instead of working creates a chain of agents that
 each wait on the next, burning tokens while nothing gets done. If a
@@ -399,6 +412,15 @@ If you are a spawned worker, you are a LEAF:
   do, and doing it is correct, not a violation.
 - Never end your turn reporting work as "running in the background" — finish
   it or report failure.
+- If the assigned work genuinely cannot finish inside one tool call, split
+  it into bounded sequential calls run to completion in THIS SAME turn —
+  using the harness's own chunking knobs (sample-size env vars, batch
+  flags) and an explicit per-call timeout (the Bash tool accepts up to 10
+  minutes). Ending the turn to "wait", or spawning a helper to do it, are
+  both violations; chunking in-turn is the only sanctioned move.
+- Never delete a temp or evidence file until, in this same turn, you have
+  verified ON DISK that its durable destination (a doc comment, a report
+  file, a commit) already holds the data it captured.
 
 A worker that delegates instead of working creates a chain of agents that
 each wait on the next, burning tokens while nothing gets done. If a
@@ -537,7 +559,13 @@ The orchestrator re-reads a file from disk immediately before verifying or
 building on it — a resumed or background sub-agent may have edited it after its
 first report, so cached content can be stale. File ownership stays DISJOINT
 across concurrent workers (the harness does not lock files); the orchestrator
-never runs two writers on the same file at once.`;
+never runs two writers on the same file at once.
+
+Before re-dispatching a task a previous agent failed, kill any processes that
+agent left running (process trees, stale PID files) — a superseded lineage
+must never keep writing into shared files after its replacement starts. After
+any denied or abandoned spawn, treat the task as NOT done regardless of what
+the agent's report claimed.`;
 
 /**
  * Render the CLAUDE.md section body for a delegation mode. Pure (no

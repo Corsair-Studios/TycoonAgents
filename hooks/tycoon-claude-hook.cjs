@@ -707,6 +707,81 @@ function main(raw) {
     const isSkill = toolName === "Skill";
 
     if (isSpawn) {
+      // -----------------------------------------------------------------
+      // Leaf-worker spawn guard — structural enforcement of the "workers
+      // are leaves, never spawn sub-agents" doctrine (see
+      // delegationDoctrine.ts's renderWorkerLeafSection). A worker spawned
+      // as the BUILT-IN `general-purpose` subagent_type loads no
+      // .claude/agents/*.md file, so the `disallowedTools: Agent`
+      // frontmatter packCatalog.ts writes into generated agent files never
+      // applies to it — this hook-level guard is what actually covers that
+      // path. Claude Code stamps `agent_id`/`agent_type` on the
+      // PreToolUse payload ONLY when the call originates inside a spawned
+      // sub-agent (both are absent for the main-session orchestrator), so
+      // an empty/missing agent_id is treated as "this is the orchestrator"
+      // and is NEVER denied. A configured team-lead agent (tier: lead in
+      // its own .claude/agents/<id>.md, only meaningful in team_leads
+      // mode) is exempt — leads are allowed to spawn their own workers.
+      // FAIL-OPEN by construction: every lookup below is wrapped so that
+      // any error (malformed payload, missing agentsDir, unreadable file)
+      // falls through to normal spawn handling rather than ever denying —
+      // a broken guard must never block the orchestrator or wedge a
+      // session.
+      // -----------------------------------------------------------------
+      try {
+        const spawnerAgentId = typeof payload.agent_id === "string" ? payload.agent_id : "";
+        if (spawnerAgentId !== "") {
+          const spawnerAgentType = typeof payload.agent_type === "string" ? payload.agent_type : "";
+          const normalizedSpawnerType = spawnerAgentType.toLowerCase().replace(/\s+/g, "-");
+          const spawnerIsLead =
+            delegationMode === "team_leads" &&
+            normalizedSpawnerType !== "" &&
+            readAgentTier(agentsDir, normalizedSpawnerType) === "lead";
+
+          if (!spawnerIsLead) {
+            const attemptedSubagentType = toolInput.subagent_type || toolInput.name || "";
+            /** @type {Record<string, unknown>} */
+            const denialRecord = {
+              event: "SpawnDenied",
+              tool: toolName,
+              agentId: spawnerAgentId,
+              agentType: spawnerAgentType || "unknown",
+              attemptedSubagentType,
+              at,
+            };
+            if (delegationMode) denialRecord.delegationMode = delegationMode;
+            if (payload.session_id) denialRecord.sessionId = payload.session_id;
+            try {
+              fs.appendFileSync(activityFile, JSON.stringify(denialRecord) + "\n", "utf8");
+            } catch { /* ignore */ }
+
+            const denialReason =
+              "Blocked: you are a leaf worker — workers do not spawn sub-agents. Do the work yourself with your own tools, chunked into bounded sequential calls if it is long (see your brief). This block is structural (TycoonAgents leaf-worker rule).";
+            // A write failure here (e.g. EPIPE) must never silently degrade
+            // to an allow: exit 0 with no stdout means "no decision" to
+            // Claude Code, which is ALLOW. So the stdout write is the ONLY
+            // path that exits 0 — any failure falls back to exit code 2
+            // (reason on stderr), which the Claude Code hooks docs also
+            // treat as a block, so the deny still lands either way.
+            try {
+              process.stdout.write(JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "deny",
+                  permissionDecisionReason: denialReason,
+                },
+              }));
+              process.exit(0);
+            } catch {
+              try { process.stderr.write(denialReason); } catch { /* best-effort */ }
+              process.exit(2);
+            }
+          }
+        }
+      } catch {
+        // Fail open: any guard error falls through to normal spawn handling.
+      }
+
       // --- Agent attribution (4-priority routing) ---
       const subagentType = toolInput.subagent_type || "";
       const description = toolInput.description || "";

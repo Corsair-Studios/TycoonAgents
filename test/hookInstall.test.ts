@@ -17,6 +17,7 @@ import {
   findLegacyHookCommands,
   LEGACY_HOOK_BASENAMES,
   LEGACY_STATE_FILE_NAMES,
+  mergeManagedSubagentDepthEnv,
 } from "../src/host/vscode/hookInstall";
 
 const cmd = "node /path/tycoon-claude-hook.cjs";
@@ -599,5 +600,59 @@ test("cleanupForeignHookArtifacts: options argument entirely omitted (Install Ho
     assert.ok(allCmds.includes(cmd));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// mergeManagedSubagentDepthEnv — belt-and-braces harness-level cap for the
+// PreToolUse spawn guard: writes CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH into
+// settings.env only when the key is entirely absent, "1" for flat/direct
+// delegation and "2" for team_leads.
+// ---------------------------------------------------------------------------
+
+test("mergeManagedSubagentDepthEnv writes '1' (flat/direct) when the key is absent and there is no env block at all", () => {
+  const result = mergeManagedSubagentDepthEnv({}, "1");
+  assert.deepEqual(result, { env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1" } });
+});
+
+test("mergeManagedSubagentDepthEnv writes '2' (team_leads) when the key is absent", () => {
+  const result = mergeManagedSubagentDepthEnv({ env: {} }, "2");
+  const env = result.env as Record<string, unknown>;
+  assert.equal(env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, "2");
+});
+
+test("mergeManagedSubagentDepthEnv leaves a pre-existing user value (e.g. '3') completely untouched, returning the SAME object", () => {
+  const existing = { env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "3" } };
+  const result = mergeManagedSubagentDepthEnv(existing, "2");
+  assert.equal(result, existing, "must return the identical object reference — a true no-op, not a rebuilt copy");
+  const env = result.env as Record<string, unknown>;
+  assert.equal(env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, "3", "the user's own value must survive unchanged");
+});
+
+test("mergeManagedSubagentDepthEnv leaves a pre-existing value untouched even from an earlier install (idempotency), regardless of what desiredDepth is passed next", () => {
+  const afterFirstInstall = mergeManagedSubagentDepthEnv({}, "1");
+  const afterModeSwitch = mergeManagedSubagentDepthEnv(afterFirstInstall, "2");
+  const env = afterModeSwitch.env as Record<string, unknown>;
+  assert.equal(
+    env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH,
+    "1",
+    "a later mode switch must not silently raise a value this function itself wrote on an earlier install"
+  );
+});
+
+test("mergeManagedSubagentDepthEnv merges cleanly into settings.env without clobbering unrelated env keys or top-level keys", () => {
+  const existing = { env: { SOME_OTHER_VAR: "keep-me" }, otherTopLevelKey: "also-keep" };
+  const result = mergeManagedSubagentDepthEnv(existing, "1");
+  assert.deepEqual(result, {
+    otherTopLevelKey: "also-keep",
+    env: { SOME_OTHER_VAR: "keep-me", CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1" },
+  });
+});
+
+test("mergeManagedSubagentDepthEnv tolerates a malformed (non-object) existing env block by treating it as empty", () => {
+  for (const badEnv of [null, "not-an-object", [1, 2, 3]]) {
+    const result = mergeManagedSubagentDepthEnv({ env: badEnv as unknown }, "2");
+    const env = result.env as Record<string, unknown>;
+    assert.equal(env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, "2", `badEnv=${JSON.stringify(badEnv)} must not prevent the write`);
   }
 });

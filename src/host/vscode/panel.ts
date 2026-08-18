@@ -161,6 +161,7 @@ function errorMessage(error: unknown): string {
 
 import {
   mergeTycoonHooks,
+  mergeManagedSubagentDepthEnv,
   migrateLegacyHookMatchers,
   cleanupForeignHookArtifacts,
   findLegacyHookCommands,
@@ -6720,7 +6721,20 @@ export class TycoonPanel {
       }
 
       // 5. Merge our hooks (pure helper).
-      const merged = mergeTycoonHooks(existing, hookCommand);
+      const mergedHooks = mergeTycoonHooks(existing, hookCommand);
+
+      // 5b. Belt-and-braces: cap the harness's own subagent nesting depth
+      // (CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH) so even a guard bug in the
+      // PreToolUse hook can't let spawning nest deeper than this mode
+      // intends. "1" for flat/direct (orchestrator -> worker), "2" for
+      // team_leads (orchestrator -> lead -> worker). Only ever written when
+      // the key is absent — see mergeManagedSubagentDepthEnv's doc comment
+      // for why an existing value (user-set or ours) is never overwritten,
+      // including on a later mode switch.
+      const merged = mergeManagedSubagentDepthEnv(
+        mergedHooks,
+        delegationMode === "team_leads" ? "2" : "1"
+      );
 
       // 6. Write merged settings.
       fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));

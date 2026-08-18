@@ -573,3 +573,89 @@ test("conflictingUefnAgents is pure — repeated calls with the same input retur
   const input = ["coding-specialist", "reviewer"];
   assert.deepEqual(conflictingUefnAgents(input), conflictingUefnAgents(input));
 });
+
+// ---------------------------------------------------------------------------
+// Leaf-spawn guard doctrine package: WORKING_DISCIPLINE_BODY additions.
+//
+// NOTE: only the batch-split sanctioned-alternative line and the
+// honest-sample-size-reporting line are actually present in
+// WORKING_DISCIPLINE_BODY (verified against the real source above) — there
+// is no "delete-only-after-verified-capture" line here. That specific rule
+// lives in src/host/vscode/delegationDoctrine.ts's renderWorkerLeafSection
+// (see delegationDoctrine.test.ts) but was never added to this file's
+// WORKING_DISCIPLINE_BODY constant.
+// ---------------------------------------------------------------------------
+
+test("WORKING_DISCIPLINE_BODY states the batch-splitting sanctioned alternative (chunk in-turn, never wait or spawn a helper)", () => {
+  assert.ok(
+    WORKING_DISCIPLINE_BODY.includes(
+      "split it into bounded sequential calls run to completion in this same turn"
+    ),
+    "missing the batch-split sanctioned-alternative line"
+  );
+  assert.ok(
+    WORKING_DISCIPLINE_BODY.includes('never end the turn to "wait" and never spawn a helper to do it'),
+    "missing the never-wait/never-spawn-a-helper framing"
+  );
+});
+
+test("WORKING_DISCIPLINE_BODY states honest-sample-size reporting (overclaiming is a failure)", () => {
+  assert.ok(
+    WORKING_DISCIPLINE_BODY.includes(
+      "State your actual sample size or coverage limit when it differs from what was asked"
+    ),
+    "missing the honest-sample-size-reporting line"
+  );
+  assert.ok(
+    WORKING_DISCIPLINE_BODY.includes("an honest smaller result is acceptable; an overclaimed one is a failure"),
+    "missing the honest-vs-overclaimed framing"
+  );
+});
+
+test("every REGULAR_AGENTS/LEAD_AGENTS/REVIEWER_AGENTS worker markdown carries the batch-split and honesty lines", () => {
+  // REGULAR_AGENTS includes the "orchestrator" id itself (the only entry
+  // buildAgentMarkdown never appends a Working discipline section for) —
+  // excluded here since this test is specifically about WORKER markdown;
+  // the orchestrator's own (lack of) content is covered by the dedicated
+  // test right below.
+  for (const a of [...REGULAR_AGENTS, ...LEAD_AGENTS, ...REVIEWER_AGENTS].filter((x) => x.id !== "orchestrator")) {
+    const md = buildAgentMarkdown(a);
+    assert.ok(
+      md.includes("split it into bounded sequential calls run to completion in this same turn"),
+      `${a.id}: missing the batch-split sanctioned-alternative line`
+    );
+    assert.ok(
+      md.includes("an honest smaller result is acceptable; an overclaimed one is a failure"),
+      `${a.id}: missing the honest-sample-size-reporting line`
+    );
+  }
+});
+
+test("the orchestrator's markdown carries neither the Working discipline section nor the batch-split/honesty lines", () => {
+  const orchMd = buildAgentMarkdown({
+    id: "orchestrator",
+    name: "Orchestrator",
+    model: "claude-opus-4-1",
+    role: "Coordinates the team.",
+    keywords: "n/a",
+  });
+  assert.equal(orchMd.includes("## Working discipline"), false, "orchestrator must carry no Working discipline section at all");
+  assert.equal(
+    orchMd.includes("split it into bounded sequential calls run to completion in this same turn"),
+    false,
+    "orchestrator must not carry the batch-split line"
+  );
+  assert.equal(
+    orchMd.includes("an honest smaller result is acceptable"),
+    false,
+    "orchestrator must not carry the honesty line"
+  );
+});
+
+// NOTE: the disallowedTools frontmatter comment's claim ("this only binds
+// named-agent spawns; the PreToolUse hook guard is the real enforcement for
+// general-purpose spawns") and the underlying "disallowedTools: Agent for a
+// worker, never for the orchestrator" behavior it documents are ALREADY
+// covered by the pre-existing test above,
+// "buildAgentMarkdown emits disallowedTools: Agent for a worker but never
+// for the orchestrator" — not duplicated here.

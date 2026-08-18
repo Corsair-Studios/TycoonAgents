@@ -74,7 +74,9 @@ export interface PackAgent {
 export const WORKING_DISCIPLINE_BODY =
   "- You are a LEAF: do the assigned task YOURSELF — reads, searches, and edits — with your own tools. Do NOT spawn Task or sub-agents; there is no delegation below you.\n" +
   "- BLOCK until the work is actually finished. Never end with a \"running in the background\", \"I'll report when it's done\", or \"waiting for another agent\" message — that is not a valid result. Return only once the files are written and verified.\n" +
-  "- Report the concrete outcome in under 250 words: what changed (file:line), how you verified it, and any open issues.";
+  "- If the work genuinely cannot finish in one tool call, split it into bounded sequential calls run to completion in this same turn (chunking knobs, per-call timeout) — never end the turn to \"wait\" and never spawn a helper to do it.\n" +
+  "- Never delete a temp or evidence file until, in this same turn, you have verified on disk that its durable destination (a doc comment, a report file, a commit) already holds the data it captured.\n" +
+  "- Report the concrete outcome in under 250 words: what changed (file:line), how you verified it, and any open issues. State your actual sample size or coverage limit when it differs from what was asked — an honest smaller result is acceptable; an overclaimed one is a failure.";
 
 export function buildAgentMarkdown(agent: {
   id: string;
@@ -94,6 +96,13 @@ export function buildAgentMarkdown(agent: {
     // "Working discipline" section below could be ignored, so every
     // non-orchestrator agent also gets a first-class denylist on the
     // sub-agent-spawning tool (named `Agent` since Claude Code v2.1.63).
+    // CAVEAT: this frontmatter only binds a spawn that uses this agent's
+    // custom NAME as `subagent_type` (Claude Code loads the .md and applies
+    // its config only on that path) — a spawn using the BUILT-IN
+    // `general-purpose` subagent_type never loads this file, so
+    // `disallowedTools` never applies to it. The PreToolUse spawn guard in
+    // hooks/tycoon-claude-hook.cjs is the enforcement that covers ALL
+    // spawn paths, not just the named-agent one.
     (agent.id !== "orchestrator" ? "disallowedTools: Agent\n" : "") +
     (agent.tier ? `tier: ${agent.tier}\n` : "") +
     (packId ? `tycoon_pack: ${packId}\n` : "") +
