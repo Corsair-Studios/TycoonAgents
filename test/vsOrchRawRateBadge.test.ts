@@ -570,3 +570,168 @@ test("settings 'vs. orch.' chip: NEGATIVE ANCHOR -- unpriced worker model render
   assert.doesNotMatch(String(text), /cheaper|pricier|nan|infinity/i, "unpriced model must never render a fabricated ratio word");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
+
+// ---------------------------------------------------------------------------
+// PHASE 3 PINS: costModelClass() + vsOrchLabel()'s subscription/local/unknown
+// branches (media/main.js ~13716, ~13658), unified across both render sites.
+// The critical risk phase 3 introduces is regressing the metered
+// (Anthropic-vs-Anthropic) path while adding the foreign-model branches, so
+// (h) below re-pins the exact known-correct metered values from commit
+// 6f6ae6b as a standalone smoke test independent of the cache-read-volume
+// sweep above, followed by the three foreign/unknown classes phase 3 adds.
+// ---------------------------------------------------------------------------
+
+test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchanged (row badge) -- Sonnet '2.5x cheaper', Haiku '5x cheaper', Opus 'same cost', Fable '2x pricier'", () => {
+  const expect = (workerModel: string, expected: string) => {
+    const { doc, dispatch, errors } = bootMainJs();
+    dispatchMetrics(dispatch, [
+      { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+      { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: workerModel, tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+    ]);
+    dispatch({ type: "settings", payload: agentsPayload() });
+    const text = rowBadgeText(doc, "Coding Specialist");
+    assert.equal(text, expected, `worker model=${workerModel}: expected '${expected}', got '${text}'`);
+    assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+  };
+
+  expect("sonnet", "2.5× cheaper");
+  expect("haiku", "5× cheaper");
+  expect("opus", "same cost");
+  expect("fable", "2× pricier");
+});
+
+test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchanged (settings chip) -- Sonnet '2.5x cheaper', Haiku '5x cheaper', Opus 'same cost', Fable '2x pricier'", () => {
+  const expect = (workerModel: string, expected: string) => {
+    const { doc, dispatch, errors } = bootMainJs();
+    dispatchMetrics(dispatch, [
+      { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+      { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: workerModel, tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+    ]);
+    dispatch({ type: "settings", payload: agentsPayload() });
+    const text = chipVsOrchText(doc, "Coding Specialist");
+    assert.equal(text, expected, `worker model=${workerModel}: expected '${expected}', got '${text}'`);
+    assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+  };
+
+  expect("sonnet", "2.5× cheaper");
+  expect("haiku", "5× cheaper");
+  expect("opus", "same cost");
+  expect("fable", "2× pricier");
+});
+
+// ---------------------------------------------------------------------------
+// (i) Subscription-class model (gpt-*/codex-*): "flat-rate" qualitative
+// label only, never a numeric ratio. Both render sites.
+// ---------------------------------------------------------------------------
+
+test("PHASE 3: subscription-class model (gpt-5.4-mini) never renders a numeric ratio badge -- row badge reads 'flat-rate' with no digit or '×'", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "gpt-5.4-mini", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const text = rowBadgeText(doc, "Coding Specialist");
+  assert.equal(text, "flat-rate", `expected 'flat-rate' for subscription-class model, got '${text}'`);
+  assert.doesNotMatch(String(text), /\d|×/, "subscription-class badge must contain no digit and no × ratio symbol");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("PHASE 3: subscription-class model (codex-auto-review) never renders a numeric ratio badge -- settings chip reads 'flat-rate' with no digit or '×'", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "codex-auto-review", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const text = chipVsOrchText(doc, "Coding Specialist");
+  assert.equal(text, "flat-rate", `expected 'flat-rate' for subscription-class model, got '${text}'`);
+  assert.doesNotMatch(String(text), /\d|×/, "subscription-class badge must contain no digit and no × ratio symbol");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("PHASE 3: subscription-class agent's row renders no dollar figure anywhere in the row", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "gpt-5.4-mini", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const rows = [...doc.querySelectorAll("#metrics-tbody tr")];
+  const row = rows.find((r: any) => r.textContent && r.textContent.toLowerCase().includes("coding specialist"));
+  assert.ok(row, "expected to find the Coding Specialist row");
+  assert.doesNotMatch(String((row as any).textContent), /\$/, "subscription-class agent's row must never render a dollar figure");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+// ---------------------------------------------------------------------------
+// (j) Local-class model (ollama:.../lmstudio.../local:... prefix): "local"
+// qualitative label only, never a fabricated price or 0x/Infinity/NaN.
+// ---------------------------------------------------------------------------
+
+test("PHASE 3: local-class model (ollama:llama3) never renders a fabricated price or 0x/Infinity/NaN -- row badge reads 'local'", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "ollama:llama3", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const text = rowBadgeText(doc, "Coding Specialist");
+  assert.equal(text, "local", `expected 'local' for local-class model, got '${text}'`);
+  assert.doesNotMatch(String(text), /\d|×/, "local-class badge must contain no digit and no × ratio symbol");
+  assert.doesNotMatch(String(text), /NaN|Infinity|0×|\$/, "local-class badge must never fabricate a price, 0×, NaN, or Infinity");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated price or 0x/Infinity/NaN -- settings chip reads 'local'", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "lmstudio-qwen2.5", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const text = chipVsOrchText(doc, "Coding Specialist");
+  assert.equal(text, "local", `expected 'local' for local-class model, got '${text}'`);
+  assert.doesNotMatch(String(text), /\d|×/, "local-class badge must contain no digit and no × ratio symbol");
+  assert.doesNotMatch(String(text), /NaN|Infinity|0×|\$/, "local-class badge must never fabricate a price, 0×, NaN, or Infinity");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+// ---------------------------------------------------------------------------
+// (k) Genuinely unknown model (matches none of the classifiers): still
+// renders "—" exactly as before phase 3 -- distinguishing "unknown" from
+// "subscription"/"local" is the entire point of the phase.
+// ---------------------------------------------------------------------------
+
+test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) still renders '—' exactly as before -- row badge", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "mistral-7b", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const text = rowBadgeText(doc, "Coding Specialist");
+  assert.equal(text, "—", `expected '—' for a genuinely unknown model, got '${text}'`);
+  assert.doesNotMatch(String(text), /cheaper|pricier|flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render a fabricated ratio");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) still renders '—' exactly as before -- settings chip", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "mistral-7b", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const text = chipVsOrchText(doc, "Coding Specialist");
+  assert.equal(text, "—", `expected '—' for a genuinely unknown model, got '${text}'`);
+  assert.doesNotMatch(String(text), /cheaper|pricier|flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render a fabricated ratio");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});

@@ -932,6 +932,48 @@ function main(raw) {
       if (payload.session_id) record.sessionId = payload.session_id;
       if (nudge) record.warned = true;
 
+      // -------------------------------------------------------------------
+      // Codex offload visibility (p6-t2): the Codex MCP server (media/mcp/
+      // catalog.json id "codex") is invoked through this same PreToolUse
+      // path — Claude Code names MCP tool calls "mcp__<serverId>__<tool>",
+      // so a Codex call surfaces here as toolName "mcp__codex__codex" or
+      // "mcp__codex__codex-reply". This is an EXTENSION of the existing
+      // non-spawn branch, not a new write site: the branch already fires
+      // for every mcp__* tool and already writes tool/workerId/at, so the
+      // only gap was the model id and the (deliberately absent) token
+      // fields. No parallel site was needed.
+      //
+      // model: the `codex` tool accepts a per-call `model` argument that
+      // overrides the server's baked-in default (verified in
+      // media/mcp/catalog.json's codex entry and docs/codex-mcp-probe-
+      // findings.md Section 3 — precedence CONFIRMED live). When the
+      // caller didn't pass one, the record falls back to the launch-time
+      // default baked into catalog.json's config.args
+      // (`-c model="gpt-5.4-mini"`) rather than leaving model empty, since
+      // that is genuinely the model the call ran on absent an override.
+      //
+      // tokens / cacheReadTokens: deliberately OMITTED (left undefined),
+      // never estimated or defaulted to 0. Per docs/codex-mcp-probe-
+      // findings.md Sections 1-3, a successful `tools/call` response for
+      // the `codex`/`codex-reply` tools carries only
+      // {content, structuredContent:{threadId, content}} — no usage/token
+      // object of any kind. Section 7 further confirms (via source
+      // inspection of codex_tool_runner.rs) that the RateLimitWindow
+      // usage data Codex's core computes internally is NOT forwarded to
+      // this MCP tools/call surface. A future maintainer who is tempted to
+      // "fill in" tokens from character/prompt-length should not — this
+      // project has a standing rule against fabricated numbers, and the
+      // metrics panel already renders an absent tokens field as "—"
+      // rather than inventing one.
+      const CODEX_TOOL_PREFIX = "mcp__codex__";
+      if (toolName.indexOf(CODEX_TOOL_PREFIX) === 0) {
+        const codexModel = (toolInput && typeof toolInput.model === "string" && toolInput.model)
+          ? toolInput.model
+          : "gpt-5.4-mini"; // catalog.json's codex entry launch-time default (-c model=)
+        record.model = codexModel;
+        // tokens / cacheReadTokens intentionally left unset — see comment above.
+      }
+
       try {
         fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
       } catch { /* ignore */ }

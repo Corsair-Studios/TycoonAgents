@@ -297,6 +297,22 @@ export const MSG = {
   // after a corrupted-plan read (see readPlanSafe / _postPlanState in
   // panel.ts). No-ops (and reposts current state) when no backup exists.
   RESTORE_PLAN_BACKUP: "RESTORE_PLAN_BACKUP",
+
+  // ---- credit-pressure offload offer (p6-t1) --------------------------
+  // Detection itself runs CLIENT-SIDE in media/main.js against the
+  // already-flowing metrics payload (no new host computation) — these
+  // messages only carry two persisted booleans, exactly mirroring
+  // REQUEST_PLAN/PLAN_STATE/SET_PROJECT_PLAN_ENABLED above:
+  //   - `dismissed`: stop showing the card. Set by BOTH accept and dismiss.
+  //   - `accepted`: the actual recorded CHOICE. Set ONLY by an explicit
+  //     accept-click; dismiss never sets it. This is the field something
+  //     downstream (the orchestrator, out of this task's scope) reads to
+  //     know the user said yes — recording the choice here has ZERO
+  //     rerouting effect of its own (see writeOffloadOfferAccepted's doc in
+  //     panel.ts); this webview never reroutes anything itself.
+  REQUEST_OFFLOAD_OFFER_STATE: "REQUEST_OFFLOAD_OFFER_STATE",
+  OFFLOAD_OFFER_STATE: "OFFLOAD_OFFER_STATE",
+  SET_OFFLOAD_OFFER_DISMISSED: "SET_OFFLOAD_OFFER_DISMISSED",
 } as const;
 
 /** Union of every wire string this module knows about (either direction). */
@@ -651,4 +667,18 @@ export const MSG_SCHEMAS = {
 
   SET_PROJECT_PLAN_ENABLED: z.object({ enabled: z.boolean() }).passthrough(),
   RESTORE_PLAN_BACKUP: z.object({}).passthrough(),
+
+  // Outbound host -> webview: current persisted state, sent once at boot in
+  // reply to REQUEST_OFFLOAD_OFFER_STATE (mirrors PLAN_STATE). `accepted`
+  // defaults false when the field predates this addition (back-compat).
+  OFFLOAD_OFFER_STATE: z.object({ dismissed: z.boolean(), accepted: z.boolean().optional() }).passthrough(),
+  // Inbound webview -> host: persist the user's action. `accepted` is
+  // OPTIONAL and present only on an accept-click; a plain dismiss omits it
+  // (or sends it false) so the two actions stay distinguishable end to end.
+  // Recording `accepted: true` has no wire-level rerouting effect — see
+  // writeOffloadOfferAccepted's doc in panel.ts for the invariant this
+  // preserves.
+  SET_OFFLOAD_OFFER_DISMISSED: z
+    .object({ dismissed: z.boolean(), accepted: z.boolean().optional() })
+    .passthrough(),
 } as const;

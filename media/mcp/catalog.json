@@ -129,6 +129,21 @@
     "config": { "command": "uvx", "args": ["blender-mcp"] }
   },
   {
+    "id": "codex",
+    "name": "Codex (OpenAI)",
+    "description": "Adversarial review and second-opinion queries from OpenAI's Codex CLI, running as an MCP server — a non-Anthropic model for cross-checking plans, diffs, and reasoning. Exposes `codex` (new session) and `codex-reply` (continue a session) tools.",
+    "requiresEnv": [],
+    "note": "Local stdio MCP server launched via `codex mcp-server`. Auth is via a ChatGPT subscription (shared rolling 5-hour quota across CLI/web/IDE use), not a metered API key — sign in once with `codex login`. The launch args below pin model and reasoning effort and set safe defaults for approval-policy and sandbox so this entry never silently inherits your global ~/.codex/config.toml (which may pin an expensive model at high reasoning effort). These are launch-time config.toml overrides (`-c key=value`, applied before the `mcp-server` subcommand); they set the SERVER's baked-in defaults, not a hard ceiling — the `codex` tool's own per-call `sandbox`/`approval-policy`/`model` arguments can still override them at call time, so a caller (or an untrusted prompt) can request a looser sandbox or a costlier model on an individual call. Verified against `codex --help` / `codex mcp-server --help` (codex-cli 0.124.0): no separate flag exists to hard-lock per-call arguments; `-c` only sets the config.toml-equivalent default the server starts with.",
+    "docsUrl": "https://github.com/openai/codex",
+    "thirdParty": true,
+    "vendor": "OpenAI",
+    "package": "Codex CLI (run via `codex`, installed separately)",
+    "homepage": "https://github.com/openai/codex",
+    "network": true,
+    "dataNote": "Prompts, code, and file contents you send through this server leave this machine and are sent to OpenAI's Codex/ChatGPT backend under your ChatGPT subscription. This is a different vendor than Anthropic and a different data-handling relationship than any Anthropic-run tool in this catalog.",
+    "config": { "command": "codex", "args": ["-c", "model=\"gpt-5.4-mini\"", "-c", "model_reasoning_effort=\"low\"", "-c", "approval_policy=\"never\"", "-c", "sandbox_mode=\"read-only\"", "mcp-server"] }
+  },
+  {
     "id": "dart",
     "name": "Dart & Flutter",
     "description": "Analyze and fix Dart & Flutter code, resolve symbols, fetch API docs, search pub.dev, manage pubspec.yaml dependencies, run tests, and format code — via Google's official dart mcp-server.",

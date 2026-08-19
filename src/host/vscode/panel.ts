@@ -227,6 +227,94 @@ function writeProjectPlanEnabled(root: string, enabled: boolean): void {
 }
 
 /**
+ * Read the credit-pressure offload offer's dismissal flag; missing
+ * file/dir/field all default to `false` (not yet dismissed, so a first-time
+ * user sees the offer once detection trips). Same execution.json top-level
+ * boolean pattern as `readProjectPlanEnabled` above — deliberately not a new
+ * storage mechanism. Field name `offloadOfferDismissed` mirrors the existing
+ * `projectPlanEnabled` naming style.
+ */
+function readOffloadOfferDismissed(root: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(projectPlanExecutionConfigPath(root), "utf8"));
+    return parsed !== null && typeof parsed === "object" && parsed.offloadOfferDismissed === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persist the offload offer's dismissal flag, preserving any other fields
+ * already on disk via the same read-modify-write merge as
+ * `writeProjectPlanEnabled` — clobbering sibling fields (projectPlanEnabled,
+ * delegation_mode, reviewEnabled, sessionJournalEntries, ...) would break
+ * those other features' persisted state.
+ *
+ * NOTE on the load-bearing invariant: this function is the ENTIRE effect of
+ * a user dismissing or accepting the offer. It writes one boolean and
+ * nothing else — no model selection, no routing table, no queued task. An
+ * "accept" click records the user's choice for the orchestrator to read
+ * elsewhere; it never reaches into routing from here. Detection tripping
+ * (media/main.js's checkCreditPressureOffer) never calls this function at
+ * all — only an explicit user click (accept or dismiss) does.
+ */
+function writeOffloadOfferDismissed(root: string, dismissed: boolean): void {
+  const configPath = projectPlanExecutionConfigPath(root);
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (parsed !== null && typeof parsed === "object") existing = parsed as Record<string, unknown>;
+  } catch {
+    /* missing/invalid => start fresh */
+  }
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({ ...existing, offloadOfferDismissed: dismissed }, null, 2));
+}
+
+/**
+ * Read the credit-pressure offload offer's ACCEPTANCE flag — distinct from
+ * `offloadOfferDismissed` above, which only means "stop showing the card"
+ * and is set by BOTH accept and dismiss. This flag is set ONLY by an
+ * explicit accept-click and is the actual recorded choice: something
+ * downstream (the orchestrator, elsewhere, out of this task's scope) can
+ * read this to know the user said yes. Missing file/dir/field default to
+ * `false`, same pattern as `readOffloadOfferDismissed`.
+ */
+function readOffloadOfferAccepted(root: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(projectPlanExecutionConfigPath(root), "utf8"));
+    return parsed !== null && typeof parsed === "object" && parsed.offloadOfferAccepted === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persist the offload offer's acceptance flag, same merge-preserving
+ * read-modify-write as `writeOffloadOfferDismissed`.
+ *
+ * RECORDING A CHOICE IS NOT THE SAME AS REROUTING: this function writes one
+ * boolean and nothing else — no model selection, no routing table write, no
+ * queued task. It makes the user's accept-click legible to whatever reads
+ * execution.json next; it does not itself cause any task to run on any
+ * model. The orchestrator (or another component, out of this task's scope)
+ * is the thing that later reads `offloadOfferAccepted` and decides to act
+ * on it — the webview and this handler never reroute anything themselves.
+ */
+function writeOffloadOfferAccepted(root: string, accepted: boolean): void {
+  const configPath = projectPlanExecutionConfigPath(root);
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (parsed !== null && typeof parsed === "object") existing = parsed as Record<string, unknown>;
+  } catch {
+    /* missing/invalid => start fresh */
+  }
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({ ...existing, offloadOfferAccepted: accepted }, null, 2));
+}
+
+/**
  * Seed the opt-in `projectPlanEnabled` flag at fresh-install/repair time,
  * mirroring the `reviewEnabled` default-on-install precedent in
  * `_handleInstallHooks`: Project Plan is ON by default for a project that
@@ -2309,6 +2397,43 @@ export class TycoonPanel {
           // resolve to a null plan (and enabled:false) so the webview can
           // no-op cleanly and hide the section.
           this._postPlanState();
+        } else if (message.type === MSG.REQUEST_OFFLOAD_OFFER_STATE) {
+          // Credit-pressure offload offer (p6-t1): boot-time read of the two
+          // persisted flags (dismissed + accepted). Detection itself runs
+          // client-side in media/main.js against the metrics payload it
+          // already has — this round-trip never touches routing, mirrors
+          // REQUEST_PLAN.
+          const root = this._projectRoot();
+          void this._panel.webview.postMessage({
+            type: MSG.OFFLOAD_OFFER_STATE,
+            dismissed: root === "" ? false : readOffloadOfferDismissed(root),
+            accepted: root === "" ? false : readOffloadOfferAccepted(root),
+          });
+        } else if (message.type === MSG.SET_OFFLOAD_OFFER_DISMISSED) {
+          // Persist the user's explicit accept/dismiss choice. `dismissed`
+          // is set on both actions (stop showing the card); `accepted` is
+          // set ONLY when the payload says so, i.e. only on an accept-click
+          // — a plain dismiss never sets it. RECORDING A CHOICE IS NOT THE
+          // SAME AS REROUTING: writing these two flags is the ONLY effect of
+          // this handler — see writeOffloadOfferAccepted's doc for why that
+          // is the load-bearing invariant of this whole feature: no routing
+          // table write, no model switch, here or anywhere else on this
+          // path. Something downstream reads `offloadOfferAccepted` later
+          // and decides what to do with it; this handler never does.
+          const parsedSetOfferDismissed = MSG_SCHEMAS.SET_OFFLOAD_OFFER_DISMISSED.safeParse(message);
+          if (!parsedSetOfferDismissed.success) {
+            console.error(
+              "TycoonAgents: SET_OFFLOAD_OFFER_DISMISSED payload rejected:",
+              parsedSetOfferDismissed.error.message
+            );
+            return;
+          }
+          const offerRoot = this._projectRoot();
+          if (offerRoot === "") return;
+          writeOffloadOfferDismissed(offerRoot, parsedSetOfferDismissed.data.dismissed);
+          if (parsedSetOfferDismissed.data.accepted === true) {
+            writeOffloadOfferAccepted(offerRoot, true);
+          }
         } else if (message.type === MSG.APPROVE_PHASE) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {

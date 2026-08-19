@@ -166,6 +166,27 @@
   let delegationStatsHasData = false;
   /** Reference to the Settings screen's Project Plan checkbox, kept live so a PLAN_STATE update can sync its checked state without a full renderSettings() re-render. */
   let projectPlanCheckboxEl = null;
+
+  /**
+   * Credit-pressure offload offer (p6-t1). Whether the user has already
+   * dismissed (or accepted) the offer this project — from
+   * OFFLOAD_OFFER_STATE.dismissed, persisted host-side in execution.json's
+   * `offloadOfferDismissed` field (same top-level-boolean pattern as
+   * `projectPlanEnabled`). Default false so a never-answered project can
+   * still surface the offer once detection trips. Set true by EITHER
+   * accept or dismiss — it only gates card visibility.
+   */
+  let offloadOfferDismissed = false;
+  /**
+   * Whether the user's EXPLICIT accept-click was recorded — from
+   * OFFLOAD_OFFER_STATE.accepted, persisted host-side in execution.json's
+   * `offloadOfferAccepted` field. Distinct from `offloadOfferDismissed`
+   * above: this is the actual recorded CHOICE (set ONLY by accept, never by
+   * a plain dismiss) that something downstream reads to know the user said
+   * yes. Recording it here has zero rerouting effect by itself — see
+   * acceptCreditPressureOffer's doc.
+   */
+  let offloadOfferAccepted = false;
   /**
    * Which array the Metrics tab's TABLE currently displays: "all" (cumulative
    * — totals since the last metrics reset) or "session" (current Claude Code
@@ -10886,6 +10907,12 @@
   // feature isn't turned on or there's no workspace.
   vscode.postMessage({ type: "REQUEST_PLAN" });
 
+  // Ask the host for the credit-pressure offload offer's persisted
+  // dismissal flag (p6-t1). No-ops host-side (dismissed:false) when there's
+  // no workspace. See OFFLOAD_OFFER_STATE handler below and
+  // checkCreditPressureOffer/renderCreditPressureOffer near renderMetrics.
+  vscode.postMessage({ type: "REQUEST_OFFLOAD_OFFER_STATE" });
+
   // ── Engine connection chips (upper-left overlay) ─────────────────
 
   const engineChipsEl = document.createElement("div");
@@ -12589,6 +12616,14 @@
       currentPlanHasBackup = !!msg.hasBackup;
       syncProjectPlanSettingsToggle();
       renderProjectPlanSection();
+    } else if (msg && msg.type === "OFFLOAD_OFFER_STATE") {
+      // Credit-pressure offload offer (p6-t1): boot-time reply to
+      // REQUEST_OFFLOAD_OFFER_STATE carrying the two persisted flags.
+      // Detection re-evaluation happens on the next renderMetrics() call
+      // (checkCreditPressureOffer), not here.
+      offloadOfferDismissed = Boolean(msg.dismissed);
+      offloadOfferAccepted = Boolean(msg.accepted);
+      renderCreditPressureOffer();
     }
   });
 
@@ -13639,6 +13674,43 @@
   }
 
   /**
+   * Compute the "vs. orch." label text for one agent — shared by the
+   * metrics-table row badge and the Settings "vs. orch." chip so the two
+   * surfaces can never disagree. A numeric ratio is only meaningful
+   * metered-vs-metered (both sides have a genuine $/token rate); for a
+   * subscription (flat-rate quota, no marginal per-token cost) or local
+   * (zero marginal cost) agent, computing a ratio against the metered
+   * orchestrator rate would fabricate a comparison that doesn't exist —
+   * exactly the class of bug the raw-rate fix (see resolveOrchestratorModelRate's
+   * doc) corrected. "unknown" stays "—", unchanged, since we genuinely don't
+   * know what the model is and a qualitative label would be a fabricated
+   * claim too.
+   * @param {string|null|undefined} agentModel
+   * @param {number|null} agentRate result of modelPricePerMtok(agentModel)
+   * @param {number|null} orchestratorPrice raw orchestrator $/Mtok rate
+   * @returns {string}
+   */
+  function vsOrchLabel(agentModel, agentRate, orchestratorPrice) {
+    const cls = costModelClass(agentModel);
+    if (cls === "subscription") return "flat-rate";
+    if (cls === "local") return "local";
+    if (agentRate != null && orchestratorPrice != null) {
+      // Raw model-rate comparison — NOT a token-volume-weighted blend. The
+      // badge promises "how much cheaper this agent's MODEL is per token
+      // than the orchestrator's" (a model-rate comparison), and a priced
+      // model has a well-defined rate ratio even with zero recorded tokens
+      // so far; gating on agent.tokens > 0 would hide an honest,
+      // already-computable ratio for no reason once the comparison no
+      // longer depends on token volume.
+      const ratio = orchestratorPrice / agentRate;
+      if (ratio >= 1.05) return `${fmtRatio(ratio)}× cheaper`;
+      if (ratio <= 0.95) return `${fmtRatio(1 / ratio)}× pricier`;
+      return "same cost";
+    }
+    return "—";
+  }
+
+  /**
    * Conjugate a verb into its third-person singular form.
    * @param {string} verb
    * @returns {string}
@@ -13711,6 +13783,63 @@
     if (s.includes("haiku")) return "Haiku";
     if (s.includes("fable")) return "Fable";
     return null;
+  }
+
+  /**
+   * Classifies a model id's BILLING MODEL — a distinct fact from its price.
+   * Per docs/provider-contract.md (Phase 1, frozen, section 4 costModelClass),
+   * exactly four values:
+   *   - "metered"      per-token billing with a marginal cost on every call
+   *                     (the Anthropic API this orchestrator itself runs on).
+   *   - "subscription" flat-rate plan with quota windows, NO marginal
+   *                     per-token cost within the window (e.g. Codex running
+   *                     under a ChatGPT Plus/Pro account).
+   *   - "local"        runs on the user's own hardware, zero marginal cost,
+   *                     constrained by VRAM/latency rather than credits or
+   *                     quota windows.
+   *   - "unknown"      genuinely unrecognized — we do not know what this is.
+   * This is NOT a price lookup: subscription/local have no marginal
+   * per-token dollar figure to fabricate (that would be as wrong as
+   * inventing a nonzero one) — the class itself is the answer callers get.
+   * @param {string|null|undefined} model
+   * @returns {"metered"|"subscription"|"local"|"unknown"}
+   */
+  function costModelClass(model) {
+    if (!model) return "unknown";
+    const s = String(model).toLowerCase();
+    // Anthropic families -> metered (matches modelFamily's substrings above;
+    // must stay in lockstep with it and with MODEL_PRICE_PER_MTOK's keys).
+    if (
+      s.includes("opus") ||
+      s.includes("sonnet") ||
+      s.includes("haiku") ||
+      s.includes("fable")
+    ) {
+      return "metered";
+    }
+    // Codex / OpenAI GPT models observed live in Phase 1 (probe doc section
+    // 7): gpt-5.5, gpt-5.4, gpt-5.4-mini, codex-auto-review. Matched
+    // generously by prefix family (gpt-*, codex-*) rather than pinning exact
+    // slugs, since new dated/variant slugs ship often and none of gpt-*/
+    // codex-* collides with an Anthropic family substring above.
+    if (s.includes("gpt") || s.includes("codex")) {
+      return "subscription";
+    }
+    // FORWARD-LOOKING, NOT YET VERIFIED: no local provider (Ollama/LM
+    // Studio) is live yet per docs/provider-contract.md section 4 ("this
+    // value is definitional rather than inferred from a probe"). This
+    // prefix convention is a placeholder signal for when phase work wires a
+    // real local provider through — re-verify against that provider's
+    // actual model-id shape before relying on this in production, per the
+    // contract's "Design judgments" section.
+    if (
+      s.indexOf("ollama") === 0 ||
+      s.indexOf("lmstudio") === 0 ||
+      s.indexOf("local:") === 0
+    ) {
+      return "local";
+    }
+    return "unknown";
   }
 
   /**
@@ -13864,7 +13993,7 @@
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Bar = tasks completed by this agent, relative to the agent with the most. Badge = how much cheaper this agent's model is per token than the orchestrator's.";
+    statusTd.title = "Bar = tasks completed by this agent, relative to the agent with the most. Badge = how much cheaper this agent's model is per token than the orchestrator's (metered models only) — flat-rate subscription and local models have no comparable per-token rate, so they show their billing class instead of a ratio.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -13878,21 +14007,7 @@
     } else {
       const agentRate = modelPricePerMtok(agent.model);
       const orchestratorPrice = opts.orchestratorPrice;
-      if (agentRate != null && orchestratorPrice != null) {
-        // Raw model-rate comparison — NOT a token-volume-weighted blend.
-        // The badge promises "how much cheaper this agent's MODEL is per
-        // token than the orchestrator's" (a model-rate comparison), and a
-        // priced model has a well-defined rate ratio even with zero
-        // recorded tokens so far; gating on agent.tokens > 0 would hide an
-        // honest, already-computable ratio for no reason once the
-        // comparison no longer depends on token volume.
-        const ratio = orchestratorPrice / agentRate;
-        if (ratio >= 1.05) vsOrchText = `${fmtRatio(ratio)}× cheaper`;
-        else if (ratio <= 0.95) vsOrchText = `${fmtRatio(1 / ratio)}× pricier`;
-        else vsOrchText = "same cost";
-      } else {
-        vsOrchText = "—";
-      }
+      vsOrchText = vsOrchLabel(agent.model, agentRate, orchestratorPrice);
     }
     label.textContent = showActive ? "active" : vsOrchText;
     track.appendChild(fill);
@@ -13948,6 +14063,10 @@
   function renderMetrics(metrics) {
     lastMetrics = metrics || [];
     renderMetricsTable(currentScopeMetrics());
+    // Detection-only: re-evaluate whether the credit-pressure offer should
+    // be visible. This call can only ever change offer VISIBILITY — see
+    // checkCreditPressureOffer's doc for the routing-neutrality invariant.
+    renderCreditPressureOffer();
   }
 
   /**
@@ -14022,6 +14141,150 @@
         "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Cache reads are tracked separately and priced at ~0.1x the input rate in the estimate shown, so these figures already reflect the discount rather than overstating cost.";
       metricsBodyEl.appendChild(pricingCaption);
     }
+  }
+
+  // ── Credit-pressure offload offer (p6-t1) ──────────────────────────────
+  //
+  // THE LOAD-BEARING INVARIANT: detection tripping changes EXACTLY ONE
+  // thing — whether the offer element below is visible. It never selects a
+  // model, never queues a task, never touches any routing table. The ONLY
+  // path that has any routing-relevant effect at all is
+  // acceptCreditPressureOffer(), and even that path only records the user's
+  // explicit choice (persisted via SET_OFFLOAD_OFFER_DISMISSED, the same
+  // wire message dismissal uses) for the ORCHESTRATOR to read and act on
+  // elsewhere — this webview never itself reroutes anything. Per the
+  // project's "user is final reviewer" doctrine, the system must never
+  // auto-switch models mid-session; this section is written so that
+  // invariant is visible by inspection, not just by convention: the
+  // detection function below returns a plain boolean and touches no other
+  // state, and acceptCreditPressureOffer's body is a single postMessage
+  // call, nothing else.
+
+  /**
+   * Orchestrator token-count threshold (cumulative, this project, since the
+   * last metrics reset) above which the credit-pressure offer becomes
+   * eligible to show. A single named constant so the trigger point is
+   * inspectable and changeable in one place.
+   *
+   * SIGNAL CHOSEN AND WHY: the orchestrator's own `tokens` field from the
+   * agentMetrics the host already computes and streams to this webview
+   * (the same number the "Coordination (not delegated work)" section
+   * displays, see the `orch.tokens` read a few hundred lines up). The
+   * orchestrator's own token burn is the single best available proxy for
+   * "this session/project is consuming a lot of the expensive model's
+   * capacity" without adding any new host-side computation or data source
+   * — everything else in agentMetrics is delegated-worker spend, which is
+   * already the cheap side of the ledger this feature exists to protect.
+   *
+   * HONEST LIMITATION: this is a raw token COUNT, not a dollar figure or a
+   * plan-quota percentage. Per the metrics panel's documented cost lens,
+   * the TOKENS figures in this UI already sum cache reads at face value,
+   * which overstates real API-dollar spend several-fold for a
+   * subscription-billed orchestrator — so this threshold is deliberately a
+   * round, coarse trip point, not a precise budget calculation. It cannot
+   * know the user's actual plan, quota, or remaining credit; it only knows
+   * "this project's coordinator has burned a lot of tokens by this
+   * approximate count." Treat it as a nudge, not a bill.
+   */
+  const CREDIT_PRESSURE_ORCH_TOKENS_THRESHOLD = 500000;
+
+  /**
+   * Pure detection: does the orchestrator's current cumulative token count
+   * (from `lastMetrics`, already flowing to this webview) exceed the
+   * threshold? Reads existing data only — no new fetch, no new host
+   * plumbing. Returns a plain boolean and has NO side effects: it does not
+   * write state, does not post a message, does not touch routing. Callers
+   * (renderCreditPressureOffer) decide what to do with the answer.
+   * @returns {boolean}
+   */
+  function checkCreditPressureOffer() {
+    const orch = Array.isArray(lastMetrics) ? lastMetrics.find((a) => a && a.id === "orchestrator") : null;
+    if (!orch) return false;
+    const tokens = (orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0);
+    return tokens >= CREDIT_PRESSURE_ORCH_TOKENS_THRESHOLD;
+  }
+
+  /**
+   * Paint (or remove) the dismissible offload-offer card in #metrics-body.
+   * Shown iff detection trips AND the user has not already dismissed it
+   * this project (offloadOfferDismissed, from OFFLOAD_OFFER_STATE). Reuses
+   * the existing `.catalog-notice` card look (see .orchestrator-model-notice
+   * in style.css) rather than inventing new styling, and is guarded by a
+   * stable element id so repeated renderMetrics() calls update it in place
+   * instead of stacking duplicates — same pattern as #metrics-stats-caption
+   * a few lines up.
+   */
+  function renderCreditPressureOffer() {
+    const metricsBodyEl = document.getElementById("metrics-body");
+    if (!metricsBodyEl) return;
+
+    const existing = document.getElementById("credit-pressure-offer");
+    if (existing) existing.remove(); // re-render clean each call
+
+    if (offloadOfferDismissed) return;
+    if (!checkCreditPressureOffer()) return;
+
+    const card = document.createElement("div");
+    card.id = "credit-pressure-offer";
+    card.className = "catalog-notice credit-pressure-offer";
+
+    const text = document.createElement("span");
+    text.className = "credit-pressure-offer-text";
+    text.textContent =
+      "This session has used a lot of orchestrator tokens. Consider routing the next task to a Codex agent (flat-rate) instead of this metered model.";
+    card.appendChild(text);
+
+    const actions = document.createElement("span");
+    actions.className = "credit-pressure-offer-actions";
+
+    const acceptBtn = document.createElement("button");
+    acceptBtn.className = "credit-pressure-offer-accept";
+    acceptBtn.textContent = "Route next task to Codex";
+    acceptBtn.addEventListener("click", acceptCreditPressureOffer);
+    actions.appendChild(acceptBtn);
+
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "credit-pressure-offer-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss");
+    dismissBtn.textContent = "×";
+    dismissBtn.addEventListener("click", dismissCreditPressureOffer);
+    actions.appendChild(dismissBtn);
+
+    card.appendChild(actions);
+    metricsBodyEl.appendChild(card);
+  }
+
+  /**
+   * Explicit user accept-click. This is the ONLY code path in this feature
+   * with any routing-relevant effect, and even here the effect is limited
+   * to RECORDING the user's choice — this function does not itself select
+   * a model, spawn an agent, or touch a task queue. It sets BOTH
+   * `dismissed` (stop showing the card, same as a plain dismiss) AND
+   * `accepted: true` (the distinct field a plain dismiss never sets) in one
+   * SET_OFFLOAD_OFFER_DISMISSED message, then hides the card. RECORDING A
+   * CHOICE IS NOT THE SAME AS REROUTING: the orchestrator reads
+   * `offloadOfferAccepted` later and decides what to do with it (out of
+   * this task's scope) — nothing in this function reaches into routing
+   * directly.
+   */
+  function acceptCreditPressureOffer() {
+    offloadOfferDismissed = true;
+    offloadOfferAccepted = true;
+    vscode.postMessage({ type: "SET_OFFLOAD_OFFER_DISMISSED", dismissed: true, accepted: true });
+    renderCreditPressureOffer();
+  }
+
+  /**
+   * Explicit user dismiss-click: persist dismissal so the offer stays gone
+   * and does not nag. Deliberately omits `accepted` (host defaults it to
+   * false/unset) — a plain dismiss must NEVER record acceptance, which is
+   * exactly the distinction that makes accept and dismiss different
+   * end-to-end instead of the same call with two names.
+   */
+  function dismissCreditPressureOffer() {
+    offloadOfferDismissed = true;
+    vscode.postMessage({ type: "SET_OFFLOAD_OFFER_DISMISSED", dismissed: true });
+    renderCreditPressureOffer();
   }
 
   /** Display label for a delegation mode id (the "flat" enum value renders as "Flat (no team leads)"). */
@@ -16083,18 +16346,14 @@
         const chipAgentRate = modelPricePerMtok(chipModel);
         // Raw model-rate helper, matching the metrics table's "vs. orch."
         // badge — see resolveOrchestratorModelRate's doc for why this is
-        // deliberately not resolveOrchestratorPrice's blended rate.
+        // deliberately not resolveOrchestratorPrice's blended rate. Shared
+        // vsOrchLabel keeps this chip and the row badge from ever disagreeing.
         const chipOrchestratorPrice = resolveOrchestratorModelRate(lastMetrics);
-        if (chipAgentRate != null && chipOrchestratorPrice != null) {
-          const ratio = chipOrchestratorPrice / chipAgentRate;
-          if (ratio >= 1.05) chipVsOrchText = `${fmtRatio(ratio)}× cheaper`;
-          else if (ratio <= 0.95) chipVsOrchText = `${fmtRatio(1 / ratio)}× pricier`;
-          else chipVsOrchText = "same cost";
-        } else {
-          chipVsOrchText = "—";
-        }
+        chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice);
       }
-      stats.appendChild(chip("vs. orch.", chipVsOrchText));
+      const vsOrchChip = chip("vs. orch.", chipVsOrchText);
+      vsOrchChip.title = "How much cheaper this agent's model is per token than the orchestrator's (metered models only) — flat-rate subscription and local models have no comparable per-token rate, so they show their billing class instead of a ratio.";
+      stats.appendChild(vsOrchChip);
       stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
       stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));
       row.appendChild(stats);
