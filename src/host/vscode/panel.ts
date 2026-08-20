@@ -4951,13 +4951,40 @@ export class TycoonPanel {
    * (incorrectly) treated any string here as "it's fine" would still see
    * an obviously-not-a-version value rather than a false "0.0.490".
    * Never throws.
+   *
+   * STAMP-BEHIND-SIBLINGS CHECK: `_stageBridgeTo` (see) already guarantees
+   * the inverse can't happen from a normal staging call — it never leaves a
+   * NEW stamp next to STALE siblings, because `bridge_version.py` copies
+   * last and only if every sibling succeeded. What that guarantee does NOT
+   * cover is an OLD stamp sitting beside CURRENT siblings — e.g. a second,
+   * uncoordinated writer (the Python-side project-to-engine self-sync in
+   * `media/uefn-bridge/init_unreal.py`) copies real files in but a stale
+   * `bridge_version.py` from a different source wins the race for the
+   * stamp itself. Ordinarily that is harmless — a plain `stale:<version>`
+   * below triggers a re-stage that fixes it. But if that re-stage then
+   * can't complete (locked file, permissions, AV) it becomes
+   * self-perpetuating: every future load reads `stale:<version>`, retries,
+   * and fails again, forever reporting "stale" for a bridge whose siblings
+   * were never actually behind. So before returning the plain stale
+   * marker, spot-check a couple of large, frequently-changed siblings
+   * (`uefn_bridge.py`, `device_audit.py` — the exact file whose mismatch
+   * produced the `_is_actor_enabled` import failure this check exists to
+   * catch) against the shipped copies. If the stamp says stale but those
+   * siblings are already byte-identical to shipped, the code is already
+   * correct and only the stamp is behind: return the distinct
+   * `"stale:stamp-behind-siblings:<installedVersion>"` marker instead of
+   * the plain one, so a caller that (correctly) only tests "is this a real
+   * version?" still sees stale and keeps working unchanged, while a caller
+   * that wants to tell the two stale shapes apart can. Deliberately cheap
+   * (size-then-content compare, two files) — not a full 26-file diff.
    */
   private _verifiedUefnBridgeStampValue(root: string): string {
     try {
       const resolved = this._resolveUefnContentDirEvidence(root);
       if (resolved.contentDir === null) return `unresolved:${resolved.reason}`;
       const effRoot = path.dirname(resolved.contentDir);
-      const stampPath = path.join(effRoot, "Content", "Python", "bridge_version.py");
+      const pyDest = path.join(effRoot, "Content", "Python");
+      const stampPath = path.join(pyDest, "bridge_version.py");
 
       let installedText: string;
       try {
@@ -4966,13 +4993,30 @@ export class TycoonPanel {
         return "stale:missing"; // no bridge_version.py on disk at the resolved target -- never landed
       }
 
-      const bundledPath = path.join(this._extensionUri.fsPath, "media", "uefn-bridge", "bridge_version.py");
+      const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+      const bundledPath = path.join(bridgeDir, "bridge_version.py");
       const bundledText = fs.readFileSync(bundledPath, "utf8");
 
       const installedVersion = parseBridgeVersion(installedText);
       const bundledVersion = parseBridgeVersion(bundledText);
       if (!installedVersion) return "stale:unparseable";
-      if (!bundledVersion || installedVersion !== bundledVersion) return `stale:${installedVersion}`;
+      if (!bundledVersion || installedVersion !== bundledVersion) {
+        // The sibling comparison only ever REFINES this verdict from
+        // `stale:<v>` to the more specific `stale:stamp-behind-siblings:<v>`.
+        // It must never be able to destroy the verdict itself: guard the
+        // call so a missing helper (a stubbed/partial `this`, as in
+        // test/panelPackStampBridgeVerify.test.ts) or a throwing one
+        // degrades to the plain, still-correct `stale:<v>` rather than
+        // escaping to the outer catch and returning `stale:error(...)`,
+        // which would lose the installed version a caller needs.
+        try {
+          if (typeof this._uefnBridgeSiblingsMatchShipped === "function" &&
+              this._uefnBridgeSiblingsMatchShipped(bridgeDir, pyDest)) {
+            return `stale:stamp-behind-siblings:${installedVersion}`;
+          }
+        } catch { /* refinement only -- fall through to the plain verdict */ }
+        return `stale:${installedVersion}`;
+      }
 
       // Cheap spot-check beyond the stamp alone: `_stageBridgeTo` copies
       // `bridge_version.py` LAST, only after every sibling succeeded (see
@@ -4994,6 +5038,44 @@ export class TycoonPanel {
       return installedVersion; // verified: on-disk stamp matches the shipped bridge, entry point present
     } catch (e) {
       return `stale:error(${String(e)})`;
+    }
+  }
+
+  /**
+   * The stamp-mismatch counterpart to `_stageBridgeTo`'s stamp-last
+   * ordering guarantee (see its docstring): true only when a couple of
+   * large, frequently-changed sibling files at `pyDest` are ALREADY
+   * byte-identical to the shipped copies at `bridgeDir`, despite
+   * `bridge_version.py` disagreeing. `uefn_bridge.py` (the entry point)
+   * and `device_audit.py` (the file whose stale copy produced the
+   * `_is_actor_enabled` import failure) are the two checked — both change
+   * in nearly every release, so a match on both is strong evidence the
+   * siblings are current and only the stamp lagged behind (e.g. a second,
+   * uncoordinated writer overwrote just the stamp). Compares size first,
+   * then content, to stay cheap. Missing/unreadable files on either side
+   * count as NOT matching (never claim "siblings are current" without
+   * being able to read them). Never throws.
+   */
+  private _uefnBridgeSiblingsMatchShipped(bridgeDir: string, pyDest: string): boolean {
+    const REPRESENTATIVE_SIBLINGS = ["uefn_bridge.py", "device_audit.py"];
+    try {
+      for (const name of REPRESENTATIVE_SIBLINGS) {
+        const shippedPath = path.join(bridgeDir, name);
+        const installedPath = path.join(pyDest, name);
+        let shippedStat: fs.Stats;
+        let installedStat: fs.Stats;
+        try {
+          shippedStat = fs.statSync(shippedPath);
+          installedStat = fs.statSync(installedPath);
+        } catch {
+          return false; // can't read one side -- never claim a match without evidence
+        }
+        if (shippedStat.size !== installedStat.size) return false;
+        if (!fs.readFileSync(shippedPath).equals(fs.readFileSync(installedPath))) return false;
+      }
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -5119,6 +5201,10 @@ export class TycoonPanel {
    *   changed; no toast if neither did.
    * - Wrapped in try/catch (console.warn on failure) so this can never
    *   throw or block panel load.
+   * - AFTER staging/heal/toast above (own try/catch, independent outcome),
+   *   also calls `_pruneSupersededExtensionVersions` (see) to remove older
+   *   sibling extension-version directories -- ordered last and off the
+   *   critical path so a prune failure can never prevent a bridge update.
    */
   private async _autoUpdateUefnBridgeIfStale(root: string): Promise<void> {
     try {
@@ -5200,6 +5286,143 @@ export class TycoonPanel {
     } catch (e) {
       console.warn("TycoonAgents: _autoUpdateUefnBridgeIfStale failed:", e);
     }
+
+    // Prune superseded sibling extension-version dirs AFTER staging above,
+    // never before -- staging reads only from the running extension's own
+    // files (`this._extensionUri`), so ordering the prune after keeps this
+    // destructive step off the critical path: a prune failure can never
+    // prevent a bridge update. Own try/catch, wholly independent of the
+    // staging outcome above, so a staging failure never skips the prune and
+    // a prune failure never surfaces as a staging failure.
+    try {
+      const pruneResult = this._pruneSupersededExtensionVersions();
+      if (pruneResult.removed.length > 0 || pruneResult.failed.length > 0) {
+        console.log(
+          `TycoonAgents: pruned superseded extension versions -- removed: [${pruneResult.removed.join(", ")}]` +
+            (pruneResult.failed.length > 0
+              ? `; failed: [${pruneResult.failed.map((f) => `${f.name} (${f.reason})`).join(", ")}]`
+              : "")
+        );
+      }
+    } catch (e) {
+      console.warn("TycoonAgents: _pruneSupersededExtensionVersions failed:", e);
+    }
+  }
+
+  /**
+   * Remove OLDER sibling `tycoonagents.tycoonagents-<semver>` extension
+   * install directories, leaving only the currently running version and any
+   * newer ones untouched.
+   *
+   * THE INCIDENT THIS FIXES: with three extension versions installed at
+   * once (0.0.559/0.0.561/0.0.562), whichever one VS Code happens to
+   * activate is the one that stages the UEFN bridge -- so an older,
+   * already-superseded copy could silently win the race and stage a
+   * behind-dated `bridge_version.py` (see `_uefnBridgeSiblingsMatchShipped`
+   * doc comment for the resulting stamp/sibling-disagreement symptom).
+   * Removing superseded versions removes the ambiguity at the source.
+   *
+   * SAFETY, in order:
+   * - The extensions dir is DERIVED as `path.dirname(this._extensionUri.fsPath)`
+   *   -- never hardcoded, never assumed to be `.vscode/extensions`, because
+   *   this also runs inside other IDEs (e.g. Antigravity) with their own
+   *   extensions root. Whatever host loaded THIS extension owns the parent
+   *   dir this reads.
+   * - Only entries matching the exact `tycoonagents.tycoonagents-<semver>`
+   *   prefix are considered; anything else (unrelated extensions, stray
+   *   files, unparseable suffixes) is skipped, never touched.
+   * - The RUNNING extension's own directory is never removed: resolved
+   *   absolute paths are compared case-insensitively (Windows paths), not
+   *   version numbers alone, so this can't misfire even if two entries
+   *   somehow parsed to the same version.
+   * - Only versions STRICTLY OLDER than the running one are removed. A
+   *   newer sibling is left alone -- the user may be testing a newer build,
+   *   and deleting it would be destructive and surprising.
+   * - Fails open per-entry: a locked directory, permission error, or
+   *   unparseable name is skipped silently and never thrown -- this runs on
+   *   every panel load and must never wedge it. Only entries actually
+   *   removed or actually attempted-and-failed are reported back; anything
+   *   skipped as not-matching or not-applicable is simply absent from both
+   *   lists.
+   * - Never throws; returns `{ removed, failed }` so the caller can log a
+   *   failed removal rather than it being silently swallowed.
+   */
+  private _pruneSupersededExtensionVersions(): { removed: string[]; failed: { name: string; reason: string }[] } {
+    const removed: string[] = [];
+    const failed: { name: string; reason: string }[] = [];
+    try {
+      const runningDir = this._extensionUri.fsPath;
+      const extensionsDir = path.dirname(runningDir);
+      const runningDirResolved = path.resolve(runningDir).toLowerCase();
+
+      const PREFIX = "tycoonagents.tycoonagents-";
+      const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)/;
+
+      const runningBaseName = path.basename(runningDir);
+      if (!runningBaseName.toLowerCase().startsWith(PREFIX)) {
+        // Can't identify our own running version from the dir name -- don't
+        // guess at what "older" means. Skip pruning entirely rather than
+        // risk comparing against the wrong baseline.
+        return { removed, failed };
+      }
+      const runningVersionMatch = SEMVER_RE.exec(runningBaseName.slice(PREFIX.length));
+      if (!runningVersionMatch) return { removed, failed };
+      const runningVersion: [number, number, number] = [
+        Number(runningVersionMatch[1]),
+        Number(runningVersionMatch[2]),
+        Number(runningVersionMatch[3])
+      ];
+
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(extensionsDir, { withFileTypes: true });
+      } catch {
+        return { removed, failed }; // can't list the extensions dir -- fail open
+      }
+
+      for (const entry of entries) {
+        try {
+          if (!entry.isDirectory()) continue;
+          const name = entry.name;
+          if (!name.toLowerCase().startsWith(PREFIX)) continue;
+
+          const candidatePath = path.join(extensionsDir, name);
+          const candidateResolved = path.resolve(candidatePath).toLowerCase();
+          if (candidateResolved === runningDirResolved) continue; // never remove ourselves
+
+          const versionMatch = SEMVER_RE.exec(name.slice(PREFIX.length));
+          if (!versionMatch) continue; // unparseable suffix -- skip, don't guess
+
+          const candidateVersion: [number, number, number] = [
+            Number(versionMatch[1]),
+            Number(versionMatch[2]),
+            Number(versionMatch[3])
+          ];
+
+          const isOlder =
+            candidateVersion[0] !== runningVersion[0]
+              ? candidateVersion[0] < runningVersion[0]
+              : candidateVersion[1] !== runningVersion[1]
+                ? candidateVersion[1] < runningVersion[1]
+                : candidateVersion[2] < runningVersion[2];
+          if (!isOlder) continue; // equal or newer -- never remove
+
+          try {
+            fs.rmSync(candidatePath, { recursive: true, force: true });
+            removed.push(name);
+          } catch (e) {
+            failed.push({ name, reason: describeFsError(e, candidatePath) });
+          }
+        } catch (e) {
+          // Fail open per-entry: an unexpected error inspecting one sibling
+          // must never abort the loop or block the panel.
+          failed.push({ name: entry.name, reason: String(e) });
+        }
+      }
+    } catch {
+      // Fail open entirely -- this must never throw or block panel load.
+    }
+    return { removed, failed };
   }
 
   /**
