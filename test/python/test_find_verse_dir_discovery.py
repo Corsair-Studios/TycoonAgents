@@ -13,15 +13,37 @@ ON THE WRONG TREE, which is worse: uefn_tag_inspect reported a plausible
 looking "2 .verse file(s) scanned, 0 tag class(es) found" while the real
 project's 112 .verse files and __ExternalActors__ tree were never touched.
 
+SECOND REGRESSION THIS FILE GUARDS (2026-08-19, live UEFN session):
+StarWars was the open project; _find_verse_dir returned DetonationDemo's
+Content dir instead, because with 8 candidate projects under "Fortnite
+Projects", the registry rung (then rung 2/3) picked by directory-listing
+order -- it had no notion of which project was actually OPEN. Verified in
+that same session: every unreal.Paths function (project_dir,
+project_content_dir, project_config_dir, get_project_file_path,
+project_plugins_dir) returns a path rooted at .../FortniteGame/..., i.e.
+the ENGINE INSTALL -- never the user's project -- so that rung never had a
+usable signal either. The fix is a new rung that reads the EDITOR WORLD's
+package path (e.g. "/StarWars/StarWars.StarWars"), takes its first path
+segment as the project's mount point ("StarWars"), and resolves that
+specific name to a directory -- ground truth for what's actually open,
+not a guess among candidates.
+
 Per docs/PATH-DISCOVERY.md, _find_verse_dir is now a discovery-ladder
 exemplar:
   1. UEFN_VERSE_PROJECT_DIR env override -- always wins.
-  2. unreal.Paths-derived live project dir, validated (rejected if it
+  2. Editor-world mount point -> resolved project dir (the OPEN project,
+     ground truth). Engine mounts (Game, Engine, Temp, Script,
+     FortniteGame) are rejected. Tries the modern
+     unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem) API first,
+     falls back to the legacy unreal.EditorLevelLibrary; a stub/partial
+     unreal missing both degrades to None, never raises.
+  3. unreal.Paths-derived live project dir, validated (rejected if it
      structurally sits inside a Fortnite/Epic install tree, or doesn't
-     have .verse files).
-  3. Windows registry "Personal" (Documents) known folder ->
+     have .verse files) -- MEASURED to always be the FortniteGame engine
+     install in UEFN, so this is a safety net only.
+  4. Windows registry "Personal" (Documents) known folder ->
      "Fortnite Projects\\*" glob. Windows-only, fails open.
-  4. The original __file__-relative strategies, but every candidate is now
+  5. The original __file__-relative strategies, but every candidate is now
      rejected if it structurally sits inside a Fortnite/Epic install tree
      (a "FortniteGame" path segment followed later by a "Plugins" segment
      -- see _is_inside_fortnite_install).
@@ -52,6 +74,9 @@ ensure_bridge_on_path()
 _unreal = stub_unreal()
 
 import device_audit  # noqa: E402
+
+
+_MISSING = object()  # sentinel: "this attr was absent from _unreal before setUp touched it"
 
 
 def _touch(path):
@@ -108,6 +133,53 @@ class _BaseCase(unittest.TestCase):
         _unreal.Paths = MagicMock(name="Paths")
         del _unreal.Paths.project_content_dir
         del _unreal.Paths.project_dir
+        # Neutralize the editor-world rung by default -- a bare MagicMock
+        # auto-vivifies get_editor_subsystem/UnrealEditorSubsystem/
+        # EditorLevelLibrary, which would otherwise fabricate a bogus
+        # world path name and leak a phantom candidate into every test not
+        # specifically exercising this rung. Tests that want the rung
+        # configure it explicitly via _configure_editor_world.
+        #
+        # _unreal is a process-wide singleton shared with every OTHER
+        # test_*.py module in this suite (they all stub the same `unreal`
+        # entry in sys.modules), so deleting these attrs here must be
+        # undone in tearDown -- leaving them deleted would break sibling
+        # test files (test_uefn_bridge_level_edit.py,
+        # test_list_devices_two_phase.py, etc.) that expect
+        # get_editor_subsystem/EditorLevelLibrary to exist as plain
+        # auto-vivified MagicMock attributes. Save each attr's prior value
+        # (a sentinel when it was already absent) and restore exactly that
+        # in tearDown.
+        self._orig_world_apis = {}
+        for _attr in ("get_editor_subsystem", "UnrealEditorSubsystem", "EditorLevelLibrary"):
+            try:
+                self._orig_world_apis[_attr] = getattr(_unreal, _attr)
+            except AttributeError:
+                self._orig_world_apis[_attr] = _MISSING
+            try:
+                delattr(_unreal, _attr)
+            except AttributeError:
+                pass
+
+    def _configure_editor_world(self, path_name, via_legacy=False):
+        """Wire the stub `unreal` module so `_editor_world_mount_name()`
+        sees an editor world whose `get_path_name()` returns *path_name*
+        (e.g. "/StarWars/StarWars.StarWars"). By default uses the modern
+        `unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)` path;
+        pass via_legacy=True to instead wire only
+        `unreal.EditorLevelLibrary.get_editor_world()`, leaving the modern
+        API absent so the fallback path is what's actually exercised."""
+        world = MagicMock(name="EditorWorld")
+        world.get_path_name = MagicMock(return_value=path_name)
+        if via_legacy:
+            level_lib = MagicMock(name="EditorLevelLibrary")
+            level_lib.get_editor_world = MagicMock(return_value=world)
+            _unreal.EditorLevelLibrary = level_lib
+        else:
+            subsystem = MagicMock(name="UnrealEditorSubsystem")
+            subsystem.get_editor_world = MagicMock(return_value=world)
+            _unreal.UnrealEditorSubsystem = MagicMock(name="UnrealEditorSubsystemClass")
+            _unreal.get_editor_subsystem = MagicMock(return_value=subsystem)
 
     def tearDown(self):
         device_audit.__file__ = self._orig_file
@@ -119,6 +191,18 @@ class _BaseCase(unittest.TestCase):
             sys.modules["winreg"] = self._orig_winreg
         else:
             sys.modules.pop("winreg", None)
+        # Restore the shared _unreal singleton's editor-world attrs exactly
+        # as setUp found them, so sibling test_*.py modules in the same
+        # process (which share this same stubbed `unreal` module) are
+        # never left with get_editor_subsystem/EditorLevelLibrary missing.
+        for _attr, _orig in self._orig_world_apis.items():
+            if _orig is _MISSING:
+                try:
+                    delattr(_unreal, _attr)
+                except AttributeError:
+                    pass
+            else:
+                setattr(_unreal, _attr, _orig)
         shutil.rmtree(self._tmp, ignore_errors=True)
 
     def _set_script_dir(self, script_path):
@@ -319,6 +403,137 @@ class RegistryRungTests(_BaseCase):
             os.path.normpath(result),
             os.path.normpath(os.path.join(real_project, "Content")),
         )
+
+
+def _install_fake_winreg_docs(fake_docs):
+    """Install a fake winreg module whose "Personal" value is *fake_docs*,
+    the same shape RegistryRungTests uses -- shared here so
+    EditorWorldRungTests can put multiple candidate projects under
+    <fake_docs>/Fortnite Projects/ and drive the mount-resolution rung's
+    root lookup through the same path the registry rung uses."""
+    fake_winreg = MagicMock(name="winreg")
+    fake_winreg.HKEY_CURRENT_USER = "HKCU"
+    fake_key_cm = MagicMock()
+    fake_key_cm.__enter__ = MagicMock(return_value=fake_key_cm)
+    fake_key_cm.__exit__ = MagicMock(return_value=False)
+    fake_winreg.OpenKey = MagicMock(return_value=fake_key_cm)
+    fake_winreg.QueryValueEx = MagicMock(return_value=(fake_docs, 1))
+    sys.modules["winreg"] = fake_winreg
+
+
+class EditorWorldRungTests(_BaseCase):
+    """Guards the exact regression from the brief: StarWars is the open
+    project (per the editor world), but DetonationDemo -- and other
+    candidate projects -- exist on disk and would otherwise be picked by
+    directory-listing/glob order."""
+
+    def test_open_project_wins_over_alphabetically_earlier_candidates(self):
+        fake_docs = os.path.join(self._tmp, "FakeDocuments")
+        projects_root = os.path.join(fake_docs, "Fortnite Projects")
+        # Alphabetically-first candidates that must NOT be selected.
+        _make_real_project(os.path.join(projects_root, "AlphaFirstProject"))
+        detonation_demo = os.path.join(projects_root, "DetonationDemo")
+        _make_real_project(detonation_demo)
+        # The actually-open project, alphabetically LAST.
+        star_wars = os.path.join(projects_root, "StarWars")
+        _make_real_project(star_wars, n_verse=5)
+
+        _install_fake_winreg_docs(fake_docs)
+        self._configure_editor_world("/StarWars/StarWars.StarWars")
+
+        other_script = os.path.join(self._tmp, "elsewhere", "Content", "Python", "device_audit.py")
+        _touch(other_script)
+        self._set_script_dir(other_script)
+
+        result = device_audit._find_verse_dir()
+        self.assertEqual(
+            os.path.normpath(result),
+            os.path.normpath(os.path.join(star_wars, "Content")),
+        )
+        self.assertNotIn("AlphaFirstProject", result)
+        self.assertNotIn("DetonationDemo", result)
+
+    def test_open_project_wins_via_legacy_editor_level_library(self):
+        fake_docs = os.path.join(self._tmp, "FakeDocuments")
+        projects_root = os.path.join(fake_docs, "Fortnite Projects")
+        detonation_demo = os.path.join(projects_root, "DetonationDemo")
+        _make_real_project(detonation_demo)
+        star_wars = os.path.join(projects_root, "StarWars")
+        _make_real_project(star_wars)
+
+        _install_fake_winreg_docs(fake_docs)
+        self._configure_editor_world("/StarWars/StarWars.StarWars", via_legacy=True)
+
+        other_script = os.path.join(self._tmp, "elsewhere2", "Content", "Python", "device_audit.py")
+        _touch(other_script)
+        self._set_script_dir(other_script)
+
+        result = device_audit._find_verse_dir()
+        self.assertEqual(
+            os.path.normpath(result),
+            os.path.normpath(os.path.join(star_wars, "Content")),
+        )
+
+    def test_engine_mount_points_are_rejected(self):
+        for bad_path_name in ("/Game/Maps/Entry", "/Engine/Transient", "/Script/FortniteGame"):
+            with self.subTest(bad_path_name=bad_path_name):
+                self._configure_editor_world(bad_path_name)
+                self.assertIsNone(device_audit._editor_world_mount_name())
+                self.assertIsNone(device_audit._editor_world_project_dir_candidate())
+
+    def test_env_override_still_beats_editor_world_rung(self):
+        fake_docs = os.path.join(self._tmp, "FakeDocuments")
+        projects_root = os.path.join(fake_docs, "Fortnite Projects")
+        star_wars = os.path.join(projects_root, "StarWars")
+        _make_real_project(star_wars)
+        _install_fake_winreg_docs(fake_docs)
+        self._configure_editor_world("/StarWars/StarWars.StarWars")
+
+        env_target = os.path.join(self._tmp, "EnvProject")
+        _touch(os.path.join(env_target, "only.verse"))
+        os.environ["UEFN_VERSE_PROJECT_DIR"] = env_target
+
+        result = device_audit._find_verse_dir()
+        self.assertEqual(os.path.normpath(result), os.path.normpath(env_target))
+
+    def test_stub_unreal_missing_world_apis_falls_through_without_raising(self):
+        # setUp already deletes get_editor_subsystem / UnrealEditorSubsystem
+        # / EditorLevelLibrary, simulating a stub `unreal` lacking these
+        # APIs entirely. Must degrade to None, never raise.
+        self.assertIsNone(device_audit._editor_world_mount_name())
+        self.assertIsNone(device_audit._editor_world_project_dir_candidate())
+
+        # And end-to-end, _find_verse_dir must still resolve via a later
+        # rung rather than blowing up.
+        real_project = os.path.join(self._tmp, "RealProject")
+        script = _make_real_project(real_project)
+        self._set_script_dir(script)
+        result = device_audit._find_verse_dir()
+        self.assertEqual(
+            os.path.normpath(result),
+            os.path.normpath(os.path.join(real_project, "Content")),
+        )
+
+    def test_world_get_path_name_raising_falls_through_without_raising(self):
+        world = MagicMock(name="EditorWorld")
+        world.get_path_name = MagicMock(side_effect=RuntimeError("boom"))
+        subsystem = MagicMock(name="UnrealEditorSubsystem")
+        subsystem.get_editor_world = MagicMock(return_value=world)
+        _unreal.UnrealEditorSubsystem = MagicMock(name="UnrealEditorSubsystemClass")
+        _unreal.get_editor_subsystem = MagicMock(return_value=subsystem)
+
+        self.assertIsNone(device_audit._editor_world_mount_name())
+        self.assertIsNone(device_audit._editor_world_project_dir_candidate())
+
+    def test_mount_name_with_no_matching_directory_on_disk_yields_none(self):
+        fake_docs = os.path.join(self._tmp, "FakeDocuments")
+        projects_root = os.path.join(fake_docs, "Fortnite Projects")
+        _make_real_project(os.path.join(projects_root, "SomeOtherProject"))
+        _install_fake_winreg_docs(fake_docs)
+        self._configure_editor_world("/NoSuchProject/NoSuchProject.NoSuchProject")
+
+        self.assertEqual(device_audit._editor_world_mount_name(), "NoSuchProject")
+        self.assertIsNone(device_audit._editor_world_project_dir_candidate())
 
 
 class TotalFailureTests(_BaseCase):

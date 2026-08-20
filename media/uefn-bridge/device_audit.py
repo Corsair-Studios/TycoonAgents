@@ -570,17 +570,21 @@ def _looks_like_real_project(directory):
         return False
 
 
-def _registry_fortnite_project_candidates():
-    """Rung 3 of the discovery ladder: read the Windows "Personal"
-    (Documents) known-folder value straight from the registry — the
-    authoritative source regardless of OneDrive/other redirection schemes
-    (docs/PATH-DISCOVERY.md sec. 4, same signal as init_unreal.py's
-    project-root discovery) — and glob for "Fortnite Projects\\*" dirs
-    under it. Windows-only and fail-open end-to-end: wrong platform,
-    missing key, or any other failure yields an empty list, never an
-    exception. Returns a list of candidate project directories (existence
-    not yet checked)."""
-    candidates = []
+def _registry_fortnite_projects_roots():
+    """Read the Windows "Personal" (Documents) known-folder value straight
+    from the registry — the authoritative source regardless of
+    OneDrive/other redirection schemes (docs/PATH-DISCOVERY.md sec. 4,
+    same signal as init_unreal.py's project-root discovery) — and return
+    the "Fortnite Projects" directory under it (existence not checked).
+    Windows-only and fail-open end-to-end: wrong platform, missing key, or
+    any other failure yields an empty list, never an exception. Returns a
+    list (0 or 1 entries today) so callers can treat it uniformly with
+    other multi-signal root sources per PATH-DISCOVERY.md sec. 2 (multiple
+    independent signals, de-duplicated) — shared by
+    ``_registry_fortnite_project_candidates`` (rung 3, globs project dirs
+    under it) and ``_editor_world_project_dir_candidate`` (the editor-world
+    rung, which resolves a specific mount name under it)."""
+    roots = []
     try:
         import winreg as _winreg
         with _winreg.OpenKey(
@@ -590,37 +594,58 @@ def _registry_fortnite_project_candidates():
             _personal_raw, _ = _winreg.QueryValueEx(_key, "Personal")
         _personal = os.path.expandvars(_personal_raw)
         if _personal:
-            try:
-                for _proj_dir in glob.glob(
-                    os.path.join(_personal, "Fortnite Projects", "*")
-                ):
-                    if not os.path.isdir(_proj_dir):
-                        continue
-                    # Prefer the project's Content/ dir (what every other
-                    # rung returns) when present; otherwise fall back to
-                    # the project root itself so _has_verse's own depth-
-                    # capped walk still has a chance to find it.
-                    _proj_content = os.path.join(_proj_dir, "Content")
-                    if os.path.isdir(_proj_content):
-                        candidates.append(_proj_content)
-                    else:
-                        candidates.append(_proj_dir)
-            except Exception:
-                pass
+            roots.append(os.path.join(_personal, "Fortnite Projects"))
     except Exception:
         pass
+    return roots
+
+
+def _registry_fortnite_project_candidates():
+    """Rung 3 of the discovery ladder: glob for "Fortnite Projects\\*" dirs
+    under each root from ``_registry_fortnite_projects_roots``. Windows-only
+    and fail-open end-to-end: wrong platform, missing key, or any other
+    failure yields an empty list, never an exception. Returns a list of
+    candidate project directories (existence not yet checked)."""
+    candidates = []
+    for _root in _registry_fortnite_projects_roots():
+        try:
+            for _proj_dir in glob.glob(os.path.join(_root, "*")):
+                if not os.path.isdir(_proj_dir):
+                    continue
+                # Prefer the project's Content/ dir (what every other rung
+                # returns) when present; otherwise fall back to the
+                # project root itself so _has_verse's own depth-capped
+                # walk still has a chance to find it.
+                _proj_content = os.path.join(_proj_dir, "Content")
+                if os.path.isdir(_proj_content):
+                    candidates.append(_proj_content)
+                else:
+                    candidates.append(_proj_dir)
+        except Exception:
+            pass
     return candidates
 
 
 def _unreal_project_dir_candidate():
-    """Rung 2 of the discovery ladder: ask the embedded ``unreal`` API for
-    the live project's directory. NOTE (from prior work in this repo):
-    ``unreal.Paths`` can return the ENGINE INSTALL directory rather than
-    the live user project, so the value is only a candidate here, never
-    trusted outright — the caller still runs it through
-    ``_is_inside_fortnite_install`` / ``_looks_like_real_project`` like
-    every other candidate. Guarded end-to-end: any missing attribute,
-    exception, or non-directory result yields None. Never raises."""
+    """A discovery-ladder candidate: ask the embedded ``unreal`` API for
+    the live project's directory. MEASURED FINDING (live UEFN session,
+    2026-08-19): every ``unreal.Paths`` function — ``project_dir``,
+    ``project_content_dir``, ``project_config_dir``, ``project_plugins_dir``,
+    and ``get_project_file_path`` — returns a path rooted at
+    ``.../FortniteGame/...``, i.e. the ENGINE INSTALL, never the user's
+    actual open project (StarWars, DetonationDemo, etc.). In UEFN "the
+    project" from the engine's own perspective is always FortniteGame, so
+    this rung is STRUCTURALLY INCAPABLE of naming the user's project — it
+    is not a bug fixable in place, just a signal that doesn't exist here.
+    Kept (rather than removed) because it's harmless, the caller already
+    validates its result through ``_is_inside_fortnite_install`` /
+    ``_looks_like_real_project`` like every other candidate, and it could
+    become useful again if Epic ever changes what Paths reports — nobody
+    should re-investigate this without cause. The real open-project signal
+    is the editor world's package path — see
+    ``_editor_world_project_dir_candidate``, which runs BEFORE this rung.
+    Guarded end-to-end: any missing attribute, exception, or non-directory
+    result yields None. Never raises."""
     try:
         paths_cls = getattr(unreal, "Paths", None)
         if paths_cls is None:
@@ -640,6 +665,114 @@ def _unreal_project_dir_candidate():
     return None
 
 
+# Package-path mount points that name ENGINE content, never a user's UEFN
+# project — the editor world's path always starts with one of these when
+# no user project is actually open, or when Epic's own content is what's
+# loaded. Rejected outright so the editor-world rung below can never
+# resolve to an engine tree.
+_ENGINE_WORLD_MOUNTS = frozenset({"Game", "Engine", "Temp", "Script", "FortniteGame"})
+
+
+def _editor_world_mount_name():
+    """Return the open UEFN project's package-path MOUNT POINT (e.g.
+    ``"StarWars"``), or None. MEASURED FINDING (live UEFN session,
+    2026-08-19): the editor world's package path — e.g.
+    ``/StarWars/StarWars.StarWars`` when StarWars is the open project — is
+    authoritative ground truth for which project is open, unlike
+    ``unreal.Paths`` (see ``_unreal_project_dir_candidate``'s docstring),
+    because the mount point is the project's own outer package namespace,
+    not the engine's. Tries the modern editor subsystem API first, then
+    falls back to the legacy ``EditorLevelLibrary``, since which one is
+    available varies by UEFN/engine version. Every attribute access is
+    guarded individually so a stub/partial ``unreal`` module (as used in
+    tests, or an older API surface) degrades to None rather than raising.
+    Rejects known-engine mounts (``_ENGINE_WORLD_MOUNTS``) since those name
+    engine content, not a user project. Never raises."""
+    world = None
+
+    # Preferred: unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).
+    try:
+        get_subsystem = getattr(unreal, "get_editor_subsystem", None)
+        subsystem_cls = getattr(unreal, "UnrealEditorSubsystem", None)
+        if get_subsystem is not None and subsystem_cls is not None:
+            subsystem = get_subsystem(subsystem_cls)
+            get_world = getattr(subsystem, "get_editor_world", None)
+            if get_world is not None:
+                world = get_world()
+    except Exception:
+        world = None
+
+    # Fallback: the legacy unreal.EditorLevelLibrary.get_editor_world().
+    if world is None:
+        try:
+            level_lib = getattr(unreal, "EditorLevelLibrary", None)
+            get_world = getattr(level_lib, "get_editor_world", None) if level_lib is not None else None
+            if get_world is not None:
+                world = get_world()
+        except Exception:
+            world = None
+
+    if world is None:
+        return None
+
+    try:
+        get_path_name = getattr(world, "get_path_name", None)
+        if get_path_name is None:
+            return None
+        path_name = get_path_name()
+        if not path_name:
+            return None
+        # e.g. "/StarWars/StarWars.StarWars" -> "StarWars"
+        segment = path_name.lstrip("/").split("/", 1)[0]
+        segment = segment.split(".", 1)[0]
+        if not segment or segment in _ENGINE_WORLD_MOUNTS:
+            return None
+        return segment
+    except Exception:
+        return None
+
+
+def _editor_world_project_dir_candidate():
+    """The editor-world rung: resolve the open UEFN project's directory
+    from the editor world's package-path mount point
+    (``_editor_world_mount_name``) — the exact fix for the measured
+    regression where StarWars was open but discovery returned
+    DetonationDemo's dir because the registry rung (rung 3) picks by
+    directory-listing order among several candidate projects. Per
+    docs/PATH-DISCOVERY.md sec. 3 (content-based over name-based matching)
+    this still isn't a bare name match: the mount name only becomes a
+    result once ``<root>/<MountName>`` is confirmed to exist AND is run
+    through the same ``_looks_like_real_project`` content check
+    (.verse files + Content/__ExternalActors__) every other rung uses, and
+    the caller re-validates it again like any other candidate. Does NOT
+    assume a single hardcoded parent — it reuses the same candidate roots
+    ``_registry_fortnite_project_candidates`` derives from the registry
+    "Personal" shell-folder value (``_registry_fortnite_projects_roots``),
+    since that is this module's only known way to enumerate "Fortnite
+    Projects" parent directories today. Guarded end-to-end: any failure at
+    any step (no world, no mount, no matching directory) yields None.
+    Never raises."""
+    try:
+        mount = _editor_world_mount_name()
+        if not mount:
+            return None
+        roots = _registry_fortnite_projects_roots()
+        best = None
+        for root in roots:
+            candidate_root = os.path.join(root, mount)
+            if not os.path.isdir(candidate_root):
+                continue
+            candidate_content = os.path.join(candidate_root, "Content")
+            candidate = candidate_content if os.path.isdir(candidate_content) else candidate_root
+            if best is None:
+                best = candidate
+            if _looks_like_real_project(candidate):
+                return candidate
+        return best
+    except Exception:
+        return None
+
+
 def _find_verse_dir():
     """
     Locate the directory tree containing the USER'S UEFN project's .verse
@@ -650,13 +783,26 @@ def _find_verse_dir():
        does not resolve to a directory with .verse files, that is an
        explicit failure (reported in the final warning), never a silent
        fall-through to guessing.
-    2. The live project path from ``unreal.Paths`` (project_content_dir /
+    2. The OPEN project's directory, resolved from the editor world's
+       package-path mount point (e.g. ``/StarWars/StarWars.StarWars`` ->
+       ``StarWars``) — see ``_editor_world_project_dir_candidate``. This is
+       the fix for the measured regression where StarWars was the open
+       project but discovery returned DetonationDemo's Content dir,
+       because with 8 candidate projects on disk, later rungs pick by
+       directory-listing order, not by what's actually open. Engine mounts
+       (``Game``, ``Engine``, ``Temp``, ``Script``, ``FortniteGame``) are
+       rejected outright — see ``_ENGINE_WORLD_MOUNTS``.
+    3. The live project path from ``unreal.Paths`` (project_content_dir /
        project_dir), validated — rejected if it lies inside a Fortnite
-       engine install tree or doesn't look like a real project.
-    3. The Windows registry's "Personal" (Documents) known folder,
+       engine install tree or doesn't look like a real project. MEASURED
+       FINDING: in UEFN this always returns the FortniteGame ENGINE
+       INSTALL, never the user's actual project — see
+       ``_unreal_project_dir_candidate``'s docstring — so this rung exists
+       only as a safety net, never as the primary signal.
+    4. The Windows registry's "Personal" (Documents) known folder,
        expanded and globbed for "Fortnite Projects\\*" dirs. Windows-only,
        fails open on any other platform or if the key/module is missing.
-    4. The original ``__file__``-relative strategies (Content/ parent,
+    5. The original ``__file__``-relative strategies (Content/ parent,
        sibling Content dirs, Plugins/ walk-up) — KEPT, but every candidate
        they produce is now rejected if it sits inside a Fortnite/Epic
        engine install tree (structural check: a "FortniteGame" segment
@@ -695,7 +841,6 @@ def _find_verse_dir():
         # past it as if it were unset — record it and continue collecting
         # candidates only so the final message is informative.
 
-    # --- Rung 2: live project path from unreal.Paths, validated ---
     candidates = []  # ordered list of (path, is_real_project) survivors
 
     def _consider(path):
@@ -711,17 +856,24 @@ def _find_verse_dir():
                 return
         candidates.append((norm, _looks_like_real_project(norm)))
 
+    # --- Rung 2: OPEN project dir from the editor world's mount point ---
+    world_dir = _editor_world_project_dir_candidate()
+    _record("editor world mount project dir", world_dir)
+    if world_dir:
+        _consider(world_dir)
+
+    # --- Rung 3: live project path from unreal.Paths, validated ---
     unreal_dir = _unreal_project_dir_candidate()
     _record("unreal.Paths project dir", unreal_dir)
     if unreal_dir:
         _consider(unreal_dir)
 
-    # --- Rung 3: registry-derived Documents\Fortnite Projects\* ---
+    # --- Rung 4: registry-derived Documents\Fortnite Projects\* ---
     for reg_candidate in _registry_fortnite_project_candidates():
         _record("registry Fortnite Projects candidate", reg_candidate)
         _consider(reg_candidate)
 
-    # --- Rung 4: original __file__-relative strategies, install-tree-safe ---
+    # --- Rung 5: original __file__-relative strategies, install-tree-safe ---
 
     # Strategy 1: Content/ parent (original).
     content_dir = os.path.dirname(script_dir)
