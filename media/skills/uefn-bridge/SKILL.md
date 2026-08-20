@@ -142,6 +142,22 @@ Use the path to wherever you kept `uefn-server.mjs` in Step B2 — this is **not
 >
 > **Quick launch:** in UEFN's Python console, type `import pt` to open Trashbyrd's Power Tools.
 
+## Workaround: bridge doesn't auto-start (UEFN's dynamic Python lifecycle)
+
+**Symptom:** Power Tools doesn't start when UEFN opens the project — no launcher window, no Tools-menu entries, and `uefn_status` reports the bridge unreachable — even though the bridge is correctly installed.
+
+**Fix (repeat once per UEFN session):** open UEFN's Python console (Output Log panel → console dropdown → **Python**) and run:
+
+```python
+import init_unreal
+```
+
+This starts everything — bridge, launcher, and Tools-menu entries — in one call. Follow it with `import pt` to open Trashbyrd's Power Tools, same as the **Quick launch** note above.
+
+**Why this happens — this is a UEFN-side change, not a broken install:** UEFN moved Python to a dynamic lifecycle. Verified in-editor settings: `Engine.Python.IsPythonLifeCycleDynamic=True` ("python will not be initialized on boot"), `Engine.Python.IsEnabledByDefault=False`, `Engine.Python.IsPythonInRestrictiveMode=True`. Python now initializes roughly 88 seconds after editor boot, force-enabled at runtime via `IPythonScriptPlugin::ForceEnablePythonAtRuntime` — and as a result, UEFN no longer auto-executes `init_unreal.py` from `FortniteGame/Content/Python` the way it used to. Only Epic's own two startup scripts under `Engine/Plugins/Experimental/` run automatically now. Nothing is wrong with the bridge itself: its directory is on `sys.path`, `init_unreal.py` exists there and compiles cleanly, and its modules import fine (`import bridge_version` succeeds) — the module is simply never imported for you anymore.
+
+**This is a manual step, not a fix you apply once.** There is currently no permanent trigger that restores auto-start, so `import init_unreal` has to be typed again every time UEFN is closed and reopened, until Epic exposes one or this bridge finds a reliable hook into the new lifecycle.
+
 ---
 
 ## Prerequisites
