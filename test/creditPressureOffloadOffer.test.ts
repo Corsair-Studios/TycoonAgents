@@ -218,6 +218,25 @@ function dispatchMetrics(dispatch: (d: any) => void, agentMetrics: any[]) {
   });
 }
 
+/**
+ * Dispatch OFFLOAD_OFFER_STATE, the host's reply to boot-time
+ * REQUEST_OFFLOAD_OFFER_STATE — this is the ONLY way `providerAvailable`
+ * (a fresh host-side .mcp.json check, panel.ts's offloadProviderAvailable)
+ * reaches the webview. Every test in this file must dispatch this
+ * EXPLICITLY with the availability it intends: the webview variable
+ * defaults `false` (fail closed) until this message arrives, so a test
+ * that wants a visible card must say so, and a test proving the reported
+ * bug must simply omit/false this call.
+ */
+function dispatchOfferState(dispatch: (d: any) => void, opts: { dismissed?: boolean; accepted?: boolean; providerAvailable?: boolean } = {}) {
+  dispatch({
+    type: "OFFLOAD_OFFER_STATE",
+    dismissed: opts.dismissed ?? false,
+    accepted: opts.accepted ?? false,
+    providerAvailable: opts.providerAvailable ?? false,
+  });
+}
+
 const BELOW_THRESHOLD_ORCH = { id: "orchestrator", name: "Orchestrator", tokens: 1000, cacheReadTokens: 500 };
 // Threshold is 500000 on (tokens + cacheReadTokens).
 const ABOVE_THRESHOLD_ORCH = { id: "orchestrator", name: "Orchestrator", tokens: 600000, cacheReadTokens: 0 };
@@ -238,17 +257,19 @@ function dismissButton(doc: any) {
 
 test("credit pressure: detection below threshold never shows the offer card", () => {
   const { doc, dispatch } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   dispatchMetrics(dispatch, [BELOW_THRESHOLD_ORCH]);
   assert.equal(offerCard(doc), null, "offer card must not render below the token threshold");
 });
 
 test("credit pressure: detection tripping shows ONLY the offer card — no other postMessage traffic beyond REQUEST_OFFLOAD_OFFER_STATE boot read", () => {
   const { doc, dispatch, postedMessages } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   const messagesBeforeMetrics = postedMessages.length;
 
   dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
 
-  assert.ok(offerCard(doc), "offer card must render once the threshold trips");
+  assert.ok(offerCard(doc), "offer card must render once the threshold trips AND a provider is confirmed available");
   assert.equal(
     postedMessages.length,
     messagesBeforeMetrics,
@@ -258,6 +279,7 @@ test("credit pressure: detection tripping shows ONLY the offer card — no other
 
 test("credit pressure: repeated re-detection (multiple state pushes) still posts nothing and never toggles any state beyond the card", () => {
   const { doc, dispatch, postedMessages } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
   const afterFirst = postedMessages.length;
   const cardFirst = offerCard(doc);
@@ -276,6 +298,7 @@ test("credit pressure: repeated re-detection (multiple state pushes) still posts
 
 test("credit pressure: dismiss sends dismissed:true WITHOUT accepted, and hides the card", () => {
   const { doc, dispatch, postedMessages } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
   const btn = dismissButton(doc);
   assert.ok(btn, "dismiss button must exist while the card is shown");
@@ -303,6 +326,7 @@ test("credit pressure: dismiss sends dismissed:true WITHOUT accepted, and hides 
 
 test("credit pressure: post-dismiss re-render (re-tripped detection) stays dismissed — identical to never having tripped, from the card's perspective", () => {
   const { doc, dispatch, postedMessages } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
   dismissButton(doc)!.dispatchEvent(new (doc.defaultView as any).Event("click", { bubbles: true }));
   assert.equal(offerCard(doc), null);
@@ -315,6 +339,7 @@ test("credit pressure: post-dismiss re-render (re-tripped detection) stays dismi
   // Baseline comparison: a session that never tripped detection at all also
   // shows no card and posts nothing extra.
   const baseline = bootMainJs();
+  dispatchOfferState(baseline.dispatch, { providerAvailable: true });
   dispatchMetrics(baseline.dispatch, [BELOW_THRESHOLD_ORCH]);
 
   assert.equal(offerCard(doc), null, "dismissed session must not resurrect the card on renewed detection");
@@ -330,6 +355,7 @@ test("credit pressure: post-dismiss re-render (re-tripped detection) stays dismi
 
 test("credit pressure: accept sends dismissed:true AND accepted:true, distinct from dismiss's payload", () => {
   const { doc, dispatch, postedMessages } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
   const btn = acceptButton(doc);
   assert.ok(btn, "accept button must exist while the card is shown");
@@ -354,11 +380,13 @@ test("credit pressure: accept sends dismissed:true AND accepted:true, distinct f
 
 test("credit pressure: accept and dismiss payloads are byte-distinguishable (regression pin — these were once byte-identical)", () => {
   const acceptRun = bootMainJs();
+  dispatchOfferState(acceptRun.dispatch, { providerAvailable: true });
   dispatchMetrics(acceptRun.dispatch, [ABOVE_THRESHOLD_ORCH]);
   acceptButton(acceptRun.doc)!.dispatchEvent(new (acceptRun.doc.defaultView as any).Event("click", { bubbles: true }));
   const acceptPayload = acceptRun.postedMessages.find((m) => m && m.type === "SET_OFFLOAD_OFFER_DISMISSED");
 
   const dismissRun = bootMainJs();
+  dispatchOfferState(dismissRun.dispatch, { providerAvailable: true });
   dispatchMetrics(dismissRun.dispatch, [ABOVE_THRESHOLD_ORCH]);
   dismissButton(dismissRun.doc)!.dispatchEvent(new (dismissRun.doc.defaultView as any).Event("click", { bubbles: true }));
   const dismissPayload = dismissRun.postedMessages.find((m) => m && m.type === "SET_OFFLOAD_OFFER_DISMISSED");
@@ -374,6 +402,7 @@ test("credit pressure: accept and dismiss payloads are byte-distinguishable (reg
 
 test("credit pressure: detection trip with zero clicks never sends SET_OFFLOAD_OFFER_DISMISSED (only the boot-time REQUEST_OFFLOAD_OFFER_STATE read may exist)", () => {
   const { dispatch, postedMessages } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
 
   const offloadMsgs = postedMessages.filter((m) => m && m.type === "SET_OFFLOAD_OFFER_DISMISSED");
@@ -387,15 +416,66 @@ test("credit pressure: detection trip with zero clicks never sends SET_OFFLOAD_O
 
 test("credit pressure: threshold is exactly at 500000 tokens+cacheReadTokens (boundary)", () => {
   const { doc, dispatch } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   dispatchMetrics(dispatch, [{ id: "orchestrator", tokens: 499999, cacheReadTokens: 0 }]);
   assert.equal(offerCard(doc), null, "499999 total tokens must stay below the trip point");
 
   dispatchMetrics(dispatch, [{ id: "orchestrator", tokens: 500000, cacheReadTokens: 0 }]);
-  assert.ok(offerCard(doc), "exactly 500000 total tokens must trip the offer (>= threshold)");
+  assert.ok(offerCard(doc), "exactly 500000 total tokens must trip the offer (>= threshold) when a provider is available");
 });
 
 test("credit pressure: no orchestrator row in agentMetrics never trips the offer", () => {
   const { doc, dispatch } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
   dispatchMetrics(dispatch, [{ id: "coding-specialist", tokens: 999999999, cacheReadTokens: 999999999 }]);
   assert.equal(offerCard(doc), null, "absence of an orchestrator row must never trip the offer, regardless of worker token volume");
+});
+
+// ── 5. Provider-availability gate (the reported bug) ──────────────────────
+//
+// Before this fix, checkCreditPressureOffer's token threshold was the ONLY
+// gate: a project with NO Codex MCP server installed still got offered a
+// route to it. These pin the fix: BOTH the threshold AND a confirmed
+// provider must hold, and absence/unreadability of .mcp.json must fail
+// CLOSED (no offer), never open.
+
+test("credit pressure BUG PIN: tokens over threshold + NO provider available + not dismissed => NO card, even though detection alone would trip", () => {
+  const { doc, dispatch } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: false });
+  dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
+  assert.equal(
+    offerCard(doc),
+    null,
+    "the reported bug: an offer for Codex must never render when no foreign provider is confirmed installed, regardless of token pressure"
+  );
+});
+
+test("credit pressure: provider available AND tokens over threshold AND not dismissed => card renders", () => {
+  const { doc, dispatch } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
+  dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
+  assert.ok(offerCard(doc), "card must render when all three conditions hold: threshold, availability, not dismissed");
+});
+
+test("credit pressure: provider available but tokens under threshold => no card (existing behavior unchanged by the availability gate)", () => {
+  const { doc, dispatch } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
+  dispatchMetrics(dispatch, [BELOW_THRESHOLD_ORCH]);
+  assert.equal(offerCard(doc), null, "availability alone must never substitute for the token threshold");
+});
+
+test("credit pressure: OFFLOAD_OFFER_STATE omitting providerAvailable (older host, or unreadable/absent .mcp.json resolving false) fails CLOSED — no card even above threshold", () => {
+  const { doc, dispatch } = bootMainJs();
+  // Simulate the host's reply when .mcp.json is absent/unreadable/lacks a
+  // codex entry: panel.ts's offloadProviderAvailable resolves false in
+  // every one of those cases, so the field is sent as false (not omitted)
+  // — but this also covers an even older host build that omits the field
+  // entirely, via dispatching the message with no providerAvailable key.
+  dispatch({ type: "OFFLOAD_OFFER_STATE", dismissed: false, accepted: false });
+  dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
+  assert.equal(
+    offerCard(doc),
+    null,
+    "a missing providerAvailable field (undefined) must be treated as false via Boolean(undefined), not as available"
+  );
 });

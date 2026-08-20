@@ -315,6 +315,32 @@ function writeOffloadOfferAccepted(root: string, accepted: boolean): void {
 }
 
 /**
+ * Whether a foreign-provider offload route actually exists for this
+ * project, checked host-side against the project's real `.mcp.json` —
+ * NEVER inferred from the webview, and NEVER by spawning a process (e.g.
+ * `codex --version`), which would be slow and inappropriate for a cosmetic
+ * card. Reuses the exact plumbing `_handleInstallMcp`/`_handleGetMcp`
+ * already use to read `.mcp.json` tolerantly (`_readMcpConfig`) and to
+ * check for a server entry (`hasMcpServer` from `./mcpCatalog`) — this is
+ * deliberately NOT a second reader.
+ *
+ * SIGNAL CHOSEN AND WHY: an `mcpServers.codex` entry in `.mcp.json` is the
+ * most direct evidence the user has actually wired up a Codex route —
+ * it's the same catalog id (`codex`, media/mcp/catalog.json) the "Install"
+ * button in the MCP panel writes. Fails CLOSED on every ambiguous case:
+ * missing `.mcp.json`, unreadable/invalid JSON (both already handled by
+ * `_readMcpConfig`'s try/catch → `{}`), or no `codex` key all resolve to
+ * `false`/"not available". An offer that names a route which does not
+ * exist is worse than no offer at all — this function's whole job is to
+ * make that impossible.
+ */
+function offloadProviderAvailable(root: string, readMcpConfig: (mcpPath: string) => Record<string, unknown>): boolean {
+  if (root === "") return false;
+  const mcpConfig = readMcpConfig(path.join(root, ".mcp.json"));
+  return hasMcpServer(mcpConfig, "codex");
+}
+
+/**
  * Seed the opt-in `projectPlanEnabled` flag at fresh-install/repair time,
  * mirroring the `reviewEnabled` default-on-install precedent in
  * `_handleInstallHooks`: Project Plan is ON by default for a project that
@@ -2398,16 +2424,22 @@ export class TycoonPanel {
           // no-op cleanly and hide the section.
           this._postPlanState();
         } else if (message.type === MSG.REQUEST_OFFLOAD_OFFER_STATE) {
-          // Credit-pressure offload offer (p6-t1): boot-time read of the two
-          // persisted flags (dismissed + accepted). Detection itself runs
-          // client-side in media/main.js against the metrics payload it
-          // already has — this round-trip never touches routing, mirrors
-          // REQUEST_PLAN.
+          // Credit-pressure offload offer (p6-t1): boot-time read of the
+          // persisted flags (dismissed + accepted) PLUS a fresh host-side
+          // check of whether a foreign-provider route actually exists
+          // (providerAvailable — see offloadProviderAvailable's doc). The
+          // latter is deliberately NOT cached/persisted: it must reflect
+          // the project's REAL .mcp.json at the moment the webview asks,
+          // not a stale snapshot from an earlier boot. Detection itself
+          // (token threshold) runs client-side in media/main.js against the
+          // metrics payload it already has — this round-trip never touches
+          // routing, mirrors REQUEST_PLAN.
           const root = this._projectRoot();
           void this._panel.webview.postMessage({
             type: MSG.OFFLOAD_OFFER_STATE,
             dismissed: root === "" ? false : readOffloadOfferDismissed(root),
             accepted: root === "" ? false : readOffloadOfferAccepted(root),
+            providerAvailable: offloadProviderAvailable(root, (p) => this._readMcpConfig(p)),
           });
         } else if (message.type === MSG.SET_OFFLOAD_OFFER_DISMISSED) {
           // Persist the user's explicit accept/dismiss choice. `dismissed`

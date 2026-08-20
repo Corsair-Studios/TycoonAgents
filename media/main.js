@@ -188,6 +188,19 @@
    */
   let offloadOfferAccepted = false;
   /**
+   * Whether a foreign-provider offload route (Codex) has been CONFIRMED to
+   * exist for this project — from OFFLOAD_OFFER_STATE.providerAvailable, a
+   * fresh host-side read of the project's real .mcp.json (see
+   * offloadProviderAvailable in panel.ts), never a guess made in this
+   * webview. Defaults `false` (NOT available) so that until the host
+   * explicitly confirms otherwise, the offer stays hidden — fail closed.
+   * This mirrors offloadOfferDismissed's storage pattern but is NOT itself
+   * persisted state; it is recomputed by the host on every
+   * REQUEST_OFFLOAD_OFFER_STATE round trip so it can never go stale if the
+   * user installs/removes the Codex MCP server mid-session.
+   */
+  let offloadProviderAvailable = false;
+  /**
    * Which array the Metrics tab's TABLE currently displays: "all" (cumulative
    * — totals since the last metrics reset) or "session" (current Claude Code
    * session only). DEFAULT "all" so upgrading users see the exact same
@@ -12618,11 +12631,16 @@
       renderProjectPlanSection();
     } else if (msg && msg.type === "OFFLOAD_OFFER_STATE") {
       // Credit-pressure offload offer (p6-t1): boot-time reply to
-      // REQUEST_OFFLOAD_OFFER_STATE carrying the two persisted flags.
-      // Detection re-evaluation happens on the next renderMetrics() call
-      // (checkCreditPressureOffer), not here.
+      // REQUEST_OFFLOAD_OFFER_STATE carrying the two persisted flags plus a
+      // FRESH (non-persisted) host-side providerAvailable check. Detection
+      // re-evaluation happens on the next renderMetrics() call
+      // (checkCreditPressureOffer), not here. `providerAvailable` defaults
+      // false (Boolean(undefined) === false) so an older host build that
+      // predates this field, or any falsy/missing value, fails CLOSED —
+      // never shows an offer for an unconfirmed route.
       offloadOfferDismissed = Boolean(msg.dismissed);
       offloadOfferAccepted = Boolean(msg.accepted);
+      offloadProviderAvailable = Boolean(msg.providerAvailable);
       renderCreditPressureOffer();
     }
   });
@@ -14224,13 +14242,21 @@
 
   /**
    * Paint (or remove) the dismissible offload-offer card in #metrics-body.
-   * Shown iff detection trips AND the user has not already dismissed it
-   * this project (offloadOfferDismissed, from OFFLOAD_OFFER_STATE). Reuses
-   * the existing `.catalog-notice` card look (see .orchestrator-model-notice
-   * in style.css) rather than inventing new styling, and is guarded by a
-   * stable element id so repeated renderMetrics() calls update it in place
-   * instead of stacking duplicates — same pattern as #metrics-stats-caption
-   * a few lines up.
+   * Shown iff ALL THREE hold: detection trips (token threshold), the user
+   * has not already dismissed it this project (offloadOfferDismissed, from
+   * OFFLOAD_OFFER_STATE), AND a foreign-provider route is CONFIRMED to
+   * exist (offloadProviderAvailable, also from OFFLOAD_OFFER_STATE — a
+   * fresh host-side .mcp.json check, never a guess made here). The third
+   * condition is load-bearing: without it, a high orchestrator token count
+   * alone used to be sufficient to show an offer proposing a route
+   * (Codex) that might not be installed at all — a fabricated-state bug,
+   * the same class the panel's "never claim what it hasn't confirmed"
+   * doctrine exists to prevent. All three gates are independent; any one
+   * failing hides the card. Reuses the existing `.catalog-notice` card look
+   * (see .orchestrator-model-notice in style.css) rather than inventing new
+   * styling, and is guarded by a stable element id so repeated
+   * renderMetrics() calls update it in place instead of stacking
+   * duplicates — same pattern as #metrics-stats-caption a few lines up.
    */
   function renderCreditPressureOffer() {
     const metricsBodyEl = document.getElementById("metrics-body");
@@ -14240,6 +14266,7 @@
     if (existing) existing.remove(); // re-render clean each call
 
     if (offloadOfferDismissed) return;
+    if (!offloadProviderAvailable) return; // fail closed: no confirmed route, no offer
     if (!checkCreditPressureOffer()) return;
 
     const card = document.createElement("div");

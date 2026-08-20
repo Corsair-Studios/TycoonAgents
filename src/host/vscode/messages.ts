@@ -671,7 +671,15 @@ export const MSG_SCHEMAS = {
   // Outbound host -> webview: current persisted state, sent once at boot in
   // reply to REQUEST_OFFLOAD_OFFER_STATE (mirrors PLAN_STATE). `accepted`
   // defaults false when the field predates this addition (back-compat).
-  OFFLOAD_OFFER_STATE: z.object({ dismissed: z.boolean(), accepted: z.boolean().optional() }).passthrough(),
+  // `providerAvailable` is a FRESH host-side check (not persisted) of
+  // whether a real foreign-provider MCP route (.mcp.json's `codex` entry)
+  // exists for this project — see offloadProviderAvailable in panel.ts. It
+  // is optional for the same back-compat reason as `accepted`: an older
+  // host build predating this field simply omits it, and the webview must
+  // treat that as "not confirmed available" (fail closed), never as true.
+  OFFLOAD_OFFER_STATE: z
+    .object({ dismissed: z.boolean(), accepted: z.boolean().optional(), providerAvailable: z.boolean().optional() })
+    .passthrough(),
   // Inbound webview -> host: persist the user's action. `accepted` is
   // OPTIONAL and present only on an accept-click; a plain dismiss omits it
   // (or sends it false) so the two actions stay distinguishable end to end.
