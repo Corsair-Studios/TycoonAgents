@@ -76,6 +76,7 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
           workerId,
           ...(record.tokens !== undefined ? { tokens: record.tokens } : {}),
           ...(record.cacheReadTokens !== undefined ? { cacheReadTokens: record.cacheReadTokens } : {}),
+          ...(record.report !== undefined ? { report: record.report } : {}),
         },
       ];
     case "PreToolUse": {

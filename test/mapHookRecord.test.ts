@@ -105,6 +105,26 @@ test("SubagentStop without tokens emits WorkerStopped with no tokens field", () 
   }
 });
 
+test("SubagentStop with a report propagates it verbatim to WorkerStopped", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "agent-4", report: "Fixed foo.ts:12, verified with tsc.", at: T };
+  const events = mapHookRecord(record);
+  const ws = events[1];
+  assert.equal(ws.type, "WorkerStopped");
+  if (ws.type === "WorkerStopped") {
+    assert.equal(ws.report, "Fixed foo.ts:12, verified with tsc.");
+  }
+});
+
+test("SubagentStop without a report emits WorkerStopped with no report field (never an empty string)", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "agent-5", at: T };
+  const events = mapHookRecord(record);
+  const ws = events[1];
+  assert.equal(ws.type, "WorkerStopped");
+  if (ws.type === "WorkerStopped") {
+    assert.equal(ws.report, undefined);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // PreToolUse Task/Agent → [WorkerSpawned, TaskCompleted{workerId:"orchestrator"}]
 // ---------------------------------------------------------------------------

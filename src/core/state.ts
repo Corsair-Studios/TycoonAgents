@@ -112,6 +112,15 @@ export interface AgentMetric {
    * incorrect. Undefined/empty on legacy records or non-orchestrator agents.
    */
   cacheReadModelBreakdown?: Record<string, number>;
+  /**
+   * The most recent worker report (final assistant-message text from its
+   * transcript, capped ~2000 chars — see HookRecord.report) attributed to
+   * this agent. Overwritten on each WorkerStopped, not accumulated — only
+   * the latest report is kept, matching the panel's "what did this agent
+   * just do" use case rather than a full history. Undefined when no
+   * SubagentStop for this agent has ever carried a report.
+   */
+  lastReport?: string;
 }
 
 /** Internal tracking record (kept as an alias now that workStartAt is public). */
@@ -218,6 +227,7 @@ function upsertMetric(
     delegations: 0,
     modelBreakdown: undefined,
     cacheReadModelBreakdown: undefined,
+    lastReport: undefined,
   };
   return [...internals, updater(fresh)];
 }
@@ -514,6 +524,11 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           tokens: m.tokens + (event.tokens ?? 0),
           cacheReadTokens: m.cacheReadTokens + (event.cacheReadTokens ?? 0),
           workStartAt: null,
+          // Most-recent report only (never accumulated). A WorkerStopped
+          // event without a report (older hook version, or the transcript
+          // had no report to extract) must NOT clobber a previously captured
+          // report — only overwrite when this event actually carries one.
+          lastReport: event.report !== undefined ? event.report : m.lastReport,
         }),
       );
       return {

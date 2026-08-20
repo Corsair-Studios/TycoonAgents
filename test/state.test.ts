@@ -200,3 +200,43 @@ test("applyEvent: lastActivityAt updates on ProviderError too, not just the agen
   });
   assert.equal(state.lastActivityAt, T + 999, "every event type must refresh lastActivityAt, not just a subset");
 });
+
+// ---------------------------------------------------------------------------
+// Worker report capture reaches panel state (AgentMetric.lastReport)
+// ---------------------------------------------------------------------------
+
+test("a SubagentStop record carrying a report reaches the agent's lastReport via the full hook-record -> panel-state pipeline", () => {
+  const records: HookRecord[] = [
+    { event: "SubagentStop", workerId: "coding-specialist", report: "Fixed foo.ts:12, verified with tsc.", at: T },
+  ];
+  const { agentMetrics } = computeStateFromRecords(records);
+  const m = metric(agentMetrics, "coding-specialist");
+  assert.equal(m?.lastReport, "Fixed foo.ts:12, verified with tsc.");
+});
+
+test("lastReport holds only the MOST RECENT report — a later SubagentStop with a report overwrites, one without a report leaves the prior report untouched (never accumulated)", () => {
+  const records: HookRecord[] = [
+    { event: "SubagentStop", workerId: "coding-specialist", report: "first report", at: T },
+    { event: "SubagentStop", workerId: "coding-specialist", report: "second report", at: T + 10 },
+  ];
+  const { agentMetrics } = computeStateFromRecords(records);
+  const m = metric(agentMetrics, "coding-specialist");
+  assert.equal(m?.lastReport, "second report", "must hold only the latest report, not a concatenation");
+
+  const recordsNoOverwrite: HookRecord[] = [
+    { event: "SubagentStop", workerId: "coding-specialist", report: "kept report", at: T },
+    { event: "SubagentStop", workerId: "coding-specialist", at: T + 10 }, // no report this time
+  ];
+  const { agentMetrics: agentMetrics2 } = computeStateFromRecords(recordsNoOverwrite);
+  const m2 = metric(agentMetrics2, "coding-specialist");
+  assert.equal(m2?.lastReport, "kept report", "a WorkerStopped without a report must not clobber a previously captured one");
+});
+
+test("an agent with no report ever captured has lastReport undefined", () => {
+  const records: HookRecord[] = [
+    { event: "SubagentStop", workerId: "coding-specialist", tokens: 50, at: T },
+  ];
+  const { agentMetrics } = computeStateFromRecords(records);
+  const m = metric(agentMetrics, "coding-specialist");
+  assert.equal(m?.lastReport, undefined);
+});

@@ -40,7 +40,11 @@ export type NormalizedEvent =
   | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string; delegationMode?: string }
   | { type: "WorkerActivity"; at: number; workerId: WorkerId; kind: ActivityKind; detail?: string }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string }
-  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number }
+  // report: the subagent's final assistant-message text (capped, see
+  // HookRecord.report in providers/claude-code/hookRecord.ts for the exact
+  // truncation/fail-open contract). Undefined on legacy records or when the
+  // transcript was unavailable — never an empty string standing in for that.
+  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string }
   | { type: "ProviderError"; at: number; workerId?: WorkerId; message: string };
 
 export type EventSink = (event: NormalizedEvent) => void;

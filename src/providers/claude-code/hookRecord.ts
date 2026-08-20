@@ -25,5 +25,11 @@ export interface HookRecord {
   sessionId?: string;        // Claude Code session id (hooks/tycoon-claude-hook.cjs: payload.session_id).
                               // Used to scope "this session" views (Delegation Health dual view). Absent on
                               // records from hook versions predating this field.
+  report?: string;           // SubagentStop only: the subagent's final assistant-message text, extracted
+                              // from its transcript (lastAssistantTextFromTranscript in the hook script).
+                              // Capped at ~2000 chars with an explicit "… [truncated]" suffix when longer;
+                              // OPTIONAL and absent (never an empty string) when the transcript was
+                              // missing/unreadable or had no assistant prose to extract. Absent on records
+                              // from hook versions predating this field.
   at: number;                // epoch ms
 }

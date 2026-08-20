@@ -352,6 +352,61 @@ function firstUserTextFromTranscript(transcriptPath) {
   return "";
 }
 
+// Hard cap on the captured worker report. The delegation doctrine caps
+// worker reports at ~250 words; ~2000 chars is a generous ceiling above that
+// while still bounding activity.jsonl growth (62k+ records already) against
+// a worker that ignores the cap or a transcript with an unusually long final
+// message.
+const REPORT_MAX_CHARS = 2000;
+const REPORT_TRUNCATION_MARKER = "… [truncated]";
+
+// Extract the subagent's FINAL assistant-message text from its transcript —
+// the symmetric counterpart to firstUserTextFromTranscript above, used to
+// capture what a worker actually reported (not just counts/tokens) for the
+// panel. Walks the transcript backward (mirrors extractSubagentTokens' same
+// backward walk for the same reason: only the LAST assistant turn is the
+// worker's final report, not a running concatenation of every turn) and
+// returns the first assistant message text found. Fails open on any error —
+// missing file, malformed JSON, non-string path — returning "" exactly like
+// firstUserTextFromTranscript, NEVER throwing. Caller treats "" as "no
+// report available" and must omit the field entirely, never store "".
+function lastAssistantTextFromTranscript(transcriptPath) {
+  try {
+    if (!transcriptPath || typeof transcriptPath !== "string") return "";
+    const lines = fs.readFileSync(transcriptPath, "utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        const msgObj = msg.message || msg;
+        const role = msg.role || msgObj.role;
+        if (role !== "assistant") continue;
+        const content = msgObj.content;
+        let text = "";
+        if (typeof content === "string") {
+          text = content;
+        } else if (Array.isArray(content)) {
+          text = content
+            .filter((c) => !c || c.type !== "tool_use") // skip tool-call blocks, keep prose
+            .map((c) => (typeof c === "string" ? c : (c.text || "")))
+            .join(" ")
+            .trim();
+        }
+        if (text) {
+          if (text.length > REPORT_MAX_CHARS) {
+            return text.slice(0, REPORT_MAX_CHARS - REPORT_TRUNCATION_MARKER.length) + REPORT_TRUNCATION_MARKER;
+          }
+          return text;
+        }
+        // Assistant turn found but it was tool-calls-only (no prose) — keep
+        // walking backward for an earlier assistant turn that has text.
+      } catch { /* skip malformed line */ }
+    }
+  } catch { /* transcript not accessible */ }
+  return "";
+}
+
 // Pop the stopped sub-agent from the stack. Disambiguate parallel agents by
 // (0) transcript keyword match, (1) subagentType match, else (2) LIFO pop.
 // Disambiguate and remove the stopped sub-agent using a prioritized match strategy.
@@ -488,6 +543,148 @@ function peekActiveAgent(activeAgentFile) {
     return stack.length > 0 ? stack[stack.length - 1] : null;
   } catch {
     return null;
+  }
+}
+
+// A stack entry that never received a matching SubagentStop (interrupted
+// worker, crashed process, denied/abandoned spawn whose lineage kept
+// running, etc.) would otherwise sit on the stack forever, corrupting every
+// later peek/attribution. UserPromptSubmit already resets the whole stack at
+// the start of each turn (see clearActiveStack), so this only guards against
+// mid-turn corruption. Any entry older than this TTL is evicted the next
+// time the stack is read for attribution. No single "normal" worker runtime
+// is authoritative — this is a defensive backstop, not a tuned SLA — so the
+// window is generous on purpose to avoid evicting a merely slow worker.
+const ORPHAN_ENTRY_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+// Read the active-agent stack, evicting any entry older than
+// ORPHAN_ENTRY_TTL_MS. Eviction is logged to activityFile as an "AgentEvicted"
+// record (never silent) and the pruned stack is written back. Returns the
+// (possibly pruned) stack, or [] on any error. Best-effort: a failure to
+// acquire the lock or to write back leaves the stack as last read (still
+// usable for this call) rather than blocking attribution.
+function readAndPruneActiveStack(activeAgentFile, activityFile, now) {
+  const lockPath = activeAgentFile + ".lock";
+  if (!acquireLock(lockPath, 5000)) {
+    // Could not get the lock in time; fall back to a raw (unpruned) read so
+    // attribution still has something to work with this call.
+    const data = readJsonSafe(activeAgentFile);
+    return Array.isArray(data && data.stack) ? data.stack : [];
+  }
+  try {
+    const data = readJsonSafe(activeAgentFile);
+    const stack = Array.isArray(data && data.stack) ? data.stack : [];
+    const kept = [];
+    const evicted = [];
+    for (const entry of stack) {
+      const ts = typeof entry.timestamp === "number" ? entry.timestamp : now;
+      if (now - ts > ORPHAN_ENTRY_TTL_MS) {
+        evicted.push(entry);
+      } else {
+        kept.push(entry);
+      }
+    }
+    if (evicted.length > 0) {
+      const topAgentId = kept.length > 0 ? kept[kept.length - 1].agentId : "none";
+      atomicWriteSync(activeAgentFile, JSON.stringify({ version: 1, agentId: topAgentId, timestamp: now, stack: kept }, null, 2));
+      for (const entry of evicted) {
+        try {
+          const evictionRecord = {
+            event: "AgentEvicted",
+            workerId: entry.agentId || "unknown",
+            reason: "orphan-ttl",
+            ageMs: now - (typeof entry.timestamp === "number" ? entry.timestamp : now),
+            at: now,
+          };
+          fs.appendFileSync(activityFile, JSON.stringify(evictionRecord) + "\n", "utf8");
+        } catch { /* never let eviction logging break attribution */ }
+      }
+    }
+    return kept;
+  } catch {
+    return [];
+  } finally {
+    releaseLock(lockPath);
+  }
+}
+
+// Resolve which stack entry a non-spawn tool call (Read/Edit/Bash/mcp__*/etc.
+// fired from PreToolUse) belongs to, and bind Claude Code's per-call
+// `payload.agent_id` (a UUID identifying the specific running subagent
+// instance — stamped on every tool-call payload made from inside a spawned
+// sub-agent, confirmed by the leaf-worker spawn guard's own use of the same
+// field at ~line 732) onto that entry so later calls from the SAME instance
+// resolve exactly instead of by stack-top guessing.
+//
+// Strategy, in order:
+//   1. Exact match: an entry already bound to this call's instanceId.
+//      This is the fix for the concurrent-spawn bug — two siblings on the
+//      stack at once now resolve by WHICH one actually made the call, not by
+//      which is on top.
+//   2. First sighting, unambiguous: no entry is bound to this instanceId yet,
+//      but exactly one live entry has no instanceId bound at all -> bind this
+//      instanceId to it (it must be that entry's first tool call) and use it.
+//   3. First sighting, ambiguous: no entry bound to this instanceId, and
+//      MULTIPLE entries are still unbound (two+ freshly spawned siblings
+//      whose first calls race before either has been bound). No discriminator
+//      exists to pick between them from a single tool-call payload alone, so
+//      this falls back to stack-top — the same approximation as before, but
+//      now narrowed to only the genuinely ambiguous window. The entry picked
+//      is still bound to this instanceId, so the NEXT call from the same
+//      instance resolves exactly via case 1.
+//   4. No instanceId on the payload at all (older Claude Code, or the
+//      orchestrator's own direct tool calls have no agent_id): stack-top,
+//      unchanged legacy behavior.
+//
+// Returns { entry, workerId } where entry is the matched stack object (or
+// null) and workerId is entry.agentId or "orchestrator".
+function resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, now) {
+  const stack = readAndPruneActiveStack(activeAgentFile, activityFile, now);
+  if (stack.length === 0) return { entry: null, workerId: "orchestrator" };
+
+  if (instanceId) {
+    // Case 1: exact match on an already-bound instance.
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].instanceId === instanceId) {
+        return { entry: stack[i], workerId: stack[i].agentId };
+      }
+    }
+
+    // Case 2/3: not bound yet. Collect unbound entries.
+    const unbound = stack.filter((e) => !e.instanceId);
+    let target = null;
+    if (unbound.length === 1) {
+      target = unbound[0];
+    } else if (unbound.length > 1) {
+      // Ambiguous first sighting: fall back to stack-top among the unbound
+      // entries (best available signal, not a guaranteed-correct one).
+      target = unbound[unbound.length - 1];
+    }
+    if (target) {
+      target.instanceId = instanceId;
+      writeActiveStack(activeAgentFile, stack, now);
+      return { entry: target, workerId: target.agentId };
+    }
+    // Every entry already bound to a DIFFERENT instanceId (e.g. an instanceId
+    // format we don't recognize, or a race we couldn't resolve) -> fall
+    // through to legacy stack-top.
+  }
+
+  const top = stack[stack.length - 1];
+  return { entry: top, workerId: top.agentId };
+}
+
+// Write the stack back to disk under lock (used after mutating an entry's
+// instanceId binding in place). Best-effort: swallows lock/write failures —
+// a failed binding write just means the NEXT call re-attempts case 2/3.
+function writeActiveStack(activeAgentFile, stack, now) {
+  const lockPath = activeAgentFile + ".lock";
+  if (!acquireLock(lockPath, 5000)) return;
+  try {
+    const topAgentId = stack.length > 0 ? stack[stack.length - 1].agentId : "none";
+    atomicWriteSync(activeAgentFile, JSON.stringify({ version: 1, agentId: topAgentId, timestamp: now, stack }, null, 2));
+  } catch { /* best-effort */ } finally {
+    releaseLock(lockPath);
   }
 }
 
@@ -693,6 +890,13 @@ function main(raw) {
     if (cacheReadTokens !== undefined && cacheReadTokens > 0) record.cacheReadTokens = cacheReadTokens;
     if (payload.session_id) record.sessionId = payload.session_id;
 
+    // Worker report capture: the subagent's final assistant-message text,
+    // extracted from the same transcript already resolved above. Optional —
+    // omitted entirely (never an empty string) when the transcript is
+    // missing/unreadable or its final assistant turn had no prose text.
+    const report = lastAssistantTextFromTranscript(transcriptPath);
+    if (report) record.report = report;
+
     try {
       fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
     } catch { /* ignore */ }
@@ -843,14 +1047,36 @@ function main(raw) {
       const agentDescription = readAgentDescription(agentsDir, agentId);
       const tier = readAgentTier(agentsDir, agentId);
 
-      // Parent attribution: whoever is on top of the active-agent stack right
-      // now (before this spawn is pushed) is treated as the parent of the
-      // agent being spawned. This is an approximation, not a ground-truth
-      // trace — when two agents spawn workers concurrently the stack can
-      // interleave and misattribute a worker to the wrong lead. Accepted
-      // limitation (see docs/plan/team-lead-mode.md Phase 3); no attempt is
-      // made to disambiguate concurrent spawns further.
-      const parentEntry = peekActiveAgent(activeAgentFile);
+      // Parent attribution: the spawning payload carries the SAME
+      // payload.agent_id discriminator as any other tool call made from
+      // inside a subagent (confirmed by the leaf-worker spawn guard's own
+      // use of this field above). When present, it is matched against an
+      // already-bound stack entry exactly like resolveNonSpawnAgent's case 1
+      // — this correctly picks the spawning sibling out of several live
+      // entries instead of guessing stack-top, fixing parent attribution for
+      // the same class of concurrent-spawn interleaving as the non-spawn fix
+      // below. It only falls back to stack-top peek when the spawner's
+      // agent_id is absent (this is the orchestrator itself — never has an
+      // agent_id) or not yet bound to any entry (the spawner's own very
+      // first tool call was this spawn, so no prior non-spawn call bound it
+      // yet — genuinely rare, since a lead has almost always made at least
+      // one other call first). That residual fallback window is the
+      // remaining accepted approximation (see docs/plan/team-lead-mode.md
+      // Phase 3).
+      const spawnerInstanceId = typeof payload.agent_id === "string" && payload.agent_id !== "" ? payload.agent_id : "";
+      // Always read-and-prune here (not only when spawnerInstanceId is
+      // present): a spawn is as good a trigger point as any non-spawn call
+      // to sweep orphaned entries, and orchestrator-issued spawns (the
+      // common case — no agent_id) would otherwise never exercise the TTL
+      // eviction sweep at all.
+      const stackNow = readAndPruneActiveStack(activeAgentFile, activityFile, at);
+      let parentEntry = null;
+      if (spawnerInstanceId) {
+        for (let i = stackNow.length - 1; i >= 0; i--) {
+          if (stackNow[i].instanceId === spawnerInstanceId) { parentEntry = stackNow[i]; break; }
+        }
+      }
+      if (!parentEntry) parentEntry = stackNow.length > 0 ? stackNow[stackNow.length - 1] : null;
       const parentId = (parentEntry && parentEntry.agentId && parentEntry.agentId !== "none")
         ? parentEntry.agentId
         : undefined;
@@ -906,12 +1132,16 @@ function main(raw) {
 
     // Non-spawn tool activity (Read, Edit, Bash, mcp__*, etc.)
     if (toolName) {
-      const top = peekActiveAgent(activeAgentFile);
-      // Direct tool calls with no sub-agent on the stack belong to the
-      // orchestrator (the main session), not a raw session-id row.
-      const workerId = (top && top.agentId && top.agentId !== "none")
-        ? top.agentId
-        : "orchestrator";
+      // payload.agent_id is Claude Code's own per-instance UUID for the
+      // subagent that issued this call (present only when the call
+      // originates inside a spawned sub-agent — see resolveNonSpawnAgent's
+      // doc comment). When present it lets us attribute this EXACT call to
+      // the EXACT worker that made it instead of guessing from stack order,
+      // which is what previously misattributed every call made by an
+      // earlier-spawned sibling once a later sibling was pushed on top.
+      const instanceId = typeof payload.agent_id === "string" && payload.agent_id !== "" ? payload.agent_id : "";
+      const resolved = resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, at);
+      const workerId = resolved.workerId;
 
       // Compliance nudge: ONLY ever computed for the orchestrator itself.
       // Spawned workers are leaves and are supposed to grep/edit directly —
