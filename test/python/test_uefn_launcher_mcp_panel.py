@@ -136,7 +136,33 @@ class McpCommandEntriesDriftGuardTests(unittest.TestCase):
         self.assertIn("uefn_" + fake_key, entries)
         self.assertEqual(entries["uefn_" + fake_key], "(no description)")
 
-    # -- 7. failed uefn_bridge import raises, never returns a fallback -
+    # -- 7. no real method renders the "(no description)" placeholder --
+
+    def test_no_real_method_falls_back_to_no_description_placeholder(self):
+        # Guards against the exact bug this suite was written to catch: a
+        # method landing in _METHODS (uefn_bridge's live dispatch table)
+        # with no matching blurb in _MCP_METHOD_DESCRIPTIONS, so the panel
+        # silently renders "(no description)" for a real, working tool
+        # (most recently list_commands and batch_location). Deliberately
+        # excludes the uefn_verse_check tail entry, which is documented as
+        # the one non-derived entry and always ships its own real blurb —
+        # asserted separately below rather than folded into this loop.
+        entries = uefn_launcher._mcp_command_entries()
+        undescribed = [name for name, desc in entries if desc == "(no description)"]
+        self.assertEqual(
+            undescribed,
+            [],
+            f"method(s) rendering the placeholder in the MCP Bridge Commands "
+            f"window: {undescribed} — add a real entry to "
+            f"_MCP_METHOD_DESCRIPTIONS for each",
+        )
+
+    def test_verse_check_tail_entry_has_its_own_real_description(self):
+        entries = dict(uefn_launcher._mcp_command_entries())
+        self.assertNotEqual(entries["uefn_verse_check"], "(no description)")
+        self.assertTrue(entries["uefn_verse_check"].strip())
+
+    # -- 8. failed uefn_bridge import raises, never returns a fallback -
 
     def test_raises_when_uefn_bridge_import_fails(self):
         del sys.modules["uefn_bridge"]

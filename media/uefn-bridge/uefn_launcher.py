@@ -287,6 +287,8 @@ _MCP_METHOD_DESCRIPTIONS = {
     "spawn_actor": "Spawn an actor from an asset into the level — undoable with Ctrl+Z",
     "duplicate_actor": "Duplicate an actor by label with an offset — undoable with Ctrl+Z",
     "set_transform": "Set an actor's location/rotation/scale by label — undoable with Ctrl+Z",
+    "list_commands": "List every MCP command with its description",
+    "batch_location": "Get world locations of filtered actors",
 }
 
 
