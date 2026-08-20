@@ -260,12 +260,25 @@ function coordinationLineText(doc: any): string | null {
 // ---------------------------------------------------------------------------
 // (a) THE USER'S EXACT SCENARIO: orchestrator roster/configured "opus",
 // observed "claude-fable-5" -> renders Fable, not Opus, on both surfaces.
+//
+// Fixture shape mirrors panel.ts's ACTUAL _stampRosterModels() output for
+// the orchestrator entry (src/host/vscode/panel.ts ~5656): `model` carries
+// the hook-OBSERVED value (untrusted), `rosterModel` carries the roster/
+// frontmatter (trusted config) value, and `observedModel` mirrors `model`
+// for symmetry with subagent entries. A first version of this test set
+// `model: "opus", observedModel: "claude-fable-5"` directly -- the INVERSE
+// of what panel.ts produces -- which passed by accident: prettyModel's
+// isOrchestratorRow branch requires a truthy `observedModel` to fire, that
+// field was actually undefined for the orchestrator pre-fix, and the
+// fall-through read the untrusted `model` string as if it were trusted
+// roster data. Codex's cross-vendor review caught this; these fixtures now
+// match the real wire shape so the intended branch actually executes.
 // ---------------------------------------------------------------------------
 
-test("orchestrator row: roster 'opus' + observed well-formed 'claude-fable-5' renders Fable (name tooltip), not Opus", () => {
+test("orchestrator row: rosterModel 'opus' + observed well-formed 'claude-fable-5' renders Fable (name tooltip), not Opus", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
-    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", observedModel: "claude-fable-5", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "claude-fable-5", observedModel: "claude-fable-5", rosterModel: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
   dispatch({ type: "settings", payload: agentsPayload() });
@@ -277,10 +290,10 @@ test("orchestrator row: roster 'opus' + observed well-formed 'claude-fable-5' re
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("orchestrator: roster 'opus' + observed well-formed 'claude-fable-5' renders Fable in the Delegation tab's Coordination line", () => {
+test("orchestrator: rosterModel 'opus' + observed well-formed 'claude-fable-5' renders Fable in the Delegation tab's Coordination line", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
-    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", observedModel: "claude-fable-5", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "claude-fable-5", observedModel: "claude-fable-5", rosterModel: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
   dispatch({ type: "settings", payload: agentsPayload() });
@@ -317,18 +330,49 @@ test("subagent row: roster 'sonnet' + observed well-formed 'claude-fable-5' (fam
 // (c) MALFORMED OBSERVED IDS NEVER RENDER RAW -- both row types.
 // ---------------------------------------------------------------------------
 
-test("orchestrator row: malformed observed model string falls back to roster family (Opus), never rendered raw", () => {
+test("orchestrator row: malformed observed model string falls back to rosterModel family (Opus), never rendered raw", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
-    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", observedModel: "<script>not-a-real-model</script>", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "<script>not-a-real-model</script>", observedModel: "<script>not-a-real-model</script>", rosterModel: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const title = rowNameTitle(doc, "Orchestrator");
   assert.ok(title, "expected a title on the orchestrator row's name cell");
-  assert.match(String(title), /Opus/, `expected fallback to roster family Opus when observed id is malformed, got '${title}'`);
+  assert.match(String(title), /Opus/, `expected fallback to rosterModel family Opus when observed id is malformed, got '${title}'`);
   assert.doesNotMatch(String(title), /not-a-real-model|<script>/, `malformed observed id must never render raw, got '${title}'`);
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+// THE CASE THAT WOULD HAVE CAUGHT THE BUG: no rosterModel at all (so the
+// only signal prettyModel has is the untrusted, malformed observed value).
+// Before the fix, call sites passed `agent.model` (the untrusted hook
+// string, "not-a-model-id-<script>") to prettyModel's TRUSTED first
+// parameter, and `isWellFormedClaudeModelId's floor was bypassed entirely
+// on that path because `if (!family) return String(rosterModel)` treats
+// its first argument as pre-validated config -- so the malformed string
+// rendered raw into the DOM. This must now be impossible: the malformed
+// value must fail isWellFormedClaudeModelId, the isOrchestratorRow branch
+// must decline it, and with no rosterModel to fall back to, the result
+// must be the empty string -- never the raw malformed text.
+test("orchestrator row: NEGATIVE ANCHOR -- malformed observed model with NO rosterModel never renders raw, falls back to empty/dash rather than String(unvalidated)", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "not-a-model-id-<script>", observedModel: "not-a-model-id-<script>", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+
+  const title = rowNameTitle(doc, "Orchestrator");
+  assert.ok(title !== null, "expected a title (possibly with no model segment) on the orchestrator row's name cell");
+  assert.doesNotMatch(String(title), /not-a-model-id|<script>/, `malformed observed id with no rosterModel must NEVER render raw, got '${title}'`);
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+
+  const coordText = coordinationLineText(doc);
+  if (coordText !== null) {
+    assert.doesNotMatch(String(coordText), /not-a-model-id|<script>/, `Coordination line must NEVER render a malformed observed id raw, got '${coordText}'`);
+  }
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -352,16 +396,16 @@ test("subagent row: malformed observed model string falls back to roster family 
 // cleanly (no crash, no blank), matching pre-fix behavior for that case.
 // ---------------------------------------------------------------------------
 
-test("orchestrator row: no observedModel present renders roster family (Opus) cleanly", () => {
+test("orchestrator row: no observedModel present renders rosterModel family (Opus) cleanly", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
-    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", rosterModel: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const title = rowNameTitle(doc, "Orchestrator");
   assert.ok(title, "expected a title on the orchestrator row's name cell");
-  assert.match(String(title), /Opus/, `expected roster family Opus with no observed model, got '${title}'`);
+  assert.match(String(title), /Opus/, `expected rosterModel family Opus with no observed model, got '${title}'`);
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

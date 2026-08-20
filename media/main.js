@@ -14000,11 +14000,18 @@
     // Per-column tooltip: agent name + model + third-person role description.
     const role = describeRole(agent.description);
     const isOrchestratorRow = agent.id === "orchestrator";
+    // For the orchestrator, `agent.model` is hook-OBSERVED (untrusted) and
+    // `agent.rosterModel` carries the roster/frontmatter (trusted, "what's
+    // configured") value — see panel.ts's _stampRosterModels. prettyModel's
+    // first argument must always be the trusted one, so the two are swapped
+    // here relative to every subagent row, where `agent.model` IS the
+    // trusted roster-stamped value and there is no `rosterModel` field.
+    const displayRosterModel = isOrchestratorRow ? agent.rosterModel : agent.model;
     let nameTitle = displayName;
     if (agent.model && role) {
-      nameTitle = `${displayName} — ${prettyModel(agent.model, agent.observedModel, isOrchestratorRow)}\n${role}`;
+      nameTitle = `${displayName} — ${prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow)}\n${role}`;
     } else if (agent.model) {
-      nameTitle = `${displayName} — ${prettyModel(agent.model, agent.observedModel, isOrchestratorRow)}`;
+      nameTitle = `${displayName} — ${prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow)}`;
     } else if (role) {
       nameTitle = `${displayName}\n${role}`;
     }
@@ -14539,7 +14546,10 @@
       const coordLine = document.createElement("div");
       coordLine.className = "delegation-stats-row";
       const orchTasks = orch.taskCount ?? 0;
-      coordLine.textContent = `${orch.model ? prettyModel(orch.model, orch.observedModel, true) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
+      // orch.model is hook-OBSERVED (untrusted) for the orchestrator; the
+      // trusted roster/frontmatter value lives on orch.rosterModel — see
+      // panel.ts's _stampRosterModels and buildMetricsRow's identical swap.
+      coordLine.textContent = `${orch.model ? prettyModel(orch.rosterModel, orch.observedModel, true) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
       coordSection.appendChild(coordLine);
 
       const coordSub = document.createElement("div");

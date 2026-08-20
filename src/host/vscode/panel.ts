@@ -5649,9 +5649,18 @@ export class TycoonPanel {
    * in settings; `.claude/agents/orchestrator.md`'s `model:` frontmatter is
    * advisory documentation, not a configured choice. So for that one entry
    * `model` is left as the hook-observed value (never overwritten by the
-   * roster), while the roster value — still needed by the roster/settings
-   * UI, which reads agentMetrics[].model to show configured tiers — is
-   * carried on `rosterModel` instead. Subagent stamping below is unchanged.
+   * roster) — this is what cost-fallback code (media/main.js's
+   * modelPricePerMtok(orch.model)) and any other "what actually ran"
+   * consumer should read. The SAME value is also mirrored onto
+   * `observedModel`, matching every subagent entry's shape, so display
+   * code has one consistent field to read hook-observed data from. The
+   * roster/frontmatter value — still needed by anything that wants "what's
+   * configured" — is carried on `rosterModel`. Display call sites in
+   * media/main.js must pass `rosterModel` as prettyModel's first
+   * (trusted-config) argument and `observedModel`/`model` as the second
+   * (untrusted, validated) argument for the orchestrator — never the
+   * reverse, or an unvalidated hook string can render raw. Subagent
+   * stamping below is unchanged.
    */
   private _stampRosterModels(state: any): any {
     if (state === null || typeof state !== "object" || !Array.isArray(state.agentMetrics)) {
@@ -5672,12 +5681,19 @@ export class TycoonPanel {
         if (m.id === "orchestrator") {
           // Orchestrator model is detected, not configured — keep the
           // hook-observed value in `model` (so display/cost-fallback read
-          // the real thing) and expose the roster/frontmatter value under
-          // `rosterModel` for anything that still wants "what's configured".
-          if (!rm) {
+          // the real thing), mirror it onto `observedModel` (same shape as
+          // every subagent entry, so display code has one field to
+          // validate untrusted data from), and expose the roster/
+          // frontmatter value under `rosterModel` for anything that still
+          // wants "what's configured".
+          if (!rm && observed === undefined) {
             return m;
           }
-          return { ...m, rosterModel: rm };
+          return {
+            ...m,
+            ...(rm ? { rosterModel: rm } : {}),
+            ...(observed !== undefined ? { observedModel: observed } : {}),
+          };
         }
         return {
           ...m,
