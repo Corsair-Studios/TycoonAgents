@@ -34,6 +34,8 @@ import traceback
 import time
 import secrets
 import contextlib
+import inspect
+import re
 
 # sys.path self-consistency shield: guarantee every sibling import below
 # (device_audit, batch_tools, texture_finder, ...) resolves from THIS
@@ -150,23 +152,25 @@ def _require_device_audit_symbols(*names):
 
 
 try:
-    from batch_tools import batch_set_property, batch_get_property
+    from batch_tools import batch_set_property, batch_get_property, batch_get_location
 except ImportError as _bt_exc:
     # batch_tools.py does its OWN hard `from device_audit import _is_device,
-    # _safe_label` at module scope — the identical version-skew exposure
-    # this file just hardened against, one layer deeper. If either symbol
-    # is missing from the resolved device_audit, that import raises here
-    # and would otherwise crash this entire module's import (the field
-    # failure this whole change exists to prevent — see the device_audit
-    # block above). Degrade only the two tools that need it instead.
+    # _safe_label, _actor_location_tuple` at module scope — the identical
+    # version-skew exposure this file just hardened against, one layer
+    # deeper. If any symbol is missing from the resolved device_audit, that
+    # import raises here and would otherwise crash this entire module's
+    # import (the field failure this whole change exists to prevent — see
+    # the device_audit block above). Degrade only the three tools that need
+    # it instead.
     unreal.log_warning(
         f"uefn_bridge: batch_tools unavailable ({_bt_exc}) — most likely the "
         "same device_audit version skew described above. batch_set/"
-        "batch_get will return an explicit error naming this; the rest of "
-        "the bridge is unaffected."
+        "batch_get/batch_location will return an explicit error naming "
+        "this; the rest of the bridge is unaffected."
     )
     batch_set_property = None
     batch_get_property = None
+    batch_get_location = None
 from texture_finder import find_texture_usage, find_texture_summary, list_textures_on_actor
 from material_browser import browse_materials, find_unused_materials
 from niagara_inspector import browse_niagara, find_niagara_usage
@@ -824,7 +828,38 @@ def _handle_batch_get(params):
     property_name = params.get("property_name")
     if not property_name:
         raise ValueError("Missing required param: property_name")
-    return batch_get_property(filter_type, filter_value, property_name)
+    fields = params.get("fields")
+    max_results = params.get("max_results")
+    offset = params.get("offset")
+    return batch_get_property(
+        filter_type, filter_value, property_name,
+        fields=fields, max_results=max_results, offset=offset,
+    )
+
+
+def _handle_batch_location(params):
+    """Batch read world locations for ANY actor matching a filter — device
+    or not. Fixes the incident where locating arbitrary actors (e.g.
+    SGMarker) needed one uefn_get_property call per actor: batch_get with
+    property_name="location" cannot work (location is not an editor
+    property) and tag_inspect returns labels/tags with no coordinates.
+    Reuses batch_tools.batch_get_location, which itself reuses
+    device_audit._actor_location_tuple with no _is_device gating.
+    """
+    if batch_get_location is None:
+        raise RuntimeError(
+            "batch_location unavailable: batch_tools failed to import, most "
+            "likely the same device_audit version skew reported at startup"
+        )
+    filter_type = params.get("filter_type", "all_devices")
+    filter_value = params.get("filter_value", "")
+    fields = params.get("fields")
+    max_results = params.get("max_results")
+    offset = params.get("offset")
+    return batch_get_location(
+        filter_type, filter_value,
+        fields=fields, max_results=max_results, offset=offset,
+    )
 
 
 def _handle_texture_find(params):
@@ -1197,7 +1232,15 @@ def _handle_tag_inspect(params):
         )
     label_pattern = params.get("label_pattern")
     project_dir = params.get("project_dir")
-    return inspect_tags(label_pattern=label_pattern, project_dir=project_dir)
+    fields = params.get("fields")
+    include_location = params.get("include_location", False)
+    max_results = params.get("max_results")
+    offset = params.get("offset")
+    return inspect_tags(
+        label_pattern=label_pattern, project_dir=project_dir,
+        fields=fields, include_location=include_location,
+        max_results=max_results, offset=offset,
+    )
 
 
 def _handle_list_assets(params):
@@ -1680,8 +1723,104 @@ def _handle_set_transform(params):
     }
 
 
+# Params every handler that supports it reads via this exact
+# `params.get("<name>")` spelling — the fields/max_results/offset paging
+# contract documented on uefn_batch_get/uefn_batch_location in
+# uefn-server.ts. Detected in _describe_handler_params by source-text
+# search, not import, so it works even for handlers whose own module
+# failed to import (see _handle_list_commands docstring).
+_PAGINATION_PARAM_NAMES = ("fields", "max_results", "offset")
+
+# Matches `params.get("name"` or `params.get('name'` — the source-level
+# convention every handler in this file uses to read an optional or
+# defaulted param (see _handle_get_property, _handle_batch_location, etc.
+# above). Deliberately does NOT try to distinguish required-with-a-manual-
+# check params (e.g. `actor_label = params.get("actor_label"); if not
+# actor_label: raise ValueError(...)`) from truly optional ones — that
+# distinction lives in prose right after the .get() call in every handler
+# and isn't reliably machine-derivable, so _describe_handler_params reports
+# every discovered name as "seen" and leaves required-vs-optional to the
+# handler's own docstring/ValueError message an agent will hit if it omits
+# one.
+_PARAMS_GET_RE = re.compile(r'params\.get\(\s*["\']([A-Za-z0-9_]+)["\']')
+
+
+def _first_doc_sentence(doc):
+    """First sentence of a docstring, collapsed to one line. Docstrings in
+    this file wrap their opening sentence across multiple lines (PEP 8
+    style), so splitting on the first ``\\n`` alone truncates mid-sentence
+    (e.g. "Batch read world locations for ANY actor matching a filter —
+    device"). Collapses internal whitespace first, then cuts at the first
+    ". " sentence boundary, falling back to the whole (collapsed) docstring
+    if no sentence break is found. Never raises; empty input yields "".
+    """
+    if not doc:
+        return ""
+    collapsed = " ".join(doc.split())
+    cut = collapsed.find(". ")
+    return collapsed[:cut + 1] if cut != -1 else collapsed
+
+
+def _describe_handler_params(handler):
+    """Best-effort, source-derived description of what *handler* reads off
+    its ``params`` dict. Never hand-maintained — every name below comes
+    from either the handler's own source text (via ``inspect.getsource``)
+    or, when source isn't available (e.g. a builtin, or the handler's
+    defining module failed to import in a way that strips its source),
+    its docstring. Returns a dict, never raises.
+    """
+    try:
+        source = inspect.getsource(handler)
+    except (OSError, TypeError):
+        source = None
+
+    if source is None:
+        return {
+            "params": "see docstring",
+            "docstring": _first_doc_sentence(inspect.getdoc(handler)) or None,
+            "supports_pagination": None,
+        }
+
+    seen = []
+    for name in _PARAMS_GET_RE.findall(source):
+        if name not in seen:
+            seen.append(name)
+
+    supports_pagination = all(name in seen for name in _PAGINATION_PARAM_NAMES) if seen else False
+
+    return {
+        "params": seen if seen else "see docstring",
+        "supports_pagination": supports_pagination,
+    }
+
+
+def _handle_list_commands(params):
+    """List every command this bridge's dispatch table currently supports,
+    with parameters and a description derived programmatically from each
+    handler's own source/docstring — never a hand-maintained literal list,
+    so a new dispatch entry appears here automatically with no separate
+    edit. Call this FIRST when unsure what the bridge offers, instead of
+    probing blind."""
+    commands = []
+    for name in sorted(_METHODS.keys()):
+        handler = _METHODS[name]
+        description = _first_doc_sentence(inspect.getdoc(handler))
+        entry = {
+            "command": name,
+            "description": description or None,
+        }
+        entry.update(_describe_handler_params(handler))
+        commands.append(entry)
+
+    return {
+        "count": len(commands),
+        "commands": commands,
+    }
+
+
 # Method dispatch table
 _METHODS = {
+    "list_commands": _handle_list_commands,
     "status": _handle_status,
     "list_devices": _handle_list_devices,
     "get_property": _handle_get_property,
@@ -1691,6 +1830,7 @@ _METHODS = {
     "get_level_info": _handle_get_level_info,
     "batch_set": _handle_batch_set,
     "batch_get": _handle_batch_get,
+    "batch_location": _handle_batch_location,
     "texture_find": _handle_texture_find,
     "texture_summary": _handle_texture_summary,
     "texture_on_actor": _handle_texture_on_actor,

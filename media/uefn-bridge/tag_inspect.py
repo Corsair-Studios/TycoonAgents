@@ -107,6 +107,37 @@ except ImportError:
 # whole module import.
 _da_get_property_names = getattr(device_audit, "_get_property_names", None) if device_audit is not None else None
 
+# Reuse device_audit's world-location reader for the opt-in
+# include_location param on inspect_tags -- the SAME seam p2 built for
+# batch_get_location/batch_get_property's "location" special case (see
+# batch_tools.py:295-333 and device_audit.py:211's _actor_location_tuple
+# docstring). Resolved via getattr for the same version-skew-tolerance
+# reason as _da_get_property_names above: a missing/renamed symbol in a
+# stale device_audit.py copy degrades include_location to an explicit
+# per-actor error rather than an ImportError that kills this whole module.
+_da_actor_location_tuple = getattr(device_audit, "_actor_location_tuple", None) if device_audit is not None else None
+
+# Reuse batch_tools' cursor-pagination slicer (batch_tools.py:346,
+# _apply_pagination) for inspect_tags' own max_results/offset paging
+# (p3-t4) rather than reimplementing the same offset/max_results/
+# next_offset contract a second time. Guarded exactly like the
+# device_audit import above: batch_tools.py does its own unconditional
+# `import unreal` at module scope, so importing it here raises ImportError
+# whenever `unreal` is unavailable (the standalone/off-editor case this
+# module must keep degrading gracefully for, not crash on) -- resolved via
+# getattr so a missing/renamed symbol in a stale batch_tools.py copy
+# degrades pagination to an explicit error rather than an ImportError that
+# kills this whole module.
+try:
+    import batch_tools
+except ImportError as _bt_exc:
+    batch_tools = None
+    _BATCH_TOOLS_IMPORT_ERROR = str(_bt_exc)
+else:
+    _BATCH_TOOLS_IMPORT_ERROR = None
+
+_apply_pagination_fn = getattr(batch_tools, "_apply_pagination", None) if batch_tools is not None else None
+
 
 def _fallback_label(actor):
     """Local last-resort label fallback if device_audit._safe_label is
@@ -323,6 +354,25 @@ def normalize_tag_name(raw):
     return text
 
 
+def _project_actor_fields(entry, fields, always_keep=("label",)):
+    """
+    Return a copy of a per-actor ``inspect_tags`` entry containing only
+    the keys named in *fields*, plus everything in *always_keep*
+    (identity fields kept regardless, so a field-selected entry can
+    still be attributed to an actor). Mirrors batch_tools.py's
+    ``_project_fields`` exactly (same contract, same "unknown names are
+    silently absent, not an error" posture) -- kept as a separate
+    function rather than a cross-module import because tag_inspect.py
+    must stay independently importable when batch_tools.py is absent/
+    version-skewed (see the module's import-safety docstring banner).
+    Called only when *fields* is not None -- the caller (``inspect_tags``)
+    never invokes this for the default path, so it can never be the
+    source of a default-shape change.
+    """
+    keep = set(fields) | set(always_keep)
+    return {k: v for k, v in entry.items() if k in keep}
+
+
 def sort_actors_flagged_first(actors):
     """Stable sort: actors with ``has_verse_tag_component`` False, or an
     empty ``tags`` list, sort BEFORE every other actor. This is the
@@ -337,6 +387,70 @@ def sort_actors_flagged_first(actors):
             return 0
         return 1
     return sorted(actors, key=_flagged_last)
+
+
+# ---------------------------------------------------------------------------
+# Cursor pagination for inspect_tags (p3-t4) -- max_results as PAGE SIZE,
+# offset to select the page, mirroring batch_tools._apply_pagination's
+# contract exactly (imported above as _apply_pagination_fn when available).
+# ---------------------------------------------------------------------------
+
+def _paginate_actors(actors_out, max_results, offset):
+    """
+    Stably sort *actors_out* by label, then slice one page via the shared
+    batch_tools._apply_pagination (imported as _apply_pagination_fn), or a
+    local fallback with the IDENTICAL contract if batch_tools is
+    unavailable (stale/version-skewed sibling set -- see the guarded
+    import above). Returns (page, page_extra) exactly as
+    _apply_pagination does: page_extra is {} (no new keys at all) when
+    both max_results and offset are None, so a caller who never opts into
+    pagination is byte-identical to before this parameter existed.
+
+    ORDERING -- why sort by label here, SEPARATELY from
+    sort_actors_flagged_first: sort_actors_flagged_first (applied earlier,
+    unconditionally, in _inspect_tags_live) is a STABLE PARTITION, not a
+    full deterministic order -- it only guarantees flagged actors precede
+    tagged ones, and preserves each partition's original (actor-walk)
+    relative order otherwise. That walk order is NOT guaranteed stable
+    across repeated calls (see _match_actors' docstring in batch_tools.py
+    for the identical underlying reason: get_all_level_actors() makes no
+    cross-call ordering guarantee). Cursor pagination calls this whole
+    function fresh for every page request, so without a KEY that depends
+    only on each actor's own attributes -- not on iteration order -- a
+    later page could silently re-return an actor an earlier page already
+    returned, or skip one entirely, exactly as _match_actors' docstring
+    describes. Sorting by "label" here is that key: it is applied AFTER
+    sort_actors_flagged_first so the existing flagged-first contract
+    (asserted by test_tag_inspect.py's SortActorsFlaggedFirstTests) is
+    completely undisturbed when pagination is not requested -- this
+    function is only ever called when the caller passed max_results and/or
+    offset, so the label sort never touches the default (non-paginated)
+    response's actor order at all.
+    """
+    stably_ordered = sorted(actors_out, key=lambda a: a.get("label") or "")
+    if _apply_pagination_fn is not None:
+        return _apply_pagination_fn(stably_ordered, max_results, offset)
+
+    # Local fallback -- same contract as batch_tools._apply_pagination,
+    # kept in exact lockstep with it (see that function's docstring for
+    # the authoritative behavior this mirrors: max_results is page size,
+    # not a ceiling; offset defaults to 0; out-of-range offset returns an
+    # empty page rather than raising).
+    total = len(stably_ordered)
+    if max_results is None and offset is None:
+        return stably_ordered, {}
+    effective_offset = offset if offset is not None else 0
+    if effective_offset < 0:
+        effective_offset = 0
+    if max_results is None or max_results <= 0:
+        page = stably_ordered[effective_offset:]
+        return page, {"offset": effective_offset, "returned": len(page)}
+    page = stably_ordered[effective_offset:effective_offset + max_results]
+    next_offset = effective_offset + len(page)
+    page_extra = {"offset": effective_offset, "returned": len(page)}
+    if next_offset < total:
+        page_extra["next_offset"] = next_offset
+    return page, page_extra
 
 
 # ---------------------------------------------------------------------------
@@ -1779,9 +1893,33 @@ def _deep_probe_actor(label, actor, known_tag_names):
     return finding
 
 
-def _inspect_tags_live(label_pattern, project_dir):
+def _inspect_tags_live(label_pattern, project_dir, include_location=False,
+                        max_results=None, offset=None):
     """The live (unreal-dependent) inspection path. Only called when
     ``_HAS_UNREAL`` is True; every editor call is individually guarded.
+
+    *include_location*: when True, each actor entry additionally carries
+    "location" ({"x","y","z"}) or "location_error" (str) -- see
+    ``inspect_tags``'s docstring for the full contract. Resolved inline
+    during the phase-2 walk below, from the SAME ``actor`` object already
+    being examined for tags -- no second actor-matching pass.
+
+    *max_results* / *offset* (p3-t5): when EITHER is given, this activates
+    the PAGE-AWARE WALK -- only the actors in the requested
+    [offset, offset+max_results) window (of the label-matched list,
+    stably sorted by label) are put through the expensive phase-2
+    component/property reflection walk at all; actors outside the window
+    are never probed in this call. See the "Actor-count cap vs.
+    PAGE-AWARE WALK" comment block inline below for the full mutual-
+    exclusion contract with ``_MAX_ACTORS_EXAMINED``. When both are
+    ``None`` (the default), behavior is byte-identical to before this
+    parameter pair existed. The returned dict carries an additional
+    ``"page_extra"`` key (a dict: ``{"offset", "returned"}`` plus
+    ``"next_offset"`` when another page remains) whenever paging was
+    requested -- ``inspect_tags`` merges those into the top-level result
+    alongside ``"matched"`` (the true full matched-actor total, from
+    ``scan_stats["actors_matched"]``, which costs nothing extra since
+    phase 1 already computed it).
 
     Runs in TWO SEQUENTIAL ``with unreal.ScopedSlowTask(...) as task:``
     blocks — phase 1 (verse-file scan + actor-label matching) and phase 2
@@ -1811,7 +1949,19 @@ def _inspect_tags_live(label_pattern, project_dir):
     notes_parts = []
     truncation_reasons = []
     scan_stats = {
+        # actors_matched is ALWAYS the true full total (phase 1 -- the
+        # cheap label-match -- runs over every actor every call
+        # regardless of paging, so this costs nothing extra and is exact
+        # even when only a page of the matched set gets walked below).
         "actors_matched": 0,
+        # actors_examined counts ONLY the actors this call actually put
+        # through the phase-2 reflection walk. On an unparameterized call
+        # that is every matched actor (up to _MAX_ACTORS_EXAMINED). On a
+        # PAGED call (max_results/offset given) it is this page's probe
+        # count ONLY -- a consumer must never read actors_examined as a
+        # full-scan total when paging: cross-check "matched" (or
+        # actors_matched here) for the true total, and loop pages until
+        # next_offset is absent to have examined every matched actor.
         "actors_examined": 0,
         "actors_examined_capped": False,
         "actors_fast_rejected": 0,
@@ -1978,6 +2128,13 @@ def _inspect_tags_live(label_pattern, project_dir):
             "offline": None,
         }
 
+    # Computed here (needs only the max_results/offset function params,
+    # both already bound) so it can gate the offline scan trigger below,
+    # not just the later live-walk/actor-merge logic that already
+    # depended on it (p3-t6 — see the offline-scan comment immediately
+    # below for why the gate moved this early).
+    paging_requested = max_results is not None or offset is not None
+
     # ------------------------------------------------------------------
     # OFFLINE __EXTERNALACTORS__ SCAN — PRIMARY source, run before the
     # expensive live actor/component walk below (see the banner above
@@ -1992,9 +2149,42 @@ def _inspect_tags_live(label_pattern, project_dir):
     # never a manual "destroy()" call) — skipped entirely if an earlier
     # phase was already cancelled, so a user's Cancel isn't followed by
     # an unrequested walk of the whole __ExternalActors__ tree.
+    #
+    # SKIPPED ENTIRELY WHEN PAGING IS REQUESTED (p3-t6): computed early
+    # (paging_requested needs only max_results/offset, both function
+    # params — no dependency on anything below this point), and checked
+    # HERE, at the trigger, not after the fact. p3-t5 already excluded
+    # offline_tags_by_label from a paged call's actor merge (see the
+    # "SKIPPED WHILE PAGING" comment far below), but that gate ran too
+    # late: it only stopped the offline data from being USED, while the
+    # ~30-minute scan_external_actors() walk still RAN unconditionally
+    # and its full result was still discarded — worst of both worlds,
+    # confirmed live against a 44,753-actor project (a paged max_results
+    # =400/offset=0 call still paid the full offline-scan cost AND still
+    # produced a 15.1 MB payload, 10.2 MB of it the unused top-level
+    # "offline" key). Gating the trigger itself means a paged call now
+    # skips the scan's cost entirely, not just its output.
+    #
+    # TRADE-OFF, STATED PLAINLY: the offline scan is the PRIMARY tag
+    # source per the banner above — project memory records the live
+    # component read as having proven blind on real projects historically,
+    # which is why offline-decoded tags are merged into live-matched
+    # actors even when the live read already returned "ok" (new tag names
+    # get unioned in). Skipping the scan on a paged call therefore means a
+    # paged call can return FEWER tags per actor than an unparameterized
+    # call would for the same actor, if that actor's tags include ones
+    # only the offline .uasset scan would have decoded. Today's live
+    # capture showed 216 actors with extraction_status "ok" from the live
+    # path alone, so the live read is not uniformly blind on this
+    # project — but the offline source may still be additive for some
+    # actors, and a paged sweep will not see that addition. This is kept
+    # as-is per the user's explicit paging-priority instruction (the
+    # ~30-minute/10MB cost is the thing paging exists to avoid), and is
+    # disclosed both here in discovery.notes and to the caller via this
+    # docstring's paging section.
     # ------------------------------------------------------------------
     offline_result = None
-    if not cancelled:
+    if not cancelled and not paging_requested:
         with _make_slow_task(
             1, "Scanning __ExternalActors__ for Verse tags (offline)…"
         ) as offline_task:
@@ -2027,6 +2217,18 @@ def _inspect_tags_live(label_pattern, project_dir):
                 should_cancel=_offline_cancel_requested,
             )
         # offline_task's __exit__ has run here regardless of outcome.
+    elif paging_requested:
+        notes_parts.append(
+            "offline __ExternalActors__ .uasset scan SKIPPED because paging "
+            "was requested (max_results/offset) — this avoids the scan's "
+            "~30-minute / 10MB+ cost on large projects, but means offline-"
+            "decoded tags (the PRIMARY source per this module's discovery "
+            "ladder) are NOT merged into this page's actors; a paged actor's "
+            "tags may be a subset of what an unparameterized call would "
+            "return for the same actor. result['offline'] is None on this "
+            "call. Make one unparameterized (no max_results/offset) call if "
+            "you need the offline-sourced tags."
+        )
     else:
         notes_parts.append(
             "offline __ExternalActors__ scan skipped — an earlier phase "
@@ -2050,11 +2252,91 @@ def _inspect_tags_live(label_pattern, project_dir):
         )
 
     # ------------------------------------------------------------------
-    # Actor-count cap — this is the expensive phase (component/property
-    # reflection walk), so only the first _MAX_ACTORS_EXAMINED matched
-    # actors are actually deep-dived. Reported explicitly, never silently.
+    # Actor-count cap vs. PAGE-AWARE WALK (p3-t5) — mutually exclusive
+    # bounds on the same expensive phase (component/property reflection),
+    # never both applied to the same call:
+    #
+    #   * Unparameterized call (max_results is None and offset is None):
+    #     byte-identical to before this task — _MAX_ACTORS_EXAMINED caps
+    #     the walk exactly as it always has, truncated/truncation_reasons
+    #     reporting intact. This is a deliberate backward-compatibility
+    #     choice: an unparameterized broad scan already exceeds the
+    #     180s bridge budget on a large project long before it could ever
+    #     reach the 5000-actor cap (measured: 25.1s fixed phase-1 cost +
+    #     ~198ms/actor marginal reflection cost on a real 44,753-actor
+    #     project — a full uncapped walk is ~2.5 HOURS, and even the
+    #     existing 5000-actor cap is ~17 minutes, both already hopeless
+    #     against the budget), so changing this path's behavior buys
+    #     nothing while risking every existing caller's assumptions.
+    #
+    #   * Paged call (max_results and/or offset passed): the walk cap
+    #     does NOT apply. Instead, the MATCHED list (already known in
+    #     full from the cheap phase-1 label-match above, at zero extra
+    #     cost) is stably sorted by label — SAME key/order
+    #     _paginate_actors uses below for the non-live-walk pagination
+    #     path, so a caller mixing paged and unparameterized calls (or
+    #     switching page size mid-sweep) never sees an actor skip or
+    #     duplicate purely from re-sorting differently — and sliced to
+    #     the requested [offset, offset+max_results) window via the SAME
+    #     _apply_pagination_fn/local-fallback contract _paginate_actors
+    #     uses. Only the actors inside that window are ever handed to
+    #     the phase-2 reflection walk below — actors outside the window
+    #     are never probed in this call at all, which is exactly where
+    #     the measured ~198ms/actor cost is avoided (a ~400-actor page:
+    #     25s fixed + 400*0.198 =~ 104s, comfortably inside the 180s
+    #     budget; looping pages until next_offset is absent covers every
+    #     matched actor across calls with no gap and no duplicate, since
+    #     the sort key depends only on each actor's own label — see
+    #     _paginate_actors' docstring for the identical ordering-safety
+    #     argument). The page window itself is the bound in this mode,
+    #     so _MAX_ACTORS_EXAMINED is skipped entirely rather than
+    #     additionally clamping an already-small page.
     # ------------------------------------------------------------------
-    if len(matched) > _MAX_ACTORS_EXAMINED:
+    # paging_requested was already computed above (before the offline-
+    # scan trigger, p3-t6) so it could gate that scan too — not
+    # recomputed here, just reused.
+    page_extra = {}
+    if paging_requested:
+        matched_sorted = sorted(matched, key=lambda pair: pair[0] or "")
+        if _apply_pagination_fn is not None:
+            matched_for_walk, page_extra = _apply_pagination_fn(
+                matched_sorted, max_results, offset
+            )
+        else:
+            # Local fallback — identical contract to
+            # batch_tools._apply_pagination / _paginate_actors' own
+            # fallback above (kept in lockstep with both).
+            total_matched = len(matched_sorted)
+            effective_offset = offset if offset is not None else 0
+            if effective_offset < 0:
+                effective_offset = 0
+            if max_results is None or max_results <= 0:
+                matched_for_walk = matched_sorted[effective_offset:]
+                page_extra = {
+                    "offset": effective_offset,
+                    "returned": len(matched_for_walk),
+                }
+            else:
+                matched_for_walk = matched_sorted[
+                    effective_offset:effective_offset + max_results
+                ]
+                next_offset = effective_offset + len(matched_for_walk)
+                page_extra = {
+                    "offset": effective_offset,
+                    "returned": len(matched_for_walk),
+                }
+                if next_offset < total_matched:
+                    page_extra["next_offset"] = next_offset
+        notes_parts.append(
+            "page-aware walk active: {} of {} matched actor(s) probed "
+            "this call (offset={}, next_offset={}) — the "
+            "_MAX_ACTORS_EXAMINED walk cap does not apply while paging; "
+            "the page window is the bound instead.".format(
+                len(matched_for_walk), len(matched_sorted),
+                page_extra.get("offset", 0), page_extra.get("next_offset"),
+            )
+        )
+    elif len(matched) > _MAX_ACTORS_EXAMINED:
         scan_stats["actors_examined_capped"] = True
         truncation_reasons.append(
             "{} actor(s) matched label_pattern={!r}, but only the first {} "
@@ -2178,6 +2460,26 @@ def _inspect_tags_live(label_pattern, project_dir):
                             actor_tags_raw.append(normalized)
                 actor_tags_matched = [t for t in actor_tags_raw if t in known_tag_names]
 
+                # OPT-IN LOCATION: resolved from the SAME actor object
+                # already in hand for this walk iteration, via the SAME
+                # shared implementation batch_get_location/
+                # batch_get_property("location") use (see
+                # batch_tools.py:295-333, device_audit.py:211) -- not a
+                # second independent get_actor_location() call site. Only
+                # attempted when include_location=True, so the default
+                # path's per-actor cost (and shape) is unchanged.
+                location_value = None
+                location_error = None
+                if include_location:
+                    if _da_actor_location_tuple is None:
+                        location_error = "device_audit._actor_location_tuple unavailable"
+                    else:
+                        try:
+                            lx, ly, lz = _da_actor_location_tuple(actor)
+                            location_value = {"x": lx, "y": ly, "z": lz}
+                        except Exception as e:
+                            location_error = str(e)
+
                 raw_records.append({
                     "label": label,
                     "has_verse_tag_component": comp is not None,
@@ -2187,6 +2489,8 @@ def _inspect_tags_live(label_pattern, project_dir):
                     "extraction_debug": extraction_debug,
                     "actor_tags_raw": actor_tags_raw,
                     "actor_tags_matched": actor_tags_matched,
+                    "location": location_value,
+                    "location_error": location_error,
                 })
         # phase2_task's __exit__ has run here regardless of how the loop
         # above ended.
@@ -2328,6 +2632,15 @@ def _inspect_tags_live(label_pattern, project_dir):
         }
         if combined_status == "unreadable" and rec.get("extraction_debug"):
             actor_entry["extraction_debug"] = rec["extraction_debug"]
+        # location/location_error keys are added ONLY when include_location
+        # was requested -- never present at all otherwise, so the default
+        # (include_location=False) actor shape is byte-identical to before
+        # this parameter existed.
+        if include_location:
+            if rec.get("location") is not None:
+                actor_entry["location"] = rec["location"]
+            else:
+                actor_entry["location_error"] = rec.get("location_error") or "unknown error"
         actors_out.append(actor_entry)
 
     combined_ok = sum(1 for a in actors_out if a["extraction_status"] == "ok")
@@ -2574,8 +2887,33 @@ def _inspect_tags_live(label_pattern, project_dir):
     # tags for but that never matched a LIVE actor at all (a headless run
     # with no editor, or a label-form mismatch) — never silently dropped,
     # same never-omit doctrine as every other actor class in this module.
+    #
+    # SKIPPED WHILE PAGING (p3-t5): offline_tags_by_label comes from
+    # scan_external_actors, which is gated only by label_pattern -- it
+    # runs in full every call and has no notion of the live walk's page
+    # window. Appending these here unconditionally would inject the SAME
+    # offline-only entries into EVERY page's actors_out, breaking the
+    # "every matched actor exactly once across a paged sweep" property
+    # (they are not part of matched_for_walk, so page slicing never
+    # touches them). Correctness over completeness-per-call: an
+    # unparameterized (non-paged) call still surfaces every offline-only
+    # actor exactly as before -- paged callers needing this offline-only
+    # set should make one additional unparameterized call for it, noted
+    # in discovery.notes below.
     matched_live_labels = {lbl for lbl, _ in matched}
-    for label, off_tags in offline_tags_by_label.items():
+    if paging_requested and offline_tags_by_label:
+        offline_only_count = sum(
+            1 for label in offline_tags_by_label if label not in matched_live_labels
+        )
+        if offline_only_count:
+            notes_parts.append(
+                "{} offline-only actor(s) (found by the __ExternalActors__ "
+                "scan but never matched live) were NOT added to 'actors' "
+                "on this paged call, to avoid duplicating them across "
+                "every page -- make one unparameterized (no max_results/"
+                "offset) call to see them.".format(offline_only_count)
+            )
+    for label, off_tags in ({} if paging_requested else offline_tags_by_label).items():
         if label in matched_live_labels:
             continue
         seen_names = set()
@@ -2590,14 +2928,22 @@ def _inspect_tags_live(label_pattern, project_dir):
                 "parent_chain": list(t.get("parents") or []),
                 "source": "external_actors",
             })
-        actors_out.append({
+        offline_entry = {
             "label": label,
             "has_verse_tag_component": False,
             "component_class": None,
             "tags": tags_out,
             "extraction_status": "ok" if tags_out else "empty",
             "actor_tags": [],
-        })
+        }
+        if include_location:
+            # No live actor object exists for an offline-only label (it
+            # never matched during the live walk above), so there is
+            # nothing to call _actor_location_tuple on -- report that
+            # explicitly rather than silently omitting the key other
+            # entries carry.
+            offline_entry["location_error"] = "no live actor object (offline-only match)"
+        actors_out.append(offline_entry)
 
     # Summary counts: which source produced how many decoded tags —
     # stated out loud rather than left implicit in per-actor "source"
@@ -2636,6 +2982,8 @@ def _inspect_tags_live(label_pattern, project_dir):
         result["deep_probe_skipped_reason"] = deep_probe_skipped_reason
     if deep_probe_result is not None:
         result["deep_probe"] = deep_probe_result
+    if paging_requested:
+        result["page_extra"] = page_extra
     return result
 
 
@@ -2770,12 +3118,102 @@ def write_report(result):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def inspect_tags(label_pattern=None, project_dir=None):
+def inspect_tags(label_pattern=None, project_dir=None, fields=None, include_location=False,
+                  max_results=None, offset=None):
     """Enumerate level actors (optionally filtered by *label_pattern* —
     plain substring or "*"-wildcard, case-insensitive; see ``match_label``)
     and report their Verse gameplay tags, discovering the tag-bearing
     component class and its tag-container property NAME AT RUNTIME rather
     than assuming one (see module docstring for why).
+
+    *max_results* / *offset* (p3-t5): opt-in cursor pagination, mirroring
+    batch_tools.py's ``batch_get_property``/``batch_get_location``
+    contract (same ``offset``/``returned``/``next_offset`` shape). Omit
+    both (the default) and behavior is byte-identical to before these
+    parameters existed -- no new keys appear at all, and the walk is
+    bounded exactly as it always was (see ``_MAX_ACTORS_EXAMINED``'s
+    comment block). Pass ``max_results`` (and, to select a page beyond
+    the first, ``offset``) to activate the PAGE-AWARE WALK instead: this
+    is not payload slicing after the fact, it changes WHICH actors get
+    examined at all.
+
+    THE WALK ITSELF IS PAGED, NOT JUST THE RESPONSE -- as of p3-t5 this
+    replaced the previous design (page over an already-fully-walked
+    ``actors`` list). The per-actor component/property reflection walk is
+    the expensive part: a live measurement against a real 44,753-actor
+    project found a ~25.1s FIXED cost (verse-file scan + tag-class
+    discovery + label-matching ALL actors, paid every call regardless of
+    how many match) plus ~198ms MARGINAL cost per actor actually put
+    through the reflection walk (measured from a 392-match scan totaling
+    102.6s). A full uncapped walk of that project would take roughly 2.5
+    hours in one call -- hopeless against the 180s budget
+    ``uefn-server.ts`` grants this tool -- and even the pre-existing
+    5,000-actor ``_MAX_ACTORS_EXAMINED`` cap is ~17 minutes, already
+    unreachable in a single call. So when paging is requested,
+    ``_inspect_tags_live`` sorts the (cheaply, already fully known)
+    matched-actor list by label -- same key ``_paginate_actors`` uses, so
+    ordering is identical whichever path a caller takes -- and probes
+    ONLY the actors inside [offset, offset+max_results): actors outside
+    that window are never put through the reflection walk in this call at
+    all, which is exactly where the ~198ms/actor is avoided. A page sized
+    ~400 costs roughly 25s fixed + 400*0.198s =~ 104s, comfortably inside
+    budget; looping calls with offset=0, then each response's
+    ``next_offset``, until it is absent, probes every matched actor
+    exactly once across the whole sweep (see
+    ``test_page_aware_walk.py``'s full-sweep test for the pinned
+    property). ``_MAX_ACTORS_EXAMINED`` and the page window are
+    MUTUALLY EXCLUSIVE bounds on the same phase -- the walk cap is
+    skipped entirely while paging (the requested page size IS the bound
+    for that call), and applied exactly as before when paging is not
+    requested; they are never combined.
+
+    A paginated response carries ``"matched"`` (the true FULL matched-
+    actor total -- from ``scan_stats.actors_matched``, computed for free
+    during the always-runs cheap phase, and exact regardless of paging),
+    ``"offset"``, ``"returned"``, and ``"next_offset"`` (present only when
+    another page remains). ``scan_stats.actors_examined`` is DIFFERENT
+    from ``"matched"`` while paging: it counts only THIS CALL's probed
+    actors (this page), never the full-scan total -- see
+    ``scan_stats``'s own inline comment in ``_inspect_tags_live`` for the
+    exact wording a stats consumer must not misread. ``truncated``/
+    ``truncation_reasons``/``cancelled`` continue to describe this call's
+    walk (the page, when paging; the capped/uncapped full walk otherwise)
+    -- a Cancel during a paged call still returns whatever of that page
+    was examined before cancellation, never discarded.
+
+    *fields*: optional list of per-actor keys to return (e.g.
+    ``["label", "tags", "location"]``) instead of the full fixed set
+    below. ``"label"`` is always kept regardless of whether it is listed,
+    so a field-selected entry can still be attributed to an actor.
+    Omitted (``None``, the default) returns every field exactly as
+    documented below — existing callers see byte-identical output. This
+    is the field-selection win this module actually needs: a real-world
+    ``tag_inspect`` call on ~390 actors measured 681 KB with the full
+    fixed shape (``tags`` carrying a nested ``parent_chain`` per tag,
+    plus ``component_class``, ``extraction_status``, the full raw
+    ``actor_tags`` list, and sometimes ``extraction_debug``) while the
+    caller only wanted ``label`` + ``tags`` + ``location`` — unlike
+    batch_get's already-lean ~223-bytes/actor shape, this is where field
+    selection pays for itself.
+
+    *include_location*: opt-in bool (default ``False`` — unchanged
+    behavior). When ``True``, each actor entry additionally carries
+    ``"location"`` (``{"x", "y", "z"}``, resolved via
+    ``device_audit._actor_location_tuple`` — the SAME shared seam
+    ``batch_get_location``/``batch_get_property``'s "location" special
+    case uses, see ``batch_tools.py``'s ``batch_get_location`` docstring;
+    no second ``get_actor_location()`` call site was added) or
+    ``"location_error"`` (str) if resolution failed for that actor. This
+    is fetched from the SAME actor object already in hand during the
+    phase-2 walk (no second actor-matching pass, no extra editor
+    enumeration) — see ``_inspect_tags_live``'s walk loop. This directly
+    answers the incident this task exists to fix: one call returning
+    label + tags + location together, through the same location
+    implementation p2 built rather than a second independent one. If
+    ``device_audit._actor_location_tuple`` is unavailable (stale/
+    version-skewed ``device_audit.py`` copy), every actor instead gets
+    ``"location_error": "device_audit._actor_location_tuple unavailable"``
+    rather than silently omitting location or crashing the whole scan.
 
     Returns exactly:
         {"discovery": {"component_class": str|None, "tag_property": str|None,
@@ -2791,7 +3229,18 @@ def inspect_tags(label_pattern=None, project_dir=None):
                                  "source": "component_tags"|"actor_tags"}],
                       "actor_tags": [str, ...],
                       "extraction_status": "ok"|"empty"|"unreadable"|None,
-                      "extraction_debug": {...} (only when "unreadable")}],
+                      "extraction_debug": {...} (only when "unreadable"),
+                      "location": {"x": float, "y": float, "z": float}
+                          (only when include_location=True and resolved),
+                      "location_error": str
+                          (only when include_location=True and NOT
+                          resolved -- location and location_error are
+                          mutually exclusive per actor, never both)}],
+                     -- when *fields* is given, each entry above is
+                     trimmed to {"label"} UNION *fields* instead (see
+                     _project_actor_fields; applied after include_location,
+                     so fields=["label","tags","location"] is exactly the
+                     incident's original ask in one call),
          "deep_probe": {"probed_labels": [str, ...], "findings": [...],
                           "cancelled": bool} (present only when the
                           deep-probe fallback ran — see below)}
@@ -2918,7 +3367,10 @@ def inspect_tags(label_pattern=None, project_dir=None):
         return result
 
     try:
-        result = _inspect_tags_live(label_pattern, project_dir)
+        result = _inspect_tags_live(
+            label_pattern, project_dir, include_location=include_location,
+            max_results=max_results, offset=offset,
+        )
     except Exception:
         tb = traceback.format_exc()
         try:
@@ -2943,6 +3395,50 @@ def inspect_tags(label_pattern=None, project_dir=None):
             "scan_stats": None,
             "offline": None,
         }
+
+    # Pagination is applied BEFORE field selection (mirrors
+    # batch_tools.py's ordering: page first, project fields on the page
+    # only -- cheaper, and fields is documented as trimming the actors
+    # actually RETURNED). Both max_results and offset are None by default
+    # -- nothing about the result shape changes for a caller who never
+    # opts in. discovery/scan_stats/truncation/cancelled reporting always
+    # describe the FULL walk, never just the current page -- see this
+    # function's pagination-vs-walk-cap docstring section above.
+    #
+    # p3-t5: when the live path ran (_inspect_tags_live), it already did
+    # the PAGE-AWARE WALK itself -- only the requested page's actors were
+    # ever probed, so result["actors"] IS the page already and carries
+    # result["page_extra"] (offset/returned/next_offset) plus the true
+    # matched total in scan_stats["actors_matched"]. Adopting those here
+    # (rather than calling _paginate_actors again) avoids re-sorting/
+    # re-slicing an already-small page -- which would silently produce
+    # the WRONG page (e.g. offset=400 sliced again from a 400-long list
+    # returns nothing). The non-live paths below (unreal unavailable, or
+    # an unhandled exception) never call _inspect_tags_live at all --
+    # "actors" is always [] there, so _paginate_actors is still used for
+    # those to keep their pagination-key shape (matched/offset/returned)
+    # consistent with every other bridge tool's contract.
+    if "page_extra" in result:
+        page_extra = result.pop("page_extra")
+        result["matched"] = result.get("scan_stats", {}).get("actors_matched", len(result.get("actors") or []))
+        result.update(page_extra)
+    elif (max_results is not None or offset is not None) and "actors" in result:
+        pre_page_total = len(result["actors"])
+        page, page_extra = _paginate_actors(result["actors"], max_results, offset)
+        result["actors"] = page
+        result["matched"] = pre_page_total
+        result.update(page_extra)
+
+    # Field selection is applied LAST, on the fully-built (and, if
+    # requested, already-paginated) result, so discovery/scan_stats/
+    # truncation reporting is never affected by it -- fields only trims
+    # per-actor entries (see _project_actor_fields). fields=None (the
+    # default) is a no-op, keeping every existing caller's shape
+    # byte-identical. The written report mirrors exactly what is returned
+    # (single source of truth, no divergent "full" archive silently kept
+    # elsewhere).
+    if fields is not None and result.get("actors"):
+        result["actors"] = [_project_actor_fields(a, fields) for a in result["actors"]]
 
     write_report(result)
     return result

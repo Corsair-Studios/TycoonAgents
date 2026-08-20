@@ -127,7 +127,10 @@ Use an absolute path for `args`. On Windows use forward slashes. Do **not** add 
 | `uefn_run_audit` | Run full device audit, return JSON results | none |
 | `uefn_get_level_info` | Get level metadata (actor counts, device types) | none |
 | `uefn_batch_set` | Set a property on a filtered set of actors | `property_name`, `value`, `filter_type` (optional), `filter_value` (optional), `dry_run` (optional) |
-| `uefn_batch_get` | Read a property from a filtered set of actors | `property_name`, `filter_type` (optional), `filter_value` (optional) |
+| `uefn_batch_get` | Read a property from a filtered set of actors (device-gated — see Filter semantics below) | `property_name`, `filter_type` (optional), `filter_value` (optional), `fields` (optional), `max_results` (optional), `offset` (optional) |
+| `uefn_batch_location` | Read label + world (x,y,z) location for every actor matching a filter — NOT device-gated, works on any actor | `filter_type` (optional), `filter_value` (optional), `fields` (optional), `max_results` (optional), `offset` (optional) |
+| `uefn_tag_inspect` | Read Verse gameplay tags (and optionally location) from actors' tag components — see tag_inspect specifics below | `label_pattern` (optional), `project_dir` (optional), `fields` (optional), `include_location` (optional), `max_results` (optional), `offset` (optional) |
+| `uefn_list_commands` | List every command the bridge's dispatch table supports, with parameters, derived live from the dispatch table — call this FIRST when unsure what the bridge offers | none |
 | `uefn_texture_find` | Find texture references in the project | `texture_name`, `match_mode` (optional), `project_only` (optional) |
 | `uefn_texture_summary` | Get a grouped texture usage summary | `texture_name`, `match_mode` (optional), `project_only` (optional) |
 | `uefn_texture_on_actor` | List textures referenced by an actor | `actor_label` |
@@ -144,6 +147,53 @@ Use an absolute path for `args`. On Windows use forward slashes. Do **not** add 
 | `uefn_spawn_actor` | Spawn a new actor from an asset into the open level. Edits the level and supports editor undo (Ctrl+Z) | `asset_path`, `location` (optional), `rotation` (optional), `scale` (optional), `label` (optional) |
 | `uefn_duplicate_actor` | Duplicate an existing actor by label, offsetting the copy. Edits the level and supports editor undo (Ctrl+Z) | `actor_label`, `offset` (optional), `new_label` (optional) |
 | `uefn_set_transform` | Set an actor's location, rotation, and/or scale by label. Edits the level and supports editor undo (Ctrl+Z) | `actor_label`, `location` (optional), `rotation` (optional), `scale` (optional) — at least one transform component required |
+
+## Filter semantics — read this before using batch_get/batch_set/batch_location
+
+`filter_type: "label"` and `filter_type: "class"` do NOT match the same way, and confusing them silently returns zero matches:
+
+- **`"label"`** is a **case-insensitive `fnmatch` glob**, not a substring match. `filter_value: "SGMarker"` matches an actor labeled EXACTLY `SGMarker` (case-insensitive) and nothing else — an actor labeled `SGMarker_04` will NOT match. Use `filter_value: "*SGMarker*"` to match by substring (on the live 44,753-actor project this session verified against, that glob matched 392 actors where the bare label matched 0).
+- **`"class"`** IS a case-insensitive substring match — `filter_value: "marker"` matches any class name containing "marker" anywhere.
+
+When a filter matches zero actors, the response's `status: "zero_match"` `reason` string now proactively teaches this: for a `"label"` filter whose `filter_value` contains no glob wildcard (`*`, `?`, `[`), it appends a suggested `filter_value` with `*` wrapped around your original input.
+
+## Honest-failure contract (batch_get, batch_set, batch_location)
+
+All three return a top-level `status` field — **read it first**, before touching `actors`/`matched`:
+
+- `"ok"` — every matched actor resolved.
+- `"zero_match"` — the filter matched no actors at all; `reason` names the filter tried (see glob-teaching above).
+- `"property_unresolved"` — actors matched, but `property_name` failed to resolve on every one of them; `reason` names the property, `unresolved_on` lists every matched label.
+- `"partial"` — some actors resolved, some didn't; per-actor entries carry an explicit `ok: true/false`, and `unresolved_on` lists the labels that failed with a real `error` string each (never dropped or coerced to null).
+- `"error"` — the filter/match step itself raised (distinct from a property failing on already-matched actors).
+
+## `property_name: "location"` in batch_get now works — but not "transform"
+
+`uefn_batch_get` special-cases `property_name` normalized (trimmed, lowercased) to `"location"`: it now routes through the same shared location implementation `uefn_batch_location` uses (`batch_get_location` in `batch_tools.py`), reshaping results into batch_get's `{label, class, ok, value}` shape with `value` as an `(x, y, z)` tuple.
+
+Why this was needed: `get_editor_property()` — what every other `property_name` goes through — **cannot resolve world-space location or transform**, because those are not editor properties; they require the dedicated `actor.get_actor_location()` call. Any OTHER geometry-like `property_name` (e.g. `"transform"`, `"rotation"`, `"scale"`) will still fail with an explicit `status: "property_unresolved"` naming that property — this is not a bug, it means that property genuinely isn't a `get_editor_property()` name.
+
+`"transform"` is deliberately **not** special-cased the way `"location"` is: the underlying location helper only returns position, and synthesizing a fake transform (guessing rotation/scale) would misrepresent the actor. If you need location for non-device actors, prefer `uefn_batch_location` directly — it isn't device-gated.
+
+## Pagination (batch_get, batch_location, tag_inspect)
+
+`max_results` is a **page size, not a ceiling**, and `offset` selects which page. Omitting both returns everything in one call — no silent cap. The response carries the true total `matched`, how many actors this page returned (`returned`), and `next_offset` — present only when another page remains, absent on the final page. Loop calls with `offset=0`, then each response's `next_offset`, until it is absent, to sweep the complete matched set exactly once (holds as long as the level isn't mutated mid-sweep).
+
+Live-measured cost on a real 44,753-actor project (`uefn_tag_inspect`, which pays a ~25.1s FIXED cost per call — verse-file scan + tag-class discovery + label-matching every actor — plus ~198ms MARGINAL cost per actor actually walked): a 392-actor page took ~103s total on the first call; a page-sized-~400 call generally costs roughly 25s fixed + 400×0.198s ≈ 104s. An unpaged, unparameterized `tag_inspect` sweep of a project this size additionally runs the offline `__ExternalActors__` scan (see below), which alone can cost **~30 minutes and 10MB+** of payload — page broad scans; don't run them unparameterized against a large project.
+
+## `uefn_tag_inspect` specifics
+
+- **`fields`** trims each returned actor entry down to only the named keys (`"label"` is always kept regardless, so a trimmed entry is still attributable). Field selection matters more here than on `batch_get`: a real 390-actor tag_inspect response measured 681KB with the full fixed shape (nested `parent_chain` per tag, `component_class`, `extraction_status`, raw `actor_tags`, sometimes `extraction_debug`).
+- **`include_location`** (default off) adds `{x, y, z}` (or a `location_error` string) to each actor entry, resolved through the same shared location implementation `uefn_batch_location`/the `"location"` special case above use — no second `get_actor_location()` call site.
+- **Paging skips the offline scan.** A paged call (`max_results` and/or `offset` given) SKIPS the offline `__ExternalActors__` `.uasset` scan entirely — this is disclosed at runtime in the response's `discovery.notes`. That offline scan is the PRIMARY tag-discovery source in this module's discovery ladder, so a paged actor's tags can be a strict subset of what an unparameterized call would return for that same actor. If you need offline-augmented tags, make one unparameterized call (no `max_results`/`offset`).
+
+## `uefn_list_commands` — call this first when unsure what's available
+
+Returns every command the bridge's dispatch table currently supports (name, parameters, one-line description, and whether it supports the fields/max_results/offset paging trio) derived LIVE from the dispatch table and each handler's own source/docstring — never a hand-maintained list, so it can't drift. Call this before probing tools blind.
+
+## The bridge source is local and readable
+
+The bridge's Python source lives at `media/uefn-bridge/*.py` in this repo (and is staged into `<project>/Content/Python` on install — see Installation above). When a tool's exact behavior matters and this doc doesn't cover it, READ THE SOURCE rather than probing tools experimentally or searching online — `batch_tools.py` and `tag_inspect.py` in particular carry extensive docstrings on filter semantics, status shapes, and pagination that are authoritative over any paraphrase here.
 
 ## Usage Examples
 

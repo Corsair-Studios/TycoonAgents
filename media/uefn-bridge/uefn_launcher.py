@@ -341,7 +341,6 @@ def _show_mcp_info():
 
     win = tk.Tk()
     win.title("Trashbyrd's MCP Bridge")
-    win.geometry("620x780")
     win.configure(bg=_BG)
 
     # Style
@@ -386,12 +385,35 @@ def _show_mcp_info():
         unreal.log_warning("uefn_launcher: _mcp_command_entries failed: " + str(e))
         commands = [("ERROR", "uefn_bridge: " + str(e))]
 
+    # Window height is content-derived (base chrome + one Treeview rowheight
+    # per command, capped at _CMD_TREE_MAX_ROWS) rather than the previous
+    # hardcoded 780px, which was sized for an older, shorter command list.
+    # As uefn_bridge._METHODS grows the fixed height silently clipped the
+    # AI-clients section and footer below the window's bottom edge,
+    # forcing a manual drag-to-resize every time — that was the bug.
+    # Above the cap, a vertical Scrollbar on cmd_tree (added below,
+    # matching the established pattern in dependency_viewer.py /
+    # tag-inspect's tree_frame) takes over so every command stays reachable
+    # without ever needing a drag. The overall window height is additionally
+    # capped at 90% of the screen's usable height so it can never exceed the
+    # display even on a short monitor.
+    _CMD_TREE_MAX_ROWS = 14
+    _CMD_ROW_PX = 20  # matches MCP.Treeview's rowheight style, above
+    _BASE_CHROME_PX = 330  # title/description/AI section/footer + padding
+    _visible_cmd_rows = min(len(commands), _CMD_TREE_MAX_ROWS)
+    _desired_height = _BASE_CHROME_PX + _visible_cmd_rows * _CMD_ROW_PX
+    try:
+        _max_height = int(win.winfo_screenheight() * 0.9)
+    except Exception:
+        _max_height = 900  # defensible cap if screen metrics are unavailable
+    win.geometry("620x{}".format(min(_desired_height, _max_height)))
+
     cmd_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
-    cmd_frame.pack(fill=tk.X, padx=12, pady=4)
+    cmd_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
 
     cmd_tree = ttk.Treeview(
         cmd_frame, columns=("cmd", "desc"), show="headings",
-        style="MCP.Treeview", height=len(commands),
+        style="MCP.Treeview", height=min(len(commands), _CMD_TREE_MAX_ROWS),
     )
     cmd_tree.heading("cmd", text="Command")
     cmd_tree.heading("desc", text="Description")
@@ -401,7 +423,10 @@ def _show_mcp_info():
     for cmd_name, desc in commands:
         cmd_tree.insert("", tk.END, values=(cmd_name, desc))
 
-    cmd_tree.pack(fill=tk.X)
+    cmd_vsb = ttk.Scrollbar(cmd_frame, orient="vertical", command=cmd_tree.yview)
+    cmd_tree.configure(yscrollcommand=cmd_vsb.set)
+    cmd_vsb.pack(side="right", fill="y")
+    cmd_tree.pack(fill=tk.BOTH, expand=True)
 
     # Compatible AI section
     ai_frame = tk.Frame(win, bg=_BG, padx=16, pady=8)

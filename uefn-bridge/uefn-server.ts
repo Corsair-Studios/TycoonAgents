@@ -630,6 +630,22 @@ server.registerTool(
 );
 
 server.registerTool(
+  "uefn_list_commands",
+  {
+    description:
+      "Lists every command this bridge's dispatch table currently supports, with parameters and a " +
+      "one-line description derived programmatically from each Python handler's own source/docstring — " +
+      "never a hand-maintained list, so it can't drift out of sync with what's actually callable. Call " +
+      "THIS FIRST when unsure what the bridge offers, instead of probing tools blind or reading source. " +
+      "Each entry reports its `params` (best-effort, source-derived — falls back to \"see docstring\" when " +
+      "not mechanically derivable) and `supports_pagination` (true when the handler accepts the shared " +
+      "fields/max_results/offset paging trio documented on uefn_batch_get/uefn_batch_location).",
+    inputSchema: {},
+  },
+  async () => bridgeTool("list_commands", {})
+);
+
+server.registerTool(
   "uefn_list_devices",
   {
     description:
@@ -731,10 +747,29 @@ server.registerTool(
       property_name: z.string().describe("Property to read from matched actors"),
       filter_type: z.string().optional().describe("Filter type (e.g. 'class', 'label')"),
       filter_value: z.string().optional().describe("Filter value to match against"),
+      fields: z.array(z.string()).optional().describe("Trim each returned actor entry to only these field names, to cut per-actor payload size on large result sets. Omit to get every field."),
+      max_results: z.number().optional().describe("PAGE SIZE, not a ceiling — the max number of matched actors to return in this call. Omit for the old unbounded behavior. To cover every matched actor, loop calls passing the previous response's next_offset as this call's offset until next_offset is absent."),
+      offset: z.number().optional().describe("Cursor into the matched (label-sorted) actor list to start this page at. Defaults to 0. Pair with max_results to page through a large result set; see max_results' description for the looping contract."),
     },
   },
   async (args) =>
-    bridgeTool("batch_get", compact({ filter_type: args.filter_type, filter_value: args.filter_value, property_name: args.property_name }))
+    bridgeTool("batch_get", compact({ filter_type: args.filter_type, filter_value: args.filter_value, property_name: args.property_name, fields: args.fields, max_results: args.max_results, offset: args.offset }))
+);
+
+server.registerTool(
+  "uefn_batch_location",
+  {
+    description: "Read world locations for every actor matching a filter — device or not (no device-only gating, unlike uefn_batch_get/uefn_list_devices). Fixes the case where uefn_batch_get with property_name='location' cannot work because location is not an editor property.",
+    inputSchema: {
+      filter_type: z.string().optional().describe("Filter type (e.g. 'class', 'label', 'all_devices' — matches ALL actors, not just devices)"),
+      filter_value: z.string().optional().describe("Filter value to match against"),
+      fields: z.array(z.string()).optional().describe("Trim each returned actor entry to only these field names, to cut per-actor payload size on large result sets. Omit to get every field."),
+      max_results: z.number().optional().describe("PAGE SIZE, not a ceiling — the max number of matched actors to return in this call. Omit for the old unbounded behavior. To cover every matched actor, loop calls passing the previous response's next_offset as this call's offset until next_offset is absent."),
+      offset: z.number().optional().describe("Cursor into the matched (label-sorted) actor list to start this page at. Defaults to 0. Pair with max_results to page through a large result set; see max_results' description for the looping contract."),
+    },
+  },
+  async (args) =>
+    bridgeTool("batch_location", compact({ filter_type: args.filter_type, filter_value: args.filter_value, fields: args.fields, max_results: args.max_results, offset: args.offset }))
 );
 
 server.registerTool(
@@ -1134,6 +1169,30 @@ server.registerTool(
         .describe(
           "UEFN project to resolve Verse tag classes from; defaults to the resolved project root."
         ),
+      fields: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Trim each returned actor entry to only these field names, to cut per-actor payload size on large result sets. Omit to get every field."
+        ),
+      include_location: z
+        .boolean()
+        .optional()
+        .describe(
+          "Add world coordinates ({x, y, z}, or a location_error string) to each returned actor entry. Off by default since it costs one extra editor call per actor."
+        ),
+      max_results: z
+        .number()
+        .optional()
+        .describe(
+          "PAGE SIZE, not a ceiling — the max number of matched actors to return in this call. Omit for the old unbounded behavior, which also runs the offline __ExternalActors__ .uasset scan (slow — tens of minutes on large projects). Passing max_results and/or offset activates paging AND skips that offline scan entirely for this call, so a paged call is much faster but may see fewer decoded tags per actor than an unparameterized call; see the response's discovery.notes for the exact caveat. To cover every matched actor, loop calls passing the previous response's page_extra.next_offset as this call's offset until next_offset is absent."
+        ),
+      offset: z
+        .number()
+        .optional()
+        .describe(
+          "Cursor into the matched (label-sorted) actor list to start this page at. Defaults to 0. Passing this (or max_results) activates paging — see max_results' description for the looping contract and the offline-scan trade-off."
+        ),
     },
   },
   async (args) => {
@@ -1146,6 +1205,10 @@ server.registerTool(
         compact({
           label_pattern: args.label_pattern,
           project_dir: args.project_dir,
+          fields: args.fields,
+          include_location: args.include_location,
+          max_results: args.max_results,
+          offset: args.offset,
         }),
         180_000
       );

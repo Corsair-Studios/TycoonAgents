@@ -63,6 +63,15 @@ import { transformSync } from 'esbuild';
 
 const SERVER_TS_PATH = join(process.cwd(), 'uefn-bridge', 'uefn-server.ts');
 
+// uefn-server.ts is checked out with CRLF line endings on Windows (git's
+// core.autocrlf converts LF-in-repo to CRLF-on-disk); the anchors below are
+// written with plain \n. Normalize once here so anchor/text matching is
+// newline-agnostic and doesn't break depending on which platform checked
+// the file out. Mirrors readServerSource() in test/uefnLevelEditTools.test.ts.
+function readServerSource(): string {
+  return readFileSync(SERVER_TS_PATH, 'utf8').replace(/\r\n/g, '\n');
+}
+
 const PURE_PREFIX_END = 'const server = new McpServer(';
 const REGION2_START = 'const execFileAsync = promisify(execFile);';
 const REGION2_END = 'server.registerTool(\n  "uefn_verse_check",';
@@ -137,7 +146,7 @@ function requireAnchorOnce(fullSource: string, label: string, needle: string): n
 // constants; defaults are the "don't care" values used by tests that never
 // exercise the timeout or bundled-copy ladder branch.
 function loadUefnVerseCheckInternals(opts: { timeoutMs?: number; serverFileDir?: string } = {}): UefnVerseCheckInternals {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
 
   const prefixEndIdx = requireAnchorOnce(fullSource, 'PURE_PREFIX_END', PURE_PREFIX_END);
   const region2StartIdx = requireAnchorOnce(fullSource, 'REGION2_START', REGION2_START);
@@ -291,7 +300,7 @@ test('extraction produces all expected exports (canary for source-layout drift)'
 });
 
 test('guard: raw source still has the two lines this test patches, verbatim (catches silent drift)', () => {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   assert.ok(fullSource.includes(SERVER_FILE_DIR_LINE), 'SERVER_FILE_DIR line changed — update SERVER_FILE_DIR_LINE and the patch in this test');
   assert.ok(fullSource.includes(TIMEOUT_LINE), 'VERSE_CHECK_SUBPROCESS_TIMEOUT_MS=170_000 changed — update TIMEOUT_LINE and the patch in this test (and re-check the real 170s value is still sane)');
 });

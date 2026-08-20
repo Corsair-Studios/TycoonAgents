@@ -46,6 +46,15 @@ import { transformSync } from 'esbuild';
 
 const SERVER_TS_PATH = join(process.cwd(), 'uefn-bridge', 'uefn-server.ts');
 
+// uefn-server.ts is checked out with CRLF line endings on Windows (git's
+// core.autocrlf converts LF-in-repo to CRLF-on-disk); the anchors and
+// COMPACT_FN_TEXT below are written with plain \n. Normalize once here so
+// anchor/text matching is endianness-of-newline-agnostic and doesn't break
+// depending on which platform checked the file out.
+function readServerSource(): string {
+  return readFileSync(SERVER_TS_PATH, 'utf8').replace(/\r\n/g, '\n');
+}
+
 const SPAWN_START = 'server.registerTool(\n  "uefn_spawn_actor",';
 const DUPLICATE_START = 'server.registerTool(\n  "uefn_duplicate_actor",';
 const SET_TRANSFORM_START = 'server.registerTool(\n  "uefn_set_transform",';
@@ -89,7 +98,7 @@ function makeStubBridgeTool(calls: BridgeCall[]): (method: string, params: Recor
 }
 
 function loadRealCompact(): (obj: Record<string, unknown>) => Record<string, unknown> {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   assert.ok(
     fullSource.includes(COMPACT_FN_TEXT),
     'compact() source text changed — update COMPACT_FN_TEXT in this test to match uefn-server.ts verbatim'
@@ -129,7 +138,7 @@ function loadHandler(
 // ── registration: each tool name appears exactly once ───────────────────────
 
 test('uefn_spawn_actor, uefn_duplicate_actor, uefn_set_transform are each registered exactly once', () => {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   // requireAnchorOnce asserts idx > 0 (found) AND exactly one occurrence —
   // calling it for all three anchors is itself the "registered exactly
   // once each" assertion.
@@ -141,7 +150,7 @@ test('uefn_spawn_actor, uefn_duplicate_actor, uefn_set_transform are each regist
 // ── uefn_spawn_actor ─────────────────────────────────────────────────────────
 
 test('uefn_spawn_actor handler calls bridgeTool("spawn_actor", ...) with all params passed through', async () => {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   const compactFn = loadRealCompact();
   const calls: BridgeCall[] = [];
   const handler = loadHandler(fullSource, 'uefn_spawn_actor', SPAWN_START, DUPLICATE_START, compactFn, calls);
@@ -161,7 +170,7 @@ test('uefn_spawn_actor handler calls bridgeTool("spawn_actor", ...) with all par
 });
 
 test('uefn_spawn_actor handler strips undefined optional fields (only asset_path given)', async () => {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   const compactFn = loadRealCompact();
   const calls: BridgeCall[] = [];
   const handler = loadHandler(fullSource, 'uefn_spawn_actor', SPAWN_START, DUPLICATE_START, compactFn, calls);
@@ -176,7 +185,7 @@ test('uefn_spawn_actor handler strips undefined optional fields (only asset_path
 // ── uefn_duplicate_actor ─────────────────────────────────────────────────────
 
 test('uefn_duplicate_actor handler calls bridgeTool("duplicate_actor", ...) with all params passed through', async () => {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   const compactFn = loadRealCompact();
   const calls: BridgeCall[] = [];
   const handler = loadHandler(fullSource, 'uefn_duplicate_actor', DUPLICATE_START, SET_TRANSFORM_START, compactFn, calls);
@@ -194,7 +203,7 @@ test('uefn_duplicate_actor handler calls bridgeTool("duplicate_actor", ...) with
 });
 
 test('uefn_duplicate_actor handler strips undefined optional fields (only actor_label given)', async () => {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   const compactFn = loadRealCompact();
   const calls: BridgeCall[] = [];
   const handler = loadHandler(fullSource, 'uefn_duplicate_actor', DUPLICATE_START, SET_TRANSFORM_START, compactFn, calls);
@@ -209,7 +218,7 @@ test('uefn_duplicate_actor handler strips undefined optional fields (only actor_
 // ── uefn_set_transform ───────────────────────────────────────────────────────
 
 test('uefn_set_transform handler calls bridgeTool("set_transform", ...) with all params passed through', async () => {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   const compactFn = loadRealCompact();
   const calls: BridgeCall[] = [];
   const handler = loadHandler(fullSource, 'uefn_set_transform', SET_TRANSFORM_START, MODERATION_START, compactFn, calls);
@@ -228,7 +237,7 @@ test('uefn_set_transform handler calls bridgeTool("set_transform", ...) with all
 });
 
 test('uefn_set_transform handler strips undefined optional fields (only actor_label + location given)', async () => {
-  const fullSource = readFileSync(SERVER_TS_PATH, 'utf8');
+  const fullSource = readServerSource();
   const compactFn = loadRealCompact();
   const calls: BridgeCall[] = [];
   const handler = loadHandler(fullSource, 'uefn_set_transform', SET_TRANSFORM_START, MODERATION_START, compactFn, calls);
