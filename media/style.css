@@ -3016,6 +3016,45 @@ td.col-name.name--active {
   color: var(--status-active);
 }
 
+/* Worker report disclosure (0.0.562): click-to-expand indicator next to the
+   agent name, and the full-width row it reveals beneath the agent row.
+   Present only for agents with a captured agent.lastReport — see
+   buildMetricsRow/toggleReportRow in media/main.js. */
+.report-toggle {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.75;
+  vertical-align: middle;
+}
+
+.report-toggle:hover,
+.report-toggle:focus-visible {
+  opacity: 1;
+}
+
+tr.report-disclosure-row td.report-disclosure-cell {
+  white-space: normal;
+  background: var(--surface);
+  padding: 10px 14px;
+  border-top: none;
+}
+
+.report-disclosure-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
 /* Status pill */
 .status-pill {
   display: inline-block;

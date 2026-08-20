@@ -14007,6 +14007,29 @@
     nameText.textContent = displayName;
     nameTd.appendChild(nameText);
 
+    // Worker report disclosure (0.0.562): agent.lastReport is the captured
+    // final assistant-message text from this agent's transcript (see
+    // AgentMetric.lastReport, src/core/state.ts ~123) — up to ~2000 chars of
+    // prose, far too long for any table cell or tooltip. Rendered here as a
+    // small click-to-expand indicator next to the agent name, revealing a
+    // full-width disclosure row directly beneath this one (see
+    // buildReportDisclosureRow below). An agent with no report gets NO new
+    // DOM at all — no caret, no placeholder — so "never captured" stays
+    // indistinguishable from "today's UI" for every pre-existing agent.
+    if (typeof agent.lastReport === "string" && agent.lastReport.length > 0) {
+      const reportToggle = document.createElement("button");
+      reportToggle.type = "button";
+      reportToggle.className = "report-toggle";
+      reportToggle.setAttribute("aria-expanded", "false");
+      reportToggle.title = "Show this agent's last report";
+      reportToggle.textContent = "📄";
+      reportToggle.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        toggleReportRow(row, agent);
+      });
+      nameTd.appendChild(reportToggle);
+    }
+
     // Per-column tooltip: agent name + model + third-person role description.
     const role = describeRole(agent.description);
     const isOrchestratorRow = agent.id === "orchestrator";
@@ -14104,6 +14127,46 @@
     row.appendChild(tokensTd);
 
     return row;
+  }
+
+  /**
+   * Toggle a disclosure `<tr>` directly beneath `row`, showing `agent`'s
+   * captured `lastReport` text. Built fresh each open (removed on close, not
+   * hidden) so a re-render never leaves a stale disclosure attached to a
+   * detached row. SAFETY: report text is model-generated and flows in via
+   * `textContent` only — never innerHTML/insertAdjacentHTML — so any
+   * markup-looking substring (e.g. "<img onerror=...>") renders as inert
+   * literal text, never a DOM element. Line breaks are preserved with CSS
+   * `white-space: pre-wrap` (see .report-disclosure-text in style.css)
+   * rather than by converting newlines to `<br>` HTML.
+   * @param {HTMLTableRowElement} row
+   * @param {{lastReport?: string}} agent
+   */
+  function toggleReportRow(row, agent) {
+    const next = row.nextElementSibling;
+    if (next && next.classList && next.classList.contains("report-disclosure-row")) {
+      next.remove();
+      const btn = row.querySelector(".report-toggle");
+      if (btn) btn.setAttribute("aria-expanded", "false");
+      return;
+    }
+
+    const btn = row.querySelector(".report-toggle");
+    if (btn) btn.setAttribute("aria-expanded", "true");
+
+    const disclosureRow = document.createElement("tr");
+    disclosureRow.className = "report-disclosure-row";
+    const cell = document.createElement("td");
+    cell.className = "report-disclosure-cell";
+    cell.colSpan = 6;
+    const pre = document.createElement("div");
+    pre.className = "report-disclosure-text";
+    // textContent only — this is the one place a worker's free-form report
+    // text reaches the DOM; never assign via innerHTML/outerHTML here.
+    pre.textContent = agent.lastReport || "";
+    cell.appendChild(pre);
+    disclosureRow.appendChild(cell);
+    row.after(disclosureRow);
   }
 
   /**
