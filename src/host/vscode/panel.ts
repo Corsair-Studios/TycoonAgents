@@ -674,6 +674,18 @@ export class TycoonPanel {
   private _planWatcher: vscode.FileSystemWatcher | undefined;
   /** Coalesces bursts of rapid on-disk writes (the skill can rewrite plan.json many times in quick succession) into a single PLAN_STATE post. */
   private _planWatcherDebounce: NodeJS.Timeout | undefined;
+  /**
+   * Watches the project's `.mcp.json` so the credit-pressure offload offer's
+   * `providerAvailable` flag (see media/main.js's `offloadProviderAvailable`
+   * doc comment) stays live instead of only being computed once at webview
+   * boot (REQUEST_OFFLOAD_OFFER_STATE). Mirrors `_planWatcher` exactly —
+   * same RelativePattern-scoped FileSystemWatcher pattern, same debounce
+   * shape — this is a sibling watcher, not a new mechanism. `undefined` when
+   * there's no workspace root to scope a `RelativePattern` to.
+   */
+  private _mcpWatcher: vscode.FileSystemWatcher | undefined;
+  /** Coalesces bursts of rapid `.mcp.json` writes into a single OFFLOAD_OFFER_STATE repost. */
+  private _mcpWatcherDebounce: NodeJS.Timeout | undefined;
   private _themeGenerationActive = false;
   /**
    * theme_id of the theme most recently sent to the webview via
@@ -876,6 +888,13 @@ export class TycoonPanel {
     // live as the project-plan skill rewrites plan.json during execution
     // (see _postPlanState / _setupPlanWatcher doc comments).
     this._setupPlanWatcher();
+
+    // Watch .mcp.json so the credit-pressure offload offer's provider
+    // availability stays live if the user installs/removes a foreign
+    // provider MCP server outside the panel's own Install/Remove buttons
+    // (e.g. hand-editing .mcp.json, or another tool writing it) — see
+    // _setupMcpWatcher / _postOffloadOfferState doc comments.
+    this._setupMcpWatcher();
 
     // Handle messages from the webview
     this._panel.webview.onDidReceiveMessage(
@@ -2424,23 +2443,11 @@ export class TycoonPanel {
           // no-op cleanly and hide the section.
           this._postPlanState();
         } else if (message.type === MSG.REQUEST_OFFLOAD_OFFER_STATE) {
-          // Credit-pressure offload offer (p6-t1): boot-time read of the
-          // persisted flags (dismissed + accepted) PLUS a fresh host-side
-          // check of whether a foreign-provider route actually exists
-          // (providerAvailable — see offloadProviderAvailable's doc). The
-          // latter is deliberately NOT cached/persisted: it must reflect
-          // the project's REAL .mcp.json at the moment the webview asks,
-          // not a stale snapshot from an earlier boot. Detection itself
-          // (token threshold) runs client-side in media/main.js against the
-          // metrics payload it already has — this round-trip never touches
-          // routing, mirrors REQUEST_PLAN.
-          const root = this._projectRoot();
-          void this._panel.webview.postMessage({
-            type: MSG.OFFLOAD_OFFER_STATE,
-            dismissed: root === "" ? false : readOffloadOfferDismissed(root),
-            accepted: root === "" ? false : readOffloadOfferAccepted(root),
-            providerAvailable: offloadProviderAvailable(root, (p) => this._readMcpConfig(p)),
-          });
+          // Credit-pressure offload offer (p6-t1): boot-time read, now also
+          // reposted live off the .mcp.json watcher and the Install/Remove
+          // MCP handlers — see _postOffloadOfferState's doc comment for the
+          // full set of refresh channels.
+          this._postOffloadOfferState();
         } else if (message.type === MSG.SET_OFFLOAD_OFFER_DISMISSED) {
           // Persist the user's explicit accept/dismiss choice. `dismissed`
           // is set on both actions (stop showing the card); `accepted` is
@@ -3504,6 +3511,12 @@ export class TycoonPanel {
         ok: true,
         alreadyExisted: false,
       });
+      // Refresh the credit-pressure offload offer's providerAvailable flag
+      // immediately — the .mcp.json watcher (_setupMcpWatcher) will also
+      // catch this write, but that path is debounced fs-event latency; this
+      // is the single most likely way a user installs a foreign provider
+      // (e.g. Codex) mid-session, so push a fresh state right away too.
+      this._postOffloadOfferState();
     } catch (e) {
       void this._panel.webview.postMessage({
         type: MSG.MCP_INSTALLED,
@@ -3560,6 +3573,9 @@ export class TycoonPanel {
       fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
       void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: true });
       this._handleGetMcp();
+      // See _handleInstallMcp's matching call: refresh providerAvailable
+      // immediately rather than waiting on the .mcp.json watcher's debounce.
+      this._postOffloadOfferState();
     } catch (e) {
       void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: false, error: String(e) });
     }
@@ -9269,6 +9285,74 @@ export class TycoonPanel {
     this._disposables.push(this._planWatcher);
   }
 
+  /**
+   * Compute and post OFFLOAD_OFFER_STATE (persisted dismissed/accepted flags
+   * plus a FRESH host-side `providerAvailable` read of the project's real
+   * `.mcp.json`) to the webview. Extracted from the former inline
+   * REQUEST_OFFLOAD_OFFER_STATE handler so every refresh channel computes
+   * the same shape identically — matches `_postPlanState`'s role for
+   * PLAN_STATE.
+   *
+   * Refresh channels (this is the full set — see media/main.js's
+   * `offloadProviderAvailable` doc comment, which this list must stay in
+   * sync with):
+   *  1. Webview boot (REQUEST_OFFLOAD_OFFER_STATE, sent once on load).
+   *  2. `_setupMcpWatcher`'s FileSystemWatcher on `.mcp.json` — fires on ANY
+   *     write to that file, regardless of source (this panel's own
+   *     Install/Remove buttons, a hand-edit in another editor, git checkout,
+   *     another extension, etc). This is the general-case live channel.
+   *  3. `_handleInstallMcp` / `_handleRemoveMcp` call this directly right
+   *     after writing `.mcp.json`, so the panel's own Install/Remove
+   *     buttons refresh immediately rather than waiting on the watcher's
+   *     debounce + the OS's fs-event latency — belt-and-suspenders with (2)
+   *     for the single most likely way a user adds/removes Codex mid-session.
+   * There is no residual "can go stale until reload" case left: every write
+   * to `.mcp.json`, from any source, is covered by the watcher in (2).
+   */
+  private _postOffloadOfferState(): void {
+    const root = this._projectRoot();
+    void this._panel.webview.postMessage({
+      type: MSG.OFFLOAD_OFFER_STATE,
+      dismissed: root === "" ? false : readOffloadOfferDismissed(root),
+      accepted: root === "" ? false : readOffloadOfferAccepted(root),
+      providerAvailable: offloadProviderAvailable(root, (p) => this._readMcpConfig(p)),
+    });
+  }
+
+  /**
+   * Watch the project's `.mcp.json` so `_postOffloadOfferState`'s
+   * `providerAvailable` flag stays live without requiring the panel to be
+   * reloaded — mirrors `_setupPlanWatcher` exactly (same RelativePattern
+   * scoping, same debounce-a-burst-of-writes shape). No-ops when there's no
+   * workspace root to scope a `RelativePattern` to, matching `_postPlanState`
+   * / `_postOffloadOfferState`'s own root==="" handling.
+   */
+  private _setupMcpWatcher(): void {
+    const root = this._projectRoot();
+    if (root === "") return;
+
+    const pattern = new vscode.RelativePattern(root, ".mcp.json");
+    this._mcpWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+    const scheduleRepost = (): void => {
+      if (this._mcpWatcherDebounce !== undefined) clearTimeout(this._mcpWatcherDebounce);
+      this._mcpWatcherDebounce = setTimeout(() => {
+        this._mcpWatcherDebounce = undefined;
+        this._postOffloadOfferState();
+      }, 150);
+    };
+
+    this._mcpWatcher.onDidChange(scheduleRepost, null, this._disposables);
+    this._mcpWatcher.onDidCreate(scheduleRepost, null, this._disposables);
+    // Deletion (e.g. .mcp.json removed entirely) must also resolve back to
+    // providerAvailable:false rather than leaving a stale "available" card
+    // up — offloadProviderAvailable already reads via this._readMcpConfig,
+    // which resolves a missing file to an empty config, so this reuses the
+    // same fail-closed path.
+    this._mcpWatcher.onDidDelete(scheduleRepost, null, this._disposables);
+    this._disposables.push(this._mcpWatcher);
+  }
+
   public dispose(): void {
     TycoonPanel.currentPanel = undefined;
     this._themeGenerationAbortController?.abort();
@@ -9281,6 +9365,10 @@ export class TycoonPanel {
     if (this._planWatcherDebounce !== undefined) {
       clearTimeout(this._planWatcherDebounce);
       this._planWatcherDebounce = undefined;
+    }
+    if (this._mcpWatcherDebounce !== undefined) {
+      clearTimeout(this._mcpWatcherDebounce);
+      this._mcpWatcherDebounce = undefined;
     }
     this._runtimeDisposable?.dispose();
     this._panel.dispose();

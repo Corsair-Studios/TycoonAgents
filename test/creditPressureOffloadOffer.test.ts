@@ -464,6 +464,63 @@ test("credit pressure: provider available but tokens under threshold => no card 
   assert.equal(offerCard(doc), null, "availability alone must never substitute for the token threshold");
 });
 
+// ── 6. Live refresh (staleness fix): a second OFFLOAD_OFFER_STATE post, not
+// just the boot-time one, must update the card without a full reload ──────
+//
+// Bug: panel.ts previously computed providerAvailable fresh but only ever
+// SENT it once, at webview boot (REQUEST_OFFLOAD_OFFER_STATE). Installing
+// or removing the Codex MCP server mid-session left the card wrong until
+// the panel was reloaded. The fix reposts OFFLOAD_OFFER_STATE from a
+// .mcp.json FileSystemWatcher plus an immediate repost from the Install/
+// Remove MCP handlers (panel.ts's _postOffloadOfferState). These tests pin
+// that main.js's EXISTING handling of a repeated OFFLOAD_OFFER_STATE
+// message (it already re-runs renderCreditPressureOffer on every arrival,
+// not just the first) actually produces the live toggle the fix relies on —
+// simulating the host-side repost by dispatching the message a second time.
+
+test("credit pressure LIVE REFRESH: provider becomes available mid-session (second OFFLOAD_OFFER_STATE post) shows the card without reload", () => {
+  const { doc, dispatch } = bootMainJs();
+  // Boot: no provider confirmed yet (Codex not installed).
+  dispatchOfferState(dispatch, { providerAvailable: false });
+  dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
+  assert.equal(offerCard(doc), null, "card must stay hidden while no provider is confirmed");
+
+  // Simulate panel.ts reposting OFFLOAD_OFFER_STATE after the user installs
+  // Codex mid-session (via the .mcp.json watcher or _handleInstallMcp's
+  // immediate repost) — same message shape, no page reload involved.
+  dispatchOfferState(dispatch, { providerAvailable: true });
+
+  assert.ok(offerCard(doc), "card must appear once a live repost confirms the provider, with no reload");
+});
+
+test("credit pressure LIVE REFRESH: provider becomes unavailable mid-session (second OFFLOAD_OFFER_STATE post) hides an already-shown card", () => {
+  const { doc, dispatch } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
+  dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
+  assert.ok(offerCard(doc), "card must be showing before the simulated removal");
+
+  // Simulate panel.ts reposting after the user removes Codex mid-session
+  // (via the .mcp.json watcher or _handleRemoveMcp's immediate repost).
+  dispatchOfferState(dispatch, { providerAvailable: false });
+
+  assert.equal(offerCard(doc), null, "card must disappear once a live repost reports the provider gone, with no reload");
+});
+
+test("credit pressure LIVE REFRESH: a dismissed card stays hidden across a live provider-availability repost (dismissed semantics unchanged by the refresh)", () => {
+  const { doc, dispatch } = bootMainJs();
+  dispatchOfferState(dispatch, { providerAvailable: true });
+  dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
+  dismissButton(doc)!.dispatchEvent(new (doc.defaultView as any).Event("click", { bubbles: true }));
+  assert.equal(offerCard(doc), null, "card hidden after dismiss");
+
+  // A live repost (e.g. .mcp.json watcher firing on an unrelated later
+  // write) must not resurrect a dismissed card just because it re-confirms
+  // availability=true again.
+  dispatchOfferState(dispatch, { dismissed: true, providerAvailable: true });
+
+  assert.equal(offerCard(doc), null, "dismissed card must remain hidden across a live availability repost");
+});
+
 test("credit pressure: OFFLOAD_OFFER_STATE omitting providerAvailable (older host, or unreadable/absent .mcp.json resolving false) fails CLOSED — no card even above threshold", () => {
   const { doc, dispatch } = bootMainJs();
   // Simulate the host's reply when .mcp.json is absent/unreadable/lacks a

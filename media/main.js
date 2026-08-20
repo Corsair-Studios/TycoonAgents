@@ -195,9 +195,19 @@
    * webview. Defaults `false` (NOT available) so that until the host
    * explicitly confirms otherwise, the offer stays hidden — fail closed.
    * This mirrors offloadOfferDismissed's storage pattern but is NOT itself
-   * persisted state; it is recomputed by the host on every
-   * REQUEST_OFFLOAD_OFFER_STATE round trip so it can never go stale if the
-   * user installs/removes the Codex MCP server mid-session.
+   * persisted state.
+   *
+   * Kept live (not just boot-time) by panel.ts, which reposts
+   * OFFLOAD_OFFER_STATE on every channel that can change it: a
+   * FileSystemWatcher on the project's .mcp.json (_setupMcpWatcher, catches
+   * ANY write regardless of source — this panel's own Install/Remove MCP
+   * buttons, a hand-edit in another editor, git, another extension), plus an
+   * immediate repost from _handleInstallMcp/_handleRemoveMcp right after they
+   * write .mcp.json themselves (belt-and-suspenders with the watcher, so the
+   * panel's own buttons don't wait on the watcher's debounce). Because the
+   * watcher covers every write source, there is no known path left where
+   * this variable can go stale short of the panel being closed while the
+   * file changes and no watcher event having fired before it reopens.
    */
   let offloadProviderAvailable = false;
   /**
