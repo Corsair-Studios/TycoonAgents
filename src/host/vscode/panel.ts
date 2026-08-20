@@ -5611,6 +5611,15 @@ export class TycoonPanel {
    * Never mutates `state` or its nested arrays — only entries whose fields
    * actually change are cloned; entries with no roster match and no
    * observed model keep the same object reference.
+   *
+   * EXCEPTION — the orchestrator ("id === 'orchestrator'"): unlike every
+   * subagent, the orchestrator has no user-facing model selector anywhere
+   * in settings; `.claude/agents/orchestrator.md`'s `model:` frontmatter is
+   * advisory documentation, not a configured choice. So for that one entry
+   * `model` is left as the hook-observed value (never overwritten by the
+   * roster), while the roster value — still needed by the roster/settings
+   * UI, which reads agentMetrics[].model to show configured tiers — is
+   * carried on `rosterModel` instead. Subagent stamping below is unchanged.
    */
   private _stampRosterModels(state: any): any {
     if (state === null || typeof state !== "object" || !Array.isArray(state.agentMetrics)) {
@@ -5627,6 +5636,16 @@ export class TycoonPanel {
         const observed = typeof m.model === "string" && m.model.trim() !== "" ? m.model : undefined;
         if (!rm && observed === undefined) {
           return m;
+        }
+        if (m.id === "orchestrator") {
+          // Orchestrator model is detected, not configured — keep the
+          // hook-observed value in `model` (so display/cost-fallback read
+          // the real thing) and expose the roster/frontmatter value under
+          // `rosterModel` for anything that still wants "what's configured".
+          if (!rm) {
+            return m;
+          }
+          return { ...m, rosterModel: rm };
         }
         return {
           ...m,

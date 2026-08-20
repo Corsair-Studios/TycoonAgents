@@ -13880,11 +13880,28 @@
    * the roster, the version is simply omitted — a missing version is
    * honest, a wrong one is not, and a family mismatch is never surfaced as
    * a contradiction (the roster family is authoritative for configuration).
+   *
+   * EXCEPTION — `isOrchestratorRow`: the orchestrator has no model selector
+   * anywhere in settings, so unlike a subagent its roster/frontmatter value
+   * is advisory, not configured. When this flag is set, a well-formed
+   * `observedModel` wins OUTRIGHT — including its family — because the
+   * observed id is the only trustworthy signal for what actually ran.
+   * `isWellFormedClaudeModelId` still gates it: a malformed observed value
+   * always falls back to `rosterModel`, orchestrator or not. Subagent
+   * callers never pass this flag, so their behavior is unchanged.
    * @param {string|null|undefined} rosterModel
    * @param {string|null|undefined} [observedModel]
+   * @param {boolean} [isOrchestratorRow]
    * @returns {string}
    */
-  function prettyModel(rosterModel, observedModel) {
+  function prettyModel(rosterModel, observedModel, isOrchestratorRow) {
+    if (isOrchestratorRow && observedModel && isWellFormedClaudeModelId(observedModel)) {
+      const family = modelFamily(observedModel);
+      if (family) {
+        const nums = (String(observedModel).match(/\d+/g) || []).filter((n) => n.length < 8);
+        return nums.length ? `${family} ${nums.join(".")}` : family;
+      }
+    }
     if (!rosterModel) return "";
     const family = modelFamily(rosterModel);
     if (!family) return String(rosterModel); // roster value is trusted config, not hook data — show raw
@@ -13964,11 +13981,12 @@
 
     // Per-column tooltip: agent name + model + third-person role description.
     const role = describeRole(agent.description);
+    const isOrchestratorRow = agent.id === "orchestrator";
     let nameTitle = displayName;
     if (agent.model && role) {
-      nameTitle = `${displayName} — ${prettyModel(agent.model, agent.observedModel)}\n${role}`;
+      nameTitle = `${displayName} — ${prettyModel(agent.model, agent.observedModel, isOrchestratorRow)}\n${role}`;
     } else if (agent.model) {
-      nameTitle = `${displayName} — ${prettyModel(agent.model, agent.observedModel)}`;
+      nameTitle = `${displayName} — ${prettyModel(agent.model, agent.observedModel, isOrchestratorRow)}`;
     } else if (role) {
       nameTitle = `${displayName}\n${role}`;
     }
@@ -14494,7 +14512,7 @@
       const coordLine = document.createElement("div");
       coordLine.className = "delegation-stats-row";
       const orchTasks = orch.taskCount ?? 0;
-      coordLine.textContent = `${orch.model ? prettyModel(orch.model, orch.observedModel) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
+      coordLine.textContent = `${orch.model ? prettyModel(orch.model, orch.observedModel, true) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
       coordSection.appendChild(coordLine);
 
       const coordSub = document.createElement("div");
@@ -14562,7 +14580,7 @@
         tr.appendChild(nameTd);
 
         const modelTd = document.createElement("td");
-        modelTd.textContent = a.model ? prettyModel(a.model, a.observedModel) : "—";
+        modelTd.textContent = a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—";
         tr.appendChild(modelTd);
 
         const tasksTd = document.createElement("td");
