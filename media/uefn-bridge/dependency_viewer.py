@@ -163,7 +163,54 @@ _MAX_SIDE_NODES = 15
 # project can't freeze the editor indefinitely. Mirrors tag_inspect.py's
 # _MAX_VERSE_FILES pattern — hit it and the result is flagged
 # truncated=True, never silently cut off.
+#
+# NOTE: this stays a backstop, not the primary defense. The primary defense
+# is _is_per_actor_stub_package() below, which excludes One-File-Per-Actor
+# level content (__ExternalActors__ / __ExternalObjects__) BEFORE it can
+# consume this cap. On a real 25000-asset scan that hit this cap, 46,825 of
+# the 25000 counted assets were per-actor stubs and fewer than 1,500 were
+# real project content — the cap was firing on level-placement bookkeeping,
+# not on the project actually being large. Do not raise or remove this cap
+# as a "fix" for that: excluding the stubs is the fix; the cap still exists
+# to protect against a genuinely pathological project.
 _MAX_ENUMERATED_ASSETS = 25000
+
+# One-File-Per-Actor (OFPA) directories UEFN/Unreal writes under a level's
+# own folder to hold one stub package PER PLACED ACTOR INSTANCE (each
+# containing ActorGuid/ActorLabel/AttachParent/bCanEverAffectNavigation plus
+# a reference to the asset it instantiates — verified by reading one on a
+# real project). These are level-placement bookkeeping, not project assets:
+# on one real project they outnumbered actual authored content ~33 to 1
+# (46,372 __ExternalActors__ + 453 __ExternalObjects__ vs. ~1,420 real
+# assets) and alone exhausted _MAX_ENUMERATED_ASSETS before the scan ever
+# reached most real content, producing walls of duplicate stub nodes
+# (BP_Blockout_Wall repeated hundreds of times) in the dependency graph.
+#
+# These are PATH SEGMENTS, not prefixes: UEFN nests them mid-path under the
+# level's own folder, e.g.
+#   /StarWars/__ExternalActors__/StarWars/0/03/XXXX
+# — never at the start of the package path — so they cannot be added to
+# _SKIP_PREFIXES above (that tuple is matched with pkg.startswith(p); a
+# startswith check would never fire on a mid-path segment). _SKIP_PREFIXES
+# is also imported from asset_usage.py and shared with other consumers
+# (texture_finder, niagara_inspector, material_browser, asset_sweep — see
+# test_powertools_dedup_ipc_and_skip_prefixes.py); folding segment-match
+# semantics into it would silently change what startswith-based prefix
+# matching means for every one of those other call sites. Kept separate and
+# named for exactly what it does instead.
+_PER_ACTOR_STUB_SEGMENTS = ("__ExternalActors__", "__ExternalObjects__")
+
+
+def _is_per_actor_stub_package(pkg):
+    """True if `pkg` (a package path, e.g. "/StarWars/__ExternalActors__/
+    StarWars/0/03/XXXX") contains an OFPA per-actor-stub directory as a
+    complete PATH SEGMENT — split on "/" and compare whole segments, never
+    a bare substring check. Substring matching would also exclude a
+    legitimately-named asset merely containing the text, e.g.
+    "/Game/MyExternalActorsHelper" (no "/" boundaries around the substring
+    there — split() never produces an "__ExternalActors__" segment for it,
+    so it correctly survives)."""
+    return any(seg in _PER_ACTOR_STUB_SEGMENTS for seg in pkg.split("/"))
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +769,7 @@ def scan_dependencies(project_only=True):
             "failure_reason":    str or None,   # explains scan_failed
             "truncated":         bool,          # True => cap or cancel hit; partial result
             "truncation_reason": str or None,
+            "excluded_stub_count": int,         # OFPA per-actor/object stubs excluded
         }
 
     The ``assets`` list is sorted by ``ref_count`` descending (most-referenced
@@ -764,6 +812,7 @@ def scan_dependencies(project_only=True):
                 "failure_reason":    prefix_detail,
                 "truncated":         False,
                 "truncation_reason": None,
+                "excluded_stub_count": 0,
             }
 
     unreal.log(
@@ -798,6 +847,13 @@ def scan_dependencies(project_only=True):
     truncated          = False
     truncation_reason  = None
 
+    # Count of per-actor/per-object OFPA stub packages excluded from the
+    # PRIMARY (project_only=True) enumeration below. Threaded through the
+    # result dict and both status lines so exclusion is always ANNOUNCED
+    # with a count, never silent — a silent exclusion is the same class of
+    # honesty failure as a truncation that doesn't announce itself.
+    excluded_stub_count = 0
+
     # ------------------------------------------------------------------
     # Step 1 — collect project assets
     # ------------------------------------------------------------------
@@ -830,6 +886,13 @@ def scan_dependencies(project_only=True):
                 if pkg in all_assets_info:
                     continue
 
+                # Exclude OFPA per-actor/per-object stubs BEFORE they can
+                # consume _MAX_ENUMERATED_ASSETS — see _is_per_actor_stub_
+                # package's docstring. Counted, not silently dropped.
+                if _is_per_actor_stub_package(pkg):
+                    excluded_stub_count += 1
+                    continue
+
                 if len(all_assets_info) >= _MAX_ENUMERATED_ASSETS:
                     truncated = True
                     truncation_reason = f"hit the {_MAX_ENUMERATED_ASSETS}-asset scan cap"
@@ -847,6 +910,8 @@ def scan_dependencies(project_only=True):
             unreal.log(
                 f"dependency_viewer: Path-scoped enumeration under '{project_prefix}' "
                 f"found {len(all_assets_info)} asset(s) across every asset type"
+                + (f" ({excluded_stub_count} external-actor/object files excluded)"
+                   if excluded_stub_count else "")
                 + (f" — TRUNCATED ({truncation_reason})" if truncated else "")
             )
         else:
@@ -1105,6 +1170,8 @@ def scan_dependencies(project_only=True):
         f"dependency_viewer: Scan complete — "
         f"{total} assets, {len(orphans)} confirmed orphans, "
         f"{len(verse_referenced)} Verse-referenced"
+        + (f" ({excluded_stub_count} external-actor/object files excluded)"
+           if excluded_stub_count else "")
         + (f", TRUNCATED ({truncation_reason})" if truncated else "")
     )
 
@@ -1120,6 +1187,7 @@ def scan_dependencies(project_only=True):
         "failure_reason":    None,
         "truncated":         truncated,
         "truncation_reason": truncation_reason,
+        "excluded_stub_count": excluded_stub_count,
     }
 
 
@@ -1768,13 +1836,18 @@ def show_dependency_viewer():
         total        = result["total_assets"]
         shown        = len(filtered)
         scope        = result.get("project_prefix") or ("unscoped" if not result.get("project_only") else "?")
+        excluded     = result.get("excluded_stub_count") or 0
 
         status_line = f"Showing {shown} of {total} assets in {scope} ({orphan_count} orphans)"
+        if excluded:
+            status_line += f" — {excluded:,} external-actor/object files excluded"
         if result.get("truncated"):
             status_line += f" — TRUNCATED: {result.get('truncation_reason')}"
         status_var.set(status_line)
 
         count_line = f"{orphan_count} orphans | {total} total | scope: {scope}"
+        if excluded:
+            count_line += f" | {excluded:,} excluded"
         if result.get("truncated"):
             count_line += " | TRUNCATED"
         count_var.set(count_line)
