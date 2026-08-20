@@ -30,20 +30,25 @@ No VS Code-family IDE available? Download Epic's Verse extension's `.vsix` direc
 
 ## Installation (run this if the bridge is not set up)
 
-If the UEFN chip in the TycoonAgents panel is gray, or if `uefn_status` fails, follow these steps to self-install the bridge.
+The runtime has no dependency on the TycoonAgents extension: a standalone copy of `uefn-server.mjs` — no `node_modules`, no extension present — has been verified to return the full MCP handshake and complete a live `uefn_status` round trip, including from a project path containing spaces. The extension is a convenience for staging files and writing `.mcp.json` automatically; it is not a requirement. Pick whichever path below matches your setup — **neither is "the" canonical path**.
 
 ### Step 1 — Check if already installed
 
-Check two conditions:
+Run `uefn_status`. If it succeeds, the bridge is already installed and connected — skip everything below. If it fails, or `Content/Python/uefn_bridge.py` does not exist in the project, install using one of the two paths below.
 
-1. Does `.mcp.json` (workspace root) contain an `mcpServers.uefn` entry?
-2. Does `Content/Python/uefn_bridge.py` exist in the project?
+If `.mcp.json` (workspace root) already has an `mcpServers.uefn` entry but `uefn_status` still fails, check for a legacy misconfiguration first: if that entry contains an `env.UEFN_BRIDGE_DIR` key, remove the entire `env` block (it directed the MCP server to a directory the Python bridge never writes, breaking IPC), save, and restart the Claude Code session before retrying.
 
-If both are present, check for a legacy misconfiguration: if the `mcpServers.uefn` entry contains an `env.UEFN_BRIDGE_DIR` key, remove that `env` block entirely (it directed the MCP server to a directory the Python bridge never writes, breaking IPC). Save the file and restart the Claude Code session. Then skip to **After install** below.
+### Prerequisites (both paths)
 
-If both are present and no `env.UEFN_BRIDGE_DIR` key exists, skip to **After install** below.
+- **Node.js 18+** on PATH — verified working on Node 22; the bundled server contains no syntax requiring a version newer than that, so 18 is the honest floor, not an aspirational one (this repo's `package.json` declares only a `vscode` engine, no Node floor of its own — the claim here is independently verified, not read off that file).
+- **UEFN running with the project open** — the in-editor Python tools only start when UEFN loads the project.
+- **The Python Editor Script Plugin enabled** in UEFN (`Edit -> Plugins`, search "Python Editor Script Plugin", enable, restart UEFN if prompted).
 
-### Step 2 — Locate the TycoonAgents extension
+`uefn_verse_check` alone needs more than this: a system Python 3 on PATH plus `verse_lsp_check.py` and Epic's Verse VS Code extension (which bundles the actual `verse-lsp.exe` analyzer engine) — see **Requirements** above for the full detail and the `VERSE_LSP_PATH` fallback. None of the other 29 tools need any of that. If `verse_lsp_check.py` isn't staged at one of its usual lookup locations, point the server at it directly with the `VERSE_CHECK_SCRIPT` environment variable; the tool fails honestly (`script_not_found`) and names every location it tried when the script can't be found.
+
+### Path A — With the TycoonAgents extension
+
+#### Step A2 — Locate the TycoonAgents extension
 
 Glob for the installed extension folder. Check in order:
 
@@ -55,9 +60,7 @@ Pick the folder with the highest version number if multiple are found. Verify it
 - `media/uefn-bridge/` directory
 - `out/mcp/uefn-server.js`
 
-If neither location has the extension, tell the user to install TycoonAgents from the VS Code Marketplace first.
-
-### Step 3 — Find the UEFN project's Python directory
+#### Step A3 — Find the UEFN project's Python directory
 
 Use this precedence (mirrors the installer logic):
 
@@ -66,7 +69,7 @@ Use this precedence (mirrors the installer logic):
 3. Else if `<workspace>/Content/` exists — use `<workspace>/Content/Python/`.
 4. Otherwise create `<workspace>/Content/Python/`.
 
-### Step 4 — Copy the bridge files
+#### Step A4 — Copy the bridge files
 
 Copy **every** Python file from `<extensionFolder>/media/uefn-bridge/` into the Python directory determined above, plus the icon `trashbyrd_40x40.png`. Do **not** copy `uefn-server.mjs` — that is the bundled MCP server (launched by Node via `.mcp.json`), not a UEFN Python tool.
 
@@ -74,7 +77,7 @@ This mirrors the extension's own installer, which stages the whole `media/uefn-b
 
 Only overwrite a file if its content differs from the source (preserves user edits).
 
-### Step 5 — Merge the `uefn` entry into `.mcp.json`
+#### Step A5 — Merge the `uefn` entry into `.mcp.json`
 
 If `.mcp.json` already exists, merge — do not overwrite other server entries. The exact JSON shape:
 
@@ -90,6 +93,44 @@ If `.mcp.json` already exists, merge — do not overwrite other server entries. 
 ```
 
 Use an absolute path for `args`. On Windows use forward slashes. Do **not** add an `env` block — the MCP server and Python bridge both default to `<OS temp dir>/uefn_bridge` automatically.
+
+### Path B — Standalone (no extension)
+
+No step in this path installs, requires, or checks for the TycoonAgents extension.
+
+#### Step B2 — Obtain the bridge files
+
+Get `media/uefn-bridge/` from this repo (clone or download it) or from a release archive that bundles the same directory. You need the whole directory: the Python files (`uefn_bridge.py`, `init_unreal.py`, and the rest), the icon `trashbyrd_40x40.png`, and the bundled server `uefn-server.mjs`.
+
+#### Step B3 — Find the UEFN project's Python directory
+
+Same precedence as Step A3 above:
+
+1. If `<project>/Python/` exists — use it.
+2. Else if `<project>/Plugins/<any>/Content/` exists and contains `.verse` files — use `<project>/Plugins/<plugin>/Content/Python/`.
+3. Else if `<project>/Content/` exists — use `<project>/Content/Python/`.
+4. Otherwise create `<project>/Content/Python/`.
+
+#### Step B4 — Copy the Python files into the project
+
+Copy every `.py` file from `media/uefn-bridge/` (plus `trashbyrd_40x40.png`) into the Python directory from Step B3. Do **not** copy `uefn-server.mjs` there — it stays wherever you keep the bridge files on disk (anywhere is fine; it's launched directly by `node`, not staged into the UEFN project).
+
+#### Step B5 — Point `.mcp.json` at `uefn-server.mjs` directly
+
+Create or merge into `.mcp.json` at your workspace root:
+
+```json
+{
+  "mcpServers": {
+    "uefn": {
+      "command": "node",
+      "args": ["<pathToBridgeFiles>/uefn-server.mjs"]
+    }
+  }
+}
+```
+
+Use the path to wherever you kept `uefn-server.mjs` in Step B2 — this is **not** the extension's `out/mcp/uefn-server.js`; the standalone server bundle is self-contained and does not need the extension's build output. On Windows use forward slashes. Do **not** add an `env` block unless you need a non-default `UEFN_BRIDGE_DIR` — both sides default to `<OS temp dir>/uefn_bridge` automatically.
 
 ### After install
 

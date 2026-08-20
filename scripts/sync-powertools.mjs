@@ -38,6 +38,16 @@ const LICENSE_SRC = join(SCRIPT_DIR, 'powertools-assets', 'LICENSE');
 // must never be hand-edited there.
 const README_SRC = join(SCRIPT_DIR, 'powertools-assets', 'README.md');
 const INSTALL_SRC = join(SCRIPT_DIR, 'powertools-assets', 'INSTALL.md');
+// verse_lsp_check.py powers uefn_verse_check but lives outside media/uefn-bridge/
+// (it's under media/skills/uefn/, alongside this repo's other Verse skill
+// docs/scripts, not the bridge's Python tools). Mirrored into the target
+// repo at <target>/skills/uefn/verse_lsp_check.py — same "skills/uefn/"
+// shape as the source side — so it's present at a predictable, documentable
+// location. The server's own discovery ladder (uefn-bridge/uefn-server.ts)
+// is NOT changed for this: in a standalone install its non-override
+// fallbacks can never resolve into this repo, so standalone users are
+// expected to point VERSE_LSP_CHECK_SCRIPT at this file (see INSTALL.md).
+const VERSE_CHECK_SRC = join(ROOT, 'media', 'skills', 'uefn', 'verse_lsp_check.py');
 
 // Files that must never be synced even though they live alongside the .py
 // tools in media/uefn-bridge/ (build artifacts / caches, not source).
@@ -186,6 +196,52 @@ function copyDoc(srcPath, destName, targetDir) {
     return true;
   } catch (err) {
     console.log(`[sync-powertools] Could not copy ${destName} (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+// Copies media/skills/uefn/verse_lsp_check.py into
+// <target>/skills/uefn/verse_lsp_check.py, creating the target's skills/uefn/
+// directory if needed. Mirrors copyDoc()'s single-file, non-fatal shape
+// (this is one named file, not a directory scan like copyBridgeFiles()) —
+// a missing source or an unwritable target logs a warning and is skipped,
+// never thrown.
+function copyVerseCheckScript(targetDir) {
+  if (!existsSync(VERSE_CHECK_SRC)) {
+    console.log(`[sync-powertools] Warning: ${VERSE_CHECK_SRC} not found; skipped verse_lsp_check.py.`);
+    return false;
+  }
+  try {
+    const targetSkillsDir = join(targetDir, 'skills', 'uefn');
+    if (!existsSync(targetSkillsDir)) {
+      mkdirSync(targetSkillsDir, { recursive: true });
+    }
+    copyFileSync(VERSE_CHECK_SRC, join(targetSkillsDir, 'verse_lsp_check.py'));
+    return true;
+  } catch (err) {
+    console.log(`[sync-powertools] Could not copy verse_lsp_check.py (non-fatal): ${err.message}`);
+    return false;
+  }
+}
+
+// Prune verse_lsp_check.py from <target>/skills/uefn/ if it no longer
+// exists in the source (media/skills/uefn/). Scoped as narrowly as
+// pruneStaleFiles() above: this checks and removes ONLY the single file
+// name 'verse_lsp_check.py', at the exact <target>/skills/uefn/ path this
+// mirror writes to — it never touches any other file under skills/uefn/
+// (that directory is not otherwise owned by this sync) and never recurses
+// or removes directories. Non-fatal: a failed prune logs and moves on.
+function pruneStaleVerseCheckScript(targetDir) {
+  const targetPath = join(targetDir, 'skills', 'uefn', 'verse_lsp_check.py');
+  if (!existsSync(targetPath)) return false;
+  if (existsSync(VERSE_CHECK_SRC)) return false; // still owned by source, keep it
+
+  try {
+    unlinkSync(targetPath);
+    console.log('[sync-powertools] Pruned stale file: skills/uefn/verse_lsp_check.py');
+    return true;
+  } catch (err) {
+    console.log(`[sync-powertools] Could not prune skills/uefn/verse_lsp_check.py (non-fatal): ${err.message}`);
     return false;
   }
 }
@@ -477,6 +533,13 @@ function main() {
 
   const prunedCount = pruneStaleFiles(targetDir);
   console.log(`[sync-powertools] Pruned ${prunedCount} stale file(s) from ${targetDir}.`);
+
+  if (copyVerseCheckScript(targetDir)) {
+    console.log('[sync-powertools] Copied verse_lsp_check.py into target repo (skills/uefn/).');
+  }
+  if (pruneStaleVerseCheckScript(targetDir)) {
+    console.log('[sync-powertools] Pruned stale verse_lsp_check.py from target repo.');
+  }
 
   if (copyLicense(targetDir)) {
     console.log('[sync-powertools] Copied LICENSE into target repo.');

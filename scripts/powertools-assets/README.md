@@ -8,6 +8,10 @@ Power Tools is a bridge between an AI chat client (or your own scripts) and a **
 
 This is an independent, community-built bridge to the live UEFN editor. It is not affiliated with or endorsed by Epic Games.
 
+### About Epic's own UEFN MCP server
+
+Epic now ships an official UEFN MCP server too. It's a different tool for a different job, not a replacement — Epic's server sees Scene Graph entities and handles authoring, device placement, Verse compile, and session control; Power Tools handles bulk queries over classic actors at scale, plus moderation, dependency, texture, material, and Niagara-usage scanning. Most real UEFN levels are built mostly from classic actors, which Epic's entity tools can't see at all. Installing both side by side is the normal, intended setup — see [INSTALL.md](INSTALL.md#epics-official-uefn-mcp-server) for how to enable Epic's server and which one to reach for.
+
 ## Features
 
 - **Device audit** — enumerate and inspect Creative devices placed in the level.

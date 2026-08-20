@@ -92,6 +92,8 @@ UEFN_BRIDGE_DIR = "C:\\path\\to\\bridge-dir"
 
 Codex CLI documents environment variables for a stdio MCP server via a `[mcp_servers.<name>.env]` sub-table, as shown above. Omit the `[mcp_servers.uefn.env]` sub-table entirely if you don't need a non-default `UEFN_BRIDGE_DIR` (it defaults to a per-machine temp directory).
 
+**Sandbox gotcha:** Codex CLI's default `sandbox_mode = "read-only"` auto-denies every MCP tool call in `codex exec` — instantly, regardless of any `tool_timeout_sec` setting, with a `"user cancelled MCP tool call"` message that reads like a person rejected it rather than the sandbox blocking it. The server itself is unaffected (a run with the sandbox opened, or an interactive session where you can approve the call, completed a live round trip against a real project). Use an interactive Codex session where you can approve the tool call, or run with the sandbox opened, so your first `uefn_*` call doesn't fail on a misleading message.
+
 ### Cursor
 
 File: `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project), key `mcpServers`. Same entry shape as Claude Code above, `env` object included normally.
@@ -134,6 +136,32 @@ These are the client-neutral way to point the bridge and its tools at a non-defa
 | `UEFN_BRIDGE_DIR` | The bridge IPC directory the MCP server and the in-UEFN Python bridge use to hand off work. Defaults to a per-machine temp directory if unset. |
 | `UEFN_VERSE_PROJECT_DIR` | UEFN's `VerseProject` data root — where digests and `.vproject` files live. |
 | `VERSE_LSP_PATH` | The Verse language server binary, used by tools that run compiler diagnostics. |
+| `VERSE_LSP_CHECK_SCRIPT` | Where `verse_lsp_check.py` itself lives (see below) — a different thing from `VERSE_LSP_PATH`, which is the analyzer binary the script locates internally. |
+
+### The `uefn_verse_check` tool needs `verse_lsp_check.py`
+
+`uefn_verse_check` doesn't talk to the in-UEFN Python bridge like the other tools — it runs `verse_lsp_check.py` directly as a local subprocess, which drives Epic's bundled Verse language server headless. That means it needs the script to be present on disk, separately from everything else this repo installs.
+
+This repo ships that script at `skills/uefn/verse_lsp_check.py`. Point the server at it with the `VERSE_LSP_CHECK_SCRIPT` environment variable:
+
+```json
+"env": {
+  "VERSE_LSP_CHECK_SCRIPT": "C:\\path\\to\\trashbyrds-power-tools\\skills\\uefn\\verse_lsp_check.py"
+}
+```
+
+Add that to whichever client config you're already using from **Connecting an AI client** above (alongside `UEFN_BRIDGE_DIR` if you're setting that too). Without it, `uefn_verse_check` fails with an honest error listing every location it tried — set the variable to the path above and it resolves.
+
+## 5. Epic's official UEFN MCP server
+
+Epic now ships its own UEFN MCP server alongside Power Tools. Enable it in UEFN via **Project Settings → Python Editor Scripting** and **Project Settings → UEFN MCP Toolsets**; once enabled it binds `http://127.0.0.1:8000/mcp` by default. You can install and run both Epic's server and Power Tools at the same time — that's the intended configuration, not a conflict.
+
+They serve different object models, so which one to use depends on what you're doing:
+
+- **Epic's server** — Scene Graph entities, authoring, device placement, Verse compile (`BuildAll`), and session start/stop/push. Reach for it when you're creating or editing Scene Graph entities, placing devices, compiling Verse, or driving a live session.
+- **Power Tools (this server)** — bulk queries over classic actors at scale, plus moderation, dependency, texture, material, and Niagara-usage scanning. Reach for it when you're inspecting or sweeping a project's classic-actor content, or running audits Epic's server doesn't offer.
+
+The reason both exist: Epic's entity tools can't see classic actors at all. On a real 44,753-actor project, asking Epic's server to find every actor named `SGMarker` (`FindEntities(nameFilter='SGMarker')`) came back with an empty list, and its viewport-listing tool (`GetVisibleActors`) returned only 1,336 actors — visible-in-viewport only, as bare reference paths with no names or locations attached. A request like "find all SGMarkers and report their locations" simply isn't answerable through Epic's MCP on a project like that; Power Tools answers it. Neither server replaces the other.
 
 ## Updating
 
