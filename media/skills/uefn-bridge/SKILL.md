@@ -115,6 +115,55 @@ Use an absolute path for `args`. On Windows use forward slashes. Do **not** add 
 - `Content/Python/uefn_bridge.py` runs a tick-pumped IPC listener inside UEFN
 - Claude Code's MCP server (`uefn`) communicates via file-based IPC in the OS temp directory (`uefn_bridge/`)
 
+## Routing: our bridge vs. Epic's official UEFN MCP
+
+Two UEFN MCP servers may be installed side by side: ours (`uefn`, this
+skill) and Epic's official server (registered as `unreal-engine-mcp`).
+They see **different object models** — decide which one to call BEFORE
+you call anything, not after a failed probe. The disambiguating question:
+**"Is this a Scene Graph entity, or a classic actor?"** In a large
+existing project, almost everything is a classic actor.
+
+- **Classic actors in the level → OUR `uefn_*` tools.** Finding actors by
+  label or class, reading/setting properties in bulk, locations of many
+  actors, tags, moderation, dependencies, textures, materials, Niagara
+  usage. Epic's `FindEntities` cannot see classic actors at all — on a
+  real 44,753-actor project it returned **0** matches.
+- **Scene Graph entities and their components → EPIC's
+  `ValkyrieToolset.EntityToolset`** (`CreateEntity`, `AddComponent`,
+  `GetComponents`, `GetEntityTransform`, component properties). We have
+  no equivalent.
+- **Authoring / write operations we do not implement → EPIC.** Placing
+  devices and event bindings (`DeviceToolset`), compiling Verse
+  (`VerseToolset.BuildAll`), pushing live changes and session control
+  (`SessionToolset.PushChanges` / `StartGame` / `StopGame`), viewport
+  capture (`EditorAppToolset.CaptureViewport`), and Niagara/UMG/Physics
+  authoring.
+- **Bulk query at scale → OURS.** Anything over hundreds or thousands of
+  actors, anything needing pagination or glob matching. Epic's
+  `GetVisibleActors` returns only viewport-visible actors (1,336 of
+  44,753 on the real project) as bare `refPath` strings with no labels,
+  no locations, and no filtering.
+
+Full measured evidence: [`docs/UEFN-MCP-COMPARISON.md`](../../../docs/UEFN-MCP-COMPARISON.md).
+
+### Operational gotchas when calling Epic's server (measured 2026-08-20)
+
+- `call_tool` takes the **short** tool name (e.g. `FindEntities`) — the
+  fully-qualified form (e.g. `ValkyrieToolset.EntityToolset.FindEntities`)
+  returns `"Unknown tool"`.
+- `describe_toolset`'s parameter is `toolset_name`; getting it wrong
+  returns HTTP 200 with `isError` set and a plain-text body, not a
+  JSON-RPC error.
+- Epic's gateway costs **2 discovery round trips** (`list_toolsets`, then
+  `describe_toolset`) before any real call.
+- Epic's own docs warn: "MCP tool calls can cause the editor to hitch and
+  hang."
+- `PushChanges` / `StopGame` need a live session — `GetSessionStatus`
+  returned `"Disconnected"` when idle.
+- Epic notes coordinate-system translation issues between XYZ and
+  Left-Up-Forward.
+
 ## Available MCP Tools
 
 | Tool | Description | Parameters |
