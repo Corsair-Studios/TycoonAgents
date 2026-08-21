@@ -653,6 +653,11 @@ def build_material_view(parent, status_callback=None):
                          (``parent.winfo_toplevel()``), for callers that
                          need a real window reference (dialogs, etc.).
         ``.container`` — the *parent* widget passed in, echoed back.
+        ``.cancel_pending`` — callable(); cancels any pending debounced
+                         filter rebuild (see ``_apply_filter`` below) so
+                         the owning window's cleanup can call it before
+                         destroying widgets this view still holds a
+                         scheduled ``after()`` callback against.
     """
     _root = parent.winfo_toplevel()
 
@@ -844,7 +849,7 @@ def build_material_view(parent, status_callback=None):
     # ------------------------------------------------------------------
     # Populate treeview from cached results + current filter state
     # ------------------------------------------------------------------
-    def _apply_filter():
+    def _apply_filter_now():
         """Re-populate the treeview from cached results applying current filters."""
         browse_result = _last_browse_result[0]
         unused_result = _last_unused_result[0]
@@ -965,7 +970,7 @@ def build_material_view(parent, status_callback=None):
             unused_result = find_unused_materials(project_only=project_only)
             _last_unused_result[0] = unused_result
 
-            _apply_filter()
+            _apply_filter_now()
         except Exception as e:
             unreal.log_error(f"material_browser UI: refresh failed — {traceback.format_exc()}")
             _set_status(f"Error during scan: {e}")
@@ -975,14 +980,44 @@ def build_material_view(parent, status_callback=None):
     refresh_btn.configure(command=_on_refresh)
 
     # ------------------------------------------------------------------
-    # Live filter — re-apply without re-scanning
+    # Debounced live filter — <KeyRelease> fires on every character typed,
+    # and each call rebuilds the WHOLE tree (delete every row + re-insert,
+    # including nested texture/actor children). This view has no window/
+    # tick-pump of its own (see the module docstring), but its caller
+    # (show_material_browser below) is pumped by root.update() inside
+    # UEFN's main-thread register_slate_post_tick_callback — same hazard
+    # shape as the dependency_viewer resize-storm precedent (see that
+    # file's :1749-1802): an uncapped per-keystroke rebuild would run
+    # synchronously mid-frame on every character. Debounce so a burst of
+    # keystrokes collapses into a single rebuild once the user pauses;
+    # rows shown at the end are identical either way.
     # ------------------------------------------------------------------
+    _filter_after_id = [None]
+
+    def _apply_filter():
+        if _filter_after_id[0] is not None:
+            try:
+                _root.after_cancel(_filter_after_id[0])
+            except tk.TclError:
+                pass
+        _filter_after_id[0] = _root.after(180, _do_debounced_filter)
+
+    def _do_debounced_filter():
+        _filter_after_id[0] = None
+        try:
+            if _root.winfo_exists():
+                _apply_filter_now()
+        except tk.TclError:
+            pass
+
     filter_entry.bind("<KeyRelease>", lambda _e: _apply_filter())
 
-    # Unused-only checkbox also re-applies filter immediately
+    # Unused-only checkbox is a discrete, deliberate action (not a burst
+    # of rapid events like keystrokes) — re-apply immediately so toggling
+    # it is never seen to lag.
     def _on_unused_toggle():
         _show_unused_state[0] = not _show_unused_state[0]
-        _apply_filter()
+        _apply_filter_now()
     unused_only_check.config(command=_on_unused_toggle)
 
     # ------------------------------------------------------------------
@@ -1075,7 +1110,18 @@ def build_material_view(parent, status_callback=None):
 
     tree.bind("<Double-1>", _on_double_click)
 
-    return SimpleNamespace(refresh=_on_refresh, root=_root, container=parent)
+    def _cancel_pending_filter():
+        if _filter_after_id[0] is not None:
+            try:
+                _root.after_cancel(_filter_after_id[0])
+            except Exception:
+                pass
+            _filter_after_id[0] = None
+
+    return SimpleNamespace(
+        refresh=_on_refresh, root=_root, container=parent,
+        cancel_pending=_cancel_pending_filter,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1157,6 +1203,12 @@ def show_material_browser():
             except Exception:
                 pass
             _tick_handle[0] = None
+        # Cancel any pending debounced filter rebuild from build_material_view
+        # so it cannot fire against destroyed widgets after this window closes.
+        try:
+            handle.cancel_pending()
+        except Exception:
+            pass
 
     def _on_close():
         _cleanup()

@@ -1132,7 +1132,7 @@ def show_health_scanner():
     # ------------------------------------------------------------------
     # Populate treeview from cached results + current filter state
     # ------------------------------------------------------------------
-    def _apply_filter():
+    def _apply_filter_now():
         """Re-populate the treeview from cached results applying current filters."""
         result = _last_scan_result[0]
         if result is None:
@@ -1209,7 +1209,7 @@ def show_health_scanner():
         try:
             result = scan_health()
             _last_scan_result[0] = result
-            _apply_filter()
+            _apply_filter_now()
         except Exception as e:
             if _HAS_UNREAL:
                 unreal.log_error(f"health_scanner UI: scan failed — {traceback.format_exc()}")
@@ -1220,10 +1220,41 @@ def show_health_scanner():
     scan_btn.configure(command=_on_scan)
 
     # ------------------------------------------------------------------
-    # Live filter bindings
+    # Debounced live filter — typing (or changing severity) fires
+    # <KeyRelease>/<<ComboboxSelected>> once per event, and each rebuilds
+    # the ENTIRE tree (delete every row + re-insert). Same hazard shape as
+    # the tooltip above and the dependency_viewer resize precedent: this
+    # window is pumped by root.update() inside UEFN's main-thread tick
+    # callback, so an uncapped per-keystroke rebuild runs synchronously
+    # mid-frame on every character typed. Debounce so a burst of
+    # keystrokes collapses into one rebuild after the user pauses; the
+    # rows shown at the end are identical either way — only WHEN the
+    # rebuild runs changes, not what it computes.
     # ------------------------------------------------------------------
+    _filter_after_id = [None]
+
+    def _apply_filter():
+        if _filter_after_id[0] is not None:
+            try:
+                root.after_cancel(_filter_after_id[0])
+            except tk.TclError:
+                pass
+        _filter_after_id[0] = root.after(180, _do_debounced_filter)
+
+    def _do_debounced_filter():
+        _filter_after_id[0] = None
+        try:
+            if root.winfo_exists():
+                _apply_filter_now()
+        except tk.TclError:
+            pass
+
     filter_entry.bind("<KeyRelease>", lambda _e: _apply_filter())
-    severity_combo.bind("<<ComboboxSelected>>", lambda _e: _apply_filter())
+    # ComboboxSelected is a discrete, deliberate action (one pick from a
+    # closed list), not a burst of rapid events like keystrokes — apply
+    # it immediately rather than routing it through the same debounce, so
+    # picking a severity is never seen to lag.
+    severity_combo.bind("<<ComboboxSelected>>", lambda _e: _apply_filter_now())
 
     # ------------------------------------------------------------------
     # Double-click — open Explorer with file selected
@@ -1262,6 +1293,23 @@ def show_health_scanner():
     }
 
     _tip_win = [None]
+    _tip_text_shown = [None]  # text currently displayed, or None if hidden
+    # ------------------------------------------------------------------
+    # WHY debounce + idempotence here specifically: this window does NOT
+    # run mainloop() — it is pumped by root.update() inside the tick-pump
+    # callback below, which UEFN invokes via register_slate_post_tick_callback
+    # on its MAIN THREAD (see the tick pump a few dozen lines down, and the
+    # Tk resize-storm precedent in dependency_viewer.py:1749-1802 —
+    # heavy/misbehaving Tk work executed synchronously from that callback
+    # runs mid-frame on UEFN's own thread, not some isolated Python UI
+    # loop, and previously aborted the whole host process). <Motion> fires
+    # on EVERY mouse pixel — far more often than <Configure> during a
+    # resize — so without both fixes, dragging across a row would
+    # destroy() and recreate a tk.Toplevel dozens of times per second
+    # inside that same undeferrable callback. Do NOT "simplify" this back
+    # to an unconditional destroy+recreate on every event.
+    _tip_after_id = [None]
+    _tip_pending_args = [None]  # (event.x_root, event.y_root, tip_text) awaiting the delay
 
     def _show_tooltip(event):
         item = tree.identify_row(event.y)
@@ -1286,25 +1334,82 @@ def show_health_scanner():
             _hide_tooltip()
             return
 
-        if _tip_win[0]:
-            _tip_win[0].destroy()
+        # Idempotence: pointer still over the same text (same row/column) —
+        # just reposition the existing window (or the one about to appear),
+        # never destroy/recreate. This alone kills nearly all the churn,
+        # since most Motion events land back-to-back within one row.
+        if tip_text == _tip_text_shown[0] and _tip_win[0] is not None:
+            try:
+                if _tip_win[0].winfo_exists():
+                    _tip_win[0].wm_geometry(f"+{event.x_root + 16}+{event.y_root + 10}")
+                    return
+            except tk.TclError:
+                pass
 
-        tw = tk.Toplevel(root)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{event.x_root + 16}+{event.y_root + 10}")
-        tw.configure(bg="#EBE7DD")
-        lbl = tk.Label(
-            tw, text=tip_text,
-            font=("Segoe UI", 9), fg="#1A1A1A", bg="#EBE7DD",
-            justify=tk.LEFT, padx=8, pady=4,
-            relief=tk.SOLID, borderwidth=1,
-        )
-        lbl.pack()
-        _tip_win[0] = tw
+        # Debounce the appearance itself: schedule after a short hover
+        # delay rather than popping instantly, cancelling any pending
+        # show so a fast pass over several rows schedules nothing extra.
+        _tip_pending_args[0] = (event.x_root, event.y_root, tip_text)
+        if _tip_after_id[0] is not None:
+            try:
+                tree.after_cancel(_tip_after_id[0])
+            except tk.TclError:
+                pass
+        _tip_after_id[0] = tree.after(300, _do_debounced_show)
+
+    def _do_debounced_show():
+        """Fires ~300ms after the last <Motion> that changed the target
+        text. The tree (or window) may already be gone by the time this
+        runs — guard exactly like the tick pump does."""
+        _tip_after_id[0] = None
+        args = _tip_pending_args[0]
+        if args is None:
+            return
+        x_root, y_root, tip_text = args
+        try:
+            if not tree.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        if _tip_win[0]:
+            try:
+                _tip_win[0].destroy()
+            except tk.TclError:
+                pass
+            _tip_win[0] = None
+
+        try:
+            tw = tk.Toplevel(root)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{x_root + 16}+{y_root + 10}")
+            tw.configure(bg="#EBE7DD")
+            lbl = tk.Label(
+                tw, text=tip_text,
+                font=("Segoe UI", 9), fg="#1A1A1A", bg="#EBE7DD",
+                justify=tk.LEFT, padx=8, pady=4,
+                relief=tk.SOLID, borderwidth=1,
+            )
+            lbl.pack()
+            _tip_win[0] = tw
+            _tip_text_shown[0] = tip_text
+        except tk.TclError:
+            pass
 
     def _hide_tooltip(*_args):
+        if _tip_after_id[0] is not None:
+            try:
+                tree.after_cancel(_tip_after_id[0])
+            except tk.TclError:
+                pass
+            _tip_after_id[0] = None
+        _tip_pending_args[0] = None
+        _tip_text_shown[0] = None
         if _tip_win[0]:
-            _tip_win[0].destroy()
+            try:
+                _tip_win[0].destroy()
+            except tk.TclError:
+                pass
             _tip_win[0] = None
 
     tree.bind("<Motion>", _show_tooltip)
@@ -1332,8 +1437,23 @@ def show_health_scanner():
             except Exception:
                 pass
             _tick_handle[0] = None
+        # Cancel any pending debounced filter rebuild / tooltip timer so
+        # neither can fire against destroyed widgets after this window closes.
+        if _filter_after_id[0] is not None:
+            try:
+                root.after_cancel(_filter_after_id[0])
+            except Exception:
+                pass
+            _filter_after_id[0] = None
+        if _tip_after_id[0] is not None:
+            try:
+                tree.after_cancel(_tip_after_id[0])
+            except Exception:
+                pass
+            _tip_after_id[0] = None
 
     def _on_close():
+        _hide_tooltip()
         _cleanup()
         try:
             root.destroy()

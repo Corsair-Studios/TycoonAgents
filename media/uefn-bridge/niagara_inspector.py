@@ -817,7 +817,7 @@ def show_niagara_inspector():
     # ------------------------------------------------------------------
     # Populate treeview from cached results + current filter state
     # ------------------------------------------------------------------
-    def _apply_filter():
+    def _apply_filter_now():
         """Re-populate the treeview from cached results applying current filters."""
         browse_result = _last_browse_result[0]
         usage_result  = _last_usage_result[0]
@@ -927,7 +927,7 @@ def show_niagara_inspector():
             usage_result = find_niagara_usage()
             _last_usage_result[0] = usage_result
 
-            _apply_filter()
+            _apply_filter_now()
         except Exception as e:
             unreal.log_error(
                 f"niagara_inspector UI: refresh failed — {traceback.format_exc()}"
@@ -939,14 +939,43 @@ def show_niagara_inspector():
     refresh_btn.configure(command=_on_refresh)
 
     # ------------------------------------------------------------------
-    # Live filter — re-apply without re-scanning
+    # Debounced live filter — <KeyRelease> fires on every character typed,
+    # and each call rebuilds the WHOLE tree (delete every row + re-insert,
+    # including nested texture/material/actor children). This window is
+    # pumped by root.update() inside UEFN's main-thread
+    # register_slate_post_tick_callback — same hazard shape as the
+    # dependency_viewer resize-storm precedent (see that file's
+    # :1749-1802): an uncapped per-keystroke rebuild would run
+    # synchronously mid-frame on every character typed. Debounce so a
+    # burst of keystrokes collapses into a single rebuild once the user
+    # pauses; the rows shown at the end are identical either way.
     # ------------------------------------------------------------------
+    _filter_after_id = [None]
+
+    def _apply_filter():
+        if _filter_after_id[0] is not None:
+            try:
+                root.after_cancel(_filter_after_id[0])
+            except tk.TclError:
+                pass
+        _filter_after_id[0] = root.after(180, _do_debounced_filter)
+
+    def _do_debounced_filter():
+        _filter_after_id[0] = None
+        try:
+            if root.winfo_exists():
+                _apply_filter_now()
+        except tk.TclError:
+            pass
+
     filter_entry.bind("<KeyRelease>", lambda _e: _apply_filter())
 
-    # Unused-only checkbox also re-applies filter immediately
+    # Unused-only checkbox is a discrete, deliberate action (not a burst
+    # of rapid events like keystrokes) — re-apply immediately so toggling
+    # it is never seen to lag.
     def _on_unused_toggle():
         _show_unused_state[0] = not _show_unused_state[0]
-        _apply_filter()
+        _apply_filter_now()
     unused_only_check.config(command=_on_unused_toggle)
 
     # ------------------------------------------------------------------
@@ -991,6 +1020,14 @@ def show_niagara_inspector():
             except Exception:
                 pass
             _tick_handle[0] = None
+        # Cancel any pending debounced filter rebuild so it cannot fire
+        # against destroyed widgets after this window closes.
+        if _filter_after_id[0] is not None:
+            try:
+                root.after_cancel(_filter_after_id[0])
+            except Exception:
+                pass
+            _filter_after_id[0] = None
 
     def _on_close():
         _cleanup()
