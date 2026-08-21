@@ -80,6 +80,10 @@ import init_unreal
 
 If you run into problems, please open an issue on the GitHub repo: https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/issues — issues are reviewed periodically and fixed when possible.
 
+## Acknowledgements
+
+Thanks to [uefn-mcp-server](https://github.com/KirChuvakov/uefn-mcp-server) (MIT), whose work influenced the development of these tools.
+
 ## License
 
 MIT. Copyright (c) 2026 Trashbyrd (https://x.com/thetrashbyrd).
