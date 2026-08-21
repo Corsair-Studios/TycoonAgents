@@ -42,6 +42,16 @@ import { createHash } from 'node:crypto';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(SCRIPT_DIR); // repo root (scripts/ is one level down)
 
+// Computed here (rather than at the bottom, next to main()) so fail() below
+// can read it at call time: when this module is imported (isMainModule ===
+// false, e.g. by scripts/sync-powertools.mjs), fail() must throw a catchable
+// Error instead of calling process.exit(1) -- exiting the whole process from
+// inside an imported call would kill the importer too, mid-way through its
+// own already-committed work. When run directly as the CLI, behavior is
+// unchanged: main() below catches the thrown Error and converts it back to
+// the same message-on-stderr-plus-exit-1 shape.
+const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
 const BRIDGE_DIR = join(ROOT, 'media', 'uefn-bridge');
 // The runnable server this zip ships: the esbuild bundle, dependency-free
 // (everything inlined), so `node uefn-server.mjs` works with no `npm
@@ -95,6 +105,12 @@ function formatDateVersion(date) {
 }
 
 function fail(message) {
+  if (!isMainModule) {
+    // Imported (e.g. by sync-powertools.mjs) -- throw so the caller's own
+    // try/catch can handle it. process.exit(1) here would kill the caller's
+    // process too, potentially after it has already committed/pushed.
+    throw new Error(message);
+  }
   console.error(`[package-powertools] ERROR: ${message}`);
   process.exit(1);
 }
@@ -290,7 +306,16 @@ function verifyZipEntryMatchesSource(zipPath, entryName, sourcePath) {
   console.log(`[package-powertools]   OK: ${entryName} matches source (sha256 ${sourceHash})`);
 }
 
-function main() {
+// Builds the runtime-only Power Tools zip and returns its manifest without
+// calling process.exit() on success -- this is the callable half main()
+// wraps for the standalone CLI. Exported so other release tooling (e.g.
+// scripts/sync-powertools.mjs's GitHub Release step) can build the exact
+// same runtime-only artifact instead of re-deriving its own packaging logic
+// or falling back to something like `git archive` that snapshots the whole
+// repo tree. Still calls fail() (process.exit(1)) on any build error, same
+// as a standalone run -- a partially-built zip must never be handed back to
+// a caller as if it were usable.
+export function buildPowerToolsZip() {
   const today = new Date();
   const version = formatDateVersion(today);
 
@@ -379,6 +404,8 @@ function main() {
     console.log(`  zip size:            ${zipSize} bytes`);
     console.log(`  output:              ${zipPath}`);
     console.log(`  version:             ${version}`);
+
+    return { zipPath, version, entryCount: stagedFiles.length, zipSize };
   } finally {
     try {
       rmSync(stageDir, { recursive: true, force: true });
@@ -388,7 +415,20 @@ function main() {
   }
 }
 
-const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+function main() {
+  try {
+    buildPowerToolsZip();
+  } catch (err) {
+    // fail() throws (rather than exiting) whenever isMainModule is false;
+    // here isMainModule is true, so any throw reaching this catch is from
+    // fail() itself (message already the exact CLI-facing text) or an
+    // unexpected error. Either way, print message-only (no raw stack dump)
+    // and exit 1 -- the same observable CLI behavior as before this change.
+    console.error(`[package-powertools] ERROR: ${err.message}`);
+    process.exit(1);
+  }
+}
+
 if (isMainModule) {
   main();
 }

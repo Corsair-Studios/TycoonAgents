@@ -24,6 +24,15 @@ import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+// The release asset must be the runtime-only end-user zip (python/,
+// skills/uefn/, docs/, README/INSTALL/LICENSE, uefn-server.mjs at root --
+// no .ts, no build/dev material), never a `git archive` snapshot of the
+// whole target repo tree (that previously shipped .github/, .gitignore,
+// package.json/package-lock.json, an internal spec doc, and uefn-server.ts
+// while OMITTING uefn-server.mjs, which INSTALL.md tells users to run).
+// Reuses package-powertools.mjs's own build/verify logic rather than
+// duplicating it here.
+import { buildPowerToolsZip } from './package-powertools.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(SCRIPT_DIR); // repo root (scripts/ is one level down)
@@ -566,30 +575,30 @@ function tagAndReleaseTarget(targetDir, version) {
 }
 
 // Best-effort GitHub Release for the target repo, attempted only once its
-// tag is confirmed pushed. Builds the installable zip from the pushed tag
-// via `git archive`, which packages ONLY tracked files at that tag — this
-// is what keeps node_modules (~59MB) out of the asset, but only as long as
-// node_modules is actually gitignored in the target repo, so that's
-// verified here rather than assumed. Written to a temp dir (never into
-// either repo's working tree) and cleaned up afterward.
+// tag is confirmed pushed. The release asset is the runtime-only end-user
+// zip built by package-powertools.mjs's buildPowerToolsZip() -- NEVER a
+// `git archive` snapshot of the target repo tree, which would include
+// .github/, .gitignore, package.json/package-lock.json, dev docs, and the
+// TypeScript server source while omitting uefn-server.mjs (the file
+// INSTALL.md tells users to run). buildPowerToolsZip() fails loudly
+// (process.exit(1) via its own fail()) on any build problem; that failure
+// is caught here and turned into a loud, explicit, non-fatal-to-the-whole-
+// sync error -- the commit/tag/push above have already landed, and a
+// missing release is recoverable, but publishing a WRONG asset is exactly
+// the mistake this function exists to prevent. There is no git-archive
+// fallback.
 function publishTargetRelease(targetDir, version, tagName) {
-  const gitignorePath = join(targetDir, '.gitignore');
-  let gitignoreText = '';
+  let built;
   try {
-    gitignoreText = readFileSync(gitignorePath, 'utf8');
+    built = buildPowerToolsZip();
   } catch (err) {
     console.log(
-      `[sync-powertools] Could not read target .gitignore (non-fatal): ${err.message}. ` +
-      'Skipping release asset build to avoid risking an unfiltered archive.',
-    );
-    return;
-  }
-
-  const ignoresNodeModules = /^node_modules\/?\s*$/m.test(gitignoreText);
-  if (!ignoresNodeModules) {
-    console.log(
-      '[sync-powertools] Target .gitignore does not appear to ignore node_modules; ' +
-      'skipping release asset build rather than risk shipping it.',
+      `[sync-powertools] GitHub Release NOT published for target repo: ` +
+      `building the runtime-only release zip FAILED (${err.message}). ` +
+      'Refusing to fall back to a full-tree git archive. ' +
+      `The tag "${tagName}" and its push have already landed; publish the release ` +
+      `manually once the build issue is fixed: node scripts/package-powertools.mjs, ` +
+      `then gh release create ${tagName} "<dist zip>" --title ${tagName} --notes "..." (run from ${targetDir})`,
     );
     return;
   }
@@ -599,12 +608,18 @@ function publishTargetRelease(targetDir, version, tagName) {
   const zipPath = join(tmpWorkDir, zipName);
   try {
     mkdirSync(tmpWorkDir, { recursive: true });
-    execFileSync('git', ['-C', targetDir, 'archive', '--format=zip', '-o', zipPath, tagName], {
-      stdio: 'inherit',
-    });
-    console.log(`[sync-powertools] Built release asset at ${zipPath}.`);
+    copyFileSync(built.zipPath, zipPath);
+    console.log(
+      `[sync-powertools] Built runtime-only release asset (${built.entryCount} entries) ` +
+      `at ${zipPath} (from ${built.zipPath}).`,
+    );
   } catch (err) {
-    console.log(`[sync-powertools] Could not build release archive (non-fatal): ${err.message}`);
+    console.log(
+      `[sync-powertools] GitHub Release NOT published for target repo: could not stage the ` +
+      `runtime-only zip for upload (${err.message}). Refusing to fall back to a git archive. ` +
+      `The tag "${tagName}" and its push have already landed; publish the release ` +
+      `manually once resolved: gh release create ${tagName} "${built.zipPath}" --title ${tagName} --notes "..." (run from ${targetDir})`,
+    );
     try {
       rmSync(tmpWorkDir, { recursive: true, force: true });
     } catch {
