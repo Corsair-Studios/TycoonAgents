@@ -2,8 +2,9 @@
 // Best-effort mirror of the UEFN Power Tools bridge (media/uefn-bridge/*.py +
 // the MCP server source) into a separate, standalone "Trashbyrd's UEFN Power
 // Tools" repo so that repo can be distributed independently of TycoonAgents.
-// Also stamps a LICENSE and a date-based version (see computeDateVersion())
-// into that repo's own package.json, and — once the sync commit has
+// Also stamps a LICENSE and a monotonic semver version (see
+// computeNextVersion(), starting at 0.1.0) into that repo's own
+// package.json, and — once the sync commit has
 // actually landed on the target's remote — tags and best-effort
 // GitHub-Releases it there too. The standalone repo's version is its OWN,
 // wholly independent of TycoonAgents' package.json version.
@@ -76,7 +77,12 @@ const VERSE_CHECK_SRC = join(ROOT, 'media', 'skills', 'uefn', 'verse_lsp_check.p
 // tools in media/uefn-bridge/ (build artifacts / caches, not source).
 const EXCLUDE_NAMES = new Set(['uefn-server.mjs']);
 
-function resolveTargetDir() {
+// Exported so scripts/release.mjs can resolve the SAME target dir before
+// computing the bridge version it stamps into bridge_version.py -- the
+// bridge stamp and the version this script later tags/releases must be
+// identical (the whole point: init_unreal.py's self-sync compares this
+// exact stamp), so both sides must derive it from the same target.
+export function resolveTargetDir() {
   const fromEnv = process.env.POWERTOOLS_REPO_DIR;
   if (fromEnv && fromEnv.trim()) {
     return fromEnv.trim();
@@ -96,73 +102,96 @@ function resolveTargetDir() {
   return null;
 }
 
-// Formats a Date as npm-semver-valid `YYYY.M.D` (NO zero padding on month
-// or day -- `2026.08.20` is INVALID per npm's semver parser because a
-// leading zero makes a numeric identifier illegal; `2026.8.20` is valid).
-// Exported for tests via computeDateVersion() below, which is the function
-// that should actually be called -- this is the pure formatting half.
-export function formatDateVersion(date) {
-  const year = date.getFullYear();
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  return `${year}.${month}.${day}`;
+// Monotonic semver sequence, starting at 0.1.0 (deliberately below 1.0.0 --
+// the README's beta notice). REPLACES the previous date-based scheme
+// (`YYYY.M.D` with same-day "-b"/"-c" letter suffixes): every build made on
+// the same calendar day shared one date stamp, so the bridge's self-sync
+// (which compares this exact stamp) could hide a whole day of fixes behind
+// an unchanged number -- this happened for real and cost an evening of
+// testing stale code. A strictly incrementing patch number gives every
+// build a distinct stamp, so the suffix machinery is no longer needed.
+//
+// Reads targetDir's own `v<major>.<minor>.<patch>` git tags, finds the
+// highest by NUMERIC component comparison (never lexicographic -- "v0.1.9"
+// must be understood as less than "v0.1.10", which a string compare gets
+// wrong), and returns that with patch incremented by one. No matching tag
+// (e.g. right now, after the old date tags were deleted) yields "0.1.0".
+//
+// Manual override: if process.env.POWERTOOLS_VERSION is set, it is used
+// verbatim after validating it is three dot-separated non-leading-zero
+// numeric parts -- this lets the owner jump straight to 1.0.0, or bump the
+// minor by hand, without editing this file. An invalid override throws
+// loudly (never silently falls back) so a typo can't ship a bad stamp.
+//
+// `today` is accepted for signature parity with the function this replaces
+// (main() still computes "now" once per run) but is unused here -- version
+// selection is now purely tag-derived, not date-derived.
+export function computeNextVersion(targetDir, today) { // eslint-disable-line no-unused-vars
+  const override = process.env.POWERTOOLS_VERSION;
+  if (override !== undefined && override.trim()) {
+    const trimmed = override.trim();
+    if (!isValidSemverTriple(trimmed)) {
+      throw new Error(
+        `[sync-powertools] POWERTOOLS_VERSION="${trimmed}" is not a valid version. ` +
+        'Expected three dot-separated non-negative integers with no leading zeros, ' +
+        'e.g. "1.0.0" or "0.2.0" (POWERTOOLS_VERSION overrides the auto-computed next version).',
+      );
+    }
+    return trimmed;
+  }
+
+  const highest = highestVersionTag(targetDir);
+  if (!highest) return '0.1.0';
+  const [major, minor, patch] = highest;
+  return `${major}.${minor}.${patch + 1}`;
 }
 
-// Lists annotated/lightweight tag names in targetDir matching `v<base>` or
-// `v<base>-<letter>` for the given base date version (e.g. base "2026.8.20"
-// matches tags "v2026.8.20", "v2026.8.20-b", "v2026.8.20-c", ...). Uses
-// `git tag --list` against the local tag refs; callers are expected to have
+// True only for a well-formed npm-semver-valid three-part version: each
+// part is digits-only, and any part with more than one digit must not start
+// with "0" (npm's semver parser rejects leading zeros as an illegal numeric
+// identifier -- "01" is invalid, "0" alone is fine).
+function isValidSemverTriple(value) {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
+  if (!m) return false;
+  return [m[1], m[2], m[3]].every((part) => part === '0' || !part.startsWith('0'));
+}
+
+// Scans targetDir's local tags for the highest `v<major>.<minor>.<patch>`
+// by numeric-per-component comparison and returns it as [major, minor,
+// patch], or null if no such tag exists. Callers are expected to have
 // already run `git fetch --tags` (tagAndReleaseTarget() does this) so the
 // list reflects the remote's tags too. Non-fatal: any git failure (no repo,
-// no tags yet) yields an empty list rather than throwing.
-export function listVersionTags(targetDir, baseVersion) {
+// no tags yet) yields null rather than throwing.
+export function highestVersionTag(targetDir) {
+  let out;
   try {
-    const escaped = baseVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const out = execFileSync(
-      'git',
-      ['-C', targetDir, 'tag', '--list', `v${baseVersion}*`],
-      { encoding: 'utf8' },
-    );
-    const pattern = new RegExp(`^v${escaped}(-([a-z]))?$`);
-    return out
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter((name) => pattern.test(name));
+    out = execFileSync('git', ['-C', targetDir, 'tag', '--list', 'v*'], { encoding: 'utf8' });
   } catch {
-    return [];
+    return null;
   }
+
+  const pattern = /^v(\d+)\.(\d+)\.(\d+)$/;
+  let best = null;
+  for (const line of out.split('\n')) {
+    const name = line.trim();
+    if (!name) continue;
+    const m = pattern.exec(name);
+    if (!m) continue;
+    const candidate = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (!best || compareVersionTuples(candidate, best) > 0) {
+      best = candidate;
+    }
+  }
+  return best;
 }
 
-// Computes today's date-based version for the target repo, deriving the
-// next free same-day suffix from tags that already exist there. First
-// release of a day has no suffix ("2026.8.20"); a second/third/etc. same-day
-// release appends "-b", "-c", ... in order. `today` is a Date, injected by
-// the caller (main() computes it once per run) so tests can pass a fixed
-// date instead of depending on the real clock, and so a run never risks a
-// midnight split between two separately-computed "now"s.
-export function computeDateVersion(targetDir, today) {
-  const base = formatDateVersion(today);
-  const existing = listVersionTags(targetDir, base);
-  if (existing.length === 0) return base;
-
-  const usedLetters = new Set();
-  let baseTagExists = false;
-  for (const tag of existing) {
-    const m = tag.match(/^v[0-9.]+(?:-([a-z]))?$/);
-    if (!m) continue;
-    if (m[1]) usedLetters.add(m[1]);
-    else baseTagExists = true;
+// Numeric (never lexicographic) comparison of two [major, minor, patch]
+// tuples: >0 if a > b, <0 if a < b, 0 if equal.
+function compareVersionTuples(a, b) {
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i];
   }
-  if (!baseTagExists) return base;
-
-  for (let code = 'b'.charCodeAt(0); code <= 'z'.charCodeAt(0); code += 1) {
-    const letter = String.fromCharCode(code);
-    if (!usedLetters.has(letter)) return `${base}-${letter}`;
-  }
-  // Exhausted a-z (26 releases in one day) -- fall back to a timestamp
-  // suffix rather than colliding or throwing.
-  return `${base}-${Date.now()}`;
+  return 0;
 }
 
 function copyBridgeFiles(targetDir) {
@@ -338,8 +367,8 @@ function pruneStaleVerseCheckScript(targetDir) {
   }
 }
 
-// Stamps the computed DATE-BASED version (see computeDateVersion() above)
-// into the target repo's package.json "version" field only — every other
+// Stamps the computed semver version (see computeNextVersion() above) into
+// the target repo's package.json "version" field only — every other
 // field, key order, indentation style, and trailing newline are preserved
 // as-is. This is the standalone Power Tools repo's OWN version now, wholly
 // independent of TycoonAgents' package.json version. Non-fatal on any
@@ -658,10 +687,11 @@ function main() {
   }
 
   // Computed exactly once for the whole run and threaded through everywhere
-  // a version string is needed (computeDateVersion, updateTargetPackageVersion,
-  // syncGitIfPresent, tagAndReleaseTarget) so a run that happens to straddle
-  // midnight can't compute two different "today"s and produce inconsistent
-  // version strings across package.json/commit/tag/release within one run.
+  // a version string is needed (computeNextVersion, updateTargetPackageVersion,
+  // syncGitIfPresent, tagAndReleaseTarget). computeNextVersion() no longer
+  // derives the version FROM this date (it's now tag-derived), but `today`
+  // is kept as a single shared "now" for the run for parity/signature
+  // reasons and in case future callers need it.
   const today = new Date();
 
   const copiedCount = copyBridgeFiles(targetDir);
@@ -705,10 +735,13 @@ function main() {
     return;
   }
 
-  // Only compute/stamp a new date version when there is actually something
-  // new to publish -- computeDateVersion() looks at existing tags in the
-  // target repo, which requires targetDir to be a usable git repo.
-  const version = isGitRepo ? computeDateVersion(targetDir, today) : formatDateVersion(today);
+  // Only compute/stamp a new version when there is actually something new
+  // to publish. computeNextVersion() looks at existing tags in targetDir;
+  // if it isn't (yet) a git repo, the tag lookup fails closed (see
+  // highestVersionTag()) and this falls through to "0.1.0" -- the very
+  // first release -- same as a git repo with no v* tags yet. Either way,
+  // POWERTOOLS_VERSION (if set) is checked first and wins regardless.
+  const version = computeNextVersion(targetDir, today);
 
   if (updateTargetPackageVersion(targetDir, version)) {
     console.log(`[sync-powertools] Stamped target package.json version to ${version}.`);

@@ -137,6 +137,77 @@ try:
         except Exception:
             return (0, 0, 0)
 
+    def _sync_relevant_name(_name):
+        """Same file filter the copy loop below applies: bridge .py modules
+        plus the launcher icon, excluding the Node-side MCP server file
+        (uefn_bridge_version.py itself is intentionally INCLUDED — a stamp
+        file that differs without a stamp bump would otherwise never be
+        caught). Shared so the drift check and the copy loop can never
+        silently diverge on what counts as "the bridge"."""
+        if _name == "uefn-server.mjs":
+            return False
+        return _name.endswith(".py") or _name == "trashbyrd_40x40.png"
+
+    def _dir_contents_differ(_dir_a, _dir_b):
+        """True if the relevant files in _dir_a and _dir_b differ in any way
+        (missing on one side, different size, or same size but different
+        content), False only if every relevant file matches exactly on both
+        sides. Used ONLY when stamps compare EQUAL (a same-day date stamp
+        can cover a whole day of unrelated edits) — never for the ordinary
+        newer-stamp path, which stays stamp-only as before.
+
+        Cost strategy, chosen for the ~24-file / up-to-228KB-file case
+        running on UEFN's main thread at every plugin load:
+          1. List names in both dirs (cheap). A name present on only one
+             side is an immediate True (no need to read anything).
+          2. Compare file SIZE via os.path.getsize (a stat call, no file
+             open/read) for every name present on both sides. Any size
+             mismatch is an immediate True.
+          3. Only for names whose sizes MATCH do we hash actual bytes
+             (sha1, read in chunks) -- this is the one case size alone
+             cannot rule out (two different files that happen to share a
+             byte count), and it is typically a small minority of files
+             since most genuine edits change size. Hash mismatch is True.
+        Failure modes of this strategy: none that produce a false
+        "identical" verdict for genuinely different files -- step 3 always
+        hashes full contents (not a prefix/sample) whenever size alone is
+        inconclusive, so a same-size-different-bytes file is always caught.
+        The only way this returns False incorrectly is a genuine SHA-1
+        collision on a same-size file, which is not a realistic risk here.
+        """
+        try:
+            _names_a = {n for n in _sync_os.listdir(_dir_a) if _sync_relevant_name(n)}
+            _names_b = {n for n in _sync_os.listdir(_dir_b) if _sync_relevant_name(n)}
+        except Exception:
+            return True  # can't even list -- fail toward freshness (sync)
+        if _names_a != _names_b:
+            return True
+        for _name in _names_a:
+            _path_a = _sync_os.path.join(_dir_a, _name)
+            _path_b = _sync_os.path.join(_dir_b, _name)
+            try:
+                _size_a = _sync_os.path.getsize(_path_a)
+                _size_b = _sync_os.path.getsize(_path_b)
+            except Exception:
+                return True  # unreadable metadata -- fail toward freshness
+            if _size_a != _size_b:
+                return True
+            try:
+                import hashlib as _sync_hashlib
+                _hash_a = _sync_hashlib.sha1()
+                with open(_path_a, "rb") as _fa:
+                    for _chunk in iter(lambda: _fa.read(65536), b""):
+                        _hash_a.update(_chunk)
+                _hash_b = _sync_hashlib.sha1()
+                with open(_path_b, "rb") as _fb:
+                    for _chunk in iter(lambda: _fb.read(65536), b""):
+                        _hash_b.update(_chunk)
+                if _hash_a.digest() != _hash_b.digest():
+                    return True
+            except Exception:
+                return True  # couldn't hash -- fail toward freshness
+        return False
+
     _this_dir = _sync_os.path.dirname(_sync_os.path.abspath(__file__))
     _own_stamp = _read_stamp(_this_dir)
 
@@ -248,13 +319,45 @@ try:
     if _candidates:
         _candidates.sort(key=lambda _c: _c[0])
         _newest_stamp, _newest_dir = _candidates[-1]
+        _sync_reason = None  # "stamp" or "content" -- set below, drives the log message
         if _newest_stamp > _own_stamp:
+            _sync_reason = "stamp"
+        elif _newest_stamp == _own_stamp:
+            # Equal stamps can still hide real drift: the version is now a
+            # plain incrementing semver (each real release gets a distinct
+            # patch number), but a project copy edited by hand, restored
+            # from backup, or produced by an interrupted/aborted release
+            # can still carry a stamp that happens to match without the
+            # content actually matching. Content is the tiebreaker here --
+            # never for _newest_stamp < _own_stamp below, where an older
+            # project copy must NEVER overwrite a newer engine copy
+            # regardless of content.
+            try:
+                if _dir_contents_differ(_newest_dir, _this_dir):
+                    _sync_reason = "content"
+            except Exception as _drift_exc:
+                # Comparison itself failed -- fail TOWARD freshness (sync
+                # anyway) rather than silently skipping; a spurious copy is
+                # harmless, a skipped one is the exact bug being fixed.
+                _sync_reason = "content-check-failed"
+                _sync_drift_warn_msg = (
+                    "Trashbyrd: bridge self-sync — content comparison failed "
+                    "for v{}.{}.{} == v{}.{}.{} ({}: {}), syncing anyway to be safe"
+                ).format(*(_own_stamp + _newest_stamp + (type(_drift_exc).__name__, _drift_exc)))
+                try:
+                    print(_sync_drift_warn_msg)
+                except Exception:
+                    pass
+                try:
+                    import unreal as _drift_unreal
+                    _drift_unreal.log_warning(_sync_drift_warn_msg)
+                except Exception:
+                    pass
+        if _sync_reason is not None:
             _copied, _failed = 0, 0
             _copy_long_path_warned = False
             for _name in _sync_os.listdir(_newest_dir):
-                if _name == "uefn-server.mjs":
-                    continue
-                if not (_name.endswith(".py") or _name == "trashbyrd_40x40.png"):
+                if not _sync_relevant_name(_name):
                     continue
                 _src = _sync_os.path.join(_newest_dir, _name)
                 _dst = _sync_os.path.join(_this_dir, _name)
@@ -289,18 +392,36 @@ try:
                                 _copy_unreal.log_warning(_copy_warn_msg)
                             except Exception:
                                 pass
-            _sync_msg = (
-                "Trashbyrd: bridge self-sync — updated v{}.{}.{} -> v{}.{}.{} "
-                "({} copied, {} failed) from {}"
-            ).format(*(_own_stamp + _newest_stamp + (_copied, _failed, _newest_dir)))
+            if _sync_reason == "stamp":
+                _sync_msg = (
+                    "Trashbyrd: bridge self-sync — updated v{}.{}.{} -> v{}.{}.{} "
+                    "({} copied, {} failed) from {}"
+                ).format(*(_own_stamp + _newest_stamp + (_copied, _failed, _newest_dir)))
+            else:
+                # "content" or "content-check-failed" -- same stamp on both
+                # sides, so the version number in the message can't change;
+                # the (content differs)/(comparison failed) tag is what lets
+                # the user tell this path apart from the stamp path in the
+                # log, per-request.
+                _sync_msg = (
+                    "Trashbyrd: bridge self-sync — updated v{}.{}.{} -> v{}.{}.{} "
+                    "({} copied, {} failed) from {} [{}, same stamp]"
+                ).format(*(_own_stamp + _newest_stamp + (_copied, _failed, _newest_dir, _sync_reason)))
             _sync_updated = True
             _sync_from_stamp = _own_stamp
             _sync_to_stamp = _newest_stamp
             _sync_result_stamp = _newest_stamp
-        else:
+        elif _newest_stamp == _own_stamp:
             _sync_msg = (
                 "Trashbyrd: bridge self-sync — v{}.{}.{} already current "
-                "(newest project copy v{}.{}.{})"
+                "(newest project copy v{}.{}.{}, content identical)"
+            ).format(*(_own_stamp + _newest_stamp))
+        else:
+            # _newest_stamp < _own_stamp: an older project copy must NEVER
+            # overwrite a newer engine copy, regardless of content.
+            _sync_msg = (
+                "Trashbyrd: bridge self-sync — v{}.{}.{} already current "
+                "(newest project copy v{}.{}.{} is older, skipped)"
             ).format(*(_own_stamp + _newest_stamp))
 
     # Best-effort status marker for uefn_launcher.py to display — never lets

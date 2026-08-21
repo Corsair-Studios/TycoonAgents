@@ -90,12 +90,16 @@ test('isNumericVersion: a mixed numeric/non-numeric component is false', () => {
   assert.equal(isNumericVersion('1.x'), false);
 });
 
-// Date-version-with-suffix tolerance -------------------------------------
-// scripts/sync-powertools.mjs computeDateVersion() appends "-b", "-c", ...
-// same-day release letters (or a "-<timestamp>" overflow fallback) to a
-// date-based version like "2026.8.21". Without suffix tolerance,
-// isNumericVersion rejected these outright and isBridgeVersionNewer treated
-// them as permanently not-newer -- these tests pin the fix.
+// Suffixed-version tolerance ----------------------------------------------
+// The version scheme is now plain incrementing semver with no suffix (see
+// scripts/sync-powertools.mjs computeNextVersion()); the OLD date-based
+// scheme it replaced used to append "-b", "-c", ... same-day release
+// letters (or a "-<timestamp>" overflow fallback) to a date-based version
+// like "2026.8.21". These tests still pin isNumericVersion/
+// isBridgeVersionNewer's suffix tolerance itself -- a real stamp will not
+// carry a suffix going forward, but the comparator must keep tolerating one
+// for forward/backward compatibility (e.g. reading an old bridge copy's
+// stamp) rather than silently rejecting it.
 
 test('isNumericVersion: a suffixed date version is true (suffix ignored)', () => {
   assert.equal(isNumericVersion('2026.8.21-b'), true);

@@ -39,6 +39,18 @@ That starts the bridge, launcher, and Tools-menu entries in one call. Follow it 
 
 Run `import init_unreal` once per UEFN session — after each restart of UEFN, repeat the step.
 
+### A tool seems to be running an old version
+
+UEFN can load Python from two places: your project's `Content/Python/` (where you just copied files) and an engine-side copy inside your Fortnite installation, at `FortniteGame/Content/Python/` under wherever your Epic Games Launcher installed Fortnite. That parent location varies by machine and by Launcher settings, so no single real path is given here.
+
+`init_unreal.py` syncs the newest project copy over the engine copy automatically when the bridge starts, comparing the `BRIDGE_VERSION` stamp in `bridge_version.py`. If that stamp already matches on both sides, the sync can skip copying even when the file contents underneath differ — so the engine copy can end up running stale code behind a version number that looks current.
+
+**Symptom:** a bug you know was fixed is still happening, or a feature you just added isn't there, even though the project copy on disk is correct.
+
+**Check which version is loaded:** the Power Tools launcher window footer (`import pt`) shows the bridge version currently running.
+
+**Manual fix:** copy this repo's `python/` files into the engine-side `FortniteGame/Content/Python/` directory as well as the project copy, delete any `__pycache__` folder in both locations, and restart UEFN.
+
 ## 2. Run the MCP server
 
 If you downloaded a release, you already have everything you need: the zip includes `uefn-server.mjs` at its root, a self-contained bundle with no dependencies to install. Run it directly:
@@ -182,4 +194,4 @@ Power Tools (this server) focuses on bulk queries over a project's actors, plus 
 
 ## Updating
 
-Download the latest release and re-copy the contents of `python/` into `<your-uefn-project>/Content/Python/`, then restart UEFN (or reload the bridge module from the Python console) to pick up changes. If you cloned the source repo, `git pull` instead.
+Download the latest release and re-copy the contents of `python/` into `<your-uefn-project>/Content/Python/`, then restart UEFN (or reload the bridge module from the Python console) to pick up changes. If you cloned the source repo, `git pull` instead. If a tool still behaves like the old version afterward, see [A tool seems to be running an old version](#a-tool-seems-to-be-running-an-old-version) — the engine-side copy may need updating too.

@@ -191,17 +191,23 @@ test("INSTALL.md's Windsurf section documents the .codeium/windsurf/mcp_config.j
 });
 
 /*
- * ── 5. Decoupled, date-based standalone versioning (plan task p4-t4) ──
+ * ── 5. Decoupled, monotonic-semver standalone versioning ──
  *
  * Coverage for scripts/sync-powertools.mjs's independent version stream:
- * formatDateVersion/listVersionTags/computeDateVersion (date -> npm-semver
- * -valid version string with same-day letter suffixes derived from the
- * target repo's own tags), detectContentChanged (ground-truth no-op
- * detection via `git status --porcelain` against the target's own HEAD --
- * NOT the copy/prune step counts, which are always non-zero on a non-empty
- * source regardless of whether content actually changed), and
- * updateTargetPackageVersion (stamps the target's OWN package.json, never
- * TycoonAgents').
+ * computeNextVersion() (derives the next version from the target repo's
+ * own highest `v<major>.<minor>.<patch>` tag, patch+1; "0.1.0" when no such
+ * tag exists; POWERTOOLS_VERSION env override, validated), plus
+ * highestVersionTag() (the numeric, never-lexicographic tag scan it's built
+ * on), detectContentChanged (ground-truth no-op detection via `git status
+ * --porcelain` against the target's own HEAD -- NOT the copy/prune step
+ * counts, which are always non-zero on a non-empty source regardless of
+ * whether content actually changed), and updateTargetPackageVersion (stamps
+ * the target's OWN package.json, never TycoonAgents').
+ *
+ * REPLACES the old date-based scheme (`YYYY.M.D` with same-day "-b"/"-c"
+ * letter suffixes) -- every build sharing one day's stamp let a whole day
+ * of fixes hide behind an unchanged version, which the self-sync compares
+ * to decide whether to copy newer tools over older ones.
  *
  * Exercises the real functions against real temp git repos (not a
  * reimplementation) via the same CJS-importing-ESM dynamic-import trick used
@@ -216,9 +222,8 @@ const dynamicImport = new Function("specifier", "return import(specifier);") as 
 ) => Promise<unknown>;
 
 interface SyncPowertoolsModule {
-  formatDateVersion: (date: Date) => string;
-  listVersionTags: (targetDir: string, baseVersion: string) => string[];
-  computeDateVersion: (targetDir: string, today: Date) => string;
+  computeNextVersion: (targetDir: string, today: Date) => string;
+  highestVersionTag: (targetDir: string) => [number, number, number] | null;
   detectContentChanged: (targetDir: string) => { isGitRepo: boolean; changed: boolean };
   updateTargetPackageVersion: (targetDir: string, version: string) => boolean;
 }
@@ -246,51 +251,118 @@ function makeTempRepo(): string {
   return dir;
 }
 
-test("formatDateVersion produces npm-semver-valid YYYY.M.D with NO zero padding for single-digit month/day", async () => {
-  const { formatDateVersion } = await loadSyncScript();
-  const version = formatDateVersion(new Date(2026, 7, 5)); // August 5, 2026 (month is 0-indexed)
-  assert.equal(version, "2026.8.5", "expected no zero padding on single-digit month/day");
-  assert.doesNotMatch(version, /\.0\d/, "version must not contain a zero-padded numeric identifier");
-});
-
-test("formatDateVersion round-trips through Node's semver-shaped validation for a double-digit month/day too", async () => {
-  const { formatDateVersion } = await loadSyncScript();
-  const version = formatDateVersion(new Date(2026, 10, 20)); // November 20, 2026
-  assert.equal(version, "2026.11.20");
-});
-
-test("computeDateVersion returns the bare date with no suffix when no tag exists yet for today", async () => {
-  const { computeDateVersion } = await loadSyncScript();
+test("computeNextVersion returns 0.1.0 when the target repo has no v* tags yet", async () => {
+  const { computeNextVersion } = await loadSyncScript();
   const dir = makeTempRepo();
   try {
-    const version = computeDateVersion(dir, new Date(2026, 7, 20)); // August 20, 2026
-    assert.equal(version, "2026.8.20");
+    const version = computeNextVersion(dir, new Date(2026, 7, 20));
+    assert.equal(version, "0.1.0");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("computeDateVersion picks the next free letter suffix given existing same-day tags (collision handling)", async () => {
-  const { computeDateVersion } = await loadSyncScript();
+test("computeNextVersion increments the patch: v0.1.0 -> 0.1.1", async () => {
+  const { computeNextVersion } = await loadSyncScript();
   const dir = makeTempRepo();
   try {
-    git(dir, "tag", "v2026.8.20");
-    git(dir, "tag", "v2026.8.20-b");
-    const version = computeDateVersion(dir, new Date(2026, 7, 20));
-    assert.equal(version, "2026.8.20-c", "expected the next free letter after b to be c");
+    git(dir, "tag", "v0.1.0");
+    const version = computeNextVersion(dir, new Date(2026, 7, 20));
+    assert.equal(version, "0.1.1");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("computeDateVersion re-run after only the base tag exists picks -b (first same-day collision)", async () => {
-  const { computeDateVersion } = await loadSyncScript();
+test("computeNextVersion compares numerically, not lexicographically: v0.1.9 -> 0.1.10", async () => {
+  // A naive string/lexicographic compare gets "0.1.10" wrong (sorts before
+  // "0.1.9" because '1' < '9'). This pins the classic bug.
+  const { computeNextVersion } = await loadSyncScript();
   const dir = makeTempRepo();
   try {
-    git(dir, "tag", "v2026.8.20");
-    const version = computeDateVersion(dir, new Date(2026, 7, 20));
-    assert.equal(version, "2026.8.20-b");
+    git(dir, "tag", "v0.1.9");
+    const version = computeNextVersion(dir, new Date(2026, 7, 20));
+    assert.equal(version, "0.1.10");
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("computeNextVersion picks the true highest out of a mixed set of tags", async () => {
+  const { computeNextVersion } = await loadSyncScript();
+  const dir = makeTempRepo();
+  try {
+    git(dir, "tag", "v0.1.0");
+    git(dir, "tag", "v0.1.9");
+    git(dir, "tag", "v0.2.0");
+    git(dir, "tag", "v0.1.10");
+    const version = computeNextVersion(dir, new Date(2026, 7, 20));
+    assert.equal(version, "0.2.1", "expected v0.2.0 to be recognized as the true highest, not v0.1.10");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("highestVersionTag returns null when no v<major>.<minor>.<patch> tag exists", async () => {
+  const { highestVersionTag } = await loadSyncScript();
+  const dir = makeTempRepo();
+  try {
+    assert.equal(highestVersionTag(dir), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("computeNextVersion honors a POWERTOOLS_VERSION override verbatim", async () => {
+  const { computeNextVersion } = await loadSyncScript();
+  const dir = makeTempRepo();
+  const prev = process.env.POWERTOOLS_VERSION;
+  process.env.POWERTOOLS_VERSION = "1.0.0";
+  try {
+    git(dir, "tag", "v0.5.0"); // present to prove the override wins over tag-derivation
+    const version = computeNextVersion(dir, new Date(2026, 7, 20));
+    assert.equal(version, "1.0.0");
+  } finally {
+    if (prev === undefined) delete process.env.POWERTOOLS_VERSION;
+    else process.env.POWERTOOLS_VERSION = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("computeNextVersion fails loudly on an invalid POWERTOOLS_VERSION override", async () => {
+  const { computeNextVersion } = await loadSyncScript();
+  const dir = makeTempRepo();
+  const prev = process.env.POWERTOOLS_VERSION;
+  process.env.POWERTOOLS_VERSION = "not-a-version";
+  try {
+    assert.throws(
+      () => computeNextVersion(dir, new Date(2026, 7, 20)),
+      /POWERTOOLS_VERSION/,
+      "an invalid override must throw naming the variable, never fail silently",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.POWERTOOLS_VERSION;
+    else process.env.POWERTOOLS_VERSION = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("computeNextVersion rejects a POWERTOOLS_VERSION override with a leading zero or wrong part count", async () => {
+  const { computeNextVersion } = await loadSyncScript();
+  const dir = makeTempRepo();
+  const prev = process.env.POWERTOOLS_VERSION;
+  try {
+    for (const bad of ["0.01.0", "1.0", "1.0.0.0", "v1.0.0", "1.0.x"]) {
+      process.env.POWERTOOLS_VERSION = bad;
+      assert.throws(
+        () => computeNextVersion(dir, new Date(2026, 7, 20)),
+        /POWERTOOLS_VERSION/,
+        `expected POWERTOOLS_VERSION="${bad}" to be rejected`,
+      );
+    }
+  } finally {
+    if (prev === undefined) delete process.env.POWERTOOLS_VERSION;
+    else process.env.POWERTOOLS_VERSION = prev;
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -325,10 +397,10 @@ test("updateTargetPackageVersion stamps the target's OWN package.json version fi
   const { updateTargetPackageVersion } = await loadSyncScript();
   const dir = makeTempRepo();
   try {
-    const ok = updateTargetPackageVersion(dir, "2026.8.20-b");
+    const ok = updateTargetPackageVersion(dir, "0.1.1");
     assert.equal(ok, true);
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-    assert.equal(pkg.version, "2026.8.20-b");
+    assert.equal(pkg.version, "0.1.1");
     assert.equal(pkg.name, "power-tools", "other package.json fields must be preserved untouched");
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -9,8 +9,8 @@
 // the compiled MCP server source, docs, and license only. No tests, no
 // build tooling, no dev config.
 //
-// Source layout and conventions (EXCLUDE_NAMES, the date-version scheme,
-// the python/skills/docs shape) are mirrored from sync-powertools.mjs on
+// Source layout and conventions (EXCLUDE_NAMES, the version scheme, the
+// python/skills/docs shape) are mirrored from sync-powertools.mjs on
 // purpose -- read that file first if editing this one.
 //
 // Zip strategy: shells out to Windows PowerShell's Compress-Archive rather
@@ -90,18 +90,25 @@ const GITIGNORE_PATH = join(ROOT, '.gitignore');
 // tools, not tests, despite their size).
 const EXCLUDE_NAMES = new Set(['uefn-server.mjs']);
 
-// formatDateVersion: npm-semver-valid `YYYY.M.D`, NO zero-padding on month
-// or day (a leading zero makes a numeric identifier invalid per semver).
-// Mirrors sync-powertools.mjs's formatDateVersion() exactly -- duplicated
-// rather than imported because that module's import path executes
-// top-level main() only under its own isMainModule guard, and importing it
-// here would be reasonable, but keeping this file dependency-free of the
-// sync script avoids coupling two independently-runnable release tools.
-function formatDateVersion(date) {
+// localBuildVersion: a placeholder semver for a STANDALONE local packaging
+// run (`node scripts/package-powertools.mjs` invoked directly, with no
+// sync target repo in play). This is cosmetic only -- when this script is
+// instead called via buildPowerToolsZip() from sync-powertools.mjs's own
+// release flow, the resulting zip is immediately copied to a filename built
+// from THAT script's own computeNextVersion() result (see
+// publishTargetRelease()'s `zipName`), so this string never surfaces in a
+// real published release asset name. Deliberately NOT imported from
+// sync-powertools.mjs's computeNextVersion() (which needs a target repo's
+// git tags to mean anything) to keep this file runnable standalone, with no
+// git-tag/target-repo dependency, and independently of that script.
+function localBuildVersion(date) {
   const year = date.getFullYear();
   const month = date.getMonth() + 1;
   const day = date.getDate();
-  return `${year}.${month}.${day}`;
+  // "0.0.0-local.<compact-date>" -- valid semver (a hyphen starts a
+  // prerelease identifier, which numeric-leading-zero rules don't apply to)
+  // and unambiguous as a non-release, non-tagged local build.
+  return `0.0.0-local.${year}${String(month).padStart(2, '0')}${String(day).padStart(2, '0')}`;
 }
 
 function fail(message) {
@@ -317,7 +324,7 @@ function verifyZipEntryMatchesSource(zipPath, entryName, sourcePath) {
 // a caller as if it were usable.
 export function buildPowerToolsZip() {
   const today = new Date();
-  const version = formatDateVersion(today);
+  const version = localBuildVersion(today);
 
   console.log('[package-powertools] Verifying required source files...');
   requireDir(BRIDGE_DIR, 'media/uefn-bridge/');

@@ -163,11 +163,14 @@ class ReadStampTests(unittest.TestCase):
             shutil.rmtree(d)
 
     def test_date_version_with_same_day_suffix_parses_ignoring_suffix(self):
-        """"2026.8.21-b" (the same-day release-letter suffix
-        computeDateVersion() in scripts/sync-powertools.mjs appends) must
-        parse to (2026, 8, 21), NOT fall back to (0, 0, 0) -- an unparseable
-        suffixed stamp would be treated as the oldest possible version and
-        get silently overwritten by an actually-older bridge copy."""
+        """"2026.8.21-b" (a hyphen-suffixed stamp -- the format the OLD
+        date-based scheme used to append for a same-day re-release; the
+        version scheme is now plain incrementing semver with no suffix, but
+        _read_stamp()'s regex still tolerates a trailing "-<suffix>" for
+        forward/backward compatibility) must parse to (2026, 8, 21), NOT
+        fall back to (0, 0, 0) -- an unparseable suffixed stamp would be
+        treated as the oldest possible version and get silently overwritten
+        by an actually-older bridge copy."""
         read_stamp, warn_calls = load_read_stamp()
         d = tempfile.mkdtemp(prefix="read-stamp-suffixed-")
         try:
