@@ -1746,9 +1746,56 @@ def show_dependency_viewer():
     graph_canvas.bind("<Button-2>",    _on_pan_start)    # Middle-click to start pan
     graph_canvas.bind("<B2-Motion>",   _on_pan_move)     # Middle-drag to pan
 
+    # ------------------------------------------------------------------
+    # Debounced resize redraw
+    # ------------------------------------------------------------------
+    # WHY debounce at all: this window does NOT run mainloop() — it is
+    # pumped by root.update() inside the tick-pump callback below, which
+    # UEFN invokes via register_slate_post_tick_callback on its MAIN
+    # THREAD (see the tick pump a few hundred lines down, and the Tk
+    # clipboard-abort precedent documented at the top of this file:
+    # heavy/misbehaving Tk work executed synchronously from that callback
+    # runs mid-frame on UEFN's own thread, not some isolated Python UI
+    # loop). Without a debounce, <Configure> fires on EVERY pixel of a
+    # drag-resize, and each one calls _draw_graph(), which deletes and
+    # fully rebuilds every node/edge (including fresh per-node event
+    # bindings) on the canvas — a classic Tk resize storm, except here
+    # each storm event runs synchronously inside a callback the host
+    # process cannot skip or defer. Do NOT "simplify" this back to a
+    # direct call in _on_canvas_resize; that reintroduces the storm.
+    _resize_after_id = [None]
+    _last_drawn_size = [None, None]  # (width, height) of the last redraw
+
     def _on_canvas_resize(event):
-        if _current_graph_path[0]:
-            _draw_graph(_current_graph_path[0])
+        if not _current_graph_path[0]:
+            return
+        # <Configure> also fires for pure moves and other non-size
+        # changes; skip scheduling anything when the size didn't
+        # actually change (removes a large share of events outright).
+        w, h = graph_canvas.winfo_width(), graph_canvas.winfo_height()
+        if (w, h) == (_last_drawn_size[0], _last_drawn_size[1]):
+            return
+        if _resize_after_id[0] is not None:
+            try:
+                graph_canvas.after_cancel(_resize_after_id[0])
+            except tk.TclError:
+                pass
+        _resize_after_id[0] = graph_canvas.after(120, _do_debounced_redraw)
+
+    def _do_debounced_redraw():
+        """Fires ~120ms after the last <Configure> event. The window may
+        already be gone by the time this runs (user closed it mid-drag) —
+        guard exactly like the tick pump does: check winfo_exists() and
+        swallow tk.TclError, never let a late callback raise."""
+        _resize_after_id[0] = None
+        try:
+            if graph_canvas.winfo_exists():
+                w, h = graph_canvas.winfo_width(), graph_canvas.winfo_height()
+                _last_drawn_size[0], _last_drawn_size[1] = w, h
+                if _current_graph_path[0]:
+                    _draw_graph(_current_graph_path[0])
+        except tk.TclError:
+            pass
 
     graph_canvas.bind("<Configure>", _on_canvas_resize)
 
@@ -1987,6 +2034,14 @@ def show_dependency_viewer():
             except Exception:
                 pass
             _tick_handle[0] = None
+        # Cancel any pending debounced resize redraw so it cannot fire
+        # against a destroyed canvas after this window closes.
+        if _resize_after_id[0] is not None:
+            try:
+                graph_canvas.after_cancel(_resize_after_id[0])
+            except Exception:
+                pass
+            _resize_after_id[0] = None
 
     def _on_close():
         _hide_tooltip()
