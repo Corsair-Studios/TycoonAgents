@@ -2,9 +2,11 @@
 // Best-effort mirror of the UEFN Power Tools bridge (media/uefn-bridge/*.py +
 // the MCP server source) into a separate, standalone "Trashbyrd's UEFN Power
 // Tools" repo so that repo can be distributed independently of TycoonAgents.
-// Also stamps a LICENSE and the TycoonAgents version into that repo's
-// package.json, and — once the sync commit has actually landed on the
-// target's remote — tags and best-effort GitHub-Releases it there too.
+// Also stamps a LICENSE and a date-based version (see computeDateVersion())
+// into that repo's own package.json, and — once the sync commit has
+// actually landed on the target's remote — tags and best-effort
+// GitHub-Releases it there too. The standalone repo's version is its OWN,
+// wholly independent of TycoonAgents' package.json version.
 //
 // This script is a NO-OP on any machine that hasn't configured a target
 // directory (every contributor's machine except the maintainer's release
@@ -21,7 +23,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, copyFi
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(SCRIPT_DIR); // repo root (scripts/ is one level down)
@@ -73,14 +75,73 @@ function resolveTargetDir() {
   return null;
 }
 
-function readVersion() {
+// Formats a Date as npm-semver-valid `YYYY.M.D` (NO zero padding on month
+// or day -- `2026.08.20` is INVALID per npm's semver parser because a
+// leading zero makes a numeric identifier illegal; `2026.8.20` is valid).
+// Exported for tests via computeDateVersion() below, which is the function
+// that should actually be called -- this is the pure formatting half.
+export function formatDateVersion(date) {
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  return `${year}.${month}.${day}`;
+}
+
+// Lists annotated/lightweight tag names in targetDir matching `v<base>` or
+// `v<base>-<letter>` for the given base date version (e.g. base "2026.8.20"
+// matches tags "v2026.8.20", "v2026.8.20-b", "v2026.8.20-c", ...). Uses
+// `git tag --list` against the local tag refs; callers are expected to have
+// already run `git fetch --tags` (tagAndReleaseTarget() does this) so the
+// list reflects the remote's tags too. Non-fatal: any git failure (no repo,
+// no tags yet) yields an empty list rather than throwing.
+export function listVersionTags(targetDir, baseVersion) {
   try {
-    const pkgPath = join(ROOT, 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-    return pkg.version || '0.0.0';
+    const escaped = baseVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const out = execFileSync(
+      'git',
+      ['-C', targetDir, 'tag', '--list', `v${baseVersion}*`],
+      { encoding: 'utf8' },
+    );
+    const pattern = new RegExp(`^v${escaped}(-([a-z]))?$`);
+    return out
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((name) => pattern.test(name));
   } catch {
-    return '0.0.0';
+    return [];
   }
+}
+
+// Computes today's date-based version for the target repo, deriving the
+// next free same-day suffix from tags that already exist there. First
+// release of a day has no suffix ("2026.8.20"); a second/third/etc. same-day
+// release appends "-b", "-c", ... in order. `today` is a Date, injected by
+// the caller (main() computes it once per run) so tests can pass a fixed
+// date instead of depending on the real clock, and so a run never risks a
+// midnight split between two separately-computed "now"s.
+export function computeDateVersion(targetDir, today) {
+  const base = formatDateVersion(today);
+  const existing = listVersionTags(targetDir, base);
+  if (existing.length === 0) return base;
+
+  const usedLetters = new Set();
+  let baseTagExists = false;
+  for (const tag of existing) {
+    const m = tag.match(/^v[0-9.]+(?:-([a-z]))?$/);
+    if (!m) continue;
+    if (m[1]) usedLetters.add(m[1]);
+    else baseTagExists = true;
+  }
+  if (!baseTagExists) return base;
+
+  for (let code = 'b'.charCodeAt(0); code <= 'z'.charCodeAt(0); code += 1) {
+    const letter = String.fromCharCode(code);
+    if (!usedLetters.has(letter)) return `${base}-${letter}`;
+  }
+  // Exhausted a-z (26 releases in one day) -- fall back to a timestamp
+  // suffix rather than colliding or throwing.
+  return `${base}-${Date.now()}`;
 }
 
 function copyBridgeFiles(targetDir) {
@@ -246,11 +307,14 @@ function pruneStaleVerseCheckScript(targetDir) {
   }
 }
 
-// Stamps the TycoonAgents version into the target repo's package.json
-// "version" field only — every other field, key order, indentation style,
-// and trailing newline are preserved as-is. Non-fatal on any failure (a
-// missing/malformed target package.json must never block the rest of sync).
-function updateTargetPackageVersion(targetDir, version) {
+// Stamps the computed DATE-BASED version (see computeDateVersion() above)
+// into the target repo's package.json "version" field only — every other
+// field, key order, indentation style, and trailing newline are preserved
+// as-is. This is the standalone Power Tools repo's OWN version now, wholly
+// independent of TycoonAgents' package.json version. Non-fatal on any
+// failure (a missing/malformed target package.json must never block the
+// rest of sync).
+export function updateTargetPackageVersion(targetDir, version) {
   const pkgPath = join(targetDir, 'package.json');
   if (!existsSync(pkgPath)) {
     console.log('[sync-powertools] Warning: target package.json not found; skipped version stamp.');
@@ -282,6 +346,46 @@ function updateTargetPackageVersion(targetDir, version) {
 // tagging. Gating on "did we just commit" made that state permanent: every
 // later run would see a clean tree, log "already up to date", and skip
 // tag/release forever.
+//
+// Stages everything (`git add -A`) and reports whether the resulting index
+// actually differs from HEAD, i.e. whether this run changed any synced
+// content. This is the ground-truth no-op signal for the whole script: the
+// copy steps above (copyBridgeFiles, copyLicense, copyDoc, ...) write their
+// files unconditionally on every run regardless of whether the content
+// actually differs from what's already on disk, so a per-step "did I copy a
+// file" count is always non-zero on a non-empty source and CANNOT tell a
+// real change from a byte-identical rewrite. `git status --porcelain`
+// against the target's own last commit is what actually answers "did
+// anything change" -- so detection happens once, here, before any
+// version/commit/tag/release decision is made, and that single answer is
+// threaded through the rest of main() rather than re-derived per step.
+// Non-fatal: any git failure yields `changed: false` (treated as a no-op,
+// never a false "changed").
+export function detectContentChanged(targetDir) {
+  const gitDir = join(targetDir, '.git');
+  if (!existsSync(gitDir)) {
+    // Not a git repo (yet) -- there's no commit history to diff against, so
+    // this can't be treated as "unchanged"; let the caller proceed to
+    // syncGitIfPresent()'s own "not a git repo yet" logging.
+    return { isGitRepo: false, changed: false };
+  }
+  try {
+    execFileSync('git', ['-C', targetDir, 'add', '-A'], { stdio: 'inherit' });
+    const status = execFileSync('git', ['-C', targetDir, 'status', '--porcelain'], {
+      encoding: 'utf8',
+    });
+    return { isGitRepo: true, changed: status.trim().length > 0 };
+  } catch (err) {
+    console.log(`[sync-powertools] Could not check target repo status (non-fatal): ${err.message}`);
+    return { isGitRepo: true, changed: false };
+  }
+}
+
+// Commits and pushes the already-staged changes (see detectContentChanged()
+// above, which ran `git add -A` and confirmed the index differs from HEAD
+// before this is called). Only called when contentChanged is true, so this
+// itself no longer re-checks `git status` -- that check already happened
+// once, up front, and its answer is what gated the call.
 function syncGitIfPresent(targetDir, version) {
   const gitDir = join(targetDir, '.git');
   if (!existsSync(gitDir)) {
@@ -290,24 +394,13 @@ function syncGitIfPresent(targetDir, version) {
   }
 
   try {
-    execFileSync('git', ['-C', targetDir, 'add', '-A'], { stdio: 'inherit' });
-
-    const status = execFileSync('git', ['-C', targetDir, 'status', '--porcelain'], {
-      encoding: 'utf8',
-    });
-
-    if (!status.trim()) {
-      console.log('[sync-powertools] Power Tools already up to date.');
-      return false;
-    }
-
     execFileSync(
       'git',
-      ['-C', targetDir, 'commit', '-m', `Sync from TycoonAgents v${version}`],
+      ['-C', targetDir, 'commit', '-m', `Sync: Power Tools ${version}`],
       { stdio: 'inherit' },
     );
     execFileSync('git', ['-C', targetDir, 'push'], { stdio: 'inherit' });
-    console.log(`[sync-powertools] Committed and pushed sync from TycoonAgents v${version}.`);
+    console.log(`[sync-powertools] Committed and pushed Power Tools ${version}.`);
     return true;
   } catch (err) {
     // Never let a git failure (no remote, auth, detached HEAD, etc.) fail
@@ -415,7 +508,7 @@ function tagAndReleaseTarget(targetDir, version) {
     try {
       execFileSync(
         'git',
-        ['-C', targetDir, 'tag', '-a', tagName, '-m', `Sync from TycoonAgents v${version}`],
+        ['-C', targetDir, 'tag', '-a', tagName, '-m', `Sync: Power Tools ${version}`],
         { stdio: 'inherit' },
       );
       tagCreatedThisRun = true;
@@ -501,7 +594,7 @@ function publishTargetRelease(targetDir, version, tagName) {
   try {
     execFileSync(
       'gh',
-      ['release', 'create', tagName, zipPath, '--title', tagName, '--notes', `Sync from TycoonAgents v${version}`],
+      ['release', 'create', tagName, zipPath, '--title', tagName, '--notes', `Sync: Power Tools ${version}`],
       { stdio: 'inherit', cwd: targetDir },
     );
     console.log(`[sync-powertools] Published GitHub Release "${tagName}" for target repo (see URL above).`);
@@ -527,7 +620,13 @@ function main() {
     return;
   }
 
-  const version = readVersion();
+  // Computed exactly once for the whole run and threaded through everywhere
+  // a version string is needed (computeDateVersion, updateTargetPackageVersion,
+  // syncGitIfPresent, tagAndReleaseTarget) so a run that happens to straddle
+  // midnight can't compute two different "today"s and produce inconsistent
+  // version strings across package.json/commit/tag/release within one run.
+  const today = new Date();
+
   const copiedCount = copyBridgeFiles(targetDir);
   console.log(`[sync-powertools] Copied ${copiedCount} file(s) into ${targetDir}.`);
 
@@ -552,8 +651,38 @@ function main() {
     console.log('[sync-powertools] Copied INSTALL.md into target repo.');
   }
 
+  // Ground-truth no-op detection: stage everything and see if the target's
+  // own git index actually differs from HEAD (see detectContentChanged()).
+  // This -- not the copy/prune step counts above, which are always non-zero
+  // on a non-empty source regardless of whether content actually changed --
+  // is what gates the version bump, commit, tag, and release below. A run
+  // that changed nothing must commit nothing, tag nothing, and release
+  // nothing.
+  const { isGitRepo, changed: contentChanged } = detectContentChanged(targetDir);
+
+  if (isGitRepo && !contentChanged) {
+    console.log('[sync-powertools] No-op run: no synced content changed since the last sync. Skipping version bump, commit, tag, and release.');
+    return;
+  }
+
+  // Only compute/stamp a new date version when there is actually something
+  // new to publish -- computeDateVersion() looks at existing tags in the
+  // target repo, which requires targetDir to be a usable git repo.
+  const version = isGitRepo ? computeDateVersion(targetDir, today) : formatDateVersion(today);
+
   if (updateTargetPackageVersion(targetDir, version)) {
     console.log(`[sync-powertools] Stamped target package.json version to ${version}.`);
+  }
+
+  if (isGitRepo) {
+    // Re-stage: updateTargetPackageVersion() above wrote package.json AFTER
+    // detectContentChanged()'s `git add -A`, so it needs to be staged too
+    // before committing.
+    try {
+      execFileSync('git', ['-C', targetDir, 'add', '-A'], { stdio: 'inherit' });
+    } catch (err) {
+      console.log(`[sync-powertools] Could not re-stage target repo after version stamp (non-fatal): ${err.message}`);
+    }
   }
 
   syncGitIfPresent(targetDir, version);
@@ -572,9 +701,18 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (err) {
-  console.log(`[sync-powertools] Unexpected error (non-fatal, skipping): ${err.message}`);
-  process.exit(0);
+// Only run the real sync (and its process.exit calls) when this script is
+// executed directly, e.g. `node scripts/sync-powertools.mjs` or
+// `npm run sync:powertools`. Tests import the exported pure/git-backed
+// functions above as a module, which must NOT trigger a live sync against
+// whatever POWERTOOLS_REPO_DIR happens to be set on the machine running the
+// tests. Same guard shape as scripts/check-no-absolute-paths.mjs.
+const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  try {
+    main();
+  } catch (err) {
+    console.log(`[sync-powertools] Unexpected error (non-fatal, skipping): ${err.message}`);
+    process.exit(0);
+  }
 }

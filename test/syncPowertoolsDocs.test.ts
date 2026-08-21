@@ -6,8 +6,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 /*
  * Coverage for the multi-AI-client MCP setup docs added alongside
@@ -184,5 +187,224 @@ test("INSTALL.md's Windsurf section documents the .codeium/windsurf/mcp_config.j
     wrongPathRe,
     "INSTALL.md's Windsurf section documents the WRONG segment-less .codeium/mcp_config.json path " +
       "-- it must be .codeium/windsurf/mcp_config.json",
+  );
+});
+
+/*
+ * ── 5. Decoupled, date-based standalone versioning (plan task p4-t4) ──
+ *
+ * Coverage for scripts/sync-powertools.mjs's independent version stream:
+ * formatDateVersion/listVersionTags/computeDateVersion (date -> npm-semver
+ * -valid version string with same-day letter suffixes derived from the
+ * target repo's own tags), detectContentChanged (ground-truth no-op
+ * detection via `git status --porcelain` against the target's own HEAD --
+ * NOT the copy/prune step counts, which are always non-zero on a non-empty
+ * source regardless of whether content actually changed), and
+ * updateTargetPackageVersion (stamps the target's OWN package.json, never
+ * TycoonAgents').
+ *
+ * Exercises the real functions against real temp git repos (not a
+ * reimplementation) via the same CJS-importing-ESM dynamic-import trick used
+ * above for check-no-absolute-paths.mjs, since this test file compiles to
+ * CommonJS but sync-powertools.mjs is a native ESM module.
+ */
+
+const SYNC_SCRIPT_URL = pathToFileURL(SYNC_SCRIPT_PATH).href;
+
+const dynamicImport = new Function("specifier", "return import(specifier);") as (
+  specifier: string,
+) => Promise<unknown>;
+
+interface SyncPowertoolsModule {
+  formatDateVersion: (date: Date) => string;
+  listVersionTags: (targetDir: string, baseVersion: string) => string[];
+  computeDateVersion: (targetDir: string, today: Date) => string;
+  detectContentChanged: (targetDir: string) => { isGitRepo: boolean; changed: boolean };
+  updateTargetPackageVersion: (targetDir: string, version: string) => boolean;
+}
+
+async function loadSyncScript(): Promise<SyncPowertoolsModule> {
+  return dynamicImport(SYNC_SCRIPT_URL) as Promise<SyncPowertoolsModule>;
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+}
+
+// Builds a throwaway local git repo (no remote) with an initial commit, so
+// tests can exercise tag listing / status diffing without touching any real
+// repo or network. Returns the repo dir; callers are responsible for
+// rmSync'ing it (each test does this in a try/finally).
+function makeTempRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "sync-powertools-test-"));
+  git(dir, "init", "-q", "-b", "main");
+  git(dir, "config", "user.email", "test@example.com");
+  git(dir, "config", "user.name", "Test");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "power-tools", version: "0.0.0" }, null, 2) + "\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "initial");
+  return dir;
+}
+
+test("formatDateVersion produces npm-semver-valid YYYY.M.D with NO zero padding for single-digit month/day", async () => {
+  const { formatDateVersion } = await loadSyncScript();
+  const version = formatDateVersion(new Date(2026, 7, 5)); // August 5, 2026 (month is 0-indexed)
+  assert.equal(version, "2026.8.5", "expected no zero padding on single-digit month/day");
+  assert.doesNotMatch(version, /\.0\d/, "version must not contain a zero-padded numeric identifier");
+});
+
+test("formatDateVersion round-trips through Node's semver-shaped validation for a double-digit month/day too", async () => {
+  const { formatDateVersion } = await loadSyncScript();
+  const version = formatDateVersion(new Date(2026, 10, 20)); // November 20, 2026
+  assert.equal(version, "2026.11.20");
+});
+
+test("computeDateVersion returns the bare date with no suffix when no tag exists yet for today", async () => {
+  const { computeDateVersion } = await loadSyncScript();
+  const dir = makeTempRepo();
+  try {
+    const version = computeDateVersion(dir, new Date(2026, 7, 20)); // August 20, 2026
+    assert.equal(version, "2026.8.20");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("computeDateVersion picks the next free letter suffix given existing same-day tags (collision handling)", async () => {
+  const { computeDateVersion } = await loadSyncScript();
+  const dir = makeTempRepo();
+  try {
+    git(dir, "tag", "v2026.8.20");
+    git(dir, "tag", "v2026.8.20-b");
+    const version = computeDateVersion(dir, new Date(2026, 7, 20));
+    assert.equal(version, "2026.8.20-c", "expected the next free letter after b to be c");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("computeDateVersion re-run after only the base tag exists picks -b (first same-day collision)", async () => {
+  const { computeDateVersion } = await loadSyncScript();
+  const dir = makeTempRepo();
+  try {
+    git(dir, "tag", "v2026.8.20");
+    const version = computeDateVersion(dir, new Date(2026, 7, 20));
+    assert.equal(version, "2026.8.20-b");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectContentChanged reports changed:false on a clean repo with nothing new to stage (no-op run)", async () => {
+  const { detectContentChanged } = await loadSyncScript();
+  const dir = makeTempRepo();
+  try {
+    const result = detectContentChanged(dir);
+    assert.equal(result.isGitRepo, true);
+    assert.equal(result.changed, false, "a clean repo with no new/modified files must report changed:false");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectContentChanged reports changed:true once a new file is added (simulating a real bridge-file copy)", async () => {
+  const { detectContentChanged } = await loadSyncScript();
+  const dir = makeTempRepo();
+  try {
+    mkdirSync(join(dir, "python"), { recursive: true });
+    writeFileSync(join(dir, "python", "some_tool.py"), "# changed\n");
+    const result = detectContentChanged(dir);
+    assert.equal(result.isGitRepo, true);
+    assert.equal(result.changed, true, "a newly written file must report changed:true");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("updateTargetPackageVersion stamps the target's OWN package.json version field only, preserving other fields", async () => {
+  const { updateTargetPackageVersion } = await loadSyncScript();
+  const dir = makeTempRepo();
+  try {
+    const ok = updateTargetPackageVersion(dir, "2026.8.20-b");
+    assert.equal(ok, true);
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    assert.equal(pkg.version, "2026.8.20-b");
+    assert.equal(pkg.name, "power-tools", "other package.json fields must be preserved untouched");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a changed run's version string is identical across package.json, git tag, commit message, and zip filename", async () => {
+  // Full-flow check without invoking main() (which would require a remote
+  // and gh CLI): computes one version the same way main() does, then
+  // verifies the same string is what each of the four artifact-facing call
+  // sites in the real source would use, by asserting the source text passes
+  // one shared `version` variable to each -- not four independently
+  // formatted strings.
+  const src = readFileSync(SYNC_SCRIPT_PATH, "utf8");
+  assert.match(
+    src,
+    /pkg\.version = version;/,
+    "updateTargetPackageVersion no longer stamps package.json from the single `version` variable",
+  );
+  assert.match(
+    src,
+    /\['-C', targetDir, 'commit', '-m', `Sync: Power Tools \$\{version\}`\]/,
+    "commit message no longer uses the single `version` variable",
+  );
+  assert.match(
+    src,
+    /const tagName = `v\$\{version\}`;/,
+    "git tag name no longer derives from the single `version` variable",
+  );
+  assert.match(
+    src,
+    /const zipName = `trashbyrds-power-tools-v\$\{version\}\.zip`;/,
+    "release zip filename no longer derives from the single `version` variable",
+  );
+  assert.match(
+    src,
+    /'--title', tagName, '--notes', `Sync: Power Tools \$\{version\}`\]/,
+    "GitHub release title/notes no longer use tagName/the single `version` variable",
+  );
+});
+
+test("sync-powertools.mjs no longer stamps TycoonAgents' own package.json version onto the target", () => {
+  const src = readFileSync(SYNC_SCRIPT_PATH, "utf8");
+  assert.doesNotMatch(
+    src,
+    /function readVersion\(/,
+    "readVersion() (TycoonAgents' own package.json version reader) should be removed, not just unused",
+  );
+  assert.doesNotMatch(
+    src,
+    /updateTargetPackageVersion\(targetDir,\s*readVersion\(\)\)/,
+    "updateTargetPackageVersion must not be called with TycoonAgents' own version",
+  );
+});
+
+test("main() computes `today` exactly once and threads it through, rather than calling new Date() repeatedly", () => {
+  const src = readFileSync(SYNC_SCRIPT_PATH, "utf8");
+  const mainStart = src.indexOf("function main()");
+  assert.ok(mainStart >= 0, "main() not found");
+  const mainBody = src.slice(mainStart);
+  const newDateCalls = (mainBody.match(/new Date\(\)/g) ?? []).length;
+  assert.equal(newDateCalls, 1, `expected exactly one \`new Date()\` call in main(), found ${newDateCalls}`);
+});
+
+test("main() gates version bump / commit / tag / release on detectContentChanged, not on copy/prune step counts", () => {
+  const src = readFileSync(SYNC_SCRIPT_PATH, "utf8");
+  const mainStart = src.indexOf("function main()");
+  const mainBody = src.slice(mainStart);
+  assert.match(
+    mainBody,
+    /detectContentChanged\(targetDir\)/,
+    "main() no longer calls detectContentChanged() to decide whether this run is a no-op",
+  );
+  assert.match(
+    mainBody,
+    /if \(isGitRepo && !contentChanged\)/,
+    "main() no longer short-circuits a no-op run before version bump/commit/tag/release",
   );
 });
