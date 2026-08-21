@@ -1258,7 +1258,13 @@ def _render_tag_report(tree, discovery_block, summary_block, data, source_label)
     # _DiagnosticBlock._is_expanded.
     # ------------------------------------------------------------------
     scan_looks_wrong = (
-        bool(data.get("truncated"))
+        # A live actor-scan cap whose offline __ExternalActors__ pass still
+        # covered the whole project is NOT a partial result -- tag_inspect
+        # flags that case as truncation_is_cosmetic. Treating it as "wrong"
+        # would force these blocks open on every healthy scan of a large
+        # project, which is exactly the wasted vertical space this
+        # collapsing exists to reclaim.
+        (bool(data.get("truncated")) and not bool(data.get("truncation_is_cosmetic")))
         or bool(data.get("cancelled"))
         or tag_class_count == 0
         or len(shown) == 0

@@ -2340,6 +2340,152 @@ class ScanExternalActorsTagClassSetTypeShapeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Raw-bytes prefilter (tag_inspect.py scan_external_actors, ~line 627): only
+# decode+regex files that could plausibly matter, skipping files whose raw
+# bytes contain neither a known tag-class name nor the label pattern. Counts
+# (files_matched, actor entries incl. zero-tag ones) must stay byte-identical
+# to the pre-prefilter behavior for a project where tags exist.
+# ---------------------------------------------------------------------------
+
+class ScanExternalActorsPrefilterTests(unittest.TestCase):
+    def setUp(self):
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+    def tearDown(self):
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    def test_prefilter_skips_non_matching_file_but_processes_matching_one(self):
+        class_map = {"t_room_r1": "tag"}
+        tag_class_set = tag_inspect.build_tag_class_set(class_map)
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            # Matching file: label matches "SGMarker" AND carries the known
+            # tag name -- must be fully processed and produce a tagged actor.
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_Actor1", "t_room_r1"))
+            # Non-matching file: neither the label pattern nor any known tag
+            # name appears anywhere in its raw bytes -- the prefilter must
+            # skip it (and it produces no actor entry, same as it would if
+            # decoded and label-rejected the old way).
+            with open(os.path.join(ext_dir, "Decoy.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("CompletelyUnrelatedLabel", "unrelated_text"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["files_total"], 2)
+        self.assertEqual(result["files_matched"], 1)
+        self.assertEqual(len(result["actors"]), 1)
+        self.assertEqual(result["actors"][0]["label"], "SGMarker_Actor1")
+        self.assertEqual(
+            [t["name"] for t in result["actors"][0]["tags"]], ["t_room_r1"],
+        )
+
+    def test_prefilter_keeps_label_matched_zero_tag_file_counted(self):
+        # Pins the correctness constraint the prefilter must never violate:
+        # a file whose label matches but that carries NO known tag name
+        # still must be decoded, counted in files_matched, and produce a
+        # zero-tag actor entry -- exactly like
+        # test_zero_tag_matched_file_still_produces_actor_entry above, but
+        # now with the prefilter active (a non-empty tag_class_set and a
+        # non-wildcard label_pattern, i.e. use_prefilter=True).
+        class_map = {"t_room_r1": "tag"}
+        tag_class_set = tag_inspect.build_tag_class_set(class_map)
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_NoTagsHere", "just some unrelated content"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["files_matched"], 1)
+        self.assertEqual(len(result["actors"]), 1)
+        self.assertEqual(result["actors"][0]["tags"], [])
+
+    def test_no_usable_marker_bytes_falls_back_to_scanning_everything(self):
+        # Empty tag_class_set -> no known tag names -> the prefilter cannot
+        # be built (use_prefilter must be False), so every file must still
+        # be decoded and label-checked exactly as before -- this is the
+        # "cannot cause under-reporting" fallback the brief requires.
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_Actor1", "some_unknown_tag_xyz"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            result = tag_inspect.scan_external_actors(
+                None, {}, {}, label_pattern="SGMarker",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["files_matched"], 1)
+        self.assertEqual(len(result["actors"]), 1)
+        self.assertEqual(result["actors"][0]["label"], "SGMarker_Actor1")
+
+    def test_wildcard_label_pattern_disables_prefilter_and_still_matches(self):
+        # A glob-wildcard label_pattern can't be represented as a raw-bytes
+        # substring test (fnmatch semantics differ), so use_prefilter must
+        # be False for it -- confirmed here by checking the wildcard match
+        # still succeeds (if the prefilter had wrongly activated and used a
+        # literal substring test against "SG*Marker", this file would be
+        # incorrectly skipped since the raw bytes never contain "sg*marker"
+        # verbatim).
+        class_map = {"t_room_r1": "tag"}
+        tag_class_set = tag_inspect.build_tag_class_set(class_map)
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SG_Special_Marker", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SG*Marker",
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["files_matched"], 1)
+        self.assertEqual(result["actors"][0]["label"], "SG_Special_Marker")
+
+    def test_cancellation_still_works_with_prefilter_active(self):
+        # ScanExternalActorsCancellationTests above pins the pre-prefilter
+        # cancel-polling contract; this repeats it with use_prefilter=True
+        # (non-empty tag_class_set + non-wildcard label_pattern) to confirm
+        # the prefilter's early `continue` never bypasses the cancel-poll
+        # block, which runs BEFORE the prefilter check in the loop.
+        class_map = {"t_room_r1": "tag"}
+        tag_class_set = tag_inspect.build_tag_class_set(class_map)
+        n_files = tag_inspect._CANCEL_POLL_INTERVAL + 10
+
+        with tempfile.TemporaryDirectory() as env_dir:
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            for i in range(n_files):
+                with open(os.path.join(ext_dir, "Actor{}.uasset".format(i)), "wb") as f:
+                    f.write(_make_uasset_bytes("SGMarker_Actor{}".format(i), "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+
+            result = tag_inspect.scan_external_actors(
+                None, tag_class_set, class_map, label_pattern="SGMarker",
+                should_cancel=lambda: True,
+            )
+
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(len(result["actors"]), tag_inspect._CANCEL_POLL_INTERVAL)
+
+
+# ---------------------------------------------------------------------------
 # Merge/rescue + deep-probe-suppression integration through inspect_tags()
 # itself -- same faked-unreal harness as ActorLevelTagSourceMergeTests /
 # DeepProbeTriggerTests above, plus UEFN_VERSE_PROJECT_DIR env patching so
@@ -2620,6 +2766,167 @@ class InspectTagsCancelDuringOfflineScanTests(unittest.TestCase):
         # rationale for a scan that never even finished.
         self.assertNotIn("deep_probe", result)
         self.assertNotIn("deep_probe_skipped_reason", result)
+
+
+# ---------------------------------------------------------------------------
+# Notes-message wording when the live _MAX_ACTORS_EXAMINED cap is hit
+# (tag_inspect.py ~2716): must NOT claim the overall result is incomplete
+# when the offline __ExternalActors__ scan (the primary tag source)
+# completed successfully -- only when the offline scan itself failed,
+# never ran, or was cancelled does the strong "never treat this as a
+# complete-project result" warning still apply. _MAX_ACTORS_EXAMINED is
+# monkeypatched down to 1 for the duration of each test so the cap can be
+# hit with a handful of fake actors instead of thousands.
+# ---------------------------------------------------------------------------
+
+class InspectTagsActorCapNotesWordingTests(unittest.TestCase):
+    def setUp(self):
+        self._had_unreal_attr = hasattr(tag_inspect, "unreal")
+        self._orig_unreal = getattr(tag_inspect, "unreal", None)
+        self._orig_has_unreal = tag_inspect._HAS_UNREAL
+        self._orig_report_path = tag_inspect.report_path
+        self._orig_get_bridge_dir = tag_inspect._get_bridge_dir
+        self._orig_max_actors = tag_inspect._MAX_ACTORS_EXAMINED
+        self._had_env = "UEFN_VERSE_PROJECT_DIR" in os.environ
+        self._orig_env = os.environ.get("UEFN_VERSE_PROJECT_DIR")
+
+        self._scratch = tempfile.mkdtemp(prefix="tag_inspect_cap_wording_test_")
+        primary = os.path.join(self._scratch, "primary", "tag_inspect_report.json")
+        fallback_dir = os.path.join(self._scratch, "fallback")
+        os.makedirs(fallback_dir, exist_ok=True)
+        tag_inspect.report_path = lambda: primary
+        tag_inspect._get_bridge_dir = lambda: fallback_dir
+        tag_inspect._MAX_ACTORS_EXAMINED = 1
+
+        self._actors = []
+        subsystem = types.SimpleNamespace(get_all_level_actors=lambda: self._actors)
+        tag_inspect.unreal = types.SimpleNamespace(
+            ActorComponent=object(),
+            EditorActorSubsystem=object(),
+            ScopedSlowTask=lambda total, desc: tag_inspect._NullSlowTask(),
+            get_editor_subsystem=lambda cls: subsystem,
+            log_warning=lambda *a, **k: None,
+            log_error=lambda *a, **k: None,
+        )
+        tag_inspect._HAS_UNREAL = True
+
+    def tearDown(self):
+        if self._had_unreal_attr:
+            tag_inspect.unreal = self._orig_unreal
+        else:
+            del tag_inspect.unreal
+        tag_inspect._HAS_UNREAL = self._orig_has_unreal
+        tag_inspect.report_path = self._orig_report_path
+        tag_inspect._get_bridge_dir = self._orig_get_bridge_dir
+        tag_inspect._MAX_ACTORS_EXAMINED = self._orig_max_actors
+        if self._had_env:
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+
+    @staticmethod
+    def _write_verse_dir_with_known_tag(tmp_dir):
+        with open(os.path.join(tmp_dir, "tags.verse"), "w", encoding="utf-8") as f:
+            f.write("t_room_r1 := class(tag)\n")
+
+    def _make_two_matching_actors(self):
+        actors = []
+        for i in range(2):
+            comp = _FakeComponentWithClass(
+                {"gameplay_tags_container": ["t_room_r1"]}, "VerseTagMarkupComponent",
+            )
+            actors.append(_FakeActor("SGMarker_Actor{}".format(i), [comp], []))
+        return actors
+
+    def test_actor_cap_hit_with_offline_complete_is_not_worded_truncated(self):
+        with tempfile.TemporaryDirectory() as verse_dir, tempfile.TemporaryDirectory() as env_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor0.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_Actor0", "t_room_r1"))
+            with open(os.path.join(ext_dir, "Actor1.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_Actor1", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+
+            self._actors = self._make_two_matching_actors()
+            result = tag_inspect.inspect_tags(label_pattern="SGMarker", project_dir=verse_dir)
+
+        self.assertTrue(result["truncated"])  # the mechanical fact: a cap WAS hit
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["offline"]["status"], "ok")
+        self.assertFalse(result["offline"].get("cancelled"))
+        notes = result["discovery"]["notes"]
+
+        self.assertNotIn("TRUNCATED", notes)
+        self.assertNotIn("never treat this as a complete-project result", notes)
+        self.assertIn("offline __ExternalActors__", notes)
+        self.assertTrue(result.get("truncation_is_cosmetic"))
+
+    def test_offline_failed_with_actor_cap_hit_keeps_strong_warning(self):
+        # No __ExternalActors__ directory anywhere -> offline scan status
+        # "error" -> the strong warning must survive even though the live
+        # actor cap was also hit.
+        os.environ.pop("UEFN_VERSE_PROJECT_DIR", None)
+        with tempfile.TemporaryDirectory() as verse_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            self._actors = self._make_two_matching_actors()
+            result = tag_inspect.inspect_tags(label_pattern="SGMarker", project_dir=verse_dir)
+
+        self.assertTrue(result["truncated"])
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["offline"]["status"], "error")
+        notes = result["discovery"]["notes"]
+
+        self.assertIn("TRUNCATED", notes)
+        self.assertIn("never treat this as a complete-project result", notes)
+        self.assertFalse(result.get("truncation_is_cosmetic"))
+
+    def test_user_cancellation_still_reads_as_cancelled(self):
+        class _AlwaysCancelPhase2Task:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def make_dialog(self, *_a, **_k):
+                pass
+
+            def enter_progress_frame(self, *_a, **_k):
+                pass
+
+            def should_cancel(self):
+                return True
+
+        def _scoped_slow_task_factory(total, desc):
+            if desc.startswith("Scanning") and "actor(s)" in desc:
+                return _AlwaysCancelPhase2Task()
+            return tag_inspect._NullSlowTask()
+
+        tag_inspect.unreal.ScopedSlowTask = _scoped_slow_task_factory
+        # should_cancel is polled only when idx > 0 in the phase-2 loop (see
+        # tag_inspect.py ~2461), so the walk needs at least 2 matched actors
+        # for cancellation to ever be observed -- restore the real cap here
+        # (this test is about cancellation, not the actor-count cap).
+        tag_inspect._MAX_ACTORS_EXAMINED = self._orig_max_actors
+
+        with tempfile.TemporaryDirectory() as verse_dir, tempfile.TemporaryDirectory() as env_dir:
+            self._write_verse_dir_with_known_tag(verse_dir)
+            ext_dir = os.path.join(env_dir, "__ExternalActors__")
+            os.makedirs(ext_dir)
+            with open(os.path.join(ext_dir, "Actor0.uasset"), "wb") as f:
+                f.write(_make_uasset_bytes("SGMarker_Actor0", "t_room_r1"))
+            os.environ["UEFN_VERSE_PROJECT_DIR"] = env_dir
+
+            self._actors = self._make_two_matching_actors()
+            result = tag_inspect.inspect_tags(label_pattern="SGMarker", project_dir=verse_dir)
+
+        self.assertTrue(result["cancelled"])
+        notes = result["discovery"]["notes"]
+        self.assertIn("SCAN CANCELLED", notes)
+        self.assertNotIn("SCAN TRUNCATED", notes)
+        self.assertFalse(result.get("truncation_is_cosmetic"))
 
 
 # ---------------------------------------------------------------------------

@@ -624,6 +624,69 @@ def scan_external_actors(verse_dir, tag_class_set, class_map, label_pattern=None
     known_tag_names = list(tag_class_set.keys())
     live_label_set = set(live_labels) if live_labels else None
 
+    # ------------------------------------------------------------------
+    # Raw-bytes prefilter: skip the latin-1 decode + printable-run regex
+    # for files that cannot possibly matter. Measured on a real 44,753-
+    # actor project: only ~2% of external-actor .uasset files contain a
+    # tag-component marker at all (12 of 600 sampled), yet the old code
+    # paid full decode+regex for EVERY file regardless. A raw `bytes in
+    # bytes` membership test on the RAW file contents (before any decode)
+    # is a cheap, correct pre-check for the TAG side: printable-run
+    # extraction only ever narrows what's already present in the raw
+    # bytes, so if none of the known tag-class names appear as a raw
+    # substring, no printable-run extracted from this file could contain
+    # one either. Full-file projection: ~11s -> ~6.8s (1.6x) for a
+    # decode-every-file baseline on that project.
+    #
+    # The marker MUST be derived from the tag classes actually discovered
+    # in THIS project (tag_class_set's keys, already computed above as
+    # known_tag_names) -- never a hardcoded component/class name. The
+    # component class that carries these tags is itself discovered at
+    # runtime and varies by project; hardcoding e.g.
+    # "VerseTagMarkupComponent" would silently break any project using a
+    # differently named component while looking like it worked.
+    #
+    # CORRECTNESS CONSTRAINT this prefilter must never violate: a file
+    # with ZERO tag hits but a label-matching run still becomes its own
+    # actor entry with tags:[] (see test_zero_tag_matched_file_still_
+    # produces_actor_entry) and counts toward files_matched. A "no known
+    # tag name found in raw bytes" file can therefore NOT simply be
+    # skipped -- it might still need to be decoded, label-checked, and
+    # emitted as a zero-tag actor entry. The prefilter is only allowed to
+    # skip a file when it can ALSO prove the file cannot satisfy
+    # label_pattern, so the skip decision covers BOTH conditions the
+    # kept-file path checks, not just the tag one. label_pattern's own
+    # non-wildcard branch (match_label) is itself a plain case-insensitive
+    # substring test against decoded text, which raw latin-1 bytes can
+    # reproduce exactly (latin-1 is a 1:1 byte<->codepoint mapping, so a
+    # decoded-text substring hit implies an identical raw-byte substring
+    # hit and vice versa) -- so label_bytes below is built the same way.
+    #
+    # The prefilter self-disables (use_prefilter=False, meaning "decode
+    # everything", the pre-existing behavior) whenever it cannot prove
+    # both sides safely:
+    #   * no known tag names at all (empty tag_class_set) -- nothing to
+    #     test the tag side against;
+    #   * label_pattern is empty/None ("matches every label" -- a raw-
+    #     bytes substring test can't represent "match everything");
+    #   * label_pattern contains a glob wildcard ("*"/"?"/"[") -- fnmatch
+    #     semantics aren't a plain substring, so a raw-bytes substring
+    #     check would not reproduce match_label's actual decision.
+    # A prefilter that cannot be proven correct must fall back to
+    # scanning everything rather than risk skipping a file it shouldn't
+    # -- under-reporting is worse than the decode cost it would have saved.
+    # ------------------------------------------------------------------
+    known_tag_name_bytes = [
+        n.encode("latin-1", errors="ignore") for n in known_tag_names if n
+    ]
+    known_tag_name_bytes = [b for b in known_tag_name_bytes if b]
+
+    label_bytes = None
+    if label_pattern and not any(ch in label_pattern for ch in "*?["):
+        label_bytes = label_pattern.lower().encode("latin-1", errors="ignore") or None
+
+    use_prefilter = bool(known_tag_name_bytes) and bool(label_bytes)
+
     dirs_tried = _discover_external_actors_dirs(verse_dir)
     external_actors_dir = next((d for d in dirs_tried if os.path.isdir(d)), None)
 
@@ -689,6 +752,20 @@ def scan_external_actors(verse_dir, tag_class_set, class_map, label_pattern=None
                 raw_bytes = f.read()
         except Exception:
             continue
+
+        if use_prefilter:
+            raw_lower = raw_bytes.lower()
+            has_tag_marker = any(b in raw_bytes for b in known_tag_name_bytes)
+            has_label_hit = label_bytes in raw_lower
+            if not has_tag_marker and not has_label_hit:
+                # Neither a known tag-class name nor the label pattern
+                # appears anywhere in the raw bytes -- decoding this file
+                # could not produce a printable run satisfying either the
+                # tag-hit path or match_label's substring check below, so
+                # it is safe to skip the decode+regex entirely. See the
+                # prefilter banner above for why both sides must be
+                # checked, not just the tag side.
+                continue
 
         text = raw_bytes.decode("latin-1", errors="ignore")
         runs = _PRINTABLE_RUN_RE.findall(text)
@@ -2713,7 +2790,60 @@ def _inspect_tags_live(label_pattern, project_dir, include_location=False,
         )
 
     notes_parts.append(fast_reject_note)
-    if cancelled or truncation_reasons:
+    # ------------------------------------------------------------------
+    # "TRUNCATED" must describe WHICH pass was limited, not blanket the
+    # whole result as incomplete. Field incident: a real 44,753-actor
+    # project hit the live _MAX_ACTORS_EXAMINED cap (5,000 examined, the
+    # rest skipped) while the OFFLINE __ExternalActors__ scan — the
+    # PRIMARY tag source per the banner above scan_external_actors — read
+    # all 46,372 .uasset files successfully and supplied 1,253 of the
+    # 1,255 tag sources found; the live walk (the expensive corroboration
+    # pass, not the primary source) contributed only 2. The old message
+    # ("SCAN TRUNCATED ... never treat this as a complete-project
+    # result") told the user their DATA was incomplete when in truth only
+    # the cheap secondary corroboration pass was capped — the user read
+    # that as "is this scanning Unreal/Fortnite content by mistake?" when
+    # it was not; the wording was simply wrong about what was limited.
+    #
+    # The offline scan is judged COMPLETE here iff it ran, returned
+    # status "ok", and was not itself cancelled mid-walk (scan_
+    # external_actors() can return status "ok" with cancelled=True — see
+    # its own cancellation contract above). is_actor_cap_only guards this
+    # to the SPECIFIC case the field incident was about: the live-walk
+    # actor-count cap was hit (scan_stats["actors_examined_capped"]) and
+    # nothing else. Since walk_cancelled always also sets the overall
+    # `cancelled` flag (see below), `not cancelled and truncation_reasons`
+    # can only mean the actor-cap fired -- checking the stat explicitly
+    # keeps this self-documenting rather than relying on that inference.
+    # Any other truncation shape (offline itself failed/cancelled, or a
+    # user Cancel anywhere) falls through to the strong warning unchanged
+    # -- that path genuinely IS a partial, unreliable result.
+    # ------------------------------------------------------------------
+    offline_complete = (
+        offline_result is not None
+        and offline_result.get("status") == "ok"
+        and not offline_result.get("cancelled")
+    )
+    is_actor_cap_only = (
+        not cancelled
+        and bool(truncation_reasons)
+        and scan_stats.get("actors_examined_capped")
+    )
+    if not cancelled and is_actor_cap_only and offline_complete:
+        notes_parts.append(
+            "live actor-scan cap reached — "
+            + "; ".join(truncation_reasons)
+            + " This does NOT make the overall result incomplete: the "
+              "offline __ExternalActors__ .uasset scan (the PRIMARY tag "
+              "source — see result['offline']) covered the project "
+              "completely ({} file(s) examined, {} matched), and the "
+              "live actor/component walk above is only a corroboration "
+              "pass over a sample of the matched actors.".format(
+                  offline_result.get("files_total"),
+                  offline_result.get("files_matched"),
+              )
+        )
+    elif cancelled or truncation_reasons:
         notes_parts.append(
             ("SCAN CANCELLED — " if cancelled else "SCAN TRUNCATED — ")
             + "; ".join(truncation_reasons)
@@ -2971,7 +3101,23 @@ def _inspect_tags_live(label_pattern, project_dir, include_location=False,
         "tag_class_count": len(tag_classes),
         "actors": actors_out,
         "cancelled": cancelled,
+        # "truncated" keeps its long-documented, purely mechanical meaning
+        # -- "a cap was hit" (see this function's docstring) -- so it is
+        # NEVER flipped false just because the offline scan happened to
+        # cover the gap; that would make the key lie about the fact it
+        # exists to report. "truncation_is_cosmetic" is the additive,
+        # narrower signal a consumer should check INSTEAD when deciding
+        # whether to alarm the user: True only in the exact case the notes
+        # message above also special-cases -- the live actor-count cap
+        # was the ONLY thing limited, and the offline __ExternalActors__
+        # scan (the primary tag source) completed successfully, so the
+        # overall result is not meaningfully incomplete. uefn_launcher.py's
+        # _render_tag_report currently auto-expands its diagnostic blocks
+        # on bare `truncated` alone; it should additionally check
+        # `not truncation_is_cosmetic` so a healthy offline-complete scan
+        # stops auto-expanding -- see this task's report for the follow-up.
         "truncated": bool(truncation_reasons),
+        "truncation_is_cosmetic": bool(is_actor_cap_only and offline_complete and not cancelled),
         "truncation_reasons": truncation_reasons,
         "scan_stats": scan_stats,
         "offline": offline_result,
