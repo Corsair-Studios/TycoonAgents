@@ -907,14 +907,25 @@ class _FakeTree:
 
 
 class _FakeLabel:
-    """Records the last .config(text=...) call -- stands in for the real
-    tk.Label discovery_label/summary_label widgets."""
+    """Records the last set_content()/clear() call -- stands in for the
+    real uefn_launcher._DiagnosticBlock discovery_block/summary_block
+    collapsible widgets (see uefn_launcher.py's _render_tag_report, which
+    now calls set_content(collapsed_summary, full_text, default_expanded)
+    instead of a raw tk.Label's config(text=...))."""
     def __init__(self):
-        self.text = None
+        self.collapsed_summary = None
+        self.full_text = None
+        self.default_expanded = None
+        self.text = None  # kept in sync with full_text for any legacy assertion
 
-    def config(self, **kwargs):
-        if "text" in kwargs:
-            self.text = kwargs["text"]
+    def set_content(self, collapsed_summary, full_text, default_expanded):
+        self.collapsed_summary = collapsed_summary
+        self.full_text = full_text
+        self.default_expanded = default_expanded
+        self.text = full_text
+
+    def clear(self):
+        self.set_content("", "", default_expanded=False)
 
 
 class ExtractTagsFromComponentTests(unittest.TestCase):

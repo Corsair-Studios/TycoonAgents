@@ -919,6 +919,116 @@ def _classify_tag_actor(actor):
 _TAG_ACTOR_ROW = "tag_actor_row"
 _TAG_SPECIAL_ROW = "tag_special_row"
 
+# Remembers the user's explicit expand/collapse choice for the discovery and
+# summary diagnostic blocks (see _render_tag_report / _DiagnosticBlock below)
+# for the lifetime of the process only -- NOT persisted to disk. Each entry
+# starts as None ("no explicit user choice yet" -- fall back to the
+# success/failure default computed fresh on every render) and becomes True/
+# False the first time the user clicks a block's toggle. Module-level (not
+# window-local) is intentional: cheap to keep, and if the user collapses a
+# block once they almost certainly want it to stay collapsed on the next
+# window open in the same session too.
+_TAG_INSPECT_UI_STATE = {"discovery_expanded": None, "summary_expanded": None}
+
+
+class _DiagnosticBlock(object):
+    """A collapsible diagnostic text block used for the discovery and
+    summary sections of the Verse Tag Inspector window (see
+    _render_tag_report below). Each block is a clickable one-line header
+    (a short at-a-glance summary + a ``▸``/``▾`` caret) above a body
+    ``tk.Label`` that holds either the SAME full text this window always
+    rendered before collapsing existed (expanded) or nothing (collapsed).
+    No information is ever dropped -- collapsing only hides the body label,
+    it never shortens or omits text from it.
+
+    ``state_key`` indexes into the module-level ``_TAG_INSPECT_UI_STATE``
+    dict so an explicit user click is remembered for the rest of the
+    process session (not persisted to disk -- see that dict's comment).
+    Until the user clicks, ``set_content`` decides expanded/collapsed fresh
+    on every render from ``default_expanded``, which callers compute from
+    whether the scan succeeded -- see _render_tag_report."""
+
+    def __init__(self, parent, state_key, wraplength=680, side=tk.TOP, fill_x=False):
+        """*side*/*fill_x* control how the header (and, when expanded, the
+        body) are packed into *parent* -- both default to plain top-down
+        anchor=W packing, but the summary block in
+        _show_tag_inspect_window needs side=BOTTOM + fill=X to preserve
+        the pre-existing "reserve this label's space before tree_frame
+        claims the rest of the cavity" ordering (see the comment at that
+        call site) -- so both widgets are packed with their final side/
+        fill HERE, at construction time, before tree_frame is packed by
+        the caller. Collapsing afterward only pack_forget()/re-pack()s the
+        BODY (see _apply) -- the header's parcel, and thus this block's
+        claim on the packing order, never goes away."""
+        self.state_key = state_key
+        self._full_text = ""
+        self._side = side
+        self._fill_x = fill_x
+        self._pack_kwargs = {"padx": 16, "anchor": tk.W}
+        if fill_x:
+            self._pack_kwargs["fill"] = tk.X
+
+        self.header_var = tk.StringVar(master=parent, value="")
+        self.header = tk.Label(
+            parent, textvariable=self.header_var, font=("Segoe UI", 8),
+            fg=_ACCENT_BLUE, bg=_BG, justify=tk.LEFT, cursor="hand2",
+            wraplength=wraplength,
+        )
+        self.header.bind("<Button-1>", lambda _e: self._toggle())
+
+        self.body = tk.Label(
+            parent, text="", font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
+            justify=tk.LEFT, wraplength=wraplength,
+        )
+        # header always visible, packed immediately so it claims its
+        # parcel in the correct order relative to sibling widgets (see
+        # docstring above); body packed/unpacked on demand by _apply.
+        self.header.pack(side=side, pady=(0, 2), **self._pack_kwargs)
+
+    def _is_expanded(self):
+        remembered = _TAG_INSPECT_UI_STATE.get(self.state_key)
+        if remembered is not None:
+            return remembered
+        return self._default_expanded
+
+    def _toggle(self):
+        _TAG_INSPECT_UI_STATE[self.state_key] = not self._is_expanded()
+        self._apply()
+
+    def set_content(self, collapsed_summary, full_text, default_expanded):
+        """Update this block's text. *collapsed_summary* is the always-
+        visible one-line gist; *full_text* is exactly what this window
+        rendered before collapsing existed (nothing removed). *default_
+        expanded* is only used when the user has not explicitly toggled
+        this block yet this session."""
+        self._collapsed_summary = collapsed_summary
+        self._full_text = full_text
+        self._default_expanded = default_expanded
+        self._apply()
+
+    def clear(self):
+        self.set_content("", "", default_expanded=False)
+
+    def _apply(self):
+        expanded = self._is_expanded()
+        caret = "▾" if expanded else "▸"  # ▾ expanded / ▸ collapsed
+        if not self._full_text:
+            self.header_var.set("")
+            self.body.pack_forget()
+            return
+        if expanded:
+            self.header_var.set(caret + " " + self._collapsed_summary + "  [hide details]")
+            self.body.config(text=self._full_text)
+            self.body.pack(side=self._side, pady=(0, 6), **self._pack_kwargs)
+        else:
+            self.header_var.set(caret + " " + self._collapsed_summary + "  [show details]")
+            self.body.pack_forget()
+
+    def set_wraplength(self, width):
+        w = max(width, 100)
+        self.header.config(wraplength=w)
+        self.body.config(wraplength=w)
+
 
 def _natural_sort_key(label):
     """Case-insensitive, numeric-aware sort key for an actor label (or any
@@ -937,11 +1047,18 @@ def _natural_sort_key(label):
     ]
 
 
-def _render_tag_report(tree, discovery_label, summary_label, data, source_label):
-    """Populate *tree*/*discovery_label*/*summary_label* from an
+def _render_tag_report(tree, discovery_block, summary_block, data, source_label):
+    """Populate *tree*/*discovery_block*/*summary_block* from an
     ``inspect_tags()``-shaped result dict (or ``None``). Clears the tree
     first, so this is safe to call repeatedly (starting view, then again
     after every "Run Scan" click) without leaking stale rows.
+
+    *discovery_block* and *summary_block* are ``_DiagnosticBlock``
+    instances (collapsible header + body label), not raw ``tk.Label``s --
+    see that class. Collapsing is presentation only: the FULL text handed
+    to ``set_content`` below is byte-for-byte what this window always
+    rendered before collapsing existed, so nothing is removed, only
+    optionally hidden behind a click.
 
     Actors classified "no_component" or "empty" by ``_classify_tag_actor``
     are NOT inserted as rows — a level with tens of thousands of untagged
@@ -960,25 +1077,29 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
     (component class, tag property, notes) is ALWAYS shown, not only on
     error/empty — when a scan finds a component but zero tags, that block
     is the only thing that explains why, and hiding it is what made the
-    field failure this tool exists to prevent so hard to diagnose."""
+    field failure this tool exists to prevent so hard to diagnose; it
+    just defaults to COLLAPSED (one-line gist, expandable) rather than
+    always fully expanded when the scan looks healthy -- see the
+    default_expanded computation near the end of this function, which
+    forces both blocks open whenever anything looks wrong."""
     tree.delete(*tree.get_children())
 
     if data is None:
-        discovery_label.config(text="")
-        summary_label.config(text="")
+        discovery_block.clear()
+        summary_block.clear()
         return
 
     discovery = data.get("discovery") or {}
     comp_class = discovery.get("component_class")
     tag_prop = discovery.get("tag_property")
     notes = discovery.get("notes") or ""
-    discovery_text = "Component class: {}  |  Tag property: {}".format(
+    discovery_summary = "Component class: {}  |  Tag property: {}".format(
         comp_class if comp_class else "<none found>",
         tag_prop if tag_prop else "<none found>",
     )
+    discovery_text = discovery_summary
     if notes:
         discovery_text += "\n" + str(notes)
-    discovery_label.config(text=discovery_text)
 
     actors = list(data.get("actors") or [])
     statuses = {id(a): _classify_tag_actor(a) for a in actors}
@@ -1116,7 +1237,38 @@ def _render_tag_report(tree, discovery_label, summary_label, data, source_label)
         summary_bits.append(str(offline_caveat))
 
     summary_bits.append(source_label)
-    summary_label.config(text="  |  ".join(summary_bits))
+    summary_text = "  |  ".join(summary_bits)
+    # Collapsed gist: just the two genuinely at-a-glance numbers (actors
+    # shown, tag classes discovered) -- everything else (verse_dir path,
+    # tag-source split, deep-probe status, offline scan detail, source
+    # label) moves behind the toggle. Deliberately NOT summary_bits[0:2]
+    # sliced blindly -- built explicitly so this stays correct even if
+    # summary_bits' composition above changes order.
+    tag_class_count = data.get("tag_class_count", 0)
+    summary_collapsed = "Showing " + str(len(shown)) + " actor(s)  |  " + str(tag_class_count) + " tag classes discovered"
+
+    # ------------------------------------------------------------------
+    # Auto-expand: both diagnostic blocks default to COLLAPSED (reclaiming
+    # the tree's vertical space) when a scan looks healthy, but SNAP OPEN
+    # by default whenever anything looks wrong -- a truncated/cancelled
+    # scan, zero tag classes found, zero actor rows shown, an unreadable
+    # actor in the results, or a failed offline scan. This only sets the
+    # DEFAULT; an explicit user click (recorded in _TAG_INSPECT_UI_STATE)
+    # always wins over it for the rest of the session -- see
+    # _DiagnosticBlock._is_expanded.
+    # ------------------------------------------------------------------
+    scan_looks_wrong = (
+        bool(data.get("truncated"))
+        or bool(data.get("cancelled"))
+        or tag_class_count == 0
+        or len(shown) == 0
+        or unreadable_count > 0
+        or bool(dp_skip_reason)
+        or (offline is not None and offline.get("status") != "ok")
+    )
+
+    discovery_block.set_content(discovery_summary, discovery_text, default_expanded=scan_looks_wrong)
+    summary_block.set_content(summary_collapsed, summary_text, default_expanded=scan_looks_wrong)
 
 
 def _render_deep_probe(tree, deep_probe):
@@ -1328,20 +1480,18 @@ def _show_tag_inspect_window(tag_inspect_module):
     )
     status_label.pack(padx=16, pady=(0, 6), anchor=tk.W)
 
-    discovery_label = tk.Label(
-        win, text="", font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG,
-        justify=tk.LEFT, wraplength=680,
-    )
-    discovery_label.pack(padx=16, pady=(0, 6), anchor=tk.W)
+    # Both diagnostic blocks below are collapsible (see _DiagnosticBlock) --
+    # collapsed by default when a scan looks healthy, forced open when it
+    # doesn't (see the scan_looks_wrong computation in _render_tag_report).
+    # Collapsing them is what actually reclaims the vertical space the
+    # tree below was starving for; the pack-order comment on
+    # summary_block still applies unchanged (its header — and body, when
+    # expanded — must be packed before tree_frame claims the cavity).
+    discovery_block = _DiagnosticBlock(win, "discovery_expanded")
 
-    summary_label = tk.Label(
-        win, text="", font=("Segoe UI", 8), fg=_TEXT_DIM, bg=_BG, justify=tk.LEFT,
-        wraplength=680,
-    )
-    # Bottom status bar: previously had NO wraplength at all (unlike
-    # discovery_label/status_label above, which use a static wraplength=680
-    # — see those constructors), so a long line (a full verse_dir path, or
-    # the three-way hidden-count summary on a big scan) just ran off the
+    # Bottom diagnostic block: previously a single Label with NO
+    # wraplength at all, so a long line (a full verse_dir path, or the
+    # three-way hidden-count summary on a big scan) just ran off the
     # visible window instead of wrapping — read by a user as truncated/
     # clipped text. side=BOTTOM + fill=X (instead of the default top-down
     # anchor=W packing) lets the label's own width track the window's
@@ -1351,7 +1501,7 @@ def _show_tag_inspect_window(tag_inspect_module):
     # viewer.py, but driven dynamically since this label sits at a fixed
     # edge rather than a fixed size.
     #
-    # PACKED HERE — before tree_frame below — is load-bearing, not
+    # CONSTRUCTED HERE — before tree_frame below — is load-bearing, not
     # cosmetic. Tk's packer carves each slave's parcel from the shared
     # cavity in the ORDER pack() is called, regardless of side=; tree_frame
     # below uses fill=BOTH/expand=True, which (if packed first) claims the
@@ -1359,15 +1509,16 @@ def _show_tag_inspect_window(tag_inspect_module):
     # side=BOTTOM widget packed afterward — that was the field bug: the
     # multi-line word-wrapped summary got clipped at the window's bottom
     # edge because tree_frame had already consumed all the space before
-    # summary_label ever got a parcel. Packing summary_label FIRST (still
-    # side=BOTTOM, so it still visually pins to the bottom edge) reserves
-    # its full wrapped-text height out of the cavity up front; tree_frame,
-    # packed after, only gets what's left and shrinks first on a small
-    # window instead of the summary clipping.
-    summary_label.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(4, 8))
-    summary_label.bind(
+    # the summary block's header ever got a parcel. _DiagnosticBlock packs
+    # its header (and, once expanded, its body) immediately on
+    # construction (still side=BOTTOM, so it still visually pins to the
+    # bottom edge), reserving its space out of the cavity up front;
+    # tree_frame, packed after, only gets what's left.
+    summary_block = _DiagnosticBlock(win, "summary_expanded", side=tk.BOTTOM, fill_x=True)
+    summary_block.header.bind(
         "<Configure>",
-        lambda e: summary_label.config(wraplength=max(e.width - 8, 100)),
+        lambda e: summary_block.set_wraplength(e.width - 8),
+        add="+",
     )
 
     tree_frame = tk.Frame(win, bg=_SECTION_BG, padx=8, pady=4)
@@ -1442,7 +1593,7 @@ def _show_tag_inspect_window(tag_inspect_module):
         a fresh render (new scan or the initial saved-report view) always
         starts in scan order with no stale sort arrow left over from a
         previous render's heading click."""
-        _render_tag_report(tree, discovery_label, summary_label, data, source_label)
+        _render_tag_report(tree, discovery_block, summary_block, data, source_label)
         _sort_dir[0] = None
         tree.heading("#0", text=_ACTOR_COL_HEADING)
 
