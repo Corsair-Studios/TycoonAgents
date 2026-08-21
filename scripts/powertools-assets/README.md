@@ -40,3 +40,11 @@ The MCP server and the in-editor Python bridge are two separate processes that h
 ## Install
 
 See [INSTALL.md](INSTALL.md) for step-by-step setup, including how to connect the MCP server to your AI client of choice (Claude Code, Gemini CLI, Codex CLI, Cursor, Windsurf, Antigravity IDE, or VS Code Copilot).
+
+## Use at your own risk
+
+Power Tools is MIT licensed and provided AS IS. Using it means you accept that — the author takes no responsibility for UEFN crashes, corrupted or lost project data, or anything else Python does to your project while the bridge is running.
+
+**Python is known to crash UEFN.** This isn't hypothetical: simply having Python running in UEFN during a project **sync** has caused crashes, independent of anything Power Tools itself was doing at the time.
+
+**Recommendation: turn Python off entirely before syncing a project.** Disable the Python Editor Script Plugin (`Edit -> Plugins`) or otherwise stop the bridge before you sync, then re-enable it afterward if you want the bridge running again.

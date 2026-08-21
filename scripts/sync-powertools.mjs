@@ -31,8 +31,12 @@ const ROOT = dirname(SCRIPT_DIR); // repo root (scripts/ is one level down)
 const LOCAL_CONFIG_PATH = join(SCRIPT_DIR, 'powertools-sync.local.json');
 const BRIDGE_DIR = join(ROOT, 'media', 'uefn-bridge');
 const SERVER_SRC = join(ROOT, 'uefn-bridge', 'uefn-server.ts');
-// Adapted from this repo's own LICENSE (same terms, renamed for the Power
-// Tools project; see scripts/powertools-assets/LICENSE for the diff notes).
+// Power Tools is MIT licensed. This is DELIBERATELY DIFFERENT from
+// TycoonAgents' own root LICENSE, which is free-to-use but not-for-sale and
+// is not OSI-approved: Power Tools is meant to be genuinely forkable, and the
+// previous shared text explicitly withheld permission to "redistribute
+// modified versions", forbidding exactly that. Do not re-unify these two
+// files -- they are two products with two different licenses on purpose.
 const LICENSE_SRC = join(SCRIPT_DIR, 'powertools-assets', 'LICENSE');
 // README.md and INSTALL.md are authored here (scripts/powertools-assets/)
 // and mirrored verbatim into the target repo root on every sync, same as

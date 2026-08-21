@@ -7,6 +7,8 @@
 - **Node.js 18+** on the machine running the MCP server.
 - An MCP-capable client (e.g. Claude Code) to talk to the server.
 
+Before you enable Python, read **Use at your own risk** in [README.md](README.md#use-at-your-own-risk) — Python is known to crash UEFN, including during project sync.
+
 ## 1. Install the Python bridge into your UEFN project
 
 Copy the **contents** of this repo's `python/` folder into your UEFN project's `Content/Python/` directory.
