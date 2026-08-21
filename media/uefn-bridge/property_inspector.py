@@ -455,7 +455,11 @@ def show_ui():
 
 
 def _show_window(result):
-    root = tk.Tk()
+    # Join an existing Tk interpreter if one is already live, else create one.
+    # An unconditional tk.Tk() here would leave tk._default_root pinned to
+    # a different root, breaking unmastered Tk variables — see device_audit.py.
+    _master = tk._default_root
+    root = tk.Toplevel(_master) if _master is not None else tk.Tk()
     root.title("Trashbyrd's Property Inspector")
     root.geometry("900x600")
     root.configure(bg=_BG)
@@ -556,7 +560,7 @@ def _show_window(result):
     search_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
 
     tk.Label(search_frame, text="Search:", font=("Segoe UI", 10), fg=_TEXT_FG, bg=_SECTION_BG).pack(side=tk.LEFT)
-    search_var = tk.StringVar()
+    search_var = tk.StringVar(master=root)
     search_entry = tk.Entry(
         search_frame, textvariable=search_var, font=("Segoe UI", 10),
         bg=_ENTRY_BG, fg=_ENTRY_FG, insertbackground=_ENTRY_FG, relief=tk.FLAT,

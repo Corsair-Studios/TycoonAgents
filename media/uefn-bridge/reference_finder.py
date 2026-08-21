@@ -237,7 +237,7 @@ def show_reference_finder():
     tk.Label(search_frame, text="Asset:", font=("Segoe UI", 9),
              fg=_TEXT_DIM, bg=_BG).pack(side=tk.LEFT, padx=(0, 6))
 
-    query_var = tk.StringVar()
+    query_var = tk.StringVar(master=root)
     query_entry = tk.Entry(search_frame, textvariable=query_var,
                            font=("Segoe UI", 10), bg=_SECTION_BG, fg=_TEXT_FG,
                            insertbackground=_TEXT_FG, relief="flat", width=36)

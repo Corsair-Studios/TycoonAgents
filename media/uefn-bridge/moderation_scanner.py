@@ -4375,7 +4375,7 @@ def show_moderation_scan():
     allowlist_entry_row = tk.Frame(allowlist_frame, bg=_BG)
     allowlist_entry_row.pack(fill=tk.X, pady=(2, 0))
 
-    allowlist_var = tk.StringVar()
+    allowlist_var = tk.StringVar(master=root)
     allowlist_entry = tk.Entry(
         allowlist_entry_row, textvariable=allowlist_var, font=("Segoe UI", 9),
         bg=_SECTION_BG, fg=_TEXT_FG, insertbackground=_TEXT_FG, relief="flat",

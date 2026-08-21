@@ -303,7 +303,7 @@ def show_tips_viewer():
     tk.Label(filter_frame, text="Filter:", font=("Segoe UI", 9),
              fg=_TEXT_DIM, bg=_BG).pack(side=tk.LEFT, padx=(0, 4))
 
-    filter_var = tk.StringVar()
+    filter_var = tk.StringVar(master=root)
     filter_entry = tk.Entry(
         filter_frame,
         textvariable=filter_var,

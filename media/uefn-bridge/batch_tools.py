@@ -875,7 +875,11 @@ def show_batch_ui():
         unreal.log_error("batch_tools: tkinter is not available.")
         return
 
-    root = tk.Tk()
+    # Join an existing Tk interpreter if one is already live, else create one.
+    # An unconditional tk.Tk() here would leave tk._default_root pinned to
+    # a different root, breaking unmastered Tk variables — see device_audit.py.
+    _master = tk._default_root
+    root = tk.Toplevel(_master) if _master is not None else tk.Tk()
     root.title("Trashbyrd's Batch Operations")
     root.geometry("700x560")
     root.configure(bg=_BG)
@@ -966,7 +970,7 @@ def show_batch_ui():
         bg=_SECTION_BG,
     ).grid(row=1, column=2, sticky=tk.W, padx=(0, 6))
 
-    filter_value_var = tk.StringVar()
+    filter_value_var = tk.StringVar(master=root)
     filter_value_entry = tk.Entry(
         filter_frame,
         textvariable=filter_value_var,
@@ -987,7 +991,7 @@ def show_batch_ui():
         bg=_SECTION_BG,
     ).grid(row=2, column=0, sticky=tk.W, padx=(0, 6), pady=(6, 0))
 
-    property_name_var = tk.StringVar()
+    property_name_var = tk.StringVar(master=root)
     property_entry = tk.Entry(
         filter_frame,
         textvariable=property_name_var,
@@ -1070,7 +1074,7 @@ def show_batch_ui():
         bg=_SECTION_BG,
     ).grid(row=0, column=0, sticky=tk.W, padx=(0, 6))
 
-    set_value_var = tk.StringVar()
+    set_value_var = tk.StringVar(master=root)
     set_value_entry = tk.Entry(
         action_frame,
         textvariable=set_value_var,

@@ -624,7 +624,7 @@ def show_asset_sweep():
 
     ttk.Label(filter_frame, text="Filter:", style="Dark.TLabel").pack(side="left", padx=(0, 4))
 
-    filter_var = tk.StringVar()
+    filter_var = tk.StringVar(master=root)
     filter_entry = tk.Entry(
         filter_frame, textvariable=filter_var,
         bg=_ENTRY_BG, fg=_ENTRY_FG, insertbackground=_ENTRY_FG,
