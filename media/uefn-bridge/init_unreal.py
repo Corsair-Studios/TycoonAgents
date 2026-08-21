@@ -82,13 +82,17 @@ try:
     _stamp_read_warned = False
 
     def _read_stamp(_dir):
-        """Parse BRIDGE_VERSION = "X.Y.Z" out of <_dir>/bridge_version.py via
-        regex on the raw file text — never imported: an import would poison
-        sys.modules with a copy we might be about to overwrite or discard,
-        and would require the dir to already be on sys.path. Returns a
-        comparable (int, int, int) tuple; any failure (file missing, bad
-        format, non-numeric parts) yields (0, 0, 0) — oldest possible, so an
-        unparseable candidate never wins over a real stamp. An OSError while
+        """Parse BRIDGE_VERSION = "X.Y.Z" (optionally "X.Y.Z-suffix", e.g. a
+        same-day release letter like "2026.8.21-b") out of
+        <_dir>/bridge_version.py via regex on the raw file text — never
+        imported: an import would poison sys.modules with a copy we might be
+        about to overwrite or discard, and would require the dir to already
+        be on sys.path. Any trailing "-suffix" is matched but ignored for
+        comparison purposes — "2026.8.21-b" parses the same as "2026.8.21".
+        Returns a comparable (int, int, int) tuple; any failure (file
+        missing, bad format, non-numeric X.Y.Z parts) yields (0, 0, 0) —
+        oldest possible, so an unparseable candidate never wins over a real
+        stamp. An OSError while
         reading (e.g. a OneDrive Files-On-Demand placeholder that fails to
         hydrate) gets exactly ONE warning logged per session, via the
         module-level _stamp_read_warned flag, naming the file and exception
@@ -103,7 +107,7 @@ try:
             ) as _f:
                 _text = _f.read()
             _m = _sync_re.search(
-                r'BRIDGE_VERSION\s*=\s*["\']([0-9]+)\.([0-9]+)\.([0-9]+)["\']',
+                r'BRIDGE_VERSION\s*=\s*["\']([0-9]+)\.([0-9]+)\.([0-9]+)(?:-[^"\']*)?["\']',
                 _text,
             )
             return tuple(int(_g) for _g in _m.groups()) if _m else (0, 0, 0)

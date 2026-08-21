@@ -189,7 +189,7 @@ test("release.mjs publishes a GitHub Release only after a successful push, gated
   assert.ok(ghBlockStart >= 0, "release.mjs: no `if (pushed) {` gate found ahead of the GitHub Release step");
   const ghCreateIdx = fullSource.indexOf("'release', 'create'", ghBlockStart);
   assert.ok(
-    ghCreateIdx >= 0 && ghCreateIdx < fullSource.indexOf("sync-powertools.mjs"),
+    ghCreateIdx >= 0 && ghCreateIdx < fullSource.indexOf("sync-powertools.mjs", ghBlockStart),
     "release.mjs: `gh release create` must run inside the `if (pushed)` block, before the Power Tools sync",
   );
 });
@@ -207,7 +207,7 @@ test("release.mjs's gh release create reuses the already-computed vsixPath, not 
 test("release.mjs's GitHub Release step is best-effort: try/catch + console.warn, no process.exit in that block", () => {
   const fullSource = readFileSync(RELEASE_SCRIPT_PATH, "utf8");
   const ghBlockStart = fullSource.indexOf("if (pushed) {");
-  const powertoolsStart = fullSource.indexOf("sync-powertools.mjs");
+  const powertoolsStart = fullSource.indexOf("sync-powertools.mjs", ghBlockStart);
   assert.ok(ghBlockStart >= 0 && powertoolsStart > ghBlockStart, "release.mjs: could not locate the GitHub Release block");
   const ghBlock = fullSource.slice(ghBlockStart, powertoolsStart);
   assert.match(ghBlock, /console\.warn/, "release.mjs: GitHub Release failure path no longer warns");

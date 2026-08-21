@@ -162,6 +162,60 @@ class ReadStampTests(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_date_version_with_same_day_suffix_parses_ignoring_suffix(self):
+        """"2026.8.21-b" (the same-day release-letter suffix
+        computeDateVersion() in scripts/sync-powertools.mjs appends) must
+        parse to (2026, 8, 21), NOT fall back to (0, 0, 0) -- an unparseable
+        suffixed stamp would be treated as the oldest possible version and
+        get silently overwritten by an actually-older bridge copy."""
+        read_stamp, warn_calls = load_read_stamp()
+        d = tempfile.mkdtemp(prefix="read-stamp-suffixed-")
+        try:
+            with open(os.path.join(d, "bridge_version.py"), "w", encoding="utf-8") as f:
+                f.write('BRIDGE_VERSION = "2026.8.21-b"\n')
+            result = read_stamp(d)
+            self.assertEqual(result, (2026, 8, 21))
+            self.assertEqual(len(warn_calls), 0)
+        finally:
+            shutil.rmtree(d)
+
+    def test_date_version_without_suffix_parses_the_same_as_with_suffix(self):
+        """Bare "2026.8.21" and suffixed "2026.8.21-b" must parse to the
+        identical tuple -- the suffix carries no comparison weight."""
+        read_stamp_bare, _ = load_read_stamp()
+        read_stamp_suffixed, _ = load_read_stamp()
+        d = tempfile.mkdtemp(prefix="read-stamp-suffix-parity-")
+        try:
+            bare_path = os.path.join(d, "bare")
+            suffixed_path = os.path.join(d, "suffixed")
+            os.makedirs(bare_path)
+            os.makedirs(suffixed_path)
+            with open(os.path.join(bare_path, "bridge_version.py"), "w", encoding="utf-8") as f:
+                f.write('BRIDGE_VERSION = "2026.8.21"\n')
+            with open(os.path.join(suffixed_path, "bridge_version.py"), "w", encoding="utf-8") as f:
+                f.write('BRIDGE_VERSION = "2026.8.21-b"\n')
+            self.assertEqual(read_stamp_bare(bare_path), read_stamp_suffixed(suffixed_path))
+            self.assertEqual(read_stamp_bare(bare_path), (2026, 8, 21))
+        finally:
+            shutil.rmtree(d)
+
+    def test_suffixed_date_version_compares_newer_than_old_semver_stamp(self):
+        """A suffixed date stamp must still win the tuple comparison used at
+        init_unreal.py's self-sync decision point (~line 247,
+        `_newest_stamp > _own_stamp`) against an old three-part semver
+        stamp like "0.0.562" -- proving the suffix doesn't demote it back to
+        (0, 0, 0) in practice, not just in isolation."""
+        read_stamp, _ = load_read_stamp()
+        d = tempfile.mkdtemp(prefix="read-stamp-ordering-")
+        try:
+            with open(os.path.join(d, "bridge_version.py"), "w", encoding="utf-8") as f:
+                f.write('BRIDGE_VERSION = "2026.8.21-b"\n')
+            new_stamp = read_stamp(d)
+            old_stamp = (0, 0, 562)
+            self.assertGreater(new_stamp, old_stamp)
+        finally:
+            shutil.rmtree(d)
+
 
 if __name__ == "__main__":
     unittest.main()

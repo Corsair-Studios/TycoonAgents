@@ -89,3 +89,36 @@ test('isNumericVersion: empty string is false', () => {
 test('isNumericVersion: a mixed numeric/non-numeric component is false', () => {
   assert.equal(isNumericVersion('1.x'), false);
 });
+
+// Date-version-with-suffix tolerance -------------------------------------
+// scripts/sync-powertools.mjs computeDateVersion() appends "-b", "-c", ...
+// same-day release letters (or a "-<timestamp>" overflow fallback) to a
+// date-based version like "2026.8.21". Without suffix tolerance,
+// isNumericVersion rejected these outright and isBridgeVersionNewer treated
+// them as permanently not-newer -- these tests pin the fix.
+
+test('isNumericVersion: a suffixed date version is true (suffix ignored)', () => {
+  assert.equal(isNumericVersion('2026.8.21-b'), true);
+});
+
+test('isNumericVersion: a suffixed date version with a timestamp overflow suffix is true', () => {
+  assert.equal(isNumericVersion('2026.8.21-1755000000000'), true);
+});
+
+test('isBridgeVersionNewer: suffixed date version is newer than an old semver stamp (2026.8.21-b > 0.0.562)', () => {
+  assert.equal(isBridgeVersionNewer('2026.8.21-b', '0.0.562'), true);
+});
+
+test('isBridgeVersionNewer: bare date version is newer than the previous day (2026.8.21 > 2026.8.20)', () => {
+  assert.equal(isBridgeVersionNewer('2026.8.21', '2026.8.20'), true);
+});
+
+test('isBridgeVersionNewer: suffixed candidate compares identically to its bare form', () => {
+  // The suffix must carry zero comparison weight in either position.
+  assert.equal(isBridgeVersionNewer('2026.8.21-b', '2026.8.20'), isBridgeVersionNewer('2026.8.21', '2026.8.20'));
+  assert.equal(isBridgeVersionNewer('2026.8.21', '2026.8.20-c'), isBridgeVersionNewer('2026.8.21', '2026.8.20'));
+});
+
+test('isBridgeVersionNewer: equal suffixed versions are not strictly newer', () => {
+  assert.equal(isBridgeVersionNewer('2026.8.21-b', '2026.8.21-c'), false);
+});
