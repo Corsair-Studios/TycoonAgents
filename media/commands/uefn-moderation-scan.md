@@ -5,7 +5,7 @@ argument-hint: [licensed-franchise ...]
 
 Scan this UEFN project for Fortnite/UEFN island-moderation risk before publishing.
 
-**Requires the UEFN Bridge (Trashbyrd's Power Tools) MCP server to be connected.** If the tool call below fails or the tool isn't found, run `/mcp` to check which MCP servers are loaded — the bridge needs its Python side running and the server connected before this command works.
+**Requires the UEFN Bridge (Trashbyrd's Power Tools) MCP server to be connected — server id `uefn-bridge`.** `uefn_moderation_scan` and `uefn_moderation_report` live on `uefn-bridge`, not on Epic's official `unreal-engine-mcp` server; moderation always routes to `uefn-bridge`, never to Epic's server. If the tool call below fails or the tool isn't found, run `/mcp` to check which MCP servers are loaded — the bridge needs its Python side running and the server connected before this command works.
 
 ## Steps
 

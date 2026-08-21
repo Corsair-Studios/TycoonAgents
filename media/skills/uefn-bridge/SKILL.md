@@ -172,33 +172,40 @@ This starts everything — bridge, launcher, and Tools-menu entries — in one c
 - `Content/Python/uefn_bridge.py` runs a tick-pumped IPC listener inside UEFN
 - Claude Code's MCP server (`uefn`) communicates via file-based IPC in the OS temp directory (`uefn_bridge/`)
 
-## Routing: our bridge vs. Epic's official UEFN MCP
+## Routing: `uefn-bridge` (ours) vs. `unreal-engine-mcp` (Epic's official server)
 
-Two UEFN MCP servers may be installed side by side: ours (`uefn`, this
-skill) and Epic's official server (registered as `unreal-engine-mcp`).
-They see **different object models** — decide which one to call BEFORE
-you call anything, not after a failed probe. The disambiguating question:
-**"Is this a Scene Graph entity, or a classic actor?"** In a large
-existing project, almost everything is a classic actor.
+Two UEFN MCP servers may be installed side by side: ours (server id
+`uefn-bridge`, this skill, tools `uefn_*`) and Epic's official server
+(server id `unreal-engine-mcp`, gateway tools `call_tool` /
+`describe_toolset` / `list_toolsets`). They see **different object
+models** — decide which one to call BEFORE you call anything, not after a
+failed probe. These are hard defaults; never stop to ask the user which
+server to use. The disambiguating question: **"Is this a Scene Graph
+entity, or a classic actor?"** In a large existing project, almost
+everything is a classic actor.
 
-- **Classic actors in the level → OUR `uefn_*` tools.** Finding actors by
-  label or class, reading/setting properties in bulk, locations of many
-  actors, tags, moderation, dependencies, textures, materials, Niagara
-  usage. Epic's `FindEntities` cannot see classic actors at all — on a
-  real 44,753-actor project it returned **0** matches.
-- **Scene Graph entities and their components → EPIC's
-  `ValkyrieToolset.EntityToolset`** (`CreateEntity`, `AddComponent`,
-  `GetComponents`, `GetEntityTransform`, component properties). We have
-  no equivalent.
-- **Authoring / write operations we do not implement → EPIC.** Placing
-  devices and event bindings (`DeviceToolset`), compiling Verse
-  (`VerseToolset.BuildAll`), pushing live changes and session control
-  (`SessionToolset.PushChanges` / `StartGame` / `StopGame`), viewport
-  capture (`EditorAppToolset.CaptureViewport`), and Niagara/UMG/Physics
-  authoring.
-- **Bulk query at scale → OURS.** Anything over hundreds or thousands of
-  actors, anything needing pagination or glob matching. Epic's
-  `GetVisibleActors` returns only viewport-visible actors (1,336 of
+- **Classic actors in the level, reads/queries/analysis at scale → ALWAYS
+  `uefn-bridge`.** Finding actors by label or class, reading/setting
+  properties in bulk, locations of many actors, tags, dependencies,
+  textures, materials, Niagara usage, audits, level info. Epic's
+  `FindEntities` cannot see classic actors at all — on a real
+  44,753-actor project it returned **0** matches.
+- **Moderation scanning and reporting → ALWAYS `uefn-bridge`**
+  (`uefn_moderation_scan`, `uefn_moderation_report`) — there is no choice
+  to present here.
+- **Scene Graph entities and their components → ALWAYS
+  `unreal-engine-mcp`'s `ValkyrieToolset.EntityToolset`** (`CreateEntity`,
+  `AddComponent`, `GetComponents`, `GetEntityTransform`, component
+  properties). We have no equivalent.
+- **Authoring / write operations we do not implement → ALWAYS
+  `unreal-engine-mcp`.** Placing devices and event bindings
+  (`DeviceToolset`), compiling Verse (`VerseToolset.BuildAll`), pushing
+  live changes and session control (`SessionToolset.PushChanges` /
+  `StartGame` / `StopGame`), viewport capture
+  (`EditorAppToolset.CaptureViewport`), and Niagara/UMG/Physics authoring.
+- **Bulk query at scale → ALWAYS `uefn-bridge`.** Anything over hundreds
+  or thousands of actors, anything needing pagination or glob matching.
+  Epic's `GetVisibleActors` returns only viewport-visible actors (1,336 of
   44,753 on the real project) as bare `refPath` strings with no labels,
   no locations, and no filtering.
 

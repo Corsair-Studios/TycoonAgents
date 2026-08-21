@@ -48,15 +48,48 @@ test("routing section heading is present", () => {
   const source = readSkillSource();
   assertContains(
     source,
-    "## Routing: our bridge vs. Epic's official UEFN MCP",
+    "## Routing: `uefn-bridge` (ours) vs. `unreal-engine-mcp` (Epic's official server)",
     "the routing section heading",
   );
+});
+
+test("routing section heading names both server ids literally", () => {
+  const source = readSkillSource();
+  assertContains(source, "`uefn-bridge`", "the literal server id uefn-bridge");
+  assertContains(source, "`unreal-engine-mcp`", "the literal server id unreal-engine-mcp");
 });
 
 test("classic-actor queries are routed to our bridge", () => {
   const source = readSkillSource();
   assertContains(source, "Classic actors in the level", "the classic-actors bullet lead-in");
-  assertContains(source, "OUR `uefn_*` tools", "classic actors routed to our uefn_* tools");
+  assertContains(
+    source,
+    "reads/queries/analysis at scale → ALWAYS\n  `uefn-bridge`.",
+    "classic actors routed to our uefn-bridge server",
+  );
+});
+
+test("moderation scanning is routed to uefn-bridge with no choice to present", () => {
+  const source = readSkillSource();
+  assertContains(
+    source,
+    "**Moderation scanning and reporting → ALWAYS `uefn-bridge`**",
+    "moderation routed to uefn-bridge",
+  );
+  assertContains(
+    source,
+    "there is no choice\n  to present here.",
+    "the no-choice-to-present statement for moderation routing",
+  );
+});
+
+test("the never-ask rule is present", () => {
+  const source = readSkillSource();
+  assertContains(
+    source,
+    "never stop to ask the user which\nserver to use",
+    "the never-ask-the-user-which-server rule",
+  );
 });
 
 test("Scene Graph entities are routed to Epic's EntityToolset", () => {
@@ -73,7 +106,7 @@ test("authoring / write operations are routed to Epic, naming BuildAll and PushC
   const source = readSkillSource();
   assertContains(
     source,
-    "Authoring / write operations we do not implement → EPIC.",
+    "**Authoring / write operations we do not implement → ALWAYS\n  `unreal-engine-mcp`.**",
     "the authoring/write-operations-to-Epic claim",
   );
   assertContains(source, "VerseToolset.BuildAll", "BuildAll named as an Epic-only authoring tool");
