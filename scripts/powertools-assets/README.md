@@ -6,13 +6,11 @@ An MCP server and in-editor Python bridge for live, chat-driven inspection and e
 
 > **Not affiliated with Epic Games.** Power Tools is an independent, community-built project. It is not endorsed by, supported by, or affiliated with Epic Games in any way. Fortnite and UEFN are trademarks of Epic Games, Inc.
 
+> **Beta software.** Power Tools has been thoroughly tested with Claude Code. Support for other MCP clients (Gemini CLI, Codex CLI, Cursor, Windsurf, and the others listed in [INSTALL.md](INSTALL.md)) should be considered experimental — those integrations have not been well tested yet.
+
 ## Use at your own risk
 
-**Python is known to destabilize UEFN.** Running Python in UEFN's embedded console — whether Power Tools is doing anything or not — has been associated with crashes, including crashes during project **sync**. This is not hypothetical; it has happened.
-
-**Recommendation: turn Python off before you sync.** Disable the Python Editor Script Plugin (`Edit -> Plugins`) or otherwise stop the bridge before syncing a project, then re-enable it afterward if you want the bridge running again.
-
-Power Tools is MIT licensed and provided AS IS. Using it means accepting that the author takes no responsibility for UEFN crashes, corrupted or lost project data, or anything else Python does to your project while the bridge is running.
+Running Python inside UEFN's embedded console has been associated with crashes, particularly around project sync — save your project often. If you've hit Python-related crashes before, consider turning Python off (disable the Python Editor Script Plugin under `Edit -> Plugins`, or otherwise stop the bridge) before you sync, then turning it back on afterward as a precaution until things are more stable. If you've never had trouble, you're probably fine. Power Tools is MIT licensed and provided as is — no responsibility for UEFN crashes, corrupted or lost project data, or anything else Python does to your project while the bridge is running.
 
 ## What it is
 
@@ -22,29 +20,15 @@ The MCP server registers 30 `uefn_*` tools. Run the server and list its tools fr
 
 ## Runs alongside Epic's official UEFN MCP server
 
-Epic now ships its own UEFN MCP server. It is a good tool, and it does exactly what it claims — this section is not a knock on it. The reason to also run Power Tools is that **the two servers see different object models**.
-
-Epic's server exposes 210 tools across 17 toolsets, reached through a 3-tool gateway (`list_toolsets`, `describe_toolset`, `call_tool`). Its entity tools — creating, editing, and querying objects — operate over UEFN's **Scene Graph**. That's the right layer for a lot of authoring work, and Epic's server is the one to reach for when you're placing devices, creating Scene Graph entities, compiling Verse, or driving a live session.
-
-But most of what's actually sitting in a real UEFN level is **classic actors**, not Scene Graph entities, and Epic's entity tools cannot see classic actors at all. Measured on a real 44,753-actor UEFN project:
-
-- Epic's `FindEntities` with no filter returned only **25** Scene Graph entities, out of 44,753 actors in the level.
-- Epic's `GetVisibleActors` returned **1,336** actors — viewport-visible only, as bare reference-path strings with no names, no locations, nothing you can act on directly.
-- Calling `GetEntityTransform` on a classic-actor reference path fails outright: Epic's tools simply don't recognize it as a valid entity.
-
-A request as simple as "find all `SGMarker` actors and report their locations" is **unanswerable through Epic's MCP** on a project like that. It's a normal query for Power Tools' `uefn_batch_get`, which searches across all 44,753 actors with glob-pattern matching and pagination.
-
-Installing both servers together is the intended setup, not a conflict — see [INSTALL.md](INSTALL.md#5-epics-official-uefn-mcp-server) for how to enable Epic's server alongside this one, and which to reach for depending on what you're doing.
+Epic ships its own official UEFN MCP server, and you can run Power Tools alongside it without conflict. See Epic's documentation for setup: https://dev.epicgames.com/documentation/fortnite/uefn-mcp
 
 ## Why use this
 
-- **Bulk queries over classic actors.** `uefn_batch_get` (plus `uefn_batch_set` and `uefn_batch_location`) answers questions across the whole level — glob-matched, paginated — that Epic's entity tools structurally cannot answer, because classic actors sit outside the Scene Graph.
-- **Moderation and IP pre-flight scanning.** Sweep a project for content that risks a moderation rejection before you submit, something neither server did until Power Tools added it.
+- **Bulk queries over classic actors.** `uefn_batch_get` (plus `uefn_batch_set` and `uefn_batch_location`) answers questions across a whole level — glob-matched, paginated.
+- **Moderation and IP pre-flight scanning.** Sweep a project for content that risks a moderation rejection before you submit.
 - **Dependency, asset, texture, and material sweeps.** Trace what depends on what, find unused materials, locate every actor using a given texture.
 - **Tag inspection.** Look up gameplay tags across actors.
 - **Offline scanning.** Some scans read UEFN's `__ExternalActors__` files directly off disk and work even when UEFN isn't running.
-
-What Power Tools does **not** do, and Epic's server does: authoring and write operations like `PlaceDevice`, `CreateEntity`, `AddComponent`, Verse `BuildAll` compilation, and live session control (`PushChanges`, start/stop). For that side of the workflow, use Epic's server.
 
 ## What's in the box
 
@@ -86,13 +70,15 @@ The MCP server and the in-editor Python bridge are two separate processes handin
 
 See [INSTALL.md](INSTALL.md) for full setup steps, including how to connect the MCP server to your AI client of choice (Claude Code, Gemini CLI, Codex CLI, Cursor, Windsurf, Antigravity IDE, or VS Code Copilot).
 
-One gotcha worth knowing up front: on current UEFN builds, Python's lifecycle is dynamic and the bridge's `init_unreal.py` may not auto-start when UEFN loads your project. If you open the Python console and don't see a Power Tools launcher window, run:
+Once your project is open in UEFN, start the bridge from UEFN's Python console by running:
 
 ```python
 import init_unreal
 ```
 
-That starts the bridge for the current session. See [INSTALL.md](INSTALL.md#workaround-bridge-doesnt-auto-start-dynamic-python-lifecycle) for details.
+## Issues
+
+If you run into problems, please open an issue on the GitHub repo: https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/issues — issues are reviewed periodically and fixed when possible.
 
 ## License
 
