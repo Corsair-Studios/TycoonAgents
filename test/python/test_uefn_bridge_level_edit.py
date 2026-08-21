@@ -366,12 +366,12 @@ class ScopedTransactionTests(unittest.TestCase):
 
     def test_nullcontext_when_symbol_absent(self):
         _unreal.ScopedEditorTransaction = None
-        result = bridge._scoped_transaction("TycoonAgents: Test")
+        result = bridge._scoped_transaction("Power Tools: Test")
         self.assertIsInstance(result, contextlib.nullcontext)
 
     def test_nullcontext_when_construction_raises(self):
         _unreal.ScopedEditorTransaction = MagicMock(side_effect=Exception("boom"))
-        result = bridge._scoped_transaction("TycoonAgents: Test")
+        result = bridge._scoped_transaction("Power Tools: Test")
         self.assertIsInstance(result, contextlib.nullcontext)
 
 

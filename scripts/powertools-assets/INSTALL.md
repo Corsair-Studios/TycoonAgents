@@ -43,16 +43,22 @@ This is a manual step you repeat every time UEFN restarts — there is currently
 
 ## 2. Run the MCP server
 
-From this repo:
+If you downloaded a release, you already have everything you need: the zip includes `uefn-server.mjs` at its root, a self-contained bundle with no dependencies to install. Run it directly:
+
+```bash
+node uefn-server.mjs
+```
+
+Point your MCP client's configuration at that same `node uefn-server.mjs` command — see **Connecting an AI client** below.
+
+**If you cloned the source repo instead** (to fork or modify Power Tools), run the TypeScript source directly instead of the bundled `.mjs`:
 
 ```bash
 npm install
 npm start
 ```
 
-`npm start` runs `tsx uefn-server.ts`. Point your MCP client's configuration at that command (or at `npx tsx <path-to-this-repo>/uefn-server.ts`) so it launches the server as an MCP tool provider.
-
-Once it's running, connect it to your AI client of choice — see **Connecting an AI client** below.
+`npm start` runs `tsx uefn-server.ts`. Point your MCP client's configuration at that command (or at `npx tsx <path-to-your-clone>/uefn-server.ts`) instead of the `node uefn-server.mjs` form.
 
 ## 3. How it connects
 
@@ -60,9 +66,9 @@ The MCP server and the in-UEFN Python bridge communicate through file-based IPC 
 
 ## 4. Connecting an AI client
 
-The MCP server (`uefn-server.ts`) speaks plain stdio MCP, so any MCP-capable client can launch it the same way: a `command` plus `args` that run the server, with an optional `env` block for the [environment overrides](#environment-overrides) below. Each client stores that config in its own file, using its own key name — the subsections below give the current (2026-08-05, web-verified) format for each.
+The MCP server (`uefn-server.mjs`) speaks plain stdio MCP, so any MCP-capable client can launch it the same way: a `command` plus `args` that run the server, with an optional `env` block for the [environment overrides](#environment-overrides) below. Each client stores that config in its own file, using its own key name — the subsections below give the current (2026-08-05, web-verified) format for each.
 
-The examples show the entry point as `uefn-server.mjs` — that's what you'll have if you're using a pre-built/staged copy of the bridge (for example, the one the TycoonAgents VS Code extension stages automatically, or a `python/`-launcher install that ships one). If you're running **this** repo's TypeScript source directly (`npm start`), swap the command in every example below for:
+The examples below show the entry point as `uefn-server.mjs` — that's what you have if you downloaded a release, which is the normal case. **If you cloned the source repo instead** and are running the TypeScript source directly (`npm start`), swap the command in every example below for:
 
 ```json
 "command": "npx",
@@ -89,7 +95,7 @@ File: `.mcp.json` at your project root, key `mcpServers`.
 }
 ```
 
-The TycoonAgents VS Code extension writes this file automatically for its own bridge; standalone Power Tools users add it by hand. `env` is optional — omit `UEFN_BRIDGE_DIR` to use the default per-machine temp directory.
+You add this file by hand. `env` is optional — omit `UEFN_BRIDGE_DIR` to use the default per-machine temp directory.
 
 ### Gemini CLI
 
@@ -183,4 +189,4 @@ The reason both exist: Epic's entity tools can't see classic actors at all. On a
 
 ## Updating
 
-Pull the latest version of this repo and re-copy the contents of `python/` into `<your-uefn-project>/Content/Python/`, then restart UEFN (or reload the bridge module from the Python console) to pick up changes.
+Download the latest release and re-copy the contents of `python/` into `<your-uefn-project>/Content/Python/`, then restart UEFN (or reload the bridge module from the Python console) to pick up changes. If you cloned the source repo, `git pull` instead.

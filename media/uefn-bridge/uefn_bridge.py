@@ -1532,7 +1532,7 @@ def _handle_spawn_actor(params):
         roll=float(rot.get("roll", 0.0)), pitch=float(rot.get("pitch", 0.0)), yaw=float(rot.get("yaw", 0.0))
     )
 
-    with _scoped_transaction("TycoonAgents: Spawn Actor"):
+    with _scoped_transaction("Power Tools: Spawn Actor"):
         actor = _spawn_via_editor_actor_subsystem(asset, location, rotation)
         if actor is None:
             actor = _spawn_via_editor_level_library(asset, location, rotation)
@@ -1602,7 +1602,7 @@ def _handle_duplicate_actor(params):
     source_location = source.get_actor_location()
     new_label = params.get("new_label")
 
-    with _scoped_transaction("TycoonAgents: Duplicate Actor"):
+    with _scoped_transaction("Power Tools: Duplicate Actor"):
         try:
             new_actor = dup_fn(source)
         except Exception as e:
@@ -1676,7 +1676,7 @@ def _handle_set_transform(params):
 
     before = _snapshot()
 
-    with _scoped_transaction("TycoonAgents: Set Transform"):
+    with _scoped_transaction("Power Tools: Set Transform"):
         if location is not None:
             cur = actor.get_actor_location()
             new_loc = unreal.Vector(
