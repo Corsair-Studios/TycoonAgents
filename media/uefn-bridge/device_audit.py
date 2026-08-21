@@ -1549,7 +1549,19 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
         )
         return
 
-    root = tk.Tk()
+    # Root window — must join the LIVE default root's interpreter when one
+    # already exists (e.g. uefn_launcher.py's window, or a previously-opened
+    # tool window still alive). An unconditional tk.Tk() here creates a
+    # SECOND Tk interpreter; tk._default_root then keeps pointing at
+    # whichever root was created FIRST, so any tk.StringVar()/IntVar()
+    # created below without an explicit master silently binds to that
+    # stale first interpreter instead of this window's — the Entry widget
+    # still shows typed text (it has its own buffer) but StringVar.get()
+    # always returns empty and traces never fire. Mirrors the
+    # _master/Toplevel pattern every other tool in this directory uses
+    # (health_scanner.py, material_browser.py, niagara_inspector.py, etc).
+    _master = tk._default_root
+    root = tk.Toplevel(_master) if _master is not None else tk.Tk()
     root.title("Trashbyrd's Device Audit")
     root.geometry("1000x700")
     root.configure(bg=_BG)
@@ -1680,7 +1692,7 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
     )
     devices_label.pack(side=tk.LEFT)
 
-    search_var = tk.StringVar()
+    search_var = tk.StringVar(master=root)
     search_entry = tk.Entry(
         header_frame,
         textvariable=search_var,
@@ -1760,6 +1772,7 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
     # -- Search/filter handler --
     def _on_search_changed(*_args):
         query = search_var.get().lower().strip()
+        _row_errors = 0
         for iid in all_device_iids:
             idx = int(dev_tree.set(iid, "_idx"))
             if idx < 0 or idx >= len(devices_with_actors):
@@ -1770,12 +1783,26 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
                 try:
                     dev_tree.reattach(iid, "", tk.END)
                 except tk.TclError:
-                    pass
+                    _row_errors += 1
             else:
                 try:
                     dev_tree.detach(iid)
                 except tk.TclError:
-                    pass
+                    _row_errors += 1
+        # A per-row TclError is expected occasionally (e.g. a row removed
+        # mid-filter) and stays silent. But if EVERY row raised, filtering
+        # is wholesale broken (e.g. a stale/mismatched tree) and failing
+        # silently is exactly how this bug went unnoticed — surface it
+        # once, not per row, so a large project's log isn't flooded.
+        if all_device_iids and _row_errors == len(all_device_iids):
+            try:
+                unreal.log_warning(
+                    f"device_audit: search filtering failed for all "
+                    f"{_row_errors} device rows — the Devices list may not "
+                    f"be filtering correctly."
+                )
+            except Exception:
+                pass
         visible = len(dev_tree.get_children())
         if query:
             devices_label.config(text=f"Devices ({visible}/{report['total_devices']})")
@@ -2032,7 +2059,7 @@ def _show_report_window(report, devices_with_actors, base_props=None, all_device
     footer_frame = tk.Frame(root, bg=_SECTION_BG, padx=8, pady=2)
     footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
-    conn_count_var = tk.StringVar(value="")
+    conn_count_var = tk.StringVar(master=root, value="")
     conn_count_label = tk.Label(
         footer_frame,
         textvariable=conn_count_var,
