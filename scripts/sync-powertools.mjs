@@ -44,6 +44,14 @@ const LICENSE_SRC = join(SCRIPT_DIR, 'powertools-assets', 'LICENSE');
 // must never be hand-edited there.
 const README_SRC = join(SCRIPT_DIR, 'powertools-assets', 'README.md');
 const INSTALL_SRC = join(SCRIPT_DIR, 'powertools-assets', 'INSTALL.md');
+// Panel screenshot for the standalone README, authored the same way as
+// README.md/INSTALL.md above (scripts/powertools-assets/) and mirrored
+// verbatim into <target>/docs/ on every sync. This repo is its source of
+// truth; the target repo's copy must never be hand-edited there. It is a
+// binary PNG, so it is copied with copyFileSync (see copyDoc()) rather than
+// any text-mode read/write -- copyFileSync is already a raw byte copy with
+// no encoding or newline transformation, so it's safe to reuse as-is.
+const PANEL_SCREENSHOT_SRC = join(SCRIPT_DIR, 'powertools-assets', 'docs', 'trashbyrds_power_tools_panel.png');
 // verse_lsp_check.py powers uefn_verse_check but lives outside media/uefn-bridge/
 // (it's under media/skills/uefn/, alongside this repo's other Verse skill
 // docs/scripts, not the bridge's Python tools). Mirrored into the target
@@ -250,17 +258,27 @@ function copyLicense(targetDir) {
 // Copies README.md and INSTALL.md (see scripts/powertools-assets/) into
 // <target>/README.md and <target>/INSTALL.md on every sync, mirroring
 // copyLicense() above. Non-fatal on any failure — a missing or unwritable
-// doc file must never block the rest of the sync.
-function copyDoc(srcPath, destName, targetDir) {
+// doc file must never block the rest of the sync. `destRelPath` is a path
+// relative to targetDir (e.g. 'README.md' or 'docs/trashbyrds_power_tools_panel.png');
+// when it contains a subdirectory, that directory is created first the same
+// way copyVerseCheckScript() creates <target>/skills/uefn/. copyFileSync is
+// a raw byte copy (no encoding/newline transformation), so this is safe to
+// use for both text docs and binary assets like the PNG.
+function copyDoc(srcPath, destRelPath, targetDir) {
   if (!existsSync(srcPath)) {
-    console.log(`[sync-powertools] Warning: ${srcPath} not found; skipped ${destName}.`);
+    console.log(`[sync-powertools] Warning: ${srcPath} not found; skipped ${destRelPath}.`);
     return false;
   }
   try {
-    copyFileSync(srcPath, join(targetDir, destName));
+    const destPath = join(targetDir, destRelPath);
+    const destDir = dirname(destPath);
+    if (!existsSync(destDir)) {
+      mkdirSync(destDir, { recursive: true });
+    }
+    copyFileSync(srcPath, destPath);
     return true;
   } catch (err) {
-    console.log(`[sync-powertools] Could not copy ${destName} (non-fatal): ${err.message}`);
+    console.log(`[sync-powertools] Could not copy ${destRelPath} (non-fatal): ${err.message}`);
     return false;
   }
 }
@@ -653,6 +671,9 @@ function main() {
   }
   if (copyDoc(INSTALL_SRC, 'INSTALL.md', targetDir)) {
     console.log('[sync-powertools] Copied INSTALL.md into target repo.');
+  }
+  if (copyDoc(PANEL_SCREENSHOT_SRC, join('docs', 'trashbyrds_power_tools_panel.png'), targetDir)) {
+    console.log('[sync-powertools] Copied docs/trashbyrds_power_tools_panel.png into target repo.');
   }
 
   // Ground-truth no-op detection: stage everything and see if the target's

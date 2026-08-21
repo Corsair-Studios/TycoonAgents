@@ -112,9 +112,9 @@ snapshot — `PushChanges` and `StopGame` need a live session.
 | Offline `__ExternalActors__` scanning (works without UEFN running) | No | Yes |
 | Actor transform get/set, spawn/duplicate/select | Partial (Scene Graph only) | Yes — `uefn_set_transform`, `uefn_spawn_actor`, `uefn_duplicate_actor`, `uefn_select_actor` |
 | Health / general audit | No | Yes — `uefn_run_audit`, `uefn_health_scan` |
-| Level info, command listing, status | No | Yes — `uefn_get_level_info`, `uefn_list_commands`, `uefn_status`, `uefn_bridge` |
+| Level info, command listing, status | No | Yes — `uefn_get_level_info`, `uefn_list_commands`, `uefn_status` |
 
-Our full tool set in this comparison: `uefn_status`, `uefn_bridge`,
+Our full tool set in this comparison: `uefn_status`,
 `uefn_list_commands`, `uefn_get_level_info`, `uefn_list_devices`,
 `uefn_get_property`, `uefn_set_property`, `uefn_batch_get`,
 `uefn_batch_set`, `uefn_batch_location`, `uefn_select_actor`,
@@ -124,7 +124,7 @@ Our full tool set in this comparison: `uefn_status`, `uefn_bridge`,
 `uefn_asset_sweep`, `uefn_inspect_asset`, `uefn_list_assets`,
 `uefn_material_browse`, `uefn_material_unused`, `uefn_texture_find`,
 `uefn_texture_on_actor`, `uefn_texture_summary`, `uefn_niagara_browse`,
-`uefn_niagara_usage`, `uefn_verse_check` — 31 tools total.
+`uefn_niagara_usage`, `uefn_verse_check` — 30 tools total.
 
 ## What Epic covers that we do not
 
