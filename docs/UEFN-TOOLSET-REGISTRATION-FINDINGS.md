@@ -5,6 +5,33 @@ probes run inside UEFN's Python console. This is not a permanent claim about
 Epic's roadmap — re-run these probes against a future build before trusting
 the conclusion unchanged.
 
+## VERIFIED: this build is hours old
+
+**VERIFIED (user-confirmed):** the machine these probes ran on is on **UEFN
+42.00**, which Epic is officially calling **Unreal Engine 6**, released the
+night of **2026-08-19/20**. Every probe in this document was run against a
+release that was hours old at the time.
+
+That reframes the whole document. Every wall hit below is plausibly a
+day-one rough edge of a brand-new major version rather than settled,
+long-term Epic policy:
+
+- the dynamic Python lifecycle (`Engine.Python.IsPythonLifeCycleDynamic=True`,
+  `IsEnabledByDefault=False`, `IsPythonInRestrictiveMode=True` — Epic's own
+  help text calls restrictive mode "still a work in progress");
+- third-party `init_unreal.py` no longer auto-running;
+- installed builds carrying no `.uplugin` manifests for Epic's own toolset
+  plugins;
+- the toolset registry accepting a class and then not registering it (see
+  the four probes below, and the correction in the "Three-tier registry
+  state" section further down).
+
+A document about a day-old major engine release is a snapshot of a moving
+target, not a settled read of Epic's intent. The "revisit when Epic
+documents this" trigger at the bottom of this file is now much more likely
+to fire soon — this is closer to launch-week turbulence than to a
+deliberate, stable gate.
+
 ## The question
 
 Could Trashbyrd's Power Tools register as a native UEFN toolset — appearing
@@ -187,6 +214,76 @@ What actually gates registration was not determined. Candidates, explicitly
 
 No probe isolated which of these (or something else entirely) is the actual
 gate. Treat all three as leads for a future session, not as findings.
+
+## Independent corroboration: UEFBen/UEFN-MCP-Toolset
+
+**VERIFIED:** a third-party reference repo,
+[`github.com/UEFBen/UEFN-MCP-Toolset`](https://github.com/UEFBen/UEFN-MCP-Toolset),
+dumps UEFN's built-in toolsets under `UEFN-42.00/NativeToolsets/` — the same
+UEFN 42.00 / UE6 build these probes ran on.
+
+**VERIFIED:** that repo documents only built-in Epic toolsets. It contains no
+guidance on registering custom or third-party toolsets, no Python-defined
+toolset material, and no mention of `init_unreal.py` or the Python lifecycle
+described above. **INFERRED:** someone else independently worked this exact
+surface — same version, same registry APIs — thoroughly enough to enumerate
+every native toolset, and also came up empty on a third-party registration
+path. That is corroboration, not proof: absence of a documented path in one
+other person's work doesn't rule one out, but it's a second data point
+pointing the same direction as our four probes.
+
+**VERIFIED:** its `dump_native_toolsets.py` is purely read-only. It calls
+`unreal.load_module()` to force-load 35 known Epic toolset modules first,
+then uses `unreal.ToolsetLibrary.get_derived_classes(unreal.ToolsetDefinition)`
+to enumerate *all* toolset classes. **This is the enumeration method Probe 2
+above looked for and did not find** — our own investigation reported "no
+enumeration method found on registry." Record `get_derived_classes` on
+`ToolsetLibrary`, paired with pre-loading known toolset modules via
+`unreal.load_module()`, as the technique to use if this is revisited.
+
+**VERIFIED:** the repo also calls `registry.is_toolset_class_registered()`,
+`get_toolset_json_schema()`, and `get_all_toolset_json_schemas()` — the same
+APIs our own probes used (see Probe 2 and Probe 3 above).
+
+## Correction: the gate gates Epic's own toolsets too
+
+**VERIFIED:** across 456 discovered tools, the UEFBen repo reports a
+three-tier state, not a simple registered/unregistered split:
+
+- **168 registered** — live and callable.
+- **11 filtered** — present in class schemas but deliberately excluded from
+  the live registry.
+- **277 unregistered** — from classes that are not registered in the runtime
+  registry, though many have valid schemas.
+
+**VERIFIED, and this is the important part:** this affects Epic's *own*
+toolsets, not just third-party ones. 34 native `UToolsetDefinition` classes
+are unregistered, and `GameplayTagsToolset` has 8 tools in its schema but
+only 4 registered.
+
+**This corrects an inference earlier in this document.** The framing above
+(see "What remains unknown") floated a C++-side allowlist or a
+compiled-plugin requirement as if the gate specifically targeted third-party
+/ Python-declared classes — a lockout aimed at outsiders. That framing is
+probably wrong. Our probes' `is_toolset_class_registered = False` is the
+*same state* 34 of Epic's own native classes are sitting in, per the
+UEFBen data. There is evidently a general filtering layer between "class
+exists with a valid schema" and "tool is live in the registry," and it gates
+Epic's own classes too — so our observed behavior is not, by itself,
+evidence of a deliberate third-party-specific lockout.
+
+**Keep this honest, both directions:** this does *not* mean third-party
+toolset registration works, or that it will if retried. Every probe in this
+document still failed, and nothing here reopens that question. What it
+means is that our stated *reason* for the failure was probably wrong, and
+the mechanism is less clearly a deliberate exclusion-of-outsiders than this
+document previously implied. **What actually drives that filtering layer
+remains UNKNOWN** — the UEFBen repo explicitly does not explain
+registered-vs-filtered-vs-unregistered either, and neither do we. The C++
+allowlist, compiled-plugin, and per-toolset `Enable`-CVar candidates listed
+under "What remains unknown" above are still unverified leads, now joined by
+a fourth: whatever filters 34 of Epic's own native classes might be the same
+mechanism, but that link itself is INFERRED, not confirmed.
 
 ## What was also ruled out: the Editor Preferences panel
 
