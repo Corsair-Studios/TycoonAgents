@@ -43,6 +43,7 @@ import { parseBridgeVersion, isBridgeVersionNewer, isNumericVersion } from "../.
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { healMcpServerPathIfStale } from "./mcpHeal";
+import { resolvePowerToolsDir } from "./powerToolsInstall";
 import { describeFsError } from "./fsErrors";
 import {
   probePathHealth,
@@ -4223,6 +4224,24 @@ export class TycoonPanel {
   }
 
   /**
+   * Resolve the Power Tools directory every bridge-staging site below reads
+   * shipped files from. Power Tools no longer ships bundled at
+   * `<extensionDir>/media/uefn-bridge` — it's a standalone repo installed on
+   * demand — so this is the SINGLE place that calls `resolvePowerToolsDir`
+   * (env override / installed copy under global storage / legacy bundled
+   * fallback — see `powerToolsInstall.ts`) rather than each of the ~5
+   * staging/version-check call sites constructing that now-deleted path
+   * directly. Returns `null` when nothing on the discovery ladder resolves;
+   * callers must surface that as an explicit error (never proceed with a
+   * broken/undefined path, never silently no-op) — see each call site's own
+   * handling.
+   */
+  private _powerToolsDir(): string | null {
+    const location = resolvePowerToolsDir(this._extensionUri.fsPath, this._globalStorageUri.fsPath);
+    return location === null ? null : location.dir;
+  }
+
+  /**
    * Copy every bridge file from `bridgeDir` into `pyDest`, except the Node MCP
    * server (`uefn-server.mjs`), which does not belong in UEFN's Content/Python.
    * A file is written only when absent or when its content differs, so tool
@@ -4777,7 +4796,7 @@ export class TycoonPanel {
       staged: number; updated: number; unchanged: number; error?: string;
     }>;
   } {
-    const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+    const bridgeDir = this._powerToolsDir();
     const resolved = this._resolveUefnContentDirEvidence(root);
 
     const locations: Array<{
@@ -4786,6 +4805,26 @@ export class TycoonPanel {
     }> = [];
     let totalWritten = 0;
     let effRoot: string | null = null;
+
+    if (bridgeDir === null) {
+      // Power Tools isn't resolvable anywhere on the discovery ladder --
+      // never proceed with a broken/undefined source path. Surface it
+      // through the same `error` field every other unresolved-target branch
+      // below uses, so the caller's existing error-reporting channel (see
+      // `_handleSetupUefnProject`'s `projectLocation?.error` check) picks it
+      // up without a new UI/message channel.
+      locations.push({
+        label: "project",
+        dir: "(unresolved)",
+        staged: 0,
+        updated: 0,
+        unchanged: 0,
+        error:
+          "Power Tools is not installed. Install Power Tools (Corsair-Studios/trashbyrds-uefn-power-tools) " +
+          "before setting up UEFN, or set POWERTOOLS_DIR to an existing install.",
+      });
+      return { bridgeStatus: "exists", engineFound: false, locations };
+    }
 
     if (resolved.contentDir !== null) {
       effRoot = path.dirname(resolved.contentDir);
@@ -4993,7 +5032,8 @@ export class TycoonPanel {
         return "stale:missing"; // no bridge_version.py on disk at the resolved target -- never landed
       }
 
-      const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+      const bridgeDir = this._powerToolsDir();
+      if (bridgeDir === null) return "unresolved:power-tools-not-installed";
       const bundledPath = path.join(bridgeDir, "bridge_version.py");
       const bundledText = fs.readFileSync(bundledPath, "utf8");
 
@@ -5095,7 +5135,9 @@ export class TycoonPanel {
     try {
       const effRoot = this._uefnEffectiveRoot(root);
       const stagedPath = path.join(effRoot, "Content", "Python", "bridge_version.py");
-      const shippedPath = path.join(this._extensionUri.fsPath, "media", "uefn-bridge", "bridge_version.py");
+      const bridgeDir = this._powerToolsDir();
+      if (bridgeDir === null) return false; // can't compare against a shipped copy that isn't resolvable -- same posture as any other missing/unreadable file here
+      const shippedPath = path.join(bridgeDir, "bridge_version.py");
       const staged = fs.readFileSync(stagedPath, "utf8").trim();
       const shipped = fs.readFileSync(shippedPath, "utf8").trim();
       return staged !== shipped;
@@ -5225,7 +5267,16 @@ export class TycoonPanel {
       const installedBridgePath = path.join(projectPyDest, "uefn_bridge.py");
       if (!fs.existsSync(installedBridgePath)) return;
 
-      const bridgeDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+      const bridgeDir = this._powerToolsDir();
+      if (bridgeDir === null) {
+        // Power Tools isn't resolvable anywhere on the discovery ladder --
+        // this is a background auto-heal rail with no UI error channel, so
+        // console.warn (the pattern this method already uses below for a
+        // partial staging failure) is the only reporting mechanism
+        // available. Must not proceed with a broken/undefined bridgeDir.
+        console.warn("TycoonAgents: _autoUpdateUefnBridgeIfStale skipped -- Power Tools not installed (checked env override, global storage, and bundled copy).");
+        return;
+      }
       const bundledStampPath = path.join(bridgeDir, "bridge_version.py");
       const installedStampPath = path.join(projectPyDest, "bridge_version.py");
 
@@ -5434,7 +5485,7 @@ export class TycoonPanel {
    * panel) previously never getting this heal at all.
    */
   private _autoHealMcpServerPathIfStale(root: string): void {
-    healMcpServerPathIfStale(root, this._extensionUri);
+    healMcpServerPathIfStale(root, this._extensionUri, this._globalStorageUri.fsPath);
   }
 
   /**
@@ -5506,7 +5557,8 @@ export class TycoonPanel {
    */
   private _refreshEngineBridgeCopy(bridgeDir: string): "updated" | "current" | "unavailable" {
     try {
-      const shippedDir = path.join(this._extensionUri.fsPath, "media", "uefn-bridge");
+      const shippedDir = this._powerToolsDir();
+      if (shippedDir === null) return "unavailable"; // Power Tools not resolvable -- same verdict as an unreadable shipped stamp below
       const shippedStampPath = path.join(shippedDir, "bridge_version.py");
       const engineStampPath = path.join(bridgeDir, "bridge_version.py");
 
@@ -5790,29 +5842,66 @@ export class TycoonPanel {
   }
 
   /**
-   * Deep-clone `config` and replace every occurrence of the literal token
-   * `${EXTENSION_DIR}` in any string value (recursively through objects/arrays)
-   * with the extension's real install path (`this._extensionUri.fsPath`).
-   * Called at install time so catalog entries with bundled servers resolve correctly.
+   * Deep-clone `config` and replace every occurrence of two literal tokens
+   * in any string value (recursively through objects/arrays):
+   *   - `${EXTENSION_DIR}` -> the extension's real install path
+   *     (`this._extensionUri.fsPath`).
+   *   - `${POWER_TOOLS_DIR}` -> the resolved Power Tools install directory,
+   *     via `resolvePowerToolsDir` (env override / installed copy under
+   *     global storage / legacy bundled fallback — see
+   *     `powerToolsInstall.ts`). Power Tools no longer ships inside this
+   *     extension, so this is looked up, not derived from `${EXTENSION_DIR}`.
+   * Called at install time so catalog entries with bundled/installed
+   * servers resolve correctly.
    *
    * Any string a token was actually substituted into is additionally
    * normalized to forward slashes (`\` -> `/`) — matching what
    * `healMcpServerPathIfStale` (mcpHeal.ts) writes on a later heal pass, so
    * a fresh install's `.mcp.json` and a healed one are byte-identical in
    * form rather than differing only by separator style on Windows. Scoped
-   * to strings that actually contained the token: this substitution only
-   * ever produces a FILESYSTEM PATH (`extensionUri.fsPath`-derived), never
-   * an arbitrary command arg/env value that might legitimately contain a
-   * literal backslash — a string with no token occurrence is returned
-   * completely untouched.
+   * to strings that actually contained a token: this substitution only
+   * ever produces a FILESYSTEM PATH, never an arbitrary command arg/env
+   * value that might legitimately contain a literal backslash — a string
+   * with no token occurrence is returned completely untouched.
+   *
+   * Throws if `${POWER_TOOLS_DIR}` appears in `config` but Power Tools
+   * cannot be resolved (not installed, no env override, no legacy bundled
+   * copy) — the token must never be silently left unresolved or substituted
+   * with a broken path. `_handleInstallMcp`'s caller already wraps this in
+   * try/catch and reports `error: String(e)` via MSG.MCP_INSTALLED, so the
+   * user sees "Power Tools must be installed first" through the existing
+   * error-reporting channel rather than a new one.
    */
   private _resolveConfigTokens(config: unknown): unknown {
-    const token = "${EXTENSION_DIR}";
-    const replacement = this._extensionUri.fsPath;
+    const EXTENSION_TOKEN = "${EXTENSION_DIR}";
+    const POWER_TOOLS_TOKEN = "${POWER_TOOLS_DIR}";
+    const configStr = JSON.stringify(config);
+    const needsPowerTools = configStr !== undefined && configStr.includes(POWER_TOOLS_TOKEN);
+
+    let powerToolsDir: string | null = null;
+    if (needsPowerTools) {
+      const location = resolvePowerToolsDir(this._extensionUri.fsPath, this._globalStorageUri.fsPath);
+      if (location === null) {
+        throw new Error(
+          "Power Tools is not installed. Install Power Tools (Corsair-Studios/trashbyrds-uefn-power-tools) before enabling this MCP server."
+        );
+      }
+      powerToolsDir = location.dir;
+    }
+
     const resolve = (value: unknown): unknown => {
       if (typeof value === "string") {
-        if (!value.includes(token)) return value;
-        return value.split(token).join(replacement).replace(/\\/g, "/");
+        let out = value;
+        let substituted = false;
+        if (out.includes(EXTENSION_TOKEN)) {
+          out = out.split(EXTENSION_TOKEN).join(this._extensionUri.fsPath);
+          substituted = true;
+        }
+        if (powerToolsDir !== null && out.includes(POWER_TOOLS_TOKEN)) {
+          out = out.split(POWER_TOOLS_TOKEN).join(powerToolsDir);
+          substituted = true;
+        }
+        return substituted ? out.replace(/\\/g, "/") : out;
       }
       if (Array.isArray(value)) {
         return value.map(resolve);

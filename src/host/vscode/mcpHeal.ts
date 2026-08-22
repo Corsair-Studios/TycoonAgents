@@ -44,12 +44,17 @@
  * folder is left alone — the user may have deliberately pointed it at a
  * custom build.
  *
- * On a stale hit, rewrites the arg to
- * `<current extension dir>/media/uefn-bridge/uefn-server.mjs` (forward
- * slashes, matching this file's other path-normalization call sites in
- * progressScope.ts / themeArchive.ts) — but only after confirming that file
- * actually exists, so a corrupted/incomplete extension install can never
- * write a second broken path. Also drops `env.UEFN_BRIDGE_DIR` from a
+ * On a stale hit, rewrites the arg to `<resolved Power Tools dir>/uefn-server.mjs`
+ * (forward slashes, matching this file's other path-normalization call sites
+ * in progressScope.ts / themeArchive.ts) — the directory is found via
+ * `powerToolsInstall.ts`'s `resolvePowerToolsDir` discovery ladder (env
+ * override > installed copy under global storage > legacy bundled copy under
+ * the extension dir), not a hardcoded bundled path, since Power Tools is no
+ * longer guaranteed to ship inside this extension. If the resolver finds no
+ * copy anywhere, the existing `.mcp.json` entry is left untouched (see the
+ * `location === null` branch below) — but only after confirming that file
+ * actually exists, so a corrupted/incomplete install can never write a
+ * second broken path. Also drops `env.UEFN_BRIDGE_DIR` from a
  * rewritten entry (documented as breaking the file-IPC default — both sides
  * must default to `<OS temp>/uefn_bridge`), removing the whole `env` block
  * only once it becomes empty, and forces `command` to `"node"` on a
@@ -64,8 +69,9 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { resolvePowerToolsDir } from "./powerToolsInstall";
 
-export function healMcpServerPathIfStale(root: string, extensionUri: vscode.Uri): void {
+export function healMcpServerPathIfStale(root: string, extensionUri: vscode.Uri, globalStorageDir: string): void {
   try {
     if (root === "") return;
     const mcpPath = path.join(root, ".mcp.json");
@@ -113,7 +119,20 @@ export function healMcpServerPathIfStale(root: string, extensionUri: vscode.Uri)
     }
     if (candidates.length === 0) return; // don't invent an entry that isn't there
 
-    const currentServerPath = path.join(extensionUri.fsPath, "media", "uefn-bridge", "uefn-server.mjs");
+    const location = resolvePowerToolsDir(extensionUri.fsPath, globalStorageDir);
+    if (location === null) {
+      // Power Tools isn't installed anywhere on the discovery ladder (env
+      // override, installed copy, or legacy bundled copy) -- leave the
+      // existing .mcp.json entry untouched rather than healing onto a file
+      // that doesn't exist. Logged (not silently returned) so this case is
+      // distinguishable from "nothing to heal" -- the function is void with
+      // no return-value channel back to callers, so console.warn (the
+      // pattern this file already uses below on failure) is the only
+      // reporting mechanism available without changing the public signature.
+      console.warn("TycoonAgents: healMcpServerPathIfStale skipped -- Power Tools not installed (checked env override, global storage, and bundled copy).");
+      return;
+    }
+    const currentServerPath = path.join(location.dir, "uefn-server.mjs");
     if (!fs.existsSync(currentServerPath)) return; // can't heal onto a file that isn't shipped
 
     const currentServerPathNormalized = currentServerPath.replace(/\\/g, "/");

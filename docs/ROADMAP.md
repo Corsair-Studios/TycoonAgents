@@ -121,9 +121,9 @@ Build inward-out, matching the architecture (DESIGN §7): a tested event → sta
 - **Status:** planned
 
 ## Phase 8 — UEFN Power Tools + dual-ship
-- **Goal:** package the UEFN Power Tools as the single source and ship a clean plugin.
+- **Goal:** consume UEFN Power Tools as an independent, on-demand install and ship a clean plugin.
 - **Tasks:**
-  - [ ] `packages/uefn-power-tools/` single source; standalone published from it — *coding-specialist*
+  - [ ] Power Tools stays the independent `Corsair-Studios/trashbyrds-uefn-power-tools` repo (single source of truth, publishes its own releases); TycoonAgents downloads the release on demand instead of bundling — *coding-specialist*
   - [ ] Install robustness + doctor; ship-plugin-not-framework VSIX (`.vscodeignore`); repo hygiene (`.gitignore`/`.urcignore`) — *vscode-integration*
 - **Acceptance criteria:**
   - The VSIX contains only the runtime plugin; doctor passes on a fresh checkout; Power Tools install works; per-developer agent artifacts are excluded from shared repos.

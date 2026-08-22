@@ -2,9 +2,10 @@
 > lives in `media/uefn-bridge/uefn_bridge.py`, `media/uefn-bridge/tag_inspect.py`,
 > `media/uefn-bridge/uefn_launcher.py`, and `uefn-bridge/uefn-server.ts` in
 > this repo. The standalone Power Tools repo (`Corsair-Studios/trashbyrds-uefn-power-tools`)
-> is generated from this one by `scripts/sync-powertools.mjs` and must not
-> be edited directly — see `docs/PATH-DISCOVERY.md` and the
-> `standalone-powertools-repo` memory note for the sync relationship. The
+> is now an independent, public repo and the single source of truth for
+> Power Tools — it publishes its own releases and must not be treated as
+> generated from this repo; see the `standalone-powertools-repo` memory
+> note for background on the prior sync relationship. The
 > body below is the original spec text, unmodified except for this note;
 > its own "Section 3" still describes the standalone repo's path layout
 > (`python/uefn_bridge.py`, `uefn-server.ts` at repo root) — read it as

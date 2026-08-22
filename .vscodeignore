@@ -40,11 +40,11 @@ eslint.config.mjs
 **/*.pyc
 **/*.pyo
 
-# runtime-generated bridge self-sync status marker (never commit/ship)
-media/uefn-bridge/bridge_sync_status.json
-# runtime-generated moderation report written by the bridge (never commit/ship)
-media/uefn-bridge/moderation_report.json
-# runtime-generated moderation Licensed IP allowlist saved by the user (never commit/ship)
-media/uefn-bridge/moderation_allowlist.json
-# runtime-generated Verse tag inspector report written by the bridge (never commit/ship)
-media/uefn-bridge/tag_inspect_report.json
+# Power Tools (formerly the bundled "uefn-bridge") is now an independent
+# repo (Corsair-Studios/trashbyrds-uefn-power-tools) publishing its own
+# GitHub Releases. It installs on demand at runtime via
+# src/host/vscode/powerToolsInstall.ts (resolvePowerToolsDir /
+# installPowerTools) into <globalStorage>/powertools, rather than shipping
+# inside this VSIX. Exclude the whole directory so it never ships, even if
+# it's ever repopulated locally for dev/testing.
+media/uefn-bridge/**

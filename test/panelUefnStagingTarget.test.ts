@@ -104,9 +104,18 @@ function listTree(root: string): string[] {
 // install -- stubbed here to keep every fixture fully isolated from
 // whatever happens to be installed on the machine running the tests (see
 // CLAUDE.md's Path & Environment Discovery: never assume machine state).
-function stage(root: string, extensionRoot: string) {
+// It also calls `this._powerToolsDir()` to locate the shipped bridge dir,
+// which itself reads `_extensionUri`/`_globalStorageUri` and resolves via
+// `resolvePowerToolsDir`'s ladder -- no installed copy is staged in these
+// fixtures, so `globalStorageDir` is always an empty dir the caller owns
+// and cleans up, making rung 2 resolve to nothing and rung 3 (the bundled
+// `extensionRoot`, content-validated by `writeShippedBridge`'s
+// uefn_bridge.py marker) win.
+function stage(root: string, extensionRoot: string, globalStorageDir: string) {
   const fakeThis = {
     _extensionUri: { fsPath: extensionRoot },
+    _globalStorageUri: { fsPath: globalStorageDir },
+    _powerToolsDir: (TycoonPanel.prototype as any)._powerToolsDir,
     _resolveUefnContentDirEvidence: (TycoonPanel.prototype as any)._resolveUefnContentDirEvidence,
     _findMatchingVprojectContentDirs: (TycoonPanel.prototype as any)._findMatchingVprojectContentDirs,
     _plausibleContentDirCandidates: (TycoonPanel.prototype as any)._plausibleContentDirCandidates,
@@ -134,6 +143,7 @@ test("Plugins-layout field failure: vproject evidence resolves the REAL Python d
   const projectRoot = tmpDir("panelUefnStaging-plugins-");
   const verseProjectRoot = tmpDir("panelUefnStaging-plugins-vproj-");
   const extensionRoot = tmpDir("panelUefnStaging-plugins-ext-");
+  const globalStorageDir = tmpDir("panelUefnStaging-plugins-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     // "<...>\MyIsland_\Plugins\PluginA\Content\" -- the real content
@@ -177,7 +187,7 @@ test("Plugins-layout field failure: vproject evidence resolves the REAL Python d
 
     // Workspace opened directly at the plugin's Content dir -- the exact
     // shape of the field failure.
-    const result = stage(realContentDir, extensionRoot);
+    const result = stage(realContentDir, extensionRoot, globalStorageDir);
 
     console.log("AFTER:", listTree(projectRoot));
 
@@ -212,6 +222,7 @@ test("Plugins-layout field failure: vproject evidence resolves the REAL Python d
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -229,6 +240,7 @@ test("no vproject evidence, existing Python/init_unreal.py under the workspace r
   const root = path.join(tmp, "Content");
   const verseProjectRoot = tmpDir("panelUefnStaging-existing-vproj-");
   const extensionRoot = tmpDir("panelUefnStaging-existing-ext-");
+  const globalStorageDir = tmpDir("panelUefnStaging-existing-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     // Already has a bridge staged from a previous install, but NO matching
@@ -243,7 +255,7 @@ test("no vproject evidence, existing Python/init_unreal.py under the workspace r
 
     process.env.UEFN_VERSE_PROJECT_DIR = verseProjectRoot; // exists, empty -- zero vproject matches
 
-    const result = stage(root, extensionRoot);
+    const result = stage(root, extensionRoot, globalStorageDir);
 
     const projectLocation = result.locations.find((l: any) => l.label === "project");
     assert.equal(projectLocation.error, undefined);
@@ -259,6 +271,7 @@ test("no vproject evidence, existing Python/init_unreal.py under the workspace r
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -282,6 +295,7 @@ test("confirmed real content dir (real .verse files, no vproject) outranks a bog
 
   const verseProjectRoot = tmpDir("panelUefnStaging-confirmed-vproj-");
   const extensionRoot = tmpDir("panelUefnStaging-confirmed-ext-");
+  const globalStorageDir = tmpDir("panelUefnStaging-confirmed-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     // Leftover bogus nested copy from the ORIGINAL bug: root/Content/Python,
@@ -302,7 +316,7 @@ test("confirmed real content dir (real .verse files, no vproject) outranks a bog
     // reproducing "user hasn't relaunched UEFN since being bitten".
     process.env.UEFN_VERSE_PROJECT_DIR = verseProjectRoot;
 
-    const result = stage(root, extensionRoot);
+    const result = stage(root, extensionRoot, globalStorageDir);
 
     const projectLocation = result.locations.find((l: any) => l.label === "project");
     assert.ok(projectLocation, "a project location must be reported");
@@ -325,6 +339,7 @@ test("confirmed real content dir (real .verse files, no vproject) outranks a bog
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -336,6 +351,7 @@ test("no vproject match, no existing bridge, no plausible layout: surfaces an ex
   const root = tmpDir("panelUefnStaging-none-");
   const verseProjectRoot = tmpDir("panelUefnStaging-none-vproj-");
   const extensionRoot = tmpDir("panelUefnStaging-none-ext-");
+  const globalStorageDir = tmpDir("panelUefnStaging-none-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     // A bare, empty workspace: not named Content, no .verse files, no
@@ -344,7 +360,7 @@ test("no vproject match, no existing bridge, no plausible layout: surfaces an ex
     writeShippedBridge(bridgeDir, "2.1.0");
     process.env.UEFN_VERSE_PROJECT_DIR = verseProjectRoot; // exists, empty
 
-    const result = stage(root, extensionRoot);
+    const result = stage(root, extensionRoot, globalStorageDir);
 
     const projectLocation = result.locations.find((l: any) => l.label === "project");
     assert.ok(projectLocation, "a project location must still be reported");
@@ -360,5 +376,6 @@ test("no vproject match, no existing bridge, no plausible layout: surfaces an ex
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });

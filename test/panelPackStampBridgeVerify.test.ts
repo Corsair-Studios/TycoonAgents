@@ -82,6 +82,10 @@ function writeExtensionFixture(extensionRoot: string): void {
   const bridgeDir = path.join(extensionRoot, "media", "uefn-bridge");
   fs.mkdirSync(bridgeDir, { recursive: true });
   fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), `BRIDGE_VERSION = "${BUNDLED_VERSION}"\n`);
+  // resolvePowerToolsDir's bundled rung (rung 3) is content-validated by this
+  // marker -- without it the resolver finds nothing and _powerToolsDir()
+  // returns null for every test using this fixture.
+  fs.writeFileSync(path.join(bridgeDir, "uefn_bridge.py"), "# shipped bridge marker");
 }
 
 /**
@@ -97,9 +101,21 @@ function writeProjectFixture(root: string): void {
   fs.writeFileSync(agentPath, buildAgentMarkdown(UEFN_AGENT, "uefn"));
 }
 
-function ensurePacksFresh(root: string, extensionRoot: string): void {
+// `_verifiedUefnBridgeStampValue` (called internally by
+// `_ensureInstalledPacksFresh`) calls `this._powerToolsDir()`, which itself
+// reads `this._extensionUri.fsPath` and `this._globalStorageUri.fsPath` --
+// both must be on the receiver, plus `_powerToolsDir` itself, or the
+// resolver throws and every verified-stamp verdict below degrades to
+// `stale:error(...)` instead of the real content-comparison result under
+// test. No installed copy is staged in these fixtures, so `globalStorageDir`
+// is an empty dir the caller owns and cleans up -- that makes rung 2
+// resolve to nothing and fall through to the bundled rung at `extensionRoot`
+// (content-validated there by `writeExtensionFixture`'s uefn_bridge.py marker).
+function ensurePacksFresh(root: string, extensionRoot: string, globalStorageDir: string): void {
   const fakeThis = {
     _extensionUri: { fsPath: extensionRoot },
+    _globalStorageUri: { fsPath: globalStorageDir },
+    _powerToolsDir: (TycoonPanel.prototype as any)._powerToolsDir,
     _projectRoot: () => root,
     _hooksInstalledForRoot: () => true,
     _currentExtensionVersion: (TycoonPanel.prototype as any)._currentExtensionVersion,
@@ -129,6 +145,7 @@ test("_ensureInstalledPacksFresh records the bridge as stale:missing when the pa
   const projectTmp = tmpDir("panelPackStampBridge-missing-proj-");
   const extensionRoot = tmpDir("panelPackStampBridge-missing-ext-");
   const verseProjectRoot = tmpDir("panelPackStampBridge-missing-vproj-");
+  const globalStorageDir = tmpDir("panelPackStampBridge-missing-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     // Workspace opened directly at a confirmed content dir (a real .verse
@@ -145,7 +162,7 @@ test("_ensureInstalledPacksFresh records the bridge as stale:missing when the pa
     writeExtensionFixture(extensionRoot);
     writeProjectFixture(root);
 
-    ensurePacksFresh(root, extensionRoot);
+    ensurePacksFresh(root, extensionRoot, globalStorageDir);
 
     const stamp = readStamp(root);
     assert.equal(stamp.version, BUNDLED_VERSION);
@@ -166,6 +183,7 @@ test("_ensureInstalledPacksFresh records the bridge as stale:missing when the pa
     fs.rmSync(projectTmp, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -173,6 +191,7 @@ test("_ensureInstalledPacksFresh records the bridge's real verified version when
   const projectTmp = tmpDir("panelPackStampBridge-current-proj-");
   const extensionRoot = tmpDir("panelPackStampBridge-current-ext-");
   const verseProjectRoot = tmpDir("panelPackStampBridge-current-vproj-");
+  const globalStorageDir = tmpDir("panelPackStampBridge-current-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     process.env.UEFN_VERSE_PROJECT_DIR = verseProjectRoot;
@@ -190,7 +209,7 @@ test("_ensureInstalledPacksFresh records the bridge's real verified version when
     writeExtensionFixture(extensionRoot);
     writeProjectFixture(root);
 
-    ensurePacksFresh(root, extensionRoot);
+    ensurePacksFresh(root, extensionRoot, globalStorageDir);
 
     const stamp = readStamp(root);
     assert.equal(stamp.packs?.uefn, BUNDLED_VERSION);
@@ -205,6 +224,7 @@ test("_ensureInstalledPacksFresh records the bridge's real verified version when
     fs.rmSync(projectTmp, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -212,6 +232,7 @@ test("_ensureInstalledPacksFresh records the bridge as stale:<old-version> when 
   const projectTmp = tmpDir("panelPackStampBridge-outdated-proj-");
   const extensionRoot = tmpDir("panelPackStampBridge-outdated-ext-");
   const verseProjectRoot = tmpDir("panelPackStampBridge-outdated-vproj-");
+  const globalStorageDir = tmpDir("panelPackStampBridge-outdated-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     process.env.UEFN_VERSE_PROJECT_DIR = verseProjectRoot;
@@ -225,7 +246,7 @@ test("_ensureInstalledPacksFresh records the bridge as stale:<old-version> when 
     writeExtensionFixture(extensionRoot);
     writeProjectFixture(root);
 
-    ensurePacksFresh(root, extensionRoot);
+    ensurePacksFresh(root, extensionRoot, globalStorageDir);
 
     const stamp = readStamp(root);
     assert.equal(stamp.packs?.uefn, BUNDLED_VERSION);
@@ -236,5 +257,6 @@ test("_ensureInstalledPacksFresh records the bridge as stale:<old-version> when 
     fs.rmSync(projectTmp, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });

@@ -56,13 +56,26 @@ function findEngineBridgeDir(programDataRoot: string): string | null {
   return (TycoonPanel.prototype as any)._findFortniteEngineBridgeDir.call({}, programDataRoot);
 }
 
-// `_refreshEngineBridgeCopy` reads `this._extensionUri.fsPath` to locate the
-// shipped `media/uefn-bridge` dir -- mirrors test/panelBridgeStaleness.test.ts's
-// `bridgeStale` receiver shape. `shippedRoot` stands in for the extension
-// install dir; the REAL shipped media/uefn-bridge (owned by another worker)
-// is never touched.
-function refreshEngineBridgeCopy(engineDir: string, shippedRoot: string): "updated" | "current" | "unavailable" {
-  const fakeThis = { _extensionUri: { fsPath: shippedRoot } };
+// `_refreshEngineBridgeCopy` calls `this._powerToolsDir()`, which reads
+// `this._extensionUri.fsPath` and `this._globalStorageUri.fsPath` to resolve
+// the shipped bridge dir via `resolvePowerToolsDir`'s ladder -- mirrors
+// test/panelBridgeStaleness.test.ts's `bridgeStale` receiver shape.
+// `shippedRoot` stands in for the extension install dir (its
+// `media/uefn-bridge` subdir is the bundled/rung-3 fallback, content-
+// validated by a `uefn_bridge.py` marker); the REAL shipped
+// media/uefn-bridge (owned by another worker) is never touched.
+// `globalStorageDir` is always an empty dir the caller owns and cleans up,
+// so rung 2 (installed copy) resolves to nothing and rung 3 (bundled) wins.
+function refreshEngineBridgeCopy(
+  engineDir: string,
+  shippedRoot: string,
+  globalStorageDir: string
+): "updated" | "current" | "unavailable" {
+  const fakeThis = {
+    _extensionUri: { fsPath: shippedRoot },
+    _globalStorageUri: { fsPath: globalStorageDir },
+    _powerToolsDir: (TycoonPanel.prototype as any)._powerToolsDir,
+  };
   return (TycoonPanel.prototype as any)._refreshEngineBridgeCopy.call(fakeThis, engineDir);
 }
 
@@ -154,6 +167,7 @@ test("_findFortniteEngineBridgeDir returns null when the manifests dir doesn't e
 test("_refreshEngineBridgeCopy copies shipped files and preserves unrelated files when the engine stamp is stale", () => {
   const engineDir = tmpDir("panelEngineBridgePush-refresh-stale-engine-");
   const shippedRoot = tmpDir("panelEngineBridgePush-refresh-stale-shipped-");
+  const globalStorageDir = tmpDir("panelEngineBridgePush-refresh-stale-storage-");
   try {
     const shippedDir = path.join(shippedRoot, "media", "uefn-bridge");
     fs.mkdirSync(shippedDir, { recursive: true });
@@ -169,7 +183,7 @@ test("_refreshEngineBridgeCopy copies shipped files and preserves unrelated file
     fs.writeFileSync(path.join(engineDir, "uefn_bridge.py"), "# old stale bridge code");
     fs.writeFileSync(path.join(engineDir, "unreal_legacy_file.py"), "# UEFN's own file -- must survive");
 
-    const result = refreshEngineBridgeCopy(engineDir, shippedRoot);
+    const result = refreshEngineBridgeCopy(engineDir, shippedRoot, globalStorageDir);
 
     assert.equal(result, "updated");
     assert.equal(fs.readFileSync(path.join(engineDir, "bridge_version.py"), "utf8"), 'BRIDGE_VERSION = "1.2.4"\n');
@@ -187,12 +201,14 @@ test("_refreshEngineBridgeCopy copies shipped files and preserves unrelated file
   } finally {
     fs.rmSync(engineDir, { recursive: true, force: true });
     fs.rmSync(shippedRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("_refreshEngineBridgeCopy is a no-op returning \"current\" when the stamps already match", () => {
   const engineDir = tmpDir("panelEngineBridgePush-refresh-current-engine-");
   const shippedRoot = tmpDir("panelEngineBridgePush-refresh-current-shipped-");
+  const globalStorageDir = tmpDir("panelEngineBridgePush-refresh-current-storage-");
   try {
     const shippedDir = path.join(shippedRoot, "media", "uefn-bridge");
     fs.mkdirSync(shippedDir, { recursive: true });
@@ -205,7 +221,7 @@ test("_refreshEngineBridgeCopy is a no-op returning \"current\" when the stamps 
     fs.writeFileSync(path.join(engineDir, "bridge_version.py"), `${stamp}\n\n  \n`);
     fs.writeFileSync(path.join(engineDir, "uefn_bridge.py"), "# untouched engine bridge code");
 
-    const result = refreshEngineBridgeCopy(engineDir, shippedRoot);
+    const result = refreshEngineBridgeCopy(engineDir, shippedRoot, globalStorageDir);
 
     assert.equal(result, "current");
     assert.equal(
@@ -216,11 +232,13 @@ test("_refreshEngineBridgeCopy is a no-op returning \"current\" when the stamps 
   } finally {
     fs.rmSync(engineDir, { recursive: true, force: true });
     fs.rmSync(shippedRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("_refreshEngineBridgeCopy returns \"unavailable\" when the engine dir doesn't exist", () => {
   const shippedRoot = tmpDir("panelEngineBridgePush-refresh-missing-shipped-");
+  const globalStorageDir = tmpDir("panelEngineBridgePush-refresh-missing-storage-");
   try {
     const shippedDir = path.join(shippedRoot, "media", "uefn-bridge");
     fs.mkdirSync(shippedDir, { recursive: true });
@@ -229,11 +247,12 @@ test("_refreshEngineBridgeCopy returns \"unavailable\" when the engine dir doesn
 
     const missingEngineDir = path.join(shippedRoot, "does-not-exist", "Python");
 
-    const result = refreshEngineBridgeCopy(missingEngineDir, shippedRoot);
+    const result = refreshEngineBridgeCopy(missingEngineDir, shippedRoot, globalStorageDir);
 
     assert.equal(result, "unavailable");
     assert.ok(!fs.existsSync(missingEngineDir), "must not create the missing engine dir");
   } finally {
     fs.rmSync(shippedRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });

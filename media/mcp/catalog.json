@@ -92,12 +92,12 @@
     "name": "UEFN Bridge (Trashbyrd's Power Tools)",
     "description": "Live UEFN editor control from Claude — read/set actor properties, run audits, and browse materials, textures, and the level via Trashbyrd's Power Tools.",
     "requiresEnv": [],
-    "note": "Local bridge — runs on your machine and only talks to your open UEFN session via temp-file IPC (no external calls). The MCP server is bundled with this extension (path resolves automatically on install). Prereqs: Node.js on your PATH (the server runs via `node`), and Trashbyrd's Power Tools' Python bridge installed in your UEFN project (Content/Python) and started in-editor. Both sides default to %TEMP%/uefn_bridge (machine-agnostic); for a custom dir set UEFN_BRIDGE_DIR for both UEFN and this server.",
+    "note": "Local bridge — runs on your machine and only talks to your open UEFN session via temp-file IPC (no external calls). Power Tools installs on demand from its own GitHub Releases (Corsair-Studios/trashbyrds-uefn-power-tools) into this extension's storage — install it via the Power Tools install flow before enabling this server. Prereqs: Node.js on your PATH (the server runs via `node`), and Trashbyrd's Power Tools' Python bridge installed in your UEFN project (Content/Python) and started in-editor. Both sides default to %TEMP%/uefn_bridge (machine-agnostic); for a custom dir set UEFN_BRIDGE_DIR for both UEFN and this server.",
     "thirdParty": false,
     "vendor": "Trashbyrd's Power Tools",
     "network": false,
     "dataNote": "Runs locally; bridges Claude to your open UEFN session over temp-file IPC. No external/network calls.",
-    "config": { "command": "node", "args": ["${EXTENSION_DIR}/media/uefn-bridge/uefn-server.mjs"] }
+    "config": { "command": "node", "args": ["${POWER_TOOLS_DIR}/uefn-server.mjs"] }
   },
   {
     "id": "unreal-engine-mcp",

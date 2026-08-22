@@ -49,9 +49,6 @@ AGENTS-CONFIG-REPORT.md
 
 # Local project MCP config (machine-specific paths)
 .mcp.json
-
-# Local machine-specific target dir for the Power Tools sync script
-scripts/powertools-sync.local.json
 design-doc/*.mp4
 
 # Python bytecode caches (must never be tracked or shipped in the VSIX)

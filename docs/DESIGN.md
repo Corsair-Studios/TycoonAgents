@@ -88,8 +88,8 @@ I made reasonable calls so the foundation isn't blocked. Override any of these:
 - **First host:** VS Code extension; core kept host-agnostic.
 - **Renderer:** canvas-based 2D sprite animation (proven, lightweight, theme-friendly).
 - **License:** custom, not OSI-approved — free for personal use; no commercial sale, bundling, or redistribution without permission (decided 2026-06-21; see `LICENSE`).
-- **Repo structure:** monorepo; the UEFN **Power Tools** live at `packages/uefn-power-tools/` as the single source of truth, with the standalone distribution published from it (decided 2026-06-21). See `DISTRIBUTION.md`.
-- **Power Tools license:** same terms as the suite (see `LICENSE`), included in the suite (decided 2026-06-21).
+- **Repo structure:** the UEFN **Power Tools** are an independent, public repo (`github.com/Corsair-Studios/trashbyrds-uefn-power-tools`) that is the single source of truth and publishes its own releases; TycoonAgents consumes it as an optional on-demand install rather than bundling it (decided 2026-06-21; updated 2026-08-21). See `DISTRIBUTION.md`.
+- **Power Tools license:** licensed independently by its own repo, not bundled with the suite (decided 2026-06-21; updated 2026-08-21).
 
 ## 9. Open — needs your call
 - **Name finalization + trademark check.**

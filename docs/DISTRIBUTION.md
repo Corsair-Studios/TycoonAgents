@@ -5,9 +5,8 @@
 ## 1. Licensing
 - The entire suite is free for personal use under a custom license (not OSI-approved; see `LICENSE`) — no commercial sale, bundling, or redistribution without permission. This includes the bundled **UEFN Power Tools** (clean IP, written post-employment).
 
-## 2. Repository structure (monorepo, single source of truth)
-- **Monorepo.** The visualization core/host and the UEFN Power Tools live in one repo.
-- **Power Tools = `packages/uefn-power-tools/` is the single source of truth.** It may *also* ship standalone, but the standalone distribution is **published from this package by a build/sync step** — never hand-maintained as a second copy. (Hand-maintained second copies drift; fix = one source + generation.)
+## 2. Repository structure (independent Power Tools repo, single source of truth)
+- **UEFN Power Tools is an independent, public repo** (`github.com/Corsair-Studios/trashbyrds-uefn-power-tools`) — the single source of truth, publishing its own GitHub Releases via its own build pipeline. TycoonAgents does not bundle it; it consumes the published release as an optional on-demand install.
 - General rule: **anything that must exist in 2+ places is generated/published from one source**, never edited by hand in both (cf. the build-time codegen used for the verse agent templates).
 
 ## 3. Ship the plugin, not the framework
@@ -34,4 +33,4 @@ Requirements:
 - Many users share a repo with teammates who do NOT use Claude Code. On setup, add per-developer agent artifacts (`.claude/`, `CLAUDE.md`, local settings) to the user's project **`.gitignore`**, and for **UEFN/Fortnite** projects to **`.urcignore`** (Unreal Revision Control; `.NET` globbing; add `CLAUDE.md` + `.claude/**`). (See DESIGN section 13.)
 
 ## 7. UEFN integration
-- The UEFN **Power Tools** are the suite's UEFN integration: when a creator works in UEFN with an AI agent (via the Power Tools' MCP bridge), that activity drives the TycoonAgents panel. Bundled under the suite's license (see `LICENSE`), sourced from `packages/uefn-power-tools/` (section 2).
+- The UEFN **Power Tools** are the suite's UEFN integration: when a creator works in UEFN with an AI agent (via the Power Tools' MCP bridge), that activity drives the TycoonAgents panel. Independently licensed and distributed from its own repo (section 2), consumed by TycoonAgents as an optional on-demand install.

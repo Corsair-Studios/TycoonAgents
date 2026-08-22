@@ -71,15 +71,22 @@ function effectiveRoot(root: string): string {
 }
 
 // `_uefnBridgeStale` calls `this._uefnEffectiveRoot` (and its own evidence-
-// ladder call chain, see `UEFN_EVIDENCE_METHODS`) and reads
-// `this._extensionUri.fsPath` — a minimal receiver carrying those is
+// ladder call chain, see `UEFN_EVIDENCE_METHODS`) and `this._powerToolsDir()`,
+// which itself reads `this._extensionUri.fsPath` and
+// `this._globalStorageUri.fsPath` -- a minimal receiver carrying those is
 // enough, mirroring test/panelProjectPlanSkillInstall.test.ts's pattern for
 // `_extensionUri`. `shippedRoot` stands in for the extension install dir; a
-// fake `media/uefn-bridge/bridge_version.py` is written under it by each
-// test — the REAL shipped file (owned by another worker) is never touched.
-function bridgeStale(root: string, shippedRoot: string): boolean {
+// fake `media/uefn-bridge/{bridge_version.py,uefn_bridge.py}` is written
+// under it by each test via `writeShippedBridge` -- the marker file is what
+// makes `resolvePowerToolsDir`'s bundled rung (rung 3) resolve at all. The
+// REAL shipped file (owned by another worker) is never touched. No installed
+// copy is staged, so `globalStorageDir` is an empty dir purely to make rung 2
+// resolve to nothing and fall through to the bundled rung.
+function bridgeStale(root: string, shippedRoot: string, globalStorageDir: string): boolean {
   const fakeThis = {
     _extensionUri: { fsPath: shippedRoot },
+    _globalStorageUri: { fsPath: globalStorageDir },
+    _powerToolsDir: (TycoonPanel.prototype as any)._powerToolsDir,
     ...UEFN_EVIDENCE_METHODS,
   };
   return (TycoonPanel.prototype as any)._uefnBridgeStale.call(fakeThis, root);
@@ -110,6 +117,20 @@ function chmodIfExists(p: string, mode: number): void {
 function writeStamp(dir: string, contents: string): void {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "bridge_version.py"), contents);
+}
+
+// `_powerToolsDir()` resolves via `resolvePowerToolsDir`'s content-validated
+// ladder -- a directory only counts as a legacy "bundled" copy (rung 3) if it
+// contains `uefn_bridge.py`, the marker `hasMarker` checks for. Fixtures
+// that stand in for the shipped `media/uefn-bridge` dir and are read through
+// `this._powerToolsDir()` (i.e. `_uefnBridgeStale`, `_autoUpdateUefnBridgeIfStale`,
+// `_verifiedUefnBridgeStampValue`) must write both files, or the resolver
+// finds nothing and every one of those methods degrades to its "unresolved"
+// fallback instead of exercising the behavior under test.
+function writeShippedBridge(dir: string, stampContents: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "bridge_version.py"), stampContents);
+  fs.writeFileSync(path.join(dir, "uefn_bridge.py"), "# shipped bridge marker");
 }
 
 // `_autoUpdateUefnBridgeIfStale`'s opt-in signal is `uefn_bridge.py`
@@ -176,44 +197,50 @@ test("_uefnEffectiveRoot leaves a normal (non-Content) root unchanged", () => {
 test("_uefnBridgeStale is false when the staged and shipped stamps match", () => {
   const root = tmpDir("panelBridgeStaleness-stale-match-root-");
   const shippedRoot = tmpDir("panelBridgeStaleness-stale-match-shipped-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-stale-match-storage-");
   try {
     const stamp = 'BRIDGE_VERSION = "1.2.3"';
     writeStamp(path.join(root, "Content", "Python"), `# generated\n# do not edit\n\n${stamp}\n`);
-    writeStamp(path.join(shippedRoot, "media", "uefn-bridge"), `# generated\n# do not edit\n\n${stamp}\n`);
+    writeShippedBridge(path.join(shippedRoot, "media", "uefn-bridge"), `# generated\n# do not edit\n\n${stamp}\n`);
 
-    assert.equal(bridgeStale(root, shippedRoot), false);
+    assert.equal(bridgeStale(root, shippedRoot, globalStorageDir), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(shippedRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("_uefnBridgeStale is true when the staged and shipped stamps differ", () => {
   const root = tmpDir("panelBridgeStaleness-stale-diff-root-");
   const shippedRoot = tmpDir("panelBridgeStaleness-stale-diff-shipped-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-stale-diff-storage-");
   try {
     writeStamp(path.join(root, "Content", "Python"), '# generated\n\nBRIDGE_VERSION = "1.2.3"\n');
-    writeStamp(path.join(shippedRoot, "media", "uefn-bridge"), '# generated\n\nBRIDGE_VERSION = "1.2.4"\n');
+    writeShippedBridge(path.join(shippedRoot, "media", "uefn-bridge"), '# generated\n\nBRIDGE_VERSION = "1.2.4"\n');
 
-    assert.equal(bridgeStale(root, shippedRoot), true);
+    assert.equal(bridgeStale(root, shippedRoot, globalStorageDir), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(shippedRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("_uefnBridgeStale falls back to false (not stale) when the staged stamp is missing", () => {
   const root = tmpDir("panelBridgeStaleness-stale-missing-root-");
   const shippedRoot = tmpDir("panelBridgeStaleness-stale-missing-shipped-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-stale-missing-storage-");
   try {
     // No staged bridge_version.py at all -- pre-stamping install.
     fs.mkdirSync(path.join(root, "Content", "Python"), { recursive: true });
-    writeStamp(path.join(shippedRoot, "media", "uefn-bridge"), '# generated\n\nBRIDGE_VERSION = "1.2.4"\n');
+    writeShippedBridge(path.join(shippedRoot, "media", "uefn-bridge"), '# generated\n\nBRIDGE_VERSION = "1.2.4"\n');
 
-    assert.equal(bridgeStale(root, shippedRoot), false);
+    assert.equal(bridgeStale(root, shippedRoot, globalStorageDir), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(shippedRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -309,16 +336,24 @@ test("_healDuplicateUefnBridgeStaging is a no-op when there is no duplicate stag
 // `_findFortniteEngineBridgeDir` first and only calls `_refreshEngineBridgeCopy`
 // with THAT discovered dir -- `engineCalls` captures the exact arg received
 // so a regression back to passing the shipped dir fails the assertion below.
+// `_autoUpdateUefnBridgeIfStale` calls `this._powerToolsDir()` (needing
+// `_extensionUri` + `_globalStorageUri`) in addition to the evidence-ladder
+// methods. No installed copy is staged in these fixtures, so `globalStorageDir`
+// is always an empty dir the caller owns and cleans up -- that makes rung 2
+// resolve to nothing and fall through to the bundled rung at `extensionRoot`.
 async function autoUpdate(
   root: string,
   extensionRoot: string,
   findEngineBridgeDir: () => string | null,
-  refreshEngineBridgeCopy: (bridgeDir: string) => "updated" | "current" | "unavailable"
+  refreshEngineBridgeCopy: (bridgeDir: string) => "updated" | "current" | "unavailable",
+  globalStorageDir: string
 ): Promise<{ engineCalls: string[]; findCalls: number }> {
   const engineCalls: string[] = [];
   let findCalls = 0;
   const fakeThis = {
     _extensionUri: { fsPath: extensionRoot },
+    _globalStorageUri: { fsPath: globalStorageDir },
+    _powerToolsDir: (TycoonPanel.prototype as any)._powerToolsDir,
     ...UEFN_EVIDENCE_METHODS,
     _stageBridgeTo: (TycoonPanel.prototype as any)._stageBridgeTo,
     _healDuplicateUefnBridgeStaging: (TycoonPanel.prototype as any)._healDuplicateUefnBridgeStaging,
@@ -338,18 +373,20 @@ async function autoUpdate(
 test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the DISCOVERED engine dir, not the shipped bridgeDir, even when the project copy is already current", async () => {
   const root = tmpDir("panelBridgeStaleness-auto-engine-current-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-current-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-auto-engine-current-storage-");
   const sentinelEngineDir = tmpDir("panelBridgeStaleness-auto-engine-current-engine-");
   try {
     const stamp = 'BRIDGE_VERSION = "1.2.3"';
     // Project copy already matches bundled -- no project-side staleness.
     writeStagedProjectBridge(path.join(root, "Content", "Python"), `${stamp}\n`);
-    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
+    writeShippedBridge(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
 
     const { engineCalls, findCalls } = await autoUpdate(
       root,
       extensionRoot,
       () => sentinelEngineDir,
-      () => "current"
+      () => "current",
+      globalStorageDir
     );
 
     assert.equal(findCalls, 1, "_findFortniteEngineBridgeDir must be called to discover the engine dir");
@@ -361,6 +398,7 @@ test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the DISCO
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
     fs.rmSync(sentinelEngineDir, { recursive: true, force: true });
   }
 });
@@ -368,16 +406,18 @@ test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the DISCO
 test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the discovered engine dir when the project copy is stale too", async () => {
   const root = tmpDir("panelBridgeStaleness-auto-engine-stale-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-stale-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-auto-engine-stale-storage-");
   const sentinelEngineDir = tmpDir("panelBridgeStaleness-auto-engine-stale-engine-");
   try {
     writeStagedProjectBridge(path.join(root, "Content", "Python"), 'BRIDGE_VERSION = "1.2.3"\n');
-    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
+    writeShippedBridge(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
 
     const { engineCalls } = await autoUpdate(
       root,
       extensionRoot,
       () => sentinelEngineDir,
-      () => "updated"
+      () => "updated",
+      globalStorageDir
     );
 
     assert.equal(engineCalls.length, 1, "_refreshEngineBridgeCopy must still be called alongside a stale project copy");
@@ -385,6 +425,7 @@ test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the disco
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
     fs.rmSync(sentinelEngineDir, { recursive: true, force: true });
   }
 });
@@ -392,9 +433,10 @@ test("_autoUpdateUefnBridgeIfStale calls _refreshEngineBridgeCopy with the disco
 test("_autoUpdateUefnBridgeIfStale never calls _refreshEngineBridgeCopy when the project never opted into UEFN", async () => {
   const root = tmpDir("panelBridgeStaleness-auto-engine-noopt-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-noopt-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-auto-engine-noopt-storage-");
   try {
     // No Content/Python/uefn_bridge.py at all -- opt-in guard returns early.
-    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
+    writeShippedBridge(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "1.2.4"\n');
 
     const { engineCalls, findCalls } = await autoUpdate(
       root,
@@ -402,24 +444,27 @@ test("_autoUpdateUefnBridgeIfStale never calls _refreshEngineBridgeCopy when the
       () => {
         throw new Error("_findFortniteEngineBridgeDir must not be called when opt-in guard returns early");
       },
-      () => "updated"
+      () => "updated",
+      globalStorageDir
     );
     assert.equal(findCalls, 0, "opt-in guard must prevent any engine dir discovery");
     assert.equal(engineCalls.length, 0, "opt-in guard must prevent any engine refresh");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("_autoUpdateUefnBridgeIfStale treats a missing engine dir as unavailable: never calls _refreshEngineBridgeCopy and fires no engine-only toast", async () => {
   const root = tmpDir("panelBridgeStaleness-auto-engine-missing-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-auto-engine-missing-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-auto-engine-missing-storage-");
   try {
     const stamp = 'BRIDGE_VERSION = "1.2.3"';
     // Project copy already current -- isolates the engine-only path.
     writeStagedProjectBridge(path.join(root, "Content", "Python"), `${stamp}\n`);
-    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
+    writeShippedBridge(path.join(extensionRoot, "media", "uefn-bridge"), `${stamp}\n`);
 
     const { engineCalls, findCalls } = await autoUpdate(
       root,
@@ -427,7 +472,8 @@ test("_autoUpdateUefnBridgeIfStale treats a missing engine dir as unavailable: n
       () => null,
       () => {
         throw new Error("_refreshEngineBridgeCopy must not be called when no engine dir was found");
-      }
+      },
+      globalStorageDir
     );
 
     assert.equal(findCalls, 1, "_findFortniteEngineBridgeDir must still be attempted");
@@ -435,6 +481,7 @@ test("_autoUpdateUefnBridgeIfStale treats a missing engine dir as unavailable: n
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -467,6 +514,7 @@ function writeVprojectForAuto(vprojectPath: string, sourceDir: string, name: str
 test("_autoUpdateUefnBridgeIfStale refreshes a STAMPLESS (pre-stamping-era) staged bridge instead of silently skipping it", async () => {
   const root = tmpDir("panelBridgeStaleness-gate-stampless-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-gate-stampless-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-gate-stampless-storage-");
   try {
     const projectPyDir = path.join(root, "Content", "Python");
     // June-era install: real bridge file present, NO bridge_version.py at
@@ -475,7 +523,7 @@ test("_autoUpdateUefnBridgeIfStale refreshes a STAMPLESS (pre-stamping-era) stag
     fs.mkdirSync(projectPyDir, { recursive: true });
     fs.writeFileSync(path.join(projectPyDir, "uefn_bridge.py"), "# STALE June bridge, no stamp");
 
-    writeStamp(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "2.1.0"\n');
+    writeShippedBridge(path.join(extensionRoot, "media", "uefn-bridge"), 'BRIDGE_VERSION = "2.1.0"\n');
 
     const { findCalls } = await autoUpdate(
       root,
@@ -483,7 +531,8 @@ test("_autoUpdateUefnBridgeIfStale refreshes a STAMPLESS (pre-stamping-era) stag
       () => null,
       () => {
         throw new Error("must not be called -- no engine dir in this fixture");
-      }
+      },
+      globalStorageDir
     );
 
     assert.equal(findCalls, 1, "the rail must run past the opt-in gate to reach the engine-refresh step too");
@@ -495,12 +544,14 @@ test("_autoUpdateUefnBridgeIfStale refreshes a STAMPLESS (pre-stamping-era) stag
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("_autoUpdateUefnBridgeIfStale heals a misplaced Content/Content/Python left by the old staging bug, alongside a normal project refresh", async () => {
   const root = tmpDir("panelBridgeStaleness-gate-dupheal-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-gate-dupheal-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-gate-dupheal-storage-");
   try {
     const projectPyDir = path.join(root, "Content", "Python");
     writeStagedProjectBridge(projectPyDir, 'BRIDGE_VERSION = "1.0.0"\n');
@@ -523,7 +574,8 @@ test("_autoUpdateUefnBridgeIfStale heals a misplaced Content/Content/Python left
       () => null,
       () => {
         throw new Error("must not be called -- no engine dir in this fixture");
-      }
+      },
+      globalStorageDir
     );
 
     assert.equal(
@@ -536,6 +588,7 @@ test("_autoUpdateUefnBridgeIfStale heals a misplaced Content/Content/Python left
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -543,6 +596,7 @@ test("_autoUpdateUefnBridgeIfStale field fixture: Plugins-layout project, worksp
   const projectRoot = tmpDir("panelBridgeStaleness-field-plugins-");
   const verseProjectRoot = tmpDir("panelBridgeStaleness-field-plugins-vproj-");
   const extensionRoot = tmpDir("panelBridgeStaleness-field-plugins-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-field-plugins-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     // "<...>\MyIsland_\Plugins\PluginA\Content\" -- the real content dir,
@@ -586,7 +640,8 @@ test("_autoUpdateUefnBridgeIfStale field fixture: Plugins-layout project, worksp
       () => null,
       () => {
         throw new Error("must not be called -- no engine dir in this fixture");
-      }
+      },
+      globalStorageDir
     );
 
     assert.equal(
@@ -608,6 +663,7 @@ test("_autoUpdateUefnBridgeIfStale field fixture: Plugins-layout project, worksp
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -615,6 +671,7 @@ test("_autoUpdateUefnBridgeIfStale never guesses a target: an unresolved evidenc
   const projectRoot = tmpDir("panelBridgeStaleness-field-ambiguous-");
   const verseProjectRoot = tmpDir("panelBridgeStaleness-field-ambiguous-vproj-");
   const extensionRoot = tmpDir("panelBridgeStaleness-field-ambiguous-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-field-ambiguous-storage-");
   const savedOverride = process.env.UEFN_VERSE_PROJECT_DIR;
   try {
     // Two plausible Plugins-layout content dirs, no vproject evidence to
@@ -640,7 +697,8 @@ test("_autoUpdateUefnBridgeIfStale never guesses a target: an unresolved evidenc
       },
       () => {
         throw new Error("must not be called");
-      }
+      },
+      globalStorageDir
     );
 
     assert.equal(findCalls, 0, "an unresolved/ambiguous target must stop the rail before any staging or engine discovery");
@@ -652,6 +710,7 @@ test("_autoUpdateUefnBridgeIfStale never guesses a target: an unresolved evidenc
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(verseProjectRoot, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
@@ -755,6 +814,7 @@ test("_stageBridgeTo: once the lock is cleared, the NEXT call completes cleanly 
 test("_autoUpdateUefnBridgeIfStale end-to-end: a locked sibling blocks the stamp this panel load, then a later panel load (block removed) completes and shows the update toast", async () => {
   const root = tmpDir("panelBridgeStaleness-order-e2e-root-");
   const extensionRoot = tmpDir("panelBridgeStaleness-order-e2e-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-order-e2e-storage-");
   try {
     const projectPyDir = path.join(root, "Content", "Python");
     fs.mkdirSync(projectPyDir, { recursive: true });
@@ -772,6 +832,8 @@ test("_autoUpdateUefnBridgeIfStale end-to-end: a locked sibling blocks the stamp
     const toasts: string[] = [];
     const fakeThis = {
       _extensionUri: { fsPath: extensionRoot },
+      _globalStorageUri: { fsPath: globalStorageDir },
+      _powerToolsDir: (TycoonPanel.prototype as any)._powerToolsDir,
       ...UEFN_EVIDENCE_METHODS,
       _stageBridgeTo: (TycoonPanel.prototype as any)._stageBridgeTo,
       _healDuplicateUefnBridgeStaging: (TycoonPanel.prototype as any)._healDuplicateUefnBridgeStaging,
@@ -816,12 +878,14 @@ test("_autoUpdateUefnBridgeIfStale end-to-end: a locked sibling blocks the stamp
     chmodIfExists(path.join(root, "Content", "Python", "zzz_locked.py"), 0o666);
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("_verifiedUefnBridgeStampValue treats a matching stamp with a missing uefn_bridge.py as stale, not verified", () => {
   const root = tmpDir("panelBridgeStaleness-verify-missing-entry-");
   const extensionRoot = tmpDir("panelBridgeStaleness-verify-missing-entry-ext-");
+  const globalStorageDir = tmpDir("panelBridgeStaleness-verify-missing-entry-storage-");
   try {
     const pyDir = path.join(root, "Content", "Python");
     fs.mkdirSync(pyDir, { recursive: true });
@@ -829,12 +893,18 @@ test("_verifiedUefnBridgeStampValue treats a matching stamp with a missing uefn_
     // never landed (or was removed) -- must not be read as verified.
     fs.writeFileSync(path.join(pyDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
 
+    // The shipped/bundled side needs its own uefn_bridge.py marker so
+    // resolvePowerToolsDir's bundled rung resolves at all -- otherwise
+    // _powerToolsDir() returns null and the method short-circuits to
+    // "unresolved:power-tools-not-installed" before ever reaching the
+    // missing-entry-point check this test targets.
     const bridgeDir = path.join(extensionRoot, "media", "uefn-bridge");
-    fs.mkdirSync(bridgeDir, { recursive: true });
-    fs.writeFileSync(path.join(bridgeDir, "bridge_version.py"), 'BRIDGE_VERSION = "2.1.0"\n');
+    writeShippedBridge(bridgeDir, 'BRIDGE_VERSION = "2.1.0"\n');
 
     const fakeThis = {
       _extensionUri: { fsPath: extensionRoot },
+      _globalStorageUri: { fsPath: globalStorageDir },
+      _powerToolsDir: (TycoonPanel.prototype as any)._powerToolsDir,
       ...UEFN_EVIDENCE_METHODS,
     };
     const value = (TycoonPanel.prototype as any)._verifiedUefnBridgeStampValue.call(fakeThis, root);
@@ -843,5 +913,6 @@ test("_verifiedUefnBridgeStampValue treats a matching stamp with a missing uefn_
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });

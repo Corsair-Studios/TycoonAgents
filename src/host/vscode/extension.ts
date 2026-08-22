@@ -45,7 +45,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const workspacePaths = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
     const projectRootForMcpHeal = resolveProjectRoot(workspacePaths, process.env["CLAUDE_PROJECT_DIR"]);
     if (projectRootForMcpHeal !== "") {
-      healMcpServerPathIfStale(projectRootForMcpHeal, context.extensionUri);
+      healMcpServerPathIfStale(projectRootForMcpHeal, context.extensionUri, context.globalStorageUri.fsPath);
     }
   } catch (e) {
     console.warn("TycoonAgents: MCP heal on activate failed:", e);

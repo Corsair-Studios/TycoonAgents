@@ -63,14 +63,22 @@ function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
-function stageCurrentServer(extensionRoot: string): void {
-  const dir = path.join(extensionRoot, "media", "uefn-bridge");
+// Stages a resolvable Power Tools copy under `<globalStorageDir>/powertools`
+// -- rung 2 of powerToolsInstall.ts's resolvePowerToolsDir ladder (an
+// "installed copy", content-validated by the presence of uefn-server.mjs).
+// Kept separate from the extension root because the resolver no longer
+// looks at `<extensionRoot>/media/uefn-bridge` first; that legacy bundled
+// rung (rung 3) requires uefn_bridge.py, not uefn-server.mjs, so staging
+// only media/uefn-bridge as these tests previously did no longer resolves
+// to anything.
+function stageInstalledServer(globalStorageDir: string): void {
+  const dir = path.join(globalStorageDir, "powertools");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "uefn-server.mjs"), "// current shipped server\n");
 }
 
-function currentServerPathForward(extensionRoot: string): string {
-  return path.join(extensionRoot, "media", "uefn-bridge", "uefn-server.mjs").replace(/\\/g, "/");
+function currentServerPathForward(globalStorageDir: string): string {
+  return path.join(globalStorageDir, "powertools", "uefn-server.mjs").replace(/\\/g, "/");
 }
 
 function fakeExtensionUri(fsPath: string) {
@@ -80,8 +88,9 @@ function fakeExtensionUri(fsPath: string) {
 test("healMcpServerPathIfStale (called directly, not via the panel wrapper): heals a stale versioned extension path to the current one, forward-slashed", () => {
   const root = tmpDir("mcpHealDirect-stale-root-");
   const extensionRoot = tmpDir("mcpHealDirect-stale-ext-");
+  const globalStorageDir = tmpDir("mcpHealDirect-stale-storage-");
   try {
-    stageCurrentServer(extensionRoot);
+    stageInstalledServer(globalStorageDir);
     const mcpPath = path.join(root, ".mcp.json");
     fs.writeFileSync(
       mcpPath,
@@ -95,24 +104,26 @@ test("healMcpServerPathIfStale (called directly, not via the panel wrapper): hea
       })
     );
 
-    healMcpServerPathIfStale(root, fakeExtensionUri(extensionRoot));
+    healMcpServerPathIfStale(root, fakeExtensionUri(extensionRoot), globalStorageDir);
 
     const updated = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
     const healedPath: string = updated.mcpServers["uefn-bridge"].args[0];
-    assert.equal(healedPath, currentServerPathForward(extensionRoot));
+    assert.equal(healedPath, currentServerPathForward(globalStorageDir));
     assert.equal(healedPath.includes("\\"), false, "healed path must use forward slashes");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("healMcpServerPathIfStale (called directly): a non-ours / user-customized entry pointing at an existing custom file is left untouched", () => {
   const root = tmpDir("mcpHealDirect-custom-root-");
   const extensionRoot = tmpDir("mcpHealDirect-custom-ext-");
+  const globalStorageDir = tmpDir("mcpHealDirect-custom-storage-");
   const customDir = tmpDir("mcpHealDirect-custom-build-");
   try {
-    stageCurrentServer(extensionRoot);
+    stageInstalledServer(globalStorageDir);
     const customServerPath = path.join(customDir, "uefn-server.mjs");
     fs.writeFileSync(customServerPath, "// deliberate custom build, not ours\n");
     const mcpPath = path.join(root, ".mcp.json");
@@ -124,13 +135,14 @@ test("healMcpServerPathIfStale (called directly): a non-ours / user-customized e
     fs.writeFileSync(mcpPath, JSON.stringify(original));
     const rawBefore = fs.readFileSync(mcpPath, "utf8");
 
-    healMcpServerPathIfStale(root, fakeExtensionUri(extensionRoot));
+    healMcpServerPathIfStale(root, fakeExtensionUri(extensionRoot), globalStorageDir);
 
     const rawAfter = fs.readFileSync(mcpPath, "utf8");
     assert.equal(rawAfter, rawBefore, "a path outside any tycoonagents dir that still exists must be left byte-for-byte unchanged");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
     fs.rmSync(customDir, { recursive: true, force: true });
   }
 });
@@ -138,22 +150,67 @@ test("healMcpServerPathIfStale (called directly): a non-ours / user-customized e
 test("healMcpServerPathIfStale (called directly): no .mcp.json present is a no-op and never throws", () => {
   const root = tmpDir("mcpHealDirect-none-root-");
   const extensionRoot = tmpDir("mcpHealDirect-none-ext-");
+  const globalStorageDir = tmpDir("mcpHealDirect-none-storage-");
   try {
-    stageCurrentServer(extensionRoot);
-    assert.doesNotThrow(() => healMcpServerPathIfStale(root, fakeExtensionUri(extensionRoot)));
+    stageInstalledServer(globalStorageDir);
+    assert.doesNotThrow(() => healMcpServerPathIfStale(root, fakeExtensionUri(extensionRoot), globalStorageDir));
     assert.equal(fs.existsSync(path.join(root, ".mcp.json")), false, "must never create .mcp.json");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
 
 test("healMcpServerPathIfStale (called directly): empty root string is a guarded no-op, never throws", () => {
   const extensionRoot = tmpDir("mcpHealDirect-emptyroot-ext-");
+  const globalStorageDir = tmpDir("mcpHealDirect-emptyroot-storage-");
   try {
-    stageCurrentServer(extensionRoot);
-    assert.doesNotThrow(() => healMcpServerPathIfStale("", fakeExtensionUri(extensionRoot)));
+    stageInstalledServer(globalStorageDir);
+    assert.doesNotThrow(() => healMcpServerPathIfStale("", fakeExtensionUri(extensionRoot), globalStorageDir));
   } finally {
     fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
+  }
+});
+
+test("healMcpServerPathIfStale (called directly): Power Tools not resolvable anywhere on the ladder leaves an existing .mcp.json entry unchanged", () => {
+  // Proves the location === null branch (mcpHeal.ts:122-134): when
+  // resolvePowerToolsDir finds no copy on ANY rung (no POWERTOOLS_DIR
+  // override, no installed copy under global storage, no legacy bundled
+  // copy under the extension dir), the function must leave the existing
+  // stale entry untouched rather than heal onto -- or clear -- it.
+  const root = tmpDir("mcpHealDirect-unresolvable-root-");
+  const extensionRoot = tmpDir("mcpHealDirect-unresolvable-ext-"); // empty: no media/uefn-bridge/uefn_bridge.py
+  const globalStorageDir = tmpDir("mcpHealDirect-unresolvable-storage-"); // empty: no powertools/ subdir
+  const prevPowertoolsDir = process.env.POWERTOOLS_DIR;
+  delete process.env.POWERTOOLS_DIR;
+  try {
+    const mcpPath = path.join(root, ".mcp.json");
+    const original = {
+      mcpServers: {
+        "uefn-bridge": {
+          command: "node",
+          args: ["c:/Users/someone/.vscode/extensions/tycoonagents.tycoonagents-0.0.424/media/uefn-bridge/uefn-server.mjs"],
+        },
+      },
+    };
+    fs.writeFileSync(mcpPath, JSON.stringify(original));
+    const rawBefore = fs.readFileSync(mcpPath, "utf8");
+
+    assert.doesNotThrow(() => healMcpServerPathIfStale(root, fakeExtensionUri(extensionRoot), globalStorageDir));
+
+    const rawAfter = fs.readFileSync(mcpPath, "utf8");
+    assert.equal(
+      rawAfter,
+      rawBefore,
+      "with Power Tools unresolvable on every ladder rung, the stale entry must be left byte-for-byte unchanged, not cleared or corrupted"
+    );
+  } finally {
+    if (prevPowertoolsDir === undefined) delete process.env.POWERTOOLS_DIR;
+    else process.env.POWERTOOLS_DIR = prevPowertoolsDir;
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+    fs.rmSync(globalStorageDir, { recursive: true, force: true });
   }
 });
