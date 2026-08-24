@@ -40,7 +40,7 @@ import {
   isUserCorrectableImageGenerationError,
   type ImageGenerationApiError,
 } from './imageGenerationError';
-import { sliceAndNormalizeAtlas } from './slicer';
+import { compositeBoardFromFrameKeys, sliceAndNormalizeAtlas } from './slicer';
 import {
   optimizeSpriteBoard,
   optimizeSpriteBoardCanvas,
@@ -2299,6 +2299,32 @@ export async function loadCurrentThemePlan(
   return normalizedPlan?.theme_id === themeId ? normalizedPlan : undefined;
 }
 
+/**
+ * Grid geometry (columns × rows of 128px cells) each sliceable board kind's
+ * own process*Atlas function passes to sliceAndNormalizeAtlas — mirrored here
+ * (not imported from there) because those grids are constructed inline per
+ * kind with kind-specific normalization options; only the columns/rows shape
+ * is needed to lay merged frame_keys back out in the same row-major cell
+ * order for compositeBoardFromFrameKeys. Returns undefined for kinds that
+ * cannot be recomposited this way (environment: single ungridded image).
+ */
+function reviewBoardGridForItemKind(item: ThemeImageReviewItem): { columns: number; rows: number } | undefined {
+  switch (item.kind) {
+    case 'character_atlas': return { columns: 5, rows: 4 };
+    // Rival boards are a compact 5-column board whose row count is the
+    // board's own rival_rows length (1-4 enemies per board — see
+    // processRivalAtlas), not a fixed constant.
+    case 'rival_atlas': return item.rival_rows?.length ? { columns: 5, rows: item.rival_rows.length } : undefined;
+    case 'object_atlas': return { columns: 4, rows: 4 };
+    case 'background_decor_atlas': return { columns: 4, rows: 4 };
+    case 'expression_atlas': return { columns: 4, rows: 2 };
+    case 'achievement_atlas': return { columns: 5, rows: 5 };
+    case 'emote_atlas': return { columns: 5, rows: 4 };
+    case 'environment': return undefined;
+    default: return undefined;
+  }
+}
+
 export async function retryThemeImage(
   globalStorageUri: ThemeStorageRoot,
   themeId: string,
@@ -2504,6 +2530,26 @@ export async function retryThemeImage(
       `Couldn't preserve the selected frame${requestedSlots.length === 1 ? '' : 's'} for ${item.label} — the `
       + 'regenerated board\'s frame layout did not match the previous one, so the whole board was replaced.',
     );
+  }
+  // The review board image at images/<filename>.png was written by
+  // applySlicedAtlasFromBuffer above as the RAW freshly-generated board —
+  // correct when the full board was kept, but stale when partialKeepApplied
+  // just restored some of that board's cells back to their pre-retry values:
+  // without this, the review UI would show an all-new board even though only
+  // the requested slot(s) were actually adopted. Re-composite the on-disk
+  // image from the FINAL merged `frames` so the preview matches what the
+  // game will render. Never touches frames.json/the merge itself — display
+  // only. Environment items are excluded (grid-less single 512×512 image,
+  // never eligible for a grid recomposite).
+  if (partialKeepApplied && item.kind !== 'environment') {
+    const boardGrid = reviewBoardGridForItemKind(item);
+    if (boardGrid) {
+      const recomposited = await compositeBoardFromFrameKeys(frameKeys, frames, boardGrid.columns, boardGrid.rows);
+      const reviewBoardBuffer = item.kind === 'character_atlas'
+        ? await resizeSpriteBoardCanvas(recomposited, 512, 512)
+        : recomposited;
+      await saveReviewImage(globalStorageUri, themeId, item.filename, reviewBoardBuffer);
+    }
   }
   // Single write for BOTH branches (merged partial-keep result, or the
   // untouched full new board when partial-keep wasn't requested/eligible) —

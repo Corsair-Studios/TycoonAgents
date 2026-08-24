@@ -410,6 +410,54 @@ export async function sliceAndNormalizeAtlas(
   };
 }
 
+/**
+ * Composites a set of already-normalized 128×128 frame data URIs into one
+ * magenta-backed review board, in the SAME row-major cell order
+ * sliceAndNormalizeAtlas's own rebuiltBoard uses (slot_id = row * columns + col).
+ *
+ * Used by retryThemeImage's partial-keep path: after a merge restores some
+ * frame keys to their pre-retry stored values, the on-disk review board must
+ * be rebuilt from the FINAL merged frame set (a mix of old and new cells)
+ * rather than persisting the raw freshly-generated board, or the review UI
+ * would show a board that doesn't match what got kept. `frameKeys` must be in
+ * the same order the board's own apply*BoardFrames function pushed them (each
+ * key contributing its frames.json array as consecutive cells), and their
+ * total frame count must equal `columns * rows` exactly, mirroring the
+ * relationship that already holds between every board kind's grid and its
+ * frame_keys (verified against every process*Atlas caller: object/rival/decor/
+ * character/expression/achievement boards all satisfy this by construction).
+ *
+ * @param frameKeys - This board's frame_keys, in cell order.
+ * @param frames - The theme's full frames map; only `frameKeys` entries are read.
+ * @param columns - Grid columns (matches the value passed to sliceAndNormalizeAtlas).
+ * @param rows - Grid rows (matches the value passed to sliceAndNormalizeAtlas).
+ * @returns A magenta-backed PNG buffer, `columns*128` × `rows*128`.
+ */
+export async function compositeBoardFromFrameKeys(
+  frameKeys: readonly string[],
+  frames: Record<string, string[]>,
+  columns: number,
+  rows: number,
+): Promise<Buffer> {
+  if (!Number.isInteger(columns) || columns <= 0 || !Number.isInteger(rows) || rows <= 0) {
+    throw new Error('Sprite board grid dimensions must be positive integers.');
+  }
+  const board = new Jimp(columns * 128, rows * 128, 0xff00ffff);
+  let slotId = 0;
+  for (const key of frameKeys) {
+    const keyFrames = frames[key] ?? [];
+    for (const frameDataUri of keyFrames) {
+      if (slotId >= columns * rows) break;
+      const base64 = frameDataUri.slice(frameDataUri.indexOf(',') + 1);
+      // eslint-disable-next-line no-await-in-loop
+      const frame = await Jimp.read(Buffer.from(base64, 'base64'));
+      board.composite(frame, (slotId % columns) * 128, Math.floor(slotId / columns) * 128);
+      slotId += 1;
+    }
+  }
+  return board.getBufferAsync(Jimp.MIME_PNG);
+}
+
 /** Pixels this dim or dimmer are treated as background, not sprite content, for registration. */
 const REGISTRATION_OPAQUE_THRESHOLD = 16;
 /** Widest drawn drift this mechanically corrects; wider mismatches are left alone. */
