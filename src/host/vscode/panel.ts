@@ -43,7 +43,7 @@ import { parseBridgeVersion, isBridgeVersionNewer, isNumericVersion } from "../.
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { healMcpServerPathIfStale } from "./mcpHeal";
-import { resolvePowerToolsDir } from "./powerToolsInstall";
+import { resolvePowerToolsDir, installPowerTools } from "./powerToolsInstall";
 import { describeFsError } from "./fsErrors";
 import { scanForLegacyBridgeStaging, applyLegacyBridgeCleanup } from "./legacyBridgeCleanup";
 import {
@@ -3512,6 +3512,24 @@ export class TycoonPanel {
         return;
       }
 
+      // This catalog entry's config references ${POWER_TOOLS_DIR} -- fetch
+      // Power Tools automatically (if not already present) before token
+      // resolution below would otherwise throw. Scoped strictly to entries
+      // that actually use the token so unrelated servers (github,
+      // filesystem, ...) never trigger a Power Tools download.
+      if (JSON.stringify(entry.config).includes("${POWER_TOOLS_DIR}")) {
+        const ensured = await this._ensurePowerToolsInstalled();
+        if (!ensured.ok) {
+          void this._panel.webview.postMessage({
+            type: MSG.MCP_INSTALLED,
+            id,
+            ok: false,
+            error: ensured.error,
+          });
+          return;
+        }
+      }
+
       const merged = mergeMcpServer(existing, id, this._resolveConfigTokens(entry.config));
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
       void this._panel.webview.postMessage({
@@ -3909,6 +3927,17 @@ export class TycoonPanel {
         if (hasMcpServer(existing, pack.mcp)) {
           results.mcp = "exists";
         } else {
+          // This pack's MCP entry references ${POWER_TOOLS_DIR} -- fetch
+          // Power Tools automatically (if not already present) before token
+          // resolution below would otherwise throw. Scoped strictly to
+          // entries that actually use the token, same gate as _handleInstallMcp.
+          if (JSON.stringify(entry.config).includes("${POWER_TOOLS_DIR}")) {
+            const ensured = await this._ensurePowerToolsInstalled();
+            if (!ensured.ok) {
+              this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: ensured.error });
+              return;
+            }
+          }
           const merged = mergeMcpServer(existing, pack.mcp, this._resolveConfigTokens(entry.config));
           fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
           results.mcp = "installed";
@@ -4247,6 +4276,36 @@ export class TycoonPanel {
   private _powerToolsDir(): string | null {
     const location = resolvePowerToolsDir(this._extensionUri.fsPath, this._globalStorageUri.fsPath);
     return location === null ? null : location.dir;
+  }
+
+  /**
+   * Ensure Power Tools is available before an install path that needs
+   * `${POWER_TOOLS_DIR}` runs. First checks `resolvePowerToolsDir` (env
+   * override / installed copy / legacy bundled copy) — an existing install
+   * always wins and is never re-downloaded. Only when nothing resolves does
+   * it fetch the latest release via `installPowerTools` and unpack it into
+   * this extension's global storage.
+   *
+   * No progress-reporting channel for long host operations exists elsewhere
+   * in this panel (checked: no `withProgress`/status-bar usage, and the one
+   * existing progress message type, `MSG.THEME_GENERATION_PROGRESS`, is
+   * theme-generation-specific), so `onProgress` is omitted here rather than
+   * inventing a new message channel for this one call site.
+   */
+  private async _ensurePowerToolsInstalled(): Promise<{ ok: true; dir: string } | { ok: false; error: string }> {
+    const existing = resolvePowerToolsDir(this._extensionUri.fsPath, this._globalStorageUri.fsPath);
+    if (existing !== null) {
+      return { ok: true, dir: existing.dir };
+    }
+    const result = await installPowerTools(this._globalStorageUri.fsPath);
+    if (result.ok) {
+      return { ok: true, dir: result.dir };
+    }
+    return {
+      ok: false,
+      error: `${result.error} (tried: ${result.tried.join(", ") || "(none)"}). ` +
+        "Set POWERTOOLS_DIR to an existing Power Tools install to skip this step.",
+    };
   }
 
   /**
