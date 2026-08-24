@@ -13943,6 +13943,18 @@
   /** Last CUMULATIVE metrics array received (state.agentMetrics), re-rendered on a timer so live time ticks. Always cumulative — see metricsScope's doc comment. */
   let lastMetrics = [];
 
+  // Report disclosure open state (fix for the row vanishing ~1s after open
+  // while any agent is active): renderMetricsTable rebuilds #metrics-tbody
+  // from scratch on every tick (tbodyEl.innerHTML = ""), which used to wipe
+  // out the report-disclosure <tr> along with the button that tracked its
+  // own aria-expanded state — open state lived ONLY in the DOM. This Set
+  // holds the stable `agent.id` of every agent whose report row is
+  // currently open, survives the rebuild, and is consulted by
+  // buildMetricsRow to re-open the disclosure row immediately after
+  // re-appending that agent's row. Keyed by agent.id (same identity used
+  // elsewhere in this file, e.g. the orchestrator pin/parentId checks).
+  const openReportAgentIds = new Set();
+
   // Orchestrator "model not detected" warning (see renderSettings's
   // isOrchestrator branch): lastMetrics starts as [] and a "state" push with
   // no orchestrator entry looks identical to never having received one, so
@@ -14020,7 +14032,12 @@
       const reportToggle = document.createElement("button");
       reportToggle.type = "button";
       reportToggle.className = "report-toggle";
-      reportToggle.setAttribute("aria-expanded", "false");
+      // Reflect state carried across rebuilds in openReportAgentIds (see its
+      // doc comment) rather than always starting closed — renderMetricsTable
+      // re-appends the matching disclosure row right after this row when the
+      // agent's id is in that Set.
+      const isOpen = !!(agent.id && openReportAgentIds.has(agent.id));
+      reportToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
       reportToggle.title = "Show this agent's last report";
       reportToggle.textContent = "📄";
       reportToggle.addEventListener("click", (ev) => {
@@ -14130,30 +14147,20 @@
   }
 
   /**
-   * Toggle a disclosure `<tr>` directly beneath `row`, showing `agent`'s
-   * captured `lastReport` text. Built fresh each open (removed on close, not
-   * hidden) so a re-render never leaves a stale disclosure attached to a
-   * detached row. SAFETY: report text is model-generated and flows in via
-   * `textContent` only — never innerHTML/insertAdjacentHTML — so any
-   * markup-looking substring (e.g. "<img onerror=...>") renders as inert
-   * literal text, never a DOM element. Line breaks are preserved with CSS
-   * `white-space: pre-wrap` (see .report-disclosure-text in style.css)
-   * rather than by converting newlines to `<br>` HTML.
-   * @param {HTMLTableRowElement} row
+   * Build a fresh report-disclosure `<tr>` for `agent`. Shared by
+   * toggleReportRow (user click) and buildMetricsRow/renderMetricsTable
+   * (restoring an already-open row after a rebuild) so the markup/classes
+   * stay byte-identical between both paths. SAFETY: report text is
+   * model-generated and flows in via `textContent` only — never
+   * innerHTML/insertAdjacentHTML — so any markup-looking substring (e.g.
+   * "<img onerror=...>") renders as inert literal text, never a DOM
+   * element. Line breaks are preserved with CSS `white-space: pre-wrap`
+   * (see .report-disclosure-text in style.css) rather than by converting
+   * newlines to `<br>` HTML.
    * @param {{lastReport?: string}} agent
+   * @returns {HTMLTableRowElement}
    */
-  function toggleReportRow(row, agent) {
-    const next = row.nextElementSibling;
-    if (next && next.classList && next.classList.contains("report-disclosure-row")) {
-      next.remove();
-      const btn = row.querySelector(".report-toggle");
-      if (btn) btn.setAttribute("aria-expanded", "false");
-      return;
-    }
-
-    const btn = row.querySelector(".report-toggle");
-    if (btn) btn.setAttribute("aria-expanded", "true");
-
+  function buildReportDisclosureRow(agent) {
     const disclosureRow = document.createElement("tr");
     disclosureRow.className = "report-disclosure-row";
     const cell = document.createElement("td");
@@ -14166,7 +14173,35 @@
     pre.textContent = agent.lastReport || "";
     cell.appendChild(pre);
     disclosureRow.appendChild(cell);
-    row.after(disclosureRow);
+    return disclosureRow;
+  }
+
+  /**
+   * Toggle a disclosure `<tr>` directly beneath `row`, showing `agent`'s
+   * captured `lastReport` text. Built fresh each open (removed on close, not
+   * hidden) so a re-render never leaves a stale disclosure attached to a
+   * detached row. Open/closed state for this agent is also recorded in
+   * `openReportAgentIds` (keyed by agent.id) so renderMetricsTable's
+   * periodic full rebuild (tbodyEl.innerHTML = "") can restore the row
+   * instead of silently dropping it — see that Set's doc comment.
+   * @param {HTMLTableRowElement} row
+   * @param {{id?: string, lastReport?: string}} agent
+   */
+  function toggleReportRow(row, agent) {
+    const next = row.nextElementSibling;
+    if (next && next.classList && next.classList.contains("report-disclosure-row")) {
+      next.remove();
+      const btn = row.querySelector(".report-toggle");
+      if (btn) btn.setAttribute("aria-expanded", "false");
+      if (agent && agent.id) openReportAgentIds.delete(agent.id);
+      return;
+    }
+
+    const btn = row.querySelector(".report-toggle");
+    if (btn) btn.setAttribute("aria-expanded", "true");
+    if (agent && agent.id) openReportAgentIds.add(agent.id);
+
+    row.after(buildReportDisclosureRow(agent));
   }
 
   /**
@@ -14239,7 +14274,25 @@
     }
     tbodyEl.innerHTML = "";
     for (const agent of orderedMetrics) {
-      tbodyEl.appendChild(buildMetricsRow(agent, maxAgentTasks, { orchestratorPrice }));
+      const agentRow = buildMetricsRow(agent, maxAgentTasks, { orchestratorPrice });
+      tbodyEl.appendChild(agentRow);
+      // Restore an already-open report disclosure row that this full rebuild
+      // just discarded (see openReportAgentIds's doc comment and the fix
+      // note above toggleReportRow). Only agents that currently HAVE a
+      // report can be open (toggleReportRow is the only place that adds to
+      // the Set, and it's only reachable via the button rendered when
+      // agent.lastReport is present), so lastReport is always available here.
+      if (agent && agent.id && openReportAgentIds.has(agent.id)) {
+        agentRow.after(buildReportDisclosureRow(agent));
+      }
+    }
+    // Prune ids for agents no longer present in this metrics list so the Set
+    // can't grow unbounded across a long session as agents come and go.
+    if (openReportAgentIds.size > 0) {
+      const presentIds = new Set(orderedMetrics.map((a) => a && a.id).filter(Boolean));
+      for (const id of openReportAgentIds) {
+        if (!presentIds.has(id)) openReportAgentIds.delete(id);
+      }
     }
 
     // Append the pricing disclaimer once, after the table. renderMetrics()

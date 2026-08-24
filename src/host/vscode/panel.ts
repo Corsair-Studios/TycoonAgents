@@ -45,6 +45,7 @@ import { detectUefnProject } from "./uefnDetect";
 import { healMcpServerPathIfStale } from "./mcpHeal";
 import { resolvePowerToolsDir } from "./powerToolsInstall";
 import { describeFsError } from "./fsErrors";
+import { scanForLegacyBridgeStaging, applyLegacyBridgeCleanup } from "./legacyBridgeCleanup";
 import {
   probePathHealth,
   detectVerseExtensionState,
@@ -1225,6 +1226,13 @@ export class TycoonPanel {
             void this._handleApplyDoctorFix(parsedApplyDoctorFix.data.removeForeign);
           } else {
             console.error("TycoonAgents: applyDoctorFix payload rejected:", parsedApplyDoctorFix.error.message);
+          }
+        } else if (message.type === MSG.CLEANUP_LEGACY_BRIDGE) {
+          const parsedCleanupLegacyBridge = MSG_SCHEMAS.CLEANUP_LEGACY_BRIDGE.safeParse(message);
+          if (parsedCleanupLegacyBridge.success) {
+            void this._handleCleanupLegacyBridge();
+          } else {
+            console.error("TycoonAgents: cleanupLegacyBridge payload rejected:", parsedCleanupLegacyBridge.error.message);
           }
         } else if (message.type === MSG.DESIGN_DOC_ACTION) {
           await this._handleDesignDocAction((message as any).mode);
@@ -8912,6 +8920,87 @@ export class TycoonPanel {
       });
     } catch (err) {
       void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: false, error: String(err) });
+    }
+  }
+
+  /**
+   * "Clean up orphaned Power Tools staging": TycoonAgents used to bundle
+   * Power Tools and stage it into a user's UEFN project + engine Python
+   * dirs (see `_stageUefnBridgeAllTargets`); that bundled copy no longer
+   * exists, so upgraded installs can be left with stale staged files. This
+   * scans the SAME candidate directories staging itself writes to (the
+   * project's resolved `Content/Python` via `_resolveUefnContentDirEvidence`,
+   * plus every engine dir from `_findFortnitePythonDirs()`), builds a
+   * preview via `scanForLegacyBridgeStaging` (see that module's doc comment
+   * for the intersection-only safety rule), shows a native confirm modal
+   * exactly like `_handleApplyDoctorFix` does for foreign hook commands, and
+   * only deletes on explicit confirmation.
+   *
+   * When Power Tools isn't currently resolvable, `scanForLegacyBridgeStaging`
+   * reports every candidate as skipped (nothing to compare against) rather
+   * than guessing — that's surfaced to the user as a no-op with an
+   * explanatory message instead of a confirm dialog.
+   */
+  private async _handleCleanupLegacyBridge(): Promise<void> {
+    try {
+      const root = this._projectRoot();
+      const candidateDirs: string[] = [];
+
+      if (root !== "") {
+        const resolved = this._resolveUefnContentDirEvidence(root);
+        if (resolved.contentDir !== null) {
+          candidateDirs.push(path.join(resolved.contentDir, "Python"));
+        }
+      }
+      for (const engineDir of this._findFortnitePythonDirs()) {
+        candidateDirs.push(engineDir);
+      }
+
+      const powerToolsDir = this._powerToolsDir();
+      const preview = scanForLegacyBridgeStaging(candidateDirs, powerToolsDir);
+
+      const activeDirs = preview.directories.filter((d) => !d.skipped);
+      if (powerToolsDir === null) {
+        void vscode.window.showWarningMessage(
+          "TycoonAgents: Power Tools must be installed before orphaned staging can be cleaned up " +
+            "(nothing to compare staged files against)."
+        );
+        void this._panel.webview.postMessage({
+          type: MSG.LEGACY_BRIDGE_CLEANUP_DONE,
+          ok: false,
+          error: "Power Tools is not installed.",
+          preview,
+        });
+        return;
+      }
+
+      if (activeDirs.length === 0 || preview.totalFiles === 0) {
+        void vscode.window.showInformationMessage("TycoonAgents: No orphaned Power Tools staging found.");
+        void this._panel.webview.postMessage({ type: MSG.LEGACY_BRIDGE_CLEANUP_DONE, ok: true, result: null, preview });
+        return;
+      }
+
+      const summaryLines = activeDirs.map((d) => `${d.dir} (${d.files.length} file(s))`);
+      const detail = preview.totalFiles <= 40
+        ? activeDirs.flatMap((d) => d.files).join("\n")
+        : `${preview.totalFiles} files across ${activeDirs.length} director${activeDirs.length === 1 ? "y" : "ies"}.`;
+      const answer = await vscode.window.showWarningMessage(
+        "The following orphaned Power Tools files will be permanently removed:\n\n" +
+          summaryLines.join("\n") +
+          "\n\n" +
+          detail,
+        { modal: true },
+        "Remove"
+      );
+      if (answer !== "Remove") {
+        void this._panel.webview.postMessage({ type: MSG.LEGACY_BRIDGE_CLEANUP_DONE, ok: true, result: null, preview, cancelled: true });
+        return;
+      }
+
+      const result = applyLegacyBridgeCleanup(preview);
+      void this._panel.webview.postMessage({ type: MSG.LEGACY_BRIDGE_CLEANUP_DONE, ok: true, result, preview });
+    } catch (err) {
+      void this._panel.webview.postMessage({ type: MSG.LEGACY_BRIDGE_CLEANUP_DONE, ok: false, error: String(err) });
     }
   }
 
