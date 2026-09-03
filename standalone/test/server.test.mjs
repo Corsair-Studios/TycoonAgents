@@ -692,3 +692,165 @@ test('seedBundledThemesIntoStore: a store with an existing (user) theme is left 
   assert.equal(after.length, 1, 'seeding must not add the bundled theme alongside an existing user theme');
   assert.equal(after[0].theme_id, 'my_custom_theme');
 });
+
+// ── Submit feedback (p9-t1) ──────────────────────────────────────────────
+test('POST /message {type: "submitFeedback"} -> feedbackPreview carries the v1 payload plus provider + host: "standalone"', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const previewPromise = collectSseEvent(reader, 'feedbackPreview');
+
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'submitFeedback',
+        category: 'bug',
+        userDescription: 'the theme picker is broken',
+        includeDiagnostics: false,
+        contact: '',
+      }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const preview = await previewPromise;
+    assert.ok(preview.ticketId, 'preview must carry a ticketId');
+    assert.equal(typeof preview.payloadJson, 'string');
+    const payload = JSON.parse(preview.payloadJson);
+    assert.equal(payload.schemaVersion, 1);
+    assert.equal(payload.ticketId, preview.ticketId);
+    assert.equal(payload.category, 'bug');
+    assert.equal(payload.userDescription, 'the theme picker is broken');
+    assert.equal(payload.hostAppName, 'standalone');
+    assert.equal(payload.provider, 'claude-code');
+    assert.equal(payload.host, 'standalone');
+    assert.ok(!('diagnosticMarkdown' in payload), 'no diagnostic report generator wired up yet');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "confirmFeedbackSend"} -> posts the retained body (with provider + host) and replies feedbackResult ok:true', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  const originalFetch = globalThis.fetch;
+  let capturedBody = null;
+  let capturedUrl = null;
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const previewPromise = collectSseEvent(reader, 'feedbackPreview');
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'submitFeedback',
+        category: 'idea',
+        userDescription: 'add a dark mode',
+        includeDiagnostics: false,
+      }),
+    });
+    const preview = await previewPromise;
+
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.startsWith('https://feedback.corsairstudios.com')) {
+        capturedUrl = url;
+        capturedBody = JSON.parse(init.body);
+        return { ok: true, status: 200 };
+      }
+      return originalFetch(url, init);
+    };
+
+    const resultPromise = collectSseEvent(reader, 'feedbackResult');
+    const confirmRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'confirmFeedbackSend', ticketId: preview.ticketId }),
+    });
+    assert.equal(confirmRes.status, 202);
+
+    const result = await resultPromise;
+    assert.equal(result.ok, true);
+    assert.equal(result.ticketId, preview.ticketId);
+    assert.equal(capturedUrl, 'https://feedback.corsairstudios.com/submit');
+    assert.equal(capturedBody.provider, 'claude-code');
+    assert.equal(capturedBody.host, 'standalone');
+    assert.equal(capturedBody.ticketId, preview.ticketId);
+  } finally {
+    globalThis.fetch = originalFetch;
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "confirmFeedbackSend"} -> network failure replies feedbackResult ok:false and retains the ticket for retry', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  const originalFetch = globalThis.fetch;
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const previewPromise = collectSseEvent(reader, 'feedbackPreview');
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'submitFeedback', category: 'other', userDescription: 'x', includeDiagnostics: false }),
+    });
+    const preview = await previewPromise;
+
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.startsWith('https://feedback.corsairstudios.com')) {
+        throw new Error('network unreachable');
+      }
+      return originalFetch(url, init);
+    };
+
+    const resultPromise = collectSseEvent(reader, 'feedbackResult');
+    const confirmRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'confirmFeedbackSend', ticketId: preview.ticketId }),
+    });
+    assert.equal(confirmRes.status, 202);
+
+    const result = await resultPromise;
+    assert.equal(result.ok, false);
+    assert.equal(result.ticketId, preview.ticketId);
+    assert.ok(typeof result.error === 'string' && result.error.length > 0);
+
+    // Retry: the ticket must still be retained after a failed send.
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.startsWith('https://feedback.corsairstudios.com')) {
+        return { ok: true, status: 200 };
+      }
+      return originalFetch(url, init);
+    };
+    const retryResultPromise = collectSseEvent(reader, 'feedbackResult');
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'confirmFeedbackSend', ticketId: preview.ticketId }),
+    });
+    const retryResult = await retryResultPromise;
+    assert.equal(retryResult.ok, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    controller.abort();
+    await runtime.close();
+  }
+});

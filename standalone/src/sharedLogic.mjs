@@ -61,6 +61,7 @@ const CLAUDE_CODE_PROVIDER_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 
 const REGISTER_ALL_MAPPERS_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'registerAllMappers.js');
 const HOOK_INSTALL_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'hookInstall.js');
 const PROVIDER_SELECTION_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'providerSelection.js');
+const FEEDBACK_SUBMIT_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'feedbackSubmit.js');
 
 const require = createRequire(import.meta.url);
 
@@ -134,6 +135,14 @@ function providerSelectionModule() {
     _providerSelectionModule = requireCompiled(PROVIDER_SELECTION_JS, 'out/src/core/providerSelection.js');
   }
   return _providerSelectionModule;
+}
+
+let _feedbackSubmitModule;
+function feedbackSubmitModule() {
+  if (!_feedbackSubmitModule) {
+    _feedbackSubmitModule = requireCompiled(FEEDBACK_SUBMIT_JS, 'out/src/host/vscode/feedbackSubmit.js');
+  }
+  return _feedbackSubmitModule;
 }
 
 function assertFn(fn, name, sourceLabel) {
@@ -249,4 +258,53 @@ export function getTycoonHookSlots() {
     );
   }
   return slots;
+}
+
+/** Canonical feedback-submit endpoint (spec-baked, same hostname the VS Code
+ * host uses) — read lazily from the compiled feedbackSubmit.js so it can
+ * never drift from panel.ts's constant.
+ * @type {() => string} */
+export function getFeedbackEndpoint() {
+  const url = feedbackSubmitModule().FEEDBACK_ENDPOINT;
+  if (typeof url !== 'string' || url === '') {
+    throw new Error(
+      '[tycoonagents-standalone] sharedLogic: expected "FEEDBACK_ENDPOINT" to be exported as a non-empty ' +
+        'string from out/src/host/vscode/feedbackSubmit.js. Run `npx tsc -p .` and verify the export still exists.',
+    );
+  }
+  return url;
+}
+
+/** Fallback web form shown to the user when a feedback submission fails. */
+export function getFeedbackFallbackFormUrl() {
+  const url = feedbackSubmitModule().FALLBACK_FORM_URL;
+  if (typeof url !== 'string' || url === '') {
+    throw new Error(
+      '[tycoonagents-standalone] sharedLogic: expected "FALLBACK_FORM_URL" to be exported as a non-empty ' +
+        'string from out/src/host/vscode/feedbackSubmit.js. Run `npx tsc -p .` and verify the export still exists.',
+    );
+  }
+  return url;
+}
+
+/** Builds the exact v1 feedback payload object (schemaVersion, ticketId,
+ * createdAt, category, sanitized userDescription/contact, ...) — the same
+ * function panel.ts's `_handleSubmitFeedback` calls.
+ * @type {(input: object, ctx: object) => object} */
+export function buildFeedbackPayload(input, ctx) {
+  const fn = assertFn(
+    feedbackSubmitModule().buildFeedbackPayload,
+    'buildFeedbackPayload',
+    'out/src/host/vscode/feedbackSubmit.js',
+  );
+  return fn(input, ctx);
+}
+
+/** POSTs `bodyString` to `endpoint` via `fetchImpl`, aborting after
+ * `timeoutMs`. Never throws — resolves `{ ok, error? }`. Same function
+ * panel.ts's `_handleConfirmFeedbackSend` calls.
+ * @type {(bodyString: string, endpoint: string, fetchImpl: Function, timeoutMs?: number) => Promise<{ok: boolean, error?: string}>} */
+export function postFeedback(bodyString, endpoint, fetchImpl, timeoutMs) {
+  const fn = assertFn(feedbackSubmitModule().postFeedback, 'postFeedback', 'out/src/host/vscode/feedbackSubmit.js');
+  return fn(bodyString, endpoint, fetchImpl, timeoutMs);
 }

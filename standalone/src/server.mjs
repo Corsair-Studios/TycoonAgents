@@ -46,6 +46,7 @@
 
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -85,6 +86,7 @@ import {
   handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
 import { handleRestorePlanBackup } from './projectPlanMessages.mjs';
+import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, postFeedback } from './sharedLogic.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -221,6 +223,32 @@ let primaryProjectRoot;
 // above (both null out any stale prior startServer() call's config on a
 // fresh call, e.g. in tests).
 let themeImageConfigGetter;
+
+// ── Feedback ("Submit feedback") retained-ticket store ──────────────────
+// Mirrors panel.ts's `_feedbackTicketBodies` (private class field): a
+// SUBMIT_FEEDBACK preview stores the exact JSON body string here keyed by
+// ticketId so a later CONFIRM_FEEDBACK_SEND posts byte-identical bytes to
+// what was previewed. Module-level (not per-startServer-call) is fine here —
+// same posture panel.ts takes with a single long-lived Map for the process's
+// lifetime; tests that call startServer() multiple times use fresh ticketIds
+// (crypto.randomUUID()) so no cross-test collision is possible.
+const _feedbackTicketBodies = new Map();
+const FEEDBACK_TICKET_MAX_ENTRIES = 50;
+const FEEDBACK_TICKET_MAX_AGE_MS = 30 * 60 * 1000;
+
+function _pruneFeedbackTickets() {
+  const now = Date.now();
+  for (const [id, entry] of _feedbackTicketBodies) {
+    if (now - entry.storedAt > FEEDBACK_TICKET_MAX_AGE_MS) {
+      _feedbackTicketBodies.delete(id);
+    }
+  }
+  while (_feedbackTicketBodies.size >= FEEDBACK_TICKET_MAX_ENTRIES) {
+    const oldestId = _feedbackTicketBodies.keys().next().value;
+    if (oldestId === undefined) break;
+    _feedbackTicketBodies.delete(oldestId);
+  }
+}
 
 // `themeImageAppData` is set by startServer() below to THAT call's own
 // appData handle (same instance getThemeImageConfig() reads through
@@ -618,8 +646,135 @@ function handleBrowserMessage(msg) {
         providerAvailable: false,
       });
       break;
+    // ── Submit feedback (spec: docs/FEEDBACK-PIPELINE-SPEC.md §5) ────────
+    // Standalone analog of panel.ts's _handleSubmitFeedback /
+    // _handleConfirmFeedbackSend (~line 7630, ~7702): same two-step
+    // preview-then-send flow, same MSG.FEEDBACK_PREVIEW/FEEDBACK_RESULT
+    // reply types media/main.js already expects (handleFeedbackPreview/
+    // handleFeedbackResult, main.js:12507-12509), so main.js's feedback
+    // wiring runs completely unmodified. `includeDiagnostics` is accepted
+    // but never attaches a diagnosticMarkdown — the standalone has no
+    // diagnostic-report generator wired up yet (out of scope for this
+    // task); an honest ticket with no diagnostics block is safer than a
+    // fabricated one. Every reply uses the same fire-and-forget
+    // broadcast('message', ...) pattern as every other case in this switch.
+    case 'submitFeedback':
+      // NOTE: unlike THEME_MSG_WIRE cases above, main.js posts these fields
+      // directly on the message object (vscode.postMessage({ type:
+      // "submitFeedback", category, userDescription, ... })), not nested
+      // under `payload` — read from `msg`, not `payload`, here.
+      handleSubmitFeedback(broadcast, msg).catch((err) => {
+        console.error('[tycoonagents-standalone] submitFeedback failed:', err);
+      });
+      break;
+    case 'confirmFeedbackSend':
+      handleConfirmFeedbackSend(broadcast, msg.ticketId).catch((err) => {
+        console.error('[tycoonagents-standalone] confirmFeedbackSend failed:', err);
+      });
+      break;
     default:
       console.log('[tycoonagents-standalone] /message (unhandled):', JSON.stringify(msg));
+  }
+}
+
+/**
+ * SUBMIT_FEEDBACK handler — builds the exact v1 payload (adding a
+ * `provider` field from resolveProviderId() and `host: "standalone"`, which
+ * panel.ts's VS Code payload does not carry) and replies with a PREVIEW
+ * only; no network call happens here. The body string is retained (see
+ * _feedbackTicketBodies above) keyed by ticketId so CONFIRM_FEEDBACK_SEND
+ * posts byte-identical bytes to what was previewed. Never throws outward —
+ * `msg`'s payload is whatever the browser sent (a plain object, guarded
+ * upstream in handleBrowserMessage), so a bad/missing field here degrades
+ * to an honest error reply rather than crashing the server.
+ */
+async function handleSubmitFeedback(broadcastFn, msg) {
+  const payload = msg;
+  try {
+    const category = ['bug', 'idea', 'question', 'other'].includes(payload.category)
+      ? payload.category
+      : 'other';
+    const provider = resolveProviderId({ projectDir: primaryProjectRoot || process.cwd(), env: process.env });
+
+    const basePayload = buildFeedbackPayload(
+      {
+        category,
+        userDescription: typeof payload.userDescription === 'string' ? payload.userDescription : '',
+        contact: typeof payload.contact === 'string' ? payload.contact : '',
+        // No diagnosticMarkdown: standalone has no diagnostic-report
+        // generator wired up yet regardless of `includeDiagnostics`.
+      },
+      {
+        roots: { projectRoot: primaryProjectRoot || null, homeDir: os.homedir(), extensionDir: REPO_ROOT },
+        extensionVersion: readRepoVersion(),
+        platform: process.platform,
+        hostAppName: 'standalone',
+      },
+    );
+    const fullPayload = { ...basePayload, provider, host: 'standalone' };
+
+    const bodyString = JSON.stringify(fullPayload, null, 2);
+    _pruneFeedbackTickets();
+    _feedbackTicketBodies.set(fullPayload.ticketId, { body: bodyString, storedAt: Date.now() });
+    broadcastFn('message', { type: 'feedbackPreview', ticketId: fullPayload.ticketId, payloadJson: bodyString });
+  } catch (err) {
+    console.error('[tycoonagents-standalone] could not build feedback preview:', err);
+  }
+}
+
+/**
+ * CONFIRM_FEEDBACK_SEND handler — the ONLY message that triggers the real
+ * network POST. Looks up the retained body for ticketId; an unknown/expired
+ * id fails safe (feedbackResult ok:false, no network call). On success the
+ * entry is deleted (single-use, matching panel.ts) so a succeeded ticket
+ * can never be resent. On failure (timeout, network error, non-2xx) the
+ * entry is RETAINED so the webview's "Retry Send" can resend the same
+ * ticketId — main.js already renders the fallback URL text itself
+ * (handleFeedbackResult, main.js:16022-16024: "...use the fallback form:
+ * https://feedback.corsairstudios.com"), so the reply here only needs
+ * ok:false + error; no browser-open / fallback-URL message type is needed.
+ * Never throws outward.
+ */
+async function handleConfirmFeedbackSend(broadcastFn, ticketId) {
+  const entry = _feedbackTicketBodies.get(ticketId);
+  const bodyString = entry?.body;
+  if (bodyString === undefined) {
+    broadcastFn('message', {
+      type: 'feedbackResult',
+      ok: false,
+      ticketId,
+      error: 'This feedback preview has expired — please rebuild it and try again.',
+    });
+    return;
+  }
+  try {
+    const result = await postFeedback(bodyString, getFeedbackEndpoint(), fetch);
+    if (result.ok) {
+      _feedbackTicketBodies.delete(ticketId);
+      broadcastFn('message', { type: 'feedbackResult', ok: true, ticketId });
+      return;
+    }
+    broadcastFn('message', { type: 'feedbackResult', ok: false, ticketId, error: result.error });
+  } catch (err) {
+    // postFeedback() is documented never to throw, but guard anyway — a
+    // thrown error here must still resolve to an honest feedbackResult
+    // reply, never an unhandled rejection that leaves the browser hanging.
+    broadcastFn('message', {
+      type: 'feedbackResult',
+      ok: false,
+      ticketId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** Reads `<repo>/package.json`'s `version` field; `'unknown'` if unreadable — matches buildFeedbackPayload()'s own `ctx.extensionVersion ?? 'unknown'` fallback. */
+function readRepoVersion() {
+  try {
+    const pkgRaw = fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8');
+    return JSON.parse(pkgRaw).version || 'unknown';
+  } catch {
+    return 'unknown';
   }
 }
 
@@ -1309,6 +1464,7 @@ function buildHostHtml() {
         <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
         <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
         <button class="menu-item" role="menuitem" id="menu-about">About</button>
+        <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
         ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ''}
       </div>
       <!-- Badge HUD: lower-right gold medallion, shown/updated by media/main.js -->
@@ -1470,6 +1626,19 @@ function buildHostHtml() {
       <button id="badge-modal-close" aria-label="Close dialog">&times;</button>
       <h2 id="badge-modal-title">Badges</h2>
       <div id="badge-list"></div>
+    </div>
+  </div>
+
+  <!-- Feedback modal overlay: houses the "Submit feedback" section moved out
+       of Settings (see the feedback-section builder in media/main.js).
+       Mirrors src/host/vscode/panel.ts's #feedback-modal block exactly (same
+       ids/classes) so main.js's unmodified click/render wiring works as-is. -->
+  <div id="feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title" hidden>
+    <div id="feedback-backdrop" class="settings-subpage-backdrop"></div>
+    <div id="feedback-dialog" class="settings-subpage-dialog">
+      <button id="feedback-modal-close" class="settings-subpage-close" aria-label="Close dialog">&times;</button>
+      <h2 id="feedback-modal-title" class="settings-subpage-title">Feedback</h2>
+      <div id="feedback-modal-body" class="settings-subpage-body"></div>
     </div>
   </div>
 
