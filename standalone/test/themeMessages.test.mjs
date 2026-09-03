@@ -229,3 +229,67 @@ test('handleGetThemeImageReview: a theme with no review.json yet broadcasts an e
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// p9-t2: guards the bug report that the standalone stage draws red-square/"?"
+// fallbacks for rivals and emotes. Investigation found the ACTUAL renderer is
+// media/main.js (src/webview/themeBuilder.ts's frameCache/atlas_asset code,
+// cited in the original report, is dead/unused — grep for "crimson" or
+// "drawnFromAtlas" in media/main.js returns nothing). media/main.js is
+// unmodified between hosts and driven entirely by THEME_INITIALIZED's
+// manifest+frames payload, so this test asserts THAT payload, produced by
+// handleSelectTheme() exactly as server.mjs's seedBundledThemesIntoStore()
+// writes it from media/themes/survivors_vs_zombies/{manifest,frames}.json,
+// has a frames[] entry for every atlas_asset the bundled manifest's roster
+// arrays reference (roster_agents, roster_rivals, buildable_objects,
+// decor_objects) — covering the rival_* and expression_* keys the bug
+// report called out. It passed against the real bundled theme, confirming
+// the standalone's payload is already complete; the visual bug, if still
+// reproducible, is client-side (media/main.js) and out of this file's scope.
+test('handleSelectTheme (bundled survivors_vs_zombies theme): every roster atlas_asset resolves to a non-empty frames[] entry', async () => {
+  const root = mkTempRoot();
+  try {
+    const bundledDir = path.join(
+      path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')),
+      '..', '..', 'media', 'themes', 'survivors_vs_zombies',
+    );
+    const bundledManifest = JSON.parse(fs.readFileSync(path.join(bundledDir, 'manifest.json'), 'utf8'));
+    const bundledFramesBytes = fs.readFileSync(path.join(bundledDir, 'frames.json'));
+
+    const store = createFsThemeFileStore(root);
+    const themeId = bundledManifest.theme_id;
+    await store.writeFile(themeManifestPath(themeId), jsonBytes(bundledManifest));
+    await store.writeFile(themeFramesPath(themeId), bundledFramesBytes);
+
+    const calls = [];
+    await handleSelectTheme(store, fakeBroadcast(calls), themeId);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].data.type, MSG_WIRE.THEME_INITIALIZED);
+    const { manifest, frames } = calls[0].data.payload;
+
+    const refs = new Set();
+    for (const group of ['roster_agents', 'roster_rivals', 'buildable_objects', 'decor_objects']) {
+      for (const item of manifest[group] ?? []) {
+        if (item.atlas_asset) refs.add(item.atlas_asset);
+      }
+    }
+    assert.ok(refs.size > 0, 'sanity: the bundled manifest must reference at least one atlas_asset');
+
+    const missing = [];
+    for (const ref of refs) {
+      const key = ref.split('#')[1];
+      if (!Array.isArray(frames[key]) || frames[key].length === 0) missing.push(ref);
+    }
+    assert.deepEqual(missing, [], `atlas_asset(s) with no usable frames[] entry in THEME_INITIALIZED payload: ${missing.join(', ')}`);
+
+    // Emote/expression frames (rendered via "expression_<0..7>" keys, not a
+    // manifest roster array — see media/main.js's showExpression) must also
+    // be present so the head-bubble never falls back to a bare "?" glyph.
+    for (let i = 0; i < 8; i++) {
+      const key = `expression_${i}`;
+      assert.ok(Array.isArray(frames[key]) && frames[key].length > 0, `missing frames for ${key}`);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
