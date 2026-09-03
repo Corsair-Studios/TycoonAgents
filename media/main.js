@@ -5561,6 +5561,12 @@
     block:     { frames: [14],             fps: 6,  loop: false, flippable: true },
   };
 
+  // True only when the active theme's manifest carries freed_frames: 'v2' —
+  // mirrors themeHasFreedFrames in src/extension/themePlan.ts (parity-
+  // tested there; main.js can't import it since it's a plain webview IIFE,
+  // not bundled). Set on THEME_INITIALIZED; gates stand_back/idle_rare below.
+  let themeFreedFramesEnabled = false;
+
   // RIVAL_CLIPS mirrors the src copy exactly (a test enforces byte parity).
   // Enemies (rivals) use a COMPACT 5-frame sprite: [walk0, walk1,
   // attack0, attack1, attack2]. Enemies only WALK or ATTACK.
@@ -6391,6 +6397,19 @@
   const POINT_CHANCE = 0.01;
   /** Minimum seconds between one agent's playful "point" emotes (rate limit). */
   const EMOTE_COOLDOWN_SEC = 20;
+
+  // ── Ambient idle poses (freed-frames scene behaviour, plan p10-t4) ─────
+  // Mirrors src/webview/animationPlayback.ts's onWalkEnded/updateIdleRare
+  // exactly (parity is hand-maintained, same as ATLAS_CLIPS above) — that
+  // file is the testable copy since main.js is a plain IIFE with no exports.
+  /** Chance a walk-end picks the held "stand_back" pose instead of idle. */
+  const STAND_BACK_CHANCE = 0.25;
+  /** Per-idle-minute chance of playing the "idle_rare" one-shot. */
+  const IDLE_RARE_CHANCE = 0.05;
+  /** Idle_rare is rolled at most once per this many seconds of continuous idle. */
+  const IDLE_RARE_MINUTE_SECONDS = 60;
+  /** Duration of one full idle_rare pass: ATLAS_CLIPS.idle_rare has 2 frames at fps 2. */
+  const IDLE_RARE_DURATION_SECONDS = 1.0;
 
   // ── Expression bubbles (rare, meaningful — see showExpression) ─────────
   /** Minimum seconds between one agent's expression bubbles (shared rate limit). */
@@ -11834,6 +11853,8 @@
 
         // ── Phase 2a: capture buildable objects + resolve stable placement ──
         const manifest = msg.payload?.manifest;
+        // Mirrors themeHasFreedFrames(manifest) in src/extension/themePlan.ts.
+        themeFreedFramesEnabled = !!manifest && manifest.freed_frames === "v2";
         themeBuildables = Array.isArray(manifest?.buildable_objects)
           ? manifest.buildable_objects.slice().sort((a, b) => (a.build_order || 0) - (b.build_order || 0))
             // Legacy manifests pad buildable_objects to 21 entries, ~10 of which
@@ -19857,6 +19878,13 @@
           // Post-recovery immunity window so a just-recovered agent doesn't
           // instantly re-daze off the next stray hit.
           dazeReentryCd: 0,
+          // Ambient idle poses (freed-frames, plan p10-t4): mirrors
+          // AmbientPoseState in src/webview/animationPlayback.ts.
+          standingBack: false,
+          idleRareActive: false,
+          idleRareElapsed: 0,
+          idleMinuteTimer: 0,
+          prevIsMoving: false,
         };
       }
       const charEntry = agentCharMap[agent.id];
@@ -20803,6 +20831,60 @@
       // clobbered back to walk/idle.
       if (isMoving) desiredClip = "walk";
       else if (!isMoving && (desiredClip === "walk")) desiredClip = "idle";
+      // ── Ambient idle poses (freed-frames, plan p10-t4) ────────────────
+      // Mirrors onWalkEnded/updateIdleRare in src/webview/animationPlayback.ts
+      // exactly (parity hand-maintained — see the ATLAS_CLIPS note above).
+      // Walk-end edge: fires the instant isMoving flips true -> false this
+      // frame. Rolls STAND_BACK_CHANCE (gated on the theme flag, never while
+      // active) and latches the result until the next walk/state change.
+      // Any higher-priority override below (build/engage/dance/sit/conga/
+      // emote/etc.) unconditionally reassigns desiredClip for those states,
+      // so a stand_back latch set here is naturally shadowed by them — it
+      // never fights an active task.
+      // Activity can begin without a walk transition (e.g. a task starts
+      // while the agent is standing still mid-idle) — clear the latched
+      // stand_back pose the instant isActive flips true, not only on the
+      // next walk restart.
+      if (isActive) {
+        charEntry.standingBack = false;
+      }
+      if (!isMoving && charEntry.prevIsMoving) {
+        charEntry.standingBack = themeFreedFramesEnabled && !isActive && Math.random() < STAND_BACK_CHANCE;
+      } else if (isMoving) {
+        charEntry.standingBack = false;
+      }
+      if (charEntry.standingBack && !isActive && desiredClip === "idle") {
+        desiredClip = "stand_back";
+      }
+      // Per-idle-minute rare pose: only accrues/rolls while truly idle
+      // (idleAndStill) and the theme flag is on; plays exactly one full
+      // 2-frame/fps-2 pass (IDLE_RARE_DURATION_SECONDS) then falls back to
+      // idle on its own — no external stop needed even though the clip
+      // itself loops.
+      if (!themeFreedFramesEnabled || isActive || !idleAndStill) {
+        charEntry.idleRareActive = false;
+        charEntry.idleRareElapsed = 0;
+        charEntry.idleMinuteTimer = 0;
+      } else if (charEntry.idleRareActive) {
+        charEntry.idleRareElapsed += delta;
+        if (charEntry.idleRareElapsed >= IDLE_RARE_DURATION_SECONDS) {
+          charEntry.idleRareActive = false;
+          charEntry.idleRareElapsed = 0;
+        }
+      } else {
+        charEntry.idleMinuteTimer += delta;
+        if (charEntry.idleMinuteTimer >= IDLE_RARE_MINUTE_SECONDS) {
+          charEntry.idleMinuteTimer -= IDLE_RARE_MINUTE_SECONDS;
+          if (Math.random() < IDLE_RARE_CHANCE) {
+            charEntry.idleRareActive = true;
+            charEntry.idleRareElapsed = 0;
+          }
+        }
+      }
+      if (charEntry.idleRareActive && desiredClip === "idle") {
+        desiredClip = "idle_rare";
+      }
+      charEntry.prevIsMoving = isMoving;
       // BUILD override: once arrived at the standoff spot for an active
       // build target, force the build clip — never while still walking.
       if ((isBuilding || (isExtinguishing && extinguishArrived)) && !isMoving) {
