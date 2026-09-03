@@ -6,6 +6,11 @@ Sitting on top of that harness is a live, game-style visualization of your agent
 
 > **Status:** Working prerelease — not a design sketch. TycoonAgents ships as a real VS Code extension (.vsix) with a small early user base: mandatory delegation, the live visualization, custom themes, an in-panel handbook, and everything else described below runs today. It's still prerelease software — expect rough edges and breaking changes between versions. See [docs/DESIGN.md](docs/DESIGN.md) for the full product & architecture design.
 
+**Three ways to run it:**
+- **VS Code extension with Claude Code** — install the extension and open the panel (see Setup below).
+- **Standalone product** — `node standalone/src/cli.mjs watch .`, no VS Code required; see [`standalone/README.md`](standalone/README.md).
+- **OpenCode as the provider** — `--provider opencode`; see "Using OpenCode as the provider" below and [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md).
+
 ## Mandatory delegation & orchestration
 
 TycoonAgents installs a **delegation doctrine** into your project's `CLAUDE.md` and a roster of specialist sub-agents into `.claude/agents/`. The rule it establishes is simple: **the orchestrator coordinates work — it does not do the work.** Implementation, searching, and exploration are all delegated via the Task tool to the specialist best suited to each job. Doing that work directly on the orchestrator's model costs roughly **5× more per token when the orchestrator is Opus** — more in practice, since the orchestrator re-reads its large context every turn (less if you've configured a cheaper orchestrator model) and hides the work from the visualization.
@@ -65,7 +70,7 @@ Everything it writes is marker-scoped and reversible, and it never stamps your o
 - **In-panel handbook.** A 13-chapter user handbook ships in the VSIX, opened from the book icon in the panel.
 - **Submit Feedback.** An in-panel two-step form shows the exact JSON payload before anything is sent; local paths and API keys are stripped from it first. If the panel won't open, there's a fallback web form at [feedback.corsairstudios.com](https://feedback.corsairstudios.com).
 - **Delegation & Metrics tabs.** Live panel views of what got delegated to which agent and the resulting token-cost breakdown (see "Token savings you can see" below).
-- **UEFN Power Tools bridge.** Live inspection and editing of an open UEFN level from Claude Code agents (see below).
+- **UEFN pack.** Verse authoring skill, LSP/project checks, and the `uefn-auditor`/`verse-expert` agents (see below); the panel can also register Trashbird's UEFN Power Tools as a third-party MCP server if you install it yourself.
 - **Verse analyzer.** Audits UEFN Verse source against the locally installed Verse/Fortnite/Unreal API digests, flagging calls to deprecated or nonexistent APIs.
 - **UEFN moderation pre-flight scan.** Collects the asset names, paths, and metadata Fortnite's island moderation actually inspects, then has your connected AI assistant judge them against Epic's IP and authenticity rules before you submit.
 
@@ -115,11 +120,9 @@ TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of C
 
 See [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md) for the full IPC contract and mapping details. Note: Anthropic/OpenAI models used through OpenCode are billed per API token, not through a Claude/Codex subscription — subscription access reaches OpenCode only via the vendor CLIs (see `docs/OPENCODE-PROVIDER.md`).
 
-## UEFN Power Tools
+## UEFN pack
 
-TycoonAgents ships a **UEFN pack** (Verse authoring skill, LSP/project checks, and the `uefn-auditor`/`verse-expert` agents) for Unreal Editor for Fortnite, but the live-editor bridge itself — Trashbird's **UEFN Power Tools**, a Node.js MCP server paired with a Python bridge that let your agents inspect and edit a *live* UEFN level (`uefn_status`, `uefn_list_devices`, `uefn_get_property`, `uefn_set_property`, `uefn_select_actor`, `uefn_run_audit`, `uefn_get_level_info`) — is a separate, independent project. TycoonAgents does not download, install, or stage it.
-
-To use it: grab a release from [Power Tools' releases page](https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/releases) and follow its `INSTALL.md`, then copy the `uefn-bridge` entry from this repo's [`.mcp.json.example`](.mcp.json.example) (or the matching entry in [`media/mcp/catalog.json`](media/mcp/catalog.json)) into your own `.mcp.json` and fill in `<POWER_TOOLS_DIR>`. See [`docs/POWER-TOOLS-COEXISTENCE.md`](docs/POWER-TOOLS-COEXISTENCE.md) for the full contract.
+TycoonAgents ships a **UEFN pack** for Unreal Editor for Fortnite — the Verse authoring skill, LSP/project checks, and the `uefn-auditor`/`verse-expert` agents. Live inspection and editing of an open UEFN level is provided by Trashbird's **UEFN Power Tools**, a separate, independently installed MCP server that TycoonAgents never downloads, installs, or stages. If you install it yourself, the panel can register it as a third-party MCP entry. See [`docs/POWER-TOOLS-COEXISTENCE.md`](docs/POWER-TOOLS-COEXISTENCE.md) for the full contract and setup steps.
 
 ## Project layout
 - [`docs/DESIGN.md`](docs/DESIGN.md) — product & architecture design (start here).
@@ -136,5 +139,3 @@ Free to use and share, including the bundled theme artwork — but not to be sol
 
 ## Thanks
 Thanks to **IndieDevDan** for his tutorials.
-
-Thanks also to **KirChuvakov**, whose [uefn-mcp-server](https://github.com/kirchuvakov/uefn-mcp-server) is an independent UEFN MCP project we referenced while building this one.
