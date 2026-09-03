@@ -284,3 +284,32 @@ independent of, and not run by, the root repo's `npm test`.
   `out/src/providers/claude-code/index.js` logic described above — reused in
   place rather than forked, so both hosts can never drift apart in how they
   interpret hook data.
+
+## Feature parity
+
+Every feature is identical after setup except the rows marked "not yet";
+the OpenCode column differs from the Claude Code column only in
+provider/vendor/model labels and the token-accounting note (see
+[`docs/OPENCODE-PROVIDER.md`](../docs/OPENCODE-PROVIDER.md)).
+
+| Feature | VS Code (Claude Code) | Standalone (Claude Code) | Standalone (OpenCode) |
+| --- | --- | --- | --- |
+| Board/agent metrics | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
+| Theater/stage | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
+| Themes list + select | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
+| Theme Generator | verified 2026-09-03 | verified server-side; visual check pending | verified server-side; visual check pending |
+| Theme Review | verified 2026-09-03 | verified server-side; visual check pending | verified server-side; visual check pending |
+| Settings dialog | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
+| Skills dialog | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
+| MCP dialog | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
+| Packs | verified 2026-09-03 | not yet (install via VS Code) | not yet (install via VS Code) |
+| Project plan panel | verified 2026-09-03 | not yet | not yet |
+| Delegation panel | verified 2026-09-03 | not yet | not yet |
+| Feedback | verified 2026-09-03 | verified 2026-09-03 (diagnostics attachment not yet) | verified 2026-09-03 (diagnostics attachment not yet) |
+| Handbook | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
+| Diagnostics report | verified 2026-09-03 | not yet | not yet |
+
+Theme Generator/Review note: `standalone/src/themeMessages.mjs` handles the
+messages server-side; rendering fixes landed 2026-09-03 (commit
+"fix(theme-stage)"). Open follow-up: emote-marker rendering still needs a
+visual check in both standalone hosts.
