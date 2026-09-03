@@ -206,3 +206,11 @@ holding any credential themselves.
   prompt-cache-creation tokens and cost; both bridges default to an isolated
   scratch working directory instead, and only load project context when a
   caller sets `cwd` deliberately.
+
+### Getting these agents on a fresh install
+
+A fresh install obtains these four agents via the optional **Multi-LLM
+agents** pack (`media/packs/catalog.json`, id `multi-llm`) from the panel's
+Packs view. Install it only after configuring the matching MCP server
+(codex, gemini, openai-compatible, or claude-cli); the pack has no single
+MCP dependency, so the panel does not show a needs-MCP badge for it.

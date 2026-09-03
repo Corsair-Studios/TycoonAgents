@@ -4,7 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
-import { REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, type PackAgent } from "./packCatalog";
+import { REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, FOREIGN_LLM_AGENTS, type PackAgent } from "./packCatalog";
 import { setKeywordPattern } from "./agentConfig";
 
 /** An agent id paired with its parsed body keywords (see {@link parseAgentKeywords}). */
@@ -27,10 +27,11 @@ function toKeywordMap(agents: PackAgent[]): Record<string, string> {
  * that are missing or empty (which the settings UI renders as an inert
  * `kw1|kw2|kw3` placeholder and disables keyword routing for that agent).
  *
- * The core roster (`REGULAR_AGENTS`/`LEAD_AGENTS`/`REVIEWER_AGENTS`,
- * defined in `./packCatalog`) is spread in directly so these values can
- * never drift from what a fresh install/repair actually writes via
- * `buildAgentMarkdown`/`_installAgentFiles`.
+ * The core roster (`REGULAR_AGENTS`/`LEAD_AGENTS`/`REVIEWER_AGENTS`) and the
+ * opt-in foreign-LLM pack roster (`FOREIGN_LLM_AGENTS`: codex-reviewer,
+ * gemini-reviewer, kimi-reviewer, claude-worker — see `./packCatalog`) are
+ * spread in directly so these values can never drift from what a fresh
+ * install/repair actually writes via `buildAgentMarkdown`/`_installAgentFiles`.
  *
  * The optional capability-pack agents below (verse-expert, uefn-auditor,
  * web-qa, godot, unity, roblox, blender) are installed from
@@ -42,6 +43,7 @@ export const DEFAULT_AGENT_KEYWORDS: Record<string, string> = {
   ...toKeywordMap(REGULAR_AGENTS),
   ...toKeywordMap(LEAD_AGENTS),
   ...toKeywordMap(REVIEWER_AGENTS),
+  ...toKeywordMap(FOREIGN_LLM_AGENTS),
   "verse-expert": "verse|uefn|fortnite|device|island|creative|digest",
   "uefn-auditor": "verse|uefn|fortnite|verse-audit|verse-review|verse-lint",
   "web-qa": "playwright|browser|ui|qa|screenshot|accessibility|e2e|web",
