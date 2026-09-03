@@ -118,6 +118,21 @@ test('character prompt enforces the production sprite-board mime contracts', () 
   assert.match(prompt, /EMPTY TARGET CONTRACT \(HIGHEST PRIORITY\)[\s\S]*No construction result/i);
   assert.match(prompt, /playful, non-graphic, non-contact actions/i);
   assert.equal(CHARACTER_TARGET_CONTENT_HEIGHT, 118);
+});
+
+test('character prompt row 1 cells 3-5 describe impatient idle and back view, not walking', () => {
+  const prompt = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid');
+  assert.match(
+    prompt,
+    /two frames of an impatient idle — the character waiting restlessly \(for example tapping a foot or checking a watch\), same stance and framing in both frames so they loop as one gesture/i,
+  );
+  assert.match(
+    prompt,
+    /the same character standing still, seen from directly behind, back to the viewer/i,
+  );
+  assert.doesNotMatch(prompt, /Cell 3 — CONTACT, foot B forward/i);
+  assert.doesNotMatch(prompt, /Cell 4 — PASSING/i);
+  assert.doesNotMatch(prompt, /Cell 5 — RECOVERY/i);
   assert.equal(CHARACTER_TARGET_CONTENT_PERCENT, 72);
   assert.match(prompt, /complete character from head to feet occupies exactly 72% of the cell height/i);
   assert.match(prompt, /72% against each individual cell/i);

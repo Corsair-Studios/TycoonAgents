@@ -4,8 +4,17 @@ import {
   normalizeThemePlan,
   themePlanToManifest,
   FIXED_EXPRESSION_LABELS,
+  themeHasFreedFrames,
 } from '../src/extension/themePlan';
 import type { ThemePlan } from '../src/extension/themePlan';
+
+test('themeHasFreedFrames is true only for freed_frames: "v2"', () => {
+  assert.equal(themeHasFreedFrames({ freed_frames: 'v2' }), true);
+  assert.equal(themeHasFreedFrames({ freed_frames: 'v1' }), false);
+  assert.equal(themeHasFreedFrames({}), false);
+  assert.equal(themeHasFreedFrames(undefined), false);
+  assert.equal(themeHasFreedFrames(null), false);
+});
 
 test('theme plan normalizes every editable slot to the required count', () => {
   const plan = normalizeThemePlan({

@@ -1727,6 +1727,7 @@ export async function generateTheme(
     buildable_objects: suggestedManifest.buildable_objects!,
     decor_objects: suggestedManifest.decor_objects!,
     badges: buildDefaultBadges(),
+    freed_frames: 'v2',
   };
   const frames: Record<string, string[]> = {};
   const generateStore = resolveThemeFileStore(globalStorageUri);

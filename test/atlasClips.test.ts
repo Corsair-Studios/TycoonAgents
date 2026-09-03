@@ -21,6 +21,8 @@ const REQUIRED_CLIP_NAMES = [
   'point',
   'signal',
   'block',
+  'idle_rare',
+  'stand_back',
 ];
 
 test('ATLAS_CLIPS exposes exactly the required clip names', () => {

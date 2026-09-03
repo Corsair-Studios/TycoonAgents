@@ -22,6 +22,9 @@ const ATLAS_CLIPS = {
   point: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
   signal: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
   block: { frames: [14], fps: 6, loop: false, flippable: true },
+  // Freed row-1 frames (formerly walk cells 3-5), mirrors themePlan.ts.
+  idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
+  stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true },
 };
 
 if (typeof window !== 'undefined') {

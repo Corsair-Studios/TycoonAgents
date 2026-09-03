@@ -5548,6 +5548,11 @@
     cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
     point:     { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
     signal:    { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
+    // Freed row-1 frames (formerly walk cells 3-5). Only played when the
+    // active theme's manifest carries freed_frames: 'v2' — see
+    // themeHasFreedFrames in src/extension/themePlan.ts (parity-tested).
+    idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
+    stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true },
     // Idle ambient combat (cosmetic hit-reaction): a brief block/flinch pose.
     // Frame 14 is this block clip's OWN dedicated dodge/flinch frame (no longer
     // part of the melee clip). Played as a one-shot emote override
