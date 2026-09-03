@@ -47,6 +47,61 @@ function stripBom(s) {
   return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
 }
 
+// Codes seen from Windows' atomic tmp-then-rename write pattern (see
+// hooks/tycoon-claude-hook.cjs's atomicWriteSync) while the writer (the hook,
+// or the VS Code host) briefly holds/replaces the file: EPERM/EBUSY when the
+// rename target is momentarily locked, EACCES on some Windows/AV
+// combinations, ENOENT mid-rename (old name gone, new name not yet visible).
+// All of these are expected to clear within a handful of milliseconds and
+// must never be treated as a real failure.
+const TRANSIENT_FS_CODES = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOENT']);
+
+function isTransientFsError(err) {
+  return !!err && TRANSIENT_FS_CODES.has(err.code);
+}
+
+// Backing buffer for the synchronous sleep in readWithRetrySync — allocated
+// once at module scope and reused across calls rather than per-call.
+const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(ms) {
+  Atomics.wait(_sleepBuf, 0, 0, ms);
+}
+
+/**
+ * Retry a synchronous fs read a few times with a short backoff when it
+ * throws a transient error (see TRANSIENT_FS_CODES) — Windows' atomic
+ * tmp-then-rename write pattern briefly makes the destination path
+ * unreadable while the writer holds/replaces it. A non-transient error (bad
+ * permissions that aren't going to clear, etc.) is thrown immediately on
+ * first failure so callers still see real problems promptly.
+ *
+ * Backoff uses Atomics.wait on a shared buffer for a true blocking sleep
+ * (not a CPU spin). Default attempts=4 with backoff [5, 10, 20]ms bounds
+ * worst-case blocking at 35ms per call, off a 250ms poll tick.
+ * @param {() => T} fn
+ * @param {{ attempts?: number, delayMs?: number | number[] }} [opts]
+ * @returns {T}
+ */
+function readWithRetrySync(fn, opts = {}) {
+  const attempts = opts.attempts ?? 4;
+  const backoff = opts.delayMs ?? [5, 10, 20];
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientFsError(err)) throw err;
+      if (i < attempts - 1) {
+        const delay = Array.isArray(backoff) ? (backoff[i] ?? backoff[backoff.length - 1]) : backoff;
+        sleepSync(delay);
+      }
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * @param {string} projectRoot absolute path to the target project (the dir
  *   containing `.claude/tycoon/`, i.e. what the hook calls CLAUDE_PROJECT_DIR).
@@ -102,6 +157,21 @@ export function createActivityWatcher(projectRoot, opts = {}) {
 
   let closed = false;
 
+  // Rate-limits onError so a run of transient EPERM/EBUSY/ENOENT retries
+  // (which can recur every poll tick while a writer is mid-rename under
+  // load) doesn't spam the log — one line per source per window, not one per
+  // tick. Keyed by source so activity.jsonl and active-agent.json failures
+  // are tracked independently.
+  const ERROR_LOG_WINDOW_MS = 5000;
+  const lastErrorLoggedAt = new Map();
+  function reportError(source, err) {
+    const now = Date.now();
+    const last = lastErrorLoggedAt.get(source) ?? 0;
+    if (now - last < ERROR_LOG_WINDOW_MS) return;
+    lastErrorLoggedAt.set(source, now);
+    onError(err);
+  }
+
   function pollActivity() {
     const stat = safeStat(activityPath);
     if (!stat) {
@@ -124,27 +194,33 @@ export function createActivityWatcher(projectRoot, opts = {}) {
 
     if (stat.size === activityOffset) return; // nothing new
 
-    let fd;
     let buf;
     try {
-      fd = fs.openSync(activityPath, 'r');
-      const length = stat.size - activityOffset;
-      buf = Buffer.alloc(length);
-      fs.readSync(fd, buf, 0, length, activityOffset);
+      buf = readWithRetrySync(() => {
+        const length = stat.size - activityOffset;
+        const b = Buffer.alloc(length);
+        // Open, read, and close within each attempt so a failed attempt
+        // never leaks an fd across retries.
+        const fd = fs.openSync(activityPath, 'r');
+        try {
+          fs.readSync(fd, b, 0, length, activityOffset);
+        } finally {
+          try {
+            fs.closeSync(fd);
+          } catch {
+            /* ignore */
+          }
+        }
+        return b;
+      });
       activityOffset = stat.size;
     } catch (err) {
-      // File vanished/locked between stat and read — leave offset as-is and
-      // retry next tick.
-      onError(err);
+      // File vanished/locked between stat and read, and stayed that way
+      // through the retries above (see readWithRetrySync) — leave offset
+      // as-is and retry next tick. Never propagates past pollAll's own
+      // try/catch, and the watcher/timer are untouched either way.
+      reportError('activity.jsonl', err);
       return;
-    } finally {
-      if (fd !== undefined) {
-        try {
-          fs.closeSync(fd);
-        } catch {
-          /* ignore */
-        }
-      }
     }
 
     activityBuffer += buf.toString('utf8');
@@ -181,9 +257,16 @@ export function createActivityWatcher(projectRoot, opts = {}) {
 
     let raw;
     try {
-      raw = fs.readFileSync(activeAgentPath, 'utf8');
+      raw = readWithRetrySync(() => fs.readFileSync(activeAgentPath, 'utf8'));
     } catch (err) {
-      onError(err);
+      // Transient (EPERM/EBUSY/EACCES/ENOENT — see TRANSIENT_FS_CODES) reads
+      // survived the retries above and still failed: the writer (the hook's
+      // atomicWriteSync, or the VS Code host) is mid tmp-then-rename on
+      // Windows. Keep surfacing the LAST known state rather than clearing
+      // it — never call onActiveAgent(null) here — and log at most once per
+      // ERROR_LOG_WINDOW_MS instead of every poll tick. The watcher keeps
+      // polling; next tick retries the read from scratch.
+      reportError('active-agent.json', err);
       return;
     }
     if (raw === lastActiveAgentRaw) return; // unchanged since last surfaced

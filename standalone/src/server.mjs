@@ -56,6 +56,7 @@ import {
   createFsThemeFileStore,
   themeImagesDirectoryPath,
   themeManifestPath,
+  themeFramesPath,
   legacyManifestPath,
 } from './themeFileStoreFs.mjs';
 import {
@@ -64,6 +65,7 @@ import {
   handleSelectTheme,
   handleDeleteTheme,
   handleGetThemeImageReview,
+  listThemesFromStore,
 } from './themeMessages.mjs';
 import { exportThemeArchiveFromStore, importThemeArchiveToStore } from './themeArchive.mjs';
 import { configureThemeFileStore } from './themeGenerationBridge.mjs';
@@ -229,6 +231,175 @@ let themeImageConfigGetter;
 // theme-image state: a fresh startServer() call always overwrites this.
 let themeImageAppData;
 
+/**
+ * Standalone analog of panel.ts's _handleCheckInstall (~line 4662-4730): the
+ * standalone host has no VS Code extension host, workspace folder, or
+ * bundled Verse extension to probe, so every VS-Code-only signal reports its
+ * safe "not applicable"/off default rather than guessing. `installed: true`
+ * is correct here because the standalone CLI itself IS the "hooks
+ * installed" runtime — there is no separate install step to gate on.
+ * Factored out of the 'checkInstall' case so buildBootHandshakeMessages()
+ * (the initial-message-provider catch-up path, registered in startServer())
+ * can compute the identical payload for a client that connects to /events
+ * AFTER a 'checkInstall' POST already raced past — see that function's doc
+ * comment for why this duplication would otherwise be a real, observed bug.
+ */
+function buildInstallStatePayload() {
+  return {
+    type: 'installState',
+    installed: true,
+    uefnDetected: false,
+    uefnSignals: [],
+    ignoreTargets: [],
+    uefnInstalled: false,
+    uefnBridgeSetUp: false,
+    engineChips: [],
+    foreignManagedBlocks: [],
+    pathHealth: [],
+    pathOverridesFilePath: null,
+    pathOverridesFileExists: false,
+    // Mirrors detectVerseExtensionState()'s "not found" shape exactly
+    // (src/host/vscode/pathHealth.ts ~line 701-710) — there is no editor
+    // extension host in the standalone to probe, so this is never anything
+    // but the "not-installed" verdict.
+    verseExtensionState: {
+      state: 'not-installed',
+      enabledVersion: null,
+      versionsFound: [],
+      multipleVersions: false,
+      message:
+        "Epic's Verse extension check is not applicable in the TycoonAgents standalone server (no editor extension host to probe).",
+    },
+  };
+}
+
+/**
+ * The full boot-handshake reply set media/main.js posts for at load
+ * (checkInstall/getPacks/getEngineStatus/REQUEST_PLAN/
+ * REQUEST_OFFLOAD_OFFER_STATE — main.js:10948-10971), computed fresh so it
+ * can be registered as an initial-message-provider (see
+ * registerInitialMessageProvider, and its call site in startServer()).
+ *
+ * WHY this exists in addition to the individual /message case handlers
+ * above: main.js calls `acquireVsCodeApi()` (which opens the `EventSource`
+ * SSE connection) synchronously at module top, then runs the REST of its
+ * ~17k-line top-level script body before reaching the `ready`/`checkInstall`
+ * posts near the bottom (main.js:10948-10971) — so in practice the SSE
+ * handshake is usually well underway first. But `EventSource`'s underlying
+ * HTTP connection and each `fetch('/message', ...)` POST are two INDEPENDENT
+ * requests with no ordering guarantee between them (slow/contended
+ * localhost socket accept, event-loop scheduling, etc.), and `broadcast()`
+ * only writes to `sseClients` already registered at the moment it's called —
+ * it does not buffer or retry. A `checkInstall` (or the other four) that
+ * arrives at the server before the GET /events handler has added this tab's
+ * response to `sseClients` is silently dropped forever, and the client has
+ * no retry: the boot overlay is then stuck on "Checking installation…"
+ * permanently (the exact previously-reported bug — the "installState" reply
+ * existed but the client that needed it never received it). Registering
+ * this as an initial-message provider means every NEW /events connection
+ * gets the full boot-handshake reply set unconditionally and immediately on
+ * connect, independent of whether the corresponding /message POST already
+ * raced past — so the overlay dismisses even in the race-losing case, and
+ * the individual case handlers above remain correct/idempotent no-ops for
+ * any LATER re-request (e.g. Settings' own checkInstall+getSettings).
+ */
+function buildBootHandshakeMessages() {
+  return [
+    { eventName: 'message', data: buildInstallStatePayload() },
+    { eventName: 'message', data: { type: 'packs', packs: [] } },
+    { eventName: 'message', data: { type: 'engineStatus', chips: [] } },
+    {
+      eventName: 'message',
+      data: {
+        type: 'PLAN_STATE',
+        enabled: false,
+        plan: null,
+        archivedPlans: [],
+        planReadable: true,
+        planError: '',
+        hasBackup: false,
+      },
+    },
+    {
+      eventName: 'message',
+      data: { type: 'OFFLOAD_OFFER_STATE', dismissed: false, accepted: false, providerAvailable: false },
+    },
+  ];
+}
+
+/**
+ * Standalone analog of src/host/vscode/bundledThemeSeeds.ts's
+ * seedBundledThemes() — that function is extension-host-only (imports
+ * 'vscode' directly for both the extensionUri read side and the
+ * ThemeManifest type), so it cannot be require()'d from the standalone's
+ * vscode-free Node process the way sharedLogic.mjs reaches into compiled
+ * `out/`. Reimplemented here against the SAME source assets
+ * (`media/themes/<id>/{manifest.json,frames.json}`, MEDIA_DIR already
+ * resolves this — see the module header) and the standalone's own fs-backed
+ * ThemeFileStore, writing the MODERN per-theme-directory layout
+ * (themeManifestPath/themeFramesPath) rather than bundledThemeSeeds.ts's
+ * legacy flat naming, since listThemesFromStore() (themeMessages.mjs)
+ * documents that "the standalone never writes that [legacy] layout".
+ *
+ * User-theme-wins rule (unchanged from the VS Code host): only seeds when
+ * the store currently has ZERO themes — never overwrites or supplements an
+ * existing theme, bundled or user-created. This is checked via
+ * listThemesFromStore(store), so a user's own theme(s) already present
+ * (any theme_id, not just the bundled one) skips seeding entirely. Without
+ * this, handleReadyThemeBoot() finds nothing on a fresh standalone appData
+ * dir and posts THEME_NONE, which renders the blue/green THEME_NONE
+ * fallback stripes instead of a real theme.
+ *
+ * Never throws: every failure (missing media/themes, bad JSON, write
+ * failure) is caught and logged — a seeding failure must never crash
+ * startServer() or block the boot handshake.
+ */
+export async function seedBundledThemesIntoStore(store) {
+  try {
+    const existing = await listThemesFromStore(store);
+    if (existing.length > 0) {
+      console.log(
+        `[tycoonagents-standalone] theme store already has ${existing.length} theme(s) — skipping bundled-theme seed.`,
+      );
+      return;
+    }
+
+    const bundledThemesDir = path.join(MEDIA_DIR, 'themes');
+    let entries;
+    try {
+      entries = fs.readdirSync(bundledThemesDir, { withFileTypes: true });
+    } catch (err) {
+      console.warn(`[tycoonagents-standalone] no bundled themes dir at ${bundledThemesDir}:`, err);
+      return;
+    }
+
+    const seeded = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const themeDir = path.join(bundledThemesDir, entry.name);
+      let manifest;
+      try {
+        manifest = JSON.parse(fs.readFileSync(path.join(themeDir, 'manifest.json'), 'utf8'));
+      } catch {
+        continue; // not a theme dir (no manifest.json) — skip silently
+      }
+      const themeId = manifest && manifest.theme_id;
+      if (!themeId) continue;
+      try {
+        const frames = fs.readFileSync(path.join(themeDir, 'frames.json'));
+        await store.writeFile(themeManifestPath(themeId), Buffer.from(JSON.stringify(manifest, null, 2)));
+        await store.writeFile(themeFramesPath(themeId), frames);
+        seeded.push(themeId);
+      } catch (err) {
+        console.warn(`[tycoonagents-standalone] could not seed bundled theme "${themeId}":`, err);
+      }
+    }
+    console.log(`[tycoonagents-standalone] seeded bundled theme(s): [${seeded.join(', ')}]`);
+  } catch (err) {
+    console.error('[tycoonagents-standalone] seedBundledThemesIntoStore failed:', err);
+  }
+}
+
 function handleBrowserMessage(msg) {
   if (!msg || typeof msg.type !== 'string') {
     console.log('[tycoonagents-standalone] /message: malformed payload, dropping:', JSON.stringify(msg));
@@ -354,9 +525,246 @@ function handleBrowserMessage(msg) {
     case 'SAVE_THEME_IMAGE_SETTINGS':
       handleSaveThemeImageSettings(broadcast, payload);
       break;
+    // ── Boot-time handshake (media/main.js's boot sequence, ~main.js:10935-
+    // 10971: "ready" then checkInstall/getPacks/getEngineStatus/
+    // REQUEST_PLAN/REQUEST_OFFLOAD_OFFER_STATE fired back-to-back before the
+    // webview's first paint). Every reply here uses the SAME broadcast()
+    // fire-and-forget pattern every other case in this switch uses (there is
+    // no per-request reply channel — POST /message always 202s immediately;
+    // real replies always arrive over the /events SSE stream) and matches
+    // media/main.js's Boolean()/Array.isArray()-guarded field reads, so a
+    // minimal/standalone-appropriate payload here never throws client-side.
+    // Previously these all fell through to the `default` "(unhandled)" log
+    // below, which left the panel stuck on "Checking installation..." and
+    // the theme stage waiting out its 15s pending-fallback timer.
+    case 'ready':
+      // Mirrors panel.ts's MSG.READY handler (src/host/vscode/panel.ts
+      // ~line 905-963): resolve the theme-stage wait immediately by posting
+      // THEME_INITIALIZED for an existing theme, or THEME_NONE otherwise —
+      // never leave the client to hit its own 15s "pending" fallback.
+      handleReadyThemeBoot(themeStore, broadcast).catch((err) => {
+        console.error('[tycoonagents-standalone] ready (theme boot) failed:', err);
+        broadcast('message', { type: THEME_MSG_WIRE.THEME_NONE, payload: {} });
+      });
+      break;
+    case 'checkInstall':
+      // Standalone analog of panel.ts's _handleCheckInstall (~line 4662-
+      // 4730). See buildInstallStatePayload() below for field-by-field
+      // rationale.
+      broadcast('message', buildInstallStatePayload());
+      break;
+    case 'getPacks':
+      // main.js's "packs" handler (renderPacksList(msg.packs, msg.error))
+      // only requires packs to be an array; the standalone doesn't yet
+      // implement the Skills/MCP/Packs catalog installer, so an empty list
+      // is the honest answer rather than a guess.
+      broadcast('message', { type: 'packs', packs: [] });
+      break;
+    case 'getSettings':
+      // Standalone analog of panel.ts's _handleGetSettings (~line 6783-
+      // 6909). main.js's renderSettings() (media/main.js:16239) only shows
+      // "Loading settings…" while `lastSettings` is null/undefined — any
+      // object unblocks it, and every field it reads is `||`/Array.isArray/
+      // Boolean-guarded, so a minimal-but-honest standalone payload (no
+      // roster mutation UI, no context-budget scan) is safe here. This case
+      // was previously MISSING entirely, so getSettings fell through to the
+      // `default` "(unhandled)" log below and the Settings screen never
+      // resolved out of "Loading settings…".
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    case 'getEngineStatus':
+      // main.js's "engineStatus" handler: renderEngineChips(Array.isArray(msg.chips) ? msg.chips : []).
+      broadcast('message', { type: 'engineStatus', chips: [] });
+      break;
+    case 'getSkills':
+      // Standalone analog of panel.ts's _handleGetSkills (~line 3184-3211).
+      // media/skills/catalog.json is a plain file read (no vscode APIs
+      // involved) so, unlike getPacks/getEngineStatus above, the real
+      // catalog is returned here rather than an honest-empty stub. main.js's
+      // renderSkillsList (media/main.js:12837) reads msg.skills/msg.error the
+      // same way regardless of host.
+      broadcast('message', buildSkillsPayload());
+      break;
+    case 'getMcp':
+      // Standalone analog of panel.ts's _handleGetMcp (~line 3384-3418).
+      // media/mcp/catalog.json is likewise a plain file read; installed
+      // status is computed against the primary project's .mcp.json exactly
+      // like panel.ts's hasMcpServer() check.
+      broadcast('message', buildMcpPayload());
+      break;
+    case 'REQUEST_PLAN':
+      // main.js's "PLAN_STATE" handler defaults every field via Boolean()/
+      // Array.isArray()/`|| null`/`!== false` — Project Plan is an optional
+      // feature the standalone doesn't wire up yet, so `enabled: false`
+      // with no plan is the correct off-state, not a stub.
+      broadcast('message', {
+        type: 'PLAN_STATE',
+        enabled: false,
+        plan: null,
+        archivedPlans: [],
+        planReadable: true,
+        planError: '',
+        hasBackup: false,
+      });
+      break;
+    case 'REQUEST_OFFLOAD_OFFER_STATE':
+      // main.js's "OFFLOAD_OFFER_STATE" handler: every field is Boolean()-
+      // guarded and `providerAvailable` is documented to fail CLOSED on any
+      // falsy/missing value, so declining the offer entirely here is safe.
+      broadcast('message', {
+        type: 'OFFLOAD_OFFER_STATE',
+        dismissed: false,
+        accepted: false,
+        providerAvailable: false,
+      });
+      break;
     default:
       console.log('[tycoonagents-standalone] /message (unhandled):', JSON.stringify(msg));
   }
+}
+
+/**
+ * Standalone analog of panel.ts's _handleGetSkills (~line 3184-3211).
+ * media/skills/catalog.json entries: { id, name, description, mcpNote?,
+ * thirdParty?, source? }. `installed` mirrors panel.ts exactly: true when the
+ * primary project has a `.claude/skills/<id>` directory.
+ */
+function buildSkillsPayload() {
+  const catalogPath = path.join(MEDIA_DIR, 'skills', 'catalog.json');
+  try {
+    const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    const skills = catalog.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      description: entry.description,
+      mcpNote: entry.mcpNote,
+      thirdParty: entry.thirdParty,
+      source: entry.source,
+      installed:
+        !!primaryProjectRoot &&
+        fs.existsSync(path.join(primaryProjectRoot, '.claude', 'skills', entry.id)),
+    }));
+    return { type: 'skills', skills };
+  } catch (err) {
+    return { type: 'skills', skills: [], error: String(err) };
+  }
+}
+
+/**
+ * Standalone analog of panel.ts's _handleGetMcp (~line 3384-3418) +
+ * _loadMcpCatalog/_readMcpConfig/hasMcpServer (src/host/vscode/mcpCatalog.ts).
+ * `installed` is true when the primary project's `.mcp.json` has a
+ * `mcpServers[id]` entry.
+ */
+function buildMcpPayload() {
+  const catalogPath = path.join(MEDIA_DIR, 'mcp', 'catalog.json');
+  let catalog;
+  try {
+    catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  } catch (err) {
+    return { type: 'mcp', servers: [], error: String(err) };
+  }
+
+  let mcpConfig = {};
+  if (primaryProjectRoot) {
+    try {
+      const parsed = JSON.parse(
+        fs.readFileSync(path.join(primaryProjectRoot, '.mcp.json'), 'utf8'),
+      );
+      if (parsed !== null && typeof parsed === 'object') mcpConfig = parsed;
+    } catch {
+      /* missing/invalid => default {} — mirrors panel.ts's _readMcpConfig */
+    }
+  }
+  const servers = mcpConfig.mcpServers;
+  const hasMcpServer = (id) =>
+    servers !== null && typeof servers === 'object' && Object.prototype.hasOwnProperty.call(servers, id);
+
+  return {
+    type: 'mcp',
+    servers: catalog.map((e) => ({
+      id: e.id,
+      name: e.name,
+      description: e.description,
+      installed: hasMcpServer(e.id),
+      requiresEnv: e.requiresEnv,
+      note: e.note,
+      docsUrl: e.docsUrl,
+      thirdParty: e.thirdParty,
+      vendor: e.vendor,
+      package: e.package,
+      homepage: e.homepage,
+      network: e.network,
+      dataNote: e.dataNote,
+      needsSetup: e.needsSetup,
+    })),
+  };
+}
+
+/**
+ * Standalone analog of panel.ts's _handleGetSettings payload (~line 6888-
+ * 6908 `MSG.SETTINGS`). The standalone has no per-project `.claude/agents/`
+ * roster editor, hook-diagnostic pass, or CLAUDE.md context-budget scan
+ * wired up yet, so every field below reports its honest "nothing to show"
+ * default rather than a guess — matching main.js's own `||`/Array.isArray/
+ * Boolean-guarded reads (renderSettings(), media/main.js:16239 onward) so
+ * none of them throw client-side. `hook.installed` mirrors the `checkInstall`
+ * case above (`installed: true` — the standalone process itself IS the
+ * running hook host, there is no separate install step).
+ */
+function buildStandaloneSettingsPayload() {
+  let lastActivityAt = null;
+  if (primaryProjectRoot) {
+    try {
+      lastActivityAt = fs.statSync(
+        path.join(primaryProjectRoot, '.claude', 'tycoon', 'activity.jsonl'),
+      ).mtimeMs;
+    } catch {
+      lastActivityAt = null;
+    }
+  }
+  return {
+    hook: { installed: true, lastActivityAt },
+    agents: [],
+    delegation_mode: 'flat',
+    reviewEnabled: true,
+    sessionJournalEntries: 0,
+    delegationHealth: {
+      directSearches: 0,
+      directReads: 0,
+      directEdits: 0,
+      delegations: 0,
+      tokens: 0,
+      session: null,
+      sessionId: null,
+    },
+    hookHealth: { healthy: true, issueCount: 0 },
+    contextBudget: null,
+    foreignManagedBlocks: [],
+  };
+}
+
+/**
+ * Boot-time theme resolution for the "ready" handshake — mirrors panel.ts's
+ * MSG.READY handler (loadLatestTheme + THEME_INITIALIZED/THEME_NONE) but
+ * against the standalone's fs-backed ThemeFileStore, which has no
+ * "most-recently-used" bookkeeping yet. Picks the first theme
+ * listThemesFromStore() returns (display-name sorted — see themeMessages.mjs)
+ * when any exist, reusing handleSelectTheme's THEME_INITIALIZED/
+ * THEME_GENERATION_ERROR posting so the wire payload shape stays identical
+ * to a real SELECT_THEME round trip; posts THEME_NONE with an empty payload
+ * (matching panel.ts's `{ type: MSG.THEME_NONE }`) when no theme exists yet.
+ *
+ * @param {import('./themeFileStoreFs.mjs').ThemeFileStore} store
+ * @param {(eventName: string, data: object) => void} broadcastFn
+ */
+async function handleReadyThemeBoot(store, broadcastFn) {
+  const themes = await listThemesFromStore(store);
+  if (themes.length === 0) {
+    broadcastFn('message', { type: THEME_MSG_WIRE.THEME_NONE, payload: {} });
+    return;
+  }
+  await handleSelectTheme(store, broadcastFn, themes[0].theme_id);
 }
 
 // ── Static file serving (media/ in place, path-traversal guarded) ──────────
@@ -1319,8 +1727,29 @@ function requestListener(req, res) {
         }
       }
     }
+    // Theme boot catch-up for THIS client only — see handleReadyThemeBoot's
+    // doc comment. Unlike the 'ready' POST case (which broadcasts to every
+    // connected client), this targets only the newly-connected `res` so
+    // other already-connected tabs never get a redundant re-post. Async
+    // (reads manifest/frames off disk via the fs-backed ThemeFileStore), so
+    // it cannot be a synchronous initialMessageProviders entry like the
+    // ones above — it runs after that loop instead. Guarded against a
+    // client that has already disconnected by the time the read resolves,
+    // and never throws: any failure (including an empty/missing store)
+    // falls back to THEME_NONE, exactly like the 'ready' case.
+    let clientClosed = false;
     req.on('close', () => {
+      clientClosed = true;
       sseClients.delete(res);
+    });
+    handleReadyThemeBoot(themeStore, (eventName, data) => {
+      if (clientClosed) return;
+      writeSseEvent(res, eventName, data);
+    }).catch((err) => {
+      console.error('[tycoonagents-standalone] /events theme boot failed:', err);
+      if (!clientClosed) {
+        writeSseEvent(res, 'message', { type: THEME_MSG_WIRE.THEME_NONE, payload: {} });
+      }
     });
     return;
   }
@@ -1741,6 +2170,22 @@ export async function startServer({
     const msg = stateFeed.getStateMessage();
     return [{ eventName: 'message', data: msg }];
   });
+  // Boot-handshake catch-up (see buildBootHandshakeMessages()'s doc comment)
+  // — replays checkInstall/getPacks/getEngineStatus/REQUEST_PLAN/
+  // REQUEST_OFFLOAD_OFFER_STATE's replies to every new /events connection so
+  // the setup overlay dismisses even when the client's own boot POSTs raced
+  // ahead of its SSE connection actually registering.
+  const unregisterBootHandshake = registerInitialMessageProvider(() => buildBootHandshakeMessages());
+
+  // Seed the bundled default theme into an EMPTY theme store on first run
+  // (see seedBundledThemesIntoStore()'s doc comment) so handleReadyThemeBoot
+  // has something to pick up instead of falling to THEME_NONE (the
+  // blue/green fallback stripe rendering). Never overwrites a user's own
+  // theme(s) — only fires when the store currently has zero themes. Awaited
+  // (not fire-and-forget) BEFORE the server starts accepting connections
+  // below, so no client's boot "ready" message can ever race ahead of the
+  // seed and see an empty store.
+  await seedBundledThemesIntoStore(themeStore);
 
   const secondaryFeeds = secondary.map((target) =>
     createStateFeed({
@@ -1813,6 +2258,7 @@ export async function startServer({
     stateFeed.close();
     for (const feed of secondaryFeeds) feed.close();
     unregisterInitialMessage();
+    unregisterBootHandshake();
     for (const res of sseClients) {
       try {
         res.end();

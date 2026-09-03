@@ -110,6 +110,9 @@ export function themeRawImagesDirectoryPath(themeId) {
 export function legacyManifestPath(themeId) {
   return themeFileStoreModule().legacyManifestPath(themeId);
 }
+export function legacyFramesPath(themeId) {
+  return themeFileStoreModule().legacyFramesPath(themeId);
+}
 
 // ── Errors ───────────────────────────────────────────────────────────────
 

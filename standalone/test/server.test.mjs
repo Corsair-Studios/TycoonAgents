@@ -26,8 +26,35 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { startServer, ServerStartError, getThemeImageConfig } from '../src/server.mjs';
+import { startServer, ServerStartError, getThemeImageConfig, seedBundledThemesIntoStore } from '../src/server.mjs';
 import { ProjectRootError } from '../src/projectRoots.mjs';
+import { createFsThemeFileStore } from '../src/themeFileStoreFs.mjs';
+import { themesDirectoryPath } from '../src/themeFileStoreFs.mjs';
+import { listThemesFromStore } from '../src/themeMessages.mjs';
+
+/** Reads SSE chunks off `reader` until it sees a `message` event whose JSON
+ * `data.type` equals `matchType`, then returns that parsed data. Bounded by
+ * `maxChunks` so a missing broadcast fails the test instead of hanging
+ * (same pattern as themeExportImportHttp.test.mjs's collectSseEvent). */
+async function collectSseEvent(reader, matchType, maxChunks = 50) {
+  let buffer = '';
+  for (let i = 0; i < maxChunks; i++) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += Buffer.from(value).toString('utf8');
+    let sepIndex;
+    while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+      const dataLine = rawEvent.split('\n').find((line) => line.startsWith('data: '));
+      if (dataLine) {
+        const data = JSON.parse(dataLine.slice('data: '.length));
+        if (data.type === matchType) return data;
+      }
+    }
+  }
+  throw new Error(`collectSseEvent: no "${matchType}" event seen within ${maxChunks} SSE reads`);
+}
 
 function mkTempProject(prefix = 'tycoon-standalone-server-test-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -268,4 +295,400 @@ test('getThemeImageConfig: persisted openaiQuality wins over TYCOON_OPENAI_IMAGE
     getThemeImageConfig({ env: { TYCOON_OPENAI_IMAGE_QUALITY: 'high' }, appData: fakeAppData }),
     { provider: 'openai', geminiModel: '', openaiModel: '', openaiQuality: 'low' },
   );
+});
+
+// ── Browser boot handshake (checkInstall / ready) ───────────────────────────
+// media/main.js's boot sequence (~main.js:10935-10971) fires "ready" then
+// "checkInstall" (plus getPacks/getEngineStatus/REQUEST_PLAN/
+// REQUEST_OFFLOAD_OFFER_STATE) before its first paint. These used to fall
+// through handleBrowserMessage()'s default case and log
+// "/message (unhandled)", leaving the panel stuck on "Checking
+// installation..." and the theme stage waiting out its 15s pending-fallback
+// timer (theme state stays "pending" -> falls back to "none").
+
+test('POST /message {type: "checkInstall"} -> broadcasts an "installState" reply', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    assert.equal(eventsRes.status, 200);
+    const reader = eventsRes.body.getReader();
+    const installStatePromise = collectSseEvent(reader, 'installState');
+
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'checkInstall' }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const installState = await installStatePromise;
+    assert.equal(installState.installed, true);
+    assert.equal(installState.uefnBridgeSetUp, false);
+    assert.deepEqual(installState.pathHealth, []);
+    assert.equal(installState.pathOverridesFilePath, null);
+    assert.equal(installState.pathOverridesFileExists, false);
+    assert.equal(installState.uefnInstalled, false);
+    assert.equal(installState.verseExtensionState.state, 'not-installed');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "getSkills"} -> broadcasts a "skills" reply built from media/skills/catalog.json', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const skillsPromise = collectSseEvent(reader, 'skills');
+
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'getSkills' }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const skills = await skillsPromise;
+    assert.ok(Array.isArray(skills.skills));
+    assert.ok(skills.skills.length > 0, 'expected the real bundled skills catalog, not an empty stub');
+    assert.ok(skills.skills.every((s) => typeof s.id === 'string' && typeof s.installed === 'boolean'));
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "getMcp"} -> broadcasts a "mcp" reply built from media/mcp/catalog.json', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const mcpPromise = collectSseEvent(reader, 'mcp');
+
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'getMcp' }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const mcp = await mcpPromise;
+    assert.ok(Array.isArray(mcp.servers));
+    assert.ok(mcp.servers.length > 0, 'expected the real bundled MCP catalog, not an empty stub');
+    assert.ok(mcp.servers.every((s) => typeof s.id === 'string' && typeof s.installed === 'boolean'));
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "ready"} -> broadcasts THEME_INITIALIZED for the auto-seeded bundled theme on a fresh store', async () => {
+  // startServer() now seeds the bundled default theme into an empty store
+  // (seedBundledThemesIntoStore(), awaited before the server starts
+  // accepting connections) so a fresh standalone install never falls back
+  // to THEME_NONE / the blue-green fallback stripes. A brand-new, isolated
+  // TYCOON_STANDALONE_DATA_DIR is exactly that "empty store" case.
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    assert.equal(eventsRes.status, 200);
+    const reader = eventsRes.body.getReader();
+    // Higher maxChunks than the 50 default: THEME_INITIALIZED's payload
+    // carries the full seeded theme manifest+frames JSON, which is large
+    // enough that the underlying TCP stream can split it across many more
+    // `reader.read()` chunks than the boot-handshake's small JSON replies
+    // ahead of it in the same SSE stream.
+    const themeInitializedPromise = collectSseEvent(reader, 'THEME_INITIALIZED', 500);
+
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'ready' }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const themeInitialized = await themeInitializedPromise;
+    assert.equal(themeInitialized.payload.manifest.theme_id, 'survivors_vs_zombies');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "getSettings"} -> broadcasts a "settings" reply that unblocks "Loading settings…"', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    assert.equal(eventsRes.status, 200);
+    const reader = eventsRes.body.getReader();
+    const settingsPromise = collectSseEvent(reader, 'settings');
+
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'getSettings' }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const settings = await settingsPromise;
+    assert.ok(settings.payload, 'settings reply must carry a non-null payload (renderSettings() only shows ' +
+      '"Loading settings…" while lastSettings is null/undefined)');
+    assert.equal(settings.payload.hook.installed, true);
+    assert.ok(Array.isArray(settings.payload.agents));
+    assert.equal(settings.payload.delegation_mode, 'flat');
+    assert.equal(settings.payload.reviewEnabled, true);
+    assert.deepEqual(settings.payload.foreignManagedBlocks, []);
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+// ── Full simulated browser boot sequence ────────────────────────────────────
+// media/main.js's actual boot order (main.js:10948-10971): "ready" then
+// checkInstall/getPacks/getEngineStatus/REQUEST_PLAN/
+// REQUEST_OFFLOAD_OFFER_STATE, fired back-to-back BEFORE the browser's own
+// EventSource connection is guaranteed to have registered server-side (see
+// buildBootHandshakeMessages()'s doc comment in server.mjs for the exact
+// race). This test connects to /events, posts every boot message in main.js's
+// order, and asserts every one of them gets its reply.
+test('simulated browser boot sequence: every boot-handshake message gets a reply', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    assert.equal(eventsRes.status, 200);
+    const reader = eventsRes.body.getReader();
+
+    const expected = [
+      ['ready', 'THEME_INITIALIZED'],
+      ['checkInstall', 'installState'],
+      ['getPacks', 'packs'],
+      ['getEngineStatus', 'engineStatus'],
+      ['REQUEST_PLAN', 'PLAN_STATE'],
+      ['REQUEST_OFFLOAD_OFFER_STATE', 'OFFLOAD_OFFER_STATE'],
+    ];
+    const wantedTypes = new Set(expected.map(([, replyType]) => replyType));
+
+    for (const [type] of expected) {
+      const res = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type }) });
+      assert.equal(res.status, 202, `POST /message {type: "${type}"} should 202`);
+    }
+
+    // A single sequential read loop (concurrent collectSseEvent calls would
+    // race reads on the same stream reader) collecting every wanted reply
+    // type, in whatever order they actually arrive.
+    const seen = new Map();
+    let buffer = '';
+    for (let i = 0; i < 500 && seen.size < wantedTypes.size; i++) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += Buffer.from(value).toString('utf8');
+      let sepIndex;
+      while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, sepIndex);
+        buffer = buffer.slice(sepIndex + 2);
+        const dataLine = rawEvent.split('\n').find((line) => line.startsWith('data: '));
+        if (!dataLine) continue;
+        const data = JSON.parse(dataLine.slice('data: '.length));
+        if (wantedTypes.has(data.type) && !seen.has(data.type)) seen.set(data.type, data);
+      }
+    }
+
+    for (const [type, replyType] of expected) {
+      assert.ok(seen.has(replyType), `expected a "${replyType}" reply for "${type}" boot message`);
+    }
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+// ── Theme boot on plain /events connect (no "ready" POST) ──────────────────
+// Regression coverage: buildBootHandshakeMessages()'s installState/packs/
+// engineStatus/PLAN_STATE/OFFLOAD_OFFER_STATE all replay on every new
+// /events connection via registerInitialMessageProvider (synchronous), but
+// the theme boot (handleReadyThemeBoot, THEME_INITIALIZED/THEME_NONE) used
+// to fire ONLY from the 'ready' POST case — dropped if that POST raced
+// ahead of the SSE handshake registering. These assert the /events handler
+// itself now delivers the theme boot to each newly-connected client,
+// independent of any 'ready' POST ever arriving.
+test('/events connect (no "ready" POST): THEME_INITIALIZED arrives when the store already has a theme', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    // startServer() awaits seedBundledThemesIntoStore() before accepting
+    // connections, so the store already has the bundled default theme —
+    // no 'ready' POST is sent here.
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    assert.equal(eventsRes.status, 200);
+    const reader = eventsRes.body.getReader();
+    // THEME_INITIALIZED carries the full manifest+frames payload (frames.json
+    // includes base64 sprite data), which streams across far more than the
+    // default 50 SSE reads — bump the budget so this doesn't flake on a slow
+    // socket.
+    const initialized = await collectSseEvent(reader, 'THEME_INITIALIZED', 500);
+    assert.ok(initialized.payload && initialized.payload.manifest, 'THEME_INITIALIZED must carry a manifest');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+// Regression coverage for the Themes pop-up (media/main.js's menuThemesBtn/
+// tabThemePicker handlers post {type:'LIST_THEMES'} and render msg.payload.
+// themes, reading theme_id/display_name/export_ready/total/accepted — see
+// renderThemesList() ~main.js:5239). This asserts the SAME store the board
+// boots THEME_INITIALIZED from (handleReadyThemeBoot, both driven by
+// listThemesFromStore()) also answers an explicit LIST_THEMES round trip
+// with that theme, in the shape the dialog needs, once the store already
+// has a modern per-directory theme on disk (manifest.json + frames.json)
+// — the survivors_vs_zombies bundled-seed layout described in the bug
+// report.
+test('POST /message LIST_THEMES: THEMES_LIST lists a store theme with the fields the Themes dialog renders', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    // startServer() awaits seedBundledThemesIntoStore() before accepting
+    // connections, so a fresh store already has survivors_vs_zombies seeded
+    // in the modern per-directory layout (manifest.json/frames.json) —
+    // exactly the on-disk shape the bug report describes.
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    assert.equal(eventsRes.status, 200);
+    const reader = eventsRes.body.getReader();
+    // Drain the boot-time THEME_INITIALIZED first so it isn't mistaken for
+    // the THEMES_LIST reply below.
+    await collectSseEvent(reader, 'THEME_INITIALIZED', 500);
+
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'LIST_THEMES' }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const list = await collectSseEvent(reader, 'THEMES_LIST', 50);
+    assert.ok(Array.isArray(list.payload && list.payload.themes), 'THEMES_LIST payload.themes must be an array');
+    const entry = list.payload.themes.find((t) => t.theme_id === 'survivors_vs_zombies');
+    assert.ok(entry, 'survivors_vs_zombies must be listed');
+    assert.equal(entry.display_name, 'Survivors vs Zombies');
+    assert.equal(typeof entry.export_ready, 'boolean');
+    assert.equal(typeof entry.total, 'number');
+    assert.equal(typeof entry.accepted, 'number');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('/events connect (no "ready" POST): THEME_NONE arrives when the store is empty', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    // Force a genuinely empty store: startServer() always seeds the
+    // bundled default theme into a fresh store before accepting
+    // connections (seedBundledThemesIntoStore() only skips when a theme
+    // already exists), so remove what it just seeded from disk before
+    // connecting — handleReadyThemeBoot() re-lists the store fresh on
+    // every /events connection, so this reproduces an empty-store client.
+    fs.rmSync(path.join(dataDir, themesDirectoryPath()), { recursive: true, force: true });
+
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    assert.equal(eventsRes.status, 200);
+    const reader = eventsRes.body.getReader();
+    const none = await collectSseEvent(reader, 'THEME_NONE');
+    assert.deepEqual(none.payload, {});
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+// ── seedBundledThemesIntoStore() — user-theme-wins seeding ──────────────────
+test('seedBundledThemesIntoStore: an empty theme store gets the bundled default theme seeded', async () => {
+  const storeRoot = path.join(mkTempProject(), 'themestore');
+  const store = createFsThemeFileStore(storeRoot);
+
+  const before = await listThemesFromStore(store);
+  assert.deepEqual(before, []);
+
+  await seedBundledThemesIntoStore(store);
+
+  const after = await listThemesFromStore(store);
+  assert.equal(after.length, 1);
+  assert.equal(after[0].theme_id, 'survivors_vs_zombies');
+});
+
+test('seedBundledThemesIntoStore: a store with an existing (user) theme is left untouched', async () => {
+  const storeRoot = path.join(mkTempProject(), 'themestore');
+  const store = createFsThemeFileStore(storeRoot);
+
+  // A pre-existing theme, distinct from the bundled one, simulating a user's
+  // own theme already present — the seed must never add to or overwrite it.
+  await store.writeFile('themes/my_custom_theme/manifest.json', JSON.stringify({
+    theme_id: 'my_custom_theme',
+    display_name: 'My Custom Theme',
+  }));
+  await store.writeFile('themes/my_custom_theme/frames.json', JSON.stringify({}));
+
+  await seedBundledThemesIntoStore(store);
+
+  const after = await listThemesFromStore(store);
+  assert.equal(after.length, 1, 'seeding must not add the bundled theme alongside an existing user theme');
+  assert.equal(after[0].theme_id, 'my_custom_theme');
 });
