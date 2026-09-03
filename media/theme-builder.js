@@ -18,7 +18,14 @@
     // block clip's OWN dedicated dodge/flinch frame (no longer part of the melee
     // clip), played as a one-shot emote override — see media/main.js
     // playEmote(entry, "block", ...). Purely cosmetic, no gameplay effect.
-    block: { frames: [14], fps: 6, loop: false, flippable: true }
+    block: { frames: [14], fps: 6, loop: false, flippable: true },
+    // Freed row-1 frames (formerly walk cells 3-5, now unused by the 2-frame
+    // walk cap above). Only played when the active theme's manifest carries
+    // freed_frames: 'v2' (see themeHasFreedFrames) — themes generated before
+    // this change still have old walk poses baked into slots 2-4 and must
+    // never play them as idle_rare/stand_back.
+    idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
+    stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true }
   };
 
   // src/webview/animationPlayback.ts
