@@ -1,0 +1,433 @@
+# AGENTS.md
+
+<!-- TYCOON-MANAGED:START -->
+# Project Instructions
+
+## MANDATORY: Use Delegation for All Work
+
+Delegate all implementation, searching, and exploration via the task tool (`@agent-name`) — direct tool use breaks the visualization and costs ~5x more per token on an Opus orchestrator (more in practice — the orchestrator re-reads its large context every turn).
+
+### You MUST use the task tool (`@agent-name`) to delegate:
+
+| Task Type | Delegate To | agent name | model | Keywords to Include |
+|-----------|-------------|---------------|-------|---------------------|
+| File searching, code lookup, grep/glob | search-retrieval | Explore | haiku | search, retrieval, find, look, where |
+| Code implementation, editing, bug fixes, refactoring | coding-specialist | general-purpose | sonnet | implement, code, fix, bug, refactor, create |
+| Test authoring, specs, coverage | testing-specialist | general-purpose | sonnet | test, spec, vitest, jest, coverage, unit |
+| VS Code extension API, webview, panel, lifecycle | vscode-integration | general-purpose | sonnet | vscode, extension, webview, panel, lifecycle |
+| Webview canvas scene, layout, CSS, animation | ux-ui-designer | general-purpose | sonnet | ux, ui, design, canvas, layout, css, animation |
+| Agent lifecycle/event monitoring, hook-record mapping | workspace-monitor | general-purpose | sonnet | monitor, lifecycle, event, hook, activity, track |
+
+> **Note:** Explicit agent names (e.g., `agent name: "coding-specialist"`) take priority over Claude built-in types for routing. When you use an explicit agent name, the task is routed directly to that agent regardless of keyword matching.
+
+### What You Can Do Directly:
+- Read a specific file (if you know the exact path)
+- Communicate with the user
+- Make high-level architectural decisions
+- Coordinate between agents
+- Review completed work
+
+### What You MUST NOT Do Directly:
+- **NEVER use Grep or Glob directly** - ALWAYS delegate to search-retrieval (uses Haiku, ~5x cheaper per token than Opus)
+- **NEVER Edit or Write files directly** - delegate to coding-specialist
+- **NEVER make multiple tool calls to explore the codebase** - delegate exploration tasks
+
+## MANDATORY: Always Delegate Searches
+
+**Searching is expensive.** Using Grep/Glob on Opus costs ~5x more per token than delegating to a search agent (which uses Haiku), and more in practice given the orchestrator's large context. This is not optional - you MUST delegate all file searches:
+
+Always route searches through the task tool (`@agent-name`) to the Explore/haiku agent — never call Grep or Glob yourself.
+
+Even for "quick" searches, delegate. The cost savings are significant and the overhead is minimal.
+
+### What You MUST Delegate
+- **You write clean, focused, tested code.** - delegate to coding-specialist
+- **Search Retrieval tasks** - delegate to search-retrieval
+- **You write and maintain tests for TycoonAgents (the `test/` suite, e.g** - delegate to testing-specialist
+- **Ux Ui Designer tasks** - delegate to ux-ui-designer
+- **Vscode Integration tasks** - delegate to vscode-integration
+- **Workspace Monitor tasks** - delegate to workspace-monitor
+
+### Why This Matters
+
+Bypassing the task tool (`@agent-name`) means the visualization misses the agent and the work runs on Opus at ~5x the per-token cost (more in practice, since the orchestrator re-reads its large context every turn).
+
+### Model & Cost Routing
+
+- **Read-only verification → Haiku.** Any task that only reads/inspects (confirm a fix landed, check package or build output, re-audit, summarize a file) MUST use `agent name: "Explore"` with `model: "haiku"` — even when it isn't a "search". Reserve sonnet workers for tasks that write code or require judgment.
+- **Implementation and creative work → Sonnet** via the delegation table above.
+
+### Worker Report Caps
+
+- Instruct every delegated agent to report back in **under 250 words**, structured as: what changed (with file:line), verification results, open issues.
+- Verbose agent reports land in the orchestrator's context at Opus prices — request the summary length explicitly in every Task prompt.
+
+### Team Patterns
+
+- **Audit team** — repo scanner (Explore/haiku) ∥ artifact/package scanner (general-purpose/sonnet); merge findings afterward.
+- **Feature team** — coding-specialist ∥ testing-specialist; define interface contract in BOTH prompts, keep file ownership disjoint (src/ vs tests/).
+- **Release team** — packager (sonnet) builds, then verifier (Explore/haiku) independently inspects; never let the packager verify its own output.
+- **Background agents** — run long builds/packaging via background tasks while a foreground agent continues other work.
+
+## Before You Delegate
+
+Subagents start cold — brief them precisely. Include:
+- **Exact file paths** (not glob patterns)
+- **Key symbol names** — function, class, or variable names relevant to the task
+- **Decisions already made** — architectural choices, patterns established, approaches ruled out
+- **The WHY** — constraint or goal driving the task
+- **Success criteria** — what "done" looks like
+
+Omit: full file contents, irrelevant background, decisions the subagent doesn't need to make, re-explaining the project (they have CLAUDE.md).
+
+## Execution Settings
+
+These settings were configured during installation:
+- **Parallel agent limit**: 2 — run at most 2 heavyweight (sonnet) workers concurrently. Lightweight Explore/haiku agents are exempt, and the tycoon-ready-test skill may exceed the limit by design.
+- **Handoff verbosity**: structured — pass structured context between agents
+
+
+## Teams Coordination
+
+This project has experimental multi-agent teams enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`).
+
+When working in a team session:
+- Teammate idle hooks log activity to `agent-activity.json` for visualization
+- Task completed hooks broadcast completion events to teammates
+- Set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in your environment before starting
+
+## Session Journal
+
+A rolling journal of recent prompts and summaries is maintained at `.claude/session-journal.json`.
+
+**At the start of each session:** Read it to recover context from the previous session.
+
+**At the end of each response:** Find the last entry where `summary` is `null` and set it to 1–2 compact sentences describing what was accomplished. Keep summaries under 150 characters. Example:
+```json
+{ "timestamp": "...", "prompt": "Add dark mode", "summary": "Added DarkModeToggle to Settings.tsx, wired to ThemeContext." }
+```
+The hook handles trimming to the configured window automatically.
+
+
+## Auto Memory
+
+Save: user preferences/corrections that should persist across sessions, project decisions/deadlines not in code, external references (dashboards, docs, Slack). Do NOT save: code patterns, file paths, git history, or anything already in CLAUDE.md. Check for existing memories before adding new ones.
+
+## TycoonAgents Ready Test
+
+When the user says "ready test", "tycoon agents ready test", or "test the agents", invoke the `tycoon-ready-test` skill (`.claude/skills/tycoon-ready-test/SKILL.md`). It discovers all agents by scanning `.claude/agents/*.md`, spawns every non-coordinator agent in parallel via the task tool (`@agent-name`), and reports pass/fail per agent.
+
+## Project-Specific Instructions
+
+<!-- tycoon:delegation -->
+## Delegation
+
+Delegate implementation work to specialist agents via the task tool (`@agent-name`) rather
+than doing it inline. Search tasks (file/code lookup, grep/glob) always go to
+Explore agents running on the haiku model. This is MANDATORY, not a
+preference — the orchestrator coordinates work, it does not do the work.
+
+**NEVER Edit or Write files directly — ALWAYS delegate to coding-specialist.**
+
+**NEVER grep, glob, search, or read across multiple files to understand the
+code yourself — ALWAYS delegate to search-retrieval (Haiku).**
+
+### Narrow exceptions: a known-path read, and answering a quick question
+
+The ONLY reads you may do directly are a SINGLE, specific, already-known
+file path. Use this test: can you name the exact file path RIGHT NOW,
+without searching to find it? If yes, read it. If you would have to grep,
+glob, or scan a directory to locate it first, that is exploration — delegate
+it to search-retrieval, which runs on Haiku, the cheapest model available.
+
+Reading three or more files to answer one question is a survey, not a
+lookup. Delegate it.
+
+You may also ANSWER A ONE-OFF QUESTION directly. When the user asks
+something you can settle in a sentence or two from one or two known files,
+answer it — spawning a worker to fetch a single fact costs more than the
+fact is worth, because you pay to write the brief and to spin the worker up,
+and save nothing. Delegation is for WORK, not for ANSWERS. The moment a
+question turns into a task — several files, a change, an audit, a
+comparison — it stops being a quick question and gets delegated.
+
+Still explicitly fine to do directly: talking to the user, making
+high-level architectural decisions, coordinating agents, and VERIFYING work
+a specialist already finished.
+
+### What you MUST NOT do yourself — delegate it
+
+- Exploring, searching, reading across multiple files, auditing, or
+  DESCRIBING the codebase (grep/glob, or reading several files to understand
+  how the project works) — delegate to the search-retrieval agent (Explore,
+  haiku). This applies EVEN WHEN the final deliverable is only documentation
+  or markdown: understanding the code well enough to write about it is
+  search/retrieval work. Doing it yourself runs that exploration on the
+  orchestrator's model instead of the cheapest one (roughly 5x the
+  per-token cost when the orchestrator is Opus — and more in practice,
+  since the orchestrator re-reads its large accumulated context on every
+  turn while a worker starts fresh) and hides the work from the
+  visualization.
+- Editing or creating files, including docs and markdown — delegate to the
+  appropriate specialist.
+
+"Reviewing your team's results" means VERIFYING a specialist's completed
+work against the task — it does NOT mean exploring or reading the codebase
+yourself. A request to describe, document, review, or audit a project
+STARTS by delegating the exploration to search-retrieval; you synthesize
+the findings afterward.
+
+### MANDATORY DELEGATION RULES
+
+You MUST delegate:
+
+1. Any file edit or creation, including docs and markdown → coding-specialist.
+2. Any search, grep, glob, or multi-file/exploratory read → search-retrieval (Haiku).
+3. test, spec, vitest, jest, mocha, assert, mock, stub, testing, qa, verify, validate, e2e, fixture, coverage, unit → testing-specialist.
+4. ux, ui, design, layout, css, canvas, render, animation, sprite, scene, visual, style, transition, accessibility → ux-ui-designer.
+5. vscode, extension, webview, panel, lifecycle, api, command, activation, manifest, menus, settings, configuration, disposable, message → vscode-integration.
+6. monitor, lifecycle, event, activity, hook, status, track, real-time, session, mapping, normalize, record, idle, active → workspace-monitor.
+7. Anything that does not clearly match a specialist's keywords → the Fallback Agent, per the rule below — never yourself.
+
+### PROPORTIONALITY
+
+Delegation does not license scope creep. When the user names the exact
+file(s) and the task is mechanical — copy, move, rename, or a small localized
+edit — the assigned worker touches ONLY those named files: no greps beyond
+them, no exploratory reads, no reference-catalog consultation, no codebase
+surveys. Delegation still applies (the work still goes to the right
+specialist), but the brief handed to that specialist must scope the task to
+the named files, and finishing verification runs against the changed files
+only — not the whole repo. Example: "Copy the retry logic from a.verse to
+b.verse" means read those two files, make the edit, verify those two —
+nothing else.
+
+### The Fallback Rule
+
+When a task does not clearly match any specialist's keywords, delegate it to
+the Fallback Agent (Sonnet) — do NOT do it yourself on the orchestrator. The
+Fallback Agent's presence in the work log is also a signal to refine keyword
+routing, but in the meantime it still runs on a cheaper model than the
+orchestrator's, so routing unmatched work there saves real
+credits and keeps every task visible in the delegation visualization. Doing
+unmatched work yourself — on the orchestrator's model, the most expensive one
+you have configured — is the single most expensive mistake you can make
+here.
+
+Brief every delegated agent precisely:
+- Exact file paths (not glob patterns)
+- Key symbol names (functions, classes, variables relevant to the task)
+- Decisions already made (architecture, patterns established, approaches
+  ruled out)
+- Success criteria (what "done" looks like)
+
+Require every delegated agent to report back in under 250 words: what
+changed (file:line), verification result, open issues.
+
+A report must state its actual sample size or coverage limit whenever it
+differs from what was asked — an honest smaller result is acceptable; an
+overclaimed one is a failure.
+
+A report opens with the outcome — what changed and whether it verified —
+never with restated context or process narration. It stays plain prose plus
+file:line: no headings, no decorative bullets, no flattery or
+self-assessment adjectives, since every word lands in the orchestrator's
+context at the most expensive model's price. Delegated work stays at the
+scope the brief asked for — a worker that notices adjacent cleanup,
+refactoring, or documentation work names it in one line under open issues
+instead of doing it.
+
+A change is always verified by someone other than the agent that authored
+it, never self-certified by the agent that wrote it.
+
+### When in doubt, delegate
+
+Doing work directly runs it on the orchestrator's expensive model instead of
+a cheap specialist, and hides the work from the delegation visualization —
+defeating the point of the system either way. When in doubt, delegate.
+
+## Specialist roster
+
+| Specialist | Task types | Vendor / model |
+| --- | --- | --- |
+| codex-reviewer | codex, foreign-review, cross-vendor, second-opinion, adversarial-review | OpenAI · openai/gpt-5.4-mini (subscription) |
+| coding-specialist | implement, code, fix, bug, refactor, create, add, update, function, class, method, logic, algorithm, typescript | Anthropic · anthropic/sonnet |
+| gemini-reviewer | gemini, foreign-review, cross-vendor, second-opinion, adversarial-review | Google · google/gemini-2.5-pro |
+| kimi-reviewer | kimi, qwen, local-review, openai-compatible, foreign-review, cross-vendor, second-opinion, adversarial-review | Moonshot · moonshot/kimi-k2 (local) |
+| search-retrieval | search, find, look, where, locate, explore, grep, glob, file, pattern, reference, documentation, example, retrieval | Anthropic · anthropic/haiku |
+| testing-specialist | test, spec, vitest, jest, mocha, assert, mock, stub, testing, qa, verify, validate, e2e, fixture, coverage, unit | Anthropic · anthropic/sonnet |
+| ux-ui-designer | ux, ui, design, layout, css, canvas, render, animation, sprite, scene, visual, style, transition, accessibility | Anthropic · anthropic/sonnet |
+| uefn-auditor | verse, uefn, fortnite, verse-audit, verse-review, verse-lint | Anthropic · anthropic/sonnet |
+| verse-expert | verse, uefn, fortnite, device, island, creative, digest | Anthropic · anthropic/sonnet |
+| vscode-integration | vscode, extension, webview, panel, lifecycle, api, command, activation, manifest, menus, settings, configuration, disposable, message | Anthropic · anthropic/sonnet |
+| workspace-monitor | monitor, lifecycle, event, activity, hook, status, track, real-time, session, mapping, normalize, record, idle, active | Anthropic · anthropic/sonnet |
+
+## Direct delegation (current mode)
+
+The orchestrator briefs specialist workers directly — there is no
+intermediate layer between the orchestrator and the worker doing the task.
+
+## Who "you" means in this file — orchestrator only
+
+Every rule above is addressed to the ORCHESTRATOR, the top-level agent
+talking to the user. If you were spawned as a sub-agent — a specialist, a
+worker, an Explore agent, anything launched via the task tool (`@agent-name`) — the
+delegation mandates above are not yours. Scope rules still bind you: touch
+only what your brief names.
+
+If you are a spawned worker, you are a LEAF:
+
+- Do the assigned task YOURSELF — reads, searches, greps, and edits — with
+  your own tools. Do NOT spawn Task or sub-agents. There is no delegation
+  below you.
+- The "NEVER grep/read/edit yourself" rules above are the opposite of your
+  job. Searching and editing directly is exactly what you were spawned to
+  do, and doing it is correct, not a violation.
+- Never end your turn reporting work as "running in the background" — finish
+  it or report failure.
+- If the assigned work genuinely cannot finish inside one tool call, split
+  it into bounded sequential calls run to completion in THIS SAME turn —
+  using the harness's own chunking knobs (sample-size env vars, batch
+  flags) and an explicit per-call timeout (the Bash tool accepts up to 10
+  minutes). Ending the turn to "wait", or spawning a helper to do it, are
+  both violations; chunking in-turn is the only sanctioned move.
+- Never delete a temp or evidence file until, in this same turn, you have
+  verified ON DISK that its durable destination (a doc comment, a report
+  file, a commit) already holds the data it captured.
+- Open your report with the outcome — what changed and whether it
+  verified. Never start with restated context, process narration, or
+  throat-clearing.
+- Keep your report plain prose plus file:line: no headings, no
+  bullet-theater, no flattery or self-assessment adjectives. Every word
+  costs orchestrator context at the most expensive model's price — spend
+  it on substance only.
+- Deliver exactly what the brief asked, at the scope it asked. Do not
+  widen into cleanup, refactoring, documentation, or adjacent features —
+  name anything adjacent worth doing in one line under open issues instead
+  of doing it.
+
+A worker that delegates instead of working creates a chain of agents that
+each wait on the next, burning tokens while nothing gets done. If a
+Task-tool prompt spawned you, you are not the orchestrator. Do the work.
+
+## A "completed" notification is not proof — verify on disk
+
+A sub-agent reporting done — or "running in the background", or narration with
+no concrete file:line changes — does NOT mean the work landed. Before recording
+a task as done, the orchestrator READS the changed files on disk itself; if
+nothing changed, it treats the task as failed and re-dispatches it.
+
+The orchestrator re-reads a file from disk immediately before verifying or
+building on it — a resumed or background sub-agent may have edited it after its
+first report, so cached content can be stale. File ownership stays DISJOINT
+across concurrent workers (the harness does not lock files); the orchestrator
+never runs two writers on the same file at once.
+
+Before re-dispatching a task a previous agent failed, kill any processes that
+agent left running (process trees, stale PID files) — a superseded lineage
+must never keep writing into shared files after its replacement starts. After
+any denied or abandoned spawn, treat the task as NOT done regardless of what
+the agent's report claimed.
+
+## Review pass (enabled)
+
+Before the orchestrator reports a specialist's task as done, it routes the
+change to the `uefn-auditor` agent for a correctness and quality pass: read the
+diff, check it against the task's intent and acceptance criteria, and flag
+bugs, regressions, or quality issues.
+
+If the `uefn-auditor` agent requires changes, the orchestrator sends them back to the
+original specialist to fix, then re-checks with the `uefn-auditor` agent once more. This
+is a single review gate, not an open-ended loop — after that one round of
+fixes the orchestrator reports the outcome rather than cycling further. The
+review stays a single pass, not a fan-out: if you are the `uefn-auditor` agent,
+do not spawn further sub-agents. The orchestrator does not start the review
+while writers touching the same files are still in flight.
+
+The `uefn-auditor` agent's pass is a quality assist, not a sign-off: it catches bugs and
+regressions BEFORE the change reaches the user, so the human reviews cleaner
+work. The user is the final reviewer — the orchestrator surfaces the
+reviewed change for the user to approve and never treats the `uefn-auditor` agent's
+pass as final acceptance.
+
+## Session Journal
+
+A rolling journal of the last 3 prompts is maintained at `.claude/session-journal.json`.
+
+**At the start of each session:** read it to recover context from previous sessions.
+
+**At the end of each response:** find the last entry whose `summary` is `null` and set it to 1-2 sentences (under 150 characters) describing what was accomplished.
+
+The hook appends entries and trims to the last 3 automatically.
+
+## Project Plan routing (feature enabled)
+
+A request for a large multi-phase feature, a GDD, a PRD, a milestone/sprint/
+delivery plan, or "plan this project" MUST go through the `project-plan`
+skill, not a specialist. This OVERRIDES the general "any file edit or
+creation, including docs and markdown → specialist" rule above for
+plan-shaped requests — the plan skill takes precedence, or that rule wins
+again and reproduces this exact bug.
+
+Writing a free-form markdown plan (e.g. `docs/project-plan.md`) does NOT
+create a plan: the panel never reads it, no phases or gates exist, and no
+human checkpoints fire.
+
+The `project-plan` skill decomposes work into a REGISTERED plan at
+`.claude/tycoon/plan.json`, with phases, tasks, and human gates the panel
+tracks. When a design doc is involved, the `design-doc` skill's
+milestone-plan template is written to be consumed by `project-plan`:
+produce or locate the design doc first, then decompose it into plan.json via
+the skill — never hand-write plan.json.
+
+Resuming: if `.claude/tycoon/plan.json` already exists, re-read it and
+continue from its recorded position — do not re-decompose an existing plan
+unless the user explicitly asks to re-plan.
+<!-- /tycoon:delegation -->
+
+<!-- tycoon:coderules -->
+## Coding standards by path
+
+These are starting defaults, not fixed law — tune the path patterns and
+standards below to fit this project's actual layout and conventions.
+
+| Area | Path patterns | Standards |
+| --- | --- | --- |
+| Gameplay / systems logic | `src/game/**`, `src/systems/**` | No hardcoded tuning values — read them from data/config; keep simulation logic deterministic and covered by tests. |
+| UI / HUD | `src/ui/**`, `**/*.tsx`, `**/*.css` | Keep layout, state, and styling changes reviewable together; prefer the UI/design specialist for canvas, animation, and CSS work. |
+| Networking / multiplayer | `src/net/**`, `src/server/**` | Validate all client input server-side; never trust client-reported state; keep message schemas versioned. |
+| Assets / data | `assets/**`, `data/**`, `**/*.json` | No secrets or absolute filesystem paths baked into shipped data; keep generated assets reproducible from their source config. |
+| Config / build | `*.config.*`, `package.json`, `tsconfig*.json` | No secrets or machine-specific absolute paths; changes here should not silently alter another area's behavior. |
+| Tests | `test/**`, `**/*.spec.*`, `**/*.test.*` | Tests cover the stated acceptance criteria, stay deterministic (no real timers/network), and are verified by someone other than the author of the change under test. |
+| Engine scripts (GDScript / C# / Verse / Python) | `**/*.gd`, `**/*.cs`, `**/*.verse`, `**/*.py` | Keep editor-bridge imports side-effect-free; match the host engine's idioms rather than porting patterns from another language verbatim. |
+<!-- /tycoon:coderules -->
+
+## Path & Environment Discovery (core principle)
+
+This project is open source and installs on machines we will never see —
+different usernames, drives, IDEs, and folder layouts. **Any shipped tool
+must DISCOVER locations at runtime; it must never assume one machine's
+username, drive, IDE, install location, or folder layout.**
+
+Discovery ladder, in order: (1) an explicit environment-variable override,
+which always wins; (2) multiple independent signals, tried in order and
+de-duplicated — never one guess; (3) content-based matching over
+name-based matching wherever possible (e.g. parse a project manifest and
+compare its declared source path, never select by matching a folder
+name); (4) platform-appropriate probes where they exist (e.g. the Windows
+registry), always fail-open — a missing key or wrong platform must never
+raise.
+
+On failure: exit with an explicit error that lists every location tried
+and names the override variable to set — never return a
+clean/empty/success-looking result. This repo has a documented history of
+tools swallowing failures and returning success shapes.
+
+Known override variables — reuse these, don't invent competing names:
+`VERSE_LSP_PATH`, `UEFN_VERSE_PROJECT_DIR`, `UEFN_BRIDGE_DIR`.
+
+Full ladder detail, the testing rule (why a multi-project test on one
+machine proves nothing), and the reference exemplar
+(`media/uefn-bridge/init_unreal.py`, project-root discovery ~lines
+79-132) live in [`docs/PATH-DISCOVERY.md`](docs/PATH-DISCOVERY.md).
+<!-- TYCOON-MANAGED:END -->
