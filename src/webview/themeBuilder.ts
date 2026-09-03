@@ -1,5 +1,5 @@
 import { WorldState, BuildableObject, ThemeManifest } from '../shared/types';
-import { ATLAS_CLIPS, type ClipName } from '../extension/themePlan';
+import { ATLAS_CLIPS, RIVAL_CLIPS, type ClipName } from '../extension/themePlan';
 import {
   advanceCharacterAnimation,
   createCharacterAnimation,
@@ -222,6 +222,21 @@ function selectCharacterAction(
   return 'idle';
 }
 
+// Rival atlases are packed to RIVAL_CLIPS' compact 5-frame scheme (2 walk +
+// 3 attack, media/main.js's enemy renderer already uses this table — see
+// src/extension/themePlan.ts RIVAL_CLIPS doc comment), NOT the ~20-slot
+// ATLAS_CLIPS scheme agents use. selectCharacterAction()/currentCharacterSlot()
+// still drive a rival's CharacterAnimationState using ClipName actions
+// ('idle'/'walk'/'melee', chosen at :206), so translate those into a slot
+// that actually exists in a rival's 5-frame array instead of indexing
+// ATLAS_CLIPS directly (whose 'idle' => slot 16 and 'melee' => slots 10/11
+// are always out of range for a 5-frame rival atlas, which is why rivals
+// fell back to a flat-color rect any time they weren't mid-walk).
+function rivalCharacterSlot(state: CharacterAnimationState): number {
+  const clip = state.action === 'walk' ? RIVAL_CLIPS.walk : RIVAL_CLIPS.attack;
+  return clip.frames[Math.min(state.frameIndex, clip.frames.length - 1)];
+}
+
 function drawCharacterFrame(
   context: CanvasRenderingContext2D,
   character: CharacterRenderable,
@@ -413,7 +428,10 @@ function renderLoop(timestamp: number) {
       const frames = frameCache.get(key);
       if (frames && frames.length > 0) {
         if (obj.type === 'agent') {
-          const frame = frames[currentCharacterSlot(obj.animation)];
+          const slot = obj.role === 'rival'
+            ? rivalCharacterSlot(obj.animation)
+            : currentCharacterSlot(obj.animation);
+          const frame = frames[slot];
           if (frame) drawnFromAtlas = drawCharacterFrame(ctx, obj, frame);
         } else {
           const frame = frames[frames.length - 1];

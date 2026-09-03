@@ -27,6 +27,10 @@
     idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
     stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true }
   };
+  var RIVAL_CLIPS = {
+    walk: { frames: [0, 1], fps: 8, loop: true, flippable: true },
+    attack: { frames: [2, 3, 4], fps: 8, loop: false, flippable: true }
+  };
 
   // src/webview/animationPlayback.ts
   function createCharacterAnimation(action = "idle") {
@@ -207,6 +211,10 @@
     if (character.current_emote === "emote_team") return "signal";
     return "idle";
   }
+  function rivalCharacterSlot(state) {
+    const clip = state.action === "walk" ? RIVAL_CLIPS.walk : RIVAL_CLIPS.attack;
+    return clip.frames[Math.min(state.frameIndex, clip.frames.length - 1)];
+  }
   function drawCharacterFrame(context, character, frame) {
     const image = frame.image;
     if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) return false;
@@ -356,7 +364,8 @@
         const frames = frameCache.get(key);
         if (frames && frames.length > 0) {
           if (obj.type === "agent") {
-            const frame = frames[currentCharacterSlot(obj.animation)];
+            const slot = obj.role === "rival" ? rivalCharacterSlot(obj.animation) : currentCharacterSlot(obj.animation);
+            const frame = frames[slot];
             if (frame) drawnFromAtlas = drawCharacterFrame(ctx, obj, frame);
           } else {
             const frame = frames[frames.length - 1];

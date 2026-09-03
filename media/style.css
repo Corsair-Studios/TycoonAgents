@@ -5072,6 +5072,15 @@ button.theme-review-preview:focus-visible::after {
   position: relative;
 }
 
+/* The ID selector above beats the UA [hidden] rule's specificity, so once
+   showThemeImageReview() sets hidden="" on this element (main.js) the stage
+   stayed visible underneath the review grid in a plain browser. Restore the
+   hide explicitly — matches the #theme-picker-list[hidden] / #theme-builder-panel[hidden]
+   pattern already used above for the same reason. */
+#theme-builder-root[hidden] {
+  display: none;
+}
+
 .tycoon-container {
   display: flex;
   flex-direction: column;
