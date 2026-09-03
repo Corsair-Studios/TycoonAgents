@@ -111,6 +111,120 @@ export function defaultHookScriptPath() {
   return path.resolve(__dirname, '..', '..', 'hooks', 'tycoon-claude-hook.cjs');
 }
 
+/** Absolute path to the repo's `hooks/` directory (source of the OpenCode
+ * plugin files copied by {@link installOpenCodePlugin}). */
+function hooksDir() {
+  return path.resolve(__dirname, '..', '..', 'hooks');
+}
+
+/** The files copied into a target project's `.opencode/plugin/` directory
+ * to register the TycoonAgents OpenCode plugin (p7-t2). These are built by
+ * `scripts/copy-hook-runtime.mjs` (agentBackend.js/modelAliases.js) and
+ * hand-authored (tycoon-opencode-plugin.ts) — all three live in this repo's
+ * `hooks/` alongside tycoon-claude-hook.cjs. */
+export const OPENCODE_PLUGIN_FILES = Object.freeze([
+  'tycoon-opencode-plugin.ts',
+  'agentBackend.js',
+  'modelAliases.js',
+]);
+
+/**
+ * Idempotently registers the TycoonAgents OpenCode plugin in `targetDir` by
+ * copying {@link OPENCODE_PLUGIN_FILES} from this repo's `hooks/` directory
+ * into `<targetDir>/.opencode/plugin/` (singular `plugin/` — OpenCode
+ * 1.18.27 loads `.ts` plugins from exactly that directory; this mirrors how
+ * the M2 smoke test staged the plugin by hand).
+ *
+ * This is a SEPARATE opt-in from {@link installHook} (the Claude Code hook
+ * installer) — calling this never touches `.claude/settings.local.json`,
+ * and calling `installHook` never touches `.opencode/`. The two are
+ * independent registrations a project can have either, both, or neither of.
+ *
+ * @param {string} targetDir project directory to install into.
+ * @param {object} [opts]
+ * @param {boolean} [opts.force] when true, overwrite a destination file
+ *   whose content differs from the source instead of throwing.
+ * @returns {{ pluginDir: string, changed: boolean, copied: string[], skipped: string[] }}
+ *   `copied`: files actually written this run (fresh or `--force`-overwritten).
+ *   `skipped`: files already present and byte-identical to the source (a
+ *   pure no-op re-run has every file in `skipped` and `changed: false`).
+ * @throws {InstallHookError} on a missing/non-directory target, a missing
+ *   source file in `hooks/` (naming `scripts/copy-hook-runtime.mjs` as the
+ *   generator for the two `.js` files), or — without `--force` — a
+ *   destination file that already exists with DIFFERENT content than the
+ *   source (never silently clobbered).
+ */
+export function installOpenCodePlugin(targetDir, opts = {}) {
+  const absTarget = path.resolve(String(targetDir ?? ''));
+
+  let targetStat;
+  try {
+    targetStat = fs.statSync(absTarget);
+  } catch {
+    throw new InstallHookError(
+      `TycoonAgents: install target directory not found: "${absTarget}"`,
+    );
+  }
+  if (!targetStat.isDirectory()) {
+    throw new InstallHookError(
+      `TycoonAgents: install target is not a directory: "${absTarget}"`,
+    );
+  }
+
+  const srcDir = hooksDir();
+  const missing = OPENCODE_PLUGIN_FILES.filter((f) => !fs.existsSync(path.join(srcDir, f)));
+  if (missing.length > 0) {
+    throw new InstallHookError(
+      `TycoonAgents: could not install the OpenCode plugin — missing source file(s) in "${srcDir}": ` +
+        `${missing.join(', ')}. tycoon-opencode-plugin.ts ships in the repo checkout; agentBackend.js ` +
+        `and modelAliases.js are built by \`node scripts/copy-hook-runtime.mjs\` (run \`npx tsc -p .\` ` +
+        `first) — run that from the repo root, then retry.`,
+    );
+  }
+
+  const pluginDir = path.join(absTarget, '.opencode', 'plugin');
+
+  // Pre-flight: with no --force, refuse (without writing anything) if any
+  // destination file exists and differs from its source.
+  if (!opts.force) {
+    for (const file of OPENCODE_PLUGIN_FILES) {
+      const destPath = path.join(pluginDir, file);
+      if (!fs.existsSync(destPath)) continue;
+      const srcBytes = fs.readFileSync(path.join(srcDir, file));
+      const destBytes = fs.readFileSync(destPath);
+      if (!srcBytes.equals(destBytes)) {
+        throw new InstallHookError(
+          `TycoonAgents: could not install the OpenCode plugin — "${destPath}" already exists and ` +
+            `differs from the repo's copy. Re-run with --force to overwrite it, or remove it first.`,
+        );
+      }
+    }
+  }
+
+  fs.mkdirSync(pluginDir, { recursive: true });
+
+  const copied = [];
+  const skipped = [];
+  for (const file of OPENCODE_PLUGIN_FILES) {
+    const srcPath = path.join(srcDir, file);
+    const destPath = path.join(pluginDir, file);
+    const srcBytes = fs.readFileSync(srcPath);
+    if (fs.existsSync(destPath)) {
+      const destBytes = fs.readFileSync(destPath);
+      if (srcBytes.equals(destBytes)) {
+        skipped.push(file);
+        continue;
+      }
+      // Only reachable with --force (pre-flight above already threw
+      // otherwise) — differing content, explicitly permitted to overwrite.
+    }
+    fs.writeFileSync(destPath, srcBytes);
+    copied.push(file);
+  }
+
+  return { pluginDir, changed: copied.length > 0, copied, skipped };
+}
+
 /** Strips a leading UTF-8 BOM, matching hooks/tycoon-claude-hook.cjs's own
  * tolerant JSON reading so a settings.json saved with a BOM by some editors
  * doesn't misreport as corrupt. */

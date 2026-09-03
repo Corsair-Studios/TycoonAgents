@@ -6,11 +6,14 @@
 - The entire suite is free for personal use under a custom license (not OSI-approved; see `LICENSE`) — no commercial sale, bundling, or redistribution without permission. This includes the bundled **UEFN Power Tools** (clean IP, written post-employment).
 
 ## 2. Repository structure (independent Power Tools repo, single source of truth)
-- **UEFN Power Tools is an independent, public repo** (`github.com/Corsair-Studios/trashbyrds-uefn-power-tools`) — the single source of truth, publishing its own GitHub Releases via its own build pipeline. TycoonAgents does not bundle it; it consumes the published release as an optional on-demand install.
+- **UEFN Power Tools is an independent, public repo** (`github.com/Corsair-Studios/trashbyrds-uefn-power-tools`) — the single source of truth, publishing its own GitHub Releases via its own build pipeline. TycoonAgents does not bundle it and never downloads it: Power Tools is not bundled, not downloaded — a third-party MCP the user installs themselves per its own `INSTALL.md` (see `docs/POWER-TOOLS-COEXISTENCE.md`).
 - General rule: **anything that must exist in 2+ places is generated/published from one source**, never edited by hand in both (cf. the build-time codegen used for the verse agent templates).
 
 ## 3. Ship the plugin, not the framework
 - The published VS Code extension (VSIX) contains ONLY the runtime plugin. Exclude build/dev tooling, generators, tests, design docs, and the meta-framework that builds it. Enforced via **`.vscodeignore`** (vsce uses `.vscodeignore`, not `.gitignore`); maintain exclude-by-default and verify each release's contents. (See DESIGN section 13.)
+
+## 3a. VSIX output location
+- `npm run package` builds the VSIX into `dist/` (via `vsce package -o dist/`), never at the repo root. `dist/` is excluded by both `.gitignore` and `.vscodeignore`. Release artifacts are never committed — `npm run release` uploads the built VSIX as a GitHub Release asset (`gh release create`).
 
 ## 4. Install robustness checklist
 Each item answers a real failure:
@@ -33,4 +36,4 @@ Requirements:
 - Many users share a repo with teammates who do NOT use Claude Code. On setup, add per-developer agent artifacts (`.claude/`, `CLAUDE.md`, local settings) to the user's project **`.gitignore`**, and for **UEFN/Fortnite** projects to **`.urcignore`** (Unreal Revision Control; `.NET` globbing; add `CLAUDE.md` + `.claude/**`). (See DESIGN section 13.)
 
 ## 7. UEFN integration
-- The UEFN **Power Tools** are the suite's UEFN integration: when a creator works in UEFN with an AI agent (via the Power Tools' MCP bridge), that activity drives the TycoonAgents panel. Independently licensed and distributed from its own repo (section 2), consumed by TycoonAgents as an optional on-demand install.
+- The UEFN **Power Tools** are the suite's UEFN integration: when a creator works in UEFN with an AI agent (via the Power Tools' MCP bridge), that activity drives the TycoonAgents panel. Independently licensed and distributed from its own repo (section 2); not bundled, not downloaded — a third-party MCP the user installs themselves (see `POWER-TOOLS-COEXISTENCE.md`).

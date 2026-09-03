@@ -17,6 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   installHook,
+  installOpenCodePlugin,
+  OPENCODE_PLUGIN_FILES,
   mergeHookIntoSettings,
   defaultHookScriptPath,
   InstallHookError,
@@ -237,6 +239,102 @@ test('mergeHookIntoSettings: applying twice in a row — second call is changed=
   const second = mergeHookIntoSettings(first.settings, hookCommand);
   assert.equal(second.changed, false, 'merging an already-merged settings object must be a no-op');
   assert.deepEqual(second.settings, first.settings);
+});
+
+// ---------------------------------------------------------------------------
+// installOpenCodePlugin — separate opt-in, .opencode/plugin/ only (p7-t2).
+// ---------------------------------------------------------------------------
+
+test('installOpenCodePlugin: copies the three plugin files into .opencode/plugin/', () => {
+  const dir = mkTempDir();
+  try {
+    const result = installOpenCodePlugin(dir);
+    assert.equal(result.changed, true);
+    assert.deepEqual([...result.copied].sort(), [...OPENCODE_PLUGIN_FILES].sort());
+    assert.deepEqual(result.skipped, []);
+    const pluginDir = path.join(dir, '.opencode', 'plugin');
+    assert.equal(result.pluginDir, pluginDir);
+    for (const file of OPENCODE_PLUGIN_FILES) {
+      assert.ok(fs.existsSync(path.join(pluginDir, file)), `expected ${file} to be copied`);
+    }
+    // .claude/ must be untouched by this opt-in.
+    assert.equal(fs.existsSync(path.join(dir, '.claude')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installOpenCodePlugin: rerun is a no-op (changed=false, all files skipped, no error)', () => {
+  const dir = mkTempDir();
+  try {
+    const first = installOpenCodePlugin(dir);
+    assert.equal(first.changed, true);
+
+    const second = installOpenCodePlugin(dir);
+    assert.equal(second.changed, false);
+    assert.deepEqual(second.copied, []);
+    assert.deepEqual([...second.skipped].sort(), [...OPENCODE_PLUGIN_FILES].sort());
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installOpenCodePlugin: without being called, nothing is written under .opencode/ by installHook', () => {
+  const dir = mkTempDir();
+  try {
+    installHook(dir);
+    assert.equal(fs.existsSync(path.join(dir, '.opencode')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installOpenCodePlugin: a differing destination file throws without --force and is left untouched', () => {
+  const dir = mkTempDir();
+  try {
+    const pluginDir = path.join(dir, '.opencode', 'plugin');
+    fs.mkdirSync(pluginDir, { recursive: true });
+    const destPath = path.join(pluginDir, 'modelAliases.js');
+    fs.writeFileSync(destPath, '// not the real file', 'utf8');
+
+    assert.throws(() => installOpenCodePlugin(dir), InstallHookError);
+    assert.equal(fs.readFileSync(destPath, 'utf8'), '// not the real file');
+
+    // --force overwrites it.
+    const result = installOpenCodePlugin(dir, { force: true });
+    assert.equal(result.changed, true);
+    assert.ok(result.copied.includes('modelAliases.js'));
+    assert.notEqual(fs.readFileSync(destPath, 'utf8'), '// not the real file');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installOpenCodePlugin: missing source file in hooks/ yields an explicit error naming copy-hook-runtime.mjs', () => {
+  const dir = mkTempDir();
+  const hooksBackupDir = path.resolve(path.dirname(defaultHookScriptPath()));
+  const victim = path.join(hooksBackupDir, 'modelAliases.js');
+  const backupPath = victim + '.installhook-test-backup';
+  const hadVictim = fs.existsSync(victim);
+  try {
+    if (hadVictim) {
+      fs.renameSync(victim, backupPath);
+    }
+    assert.throws(
+      () => installOpenCodePlugin(dir),
+      (err) => {
+        assert.ok(err instanceof InstallHookError);
+        assert.match(err.message, /modelAliases\.js/);
+        assert.match(err.message, /copy-hook-runtime\.mjs/);
+        return true;
+      },
+    );
+  } finally {
+    if (hadVictim && fs.existsSync(backupPath)) {
+      fs.renameSync(backupPath, victim);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('mergeHookIntoSettings: does not mutate the input object', () => {

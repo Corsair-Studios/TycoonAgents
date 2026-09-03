@@ -6,6 +6,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { Backend } from "../../core/agentBackend";
 
 /**
  * The two supported delegation topologies (Team Lead Mode, Phase 1).
@@ -66,6 +67,50 @@ export interface DoctrineRosterAgent {
   id: string;
   /** Task-routing description shown in the "Task types" column. */
   taskTypes: string;
+  /**
+   * Pre-formatted "Vendor / model" column value (e.g.
+   * `Anthropic · anthropic/sonnet` or `OpenAI · openai/gpt-5.4-mini
+   * (subscription)`) — see {@link formatVendorModelLabel}. Optional: a
+   * caller supplying rows without backend info (or an older caller not yet
+   * updated) gets the claude-native default label rendered instead, so
+   * every row still shows a value.
+   */
+  vendorLabel?: string;
+}
+
+/**
+ * Vendor display name for a backend's `vendor` field. Known vendors get a
+ * proper-cased display name (`anthropic` -> `Anthropic`, `openai` ->
+ * `OpenAI`); anything else is title-cased from the raw string so an unknown
+ * future vendor still renders reasonably instead of blank.
+ */
+function vendorDisplayName(vendor: string): string {
+  switch (vendor.toLowerCase()) {
+    case "anthropic":
+      return "Anthropic";
+    case "openai":
+      return "OpenAI";
+    default:
+      return vendor.length > 0 ? vendor[0].toUpperCase() + vendor.slice(1) : vendor;
+  }
+}
+
+/**
+ * Format a resolved {@link Backend} (from
+ * `parseAgentBackend(readAgentFrontmatter(agentFileText))`) into the
+ * roster table's "Vendor / model" column value:
+ * `<Vendor> · <vendor/model>` with a trailing `(subscription)` or `(local)`
+ * cost-class marker — `(metered)` is the default and is omitted since it's
+ * the common case for claude-native agents.
+ *
+ * Examples:
+ * - claude-native, metered -> `Anthropic · anthropic/sonnet`
+ * - openai-compatible, subscription -> `OpenAI · openai/gpt-5.4-mini (subscription)`
+ */
+export function formatVendorModelLabel(backend: Backend): string {
+  const vendor = vendorDisplayName(backend.vendor);
+  const suffix = backend.costModelClass === "metered" ? "" : ` (${backend.costModelClass})`;
+  return `${vendor} · ${backend.model}${suffix}`;
 }
 
 /**
@@ -75,13 +120,15 @@ export interface DoctrineRosterAgent {
  * previous hardcoded table exactly so a bare install still gets sensible
  * defaults.
  */
+const DEFAULT_VENDOR_LABEL = "Anthropic · anthropic/sonnet";
+
 const DEFAULT_ROSTER_ROWS: DoctrineRosterAgent[] = [
-  { id: "coding-specialist", taskTypes: "Implementation, editing, bug fixes, refactoring" },
-  { id: "testing-specialist", taskTypes: "Test authoring, specs, coverage" },
-  { id: "vscode-integration", taskTypes: "VS Code extension API, webview, panel, lifecycle" },
-  { id: "ux-ui-designer", taskTypes: "Webview canvas scene, layout, CSS, animation" },
-  { id: "workspace-monitor", taskTypes: "Agent lifecycle/event monitoring, hook-record mapping" },
-  { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob (runs on haiku)" },
+  { id: "coding-specialist", taskTypes: "Implementation, editing, bug fixes, refactoring", vendorLabel: DEFAULT_VENDOR_LABEL },
+  { id: "testing-specialist", taskTypes: "Test authoring, specs, coverage", vendorLabel: DEFAULT_VENDOR_LABEL },
+  { id: "vscode-integration", taskTypes: "VS Code extension API, webview, panel, lifecycle", vendorLabel: DEFAULT_VENDOR_LABEL },
+  { id: "ux-ui-designer", taskTypes: "Webview canvas scene, layout, CSS, animation", vendorLabel: DEFAULT_VENDOR_LABEL },
+  { id: "workspace-monitor", taskTypes: "Agent lifecycle/event monitoring, hook-record mapping", vendorLabel: DEFAULT_VENDOR_LABEL },
+  { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob (runs on haiku)", vendorLabel: "Anthropic · anthropic/haiku" },
 ];
 
 /**
@@ -105,8 +152,8 @@ function resolveRosterRows(agents: DoctrineRosterAgent[] | undefined): DoctrineR
  */
 function renderRosterTable(agents: DoctrineRosterAgent[] | undefined): string {
   const rows = resolveRosterRows(agents);
-  const lines = rows.map((a) => `| ${a.id} | ${a.taskTypes} |`);
-  return `## Specialist roster\n\n| Specialist | Task types |\n| --- | --- |\n${lines.join("\n")}`;
+  const lines = rows.map((a) => `| ${a.id} | ${a.taskTypes} | ${a.vendorLabel ?? DEFAULT_VENDOR_LABEL} |`);
+  return `## Specialist roster\n\n| Specialist | Task types | Vendor / model |\n| --- | --- | --- |\n${lines.join("\n")}`;
 }
 
 /**

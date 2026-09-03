@@ -95,9 +95,31 @@ Prefer to author outside VS Code? There's a **standalone theme host** in [`stand
 
 A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
 
+### Using OpenCode as the provider
+
+TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of Claude Code, via the same provider abstraction.
+
+1. **Build** — from the repo root:
+
+  ```sh
+  npm install && npm run build
+  ```
+
+  This compiles the TypeScript sources and copies the hook runtime files the OpenCode plugin needs.
+
+2. **Select the provider** — VS Code setting `tycoonagents.provider: "opencode"`, or the `TYCOON_PROVIDER=opencode` environment variable (which always overrides the setting), or `--provider opencode` in the standalone host.
+3. **Generate the roster** — `npm run opencode:config` writes an OpenCode-flavored agent config from the same specialist roster the VS Code extension seeds.
+4. **Register the plugin** — copy `hooks/tycoon-opencode-plugin.ts`, `hooks/agentBackend.js`, and `hooks/modelAliases.js` into your project's `.opencode/plugin/` directory (OpenCode loads `.ts` plugins from there); the standalone host can do this for you — see [`standalone/README.md`](standalone/README.md#opencode-plugin-registration).
+5. **Run a session** in OpenCode as usual — the plugin appends hook records to the same activity log the Claude Code hook writes to.
+6. **What the panel shows** — the same live agent visualization and metrics, sourced from OpenCode's events instead of Claude Code's.
+
+See [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md) for the full IPC contract and mapping details. Note: Anthropic/OpenAI models used through OpenCode are billed per API token, not through a Claude/Codex subscription — subscription access reaches OpenCode only via the vendor CLIs (see `docs/OPENCODE-PROVIDER.md`).
+
 ## UEFN Power Tools
 
-TycoonAgents includes a **UEFN component** for Unreal Editor for Fortnite: a **Node.js MCP server** paired with a **Python bridge** that let your agents inspect and edit a *live* UEFN level. The Python bridge runs inside UEFN and communicates over file-based IPC; the MCP server exposes its capabilities to Claude Code agents as tools — `uefn_status`, `uefn_list_devices`, `uefn_get_property`, `uefn_set_property`, `uefn_select_actor`, `uefn_run_audit`, and `uefn_get_level_info`.
+TycoonAgents ships a **UEFN pack** (Verse authoring skill, LSP/project checks, and the `uefn-auditor`/`verse-expert` agents) for Unreal Editor for Fortnite, but the live-editor bridge itself — Trashbird's **UEFN Power Tools**, a Node.js MCP server paired with a Python bridge that let your agents inspect and edit a *live* UEFN level (`uefn_status`, `uefn_list_devices`, `uefn_get_property`, `uefn_set_property`, `uefn_select_actor`, `uefn_run_audit`, `uefn_get_level_info`) — is a separate, independent project. TycoonAgents does not download, install, or stage it.
+
+To use it: grab a release from [Power Tools' releases page](https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/releases) and follow its `INSTALL.md`, then copy the `uefn-bridge` entry from this repo's [`.mcp.json.example`](.mcp.json.example) (or the matching entry in [`media/mcp/catalog.json`](media/mcp/catalog.json)) into your own `.mcp.json` and fill in `<POWER_TOOLS_DIR>`. See [`docs/POWER-TOOLS-COEXISTENCE.md`](docs/POWER-TOOLS-COEXISTENCE.md) for the full contract.
 
 ## Project layout
 - [`docs/DESIGN.md`](docs/DESIGN.md) — product & architecture design (start here).

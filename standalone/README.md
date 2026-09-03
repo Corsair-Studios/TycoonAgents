@@ -15,19 +15,23 @@ running it never builds, packages, or otherwise touches the extension.
 - The repo's TypeScript sources compiled once, from the **repo root**:
 
   ```sh
-  npx tsc -p .
+  npm run build
   ```
 
+  This also copies the hook runtime files the `--opencode` install needs.
+
   Why: the standalone does not fork or reimplement the extension's pure
-  state logic (`computeStateFromRecords`, `mapHookRecord`, etc. in
-  `src/core/state.ts` / `src/providers/claude-code/mapHookRecord.ts`). It
-  `require()`s the **compiled** output of those files from `out/src/...` at
-  runtime (see `src/sharedLogic.mjs`) so both hosts stay byte-for-byte
-  behaviorally identical. `out/` is gitignored, so this step is required
-  after every fresh clone and after pulling changes to `src/core/state.ts`
-  or `src/providers/claude-code/mapHookRecord.ts`. If `out/` is missing or
-  stale, the standalone fails fast with an actionable error telling you to
-  run this command — it does not silently serve wrong data.
+  state logic (`computeStateFromRecords`, `mapHookRecord`, the provider
+  mapper registry, etc. in `src/core/state.ts` / `src/core/mappingRegistry.ts`
+  / `src/providers/claude-code/index.ts`). It `require()`s the **compiled**
+  output of those files from `out/src/...` at runtime (see
+  `src/sharedLogic.mjs`) so both hosts stay byte-for-byte behaviorally
+  identical. `out/` is gitignored, so this step is required after every
+  fresh clone and after pulling changes to `src/core/state.ts`,
+  `src/core/mappingRegistry.ts`, or `src/providers/claude-code/index.ts`. If
+  `out/` is missing or stale, the standalone fails fast with an actionable
+  error telling you to run this command — it does not silently serve wrong
+  data.
 
 ## How to run
 
@@ -90,6 +94,24 @@ file store reads/writes generated theme manifests and images from/to (see
 "Running the theme host end to end" below).
 
 Precedence for project targets: explicit CLI directory argument(s) > `TYCOON_STANDALONE_PROJECT_ROOT` > current working directory. See `src/projectRoots.mjs`.
+
+## Provider selection
+
+`watch` reads agent activity from Claude Code by default. Pass `--provider <id>` (`claude-code` or `opencode`) or set `TYCOON_PROVIDER` (always wins over the flag) to switch:
+
+```sh
+node src/cli.mjs watch . --provider opencode
+```
+
+## OpenCode plugin registration
+
+`install-hook`'s `--opencode` flag is a **separate opt-in** from the default Claude Code hook install: it idempotently copies the TycoonAgents OpenCode plugin (`hooks/tycoon-opencode-plugin.ts`, `hooks/agentBackend.js`, `hooks/modelAliases.js`) into `<dir>/.opencode/plugin/` (the directory OpenCode 1.18.27 loads `.ts` plugins from) instead of touching `.claude/settings.local.json`.
+
+```sh
+node src/cli.mjs install-hook <path-to-project> --opencode
+```
+
+Safe to re-run — a file already present and byte-identical to the repo's copy is left alone. If a destination file exists with *different* content, it refuses and errors rather than overwriting; pass `--force` to overwrite it anyway. If the source files are missing from this repo's `hooks/` directory (the two `.js` files are built by `node scripts/copy-hook-runtime.mjs`, which needs `npx tsc -p .` first), the command fails with an explicit error naming what's missing.
 
 ### Theme image generation — API keys
 
@@ -258,6 +280,7 @@ independent of, and not run by, the root repo's `npm test`.
 - Building/packaging the extension (`npm run package` at the repo root)
   never builds, requires, or includes anything under `standalone/`.
 - The one deliberate coupling between the two build targets is the shared
-  compiled `out/src/core/state.js` / `out/src/providers/claude-code/mapHookRecord.js`
-  logic described above — reused in place rather than forked, so both hosts
-  can never drift apart in how they interpret hook data.
+  compiled `out/src/core/state.js` / `out/src/core/mappingRegistry.js` /
+  `out/src/providers/claude-code/index.js` logic described above — reused in
+  place rather than forked, so both hosts can never drift apart in how they
+  interpret hook data.
