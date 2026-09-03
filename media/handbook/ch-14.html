@@ -27,7 +27,7 @@
 <a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
 <a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link side-rail-current" href="ch-14.html" aria-current="page">14 &middot; Diagnostics</a>
 </nav>
 </details>
@@ -70,22 +70,22 @@
 
 <div class="section-head">
   <span class="s-title">§ 14.3 · UEFN chip is gray</span>
-  <span class="cap">bridge not staged, or engine not restarted</span>
+  <span class="cap">Power Tools not installed/wired up, or engine not restarted</span>
 </div>
-<p>A gray UEFN chip means the Power Tools bridge either hasn't been staged into your project yet, or UEFN hasn't been restarted since it was.</p>
+<p>A gray UEFN chip means Power Tools &mdash; a separate product from TycoonAgents &mdash; either isn't installed and wired into your <code>.mcp.json</code> yet, or UEFN hasn't been restarted since it was.</p>
 <div class="steps">
   <div class="step">
     <span class="stepno">01</span>
-    <div><p>Revisit Setup and confirm the bridge staging step completed (Chapter 13).</p></div>
+    <div><p>Confirm you've installed Power Tools yourself and copied its <code>uefn-bridge</code> entry into your own <code>.mcp.json</code> (Chapter 13).</p></div>
   </div>
   <div class="step">
     <span class="stepno">02</span>
-    <div><p>Restart UEFN so it picks up the bridge from <code>Content/Python</code>.</p></div>
+    <div><p>Restart UEFN so it picks up Power Tools' bridge.</p></div>
   </div>
 </div>
 <div class="callout note">
   <p class="callout-label">Advanced</p>
-  <p>The bridge auto-discovers its paths, but three environment variables override that discovery when it picks the wrong location: <code>UEFN_BRIDGE_DIR</code> overrides the IPC directory the bridge and MCP server use to talk to each other; <code>UEFN_VERSE_PROJECT_DIR</code> overrides the Verse project cache root; <code>VERSE_LSP_PATH</code> overrides the Verse language server executable the Verse-aware audit tools launch. Reach for one of these only if the chip stays gray after a restart, or the bridge responds with the wrong project's data.</p>
+  <p>Power Tools' bridge auto-discovers its own paths, but <code>UEFN_BRIDGE_DIR</code> (owned by Power Tools) overrides the IPC directory its bridge and MCP server use to talk to each other if it picks the wrong location. TycoonAgents' own pack instead reads <code>UEFN_VERSE_PROJECT_DIR</code> (Verse project cache root) and <code>VERSE_LSP_PATH</code> (the Verse language server executable) for its LSP/project checks. Reach for these only if the chip stays gray after a restart, or a check responds with the wrong project's data.</p>
 </div>
 <div class="callout note">
   <p class="callout-label">Advanced</p>
@@ -94,7 +94,7 @@
 </div>
 <div class="callout tip">
   <p class="callout-label">Tip</p>
-  <p>The UEFN MCP chip also needs <code>node</code> v18+ on your PATH — the MCP client launches the bridge's server through Node. Run <code>node --version</code> in a terminal to check.</p>
+  <p>The UEFN MCP chip also needs <code>node</code> v18+ on your PATH — the MCP client launches Power Tools' server through Node. Run <code>node --version</code> in a terminal to check.</p>
 </div>
 <div class="callout note">
   <p class="callout-label">Advanced</p>
@@ -175,7 +175,7 @@
 <p>Reinstalling through the setup wizard is safe to reach for. Your state survives an update — build progress and earned badges persist on the host side, not in the webview — so a reinstall won't wipe your progress.</p>
 
 <p class="nav-links">
-  <a class="prev" href="ch-13.html">&larr; Ch 13 · UEFN Power Tools</a>
+  <a class="prev" href="ch-13.html">&larr; Ch 13 · UEFN Pack</a>
   <a class="index" href="index.html">Index</a>
   <span class="next-placeholder">End of handbook</span>
 </p>

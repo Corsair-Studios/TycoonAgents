@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chapter 13 — UEFN Power Tools · TycoonAgents Handbook</title>
+<title>Chapter 13 — UEFN Pack · TycoonAgents Handbook</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -27,7 +27,7 @@
 <a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
 <a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
-<a class="side-rail-link side-rail-current" href="ch-13.html" aria-current="page">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link side-rail-current" href="ch-13.html" aria-current="page">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
@@ -35,48 +35,39 @@
 
 <p class="crumb">TycoonAgents Handbook / Chapter 13 / Part III · Reference</p>
 
-<h1><span class="chapter-num">13</span>UEFN Power Tools</h1>
+<h1><span class="chapter-num">13</span>UEFN Pack</h1>
 
 <div class="lede">
   <p class="label">For Fortnite Creative projects</p>
-  <p class="intro">If your workspace is a UEFN (Unreal Editor for Fortnite) project, TycoonAgents adds a second layer on top of everything else: a bridge into the editor itself, so agents can inspect and audit your level, not just your source files.</p>
+  <p class="intro">If your workspace is a UEFN (Unreal Editor for Fortnite) project, TycoonAgents ships a UEFN <strong>pack</strong>: a Verse authoring skill, LSP and project-health checks that read your local paths, and two specialist agents (<strong>Verse Expert</strong> and <strong>UEFN Auditor</strong>) that use them. Trashbird's <strong>UEFN Power Tools</strong> is a separate, independently installed product &mdash; TycoonAgents never downloads, installs, stages, or deletes it or its files. This chapter covers TycoonAgents' own pack first, then documents the Power Tools MCP tool catalog for reference once you've installed Power Tools yourself. See docs/POWER-TOOLS-COEXISTENCE.md for the full contract.</p>
 </div>
 
 <div class="callout note">
   <p class="callout-label">Requirements at a glance</p>
-  <p>The in-editor Power Tools window only needs UEFN with the <strong>Python Editor Script Plugin</strong> enabled &mdash; that runs on UEFN's own embedded Python, no system install required. The MCP tools (§ 13.3 below) additionally need <strong>Node.js v18+</strong> on PATH. <code>uefn_verse_check</code> additionally needs <strong>system Python 3</strong> and <strong>Epic's Verse VS Code extension</strong>. See Chapter 02's requirements table for the full tier breakdown, and Chapter 14 for the environment-variable overrides if discovery ever picks the wrong path.</p>
+  <p>TycoonAgents' own pack needs only <strong>system Python 3</strong> and, for LSP checks, <strong>Epic's Verse VS Code extension</strong> installed somewhere on the machine (see Chapter 14 for discovery). If you've separately installed <strong>Power Tools</strong>, its in-editor window needs UEFN with the <strong>Python Editor Script Plugin</strong> enabled &mdash; that runs on UEFN's own embedded Python, no system install required &mdash; and its MCP tools (§ 13.3 below) additionally need <strong>Node.js v18+</strong> on PATH. See Chapter 02's requirements table for the full tier breakdown.</p>
 </div>
 
 <div class="section-head">
   <span class="s-title">§ 13.1 · Setup</span>
-  <span class="cap">detected automatically</span>
+  <span class="cap">TycoonAgents' pack, plus Power Tools if you install it</span>
 </div>
-<p>The setup wizard detects a UEFN project on its own. When it does, it offers to:</p>
-<div class="steps">
-  <div class="step">
-    <span class="stepno">01</span>
-    <div><p>Stage the Python bridge into your project's <code>Content/Python</code> folder.</p></div>
-  </div>
-  <div class="step">
-    <span class="stepno">02</span>
-    <div><p>Install the <strong>Verse Expert</strong> and <strong>UEFN Auditor</strong> agents alongside your other specialists.</p></div>
-  </div>
-</div>
+<p>The setup wizard detects a UEFN project on its own. When it does, it offers to install the <strong>Verse Expert</strong> and <strong>UEFN Auditor</strong> agents alongside your other specialists, and it points <code>VERSE_LSP_PATH</code> / <code>UEFN_VERSE_PROJECT_DIR</code> at the paths it discovers so the pack's own LSP and project checks work. It does not download, stage, or install anything belonging to Power Tools.</p>
+<p>If you also want live-editor inspection and audits, install <strong>Power Tools</strong> yourself from its own release, following its own <code>INSTALL.md</code>. Once it's installed, copy the <code>uefn-bridge</code> entry out of this repo's <code>.mcp.json.example</code> into your own (gitignored) <code>.mcp.json</code> and fill in the path to where you unzipped it — TycoonAgents registers it in the catalog as a third-party entry, but one-click install is refused by design; see docs/POWER-TOOLS-COEXISTENCE.md for the exact steps.</p>
 <div class="figure-placeholder">
   <span class="fig-label">Screenshot</span>
-  <p>Setup screen — UEFN detected, bridge staging chip.</p>
+  <p>Setup screen — UEFN detected, agent install chip.</p>
 </div>
 
 <div class="callout note">
   <p class="callout-label">See also</p>
-  <p>The UEFN chip in the stage's status chip row (Chapter 04, § 4.6) shows live bridge connectivity at a glance: green glow means a heartbeat arrived in the last 15 seconds and agents can use the <code>uefn_*</code> MCP tools; amber means reopen the project in UEFN so the bridge auto-starts.</p>
+  <p>The UEFN chip in the stage's status chip row (Chapter 04, § 4.6) shows live Power Tools bridge connectivity at a glance, once you've installed and wired it up yourself: green glow means a heartbeat arrived in the last 15 seconds and agents can use the <code>uefn_*</code> MCP tools; amber means reopen the project in UEFN so Power Tools' own bridge auto-starts.</p>
 </div>
 
 <div class="section-head">
   <span class="s-title">§ 13.2 · The Power Tools window</span>
-  <span class="cap">in-editor launcher</span>
+  <span class="cap">in-editor launcher — part of Power Tools, not TycoonAgents</span>
 </div>
-<p>Once the bridge is staged, an in-editor launcher window becomes available inside UEFN itself. Its title bar shows the bridge's version, so you can tell at a glance whether it's current. From there you can reach:</p>
+<p>Once you've installed Power Tools yourself and it's active in your UEFN project, an in-editor launcher window it provides becomes available inside UEFN. Its title bar shows the bridge's version, so you can tell at a glance whether it's current. From there you can reach:</p>
 <div class="ref-table">
 <table>
   <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
@@ -188,20 +179,20 @@
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 13.4 · Keeping the bridge current</span>
-  <span class="cap">self-updating, mostly</span>
+  <span class="s-title">§ 13.4 · Keeping Power Tools current</span>
+  <span class="cap">Power Tools' own self-update, not TycoonAgents'</span>
 </div>
-<p>The bridge keeps itself up to date in two ways: the newest project-side copy wins automatically when a UEFN project loads, and the extension also refreshes engine-side copies each time the panel opens.</p>
+<p>Power Tools keeps itself up to date on its own, independent of TycoonAgents: the newest project-side copy wins automatically when a UEFN project loads, and Power Tools refreshes its engine-side copies each time it runs. TycoonAgents never stages, updates, or deletes these files.</p>
 <div class="callout tip">
   <p class="callout-label">Tip</p>
-  <p>If the Power Tools window's title shows an older version than your installed extension, close and reopen the UEFN project — the self-sync runs at project load, before anything else.</p>
+  <p>If the Power Tools window's title shows an older version than you expect, close and reopen the UEFN project — Power Tools' self-sync runs at project load, before anything else.</p>
 </div>
 
 <div class="section-head">
   <span class="s-title">§ 13.5 · Revision control hygiene</span>
-  <span class="cap">.urcignore</span>
+  <span class="cap">.urcignore — written by Power Tools' own setup</span>
 </div>
-<p>Setup also writes a <code>.urcignore</code> file so day-to-day dev artifacts (config, logs, and similar loose files) stay out of UEFN's Revision Control — only your actual project assets get tracked.</p>
+<p>Power Tools' own setup writes a <code>.urcignore</code> file so day-to-day dev artifacts (config, logs, and similar loose files) stay out of UEFN's Revision Control — only your actual project assets get tracked. TycoonAgents does not write or manage this file.</p>
 
 <div class="section-head">
   <span class="s-title">§ 13.6 · Device audit</span>

@@ -27,7 +27,7 @@
 <a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
 <a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
@@ -40,9 +40,11 @@
   <div class="lede">
     <div class="lede-label">Get running</div>
     <div class="lede-intro">
-      Install the extension, let it open the panel, and walk through the
-      two-step setup wizard once. Everything here runs on first launch and
-      is skipped automatically after that.
+      This chapter covers installing TycoonAgents as a VS Code extension.
+      Running it standalone (no VS Code) or with OpenCode instead of Claude
+      Code? See Chapter 03 instead. Either way, the two-step setup wizard
+      below runs once on first launch and is skipped automatically after
+      that.
     </div>
   </div>
 
@@ -72,7 +74,7 @@
       <tr>
         <td>2 &middot; UEFN bridge / Power Tools</td>
         <td>Live-editor inspection, audits, MCP tools</td>
-        <td>UEFN installed with the project open, the Python Editor Script Plugin enabled (the in-editor bridge runs on UEFN's own embedded Python &mdash; no system Python needed for the in-editor tools), and Node.js v18+ on PATH (the MCP client launches the bridge's server via <code>node</code>).</td>
+        <td>Power Tools installed separately (its own download), UEFN with the project open, the Python Editor Script Plugin enabled (Power Tools' in-editor bridge runs on UEFN's own embedded Python &mdash; no system Python needed for the in-editor tools), and Node.js v18+ on PATH (the MCP client launches its server via <code>node</code>).</td>
       </tr>
       <tr>
         <td>3 &middot; Verse analyzer</td>
@@ -98,12 +100,18 @@
 
   <div class="section-head">
     <div class="s-title">&sect; 2.2 &middot; Installing the extension</div>
-    <div class="s-caption">VSIX or marketplace</div>
+    <div class="s-caption">VSIX or marketplace &mdash; VS Code path; see Chapter 03 for standalone/OpenCode</div>
   </div>
   <p>
-    Install TycoonAgents either from a <code>.vsix</code> file or from your
-    editor's extension marketplace, the same way you'd install any other
-    extension. Once it's active in a workspace, the panel opens
+    This section covers the VS Code extension path specifically. If you'd
+    rather skip VS Code entirely, or pair either host with OpenCode instead
+    of Claude Code, see <a href="ch-03.html">Chapter 03, Standalone and
+    OpenCode Setup</a>.
+  </p>
+  <p>
+    In VS Code, install TycoonAgents either from a <code>.vsix</code> file
+    or from your editor's extension marketplace, the same way you'd install
+    any other extension. Once it's active in a workspace, the panel opens
     automatically &mdash; this is controlled by the
     <code>tycoonagents.autoShow</code> setting, which defaults to
     <code>true</code>. If you'd rather open it yourself, turn that setting
@@ -199,10 +207,10 @@
         <p>
           <strong>UEFN detection card</strong> &mdash; if TycoonAgents
           detects a UEFN project, a card offers "Yes, set up UEFN." Accepting
-          it stages the Python bridge into your project's
-          <code>Content/Python</code> folder and installs the Verse Expert
-          and UEFN Auditor specialist agents. See Chapter 13 for what the
-          bridge does.
+          it installs the Verse Expert and UEFN Auditor specialist agents
+          and TycoonAgents' own Verse LSP/project-check pack. It does not
+          install Power Tools &mdash; that's a separate product you install
+          yourself. See Chapter 13 for the full pack/Power Tools split.
         </p>
       </div>
     </div>

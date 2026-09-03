@@ -27,7 +27,7 @@
 <a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
 <a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
@@ -40,9 +40,13 @@
   <div class="lede">
     <div class="lede-label">Read this first</div>
     <div class="lede-intro">
-      TycoonAgents watches your Claude Code multi-agent delegation and turns
-      it into a living tycoon scene &mdash; agents that walk, build, and earn
-      badges as your orchestrator hands off real work to specialists. This
+      TycoonAgents runs three ways: as a VS Code extension next to Claude
+      Code, as a standalone app you open in a browser with no VS Code at
+      all, or with OpenCode as the provider in either host (setup for all
+      three is in <a href="ch-03.html">Chapter 03</a>). Whichever way you
+      run it, it watches your multi-agent delegation and turns it into a
+      living tycoon scene &mdash; agents that walk, build, and earn badges
+      as your orchestrator hands off real work to specialists. This
       chapter covers the four ideas you need before anything else in this
       handbook will make sense.
     </div>
@@ -53,14 +57,17 @@
     <div class="s-caption">the elevator pitch</div>
   </div>
   <p>
-    TycoonAgents is a VS Code&#8209;compatible extension. It does not run your
-    project, and it does not decide how your agents work. Instead, it sits
-    alongside Claude Code and <strong>observes</strong>: every time your
-    orchestrator dispatches a task to a specialist agent, and every time
-    that agent finishes, TycoonAgents' hooks record the event. The panel
-    then replays those events as a scene &mdash; each agent is a character on
-    a stage, walking to a build site, hammering away, and celebrating when
-    the task completes.
+    TycoonAgents comes in three forms &mdash; a VS Code extension, a
+    standalone app that runs the same panel in a browser with no VS Code
+    installed, and either one paired with OpenCode instead of Claude Code
+    as the provider (see <a href="ch-03.html">Chapter 03</a>). None of them
+    run your project or decide how your agents work. Instead, TycoonAgents
+    sits alongside Claude Code (or OpenCode) and <strong>observes</strong>:
+    every time your orchestrator dispatches a task to a specialist agent,
+    and every time that agent finishes, TycoonAgents' hooks record the
+    event. The panel then replays those events as a scene &mdash; each agent
+    is a character on a stage, walking to a build site, hammering away, and
+    celebrating when the task completes.
   </p>
   <p>
     The important part: this is a <strong>visualization of work that is

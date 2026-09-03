@@ -313,3 +313,23 @@ test("ch-10.html mentions uefn-paths.json", () => {
   const content = readHandbookFile("ch-10.html");
   assert.match(content, /uefn-paths\.json/, "ch-10.html: missing \"uefn-paths.json\"");
 });
+
+test("index.html and ch-01.html frame standalone + OpenCode support within their first 60 lines", () => {
+  for (const file of ["index.html", "ch-01.html"]) {
+    const lines = readHandbookFile(file).split("\n").slice(0, 60).join("\n");
+    assert.match(lines, /standalone/i, `${file}: first 60 lines don't mention "standalone"`);
+    assert.match(lines, /OpenCode/i, `${file}: first 60 lines don't mention "OpenCode"`);
+  }
+});
+
+test("no media/handbook/*.html claims TycoonAgents bundles, installs, or ships with Power Tools", () => {
+  const bannedRe = /bundled power tools|installs power tools|ships with power tools/i;
+  for (const file of listHandbookFiles()) {
+    const content = readHandbookFile(file);
+    assert.doesNotMatch(
+      content,
+      bannedRe,
+      `${file}: contains language implying TycoonAgents bundles/installs/ships Power Tools`,
+    );
+  }
+});

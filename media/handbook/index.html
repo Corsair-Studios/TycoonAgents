@@ -27,7 +27,7 @@
 <a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
 <a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
@@ -37,30 +37,41 @@
   <div class="hero">
     <h1>TycoonAgents Handbook</h1>
     <p class="tagline">
-      Everything you need to install TycoonAgents, wire up delegation, build a
-      theme, and read the panel like a pro — from first launch to
-      troubleshooting the deep stuff.
+      TycoonAgents runs three ways: as a VS Code extension paired with Claude
+      Code, as a standalone app you open in a browser with no VS Code at
+      all, and with OpenCode as the provider in either host. Every feature
+      described after setup is identical no matter which way you're
+      running it.
     </p>
   </div>
 
   <h2 style="font-family: var(--font-display); margin-bottom: 0.75rem;">What is TycoonAgents?</h2>
   <p>
-    TycoonAgents is a VS Code&#8209;compatible extension that turns your Claude
-    Code multi&#8209;agent delegation into a living tycoon scene. An
-    orchestrator agent hands work off to cheap specialist agents, hooks
-    record every dispatch and completion, and the panel renders those
-    agents as characters who walk the stage, build, emote, earn badges, and
-    even rebirth (prestige) as your project grows. The extension itself
-    makes <strong>zero runtime AI calls</strong> &mdash; it only observes
-    hooks and renders what already happened. The visuals are a
-    <em>theme</em>: an art skin you generate once with the built-in Theme
-    Maker, then the panel renders it forever, fully offline.
+    TycoonAgents turns your Claude Code (or OpenCode) multi&#8209;agent
+    delegation into a living tycoon scene, and you can run it three ways:
+    as a <strong>VS Code extension</strong> alongside Claude Code, as a
+    <strong>standalone app</strong> in your browser with no VS Code
+    installed at all, or with <strong>OpenCode</strong> as the provider in
+    either host. See <a href="ch-03.html">Chapter 03, Standalone and
+    OpenCode Setup</a> for how to pick and configure one. Whichever way
+    you run it, every feature described after setup &mdash; the theater,
+    Theme Maker, metrics, delegation tabs, project plan &mdash; is
+    identical: an orchestrator agent hands work off to cheap specialist
+    agents, hooks record every dispatch and completion, and the panel
+    renders those agents as characters who walk the stage, build, emote,
+    earn badges, and even rebirth (prestige) as your project grows.
+    TycoonAgents itself makes <strong>zero runtime AI calls</strong>
+    &mdash; it only observes hooks and renders what already happened. The
+    visuals are a <em>theme</em>: an art skin you generate once with the
+    built-in Theme Maker, then the panel renders it forever, fully
+    offline.
   </p>
   <p>
     This handbook is split into three parts. Part I gets you installed and
-    oriented. Part II walks the Theme Maker end to end. Part III is a
-    reference for settings, the metrics/delegation tabs, the project plan
-    feature, UEFN Power Tools, and troubleshooting.
+    oriented, in whichever host you're using. Part II walks the Theme
+    Maker end to end. Part III is a reference for settings, the
+    metrics/delegation tabs, the project plan feature, the UEFN pack, and
+    troubleshooting.
   </p>
 
   <div class="toc-part">Part I &middot; Getting Started</div>
@@ -160,8 +171,8 @@
     <a class="chapter-card" href="ch-13.html">
       <div class="cc-num">13</div>
       <div>
-        <div class="cc-title">UEFN Power Tools</div>
-        <div class="cc-desc">The Python bridge and MCP tools for UEFN projects.</div>
+        <div class="cc-title">UEFN Pack</div>
+        <div class="cc-desc">Verse authoring skill, LSP/project checks, and how Power Tools plugs in as its own MCP server.</div>
       </div>
     </a>
     <a class="chapter-card" href="ch-14.html">
