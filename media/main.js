@@ -118,6 +118,17 @@
 
   bootLoaderSetProgress(15, "Connecting…");
   unrefTimeout(bootLoaderComplete, 12000);
+  // Safety cap: if the host never answers with THEME_INITIALIZED/THEME_NONE at
+  // all, don't leave the stage's theme state stuck 'pending' forever (which
+  // would otherwise hold the plain dark fill indefinitely once bootLoaderComplete's
+  // 12s hard timeout above force-hides the loader). Fall back to the 'none'
+  // verdict so the stage hands off to the normal no-theme placeholder scene.
+  unrefTimeout(() => {
+    if (themeStageState === "pending") {
+      console.warn("TycoonAgents: theme state still pending after 15s, falling back to 'none'");
+      themeStageState = "none";
+    }
+  }, 15000);
 
   // ── Resize handle: drag to control metrics panel height ─────────
 
@@ -5648,6 +5659,24 @@
 
   /** Theme data set by THEME_INITIALIZED */
   let themeLoaded = false;
+  /**
+   * Explicit stage theme-readiness state, separate from themeLoaded/noThemeSignaled
+   * so the stage draw and boot-loader dismissal can tell "no verdict yet" apart from
+   * "verdict is no-theme" apart from "verdict is a broken theme":
+   *   'pending' — initial; host hasn't answered yet. Stage draws plain dark fill only
+   *               (no sky/ground fallback) and the boot loader must not dismiss.
+   *   'loaded'  — THEME_INITIALIZED preloaded a usable theme (themeLoaded becomes true
+   *               with no fallbackStageMessage).
+   *   'none'    — THEME_NONE received, or the 15s pending safety cap fired.
+   *   'failed'  — THEME_INITIALIZED arrived but frames/environment_background were
+   *               missing or malformed (fallbackStageMessage is set).
+   * 'none' and 'failed' both use today's sky/ground fallback stage; only 'pending'
+   * suppresses it.
+   * @type {'pending'|'loaded'|'none'|'failed'}
+   */
+  let themeStageState = "pending";
+  /** Set when THEME_INITIALIZED arrives without usable frames/environment_background; drawn on the fallback stage instead of failing silently. */
+  let fallbackStageMessage = "";
   /** @type {Record<string, string[]>} raw frames per character (slot → data-URI) */
   let themeFramesRaw = {};
   /** @type {Record<string, HTMLImageElement[]>} preloaded Image objects per character */
@@ -10203,7 +10232,12 @@
       bgImg.onerror = onBgSettled; // don't let a bad image stall the boot loader
       bgImg.src = bgFrames[0];
       themeBackgroundImg = bgImg;
+    } else {
+      console.error("TycoonAgents preloadThemeImages: no environment_background to load", {
+        keyCount: Object.keys(rawFrames).length,
+      });
     }
+    console.info(`TycoonAgents preloadThemeImages: keyCount=${Object.keys(rawFrames).length}`);
     for (const [charId, slots] of Object.entries(rawFrames)) {
       if (charId === "environment_background") continue;
       // All sprite frame keys (agents, rivals, objects, decor, crate, poof)
@@ -11064,8 +11098,8 @@
         parts.push((agentNames.length === 1 ? "agent: " : "agents: ") + agentNames.join(", "));
       }
     }
-    if (pack.stagesPythonBridge) {
-      parts.push("stages the Python bridge into Content/Python");
+    if (pack.id === "uefn") {
+      parts.push("the uefn-bridge MCP is provided by Trashbird's Power Tools (installed separately)");
     }
     return parts.length ? parts.join("; ") : "nothing additional";
   }
@@ -11654,6 +11688,7 @@
       // that stale verdict already completed the overlay moments ago, revive
       // it at full opacity so nothing placeholder peeks through.
       noThemeSignaled = false;
+      themeStageState = "pending";
       bootThemedFrames = 0;
       bootFirstThemedFrameTs = 0;
       bootLoaderRevive();
@@ -11684,9 +11719,23 @@
       // Load theme character sprites for the stage canvas
       if (msg.payload?.frames && typeof msg.payload.frames === "object") {
         themeFramesRaw = msg.payload.frames;
+        const envBgEntry = themeFramesRaw["environment_background"];
+        const hasEnvBg = Array.isArray(envBgEntry) && typeof envBgEntry[0] === "string" && envBgEntry[0].length > 0;
+        if (!hasEnvBg) {
+          console.error("TycoonAgents THEME_INITIALIZED: missing environment_background", {
+            theme_id: initializedThemeId,
+            typeofFrames: typeof themeFramesRaw,
+            keyCount: Object.keys(themeFramesRaw).length,
+            hasEnvBg,
+          });
+          fallbackStageMessage = `Theme '${initializedThemeId ?? "unknown"}' failed to load: environment_background missing or empty`;
+        } else {
+          fallbackStageMessage = "";
+        }
         themeLoadStartTs = nowMs(); // restart the loading window for this theme's frames
         preloadThemeImages(themeFramesRaw);
         themeLoaded = true;
+        themeStageState = fallbackStageMessage ? "failed" : "loaded";
         // Reset per-worker animation/facing states so they start fresh
         workerAnimStates = {};
         agentCharMap = {};
@@ -12224,13 +12273,24 @@
         if (Array.isArray(lastThemesList)) {
           renderThemesList(lastThemesList);
         }
+      } else {
+        console.error("TycoonAgents THEME_INITIALIZED: frames missing or not an object", {
+          theme_id: initializedThemeId,
+          typeofFrames: typeof msg.payload?.frames,
+          keyCount: msg.payload?.frames && typeof msg.payload.frames === "object" ? Object.keys(msg.payload.frames).length : 0,
+          hasEnvBg: false,
+        });
+        fallbackStageMessage = `Theme '${initializedThemeId ?? "unknown"}' failed to load: frames missing or malformed`;
+        themeStageState = "failed";
       }
     } else if (msg && msg.type === "THEME_NONE") {
       // Host looked for a theme on "ready" and found none (fresh install) —
       // end the boot loader's loading window right away so it hands off to
       // the no-theme placeholder scene the moment render() actually draws
       // it, instead of idling for LOADING_TIMEOUT_MS/the 12s hard failsafe.
+      console.warn("TycoonAgents: THEME_NONE received");
       noThemeSignaled = true;
+      themeStageState = "none";
     } else if (msg && msg.type === "CONFIRM_THEME_SWITCH") {
       // Host determined (via shouldWarnOnThemeSwitch, using its persisted
       // per-project badge counts the webview doesn't have) that switching
@@ -13486,11 +13546,12 @@
   }
 
   /**
-   * Blended $ per MILLION tokens, keyed by model family. Derived from
-   * Anthropic's current published API token rates using a 3:1 input:output
-   * blend (agentic work is input-heavy), i.e. (3*input + output) / 4, taking
-   * the latest non-deprecated model per family (version numbers omitted —
-   * see prettyModel()'s docs for why this project never hardcodes them):
+   * Blended $ per MILLION tokens and relative cost WEIGHT, keyed by
+   * "provider/family". Anthropic rows are derived from Anthropic's current
+   * published API token rates using a 3:1 input:output blend (agentic work
+   * is input-heavy), i.e. (3*input + output) / 4, taking the latest
+   * non-deprecated model per family (version numbers omitted — see
+   * prettyModel()'s docs for why this project never hardcodes them):
    *   opus    $5 in / $25 out  -> (3*5  + 25)/4 = $10
    *   sonnet  $2 in / $10 out  -> (3*2  + 10)/4 = $4   [intro rate thru 2026-08-31; standard $3/$15 -> $6 from 2026-09-01]
    *   haiku   $1 in / $5  out  -> (3*1  +  5)/4 = $2
@@ -13499,26 +13560,126 @@
    * treat this as a rough estimate — RATIOS between models matter more than
    * absolute accuracy. These are API rates and do NOT reflect Claude
    * subscription (Max/Pro) billing. Run the /update-pricing skill to refresh
-   * from live rates. (rates confirmed ~2026-07)
-   * @type {{opus:number, sonnet:number, haiku:number, fable:number}}
+   * Anthropic rates from live prices. (rates confirmed ~2026-07)
+   *
+   * PLACEHOLDERS — every non-anthropic/* row below is a rough seed, not a
+   * verified published rate. Refresh via the update-pricing skill before
+   * relying on these for anything but relative ordering.
+   *
+   * `weight` is a relative-cost figure used by savingsPct-style comparisons
+   * (unitless, NOT a dollar figure); it need not track perMtok 1:1.
+   * @type {Record<string, {perMtok:number, weight:number}>}
    */
-  const MODEL_PRICE_PER_MTOK = { opus: 10, sonnet: 4, haiku: 2, fable: 20 };
+  const PRICE_TABLE = {
+    "anthropic/opus": { perMtok: 10, weight: 15 },
+    "anthropic/sonnet": { perMtok: 4, weight: 3 },
+    "anthropic/haiku": { perMtok: 2, weight: 0.8 },
+    "anthropic/fable": { perMtok: 20, weight: 30 },
+    // placeholders — refresh via the update-pricing skill
+    "openai/gpt-5": { perMtok: 8, weight: 12 },
+    "openai/gpt-5.4-mini": { perMtok: 1.5, weight: 1 },
+    "google/gemini-2.5-pro": { perMtok: 6, weight: 8 },
+    "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
+    "moonshot/kimi-k2": { perMtok: 2, weight: 1.5 },
+    "alibaba/qwen3": { perMtok: 1.5, weight: 1 },
+  };
+
+  /** Legacy alias, kept for any external readers: opus/sonnet/haiku/fable -> perMtok only. */
+  const MODEL_PRICE_PER_MTOK = {
+    opus: PRICE_TABLE["anthropic/opus"].perMtok,
+    sonnet: PRICE_TABLE["anthropic/sonnet"].perMtok,
+    haiku: PRICE_TABLE["anthropic/haiku"].perMtok,
+    fable: PRICE_TABLE["anthropic/fable"].perMtok,
+  };
+
+  /** Relative cost weight applied to a "subscription" cost-class model (flat-rate quota, no marginal $/token). */
+  const SUBSCRIPTION_WEIGHT = 1;
+
+  /** Fallback key for a model that resolves to none of the known providers/families — priced non-zero so it's never silently treated as free. */
+  const DEFAULT_PRICE_KEY = "unknown/metered";
+  if (!PRICE_TABLE[DEFAULT_PRICE_KEY]) {
+    PRICE_TABLE[DEFAULT_PRICE_KEY] = { perMtok: 3, weight: 3 };
+  }
+
+  const LEGACY_CLAUDE_MODEL_ID_RE = /^claude-(opus|sonnet|haiku|fable)(-\d+)+$/i;
+
+  /**
+   * Resolve a model id/alias/vendor-qualified string (plus optional
+   * costModelClass) to a PRICE_TABLE key. Never throws, never returns a
+   * missing key.
+   *   - legacy `claude-<family>[-N...]` ids, bare family aliases
+   *     ("sonnet"), and `anthropic/claude-<family>...` / `anthropic/<family>`
+   *     forms all resolve to `anthropic/<family>`.
+   *   - an exact `provider/model` PRICE_TABLE hit resolves to itself.
+   *   - a `provider/model` with a family-prefix match (e.g.
+   *     "openai/gpt-5.4-mini-2026") resolves to the longest matching
+   *     PRICE_TABLE key under that provider.
+   *   - anything else resolves to DEFAULT_PRICE_KEY.
+   * `costModelClass` does not change which key is returned — it only tells
+   * callers (see costModelClass()/fmtUSD call sites) whether to display a
+   * price at all versus "quota"/"local".
+   * @param {string|null|undefined} modelId
+   * @param {string|null|undefined} [costModelClassHint]
+   * @returns {string}
+   */
+  function resolvePriceKey(modelId, costModelClassHint) {
+    const id = String(modelId || "").trim().toLowerCase();
+    if (!id) return DEFAULT_PRICE_KEY;
+
+    // Legacy bare Claude ids: "claude-sonnet-4-6", or a bare alias like "sonnet".
+    if (LEGACY_CLAUDE_MODEL_ID_RE.test(id)) {
+      const m = /^claude-(opus|sonnet|haiku|fable)/i.exec(id);
+      return `anthropic/${m[1].toLowerCase()}`;
+    }
+    const bareFamily = /^(opus|sonnet|haiku|fable)$/i.exec(id);
+    if (bareFamily) return `anthropic/${bareFamily[1].toLowerCase()}`;
+
+    if (id.indexOf("/") >= 0) {
+      const [provider, ...rest] = id.split("/");
+      const modelPart = rest.join("/");
+
+      if (provider === "anthropic") {
+        const famMatch = /(opus|sonnet|haiku|fable)/i.exec(modelPart);
+        if (famMatch) return `anthropic/${famMatch[1].toLowerCase()}`;
+      }
+
+      const fullKey = `${provider}/${modelPart}`;
+      if (PRICE_TABLE[fullKey]) return fullKey;
+
+      // Longest-matching family-prefix key under this provider, e.g.
+      // "openai/gpt-5.4-mini-2026" -> "openai/gpt-5.4-mini" over "openai/gpt-5".
+      let best = null;
+      for (const key of Object.keys(PRICE_TABLE)) {
+        if (!key.startsWith(`${provider}/`)) continue;
+        const suffix = key.slice(provider.length + 1);
+        if (modelPart.indexOf(suffix) === 0 && (!best || suffix.length > best.length)) {
+          best = suffix;
+        }
+      }
+      if (best) return `${provider}/${best}`;
+    }
+
+    if (costModelClassHint === "local") return DEFAULT_PRICE_KEY;
+    return DEFAULT_PRICE_KEY;
+  }
 
   /**
    * Blended $/million-token price for a model id/family string, or null when
-   * the family can't be determined (unpriced models are excluded from cost
-   * sums/rates, never shown as $0).
+   * the model's cost class means no marginal per-token dollar figure applies
+   * (subscription/local) — callers render "quota"/"local" for those rather
+   * than a fabricated price. Metered models (Anthropic families, the seeded
+   * provider/model rows, and the unknown-fallback) always resolve to a
+   * non-zero number via resolvePriceKey + PRICE_TABLE.
    * @param {string|null|undefined} model
    * @returns {number|null}
    */
-  function modelPricePerMtok(model) {
+  function modelPricePerMtok(model, explicitCostModelClass) {
     if (!model) return null;
-    const s = String(model).toLowerCase();
-    if (s.indexOf("opus") >= 0) return MODEL_PRICE_PER_MTOK.opus;
-    if (s.indexOf("sonnet") >= 0) return MODEL_PRICE_PER_MTOK.sonnet;
-    if (s.indexOf("haiku") >= 0) return MODEL_PRICE_PER_MTOK.haiku;
-    if (s.indexOf("fable") >= 0) return MODEL_PRICE_PER_MTOK.fable;
-    return null;
+    const cls = costModelClass(model, explicitCostModelClass);
+    if (cls === "subscription" || cls === "local") return null;
+    const key = resolvePriceKey(model, cls);
+    const row = PRICE_TABLE[key] || PRICE_TABLE[DEFAULT_PRICE_KEY];
+    return row.perMtok;
   }
 
   /**
@@ -13530,8 +13691,8 @@
    * @param {string|null|undefined} model
    * @returns {number|null}
    */
-  function estCostUSD(tokens, model) {
-    const price = modelPricePerMtok(model);
+  function estCostUSD(tokens, model, explicitCostModelClass) {
+    const price = modelPricePerMtok(model, explicitCostModelClass);
     if (price == null || !(tokens > 0)) return null;
     return (tokens / 1e6) * price;
   }
@@ -13548,8 +13709,8 @@
    * @param {string|null|undefined} model
    * @returns {number|null}
    */
-  function estCostUSDWithCache(tokens, cacheReadTokens, model) {
-    const price = modelPricePerMtok(model);
+  function estCostUSDWithCache(tokens, cacheReadTokens, model, explicitCostModelClass) {
+    const price = modelPricePerMtok(model, explicitCostModelClass);
     if (price == null) return null;
     const billable = tokens > 0 ? tokens : 0;
     const cacheRead = cacheReadTokens > 0 ? cacheReadTokens : 0;
@@ -13623,7 +13784,7 @@
     if (breakdown && typeof breakdown === "object") {
       for (const [model, tokens] of Object.entries(breakdown)) {
         if (!(tokens > 0)) continue;
-        const price = modelPricePerMtok(model);
+        const price = modelPricePerMtok(model, orch.costModelClass);
         if (price == null) continue;
         pricedTokens += tokens;
         weightedSum += tokens * price;
@@ -13632,7 +13793,7 @@
     if (cacheBreakdown && typeof cacheBreakdown === "object") {
       for (const [model, tokens] of Object.entries(cacheBreakdown)) {
         if (!(tokens > 0)) continue;
-        const price = modelPricePerMtok(model);
+        const price = modelPricePerMtok(model, orch.costModelClass);
         if (price == null) continue;
         // Cache reads bill at ~0.1x the model's input rate.
         pricedTokens += tokens;
@@ -13645,7 +13806,7 @@
     // returning null outright, since orch.model may still be a priced,
     // more-recent signal.
 
-    const price = modelPricePerMtok(orch.model);
+    const price = modelPricePerMtok(orch.model, orch.costModelClass);
     return price != null ? price : null;
   }
 
@@ -13689,7 +13850,7 @@
     if (breakdown && typeof breakdown === "object") {
       for (const [model, tokens] of Object.entries(breakdown)) {
         if (!(tokens > 0)) continue;
-        const price = modelPricePerMtok(model);
+        const price = modelPricePerMtok(model, orch.costModelClass);
         if (price == null) continue;
         pricedTokens += tokens;
         weightedSum += tokens * price;
@@ -13697,7 +13858,7 @@
     }
     if (pricedTokens > 0) return weightedSum / pricedTokens;
 
-    const price = modelPricePerMtok(orch.model);
+    const price = modelPricePerMtok(orch.model, orch.costModelClass);
     return price != null ? price : null;
   }
 
@@ -13718,8 +13879,8 @@
    * @param {number|null} orchestratorPrice raw orchestrator $/Mtok rate
    * @returns {string}
    */
-  function vsOrchLabel(agentModel, agentRate, orchestratorPrice) {
-    const cls = costModelClass(agentModel);
+  function vsOrchLabel(agentModel, agentRate, orchestratorPrice, explicitCostModelClass) {
+    const cls = costModelClass(agentModel, explicitCostModelClass);
     if (cls === "subscription") return "flat-rate";
     if (cls === "local") return "local";
     if (agentRate != null && orchestratorPrice != null) {
@@ -13832,7 +13993,8 @@
    * @param {string|null|undefined} model
    * @returns {"metered"|"subscription"|"local"|"unknown"}
    */
-  function costModelClass(model) {
+  function costModelClass(model, explicit) {
+    if (explicit === "metered" || explicit === "subscription" || explicit === "local") return explicit;
     if (!model) return "unknown";
     const s = String(model).toLowerCase();
     // Anthropic families -> metered (matches modelFamily's substrings above;
@@ -13938,6 +14100,19 @@
       if (nums.length) return `${family} ${nums.join(".")}`;
     }
     return family;
+  }
+
+  /**
+   * Display name for a non-Anthropic `vendor` field (e.g. `openai` -> "OpenAI").
+   * Callers only invoke this when vendor is present and not "anthropic" — a
+   * claude-native record never shows a vendor chip since it's the default.
+   * @param {string} vendor
+   * @returns {string}
+   */
+  function vendorLabelFor(vendor) {
+    const v = String(vendor || "");
+    if (v.toLowerCase() === "openai") return "OpenAI";
+    return v ? v.charAt(0).toUpperCase() + v.slice(1) : v;
   }
 
   /** Last CUMULATIVE metrics array received (state.agentMetrics), re-rendered on a timer so live time ticks. Always cumulative — see metricsScope's doc comment. */
@@ -14098,9 +14273,9 @@
     if (agent.id === "orchestrator") {
       vsOrchText = "baseline";
     } else {
-      const agentRate = modelPricePerMtok(agent.model);
+      const agentRate = modelPricePerMtok(agent.model, agent.costModelClass);
       const orchestratorPrice = opts.orchestratorPrice;
-      vsOrchText = vsOrchLabel(agent.model, agentRate, orchestratorPrice);
+      vsOrchText = vsOrchLabel(agent.model, agentRate, orchestratorPrice, agent.costModelClass);
     }
     label.textContent = showActive ? "active" : vsOrchText;
     track.appendChild(fill);
@@ -14531,7 +14706,7 @@
         const billable = a.tokens ?? 0;
         const cacheRead = a.cacheReadTokens ?? 0;
         if (!(billable > 0) && !(cacheRead > 0)) continue;
-        const cost = estCostUSDWithCache(billable, cacheRead, a.model);
+        const cost = estCostUSDWithCache(billable, cacheRead, a.model, a.costModelClass);
         if (cost == null) continue;
         actual += cost;
         // Counterfactual: what it would have cost had the orchestrator's own
@@ -14719,7 +14894,7 @@
       agentHeading.textContent = "By agent";
       agentSection.appendChild(agentHeading);
 
-      const totalCost = tableAgents.reduce((sum, a) => sum + (estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model) ?? 0), 0);
+      const totalCost = tableAgents.reduce((sum, a) => sum + (estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model, a.costModelClass) ?? 0), 0);
 
       const table = document.createElement("table");
       table.className = "delegation-agent-table";
@@ -14744,6 +14919,16 @@
 
         const modelTd = document.createElement("td");
         modelTd.textContent = a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—";
+        // Vendor / cost-class suffix (label-only, no new layout): shows e.g.
+        // "Sonnet 5 (OpenAI, quota)" for a foreign/subscription backend.
+        // Guarded — records without these fields (older sessions, or the
+        // orchestrator row) render exactly as before.
+        const modelVendor = a.vendor && a.vendor !== "anthropic" ? vendorLabelFor(a.vendor) : null;
+        const modelCostTag = a.costModelClass === "subscription" ? "quota" : a.costModelClass === "local" ? "local" : null;
+        if (modelVendor || modelCostTag) {
+          const extras = [modelVendor, modelCostTag].filter(Boolean).join(", ");
+          modelTd.textContent += ` (${extras})`;
+        }
         tr.appendChild(modelTd);
 
         const tasksTd = document.createElement("td");
@@ -14757,7 +14942,7 @@
         tr.appendChild(tokensTd);
 
         const shareTd = document.createElement("td");
-        const cost = estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model);
+        const cost = estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model, a.costModelClass);
         shareTd.textContent = cost != null && totalCost > 0 ? `${Math.round((cost / totalCost) * 100)}%` : "—";
         tr.appendChild(shareTd);
 
@@ -16524,19 +16709,33 @@
         chipVsOrchText = "baseline";
       } else {
         const chipModel = m ? (m.model || agent.model) : agent.model;
-        const chipAgentRate = modelPricePerMtok(chipModel);
+        const chipCostModelClass = (m && m.costModelClass) || agent.costModelClass || null;
+        const chipAgentRate = modelPricePerMtok(chipModel, chipCostModelClass);
         // Raw model-rate helper, matching the metrics table's "vs. orch."
         // badge — see resolveOrchestratorModelRate's doc for why this is
         // deliberately not resolveOrchestratorPrice's blended rate. Shared
         // vsOrchLabel keeps this chip and the row badge from ever disagreeing.
         const chipOrchestratorPrice = resolveOrchestratorModelRate(lastMetrics);
-        chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice);
+        chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice, chipCostModelClass);
       }
       const vsOrchChip = chip("vs. orch.", chipVsOrchText);
       vsOrchChip.title = "How much cheaper this agent's model is per token than the orchestrator's (metered models only) — flat-rate subscription and local models have no comparable per-token rate, so they show their billing class instead of a ratio.";
       stats.appendChild(vsOrchChip);
       stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
       stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));
+      // Vendor / cost-class chips (label-only, reusing the same .stat-chip
+      // style as the chips above) — guarded, since older records/agents
+      // lacking these fields render exactly as before.
+      const cardVendor = (m && m.vendor) || agent.vendor || null;
+      if (cardVendor && cardVendor !== "anthropic") {
+        stats.appendChild(chip("vendor", vendorLabelFor(cardVendor)));
+      }
+      const cardCostClass = (m && m.costModelClass) || agent.costModelClass || null;
+      if (cardCostClass === "subscription") {
+        stats.appendChild(chip("billing", "quota"));
+      } else if (cardCostClass === "local") {
+        stats.appendChild(chip("billing", "local"));
+      }
       row.appendChild(stats);
 
       // Recommendation badge. Suppressed for exactly one render right after
@@ -19159,21 +19358,37 @@
       // No decoded background yet — nothing native-space is drawn this frame,
       // so nothing should be shrunk either.
       sceneFitScale = 1;
-      // Fallback placeholder background
+      // Plain dark fill always underlies the fallback (and is ALL that's drawn
+      // while themeStageState is still 'pending' — the boot loader/loading
+      // screen owns that moment, so no sky/ground fallback paints under or
+      // instead of it; see themeStageState above).
       ctx.fillStyle = "#1a1a2e";
       ctx.fillRect(0, 0, w, h);
 
-      // Sky gradient strip
-      const grad = ctx.createLinearGradient(0, 0, 0, h * 0.7);
-      grad.addColorStop(0, "#0d1b3e");
-      grad.addColorStop(1, "#1a2a50");
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, w, h * 0.7);
+      if (themeStageState !== "pending") {
+        // Sky gradient strip
+        const grad = ctx.createLinearGradient(0, 0, 0, h * 0.7);
+        grad.addColorStop(0, "#0d1b3e");
+        grad.addColorStop(1, "#1a2a50");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h * 0.7);
+
+        if (fallbackStageMessage) {
+          ctx.save();
+          ctx.fillStyle = "#ffb4b4";
+          ctx.font = "13px var(--vscode-font-family, sans-serif)";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(fallbackStageMessage, w / 2, 8);
+          ctx.restore();
+        }
+      }
     }
 
-    // Ground band (pre-theme backdrop only — no entities are drawn on it)
+    // Ground band (pre-theme backdrop only — no entities are drawn on it; and
+    // not while themeStageState is still 'pending' — see above)
     const groundY = Math.floor(h * 0.78);
-    if (!themeLoaded || !themeBackgroundImg || !themeBackgroundImg.complete) {
+    if (themeStageState !== "pending" && (!themeLoaded || !themeBackgroundImg || !themeBackgroundImg.complete)) {
       ctx.fillStyle = "#2a3a2a";
       ctx.fillRect(0, groundY, w, h - groundY);
       ctx.strokeStyle = "#4a6a4a";
@@ -21401,7 +21616,10 @@
       // theme may still be coming (slow theme discovery can outlast the 6s
       // stage-loading window) — hold opaque rather than complete into the
       // pre-theme scene. The 12s hard timeout still covers a dead host.
-      const themeOutcomeKnown = themeLoaded || noThemeSignaled;
+      // themeStageState leaving 'pending' is the authoritative verdict (it also
+      // covers the 15s pending safety cap, which the older themeLoaded/noThemeSignaled
+      // check alone did not).
+      const themeOutcomeKnown = themeStageState !== "pending";
       const themedSceneExpected = themeLoaded && !noThemeSignaled && _load.ready;
       if (!themeOutcomeKnown) {
         // hold — no verdict yet

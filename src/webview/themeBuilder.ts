@@ -960,3 +960,14 @@ window.addEventListener('message', (event) => {
     triggerCharacterAction(message.payload);
   }
 });
+
+// Handshake: tell the host our message listener is attached (mirrors
+// MSG.READY, src/host/vscode/messages.ts) so it can gate the first
+// THEME_INITIALIZED post on this instead of racing script load (a post sent
+// before this listener attaches is silently lost — the bug behind a blank
+// Theater view after "Restart Extensions" without a full reload).
+if (vscode) {
+  vscode.postMessage({ type: 'ready' });
+} else {
+  window.parent.postMessage({ type: 'ready' }, '*');
+}

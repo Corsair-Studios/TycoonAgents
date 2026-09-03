@@ -221,8 +221,9 @@ export async function listThemes(
       const manifest = await readJson<Partial<ThemeManifest>>(store, themeManifestPath(entry.name));
       if (manifest) results.set(entry.name, { theme_id: entry.name, display_name: manifest.display_name ?? entry.name });
     }
-  } catch {
+  } catch (error) {
     // The themes directory is created on first generation.
+    console.warn(`TycoonAgents: listThemes: themesDirectoryPath() readdir failed (expected on first run): ${String(error)}`);
   }
 
   // Preserve access to themes produced by versions that used flat storage.
@@ -235,9 +236,13 @@ export async function listThemes(
       const manifest = await readJson<Partial<ThemeManifest>>(store, entry.name);
       if (manifest) results.set(themeId, { theme_id: themeId, display_name: manifest.display_name ?? themeId });
     }
-  } catch {
+  } catch (error) {
     // Global storage may not exist yet.
+    console.warn(`TycoonAgents: listThemes: flat-root readdir failed: ${String(error)}`);
   }
+  console.info(
+    `TycoonAgents: listThemes: root=${String(globalStorageUri)} count=${results.size} ids=[${[...results.keys()].join(', ')}]`,
+  );
   const sorted = [...results.values()].sort((a, b) => a.display_name.localeCompare(b.display_name));
   return Promise.all(sorted.map(async (theme) => {
     const [approval, sizeBytes] = await Promise.all([
@@ -637,15 +642,37 @@ export async function uploadThemeImage(
   }
 }
 
+/** The bundled starter theme preferred when no user theme is installed. */
+export const DEFAULT_THEME_ID = 'survivors_vs_zombies';
+
 /**
- * Load the most recently modified theme (by manifest mtime), if any exist.
- * Used to auto-populate a freshly opened surface with the latest theme.
+ * theme_ids shipped under `media/themes/` and seeded on first run. Declared
+ * here rather than imported from bundledThemeSeeds.ts because that module
+ * imports 'vscode' and themeService.ts must stay require-able from a bare
+ * Node process. Keep in sync with the directories under media/themes/.
+ */
+export const BUNDLED_THEME_IDS: readonly string[] = [DEFAULT_THEME_ID];
+
+/**
+ * Load the theme to show by default, in order: (1) the user's own themes —
+ * anything not in BUNDLED_THEME_IDS — by newest manifest mtime, so a
+ * user-generated theme always wins even when the bundled seed was written
+ * later; (2) DEFAULT_THEME_ID when installed, so a fresh install opens on a
+ * real stage; (3) newest mtime over whatever remains.
  */
 export async function loadLatestTheme(
   globalStorageUri: ThemeStorageRoot,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
   const store = resolveThemeFileStore(globalStorageUri);
-  const themes = await listThemes(globalStorageUri);
+  const allThemes = await listThemes(globalStorageUri);
+
+  const userThemes = allThemes.filter((t) => !BUNDLED_THEME_IDS.includes(t.theme_id));
+  if (userThemes.length === 0 && allThemes.some((t) => t.theme_id === DEFAULT_THEME_ID)) {
+    const preferred = await loadTheme(globalStorageUri, DEFAULT_THEME_ID);
+    if (preferred) return preferred;
+  }
+  const themes = userThemes.length > 0 ? userThemes : allThemes;
+
   let newestId: string | undefined;
   let newestMtime = -1;
   for (const theme of themes) {

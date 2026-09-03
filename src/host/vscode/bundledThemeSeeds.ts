@@ -13,6 +13,7 @@ import {
   resolveThemeFileStore,
   type ThemeStorageRoot,
 } from '../../extension/themeFileStore';
+import { log } from './log';
 
 /**
  * Relocated out of src/extension/themeService.ts (project-plan task pC-t1):
@@ -27,18 +28,28 @@ import {
  * naming), and call site (src/host/vscode/extension.ts) are unchanged.
  */
 
+export interface SeedResult {
+  seeded: string[];
+  skipped: string[];
+}
+
 /**
  * Seed bundled starter themes into global storage on first run, so a freshly
- * installed plugin has at least one theme available out-of-box. Never
- * overwrites existing user themes. Best-effort: failures are swallowed.
+ * installed plugin has at least one theme available out-of-box. Also seeds
+ * any bundled theme added in a later release that an existing user's global
+ * storage doesn't yet have (per-theme presence check, NOT a list-empty
+ * check). Never overwrites an existing theme dir. Never throws: every
+ * failure is caught, logged, and the theme id (when known) is recorded in
+ * `skipped`.
  */
 export async function seedBundledThemes(
   extensionUri: vscode.Uri,
   globalStorageUri: ThemeStorageRoot,
-): Promise<void> {
+): Promise<SeedResult> {
+  const result: SeedResult = { seeded: [], skipped: [] };
+  const startedAt = Date.now();
   try {
-    const existing = await listThemes(globalStorageUri);
-    if (existing.length > 0) return;
+    const existing = new Set((await listThemes(globalStorageUri)).map((t) => t.theme_id));
 
     // Bundled seed themes are read from the extension's own shipped resources
     // (extensionUri), a different root than the theme storage this refactor
@@ -52,7 +63,7 @@ export async function seedBundledThemes(
     try {
       entries = await vscode.workspace.fs.readDirectory(bundledThemesUri);
     } catch {
-      return;
+      return result;
     }
 
     for (const [name, kind] of entries) {
@@ -65,19 +76,32 @@ export async function seedBundledThemes(
       } catch {
         continue;
       }
-      if (!manifest?.theme_id) continue;
+      const themeId = manifest?.theme_id;
+      if (!themeId) continue;
+
+      if (existing.has(themeId)) {
+        result.skipped.push(themeId);
+        continue;
+      }
 
       try {
         const framesBytes = await vscode.workspace.fs.readFile(
           vscode.Uri.joinPath(themeDirUri, 'frames.json'),
         );
-        await store.writeFile(legacyManifestPath(manifest.theme_id), Buffer.from(JSON.stringify(manifest, null, 2)));
-        await store.writeFile(legacyFramesPath(manifest.theme_id), framesBytes);
+        await store.writeFile(legacyManifestPath(themeId), Buffer.from(JSON.stringify(manifest, null, 2)));
+        await store.writeFile(legacyFramesPath(themeId), framesBytes);
+        result.seeded.push(themeId);
       } catch (error) {
         console.warn(`TycoonAgents: Could not seed bundled theme "${name}":`, error);
+        result.skipped.push(themeId);
       }
     }
   } catch (error) {
     console.warn('TycoonAgents: Could not seed bundled themes:', error);
+    log(`seedBundledThemes: FAILED root=${String(globalStorageUri)} error=${String(error)}`);
   }
+  log(
+    `seedBundledThemes: root=${String(globalStorageUri)} seeded=[${result.seeded.join(', ')}] skipped=[${result.skipped.join(', ')}] durationMs=${Date.now() - startedAt}`,
+  );
+  return result;
 }

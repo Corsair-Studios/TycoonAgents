@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.564",
+  "version": "0.0.570",
   "private": true,
   "description": "Enforces delegation of coding work to cheaper specialist AI models, with a live tycoon-style visualization of that work as it happens.",
   "displayName": "TycoonAgents",
@@ -99,6 +99,15 @@
           "type": "string",
           "default": "",
           "description": "Image quality for OpenAI (low, medium, high). Leave blank to use medium. No effect on Google Gemini."
+        },
+        "tycoonagents.provider": {
+          "type": "string",
+          "enum": [
+            "claude-code",
+            "opencode"
+          ],
+          "default": "claude-code",
+          "description": "Which coding agent harness TycoonAgents reads activity from: 'claude-code' watches .claude/tycoon/activity.jsonl written by the Claude Code hook; 'opencode' watches the OpenCode harness's activity log instead. The TYCOON_PROVIDER environment variable, if set, always overrides this setting."
         }
       }
     }
@@ -123,21 +132,23 @@
     "project planning"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run build && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run test:python && npm run test:standalone && npm run test:compiled",
+    "vscode:prepublish": "npm run build && npm run copy:hookruntime && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run test:python && npm run test:standalone && npm run test:compiled",
+    "copy:hookruntime": "node scripts/copy-hook-runtime.mjs",
+    "opencode:config": "node scripts/generate-opencode-config.mjs",
     "check:paths": "node scripts/check-no-absolute-paths.mjs",
     "check:webview": "node scripts/check-webview.mjs",
     "test:python": "node scripts/test-python.mjs",
     "test:standalone": "npm --prefix standalone test",
     "lint": "eslint .",
-    "build": "tsc -p .",
-    "build-ext": "tsc -p . && npm run bundle:host",
+    "build": "tsc -p . && npm run copy:hookruntime",
+    "build-ext": "tsc -p . && npm run copy:hookruntime && npm run bundle:host",
     "typecheck": "tsc -p . --noEmit",
     "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
     "test:compiled": "node --test \"out/test/**/*.test.js\"",
     "bundle:designdoc": "esbuild design-doc/design-doc-cli.ts --bundle --platform=node --format=esm --target=node18 --outfile=media/skills/design-doc/design-doc-cli.mjs",
     "bundle:themebuilder": "esbuild src/webview/themeBuilder.ts --bundle --outfile=media/theme-builder.js",
     "bundle:host": "esbuild src/host/vscode/extension.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --outfile=out/extension.js",
-    "package": "vsce package",
+    "package": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\" && npx --yes @vscode/vsce package --no-dependencies -o dist/",
     "release": "node scripts/release.mjs"
   },
   "devDependencies": {

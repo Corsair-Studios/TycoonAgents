@@ -11,6 +11,12 @@ out/**/*.test.js
 out/**/*.test.js.map
 docs/**
 design-doc/**
+design-docs/**
+*_tmp.cjs
+regen_tmp.cjs
+TycoonAgents.code-workspace
+dist/**
+*.vsix
 standalone/**
 scale-references/**
 .claude/**
@@ -40,11 +46,11 @@ eslint.config.mjs
 **/*.pyc
 **/*.pyo
 
-# Power Tools (formerly the bundled "uefn-bridge") is now an independent
-# repo (Corsair-Studios/trashbyrds-uefn-power-tools) publishing its own
-# GitHub Releases. It installs on demand at runtime via
-# src/host/vscode/powerToolsInstall.ts (resolvePowerToolsDir /
-# installPowerTools) into <globalStorage>/powertools, rather than shipping
-# inside this VSIX. Exclude the whole directory so it never ships, even if
-# it's ever repopulated locally for dev/testing.
+# TycoonAgents no longer bundles or installs Trashbyrd's Power Tools.
+# Exclude the whole directory so it never ships, even if it's ever
+# repopulated locally for dev/testing.
 media/uefn-bridge/**
+
+# Throwaway OpenCode hook-probe spike (plan p3-t1) — never ship.
+standalone/spike/**
+.opencode/**

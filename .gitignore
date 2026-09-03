@@ -17,6 +17,11 @@ media/uefn-bridge/uefn-server.mjs
 # Only the built .mjs is ignored — SKILL.md in media/skills/design-doc/ is tracked.
 media/skills/design-doc/design-doc-cli.mjs
 
+# Compiled hook-runtime modules copied into hooks/ by scripts/copy-hook-runtime.mjs
+# (built artifacts; source is src/core/agentBackend.ts and src/core/modelAliases.ts).
+hooks/agentBackend.js
+hooks/modelAliases.js
+
 # Environment / secrets
 .env
 .env.*
@@ -64,3 +69,10 @@ media/uefn-bridge/moderation_report.json
 media/uefn-bridge/moderation_allowlist.json
 # runtime-generated Verse tag inspector report written by the bridge (never commit/ship)
 media/uefn-bridge/tag_inspect_report.json
+
+# TycoonAgents runtime artifacts
+.claude/session-journal.json
+
+# OpenCode hook-probe spike output (runtime-generated, never commit)
+standalone/spike/probe-log.jsonl
+.opencode/plugin/probe-log.jsonl

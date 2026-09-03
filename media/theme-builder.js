@@ -809,4 +809,9 @@
       triggerCharacterAction(message.payload);
     }
   });
+  if (vscode) {
+    vscode.postMessage({ type: "ready" });
+  } else {
+    window.parent.postMessage({ type: "ready" }, "*");
+  }
 })();

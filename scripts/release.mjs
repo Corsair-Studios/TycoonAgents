@@ -104,10 +104,10 @@ function main() {
   }
 
   const vsixName = `tycoonagents-${newVersion}.vsix`;
-  const vsixPath = join(ROOT, vsixName);
+  const vsixPath = join(ROOT, 'dist', vsixName);
   if (!existsSync(vsixPath)) {
     console.error(
-      `\n[release] Expected "${vsixName}" at repo root after packaging, but it's missing.\n` +
+      `\n[release] Expected "${vsixName}" in dist/ after packaging, but it's missing.\n` +
       '[release] Aborting before any git action.\n',
     );
     process.exit(1);
@@ -115,7 +115,7 @@ function main() {
   const vsixSize = statSync(vsixPath).size;
 
   const commitMessage = message ? `Release ${newVersion}: ${message}` : `Release ${newVersion}`;
-  const commitBody = `${commitMessage}\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>`;
+  const commitBody = `${commitMessage}\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`;
 
   try {
     execSync('git add -A', { stdio: 'inherit', cwd: ROOT });

@@ -13,6 +13,7 @@ import type {
   ThemeFileStoreRenameOptions,
   ThemeFileStoreStat,
 } from './themeFileStore';
+import { log } from '../host/vscode/log';
 
 /**
  * vscode.workspace.fs-backed ThemeFileStore, rooted at `root` (the
@@ -24,7 +25,40 @@ import type {
  * 'FileNotFound'`) are intentionally left to propagate unchanged, since
  * themeService.ts's existing try/catch call sites depend on that exact shape.
  */
+/**
+ * Schemes whose `vscode.Uri` maps 1:1 onto a real local filesystem path via
+ * `.fsPath` — `file:` always, and `vscode-userdata:` too on desktop (used
+ * for globalStorage/extension-storage roots; only diverges from `file:` in
+ * remote/sandboxed scenarios). For these, `createFsThemeFileStore` (Node
+ * `fs/promises`) is used instead of `vscode.workspace.fs`, which proxies
+ * every call through the extension host's RPC channel and can take upwards
+ * of ten seconds for a multi-megabyte read (e.g. a theme's frames.json).
+ */
+const LOCAL_FS_SCHEMES = new Set(['file', 'vscode-userdata']);
+
 export function createVscodeThemeFileStore(root: vscode.Uri): ThemeFileStore {
+  if (LOCAL_FS_SCHEMES.has(root.scheme)) {
+    log(
+      `themeFileStoreVscode.createVscodeThemeFileStore: selected fs-backed store (scheme=${root.scheme} fsPath=${root.fsPath}) — local path, avoiding vscode.workspace.fs RPC overhead`,
+    );
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createFsThemeFileStore } = require('./themeFileStoreFs') as typeof import('./themeFileStoreFs');
+    const fsStore = createFsThemeFileStore(root.fsPath);
+    return {
+      ...fsStore,
+      // Callers that need a displayable/webview-convertible location (e.g.
+      // panel.ts's asWebviewUri for review images) still need a real
+      // vscode.Uri, not the fs store's plain-object handle.
+      resolveHandle(relativePath: string): ThemeFileHandle {
+        const segments = relativePath.split('/').filter((segment) => segment.length > 0);
+        return segments.length ? vscode.Uri.joinPath(root, ...segments) : root;
+      },
+    };
+  }
+  log(
+    `themeFileStoreVscode.createVscodeThemeFileStore: selected vscode.workspace.fs-backed store (scheme=${root.scheme}) — non-local scheme, no faster path available`,
+  );
+
   const resolve = (relativePath: string): vscode.Uri => {
     const segments = relativePath.split('/').filter((segment) => segment.length > 0);
     return segments.length ? vscode.Uri.joinPath(root, ...segments) : root;
@@ -32,19 +66,45 @@ export function createVscodeThemeFileStore(root: vscode.Uri): ThemeFileStore {
 
   return {
     async readFile(relativePath) {
-      return vscode.workspace.fs.readFile(resolve(relativePath));
+      const uri = resolve(relativePath);
+      try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        log(`themeFileStoreVscode.readFile: uri=${uri.toString()} bytes=${bytes.byteLength}`);
+        return bytes;
+      } catch (error) {
+        // FileNotFound is the EXPECTED outcome of every optional-lookup probe
+        // (review.json / <id>_image_review.json on a theme's first load, a
+        // modern manifest that only exists in the legacy flat layout, etc.) —
+        // themeService.ts's call sites already catch and fall back on it.
+        // Logging it at the same level as a real failure drowns the Output
+        // channel in expected noise on every first load, so it's skipped here;
+        // any other error still logs.
+        if ((error as { code?: string } | undefined)?.code !== 'FileNotFound') {
+          log(`themeFileStoreVscode.readFile: FAILED uri=${uri.toString()} error=${String(error)}`);
+        }
+        throw error;
+      }
     },
     async writeFile(relativePath, data) {
       const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
       await vscode.workspace.fs.writeFile(resolve(relativePath), bytes);
     },
     async readdir(relativePath): Promise<ThemeFileStoreEntry[]> {
-      const entries = await vscode.workspace.fs.readDirectory(resolve(relativePath));
-      return entries.map(([name, kind]) => ({
-        name,
-        isDirectory: kind === vscode.FileType.Directory,
-        isFile: kind === vscode.FileType.File,
-      }));
+      const uri = resolve(relativePath);
+      try {
+        const entries = await vscode.workspace.fs.readDirectory(uri);
+        log(
+          `themeFileStoreVscode.readdir: uri=${uri.toString()} entries=[${entries.map(([name]) => name).join(', ')}]`,
+        );
+        return entries.map(([name, kind]) => ({
+          name,
+          isDirectory: kind === vscode.FileType.Directory,
+          isFile: kind === vscode.FileType.File,
+        }));
+      } catch (error) {
+        log(`themeFileStoreVscode.readdir: FAILED uri=${uri.toString()} error=${String(error)}`);
+        throw error;
+      }
     },
     async mkdirp(relativePath) {
       await vscode.workspace.fs.createDirectory(resolve(relativePath));
