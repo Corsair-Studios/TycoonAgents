@@ -31,7 +31,7 @@ No VS Code-family IDE available? Download Epic's Verse extension's `.vsix` direc
 ## Installation
 
 TycoonAgents does not install, stage, bundle, or download this bridge. It is
-provided by **Trashbird's Power Tools**, a separate third-party project the
+provided by **Trashbyrd's Power Tools**, a separate third-party project the
 user installs and configures themselves — see the `uefn-bridge` entry in the
 MCP catalog (`media/mcp/catalog.json`) and `.mcp.json.example` at the repo
 root for the exact `mcpServers` entry shape, or Power Tools' own INSTALL.md
@@ -228,7 +228,7 @@ Returns every command the bridge's dispatch table currently supports (name, para
 
 ## The bridge source is local and readable
 
-The bridge's Python source belongs to Trashbird's Power Tools, not this repo — see **Installation** above for where to get it. When a tool's exact behavior matters and this doc doesn't cover it, read the source from your Power Tools install rather than probing tools experimentally or searching online — `batch_tools.py` and `tag_inspect.py` in particular carry extensive docstrings on filter semantics, status shapes, and pagination that are authoritative over any paraphrase here.
+The bridge's Python source belongs to Trashbyrd's Power Tools, not this repo — see **Installation** above for where to get it. When a tool's exact behavior matters and this doc doesn't cover it, read the source from your Power Tools install rather than probing tools experimentally or searching online — `batch_tools.py` and `tag_inspect.py` in particular carry extensive docstrings on filter semantics, status shapes, and pagination that are authoritative over any paraphrase here.
 
 ## Usage Examples
 

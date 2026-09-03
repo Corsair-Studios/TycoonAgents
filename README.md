@@ -70,7 +70,7 @@ Everything it writes is marker-scoped and reversible, and it never stamps your o
 - **In-panel handbook.** A 13-chapter user handbook ships in the VSIX, opened from the book icon in the panel.
 - **Submit Feedback.** An in-panel two-step form shows the exact JSON payload before anything is sent; local paths and API keys are stripped from it first. If the panel won't open, there's a fallback web form at [feedback.corsairstudios.com](https://feedback.corsairstudios.com).
 - **Delegation & Metrics tabs.** Live panel views of what got delegated to which agent and the resulting token-cost breakdown (see "Token savings you can see" below).
-- **UEFN pack.** Verse authoring skill, LSP/project checks, and the `uefn-auditor`/`verse-expert` agents (see below); the panel can also register Trashbird's UEFN Power Tools as a third-party MCP server if you install it yourself.
+- **UEFN pack.** Skills that understand Verse syntax and write Verse code, project/LSP checks, and the `uefn-auditor`/`verse-expert` agents. Pair it with Trashbyrd's UEFN Power Tools MCP for live access to an open UEFN level.
 - **Verse analyzer.** Audits UEFN Verse source against the locally installed Verse/Fortnite/Unreal API digests, flagging calls to deprecated or nonexistent APIs.
 - **UEFN moderation pre-flight scan.** Collects the asset names, paths, and metadata Fortnite's island moderation actually inspects, then has your connected AI assistant judge them against Epic's IP and authenticity rules before you submit.
 
@@ -122,7 +122,7 @@ See [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md) for the full IPC co
 
 ## UEFN pack
 
-TycoonAgents ships a **UEFN pack** for Unreal Editor for Fortnite — the Verse authoring skill, LSP/project checks, and the `uefn-auditor`/`verse-expert` agents. Live inspection and editing of an open UEFN level is provided by Trashbird's **UEFN Power Tools**, a separate, independently installed MCP server that TycoonAgents never downloads, installs, or stages. If you install it yourself, the panel can register it as a third-party MCP entry. See [`docs/POWER-TOOLS-COEXISTENCE.md`](docs/POWER-TOOLS-COEXISTENCE.md) for the full contract and setup steps.
+TycoonAgents ships a UEFN pack: skills that understand Verse syntax and write Verse code, project/LSP checks, and the `uefn-auditor` and `verse-expert` agents. For live access to an open UEFN level, pair it with Trashbyrd's UEFN Power Tools MCP (install separately; the panel can register it) — see [`docs/POWER-TOOLS-COEXISTENCE.md`](docs/POWER-TOOLS-COEXISTENCE.md) for details for maintainers.
 
 ## Project layout
 - [`docs/DESIGN.md`](docs/DESIGN.md) — product & architecture design (start here).

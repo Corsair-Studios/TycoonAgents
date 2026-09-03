@@ -1,6 +1,6 @@
 # TycoonAgents ↔ UEFN Power Tools coexistence
 
-> **The one-sentence rule:** Trashbird's UEFN Power Tools (`github.com/Corsair-Studios/trashbyrds-uefn-power-tools`) is a separately installed third-party MCP server — TycoonAgents never downloads, installs, stages, deletes, or rewrites it or its files.
+> **The one-sentence rule:** Trashbyrd's UEFN Power Tools (`github.com/Corsair-Studios/trashbyrds-uefn-power-tools`) is a separately installed third-party MCP server — TycoonAgents never downloads, installs, stages, deletes, or rewrites it or its files.
 
 ## What TycoonAgents' UEFN pack contains
 

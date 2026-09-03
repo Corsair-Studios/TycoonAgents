@@ -3522,7 +3522,7 @@ export class TycoonPanel {
           id,
           ok: false,
           error:
-            `${id} is provided by Trashbird's Power Tools — install it separately and add the entry to your own ` +
+            `${id} is provided by Trashbyrd's Power Tools — install it separately and add the entry to your own ` +
             ".mcp.json; see .mcp.json.example.",
         });
         return;
@@ -3910,7 +3910,7 @@ export class TycoonPanel {
             results.mcp = {
               status: "skipped",
               error:
-                `${pack.mcp} is provided by Trashbird's Power Tools — install it separately and add the entry to ` +
+                `${pack.mcp} is provided by Trashbyrd's Power Tools — install it separately and add the entry to ` +
                 "your own .mcp.json; see .mcp.json.example.",
             };
           } else {

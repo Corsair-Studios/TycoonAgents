@@ -5529,8 +5529,15 @@
 
   // ── Theme character rendering ────────────────────────────────────────────
   // ATLAS_CLIPS mirrors src/extension/themePlan.ts exactly — keep in sync.
+  // EXPERIMENT (reversible): walk capped to the first CHARACTER_WALK_FRAME_CAP
+  // (2) frames — most theme walk_1..walk_5 frames render near-identically, so
+  // the full 5-frame cycle showed a visible duplicate-looking frame each
+  // loop. fps is unchanged so per-frame duration stays the same, the 2-frame
+  // loop just repeats. Revert by restoring frames to [0, 1, 2, 3, 4] here and
+  // in src/extension/themePlan.ts's ATLAS_CLIPS (a parity test enforces the
+  // two stay identical).
   const ATLAS_CLIPS = {
-    walk:      { frames: [0, 1, 2, 3, 4],  fps: 10, loop: true,  flippable: true },
+    walk:      { frames: [0, 1],  fps: 10, loop: true,  flippable: true },
     idle:      { frames: [16],              fps: 0,  loop: true,  flippable: false, hold: true },
     sit:       { frames: [15],              fps: 0,  loop: true,  flippable: true,  hold: true },
     melee:     { frames: [10, 11],         fps: 12, loop: false, flippable: true },
@@ -11099,7 +11106,7 @@
       }
     }
     if (pack.id === "uefn") {
-      parts.push("the uefn-bridge MCP is provided by Trashbird's Power Tools (installed separately)");
+      parts.push("the uefn-bridge MCP is provided by Trashbyrd's Power Tools (installed separately)");
     }
     return parts.length ? parts.join("; ") : "nothing additional";
   }

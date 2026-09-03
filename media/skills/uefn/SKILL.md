@@ -14,7 +14,7 @@ textures, inspect the level).
 
 TycoonAgents does not install, stage, bundle, or download the UEFN live-editor
 bridge. The bridge (the `uefn-bridge` MCP server and its in-editor Python
-counterpart) is **Trashbird's Power Tools**, a separate third-party project
+counterpart) is **Trashbyrd's Power Tools**, a separate third-party project
 the user installs and configures themselves — see the `uefn-bridge` entry in
 the MCP catalog (`media/mcp/catalog.json`) and `.mcp.json.example` at the repo
 root for the exact `mcpServers` shape, or Power Tools' own INSTALL.md

@@ -39,7 +39,7 @@
 
 <div class="lede">
   <p class="label">For Fortnite Creative projects</p>
-  <p class="intro">If your workspace is a UEFN (Unreal Editor for Fortnite) project, TycoonAgents ships a UEFN <strong>pack</strong>: a Verse authoring skill, LSP and project-health checks that read your local paths, and two specialist agents (<strong>Verse Expert</strong> and <strong>UEFN Auditor</strong>) that use them. Trashbird's <strong>UEFN Power Tools</strong> is a separate, independently installed product &mdash; TycoonAgents never downloads, installs, stages, or deletes it or its files. This chapter covers TycoonAgents' own pack first, then documents the Power Tools MCP tool catalog for reference once you've installed Power Tools yourself. See docs/POWER-TOOLS-COEXISTENCE.md for the full contract.</p>
+  <p class="intro">If your workspace is a UEFN (Unreal Editor for Fortnite) project, TycoonAgents ships a UEFN <strong>pack</strong>: a Verse authoring skill, LSP and project-health checks, and two specialist agents (<strong>Verse Expert</strong> and <strong>UEFN Auditor</strong>). For live access to an open UEFN level, pair it with Trashbyrd's <strong>UEFN Power Tools</strong> MCP, covered later in this chapter once you've installed it yourself.</p>
 </div>
 
 <div class="callout note">
@@ -51,7 +51,7 @@
   <span class="s-title">§ 13.1 · Setup</span>
   <span class="cap">TycoonAgents' pack, plus Power Tools if you install it</span>
 </div>
-<p>The setup wizard detects a UEFN project on its own. When it does, it offers to install the <strong>Verse Expert</strong> and <strong>UEFN Auditor</strong> agents alongside your other specialists, and it points <code>VERSE_LSP_PATH</code> / <code>UEFN_VERSE_PROJECT_DIR</code> at the paths it discovers so the pack's own LSP and project checks work. It does not download, stage, or install anything belonging to Power Tools.</p>
+<p>The setup wizard detects a UEFN project on its own. When it does, it offers to install the <strong>Verse Expert</strong> and <strong>UEFN Auditor</strong> agents alongside your other specialists, and it points <code>VERSE_LSP_PATH</code> / <code>UEFN_VERSE_PROJECT_DIR</code> at the paths it discovers so the pack's own LSP and project checks work.</p>
 <p>If you also want live-editor inspection and audits, install <strong>Power Tools</strong> yourself from its own release, following its own <code>INSTALL.md</code>. Once it's installed, copy the <code>uefn-bridge</code> entry out of this repo's <code>.mcp.json.example</code> into your own (gitignored) <code>.mcp.json</code> and fill in the path to where you unzipped it — TycoonAgents registers it in the catalog as a third-party entry, but one-click install is refused by design; see docs/POWER-TOOLS-COEXISTENCE.md for the exact steps.</p>
 <div class="figure-placeholder">
   <span class="fig-label">Screenshot</span>

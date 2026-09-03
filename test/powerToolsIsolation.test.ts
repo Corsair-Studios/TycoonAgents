@@ -11,7 +11,7 @@ import * as path from "node:path";
 
 /*
  * Guards the Power Tools decoupling (see media/power-tools-decoupled.md /
- * MEMORY.md): TycoonAgents ships without Trashbird's Power Tools bundled or
+ * MEMORY.md): TycoonAgents ships without Trashbyrd's Power Tools bundled or
  * installed — it never writes into a Power Tools / Content/Python tree, and
  * the uefn-bridge MCP catalog entry stays a disclosed third-party pointer
  * with a placeholder the user fills in themselves (see .mcp.json.example).
