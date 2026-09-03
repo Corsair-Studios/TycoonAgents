@@ -1,21 +1,58 @@
 import * as vscode from 'vscode';
 import type { WorldState, ThemeManifest } from '../shared/types';
-import {
-  listThemes,
-  loadTheme,
-} from './themeService';
-import { themeManifestUri } from './themeStorage';
+import { loadLatestTheme } from './themeService';
+import { waitForBundledThemes } from '../host/vscode/themeReady';
+import { MSG } from '../host/vscode/messages';
 
 let activeWebview: vscode.Webview | undefined;
 let heartbeat: NodeJS.Timeout | undefined;
+// The last theme broadcast to the Theater view, kept so a view that is
+// re-resolved after "Restart Extensions" (its old webview torn down, a new
+// one created) can be re-sent the theme on its next ready handshake instead
+// of re-reading disk.
 let lastTheme: { manifest: ThemeManifest; frames: Record<string, string[]> } | undefined;
 
-function broadcastTheme(manifest: ThemeManifest, frames: Record<string, string[]>, isEditorMode: boolean): void {
-  if (activeWebview !== undefined) {
-    void activeWebview.postMessage({
-      type: 'THEME_INITIALIZED',
-      payload: { manifest, frames, is_editor_mode: isEditorMode },
+/**
+ * Injected dependencies for handleTheaterReady, factored out so the
+ * ready-gated handshake is unit-testable without a real vscode.Webview.
+ */
+export interface TheaterReadyDeps {
+  /** Resolves (bounded) once the first-run bundled-theme seed has settled. */
+  bundledThemesReady: Promise<unknown> | undefined;
+  /** Returns the last broadcast theme, if any, without touching disk. */
+  getLastTheme: () => { manifest: ThemeManifest; frames: Record<string, string[]> } | undefined;
+  /** Reads the latest theme from disk (global storage). */
+  loadLatestTheme: () => Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined>;
+  /** Posts a message back to the webview that sent THEATER_READY. */
+  post: (msg: { type: string; payload?: unknown }) => void;
+}
+
+/**
+ * The Theater webview's ready handshake: only once the webview confirms its
+ * message listener is attached (THEATER_READY, reusing the generic
+ * MSG.READY the main panel already uses) do we await the bundled-theme seed
+ * and post a theme — never unconditionally at resolve time, which is what
+ * raced the webview's script load and dropped THEME_INITIALIZED after a
+ * "Restart Extensions".
+ */
+export async function handleTheaterReady(deps: TheaterReadyDeps): Promise<void> {
+  const cached = deps.getLastTheme();
+  if (cached) {
+    deps.post({
+      type: MSG.THEME_INITIALIZED,
+      payload: { manifest: cached.manifest, frames: cached.frames, is_editor_mode: false },
     });
+    return;
+  }
+  await waitForBundledThemes(deps.bundledThemesReady);
+  const t = await deps.loadLatestTheme();
+  if (t) {
+    deps.post({
+      type: MSG.THEME_INITIALIZED,
+      payload: { manifest: t.manifest, frames: t.frames, is_editor_mode: false },
+    });
+  } else {
+    deps.post({ type: MSG.THEME_NONE });
   }
 }
 
@@ -32,10 +69,21 @@ class TheaterViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'tycoon.theaterView';
   private readonly _extensionUri: vscode.Uri;
   private readonly _globalStorageUri: vscode.Uri;
+  /**
+   * The activation-time bundled-theme seed promise (extension.ts's
+   * `bundledThemesReady`), injected so a fresh install's Theater view waits
+   * for the seed instead of racing it and showing nothing.
+   */
+  private readonly _bundledThemesReady: Promise<unknown> | undefined;
 
-  constructor(extensionUri: vscode.Uri, globalStorageUri: vscode.Uri) {
+  constructor(
+    extensionUri: vscode.Uri,
+    globalStorageUri: vscode.Uri,
+    bundledThemesReady?: Promise<unknown>,
+  ) {
     this._extensionUri = extensionUri;
     this._globalStorageUri = globalStorageUri;
+    this._bundledThemesReady = bundledThemesReady;
   }
 
   resolveWebviewView(
@@ -52,19 +100,28 @@ class TheaterViewProvider implements vscode.WebviewViewProvider {
     };
 
     activeWebview = webviewView.webview;
-    webviewView.webview.html = this._getHtml(webviewView.webview);
 
     webviewView.webview.onDidReceiveMessage(async (msg: { type?: string }) => {
-      if (msg?.type === 'THEME_REQUEST') {
-        const t = lastTheme ?? await loadLatestTheme(this._globalStorageUri);
-        if (t) broadcastTheme(t.manifest, t.frames, false);
+      if (msg?.type === MSG.READY || msg?.type === 'THEME_REQUEST') {
+        // THEME_REQUEST is the webview's own explicit re-request (e.g. a
+        // manual retry); MSG.READY is the first-attach handshake. Both land
+        // here so either broadcasts through the same lastTheme-or-disk path.
+        await handleTheaterReady({
+          bundledThemesReady: this._bundledThemesReady,
+          getLastTheme: () => lastTheme,
+          loadLatestTheme: () => loadLatestTheme(this._globalStorageUri),
+          post: (m) => {
+            if (m.type === MSG.THEME_INITIALIZED) {
+              const p = m.payload as { manifest: ThemeManifest; frames: Record<string, string[]> };
+              lastTheme = { manifest: p.manifest, frames: p.frames };
+            }
+            void webviewView.webview.postMessage(m);
+          },
+        });
       }
     });
 
-    void (async () => {
-      const t = lastTheme ?? await loadLatestTheme(this._globalStorageUri);
-      if (t) broadcastTheme(t.manifest, t.frames, false);
-    })();
+    webviewView.webview.html = this._getHtml(webviewView.webview);
 
     webviewView.onDidDispose(() => {
       activeWebview = undefined;
@@ -107,41 +164,22 @@ class TheaterViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-async function loadLatestTheme(globalStorageUri: vscode.Uri): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
-  try {
-    const themes = await listThemes(globalStorageUri);
-    let newest: { themeId: string; mtime: number } | undefined;
-    for (const theme of themes) {
-      let mtime = 0;
-      try {
-        mtime = (await vscode.workspace.fs.stat(themeManifestUri(globalStorageUri, theme.theme_id))).mtime;
-      } catch {
-        try {
-          mtime = (await vscode.workspace.fs.stat(
-            vscode.Uri.joinPath(globalStorageUri, `${theme.theme_id}_manifest.json`),
-          )).mtime;
-        } catch {
-          continue;
-        }
-      }
-      if (newest === undefined || mtime > newest.mtime) newest = { themeId: theme.theme_id, mtime };
-    }
-    if (!newest) return undefined;
-    return loadTheme(globalStorageUri, newest.themeId);
-  } catch {
-    return undefined;
-  }
-}
-
 export function sendTelemetryUpdate(state: WorldState): void {
   if (activeWebview !== undefined) {
     void activeWebview.postMessage({ type: 'WORLD_TELEMETRY_UPDATE', payload: state });
   }
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export function activate(
+  context: vscode.ExtensionContext,
+  bundledThemesReady?: Promise<unknown>,
+): void {
   // 1. Register the webview view provider
-  const provider = new TheaterViewProvider(context.extensionUri, context.globalStorageUri);
+  const provider = new TheaterViewProvider(
+    context.extensionUri,
+    context.globalStorageUri,
+    bundledThemesReady,
+  );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(TheaterViewProvider.viewType, provider),
   );

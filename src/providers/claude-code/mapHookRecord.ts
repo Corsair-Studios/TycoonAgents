@@ -101,6 +101,8 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
             ...(record.parentId !== undefined ? { parentId: record.parentId } : {}),
             ...(record.tier !== undefined ? { tier: record.tier } : {}),
             ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
+            ...(record.vendor !== undefined ? { vendor: record.vendor } : {}),
+            ...(record.costModelClass !== undefined ? { costModelClass: record.costModelClass } : {}),
           },
         ];
       }
@@ -118,7 +120,18 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
           },
         ];
       }
-      return [{ type: "WorkerActivity", at: record.at, workerId, kind: toolToActivityKind(record.tool), detail: record.tool }];
+      return [
+        {
+          type: "WorkerActivity",
+          at: record.at,
+          workerId,
+          kind: toolToActivityKind(record.tool),
+          detail: record.tool,
+          ...(record.model !== undefined ? { model: record.model } : {}),
+          ...(record.vendor !== undefined ? { vendor: record.vendor } : {}),
+          ...(record.costModelClass !== undefined ? { costModelClass: record.costModelClass } : {}),
+        },
+      ];
     }
     default:
       return [];

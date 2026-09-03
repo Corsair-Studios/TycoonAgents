@@ -15,6 +15,11 @@ export interface HookRecord {
   cacheReadTokens?: number;  // SubagentStop/Stop: cache-read tokens, tracked separately from `tokens`
                               // because they price at ~0.1x the model's input rate rather than full rate.
   model?: string;            // full model id resolved at spawn time, e.g. "claude-sonnet-4-6"
+  vendor?: string;           // backend vendor from agentBackend.ts (e.g. "anthropic", "openai", "google")
+                              // for a generic mcp/openai-compatible backend match (p2-t2). Absent on
+                              // records from hook versions predating generic backend routing.
+  costModelClass?: "metered" | "subscription" | "local"; // from agentBackend.ts's Backend.costModelClass,
+                              // set alongside `vendor` (p2-t2). Absent on older records.
   agentDescription?: string; // description from agent .md frontmatter, if found
   tier?: string;             // agent tier from .md frontmatter, e.g. "lead" (PreToolUse spawn only)
   parentId?: string;         // agentId on top of the active-agent stack at spawn time, if any

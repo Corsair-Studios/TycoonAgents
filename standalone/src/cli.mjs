@@ -18,9 +18,10 @@
 
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { installHook, InstallHookError } from './installHook.mjs';
+import { installHook, installOpenCodePlugin, InstallHookError } from './installHook.mjs';
 import { startServer, ServerStartError } from './server.mjs';
 import { ProjectRootError } from './projectRoots.mjs';
+import { resolveProviderId } from './sharedLogic.mjs';
 
 function printUsage() {
   console.error(
@@ -30,6 +31,13 @@ function printUsage() {
       'Commands:',
       '  install-hook <dir>          Idempotently register the TycoonAgents Claude',
       '                               Code hook in <dir>/.claude/settings.local.json.',
+      '                               --opencode                Instead (separate opt-in),',
+      '                               idempotently copy the TycoonAgents OpenCode plugin',
+      '                               (tycoon-opencode-plugin.ts, agentBackend.js,',
+      '                               modelAliases.js) into <dir>/.opencode/plugin/.',
+      '                               Never touches settings.local.json. --force',
+      '                               overwrites a destination file that differs from',
+      '                               the repo copy (default: refuse and error).',
       '  watch <dir> [<dir2> ...]    Start the live agent visualization server for',
       '                               <dir> (a project containing, or that will',
       '                               contain, .claude/tycoon/) and open it in your',
@@ -39,7 +47,11 @@ function printUsage() {
       '                               your current shell directory.',
       '                               Flags: --no-open (also: env',
       '                               TYCOON_STANDALONE_NO_OPEN=1) suppresses the',
-      '                               automatic browser launch.',
+      '                               automatic browser launch. --provider <id>',
+      '                               (claude-code|opencode, also: env',
+      '                               TYCOON_PROVIDER) selects which harness to',
+      '                               read activity from; TYCOON_PROVIDER always',
+      '                               overrides this flag.',
     ].join('\n'),
   );
 }
@@ -62,16 +74,24 @@ function printUsage() {
 export function parseWatchArgs(argv) {
   const dirs = [];
   let noOpen = false;
-  for (const arg of Array.isArray(argv) ? argv : []) {
+  let provider;
+  const list = Array.isArray(argv) ? argv : [];
+  for (let i = 0; i < list.length; i++) {
+    const arg = list[i];
     if (arg === '--no-open') {
       noOpen = true;
+    } else if (arg === '--provider') {
+      provider = list[i + 1];
+      i++;
+    } else if (typeof arg === 'string' && arg.startsWith('--provider=')) {
+      provider = arg.slice('--provider='.length);
     } else if (typeof arg === 'string' && arg.trim() !== '' && !arg.startsWith('-')) {
       dirs.push(arg);
     }
     // Any other '-'-prefixed token is silently ignored (reserved for future
     // flags), matching resolveProjectRoots' own tolerance of unknown flags.
   }
-  return { dirs, noOpen };
+  return provider === undefined ? { dirs, noOpen } : { dirs, noOpen, provider };
 }
 
 /** Whether the browser auto-open should fire, given the parsed `--no-open`
@@ -141,7 +161,23 @@ function openInBrowser(url) {
  *   clean, user-actionable startup failure).
  */
 export async function runWatchCommand(rest, { env = process.env, cwd = process.cwd(), signal } = {}) {
-  const { dirs, noOpen } = parseWatchArgs(rest);
+  const { dirs, noOpen, provider: providerFlag } = parseWatchArgs(rest);
+
+  // --provider sets TYCOON_PROVIDER before sharedLogic (and, transitively,
+  // resolveProviderId) ever loads — but a real TYCOON_PROVIDER already
+  // present in `env` wins, matching resolveProviderId's own env-first
+  // precedence (src/core/providerSelection.ts).
+  if (providerFlag !== undefined && (env.TYCOON_PROVIDER === undefined || env.TYCOON_PROVIDER === '')) {
+    env.TYCOON_PROVIDER = providerFlag;
+  }
+
+  let resolvedProviderId;
+  try {
+    resolvedProviderId = resolveProviderId({ env, projectDir: cwd });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    return 1;
+  }
 
   let runtime;
   try {
@@ -154,6 +190,7 @@ export async function runWatchCommand(rest, { env = process.env, cwd = process.c
     throw err;
   }
 
+  console.log(`TycoonAgents: using provider "${resolvedProviderId}".`);
   console.log(`TycoonAgents: watching. Open ${runtime.url} in your browser.`);
   if (shouldOpenBrowser({ noOpenFlag: noOpen, env })) {
     openInBrowser(runtime.url);
@@ -197,12 +234,34 @@ export async function runCli(argv) {
 
   switch (command) {
     case 'install-hook': {
-      const dir = rest[0];
+      const flags = rest.filter((a) => typeof a === 'string' && a.startsWith('-'));
+      const dir = rest.find((a) => typeof a === 'string' && !a.startsWith('-'));
       if (!dir) {
         console.error('tycoonagents-standalone install-hook: missing <dir> argument.');
         printUsage();
         return 1;
       }
+
+      if (flags.includes('--opencode')) {
+        const force = flags.includes('--force');
+        try {
+          const { pluginDir, changed, copied, skipped } = installOpenCodePlugin(dir, { force });
+          console.log(
+            changed
+              ? `TycoonAgents: OpenCode plugin installed in ${pluginDir} (copied: ${copied.join(', ')}` +
+                  (skipped.length > 0 ? `; unchanged: ${skipped.join(', ')})` : ')')
+              : `TycoonAgents: OpenCode plugin already installed in ${pluginDir} (no changes).`,
+          );
+        } catch (err) {
+          if (err instanceof InstallHookError) {
+            console.error(err.message);
+            return 1;
+          }
+          throw err;
+        }
+        return 0;
+      }
+
       const { settingsPath, changed } = installHook(dir);
       console.log(
         changed

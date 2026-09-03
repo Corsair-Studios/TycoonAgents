@@ -5,8 +5,19 @@
  */
 
 import type { NormalizedEvent, WorkerId } from "./events";
-import { mapHookRecord } from "../providers/claude-code/mapHookRecord";
-import type { HookRecord } from "../providers/claude-code/hookRecord";
+import { tryMapRecord } from "./mappingRegistry";
+
+/**
+ * Minimal shape state.ts needs from a raw provider record, kept local so
+ * src/core never imports a specific provider (see mappingRegistry.ts).
+ * Provider-specific record types (e.g. HookRecord) are structurally
+ * compatible with this and can be passed directly.
+ */
+export interface RawRecord {
+  at: number;
+  sessionId?: string;
+  provider?: string;
+}
 
 // Pure, host-agnostic world state (see docs/DESIGN.md section 7.3).
 // Knows nothing about VS Code, Claude, or any provider.
@@ -35,6 +46,10 @@ export interface AgentMetric {
   name: string;
   /** LLM model this agent runs on (e.g. "Opus", "Sonnet", "Haiku"). */
   model?: string;
+  /** Backend vendor (e.g. "anthropic" | "openai" | "google"), from a generic mcp/openai-compatible backend match (p2-t5). Undefined when never reported. */
+  vendor?: string;
+  /** Backend cost model class ("metered" | "subscription" | "local"), from the same backend match as `vendor` (p2-t5). Undefined when never reported. */
+  costModelClass?: "metered" | "subscription" | "local";
   /** One-line description of this agent's role. */
   description?: string;
   /** Agent tier from .md frontmatter, e.g. "lead" (Team Lead Mode). Undefined for flat agents. */
@@ -209,6 +224,8 @@ function upsertMetric(
     id: workerId,
     name: toDisplayName(workerId),
     model: undefined,
+    vendor: undefined,
+    costModelClass: undefined,
     description: undefined,
     tier: undefined,
     parentId: undefined,
@@ -412,6 +429,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           tier: event.tier ?? m.tier,
           parentId: event.parentId ?? m.parentId,
           delegationMode: event.delegationMode ?? m.delegationMode,
+          vendor: event.vendor ?? m.vendor,
+          costModelClass: event.costModelClass ?? m.costModelClass,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
@@ -466,6 +485,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           directSearches: isForbiddenSearch ? m.directSearches + 1 : m.directSearches,
           directReads: isRead ? m.directReads + 1 : m.directReads,
           directEdits: (event.kind === "build" || event.kind === "haul") ? m.directEdits + 1 : m.directEdits,
+          vendor: event.vendor ?? m.vendor,
+          costModelClass: event.costModelClass ?? m.costModelClass,
           // Start timer if not already running.
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
@@ -716,7 +737,7 @@ export function computeDelegationModeStats(agentMetrics: AgentMetric[]): Delegat
  * accumulated state, given the same records).
  */
 export function computeStateFromRecords(
-  records: HookRecord[],
+  records: RawRecord[],
   filterSessionId?: string,
 ): MetricsWorldState {
   let state = initialWorldState();
@@ -724,7 +745,7 @@ export function computeStateFromRecords(
   for (const record of records) {
     if (filterSessionId !== undefined && record.sessionId !== filterSessionId) continue;
     if (lastActivityAt === null || record.at > lastActivityAt) lastActivityAt = record.at;
-    for (const event of mapHookRecord(record)) {
+    for (const event of tryMapRecord(record) ?? []) {
       state = applyEvent(state, event);
     }
   }

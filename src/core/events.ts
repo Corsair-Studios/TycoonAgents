@@ -37,8 +37,17 @@ export type NormalizedEvent =
   // delegationMode (Team Lead Mode Phase 4) is the delegation topology active at spawn
   // time ("flat"|"team_leads"); undefined on legacy records — treated as "flat" by
   // computeDelegationModeStats in core/state.ts.
-  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string; delegationMode?: string }
-  | { type: "WorkerActivity"; at: number; workerId: WorkerId; kind: ActivityKind; detail?: string }
+  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string; delegationMode?: string; vendor?: string; costModelClass?: "metered" | "subscription" | "local" }
+  | {
+      type: "WorkerActivity";
+      at: number;
+      workerId: WorkerId;
+      kind: ActivityKind;
+      detail?: string;
+      model?: string; // full model id, e.g. from a generic mcp/openai-compatible backend match (p2-t2)
+      vendor?: string; // backend vendor, e.g. "anthropic" | "openai" | "google" (p2-t2)
+      costModelClass?: "metered" | "subscription" | "local"; // (p2-t2)
+    }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string }
   // report: the subagent's final assistant-message text (capped, see
   // HookRecord.report in providers/claude-code/hookRecord.ts for the exact
