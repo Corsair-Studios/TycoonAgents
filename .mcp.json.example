@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "uefn-bridge": {
+      "command": "node",
+      "args": [
+        "<POWER_TOOLS_DIR>/uefn-server.mjs"
+      ]
+    },
+    "unreal-engine-mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
+    },
+    "codex": {
+      "command": "codex",
+      "args": [
+        "-c",
+        "model=\"gpt-5.4-mini\"",
+        "-c",
+        "model_reasoning_effort=\"low\"",
+        "-c",
+        "approval_policy=\"never\"",
+        "-c",
+        "sandbox_mode=\"read-only\"",
+        "mcp-server"
+      ]
+    }
+  }
+}

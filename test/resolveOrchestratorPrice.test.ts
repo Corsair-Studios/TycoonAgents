@@ -432,13 +432,17 @@ test("delegation hero: modelBreakdown {} (empty) behaves identically to no model
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("delegation hero: modelBreakdown with a partially unpriced model excludes only that entry's tokens, matching a pure-opus-only breakdown", () => {
+test("delegation hero: modelBreakdown with a genuinely unrecognized model prices it via DEFAULT_PRICE_KEY (not excluded/null), blending toward that default", () => {
   const { doc, dispatch, errors } = bootMainJs();
-  // { opus: 1000, "some-unknown-model-xyz": 5000 } -- the unknown model's
-  // 5000 tokens must be excluded from BOTH the weighted sum and the token
-  // denominator (not treated as free/zero-price, which would dilute the
-  // price toward 0). Only the 1000 opus tokens are priceable, so the
-  // resulting blended price must equal pure opus (10 $/Mtok) exactly.
+  // { opus: 1000, "some-unknown-model-xyz": 5000 } -- post pricing-refactor,
+  // "some-unknown-model-xyz" is NOT excluded from the blend: it resolves to
+  // DEFAULT_PRICE_KEY ("unknown/metered", $3/Mtok, media/main.js
+  // ~13539-13541) and is priced and counted like any other entry. This is
+  // the documented intent of the DEFAULT_PRICE_KEY design (never silently
+  // treat an unrecognized-but-metered model as free/excluded), not a
+  // regression. Blended price = (1000*10 + 5000*3) / 6000 = 4.1667 $/Mtok.
+  // Delegated agent: sonnet, 100000 tokens -> actual cost 0.4, counterfactual
+  // 0.41667 -> savedPct = round((1 - 0.4/0.41667) * 100) = 4%.
   dispatchMetrics(dispatch, [
     {
       id: "orchestrator",
@@ -457,19 +461,25 @@ test("delegation hero: modelBreakdown with a partially unpriced model excludes o
   const body = openDelegationTab(doc);
   const heroNum = body.querySelector(".delegation-hero-num");
 
-  assert.ok(heroNum, "a partially-priced modelBreakdown should still render a hero percentage");
+  assert.ok(heroNum, "a modelBreakdown containing an unrecognized-but-metered model should still render a hero percentage");
   assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
   const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
-  assert.equal(pct, 60, `unpriced entry's tokens must be excluded (not zero-priced) -- expected pure-opus 60%, got ${pct}%`);
-  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text (unpriced tokens must not corrupt the average)");
+  assert.equal(pct, 4, `unrecognized model must be priced via DEFAULT_PRICE_KEY and pulled into the blend -- expected 4% (blended 4.1667 $/Mtok), got ${pct}%`);
+  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("delegation hero: modelBreakdown fully unpriced falls back gracefully to scalar model instead of null/NaN", () => {
+test("delegation hero: modelBreakdown of entirely unrecognized models still prices via DEFAULT_PRICE_KEY, never null/NaN, even when that price beats the delegated agent's (no savings to show)", () => {
   const { doc, dispatch, errors } = bootMainJs();
-  // { "unknown-a": 500, "unknown-b": 500 } -- nothing in the breakdown is
-  // priceable, so resolveOrchestratorPrice must fall through to the scalar
-  // orch.model ("opus") rather than returning null outright.
+  // { "unknown-a": 500, "unknown-b": 500 } -- both entries resolve to
+  // DEFAULT_PRICE_KEY ($3/Mtok), NOT excluded and NOT a fallback to the
+  // scalar "opus" model. Blended orchestrator price = 3 $/Mtok, which is
+  // CHEAPER than the delegated sonnet worker's 4 $/Mtok -- delegating here
+  // costs more than the orchestrator's own (default-priced) rate, so the
+  // hero renders the "not enough priced delegated work" unknown-state label
+  // rather than a fabricated/negative percentage. The property under test
+  // is still honesty: no NaN/Infinity, and no null price silently treated
+  // as "unpriced" now that DEFAULT_PRICE_KEY prices everything metered.
   dispatchMetrics(dispatch, [
     {
       id: "orchestrator",
@@ -488,10 +498,8 @@ test("delegation hero: modelBreakdown fully unpriced falls back gracefully to sc
   const body = openDelegationTab(doc);
   const heroNum = body.querySelector(".delegation-hero-num");
 
-  assert.ok(heroNum, "a fully-unpriced modelBreakdown must still fall back to the scalar model and render a percentage (not null/NaN)");
-  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
-  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
-  assert.equal(pct, 60, `fully-unpriced breakdown should fall back to the scalar opus model and match the 60% baseline, got ${pct}%`);
+  assert.equal(heroNum, null, "DEFAULT_PRICE_KEY (3 $/Mtok) prices the orchestrator cheaper than the sonnet worker (4 $/Mtok), so there is no positive savings percentage to render");
+  assert.match(String(body.textContent), /not enough.*priced delegated work/i, "must render the honest 'not enough priced delegated work' state, not a fabricated figure");
   assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

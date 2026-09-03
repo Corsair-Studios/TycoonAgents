@@ -429,7 +429,7 @@ test("metrics row badge: orchestrator's own row always renders 'baseline', regar
 // (e) Unpriced/unknown model: renders "—", never a fabricated ratio.
 // ---------------------------------------------------------------------------
 
-test("metrics row badge: NEGATIVE ANCHOR -- unpriced/unknown worker model renders '—', never a fabricated ratio", () => {
+test("metrics row badge: unknown worker model prices via DEFAULT_PRICE_KEY (unknown/metered, $3/Mtok) instead of rendering '—', never a NaN/Infinity ratio", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -438,8 +438,13 @@ test("metrics row badge: NEGATIVE ANCHOR -- unpriced/unknown worker model render
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const text = rowBadgeText(doc, "Coding Specialist");
-  assert.equal(text, "—", `expected '—' for an unpriced model, got '${text}'`);
-  assert.doesNotMatch(String(text), /cheaper|pricier|nan|infinity/i, "unpriced model must never render a fabricated ratio word");
+  // Post pricing-refactor: modelPricePerMtok never returns null for a
+  // metered-but-unrecognized model — it resolves to DEFAULT_PRICE_KEY
+  // ("unknown/metered", $3/Mtok, media/main.js ~13539-13541), so opus (10)
+  // vs the $3 fallback renders as "3.3x cheaper", not "—". This is the
+  // documented intent of the DEFAULT_PRICE_KEY design, not a regression.
+  assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);
+  assert.doesNotMatch(String(text), /nan|infinity/i, "unpriced model must never render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -557,7 +562,7 @@ test("settings 'vs. orch.' chip: orchestrator's own card always renders 'baselin
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("settings 'vs. orch.' chip: NEGATIVE ANCHOR -- unpriced worker model renders '—', never a fabricated ratio", () => {
+test("settings 'vs. orch.' chip: unknown worker model prices via DEFAULT_PRICE_KEY instead of rendering '—', never a NaN/Infinity ratio", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -566,8 +571,10 @@ test("settings 'vs. orch.' chip: NEGATIVE ANCHOR -- unpriced worker model render
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const text = chipVsOrchText(doc, "Coding Specialist");
-  assert.equal(text, "—", `expected '—' for an unpriced model, got '${text}'`);
-  assert.doesNotMatch(String(text), /cheaper|pricier|nan|infinity/i, "unpriced model must never render a fabricated ratio word");
+  // See the row-badge test above: DEFAULT_PRICE_KEY ($3/Mtok) now prices
+  // unrecognized-but-metered models instead of returning null.
+  assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);
+  assert.doesNotMatch(String(text), /nan|infinity/i, "unpriced model must never render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -708,7 +715,7 @@ test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated p
 // "subscription"/"local" is the entire point of the phase.
 // ---------------------------------------------------------------------------
 
-test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) still renders '—' exactly as before -- row badge", () => {
+test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) prices via DEFAULT_PRICE_KEY, not misclassified as subscription/local -- row badge", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -717,12 +724,16 @@ test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) still
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const text = rowBadgeText(doc, "Coding Specialist");
-  assert.equal(text, "—", `expected '—' for a genuinely unknown model, got '${text}'`);
-  assert.doesNotMatch(String(text), /cheaper|pricier|flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render a fabricated ratio");
+  // DEFAULT_PRICE_KEY prices "metered but unrecognized" models rather than
+  // treating them as unpriced; distinguishing this from subscription/local
+  // (which still render "flat-rate"/"local") is the entire point of the
+  // phase, so this must never collapse to those labels.
+  assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);
+  assert.doesNotMatch(String(text), /flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) still renders '—' exactly as before -- settings chip", () => {
+test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) prices via DEFAULT_PRICE_KEY, not misclassified as subscription/local -- settings chip", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -731,7 +742,7 @@ test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) still
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const text = chipVsOrchText(doc, "Coding Specialist");
-  assert.equal(text, "—", `expected '—' for a genuinely unknown model, got '${text}'`);
-  assert.doesNotMatch(String(text), /cheaper|pricier|flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render a fabricated ratio");
+  assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);
+  assert.doesNotMatch(String(text), /flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
