@@ -28,6 +28,7 @@ HANDOFF.md
 AGENTS-CONFIG-REPORT.md
 RESET-FIX-STATUS.md
 **/*.ts
+!hooks/tycoon-opencode-plugin.ts
 tsconfig.json
 .gitignore
 .vscodeignore
