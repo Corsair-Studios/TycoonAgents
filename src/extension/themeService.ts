@@ -47,6 +47,7 @@ import {
   resizeSpriteBoardCanvas,
 } from './spriteBoardOptimizer';
 import { recoverReviewImages } from './themeReviewImages';
+import { composeRecoveredBoardImages, type RecoveredBoardFile } from './themeBoardRecovery';
 import { createEnvironmentShapeGuide, normalizeEnvironmentImage } from './environmentAsset';
 import {
   acceptAllThemeImageReviewItems,
@@ -768,9 +769,48 @@ export async function ensureThemeReviewImages(
   const loaded = await loadTheme(globalStorageUri, themeId);
   if (loaded) {
     try {
-      const recoveredFiles = await recoverReviewImages(loaded.frames);
-      for (const file of recoveredFiles) {
-        await store.writeFile(`${directoryPath}/${file.filename}`, file.data);
+      // Prefer board-shaped recovery: when this theme has a manifest + a
+      // saved plan, rebuild the SAME board contract a generated theme would
+      // show (one magenta sprite sheet per character/rival/object/decor
+      // board, matching frame_slots/edit menus) instead of one loose
+      // transparent atlas per frame key. Falls through to the old per-key
+      // recovery below for any theme without a usable plan (pre-plan
+      // legacy themes keep their previous behavior unchanged).
+      const boardRecovered = await recoverBoardAlignedReviewImages(globalStorageUri, themeId, loaded);
+      if (boardRecovered) {
+        for (const file of boardRecovered.files) {
+          await store.writeFile(`${directoryPath}/${file.filename}`, file.data);
+        }
+        // Only the frame keys NOT owned by any board in the current contract
+        // (e.g. stale data from a superseded/legacy shape) fall back to a
+        // loose per-key atlas, so nothing with a stored frame is silently
+        // dropped from review even if it no longer maps to a board.
+        const unmatchedFrames = Object.fromEntries(
+          Object.entries(loaded.frames).filter(([key]) => !boardRecovered.knownKeys.has(key)),
+        );
+        const fallbackFiles = await recoverReviewImages(unmatchedFrames);
+        for (const file of fallbackFiles) {
+          await store.writeFile(`${directoryPath}/${file.filename}`, file.data);
+        }
+        // Only write review.json when none exists yet — if a review
+        // document is already present (e.g. images were removed
+        // out-of-band while accept/reject state survives), preserve the
+        // user's existing statuses instead of clobbering them. Matches the
+        // standalone guard in themeMessages.mjs's handleGetThemeImageReview.
+        const existingReviewDoc = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+        if (!existingReviewDoc) {
+          await initializeThemeImageReviewDocument(
+            globalStorageUri,
+            themeId,
+            loaded.manifest.display_name,
+            boardRecovered.items,
+          );
+        }
+      } else {
+        const recoveredFiles = await recoverReviewImages(loaded.frames);
+        for (const file of recoveredFiles) {
+          await store.writeFile(`${directoryPath}/${file.filename}`, file.data);
+        }
       }
     } catch (err) {
       console.warn(`TycoonAgents: Could not recover review images for ${themeId}:`, err);
@@ -781,6 +821,51 @@ export async function ensureThemeReviewImages(
     imageUris: await listReviewImageUris(store, directoryPath),
     recovered: true,
   };
+}
+
+/**
+ * Board-aligned recovery helper for ensureThemeReviewImages: synthesizes the
+ * CURRENT board contract for this manifest (createReviewItems — the same
+ * source of truth full generation and per-board regeneration use, using the
+ * theme's saved plan.json when one exists, or an all-defaults synthetic plan
+ * otherwise — see the synthetic-plan comment below) and composes one board
+ * PNG per item from the theme's stored frames.json data
+ * (composeRecoveredBoardImages). Returns undefined only when createReviewItems
+ * itself throws (e.g. a manifest whose rosters are too malformed to build a
+ * board contract at all), telling the caller to fall back to the old per-key
+ * recovery.
+ */
+async function recoverBoardAlignedReviewImages(
+  globalStorageUri: ThemeStorageRoot,
+  themeId: string,
+  loaded: { manifest: ThemeManifest; frames: Record<string, string[]> },
+): Promise<{
+  items: Array<Omit<ThemeImageReviewItem, 'updated_at'>>;
+  files: RecoveredBoardFile[];
+  knownKeys: Set<string>;
+} | undefined> {
+  try {
+    // The board CONTRACT (ids/filenames/frame_keys) createReviewItems derives
+    // is sourced from the MANIFEST's rosters (roster_agents/roster_rivals/
+    // buildable_objects/decor_objects), not from the plan's text fields — the
+    // plan only supplies prompt/description copy, which the review UI always
+    // recomputes fresh from the CURRENT plan+manifest for display anyway (see
+    // panel.ts's _postThemeImageReview currentPrompt) rather than trusting a
+    // saved item.prompt. So a theme with a manifest but NO saved plan.json —
+    // e.g. the bundled sample theme, which ships manifest.json+frames.json
+    // only — still gets the full board-shaped recovery via a synthetic
+    // all-defaults plan, instead of falling through to loose per-key atlases.
+    const savedPlan = await loadCurrentThemePlan(globalStorageUri, themeId, loaded.manifest.display_name);
+    const plan = savedPlan ?? normalizeThemePlan({}, loaded.manifest.display_name);
+    const creativeDirection = themePlanCreativeDirection(plan);
+    const items = createReviewItems(plan, loaded.manifest, creativeDirection);
+    const files = await composeRecoveredBoardImages(items, loaded.frames);
+    const knownKeys = new Set(items.flatMap((item) => item.frame_keys ?? []));
+    return { items, files, knownKeys };
+  } catch (err) {
+    console.warn(`TycoonAgents: Could not synthesize board-aligned review for ${themeId}:`, err);
+    return undefined;
+  }
 }
 
 /**

@@ -216,7 +216,7 @@ test('handleGetThemeImageReview: broadcasts THEME_IMAGE_REVIEW with an image_src
   }
 });
 
-test('handleGetThemeImageReview: a theme with no review.json yet broadcasts an empty items array, never throws', async () => {
+test('handleGetThemeImageReview: a theme with no review.json and a manifest whose rosters cannot satisfy the board contract (empty rosters -> createReviewItems throws, e.g. decor requires exactly 9 items) falls back to an empty items array, never throws', async () => {
   const root = mkTempRoot();
   try {
     const store = createFsThemeFileStore(root);
@@ -225,6 +225,68 @@ test('handleGetThemeImageReview: a theme with no review.json yet broadcasts an e
     await handleGetThemeImageReview(store, fakeBroadcast(calls), 'no_review_yet');
     assert.equal(calls[0].data.type, MSG_WIRE.THEME_IMAGE_REVIEW);
     assert.deepEqual(calls[0].data.payload.items, []);
+    // Recovery failed (degenerate manifest) so nothing is persisted -- unlike
+    // the bundled-theme test below, which has a real roster and succeeds.
+    assert.equal(await store.exists(themeReviewPath('no_review_yet')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// p9-t4: the bundled sample theme ships manifest.json + frames.json only (no
+// review.json / images/) — this is the exact shape ensureThemeReviewImages
+// recovers on the VS Code host, and recoverThemeReviewBoards (themeMessages.mjs)
+// must converge on the same on-disk state: review.json + one composed PNG per
+// board group under images/, board items carrying image_src + frame_slots.
+test('handleGetThemeImageReview (bundled survivors_vs_zombies theme, manifest+frames only): recovers board items with image_src + frame_slots, writes review.json + PNGs, and caches on a second call', async () => {
+  const root = mkTempRoot();
+  try {
+    const bundledDir = path.join(
+      path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')),
+      '..', '..', 'media', 'themes', 'survivors_vs_zombies',
+    );
+    const bundledManifest = JSON.parse(fs.readFileSync(path.join(bundledDir, 'manifest.json'), 'utf8'));
+    const bundledFramesBytes = fs.readFileSync(path.join(bundledDir, 'frames.json'));
+
+    const store = createFsThemeFileStore(root);
+    const themeId = bundledManifest.theme_id;
+    await store.writeFile(themeManifestPath(themeId), jsonBytes(bundledManifest));
+    await store.writeFile(themeFramesPath(themeId), bundledFramesBytes);
+
+    assert.equal(await store.exists(themeReviewPath(themeId)), false, 'sanity: no review.json before recovery');
+
+    const firstCalls = [];
+    await handleGetThemeImageReview(store, fakeBroadcast(firstCalls), themeId);
+    assert.equal(firstCalls.length, 1);
+    assert.equal(firstCalls[0].data.type, MSG_WIRE.THEME_IMAGE_REVIEW);
+    const firstItems = firstCalls[0].data.payload.items;
+    assert.ok(firstItems.length > 0);
+
+    const environmentItem = firstItems.find((item) => item.id === 'environment');
+    assert.ok(environmentItem, 'environment board must be present');
+    assert.ok(environmentItem.image_src.startsWith(`/theme-images/${themeId}/environment.png`));
+    assert.ok(Array.isArray(environmentItem.frame_slots) && environmentItem.frame_slots.length > 0);
+
+    const generatedWithImage = firstItems.filter((item) => item.image_src);
+    assert.ok(generatedWithImage.length > 0, 'at least one board must have composed a PNG from the bundled frames');
+    for (const item of generatedWithImage) {
+      assert.ok(Array.isArray(item.frame_slots), `${item.id} must carry frame_slots`);
+    }
+
+    assert.equal(await store.exists(themeReviewPath(themeId)), true, 'recovery must persist review.json');
+    const imagesDir = themeImagesDirectoryPath(themeId);
+    assert.equal(await store.exists(`${imagesDir}/environment.png`), true, 'recovery must write the environment PNG');
+
+    // Second call: review.json now exists, so no re-recovery -- the SAME
+    // cached record (persisted item set) is read back.
+    const secondCalls = [];
+    await handleGetThemeImageReview(store, fakeBroadcast(secondCalls), themeId);
+    const secondItems = secondCalls[0].data.payload.items;
+    assert.deepEqual(
+      secondItems.map((item) => item.id).sort(),
+      firstItems.map((item) => item.id).sort(),
+      'second call must read the same cached review.json record',
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -289,6 +351,84 @@ test('handleSelectTheme (bundled survivors_vs_zombies theme): every roster atlas
       const key = `expression_${i}`;
       assert.ok(Array.isArray(frames[key]) && frames[key].length > 0, `missing frames for ${key}`);
     }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// p9-t4: GET_THEME_IMAGE_REVIEW on the bundled theme, once its review.json
+// carries the board-shaped contract produced by the VS Code host's recovery
+// path (src/extension/themeService.ts's ensureThemeReviewImages +
+// src/extension/themeBoardRecovery.ts's composeRecoveredBoardImages — one
+// magenta sprite-sheet board per character/rival/object/decor group, keyed
+// by the SAME ids/filenames/frame_keys createReviewItems synthesizes), must
+// surface those board items intact: correct image_src for a populated
+// board, frame_keys preserved verbatim, and no item dropped or renamed.
+//
+// NOTE (scope): this exercises handleGetThemeImageReview's existing
+// review.json + on-disk-image contract using the REAL bundled manifest's
+// first character slot for realism; it does not itself drive
+// ensureThemeReviewImages (a themeService.ts / vscode-host function this
+// vscode-free .mjs test cannot import) or assert on `frame_slots` — that
+// field is only ever added by the VS Code host's panel.ts
+// (_postThemeImageReview), never by this file's handleGetThemeImageReview,
+// which is a pre-existing gap outside this fix's owned files. Likewise,
+// seedBundledThemesIntoStore (standalone/src/server.mjs) never seeds a
+// review.json for the bundled theme today, so this test seeds one directly
+// to prove the WIRE CONTRACT is compatible; wiring the standalone host to
+// actually run board-recovery is tracked as an open issue, not fixed here.
+test('handleGetThemeImageReview (bundled survivors_vs_zombies theme): a board-shaped review item (character board, real roster slot) round-trips with image_src set and frame_keys intact', async () => {
+  const root = mkTempRoot();
+  try {
+    const bundledDir = path.join(
+      path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')),
+      '..', '..', 'media', 'themes', 'survivors_vs_zombies',
+    );
+    const bundledManifest = JSON.parse(fs.readFileSync(path.join(bundledDir, 'manifest.json'), 'utf8'));
+    const bundledFramesBytes = fs.readFileSync(path.join(bundledDir, 'frames.json'));
+    const bundledFrames = JSON.parse(bundledFramesBytes.toString('utf8'));
+    const themeId = bundledManifest.theme_id;
+    const firstAgent = bundledManifest.roster_agents[0];
+    assert.ok(firstAgent, 'sanity: bundled manifest must have at least one roster agent');
+    const agentKey = firstAgent.atlas_asset.split('#')[1];
+    assert.ok(Array.isArray(bundledFrames[agentKey]) && bundledFrames[agentKey].length > 0, 'sanity: agent frames present');
+
+    const store = createFsThemeFileStore(root);
+    await store.writeFile(themeManifestPath(themeId), jsonBytes(bundledManifest));
+    await store.writeFile(themeFramesPath(themeId), bundledFramesBytes);
+
+    const characterItem = {
+      id: `agent_${firstAgent.slot_id}`,
+      filename: `agent_${String(firstAgent.slot_id + 1).padStart(2, '0')}_${firstAgent.name}.png`,
+      label: firstAgent.name,
+      kind: 'character_atlas',
+      status: 'pending',
+      prompt: '',
+      revision: 0,
+      frame_keys: [agentKey],
+      updated_at: new Date(0).toISOString(),
+    };
+    await store.writeFile(
+      themeReviewPath(themeId),
+      jsonBytes({ version: 1, theme_id: themeId, display_name: bundledManifest.display_name, items: [characterItem] }),
+    );
+    // Simulates the composed board PNG ensureThemeReviewImages/
+    // composeRecoveredBoardImages would have written at this exact filename.
+    await store.mkdirp(themeImagesDirectoryPath(themeId));
+    await store.writeFile(`${themeImagesDirectoryPath(themeId)}/${characterItem.filename}`, new Uint8Array([1, 2, 3]));
+
+    const calls = [];
+    await handleGetThemeImageReview(store, fakeBroadcast(calls), themeId);
+
+    assert.equal(calls.length, 1);
+    const payload = calls[0].data.payload;
+    assert.equal(payload.items.length, 1);
+    const outItem = payload.items[0];
+    assert.equal(outItem.id, characterItem.id);
+    assert.equal(outItem.kind, 'character_atlas');
+    assert.deepEqual(outItem.frame_keys, [agentKey]);
+    assert.ok(outItem.image_src.startsWith(`/theme-images/${themeId}/${encodeURIComponent(characterItem.filename)}`));
+    assert.equal(outItem.generated, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
