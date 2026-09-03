@@ -259,57 +259,57 @@ test("every media/handbook/*.html has unique id attributes within the file", () 
   }
 });
 
-test("ch-09.html's step renumbering left no duplicate <span class=\"stepno\"> values", () => {
-  const content = readHandbookFile("ch-09.html");
+test("ch-10.html's step renumbering left no duplicate <span class=\"stepno\"> values", () => {
+  const content = readHandbookFile("ch-10.html");
   const stepnoRe = /<span class="stepno">(\d+)<\/span>/g;
   const stepNumbers = [...content.matchAll(stepnoRe)].map((m) => m[1]);
-  assert.ok(stepNumbers.length > 0, "ch-09.html: no <span class=\"stepno\"> markers found — structural marker changed");
+  assert.ok(stepNumbers.length > 0, "ch-10.html: no <span class=\"stepno\"> markers found — structural marker changed");
   const unique = new Set(stepNumbers);
   assert.equal(
     unique.size,
     stepNumbers.length,
-    `ch-09.html: duplicate step numbers found after renumbering — steps: ${stepNumbers.join(", ")}`,
+    `ch-10.html: duplicate step numbers found after renumbering — steps: ${stepNumbers.join(", ")}`,
   );
 });
 
 // ── 2. Content smoke: cheap, stable-string checks on the new sections ──
 
-test("ch-03.html has the Rebirth section with a 6-row tier table (sparring at tier 6, huddles at tier 2)", () => {
-  const content = readHandbookFile("ch-03.html");
-  assert.match(content, /Rebirth/, "ch-03.html: missing a \"Rebirth\" heading");
+test("ch-04.html has the Rebirth section with a 6-row tier table (sparring at tier 6, huddles at tier 2)", () => {
+  const content = readHandbookFile("ch-04.html");
+  assert.match(content, /Rebirth/, "ch-04.html: missing a \"Rebirth\" heading");
 
-  const sectionStart = content.indexOf("3.7");
-  assert.ok(sectionStart >= 0, "ch-03.html: missing a \"3.7\" section marker for Rebirth");
+  const sectionStart = content.indexOf("4.7");
+  assert.ok(sectionStart >= 0, "ch-04.html: missing a \"4.7\" section marker for Rebirth");
   const tableStart = content.indexOf("<table>", sectionStart);
-  assert.ok(tableStart >= 0, "ch-03.html: missing a <table> after the 3.7 Rebirth section head");
+  assert.ok(tableStart >= 0, "ch-04.html: missing a <table> after the 4.7 Rebirth section head");
   const tableEnd = content.indexOf("</table>", tableStart);
-  assert.ok(tableEnd >= 0, "ch-03.html: unterminated Rebirth tier table");
+  assert.ok(tableEnd >= 0, "ch-04.html: unterminated Rebirth tier table");
   const tierTable = content.slice(tableStart, tableEnd);
 
   const rowCount = countOccurrences(tierTable, /<tr>/gi) - 1; // minus the header row
-  assert.equal(rowCount, 6, `ch-03.html: Rebirth tier table has ${rowCount} data rows, expected 6`);
+  assert.equal(rowCount, 6, `ch-04.html: Rebirth tier table has ${rowCount} data rows, expected 6`);
 
   const tier2Row = /<tr><td>2<\/td>.*?<\/tr>/s.exec(tierTable);
-  assert.ok(tier2Row, "ch-03.html: no tier-2 row found in Rebirth table");
-  assert.match(tier2Row![0], /huddles/i, "ch-03.html: tier-2 row doesn't mention \"huddles\"");
+  assert.ok(tier2Row, "ch-04.html: no tier-2 row found in Rebirth table");
+  assert.match(tier2Row![0], /huddles/i, "ch-04.html: tier-2 row doesn't mention \"huddles\"");
 
   const tier6Row = /<tr><td>6<\/td>.*?<\/tr>/s.exec(tierTable);
-  assert.ok(tier6Row, "ch-03.html: no tier-6 row found in Rebirth table");
-  assert.match(tier6Row![0], /sparring/i, "ch-03.html: tier-6 row doesn't mention \"sparring\"");
+  assert.ok(tier6Row, "ch-04.html: no tier-6 row found in Rebirth table");
+  assert.match(tier6Row![0], /sparring/i, "ch-04.html: tier-6 row doesn't mention \"sparring\"");
 });
 
-test("ch-12.html mentions uefn_verse_check and epic-generated", () => {
-  const content = readHandbookFile("ch-12.html");
-  assert.match(content, /uefn_verse_check/, "ch-12.html: missing \"uefn_verse_check\"");
-  assert.match(content, /epic-generated/, "ch-12.html: missing \"epic-generated\"");
-});
-
-test("ch-13.html mentions LongPathsEnabled", () => {
+test("ch-13.html mentions uefn_verse_check and epic-generated", () => {
   const content = readHandbookFile("ch-13.html");
-  assert.match(content, /LongPathsEnabled/, "ch-13.html: missing \"LongPathsEnabled\"");
+  assert.match(content, /uefn_verse_check/, "ch-13.html: missing \"uefn_verse_check\"");
+  assert.match(content, /epic-generated/, "ch-13.html: missing \"epic-generated\"");
 });
 
-test("ch-09.html mentions uefn-paths.json", () => {
-  const content = readHandbookFile("ch-09.html");
-  assert.match(content, /uefn-paths\.json/, "ch-09.html: missing \"uefn-paths.json\"");
+test("ch-14.html mentions LongPathsEnabled", () => {
+  const content = readHandbookFile("ch-14.html");
+  assert.match(content, /LongPathsEnabled/, "ch-14.html: missing \"LongPathsEnabled\"");
+});
+
+test("ch-10.html mentions uefn-paths.json", () => {
+  const content = readHandbookFile("ch-10.html");
+  assert.match(content, /uefn-paths\.json/, "ch-10.html: missing \"uefn-paths.json\"");
 });

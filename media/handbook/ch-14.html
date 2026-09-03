@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 14 — Troubleshooting &amp; Diagnostics · TycoonAgents Handbook</title>
+<link rel="stylesheet" href="handbook.css">
+</head>
+<body class="page">
+<aside class="side-rail">
+<details class="side-rail-toggle" open>
+<summary class="side-rail-summary">Chapters</summary>
+<nav class="side-rail-nav" aria-label="Handbook chapters">
+<a class="side-rail-home" href="index.html">&#8962; Handbook</a>
+<div class="side-rail-part">Part I &middot; Getting Started</div>
+<a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
+<a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
+<div class="side-rail-part">Part II &middot; Theme Maker</div>
+<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
+<a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
+<div class="side-rail-part">Part III &middot; Reference</div>
+<a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link side-rail-current" href="ch-14.html" aria-current="page">14 &middot; Diagnostics</a>
+</nav>
+</details>
+</aside>
+
+<p class="crumb">TycoonAgents Handbook / Chapter 14 / Part III · Reference</p>
+
+<h1><span class="chapter-num">14</span>Troubleshooting &amp; Diagnostics</h1>
+
+<div class="lede">
+  <p class="label">When something's not right</p>
+  <p class="intro">Most problems in TycoonAgents trace back to one of a handful of root causes — hooks, a missing theme selection, a stale bridge, or a metrics number that only looks wrong. This chapter is a quick-reference triage before you file a bug report.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 14.1 · Panel is empty, no agents show up</span>
+  <span class="cap">hooks aren't installed</span>
+</div>
+<p>The agent visualization is driven entirely by Claude Code hooks. If nothing appears, hooks likely aren't installed for this project, or your session hasn't picked up a recent install.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Open Settings → <strong>Hook health</strong> and use <strong>Troubleshoot → Fix</strong> to repair the install.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Restart your Claude Code session so it picks up the newly installed hooks.</p></div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 14.2 · Theme art isn't showing</span>
+  <span class="cap">selection or frames</span>
+</div>
+<p>Two likely causes: no theme is currently selected, or the theme is selected but some of its entities are missing frames.</p>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>Check the Theme Picker first to confirm a theme is active. If it is and art is still missing, see Chapter 8 for the health check and the Resume fix.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 14.3 · UEFN chip is gray</span>
+  <span class="cap">bridge not staged, or engine not restarted</span>
+</div>
+<p>A gray UEFN chip means the Power Tools bridge either hasn't been staged into your project yet, or UEFN hasn't been restarted since it was.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Revisit Setup and confirm the bridge staging step completed (Chapter 13).</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Restart UEFN so it picks up the bridge from <code>Content/Python</code>.</p></div>
+  </div>
+</div>
+<div class="callout note">
+  <p class="callout-label">Advanced</p>
+  <p>The bridge auto-discovers its paths, but three environment variables override that discovery when it picks the wrong location: <code>UEFN_BRIDGE_DIR</code> overrides the IPC directory the bridge and MCP server use to talk to each other; <code>UEFN_VERSE_PROJECT_DIR</code> overrides the Verse project cache root; <code>VERSE_LSP_PATH</code> overrides the Verse language server executable the Verse-aware audit tools launch. Reach for one of these only if the chip stays gray after a restart, or the bridge responds with the wrong project's data.</p>
+</div>
+<div class="callout note">
+  <p class="callout-label">Advanced</p>
+  <p><code>verse-lsp.exe</code> &mdash; the actual analyzer engine behind <code>uefn_verse_check</code> &mdash; ships inside Epic's own Verse VS Code extension rather than as a separate download. When <code>VERSE_LSP_PATH</code> isn't set, discovery searches for that extension across every supported IDE's extensions folder: VS Code, VS Code Insiders, Cursor, Antigravity, Windsurf, and a remote <code>vscode-server</code> install.</p>
+  <p>No VS Code-family IDE on this machine at all? You don't need to install one just for the analyzer: download Epic's Verse extension's <code>.vsix</code> directly from the VS Code Marketplace website, extract it (a <code>.vsix</code> is a zip archive), and point <code>VERSE_LSP_PATH</code> at the <code>verse-lsp.exe</code> inside the extracted folder.</p>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>The UEFN MCP chip also needs <code>node</code> v18+ on your PATH — the MCP client launches the bridge's server through Node. Run <code>node --version</code> in a terminal to check.</p>
+</div>
+<div class="callout note">
+  <p class="callout-label">Advanced</p>
+  <p>On Windows, a deep project path — especially one under a OneDrive-redirected folder — can exceed the 260-character <code>MAX_PATH</code> limit. When TycoonAgents detects this condition, it names it directly in the relevant error message rather than leaving you to guess. The fix is either to enable Windows long paths (the <code>LongPathsEnabled</code> registry policy) or to shorten or move the project path so it sits closer to the drive root.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 14.4 · Metrics numbers look wrong</span>
+  <span class="cap">usually not a bug</span>
+</div>
+<p>A gap between "dispatched" and "completed" task counts is expected, not an error — it means some dispatched tasks never posted a completion (abandoned or simply unfinished), not that something is silently broken. See Chapter 11 for the full explanation.</p>
+
+<div class="section-head">
+  <span class="s-title">§ 14.5 · Reporting a bug</span>
+  <span class="cap">Report a bug / Diagnostics</span>
+</div>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Settings — Report a bug / Diagnostics section.</p>
+</div>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Open Settings → <strong>Report a bug / Diagnostics</strong> and choose <strong>Generate diagnostic report</strong>.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>The report is sanitized — absolute file paths and secrets are stripped before it's copied to your clipboard — and ready to paste wherever you're reporting the issue.</p></div>
+  </div>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>You can also run the <code>/tycoon-diagnose</code> skill directly from Claude Code for a deeper, AI-reasoned pass over your project's own configuration.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 14.6 · Submit feedback</span>
+  <span class="cap">bugs, ideas, questions — straight to the maintainer</span>
+</div>
+<p>Settings also has a <strong>Submit feedback</strong> form for anything short of a full bug report — an idea, a question, or a rough edge worth putting on record. It sits right below Report a bug / Diagnostics, and it's deliberately two-step: nothing is ever sent in the background, and nothing leaves your machine until you press <strong>Send</strong>.</p>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <div class="fig-caption">Settings — the Submit feedback form with the preview step open.</div>
+</div>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Open Settings → <strong>Submit feedback</strong>, pick a category (<strong>Bug</strong> / <strong>Idea</strong> / <strong>Question</strong> / <strong>Other</strong>), and describe what happened (up to 4000 characters). <strong>Include diagnostic report</strong> is checked by default and attaches the same sanitized report from § 14.5; an optional contact field lets the maintainer follow up.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Choose <strong>Preview</strong> to see the exact JSON payload that will be sent. Only after you've reviewed it does <strong>Send</strong> appear — there's no way to submit without seeing the payload first.</p></div>
+  </div>
+</div>
+<div class="callout note">
+  <p class="callout-label">What actually gets sent</p>
+  <p>Your description and contact info go as typed — local file paths and recognizable API keys or tokens are stripped automatically before anything is sent. If <strong>Include diagnostic report</strong> is checked, it also sends:</p>
+  <ul>
+    <li>Your extension version, operating system, IDE name and variant, and when the report was generated</li>
+    <li>Whether the background hook is installed, whether it's working, and when it last ran</li>
+    <li>Your delegation settings</li>
+    <li>A list of your agent names and whether each one has routing configured</li>
+    <li>Whether your project's instructions file (CLAUDE.md) has any leftover sections from an older format</li>
+    <li>A size check of your instructions and agent files (so the maintainer can tell if they're getting too long)</li>
+    <li>The connection status of any configured engines (like UEFN) — for MCP servers, only which ones are configured, not their connection status</li>
+  </ul>
+  <p><strong>Never sent:</strong> your source code, file contents, project names (only redacted paths), API keys, or anything running in the background. Nothing leaves your machine until you press Send, and you'll see the exact data being sent right before that happens.</p>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>Submissions become tickets the maintainer triages directly — there's no account to create and no board to check. If sending fails (offline, timeout), the payload is copied to your clipboard automatically so nothing is lost, and you can retry or use the fallback form at <a href="https://feedback.corsairstudios.com">feedback.corsairstudios.com</a>.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 14.7 · When all else fails</span>
+  <span class="cap">reinstall is safe</span>
+</div>
+<p>Reinstalling through the setup wizard is safe to reach for. Your state survives an update — build progress and earned badges persist on the host side, not in the webview — so a reinstall won't wipe your progress.</p>
+
+<p class="nav-links">
+  <a class="prev" href="ch-13.html">&larr; Ch 13 · UEFN Power Tools</a>
+  <a class="index" href="index.html">Index</a>
+  <span class="next-placeholder">End of handbook</span>
+</p>
+
+</body>
+</html>

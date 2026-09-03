@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chapter 10 — Metrics &amp; Delegation Tabs · TycoonAgents Handbook</title>
+<title>Chapter 10 — Settings Reference · TycoonAgents Handbook</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -15,112 +15,117 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Panel Tour</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-04.html">04 &middot; API Keys &amp; Providers</a>
-<a class="side-rail-link" href="ch-05.html">05 &middot; Building a Theme</a>
-<a class="side-rail-link" href="ch-06.html">06 &middot; Generation &amp; Review</a>
-<a class="side-rail-link" href="ch-07.html">07 &middot; Troubleshooting &amp; Redos</a>
-<a class="side-rail-link" href="ch-08.html">08 &middot; Themes &amp; Community</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
+<a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
 <div class="side-rail-part">Part III &middot; Reference</div>
-<a class="side-rail-link" href="ch-09.html">09 &middot; Settings Reference</a>
-<a class="side-rail-link side-rail-current" href="ch-10.html" aria-current="page">10 &middot; Metrics &amp; Delegation</a>
-<a class="side-rail-link" href="ch-11.html">11 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-12.html">12 &middot; UEFN Power Tools</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; Diagnostics</a>
+<a class="side-rail-link side-rail-current" href="ch-10.html" aria-current="page">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
 </aside>
 
 <p class="crumb">TycoonAgents Handbook / Chapter 10 / Part III · Reference</p>
 
-<h1><span class="chapter-num">10</span>Metrics &amp; Delegation Tabs</h1>
+<h1><span class="chapter-num">10</span>Settings Reference</h1>
 
 <div class="lede">
-  <p class="label">Reading the numbers</p>
-  <p class="intro">The Metrics tab tells you what each agent actually did; the Delegation tab tells you whether delegating was worth it. Neither is trying to give you a precise dollar figure — both are built around relative comparisons, so you can trust the shape of the story even without an exact cost model.</p>
+  <p class="label">Two layers of settings</p>
+  <p class="intro">TycoonAgents has editor-level settings (the ones your editor's Settings UI knows about) and an in-panel Settings tab with richer, live controls. This chapter lists both, so you know where to look for a given knob.</p>
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 10.1 · Metrics table</span>
-  <span class="cap">one row per agent</span>
-</div>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Metrics tab — the per-agent table.</p>
+  <span class="s-title">§ 10.1 · Editor settings</span>
+  <span class="cap">key · default · what it does</span>
 </div>
 <div class="ref-table">
 <table>
-  <thead><tr><th>Column</th><th>What it shows</th></tr></thead>
+  <thead><tr><th>Setting key</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td>Agent</td><td>The agent or orchestrator this row summarizes.</td></tr>
-    <tr><td>Model</td><td>Which model that agent is running on.</td></tr>
-    <tr><td>Tasks</td><td>Completed task count. The orchestrator's row is marked with an asterisk (*) and shows its own completed tasks — hover it to see the delegated count too.</td></tr>
-    <tr><td>Tokens</td><td>Total tokens consumed by that agent.</td></tr>
-    <tr><td>vs. orch.</td><td>A bar showing tasks completed relative to the busiest agent, plus a badge like "3x cheaper" or "2x pricier" derived from the model's price ratio to the orchestrator's model.</td></tr>
+    <tr><td><code>tycoonagents.autoShow</code></td><td>true</td><td>Automatically opens the live agent panel when a workspace opens.</td></tr>
+    <tr><td><code>tycoonagents.idleFreezeMinutes</code></td><td>3</td><td>Freezes an agent's live time after this many minutes with no activity.</td></tr>
+    <tr><td><code>tycoonagents.sanityCapMinutes</code></td><td>15</td><td>Hard cap on any single active stretch, in minutes.</td></tr>
+    <tr><td><code>tycoonagents.themeImageProvider</code></td><td>openai</td><td>Which image provider to use — <code>openai</code> or <code>gemini</code>.</td></tr>
+    <tr><td><code>tycoonagents.geminiApiKey</code></td><td>&nbsp;</td><td>Fallback Gemini API key. Prefer the secure field in Themes &gt; Theme Builder.</td></tr>
+    <tr><td><code>tycoonagents.openaiApiKey</code></td><td>&nbsp;</td><td>Fallback OpenAI API key. Prefer the secure field in Themes &gt; Theme Builder.</td></tr>
+    <tr><td><code>tycoonagents.geminiModel</code></td><td>&nbsp;</td><td>Image model override for Gemini. Leave blank to always use the latest recommended model.</td></tr>
+    <tr><td><code>tycoonagents.openaiModel</code></td><td>&nbsp;</td><td>Image model override for OpenAI. Leave blank to always use the latest recommended model.</td></tr>
   </tbody>
 </table>
 </div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>Leaving the model overrides blank isn't a placeholder — it's the recommended setting. TycoonAgents resolves to the newest supported model for your chosen provider automatically.</p>
+</div>
 
 <div class="section-head">
-  <span class="s-title">§ 10.2 · Delegation tab</span>
-  <span class="cap">was delegating worth it?</span>
-</div>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Delegation tab — savings headline and per-agent breakdown.</p>
+  <span class="s-title">§ 10.2 · In-panel Settings tab</span>
+  <span class="cap">what each section controls</span>
 </div>
 
 <div class="steps">
   <div class="step">
     <span class="stepno">01</span>
     <div>
-      <p><strong>Savings headline.</strong> A line like "Delegating avoided ~N% of the cost of running it all on the orchestrator's model" — scoped only to the work that was actually delegated, not the orchestrator's own coordination overhead.</p>
+      <p><strong>Hook health.</strong> Shows whether Claude Code's hooks are installed for this project, with buttons to install or repair them.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">02</span>
     <div>
-      <p><strong>Dispatched vs. completed.</strong> A reconciliation line comparing tasks the orchestrator dispatched against tasks that posted a completion. The gap is labeled "unfinished" — dispatched tasks that never reported back, whether abandoned or simply not yet done. It does not mean something is currently running.</p>
+      <p><strong>Path Health.</strong> Shows how each UEFN-related path was resolved — <em>override</em>, <em>environment</em>, <em>auto-detected</em>, or <em>NOT FOUND</em> — along with every candidate location that was tried. It also detects whether Epic's Verse VS Code extension is installed and enabled, and warns separately when the extension is installed but disabled rather than missing entirely. You can set explicit path overrides here; they're persisted to <code>.claude/tycoon/uefn-paths.json</code>. A copy-paste diagnostic block is available too, formatted to hand to your own Claude session for guided fixing. See Chapter 14 for the related troubleshooting callout and the environment-variable overrides it honors.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">03</span>
     <div>
-      <p><strong>Delegated work by tier.</strong> A breakdown of delegated work grouped by model tier.</p>
+      <p><strong>Delegation style.</strong> Choose between <em>Flat</em> and <em>Team leads</em> delegation modes, plus a separate <strong>Review pass</strong> checkbox (on by default) — when enabled, a second agent reviews each specialist's work before it's reported done.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">04</span>
     <div>
-      <p><strong>Coordination (orchestrator).</strong> Shown as its own separate bucket — the orchestrator is expected to be the biggest single token consumer, since it's coordinating everything else.</p>
+      <p><strong>Project Plan.</strong> Turns the optional phase/task planning feature on or off (see Chapter 12).</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">05</span>
     <div>
-      <p><strong>Per-agent table.</strong> The same agents from the Metrics tab, viewed through the delegation-savings lens.</p>
+      <p><strong>Agents.</strong> Per-role model and agent choices — which model each specialist role runs on.</p>
     </div>
   </div>
   <div class="step">
     <span class="stepno">06</span>
     <div>
-      <p><strong>Zero tasks &ne; zero tokens.</strong> A caption under the Coordination line notes that coordinating each delegation still costs orchestrator tokens even when the orchestrator completes no tasks of its own — still far cheaper than doing the work on that model.</p>
+      <p><strong>Keyword routing.</strong> The word lists that decide which specialist a task's description routes to.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">07</span>
+    <div>
+      <p><strong>Context budget.</strong> Controls related to how much context gets passed between agents.</p>
+    </div>
+  </div>
+  <div class="step">
+    <span class="stepno">08</span>
+    <div>
+      <p><strong>Report a bug / Diagnostics.</strong> Generates a sanitized diagnostic report you can share when something isn't working — see Chapter 14.</p>
     </div>
   </div>
 </div>
 
-<div class="callout warn">
-  <p class="callout-label">Warn</p>
-  <p>If delegation looks like it isn't working, the Coordination line is the fastest check: a high orchestrator task count next to few completed agent tasks usually means an agent's instructions aren't routing work to a specialist — worth a look at Keyword routing in Settings (Chapter 9).</p>
-</div>
-
-<p>Both tabs share a <strong>Reset metrics</strong> button, which clears the counters for a fresh session without touching your themes or plan state.</p>
-
 <p class="nav-links">
-  <a class="prev" href="ch-09.html">&larr; Ch 09 · Settings Reference</a>
+  <a class="prev" href="ch-09.html">&larr; Ch 09 · Themes: Shipped, Personal &amp; Community</a>
   <a class="index" href="index.html">Index</a>
-  <a class="next" href="ch-11.html">Ch 11 · Project Plan &rarr;</a>
+  <a class="next" href="ch-11.html">Ch 11 · Metrics &amp; Delegation Tabs &rarr;</a>
 </p>
 
 </body>

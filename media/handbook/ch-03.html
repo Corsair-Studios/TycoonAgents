@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch. 03 &middot; Panel Tour</title>
+<title>Ch. 03 &middot; Standalone &amp; OpenCode Setup</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -15,262 +15,186 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link side-rail-current" href="ch-03.html" aria-current="page">03 &middot; Panel Tour</a>
+<a class="side-rail-link side-rail-current" href="ch-03.html" aria-current="page">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-04.html">04 &middot; API Keys &amp; Providers</a>
-<a class="side-rail-link" href="ch-05.html">05 &middot; Building a Theme</a>
-<a class="side-rail-link" href="ch-06.html">06 &middot; Generation &amp; Review</a>
-<a class="side-rail-link" href="ch-07.html">07 &middot; Troubleshooting &amp; Redos</a>
-<a class="side-rail-link" href="ch-08.html">08 &middot; Themes &amp; Community</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
+<a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
 <div class="side-rail-part">Part III &middot; Reference</div>
-<a class="side-rail-link" href="ch-09.html">09 &middot; Settings Reference</a>
-<a class="side-rail-link" href="ch-10.html">10 &middot; Metrics &amp; Delegation</a>
-<a class="side-rail-link" href="ch-11.html">11 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-12.html">12 &middot; UEFN Power Tools</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
 </aside>
   <div class="crumb">TycoonAgents Handbook / Chapter 03 / Part I &middot; Getting Started</div>
 
   <div class="chapter-num">03</div>
-  <h1>Panel Tour</h1>
+  <h1>Standalone and OpenCode Setup</h1>
 
   <div class="lede">
-    <div class="lede-label">Orientation</div>
+    <div class="lede-label">Same product, three fronts</div>
     <div class="lede-intro">
-      The panel has four tabs and a menu. This chapter is a map of each
-      one, so the rest of the handbook can point at specific tabs without
-      re-explaining them.
+      TycoonAgents is one scene renderer that can watch three different
+      combinations of editor and coding-agent harness. Only how you set it
+      up differs &mdash; once the panel is open, every feature in the rest
+      of this handbook (Theme Maker, Metrics, Delegation, Project Plan)
+      behaves identically no matter which front you're on. If you installed
+      via VS Code + Claude Code in Chapter 02, you can skip straight to
+      Chapter 04.
     </div>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.1 &middot; Theater</div>
-    <div class="s-caption">the scene itself</div>
+    <div class="s-title">&sect; 3.1 &middot; Requirements</div>
+    <div class="s-caption">by setup</div>
   </div>
-  <p>
-    Theater is the default tab and the one most people leave open. Agents
-    appear on stage as characters that walk to build sites, hammer away
-    while a task is in progress, and emote when it completes. A HUD shows
-    badges you've earned and your current rebirth (prestige) level &mdash;
-    rebirthing resets progress in exchange for permanent milestones, and
-    it's driven entirely by real delegation activity, not anything
-    scripted.
-  </p>
-
-  <div class="figure-placeholder">
-    <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Theater tab with agents mid-build and the badge HUD visible.</div>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 3.2 &middot; Metrics</div>
-    <div class="s-caption">per-agent table</div>
-  </div>
-  <p>
-    Metrics lists every agent that has run in this workspace with a row
-    per agent: tasks completed, tokens used, and the model it ran on. Each
-    row also carries a <strong>"vs. orch."</strong> bar &mdash; tasks
-    completed relative to the busiest agent &mdash; paired with an
-    <strong>"Nx cheaper"</strong> badge that expresses how much less that
-    agent's model costs relative to the orchestrator's, without ever
-    showing a dollar figure. These comparisons use Anthropic API token
-    rates and are informational only &mdash; Claude subscriptions (Max/Pro)
-    bill by plan, not per token. Token totals count input, output, and
-    cache reads at face value; cache reads dominate long sessions yet bill
-    at roughly 0.1x the input rate, so a real API bill would run well below
-    what raw totals suggest. See Chapter 10 for how to read the cost lens
-    in full.
-  </p>
-
-  <div class="figure-placeholder">
-    <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Metrics tab &mdash; per-agent table with vs. orch. bars.</div>
+  <div class="ref-table">
+  <table>
+    <thead><tr><th>Setup</th><th>Requires</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>All three</td>
+        <td>Node.js 18+ on PATH (the standalone host and the OpenCode config generator both run on it; CI runs Node 20).</td>
+      </tr>
+      <tr>
+        <td>Any OpenCode front</td>
+        <td>OpenCode 1.18.x with at least one provider configured &mdash; OpenCode Zen's free models work for a first look, no card required.</td>
+      </tr>
+      <tr>
+        <td>Subscription-backed agents (Claude Code, Codex)</td>
+        <td>The vendor's own CLI installed and logged in (the Claude Code CLI, the Codex CLI). TycoonAgents never sees or handles credentials &mdash; it shells out to the CLI you've already authenticated, and only ever reads back its own environment-variable names.</td>
+      </tr>
+    </tbody>
+  </table>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.3 &middot; Delegation</div>
-    <div class="s-caption">where the work actually went</div>
+    <div class="s-title">&sect; 3.2 &middot; Setup A &middot; VS Code + Claude Code</div>
+    <div class="s-caption">the default</div>
   </div>
   <p>
-    Delegation zooms out to the whole session: a chart of delegated work
-    by model tier, a coordination line showing how much the orchestrator
-    itself is doing (in tasks, matching the Metrics tab &mdash; not raw
-    tool-call counts), and a dispatched-vs-completed reconciliation (the
-    gap between the two is normal &mdash; it reflects abandoned or
-    unfinished spawns, not a bug). Below that sits the same per-agent
-    table as Metrics, and a savings headline like "avoided ~N%."
-    Chapter 10 covers all of these in depth.
+    This is the path Chapter 02 walks through in full &mdash; install the
+    extension, let the first-run wizard configure hooks and the agent
+    roster, done.
   </p>
 
-  <div class="figure-placeholder">
-    <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Delegation tab &mdash; tier chart, reconciliation line, and savings headline.</div>
+  <div class="section-head">
+    <div class="s-title">&sect; 3.3 &middot; Setup B &middot; Standalone + Claude Code</div>
+    <div class="s-caption">no VS Code required</div>
+  </div>
+  <p>
+    The standalone host watches the same <code>.claude/tycoon/</code>
+    activity data the VS Code extension watches and serves the identical,
+    unmodified panel in a browser tab instead. From the repo root:
+  </p>
+<pre>node standalone/src/cli.mjs install-hook .
+node standalone/src/cli.mjs watch .</pre>
+  <p>
+    <code>install-hook</code> registers the Claude Code hook in the target
+    project (idempotent &mdash; safe to re-run); <code>watch</code> starts
+    the server and opens the panel in your default browser. Full flags,
+    multi-directory watching, and the underlying architecture are in
+    <code>standalone/README.md</code>.
+  </p>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 3.4 &middot; Setup C &middot; Standalone + OpenCode</div>
+    <div class="s-caption">a different harness entirely</div>
+  </div>
+  <p>
+    Swap the coding-agent harness itself: OpenCode's plugin hooks feed the
+    same normalized event stream the Claude Code hook produces, so the
+    panel can't tell the difference. From the repo root:
+  </p>
+<pre>npm run build
+npm run opencode:config
+node standalone/src/cli.mjs install-hook . --opencode
+node standalone/src/cli.mjs watch . --provider opencode</pre>
+  <p>
+    <code>npm run build</code> compiles the shared state logic the
+    standalone requires at runtime (see the note in
+    <code>standalone/README.md</code> on why it isn't reimplemented);
+    <code>opencode:config</code> generates the OpenCode-side plugin
+    registration. If you'd rather run OpenCode inside VS Code, set
+    <code>tycoonagents.provider</code> to <code>"opencode"</code> in
+    Settings (Chapter 10) instead &mdash; or the <code>TYCOON_PROVIDER</code>
+    environment variable, which always overrides the setting. The full
+    hook contract and event mapping are in
+    <code>docs/OPENCODE-PROVIDER.md</code>.
+  </p>
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      An optional "Multi-LLM agents" pack lets specialist agents run on
+      Codex, Gemini, Kimi, or any OpenAI-compatible endpoint instead of
+      Claude, declared per-agent rather than hardcoded &mdash; see
+      <code>docs/AGENT-BACKENDS.md</code>. It's early: schema and parser
+      only so far, not yet wired into the hook's dispatch path.
+    </p>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.4 &middot; Project Plan</div>
-    <div class="s-caption">only when enabled</div>
+    <div class="s-title">&sect; 3.5 &middot; What differs on screen</div>
+    <div class="s-caption">provider, vendor, cost class</div>
   </div>
   <p>
-    Project Plan shows phases, tasks, and gates for larger bodies of work
-    tracked through the plan feature. This tab only appears when the
-    Project Plan feature is enabled for the workspace &mdash; it's on by
-    default for new installs, but existing projects that were set up
-    before it shipped stay off unless the feature is turned on explicitly.
-    Chapter 11 is the full reference.
-  </p>
-
-  <div class="figure-placeholder">
-    <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Project Plan tab &mdash; phases and tasks with gate checkpoints.</div>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 3.5 &middot; The menu</div>
-    <div class="s-caption">everything else</div>
-  </div>
-  <p>
-    A menu sits alongside the tabs with four entries:
+    Once a provider other than the default is in play, a few things appear
+    that a single-provider Claude Code setup never shows:
   </p>
   <ul>
-    <li><strong>About</strong> &mdash; version and quick project info.</li>
-    <li><strong>Settings</strong> &mdash; the full settings surface (Chapter 09).</li>
-    <li><strong>Themes</strong> &mdash; switch active theme or open the Theme Maker (Part II).</li>
-    <li><strong>Troubleshoot &amp; Fix</strong> &mdash; runs diagnostics and offers repairs (Chapter 13).</li>
+    <li>The active <strong>provider</strong> is shown per session.</li>
+    <li>Worker cards carry a <strong>vendor / model</strong> label instead of
+    always assuming Claude.</li>
+    <li>The Metrics tab's pricing column groups by <strong>cost class</strong>
+    &mdash; metered (pay-per-token API), subscription (a CLI you're already
+    paying for), or local &mdash; since the three aren't comparable in raw
+    dollar terms.</li>
   </ul>
-
-  <div class="callout tip">
-    <span class="callout-label">Tip</span>
+  <div class="callout note">
+    <span class="callout-label">Token-accounting note</span>
     <p>
-      If delegation looks like it isn't working &mdash; no agents ever appear
-      on stage &mdash; check the Delegation tab's Coordination line first. A
-      high orchestrator task count next to few completed agent tasks is
-      usually the fastest way to spot work that's quietly bypassing the
-      doctrine.
+      OpenCode's own terminal UI shows the parent session's current
+      <em>context size</em>. That is not the same number the panel reports
+      as usage: the panel's token counts come from each
+      <code>SubagentStop</code> event (fresh tokens plus cache-read tokens),
+      matching the accounting the Claude Code provider already uses. Expect
+      the two numbers to disagree &mdash; they're measuring different
+      things.
     </p>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.6 &middot; Status chips</div>
-    <div class="s-caption">upper-left of the stage</div>
+    <div class="s-title">&sect; 3.6 &middot; Not yet at parity</div>
+    <div class="s-caption">be aware before you rely on it</div>
   </div>
   <p>
-    A row of small chips sits in the upper-left of the Theater stage,
-    alongside the agents themselves. Each chip represents an engine
-    integration &mdash; UEFN first, then the rest alphabetically (Blender,
-    Godot, Roblox, Unity, Unreal). They're informational only: hover a chip
-    to read its tooltip, but clicking it doesn't do anything.
+    The standalone host and the VS Code extension share the exact same
+    panel code, but a couple of things are worth knowing honestly rather
+    than discovering the hard way:
   </p>
-
-  <div class="figure-placeholder">
-    <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">SCREENSHOT &mdash; the chip row in the upper-left of the stage (e.g. a UEFN chip glowing green beside a Godot chip in ready state).</div>
-  </div>
-
+  <ul>
+    <li>A feature-by-feature parity table between the VS Code host and the
+    standalone host doesn't exist yet &mdash; it's planned for a later
+    phase of this project's own plan. Until then, check
+    <code>standalone/README.md</code> directly for anything that touches
+    feedback submission or the theme-view flow, since those are the areas
+    most likely to differ.</li>
+    <li>The OpenCode desktop app and the OpenCode VS Code extension are
+    both unverified fronts for this integration &mdash; only the OpenCode
+    terminal TUI has been smoke-tested end to end (see
+    <code>docs/OPENCODE-PROVIDER.md</code>). They may work; they simply
+    haven't been checked.</li>
+  </ul>
   <p>
-    The <strong>UEFN chip</strong> appears once the UEFN bridge is
-    installed, and has two states:
+    None of this affects Setup A or Setup B &mdash; it's specific to
+    running OpenCode as the harness.
   </p>
-  <div class="ref-table">
-    <table>
-      <thead><tr><th>State</th><th>Color</th><th>Meaning</th></tr></thead>
-      <tbody>
-        <tr><td>Connected</td><td>Green glow</td><td>Heartbeat received in the last 15 seconds &mdash; agents can use the <code>uefn_*</code> MCP tools.</td></tr>
-        <tr><td>Offline</td><td>Amber</td><td>No recent heartbeat. Reopen the UEFN project so the bridge auto-starts, and confirm the Python Editor Script Plugin is enabled.</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p>
-    The <strong>engine chips</strong> (Godot, Unity, Unreal, Roblox,
-    Blender) appear when TycoonAgents detects that engine's project files
-    (for example <code>project.godot</code>, a <code>ProjectSettings/</code>
-    folder, a <code>*.uproject</code>, a <code>.rbxl</code> or
-    <code>default.project.json</code>, or a <code>.blend</code> file), OR
-    that engine's pack, skill, or agents are installed, OR an MCP entry for
-    it exists. Any one of those three triggers is enough for the chip to
-    show up. Each engine chip has five possible states:
-  </p>
-  <div class="ref-table">
-    <table>
-      <thead><tr><th>State</th><th>Color</th><th>Meaning</th><th>What to do</th></tr></thead>
-      <tbody>
-        <tr><td>Connected</td><td>Green glow</td><td>MCP probed and answering &mdash; live tools are available.</td><td>Nothing &mdash; ready to use.</td></tr>
-        <tr><td>Offline</td><td>Amber</td><td>MCP is configured but not responding.</td><td>Start the local MCP server.</td></tr>
-        <tr><td>Configured</td><td>Solid green</td><td>A stdio MCP entry is present but not yet started.</td><td>Start its server to enable live tools.</td></tr>
-        <tr><td>Ready</td><td>Cyan</td><td>The engine's pack or skill is installed, but no MCP is set up.</td><td>Nothing required &mdash; add an MCP entry for live tools.</td></tr>
-        <tr><td>Setup</td><td>Gray</td><td>A project for that engine was detected, but nothing is installed yet.</td><td>Install the engine's pack from the catalog.</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="callout note">
-    <span class="callout-label">Not the same as</span>
-    <p>
-      The install wizard's Optionals step has its own row of chips
-      (Playwright, Godot, Unity, Unreal Engine, UEFN) &mdash; those are
-      toggleable and clicking one selects a skill to install. The status
-      chips described here are a different thing: read-only indicators on
-      the live stage, not selectable at all. See Chapter 02 for the wizard.
-    </p>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 3.7 &middot; Rebirth</div>
-    <div class="s-caption">prestige, badge previews, and trophy cups</div>
-  </div>
-  <p>
-    Rebirth is the panel's prestige loop. Triggering it resets progress in
-    exchange for permanent gains: every built object is wiped &mdash; the
-    whole build queue has to be rebuilt from scratch &mdash; and the badge
-    requirements re-roll for the next cycle. In exchange, each completed
-    rebirth permanently and compoundingly increases two stats: build speed
-    goes up 20% per rebirth (1.2 raised to your rebirth count), and agent
-    defense goes up 10% per rebirth (1.1 raised to your rebirth count) &mdash;
-    agents and turrets deal more damage to rivals at higher defense.
-  </p>
-  <p>
-    The badges popup only ever previews the <strong>next</strong> rebirth
-    &mdash; one tier ahead of your current one, never further &mdash; and
-    includes a stat line showing your current build-speed and defense
-    percentages against what they'll become once you reach it.
-  </p>
-  <p>
-    Each rebirth tier permanently unlocks its own perk, and the tiers stack
-    &mdash; nothing you've already unlocked goes away:
-  </p>
-  <div class="ref-table">
-    <table>
-      <thead><tr><th>Rebirth</th><th>Unlocks</th></tr></thead>
-      <tbody>
-        <tr><td>1</td><td>The buildable weapons rack, which unlocks ranged weapons.</td></tr>
-        <tr><td>2</td><td>The buildable defensive turret (for themes that have one) and team stand-up huddles &mdash; agents ring up around a rotating speaker who shows idea and team bubbles while listeners react, and one occasionally dozes off.</td></tr>
-        <tr><td>3</td><td>The disco dance party.</td></tr>
-        <tr><td>4</td><td>The dance-off.</td></tr>
-        <tr><td>5</td><td>The victory-lap upgrade &mdash; party lights and confetti on a wave clear.</td></tr>
-        <tr><td>6</td><td>The gold party palette, plus agent sparring exhibitions &mdash; friendly melee-and-block duels with spectators and one winner's cheer. The dazed and angry expression bubbles stay reserved for real combat; sparring never uses them.</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p>
-    Completed rebirths are marked by trophy cups. Hovering a cup shows which
-    rebirth it represents and what that tier's perk was.
-  </p>
-
-  <div class="figure-placeholder">
-    <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Badges popup showing the next-rebirth preview and stat line, with the trophy cup row visible.</div>
-  </div>
-
-  <div class="callout note">
-    <span class="callout-label">See also</span>
-    <p>
-      Settings has its own Path Health section for diagnosing UEFN-related
-      path resolution &mdash; see Chapter 09 (§ 9.2) and Chapter 13.
-    </p>
-  </div>
 
   <div class="nav-links">
     <div class="nav-prev"><a href="ch-02.html">&larr; Chapter 02</a></div>

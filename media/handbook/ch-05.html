@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch. 05 &middot; Building a Theme</title>
+<title>Ch. 05 &middot; API Keys &amp; Providers</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -15,138 +15,157 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Panel Tour</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-04.html">04 &middot; API Keys &amp; Providers</a>
-<a class="side-rail-link side-rail-current" href="ch-05.html" aria-current="page">05 &middot; Building a Theme</a>
-<a class="side-rail-link" href="ch-06.html">06 &middot; Generation &amp; Review</a>
-<a class="side-rail-link" href="ch-07.html">07 &middot; Troubleshooting &amp; Redos</a>
-<a class="side-rail-link" href="ch-08.html">08 &middot; Themes &amp; Community</a>
+<a class="side-rail-link side-rail-current" href="ch-05.html" aria-current="page">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
+<a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
 <div class="side-rail-part">Part III &middot; Reference</div>
-<a class="side-rail-link" href="ch-09.html">09 &middot; Settings Reference</a>
-<a class="side-rail-link" href="ch-10.html">10 &middot; Metrics &amp; Delegation</a>
-<a class="side-rail-link" href="ch-11.html">11 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-12.html">12 &middot; UEFN Power Tools</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
 </aside>
   <div class="crumb">TycoonAgents Handbook / Chapter 05 / Part II &middot; Theme Maker</div>
 
   <div class="chapter-num">05</div>
-  <h1>Building a Theme</h1>
+  <h1>API Keys &amp; Providers</h1>
 
   <div class="lede">
-    <div class="lede-label">The form</div>
+    <div class="lede-label">Before you build</div>
     <div class="lede-intro">
-      Before you generate anything, the Theme Builder form asks for every
-      piece that makes up a theme. This chapter is the field-by-field
-      contract &mdash; what each slot is, how many you need, and what makes a
-      good description.
+      The Theme Maker needs an image-generation API key to turn your
+      creative direction into art. This is the one place TycoonAgents talks
+      to an external AI provider &mdash; and only when you tell it to.
     </div>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 5.1 &middot; Name and creative direction</div>
-    <div class="s-caption">the seed everything else follows</div>
+    <div class="s-title">&sect; 5.1 &middot; Authoring-time only</div>
+    <div class="s-caption">what the key is for</div>
   </div>
   <p>
-    Start with a <strong>theme name</strong> and a
-    <strong>creative direction</strong> textarea &mdash; a short paragraph
-    describing the overall look and feel (for example, a neon-city theme,
-    or a high-seas theme). This is the seed that every subsequent image
-    prompt draws from, so it's worth spending a minute getting it
-    specific. An <strong>environment description</strong> follows, covering
-    the background/stage setting your characters will be built into.
+    An API key is only ever used while you're generating a theme. Once the
+    images are generated, they're saved locally as part of the theme
+    (Chapter 07 covers exactly what gets stored), and the extension never
+    calls the image API again to render the scene &mdash; it just plays back
+    the stored frames. Runtime rendering has no AI dependency at all.
   </p>
 
   <div class="section-head">
-    <div class="s-title">&sect; 5.2 &middot; Characters, rivals, objects, decor</div>
-    <div class="s-caption">the roster</div>
+    <div class="s-title">&sect; 5.2 &middot; Choosing a provider</div>
+    <div class="s-caption">two options</div>
   </div>
   <table class="ref-table">
     <thead>
       <tr>
-        <th>Slot</th>
-        <th>Count</th>
+        <th>Provider</th>
+        <th>Where to get a key</th>
         <th>Notes</th>
       </tr>
     </thead>
     <tbody>
       <tr>
-        <td>Characters</td>
-        <td>16</td>
-        <td>Per-slot name + description each.</td>
+        <td>OpenAI GPT Image <em>(recommended default)</em></td>
+        <td>platform.openai.com &rarr; API keys</td>
+        <td>Requires a paid OpenAI account with credits.</td>
       </tr>
       <tr>
-        <td>Rivals</td>
-        <td>4</td>
-        <td>Each has an attack style &mdash; melee or ranged &mdash; plus a description.</td>
-      </tr>
-      <tr>
-        <td>Objects</td>
-        <td>21 across 2 boards</td>
-        <td>19 static + 2 animated. Includes a crate, poof FX, and a projectile description.</td>
-      </tr>
-      <tr>
-        <td>Decor</td>
-        <td>9</td>
-        <td>Background/set-dressing pieces.</td>
+        <td>Google Gemini image models <em>(community nickname "Nano Banana")</em></td>
+        <td>aistudio.google.com &rarr; Get API key</td>
+        <td>Has a free tier, good for experimenting before committing to a paid provider.</td>
       </tr>
     </tbody>
   </table>
 
-  <div class="section-head">
-    <div class="s-title">&sect; 5.3 &middot; Expressions</div>
-    <div class="s-caption">fixed labels, themed art</div>
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      Neither provider is required over the other &mdash; pick whichever you
+      already have an account with. OpenAI GPT Image is the recommended
+      default for consistency across a full theme's worth of images.
+    </p>
   </div>
-  <p>
-    Every theme has exactly <strong>8 expressions</strong>, and the labels
-    are fixed &mdash; you don't get to add or remove them, only re-skin their
-    art to match your theme:
-  </p>
-  <p>
-    Love &middot; Idea spark &middot; Anger &middot; Team rally &middot;
-    Thumbs up &middot; Music &middot; Sleep/zzz &middot; Dazed
-  </p>
 
   <div class="section-head">
-    <div class="s-title">&sect; 5.4 &middot; Badges</div>
-    <div class="s-caption">up to 25</div>
+    <div class="s-title">&sect; 5.3 &middot; Entering and storing your key</div>
+    <div class="s-caption">where it lives</div>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">01</div>
+      <div class="step-body">
+        <p>
+          Open the theme generation form (Chapter 06) and enter your key in
+          the provider section. Your editor stores it securely rather than
+          writing it into any project file.
+        </p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">02</div>
+      <div class="step-body">
+        <p>
+          As a fallback, you can also set a key via Settings using
+          <code>tycoonagents.openaiApiKey</code> or
+          <code>tycoonagents.geminiApiKey</code> &mdash; useful if you want
+          the key pre-filled across the workspace rather than entering it
+          each time.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 5.4 &middot; Picking a model</div>
+    <div class="s-caption">latest by default</div>
   </div>
   <p>
-    Up to <strong>25 achievement badges</strong> round out the form. Badge
-    names are editable, and their art is generated alongside everything
-    else in the pipeline (Chapter 06).
+    Model pickers default to <strong>"Latest (recommended)."</strong>
+    TycoonAgents never hardcodes a specific model version internally &mdash;
+    the default always tracks whatever the provider currently considers
+    latest. If you want to pin an older or cheaper model instead, use the
+    dropdown, or set an override permanently via
+    <code>tycoonagents.openaiModel</code> / <code>tycoonagents.geminiModel</code>.
   </p>
+
+  <table class="ref-table">
+    <thead>
+      <tr>
+        <th>Provider</th>
+        <th>Model menu (current)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>OpenAI</td>
+        <td>GPT Image 2 (latest) &middot; 1.5 &middot; 1 &middot; 1 Mini (cheapest)</td>
+      </tr>
+      <tr>
+        <td>Gemini</td>
+        <td>Flash Image 3.1 (latest) &middot; Pro Image 3 &middot; Flash-Lite 3.1 (cheapest) &middot; 2.5 Flash Image (legacy)</td>
+      </tr>
+    </tbody>
+  </table>
 
   <div class="figure-placeholder">
     <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">The Theme Builder form &mdash; characters, rivals, objects, decor, expressions, badges.</div>
+    <div class="fig-caption">Provider, key, and model picker section of the theme generation form.</div>
   </div>
 
-  <div class="section-head">
-    <div class="s-title">&sect; 5.5 &middot; Writing good descriptions</div>
-    <div class="s-caption">two habits that pay off</div>
-  </div>
   <div class="callout tip">
     <span class="callout-label">Tip</span>
     <p>
-      Concrete visual descriptions beat vague ones. "A weathered dock
-      worker in a faded blue coat with a hook hand" generates far more
-      consistent art than "a worker" &mdash; every image prompt in the
-      pipeline consumes the exact per-item description you write here, so
-      specificity up front saves you retries later.
-    </p>
-  </div>
-  <div class="callout tip">
-    <span class="callout-label">Tip</span>
-    <p>
-      Describe characters in shoulder-height poses rather than full-body
-      extremes. Wide poses (arms fully outstretched, deep lunges) can clip
-      at the edges of the character board when it's sliced into frames.
-      Chapter 07 covers the details and how to recover if it happens
-      anyway.
+      A full theme generates 10 or more large images. If you're still
+      experimenting with a creative direction, pick one of the cheaper
+      models first and switch to the latest once you're happy with the
+      results.
     </p>
   </div>
 

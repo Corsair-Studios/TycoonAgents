@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch. 06 &middot; Generation &amp; the Review Screen</title>
+<title>Ch. 06 &middot; Building a Theme</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -15,175 +15,139 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Panel Tour</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-04.html">04 &middot; API Keys &amp; Providers</a>
-<a class="side-rail-link" href="ch-05.html">05 &middot; Building a Theme</a>
-<a class="side-rail-link side-rail-current" href="ch-06.html" aria-current="page">06 &middot; Generation &amp; Review</a>
-<a class="side-rail-link" href="ch-07.html">07 &middot; Troubleshooting &amp; Redos</a>
-<a class="side-rail-link" href="ch-08.html">08 &middot; Themes &amp; Community</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link side-rail-current" href="ch-06.html" aria-current="page">06 &middot; Building a Theme</a>
+<a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
 <div class="side-rail-part">Part III &middot; Reference</div>
-<a class="side-rail-link" href="ch-09.html">09 &middot; Settings Reference</a>
-<a class="side-rail-link" href="ch-10.html">10 &middot; Metrics &amp; Delegation</a>
-<a class="side-rail-link" href="ch-11.html">11 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-12.html">12 &middot; UEFN Power Tools</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
 </aside>
   <div class="crumb">TycoonAgents Handbook / Chapter 06 / Part II &middot; Theme Maker</div>
 
   <div class="chapter-num">06</div>
-  <h1>Generation &amp; the Review Screen</h1>
+  <h1>Building a Theme</h1>
 
   <div class="lede">
-    <div class="lede-label">From form to art</div>
+    <div class="lede-label">The form</div>
     <div class="lede-intro">
-      Once your form is filled in (Chapter 05), generation runs in a fixed
-      order and hands you a review screen where you can retry individual
-      items without burning spend on the whole theme.
+      Before you generate anything, the Theme Builder form asks for every
+      piece that makes up a theme. This chapter is the field-by-field
+      contract &mdash; what each slot is, how many you need, and what makes a
+      good description.
     </div>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 6.1 &middot; Pipeline order</div>
-    <div class="s-caption">what generates when</div>
+    <div class="s-title">&sect; 6.1 &middot; Name and creative direction</div>
+    <div class="s-caption">the seed everything else follows</div>
   </div>
   <p>
-    Generation always proceeds in the same sequence:
+    Start with a <strong>theme name</strong> and a
+    <strong>creative direction</strong> textarea &mdash; a short paragraph
+    describing the overall look and feel (for example, a neon-city theme,
+    or a high-seas theme). This is the seed that every subsequent image
+    prompt draws from, so it's worth spending a minute getting it
+    specific. An <strong>environment description</strong> follows, covering
+    the background/stage setting your characters will be built into.
   </p>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">01</div>
-      <div class="step-body"><p><strong>Environment / background</strong> &mdash; generated first, since every other piece is composed against it.</p></div>
-    </div>
-    <div class="step">
-      <div class="step-num">02</div>
-      <div class="step-body"><p><strong>Characters</strong></p></div>
-    </div>
-    <div class="step">
-      <div class="step-num">03</div>
-      <div class="step-body"><p><strong>Rivals</strong></p></div>
-    </div>
-    <div class="step">
-      <div class="step-num">04</div>
-      <div class="step-body"><p><strong>Decor</strong></p></div>
-    </div>
-    <div class="step">
-      <div class="step-num">05</div>
-      <div class="step-body"><p><strong>Objects</strong></p></div>
-    </div>
-    <div class="step">
-      <div class="step-num">06</div>
-      <div class="step-body"><p><strong>Expressions</strong></p></div>
-    </div>
-    <div class="step">
-      <div class="step-num">07</div>
-      <div class="step-body"><p><strong>Badges</strong></p></div>
-    </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 6.2 &middot; Characters, rivals, objects, decor</div>
+    <div class="s-caption">the roster</div>
+  </div>
+  <table class="ref-table">
+    <thead>
+      <tr>
+        <th>Slot</th>
+        <th>Count</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Characters</td>
+        <td>16</td>
+        <td>Per-slot name + description each.</td>
+      </tr>
+      <tr>
+        <td>Rivals</td>
+        <td>4</td>
+        <td>Each has an attack style &mdash; melee or ranged &mdash; plus a description.</td>
+      </tr>
+      <tr>
+        <td>Objects</td>
+        <td>21 across 2 boards</td>
+        <td>19 static + 2 animated. Includes a crate, poof FX, and a projectile description.</td>
+      </tr>
+      <tr>
+        <td>Decor</td>
+        <td>9</td>
+        <td>Background/set-dressing pieces.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 6.3 &middot; Expressions</div>
+    <div class="s-caption">fixed labels, themed art</div>
   </div>
   <p>
-    A <strong>"Pause for review"</strong> toggle, when on, stops generation
-    between boards so you can check each batch before moving to the next
-    instead of waiting for the whole pipeline to finish.
+    Every theme has exactly <strong>8 expressions</strong>, and the labels
+    are fixed &mdash; you don't get to add or remove them, only re-skin their
+    art to match your theme:
+  </p>
+  <p>
+    Love &middot; Idea spark &middot; Anger &middot; Team rally &middot;
+    Thumbs up &middot; Music &middot; Sleep/zzz &middot; Dazed
+  </p>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 6.4 &middot; Badges</div>
+    <div class="s-caption">up to 25</div>
+  </div>
+  <p>
+    Up to <strong>25 achievement badges</strong> round out the form. Badge
+    names are editable, and their art is generated alongside everything
+    else in the pipeline (Chapter 07).
   </p>
 
   <div class="figure-placeholder">
     <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Generation in progress, showing pipeline stage and pause-for-review toggle.</div>
+    <div class="fig-caption">The Theme Builder form &mdash; characters, rivals, objects, decor, expressions, badges.</div>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 6.2 &middot; The review screen</div>
-    <div class="s-caption">fix without regenerating everything</div>
+    <div class="s-title">&sect; 6.5 &middot; Writing good descriptions</div>
+    <div class="s-caption">two habits that pay off</div>
   </div>
-  <p>
-    At the top of the review screen sits the <strong>Creative Direction
-    editor</strong>. Edits here are persisted, but they only re-ground
-    <em>future</em> regenerations &mdash; they never repaint art that's
-    already been generated. If you change your mind about the theme's
-    direction partway through, existing approved items stay exactly as
-    they are.
-  </p>
-  <p>
-    Below that, every generated item gets its own collapsible
-    name-and-description editor with a per-item <strong>Retry</strong>
-    button &mdash; so a single bad character or object can be regenerated on
-    its own instead of redoing the whole board. <strong>Approve all</strong>
-    accepts everything currently shown, and <strong>Resume</strong> /
-    <strong>Stop</strong> control whether the pipeline continues to the next
-    board.
-  </p>
-
-  <div class="figure-placeholder">
-    <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Review screen with the Creative Direction editor and per-item retry controls.</div>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 6.3 &middot; Resume and recovery</div>
-    <div class="s-caption">no wasted spend</div>
-  </div>
-  <p>
-    If a board was accepted but its frames didn't make it to disk for some
-    reason, <strong>Resume</strong> recovers it by re-slicing the stored raw
-    image &mdash; it does not call the image API again, so there's no
-    additional cost to recover from an interrupted session.
-  </p>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 6.4 &middot; Where a theme is stored</div>
-    <div class="s-caption">on disk, per project</div>
-  </div>
-  <p>
-    Themes are stored per-project inside your editor's global storage.
-    Each theme is a self-contained folder holding
-    <code>manifest.json</code>, <code>plan.json</code>, and
-    <code>frames.json</code>, plus an <code>images/</code> folder for
-    finished art and an <code>images/raw/</code> folder for the
-    unsliced source images Resume draws from.
-  </p>
-
-  <div class="callout note">
-    <span class="callout-label">Note</span>
-    <p>
-      Because raw images are kept alongside sliced frames, most generation
-      hiccups are recoverable without spending API credits again. Chapter
-      07 covers the specific failure cases and fixes in more depth.
-    </p>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 6.5 &middot; Turrets (optional)</div>
-    <div class="s-caption">give one animated object teeth</div>
-  </div>
-  <p>
-    On the review screen's per-object editor, either of your theme's two
-    <strong>animated objects</strong> can be marked <strong>"Acts as
-    turret (auto-fires at attackers)"</strong>. This checkbox only appears
-    on animated object rows &mdash; static objects and decor don't get it.
-    Turning it on is entirely opt-in: a theme that never checks the box
-    behaves exactly as it does today.
-  </p>
-  <p>
-    A built turret auto-targets the nearest attacker in range and fires
-    roughly once per second, reusing the projectile art you already
-    described for that object &mdash; there's no separate turret sprite to
-    generate. Each shot deals about a quarter of a character's damage and
-    briefly staggers the target, interrupting whatever it was attacking. A
-    turret is also a normal structure in every other sense: it takes
-    damage, smokes when hurt, shows a health bar, and needs repairing like
-    anything else you build. While it's damaged, it stops firing entirely
-    and only resumes once fully repaired.
-  </p>
   <div class="callout tip">
     <span class="callout-label">Tip</span>
     <p>
-      Turrets ride on the projectile description you already wrote for
-      that animated object (Chapter 05, &sect; 5.2), so there's nothing
-      extra to generate. If the object's projectile art was skipped or
-      never generated, marking it as a turret is harmless &mdash; it simply
-      won't fire.
+      Concrete visual descriptions beat vague ones. "A weathered dock
+      worker in a faded blue coat with a hook hand" generates far more
+      consistent art than "a worker" &mdash; every image prompt in the
+      pipeline consumes the exact per-item description you write here, so
+      specificity up front saves you retries later.
+    </p>
+  </div>
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    <p>
+      Describe characters in shoulder-height poses rather than full-body
+      extremes. Wide poses (arms fully outstretched, deep lunges) can clip
+      at the edges of the character board when it's sliced into frames.
+      Chapter 08 covers the details and how to recover if it happens
+      anyway.
     </p>
   </div>
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chapter 8 — Themes: Shipped, Personal &amp; Community · TycoonAgents Handbook</title>
+<title>Chapter 8 — Theme Troubleshooting &amp; Redos · TycoonAgents Handbook</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -15,103 +15,162 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Panel Tour</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-04.html">04 &middot; API Keys &amp; Providers</a>
-<a class="side-rail-link" href="ch-05.html">05 &middot; Building a Theme</a>
-<a class="side-rail-link" href="ch-06.html">06 &middot; Generation &amp; Review</a>
-<a class="side-rail-link" href="ch-07.html">07 &middot; Troubleshooting &amp; Redos</a>
-<a class="side-rail-link side-rail-current" href="ch-08.html" aria-current="page">08 &middot; Themes &amp; Community</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
+<a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link side-rail-current" href="ch-08.html" aria-current="page">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
 <div class="side-rail-part">Part III &middot; Reference</div>
-<a class="side-rail-link" href="ch-09.html">09 &middot; Settings Reference</a>
-<a class="side-rail-link" href="ch-10.html">10 &middot; Metrics &amp; Delegation</a>
-<a class="side-rail-link" href="ch-11.html">11 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-12.html">12 &middot; UEFN Power Tools</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
 </aside>
 
 <p class="crumb">TycoonAgents Handbook / Chapter 08 / Part II · Theme Maker</p>
 
-<h1><span class="chapter-num">08</span>Themes: Shipped, Personal &amp; Community</h1>
+<h1><span class="chapter-num">08</span>Theme Troubleshooting &amp; Redos</h1>
 
 <div class="lede">
-  <p class="label">Where art comes from</p>
-  <p class="intro">Every theme is either one that shipped with the extension, one you generated yourself, or one someone shared with you. Each of those has a different rule about what it's for — this chapter is the short version so you don't accidentally step on someone else's rights, or your own.</p>
+  <p class="label">When a board misbehaves</p>
+  <p class="intro">Generation runs a lot of image requests back to back, and every so often one of them comes back wrong — blocked, rate-limited, clipped, or just off-style. None of this means the run failed. Each item on a theme board can be retried on its own, so a bad frame costs you a redo, not a restart.</p>
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 8.1 · Shipped themes</span>
-  <span class="cap">built in, original art</span>
+  <span class="s-title">§ 8.1 · Moderation blocks</span>
+  <span class="cap">the provider says no</span>
 </div>
-<p>The extension ships with a small set of built-in themes. All of them are original artwork created for TycoonAgents — none reference any third-party franchise, brand, or character. They're ready to use the moment you install, no API key required.</p>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Shipped theme — Theme Picker preview.</p>
-</div>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Shipped theme — an object board in the panel.</p>
-</div>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Shipped theme — a character board in the panel.</p>
-</div>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Shipped theme — the environment background.</p>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 8.2 · Personal themes</span>
-  <span class="cap">unlimited, stored locally</span>
-</div>
-<p>Once you've added an API key (Chapter 4), you can generate as many personal themes as you like. Each one is stored on your machine in your editor's global storage — nothing you generate is uploaded anywhere by the extension itself.</p>
-<div class="callout note">
-  <p class="callout-label">Note</p>
-  <p>Personal use of any theme style — including one built around a franchise or character you like — is fine. The line that matters is <em>sharing</em> it, covered next.</p>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 8.3 · Sharing themes with others</span>
-  <span class="cap">what's redistributable, what isn't</span>
-</div>
-<div class="ref-table">
-<table>
-  <thead><tr><th>Theme type</th><th>Redistribution</th></tr></thead>
-  <tbody>
-    <tr><td>Original artwork (your own style, no third-party references)</td><td>Shareable — the official theme repository only accepts original work</td></tr>
-    <tr><td>Themes referencing a third-party franchise, brand, or character</td><td>Personal use only — do not redistribute</td></tr>
-  </tbody>
-</table>
-</div>
-<p>Sharing happens through a separate community themes repository (not the extension itself), organized one pull request per theme folder. Whoever uploads a theme is responsible for making sure it's their own original work, and takedown requests are honored.</p>
-
-<div class="section-head">
-  <span class="s-title">§ 8.4 · Exporting &amp; importing a theme</span>
-  <span class="cap">Theme Picker · Export .zip / Import .zip</span>
-</div>
-<p>The Theme Picker has both directions of this working today:</p>
+<p>If an item comes back with the message below, the image provider's safety filter rejected the request outright — no image was produced and no retry will fix it without a change.</p>
+<pre>OpenAI blocked this image request. Revise the prompt or input images, then retry.</pre>
 <div class="steps">
   <div class="step">
     <span class="stepno">01</span>
-    <div><p><strong>Export.</strong> Pick a theme and choose <strong>Export .zip</strong> to save it as a single archive file you can hand to someone else.</p></div>
+    <div>
+      <p><strong>Reword the item's description.</strong> Open the item's description editor and remove anything that could read as violence, gore, real celebrities, or branded/trademarked terms — even indirectly.</p>
+    </div>
   </div>
   <div class="step">
     <span class="stepno">02</span>
-    <div><p><strong>Import.</strong> Choose <strong>Import .zip</strong> in the Theme Picker, pick a theme archive someone gave you, and it's added to your local theme library (or replaces a matching one, if you confirm).</p></div>
+    <div>
+      <p><strong>Retry just that item.</strong> Use the item's own retry action on the review screen — you don't need to regenerate the whole board.</p>
+    </div>
   </div>
 </div>
 <div class="callout tip">
   <p class="callout-label">Tip</p>
-  <p>Import/export moves a theme as a file between two installs — it doesn't publish or fetch anything over the network on its own. If a theme you're importing references third-party IP, remember it's for your personal use, not further redistribution.</p>
+  <p>Moderation is judged per-request, not per-theme. A vivid description on one object rarely means the rest of the board is at risk.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 8.2 · Rate limits &amp; server errors</span>
+  <span class="cap">HTTP 429 / 5xx</span>
+</div>
+<p>A <code>429</code> (rate limited) or any <code>5xx</code> (provider-side server error) is treated as retryable — the request didn't fail because of anything you wrote.</p>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>Wait a moment and retry the item. If <code>429</code>s keep happening across many items in a row, it's usually your account's request-rate tier on the provider's side rather than anything in the theme — space retries out and give it a few minutes.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 8.3 · Bottom-row clipping on character boards</span>
+  <span class="cap">the last row of an atlas</span>
+</div>
+<p>Character sprite boards are sliced into rows and columns after the image comes back. Poses with raised arms or mid-jump silhouettes on the <strong>last row</strong> of the board can get their tops clipped by the slice line — this is a constraint of how the sheet is cut, not something you can toggle off.</p>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Example of a clipped top-row frame next to a corrected shoulder-height pose.</p>
+</div>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Edit the pose description for that character to describe a <strong>compact, shoulder-height</strong> pose instead of a full extension or jump.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Retry the character. The rest of the board's poses are unaffected.</p></div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 8.4 · Objects bleeding into neighbors</span>
+  <span class="cap">wide objects encroach adjacent cells</span>
+</div>
+<p>Object boards are also sliced into a fixed grid. An object described as unusually wide or sprawling can visually bleed past its own cell into the one next to it.</p>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>Retry with phrasing like "compact, centered, fits fully in frame" added to the object's description, then retry just that object.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 8.5 · Environment issues</span>
+  <span class="cap">stray outlines, cluttered floor</span>
+</div>
+<p>The environment is one background image generated from a stage guide. Two recurring issues: a stray outline color surviving into the final art, or clutter placed on the floor area characters actually walk on.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Edit the environment description to explicitly keep the walkable floor area empty and clear.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Regenerate the environment from the review screen.</p></div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 8.6 · "Roadblock" placeholders &amp; missing frames</span>
+  <span class="cap">the theme health check</span>
+</div>
+<p>Every theme is checked for entities whose frames are missing, empty, or orphaned — across agents, rivals, buildable objects, decor, expressions, badge icons, projectile FX, and poof FX. An entity that fails this check shows as a roadblock placeholder in the panel instead of its art.</p>
+<div class="ref-table">
+<table>
+  <thead><tr><th>Issue</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>missing_frames</td><td>The entity has no frames recorded at all</td></tr>
+    <tr><td>empty_frames</td><td>The entity has a frames array, but it's empty</td></tr>
+    <tr><td>orphan_frames</td><td>Frames exist on disk with no entity referencing them</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>The health check panel listing a roadblock entity.</p>
+</div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>A board can be marked accepted with no frames recorded — accepting a board and slicing its frames are decoupled steps. If you see this, use <strong>Resume</strong> on that board: it re-slices the raw image that's already on disk, at no additional API cost.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 8.7 · Style drift across boards</span>
+  <span class="cap">keeping a theme visually consistent</span>
+</div>
+<p>If later boards start looking off relative to earlier ones, don't rewrite each item's description by hand. Use the review screen's <strong>Creative Direction</strong> editor instead.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p>Open Creative Direction on the review screen and describe the style correction you want.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>Save it. It re-grounds every <strong>future</strong> regeneration — it never touches art already generated.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">03</span>
+    <div><p>Retry the off-style items so they regenerate under the new direction.</p></div>
+  </div>
 </div>
 
 <p class="nav-links">
-  <a class="prev" href="ch-07.html">&larr; Ch 07 · Theme Troubleshooting &amp; Redos</a>
+  <a class="prev" href="ch-07.html">&larr; Ch 07 · Generation &amp; the Review Screen</a>
   <a class="index" href="index.html">Index</a>
-  <a class="next" href="ch-09.html">Ch 09 · Settings Reference &rarr;</a>
+  <a class="next" href="ch-09.html">Ch 09 · Themes: Shipped, Personal &amp; Community &rarr;</a>
 </p>
 
 </body>

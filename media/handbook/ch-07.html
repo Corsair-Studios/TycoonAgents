@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chapter 7 — Theme Troubleshooting &amp; Redos · TycoonAgents Handbook</title>
+<title>Ch. 07 &middot; Generation &amp; the Review Screen</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -15,162 +15,183 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Panel Tour</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-04.html">04 &middot; API Keys &amp; Providers</a>
-<a class="side-rail-link" href="ch-05.html">05 &middot; Building a Theme</a>
-<a class="side-rail-link" href="ch-06.html">06 &middot; Generation &amp; Review</a>
-<a class="side-rail-link side-rail-current" href="ch-07.html" aria-current="page">07 &middot; Troubleshooting &amp; Redos</a>
-<a class="side-rail-link" href="ch-08.html">08 &middot; Themes &amp; Community</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
+<a class="side-rail-link side-rail-current" href="ch-07.html" aria-current="page">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
 <div class="side-rail-part">Part III &middot; Reference</div>
-<a class="side-rail-link" href="ch-09.html">09 &middot; Settings Reference</a>
-<a class="side-rail-link" href="ch-10.html">10 &middot; Metrics &amp; Delegation</a>
-<a class="side-rail-link" href="ch-11.html">11 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-12.html">12 &middot; UEFN Power Tools</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
 </aside>
+  <div class="crumb">TycoonAgents Handbook / Chapter 07 / Part II &middot; Theme Maker</div>
 
-<p class="crumb">TycoonAgents Handbook / Chapter 07 / Part II · Theme Maker</p>
+  <div class="chapter-num">07</div>
+  <h1>Generation &amp; the Review Screen</h1>
 
-<h1><span class="chapter-num">07</span>Theme Troubleshooting &amp; Redos</h1>
-
-<div class="lede">
-  <p class="label">When a board misbehaves</p>
-  <p class="intro">Generation runs a lot of image requests back to back, and every so often one of them comes back wrong — blocked, rate-limited, clipped, or just off-style. None of this means the run failed. Each item on a theme board can be retried on its own, so a bad frame costs you a redo, not a restart.</p>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 7.1 · Moderation blocks</span>
-  <span class="cap">the provider says no</span>
-</div>
-<p>If an item comes back with the message below, the image provider's safety filter rejected the request outright — no image was produced and no retry will fix it without a change.</p>
-<pre>OpenAI blocked this image request. Revise the prompt or input images, then retry.</pre>
-<div class="steps">
-  <div class="step">
-    <span class="stepno">01</span>
-    <div>
-      <p><strong>Reword the item's description.</strong> Open the item's description editor and remove anything that could read as violence, gore, real celebrities, or branded/trademarked terms — even indirectly.</p>
+  <div class="lede">
+    <div class="lede-label">From form to art</div>
+    <div class="lede-intro">
+      Once your form is filled in (Chapter 06), generation runs in a fixed
+      order and hands you a review screen where you can retry individual
+      items without burning spend on the whole theme.
     </div>
   </div>
-  <div class="step">
-    <span class="stepno">02</span>
-    <div>
-      <p><strong>Retry just that item.</strong> Use the item's own retry action on the review screen — you don't need to regenerate the whole board.</p>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 7.1 &middot; Pipeline order</div>
+    <div class="s-caption">what generates when</div>
+  </div>
+  <p>
+    Generation always proceeds in the same sequence:
+  </p>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">01</div>
+      <div class="step-body"><p><strong>Environment / background</strong> &mdash; generated first, since every other piece is composed against it.</p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">02</div>
+      <div class="step-body"><p><strong>Characters</strong></p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">03</div>
+      <div class="step-body"><p><strong>Rivals</strong></p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">04</div>
+      <div class="step-body"><p><strong>Decor</strong></p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">05</div>
+      <div class="step-body"><p><strong>Objects</strong></p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">06</div>
+      <div class="step-body"><p><strong>Expressions</strong></p></div>
+    </div>
+    <div class="step">
+      <div class="step-num">07</div>
+      <div class="step-body"><p><strong>Badges</strong></p></div>
     </div>
   </div>
-</div>
-<div class="callout tip">
-  <p class="callout-label">Tip</p>
-  <p>Moderation is judged per-request, not per-theme. A vivid description on one object rarely means the rest of the board is at risk.</p>
-</div>
+  <p>
+    A <strong>"Pause for review"</strong> toggle, when on, stops generation
+    between boards so you can check each batch before moving to the next
+    instead of waiting for the whole pipeline to finish.
+  </p>
 
-<div class="section-head">
-  <span class="s-title">§ 7.2 · Rate limits &amp; server errors</span>
-  <span class="cap">HTTP 429 / 5xx</span>
-</div>
-<p>A <code>429</code> (rate limited) or any <code>5xx</code> (provider-side server error) is treated as retryable — the request didn't fail because of anything you wrote.</p>
-<div class="callout note">
-  <p class="callout-label">Note</p>
-  <p>Wait a moment and retry the item. If <code>429</code>s keep happening across many items in a row, it's usually your account's request-rate tier on the provider's side rather than anything in the theme — space retries out and give it a few minutes.</p>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 7.3 · Bottom-row clipping on character boards</span>
-  <span class="cap">the last row of an atlas</span>
-</div>
-<p>Character sprite boards are sliced into rows and columns after the image comes back. Poses with raised arms or mid-jump silhouettes on the <strong>last row</strong> of the board can get their tops clipped by the slice line — this is a constraint of how the sheet is cut, not something you can toggle off.</p>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Example of a clipped top-row frame next to a corrected shoulder-height pose.</p>
-</div>
-<div class="steps">
-  <div class="step">
-    <span class="stepno">01</span>
-    <div><p>Edit the pose description for that character to describe a <strong>compact, shoulder-height</strong> pose instead of a full extension or jump.</p></div>
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Generation in progress, showing pipeline stage and pause-for-review toggle.</div>
   </div>
-  <div class="step">
-    <span class="stepno">02</span>
-    <div><p>Retry the character. The rest of the board's poses are unaffected.</p></div>
-  </div>
-</div>
 
-<div class="section-head">
-  <span class="s-title">§ 7.4 · Objects bleeding into neighbors</span>
-  <span class="cap">wide objects encroach adjacent cells</span>
-</div>
-<p>Object boards are also sliced into a fixed grid. An object described as unusually wide or sprawling can visually bleed past its own cell into the one next to it.</p>
-<div class="callout tip">
-  <p class="callout-label">Tip</p>
-  <p>Retry with phrasing like "compact, centered, fits fully in frame" added to the object's description, then retry just that object.</p>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 7.5 · Environment issues</span>
-  <span class="cap">stray outlines, cluttered floor</span>
-</div>
-<p>The environment is one background image generated from a stage guide. Two recurring issues: a stray outline color surviving into the final art, or clutter placed on the floor area characters actually walk on.</p>
-<div class="steps">
-  <div class="step">
-    <span class="stepno">01</span>
-    <div><p>Edit the environment description to explicitly keep the walkable floor area empty and clear.</p></div>
+  <div class="section-head">
+    <div class="s-title">&sect; 7.2 &middot; The review screen</div>
+    <div class="s-caption">fix without regenerating everything</div>
   </div>
-  <div class="step">
-    <span class="stepno">02</span>
-    <div><p>Regenerate the environment from the review screen.</p></div>
-  </div>
-</div>
+  <p>
+    At the top of the review screen sits the <strong>Creative Direction
+    editor</strong>. Edits here are persisted, but they only re-ground
+    <em>future</em> regenerations &mdash; they never repaint art that's
+    already been generated. If you change your mind about the theme's
+    direction partway through, existing approved items stay exactly as
+    they are.
+  </p>
+  <p>
+    Below that, every generated item gets its own collapsible
+    name-and-description editor with a per-item <strong>Retry</strong>
+    button &mdash; so a single bad character or object can be regenerated on
+    its own instead of redoing the whole board. <strong>Approve all</strong>
+    accepts everything currently shown, and <strong>Resume</strong> /
+    <strong>Stop</strong> control whether the pipeline continues to the next
+    board.
+  </p>
 
-<div class="section-head">
-  <span class="s-title">§ 7.6 · "Roadblock" placeholders &amp; missing frames</span>
-  <span class="cap">the theme health check</span>
-</div>
-<p>Every theme is checked for entities whose frames are missing, empty, or orphaned — across agents, rivals, buildable objects, decor, expressions, badge icons, projectile FX, and poof FX. An entity that fails this check shows as a roadblock placeholder in the panel instead of its art.</p>
-<div class="ref-table">
-<table>
-  <thead><tr><th>Issue</th><th>Meaning</th></tr></thead>
-  <tbody>
-    <tr><td>missing_frames</td><td>The entity has no frames recorded at all</td></tr>
-    <tr><td>empty_frames</td><td>The entity has a frames array, but it's empty</td></tr>
-    <tr><td>orphan_frames</td><td>Frames exist on disk with no entity referencing them</td></tr>
-  </tbody>
-</table>
-</div>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>The health check panel listing a roadblock entity.</p>
-</div>
-<div class="callout note">
-  <p class="callout-label">Note</p>
-  <p>A board can be marked accepted with no frames recorded — accepting a board and slicing its frames are decoupled steps. If you see this, use <strong>Resume</strong> on that board: it re-slices the raw image that's already on disk, at no additional API cost.</p>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 7.7 · Style drift across boards</span>
-  <span class="cap">keeping a theme visually consistent</span>
-</div>
-<p>If later boards start looking off relative to earlier ones, don't rewrite each item's description by hand. Use the review screen's <strong>Creative Direction</strong> editor instead.</p>
-<div class="steps">
-  <div class="step">
-    <span class="stepno">01</span>
-    <div><p>Open Creative Direction on the review screen and describe the style correction you want.</p></div>
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Review screen with the Creative Direction editor and per-item retry controls.</div>
   </div>
-  <div class="step">
-    <span class="stepno">02</span>
-    <div><p>Save it. It re-grounds every <strong>future</strong> regeneration — it never touches art already generated.</p></div>
-  </div>
-  <div class="step">
-    <span class="stepno">03</span>
-    <div><p>Retry the off-style items so they regenerate under the new direction.</p></div>
-  </div>
-</div>
 
-<p class="nav-links">
-  <a class="prev" href="ch-06.html">&larr; Ch 06 · Generation &amp; the Review Screen</a>
-  <a class="index" href="index.html">Index</a>
-  <a class="next" href="ch-08.html">Ch 08 · Themes: Shipped, Personal &amp; Community &rarr;</a>
-</p>
+  <div class="section-head">
+    <div class="s-title">&sect; 7.3 &middot; Resume and recovery</div>
+    <div class="s-caption">no wasted spend</div>
+  </div>
+  <p>
+    If a board was accepted but its frames didn't make it to disk for some
+    reason, <strong>Resume</strong> recovers it by re-slicing the stored raw
+    image &mdash; it does not call the image API again, so there's no
+    additional cost to recover from an interrupted session.
+  </p>
 
+  <div class="section-head">
+    <div class="s-title">&sect; 7.4 &middot; Where a theme is stored</div>
+    <div class="s-caption">on disk, per project</div>
+  </div>
+  <p>
+    Themes are stored per-project inside your editor's global storage.
+    Each theme is a self-contained folder holding
+    <code>manifest.json</code>, <code>plan.json</code>, and
+    <code>frames.json</code>, plus an <code>images/</code> folder for
+    finished art and an <code>images/raw/</code> folder for the
+    unsliced source images Resume draws from.
+  </p>
+
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      Because raw images are kept alongside sliced frames, most generation
+      hiccups are recoverable without spending API credits again. Chapter
+      07 covers the specific failure cases and fixes in more depth.
+    </p>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 7.5 &middot; Turrets (optional)</div>
+    <div class="s-caption">give one animated object teeth</div>
+  </div>
+  <p>
+    On the review screen's per-object editor, either of your theme's two
+    <strong>animated objects</strong> can be marked <strong>"Acts as
+    turret (auto-fires at attackers)"</strong>. This checkbox only appears
+    on animated object rows &mdash; static objects and decor don't get it.
+    Turning it on is entirely opt-in: a theme that never checks the box
+    behaves exactly as it does today.
+  </p>
+  <p>
+    A built turret auto-targets the nearest attacker in range and fires
+    roughly once per second, reusing the projectile art you already
+    described for that object &mdash; there's no separate turret sprite to
+    generate. Each shot deals about a quarter of a character's damage and
+    briefly staggers the target, interrupting whatever it was attacking. A
+    turret is also a normal structure in every other sense: it takes
+    damage, smokes when hurt, shows a health bar, and needs repairing like
+    anything else you build. While it's damaged, it stops firing entirely
+    and only resumes once fully repaired.
+  </p>
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    <p>
+      Turrets ride on the projectile description you already wrote for
+      that animated object (Chapter 06, &sect; 6.2), so there's nothing
+      extra to generate. If the object's projectile art was skipped or
+      never generated, marking it as a turret is harmless &mdash; it simply
+      won't fire.
+    </p>
+  </div>
+
+  <div class="nav-links">
+    <div class="nav-prev"><a href="ch-06.html">&larr; Chapter 06</a></div>
+    <div class="nav-index"><a href="index.html">Handbook Index</a></div>
+    <div class="nav-next"><a href="ch-08.html">Chapter 08 &rarr;</a></div>
+  </div>
 </body>
 </html>

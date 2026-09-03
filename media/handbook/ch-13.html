@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chapter 13 — Troubleshooting &amp; Diagnostics · TycoonAgents Handbook</title>
+<title>Chapter 13 — UEFN Power Tools · TycoonAgents Handbook</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -15,168 +15,217 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Panel Tour</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-04.html">04 &middot; API Keys &amp; Providers</a>
-<a class="side-rail-link" href="ch-05.html">05 &middot; Building a Theme</a>
-<a class="side-rail-link" href="ch-06.html">06 &middot; Generation &amp; Review</a>
-<a class="side-rail-link" href="ch-07.html">07 &middot; Troubleshooting &amp; Redos</a>
-<a class="side-rail-link" href="ch-08.html">08 &middot; Themes &amp; Community</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
+<a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
 <div class="side-rail-part">Part III &middot; Reference</div>
-<a class="side-rail-link" href="ch-09.html">09 &middot; Settings Reference</a>
-<a class="side-rail-link" href="ch-10.html">10 &middot; Metrics &amp; Delegation</a>
-<a class="side-rail-link" href="ch-11.html">11 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-12.html">12 &middot; UEFN Power Tools</a>
-<a class="side-rail-link side-rail-current" href="ch-13.html" aria-current="page">13 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link side-rail-current" href="ch-13.html" aria-current="page">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
 </aside>
 
 <p class="crumb">TycoonAgents Handbook / Chapter 13 / Part III · Reference</p>
 
-<h1><span class="chapter-num">13</span>Troubleshooting &amp; Diagnostics</h1>
+<h1><span class="chapter-num">13</span>UEFN Power Tools</h1>
 
 <div class="lede">
-  <p class="label">When something's not right</p>
-  <p class="intro">Most problems in TycoonAgents trace back to one of a handful of root causes — hooks, a missing theme selection, a stale bridge, or a metrics number that only looks wrong. This chapter is a quick-reference triage before you file a bug report.</p>
+  <p class="label">For Fortnite Creative projects</p>
+  <p class="intro">If your workspace is a UEFN (Unreal Editor for Fortnite) project, TycoonAgents adds a second layer on top of everything else: a bridge into the editor itself, so agents can inspect and audit your level, not just your source files.</p>
+</div>
+
+<div class="callout note">
+  <p class="callout-label">Requirements at a glance</p>
+  <p>The in-editor Power Tools window only needs UEFN with the <strong>Python Editor Script Plugin</strong> enabled &mdash; that runs on UEFN's own embedded Python, no system install required. The MCP tools (§ 13.3 below) additionally need <strong>Node.js v18+</strong> on PATH. <code>uefn_verse_check</code> additionally needs <strong>system Python 3</strong> and <strong>Epic's Verse VS Code extension</strong>. See Chapter 02's requirements table for the full tier breakdown, and Chapter 14 for the environment-variable overrides if discovery ever picks the wrong path.</p>
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 13.1 · Panel is empty, no agents show up</span>
-  <span class="cap">hooks aren't installed</span>
+  <span class="s-title">§ 13.1 · Setup</span>
+  <span class="cap">detected automatically</span>
 </div>
-<p>The agent visualization is driven entirely by Claude Code hooks. If nothing appears, hooks likely aren't installed for this project, or your session hasn't picked up a recent install.</p>
+<p>The setup wizard detects a UEFN project on its own. When it does, it offers to:</p>
 <div class="steps">
   <div class="step">
     <span class="stepno">01</span>
-    <div><p>Open Settings → <strong>Hook health</strong> and use <strong>Troubleshoot → Fix</strong> to repair the install.</p></div>
+    <div><p>Stage the Python bridge into your project's <code>Content/Python</code> folder.</p></div>
   </div>
   <div class="step">
     <span class="stepno">02</span>
-    <div><p>Restart your Claude Code session so it picks up the newly installed hooks.</p></div>
+    <div><p>Install the <strong>Verse Expert</strong> and <strong>UEFN Auditor</strong> agents alongside your other specialists.</p></div>
   </div>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 13.2 · Theme art isn't showing</span>
-  <span class="cap">selection or frames</span>
-</div>
-<p>Two likely causes: no theme is currently selected, or the theme is selected but some of its entities are missing frames.</p>
-<div class="callout note">
-  <p class="callout-label">Note</p>
-  <p>Check the Theme Picker first to confirm a theme is active. If it is and art is still missing, see Chapter 7 for the health check and the Resume fix.</p>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 13.3 · UEFN chip is gray</span>
-  <span class="cap">bridge not staged, or engine not restarted</span>
-</div>
-<p>A gray UEFN chip means the Power Tools bridge either hasn't been staged into your project yet, or UEFN hasn't been restarted since it was.</p>
-<div class="steps">
-  <div class="step">
-    <span class="stepno">01</span>
-    <div><p>Revisit Setup and confirm the bridge staging step completed (Chapter 12).</p></div>
-  </div>
-  <div class="step">
-    <span class="stepno">02</span>
-    <div><p>Restart UEFN so it picks up the bridge from <code>Content/Python</code>.</p></div>
-  </div>
-</div>
-<div class="callout note">
-  <p class="callout-label">Advanced</p>
-  <p>The bridge auto-discovers its paths, but three environment variables override that discovery when it picks the wrong location: <code>UEFN_BRIDGE_DIR</code> overrides the IPC directory the bridge and MCP server use to talk to each other; <code>UEFN_VERSE_PROJECT_DIR</code> overrides the Verse project cache root; <code>VERSE_LSP_PATH</code> overrides the Verse language server executable the Verse-aware audit tools launch. Reach for one of these only if the chip stays gray after a restart, or the bridge responds with the wrong project's data.</p>
-</div>
-<div class="callout note">
-  <p class="callout-label">Advanced</p>
-  <p><code>verse-lsp.exe</code> &mdash; the actual analyzer engine behind <code>uefn_verse_check</code> &mdash; ships inside Epic's own Verse VS Code extension rather than as a separate download. When <code>VERSE_LSP_PATH</code> isn't set, discovery searches for that extension across every supported IDE's extensions folder: VS Code, VS Code Insiders, Cursor, Antigravity, Windsurf, and a remote <code>vscode-server</code> install.</p>
-  <p>No VS Code-family IDE on this machine at all? You don't need to install one just for the analyzer: download Epic's Verse extension's <code>.vsix</code> directly from the VS Code Marketplace website, extract it (a <code>.vsix</code> is a zip archive), and point <code>VERSE_LSP_PATH</code> at the <code>verse-lsp.exe</code> inside the extracted folder.</p>
-</div>
-<div class="callout tip">
-  <p class="callout-label">Tip</p>
-  <p>The UEFN MCP chip also needs <code>node</code> v18+ on your PATH — the MCP client launches the bridge's server through Node. Run <code>node --version</code> in a terminal to check.</p>
-</div>
-<div class="callout note">
-  <p class="callout-label">Advanced</p>
-  <p>On Windows, a deep project path — especially one under a OneDrive-redirected folder — can exceed the 260-character <code>MAX_PATH</code> limit. When TycoonAgents detects this condition, it names it directly in the relevant error message rather than leaving you to guess. The fix is either to enable Windows long paths (the <code>LongPathsEnabled</code> registry policy) or to shorten or move the project path so it sits closer to the drive root.</p>
-</div>
-
-<div class="section-head">
-  <span class="s-title">§ 13.4 · Metrics numbers look wrong</span>
-  <span class="cap">usually not a bug</span>
-</div>
-<p>A gap between "dispatched" and "completed" task counts is expected, not an error — it means some dispatched tasks never posted a completion (abandoned or simply unfinished), not that something is silently broken. See Chapter 10 for the full explanation.</p>
-
-<div class="section-head">
-  <span class="s-title">§ 13.5 · Reporting a bug</span>
-  <span class="cap">Report a bug / Diagnostics</span>
 </div>
 <div class="figure-placeholder">
   <span class="fig-label">Screenshot</span>
-  <p>Settings — Report a bug / Diagnostics section.</p>
+  <p>Setup screen — UEFN detected, bridge staging chip.</p>
 </div>
-<div class="steps">
-  <div class="step">
-    <span class="stepno">01</span>
-    <div><p>Open Settings → <strong>Report a bug / Diagnostics</strong> and choose <strong>Generate diagnostic report</strong>.</p></div>
-  </div>
-  <div class="step">
-    <span class="stepno">02</span>
-    <div><p>The report is sanitized — absolute file paths and secrets are stripped before it's copied to your clipboard — and ready to paste wherever you're reporting the issue.</p></div>
-  </div>
-</div>
-<div class="callout tip">
-  <p class="callout-label">Tip</p>
-  <p>You can also run the <code>/tycoon-diagnose</code> skill directly from Claude Code for a deeper, AI-reasoned pass over your project's own configuration.</p>
+
+<div class="callout note">
+  <p class="callout-label">See also</p>
+  <p>The UEFN chip in the stage's status chip row (Chapter 04, § 4.6) shows live bridge connectivity at a glance: green glow means a heartbeat arrived in the last 15 seconds and agents can use the <code>uefn_*</code> MCP tools; amber means reopen the project in UEFN so the bridge auto-starts.</p>
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 13.6 · Submit feedback</span>
-  <span class="cap">bugs, ideas, questions — straight to the maintainer</span>
+  <span class="s-title">§ 13.2 · The Power Tools window</span>
+  <span class="cap">in-editor launcher</span>
 </div>
-<p>Settings also has a <strong>Submit feedback</strong> form for anything short of a full bug report — an idea, a question, or a rough edge worth putting on record. It sits right below Report a bug / Diagnostics, and it's deliberately two-step: nothing is ever sent in the background, and nothing leaves your machine until you press <strong>Send</strong>.</p>
+<p>Once the bridge is staged, an in-editor launcher window becomes available inside UEFN itself. Its title bar shows the bridge's version, so you can tell at a glance whether it's current. From there you can reach:</p>
+<div class="ref-table">
+<table>
+  <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>Device audit</td><td>Reviews devices in your level for common configuration issues.</td></tr>
+    <tr><td>Project health scan</td><td>Checks the project for structural issues across its assets and Verse source.</td></tr>
+    <tr><td>Asset browsers</td><td>Browse and inspect assets in your project's content.</td></tr>
+    <tr><td>IP / Moderation Scan</td><td>Collects the raw asset, Verse, and metadata surfaces Fortnite moderation may flag before submission. The launcher can only show the raw data — run the matching MCP tool from a connected AI assistant for the full analysed report.</td></tr>
+  </tbody>
+</table>
+</div>
 <div class="figure-placeholder">
   <span class="fig-label">Screenshot</span>
-  <div class="fig-caption">Settings — the Submit feedback form with the preview step open.</div>
-</div>
-<div class="steps">
-  <div class="step">
-    <span class="stepno">01</span>
-    <div><p>Open Settings → <strong>Submit feedback</strong>, pick a category (<strong>Bug</strong> / <strong>Idea</strong> / <strong>Question</strong> / <strong>Other</strong>), and describe what happened (up to 4000 characters). <strong>Include diagnostic report</strong> is checked by default and attaches the same sanitized report from § 13.5; an optional contact field lets the maintainer follow up.</p></div>
-  </div>
-  <div class="step">
-    <span class="stepno">02</span>
-    <div><p>Choose <strong>Preview</strong> to see the exact JSON payload that will be sent. Only after you've reviewed it does <strong>Send</strong> appear — there's no way to submit without seeing the payload first.</p></div>
-  </div>
-</div>
-<div class="callout note">
-  <p class="callout-label">What actually gets sent</p>
-  <p>Your description and contact info go as typed — local file paths and recognizable API keys or tokens are stripped automatically before anything is sent. If <strong>Include diagnostic report</strong> is checked, it also sends:</p>
-  <ul>
-    <li>Your extension version, operating system, IDE name and variant, and when the report was generated</li>
-    <li>Whether the background hook is installed, whether it's working, and when it last ran</li>
-    <li>Your delegation settings</li>
-    <li>A list of your agent names and whether each one has routing configured</li>
-    <li>Whether your project's instructions file (CLAUDE.md) has any leftover sections from an older format</li>
-    <li>A size check of your instructions and agent files (so the maintainer can tell if they're getting too long)</li>
-    <li>The connection status of any configured engines (like UEFN) — for MCP servers, only which ones are configured, not their connection status</li>
-  </ul>
-  <p><strong>Never sent:</strong> your source code, file contents, project names (only redacted paths), API keys, or anything running in the background. Nothing leaves your machine until you press Send, and you'll see the exact data being sent right before that happens.</p>
-</div>
-<div class="callout tip">
-  <p class="callout-label">Tip</p>
-  <p>Submissions become tickets the maintainer triages directly — there's no account to create and no board to check. If sending fails (offline, timeout), the payload is copied to your clipboard automatically so nothing is lost, and you can retry or use the fallback form at <a href="https://feedback.corsairstudios.com">feedback.corsairstudios.com</a>.</p>
+  <p>The Power Tools launcher window, version-stamped title.</p>
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 13.7 · When all else fails</span>
-  <span class="cap">reinstall is safe</span>
+  <span class="s-title">§ 13.3 · What agents can do through it</span>
+  <span class="cap">MCP tools</span>
 </div>
-<p>Reinstalling through the setup wizard is safe to reach for. Your state survives an update — build progress and earned badges persist on the host side, not in the webview — so a reinstall won't wipe your progress.</p>
+<p>Agents reach the live editor through a set of MCP tools built on the same bridge:</p>
+
+<div class="ref-table">
+<p class="group-label">Core &amp; status</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_status</code></td><td>Bridge connectivity check.</td></tr>
+    <tr><td><code>uefn_get_level_info</code></td><td>Returns summary information about the current level.</td></tr>
+    <tr><td><code>uefn_run_audit</code></td><td>Runs the device audit.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Devices &amp; properties</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_list_devices</code></td><td>Lists devices in the level.</td></tr>
+    <tr><td><code>uefn_get_property</code> / <code>uefn_set_property</code></td><td>Reads or writes a property on an actor or device.</td></tr>
+    <tr><td><code>uefn_select_actor</code></td><td>Selects an actor in the editor.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Batch operations</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_batch_set</code></td><td>Sets a property on a filtered set of actors.</td></tr>
+    <tr><td><code>uefn_batch_get</code></td><td>Reads a property from a filtered set of actors.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Level editing</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_spawn_actor</code></td><td>Spawns a new actor from an asset into the level. Edits the level and supports editor undo (Ctrl+Z).</td></tr>
+    <tr><td><code>uefn_duplicate_actor</code></td><td>Duplicates an existing actor by label, offsetting the copy. Edits the level and supports editor undo (Ctrl+Z).</td></tr>
+    <tr><td><code>uefn_set_transform</code></td><td>Sets an actor's location, rotation, and/or scale by label. Edits the level and supports editor undo (Ctrl+Z).</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Asset browsing</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_list_assets</code></td><td>Lists assets under a content path.</td></tr>
+    <tr><td><code>uefn_inspect_asset</code></td><td><em>Experimental.</em> Loads and inspects a single asset's editor-exposed properties.</td></tr>
+    <tr><td><code>uefn_texture_find</code></td><td>Finds texture references in the project.</td></tr>
+    <tr><td><code>uefn_texture_summary</code></td><td>Gets a grouped texture usage summary.</td></tr>
+    <tr><td><code>uefn_texture_on_actor</code></td><td>Lists textures referenced by an actor.</td></tr>
+    <tr><td><code>uefn_material_browse</code></td><td>Browses project materials.</td></tr>
+    <tr><td><code>uefn_material_unused</code></td><td>Finds unused materials in the project.</td></tr>
+    <tr><td><code>uefn_niagara_browse</code></td><td>Browses Niagara particle systems.</td></tr>
+    <tr><td><code>uefn_niagara_usage</code></td><td>Shows Niagara particle system usage across the level.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Project health</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_health_scan</code></td><td>Runs a health scan on the project.</td></tr>
+    <tr><td><code>uefn_dependency_scan</code></td><td>Scans asset dependencies.</td></tr>
+    <tr><td><code>uefn_asset_sweep</code></td><td>Sweeps and reports on project assets.</td></tr>
+    <tr><td><code>uefn_moderation_scan</code></td><td>Predicts what Fortnite/UEFN island moderation may flag before submission — collects the raw evidence; the connected AI assistant does the judgment and writes the report.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="ref-table">
+<p class="group-label">Verse analysis</p>
+<table>
+  <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>uefn_verse_check</code></td><td>Runs Epic's own Verse language server — the same analyzer bundled with the Verse VS Code extension — headless, for real compiler diagnostics. It's the only tool in this reference that works while UEFN itself is closed. It accepts a set of target files, and classifies every diagnostic's origin as <em>project</em> (your own code) or <em>epic-generated</em> (Epic's digest/cache files). A clean project can still report hundreds of epic-generated diagnostics — that's normal, and it means your own code is analyzer-clean.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 13.4 · Keeping the bridge current</span>
+  <span class="cap">self-updating, mostly</span>
+</div>
+<p>The bridge keeps itself up to date in two ways: the newest project-side copy wins automatically when a UEFN project loads, and the extension also refreshes engine-side copies each time the panel opens.</p>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>If the Power Tools window's title shows an older version than your installed extension, close and reopen the UEFN project — the self-sync runs at project load, before anything else.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 13.5 · Revision control hygiene</span>
+  <span class="cap">.urcignore</span>
+</div>
+<p>Setup also writes a <code>.urcignore</code> file so day-to-day dev artifacts (config, logs, and similar loose files) stay out of UEFN's Revision Control — only your actual project assets get tracked.</p>
+
+<div class="section-head">
+  <span class="s-title">§ 13.6 · Device audit</span>
+  <span class="cap">defaults comparison</span>
+</div>
+<p>The device audit diffs every device's properties against its class defaults, so it can show exactly what a creator changed versus what shipped as the default. The audit window's device list has a <strong>Tuned</strong> column showing how many properties differ from default for each device — when defaults can't be resolved for a class, that column shows a <code>?</code> rather than a fake <code>0</code>, so an unresolved comparison is never mistaken for "nothing changed."</p>
+<p>Opening a device's detail view adds a <strong>Tuned Properties</strong> table listing each changed property alongside its current value and its class default. The same idea carries into the Property Inspector: every current value there is shown beside a Default column, so you can spot a tuned property without cross-referencing anything else.</p>
+<p>Device listings also account for every actor rather than silently dropping ones that fail to resolve: skipped actors are counted, and a device with a field that fails to read is listed anyway, with an error note attached, instead of being omitted from the results.</p>
+<div class="figure-placeholder">
+  <span class="fig-label">Screenshot</span>
+  <p>Device audit window — Tuned column and a device's Tuned Properties table.</p>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 13.7 · Moderation</span>
+  <span class="cap">self-verifying saves &amp; thumbnail scope</span>
+</div>
+<p>Moderation report saves are self-verifying: after writing a report, the bridge re-reads back what it just wrote and only reports success once that round-trip passes. A save is never reported as landed on the strength of the write call alone.</p>
+<p>Thumbnail pixel review is scoped to project-owned images only — engine and Fortnite built-in thumbnails are never scanned. The report states how many thumbnails were excluded for this reason, so the exclusion is visible rather than silent.</p>
 
 <p class="nav-links">
-  <a class="prev" href="ch-12.html">&larr; Ch 12 · UEFN Power Tools</a>
+  <a class="prev" href="ch-12.html">&larr; Ch 12 · Project Plan</a>
   <a class="index" href="index.html">Index</a>
-  <span class="next-placeholder">End of handbook</span>
+  <a class="next" href="ch-14.html">Ch 14 · Troubleshooting &amp; Diagnostics &rarr;</a>
 </p>
 
 </body>

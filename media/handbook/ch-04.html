@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch. 04 &middot; API Keys &amp; Providers</title>
+<title>Ch. 04 &middot; Panel Tour</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -15,156 +15,261 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Panel Tour</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link side-rail-current" href="ch-04.html" aria-current="page">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link side-rail-current" href="ch-04.html" aria-current="page">04 &middot; API Keys &amp; Providers</a>
-<a class="side-rail-link" href="ch-05.html">05 &middot; Building a Theme</a>
-<a class="side-rail-link" href="ch-06.html">06 &middot; Generation &amp; Review</a>
-<a class="side-rail-link" href="ch-07.html">07 &middot; Troubleshooting &amp; Redos</a>
-<a class="side-rail-link" href="ch-08.html">08 &middot; Themes &amp; Community</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
+<a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
+<a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
+<a class="side-rail-link" href="ch-09.html">09 &middot; Themes &amp; Community</a>
 <div class="side-rail-part">Part III &middot; Reference</div>
-<a class="side-rail-link" href="ch-09.html">09 &middot; Settings Reference</a>
-<a class="side-rail-link" href="ch-10.html">10 &middot; Metrics &amp; Delegation</a>
-<a class="side-rail-link" href="ch-11.html">11 &middot; Project Plan</a>
-<a class="side-rail-link" href="ch-12.html">12 &middot; UEFN Power Tools</a>
-<a class="side-rail-link" href="ch-13.html">13 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-10.html">10 &middot; Settings Reference</a>
+<a class="side-rail-link" href="ch-11.html">11 &middot; Metrics &amp; Delegation</a>
+<a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
+<a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Power Tools</a>
+<a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
 </nav>
 </details>
 </aside>
-  <div class="crumb">TycoonAgents Handbook / Chapter 04 / Part II &middot; Theme Maker</div>
+  <div class="crumb">TycoonAgents Handbook / Chapter 04 / Part I &middot; Getting Started</div>
 
   <div class="chapter-num">04</div>
-  <h1>API Keys &amp; Providers</h1>
+  <h1>Panel Tour</h1>
 
   <div class="lede">
-    <div class="lede-label">Before you build</div>
+    <div class="lede-label">Orientation</div>
     <div class="lede-intro">
-      The Theme Maker needs an image-generation API key to turn your
-      creative direction into art. This is the one place TycoonAgents talks
-      to an external AI provider &mdash; and only when you tell it to.
+      The panel has four tabs and a menu. This chapter is a map of each
+      one, so the rest of the handbook can point at specific tabs without
+      re-explaining them.
     </div>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 4.1 &middot; Authoring-time only</div>
-    <div class="s-caption">what the key is for</div>
+    <div class="s-title">&sect; 4.1 &middot; Theater</div>
+    <div class="s-caption">the scene itself</div>
   </div>
   <p>
-    An API key is only ever used while you're generating a theme. Once the
-    images are generated, they're saved locally as part of the theme
-    (Chapter 06 covers exactly what gets stored), and the extension never
-    calls the image API again to render the scene &mdash; it just plays back
-    the stored frames. Runtime rendering has no AI dependency at all.
+    Theater is the default tab and the one most people leave open. Agents
+    appear on stage as characters that walk to build sites, hammer away
+    while a task is in progress, and emote when it completes. A HUD shows
+    badges you've earned and your current rebirth (prestige) level &mdash;
+    rebirthing resets progress in exchange for permanent milestones, and
+    it's driven entirely by real delegation activity, not anything
+    scripted.
   </p>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 4.2 &middot; Choosing a provider</div>
-    <div class="s-caption">two options</div>
-  </div>
-  <table class="ref-table">
-    <thead>
-      <tr>
-        <th>Provider</th>
-        <th>Where to get a key</th>
-        <th>Notes</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>OpenAI GPT Image <em>(recommended default)</em></td>
-        <td>platform.openai.com &rarr; API keys</td>
-        <td>Requires a paid OpenAI account with credits.</td>
-      </tr>
-      <tr>
-        <td>Google Gemini image models <em>(community nickname "Nano Banana")</em></td>
-        <td>aistudio.google.com &rarr; Get API key</td>
-        <td>Has a free tier, good for experimenting before committing to a paid provider.</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <div class="callout note">
-    <span class="callout-label">Note</span>
-    <p>
-      Neither provider is required over the other &mdash; pick whichever you
-      already have an account with. OpenAI GPT Image is the recommended
-      default for consistency across a full theme's worth of images.
-    </p>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 4.3 &middot; Entering and storing your key</div>
-    <div class="s-caption">where it lives</div>
-  </div>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">01</div>
-      <div class="step-body">
-        <p>
-          Open the theme generation form (Chapter 05) and enter your key in
-          the provider section. Your editor stores it securely rather than
-          writing it into any project file.
-        </p>
-      </div>
-    </div>
-    <div class="step">
-      <div class="step-num">02</div>
-      <div class="step-body">
-        <p>
-          As a fallback, you can also set a key via Settings using
-          <code>tycoonagents.openaiApiKey</code> or
-          <code>tycoonagents.geminiApiKey</code> &mdash; useful if you want
-          the key pre-filled across the workspace rather than entering it
-          each time.
-        </p>
-      </div>
-    </div>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 4.4 &middot; Picking a model</div>
-    <div class="s-caption">latest by default</div>
-  </div>
-  <p>
-    Model pickers default to <strong>"Latest (recommended)."</strong>
-    TycoonAgents never hardcodes a specific model version internally &mdash;
-    the default always tracks whatever the provider currently considers
-    latest. If you want to pin an older or cheaper model instead, use the
-    dropdown, or set an override permanently via
-    <code>tycoonagents.openaiModel</code> / <code>tycoonagents.geminiModel</code>.
-  </p>
-
-  <table class="ref-table">
-    <thead>
-      <tr>
-        <th>Provider</th>
-        <th>Model menu (current)</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>OpenAI</td>
-        <td>GPT Image 2 (latest) &middot; 1.5 &middot; 1 &middot; 1 Mini (cheapest)</td>
-      </tr>
-      <tr>
-        <td>Gemini</td>
-        <td>Flash Image 3.1 (latest) &middot; Pro Image 3 &middot; Flash-Lite 3.1 (cheapest) &middot; 2.5 Flash Image (legacy)</td>
-      </tr>
-    </tbody>
-  </table>
 
   <div class="figure-placeholder">
     <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Provider, key, and model picker section of the theme generation form.</div>
+    <div class="fig-caption">Theater tab with agents mid-build and the badge HUD visible.</div>
   </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 4.2 &middot; Metrics</div>
+    <div class="s-caption">per-agent table</div>
+  </div>
+  <p>
+    Metrics lists every agent that has run in this workspace with a row
+    per agent: tasks completed, tokens used, and the model it ran on. Each
+    row also carries a <strong>"vs. orch."</strong> bar &mdash; tasks
+    completed relative to the busiest agent &mdash; paired with an
+    <strong>"Nx cheaper"</strong> badge that expresses how much less that
+    agent's model costs relative to the orchestrator's, without ever
+    showing a dollar figure. These comparisons use Anthropic API token
+    rates and are informational only &mdash; Claude subscriptions (Max/Pro)
+    bill by plan, not per token. Token totals count input, output, and
+    cache reads at face value; cache reads dominate long sessions yet bill
+    at roughly 0.1x the input rate, so a real API bill would run well below
+    what raw totals suggest. See Chapter 11 for how to read the cost lens
+    in full.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Metrics tab &mdash; per-agent table with vs. orch. bars.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 4.3 &middot; Delegation</div>
+    <div class="s-caption">where the work actually went</div>
+  </div>
+  <p>
+    Delegation zooms out to the whole session: a chart of delegated work
+    by model tier, a coordination line showing how much the orchestrator
+    itself is doing (in tasks, matching the Metrics tab &mdash; not raw
+    tool-call counts), and a dispatched-vs-completed reconciliation (the
+    gap between the two is normal &mdash; it reflects abandoned or
+    unfinished spawns, not a bug). Below that sits the same per-agent
+    table as Metrics, and a savings headline like "avoided ~N%."
+    Chapter 11 covers all of these in depth.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Delegation tab &mdash; tier chart, reconciliation line, and savings headline.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 4.4 &middot; Project Plan</div>
+    <div class="s-caption">only when enabled</div>
+  </div>
+  <p>
+    Project Plan shows phases, tasks, and gates for larger bodies of work
+    tracked through the plan feature. This tab only appears when the
+    Project Plan feature is enabled for the workspace &mdash; it's on by
+    default for new installs, but existing projects that were set up
+    before it shipped stay off unless the feature is turned on explicitly.
+    Chapter 12 is the full reference.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Project Plan tab &mdash; phases and tasks with gate checkpoints.</div>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 4.5 &middot; The menu</div>
+    <div class="s-caption">everything else</div>
+  </div>
+  <p>
+    A menu sits alongside the tabs with four entries:
+  </p>
+  <ul>
+    <li><strong>About</strong> &mdash; version and quick project info.</li>
+    <li><strong>Settings</strong> &mdash; the full settings surface (Chapter 10).</li>
+    <li><strong>Themes</strong> &mdash; switch active theme or open the Theme Maker (Part II).</li>
+    <li><strong>Troubleshoot &amp; Fix</strong> &mdash; runs diagnostics and offers repairs (Chapter 14).</li>
+  </ul>
 
   <div class="callout tip">
     <span class="callout-label">Tip</span>
     <p>
-      A full theme generates 10 or more large images. If you're still
-      experimenting with a creative direction, pick one of the cheaper
-      models first and switch to the latest once you're happy with the
-      results.
+      If delegation looks like it isn't working &mdash; no agents ever appear
+      on stage &mdash; check the Delegation tab's Coordination line first. A
+      high orchestrator task count next to few completed agent tasks is
+      usually the fastest way to spot work that's quietly bypassing the
+      doctrine.
+    </p>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 4.6 &middot; Status chips</div>
+    <div class="s-caption">upper-left of the stage</div>
+  </div>
+  <p>
+    A row of small chips sits in the upper-left of the Theater stage,
+    alongside the agents themselves. Each chip represents an engine
+    integration &mdash; UEFN first, then the rest alphabetically (Blender,
+    Godot, Roblox, Unity, Unreal). They're informational only: hover a chip
+    to read its tooltip, but clicking it doesn't do anything.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">SCREENSHOT &mdash; the chip row in the upper-left of the stage (e.g. a UEFN chip glowing green beside a Godot chip in ready state).</div>
+  </div>
+
+  <p>
+    The <strong>UEFN chip</strong> appears once the UEFN bridge is
+    installed, and has two states:
+  </p>
+  <div class="ref-table">
+    <table>
+      <thead><tr><th>State</th><th>Color</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Connected</td><td>Green glow</td><td>Heartbeat received in the last 15 seconds &mdash; agents can use the <code>uefn_*</code> MCP tools.</td></tr>
+        <tr><td>Offline</td><td>Amber</td><td>No recent heartbeat. Reopen the UEFN project so the bridge auto-starts, and confirm the Python Editor Script Plugin is enabled.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    The <strong>engine chips</strong> (Godot, Unity, Unreal, Roblox,
+    Blender) appear when TycoonAgents detects that engine's project files
+    (for example <code>project.godot</code>, a <code>ProjectSettings/</code>
+    folder, a <code>*.uproject</code>, a <code>.rbxl</code> or
+    <code>default.project.json</code>, or a <code>.blend</code> file), OR
+    that engine's pack, skill, or agents are installed, OR an MCP entry for
+    it exists. Any one of those three triggers is enough for the chip to
+    show up. Each engine chip has five possible states:
+  </p>
+  <div class="ref-table">
+    <table>
+      <thead><tr><th>State</th><th>Color</th><th>Meaning</th><th>What to do</th></tr></thead>
+      <tbody>
+        <tr><td>Connected</td><td>Green glow</td><td>MCP probed and answering &mdash; live tools are available.</td><td>Nothing &mdash; ready to use.</td></tr>
+        <tr><td>Offline</td><td>Amber</td><td>MCP is configured but not responding.</td><td>Start the local MCP server.</td></tr>
+        <tr><td>Configured</td><td>Solid green</td><td>A stdio MCP entry is present but not yet started.</td><td>Start its server to enable live tools.</td></tr>
+        <tr><td>Ready</td><td>Cyan</td><td>The engine's pack or skill is installed, but no MCP is set up.</td><td>Nothing required &mdash; add an MCP entry for live tools.</td></tr>
+        <tr><td>Setup</td><td>Gray</td><td>A project for that engine was detected, but nothing is installed yet.</td><td>Install the engine's pack from the catalog.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout note">
+    <span class="callout-label">Not the same as</span>
+    <p>
+      The install wizard's Optionals step has its own row of chips
+      (Playwright, Godot, Unity, Unreal Engine, UEFN) &mdash; those are
+      toggleable and clicking one selects a skill to install. The status
+      chips described here are a different thing: read-only indicators on
+      the live stage, not selectable at all. See Chapter 02 for the wizard.
+    </p>
+  </div>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 4.7 &middot; Rebirth</div>
+    <div class="s-caption">prestige, badge previews, and trophy cups</div>
+  </div>
+  <p>
+    Rebirth is the panel's prestige loop. Triggering it resets progress in
+    exchange for permanent gains: every built object is wiped &mdash; the
+    whole build queue has to be rebuilt from scratch &mdash; and the badge
+    requirements re-roll for the next cycle. In exchange, each completed
+    rebirth permanently and compoundingly increases two stats: build speed
+    goes up 20% per rebirth (1.2 raised to your rebirth count), and agent
+    defense goes up 10% per rebirth (1.1 raised to your rebirth count) &mdash;
+    agents and turrets deal more damage to rivals at higher defense.
+  </p>
+  <p>
+    The badges popup only ever previews the <strong>next</strong> rebirth
+    &mdash; one tier ahead of your current one, never further &mdash; and
+    includes a stat line showing your current build-speed and defense
+    percentages against what they'll become once you reach it.
+  </p>
+  <p>
+    Each rebirth tier permanently unlocks its own perk, and the tiers stack
+    &mdash; nothing you've already unlocked goes away:
+  </p>
+  <div class="ref-table">
+    <table>
+      <thead><tr><th>Rebirth</th><th>Unlocks</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>The buildable weapons rack, which unlocks ranged weapons.</td></tr>
+        <tr><td>2</td><td>The buildable defensive turret (for themes that have one) and team stand-up huddles &mdash; agents ring up around a rotating speaker who shows idea and team bubbles while listeners react, and one occasionally dozes off.</td></tr>
+        <tr><td>3</td><td>The disco dance party.</td></tr>
+        <tr><td>4</td><td>The dance-off.</td></tr>
+        <tr><td>5</td><td>The victory-lap upgrade &mdash; party lights and confetti on a wave clear.</td></tr>
+        <tr><td>6</td><td>The gold party palette, plus agent sparring exhibitions &mdash; friendly melee-and-block duels with spectators and one winner's cheer. The dazed and angry expression bubbles stay reserved for real combat; sparring never uses them.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Completed rebirths are marked by trophy cups. Hovering a cup shows which
+    rebirth it represents and what that tier's perk was.
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Badges popup showing the next-rebirth preview and stat line, with the trophy cup row visible.</div>
+  </div>
+
+  <div class="callout note">
+    <span class="callout-label">See also</span>
+    <p>
+      Settings has its own Path Health section for diagnosing UEFN-related
+      path resolution &mdash; see Chapter 10 (§ 10.2) and Chapter 14.
     </p>
   </div>
 
