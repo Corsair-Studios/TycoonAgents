@@ -28,119 +28,41 @@ This project includes a Python bridge that connects Claude Code agents to the li
 
 No VS Code-family IDE available? Download Epic's Verse extension's `.vsix` directly from the VS Code Marketplace website, extract it (a `.vsix` is a zip archive), and set the `VERSE_LSP_PATH` environment variable to the `verse-lsp.exe` inside the extracted folder.
 
-## Installation (run this if the bridge is not set up)
+## Installation
 
-The runtime has no dependency on the TycoonAgents extension: a standalone copy of `uefn-server.mjs` — no `node_modules`, no extension present — has been verified to return the full MCP handshake and complete a live `uefn_status` round trip, including from a project path containing spaces. The extension is a convenience for staging files and writing `.mcp.json` automatically; it is not a requirement. Pick whichever path below matches your setup — **neither is "the" canonical path**.
+TycoonAgents does not install, stage, bundle, or download this bridge. It is
+provided by **Trashbird's Power Tools**, a separate third-party project the
+user installs and configures themselves — see the `uefn-bridge` entry in the
+MCP catalog (`media/mcp/catalog.json`) and `.mcp.json.example` at the repo
+root for the exact `mcpServers` entry shape, or Power Tools' own INSTALL.md
+(https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/blob/main/INSTALL.md)
+for full setup steps.
 
-### Step 1 — Check if already installed
+### Check if it's already connected
 
-Run `uefn_status`. If it succeeds, the bridge is already installed and connected — skip everything below. If it fails, or `Content/Python/uefn_bridge.py` does not exist in the project, install using one of the two paths below.
+Run `uefn_status`. If it succeeds, the bridge is installed and connected. If
+it fails, point the user at the catalog entry / `.mcp.json.example` / Power
+Tools' INSTALL.md above rather than attempting to install or stage anything
+from this repo.
 
-If `.mcp.json` (workspace root) already has an `mcpServers.uefn` entry but `uefn_status` still fails, check for a legacy misconfiguration first: if that entry contains an `env.UEFN_BRIDGE_DIR` key, remove the entire `env` block (it directed the MCP server to a directory the Python bridge never writes, breaking IPC), save, and restart the Claude Code session before retrying.
+`uefn_verse_check` additionally needs a system Python 3 on PATH plus
+`verse_lsp_check.py` and Epic's Verse VS Code extension (which bundles the
+actual `verse-lsp.exe` analyzer engine) — see **Requirements** above for the
+full detail and the `VERSE_LSP_PATH` / `VERSE_CHECK_SCRIPT` env vars. None of
+the other tools need any of that.
 
-### Prerequisites (both paths)
+### After Power Tools is installed and connected
 
-- **Node.js 18+** on PATH — verified working on Node 22; the bundled server contains no syntax requiring a version newer than that, so 18 is the honest floor, not an aspirational one (this repo's `package.json` declares only a `vscode` engine, no Node floor of its own — the claim here is independently verified, not read off that file).
-- **UEFN running with the project open** — the in-editor Python tools only start when UEFN loads the project.
-- **The Python Editor Script Plugin enabled** in UEFN (`Edit -> Plugins`, search "Python Editor Script Plugin", enable, restart UEFN if prompted).
+**IMPORTANT — tell the user this in chat if the bridge isn't responding:**
 
-`uefn_verse_check` alone needs more than this: a system Python 3 on PATH plus `verse_lsp_check.py` and Epic's Verse VS Code extension (which bundles the actual `verse-lsp.exe` analyzer engine) — see **Requirements** above for the full detail and the `VERSE_LSP_PATH` fallback. None of the other 29 tools need any of that. If `verse_lsp_check.py` isn't staged at one of its usual lookup locations, point the server at it directly with the `VERSE_CHECK_SCRIPT` environment variable; the tool fails honestly (`script_not_found`) and names every location it tried when the script can't be found.
-
-### Path A — With the TycoonAgents extension
-
-#### Step A2 — Locate the TycoonAgents extension
-
-Glob for the installed extension folder. Check in order:
-
-- `~/.vscode/extensions/*tycoonagents*/`
-- `~/.vscode-insiders/extensions/*tycoonagents*/`
-- `~/.cursor/extensions/*tycoonagents*/`
-
-Pick the folder with the highest version number if multiple are found. Verify it contains both:
-- `media/uefn-bridge/` directory
-- `out/mcp/uefn-server.js`
-
-#### Step A3 — Find the UEFN project's Python directory
-
-Use this precedence (mirrors the installer logic):
-
-1. If `<workspace>/Python/` exists — use it (workspace root is already a plugin content dir).
-2. Else if `<workspace>/Plugins/<any>/Content/` exists and contains `.verse` files — use `<workspace>/Plugins/<plugin>/Content/Python/`.
-3. Else if `<workspace>/Content/` exists — use `<workspace>/Content/Python/`.
-4. Otherwise create `<workspace>/Content/Python/`.
-
-#### Step A4 — Copy the bridge files
-
-Copy **every** Python file from `<extensionFolder>/media/uefn-bridge/` into the Python directory determined above, plus the icon `trashbyrd_40x40.png`. Do **not** copy `uefn-server.mjs` — that is the bundled MCP server (launched by Node via `.mcp.json`), not a UEFN Python tool.
-
-This mirrors the extension's own installer, which stages the whole `media/uefn-bridge/` directory (minus the server bundle) into `Content/Python`, so the manual copy stays correct as tools are added or removed rather than drifting from a hardcoded list.
-
-Only overwrite a file if its content differs from the source (preserves user edits).
-
-#### Step A5 — Merge the `uefn` entry into `.mcp.json`
-
-If `.mcp.json` already exists, merge — do not overwrite other server entries. The exact JSON shape:
-
-```json
-{
-  "mcpServers": {
-    "uefn": {
-      "command": "node",
-      "args": ["<absolutePath>/out/mcp/uefn-server.js"]
-    }
-  }
-}
-```
-
-Use an absolute path for `args`. On Windows use forward slashes. Do **not** add an `env` block — the MCP server and Python bridge both default to `<OS temp dir>/uefn_bridge` automatically.
-
-### Path B — Standalone (no extension)
-
-No step in this path installs, requires, or checks for the TycoonAgents extension.
-
-#### Step B2 — Obtain the bridge files
-
-Get `media/uefn-bridge/` from this repo (clone or download it) or from a release archive that bundles the same directory. You need the whole directory: the Python files (`uefn_bridge.py`, `init_unreal.py`, and the rest), the icon `trashbyrd_40x40.png`, and the bundled server `uefn-server.mjs`.
-
-#### Step B3 — Find the UEFN project's Python directory
-
-Same precedence as Step A3 above:
-
-1. If `<project>/Python/` exists — use it.
-2. Else if `<project>/Plugins/<any>/Content/` exists and contains `.verse` files — use `<project>/Plugins/<plugin>/Content/Python/`.
-3. Else if `<project>/Content/` exists — use `<project>/Content/Python/`.
-4. Otherwise create `<project>/Content/Python/`.
-
-#### Step B4 — Copy the Python files into the project
-
-Copy every `.py` file from `media/uefn-bridge/` (plus `trashbyrd_40x40.png`) into the Python directory from Step B3. Do **not** copy `uefn-server.mjs` there — it stays wherever you keep the bridge files on disk (anywhere is fine; it's launched directly by `node`, not staged into the UEFN project).
-
-#### Step B5 — Point `.mcp.json` at `uefn-server.mjs` directly
-
-Create or merge into `.mcp.json` at your workspace root:
-
-```json
-{
-  "mcpServers": {
-    "uefn": {
-      "command": "node",
-      "args": ["<pathToBridgeFiles>/uefn-server.mjs"]
-    }
-  }
-}
-```
-
-Use the path to wherever you kept `uefn-server.mjs` in Step B2 — this is **not** the extension's `out/mcp/uefn-server.js`; the standalone server bundle is self-contained and does not need the extension's build output. On Windows use forward slashes. Do **not** add an `env` block unless you need a non-default `UEFN_BRIDGE_DIR` — both sides default to `<OS temp dir>/uefn_bridge` automatically.
-
-### After install
-
-**IMPORTANT — always tell the user this in chat after installing:**
-
-> **Restart the Claude Code session** to load the new MCP server.
+> UEFN only runs the Python tools at project load. If your level is already
+> open, **close and reopen the project in UEFN** (or restart UEFN); the
+> bridge auto-starts and UEFN asks whether to launch **Trashbyrd's Power
+> Tools**. Make sure the **Python Editor Script Plugin** is enabled. Then run
+> `uefn_status` here to verify.
 >
-> UEFN only runs the Python tools at project load. Since your level is probably already open, **close and reopen the project in UEFN** (or restart UEFN); the bridge auto-starts and UEFN asks whether to launch **Trashbyrd's Power Tools**. Make sure the **Python Editor Script Plugin** is enabled. Then run `uefn_status` here to verify.
->
-> **Quick launch:** in UEFN's Python console, type `import pt` to open Trashbyrd's Power Tools.
+> **Quick launch:** in UEFN's Python console, type `import pt` to open
+> Trashbyrd's Power Tools.
 
 ## Workaround: bridge doesn't auto-start (UEFN's dynamic Python lifecycle)
 
@@ -306,7 +228,7 @@ Returns every command the bridge's dispatch table currently supports (name, para
 
 ## The bridge source is local and readable
 
-The bridge's Python source lives at `media/uefn-bridge/*.py` in this repo (and is staged into `<project>/Content/Python` on install — see Installation above). When a tool's exact behavior matters and this doc doesn't cover it, READ THE SOURCE rather than probing tools experimentally or searching online — `batch_tools.py` and `tag_inspect.py` in particular carry extensive docstrings on filter semantics, status shapes, and pagination that are authoritative over any paraphrase here.
+The bridge's Python source belongs to Trashbird's Power Tools, not this repo — see **Installation** above for where to get it. When a tool's exact behavior matters and this doc doesn't cover it, read the source from your Power Tools install rather than probing tools experimentally or searching online — `batch_tools.py` and `tag_inspect.py` in particular carry extensive docstrings on filter semantics, status shapes, and pagination that are authoritative over any paraphrase here.
 
 ## Usage Examples
 

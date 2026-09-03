@@ -9,18 +9,31 @@ import * as path from "path";
 import { Runtime } from "./runtime";
 import { TycoonPanel } from "./panel";
 import { runDemo } from "./demo";
-import { ClaudeCodeProvider } from "../../providers/claude-code/claudeCodeProvider";
+import type { Provider } from "../../core/provider";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { activate as activateTheater, deactivate as deactivateTheater } from "../../extension/main";
 import { upgradeInstalledThemes } from "../../extension/themeService";
-import { seedBundledThemes } from "./bundledThemeSeeds";
+import { seedBundledThemes, type SeedResult } from "./bundledThemeSeeds";
 import { resolveProjectRoot } from "./progressScope";
-import { healMcpServerPathIfStale } from "./mcpHeal";
+import { initLog, log } from "./log";
+import { resolveProviderId } from "../../core/providerSelection";
+import { createProvider } from "./providerFactory";
 
-let provider: ClaudeCodeProvider | undefined;
+let provider: Provider | undefined;
+
+/**
+ * Resolves when the first-run bundled-theme seed has finished (or was skipped
+ * / failed). The panel awaits this — bounded by THEME_SEED_WAIT_MS — before
+ * its first loadLatestTheme() so a fresh install doesn't race the seed and
+ * paint the "no theme" placeholder. Initialized to an already-resolved empty
+ * result so it is NEVER undefined and never rejects, whatever happens during
+ * activation.
+ */
+export let bundledThemesReady: Promise<SeedResult> = Promise.resolve({ seeded: [], skipped: [] });
 let demoDisposable: { dispose(): void } | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  initLog(context);
   const cfg = vscode.workspace.getConfiguration("tycoonagents");
   const idleFreezeMs = cfg.get<number>("idleFreezeMinutes", 3) * 60000;
   const sanityCapMs = cfg.get<number>("sanityCapMinutes", 15) * 60000;
@@ -28,32 +41,20 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Best-effort: seed bundled starter themes into global storage on first
   // run so a freshly installed plugin has a default theme available.
-  void seedBundledThemes(context.extensionUri, context.globalStorageUri);
-
-  // Auto-heal a stale UEFN MCP server path in .mcp.json at ACTIVATION, not
-  // only on panel open (see mcpHeal.ts's healMcpServerPathIfStale doc
-  // comment). Fixes a real gap: a CLI-only user who drives `uefn_*` tools
-  // through Claude Code without ever opening the TycoonAgents webview panel
-  // previously never got this heal at all, so an extension update that
-  // deletes the old version-numbered folder left them with a permanently
-  // dead .mcp.json entry. Guarded so activation can never throw or slow:
-  // wrapped in try/catch, the workspace-root lookup is a cheap in-memory
-  // read, and healMcpServerPathIfStale itself is opt-in (no-op unless
-  // .mcp.json already exists and contains our uefn entry) and internally
-  // try/catches every step.
-  try {
-    const workspacePaths = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
-    const projectRootForMcpHeal = resolveProjectRoot(workspacePaths, process.env["CLAUDE_PROJECT_DIR"]);
-    if (projectRootForMcpHeal !== "") {
-      healMcpServerPathIfStale(projectRootForMcpHeal, context.extensionUri, context.globalStorageUri.fsPath);
-    }
-  } catch (e) {
-    console.warn("TycoonAgents: MCP heal on activate failed:", e);
-  }
+  // Non-blocking (activation is not awaited on it), but the promise is
+  // captured and handed to the panel so the panel's first theme load can wait
+  // on it instead of racing it.
+  bundledThemesReady = seedBundledThemes(context.extensionUri, context.globalStorageUri).catch(
+    (error): SeedResult => {
+      console.warn("TycoonAgents: bundled theme seeding failed:", error);
+      return { seeded: [], skipped: [] };
+    },
+  );
+  void bundledThemesReady;
 
   // Command: open (or reveal) the TycoonAgents panel
   const openCmd = vscode.commands.registerCommand("tycoonagents.open", () => {
-    TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri, context.secrets);
+    TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri, context.secrets, bundledThemesReady);
 
     // Start the Claude Code provider if not already running
     if (!provider) {
@@ -95,7 +96,12 @@ export function activate(context: vscode.ExtensionContext): void {
         });
       }
 
-      provider = new ClaudeCodeProvider({ activityFile });
+      const providerId = resolveProviderId({
+        settingValue: cfg.get<string>("provider"),
+        projectDir: projectRoot,
+      });
+      log(`TycoonAgents: using provider "${providerId}".`);
+      provider = createProvider(providerId, activityFile);
       provider.start((e) => runtime.ingest(e));
 
       // Stop provider when the panel is disposed
@@ -112,7 +118,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Command: run demo sequence
   const demoCmd = vscode.commands.registerCommand("tycoonagents.demo", () => {
-    TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri, context.secrets);
+    TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri, context.secrets, bundledThemesReady);
     // Cancel any previous demo
     demoDisposable?.dispose();
     demoDisposable = runDemo(runtime);
@@ -175,7 +181,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   // Boot the Theme Factory / Theater lifecycle controller (webview view, generateTheme command, telemetry heartbeat).
-  activateTheater(context);
+  activateTheater(context, bundledThemesReady);
 }
 
 export function deactivate(): void {

@@ -470,7 +470,7 @@ function enumerateFixedDrivesLocal(): string[] {
  * Rung 3 for FORTNITE_INSTALL_DIR — mirrors panel.ts's `_findFortnitePythonDirs`
  * ladder (Epic Games Launcher manifests, then a bounded probe of every fixed
  * drive letter present) but targets the install ROOT's existence rather than
- * its `FortniteGame/Content/Python` subdirectory. Deliberately a separate,
+ * its `FortniteGame/`-relative Python folder subdirectory. Deliberately a separate,
  * small copy rather than importing from panel.ts: this module must stay a
  * leaf (panel.ts imports FROM host modules, never the reverse — see
  * uefnDetect.ts/engineDetect.ts, neither of which imports panel.ts either).

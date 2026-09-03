@@ -102,6 +102,14 @@ const MODEL_DEFAULTS = {
 // stack. There is NO live API call, so the bare aliases opus/sonnet/haiku are
 // safe here and stay consistent with what the Settings GUI now writes. Fable
 // keeps its canonical id (no auto-latest alias exists).
+//
+// This is a LEGACY fallback copy of src/core/modelAliases.ts's MODEL_ALIASES,
+// kept because the hook is a standalone zero-dep .cjs that must run even
+// when the compiled module below isn't available next to it (dev checkout
+// that hasn't built out/, or a packaged install missing it for any reason).
+// When the installer (src/host/vscode/panel.ts) has copied the compiled
+// modelAliases.js alongside this hook, that copy is used instead — see
+// agentBackendModule / getShorthandModel below (p2-t2).
 const SHORTHAND_MODEL = {
   "opus":   "opus",
   "sonnet": "sonnet",
@@ -109,11 +117,123 @@ const SHORTHAND_MODEL = {
   "fable":  "claude-fable-5",
 };
 
+// ---------------------------------------------------------------------------
+// Backend-aware generic routing (p2-t2). The installer copies the compiled
+// src/core/agentBackend.js and modelAliases.js next to this hook (into
+// <project>/.claude/tycoon/) so it can parse any agent's `backend:`
+// frontmatter instead of hardcoding the Codex MCP special case. Loaded once,
+// lazily, and guarded: if either module is missing (unbuilt out/, or an old
+// installer that hasn't copied them yet), we log one warning to stderr and
+// every caller below falls back to legacy behavior (the literal
+// mcp__codex__ special case and the local SHORTHAND_MODEL table).
+// ---------------------------------------------------------------------------
+let _agentBackendModule; // undefined = not yet attempted, null = load failed
+function getAgentBackendModule() {
+  if (_agentBackendModule === undefined) {
+    try {
+      _agentBackendModule = require(path.join(__dirname, "agentBackend.js"));
+    } catch (err) {
+      _agentBackendModule = null;
+      try {
+        process.stderr.write(
+          "[tycoon-hook] agentBackend.js not available next to the hook — falling back to legacy Codex-only routing: " +
+            (err && err.message ? err.message : String(err)) +
+            "\n"
+        );
+      } catch { /* never let a warning break the hook */ }
+    }
+  }
+  return _agentBackendModule;
+}
+
+let _modelAliasesModule; // undefined = not yet attempted, null = load failed
+function getModelAliasesModule() {
+  if (_modelAliasesModule === undefined) {
+    try {
+      _modelAliasesModule = require(path.join(__dirname, "modelAliases.js"));
+    } catch {
+      _modelAliasesModule = null; // silent: getAgentBackendModule already warns once
+    }
+  }
+  return _modelAliasesModule;
+}
+
+function getShorthandModel() {
+  const mod = getModelAliasesModule();
+  return (mod && mod.MODEL_ALIASES) || SHORTHAND_MODEL;
+}
+
 function resolveModel(rawModel, agentId) {
   if (rawModel) {
-    return SHORTHAND_MODEL[rawModel.toLowerCase()] || rawModel;
+    const table = getShorthandModel();
+    return table[rawModel.toLowerCase()] || rawModel;
   }
   return MODEL_DEFAULTS[agentId];
+}
+
+// Scan .claude/agents/*.md, parse each backend via agentBackend.js, and
+// build a map keyed by "mcp__<mcpServer>__<tool>" (or, when a backend omits
+// `tools`, by a marker matched via prefix "mcp__<mcpServer>__" against any
+// tool on that server) -> { agentId, vendor, model, costModelClass }. Built
+// fresh per hook invocation (each PreToolUse is a fresh short-lived process,
+// so there is no long-lived cache to keep warm) and only when the
+// agentBackend module actually loaded. Only transports 'mcp' and
+// 'openai-compatible' participate — 'claude-native' backends have no MCP
+// tool surface to route.
+function buildMcpBackendRouting(agentsDir) {
+  const mod = getAgentBackendModule();
+  if (!mod) return null;
+  const exact = new Map();   // "mcp__server__tool" -> entry
+  const prefixes = [];       // [{ prefix: "mcp__server__", entry }]
+  let files;
+  try {
+    files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+  } catch {
+    return { exact, prefixes };
+  }
+  for (const file of files) {
+    const agentId = file.slice(0, -3);
+    let text;
+    try {
+      text = fs.readFileSync(path.join(agentsDir, file), "utf8");
+    } catch {
+      continue;
+    }
+    let backend;
+    try {
+      const frontmatter = mod.readAgentFrontmatter(text);
+      backend = mod.parseAgentBackend(frontmatter);
+    } catch {
+      continue; // malformed backend block — skip this agent, don't crash the hook
+    }
+    if (!backend || (backend.transport !== "mcp" && backend.transport !== "openai-compatible")) continue;
+    if (!backend.mcpServer) continue;
+    const entry = {
+      agentId,
+      vendor: backend.vendor,
+      model: backend.model,
+      costModelClass: backend.costModelClass,
+    };
+    const serverPrefix = "mcp__" + backend.mcpServer + "__";
+    if (Array.isArray(backend.tools) && backend.tools.length > 0) {
+      for (const tool of backend.tools) {
+        exact.set(serverPrefix + tool, entry);
+      }
+    } else {
+      prefixes.push({ prefix: serverPrefix, entry });
+    }
+  }
+  return { exact, prefixes };
+}
+
+function lookupMcpBackend(routing, toolName) {
+  if (!routing) return undefined;
+  const hit = routing.exact.get(toolName);
+  if (hit) return hit;
+  for (const { prefix, entry } of routing.prefixes) {
+    if (toolName.indexOf(prefix) === 0) return entry;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,13 +1486,43 @@ function main(raw) {
       // project has a standing rule against fabricated numbers, and the
       // metrics panel already renders an absent tokens field as "—"
       // rather than inventing one.
-      const CODEX_TOOL_PREFIX = "mcp__codex__";
-      if (toolName.indexOf(CODEX_TOOL_PREFIX) === 0) {
-        const codexModel = (toolInput && typeof toolInput.model === "string" && toolInput.model)
+      // Generic path (p2-t2): route ANY mcp__<server>__<tool> call through
+      // the backend map built from .claude/agents/*.md `backend:`
+      // frontmatter (buildMcpBackendRouting/lookupMcpBackend above), rather
+      // than hardcoding the Codex server. Adds vendor/costModelClass, which
+      // the legacy fallback below never had.
+      const mcpRouting = toolName.indexOf("mcp__") === 0 ? buildMcpBackendRouting(agentsDir) : null;
+      const mcpBackend = mcpRouting ? lookupMcpBackend(mcpRouting, toolName) : undefined;
+      if (mcpBackend) {
+        const backendModel = (toolInput && typeof toolInput.model === "string" && toolInput.model)
           ? toolInput.model
-          : "gpt-5.4-mini"; // catalog.json's codex entry launch-time default (-c model=)
-        record.model = codexModel;
-        // tokens / cacheReadTokens intentionally left unset — see comment above.
+          : mcpBackend.model;
+        record.model = backendModel;
+        record.vendor = mcpBackend.vendor;
+        record.costModelClass = mcpBackend.costModelClass;
+        // tokens / cacheReadTokens intentionally left unset unless a future
+        // tool result surface actually carries usage — see comment above.
+      } else if (toolName.indexOf("mcp__codex__") === 0) {
+        // LEGACY FALLBACK: fires whenever no backend map entry matched this
+        // call — either agentBackend.js isn't available next to this hook
+        // (unbuilt out/, or an installer that hasn't copied it yet —
+        // mcpRouting === null), or it IS available but no *.md declares a
+        // `backend:` block for the codex server (mcpRouting is a real but
+        // non-matching map). Both cases must still record a Codex model
+        // rather than silently dropping it (mcpRouting being non-null was
+        // previously mistaken for "already handled", which dropped
+        // record.model whenever no agent had opted into backend routing).
+        // Once codex-reviewer.md declares a `backend:` block, mcpBackend
+        // above is truthy and this branch is skipped via the preceding
+        // else-if, so there is no double routing.
+        const CODEX_TOOL_PREFIX = "mcp__codex__";
+        if (toolName.indexOf(CODEX_TOOL_PREFIX) === 0) {
+          const codexModel = (toolInput && typeof toolInput.model === "string" && toolInput.model)
+            ? toolInput.model
+            : "gpt-5.4-mini"; // catalog.json's codex entry launch-time default (-c model=)
+          record.model = codexModel;
+          // tokens / cacheReadTokens intentionally left unset — see comment above.
+        }
       }
 
       try {

@@ -9,10 +9,16 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Runtime } from "./runtime";
+import { waitForBundledThemes } from "./themeReady";
+import { log } from "./log";
 import { computeDelegationModeStats, applyEvent, initialWorldState } from "../../core/state";
 import type { MetricsWorldState, AgentMetric } from "../../core/state";
 import type { HookRecord } from "../../providers/claude-code/hookRecord";
-import { mapHookRecord } from "../../providers/claude-code/mapHookRecord";
+import { mapHookRecord } from "../../providers/claude-code";
+// Ensures every provider's mapper (claude-code, opencode) is registered into
+// mappingRegistry regardless of which provider this host is configured to
+// run, since activity.jsonl can carry records from more than one provider.
+import "../../providers/registerAllMappers";
 import {
   shortFromModelId,
   modelIdFromShort,
@@ -35,17 +41,15 @@ import {
   upsertDelegationSection,
   readExecutionConfig,
   writeExecutionConfig,
+  formatVendorModelLabel,
   type DelegationMode,
   type DoctrineRosterAgent,
 } from "./delegationDoctrine";
+import { readAgentFrontmatter, parseAgentBackend } from "../../core/agentBackend";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
-import { parseBridgeVersion, isBridgeVersionNewer, isNumericVersion } from "../../shared/bridgeVersion";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
-import { healMcpServerPathIfStale } from "./mcpHeal";
-import { resolvePowerToolsDir, installPowerTools } from "./powerToolsInstall";
 import { describeFsError } from "./fsErrors";
-import { scanForLegacyBridgeStaging, applyLegacyBridgeCleanup } from "./legacyBridgeCleanup";
 import {
   probePathHealth,
   detectVerseExtensionState,
@@ -391,14 +395,15 @@ export function seedProjectPlanEnabledDefault(root: string): void {
  * they need no separate `Content/`-prefixed duplicate); the targeted names
  * remain as belt-and-braces for tools that write those exact filenames.
  *
- * UEFN gameplay itself is authored in Verse, never Python — `Content/Python`
- * holds the TycoonAgents UEFN Power Tools bridge (`media/uefn-bridge/*.py`),
+ * UEFN gameplay itself is authored in Verse, never Python — the UEFN
+ * project's Python folder holds the TycoonAgents UEFN Power Tools bridge (`media/uefn-bridge/*.py`),
  * a per-developer editor-tooling install staged there by this extension, not
  * game content. Each teammate installs their own copy from their own VSIX, the
  * staged files bake in machine-specific paths, and shipping them into a
  * Fortnite project's revision control carries needless island-moderation
- * risk. `*.py` covers the bridge scripts themselves; `Content/Python/` and
- * `Python/` (for workspace roots that already sit at `Content/`) catch the
+ * risk. `*.py` covers the bridge scripts themselves; the UEFN project's
+ * Python folder and `Python/` (for workspace roots that already sit at
+ * `Content/`) catch the
  * rest of the staged footprint that isn't a bare `.py` file — the launcher
  * icon, `__pycache__/`, `.pyc`, and the runtime `bridge_sync_status.json`.
  */
@@ -521,30 +526,6 @@ function detectIgnoreTargets(root: string, effRoot: string, uefnDetected: boolea
 }
 
 /**
- * Resolve the Windows `ProgramData` root. `overrideValue` (a caller-supplied
- * override, e.g. a test fixture) always wins; then `PROGRAMDATA`/`ProgramData`
- * as the OS sets it (Node's `process.env` is case-insensitive on win32, so
- * either spelling reads the same var); then a derived drive letter from other
- * signals Windows still sets when `PROGRAMDATA` itself is missing (seen in
- * some restricted/CI shells); the literal default is a last resort only.
- * Module-level (not a class method) so it stays callable with a bare
- * receiver, matching how `_findFortniteEngineBridgeDir` is exercised in
- * `test/panelEngineBridgePush.test.ts`.
- */
-function resolveProgramDataRoot(overrideValue?: string): string {
-  if (overrideValue) return overrideValue;
-  const envVal = process.env.PROGRAMDATA || process.env.ProgramData;
-  if (envVal) return envVal;
-  const driveSource = process.env.SystemDrive || process.env.SystemRoot || process.env.windir || os.homedir() || "";
-  const driveMatch = /^[A-Za-z]:/.exec(driveSource);
-  if (driveMatch) {
-    return path.join(`${driveMatch[0]}\\`, "ProgramData");
-  }
-  // Last-resort literal — only reached when every signal above is absent.
-  return "C:\\ProgramData";
-}
-
-/**
  * Probe every fixed drive letter actually present on the machine (not a
  * hardcoded `C:`-`F:` guess). Bounded to the 24 non-floppy letters `C:`-`Z:`
  * (`A:`/`B:` skipped — legacy floppy letters can trigger a slow OS-level
@@ -568,6 +549,11 @@ function enumerateFixedDrives(): string[] {
 }
 
 /** Singleton webview panel that renders the TycoonAgents visualization. */
+// The bounded seed wait lives in themeReady.ts so src/extension/main.ts (the
+// Theater sidebar) can share it without importing this module. Re-exported
+// here because existing callers/tests import it from panel.ts.
+export { THEME_SEED_WAIT_MS, waitForBundledThemes } from "./themeReady";
+
 export class TycoonPanel {
   public static currentPanel: TycoonPanel | undefined;
   private static readonly viewType = "tycoonagents";
@@ -576,6 +562,14 @@ export class TycoonPanel {
   private readonly _extensionUri: vscode.Uri;
   private readonly _runtime: Runtime;
   private readonly _globalStorageUri: vscode.Uri;
+
+  /**
+   * The activation-time bundled-theme seed promise (see extension.ts's
+   * `bundledThemesReady`), injected rather than imported so panel.ts stays
+   * free of a circular import back into extension.ts. Undefined in tests /
+   * callers that don't seed — treated as "nothing to wait for".
+   */
+  private readonly _bundledThemesReady: Promise<unknown> | undefined;
   private readonly _secrets: vscode.SecretStorage;
   private _disposables: vscode.Disposable[] = [];
   private _runtimeDisposable: { dispose(): void } | undefined;
@@ -747,6 +741,7 @@ export class TycoonPanel {
     runtime: Runtime,
     globalStorageUri: vscode.Uri,
     secrets: vscode.SecretStorage,
+    bundledThemesReady?: Promise<unknown>,
   ): TycoonPanel {
     // Dock beside the editor (ViewColumn.Two) so we never cover the active
     // Claude Code session in column One.
@@ -769,7 +764,14 @@ export class TycoonPanel {
       }
     );
 
-    TycoonPanel.currentPanel = new TycoonPanel(panel, extensionUri, runtime, globalStorageUri, secrets);
+    TycoonPanel.currentPanel = new TycoonPanel(
+      panel,
+      extensionUri,
+      runtime,
+      globalStorageUri,
+      secrets,
+      bundledThemesReady,
+    );
     return TycoonPanel.currentPanel;
   }
 
@@ -779,8 +781,10 @@ export class TycoonPanel {
     runtime: Runtime,
     globalStorageUri: vscode.Uri,
     secrets: vscode.SecretStorage,
+    bundledThemesReady?: Promise<unknown>,
   ) {
     this._panel = panel;
+    this._bundledThemesReady = bundledThemesReady;
     this._extensionUri = extensionUri;
     this._runtime = runtime;
     this._globalStorageUri = globalStorageUri;
@@ -846,21 +850,6 @@ export class TycoonPanel {
     // was only ever copied once at install time.
     this._ensureProjectPlanSkillFresh();
 
-    // Auto-heal a stale staged UEFN bridge once per panel open (see
-    // _autoUpdateUefnBridgeIfStale doc comment) — fixes updating the VSIX
-    // alone never refreshing a bridge already staged into a UEFN project's
-    // Content/Python; opt-in preserved (no-op when no bridge is staged).
-    // Fire-and-forget: must never delay panel construction/rendering.
-    void this._autoUpdateUefnBridgeIfStale(this._projectRoot());
-
-    // Auto-heal a stale UEFN MCP server path in .mcp.json once per panel
-    // open (see _autoHealMcpServerPathIfStale doc comment) — fixes the
-    // version-stamped extension-install path in .mcp.json dying on every
-    // extension update, which silently drops every uefn_* tool for the
-    // user's AI assistant with no obvious error. Opt-in preserved (no-op
-    // when no .mcp.json exists). Runs after the bridge auto-update above so
-    // both auto-heals stay in a stable, predictable order.
-    this._autoHealMcpServerPathIfStale(this._projectRoot());
 
     // Auto-heal stale pack content (skills, commands, agent .md files) for
     // every pack this project already has installed, once per panel open
@@ -941,17 +930,40 @@ export class TycoonPanel {
           // Auto-load the latest theme so the main panel shows the real
           // characters + environment on open (mirrors the Theater view).
           void (async () => {
+            // A fresh install seeds media/themes/* into global storage during
+            // activation; that seed is async and used to race this first load,
+            // making the panel show the no-theme placeholder even though a
+            // bundled theme was about to appear. Wait for it — bounded, so a
+            // hung seed can never freeze the panel.
+            await waitForBundledThemes(this._bundledThemesReady);
+            const diagThemes = await listThemes(this._globalStorageUri).catch((error) => {
+              log(`panel first-load: listThemes threw: ${String(error)}`);
+              return [];
+            });
+            log(
+              `panel first-load: listThemes root=${String(this._globalStorageUri)} count=${diagThemes.length} ids=[${diagThemes.map((th) => th.theme_id).join(", ")}]`,
+            );
             const t = await loadLatestTheme(this._globalStorageUri);
+            log(`panel first-load: loadLatestTheme -> ${t ? t.manifest.theme_id : "undefined"}`);
             if (t) {
+              const payload = await this._buildThemeInitPayload(t.manifest, t.frames, false);
+              const frames = (payload as any)?.frames;
+              const frameKeys = frames && typeof frames === "object" ? Object.keys(frames) : [];
+              const envBg = frames && typeof frames === "object" ? frames["environment_background"] : undefined;
+              const envBgFirst = Array.isArray(envBg) ? envBg[0] : undefined;
+              log(
+                `panel first-load: sending THEME_INITIALIZED theme_id=${t.manifest.theme_id} frameKeyCount=${frameKeys.length} hasEnvBg=${Boolean(envBgFirst)} envBgPrefix=${typeof envBgFirst === "string" ? envBgFirst.slice(0, 30) : "n/a"}`,
+              );
               void this._panel.webview.postMessage({
                 type: MSG.THEME_INITIALIZED,
-                payload: await this._buildThemeInitPayload(t.manifest, t.frames, false),
+                payload,
               });
             } else {
               // No theme on disk yet (fresh install) — tell the webview
               // explicitly so its boot loader can hand off to the no-theme
               // placeholder scene immediately instead of idling out its
               // stage-loading timeout.
+              log("panel first-load: sending THEME_NONE (no theme found)");
               void this._panel.webview.postMessage({ type: MSG.THEME_NONE });
             }
           })();
@@ -1216,8 +1228,6 @@ export class TycoonPanel {
           void this._handleOpenHandbook();
         } else if (message.type === MSG.GET_ENGINE_STATUS) {
           this._pollEngineStatus();
-        } else if (message.type === MSG.SETUP_UEFN_PROJECT) {
-          void this._handleSetupUefnProject();
         } else if (message.type === MSG.RUN_DOCTOR) {
           this._handleRunDoctor();
         } else if (message.type === MSG.APPLY_DOCTOR_FIX) {
@@ -1226,13 +1236,6 @@ export class TycoonPanel {
             void this._handleApplyDoctorFix(parsedApplyDoctorFix.data.removeForeign);
           } else {
             console.error("TycoonAgents: applyDoctorFix payload rejected:", parsedApplyDoctorFix.error.message);
-          }
-        } else if (message.type === MSG.CLEANUP_LEGACY_BRIDGE) {
-          const parsedCleanupLegacyBridge = MSG_SCHEMAS.CLEANUP_LEGACY_BRIDGE.safeParse(message);
-          if (parsedCleanupLegacyBridge.success) {
-            void this._handleCleanupLegacyBridge();
-          } else {
-            console.error("TycoonAgents: cleanupLegacyBridge payload rejected:", parsedCleanupLegacyBridge.error.message);
           }
         } else if (message.type === MSG.DESIGN_DOC_ACTION) {
           await this._handleDesignDocAction((message as any).mode);
@@ -3512,25 +3515,20 @@ export class TycoonPanel {
         return;
       }
 
-      // This catalog entry's config references ${POWER_TOOLS_DIR} -- fetch
-      // Power Tools automatically (if not already present) before token
-      // resolution below would otherwise throw. Scoped strictly to entries
-      // that actually use the token so unrelated servers (github,
-      // filesystem, ...) never trigger a Power Tools download.
-      if (JSON.stringify(entry.config).includes("${POWER_TOOLS_DIR}")) {
-        const ensured = await this._ensurePowerToolsInstalled();
-        if (!ensured.ok) {
-          void this._panel.webview.postMessage({
-            type: MSG.MCP_INSTALLED,
-            id,
-            ok: false,
-            error: ensured.error,
-          });
-          return;
-        }
+      const resolvedConfig = this._resolveConfigTokens(entry.config);
+      if (/<[^<>]*>/.test(JSON.stringify(resolvedConfig))) {
+        void this._panel.webview.postMessage({
+          type: MSG.MCP_INSTALLED,
+          id,
+          ok: false,
+          error:
+            `${id} is provided by Trashbird's Power Tools — install it separately and add the entry to your own ` +
+            ".mcp.json; see .mcp.json.example.",
+        });
+        return;
       }
 
-      const merged = mergeMcpServer(existing, id, this._resolveConfigTokens(entry.config));
+      const merged = mergeMcpServer(existing, id, resolvedConfig);
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
       void this._panel.webview.postMessage({
         type: MSG.MCP_INSTALLED,
@@ -3673,15 +3671,13 @@ export class TycoonPanel {
             })(),
           },
           skills,
-          // Slash commands, agent identities, MCP server name, and whether
-          // this pack stages the Python UEFN bridge - all sourced straight
-          // from the catalog entry so the onboarding "what it installs" copy
-          // (media/main.js describePackageInstalls) never hardcodes per-pack
-          // prose and stays correct as packs change.
+          // Slash commands, agent identities, and MCP server name - all
+          // sourced straight from the catalog entry so the onboarding "what
+          // it installs" copy (media/main.js describePackageInstalls) never
+          // hardcodes per-pack prose and stays correct as packs change.
           commands: packCommands,
           agents: packAgents.map((a: any) => ({ id: a.id, name: a.name })),
           mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
-          stagesPythonBridge: pack.mcp === "uefn-bridge" || pack.id === "uefn",
           thirdParty: disclosures.length > 0,
           disclosures,
         };
@@ -3693,15 +3689,12 @@ export class TycoonPanel {
   }
 
   /** Build the modal-confirm body listing a pack's third-party sources. */
-  private _buildPackConfirmMessage(packName: string, disclosures: any[], stagesPythonBridge = false): string {
+  private _buildPackConfirmMessage(packName: string, disclosures: any[]): string {
     const networked = disclosures.filter((d) => d && d.network);
     const lines: string[] = [];
     lines.push(`Install ${packName || "this pack"}?`);
     lines.push("");
     lines.push("This installs third-party software that runs on your machine:");
-    if (stagesPythonBridge) {
-      lines.push("It also stages the Python bridge into Content/Python - no manual Python setup needed.");
-    }
     for (const d of disclosures) {
       const who = [d.label, d.vendor].filter(Boolean).join(" - ");
       lines.push(`- ${who}${d.package ? ` - runs ${d.package}` : ""}`);
@@ -3771,25 +3764,12 @@ export class TycoonPanel {
     return results;
   }
 
-  /**
-   * Install a pack; when it provides the UEFN bridge, also auto-stages the
-   * Python side (see `_stageUefnBridgeAllTargets`) so the user never has to
-   * paste Python manually. Returns the staging result so `_handleSetupUefnProject`
-   * can reuse it for its own `uefnSetupDone` summary without staging twice;
-   * `undefined` when this pack didn't stage anything.
-   */
+  /** Install a pack: its skills, commands, MCP server, and agent files. */
   private async _handleInstallPack(
     id: string,
     thirdParty = false,
     passedDisclosures?: any[]
-  ): Promise<{
-    bridgeStatus: "staged" | "exists";
-    engineFound: boolean;
-    locations: Array<{
-      label: string; dir: string;
-      staged: number; updated: number; unchanged: number; error?: string;
-    }>;
-  } | undefined> {
+  ): Promise<void> {
     try {
       const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
       const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
@@ -3815,8 +3795,6 @@ export class TycoonPanel {
       const disclosures = mcpCatalog.length > 0
         ? this._buildPackDisclosures(pack, mcpCatalog)
         : (Array.isArray(passedDisclosures) ? passedDisclosures : []);
-      const stagesPythonBridge = pack.mcp === "uefn-bridge" || pack.id === "uefn";
-
       // UEFN-pack-only conflict gate: this pack ships its own Verse
       // specialists (uefn-auditor, verse-expert) that route the same task
       // keywords as the generic reviewer/coding-specialist agents. Leaving
@@ -3841,7 +3819,7 @@ export class TycoonPanel {
             "so task routing goes to the correct Verse-specialist agents instead of the generic ones."
           : "";
         const answer = await vscode.window.showWarningMessage(
-          this._buildPackConfirmMessage(pack.name, disclosures, stagesPythonBridge) + conflictWarning,
+          this._buildPackConfirmMessage(pack.name, disclosures) + conflictWarning,
           { modal: true },
           "Install"
         );
@@ -3927,20 +3905,19 @@ export class TycoonPanel {
         if (hasMcpServer(existing, pack.mcp)) {
           results.mcp = "exists";
         } else {
-          // This pack's MCP entry references ${POWER_TOOLS_DIR} -- fetch
-          // Power Tools automatically (if not already present) before token
-          // resolution below would otherwise throw. Scoped strictly to
-          // entries that actually use the token, same gate as _handleInstallMcp.
-          if (JSON.stringify(entry.config).includes("${POWER_TOOLS_DIR}")) {
-            const ensured = await this._ensurePowerToolsInstalled();
-            if (!ensured.ok) {
-              this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: ensured.error });
-              return;
-            }
+          const resolvedConfig = this._resolveConfigTokens(entry.config);
+          if (/<[^<>]*>/.test(JSON.stringify(resolvedConfig))) {
+            results.mcp = {
+              status: "skipped",
+              error:
+                `${pack.mcp} is provided by Trashbird's Power Tools — install it separately and add the entry to ` +
+                "your own .mcp.json; see .mcp.json.example.",
+            };
+          } else {
+            const merged = mergeMcpServer(existing, pack.mcp, resolvedConfig);
+            fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+            results.mcp = "installed";
           }
-          const merged = mergeMcpServer(existing, pack.mcp, this._resolveConfigTokens(entry.config));
-          fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
-          results.mcp = "installed";
         }
       }
       const agents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
@@ -3999,43 +3976,11 @@ export class TycoonPanel {
       fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
       fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
 
-      // Auto-stage the Python bridge when (and only when) this pack provides
-      // the UEFN bridge - never for godot/unity/other packs. Staging is an
-      // idempotent file copy (see _stageBridgeTo), so re-running install is
-      // safe. This is the single staging call site for pack installs;
-      // _handleSetupUefnProject reuses this method's return value instead of
-      // staging again.
-      let bridgeStaging:
-        | { bridgeStatus: "staged" | "exists"; engineFound: boolean; locations: Array<{ label: string; dir: string; staged: number; updated: number; unchanged: number; error?: string }> }
-        | undefined;
-      if (pack.mcp === "uefn-bridge" || pack.id === "uefn") {
-        try {
-          bridgeStaging = this._stageUefnBridgeAllTargets(root);
-          results.bridge = {
-            status: bridgeStaging.bridgeStatus,
-            engineFound: bridgeStaging.engineFound,
-            locations: bridgeStaging.locations,
-          };
-          void vscode.window.showInformationMessage(
-            "UEFN bridge installed into Content/Python. Reopen your UEFN project in the editor to activate it."
-          );
-        } catch (e) {
-          // Do NOT swallow this into the overall `ok: true` success shape —
-          // the rest of the pack (skills/commands/mcp/agents) can genuinely
-          // succeed while bridge staging fails, and the caller (Setup Wizard
-          // Step-2 checkbox install, or Settings > Packs) needs to know the
-          // bridge specifically did not land. Reported the same way every
-          // other per-component failure above is: an `error` field inside
-          // `results`, never a silently-dropped catch.
-          results.bridge = { status: "error", error: String(e) };
-        }
-      }
-
       this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: true, results });
-      return bridgeStaging;
+      return;
     } catch (e) {
       this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: String(e) });
-      return undefined;
+      return;
     }
   }
 
@@ -4197,1484 +4142,6 @@ export class TycoonPanel {
       this._handleGetMcp();
     } catch (e) {
       this._panel.webview.postMessage({ type: MSG.PACK_REMOVED, id, ok: false, error: String(e) });
-    }
-  }
-
-  private async _handleSetupUefnProject(): Promise<void> {
-    try {
-      const root = this._projectRoot();
-      if (root === "") {
-        void this._panel.webview.postMessage({ type: MSG.UEFN_SETUP_DONE, ok: false, error: "No workspace folder open" });
-        return;
-      }
-      // Install the uefn pack (reuses _handleInstallPack logic via _installPackById).
-      // We call _handleInstallPack directly; it posts packInstalled - but we also need
-      // to handle the bridge staging and post uefnSetupDone. So we factor pack install
-      // inline here to capture the result synchronously.
-      const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
-      const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
-      const pack = packs.find((p: any) => p.id === "uefn");
-      if (!pack) {
-        void this._panel.webview.postMessage({ type: MSG.UEFN_SETUP_DONE, ok: false, error: "UEFN pack not found in catalog" });
-        return;
-      }
-      // Reuse the existing pack-install logic by calling _handleInstallPack("uefn").
-      // That method posts its own packInstalled message AND stages the Python bridge
-      // into every location UEFN may load Python from (see _stageUefnBridgeAllTargets;
-      // CRUCIAL: UEFN loads the bridge from the Fortnite ENGINE install's
-      // FortniteGame/Content/Python, which wins on sys.path over the project's own
-      // Content/Python, so both are staged). We await it here (unlike a fire-and-forget
-      // call) specifically to reuse its staging result below, so we don't stage a
-      // second time. UEFN is not third-party, so no confirm modal is shown.
-      const staged = await this._handleInstallPack("uefn");
-
-      const bridgeStatus: "staged" | "exists" = staged?.bridgeStatus ?? "exists";
-      const engineFound = staged?.engineFound ?? false;
-      const locations = staged?.locations ?? [];
-
-      // Do NOT report ok:true when the project-target resolution itself
-      // failed (see `_stageUefnBridgeAllTargets` / `_resolveUefnContentDirEvidence`)
-      // — `bridgeStatus` alone can look like an innocuous "exists" (nothing
-      // needed doing) when what actually happened is "we couldn't figure out
-      // where to stage it and wrote nothing". The project location's own
-      // `error` field is the authoritative signal; surface it explicitly
-      // rather than let a misleadingly-clean top-level `ok:true` hide it.
-      const projectLocation = locations.find((l) => l.label === "project");
-      if (projectLocation?.error) {
-        void this._panel.webview.postMessage({
-          type: MSG.UEFN_SETUP_DONE,
-          ok: false,
-          error: projectLocation.error,
-          results: { pack: "uefn", bridge: bridgeStatus, engineFound, locations },
-        });
-        return;
-      }
-
-      void this._panel.webview.postMessage({
-        type: MSG.UEFN_SETUP_DONE,
-        ok: true,
-        results: { pack: "uefn", bridge: bridgeStatus, engineFound, locations },
-      });
-    } catch (e) {
-      void this._panel.webview.postMessage({ type: MSG.UEFN_SETUP_DONE, ok: false, error: String(e) });
-    }
-  }
-
-  /**
-   * Resolve the Power Tools directory every bridge-staging site below reads
-   * shipped files from. Power Tools no longer ships bundled at
-   * `<extensionDir>/media/uefn-bridge` — it's a standalone repo installed on
-   * demand — so this is the SINGLE place that calls `resolvePowerToolsDir`
-   * (env override / installed copy under global storage / legacy bundled
-   * fallback — see `powerToolsInstall.ts`) rather than each of the ~5
-   * staging/version-check call sites constructing that now-deleted path
-   * directly. Returns `null` when nothing on the discovery ladder resolves;
-   * callers must surface that as an explicit error (never proceed with a
-   * broken/undefined path, never silently no-op) — see each call site's own
-   * handling.
-   */
-  private _powerToolsDir(): string | null {
-    const location = resolvePowerToolsDir(this._extensionUri.fsPath, this._globalStorageUri.fsPath);
-    return location === null ? null : location.dir;
-  }
-
-  /**
-   * Ensure Power Tools is available before an install path that needs
-   * `${POWER_TOOLS_DIR}` runs. First checks `resolvePowerToolsDir` (env
-   * override / installed copy / legacy bundled copy) — an existing install
-   * always wins and is never re-downloaded. Only when nothing resolves does
-   * it fetch the latest release via `installPowerTools` and unpack it into
-   * this extension's global storage.
-   *
-   * No progress-reporting channel for long host operations exists elsewhere
-   * in this panel (checked: no `withProgress`/status-bar usage, and the one
-   * existing progress message type, `MSG.THEME_GENERATION_PROGRESS`, is
-   * theme-generation-specific), so `onProgress` is omitted here rather than
-   * inventing a new message channel for this one call site.
-   */
-  private async _ensurePowerToolsInstalled(): Promise<{ ok: true; dir: string } | { ok: false; error: string }> {
-    const existing = resolvePowerToolsDir(this._extensionUri.fsPath, this._globalStorageUri.fsPath);
-    if (existing !== null) {
-      return { ok: true, dir: existing.dir };
-    }
-    const result = await installPowerTools(this._globalStorageUri.fsPath);
-    if (result.ok) {
-      return { ok: true, dir: result.dir };
-    }
-    return {
-      ok: false,
-      error: `${result.error} (tried: ${result.tried.join(", ") || "(none)"}). ` +
-        "Set POWERTOOLS_DIR to an existing Power Tools install to skip this step.",
-    };
-  }
-
-  /**
-   * Copy every bridge file from `bridgeDir` into `pyDest`, except the Node MCP
-   * server (`uefn-server.mjs`), which does not belong in UEFN's Content/Python.
-   * A file is written only when absent or when its content differs, so tool
-   * updates land without needlessly rewriting unchanged files. Creates pyDest.
-   */
-  /**
-   * Stage every shipped bridge file into `pyDest`. `bridge_version.py`
-   * ALWAYS copies LAST, and ONLY if every other sibling copied cleanly.
-   *
-   * THE BUG THIS ORDERING FIXES: this used to copy files in plain
-   * `fs.readdirSync` (directory-listing) order, and `bridge_version.py`
-   * sorts alphabetically ahead of nearly every sibling. This method runs on
-   * panel load (`_autoUpdateUefnBridgeIfStale`) while UEFN may be open and
-   * holding a sibling file locked — so the stamp could land, then a LATER
-   * sibling's `copyFileSync` throws (locked/read-only/AV), leaving NEW
-   * stamp + STALE siblings on disk. That state is self-perpetuating: the
-   * next panel load reads the stamp as current and never retries, and
-   * `_verifiedUefnBridgeStampValue` (which only re-reads the stamp) would
-   * certify the broken state as verified — recreating, one layer down,
-   * the exact "success-shaped stamp with no verified files behind it" bug
-   * this changeset exists to kill.
-   *
-   * Every file copy is individually try/caught: one failing sibling no
-   * longer aborts the whole call (best-effort, same posture as
-   * `_healDuplicateUefnBridgeStaging`), but if ANY sibling fails,
-   * `bridge_version.py` is skipped entirely rather than attempted — so a
-   * partial failure always leaves the OLD stamp (or none) in place. The
-   * on-disk state alone is what guarantees the next panel load sees this
-   * as stale and retries; no separate "did it work" signal needs to be
-   * threaded through the caller.
-   *
-   * Returns `error` (a joined, human-readable summary of every failed
-   * file) when anything failed to copy — callers must surface this rather
-   * than reading a call with `error` unset as full success.
-   */
-  private _stageBridgeTo(
-    bridgeDir: string,
-    pyDest: string
-  ): { staged: number; updated: number; unchanged: number; error?: string } {
-    try {
-      fs.mkdirSync(pyDest, { recursive: true });
-    } catch (e) {
-      // Can't even create the destination -- nothing below can proceed.
-      // Route through describeFsError so a masked-long-path ENOENT (see its
-      // doc comment) is named explicitly rather than looking like a
-      // mysterious "destination doesn't exist" failure.
-      return { staged: 0, updated: 0, unchanged: 0, error: describeFsError(e, pyDest) };
-    }
-    let staged = 0;
-    let updated = 0;
-    let unchanged = 0;
-    const failures: string[] = [];
-
-    const names = fs.readdirSync(bridgeDir).filter((name) => {
-      if (name === "uefn-server.mjs") return false;
-      if (name === "__pycache__") return false;
-      if (name.endsWith(".pyc") || name.endsWith(".pyo")) return false;
-      try {
-        return fs.statSync(path.join(bridgeDir, name)).isFile();
-      } catch {
-        return false;
-      }
-    });
-
-    const STAMP_NAME = "bridge_version.py";
-    const orderedNames = [...names.filter((n) => n !== STAMP_NAME), ...names.filter((n) => n === STAMP_NAME)];
-
-    for (const name of orderedNames) {
-      if (name === STAMP_NAME && failures.length > 0) {
-        // A sibling already failed this run -- never stamp a partially
-        // updated dir, even if bridge_version.py itself would copy fine.
-        failures.push(`${STAMP_NAME}: skipped -- ${failures.length} earlier sibling(s) failed to copy`);
-        continue;
-      }
-      try {
-        const srcPath = path.join(bridgeDir, name);
-        const destPath = path.join(pyDest, name);
-        if (!fs.existsSync(destPath)) {
-          fs.copyFileSync(srcPath, destPath);
-          staged++;
-        } else if (!fs.readFileSync(srcPath).equals(fs.readFileSync(destPath))) {
-          fs.copyFileSync(srcPath, destPath);
-          updated++;
-        } else {
-          unchanged++;
-        }
-      } catch (e) {
-        failures.push(`${name}: ${describeFsError(e, path.join(pyDest, name))}`);
-      }
-    }
-
-    return failures.length > 0
-      ? { staged, updated, unchanged, error: failures.join("; ") }
-      : { staged, updated, unchanged };
-  }
-
-  /**
-   * Discover the Fortnite engine `FortniteGame/Content/Python` director(ies)
-   * that UEFN actually loads bridge modules from. Resolves the install via
-   * `FORTNITE_INSTALL_DIR` (explicit override — always wins, skips every
-   * other rung), then the Epic Games Launcher manifests (authoritative),
-   * then a bounded probe of every fixed drive letter actually present on the
-   * machine (see `enumerateFixedDrives`) for the common default install
-   * location. Returns only paths whose parent `FortniteGame/Content` exists
-   * (the Python subdir is created on stage).
-   */
-  private _findFortnitePythonDirs(): string[] {
-    const found = new Set<string>();
-    const addFromInstall = (installLoc: string): void => {
-      if (!installLoc) return;
-      const contentBase = path.join(installLoc, "FortniteGame", "Content");
-      try {
-        if (fs.existsSync(contentBase)) {
-          found.add(path.join(contentBase, "Python"));
-        }
-      } catch {
-        /* ignore inaccessible path */
-      }
-    };
-
-    // 0) Explicit override always wins.
-    const overrideDir = process.env.FORTNITE_INSTALL_DIR;
-    if (overrideDir) {
-      addFromInstall(overrideDir);
-      if (found.size > 0) return [...found];
-    }
-
-    // 1) Epic Games Launcher manifests list every installed app's location.
-    try {
-      const programData = resolveProgramDataRoot();
-      const manifestsDir = path.join(programData, "Epic", "EpicGamesLauncher", "Data", "Manifests");
-      if (fs.existsSync(manifestsDir)) {
-        for (const f of fs.readdirSync(manifestsDir)) {
-          if (!f.toLowerCase().endsWith(".item")) continue;
-          try {
-            const m = JSON.parse(fs.readFileSync(path.join(manifestsDir, f), "utf8"));
-            const label = String(m.DisplayName || m.AppName || m.MandatoryAppFolderName || "");
-            const loc = String(m.InstallLocation || "");
-            if (loc && /fortnite/i.test(`${label} ${loc}`)) {
-              addFromInstall(loc);
-            }
-          } catch {
-            /* skip malformed manifest */
-          }
-        }
-      }
-    } catch {
-      /* manifests unavailable — fall through to defaults */
-    }
-
-    // 2) Fallback: probe every fixed drive letter actually present.
-    if (found.size === 0) {
-      for (const drive of enumerateFixedDrives()) {
-        addFromInstall(path.join(`${drive}\\`, "Program Files", "Epic Games", "Fortnite"));
-      }
-    }
-
-    return [...found];
-  }
-
-  /** Canonicalized (case-insensitive, trailing-separator-stripped) form of a path, for containment/equality comparisons that must be robust to trailing slashes and Windows case-insensitivity. */
-  private _canonPath(p: string): string {
-    return path.normalize(p).toLowerCase().replace(/[\\/]+$/, "");
-  }
-
-  /**
-   * Rung 1 of the staging-target evidence ladder (see CLAUDE.md's Path &
-   * Environment Discovery ladder / docs/PATH-DISCOVERY.md): the workspace's
-   * matching UEFN `.vproject` Source package `dirPath` — content-based
-   * evidence, never a name/layout guess. UEFN writes one `.vproject` per
-   * opened project under `<VerseProjectRoot>/<name>/vproject/*.vproject`
-   * (see `media/skills/uefn/verse_lsp_check.py`'s `locate_vproject`, which
-   * this mirrors on the TS side); its `packages[].desc` entry whose
-   * `settings.role === "Source"` carries the REAL content directory in
-   * `dirPath`, independent of where the workspace happens to be opened.
-   *
-   * `VerseProjectRoot` resolution: `UEFN_VERSE_PROJECT_DIR` override always
-   * wins; else `%LOCALAPPDATA%\UnrealEditorFortnite\Saved\VerseProject`;
-   * else a homedir()-derived `AppData\Local` fallback (same ladder
-   * `uefnDetect.ts` already uses for `uefnInstalled`).
-   *
-   * A `.vproject` file's Source `dirPath` is considered a match for `root`
-   * when the two are canonically equal, `root` is an ancestor of `dirPath`
-   * (workspace opened at the outer project root, content dir is a
-   * descendant — the classic ROOT layout, and the Plugins layout where the
-   * content dir lives under `Plugins/<Plugin>/Content`), or `dirPath` is an
-   * ancestor of `root` (workspace opened somewhere inside the content dir,
-   * e.g. `Content/Verse`). Every unreadable/invalid `.vproject` is skipped,
-   * never thrown — this is a best-effort evidence GATHERER; the caller
-   * decides what "zero matches" or "more than one distinct match" means.
-   */
-  private _findMatchingVprojectContentDirs(root: string): Array<{ contentDir: string; vprojectPath: string }> {
-    const verseProjectRoots: string[] = [];
-    const override = process.env.UEFN_VERSE_PROJECT_DIR;
-    if (override) {
-      verseProjectRoots.push(override);
-    } else {
-      const localAppData = process.env.LOCALAPPDATA;
-      if (localAppData) {
-        verseProjectRoots.push(path.join(localAppData, "UnrealEditorFortnite", "Saved", "VerseProject"));
-      } else {
-        try {
-          const home = os.homedir();
-          if (home) {
-            verseProjectRoots.push(path.join(home, "AppData", "Local", "UnrealEditorFortnite", "Saved", "VerseProject"));
-          }
-        } catch {
-          /* os.homedir() can throw in rare sandboxed/CI environments -- no candidate from this rung */
-        }
-      }
-    }
-
-    const canonRoot = this._canonPath(root);
-    const results: Array<{ contentDir: string; vprojectPath: string }> = [];
-    const seenContentDirs = new Set<string>();
-
-    for (const vpRoot of verseProjectRoots) {
-      let projectDirs: string[];
-      try {
-        projectDirs = fs.readdirSync(vpRoot);
-      } catch {
-        continue;
-      }
-      for (const projectDir of projectDirs) {
-        const vprojectSub = path.join(vpRoot, projectDir, "vproject");
-        let files: string[];
-        try {
-          files = fs.readdirSync(vprojectSub);
-        } catch {
-          continue;
-        }
-        for (const f of files) {
-          if (!f.toLowerCase().endsWith(".vproject")) continue;
-          const vprojectPath = path.join(vprojectSub, f);
-          let sourceDir: string | null = null;
-          try {
-            const data = JSON.parse(fs.readFileSync(vprojectPath, "utf8"));
-            const packages = Array.isArray(data?.packages) ? data.packages : [];
-            for (const pkg of packages) {
-              const desc = pkg?.desc;
-              if (desc?.settings?.role === "Source" && typeof desc?.dirPath === "string" && desc.dirPath) {
-                sourceDir = desc.dirPath;
-                break;
-              }
-            }
-          } catch {
-            continue; // unreadable/invalid JSON, or no Source package -- not evidence for this workspace
-          }
-          if (!sourceDir) continue;
-
-          const canonSource = this._canonPath(sourceDir);
-          const isMatch =
-            canonSource === canonRoot ||
-            canonSource.startsWith(canonRoot + path.sep) ||
-            canonRoot.startsWith(canonSource + path.sep);
-          if (!isMatch) continue;
-
-          if (!seenContentDirs.has(canonSource)) {
-            seenContentDirs.add(canonSource);
-            results.push({ contentDir: sourceDir, vprojectPath });
-          }
-        }
-      }
-    }
-    return results;
-  }
-
-  /**
-   * True when `root` is CONFIRMED to be a UEFN content dir in its own
-   * right, never on name alone (an unrelated project's own "Content"
-   * folder must not be redirected): either it directly contains `.verse`
-   * files, or it's named `Content` AND a `.uefnproject` marker is found
-   * walking UP its ancestor chain (bounded to 6 levels). The bounded walk
-   * (rather than only the immediate parent) is what actually fixes the
-   * Plugins layout: `.uefnproject` lives at the true project root, several
-   * levels above `Plugins/<Plugin>/Content`, not in `Content`'s immediate
-   * parent — the exact shape of the field failure: a workspace opened at
-   * `Plugins/<Plugin>/Content` got staged into a fabricated
-   * `Content/Content/Python` because only the immediate parent was ever
-   * checked for the marker.
-   *
-   * Gates `_resolveUefnContentDirEvidence`'s rung 2 (root confirmed as real
-   * content, checked BEFORE any bridge-file scanning) — an unconfirmed root
-   * can still be picked up later via rung 3's existing-bridge check, but
-   * only as corroborating evidence, never in place of this check.
-   */
-  private _confirmedContentDirItself(dir: string): boolean {
-    try {
-      if (fs.readdirSync(dir).some((f) => f.toLowerCase().endsWith(".verse"))) return true;
-    } catch {
-      /* inaccessible -- fall through to the marker-walk check */
-    }
-    if (path.basename(dir).toLowerCase() !== "content") return false;
-    let cursor = path.dirname(dir);
-    for (let i = 0; i < 6; i++) {
-      try {
-        if (fs.readdirSync(cursor).some((entry) => entry.toLowerCase().endsWith(".uefnproject"))) return true;
-      } catch {
-        break;
-      }
-      const parent = path.dirname(cursor);
-      if (parent === cursor) break; // reached the filesystem root
-      cursor = parent;
-    }
-    return false;
-  }
-
-  /**
-   * Rungs 3/4's shared candidate set: every directory that PLAUSIBLY IS the
-   * project's UEFN content dir, purely from documented layout rules (no
-   * vproject evidence involved) —
-   *   - workspace-is-content-dir: `root` itself, UNCONDITIONALLY included
-   *     here so rung 3's existing-bridge scan can still pick up an
-   *     UNCONFIRMED root that happens to already have a bridge staged
-   *     (a root PASSING `_confirmedContentDirItself` is already settled by
-   *     rung 2, before this candidate set is even built) — `root` itself IS
-   *     the content dir in this case and must never get another `Content`
-   *     appended onto it.
-   *   - root Content: `<root>/Content` exists (the classic ROOT layout,
-   *     workspace opened at the project root).
-   *   - Plugins scan: `<root>/Plugins/<name>/Content` (the Plugins layout,
-   *     workspace opened at the project root, content dir nested under a
-   *     plugin).
-   * De-duplicated by canonical path. Every fs probe fails open.
-   */
-  private _plausibleContentDirCandidates(root: string): string[] {
-    const candidates: string[] = [root];
-
-    try {
-      const rootContent = path.join(root, "Content");
-      if (fs.existsSync(rootContent) && fs.statSync(rootContent).isDirectory()) {
-        candidates.push(rootContent);
-      }
-    } catch {
-      /* inaccessible -- not a candidate */
-    }
-
-    try {
-      const pluginsDir = path.join(root, "Plugins");
-      if (fs.existsSync(pluginsDir) && fs.statSync(pluginsDir).isDirectory()) {
-        for (const entry of fs.readdirSync(pluginsDir)) {
-          const pluginContent = path.join(pluginsDir, entry, "Content");
-          try {
-            if (fs.existsSync(pluginContent) && fs.statSync(pluginContent).isDirectory()) {
-              candidates.push(pluginContent);
-            }
-          } catch {
-            /* inaccessible -- not a candidate */
-          }
-        }
-      }
-    } catch {
-      /* inaccessible -- not a candidate */
-    }
-
-    const seen = new Set<string>();
-    return candidates.filter((c) => {
-      const canon = this._canonPath(c);
-      if (seen.has(canon)) return false;
-      seen.add(canon);
-      return true;
-    });
-  }
-
-  /**
-   * The full evidence ladder for "what is this workspace's real UEFN
-   * content directory" — strongest evidence first, never a guess (see
-   * CLAUDE.md's Path & Environment Discovery ladder):
-   *   1. A UNIQUE matching `.vproject` Source `dirPath` (content-based,
-   *      see `_findMatchingVprojectContentDirs`). More than one distinct
-   *      match is reported `ambiguous`, never silently picked.
-   *   2. The workspace root ITSELF confirmed as real content (see
-   *      `_confirmedContentDirItself`: `.verse` files present, or a
-   *      `.uefnproject` marker found walking up) — wins outright, BEFORE
-   *      any bridge-file scanning, so a bogus sibling `Content/Python` left
-   *      by a prior corrupted install can never out-"evidence" the real,
-   *      confirmed root.
-   *   3. A UNIQUE plausible content dir (see `_plausibleContentDirCandidates`)
-   *      that already has `Python/init_unreal.py` staged — corroborating
-   *      evidence only, refresh in place rather than guessing a second
-   *      target. Never checked ahead of rung 2: `init_unreal.py` presence
-   *      alone is exactly what a corrupted install scatters around, never
-   *      primary evidence.
-   *   4. A UNIQUE plausible content dir per the documented layout rules,
-   *      with no bridge staged yet (root itself excluded — already settled
-   *      by rung 2).
-   * Zero candidates at every rung, or more than one at whichever rung is
-   * reached, both return `contentDir: null` — callers must surface that
-   * rather than fabricating a path (the field failure this ladder exists
-   * to prevent: staging into `Content/Content/Python` because a workspace
-   * opened AT a Plugins-layout content dir wasn't recognised as one).
-   */
-  private _resolveUefnContentDirEvidence(root: string):
-    | { contentDir: string; source: "vproject" | "existing-python" | "layout-rule"; detail: string }
-    | { contentDir: null; ambiguous: boolean; reason: string } {
-    // Safety net applied at EVERY rung below: every downstream consumer of
-    // the resolved content dir (`_uefnEffectiveRoot`, `_stageUefnBridgeAllTargets`,
-    // `_healDuplicateUefnBridgeStaging`, the staleness/ignore-target checks)
-    // reconstructs it as `dirname(contentDir) + "Content"` — correct ONLY
-    // when the resolved dir is actually named `Content` (always true for a
-    // real UEFN project; Unreal/UEFN's own convention never names the
-    // content dir anything else). A candidate that fails this check is
-    // rejected outright rather than silently reconstructed into a wrong
-    // path — this is what actually caught a fixture bug during development
-    // where a non-"Content"-named stand-in resolved into a nonsense sibling
-    // path instead of failing loudly.
-    const isNamedContentDir = (dir: string): boolean => path.basename(dir).toLowerCase() === "content";
-
-    const vprojectMatches = this._findMatchingVprojectContentDirs(root).filter((m) => isNamedContentDir(m.contentDir));
-    if (vprojectMatches.length === 1) {
-      return {
-        contentDir: vprojectMatches[0].contentDir,
-        source: "vproject",
-        detail: `matched .vproject Source package at ${vprojectMatches[0].vprojectPath}`,
-      };
-    }
-    if (vprojectMatches.length > 1) {
-      return {
-        contentDir: null,
-        ambiguous: true,
-        reason:
-          `${vprojectMatches.length} .vproject Source packages matched this workspace: ` +
-          vprojectMatches.map((m) => m.contentDir).join(", "),
-      };
-    }
-
-    // Rung 2: the workspace root ITSELF is CONFIRMED real content (`.verse`
-    // files directly present, or a `.uefnproject` marker found walking up
-    // its ancestor chain — see `_confirmedContentDirItself`). This is
-    // checked BEFORE any bridge-file scanning below and wins outright:
-    // `init_unreal.py` presence elsewhere is corroboration, never primary
-    // evidence — it is exactly what a prior corrupted install scatters
-    // around (a bogus `<root>/Content/Python` left by the original bug
-    // would otherwise out-"evidence" the real, confirmed root via rung 3's
-    // bridge-file scan below). A confirmed root must never lose to a
-    // fabricated sibling just because that sibling happens to already have
-    // our own files staged in it.
-    if (isNamedContentDir(root) && this._confirmedContentDirItself(root)) {
-      return {
-        contentDir: root,
-        source: "layout-rule",
-        detail: "workspace root confirmed as the content dir (.verse files present or a .uefnproject marker found)",
-      };
-    }
-
-    // Rung 3: an existing staged bridge (`Python/init_unreal.py`) under a
-    // plausible content dir — refresh in place rather than guessing a
-    // second target. Only reached when the root itself wasn't confirmed
-    // above, so this is corroborating evidence for an UNCONFIRMED root (or
-    // a sibling candidate), never primary evidence on its own.
-    const candidates = this._plausibleContentDirCandidates(root).filter(isNamedContentDir);
-    const withBridge = candidates.filter((c) => {
-      try {
-        return fs.existsSync(path.join(c, "Python", "init_unreal.py"));
-      } catch {
-        return false;
-      }
-    });
-    if (withBridge.length === 1) {
-      return { contentDir: withBridge[0], source: "existing-python", detail: `existing Python/init_unreal.py under ${withBridge[0]}` };
-    }
-    if (withBridge.length > 1) {
-      return {
-        contentDir: null,
-        ambiguous: true,
-        reason: `multiple existing Python/init_unreal.py bridge copies found: ${withBridge.join(", ")}`,
-      };
-    }
-
-    // Rung 4: bare layout rule, no bridge staged anywhere and root itself
-    // wasn't confirmed (already handled by rung 2 above, so always excluded
-    // here). `<root>/Content` and `<root>/Plugins/<name>/Content` are
-    // already self-evidencing structural facts on their own.
-    const rootCanon = this._canonPath(root);
-    const layoutCandidates = candidates.filter((c) => this._canonPath(c) !== rootCanon);
-    if (layoutCandidates.length === 1) {
-      return { contentDir: layoutCandidates[0], source: "layout-rule", detail: `layout rule matched ${layoutCandidates[0]}` };
-    }
-    if (layoutCandidates.length > 1) {
-      return {
-        contentDir: null,
-        ambiguous: true,
-        reason: `multiple plausible content dirs with no way to disambiguate: ${layoutCandidates.join(", ")}`,
-      };
-    }
-
-    return {
-      contentDir: null,
-      ambiguous: false,
-      reason:
-        "no matching .vproject Source package, no existing Python bridge, and no plausible content dir " +
-        "(workspace root itself, <root>/Content, or <root>/Plugins/*/Content) found",
-    };
-  }
-
-  /**
-   * If `root` (the workspace folder) IS a UEFN project's `Content` dir
-   * itself (opened at the wrong level — parent holds the `.uefnproject`),
-   * every UEFN-filesystem path must anchor at the PARENT instead. Staging
-   * hardcodes `<effRoot>/Content/Python`, so when `root` is already the
-   * content dir that must land at `<parent-of-Content>/Content/Python`, not
-   * a doubled `Content/Content/Python` (a real bug hit in the field, in
-   * both the ROOT layout — content dir's parent holds `.uefnproject` — and
-   * the Plugins layout — content dir is `Plugins/<Plugin>/Content`, with
-   * `.uefnproject` several levels further up at the true project root).
-   * Delegates to `_resolveUefnContentDirEvidence` (see) for WHICH directory
-   * is the real content dir, then returns its PARENT so every existing
-   * `path.join(effRoot, "Content", ...)` call site keeps working unchanged.
-   * Best-effort / read-only-safe: returns `root` unchanged whenever the
-   * evidence ladder can't confirm a content dir (no match, or ambiguous) —
-   * callers that only READ through this (staleness checks, ignore-file
-   * targets) are safe with a passthrough; the STAGING write path
-   * (`_stageUefnBridgeAllTargets`) uses `_resolveUefnContentDirEvidence`
-   * directly instead, so it can surface a failure rather than fall back to
-   * a possibly-wrong guessed path.
-   */
-  private _uefnEffectiveRoot(root: string): string {
-    const resolved = this._resolveUefnContentDirEvidence(root);
-    if (resolved.contentDir !== null) return path.dirname(resolved.contentDir);
-    return root;
-  }
-
-  /**
-   * Stage the Python bridge + Power Tools suite into every location UEFN may
-   * load Python from (the project's own Content/Python, plus every
-   * discovered Fortnite engine Python dir — see _findFortnitePythonDirs for
-   * why both are needed). Single source of truth for staging so it runs
-   * exactly once per user action: `_handleInstallPack` calls this when the
-   * installed pack provides the UEFN bridge (auto-stage on install), and
-   * `_handleSetupUefnProject` reuses `_handleInstallPack`'s result instead of
-   * staging a second time.
-   *
-   * The project target is resolved via `_resolveUefnContentDirEvidence` (see
-   * — the evidence ladder that replaced a bare `_uefnEffectiveRoot` call
-   * here): a workspace opened at the project's `Content/` dir, or at a
-   * Plugins-layout plugin's `Content/` dir, must still stage into that
-   * project's real `Content/Python`, not a doubled `Content/Content/Python`
-   * fabricated by guessing. When the ladder can't confirm a target (no
-   * evidence, or more than one candidate), the "project" location is
-   * recorded with an explicit `error` and NOTHING is written there — engine
-   * targets still stage normally, and the failure is visible in the
-   * returned `locations`, never swallowed into a success shape. After a
-   * successful project stage, `_healDuplicateUefnBridgeStaging` auto-repairs
-   * any bogus `Content/Content/Python` left behind by an older, guessed
-   * install.
-   */
-  private _stageUefnBridgeAllTargets(root: string): {
-    bridgeStatus: "staged" | "exists";
-    engineFound: boolean;
-    locations: Array<{
-      label: string; dir: string;
-      staged: number; updated: number; unchanged: number; error?: string;
-    }>;
-  } {
-    const bridgeDir = this._powerToolsDir();
-    const resolved = this._resolveUefnContentDirEvidence(root);
-
-    const locations: Array<{
-      label: string; dir: string;
-      staged: number; updated: number; unchanged: number; error?: string;
-    }> = [];
-    let totalWritten = 0;
-    let effRoot: string | null = null;
-
-    if (bridgeDir === null) {
-      // Power Tools isn't resolvable anywhere on the discovery ladder --
-      // never proceed with a broken/undefined source path. Surface it
-      // through the same `error` field every other unresolved-target branch
-      // below uses, so the caller's existing error-reporting channel (see
-      // `_handleSetupUefnProject`'s `projectLocation?.error` check) picks it
-      // up without a new UI/message channel.
-      locations.push({
-        label: "project",
-        dir: "(unresolved)",
-        staged: 0,
-        updated: 0,
-        unchanged: 0,
-        error:
-          "Power Tools is not installed. Install Power Tools (Corsair-Studios/trashbyrds-uefn-power-tools) " +
-          "before setting up UEFN, or set POWERTOOLS_DIR to an existing install.",
-      });
-      return { bridgeStatus: "exists", engineFound: false, locations };
-    }
-
-    if (resolved.contentDir !== null) {
-      effRoot = path.dirname(resolved.contentDir);
-      const projectDir = path.join(effRoot, "Content", "Python");
-      try {
-        const r = this._stageBridgeTo(bridgeDir, projectDir);
-        locations.push({ label: "project", dir: projectDir, ...r });
-        totalWritten += r.staged + r.updated;
-      } catch (e) {
-        locations.push({ label: "project", dir: projectDir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
-      }
-    } else {
-      locations.push({
-        label: "project",
-        dir: "(unresolved)",
-        staged: 0,
-        updated: 0,
-        unchanged: 0,
-        error:
-          `Could not resolve this workspace's real UEFN Content directory (${resolved.reason}). ` +
-          "Set UEFN_VERSE_PROJECT_DIR to override, or open the project once in UEFN so its .vproject Source " +
-          "package is written, then retry install.",
-      });
-    }
-
-    let engineFound = false;
-    for (const engineDir of this._findFortnitePythonDirs()) {
-      engineFound = true;
-      try {
-        const r = this._stageBridgeTo(bridgeDir, engineDir);
-        locations.push({ label: "engine", dir: engineDir, ...r });
-        totalWritten += r.staged + r.updated;
-      } catch (e) {
-        locations.push({ label: "engine", dir: engineDir, staged: 0, updated: 0, unchanged: 0, error: String(e) });
-      }
-    }
-
-    const projectLocation = locations.find((l) => l.label === "project");
-    if (effRoot && projectLocation && !projectLocation.error) {
-      try {
-        this._healDuplicateUefnBridgeStaging(effRoot, bridgeDir);
-      } catch {
-        /* auto-heal is best-effort -- must never break staging */
-      }
-    }
-
-    // Best-effort push for an OLD Fortnite engine-side bridge copy that
-    // predates the bridge's own version-stamp self-sync (see
-    // `_findFortniteEngineBridgeDir` / `_refreshEngineBridgeCopy`). Purely
-    // additive on top of the staging above and must never affect it.
-    try {
-      const engineBridgeDir = this._findFortniteEngineBridgeDir();
-      if (engineBridgeDir) {
-        const refreshResult = this._refreshEngineBridgeCopy(engineBridgeDir);
-        console.log(`TycoonAgents: engine bridge copy refresh (${engineBridgeDir}) -> ${refreshResult}`);
-      }
-    } catch (e) {
-      console.warn("TycoonAgents: engine bridge copy refresh failed:", e);
-    }
-
-    const bridgeStatus: "staged" | "exists" = totalWritten > 0 ? "staged" : "exists";
-    return { bridgeStatus, engineFound, locations };
-  }
-
-  /**
-   * Auto-heal a known-bogus leftover from the double-Content staging bug
-   * (see `_uefnEffectiveRoot`): if `<effRoot>/Content/Content/Python`
-   * exists and holds `uefn_bridge.py`, delete ONLY the files there whose
-   * basenames match the bridge's own source file set (every `.py` +
-   * `trashbyrd_40x40.png` staged from `bridgeDir` -- the same set
-   * `_stageBridgeTo` copies, excluding `uefn-server.mjs`/`__pycache__`/
-   * `.pyc`/`.pyo`), then removes the emptied `Python` dir and its
-   * `Content` parent if they end up empty. Every fs op is try/caught so a
-   * failure here can never break staging, and nothing outside the known
-   * bridge file set -- e.g. a user's own file that happened to land there
-   * -- is ever touched or removed.
-   */
-  private _healDuplicateUefnBridgeStaging(effRoot: string, bridgeDir: string): void {
-    const dupPythonDir = path.join(effRoot, "Content", "Content", "Python");
-    try {
-      if (!fs.existsSync(path.join(dupPythonDir, "uefn_bridge.py"))) return;
-    } catch {
-      return;
-    }
-
-    let bridgeFileNames: string[];
-    try {
-      bridgeFileNames = fs.readdirSync(bridgeDir).filter((name) => {
-        if (name === "uefn-server.mjs") return false;
-        if (name === "__pycache__") return false;
-        if (name.endsWith(".pyc") || name.endsWith(".pyo")) return false;
-        try {
-          return fs.statSync(path.join(bridgeDir, name)).isFile();
-        } catch {
-          return false;
-        }
-      });
-    } catch {
-      return;
-    }
-
-    for (const name of bridgeFileNames) {
-      try {
-        fs.unlinkSync(path.join(dupPythonDir, name));
-      } catch {
-        /* best-effort -- leave file in place on failure */
-      }
-    }
-
-    try {
-      if (fs.readdirSync(dupPythonDir).length === 0) {
-        fs.rmdirSync(dupPythonDir);
-      }
-    } catch {
-      /* not empty (unrelated files remain) or inaccessible -- leave it */
-    }
-
-    const dupContentDir = path.join(effRoot, "Content", "Content");
-    try {
-      if (fs.readdirSync(dupContentDir).length === 0) {
-        fs.rmdirSync(dupContentDir);
-      }
-    } catch {
-      /* not empty or inaccessible -- leave it */
-    }
-  }
-
-  /**
-   * Whether the Python bridge file is staged into the project's own
-   * Content/Python — the "project" target `_stageUefnBridgeAllTargets`
-   * always writes to. Used to harden `uefnBridgeSetUp` (see
-   * `_handleCheckInstall`) so a bare `.mcp.json` uefn-bridge entry, with no
-   * Python actually staged, is no longer reported as "set up". Anchored via
-   * `_uefnEffectiveRoot` (see) so a workspace opened at the project's
-   * `Content/` dir is still checked at the right place.
-   */
-  private _uefnBridgePythonStaged(root: string): boolean {
-    try {
-      const effRoot = this._uefnEffectiveRoot(root);
-      return fs.existsSync(path.join(effRoot, "Content", "Python", "uefn_bridge.py"));
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Verify-after-write for the UEFN bridge, used by `_ensureInstalledPacksFresh`
-   * so a pack's `pack-staging.json` entry can never claim the bridge is
-   * current without re-reading its ACTUAL on-disk stamp. Mirrors the
-   * `_write_json_checked` precedent in `media/uefn-bridge/uefn_bridge.py`
-   * (verify the write landed by reading it back, never trust the write call
-   * alone): re-resolves the project target via `_resolveUefnContentDirEvidence`
-   * (the same write-path evidence ladder `_autoUpdateUefnBridgeIfStale` /
-   * `_stageUefnBridgeAllTargets` use — never the best-effort
-   * `_uefnEffectiveRoot`), then compares the resolved target's OWN
-   * `Content/Python/bridge_version.py` against the shipped one.
-   *
-   * Returns the verified numeric version string ONLY when the resolved
-   * target's stamp matches the shipped bridge exactly — that is the one
-   * shape a caller may read as "confirmed current". Every other outcome
-   * returns a `"stale:<reason>"` / `"unresolved:<reason>"` marker that can
-   * never be mistaken for a real version number, so a reader that
-   * (incorrectly) treated any string here as "it's fine" would still see
-   * an obviously-not-a-version value rather than a false "0.0.490".
-   * Never throws.
-   *
-   * STAMP-BEHIND-SIBLINGS CHECK: `_stageBridgeTo` (see) already guarantees
-   * the inverse can't happen from a normal staging call — it never leaves a
-   * NEW stamp next to STALE siblings, because `bridge_version.py` copies
-   * last and only if every sibling succeeded. What that guarantee does NOT
-   * cover is an OLD stamp sitting beside CURRENT siblings — e.g. a second,
-   * uncoordinated writer (the Python-side project-to-engine self-sync in
-   * `media/uefn-bridge/init_unreal.py`) copies real files in but a stale
-   * `bridge_version.py` from a different source wins the race for the
-   * stamp itself. Ordinarily that is harmless — a plain `stale:<version>`
-   * below triggers a re-stage that fixes it. But if that re-stage then
-   * can't complete (locked file, permissions, AV) it becomes
-   * self-perpetuating: every future load reads `stale:<version>`, retries,
-   * and fails again, forever reporting "stale" for a bridge whose siblings
-   * were never actually behind. So before returning the plain stale
-   * marker, spot-check a couple of large, frequently-changed siblings
-   * (`uefn_bridge.py`, `device_audit.py` — the exact file whose mismatch
-   * produced the `_is_actor_enabled` import failure this check exists to
-   * catch) against the shipped copies. If the stamp says stale but those
-   * siblings are already byte-identical to shipped, the code is already
-   * correct and only the stamp is behind: return the distinct
-   * `"stale:stamp-behind-siblings:<installedVersion>"` marker instead of
-   * the plain one, so a caller that (correctly) only tests "is this a real
-   * version?" still sees stale and keeps working unchanged, while a caller
-   * that wants to tell the two stale shapes apart can. Deliberately cheap
-   * (size-then-content compare, two files) — not a full 26-file diff.
-   */
-  private _verifiedUefnBridgeStampValue(root: string): string {
-    try {
-      const resolved = this._resolveUefnContentDirEvidence(root);
-      if (resolved.contentDir === null) return `unresolved:${resolved.reason}`;
-      const effRoot = path.dirname(resolved.contentDir);
-      const pyDest = path.join(effRoot, "Content", "Python");
-      const stampPath = path.join(pyDest, "bridge_version.py");
-
-      let installedText: string;
-      try {
-        installedText = fs.readFileSync(stampPath, "utf8");
-      } catch {
-        return "stale:missing"; // no bridge_version.py on disk at the resolved target -- never landed
-      }
-
-      const bridgeDir = this._powerToolsDir();
-      if (bridgeDir === null) return "unresolved:power-tools-not-installed";
-      const bundledPath = path.join(bridgeDir, "bridge_version.py");
-      const bundledText = fs.readFileSync(bundledPath, "utf8");
-
-      const installedVersion = parseBridgeVersion(installedText);
-      const bundledVersion = parseBridgeVersion(bundledText);
-      if (!installedVersion) return "stale:unparseable";
-      if (!bundledVersion || installedVersion !== bundledVersion) {
-        // The sibling comparison only ever REFINES this verdict from
-        // `stale:<v>` to the more specific `stale:stamp-behind-siblings:<v>`.
-        // It must never be able to destroy the verdict itself: guard the
-        // call so a missing helper (a stubbed/partial `this`, as in
-        // test/panelPackStampBridgeVerify.test.ts) or a throwing one
-        // degrades to the plain, still-correct `stale:<v>` rather than
-        // escaping to the outer catch and returning `stale:error(...)`,
-        // which would lose the installed version a caller needs.
-        try {
-          if (typeof this._uefnBridgeSiblingsMatchShipped === "function" &&
-              this._uefnBridgeSiblingsMatchShipped(bridgeDir, pyDest)) {
-            return `stale:stamp-behind-siblings:${installedVersion}`;
-          }
-        } catch { /* refinement only -- fall through to the plain verdict */ }
-        return `stale:${installedVersion}`;
-      }
-
-      // Cheap spot-check beyond the stamp alone: `_stageBridgeTo` copies
-      // `bridge_version.py` LAST, only after every sibling succeeded (see
-      // its docstring) -- so a matching stamp SHOULD imply the rest of the
-      // bridge landed too. This is a second, independent signal against
-      // that guarantee ever regressing (or a stamp being hand-placed/
-      // restored without its siblings): if the bridge's actual entry point
-      // is missing or empty right next to a "matching" stamp, that is not
-      // a verified install. Deliberately narrow (one file, one stat) --
-      // the ordering guarantee in `_stageBridgeTo` is the primary defense,
-      // this is just a cheap trip-wire, not a full file-set diff.
-      const entryPointPath = path.join(effRoot, "Content", "Python", "uefn_bridge.py");
-      try {
-        if (fs.statSync(entryPointPath).size === 0) return "stale:empty-uefn_bridge.py";
-      } catch {
-        return "stale:missing-uefn_bridge.py";
-      }
-
-      return installedVersion; // verified: on-disk stamp matches the shipped bridge, entry point present
-    } catch (e) {
-      return `stale:error(${String(e)})`;
-    }
-  }
-
-  /**
-   * The stamp-mismatch counterpart to `_stageBridgeTo`'s stamp-last
-   * ordering guarantee (see its docstring): true only when a couple of
-   * large, frequently-changed sibling files at `pyDest` are ALREADY
-   * byte-identical to the shipped copies at `bridgeDir`, despite
-   * `bridge_version.py` disagreeing. `uefn_bridge.py` (the entry point)
-   * and `device_audit.py` (the file whose stale copy produced the
-   * `_is_actor_enabled` import failure) are the two checked — both change
-   * in nearly every release, so a match on both is strong evidence the
-   * siblings are current and only the stamp lagged behind (e.g. a second,
-   * uncoordinated writer overwrote just the stamp). Compares size first,
-   * then content, to stay cheap. Missing/unreadable files on either side
-   * count as NOT matching (never claim "siblings are current" without
-   * being able to read them). Never throws.
-   */
-  private _uefnBridgeSiblingsMatchShipped(bridgeDir: string, pyDest: string): boolean {
-    const REPRESENTATIVE_SIBLINGS = ["uefn_bridge.py", "device_audit.py"];
-    try {
-      for (const name of REPRESENTATIVE_SIBLINGS) {
-        const shippedPath = path.join(bridgeDir, name);
-        const installedPath = path.join(pyDest, name);
-        let shippedStat: fs.Stats;
-        let installedStat: fs.Stats;
-        try {
-          shippedStat = fs.statSync(shippedPath);
-          installedStat = fs.statSync(installedPath);
-        } catch {
-          return false; // can't read one side -- never claim a match without evidence
-        }
-        if (shippedStat.size !== installedStat.size) return false;
-        if (!fs.readFileSync(shippedPath).equals(fs.readFileSync(installedPath))) return false;
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * True when the staged bridge is STALE: both the staged
-   * `<effRoot>/Content/Python/bridge_version.py` stamp and the shipped
-   * `media/uefn-bridge/bridge_version.py` are readable, and their trimmed
-   * contents differ. Used to harden `uefnBridgeSetUp` (see
-   * `_handleCheckInstall`) beyond mere existence -- an old staged bridge
-   * from a prior VSIX version should nag reinstall rather than silently
-   * read as "set up". Returns false (not stale) whenever either file is
-   * missing or unreadable, so installs made before stamping existed (no
-   * staged `bridge_version.py` yet) fall back to the existence-only result
-   * instead of a false negative.
-   */
-  private _uefnBridgeStale(root: string): boolean {
-    try {
-      const effRoot = this._uefnEffectiveRoot(root);
-      const stagedPath = path.join(effRoot, "Content", "Python", "bridge_version.py");
-      const bridgeDir = this._powerToolsDir();
-      if (bridgeDir === null) return false; // can't compare against a shipped copy that isn't resolvable -- same posture as any other missing/unreadable file here
-      const shippedPath = path.join(bridgeDir, "bridge_version.py");
-      const staged = fs.readFileSync(stagedPath, "utf8").trim();
-      const shipped = fs.readFileSync(shippedPath, "utf8").trim();
-      return staged !== shipped;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Auto-heal a STALE staged UEFN bridge once per panel open, so updating
-   * the VSIX alone is enough to refresh the bridge already staged into a
-   * project's `Content/Python` — the user is no longer required to click
-   * "Install pack" / "Setup UEFN project" again after every extension
-   * update. Anchored via `_uefnEffectiveRoot` (see) so the SAME project
-   * target `_stageUefnBridgeAllTargets` writes to is the one read here —
-   * check and push always agree on where the bridge lives.
-   *
-   * Deliberately narrower than `_uefnBridgeStale` (any content diff counts
-   * as stale, used for the "set up" UI hint): this method only PUSHES when
-   * the bundled `BRIDGE_VERSION` is NUMERICALLY newer than the installed
-   * one (via `parseBridgeVersion`/`isBridgeVersionNewer`), so a user's local
-   * edits to the staged copy, or a shipped file that differs for unrelated
-   * reasons but isn't a version bump, don't trigger an unwanted overwrite.
-   * An installed stamp that fails to parse as a valid NUMERIC version (e.g.
-   * hand-edited/corrupted) is treated as stale rather than a dead-end that
-   * would silently block auto-update forever, provided the bundled stamp
-   * itself parses as valid.
-   *
-   * PROJECT copy: unlike `_stageUefnBridgeAllTargets` (used by the explicit
-   * user-initiated Install-pack / Setup-UEFN flows), this automatic
-   * panel-load path never CREATES a Fortnite engine install copy — it only
-   * ever pushes to the resolved project target via the same single-target
-   * `_stageBridgeTo` helper. As of the fix below, the target is resolved
-   * via `_resolveUefnContentDirEvidence` directly (the SAME evidence
-   * ladder `_stageUefnBridgeAllTargets` uses for the explicit install path)
-   * rather than the best-effort, fall-back-to-`root` `_uefnEffectiveRoot` —
-   * this is a WRITE path, so an unresolved/ambiguous target must be treated
-   * as "can't safely act" and skipped, never guessed at.
-   *
-   * THE SILENT-SKIP BUG THIS FIXES: the opt-in gate used to check for
-   * `<effRoot>/Content/Python/bridge_version.py` — i.e. it treated "no
-   * version stamp" as "never opted into UEFN, do nothing". But a
-   * pre-stamping-era install (staged before `bridge_version.py` existed at
-   * all) has real bridge files with NO stamp — the gate misread "unknown
-   * version" as "not installed" and skipped a project that badly needed
-   * refreshing. Confirmed in the field: a June-era staged bridge with a
-   * hard `from device_audit import <symbol>` import died against a newer
-   * engine-side `device_audit.py` that had dropped that symbol, and this
-   * method's early return meant it never got the chance to heal. The gate
-   * now checks for `uefn_bridge.py` itself (the actual "this project has a
-   * bridge staged" signal, same one `_uefnBridgePythonStaged` uses) —
-   * opt-in is still preserved (never creates a bridge copy that wasn't
-   * there before), but a missing/unparseable version stamp on an otherwise
-   * staged bridge is now treated as MAXIMALLY stale rather than "can't
-   * tell so skip".
-   *
-   * MISPLACED-COPY HEAL: after a project push, this now also calls
-   * `_healDuplicateUefnBridgeStaging` against the SAME resolved `effRoot`
-   * the push used — the bogus `Content/Content/Python` left by the old
-   * staging bug previously only got cleaned up on an explicit
-   * install/reinstall (`_stageUefnBridgeAllTargets`), never on this
-   * automatic panel-load rail, so a project that hit the bug once stayed
-   * bogus-nested forever unless the user re-ran setup.
-   *
-   * ENGINE copy: this method ALSO best-effort refreshes an EXISTING engine
-   * bridge copy by first discovering it via `_findFortniteEngineBridgeDir`
-   * and, only if found, passing THAT discovered dir into the guarded
-   * `_refreshEngineBridgeCopy` (see) — `_refreshEngineBridgeCopy` treats its
-   * argument as the engine-side dir to compare/copy into, so it must never
-   * be handed the shipped `media/uefn-bridge` dir. `_findFortniteEngineBridgeDir`
-   * only ever returns a dir that already contains `uefn_bridge.py`, so this
-   * never creates an engine install, only heals one that's already there.
-   * Critically, the engine refresh call is
-   * NOT gated behind the project copy being stale: a user can already have
-   * a CURRENT project copy (e.g. auto-updated on a previous panel open)
-   * while the engine copy is still stuck on an old version — that's the
-   * real stuck-user case (`init_unreal.py`'s project→engine self-sync only
-   * runs when the UEFN project is opened, so it can lag arbitrarily far
-   * behind a project copy that already self-healed). Calling
-   * `_refreshEngineBridgeCopy` unconditionally on every panel open is safe
-   * because it self-guards (returns `"unavailable"` with no engine copy
-   * found, `"current"` when the stamps already match, and never creates a
-   * directory).
-   *
-   * Rules:
-   * - Never creates a bridge copy (project or engine) — if the resolved
-   *   project target has no `uefn_bridge.py` staged, the project never
-   *   opted into UEFN and this returns immediately before touching either
-   *   copy (opt-in preserved, same posture as `_ensureHookScriptFresh`).
-   *   If the target itself can't be resolved (no evidence, or ambiguous),
-   *   this also returns immediately — a write path must never guess.
-   * - Project copy re-stages when the bundled version is strictly newer
-   *   than the installed one, OR the installed stamp is missing/unparseable
-   *   garbage (never "can't tell so skip" — see above); equal or
-   *   genuinely newer-but-valid installed versions are left untouched.
-   * - The misplaced `Content/Content/Python` heal runs after every attempt
-   *   to resolve a target, independent of whether the project copy was
-   *   itself stale — a stray nested copy can outlive an already-current
-   *   real one.
-   * - Engine copy refresh runs independently every call (see above) and is
-   *   itself a no-op unless a stale engine copy already exists.
-   * - Shows exactly one informational toast when EITHER copy actually
-   *   changed; no toast if neither did.
-   * - Wrapped in try/catch (console.warn on failure) so this can never
-   *   throw or block panel load.
-   * - AFTER staging/heal/toast above (own try/catch, independent outcome),
-   *   also calls `_pruneSupersededExtensionVersions` (see) to remove older
-   *   sibling extension-version directories -- ordered last and off the
-   *   critical path so a prune failure can never prevent a bridge update.
-   */
-  private async _autoUpdateUefnBridgeIfStale(root: string): Promise<void> {
-    try {
-      if (root === "") return;
-
-      // Write path -- resolve via the evidence ladder directly (same as
-      // `_stageUefnBridgeAllTargets`), never the best-effort
-      // fall-back-to-`root` `_uefnEffectiveRoot`. An unresolved/ambiguous
-      // target must be skipped, not guessed at.
-      const resolved = this._resolveUefnContentDirEvidence(root);
-      if (resolved.contentDir === null) return;
-      const effRoot = path.dirname(resolved.contentDir);
-      const projectPyDest = path.join(effRoot, "Content", "Python");
-
-      // Opt-in signal: an actual staged bridge file, NOT the version stamp
-      // (a pre-stamping-era install has the former but not the latter --
-      // see docstring). Never auto-install.
-      const installedBridgePath = path.join(projectPyDest, "uefn_bridge.py");
-      if (!fs.existsSync(installedBridgePath)) return;
-
-      const bridgeDir = this._powerToolsDir();
-      if (bridgeDir === null) {
-        // Power Tools isn't resolvable anywhere on the discovery ladder --
-        // this is a background auto-heal rail with no UI error channel, so
-        // console.warn (the pattern this method already uses below for a
-        // partial staging failure) is the only reporting mechanism
-        // available. Must not proceed with a broken/undefined bridgeDir.
-        console.warn("TycoonAgents: _autoUpdateUefnBridgeIfStale skipped -- Power Tools not installed (checked env override, global storage, and bundled copy).");
-        return;
-      }
-      const bundledStampPath = path.join(bridgeDir, "bridge_version.py");
-      const installedStampPath = path.join(projectPyDest, "bridge_version.py");
-
-      const bundledText = fs.readFileSync(bundledStampPath, "utf8");
-      const bundledVersion = parseBridgeVersion(bundledText);
-      if (!bundledVersion || !isNumericVersion(bundledVersion)) return;
-
-      // A missing or unparseable installed stamp is MAXIMALLY stale, never
-      // a reason to skip -- this is the exact gap that let a June-era
-      // (pre-stamping) bridge sit unrefreshed in the field.
-      let installedVersion: string | null = null;
-      try {
-        installedVersion = parseBridgeVersion(fs.readFileSync(installedStampPath, "utf8"));
-      } catch {
-        installedVersion = null;
-      }
-      const installedIsUnknownOrCorrupt = installedVersion === null || !isNumericVersion(installedVersion);
-
-      let projectUpdated = false;
-      if (installedIsUnknownOrCorrupt || isBridgeVersionNewer(bundledVersion, installedVersion as string)) {
-        const stageResult = this._stageBridgeTo(bridgeDir, projectPyDest);
-        if (stageResult.error) {
-          // Partial failure -- `_stageBridgeTo` guarantees the OLD stamp
-          // (or none) is still on disk, so the next panel load will see
-          // this as stale and retry on its own. Never claim success here:
-          // no toast, no `projectUpdated`.
-          console.warn(`TycoonAgents: _autoUpdateUefnBridgeIfStale partial staging failure at ${projectPyDest}: ${stageResult.error}`);
-        } else {
-          projectUpdated = true;
-        }
-      }
-
-      // Heal a bogus nested Content/Content/Python left by the old staging
-      // bug, using the SAME resolved `effRoot` the push above used -- never
-      // guessed. Runs regardless of whether the project copy itself needed
-      // refreshing (mirrors `_stageUefnBridgeAllTargets`'s post-stage heal).
-      try {
-        this._healDuplicateUefnBridgeStaging(effRoot, bridgeDir);
-      } catch {
-        /* auto-heal is best-effort -- must never break this rail */
-      }
-
-      // Independent of project staleness above: a stuck engine copy can
-      // exist even when the project copy is already current (see docstring).
-      // Self-guarded — no-op if no existing engine copy is found or it's
-      // already current. `_refreshEngineBridgeCopy` expects the ENGINE dir,
-      // not the shipped `bridgeDir` above, so discover it first.
-      const engineBridgeDir = this._findFortniteEngineBridgeDir();
-      const engineResult = engineBridgeDir
-        ? this._refreshEngineBridgeCopy(engineBridgeDir)
-        : "unavailable";
-
-      if (projectUpdated || engineResult === "updated") {
-        void vscode.window.showInformationMessage(
-          `Trashbyrd's Power Tools updated to ${bundledVersion} — reopen your UEFN project in the editor to finish updating.`
-        );
-      }
-    } catch (e) {
-      console.warn("TycoonAgents: _autoUpdateUefnBridgeIfStale failed:", e);
-    }
-
-    // Prune superseded sibling extension-version dirs AFTER staging above,
-    // never before -- staging reads only from the running extension's own
-    // files (`this._extensionUri`), so ordering the prune after keeps this
-    // destructive step off the critical path: a prune failure can never
-    // prevent a bridge update. Own try/catch, wholly independent of the
-    // staging outcome above, so a staging failure never skips the prune and
-    // a prune failure never surfaces as a staging failure.
-    try {
-      const pruneResult = this._pruneSupersededExtensionVersions();
-      if (pruneResult.removed.length > 0 || pruneResult.failed.length > 0) {
-        console.log(
-          `TycoonAgents: pruned superseded extension versions -- removed: [${pruneResult.removed.join(", ")}]` +
-            (pruneResult.failed.length > 0
-              ? `; failed: [${pruneResult.failed.map((f) => `${f.name} (${f.reason})`).join(", ")}]`
-              : "")
-        );
-      }
-    } catch (e) {
-      console.warn("TycoonAgents: _pruneSupersededExtensionVersions failed:", e);
-    }
-  }
-
-  /**
-   * Remove OLDER sibling `tycoonagents.tycoonagents-<semver>` extension
-   * install directories, leaving only the currently running version and any
-   * newer ones untouched.
-   *
-   * THE INCIDENT THIS FIXES: with three extension versions installed at
-   * once (0.0.559/0.0.561/0.0.562), whichever one VS Code happens to
-   * activate is the one that stages the UEFN bridge -- so an older,
-   * already-superseded copy could silently win the race and stage a
-   * behind-dated `bridge_version.py` (see `_uefnBridgeSiblingsMatchShipped`
-   * doc comment for the resulting stamp/sibling-disagreement symptom).
-   * Removing superseded versions removes the ambiguity at the source.
-   *
-   * SAFETY, in order:
-   * - The extensions dir is DERIVED as `path.dirname(this._extensionUri.fsPath)`
-   *   -- never hardcoded, never assumed to be `.vscode/extensions`, because
-   *   this also runs inside other IDEs (e.g. Antigravity) with their own
-   *   extensions root. Whatever host loaded THIS extension owns the parent
-   *   dir this reads.
-   * - Only entries matching the exact `tycoonagents.tycoonagents-<semver>`
-   *   prefix are considered; anything else (unrelated extensions, stray
-   *   files, unparseable suffixes) is skipped, never touched.
-   * - The RUNNING extension's own directory is never removed: resolved
-   *   absolute paths are compared case-insensitively (Windows paths), not
-   *   version numbers alone, so this can't misfire even if two entries
-   *   somehow parsed to the same version.
-   * - Only versions STRICTLY OLDER than the running one are removed. A
-   *   newer sibling is left alone -- the user may be testing a newer build,
-   *   and deleting it would be destructive and surprising.
-   * - Fails open per-entry: a locked directory, permission error, or
-   *   unparseable name is skipped silently and never thrown -- this runs on
-   *   every panel load and must never wedge it. Only entries actually
-   *   removed or actually attempted-and-failed are reported back; anything
-   *   skipped as not-matching or not-applicable is simply absent from both
-   *   lists.
-   * - Never throws; returns `{ removed, failed }` so the caller can log a
-   *   failed removal rather than it being silently swallowed.
-   */
-  private _pruneSupersededExtensionVersions(): { removed: string[]; failed: { name: string; reason: string }[] } {
-    const removed: string[] = [];
-    const failed: { name: string; reason: string }[] = [];
-    try {
-      const runningDir = this._extensionUri.fsPath;
-      const extensionsDir = path.dirname(runningDir);
-      const runningDirResolved = path.resolve(runningDir).toLowerCase();
-
-      const PREFIX = "tycoonagents.tycoonagents-";
-      const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)/;
-
-      const runningBaseName = path.basename(runningDir);
-      if (!runningBaseName.toLowerCase().startsWith(PREFIX)) {
-        // Can't identify our own running version from the dir name -- don't
-        // guess at what "older" means. Skip pruning entirely rather than
-        // risk comparing against the wrong baseline.
-        return { removed, failed };
-      }
-      const runningVersionMatch = SEMVER_RE.exec(runningBaseName.slice(PREFIX.length));
-      if (!runningVersionMatch) return { removed, failed };
-      const runningVersion: [number, number, number] = [
-        Number(runningVersionMatch[1]),
-        Number(runningVersionMatch[2]),
-        Number(runningVersionMatch[3])
-      ];
-
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(extensionsDir, { withFileTypes: true });
-      } catch {
-        return { removed, failed }; // can't list the extensions dir -- fail open
-      }
-
-      for (const entry of entries) {
-        try {
-          if (!entry.isDirectory()) continue;
-          const name = entry.name;
-          if (!name.toLowerCase().startsWith(PREFIX)) continue;
-
-          const candidatePath = path.join(extensionsDir, name);
-          const candidateResolved = path.resolve(candidatePath).toLowerCase();
-          if (candidateResolved === runningDirResolved) continue; // never remove ourselves
-
-          const versionMatch = SEMVER_RE.exec(name.slice(PREFIX.length));
-          if (!versionMatch) continue; // unparseable suffix -- skip, don't guess
-
-          const candidateVersion: [number, number, number] = [
-            Number(versionMatch[1]),
-            Number(versionMatch[2]),
-            Number(versionMatch[3])
-          ];
-
-          const isOlder =
-            candidateVersion[0] !== runningVersion[0]
-              ? candidateVersion[0] < runningVersion[0]
-              : candidateVersion[1] !== runningVersion[1]
-                ? candidateVersion[1] < runningVersion[1]
-                : candidateVersion[2] < runningVersion[2];
-          if (!isOlder) continue; // equal or newer -- never remove
-
-          try {
-            fs.rmSync(candidatePath, { recursive: true, force: true });
-            removed.push(name);
-          } catch (e) {
-            failed.push({ name, reason: describeFsError(e, candidatePath) });
-          }
-        } catch (e) {
-          // Fail open per-entry: an unexpected error inspecting one sibling
-          // must never abort the loop or block the panel.
-          failed.push({ name: entry.name, reason: String(e) });
-        }
-      }
-    } catch {
-      // Fail open entirely -- this must never throw or block panel load.
-    }
-    return { removed, failed };
-  }
-
-  /**
-   * Auto-heal a STALE UEFN MCP server path in the project's `.mcp.json` once
-   * per panel open. Thin wrapper over `mcpHeal.ts`'s `healMcpServerPathIfStale`
-   * (see its doc comment for the full contract) — the implementation was
-   * extracted there so it can ALSO run once at extension `activate()`
-   * (`extension.ts`), fixing a CLI-only user (never opens the TycoonAgents
-   * panel) previously never getting this heal at all.
-   */
-  private _autoHealMcpServerPathIfStale(root: string): void {
-    healMcpServerPathIfStale(root, this._extensionUri, this._globalStorageUri.fsPath);
-  }
-
-  /**
-   * Discover a Fortnite engine-side `FortniteGame/Content/Python` directory
-   * that ALREADY holds a bridge copy (`uefn_bridge.py` present) — i.e. an
-   * OLD engine-side copy from before the bridge gained its own version-stamp
-   * self-sync, worth a best-effort refresh push (see
-   * `_refreshEngineBridgeCopy`). Resolves the Fortnite install via the Epic
-   * Games Launcher manifests (`<PROGRAMDATA>/Epic/EpicGamesLauncher/Data/
-   * Manifests/*.item`), matching the manifest whose `DisplayName`/`AppName`
-   * indicates Fortnite (`DisplayName === "Fortnite"` is the normal case).
-   * Deliberately narrower than `_findFortnitePythonDirs` (which stages into
-   * every discovered engine dir, creating it if absent): this only ever
-   * returns a dir that DEMONSTRABLY already has a bridge staged, since the
-   * whole point is refreshing an existing old copy, not creating a new one.
-   * Every failure — missing PROGRAMDATA, unreadable manifests dir, malformed
-   * per-file JSON — resolves to `null` rather than throwing; this is
-   * best-effort discovery only.
-   *
-   * @param programDataRoot Override for `process.env.PROGRAMDATA` (tests only).
-   */
-  private _findFortniteEngineBridgeDir(programDataRoot?: string): string | null {
-    try {
-      const programData = resolveProgramDataRoot(programDataRoot);
-      if (!programData) return null;
-      const manifestsDir = path.join(programData, "Epic", "EpicGamesLauncher", "Data", "Manifests");
-      if (!fs.existsSync(manifestsDir)) return null;
-      for (const f of fs.readdirSync(manifestsDir)) {
-        if (!f.toLowerCase().endsWith(".item")) continue;
-        try {
-          const m = JSON.parse(fs.readFileSync(path.join(manifestsDir, f), "utf8"));
-          const displayName = String(m.DisplayName || "");
-          const appName = String(m.AppName || "");
-          const isFortnite = displayName === "Fortnite" || /fortnite/i.test(`${displayName} ${appName}`);
-          if (!isFortnite) continue;
-          const installLocation = String(m.InstallLocation || "");
-          if (!installLocation) continue;
-          const pythonDir = path.join(installLocation, "FortniteGame", "Content", "Python");
-          if (fs.existsSync(pythonDir) && fs.existsSync(path.join(pythonDir, "uefn_bridge.py"))) {
-            return pythonDir;
-          }
-        } catch {
-          /* skip malformed manifest */
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Best-effort refresh push for an OLD Fortnite engine-side bridge copy
-   * (`bridgeDir`, as returned by `_findFortniteEngineBridgeDir`) that
-   * predates the bridge's own version-stamp self-sync. Compares the engine
-   * copy's `bridge_version.py` stamp against the shipped
-   * `media/uefn-bridge/bridge_version.py` (trimmed content, same comparison
-   * `_uefnBridgeStale` uses); if they already match, nothing is rewritten
-   * and this returns `"current"`. Otherwise every shipped bridge file is
-   * copied into `bridgeDir`, overwriting same-named files and adding new
-   * ones — the same file set `_stageBridgeTo` copies (every `.py` +
-   * `trashbyrd_40x40.png`, excluding `uefn-server.mjs`, `__pycache__`,
-   * `.pyc`/`.pyo`). This NEVER deletes or touches any file outside that
-   * shipped set — the engine dir holds UEFN's own/legacy files that must be
-   * left alone. Per-file copy failures are skipped rather than aborting the
-   * whole refresh (returns `"unavailable"` only if the `bridge_version.py`
-   * stamp itself never lands). The outer operation is fully try/caught so a
-   * failure here can never break the staging flow that calls it.
-   */
-  private _refreshEngineBridgeCopy(bridgeDir: string): "updated" | "current" | "unavailable" {
-    try {
-      const shippedDir = this._powerToolsDir();
-      if (shippedDir === null) return "unavailable"; // Power Tools not resolvable -- same verdict as an unreadable shipped stamp below
-      const shippedStampPath = path.join(shippedDir, "bridge_version.py");
-      const engineStampPath = path.join(bridgeDir, "bridge_version.py");
-
-      let shippedStamp: string;
-      try {
-        shippedStamp = fs.readFileSync(shippedStampPath, "utf8").trim();
-      } catch {
-        return "unavailable";
-      }
-
-      try {
-        const engineStamp = fs.readFileSync(engineStampPath, "utf8").trim();
-        if (engineStamp === shippedStamp) return "current";
-      } catch {
-        /* missing/unreadable engine stamp -- treat as stale, fall through to copy */
-      }
-
-      let names: string[];
-      try {
-        // Same exclusion filter as `_stageBridgeTo`: every `.py` +
-        // `trashbyrd_40x40.png` in the shipped dir, skipping the Node MCP
-        // server, pycache, and compiled Python artifacts.
-        names = fs.readdirSync(shippedDir).filter((name) => {
-          if (name === "uefn-server.mjs") return false;
-          if (name === "__pycache__") return false;
-          if (name.endsWith(".pyc") || name.endsWith(".pyo")) return false;
-          try {
-            return fs.statSync(path.join(shippedDir, name)).isFile();
-          } catch {
-            return false;
-          }
-        });
-      } catch {
-        return "unavailable";
-      }
-
-      let stampLanded = false;
-      for (const name of names) {
-        try {
-          fs.copyFileSync(path.join(shippedDir, name), path.join(bridgeDir, name));
-          if (name === "bridge_version.py") stampLanded = true;
-        } catch {
-          /* best-effort -- skip this file, keep going */
-        }
-      }
-
-      return stampLanded ? "updated" : "unavailable";
-    } catch {
-      return "unavailable";
     }
   }
 
@@ -5909,52 +4376,20 @@ export class TycoonPanel {
   }
 
   /**
-   * Deep-clone `config` and replace every occurrence of two literal tokens
-   * in any string value (recursively through objects/arrays):
-   *   - `${EXTENSION_DIR}` -> the extension's real install path
-   *     (`this._extensionUri.fsPath`).
-   *   - `${POWER_TOOLS_DIR}` -> the resolved Power Tools install directory,
-   *     via `resolvePowerToolsDir` (env override / installed copy under
-   *     global storage / legacy bundled fallback — see
-   *     `powerToolsInstall.ts`). Power Tools no longer ships inside this
-   *     extension, so this is looked up, not derived from `${EXTENSION_DIR}`.
-   * Called at install time so catalog entries with bundled/installed
-   * servers resolve correctly.
+   * Deep-clone `config` and replace `${EXTENSION_DIR}` in any string value
+   * (recursively through objects/arrays) with the extension's real install
+   * path (`this._extensionUri.fsPath`). Called at install time so catalog
+   * entries with bundled servers resolve correctly.
    *
    * Any string a token was actually substituted into is additionally
-   * normalized to forward slashes (`\` -> `/`) — matching what
-   * `healMcpServerPathIfStale` (mcpHeal.ts) writes on a later heal pass, so
-   * a fresh install's `.mcp.json` and a healed one are byte-identical in
-   * form rather than differing only by separator style on Windows. Scoped
-   * to strings that actually contained a token: this substitution only
-   * ever produces a FILESYSTEM PATH, never an arbitrary command arg/env
-   * value that might legitimately contain a literal backslash — a string
-   * with no token occurrence is returned completely untouched.
-   *
-   * Throws if `${POWER_TOOLS_DIR}` appears in `config` but Power Tools
-   * cannot be resolved (not installed, no env override, no legacy bundled
-   * copy) — the token must never be silently left unresolved or substituted
-   * with a broken path. `_handleInstallMcp`'s caller already wraps this in
-   * try/catch and reports `error: String(e)` via MSG.MCP_INSTALLED, so the
-   * user sees "Power Tools must be installed first" through the existing
-   * error-reporting channel rather than a new one.
+   * normalized to forward slashes (`\` -> `/`). Scoped to strings that
+   * actually contained the token: this substitution only ever produces a
+   * FILESYSTEM PATH, never an arbitrary command arg/env value that might
+   * legitimately contain a literal backslash — a string with no token
+   * occurrence is returned completely untouched.
    */
   private _resolveConfigTokens(config: unknown): unknown {
     const EXTENSION_TOKEN = "${EXTENSION_DIR}";
-    const POWER_TOOLS_TOKEN = "${POWER_TOOLS_DIR}";
-    const configStr = JSON.stringify(config);
-    const needsPowerTools = configStr !== undefined && configStr.includes(POWER_TOOLS_TOKEN);
-
-    let powerToolsDir: string | null = null;
-    if (needsPowerTools) {
-      const location = resolvePowerToolsDir(this._extensionUri.fsPath, this._globalStorageUri.fsPath);
-      if (location === null) {
-        throw new Error(
-          "Power Tools is not installed. Install Power Tools (Corsair-Studios/trashbyrds-uefn-power-tools) before enabling this MCP server."
-        );
-      }
-      powerToolsDir = location.dir;
-    }
 
     const resolve = (value: unknown): unknown => {
       if (typeof value === "string") {
@@ -5962,10 +4397,6 @@ export class TycoonPanel {
         let substituted = false;
         if (out.includes(EXTENSION_TOKEN)) {
           out = out.split(EXTENSION_TOKEN).join(this._extensionUri.fsPath);
-          substituted = true;
-        }
-        if (powerToolsDir !== null && out.includes(POWER_TOOLS_TOKEN)) {
-          out = out.split(POWER_TOOLS_TOKEN).join(powerToolsDir);
           substituted = true;
         }
         return substituted ? out.replace(/\\/g, "/") : out;
@@ -6243,20 +4674,12 @@ export class TycoonPanel {
     const engineChips = root !== "" ? computeEngineChips(root, null) : [];
     // Whether UEFN setup already ran — requires the `.mcp.json` uefn-bridge
     // entry (_uefnBridgeEntry, also used by _computeEngineStatus's live
-    // ladder), the Python bridge actually staged into the project's
-    // Content/Python (_uefnBridgePythonStaged), AND that staged bridge not
-    // being stale against the shipped copy (_uefnBridgeStale). An mcp entry
-    // alone is not enough to call it "set up", and neither is a stale staged
-    // copy — lets the setup wizard stop re-prompting "set up UEFN" only once
-    // it's genuinely done and current (see media/main.js's installState
+    // ladder). Lets the setup wizard stop re-prompting "set up UEFN" once
+    // the MCP server is registered (see media/main.js's installState
     // handler / the uefnDetected trigger, and renderSetupOptionals's UEFN
     // section).
     const mcpConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
-    const uefnBridgeSetUp =
-      root !== "" &&
-      Boolean(this._uefnBridgeEntry(mcpConfig)) &&
-      this._uefnBridgePythonStaged(root) &&
-      !this._uefnBridgeStale(root);
+    const uefnBridgeSetUp = root !== "" && Boolean(this._uefnBridgeEntry(mcpConfig));
     // Detect any non-tycoon managed CLAUDE.md block — legacy config carried
     // over from a prior setup, or a currently-installed other tool's own
     // block (see legacyDoctrine.ts detectForeignManagedBlocks). Every entry
@@ -6286,7 +4709,7 @@ export class TycoonPanel {
     // Evidence-based ignore-file targets for the Setup Wizard's "Add Tycoon
     // logs to ignore file" checkbox (see detectIgnoreTargets) — never a
     // guessed VCS. Piggybacks on this same INSTALL_STATE push.
-    const ignoreTargets = root !== "" ? detectIgnoreTargets(root, this._uefnEffectiveRoot(root), uefn.detected) : [];
+    const ignoreTargets = root !== "" ? detectIgnoreTargets(root, root, uefn.detected) : [];
     void this._panel.webview.postMessage({
       type: MSG.INSTALL_STATE,
       installed,
@@ -6391,10 +4814,7 @@ export class TycoonPanel {
     if (root === "") return;
 
     const uefn = detectUefnProject(root);
-    // URC/Perforce read .urcignore/.p4ignore only at the true project root —
-    // if this workspace is opened AT the project's Content/ dir, that root
-    // is the PARENT (see _uefnEffectiveRoot), not `root`.
-    const effRoot = this._uefnEffectiveRoot(root);
+    const effRoot = root;
     const targets = detectIgnoreTargets(root, effRoot, uefn.detected);
     if (targets.length === 0) return; // no VCS/ignore-file evidence — never guess
 
@@ -6891,10 +5311,9 @@ export class TycoonPanel {
    * THE BUG THIS FIXES: nothing in this codebase previously re-ran ANY part
    * of pack install on an extension update. `_handleInstallPack` (skills,
    * commands, `.mcp.json` entry, agent `.md` files) only ever runs on an
-   * explicit "Install pack" click — contrast with the Python bridge, the
-   * hook script, and the project-plan skill, which all already have their
-   * own panel-open auto-heal (`_autoUpdateUefnBridgeIfStale`,
-   * `_ensureHookScriptFresh`, `_ensureProjectPlanSkillFresh`). On top of
+   * explicit "Install pack" click — contrast with the hook script and the
+   * project-plan skill, which already have their own panel-open auto-heal
+   * (`_ensureHookScriptFresh`, `_ensureProjectPlanSkillFresh`). On top of
    * that gap, `_handleInstallPack`'s skill step used to skip re-copying
    * entirely once `.claude/skills/<skillId>` existed at all (see
    * `_stageSkillTree`'s doc comment) — so even re-clicking "Install pack"
@@ -6915,16 +5334,7 @@ export class TycoonPanel {
    * project. A missing/unparsable stamp is treated as "stale" (never as
    * "nothing to do") so a project that predates this method's existence
    * still gets re-staged once. `packs[packId] = currentVersion` claims ONLY
-   * that this pack's skill/agent files were re-staged successfully — for a
-   * pack that also provides the Python UEFN bridge (`pack.mcp ===
-   * "uefn-bridge" || pack.id === "uefn"`), the bridge itself is staged by a
-   * wholly separate rail (`_autoUpdateUefnBridgeIfStale`), so its state is
-   * independently verified and recorded under the synthetic `"uefn-bridge"`
-   * key via `_verifiedUefnBridgeStampValue` (see) — never inferred from
-   * this pack's own success. This is the fix for a real field bug:
-   * `pack-staging.json` was stamped `0.0.490` while the project's actual
-   * `Content/Python/bridge_version.py` was still a pre-stamping June
-   * install — a success-shaped stamp with no verified files behind it.
+   * that this pack's skill/agent files were re-staged successfully.
    *
    * "ALREADY HAS" DETECTION — never installs a pack the user did not
    * choose: a pack counts as installed only if its first agent's
@@ -7065,24 +5475,6 @@ export class TycoonPanel {
           if (ok) {
             restaged.push(pack.id);
             packStamp[pack.id] = currentVersion;
-
-            // The "uefn" pack also provides the Python bridge, but that
-            // bridge is staged/refreshed by an entirely separate rail
-            // (`_autoUpdateUefnBridgeIfStale` on panel load,
-            // `_stageUefnBridgeAllTargets` on explicit install) — NOT by
-            // the skill/agent restage above. `packStamp[pack.id] =
-            // currentVersion` must never be read as "the bridge is current
-            // too": that was the exact field bug (pack-staging.json
-            // stamped 0.0.490 while the real Content/Python bridge was
-            // still June-era). Record the bridge's OWN verified on-disk
-            // state under its own key — verify-after-write, mirroring
-            // `_write_json_checked` in uefn_bridge.py — so a stale/missing
-            // bridge shows up here as `"stale:..."`, never silently
-            // implied current by the pack's success.
-            const stagesPythonBridge = pack.mcp === "uefn-bridge" || pack.id === "uefn";
-            if (stagesPythonBridge) {
-              packStamp["uefn-bridge"] = this._verifiedUefnBridgeStampValue(root);
-            }
           } else {
             failed.push(pack.id);
           }
@@ -7178,9 +5570,16 @@ export class TycoonPanel {
     for (const agent of rosterFiles) {
       if (EXCLUDED_IDS.has(agent.id)) continue;
 
+      let agentText: string | undefined;
+      try {
+        agentText = fs.readFileSync(path.join(agentsDir, `${agent.id}.md`), "utf8");
+      } catch {
+        agentText = undefined;
+      }
+
       let tier: string | undefined;
       try {
-        tier = agentMarkdownTier(fs.readFileSync(path.join(agentsDir, `${agent.id}.md`), "utf8"));
+        tier = agentText !== undefined ? agentMarkdownTier(agentText) : undefined;
       } catch {
         tier = undefined;
       }
@@ -7197,7 +5596,25 @@ export class TycoonPanel {
               .join(", ")
           : agent.description ?? "General tasks";
 
-      rows.push({ id: agent.id, taskTypes });
+      // vendorLabel: read this agent's `backend:` frontmatter (if any) and
+      // format it via formatVendorModelLabel so the roster's "Vendor /
+      // model" column reflects the ACTUAL backend (e.g. codex-reviewer ->
+      // "OpenAI · openai/gpt-5.4-mini (subscription)") instead of always
+      // falling back to delegationDoctrine.ts's claude-native default. A
+      // malformed/missing backend block must never throw here — it just
+      // means this row falls back to the default label same as before.
+      let vendorLabel: string | undefined;
+      try {
+        if (agentText !== undefined) {
+          const frontmatter = readAgentFrontmatter(agentText);
+          const backend = parseAgentBackend(frontmatter);
+          vendorLabel = formatVendorModelLabel(backend);
+        }
+      } catch {
+        vendorLabel = undefined;
+      }
+
+      rows.push({ id: agent.id, taskTypes, vendorLabel });
     }
 
     return rows;
@@ -7288,6 +5705,44 @@ export class TycoonPanel {
       ).fsPath;
       const dest = path.join(tycoonDir, "tycoon-claude-hook.cjs");
       fs.copyFileSync(src, dest);
+
+      // 2b. Copy the compiled agentBackend/modelAliases modules next to the
+      // hook so it can require() them for generic backend-aware routing
+      // (p2-t2). Best-effort: if out/ hasn't been built (dev checkout that
+      // hasn't run tsc, or a packaged VSIX missing them for any reason), the
+      // hook's own require() falls back to its legacy hardcoded behavior —
+      // never throw here.
+      try {
+        // Packaged installs ship these next to tycoon-claude-hook.cjs in
+        // hooks/ (see scripts/copy-hook-runtime.mjs, run by both `npm run
+        // build` and vscode:prepublish). A dev checkout that hasn't built
+        // yet won't have hooks/ populated, so fall back to the raw tsc
+        // output under out/src/core.
+        const resolveRuntimeFile = (fileName: string): string | undefined => {
+          const hooksPath = vscode.Uri.joinPath(this._extensionUri, "hooks", fileName).fsPath;
+          if (fs.existsSync(hooksPath)) {
+            return hooksPath;
+          }
+          const outPath = vscode.Uri.joinPath(
+            this._extensionUri,
+            "out",
+            "src",
+            "core",
+            fileName
+          ).fsPath;
+          return fs.existsSync(outPath) ? outPath : undefined;
+        };
+        const agentBackendSrc = resolveRuntimeFile("agentBackend.js");
+        const modelAliasesSrc = resolveRuntimeFile("modelAliases.js");
+        if (agentBackendSrc) {
+          fs.copyFileSync(agentBackendSrc, path.join(tycoonDir, "agentBackend.js"));
+        }
+        if (modelAliasesSrc) {
+          fs.copyFileSync(modelAliasesSrc, path.join(tycoonDir, "modelAliases.js"));
+        }
+      } catch {
+        /* best-effort; hook falls back to legacy behavior when absent */
+      }
 
       // 3. Relative hook command (Claude Code runs hooks with cwd = project root).
       const hookCommand = this._buildHookCommand();
@@ -8983,87 +7438,6 @@ export class TycoonPanel {
   }
 
   /**
-   * "Clean up orphaned Power Tools staging": TycoonAgents used to bundle
-   * Power Tools and stage it into a user's UEFN project + engine Python
-   * dirs (see `_stageUefnBridgeAllTargets`); that bundled copy no longer
-   * exists, so upgraded installs can be left with stale staged files. This
-   * scans the SAME candidate directories staging itself writes to (the
-   * project's resolved `Content/Python` via `_resolveUefnContentDirEvidence`,
-   * plus every engine dir from `_findFortnitePythonDirs()`), builds a
-   * preview via `scanForLegacyBridgeStaging` (see that module's doc comment
-   * for the intersection-only safety rule), shows a native confirm modal
-   * exactly like `_handleApplyDoctorFix` does for foreign hook commands, and
-   * only deletes on explicit confirmation.
-   *
-   * When Power Tools isn't currently resolvable, `scanForLegacyBridgeStaging`
-   * reports every candidate as skipped (nothing to compare against) rather
-   * than guessing — that's surfaced to the user as a no-op with an
-   * explanatory message instead of a confirm dialog.
-   */
-  private async _handleCleanupLegacyBridge(): Promise<void> {
-    try {
-      const root = this._projectRoot();
-      const candidateDirs: string[] = [];
-
-      if (root !== "") {
-        const resolved = this._resolveUefnContentDirEvidence(root);
-        if (resolved.contentDir !== null) {
-          candidateDirs.push(path.join(resolved.contentDir, "Python"));
-        }
-      }
-      for (const engineDir of this._findFortnitePythonDirs()) {
-        candidateDirs.push(engineDir);
-      }
-
-      const powerToolsDir = this._powerToolsDir();
-      const preview = scanForLegacyBridgeStaging(candidateDirs, powerToolsDir);
-
-      const activeDirs = preview.directories.filter((d) => !d.skipped);
-      if (powerToolsDir === null) {
-        void vscode.window.showWarningMessage(
-          "TycoonAgents: Power Tools must be installed before orphaned staging can be cleaned up " +
-            "(nothing to compare staged files against)."
-        );
-        void this._panel.webview.postMessage({
-          type: MSG.LEGACY_BRIDGE_CLEANUP_DONE,
-          ok: false,
-          error: "Power Tools is not installed.",
-          preview,
-        });
-        return;
-      }
-
-      if (activeDirs.length === 0 || preview.totalFiles === 0) {
-        void vscode.window.showInformationMessage("TycoonAgents: No orphaned Power Tools staging found.");
-        void this._panel.webview.postMessage({ type: MSG.LEGACY_BRIDGE_CLEANUP_DONE, ok: true, result: null, preview });
-        return;
-      }
-
-      const summaryLines = activeDirs.map((d) => `${d.dir} (${d.files.length} file(s))`);
-      const detail = preview.totalFiles <= 40
-        ? activeDirs.flatMap((d) => d.files).join("\n")
-        : `${preview.totalFiles} files across ${activeDirs.length} director${activeDirs.length === 1 ? "y" : "ies"}.`;
-      const answer = await vscode.window.showWarningMessage(
-        "The following orphaned Power Tools files will be permanently removed:\n\n" +
-          summaryLines.join("\n") +
-          "\n\n" +
-          detail,
-        { modal: true },
-        "Remove"
-      );
-      if (answer !== "Remove") {
-        void this._panel.webview.postMessage({ type: MSG.LEGACY_BRIDGE_CLEANUP_DONE, ok: true, result: null, preview, cancelled: true });
-        return;
-      }
-
-      const result = applyLegacyBridgeCleanup(preview);
-      void this._panel.webview.postMessage({ type: MSG.LEGACY_BRIDGE_CLEANUP_DONE, ok: true, result, preview });
-    } catch (err) {
-      void this._panel.webview.postMessage({ type: MSG.LEGACY_BRIDGE_CLEANUP_DONE, ok: false, error: String(err) });
-    }
-  }
-
-  /**
    * "Generate diagnostic report": gather every health signal this panel
    * already computes elsewhere (hook health, delegation/review mode,
    * doctrine health, context budget, roster consistency, engine/UEFN
@@ -9494,7 +7868,7 @@ export class TycoonPanel {
       // keep the real paths to be useful. Do not "fix" this by adding
       // sanitize() here; see buildPathDiagnosticText's own doc comment.
       // Recognizes both key names this product has written for the UEFN MCP
-      // server over time (see mcpHeal.ts) so the node/PATH note below only
+      // server over time so the node/PATH note below only
       // appears when there's actually an entry it could be relevant to.
       const mcpConfigForDiagnostic = this._readMcpConfig(path.join(root, ".mcp.json"));
       const mcpUefnEntryConfigured =

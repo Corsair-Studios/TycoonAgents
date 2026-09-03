@@ -108,17 +108,6 @@ export const MSG = {
   DOCTOR_REPORT: "doctorReport",
   APPLY_DOCTOR_FIX: "applyDoctorFix",
   DOCTOR_FIX_DONE: "doctorFixDone",
-  // Orphaned Power Tools staging cleanup (see legacyBridgeCleanup.ts): the
-  // webview's confirm-click trigger to scan candidate directories, show a
-  // native showWarningMessage modal listing what would be removed, and (on
-  // "Remove") delete it. No payload — the host resolves every input itself,
-  // same pattern as GENERATE_DIAGNOSTIC below.
-  CLEANUP_LEGACY_BRIDGE: "cleanupLegacyBridge",
-  // Outbound-only, host -> webview: result of a CLEANUP_LEGACY_BRIDGE run
-  // (including the case where the user cancelled the modal, or Power Tools
-  // wasn't installed so nothing could be compared). Not in MSG_SCHEMAS since
-  // that table only covers inbound MUTATING webview->host messages.
-  LEGACY_BRIDGE_CLEANUP_DONE: "legacyBridgeCleanupDone",
   // Outbound-only, host -> webview: fired once per panel open (see panel.ts
   // constructor's _detectLegacyArtifactsOnLoad + the MSG.READY handler that
   // delivers it) when the same read-only scan Hook Doctor's "Run Doctor"
@@ -190,8 +179,6 @@ export const MSG = {
   // ---- engine / UEFN -------------------------------------------------------
   GET_ENGINE_STATUS: "getEngineStatus",
   ENGINE_STATUS: "engineStatus",
-  SETUP_UEFN_PROJECT: "setupUefnProject",
-  UEFN_SETUP_DONE: "uefnSetupDone",
 
   // ---- theme image provider settings -------------------------------------
   GET_THEME_IMAGE_SETTINGS: "GET_THEME_IMAGE_SETTINGS",
@@ -625,11 +612,6 @@ export const MSG_SCHEMAS = {
   // true; `.optional().default(true)` gives exactly that: undefined input ->
   // true, `false` input -> false, `true` input -> true.
   APPLY_DOCTOR_FIX: z.object({ removeForeign: z.boolean().optional().default(true) }).passthrough(),
-
-  // No required fields — the host gathers every input itself (candidate
-  // dirs + the resolved Power Tools dir) and shows its own native confirm
-  // modal; this message is purely the user's confirm-click trigger.
-  CLEANUP_LEGACY_BRIDGE: z.object({}).passthrough(),
 
   // ---- Feedback pipeline ----------------------------------------------------
   // Preview-only build request — see MSG.SUBMIT_FEEDBACK above. No network

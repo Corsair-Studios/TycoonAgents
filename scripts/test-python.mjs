@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Build gate: run the stdlib-unittest suite for the UEFN bridge Python
-// collectors (test/python/, discovered as test_*.py). See test/python/ for
-// why this exists: every historical bug in the moderation-scanner feature
-// (~19 releases' worth) lived in Python and was previously proven only by a
-// throwaway scratchpad harness that died with the session.
+// Build gate: run the stdlib-unittest suite for the UEFN skill Python
+// collectors this repo still ships in media/skills/uefn/ (verse_lint.py,
+// verse_lsp_check.py, verse_project_check.py), test-driven from
+// test/python/ (discovered as test_verse_*.py). TycoonAgents no longer
+// bundles or installs Power Tools (media/uefn-bridge/ was removed — it's
+// a separate third-party product), so the tests that used to target that
+// directory were deleted along with it.
 //
 // Interpreter-absent policy: if NO Python interpreter is found on this
 // machine, that is an ENVIRONMENT condition, not a test failure — print a
@@ -60,7 +62,7 @@ if (!interpreter) {
 
 console.log(`[test:python] Using interpreter: ${interpreter.cmd} ${interpreter.args.slice(0, -1).join(' ')}`.trim());
 
-const runArgs = [...interpreter.args.slice(0, -1), '-m', 'unittest', 'discover', '-s', TEST_DIR, '-p', 'test_*.py', '-v'];
+const runArgs = [...interpreter.args.slice(0, -1), '-m', 'unittest', 'discover', '-s', TEST_DIR, '-p', 'test_verse_*.py', '-v'];
 const result = spawnSync(interpreter.cmd, runArgs, {
   stdio: 'inherit',
   shell: true,

@@ -10,24 +10,27 @@ Guidance for building UEFN islands and Verse device scripts. Pairs with the
 (`uefn_*` tools: read/set actor properties, run audits, browse materials and
 textures, inspect the level).
 
+## Relationship to Power Tools
+
+TycoonAgents does not install, stage, bundle, or download the UEFN live-editor
+bridge. The bridge (the `uefn-bridge` MCP server and its in-editor Python
+counterpart) is **Trashbird's Power Tools**, a separate third-party project
+the user installs and configures themselves — see the `uefn-bridge` entry in
+the MCP catalog (`media/mcp/catalog.json`) and `.mcp.json.example` at the repo
+root for the exact `mcpServers` shape, or Power Tools' own INSTALL.md
+(https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools). This skill
+covers Verse/device authoring conventions and how the agents use the bridge's
+`uefn_*` tools once it's connected; it assumes Power Tools is already set up.
+
 ## Setup & prerequisites
 
-Live-editor control needs all of the following. Without the bridge, this skill
-still covers Verse/device authoring.
+Live-editor control needs Power Tools installed and connected (see
+**Relationship to Power Tools** above). Without it, this skill still covers
+Verse/device authoring.
 
-1. **Node.js on your PATH** — the bridge MCP server runs via `node`. (Same
-   requirement as any npx-based MCP server.)
-2. **Install the UEFN Bridge MCP** from the catalog's **MCP** tab. It's bundled
-   with this extension and resolves its own path automatically on install —
-   nothing to download or configure.
-3. **Install + start the Python bridge inside UEFN** — copy Trashbyrd's Power
-   Tools' `uefn_bridge.py` into your UEFN project's `Content/Python/` and start
-   it from the in-editor Python console (it runs *inside* the UEFN process, so
-   this is a one-time step per UEFN project — it can't be auto-installed for you).
-4. **They connect automatically.** The MCP server and the in-editor bridge meet
-   over a shared temp directory (`<temp>/uefn_bridge`), which each machine
-   resolves locally — no path configuration. For a custom directory, set
-   `UEFN_BRIDGE_DIR` for **both** the UEFN process and the MCP server.
+- **Node.js on your PATH** — Power Tools' MCP server runs via `node`.
+- **Verify the connection** with `uefn_status` once Power Tools is installed
+  and UEFN is running with the project open.
 
 ## Agents & digest auto-detection
 

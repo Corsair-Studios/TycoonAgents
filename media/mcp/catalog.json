@@ -91,13 +91,17 @@
     "id": "uefn-bridge",
     "name": "UEFN Bridge (Trashbyrd's Power Tools)",
     "description": "Live UEFN editor control from Claude — read/set actor properties, run audits, and browse materials, textures, and the level via Trashbyrd's Power Tools.",
-    "requiresEnv": [],
-    "note": "Local bridge — runs on your machine and only talks to your open UEFN session via temp-file IPC (no external calls). Power Tools installs on demand from its own GitHub Releases (Corsair-Studios/trashbyrds-uefn-power-tools) into this extension's storage — install it via the Power Tools install flow before enabling this server. Prereqs: Node.js on your PATH (the server runs via `node`), and Trashbyrd's Power Tools' Python bridge installed in your UEFN project (Content/Python) and started in-editor. Both sides default to %TEMP%/uefn_bridge (machine-agnostic); for a custom dir set UEFN_BRIDGE_DIR for both UEFN and this server.",
-    "thirdParty": false,
-    "vendor": "Trashbyrd's Power Tools",
+    "requiresEnv": ["UEFN_BRIDGE_DIR", "UEFN_VERSE_PROJECT_DIR", "VERSE_LSP_PATH", "VERSE_LSP_CHECK_SCRIPT"],
+    "note": "TycoonAgents never installs or modifies Power Tools or this server — it is a separate project you install and configure yourself, then add to your OWN .mcp.json (see .mcp.json.example in this repo). Download the release from GitHub Releases below and unzip it, then set `<POWER_TOOLS_DIR>` in the command args to that folder's full path (forward slashes even on Windows). Env vars per Power Tools' INSTALL.md: UEFN_BRIDGE_DIR is the bridge IPC directory shared by the MCP server and the in-UEFN Python bridge — must be set for both sides or neither, or they land in different directories (defaults to a per-machine temp dir if unset); UEFN_VERSE_PROJECT_DIR points at UEFN's VerseProject data root (digests, .vproject files); VERSE_LSP_PATH and VERSE_LSP_CHECK_SCRIPT are only needed for the uefn_verse_check tool. No env block is required in most client configs.",
+    "thirdParty": true,
+    "vendor": "Trashbird (Corsair Studios)",
+    "package": "Trashbyrd's Power Tools (downloaded release, run via `node`; not published to npm)",
+    "installUrl": "https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/releases",
+    "homepage": "https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools",
+    "docsUrl": "https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/blob/main/INSTALL.md",
     "network": false,
     "dataNote": "Runs locally; bridges Claude to your open UEFN session over temp-file IPC. No external/network calls.",
-    "config": { "command": "node", "args": ["${POWER_TOOLS_DIR}/uefn-server.mjs"] }
+    "config": { "command": "node", "args": ["<POWER_TOOLS_DIR>/uefn-server.mjs"] }
   },
   {
     "id": "unreal-engine-mcp",
@@ -133,7 +137,7 @@
     "name": "Codex (OpenAI)",
     "description": "Adversarial review and second-opinion queries from OpenAI's Codex CLI, running as an MCP server — a non-Anthropic model for cross-checking plans, diffs, and reasoning. Exposes `codex` (new session) and `codex-reply` (continue a session) tools.",
     "requiresEnv": [],
-    "note": "Local stdio MCP server launched via `codex mcp-server`. Auth is via a ChatGPT subscription (shared rolling 5-hour quota across CLI/web/IDE use), not a metered API key — sign in once with `codex login`. The launch args below pin model and reasoning effort and set safe defaults for approval-policy and sandbox so this entry never silently inherits your global ~/.codex/config.toml (which may pin an expensive model at high reasoning effort). These are launch-time config.toml overrides (`-c key=value`, applied before the `mcp-server` subcommand); they set the SERVER's baked-in defaults, not a hard ceiling — the `codex` tool's own per-call `sandbox`/`approval-policy`/`model` arguments can still override them at call time, so a caller (or an untrusted prompt) can request a looser sandbox or a costlier model on an individual call. Verified against `codex --help` / `codex mcp-server --help` (codex-cli 0.124.0): no separate flag exists to hard-lock per-call arguments; `-c` only sets the config.toml-equivalent default the server starts with.",
+    "note": "Local stdio MCP server launched via `codex mcp-server`. Auth is via a ChatGPT subscription (shared rolling 5-hour quota across CLI/web/IDE use), not a metered API key — sign in once with `codex login`. The launch args below pin model and reasoning effort and set safe defaults for approval-policy and sandbox so this entry never silently inherits your global ~/.codex/config.toml (which may pin an expensive model at high reasoning effort). These are launch-time config.toml overrides (`-c key=value`, applied before the `mcp-server` subcommand); they set the SERVER's baked-in defaults, not a hard ceiling — the `codex` tool's own per-call `sandbox`/`approval-policy`/`model` arguments can still override them at call time, so a caller (or an untrusted prompt) can request a looser sandbox or a costlier model on an individual call. Verified against `codex --help` / `codex mcp-server --help` (codex-cli 0.124.0): no separate flag exists to hard-lock per-call arguments; `-c` only sets the config.toml-equivalent default the server starts with. `codex mcp-server` works identically when launched from OpenCode — same subscription-backed CLI, same MCP wire contract, no TycoonAgents-specific glue.",
     "docsUrl": "https://github.com/openai/codex",
     "thirdParty": true,
     "vendor": "OpenAI",
@@ -142,6 +146,22 @@
     "network": true,
     "dataNote": "Prompts, code, and file contents you send through this server leave this machine and are sent to OpenAI's Codex/ChatGPT backend under your ChatGPT subscription. This is a different vendor than Anthropic and a different data-handling relationship than any Anthropic-run tool in this catalog.",
     "config": { "command": "codex", "args": ["-c", "model=\"gpt-5.4-mini\"", "-c", "model_reasoning_effort=\"low\"", "-c", "approval_policy=\"never\"", "-c", "sandbox_mode=\"read-only\"", "mcp-server"] }
+  },
+  {
+    "id": "claude-cli",
+    "name": "Claude CLI",
+    "description": "Route model calls through the user's own `claude` CLI login (a Claude Max/Pro subscription) instead of a metered Anthropic API key — a zero-dependency local MCP server wrapping `claude -p`. Exposes a single `claude` tool.",
+    "requiresEnv": [],
+    "note": "Local stdio MCP server (hooks/claude-cli-mcp.cjs, run via `node`). Auth is entirely the user's existing `claude` CLI login — TycoonAgents never sees, stores, or forwards credentials; it just shells out to the CLI the user already signed into. This uses Anthropic's own supported CLI surface, never a third-party OAuth client impersonating one — Anthropic's terms restrict third-party OAuth against Claude, and this deliberately stays on the vendor's official path instead (not legal advice). Defaults: permission-mode 'plan' (read-only planning, no unattended edits) and a fresh scratch working directory per call so the caller's project CLAUDE.md is NOT auto-loaded (and its prompt-cache-creation cost avoided) unless `cwd` is set on purpose. Optional env overrides: CLAUDE_CLI_BIN (explicit binary path, skips discovery), CLAUDE_CLI_MODEL (default model id, default 'claude-haiku-4-5'), CLAUDE_CLI_PERMISSION_MODE (default 'plan'), CLAUDE_CLI_CWD (default working directory), CLAUDE_CLI_TIMEOUT_MS (default 180000). Verified against `claude --help` (Claude Code 2.1.258) for --model/--permission-mode/--allowedTools/--append-system-prompt/--output-format; --max-turns is not listed in that help output but is accepted and honored (checked by direct invocation) — re-verify before relying on further undocumented flags.",
+    "docsUrl": "https://docs.claude.com/en/docs/claude-code/cli-reference",
+    "thirdParty": false,
+    "vendor": "Anthropic",
+    "costModelClass": "subscription",
+    "package": "hooks/claude-cli-mcp.cjs (bundled with TycoonAgents; requires the `claude` CLI already installed and logged in)",
+    "homepage": "https://docs.claude.com/en/docs/claude-code/overview",
+    "network": true,
+    "dataNote": "Prompts sent through this server go to Anthropic under the user's own Claude subscription, via the same `claude` CLI the user already uses interactively — no different a data relationship than using Claude Code directly.",
+    "config": { "command": "node", "args": ["${EXTENSION_DIR}/hooks/claude-cli-mcp.cjs"] }
   },
   {
     "id": "dart",
@@ -157,5 +177,35 @@
     "network": true,
     "dataNote": "Runs locally against your project's Dart/Flutter source; contacts pub.dev when searching packages or fetching docs. Requires the Dart SDK (3.9+) on your PATH.",
     "config": { "command": "dart", "args": ["mcp-server"] }
+  },
+  {
+    "id": "gemini",
+    "name": "Gemini (Google)",
+    "description": "Second-opinion / cross-vendor review queries against Google's Gemini models, running as an MCP server. Exposes `ask-gemini` (analyze/ask, optional sandbox mode), `sandbox-test`, and `ping` tools.",
+    "requiresEnv": ["GEMINI_API_KEY"],
+    "note": "Google's own gemini-cli (https://github.com/google-gemini/gemini-cli) only CONSUMES MCP servers — confirmed against its docs: it has no server-mode flag (no 'mcp-server'/'--experimental-mcp-server' subcommand), only a `mcpServers` client config in ~/.gemini/settings.json. There is no official Google-published Gemini MCP *server*. This entry instead uses the most-starred, actively-maintained community bridge, jamubc/gemini-mcp-tool (2.3k★, https://github.com/jamubc/gemini-mcp-tool), which runs the local `gemini` CLI under the hood and exposes it over MCP stdio via `npx -y gemini-mcp-tool`. Auth follows whatever the underlying `gemini` CLI is configured with — interactive OAuth login (`gemini` CLI's default) or, if you'd rather avoid a browser login step, the CLI's own support for reading GEMINI_API_KEY from the environment. Set GEMINI_API_KEY here only if you want that path; the server can also work with a CLI already logged in via OAuth (leave the value blank in that case). The `gemini` CLI itself must be installed and on PATH.",
+    "docsUrl": "https://github.com/jamubc/gemini-mcp-tool",
+    "thirdParty": true,
+    "vendor": "Google",
+    "package": "gemini-mcp-tool (community bridge over Google's gemini CLI, run via `npx`)",
+    "homepage": "https://github.com/jamubc/gemini-mcp-tool",
+    "network": true,
+    "dataNote": "Prompts and content you send through this server leave this machine and are sent to Google's Gemini backend, via the local `gemini` CLI's own auth (OAuth login or GEMINI_API_KEY). A different vendor than Anthropic, routed through a third-party (non-Google-published) MCP bridge rather than an official Gemini MCP server.",
+    "config": { "command": "npx", "args": ["-y", "gemini-mcp-tool"] }
+  },
+  {
+    "id": "openai-compatible",
+    "name": "OpenAI-Compatible Endpoint",
+    "description": "Call any OpenAI-compatible chat-completions endpoint (a local vLLM/Ollama/LM Studio server, or a hosted OpenAI-compatible API such as Kimi or Qwen) through one MCP `chat` tool — for local or self-hosted models this project doesn't special-case.",
+    "requiresEnv": ["OPENAI_COMPAT_BASE_URL", "OPENAI_COMPAT_API_KEY"],
+    "note": "Zero-dependency MCP stdio server shipped with this project (hooks/openai-compatible-mcp.cjs) — nothing to install separately. Points at any server exposing a `/v1/chat/completions` endpoint: vLLM, Ollama (OpenAI-compatible mode), LM Studio, or a hosted OpenAI-compatible API like Moonshot's Kimi or Alibaba's Qwen — including one running on a remote VM, by pointing OPENAI_COMPAT_BASE_URL at its address. OPENAI_COMPAT_API_KEY is optional — omit it for a local server with no auth (e.g. Ollama/LM Studio on localhost); set it for a hosted or auth-gated endpoint. Exposes one tool, `chat`, taking {model, prompt, system?, messages?, max_tokens?}.",
+    "docsUrl": "https://modelcontextprotocol.io/specification",
+    "thirdParty": false,
+    "vendor": "any (OpenAI-compatible endpoint)",
+    "package": "hooks/openai-compatible-mcp.cjs (bundled with this project, run via `node`)",
+    "homepage": "https://modelcontextprotocol.io/specification",
+    "network": true,
+    "dataNote": "Prompts and content you send through this server go to whatever host OPENAI_COMPAT_BASE_URL points at — a fully local server (e.g. Ollama on localhost) never leaves this machine; a hosted endpoint (e.g. Kimi/Qwen) sends data to that vendor under your own account/key.",
+    "config": { "command": "node", "args": ["${EXTENSION_DIR}/hooks/openai-compatible-mcp.cjs"] }
   }
 ]
