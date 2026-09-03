@@ -1,5 +1,5 @@
 import { WorldState, BuildableObject, ThemeManifest } from '../shared/types';
-import { ATLAS_CLIPS, RIVAL_CLIPS, type ClipName } from '../extension/themePlan';
+import { ATLAS_CLIPS, RIVAL_CLIPS, FIXED_EXPRESSION_LABELS, type ClipName } from '../extension/themePlan';
 import {
   advanceCharacterAnimation,
   createCharacterAnimation,
@@ -36,6 +36,47 @@ interface CachedFrame {
 }
 
 export const frameCache: Map<string, CachedFrame[]> = new Map();
+
+// The renderer's legacy emote keys are resolved onto the pinned expression
+// slots defined by FIXED_EXPRESSION_LABELS (src/extension/themePlan.ts),
+// keyed by label rather than a hardcoded index so a future reorder of that
+// array can't silently desync this map. Current theme packs (e.g.
+// survivors_vs_zombies) only ship frames.json keys as
+// expression_0..expression_N — never the legacy emote_* aliases directly —
+// so current_emote must be resolved through this map before hitting
+// frameCache.
+function expressionIndexForLabel(label: (typeof FIXED_EXPRESSION_LABELS)[number]): number {
+  const idx = FIXED_EXPRESSION_LABELS.indexOf(label);
+  if (idx === -1) {
+    throw new Error(`themeBuilder: label "${label}" not found in FIXED_EXPRESSION_LABELS`);
+  }
+  return idx;
+}
+
+const EMOTE_TO_EXPRESSION: Record<string, string> = {
+  emote_smile: `expression_${expressionIndexForLabel('Thumbs up')}`,
+  emote_idea: `expression_${expressionIndexForLabel('Idea / discovery spark')}`,
+  emote_sleep: `expression_${expressionIndexForLabel('Sleep / low-energy zzz')}`,
+  emote_team: `expression_${expressionIndexForLabel('Team action / rally')}`,
+};
+
+/**
+ * Resolve a current_emote value (e.g. "emote_smile") to the frameCache key
+ * that actually holds its frames. Tries the emote key directly first (in
+ * case a future theme pack ships legacy emote_* keys verbatim), then falls
+ * back to the documented positional alias onto expression_N. Returns null
+ * when neither resolves, so callers can fall back to the "?" placeholder.
+ */
+export function resolveEmoteFrameKey(
+  emote: string | null,
+  cache: Map<string, CachedFrame[]>
+): string | null {
+  if (emote === null) return null;
+  if (cache.has(emote)) return emote;
+  const aliased = EMOTE_TO_EXPRESSION[emote];
+  if (aliased && cache.has(aliased)) return aliased;
+  return null;
+}
 
 declare const acquireVsCodeApi: any;
 const vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
@@ -464,7 +505,8 @@ function renderLoop(timestamp: number) {
       ctx.strokeStyle = '#333';
       ctx.stroke();
 
-      const emoteFrames = frameCache.get(obj.current_emote);
+      const emoteKey = resolveEmoteFrameKey(obj.current_emote, frameCache);
+      const emoteFrames = emoteKey ? frameCache.get(emoteKey) : undefined;
       if (emoteFrames && emoteFrames.length > 0) {
         const emoteFrame = emoteFrames[Math.floor(frameCount / 5) % emoteFrames.length];
         if (emoteFrame.image.complete && emoteFrame.image.naturalWidth > 0) {

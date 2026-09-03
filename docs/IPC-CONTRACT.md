@@ -34,7 +34,7 @@ Sent once after a full theme generation run completes.
 - `object_<object_id>` — four idle-animation frames sliced from one of the three animated-object boards.
 - `crate` — one static themed build-crate frame shared by the theme.
 - `poof` — four one-shot reveal frames shared by the theme.
-- `expression_<0..15>` — one icon sliced from the 16-expression board. The first four are also aliased to the legacy `emote_smile`, `emote_sleep`, `emote_idea`, and `emote_team` renderer keys.
+- `expression_<0..7>` — one icon sliced from the 8-cell expression board, pinned per `FIXED_EXPRESSION_LABELS` in `src/extension/themePlan.ts` (source of truth for the order). The legacy renderer keys are aliased onto that pinned order, not by raw index: `emote_smile`→`expression_4` (Thumbs up), `emote_idea`→`expression_1` (Idea / discovery spark), `emote_team`→`expression_3` (Team action / rally), `emote_sleep`→`expression_6` (Sleep / low-energy zzz).
 - `achievement_<0..19>` — one icon sliced from the 20-badge board; achievement rules are intentionally deferred.
 
 **atlas_asset ref format:** Each `AgentConfig.atlas_asset` and `RivalConfig.atlas_asset` in a current manifest uses `frames.json#<key>`. To resolve it, split on `#` and use the right-hand side as the key into `frames`. Legacy `<theme_id>_frames.json#<key>` references remain readable.

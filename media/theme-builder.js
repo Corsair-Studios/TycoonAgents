@@ -1,6 +1,16 @@
 "use strict";
 (() => {
   // src/extension/themePlan.ts
+  var FIXED_EXPRESSION_LABELS = [
+    "Love",
+    "Idea / discovery spark",
+    "Anger",
+    "Team action / rally",
+    "Thumbs up",
+    "Music",
+    "Sleep / low-energy zzz",
+    "Dazed / hit"
+  ];
   var CHARACTER_WALK_FRAME_CAP = 2;
   var ATLAS_CLIPS = {
     walk: { frames: [0, 1, 2, 3, 4].slice(0, CHARACTER_WALK_FRAME_CAP), fps: 10, loop: true, flippable: true },
@@ -101,6 +111,26 @@
   };
   var activeManifest = null;
   var frameCache = /* @__PURE__ */ new Map();
+  function expressionIndexForLabel(label) {
+    const idx = FIXED_EXPRESSION_LABELS.indexOf(label);
+    if (idx === -1) {
+      throw new Error(`themeBuilder: label "${label}" not found in FIXED_EXPRESSION_LABELS`);
+    }
+    return idx;
+  }
+  var EMOTE_TO_EXPRESSION = {
+    emote_smile: `expression_${expressionIndexForLabel("Thumbs up")}`,
+    emote_idea: `expression_${expressionIndexForLabel("Idea / discovery spark")}`,
+    emote_sleep: `expression_${expressionIndexForLabel("Sleep / low-energy zzz")}`,
+    emote_team: `expression_${expressionIndexForLabel("Team action / rally")}`
+  };
+  function resolveEmoteFrameKey(emote, cache) {
+    if (emote === null) return null;
+    if (cache.has(emote)) return emote;
+    const aliased = EMOTE_TO_EXPRESSION[emote];
+    if (aliased && cache.has(aliased)) return aliased;
+    return null;
+  }
   var vscode = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null;
   var is_editor_mode = false;
   var placed_props = [];
@@ -391,7 +421,8 @@
         ctx.fill();
         ctx.strokeStyle = "#333";
         ctx.stroke();
-        const emoteFrames = frameCache.get(obj.current_emote);
+        const emoteKey = resolveEmoteFrameKey(obj.current_emote, frameCache);
+        const emoteFrames = emoteKey ? frameCache.get(emoteKey) : void 0;
         if (emoteFrames && emoteFrames.length > 0) {
           const emoteFrame = emoteFrames[Math.floor(frameCount / 5) % emoteFrames.length];
           if (emoteFrame.image.complete && emoteFrame.image.naturalWidth > 0) {
