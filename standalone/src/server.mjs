@@ -125,6 +125,46 @@ function imageModelsModule() {
   return _imageModelsModule;
 }
 
+// ── Pack-catalog compiled bridges (out/src/host/vscode/{packCatalog,mcpCatalog,agentConfig}.js) ──
+// These three compiled modules are pure (no `import "vscode"` anywhere in
+// their own or transitive imports — packCatalog.ts only pulls in
+// src/core/agentBackend.ts -> modelAliases.ts; mcpCatalog.ts and
+// agentConfig.ts import nothing) so, like imageModelsModule() above, they
+// are safe to require() directly from the standalone's vscode-free process.
+// Used by buildPacksPayload()/handleInstallPack() below to mirror panel.ts's
+// _handleGetPacks/_handleInstallPack exactly (same generated agent markdown,
+// same MCP merge semantics, same keyword-table shape) instead of
+// reimplementing them.
+const PACK_CATALOG_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'packCatalog.js');
+const MCP_CATALOG_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'mcpCatalog.js');
+const AGENT_CONFIG_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'agentConfig.js');
+
+function requireCompiledOrThrow(jsPath, label) {
+  if (!fs.existsSync(jsPath)) {
+    throw new Error(
+      `[tycoonagents-standalone] ${label}: ${jsPath} not found. The compiled \`out/\` directory is missing or ` +
+        'stale — run `npx tsc -p .` from the repo root first, then restart the standalone server.',
+    );
+  }
+  return requireCompiledModule(jsPath);
+}
+
+let _packCatalogModule;
+function packCatalogModule() {
+  if (!_packCatalogModule) _packCatalogModule = requireCompiledOrThrow(PACK_CATALOG_JS, 'packCatalog');
+  return _packCatalogModule;
+}
+let _mcpCatalogModule;
+function mcpCatalogModule() {
+  if (!_mcpCatalogModule) _mcpCatalogModule = requireCompiledOrThrow(MCP_CATALOG_JS, 'mcpCatalog');
+  return _mcpCatalogModule;
+}
+let _agentConfigModule;
+function agentConfigModule() {
+  if (!_agentConfigModule) _agentConfigModule = requireCompiledOrThrow(AGENT_CONFIG_JS, 'agentConfig');
+  return _agentConfigModule;
+}
+
 // ── MIME map (media/ only ships a handful of extensions today) ─────────────
 const MIME_TYPES = {
   '.js': 'text/javascript; charset=utf-8',
@@ -334,7 +374,7 @@ function buildInstallStatePayload() {
 function buildBootHandshakeMessages() {
   return [
     { eventName: 'message', data: buildInstallStatePayload() },
-    { eventName: 'message', data: { type: 'packs', packs: [] } },
+    { eventName: 'message', data: buildPacksPayload() },
     { eventName: 'message', data: { type: 'engineStatus', chips: [] } },
     {
       eventName: 'message',
@@ -582,11 +622,14 @@ function handleBrowserMessage(msg) {
       broadcast('message', buildInstallStatePayload());
       break;
     case 'getPacks':
-      // main.js's "packs" handler (renderPacksList(msg.packs, msg.error))
-      // only requires packs to be an array; the standalone doesn't yet
-      // implement the Skills/MCP/Packs catalog installer, so an empty list
-      // is the honest answer rather than a guess.
-      broadcast('message', { type: 'packs', packs: [] });
+      // Standalone analog of panel.ts's _handleGetPacks (~line 3626-3686) —
+      // see buildPacksPayload() below.
+      broadcast('message', buildPacksPayload());
+      break;
+    case 'installPack':
+      // Standalone analog of panel.ts's _handleInstallPack (~line 3768-
+      // 3982) — see handleInstallPack() below for what is/isn't replicated.
+      handleInstallPack(msg);
       break;
     case 'getSettings':
       // Standalone analog of panel.ts's _handleGetSettings (~line 6783-
@@ -854,6 +897,365 @@ function buildMcpPayload() {
       needsSetup: e.needsSetup,
     })),
   };
+}
+
+/**
+ * Standalone analog of panel.ts's _handleGetPacks (src/host/vscode/panel.ts
+ * ~line 3626-3686) and its _buildPackDisclosures helper. Reads the same
+ * three catalogs (media/packs/catalog.json, media/mcp/catalog.json,
+ * media/skills/catalog.json) and computes `installed`/`disclosures` against
+ * `primaryProjectRoot` exactly like the VS Code host does. Returns the same
+ * per-pack shape main.js's renderPacksList/describePackageInstalls expect.
+ */
+function buildPacksPayload() {
+  const packsPath = path.join(MEDIA_DIR, 'packs', 'catalog.json');
+  let packs;
+  try {
+    packs = JSON.parse(fs.readFileSync(packsPath, 'utf8'));
+  } catch (err) {
+    return { type: 'packs', packs: [], error: String(err) };
+  }
+  let mcpCatalog = [];
+  try {
+    mcpCatalog = JSON.parse(fs.readFileSync(path.join(MEDIA_DIR, 'mcp', 'catalog.json'), 'utf8'));
+  } catch {
+    mcpCatalog = [];
+  }
+  const skillNames = {};
+  try {
+    const skillsCatalog = JSON.parse(fs.readFileSync(path.join(MEDIA_DIR, 'skills', 'catalog.json'), 'utf8'));
+    for (const s of skillsCatalog) {
+      if (s && typeof s.id === 'string') skillNames[s.id] = typeof s.name === 'string' ? s.name : s.id;
+    }
+  } catch {
+    /* skillNames stays {} */
+  }
+  const root = primaryProjectRoot || '';
+  let mcpConfig = {};
+  if (root) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
+      if (parsed !== null && typeof parsed === 'object') mcpConfig = parsed;
+    } catch {
+      /* missing/invalid => default {} */
+    }
+  }
+  const { hasMcpServer } = mcpCatalogModule();
+  const skillInstalled = (id) => !!root && fs.existsSync(path.join(root, '.claude', 'skills', id));
+  const agentInstalled = (id) => !!root && fs.existsSync(path.join(root, '.claude', 'agents', `${id}.md`));
+
+  const result = packs.map((pack) => {
+    const disclosures = [];
+    if (pack && pack.mcp) {
+      const m = mcpCatalog.find((x) => x.id === pack.mcp);
+      if (m && m.thirdParty) {
+        disclosures.push({ label: m.name, vendor: m.vendor, package: m.package, homepage: m.homepage, network: m.network, dataNote: m.dataNote });
+      }
+    }
+    const packSkills = Array.isArray(pack.skills) ? pack.skills : [];
+    const packCommands = Array.isArray(pack.commands) ? pack.commands : [];
+    const packAgents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
+    const skills = packSkills.map((id) => ({ id, name: skillNames[id] ?? id, installed: skillInstalled(id) }));
+    const mcpEntry = pack.mcp ? mcpCatalog.find((x) => x.id === pack.mcp) : undefined;
+    return {
+      id: pack.id,
+      name: pack.name,
+      description: pack.description,
+      has: { skill: packSkills.length > 0, mcp: !!pack.mcp, agent: true },
+      installed: {
+        skill: packSkills.length > 0 && packSkills.every((id) => skillInstalled(id)),
+        mcp: pack.mcp ? hasMcpServer(mcpConfig, pack.mcp) : false,
+        agent: root !== '' && packAgents.length > 0 && packAgents.every((a) => agentInstalled(a.id)),
+      },
+      skills,
+      commands: packCommands,
+      agents: packAgents.map((a) => ({ id: a.id, name: a.name })),
+      mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
+      thirdParty: disclosures.length > 0,
+      disclosures,
+    };
+  });
+  return { type: 'packs', packs: result };
+}
+
+/**
+ * Standalone analog of panel.ts's `_stageSkillTree` (~line 4284-4340):
+ * content-diff recursive copy from media/skills/<skillId> into
+ * `<root>/.claude/skills/<skillId>`. Never throws — per-file failures are
+ * collected into `failed` instead.
+ */
+function stageSkillTreeStandalone(skillId, root) {
+  const src = path.join(MEDIA_DIR, 'skills', skillId);
+  const dest = path.join(root, '.claude', 'skills', skillId);
+  let staged = 0;
+  let updated = 0;
+  let unchanged = 0;
+  const failed = [];
+  const copyRecursive = (srcDir, destDir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(srcDir, { withFileTypes: true });
+    } catch (e) {
+      failed.push({ path: srcDir, error: String(e) });
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === '__pycache__') continue;
+      if (entry.name.endsWith('.pyc') || entry.name.endsWith('.pyo')) continue;
+      const srcPath = path.join(srcDir, entry.name);
+      const destPath = path.join(destDir, entry.name);
+      if (entry.isDirectory()) {
+        copyRecursive(srcPath, destPath);
+        continue;
+      }
+      try {
+        const srcBuf = fs.readFileSync(srcPath);
+        let same = false;
+        let destExists = true;
+        try {
+          same = srcBuf.equals(fs.readFileSync(destPath));
+        } catch {
+          destExists = false;
+        }
+        if (!destExists) {
+          fs.mkdirSync(destDir, { recursive: true });
+          fs.copyFileSync(srcPath, destPath);
+          staged++;
+        } else if (!same) {
+          fs.copyFileSync(srcPath, destPath);
+          updated++;
+        } else {
+          unchanged++;
+        }
+      } catch (e) {
+        failed.push({ path: destPath, error: String(e) });
+      }
+    }
+  };
+  copyRecursive(src, dest);
+  return { staged, updated, unchanged, failed };
+}
+
+/**
+ * Standalone analog of panel.ts's `_installPackCommands` (~line 3734-3763):
+ * content-diff copy of media/commands/<id>.md into
+ * `<root>/.claude/commands/<id>.md`.
+ */
+function installPackCommandsStandalone(root, packCommands) {
+  const results = [];
+  for (const commandId of packCommands) {
+    try {
+      const target = path.join(root, '.claude', 'commands', `${commandId}.md`);
+      const src = path.join(MEDIA_DIR, 'commands', `${commandId}.md`);
+      const srcContent = fs.readFileSync(src, 'utf8');
+      let destContent;
+      try {
+        destContent = fs.readFileSync(target, 'utf8');
+      } catch {
+        destContent = undefined;
+      }
+      if (destContent === undefined) {
+        fs.mkdirSync(path.join(root, '.claude', 'commands'), { recursive: true });
+        fs.writeFileSync(target, srcContent);
+        results.push({ id: commandId, status: 'installed' });
+      } else if (destContent !== srcContent) {
+        fs.writeFileSync(target, srcContent);
+        results.push({ id: commandId, status: 'updated' });
+      } else {
+        results.push({ id: commandId, status: 'unchanged' });
+      }
+    } catch (e) {
+      results.push({ id: commandId, status: 'error', error: String(e) });
+    }
+  }
+  return results;
+}
+
+/**
+ * Standalone analog of panel.ts's `_readKeywordsConfig` (~line 6362-6373).
+ */
+function readKeywordsConfigStandalone(root) {
+  const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(keywordsPath, 'utf8'));
+    if (parsed !== null && typeof parsed === 'object') return parsed;
+  } catch {
+    /* missing/invalid => default */
+  }
+  return { fallback_agent: 'primary-agent', agents: {} };
+}
+
+/**
+ * Standalone analog of panel.ts's `_resolveConfigTokens` (~line 4391-4406):
+ * substitutes the `${EXTENSION_DIR}` token an MCP catalog entry's config may
+ * contain with the repo root (the standalone's analog of the extension's
+ * install directory — media/ is served straight out of REPO_ROOT/media, see
+ * MEDIA_DIR above), forward-slashing the result the same way.
+ */
+function resolveConfigTokensStandalone(config) {
+  const EXTENSION_TOKEN = '${EXTENSION_DIR}';
+  const resolve = (value) => {
+    if (typeof value === 'string') {
+      let out = value;
+      let substituted = false;
+      if (out.includes(EXTENSION_TOKEN)) {
+        out = out.split(EXTENSION_TOKEN).join(REPO_ROOT);
+        substituted = true;
+      }
+      return substituted ? out.replace(/\\/g, '/') : out;
+    }
+    if (Array.isArray(value)) return value.map(resolve);
+    if (value !== null && typeof value === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) out[k] = resolve(v);
+      return out;
+    }
+    return value;
+  };
+  return resolve(config);
+}
+
+/**
+ * Standalone analog of panel.ts's `_handleInstallPack` (~line 3768-3982).
+ * Installs a pack's skills, commands, MCP server entry, and agent files
+ * against `primaryProjectRoot`, using the SAME compiled pure helpers panel.ts
+ * uses (buildAgentMarkdown/agentMarkdownHasTycoonMarker from packCatalog.js,
+ * mergeMcpServer/hasMcpServer from mcpCatalog.js, setKeywordPattern from
+ * agentConfig.js) so a standalone install produces byte-identical agent
+ * files and MCP config to a VS Code install.
+ *
+ * NOT replicated (require the VS Code extension host, no equivalent exists
+ * in a headless server — these are documented no-ops rather than silent
+ * omissions):
+ *   - the native third-party-disclosure confirm modal (`thirdParty`/
+ *     `disclosures` payload fields are accepted but ignored — a headless
+ *     server has no interactive confirm channel, so install proceeds
+ *     directly, same as passing `thirdParty:false` would in the VS Code host)
+ *   - the UEFN generic-agent-conflict warning + auto-removal
+ *     (uefnConflictIds / conflictingUefnAgents) — left for a future task if
+ *     the standalone ever ships the UEFN pack's conflict UX.
+ */
+function handleInstallPack(payload) {
+  const id = payload && payload.id;
+  try {
+    const packsPath = path.join(MEDIA_DIR, 'packs', 'catalog.json');
+    const packs = JSON.parse(fs.readFileSync(packsPath, 'utf8'));
+    const pack = packs.find((p) => p.id === id);
+    if (!pack) {
+      broadcast('message', { type: 'packInstalled', id, ok: false, error: 'Unknown pack' });
+      return;
+    }
+    const root = primaryProjectRoot;
+    if (!root) {
+      broadcast('message', { type: 'packInstalled', id, ok: false, error: 'No project root resolved' });
+      return;
+    }
+
+    const results = {};
+    const packSkills = Array.isArray(pack.skills) ? pack.skills : [];
+    if (packSkills.length > 0) {
+      results.skills = packSkills.map((skillId) => {
+        try {
+          const { staged, updated, failed } = stageSkillTreeStandalone(skillId, root);
+          return {
+            id: skillId,
+            status: staged > 0 ? 'installed' : updated > 0 ? 'updated' : 'unchanged',
+            ...(failed.length > 0 ? { error: failed.map((f) => `${f.path}: ${f.error}`).join('; ') } : {}),
+          };
+        } catch (e) {
+          return { id: skillId, status: 'unchanged', error: String(e) };
+        }
+      });
+    }
+    const packCommands = Array.isArray(pack.commands) ? pack.commands : [];
+    if (packCommands.length > 0) {
+      results.commands = installPackCommandsStandalone(root, packCommands);
+    }
+    if (pack.mcp) {
+      const { hasMcpServer, mergeMcpServer } = mcpCatalogModule();
+      let mcpCatalog = [];
+      try {
+        mcpCatalog = JSON.parse(fs.readFileSync(path.join(MEDIA_DIR, 'mcp', 'catalog.json'), 'utf8'));
+      } catch {
+        mcpCatalog = [];
+      }
+      const entry = mcpCatalog.find((x) => x.id === pack.mcp);
+      if (entry === undefined) {
+        throw new Error(`MCP catalog entry not found for id: ${pack.mcp}`);
+      }
+      const mcpPath = path.join(root, '.mcp.json');
+      let existing = {};
+      try {
+        const parsed = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+        if (parsed !== null && typeof parsed === 'object') existing = parsed;
+      } catch {
+        existing = {};
+      }
+      if (hasMcpServer(existing, pack.mcp)) {
+        results.mcp = 'exists';
+      } else {
+        const resolvedConfig = resolveConfigTokensStandalone(entry.config);
+        if (/<[^<>]*>/.test(JSON.stringify(resolvedConfig))) {
+          results.mcp = {
+            status: 'skipped',
+            error:
+              `${pack.mcp} is provided by Trashbyrd's Power Tools — install it separately and add the entry to ` +
+              'your own .mcp.json; see .mcp.json.example.',
+          };
+        } else {
+          const merged = mergeMcpServer(existing, pack.mcp, resolvedConfig);
+          fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+          results.mcp = 'installed';
+        }
+      }
+    }
+
+    const { buildAgentMarkdown, agentMarkdownHasTycoonMarker } = packCatalogModule();
+    const { setKeywordPattern } = agentConfigModule();
+    const agents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
+    const agentResults = [];
+    let cfg = readKeywordsConfigStandalone(root);
+    for (const a of agents) {
+      try {
+        const agentsDir = path.join(root, '.claude', 'agents');
+        const agentPath = path.join(agentsDir, `${a.id}.md`);
+        const generated = buildAgentMarkdown(a, pack.id);
+        if (!fs.existsSync(agentPath)) {
+          fs.mkdirSync(agentsDir, { recursive: true });
+          fs.writeFileSync(agentPath, generated);
+          agentResults.push({ id: a.id, status: 'created' });
+        } else {
+          const existingContent = fs.readFileSync(agentPath, 'utf8');
+          if (agentMarkdownHasTycoonMarker(existingContent)) {
+            if (existingContent === generated) {
+              agentResults.push({ id: a.id, status: 'unchanged' });
+            } else {
+              fs.writeFileSync(agentPath, generated);
+              agentResults.push({ id: a.id, status: 'refreshed' });
+            }
+          } else {
+            const backupPath = `${agentPath}.bak`;
+            if (!fs.existsSync(backupPath)) {
+              fs.writeFileSync(backupPath, existingContent);
+            }
+            fs.writeFileSync(agentPath, generated);
+            agentResults.push({ id: a.id, status: 'replaced-legacy' });
+          }
+        }
+      } catch (e) {
+        agentResults.push({ id: a.id, status: 'error', error: String(e) });
+      }
+      cfg = setKeywordPattern(cfg, a.id, a.keywords);
+    }
+    results.agents = agentResults;
+    const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+    fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+    fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+
+    broadcast('message', { type: 'packInstalled', id, ok: true, results });
+  } catch (e) {
+    broadcast('message', { type: 'packInstalled', id, ok: false, error: String(e) });
+  }
 }
 
 /**

@@ -31,6 +31,12 @@ import { ProjectRootError } from '../src/projectRoots.mjs';
 import { createFsThemeFileStore } from '../src/themeFileStoreFs.mjs';
 import { themesDirectoryPath } from '../src/themeFileStoreFs.mjs';
 import { listThemesFromStore } from '../src/themeMessages.mjs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+// standalone/test -> standalone -> repo root (same derivation server.mjs uses).
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** Reads SSE chunks off `reader` until it sees a `message` event whose JSON
  * `data.type` equals `matchType`, then returns that parsed data. Bounded by
@@ -399,6 +405,104 @@ test('POST /message {type: "getMcp"} -> broadcasts a "mcp" reply built from medi
     controller.abort();
     await runtime.close();
   }
+});
+
+test('POST /message {type: "getPacks"} -> lists every catalog pack with installed flags computed against a temp project', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const catalog = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'media', 'packs', 'catalog.json'), 'utf8'));
+
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const packsPromise = collectSseEvent(reader, 'packs');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'getPacks' }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const packs = await packsPromise;
+    assert.ok(Array.isArray(packs.packs));
+    assert.equal(packs.packs.length, catalog.length, 'every catalog pack must be listed');
+    const multiLlm = packs.packs.find((p) => p.id === 'multi-llm');
+    assert.ok(multiLlm, 'multi-llm pack must be present');
+    assert.equal(multiLlm.installed.agent, false, 'no agent files exist yet in the fresh temp project');
+    assert.deepEqual(multiLlm.agents.map((a) => a.id).sort(), ['claude-worker', 'codex-reviewer', 'gemini-reviewer', 'kimi-reviewer']);
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "installPack", id: "multi-llm"} -> writes byte-identical agent markdown and getPacks then reports installed', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const catalog = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'media', 'packs', 'catalog.json'), 'utf8'));
+    const pack = catalog.find((p) => p.id === 'multi-llm');
+    const { buildAgentMarkdown } = require('../../out/src/host/vscode/packCatalog.js');
+
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const installedPromise = collectSseEvent(reader, 'packInstalled');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'installPack', id: 'multi-llm', thirdParty: false, disclosures: [] }),
+    });
+    assert.equal(messageRes.status, 202);
+
+    const installed = await installedPromise;
+    assert.equal(installed.ok, true, `install must succeed: ${installed.error}`);
+
+    for (const agent of pack.agents) {
+      const written = fs.readFileSync(path.join(projectRoot, '.claude', 'agents', `${agent.id}.md`), 'utf8');
+      const expected = buildAgentMarkdown(agent, 'multi-llm');
+      assert.equal(written, expected, `${agent.id}.md must be byte-identical to buildAgentMarkdown's output`);
+    }
+
+    const packsPromise = collectSseEvent(reader, 'packs');
+    const getPacksRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'getPacks' }),
+    });
+    assert.equal(getPacksRes.status, 202);
+    const packs = await packsPromise;
+    const multiLlm = packs.packs.find((p) => p.id === 'multi-llm');
+    assert.equal(multiLlm.installed.agent, true, 'getPacks must report the pack as installed after installPack');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('server.mjs and packCatalog.js load without ever requiring the "vscode" module', () => {
+  const Module = require('module');
+  const orig = Module._load;
+  let sawVscode = false;
+  Module._load = function patchedLoad(request, ...args) {
+    if (request === 'vscode') sawVscode = true;
+    return orig.call(this, request, ...args);
+  };
+  try {
+    delete require.cache[require.resolve('../../out/src/host/vscode/packCatalog.js')];
+    require('../../out/src/host/vscode/packCatalog.js');
+  } finally {
+    Module._load = orig;
+  }
+  assert.equal(sawVscode, false, 'packCatalog.js must load standalone, without importing "vscode"');
 });
 
 test('POST /message {type: "ready"} -> broadcasts THEME_INITIALIZED for the auto-seeded bundled theme on a fresh store', async () => {
