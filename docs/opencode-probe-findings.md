@@ -147,3 +147,37 @@ Defects found and fixed during the smoke (standalone only, all covered by tests 
 Coverage limits: terminal TUI only; OpenCode desktop app and OpenCode VS Code extension not exercised; the subagent's own Read PreToolUse carried the child sessionId without parentId (observe whether the panel attributes it to `probe-sub` via `workerId` — it did in this run).
 
 Verdict: M2 smoke PASS.
+
+## M5 smoke (2026-09-03, run by agent on user's machine)
+
+Clone path: `D:/ACode/TycoonAgents-smoke` (fresh local clone of HEAD of `main`, commit `beb59b9`).
+
+README steps followed (`README.md` "Using OpenCode as the provider" + `standalone/README.md`):
+
+1. `npm install` — exit 0 (13 vulnerabilities reported by npm audit, unrelated to this smoke; esbuild postinstall-script warning, no action needed).
+2. `npm run build` (`tsc -p .` + `copy:hookruntime`) — exit 0, copied `agentBackend.js` and `modelAliases.js` into `hooks/`.
+3. `npm run opencode:config` — exit 0, wrote `AGENTS.md`.
+4. `node standalone/src/cli.mjs install-hook . --opencode` — exit 0, copied `tycoon-opencode-plugin.ts`, `agentBackend.js`, `modelAliases.js` into `.opencode/plugin/`. `.opencode/agents/` was populated with the full specialist roster (14 files incl. `probe-sub.md`, `orchestrator.md`, etc.) and `AGENTS.md` head showed the managed-block markers (`<!-- TYCOON-MANAGED:START/END -->`) present but empty between them.
+
+Deviations from README:
+- `git clone` initially failed with "detected dubious ownership" (Windows/Git ownership check on the source repo's `.git`); required `git config --global --add safe.directory D:/ACode/TycoonAgents/.git` first. Not mentioned in README; environment-specific, not a repo defect.
+- Started the standalone with `TYCOON_STANDALONE_NO_OPEN=1` (documented env var, just not called out in the "Using OpenCode as the provider" section) to avoid a browser-launch attempt in a headless shell.
+
+Standalone server: started via `TYCOON_STANDALONE_PORT=4311 TYCOON_STANDALONE_NO_OPEN=1 node standalone/src/cli.mjs watch . --provider opencode`, backgrounded, log at `smoke-standalone.log`. `curl http://127.0.0.1:4311/` returned the host HTML (exit 0). `curl -N http://127.0.0.1:4311/events` streamed `state`, `installState`, `packs`, `engineStatus`, `PLAN_STATE`, `OFFLOAD_OFFER_STATE`, and `THEME_INITIALIZED` (bundled "Survivors vs Zombies" theme already present in app-data theme store) — all as documented.
+
+`opencode run "@probe-sub hello, then stop"` (opencode 1.18.27, model `opencode/big-pickle`) — worked non-interactively with no extra flags needed; exit 0, ~30s. Output: "Probe subagent test — Probe-Sub Agent" then "Probe ran and read `AGENTS.md` successfully. Stopping now."
+
+`grep '"provider":"opencode"' .claude/tycoon/activity.jsonl` — all 5 opencode-tagged lines, verbatim:
+```
+{"event":"UserPromptSubmit","provider":"opencode","at":1788462086146,"sessionId":"ses_f975a4806ffedly4b5FKh6utPz"}
+{"event":"PreToolUse","provider":"opencode","at":1788462095182,"tool":"Task","workerId":"probe-sub","agentDescription":"Probe subagent test","sessionId":"ses_f975a4806ffedly4b5FKh6utPz","parentId":"ses_f975a4806ffedly4b5FKh6utPz"}
+{"event":"PreToolUse","provider":"opencode","at":1788462100532,"tool":"Read","workerId":"probe-sub","sessionId":"ses_f975a24aaffeD2mj16uZw9ZTZJ"}
+{"event":"SubagentStop","provider":"opencode","at":1788462107495,"workerId":"probe-sub","sessionId":"ses_f975a4806ffedly4b5FKh6utPz","model":"opencode/big-pickle","tokens":5200,"cacheReadTokens":4800}
+{"event":"Stop","provider":"opencode","at":1788462113770,"sessionId":"ses_f975a4806ffedly4b5FKh6utPz"}
+```
+
+No dedicated `GET /state` REST route exists in `standalone/src/server.mjs` (state is push-only over SSE `/events`), so state was read from the `/events` stream instead: it showed `"workers":{"probe-sub":{"id":"probe-sub","role":"Task","state":"leave"}}` and `probe-sub` present in `agentMetrics` (taskCount:1, tokens:5200, cacheReadTokens:4800, directReads:1) alongside the orchestrator (delegations:1). probe-sub appeared correctly as a worker.
+
+Standalone server killed after the run; port 4311 confirmed free (no LISTENING entry in `netstat -ano`, only stale TIME_WAIT). Clone folder left in place at `D:/ACode/TycoonAgents-smoke`, no push, no commit.
+
+Verdict: M5 smoke PASS. No failing step.
