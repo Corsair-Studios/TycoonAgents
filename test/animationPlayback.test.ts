@@ -8,10 +8,13 @@ import {
 } from '../src/webview/animationPlayback';
 
 test('walk advances at its clip fps and loops', () => {
+  // walk is capped to 2 frames (CHARACTER_WALK_FRAME_CAP experiment, see
+  // src/extension/themePlan.ts ATLAS_CLIPS.walk) so the loop wraps every
+  // 0.2s at this clip's 10fps instead of every 0.5s.
   const state = createCharacterAnimation('walk');
   advanceCharacterAnimation(state, 0.1);
   assert.equal(currentCharacterSlot(state), 1);
-  advanceCharacterAnimation(state, 0.4);
+  advanceCharacterAnimation(state, 0.1);
   assert.equal(currentCharacterSlot(state), 0);
 });
 

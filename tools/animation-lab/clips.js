@@ -8,7 +8,9 @@
 // between the two and will fail on drift.
 
 const ATLAS_CLIPS = {
-  walk: { frames: [0, 1, 2, 3, 4], fps: 10, loop: true, flippable: true },
+  // EXPERIMENT (reversible): capped to CHARACTER_WALK_FRAME_CAP=2 frames —
+  // mirrors src/extension/themePlan.ts's ATLAS_CLIPS.walk (parity-tested).
+  walk: { frames: [0, 1], fps: 10, loop: true, flippable: true },
   idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
   sit: { frames: [15], fps: 0, loop: true, flippable: true, hold: true },
   melee: { frames: [10, 11], fps: 12, loop: false, flippable: true },

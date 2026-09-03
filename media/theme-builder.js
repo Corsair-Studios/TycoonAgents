@@ -1,8 +1,9 @@
 "use strict";
 (() => {
   // src/extension/themePlan.ts
+  var CHARACTER_WALK_FRAME_CAP = 2;
   var ATLAS_CLIPS = {
-    walk: { frames: [0, 1, 2, 3, 4], fps: 10, loop: true, flippable: true },
+    walk: { frames: [0, 1, 2, 3, 4].slice(0, CHARACTER_WALK_FRAME_CAP), fps: 10, loop: true, flippable: true },
     idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
     sit: { frames: [15], fps: 0, loop: true, flippable: true, hold: true },
     melee: { frames: [10, 11], fps: 12, loop: false, flippable: true },
