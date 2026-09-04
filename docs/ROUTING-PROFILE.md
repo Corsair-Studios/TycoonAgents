@@ -204,6 +204,10 @@ agent's OpenCode model without touching frontmatter. Once a project adopts
 No code change is required to add a newly-released model: set `model` to
 any `"provider/model"` string in the relevant slot.
 
+For OpenCode-side generation (`.opencode/tycoon-routing.generated.json`,
+`AGENTS.md`), see `docs/OPENCODE-PROVIDER.md` — this document covers the
+routing profile schema and the Claude-side application only.
+
 ## Applying the profile to Claude Code agents
 
 `scripts/apply-routing-profile.mjs` is the Claude-side counterpart to
@@ -254,3 +258,136 @@ script exits `0` and writes nothing. An invalid `routing.json` prints every
 validation error and exits `2` without writing anything. The script is
 deterministic and idempotent — running it twice against an unchanged profile
 produces no further diffs.
+
+## Fallback chains at runtime
+
+A `RoutingSlot.fallback` array (validated to depth `MAX_FALLBACK_DEPTH = 3`
+in `src/core/routingProfile.ts`) is not executed by any hook — no hook can
+re-run an agent on either host. Instead each host detects a provider
+failure, records it, and injects an instruction telling the **orchestrator**
+to re-dispatch the same task itself. The shared, host-agnostic pieces live
+in `src/core/fallbackChain.ts`:
+
+- `isProviderFailure(text)` — matches `PROVIDER_FAILURE_PATTERNS` (usage
+  limit, spend cap, out of credits, 401/403/Unauthorized, quota, rate limit,
+  `RESOURCE_EXHAUSTED`, `OPENAI_COMPAT_BASE_URL`, `ECONNREFUSED`, `failed:`,
+  `provider-unavailable`) against a tool result body.
+- `resolveNextFallback({ slotId, chain, attemptsSoFar })` — pure lookup of
+  the next `RoutingSlot` in the chain, or `{ exhausted: true }` past the end.
+- `FallbackState` — per-session, per-slotId attempt counter (`recordFailure`,
+  `getNext`, `getRecord`, `endSession`, `clear`), capped at
+  `MAX_TRACKED_SESSIONS = 200` sessions with oldest-first eviction.
+- `buildFallbackInstruction({ workerId, failedProvider, failedModel, reason, result, chainLength })`
+  — the exact text queued to the orchestrator: which agent failed, on what
+  model, and either "re-dispatch on `<nextModel>` (fallback N of M)" or
+  "all fallback options exhausted — report the failure" once `result.exhausted`.
+
+**Detection → record → instruction → re-dispatch, per host:**
+
+- **Claude Code** (`hooks/tycoon-claude-hook.cjs`, `PostToolUse` branch,
+  registered as the `mcp__.*` PostToolUse slot in
+  `src/host/vscode/hookInstall.ts`'s `TYCOON_HOOK_SLOTS`): on a `PostToolUse`
+  for any `mcp__<server>__<tool>` call whose response text matches
+  `isProviderFailure`, the hook reads that agent's fallback chain from
+  `.claude/tycoon/routing.resolved.json` (`agents[slotId].fallback`),
+  persists the incremented attempt count to
+  `.claude/tycoon/fallback-state.json` (keyed by session id, then slot id),
+  calls `resolveNextFallback`/`buildFallbackInstruction`, appends a
+  `FallbackTriggered` record to the activity log, and returns the
+  instruction as `hookSpecificOutput.additionalContext` so it lands in the
+  orchestrator's next turn. `fallback-state.json` is evicted on session end
+  the same way the rest of that hook's per-session state is (see the hook's
+  `Stop` handling).
+- **OpenCode** (`hooks/tycoon-opencode-plugin.ts`): on a `Task` re-dispatch,
+  if `FallbackState.getNext(sessionId, workerId)` returns a non-exhausted
+  entry, the plugin best-effort rewrites `input.args.model` to the next
+  chain entry's model (`args.model` mutation is **not confirmed** to be
+  observed by OpenCode's own tool execution — see
+  `docs/opencode-probe-findings.md`), stamps `fallbackOf`/`fallbackDepth` on
+  the pushed active-agent stack entry, and separately queues the
+  human-readable instruction text via `queueNudge`, delivered into the
+  model's system prompt on its **next** turn through
+  `experimental.chat.system.transform` (`chatSystemTransform`) — there is no
+  earlier hook this plugin can use to inject mid-turn. `FallbackTriggered`
+  is appended to the activity log from `handleToolExecuteAfter`/the
+  `SubagentStop`-equivalent path once the popped active-agent entry carries
+  `fallbackOf`.
+
+**What a user sees in the panel:** the metrics rollup
+(`buildMetricsRollup`, `media/main.js:14277`) sums each agent's
+`fallbackCount` into a `fallbackCount` total shown alongside the
+per-vendor and per-`costModelClass` breakdowns (`byVendor`, `byCostClass`)
+and the `local` rows' time-based (`activeMs`, since local agents have no
+token cost). A per-agent row that most recently ran on a fallback shows
+that agent's live `vendor`/`model` as the fallback entry's own (not the
+originally-assigned primary's).
+
+**Two known limitations:**
+
+1. An OpenCode-side `RoutingSlot.fallback` chain entry carries no per-entry
+   `costModelClass` in `AgentMetric` — routing.resolved.json only records
+   `"provider/model"` strings for chain entries, so a fallback dispatch keeps
+   the agent's own originally-declared `costModelClass` as a best-effort
+   value rather than the fallback entry's actual one.
+2. The OpenCode `args.model` rewrite in `hooks/tycoon-opencode-plugin.ts` is
+   best-effort only — it has not been confirmed to change which model
+   OpenCode actually calls; the system-prompt nudge via
+   `chat.system.transform` is the mechanism actually relied on to get the
+   orchestrator to re-dispatch on the intended model.
+
+## Activity record fields
+
+Fallback-related fields on an activity/`AgentMetric` record
+(`src/core/state.ts`, `src/providers/claude-code/hookRecord.ts`,
+`hooks/tycoon-opencode-plugin.ts`):
+
+- `fallbackOf?: string` — the originally-assigned slot id (agent id) when
+  the current dispatch is actually running on a fallback chain entry.
+  Present only on a `PreToolUse` Task dispatch / `SubagentStop` for a
+  fallback re-dispatch.
+- `fallbackDepth?: number` — 1-based index into the fallback chain for this
+  dispatch; present iff `fallbackOf` is.
+- `fallbackCount: number` — running total of fallback re-dispatches recorded
+  for that agent; always present on `AgentMetric` (default `0`) so the panel
+  can sum it (`state.ts` bumps it whenever an incoming event carries
+  `fallbackOf`).
+- `FallbackTriggered` — the event both hosts append when a provider failure
+  is detected and a re-dispatch instruction is queued (fields: `workerId`/
+  `slotId`, `failedModel`, `nextModel`, `reason`, `at`, optional
+  `sessionId`).
+- `SpawnDenied` — `hooks/tycoon-opencode-plugin.ts`'s doctrine-driven
+  leaf-worker spawn-guard block (thrown as `BlockingToolCallError` from
+  `tool.execute.before`, which OpenCode surfaces verbatim to the model as
+  the tool's error output — confirmed against OpenCode 1.18.27 per
+  `docs/opencode-probe-findings.md`), recorded so a denied spawn shows in
+  the panel instead of only aborting silently.
+  `src/core/delegationEnforcement.ts` is the shared decision logic behind
+  this event on both hosts.
+- `ReviewGate` — recorded when the review-pass gate (a specialist's change
+  routed to the reviewer agent before being reported done) fires or is
+  bypassed.
+
+## Enforcement without Claude
+
+Delegation enforcement (the spawn-guard and review-gate decisions above) is
+shared logic in `src/core/delegationEnforcement.ts`, ported into the OpenCode
+plugin so a project running entirely on OpenCode-routed agents (no Claude
+Code orchestrator at all) still gets the same doctrine enforced. See
+`docs/OPENCODE-PROVIDER.md` for how a fully-OpenCode setup is configured, and
+`docs/ENFORCEMENT-PARITY-BENCHMARK.md` for the benchmark proving the ported
+OpenCode enforcement produces the same decisions as the Claude-hook original.
+
+## Files written by the routing system
+
+| File | Written by | Read by |
+| --- | --- | --- |
+| `.claude/tycoon/routing.json` | Hand-authored by the project (or the `project-plan`/routing-setup flow) | `loadRoutingProfile` (`src/core/routingProfile.ts`); both `scripts/apply-routing-profile.mjs` and `scripts/generate-opencode-config.mjs` |
+| `.claude/tycoon/routing.resolved.json` | `scripts/apply-routing-profile.mjs` | `hooks/tycoon-claude-hook.cjs` (PreToolUse Task-branch model swap and PostToolUse fallback-chain lookup) |
+| `.opencode/tycoon-routing.generated.json` | `scripts/generate-opencode-config.mjs` | `hooks/tycoon-opencode-plugin.ts` and the OpenCode runtime itself |
+| `.claude/tycoon/fallback-state.json` | `hooks/tycoon-claude-hook.cjs` (`PostToolUse`) | `hooks/tycoon-claude-hook.cjs` (same hook, next `PostToolUse`/Task dispatch); evicted on session end |
+| `.opencode/agents/*.md` | `scripts/generate-opencode-config.mjs` | OpenCode runtime (agent definitions) |
+| `AGENTS.md` managed block | `scripts/generate-opencode-config.mjs` (`buildAgentsMd`, enforcement doctrine block) | OpenCode runtime; human readers |
+| `.claude/agents/<id>.md` managed `backend:` block | `scripts/apply-routing-profile.mjs` (stamped with `# managed-by: tycoon-routing`) | `parseAgentBackend()` (`src/core/agentBackend.ts`); Claude hook and panel |
+
+`opencode-models.json` is not written by the routing system — see Migration
+above; it is a pre-`routing.json` hand-authored escape hatch, read only.

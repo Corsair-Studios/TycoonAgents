@@ -5,6 +5,17 @@ behavior — `hooks/tycoon-claude-hook.cjs` still hardcodes its `mcp__codex__`
 special case (lines ~1336-1376) and does not yet call `parseAgentBackend`. A
 later task wires that in.
 
+## Relationship to routing.json and fallback chains
+
+This document covers the per-agent `backend:` frontmatter schema and its
+defaults/validation only. A project-wide `.claude/tycoon/routing.json`
+profile (schema, precedence, migration from `opencode-models.json`) that
+overrides these `backend:` blocks — plus how a `RoutingSlot.fallback` chain
+is detected, recorded, and re-dispatched at runtime, and every activity
+record field it produces — is documented in `docs/ROUTING-PROFILE.md`. See
+`docs/OPENCODE-PROVIDER.md` for the OpenCode-side generation and enforcement
+counterpart.
+
 ## Purpose
 
 Every `.claude/agents/*.md` subagent can declare a `backend:` block in its
