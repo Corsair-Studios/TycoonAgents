@@ -2,7 +2,9 @@
 
 ## Problem / Opportunity
 
-Today's theme generation (`src/extension/themeService.ts`, `standalone/src/themeMessages.mjs`) is bring-your-own-key: the user pastes an OpenAI (or Google Gemini) API key into the Theme Generator dialog (`media/main.js:3090-3219`, "OpenAI API key" / "Google Gemini API key" field, stored via a `SAVE_API_KEY`-style message and `updateThemeApiKeyUi`), and every image call (`createReviewItems` boards, `retryThemeImage`, `resliceThemeImageFromRaw`) bills that key directly. This works but has real costs to the product: users must obtain and manage their own key, get billed by OpenAI/Google directly with no markup or support surface for Corsair, and the extension has no monetization path of its own. The product decision (2026-09-03) is to move theme generation to a Corsair-hosted, authenticated API — the "Corsair Theme Service" — so users buy credit packs through Corsair's own Stripe account and spend credits per board/theme, while uploading or hand-making themes stays free and fully offline (no service dependency at all).
+Today's theme generation (`src/extension/themeService.ts`, `standalone/src/themeMessages.mjs`) is bring-your-own-key: the user pastes an OpenAI (or Google Gemini) API key into the Theme Generator dialog (`media/main.js:3090-3219`, "OpenAI API key" / "Google Gemini API key" field, stored via a `SAVE_API_KEY`-style message and `updateThemeApiKeyUi`), and every image call (`createReviewItems` boards, `retryThemeImage`, `resliceThemeImageFromRaw`) bills that key directly. This works but has real costs to the product: users must obtain and manage their own key, get billed by OpenAI/Google directly with no markup or support surface for Corsair, and the extension has no monetization path of its own. The product decision (2026-09-03) is to move theme generation to a Corsair-hosted, authenticated API — the "Corsair Theme Service" — so users buy credit packs through Corsair's own Stripe account, while uploading or hand-making themes stays free and fully offline (no service dependency at all).
+
+**We sell credits, not themes.** Every generation attempt that actually calls the image model spends credits — the initial attempt on a board and every retry on that board are each a billable attempt, because each one is a real model call. Re-slicing an existing generation from its raw atlas (`resliceThemeImageFromRaw`) makes no model call and is always free. A theme's total cost is simply the sum of whatever attempts the user made across its boards — some boards succeed first try, some take five — so Corsair does not know a theme's price in advance and never charges a flat per-theme amount.
 
 ## Target Users
 
@@ -12,8 +14,9 @@ Today's theme generation (`src/extension/themeService.ts`, `standalone/src/theme
 
 ## Goals & Success Metrics
 
-- A user can generate a full theme (all boards) without ever holding a model API key, by spending credits from a Corsair account balance.
-- Per-board and per-theme credit cost is shown as an estimate before generation starts, and a failed board automatically refunds its credit.
+- A user can generate a full theme (all boards) without ever holding a model API key, by spending credits from a Corsair account balance, one credit charge per generation attempt (initial + each retry).
+- Before each generation attempt, the dialog shows "this attempt costs N credits" and a running total spent on the current theme; the UI also shows a "typical theme" guidance range (e.g. "a theme typically takes between X and Y credits") derived from observed attempt counts, not a quote or guarantee.
+- A failed API call (provider error, no image returned) automatically refunds its credit; an attempt that returns an image the user simply doesn't like is not refunded — it was a real model call.
 - Uploading/hand-making a theme (no image generation) remains entirely free and works fully offline — zero calls to the Corsair Theme Service.
 - No model provider key (OpenAI, Google, or otherwise) is ever bundled in, or reachable from, the shipped VSIX or standalone app — only the service URL and the user's account token are client-side secrets.
 - No telemetry exists in the codebase today; this PRD proposes only the minimal counters needed to run the service (§ Requirements — Telemetry), not product analytics.
@@ -23,8 +26,8 @@ Today's theme generation (`src/extension/themeService.ts`, `standalone/src/theme
 - Corsair account + token issuance — planned, new.
 - Credit ledger (balance, spend, refund) — planned, new.
 - Stripe Checkout credit-pack purchase + webhook top-up + Stripe Tax — planned, new.
-- Per-board credit pricing with a pre-generation estimate — planned, extends existing `createReviewItems` board enumeration.
-- Automatic refund on a failed board — planned, hooks into the existing per-board retry/error path (`retryThemeImage`, `onProgress` failure branches in `themeService.ts`).
+- Per-attempt credit pricing per board type, plus a UI-shown "typical theme" guidance range — planned, extends existing `createReviewItems` board enumeration.
+- Automatic refund on a failed API call (not on an unsatisfying image) — planned, hooks into the existing per-board retry/error path (`retryThemeImage`, `onProgress` failure branches in `themeService.ts`).
 - Client integration: sign-in, balance display, "Buy credits" flow, generation routed through the service — planned, replaces the BYO-key UI in `media/main.js` and its standalone equivalent.
 - BYO-key advanced fallback — **PENDING USER DECISION** (kept hidden, see Open Questions).
 - Existing feedback pipeline pattern (`src/host/vscode/feedbackSubmit.ts` → `https://feedback.corsairstudios.com/submit`) — shipped; reused here only as the architectural precedent for "one maintainer-controlled hostname baked into every release, repointable server-side."
@@ -33,7 +36,7 @@ Today's theme generation (`src/extension/themeService.ts`, `standalone/src/theme
 
 1. **First-time theme generation**: user opens the Theme Generator, is prompted to sign in to their Corsair account (magic-link or license key — see Requirements); once signed in, the dialog shows their credit balance instead of an API-key field; if balance is zero or insufficient for the plan's board count, a "Buy credits" button is shown alongside the estimate.
 2. **Buy credits**: user clicks "Buy credits" → client opens the system browser to a Stripe Checkout session created by the service → user completes payment (Stripe handles card + Stripe Tax) → Stripe webhook credits the ledger server-side → client polls (or receives a push) for the updated balance and re-enables generation once funds land.
-3. **Generate a theme**: client requests a per-board cost estimate from the service using the current plan's board list (same enumeration `createReviewItems` already produces — see Grounding below) → shows total estimated credits → user confirms → each board's generation request goes through the service (prompt + reference images in, sprite sheet out) → the service debits credits per successful board and refunds automatically on a failed/errored board, mirroring today's per-board retry granularity in `retryThemeImage`.
+3. **Generate a theme**: client shows the per-attempt credit cost for the board about to be generated ("this attempt costs N credits") plus the running total spent on this theme so far, and a "typical theme" guidance range for context → user confirms → the generation request goes through the service (prompt + reference images in, sprite sheet out) → the service debits one credit for that attempt on a successful or unsatisfying-but-returned image, and refunds automatically only if the API call itself failed (provider error, no image returned) → a retry on the same board is a new attempt at the same per-attempt price; a re-slice from raw is free (no model call).
 4. **Upload/hand-made theme**: entirely unchanged — no network call, no account required, no credits spent. This path must keep working with no Corsair account at all.
 5. **Offline / service-down**: generation calls fail with a clear "Theme Service unavailable" error distinct from "insufficient credits" or "not signed in"; no credits are debited; upload/hand-made themes remain available.
 6. **Existing local-key user migrates**: on first launch after this ships, a user with a saved OpenAI/Gemini key sees a one-time notice that generation now goes through the Corsair Theme Service; their local key is preserved untouched only if BYO-key advanced fallback ships (Open Questions) — otherwise it is left in storage, unused, until the user clears it manually (never auto-deleted, since SecretStorage/local key deletion is a destructive action this PRD does not want to make silently).
@@ -49,22 +52,25 @@ Server-authoritative balance and transaction log (grant, spend, refund) keyed by
 ### Stripe Checkout + webhooks + Tax
 Client never talks to Stripe directly — it asks the service for a Checkout Session URL, opens it in the system browser, and the service's own webhook endpoint (Stripe → service, server-to-server) is the only writer to the ledger's "grant" side. Stripe Tax is enabled on the Checkout Session so tax collection/remittance is Stripe-handled, not custom logic in the service.
 
-### Per-board pricing + estimate + refund
-Price per board (not per theme), since board count varies with the plan's roster size (agent boards, rivals-group boards, `objects_01`/`objects_02`, `environment`, `expressions`, `achievements` — see Grounding). The client requests/derives an estimate from the current plan's board list before confirming generation, matching the same board enumeration `createReviewItems` already produces so the estimate and the actual per-board billing can never drift from what will actually be generated. A board that errors (safety block, provider failure, network failure) refunds its credit automatically, server-side, on the same request that reports the failure — never a manual/support-ticket refund for the ordinary failure case.
+### Per-attempt pricing + guidance range + refund
+Price is per generation attempt on a board (not per board and not per theme): each call to the image model — the initial attempt and every retry — is a separate, equally-billed attempt, because each is a real model call. A board that errors before returning an image (safety block, provider failure, network failure) refunds its credit automatically, server-side, on the same request that reports the failure — never a manual/support-ticket refund for the ordinary failure case. An attempt that returns an image the user doesn't like is not a failure and is not refunded.
 
-Board count per theme is deterministic from the plan: one board per roster agent, plus the rival-group boards, plus five fixed boards (objects_01, objects_02, environment, expressions, achievements), as enumerated by createReviewItems in src/extension/themeService.ts. The pre-generation estimate multiplies this count by the per-board credit price; re-slicing from raw makes no provider call and is never billed.
+Board count per theme is still deterministic from the plan: one board per roster agent, plus the rival-group boards, plus five fixed boards (objects_01, objects_02, environment, expressions, achievements), as enumerated by `createReviewItems` in `src/extension/themeService.ts`. That deterministic count is the basis for the **lower bound** of the "typical theme" guidance range shown in the UI (one attempt per board, no retries); the **upper bound** comes from observed retry behavior once real usage data exists (M0/M1). The dialog shows this range as guidance ("a theme typically takes between X and Y credits"), never as a quote or a guarantee — it cannot know in advance how many retries a given theme will need. Re-slicing from raw makes no provider call and is never billed.
+
+### Generation quality caveat (product + in-app disclosure)
+Generation runs through a third-party AI image model and its output quality depends heavily on the user's own prompts. TycoonAgents' built-in prompt scaffolding (existing prompt-construction code in `themeService.ts`) helps structure a request but cannot know what a specific board should look like for a specific user's theme — it cannot describe the user's intent for them. Users should expect trial and error, especially on their first theme, and should expect credits to be consumed by retries as they converge on an acceptable result. There is no guarantee of a "perfect" or even satisfactory result on any given attempt. The in-product disclosure (see § Privacy/terms text changes) must state this plainly before the user's first purchase or generation: generation attempts are billed per call including retries; only calls that fail outright (provider error, no image returned) are refunded; an unsatisfying-but-returned image is not refunded.
 
 ### Rate limits / abuse controls
 Per-account request-rate limiting on both generation and Checkout-session creation; the magic-link/token issuance endpoint itself is rate-limited per email/IP to prevent enumeration or spam.
 
 ### Privacy / terms text changes
-The client's existing disclosure pattern (`media/main.js:16288-16330`, "what's never sent" / "local file paths and API keys are redacted") must be updated: prompts and now-generated images transit Corsair's server, not the user's own OpenAI/Gemini account, and the "your API keys ... are removed" language needs a companion line stating that theme prompts/images ARE sent to the Corsair Theme Service when generating (not when uploading/hand-making). Terms text needs a credits/refunds/no-guarantee-of-image-quality clause. **Human-in-the-loop**: final legal wording is not drafted by this PRD.
+The client's existing disclosure pattern (`media/main.js:16288-16330`, "what's never sent" / "local file paths and API keys are redacted") must be updated: prompts and now-generated images transit Corsair's server, not the user's own OpenAI/Gemini account, and the "your API keys ... are removed" language needs a companion line stating that theme prompts/images ARE sent to the Corsair Theme Service when generating (not when uploading/hand-making). Terms text needs a credits/refunds/no-guarantee-of-image-quality clause covering: credits are spent per generation attempt including retries; re-slicing from raw is free; only outright-failed calls are refunded; results depend on the user's own prompts and are not guaranteed. **Human-in-the-loop**: final legal wording is not drafted by this PRD.
 
 ### Offline behaviour / error states
 Distinct, user-legible states: not signed in; signed in, insufficient credits (with buy-credits CTA); signed in, sufficient credits, service unreachable; board failed + auto-refunded; Checkout session expired/cancelled. Never collapse these into one generic "generation failed."
 
 ### Balance display / buy flow
-Balance shown wherever the API-key field used to live in the dialog; "Buy credits" opens the browser to Checkout and the client polls balance on an interval (and once more when the webview regains focus) until the purchase lands or the user cancels.
+Balance shown wherever the API-key field used to live in the dialog, alongside a "typical theme costs X-Y credits" guidance line; "Buy credits" opens the browser to Checkout (offering roughly five credit-pack SKUs, sizes/prices TBD — see Tech Stack and Open Questions) and the client polls balance on an interval (and once more when the webview regains focus) until the purchase lands or the user cancels. Before each attempt, the dialog shows "this attempt costs N credits" and the running total spent on the current theme so far.
 
 ### Migration
 Existing local BYO keys are never auto-deleted or auto-uploaded; users keep them in local storage until they clear them, and (if BYO-key fallback ships) can still opt into using them explicitly.
@@ -82,7 +88,7 @@ Minimal: request count and pass/fail per board, for capacity planning and refund
 
 - Client: existing TypeScript extension (`src/extension/themeService.ts`, `media/main.js`) and standalone (`standalone/src/themeMessages.mjs`) surfaces, modified to call the new service instead of OpenAI/Gemini directly.
 - Service (new, separate private repo `corsair-theme-service`): HTTP API with auth, ledger, Stripe integration; holds the actual OpenAI/Gemini model keys server-side; language/framework choice is that repo's own decision, out of scope here.
-- Payments: Stripe Checkout + webhooks + Stripe Tax, under Corsair's existing Stripe account.
+- Payments: Stripe Checkout + webhooks + Stripe Tax, under Corsair's existing Stripe account; roughly five credit-pack SKUs, sizes and prices TBD by the user. Working assumption (not a fact, to be validated with real spend data in M0/M1): a typical theme lands around USD 4-8 depending on retry count.
 - Reused pattern: one maintainer-controlled hostname baked into shipped releases, repointable server-side without a client update — same shape as `FEEDBACK_ENDPOINT`/`FALLBACK_FORM_URL` in `src/host/vscode/feedbackSubmit.ts`.
 
 ## Milestones & Scope
@@ -93,10 +99,11 @@ In scope: M0 service skeleton, M1 payments, M2 client integration, M3 standalone
 
 - **PENDING USER DECISION — keep or remove BYO-key as a hidden advanced fallback.** Case for keep: some users already have a paid OpenAI/Gemini account and would rather use it directly than buy Corsair credits, and it's a safety valve if the service is ever down or discontinued; keeping it hidden (not in the main dialog) avoids confusing new users with two payment paths. Case for remove: two code paths through generation (service-billed vs. direct-billed) double the surface area of every theme-generation bug fix indefinitely, and the "hidden" field is exactly the kind of thing users find, get confused by, and file support tickets about. Recommendation left to the user; this PRD treats it as unresolved and M2 does not remove the existing key-entry code path until decided.
 - **Unit naming: "credits" vs "tokens".** Recommend **"credits"** — the metrics/cost panel already uses "tokens" for LLM token counts (`media/main.js` cost-estimate code), and reusing that word for a purchasable balance would read as the same thing on the same screen.
-- **Pricing tiers** — not set here; needs a per-board cost floor from the service's actual OpenAI/Gemini spend plus margin, decided when M0/M1 are built and real image-call costs are known.
-- **Refunds policy (cash refunds on unused credit balances)** — unresolved; distinct from the automatic per-board-failure refund (in scope, § Requirements) which is not a policy question but a correctness requirement.
+- **Credit-pack pricing** — sizes/prices of the roughly five packs are TBD by the user; the USD 4-8 typical-theme figure is a working assumption pending real M0/M1 spend data, not a committed price point.
+- **Refunds policy (cash refunds on unused credit balances)** — unresolved; distinct from the automatic per-failed-call refund (in scope, § Requirements) which is not a policy question but a correctness requirement.
 - **EU VAT / Stripe Tax jurisdiction coverage** — Stripe Tax handles calculation and remittance, but enabling it in the correct jurisdictions is a Stripe-dashboard configuration step, not a code change (see Milestone Plan human-in-the-loop tasks).
-- **Margin risk on retries** — a retried/re-sliced board (`retryThemeImage`) either needs its own credit charge or a defined "free retry within N minutes" policy; unresolved here, must be decided before M1's pricing model is finalized.
+- **Heavy retriers** — since every retry is a billed attempt, a user who struggles to get a satisfying result on a board can burn through credits quickly and unhappily; this is priced correctly (each attempt is a real model call) but is a real support-burden and satisfaction risk. Mitigation: the "typical theme" guidance range sets expectations up front, and the caveat text (§ Generation quality caveat) is explicit that trial and error is expected.
+- **Prompt-quality support burden** — users unfamiliar with prompting an image model will likely file more support tickets and burn more credits than experienced users. Mitigation: add a "prompt tips" link from the generator dialog to guidance on writing effective board prompts, to reduce avoidable retries without claiming the scaffolding can write the prompt for them.
 - **Image-model price changes** — OpenAI/Gemini could reprice; the service should read its own cost config independent of a client release, so a price change never needs a VSIX update.
 - **Service downtime** — no generation is possible while the service is down unless BYO-key fallback ships; this is an accepted risk of the hosted model, mitigated only by the fallback decision above.
 
@@ -120,7 +127,7 @@ A private, deployed `corsair-theme-service` exists with account issuance and a w
 **Acceptance Criteria**
 - A test account can sign in via magic-link, receive a device token, and see a balance of 0.
 - An admin-granted credit shows up in balance and in the transaction log.
-- A stub generation call against one board type debits exactly one credit and returns an image, or fails and refunds with no net balance change.
+- A stub generation call against one board type debits exactly one credit for that attempt and returns an image, or fails (no image returned) and refunds with no net balance change; a second attempt (retry) on the same board debits a second credit.
 
 **Risks**
 Service architecture/hosting choices happen in the private repo and are not this PRD's decision — flagged as a dependency, not detailed here.
@@ -134,7 +141,7 @@ Users can actually buy credits with real money.
 - Stripe Checkout Session creation endpoint on the service, parameterized by credit-pack SKU.
 - Stripe webhook handler that credits the ledger on `checkout.session.completed` (idempotent — replay-safe on Stripe's at-least-once delivery).
 - Stripe Tax enabled on Checkout Sessions.
-- At least two credit-pack SKUs defined (exact pricing per the Open Questions item above — placeholder values acceptable at this milestone).
+- Roughly five credit-pack SKUs defined (exact sizes/pricing TBD per the Open Questions item above — placeholder values acceptable at this milestone).
 
 **Acceptance Criteria**
 - A real (or Stripe test-mode) Checkout purchase results in a correct credit grant within one webhook round-trip, with a matching ledger entry.
@@ -155,7 +162,8 @@ The Theme Generator dialog in the VS Code extension generates themes through the
 **Deliverables**
 - Sign-in UI replacing the "OpenAI API key" / "Google Gemini API key" fields in `media/main.js` (`themeApiKeyInput`, `themeApiKeyLabel`, `updateThemeApiKeyUi` and related code around `media/main.js:3090-3219`) with an account sign-in + balance display.
 - Token storage via `vscode.SecretStorage`, replacing whatever storage currently backs the saved API key.
-- Client-side estimate call before generation, built from the same board list `createReviewItems` (`src/extension/themeService.ts:3149`) already enumerates.
+- Client-side "this attempt costs N credits" + running-total-spent display before/during generation, plus a "typical theme" guidance range derived from the deterministic board count (`createReviewItems`, `src/extension/themeService.ts:3149`) as its lower bound.
+- A "prompt tips" link in the generator dialog, per the prompt-quality support-burden mitigation (§ Risks).
 - `themeService.ts`'s generation call sites (the ones currently building `ThemeImageGenerationOptions` and calling the OpenAI/Gemini SDK directly) rerouted to call the Corsair Theme Service instead.
 - "Buy credits" button opening system browser to a Checkout URL from the service, with balance polling on an interval and on webview focus.
 - Distinct error-state UI for not-signed-in / insufficient-credits / service-unreachable / board-failed-refunded, per Non-Functional Requirements.
@@ -163,8 +171,8 @@ The Theme Generator dialog in the VS Code extension generates themes through the
 
 **Acceptance Criteria**
 - A full theme generation run (all boards for a real plan) completes using only a signed-in Corsair account, with zero calls to `api.openai.com`/Google's endpoint from the client.
-- The estimate shown before generation matches the number of boards actually billed, verified against a fixed test plan.
-- A forced board failure (e.g. simulated network error to the service) results in a refund visible in the balance display without a page reload.
+- The per-attempt cost shown before each generation matches what is actually billed for that attempt, and the running total displayed matches the ledger's sum of attempts for that theme so far, verified against a fixed test plan including at least one retry.
+- A forced board failure (e.g. simulated network error to the service) results in a refund visible in the balance display without a page reload; a forced "unsatisfying but returned" result (a successful call the test treats as a retry trigger) does not refund.
 - No OpenAI/Gemini key string appears anywhere in the built VSIX (`dist/*.vsix`) — grep check as part of the release checklist.
 
 **Sequencing Notes**
