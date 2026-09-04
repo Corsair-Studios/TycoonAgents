@@ -155,3 +155,57 @@ Body text here.
 test("readAgentFrontmatter: no frontmatter block returns an empty object", () => {
   assert.deepEqual(readAgentFrontmatter("just body text, no frontmatter"), {});
 });
+
+test("readAgentFrontmatter: CRLF line endings parse identically to LF", () => {
+  const lf = `---
+name: codex-reviewer
+model: sonnet
+backend:
+  vendor: openai
+  transport: mcp
+  mcpServer: codex
+  tools: [chat, review]
+  costModelClass: subscription
+---
+Body text here.
+`;
+  const crlf = lf.replace(/\n/g, "\r\n");
+  const fmLf = readAgentFrontmatter(lf);
+  const fmCrlf = readAgentFrontmatter(crlf);
+  assert.deepEqual(fmCrlf, fmLf);
+  assert.equal(fmCrlf.name, "codex-reviewer");
+  assert.equal(fmCrlf.model, "sonnet");
+  assert.deepEqual(fmCrlf.backend, {
+    vendor: "openai",
+    transport: "mcp",
+    mcpServer: "codex",
+    tools: ["chat", "review"],
+    costModelClass: "subscription",
+  });
+});
+
+test("readAgentFrontmatter: BOM + CRLF parses correctly", () => {
+  const lf = `---
+name: codex-reviewer
+model: sonnet
+backend:
+  vendor: openai
+  transport: mcp
+  mcpServer: codex
+  tools: [chat, review]
+  costModelClass: subscription
+---
+Body text here.
+`;
+  const bomCrlf = "﻿" + lf.replace(/\n/g, "\r\n");
+  const fm = readAgentFrontmatter(bomCrlf);
+  assert.equal(fm.name, "codex-reviewer");
+  assert.equal(fm.model, "sonnet");
+  assert.deepEqual(fm.backend, {
+    vendor: "openai",
+    transport: "mcp",
+    mcpServer: "codex",
+    tools: ["chat", "review"],
+    costModelClass: "subscription",
+  });
+});

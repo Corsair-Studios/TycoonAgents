@@ -51,7 +51,12 @@ function isCostModelClass(v: unknown): v is CostModelClass {
  * separately by parseAgentBackend from their own `backend:` sub-block.
  */
 export function readAgentFrontmatter(mdText: string): Record<string, unknown> {
-  const fmMatch = mdText.match(/^---\s*\n([\s\S]*?)\n---/);
+  // Strip a UTF-8 BOM and normalize CRLF/CR line endings to LF so downstream
+  // per-line regexes (which use `.` and thus would otherwise capture a
+  // trailing \r into every value) behave identically regardless of the
+  // source file's line-ending convention (Windows-authored CRLF included).
+  const normalized = mdText.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+  const fmMatch = normalized.match(/^---\s*\n([\s\S]*?)\n---/);
   if (!fmMatch) return {};
   const block = fmMatch[1];
   const result: Record<string, unknown> = {};

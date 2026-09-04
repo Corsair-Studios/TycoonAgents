@@ -203,3 +203,54 @@ agent's OpenCode model without touching frontmatter. Once a project adopts
 
 No code change is required to add a newly-released model: set `model` to
 any `"provider/model"` string in the relevant slot.
+
+## Applying the profile to Claude Code agents
+
+`scripts/apply-routing-profile.mjs` is the Claude-side counterpart to
+`scripts/generate-opencode-config.mjs`: it writes the resolved `backend:`
+frontmatter block (and top-level `model:`) into each `.claude/agents/<id>.md`
+so the Claude hook and panel — which read frontmatter through
+`parseAgentBackend()` (`src/core/agentBackend.ts`) — see the same routing
+decisions the OpenCode generator applies.
+
+```
+node scripts/apply-routing-profile.mjs [--root <dir>] [--check]
+```
+
+For every agent id in `profile.agents` with a matching
+`.claude/agents/<id>.md`, the script resolves the slot
+(`resolveAgentSlot`/`routingSlotToBackend`) and replaces or inserts that
+file's `backend:` block, stamping a `# managed-by: tycoon-routing` marker
+line as the block's first line so a later run can find it again. Every other
+frontmatter key and the entire body are preserved byte-for-byte. The
+top-level `model:` key is also set to the slot's model string (bare alias or
+`provider/model`) when the slot names one; an existing `model:` value is
+otherwise left untouched.
+
+The orchestrator slot (`resolveOrchestratorSlot`) is applied to whichever
+agent file's frontmatter declares `role: orchestrator` or
+`tier: orchestrator`, if one exists.
+
+An agent listed in the profile with no corresponding `.md` file is warned
+and skipped — this script never creates agent files. A `.md` file with no
+YAML frontmatter block at all is reported and left untouched.
+
+Per the precedence rule above, `fallback` chains are not written into
+frontmatter (fallback execution is a later milestone, PRD p15). Instead they
+are recorded, alongside every resolved primary backend, in
+`<root>/.claude/tycoon/routing.resolved.json`:
+
+```jsonc
+{
+  "agents": { "<id>": { "backend": { /* Backend */ }, "fallback": [ /* Backend[] */ ] } },
+  "orchestrator": { "backend": { /* Backend */ } }
+}
+```
+
+`--check` writes nothing: it prints every `.md` file and
+`routing.resolved.json` that would change and exits `1`, or exits `0` when
+the profile is already fully applied. With no `routing.json` present, the
+script exits `0` and writes nothing. An invalid `routing.json` prints every
+validation error and exits `2` without writing anything. The script is
+deterministic and idempotent — running it twice against an unchanged profile
+produces no further diffs.
