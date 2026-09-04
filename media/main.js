@@ -16679,7 +16679,7 @@
   var routingEnvProbe = {};      // merged env-var name -> boolean (set) cache, seeded from payload.envProbe + probeEnv replies
   var routingSaving = false;
   var routingLastResult = null;  // last routingSaved payload, for the collapsed check/write output block
-  var routingModalEl = null, routingBackdropEl = null, routingCloseBtnEl = null, routingBodyEl = null;
+  var routingModalEl = null, routingBackdropEl = null, routingCloseBtnEl = null, routingBodyEl = null, routingContentEl = null;
 
   function cloneSlotFromBackend(backend) {
     if (!backend) return {};
@@ -17167,18 +17167,11 @@
 
     var dialog = document.createElement("div");
     dialog.id = "routing-dialog";
-    routingCloseBtnEl = document.createElement("button");
-    routingCloseBtnEl.id = "routing-modal-close";
-    routingCloseBtnEl.setAttribute("aria-label", "Close dialog");
-    routingCloseBtnEl.innerHTML = "&times;";
-    routingCloseBtnEl.addEventListener("click", function () { closeModal(routingModalEl); });
-    dialog.appendChild(routingCloseBtnEl);
 
-    var title = document.createElement("h2");
-    title.id = "routing-modal-title";
-    title.textContent = "Routing";
-    dialog.appendChild(title);
-
+    // routingBodyEl is the scroll container (dialog itself no longer
+    // scrolls — see #routing-dialog CSS). Its first child is a sticky
+    // header carrying the title + close button, so both stay pinned to the
+    // upper-right regardless of how far the content below is scrolled.
     routingBodyEl = document.createElement("div");
     routingBodyEl.id = "routing-modal-body";
     // Re-apply a chip/Totals update that updateRoutingViewLive deferred
@@ -17191,6 +17184,29 @@
         if (routingUpdatePending) updateRoutingViewLive();
       }, 0);
     });
+
+    var header = document.createElement("div");
+    header.id = "routing-modal-header";
+    header.className = "routing-modal-header";
+
+    var title = document.createElement("h2");
+    title.id = "routing-modal-title";
+    title.textContent = "Routing";
+    header.appendChild(title);
+
+    routingCloseBtnEl = document.createElement("button");
+    routingCloseBtnEl.id = "routing-modal-close";
+    routingCloseBtnEl.setAttribute("aria-label", "Close dialog");
+    routingCloseBtnEl.innerHTML = "&times;";
+    routingCloseBtnEl.addEventListener("click", function () { closeModal(routingModalEl); });
+    header.appendChild(routingCloseBtnEl);
+
+    routingBodyEl.appendChild(header);
+
+    routingContentEl = document.createElement("div");
+    routingContentEl.id = "routing-modal-content";
+    routingBodyEl.appendChild(routingContentEl);
+
     dialog.appendChild(routingBodyEl);
 
     routingModalEl.appendChild(dialog);
@@ -17219,7 +17235,11 @@
     if (!routingModalEl || routingModalEl.hasAttribute("hidden") || !routingBodyEl) return;
     if (!lastRoutingPayload) return;
 
-    if (document.activeElement && routingBodyEl.contains(document.activeElement)) {
+    // Check routingContentEl (not routingBodyEl) — routingBodyEl also
+    // contains the sticky header's close button, and focus landing there
+    // (e.g. right after the modal opens) must not be treated as "mid-edit
+    // in a slot field" and defer this repaint forever.
+    if (document.activeElement && routingContentEl && routingContentEl.contains(document.activeElement)) {
       routingUpdatePending = true;
       return;
     }
@@ -17243,20 +17263,20 @@
     if (oldTotals) {
       oldTotals.replaceWith(newTotals);
     } else {
-      routingBodyEl.appendChild(newTotals);
+      routingContentEl.appendChild(newTotals);
     }
   }
 
   /** Full re-render of the Routing modal body from lastRoutingPayload + routingDraft. */
   function renderRoutingModal() {
-    if (!routingBodyEl) return;
-    routingBodyEl.innerHTML = "";
+    if (!routingContentEl) return;
+    routingContentEl.innerHTML = "";
 
     if (!lastRoutingPayload) {
       var loading = document.createElement("p");
       loading.className = "settings-empty";
       loading.textContent = "Loading routing…";
-      routingBodyEl.appendChild(loading);
+      routingContentEl.appendChild(loading);
       return;
     }
     if (!routingDraft) routingDraft = buildRoutingDraft(lastRoutingPayload);
@@ -17273,7 +17293,7 @@
         p.textContent = e;
         errBox.appendChild(p);
       });
-      routingBodyEl.appendChild(errBox);
+      routingContentEl.appendChild(errBox);
     }
 
     // ── Orchestrator ──
@@ -17288,7 +17308,7 @@
     orchSection.appendChild(orchMeta);
     orchSection.appendChild(buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal));
     orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal));
-    routingBodyEl.appendChild(orchSection);
+    routingContentEl.appendChild(orchSection);
 
     // ── Per-agent table ──
     var agentsSection = buildSection("Agents");
@@ -17370,8 +17390,8 @@
       });
       agentsSection.appendChild(list);
     }
-    routingBodyEl.appendChild(agentsSection);
-    routingBodyEl.appendChild(buildRoutingTotalsBlock());
+    routingContentEl.appendChild(agentsSection);
+    routingContentEl.appendChild(buildRoutingTotalsBlock());
 
     // ── Actions ──
     var actionsSection = buildSection("Profile");
@@ -17433,7 +17453,7 @@
       actionsSection.appendChild(resultDetails);
     }
 
-    routingBodyEl.appendChild(actionsSection);
+    routingContentEl.appendChild(actionsSection);
   }
 
   function assembleRoutingProfile() {

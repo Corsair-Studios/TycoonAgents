@@ -5908,7 +5908,10 @@ button.theme-review-preview:focus-visible::after {
 }
 
 /* ── Routing panel (plan p13-t1) ──────────────────────────────────────── */
-/* Mirrors #about-modal's backdrop/dialog/title structure exactly. */
+/* Backdrop mirrors #about-modal; the scroll/header split below mirrors
+   #themes-dialog/#themes-scroll (sticky header pinned above a scrolling
+   body) rather than #about-modal, since the whole dialog scrolling
+   let the title/close button scroll away with the content. */
 #routing-modal[hidden] {
   display: none;
 }
@@ -5933,28 +5936,51 @@ button.theme-review-preview:focus-visible::after {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 28px 32px 24px;
+  padding: 0 32px 24px;
   width: min(760px, 92vw);
   max-height: 84vh;
-  overflow-y: auto;
-  overflow-x: hidden; /* backstop — the fields below are sized to fit, this just guards regressions */
+  overflow: hidden; /* the dialog itself no longer scrolls — #routing-modal-body does */
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
+}
+
+/* #routing-modal-body is the scroll container (not the dialog, not the
+   page). Its first child, #routing-modal-header, is sticky so the title +
+   close button stay pinned to the upper-right no matter how far the
+   content below has scrolled. */
+#routing-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden; /* backstop — the fields below are sized to fit, this just guards regressions */
+  display: flex;
+  flex-direction: column;
   gap: 12px;
+}
+
+.routing-modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 -32px;
+  padding: 28px 32px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
 }
 
 #routing-modal-title {
   font-size: 18px;
   font-weight: 600;
   color: var(--accent);
-  margin-bottom: 4px;
+  margin: 0;
 }
 
 #routing-modal-close {
-  position: absolute;
-  top: 10px;
-  right: 12px;
   background: none;
   border: none;
   color: var(--muted);
@@ -5969,6 +5995,26 @@ button.theme-review-preview:focus-visible::after {
 #routing-modal-close:hover {
   color: var(--text);
   background: rgba(255, 255, 255, 0.08);
+}
+
+#routing-modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Save/Revert/Clear action row — no other modal in this file has an
+   analogous bottom action bar to mirror, so it's pinned sticky-bottom here
+   so it stays reachable without scrolling to the very end of the dialog. */
+.routing-actions-row {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin: 0 -32px;
+  padding: 10px 32px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.35);
 }
 
 .routing-errors {

@@ -249,6 +249,35 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
   assert.ok(modal, 'routing modal should exist');
   assert.notEqual(modal.hasAttribute('hidden'), true, 'routing modal should be visible after open');
 
+  // ── Sticky header (p13 audit fix): the title + close button must live in
+  // a sticky header that is the FIRST CHILD of the scroll container
+  // (#routing-modal-body), not of the dialog — so they stay pinned to the
+  // upper-right no matter how far the body beneath is scrolled. ──
+  const scrollContainer = doc.getElementById('routing-modal-body');
+  assert.ok(scrollContainer, '#routing-modal-body (the scroll container) should exist');
+  const header = doc.getElementById('routing-modal-header');
+  assert.ok(header, '#routing-modal-header should exist');
+  assert.ok(header.classList.contains('routing-modal-header'), 'header should carry the .routing-modal-header sticky class');
+  assert.equal(
+    scrollContainer.firstElementChild,
+    header,
+    '#routing-modal-header must be the first child of #routing-modal-body (the scroll container)'
+  );
+  assert.ok(header.contains(doc.getElementById('routing-modal-title')), 'header should contain the title');
+  assert.ok(header.contains(doc.getElementById('routing-modal-close')), 'header should contain the close button');
+
+  const css = readFileSync(join(process.cwd(), 'media', 'style.css'), 'utf8');
+  assert.match(
+    css,
+    /\.routing-modal-header\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/,
+    '.routing-modal-header should be position: sticky; top: 0'
+  );
+  assert.match(
+    css,
+    /#routing-modal-body\s*\{[^}]*overflow-y:\s*auto;/,
+    '#routing-modal-body (not the dialog) should be the overflow-y: auto scroll container'
+  );
+
   const rows = doc.querySelectorAll('.routing-agent-row');
   assert.equal(rows.length, 2, 'one row per fixture agent');
   const sourceChips = doc.querySelectorAll('.routing-source-chip');
