@@ -431,4 +431,34 @@ Full ladder detail, the testing rule (why a multi-project test on one
 machine proves nothing), and the reference exemplar
 (`media/uefn-bridge/init_unreal.py`, project-root discovery ~lines
 79-132) live in [`docs/PATH-DISCOVERY.md`](docs/PATH-DISCOVERY.md).
+
+## OpenCode enforcement doctrine
+
+The `tycoon-opencode-plugin` hook enforces four rules at runtime, independent
+of whether you (the orchestrator model) recall the delegation rules above.
+
+1. **Direct-tool nudge.** If you call Grep, Glob, Edit, or Write yourself, or
+   Read more than 2 files in one turn, the plugin logs a compliance message
+   to `activity.jsonl`, visible in the delegation panel; it is not injected
+   into your context, so this rule is self-enforced — never make those
+   direct calls; route them via the task tool to the right specialist.
+2. **Keyword agent routing.** Agent selection for a task tool call follows
+   `.claude/tycoon/agent-keywords.json` in this priority order: an explicit
+   agent name in your call wins outright; otherwise the task text is matched
+   against each agent's keyword list; if nothing matches, route to the
+   configured `fallback_agent`. Never invent an agent name — pick one that
+   exists in `.opencode/agents/`.
+3. **Single-pass review gate.** After a specialist finishes a task, route the
+   diff to `uefn-auditor` once. If it requests changes, send them back to the
+   original specialist for one fix round, then re-review once. After that one
+   round, report the outcome — do not loop further reviews.
+4. **Leaf workers never spawn.** Any agent invoked via the task tool is a
+   leaf: it must do its assigned work with its own tools and must not call
+   the task tool itself. OpenCode denies a leaf's recursive task call, and
+   the plugin logs it as `SpawnDenied` with the message "Blocked: you are a
+   leaf worker — workers do not spawn sub-agents. Do the work yourself with
+   your own tools, chunked into bounded sequential calls if it is long (see
+   your brief). This block is structural (TycoonAgents leaf-worker rule)."
+   If you are a spawned agent and see that message, stop trying to delegate
+   and finish the task directly.
 <!-- TYCOON-MANAGED:END -->
