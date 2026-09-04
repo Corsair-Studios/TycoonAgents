@@ -12787,6 +12787,150 @@
   }
 
   /**
+   * Truncate text to `max` chars on a word boundary, appending "…". Used for
+   * the one-line collapsed summary so long authored/derived text never
+   * blows out the collapsed row height.
+   * @param {string} text
+   * @param {number} [max]
+   * @returns {string}
+   */
+  function truncateCatalogSummary(text, max) {
+    const limit = max || 120;
+    if (!text) return "";
+    if (text.length <= limit) return text;
+    const slice = text.slice(0, limit - 1);
+    const lastSpace = slice.lastIndexOf(" ");
+    const cut = lastSpace > 40 ? slice.slice(0, lastSpace) : slice;
+    return cut.trimEnd() + "…";
+  }
+
+  /**
+   * Derive a one-sentence fallback summary from a longer description: strip
+   * backticks, take up to the first sentence terminator, then truncate to
+   * 120 chars on a word boundary. Used only until an item's authored
+   * `summary` field lands from the catalogs/hosts.
+   * @param {string|undefined} description
+   * @returns {string}
+   */
+  function firstSentenceCatalogSummary(description) {
+    if (!description) return "";
+    const cleaned = String(description).replace(/`/g, "");
+    const match = cleaned.match(/^.*?[.!?](?:\s|$)/);
+    const sentence = match ? match[0].trim() : cleaned.trim();
+    return truncateCatalogSummary(sentence, 120);
+  }
+
+  /**
+   * One-sentence summary for a catalog item (skill/pack/MCP server): prefers
+   * the authored `item.summary` field (once the catalogs/hosts populate it),
+   * falling back to a derived first-sentence-of-description client-side so
+   * the UI works with either payload shape.
+   * @param {{summary?:string, description?:string}} item
+   * @returns {string}
+   */
+  function catalogSummaryFor(item) {
+    if (item && item.summary) {
+      return truncateCatalogSummary(String(item.summary).replace(/`/g, ""), 120);
+    }
+    return firstSentenceCatalogSummary(item && item.description);
+  }
+
+  /** vscode.getState() key holding the open/closed map for catalog <details>
+   *  disclosures, keyed by entry id ("skill:<id>", "mcp:<id>", "pack:<id>").
+   *  Shared across the Skills/Packs/MCP lists so ids never collide. */
+  const CATALOG_DISCLOSURE_STATE_KEY = "catalogDisclosureOpen";
+
+  /**
+   * Read the persisted open/closed map for catalog <details> disclosures.
+   * @returns {Record<string, boolean>}
+   */
+  function getCatalogDisclosureState() {
+    const st = vscode.getState() || {};
+    return st[CATALOG_DISCLOSURE_STATE_KEY] || {};
+  }
+
+  /**
+   * Persist a single entry's open/closed state, reusing the same
+   * vscode.getState()/setState() blob used elsewhere in this file so it
+   * survives a VS Code webview reload and works identically in the
+   * standalone host (whose acquireVsCodeApi shim backs the same calls with
+   * localStorage).
+   * @param {string} id
+   * @param {boolean} open
+   */
+  function setCatalogDisclosureOpen(id, open) {
+    const prev = vscode.getState() || {};
+    const map = { ...(prev[CATALOG_DISCLOSURE_STATE_KEY] || {}) };
+    if (open) {
+      map[id] = true;
+    } else {
+      delete map[id];
+    }
+    vscode.setState({ ...prev, [CATALOG_DISCLOSURE_STATE_KEY]: map });
+  }
+
+  /**
+   * Build a collapsed-by-default <details class="catalog-details"> block for
+   * one catalog entry. `fill` receives the details' body container to
+   * populate with everything that used to always render inline (full
+   * description, notes, disclosure box, docs/env links). Native <details>
+   * gives keyboard access (Enter/Space on the <summary>) for free.
+   * @param {string} id Stable entry id, e.g. "skill:foo".
+   * @param {(body: HTMLElement) => void} fill
+   * @returns {HTMLDetailsElement}
+   */
+  function buildCatalogDetails(id, fill) {
+    const details = /** @type {HTMLDetailsElement} */ (document.createElement("details"));
+    details.className = "catalog-details";
+    details.dataset.catalogId = id;
+    const summaryEl = document.createElement("summary");
+    summaryEl.textContent = "Details";
+    details.appendChild(summaryEl);
+    const body = document.createElement("div");
+    body.className = "catalog-details-body";
+    fill(body);
+    details.appendChild(body);
+    if (getCatalogDisclosureState()[id]) details.open = true;
+    details.addEventListener("toggle", () => {
+      setCatalogDisclosureOpen(id, details.open);
+    });
+    return details;
+  }
+
+  /**
+   * Build the "Expand all" / "Collapse all" control bar for one catalog list.
+   * Operates on every `details.catalog-details` currently in `listEl` (called
+   * after the list has been rendered), and persists the resulting state.
+   * @param {HTMLElement} listEl
+   * @returns {HTMLElement}
+   */
+  function buildCatalogExpandBar(listEl) {
+    const bar = document.createElement("div");
+    bar.className = "catalog-expand-bar";
+    const setAll = (open) => {
+      const list = listEl.querySelectorAll("details.catalog-details");
+      for (const d of list) {
+        d.open = open;
+        const id = d.dataset.catalogId;
+        if (id) setCatalogDisclosureOpen(id, open);
+      }
+    };
+    const expandBtn = document.createElement("button");
+    expandBtn.type = "button";
+    expandBtn.className = "catalog-expand-btn";
+    expandBtn.textContent = "Expand all";
+    expandBtn.addEventListener("click", () => setAll(true));
+    const collapseBtn = document.createElement("button");
+    collapseBtn.type = "button";
+    collapseBtn.className = "catalog-expand-btn";
+    collapseBtn.textContent = "Collapse all";
+    collapseBtn.addEventListener("click", () => setAll(false));
+    bar.appendChild(expandBtn);
+    bar.appendChild(collapseBtn);
+    return bar;
+  }
+
+  /**
    * Build a per-item disclosure block (used by MCP rows and Pack disclosures).
    * @param {{vendor?:string,package?:string,homepage?:string,network?:boolean,dataNote?:string,label?:string}} d
    * @returns {HTMLElement}
@@ -12885,6 +13029,7 @@
       skillsListEl.appendChild(emptyEl);
       return;
     }
+    skillsListEl.appendChild(buildCatalogExpandBar(skillsListEl));
     for (const skill of skills) {
       const row = document.createElement("div");
       row.className = "skill-row";
@@ -12893,41 +13038,19 @@
       const textBlock = document.createElement("div");
       textBlock.className = "skill-text";
 
+      const header = document.createElement("div");
+      header.className = "catalog-header";
+
       const nameEl = document.createElement("span");
       nameEl.className = "skill-name";
       nameEl.textContent = skill.name;
-
-      const descEl = document.createElement("span");
-      descEl.className = "skill-desc";
-      descEl.textContent = skill.description;
-
-      textBlock.appendChild(nameEl);
-      textBlock.appendChild(descEl);
-
-      if (skill.mcpNote) {
-        const noteEl = document.createElement("span");
-        noteEl.className = "skill-mcpnote";
-        noteEl.textContent = `⚙ ${skill.mcpNote}`;
-        textBlock.appendChild(noteEl);
-      }
+      header.appendChild(nameEl);
 
       if (skill.thirdParty) {
-        const attrLine = document.createElement("div");
-        attrLine.className = "skill-attribution disclosure-tagline";
         const tag = document.createElement("span");
         tag.className = "disclosure-tag";
         tag.textContent = "Third-party";
-        attrLine.appendChild(tag);
-        if (skill.source) {
-          const src = document.createElement("a");
-          src.className = "disclosure-src";
-          src.href = skill.source;
-          src.target = "_blank";
-          src.rel = "noopener noreferrer";
-          src.textContent = "source ↗";
-          attrLine.appendChild(src);
-        }
-        textBlock.appendChild(attrLine);
+        header.appendChild(tag);
       }
 
       const btn = document.createElement("button");
@@ -12940,9 +13063,49 @@
         btn.textContent = "Install";
         btn.setAttribute("data-skill-id", skill.id);
       }
+      header.appendChild(btn);
+      textBlock.appendChild(header);
+
+      const summaryLine = document.createElement("div");
+      summaryLine.className = "catalog-summary";
+      summaryLine.textContent = catalogSummaryFor(skill);
+      textBlock.appendChild(summaryLine);
+
+      const details = buildCatalogDetails(`skill:${skill.id}`, (body) => {
+        const descEl = document.createElement("span");
+        descEl.className = "skill-desc";
+        descEl.textContent = skill.description;
+        body.appendChild(descEl);
+
+        if (skill.mcpNote) {
+          const noteEl = document.createElement("span");
+          noteEl.className = "skill-mcpnote";
+          noteEl.textContent = `⚙ ${skill.mcpNote}`;
+          body.appendChild(noteEl);
+        }
+
+        if (skill.thirdParty) {
+          const attrLine = document.createElement("div");
+          attrLine.className = "skill-attribution disclosure-tagline";
+          const tag2 = document.createElement("span");
+          tag2.className = "disclosure-tag";
+          tag2.textContent = "Third-party";
+          attrLine.appendChild(tag2);
+          if (skill.source) {
+            const src = document.createElement("a");
+            src.className = "disclosure-src";
+            src.href = skill.source;
+            src.target = "_blank";
+            src.rel = "noopener noreferrer";
+            src.textContent = "source ↗";
+            attrLine.appendChild(src);
+          }
+          body.appendChild(attrLine);
+        }
+      });
+      textBlock.appendChild(details);
 
       row.appendChild(textBlock);
-      row.appendChild(btn);
       skillsListEl.appendChild(row);
     }
   }
@@ -13092,6 +13255,7 @@
       mcpListEl.appendChild(emptyEl);
       return;
     }
+    mcpListEl.appendChild(buildCatalogExpandBar(mcpListEl));
     for (const server of servers) {
       const row = document.createElement("div");
       row.className = "skill-row";
@@ -13100,58 +13264,20 @@
       const textBlock = document.createElement("div");
       textBlock.className = "skill-text";
 
+      const header = document.createElement("div");
+      header.className = "catalog-header";
+
       const nameEl = document.createElement("span");
       nameEl.className = "skill-name";
       nameEl.textContent = server.name;
-
-      const descEl = document.createElement("span");
-      descEl.className = "skill-desc";
-      descEl.textContent = server.description;
-
-      textBlock.appendChild(nameEl);
+      header.appendChild(nameEl);
 
       if (server.needsSetup) {
         const setupBadge = document.createElement("span");
         setupBadge.className = "mcp-setup-badge";
         setupBadge.textContent = "Template — needs setup";
         setupBadge.style.cssText = "margin-left:8px;font-size:11px;padding:1px 7px;border-radius:9px;background:rgba(224,168,0,0.18);color:#b8860b;border:1px solid rgba(224,168,0,0.4);vertical-align:middle;";
-        textBlock.appendChild(setupBadge);
-      }
-
-      textBlock.appendChild(descEl);
-
-      if (server.requiresEnv && server.requiresEnv.length) {
-        const reqEl = document.createElement("span");
-        reqEl.className = "mcp-req";
-        reqEl.textContent = `Requires: ${server.requiresEnv.join(", ")}`;
-        textBlock.appendChild(reqEl);
-      }
-
-      if (server.note) {
-        const noteEl = document.createElement("span");
-        noteEl.className = "mcp-req";
-        noteEl.textContent = server.note;
-        textBlock.appendChild(noteEl);
-      }
-
-      if (server.docsUrl) {
-        const docsEl = document.createElement("a");
-        docsEl.className = "mcp-docs";
-        docsEl.href = server.docsUrl;
-        docsEl.target = "_blank";
-        docsEl.rel = "noopener noreferrer";
-        docsEl.textContent = "docs";
-        textBlock.appendChild(docsEl);
-      }
-
-      if (server.thirdParty) {
-        textBlock.appendChild(buildDisclosureBlock({
-          vendor: server.vendor,
-          package: server.package,
-          homepage: server.homepage,
-          network: server.network,
-          dataNote: server.dataNote,
-        }));
+        header.appendChild(setupBadge);
       }
 
       const btn = document.createElement("button");
@@ -13164,9 +13290,57 @@
         btn.textContent = "Install";
         btn.setAttribute("data-mcp-id", server.id);
       }
+      header.appendChild(btn);
+      textBlock.appendChild(header);
+
+      const summaryLine = document.createElement("div");
+      summaryLine.className = "catalog-summary";
+      summaryLine.textContent = catalogSummaryFor(server);
+      textBlock.appendChild(summaryLine);
+
+      const details = buildCatalogDetails(`mcp:${server.id}`, (body) => {
+        const descEl = document.createElement("span");
+        descEl.className = "skill-desc";
+        descEl.textContent = server.description;
+        body.appendChild(descEl);
+
+        if (server.requiresEnv && server.requiresEnv.length) {
+          const reqEl = document.createElement("span");
+          reqEl.className = "mcp-req";
+          reqEl.textContent = `Requires: ${server.requiresEnv.join(", ")}`;
+          body.appendChild(reqEl);
+        }
+
+        if (server.note) {
+          const noteEl = document.createElement("span");
+          noteEl.className = "mcp-req";
+          noteEl.textContent = server.note;
+          body.appendChild(noteEl);
+        }
+
+        if (server.docsUrl) {
+          const docsEl = document.createElement("a");
+          docsEl.className = "mcp-docs";
+          docsEl.href = server.docsUrl;
+          docsEl.target = "_blank";
+          docsEl.rel = "noopener noreferrer";
+          docsEl.textContent = "docs";
+          body.appendChild(docsEl);
+        }
+
+        if (server.thirdParty) {
+          body.appendChild(buildDisclosureBlock({
+            vendor: server.vendor,
+            package: server.package,
+            homepage: server.homepage,
+            network: server.network,
+            dataNote: server.dataNote,
+          }));
+        }
+      });
+      textBlock.appendChild(details);
 
       row.appendChild(textBlock);
-      row.appendChild(btn);
       mcpListEl.appendChild(row);
     }
   }
@@ -13342,6 +13516,7 @@
       packsListEl.appendChild(emptyEl);
       return;
     }
+    packsListEl.appendChild(buildCatalogExpandBar(packsListEl));
     for (const pack of packs) {
       const row = document.createElement("div");
       row.className = "skill-row";
@@ -13350,57 +13525,18 @@
       const textBlock = document.createElement("div");
       textBlock.className = "skill-text";
 
+      const header = document.createElement("div");
+      header.className = "catalog-header";
+
       const nameEl = document.createElement("span");
       nameEl.className = "skill-name";
       nameEl.textContent = pack.name;
-
-      const descEl = document.createElement("span");
-      descEl.className = "skill-desc";
-      descEl.textContent = pack.description;
-
-      textBlock.appendChild(nameEl);
-      textBlock.appendChild(descEl);
+      header.appendChild(nameEl);
 
       const parts = document.createElement("div");
       parts.className = "pack-parts";
       renderPackChips(parts, pack);
-      textBlock.appendChild(parts);
-
-      // Muted line listing each bundled skill with a per-skill done marker.
-      if (Array.isArray(pack.skills) && pack.skills.length) {
-        const includes = document.createElement("div");
-        includes.className = "pack-skills";
-        const lead = document.createElement("span");
-        lead.className = "pack-skills-lead";
-        lead.textContent = "Includes: ";
-        includes.appendChild(lead);
-        pack.skills.forEach((s, i) => {
-          const item = document.createElement("span");
-          item.className = "pack-skills-item" + (s && s.installed ? " pack-skills-item--done" : "");
-          const label = (s && (s.name || s.id)) || "";
-          item.textContent = (s && s.installed) ? `${label} ✓` : label;
-          includes.appendChild(item);
-          if (i < pack.skills.length - 1) {
-            const sep = document.createElement("span");
-            sep.className = "pack-skills-sep";
-            sep.textContent = ", ";
-            includes.appendChild(sep);
-          }
-        });
-        textBlock.appendChild(includes);
-      }
-
-      if (pack.thirdParty && Array.isArray(pack.disclosures) && pack.disclosures.length) {
-        for (const d of pack.disclosures) {
-          textBlock.appendChild(buildDisclosureBlock(d));
-        }
-      } else {
-        const local = document.createElement("div");
-        local.className = "disclosure-local";
-        local.textContent =
-          "Local only — installs a bundled skill + a local agent; no third-party servers.";
-        textBlock.appendChild(local);
-      }
+      header.appendChild(parts);
 
       const fully = packFullyInstalled(pack);
       const anyInstalled = packAnyInstalled(pack);
@@ -13415,9 +13551,7 @@
         btn.textContent = "Install";
         btn.setAttribute("data-pack-id", pack.id);
       }
-
-      row.appendChild(textBlock);
-      row.appendChild(btn);
+      header.appendChild(btn);
 
       // Show a Remove button whenever any component is installed (fully or
       // partially). It sits alongside the Install/Installed button.
@@ -13426,9 +13560,61 @@
         removeBtn.className = "skill-btn skill-btn--remove";
         removeBtn.textContent = "Remove";
         removeBtn.setAttribute("data-remove-pack-id", pack.id);
-        row.appendChild(removeBtn);
+        header.appendChild(removeBtn);
       }
 
+      textBlock.appendChild(header);
+
+      const summaryLine = document.createElement("div");
+      summaryLine.className = "catalog-summary";
+      summaryLine.textContent = catalogSummaryFor(pack);
+      textBlock.appendChild(summaryLine);
+
+      const details = buildCatalogDetails(`pack:${pack.id}`, (body) => {
+        const descEl = document.createElement("span");
+        descEl.className = "skill-desc";
+        descEl.textContent = pack.description;
+        body.appendChild(descEl);
+
+        // Muted line listing each bundled skill with a per-skill done marker.
+        if (Array.isArray(pack.skills) && pack.skills.length) {
+          const includes = document.createElement("div");
+          includes.className = "pack-skills";
+          const lead = document.createElement("span");
+          lead.className = "pack-skills-lead";
+          lead.textContent = "Includes: ";
+          includes.appendChild(lead);
+          pack.skills.forEach((s, i) => {
+            const item = document.createElement("span");
+            item.className = "pack-skills-item" + (s && s.installed ? " pack-skills-item--done" : "");
+            const label = (s && (s.name || s.id)) || "";
+            item.textContent = (s && s.installed) ? `${label} ✓` : label;
+            includes.appendChild(item);
+            if (i < pack.skills.length - 1) {
+              const sep = document.createElement("span");
+              sep.className = "pack-skills-sep";
+              sep.textContent = ", ";
+              includes.appendChild(sep);
+            }
+          });
+          body.appendChild(includes);
+        }
+
+        if (pack.thirdParty && Array.isArray(pack.disclosures) && pack.disclosures.length) {
+          for (const d of pack.disclosures) {
+            body.appendChild(buildDisclosureBlock(d));
+          }
+        } else {
+          const local = document.createElement("div");
+          local.className = "disclosure-local";
+          local.textContent =
+            "Local only — installs a bundled skill + a local agent; no third-party servers.";
+          body.appendChild(local);
+        }
+      });
+      textBlock.appendChild(details);
+
+      row.appendChild(textBlock);
       packsListEl.appendChild(row);
     }
   }

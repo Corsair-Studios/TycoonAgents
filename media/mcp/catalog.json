@@ -3,6 +3,7 @@
     "id": "github",
     "name": "GitHub",
     "description": "Read and manage repos, issues, and PRs from GitHub — via GitHub's official hosted MCP server.",
+    "summary": "Read and manage repos, issues, and PRs via GitHub's official hosted MCP server.",
     "requiresEnv": [],
     "note": "Official GitHub-hosted remote server — nothing to install locally. On first use Claude Code opens a browser to sign in to GitHub (OAuth); no token to manage. Works with any GitHub account.",
     "docsUrl": "https://github.com/github/github-mcp-server",
@@ -12,12 +13,16 @@
     "homepage": "https://github.com/github/github-mcp-server",
     "network": true,
     "dataNote": "Connects to GitHub's hosted MCP server (api.githubcopilot.com) using your authorized GitHub account; the model can read and manage the repos, issues, and PRs you grant access to.",
-    "config": { "type": "http", "url": "https://api.githubcopilot.com/mcp/" }
+    "config": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    }
   },
   {
     "id": "filesystem",
     "name": "Filesystem",
     "description": "Give Claude scoped read/write access to a local directory.",
+    "summary": "Gives Claude scoped read/write access to a local directory.",
     "requiresEnv": [],
     "note": "Edit the path arg in .mcp.json to the directory you want to expose.",
     "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
@@ -27,12 +32,20 @@
     "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
     "network": false,
     "dataNote": "Runs locally with no network calls, but exposes the configured directory's files to the AI model.",
-    "config": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
+    "config": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ]
+    }
   },
   {
     "id": "playwright",
     "name": "Playwright",
     "description": "Drive a real browser for UI QA, screenshots, and accessibility checks.",
+    "summary": "Drives a real browser for UI QA, screenshots, and accessibility checks.",
     "requiresEnv": [],
     "docsUrl": "https://github.com/microsoft/playwright-mcp",
     "thirdParty": true,
@@ -41,12 +54,19 @@
     "homepage": "https://github.com/microsoft/playwright-mcp",
     "network": true,
     "dataNote": "Downloads browser binaries on first run and navigates to URLs you or the model open.",
-    "config": { "command": "npx", "args": ["-y", "@playwright/mcp@latest"] }
+    "config": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    }
   },
   {
     "id": "context7",
     "name": "Context7",
     "description": "Pull up-to-date, version-specific docs for libraries and frameworks.",
+    "summary": "Pulls up-to-date, version-specific docs for libraries and frameworks.",
     "requiresEnv": [],
     "docsUrl": "https://github.com/upstash/context7",
     "thirdParty": true,
@@ -55,12 +75,19 @@
     "homepage": "https://github.com/upstash/context7",
     "network": true,
     "dataNote": "Sends the library names/queries you look up to Context7's hosted service.",
-    "config": { "command": "npx", "args": ["-y", "@upstash/context7-mcp"] }
+    "config": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ]
+    }
   },
   {
     "id": "sequential-thinking",
     "name": "Sequential Thinking",
     "description": "Structured step-by-step reasoning scratchpad for hard problems.",
+    "summary": "Structured step-by-step reasoning scratchpad for hard problems.",
     "requiresEnv": [],
     "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
     "thirdParty": true,
@@ -69,13 +96,20 @@
     "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
     "network": false,
     "dataNote": "Runs locally; a reasoning scratchpad with no external calls.",
-    "config": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"] }
+    "config": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    }
   },
   {
     "id": "roblox-studio",
     "needsSetup": true,
     "name": "Roblox Studio",
     "description": "Connect an AI client to a live Roblox Studio session — explore the data model, write Luau, and run/test in play mode.",
+    "summary": "Connects an AI client to a live Roblox Studio session to explore and script it.",
     "requiresEnv": [],
     "note": "Official Roblox Studio MCP is a local bridge (Studio plugin + a standalone Rust server, or Studio's built-in server) and needs separate setup. Installing here adds a template entry to .mcp.json — replace the command with your built server path per Roblox's docs.",
     "homepage": "https://github.com/Roblox/studio-rust-mcp-server",
@@ -85,13 +119,22 @@
     "package": "Roblox/studio-rust-mcp-server (standalone Rust server) or Roblox Studio's built-in MCP server",
     "network": true,
     "dataNote": "Bridges an AI client to your local Roblox Studio session; the AI can read your place's data model and write/run Luau code in it.",
-    "config": { "command": "<path-to-roblox-studio-mcp-server>", "args": [] }
+    "config": {
+      "command": "<path-to-roblox-studio-mcp-server>",
+      "args": []
+    }
   },
   {
     "id": "uefn-bridge",
     "name": "UEFN Bridge (Trashbyrd's Power Tools)",
     "description": "Live UEFN editor control from Claude — read/set actor properties, run audits, and browse materials, textures, and the level via Trashbyrd's Power Tools.",
-    "requiresEnv": ["UEFN_BRIDGE_DIR", "UEFN_VERSE_PROJECT_DIR", "VERSE_LSP_PATH", "VERSE_LSP_CHECK_SCRIPT"],
+    "summary": "Live UEFN editor control from Claude via Trashbyrd's Power Tools.",
+    "requiresEnv": [
+      "UEFN_BRIDGE_DIR",
+      "UEFN_VERSE_PROJECT_DIR",
+      "VERSE_LSP_PATH",
+      "VERSE_LSP_CHECK_SCRIPT"
+    ],
     "note": "Install Power Tools yourself, then add it to your OWN .mcp.json (see .mcp.json.example in this repo). Download the release from GitHub Releases below and unzip it, then set `<POWER_TOOLS_DIR>` in the command args to that folder's full path (forward slashes even on Windows). Env vars per Power Tools' INSTALL.md: UEFN_BRIDGE_DIR is the bridge IPC directory shared by the MCP server and the in-UEFN Python bridge — must be set for both sides or neither, or they land in different directories (defaults to a per-machine temp dir if unset); UEFN_VERSE_PROJECT_DIR points at UEFN's VerseProject data root (digests, .vproject files); VERSE_LSP_PATH and VERSE_LSP_CHECK_SCRIPT are only needed for the uefn_verse_check tool. No env block is required in most client configs.",
     "thirdParty": true,
     "vendor": "Trashbyrd (Corsair Studios)",
@@ -101,12 +144,18 @@
     "docsUrl": "https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/blob/main/INSTALL.md",
     "network": false,
     "dataNote": "Runs locally; bridges Claude to your open UEFN session over temp-file IPC. No external/network calls.",
-    "config": { "command": "node", "args": ["<POWER_TOOLS_DIR>/uefn-server.mjs"] }
+    "config": {
+      "command": "node",
+      "args": [
+        "<POWER_TOOLS_DIR>/uefn-server.mjs"
+      ]
+    }
   },
   {
     "id": "unreal-engine-mcp",
     "name": "Unreal Engine MCP (Official · UE 5.8+)",
     "description": "Epic's official in-editor MCP server, built into Unreal Editor 5.8+. Enable the \"Unreal MCP\" plugin and toggle Auto Start Server in Editor Preferences, then connect over HTTP/SSE. For general Unreal Engine projects — distinct from the UEFN Bridge above, which targets UEFN/Fortnite.",
+    "summary": "Epic's official in-editor MCP server, built into Unreal Editor 5.8+.",
     "requiresEnv": [],
     "note": "Built into the Unreal Editor — no external bridge process. Enable via Edit > Plugins > \"Unreal MCP\", then Edit > Editor Preferences > General > Model Context Protocol > toggle \"Auto Start Server\". The editor can also auto-generate a client config via the console command: ModelContextProtocol.GenerateClientConfig ClaudeCode. Endpoint, port, and path are configurable in Editor Preferences.",
     "docsUrl": "https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor",
@@ -115,12 +164,16 @@
     "homepage": "https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor",
     "network": false,
     "dataNote": "Local HTTP/SSE connection to your own running Unreal Editor (127.0.0.1, no auth by default). No external/network calls beyond your machine.",
-    "config": { "type": "http", "url": "http://127.0.0.1:8000/mcp" }
+    "config": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
+    }
   },
   {
     "id": "blender",
     "name": "Blender",
     "description": "Live Blender viewport/scene control from Claude — read and modify objects, materials, and run Python (bpy) in your open Blender session.",
+    "summary": "Live Blender viewport/scene control from Claude over a local socket.",
     "requiresEnv": [],
     "note": "Local stdio MCP server launched via `uvx blender-mcp`. Prereqs: Blender 4.x with the official Blender MCP add-on installed (drag-and-drop the add-on from https://www.blender.org/lab/mcp-server/ into Blender, enable it, and start the MCP panel inside Blender), plus the `uv` package manager (provides `uvx`) and Python 3.10+. The server connects to the Blender add-on over a local socket (env vars BLENDER_HOST, default localhost; BLENDER_PORT, default 9876).",
     "homepage": "https://www.blender.org/lab/mcp-server/",
@@ -130,12 +183,18 @@
     "package": "blender-mcp (run via uvx)",
     "network": false,
     "dataNote": "Runs locally; bridges Claude to your open Blender session over a local socket (default port 9876). No external/network calls.",
-    "config": { "command": "uvx", "args": ["blender-mcp"] }
+    "config": {
+      "command": "uvx",
+      "args": [
+        "blender-mcp"
+      ]
+    }
   },
   {
     "id": "codex",
     "name": "Codex (OpenAI)",
     "description": "Adversarial review and second-opinion queries from OpenAI's Codex CLI, running as an MCP server — a non-Anthropic model for cross-checking plans, diffs, and reasoning. Exposes `codex` (new session) and `codex-reply` (continue a session) tools.",
+    "summary": "Adversarial review and second opinions from OpenAI's Codex CLI running as an MCP server.",
     "requiresEnv": [],
     "note": "Local stdio MCP server launched via `codex mcp-server`. Auth is via a ChatGPT subscription (shared rolling 5-hour quota across CLI/web/IDE use), not a metered API key — sign in once with `codex login`. The launch args below pin model and reasoning effort and set safe defaults for approval-policy and sandbox so this entry never silently inherits your global ~/.codex/config.toml (which may pin an expensive model at high reasoning effort). These are launch-time config.toml overrides (`-c key=value`, applied before the `mcp-server` subcommand); they set the SERVER's baked-in defaults, not a hard ceiling — the `codex` tool's own per-call `sandbox`/`approval-policy`/`model` arguments can still override them at call time, so a caller (or an untrusted prompt) can request a looser sandbox or a costlier model on an individual call. Verified against `codex --help` / `codex mcp-server --help` (codex-cli 0.124.0): no separate flag exists to hard-lock per-call arguments; `-c` only sets the config.toml-equivalent default the server starts with. `codex mcp-server` works identically when launched from OpenCode — same subscription-backed CLI, same MCP wire contract, no TycoonAgents-specific glue.",
     "docsUrl": "https://github.com/openai/codex",
@@ -145,12 +204,26 @@
     "homepage": "https://github.com/openai/codex",
     "network": true,
     "dataNote": "Prompts, code, and file contents you send through this server leave this machine and are sent to OpenAI's Codex/ChatGPT backend under your ChatGPT subscription. This is a different vendor than Anthropic and a different data-handling relationship than any Anthropic-run tool in this catalog.",
-    "config": { "command": "codex", "args": ["-c", "model=\"gpt-5.4-mini\"", "-c", "model_reasoning_effort=\"low\"", "-c", "approval_policy=\"never\"", "-c", "sandbox_mode=\"read-only\"", "mcp-server"] }
+    "config": {
+      "command": "codex",
+      "args": [
+        "-c",
+        "model=\"gpt-5.4-mini\"",
+        "-c",
+        "model_reasoning_effort=\"low\"",
+        "-c",
+        "approval_policy=\"never\"",
+        "-c",
+        "sandbox_mode=\"read-only\"",
+        "mcp-server"
+      ]
+    }
   },
   {
     "id": "claude-cli",
     "name": "Claude CLI",
     "description": "Route model calls through the user's own `claude` CLI login (a Claude Max/Pro subscription) instead of a metered Anthropic API key — a zero-dependency local MCP server wrapping `claude -p`. Exposes a single `claude` tool.",
+    "summary": "Routes model calls through the user's own Claude CLI subscription instead of a metered API key.",
     "requiresEnv": [],
     "note": "Local stdio MCP server (hooks/claude-cli-mcp.cjs, run via `node`). Auth is entirely the user's existing `claude` CLI login — TycoonAgents never sees, stores, or forwards credentials; it just shells out to the CLI the user already signed into. This uses Anthropic's own supported CLI surface, never a third-party OAuth client impersonating one — Anthropic's terms restrict third-party OAuth against Claude, and this deliberately stays on the vendor's official path instead (not legal advice). Defaults: permission-mode 'plan' (read-only planning, no unattended edits) and a fresh scratch working directory per call so the caller's project CLAUDE.md is NOT auto-loaded (and its prompt-cache-creation cost avoided) unless `cwd` is set on purpose. Optional env overrides: CLAUDE_CLI_BIN (explicit binary path, skips discovery), CLAUDE_CLI_MODEL (default model id, default 'claude-haiku-4-5'), CLAUDE_CLI_PERMISSION_MODE (default 'plan'), CLAUDE_CLI_CWD (default working directory), CLAUDE_CLI_TIMEOUT_MS (default 180000). Verified against `claude --help` (Claude Code 2.1.258) for --model/--permission-mode/--allowedTools/--append-system-prompt/--output-format; --max-turns is not listed in that help output but is accepted and honored (checked by direct invocation) — re-verify before relying on further undocumented flags.",
     "docsUrl": "https://docs.claude.com/en/docs/claude-code/cli-reference",
@@ -161,12 +234,18 @@
     "homepage": "https://docs.claude.com/en/docs/claude-code/overview",
     "network": true,
     "dataNote": "Prompts sent through this server go to Anthropic under the user's own Claude subscription, via the same `claude` CLI the user already uses interactively — no different a data relationship than using Claude Code directly.",
-    "config": { "command": "node", "args": ["${EXTENSION_DIR}/hooks/claude-cli-mcp.cjs"] }
+    "config": {
+      "command": "node",
+      "args": [
+        "${EXTENSION_DIR}/hooks/claude-cli-mcp.cjs"
+      ]
+    }
   },
   {
     "id": "dart",
     "name": "Dart & Flutter",
     "description": "Analyze and fix Dart & Flutter code, resolve symbols, fetch API docs, search pub.dev, manage pubspec.yaml dependencies, run tests, and format code — via Google's official dart mcp-server.",
+    "summary": "Analyzes and fixes Dart & Flutter code via Google's official dart mcp-server.",
     "requiresEnv": [],
     "note": "Provided by the Dart SDK — no separate install if `dart` (3.9+) is on your PATH. Experimental and evolving. Best used inside a Flutter/Dart project (a directory with pubspec.yaml). If your MCP client has trouble with workspace roots, add \"--force-roots-fallback\" to args.",
     "docsUrl": "https://docs.flutter.dev/ai/mcp-server",
@@ -176,13 +255,21 @@
     "homepage": "https://dart.dev",
     "network": true,
     "dataNote": "Runs locally against your project's Dart/Flutter source; contacts pub.dev when searching packages or fetching docs. Requires the Dart SDK (3.9+) on your PATH.",
-    "config": { "command": "dart", "args": ["mcp-server"] }
+    "config": {
+      "command": "dart",
+      "args": [
+        "mcp-server"
+      ]
+    }
   },
   {
     "id": "gemini",
     "name": "Gemini (Google)",
     "description": "Second-opinion / cross-vendor review queries against Google's Gemini models, running as an MCP server. Exposes `ask-gemini` (analyze/ask, optional sandbox mode), `sandbox-test`, and `ping` tools.",
-    "requiresEnv": ["GEMINI_API_KEY"],
+    "summary": "Second-opinion, cross-vendor review queries against Google's Gemini models.",
+    "requiresEnv": [
+      "GEMINI_API_KEY"
+    ],
     "note": "Google's own gemini-cli (https://github.com/google-gemini/gemini-cli) only CONSUMES MCP servers — confirmed against its docs: it has no server-mode flag (no 'mcp-server'/'--experimental-mcp-server' subcommand), only a `mcpServers` client config in ~/.gemini/settings.json. There is no official Google-published Gemini MCP *server*. This entry instead uses the most-starred, actively-maintained community bridge, jamubc/gemini-mcp-tool (2.3k★, https://github.com/jamubc/gemini-mcp-tool), which runs the local `gemini` CLI under the hood and exposes it over MCP stdio via `npx -y gemini-mcp-tool`. Auth follows whatever the underlying `gemini` CLI is configured with — interactive OAuth login (`gemini` CLI's default) or, if you'd rather avoid a browser login step, the CLI's own support for reading GEMINI_API_KEY from the environment. Set GEMINI_API_KEY here only if you want that path; the server can also work with a CLI already logged in via OAuth (leave the value blank in that case). The `gemini` CLI itself must be installed and on PATH.",
     "docsUrl": "https://github.com/jamubc/gemini-mcp-tool",
     "thirdParty": true,
@@ -191,13 +278,23 @@
     "homepage": "https://github.com/jamubc/gemini-mcp-tool",
     "network": true,
     "dataNote": "Prompts and content you send through this server leave this machine and are sent to Google's Gemini backend, via the local `gemini` CLI's own auth (OAuth login or GEMINI_API_KEY). A different vendor than Anthropic, routed through a third-party (non-Google-published) MCP bridge rather than an official Gemini MCP server.",
-    "config": { "command": "npx", "args": ["-y", "gemini-mcp-tool"] }
+    "config": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "gemini-mcp-tool"
+      ]
+    }
   },
   {
     "id": "openai-compatible",
     "name": "OpenAI-Compatible Endpoint",
     "description": "Call any OpenAI-compatible chat-completions endpoint (a local vLLM/Ollama/LM Studio server, or a hosted OpenAI-compatible API such as Kimi or Qwen) through one MCP `chat` tool — for local or self-hosted models this project doesn't special-case.",
-    "requiresEnv": ["OPENAI_COMPAT_BASE_URL", "OPENAI_COMPAT_API_KEY"],
+    "summary": "Calls any OpenAI-compatible chat-completions endpoint through one MCP chat tool.",
+    "requiresEnv": [
+      "OPENAI_COMPAT_BASE_URL",
+      "OPENAI_COMPAT_API_KEY"
+    ],
     "note": "Zero-dependency MCP stdio server shipped with this project (hooks/openai-compatible-mcp.cjs) — nothing to install separately. Points at any server exposing a `/v1/chat/completions` endpoint: vLLM, Ollama (OpenAI-compatible mode), LM Studio, or a hosted OpenAI-compatible API like Moonshot's Kimi or Alibaba's Qwen — including one running on a remote VM, by pointing OPENAI_COMPAT_BASE_URL at its address. OPENAI_COMPAT_API_KEY is optional — omit it for a local server with no auth (e.g. Ollama/LM Studio on localhost); set it for a hosted or auth-gated endpoint. Exposes one tool, `chat`, taking {model, prompt, system?, messages?, max_tokens?}.",
     "docsUrl": "https://modelcontextprotocol.io/specification",
     "thirdParty": false,
@@ -206,6 +303,11 @@
     "homepage": "https://modelcontextprotocol.io/specification",
     "network": true,
     "dataNote": "Prompts and content you send through this server go to whatever host OPENAI_COMPAT_BASE_URL points at — a fully local server (e.g. Ollama on localhost) never leaves this machine; a hosted endpoint (e.g. Kimi/Qwen) sends data to that vendor under your own account/key.",
-    "config": { "command": "node", "args": ["${EXTENSION_DIR}/hooks/openai-compatible-mcp.cjs"] }
+    "config": {
+      "command": "node",
+      "args": [
+        "${EXTENSION_DIR}/hooks/openai-compatible-mcp.cjs"
+      ]
+    }
   }
 ]

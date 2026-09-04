@@ -1,14 +1,84 @@
 [
-  { "id": "git", "name": "Git", "description": "Branch, commit, PR, and history workflows with safe defaults." },
-  { "id": "uefn", "name": "UEFN", "description": "Unreal Editor for Fortnite + Verse device scripting and live-edit workflows.", "mcpNote": "Live-editor control (uefn_* tools) needs the UEFN Bridge MCP — Trashbyrd's Power Tools (MCP tab). Prereqs: Node on PATH, plus the Python bridge installed in your UEFN project (Content/Python) and started in-editor. Without it, this skill only covers Verse/device authoring." },
-  { "id": "playwright", "name": "Playwright", "description": "Browser automation, UI QA, screenshots, and accessibility checks.", "mcpNote": "Pairs with the Playwright MCP server (MCP tab) to actually drive a browser." },
-  { "id": "godot", "name": "Godot", "description": "Godot 4 GDScript nodes, scenes, signals, and game systems.", "mcpNote": "More effective with a Godot editor MCP for live scene/node inspection." },
-  { "id": "unity", "name": "Unity", "description": "Unity C# MonoBehaviour components, prefabs, and scene workflows.", "mcpNote": "More effective with a Unity editor MCP for live scene/asset control." },
-  { "id": "roblox", "name": "Roblox", "description": "Roblox Studio + Luau scripting — instances, services, and experience workflows.", "mcpNote": "Needs the Roblox Studio MCP (MCP tab) to read your data model and run Luau in a live Studio session." },
-  { "id": "blender", "name": "Blender", "description": "Blender modeling, materials, shading, animation, and Python (bpy) scripting.", "mcpNote": "Pairs with the official Blender MCP (uvx blender-mcp) + add-on for live viewport/scene control." },
-  { "id": "unreal-engine", "name": "Unreal Engine", "description": "Unreal Engine C++/Blueprint gameplay, actors, and editor workflows." },
-  { "id": "threejs", "name": "Three.js", "description": "Three.js scenes, meshes, lighting, and render-loop lifecycle." },
-  { "id": "graphify", "name": "Graphify", "description": "Turn a codebase (plus docs, PDFs, images) into a queryable knowledge graph to map architecture and answer how-does-this-connect questions.", "thirdParty": true, "source": "https://github.com/safishamsi/graphify", "mcpNote": "Pairs with the search-retrieval agent; parses code offline, uses your configured LLM for semantic extraction. Also ships an MCP mode." },
-  { "id": "uefn-bridge", "name": "UEFN Bridge", "description": "UEFN MCP live-editor bridge — install/setup, tools (uefn_status, uefn_list_devices, uefn_get_property, uefn_set_property, uefn_select_actor, uefn_run_audit, uefn_get_level_info), prerequisites, architecture, and usage examples.", "mcpNote": "Installs and documents the UEFN Bridge MCP (Trashbyrd's Power Tools). Pairs with the UEFN skill and pack." },
-  { "id": "tycoon-diagnose", "name": "Tycoon Diagnose", "description": "Deep, AI-reasoned diagnosis of this project's own TycoonAgents/Claude Code config — CLAUDE.md managed blocks, .claude/agents consistency, keyword routing, MCP servers, and hooks — producing a sanitized Markdown report you can review and send to the maintainer. Makes no network calls." }
+  {
+    "id": "git",
+    "name": "Git",
+    "description": "Branch, commit, PR, and history workflows with safe defaults.",
+    "summary": "Branch, commit, PR, and history workflows with safe defaults."
+  },
+  {
+    "id": "uefn",
+    "name": "UEFN",
+    "description": "Unreal Editor for Fortnite + Verse device scripting and live-edit workflows.",
+    "summary": "Unreal Editor for Fortnite + Verse device scripting and live-edit workflows.",
+    "mcpNote": "Live-editor control (uefn_* tools) needs the UEFN Bridge MCP — Trashbyrd's Power Tools (MCP tab). Prereqs: Node on PATH, plus the Python bridge installed in your UEFN project (Content/Python) and started in-editor. Without it, this skill only covers Verse/device authoring."
+  },
+  {
+    "id": "playwright",
+    "name": "Playwright",
+    "description": "Browser automation, UI QA, screenshots, and accessibility checks.",
+    "summary": "Browser automation, UI QA, screenshots, and accessibility checks.",
+    "mcpNote": "Pairs with the Playwright MCP server (MCP tab) to actually drive a browser."
+  },
+  {
+    "id": "godot",
+    "name": "Godot",
+    "description": "Godot 4 GDScript nodes, scenes, signals, and game systems.",
+    "summary": "Godot 4 GDScript nodes, scenes, signals, and game systems.",
+    "mcpNote": "More effective with a Godot editor MCP for live scene/node inspection."
+  },
+  {
+    "id": "unity",
+    "name": "Unity",
+    "description": "Unity C# MonoBehaviour components, prefabs, and scene workflows.",
+    "summary": "Unity C# MonoBehaviour components, prefabs, and scene workflows.",
+    "mcpNote": "More effective with a Unity editor MCP for live scene/asset control."
+  },
+  {
+    "id": "roblox",
+    "name": "Roblox",
+    "description": "Roblox Studio + Luau scripting — instances, services, and experience workflows.",
+    "summary": "Roblox Studio + Luau scripting for instances, services, and experiences.",
+    "mcpNote": "Needs the Roblox Studio MCP (MCP tab) to read your data model and run Luau in a live Studio session."
+  },
+  {
+    "id": "blender",
+    "name": "Blender",
+    "description": "Blender modeling, materials, shading, animation, and Python (bpy) scripting.",
+    "summary": "Blender modeling, materials, shading, animation, and Python scripting.",
+    "mcpNote": "Pairs with the official Blender MCP (uvx blender-mcp) + add-on for live viewport/scene control."
+  },
+  {
+    "id": "unreal-engine",
+    "name": "Unreal Engine",
+    "description": "Unreal Engine C++/Blueprint gameplay, actors, and editor workflows.",
+    "summary": "Unreal Engine C++/Blueprint gameplay, actors, and editor workflows."
+  },
+  {
+    "id": "threejs",
+    "name": "Three.js",
+    "description": "Three.js scenes, meshes, lighting, and render-loop lifecycle.",
+    "summary": "Three.js scenes, meshes, lighting, and render-loop lifecycle."
+  },
+  {
+    "id": "graphify",
+    "name": "Graphify",
+    "description": "Turn a codebase (plus docs, PDFs, images) into a queryable knowledge graph to map architecture and answer how-does-this-connect questions.",
+    "summary": "Turns a codebase into a queryable knowledge graph mapping architecture and connections.",
+    "thirdParty": true,
+    "source": "https://github.com/safishamsi/graphify",
+    "mcpNote": "Pairs with the search-retrieval agent; parses code offline, uses your configured LLM for semantic extraction. Also ships an MCP mode."
+  },
+  {
+    "id": "uefn-bridge",
+    "name": "UEFN Bridge",
+    "description": "UEFN MCP live-editor bridge — install/setup, tools (uefn_status, uefn_list_devices, uefn_get_property, uefn_set_property, uefn_select_actor, uefn_run_audit, uefn_get_level_info), prerequisites, architecture, and usage examples.",
+    "summary": "Installs and documents the UEFN Bridge MCP for live-editor control.",
+    "mcpNote": "Installs and documents the UEFN Bridge MCP (Trashbyrd's Power Tools). Pairs with the UEFN skill and pack."
+  },
+  {
+    "id": "tycoon-diagnose",
+    "name": "Tycoon Diagnose",
+    "description": "Deep, AI-reasoned diagnosis of this project's own TycoonAgents/Claude Code config — CLAUDE.md managed blocks, .claude/agents consistency, keyword routing, MCP servers, and hooks — producing a sanitized Markdown report you can review and send to the maintainer. Makes no network calls.",
+    "summary": "Diagnoses this project's own TycoonAgents/Claude Code configuration, with no network calls."
+  }
 ]

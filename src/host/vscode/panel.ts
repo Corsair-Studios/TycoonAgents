@@ -29,6 +29,7 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
+import { catalogSummary } from "../../shared/catalogSummary";
 import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
@@ -3189,6 +3190,7 @@ export class TycoonPanel {
         id: string;
         name: string;
         description: string;
+        summary?: string;
         mcpNote?: string;
         thirdParty?: boolean;
         source?: string;
@@ -3197,6 +3199,7 @@ export class TycoonPanel {
         id: entry.id,
         name: entry.name,
         description: entry.description,
+        summary: catalogSummary(entry),
         mcpNote: entry.mcpNote,
         thirdParty: entry.thirdParty,
         source: entry.source,
@@ -3334,6 +3337,7 @@ export class TycoonPanel {
     id: string;
     name: string;
     description: string;
+    summary?: string;
     requiresEnv?: boolean;
     note?: string;
     docsUrl?: string;
@@ -3402,6 +3406,7 @@ export class TycoonPanel {
       id: e.id,
       name: e.name,
       description: e.description,
+      summary: catalogSummary(e),
       installed: hasMcpServer(parsed, e.id),
       requiresEnv: e.requiresEnv,
       note: e.note,
@@ -3662,6 +3667,7 @@ export class TycoonPanel {
           id: pack.id,
           name: pack.name,
           description: pack.description,
+          summary: catalogSummary(pack),
           has: { skill: packSkills.length > 0, mcp: !!pack.mcp, agent: true },
           installed: {
             skill: packSkills.length > 0 && packSkills.every((id: string) => skillInstalled(id)),

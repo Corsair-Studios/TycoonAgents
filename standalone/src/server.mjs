@@ -138,6 +138,11 @@ function imageModelsModule() {
 const PACK_CATALOG_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'packCatalog.js');
 const MCP_CATALOG_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'mcpCatalog.js');
 const AGENT_CONFIG_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'agentConfig.js');
+// Pure helper shared with panel.ts's _handleGetSkills/_handleGetPacks/_handleGetMcp —
+// derives the `summary` field on skills/packs/MCP payload items (authored
+// `summary` field wins, else first sentence of `description`). No `vscode`
+// import in its own or transitive dependencies.
+const CATALOG_SUMMARY_JS = path.join(REPO_ROOT, 'out', 'src', 'shared', 'catalogSummary.js');
 
 function requireCompiledOrThrow(jsPath, label) {
   if (!fs.existsSync(jsPath)) {
@@ -163,6 +168,11 @@ let _agentConfigModule;
 function agentConfigModule() {
   if (!_agentConfigModule) _agentConfigModule = requireCompiledOrThrow(AGENT_CONFIG_JS, 'agentConfig');
   return _agentConfigModule;
+}
+let _catalogSummaryModule;
+function catalogSummaryModule() {
+  if (!_catalogSummaryModule) _catalogSummaryModule = requireCompiledOrThrow(CATALOG_SUMMARY_JS, 'catalogSummary');
+  return _catalogSummaryModule;
 }
 
 // ── MIME map (media/ only ships a handful of extensions today) ─────────────
@@ -831,10 +841,12 @@ function buildSkillsPayload() {
   const catalogPath = path.join(MEDIA_DIR, 'skills', 'catalog.json');
   try {
     const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    const { catalogSummary } = catalogSummaryModule();
     const skills = catalog.map((entry) => ({
       id: entry.id,
       name: entry.name,
       description: entry.description,
+      summary: catalogSummary(entry),
       mcpNote: entry.mcpNote,
       thirdParty: entry.thirdParty,
       source: entry.source,
@@ -877,6 +889,7 @@ function buildMcpPayload() {
   const servers = mcpConfig.mcpServers;
   const hasMcpServer = (id) =>
     servers !== null && typeof servers === 'object' && Object.prototype.hasOwnProperty.call(servers, id);
+  const { catalogSummary } = catalogSummaryModule();
 
   return {
     type: 'mcp',
@@ -884,6 +897,7 @@ function buildMcpPayload() {
       id: e.id,
       name: e.name,
       description: e.description,
+      summary: catalogSummary(e),
       installed: hasMcpServer(e.id),
       requiresEnv: e.requiresEnv,
       note: e.note,
@@ -961,6 +975,7 @@ function buildPacksPayload() {
       id: pack.id,
       name: pack.name,
       description: pack.description,
+      summary: catalogSummaryModule().catalogSummary(pack),
       has: { skill: packSkills.length > 0, mcp: !!pack.mcp, agent: true },
       installed: {
         skill: packSkills.length > 0 && packSkills.every((id) => skillInstalled(id)),

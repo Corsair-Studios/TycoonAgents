@@ -371,6 +371,10 @@ test('POST /message {type: "getSkills"} -> broadcasts a "skills" reply built fro
     assert.ok(Array.isArray(skills.skills));
     assert.ok(skills.skills.length > 0, 'expected the real bundled skills catalog, not an empty stub');
     assert.ok(skills.skills.every((s) => typeof s.id === 'string' && typeof s.installed === 'boolean'));
+    assert.ok(
+      skills.skills.every((s) => typeof s.summary === 'string' && s.summary.length > 0 && s.summary.length <= 120),
+      'every skill payload item must carry a non-empty summary <= 120 chars',
+    );
   } finally {
     controller.abort();
     await runtime.close();
@@ -401,6 +405,10 @@ test('POST /message {type: "getMcp"} -> broadcasts a "mcp" reply built from medi
     assert.ok(Array.isArray(mcp.servers));
     assert.ok(mcp.servers.length > 0, 'expected the real bundled MCP catalog, not an empty stub');
     assert.ok(mcp.servers.every((s) => typeof s.id === 'string' && typeof s.installed === 'boolean'));
+    assert.ok(
+      mcp.servers.every((s) => typeof s.summary === 'string' && s.summary.length > 0 && s.summary.length <= 120),
+      'every mcp payload item must carry a non-empty summary <= 120 chars',
+    );
   } finally {
     controller.abort();
     await runtime.close();
@@ -431,6 +439,10 @@ test('POST /message {type: "getPacks"} -> lists every catalog pack with installe
     const packs = await packsPromise;
     assert.ok(Array.isArray(packs.packs));
     assert.equal(packs.packs.length, catalog.length, 'every catalog pack must be listed');
+    assert.ok(
+      packs.packs.every((p) => typeof p.summary === 'string' && p.summary.length > 0 && p.summary.length <= 120),
+      'every pack payload item must carry a non-empty summary <= 120 chars',
+    );
     const multiLlm = packs.packs.find((p) => p.id === 'multi-llm');
     assert.ok(multiLlm, 'multi-llm pack must be present');
     assert.equal(multiLlm.installed.agent, false, 'no agent files exist yet in the fresh temp project');

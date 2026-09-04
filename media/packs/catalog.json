@@ -3,6 +3,7 @@
     "id": "uefn",
     "name": "UEFN",
     "description": "Unreal Editor for Fortnite + Verse. Installs two agents — a Verse Expert (authoring) and an Auditor (review/validation) — that auto-detect the latest Verse, Fortnite, and Unreal digests installed on your machine and treat them as the current API. Includes the UEFN skill + Understand Anything for visual code exploration, plus the UEFN Bridge (Trashbyrd's Power Tools) for live-editor control. Prereqs: Node on PATH, and install + start the Python bridge in your UEFN project (Content/Python) — see the UEFN skill for setup.",
+    "summary": "Adds a Verse Expert and Auditor, the UEFN skill, and the UEFN Bridge for live-editor control.",
     "skills": [
       "uefn"
     ],
@@ -31,6 +32,7 @@
     "id": "playwright",
     "name": "Playwright QA",
     "description": "Browser-driven UI QA agent backed by the Playwright skill and MCP server.",
+    "summary": "Browser-driven UI QA agent backed by the Playwright skill and MCP server.",
     "skills": [
       "playwright"
     ],
@@ -47,6 +49,7 @@
     "id": "godot",
     "name": "Godot",
     "description": "Godot 4 GDScript agent with the Godot skill + Understand Anything for visual code exploration. Add a Godot MCP to wire live-editor tools.",
+    "summary": "Godot 4 GDScript agent with the Godot skill and optional live-editor MCP.",
     "skills": [
       "godot"
     ],
@@ -63,6 +66,7 @@
     "id": "unity",
     "name": "Unity",
     "description": "Unity C# agent with the Unity skill + Understand Anything for visual code exploration. Add a Unity MCP to wire editor tools.",
+    "summary": "Unity C# agent with the Unity skill and optional live-editor MCP.",
     "skills": [
       "unity"
     ],
@@ -79,6 +83,7 @@
     "id": "roblox",
     "name": "Roblox",
     "description": "Roblox Studio + Luau agent with the Roblox skill + Understand Anything for visual code exploration and the Roblox Studio MCP (requires Studio MCP setup).",
+    "summary": "Roblox Studio + Luau agent with the Roblox skill and Roblox Studio MCP.",
     "skills": [
       "roblox"
     ],
@@ -95,6 +100,7 @@
     "id": "blender",
     "name": "Blender",
     "description": "Blender modeling, materials, shading, animation, and Python (bpy) scripting agent with the Blender skill + Understand Anything for visual code exploration, plus the Blender MCP for live viewport/scene control.",
+    "summary": "Blender modeling/animation agent with the Blender skill and live viewport MCP.",
     "skills": [
       "blender"
     ],
@@ -111,6 +117,7 @@
     "id": "multi-llm",
     "name": "Multi-LLM agents",
     "description": "Optional cross-vendor reviewer/worker agents: Codex Reviewer, Gemini Reviewer, and Kimi Reviewer run an adversarial second-opinion review of a completed change through OpenAI, Google, or an OpenAI-compatible endpoint (Kimi K2, Qwen, or a local model); Claude Worker delegates work through your own Claude CLI subscription login instead of the orchestrator's metered API key. Each needs its own MCP server configured (codex, gemini, openai-compatible, claude-cli in the MCP catalog) and provider credentials — install only the servers you actually use; an agent whose server is not configured simply cannot be routed to.",
+    "summary": "Optional cross-vendor reviewer/worker agents routed through OpenAI, Google, or OpenAI-compatible endpoints.",
     "skills": [],
     "commands": [],
     "mcp": null,
