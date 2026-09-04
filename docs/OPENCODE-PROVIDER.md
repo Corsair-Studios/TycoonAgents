@@ -47,23 +47,35 @@ error can't spam every poll tick. Every other event delegates straight to
 
 A single file with no runtime dependencies beyond Node builtins (mirroring
 `tycoon-claude-hook.cjs`'s zero-dep posture). It exports an OpenCode plugin
-entrypoint (`ctx => Hooks`) implementing three hooks:
+entrypoint (`ctx => Hooks`) implementing four hooks:
 
 - `event` — the one hook OpenCode delivers `session.*`/`message.*` bus
   events through.
 - `tool.execute.before` / `tool.execute.after` — separate top-level hooks
-  for tool calls, including `task` (subagent spawns).
+  for tool calls, including `task` (subagent spawns). `tool.execute.before`
+  can also **abort** the call: a leaf-worker spawn attempt throws
+  `BlockingToolCallError`, which the entrypoint deliberately does not
+  catch, so OpenCode aborts the `task` call and surfaces the error message
+  to the model (plan p15-t0; see the Enforcement section below).
+- `experimental.chat.system.transform` — delivers queued compliance/fallback
+  nudges (`pendingNudgesBySession`) into the model's own system prompt on
+  its next turn. Absent on older OpenCode builds; OpenCode simply never
+  calls a hook key it doesn't support, so no version guard is needed.
 
-### Event mapping (from the plugin's `dispatchEvent`/`toolExecuteBefore`/`toolExecuteAfter`)
+### Event mapping (from the plugin's `dispatchEvent`/`toolExecuteBefore`/`toolExecuteAfter`/`chatSystemTransform`)
 
 | OpenCode signal | HookRecord event | Source |
 |---|---|---|
 | `event:message.updated`, first root-session (`no parentID`) `role:"user"` message | `UserPromptSubmit` | `handleMessageUpdated`; deduped against a `session.created` for the same session within 1s (`handleSessionCreated`, `makeSubmitDedupe`) |
-| `tool.execute.before`, `tool === "task"` | `PreToolUse` with `tool:"Task"`, `workerId` from `args.subagent_type`, `agentDescription` from `args.description`; pushes the active-agent stack | `handleToolExecuteBefore` |
-| `tool.execute.before`, any other tool | `PreToolUse <mappedTool>`, attributed to the top of the active-agent stack (`"orchestrator"` if empty); MCP tools resolve `vendor`/`model`/`costModelClass` via `buildMcpBackendRouting`/`lookupMcpBackend` | `handleToolExecuteBefore` |
-| `tool.execute.after`, `tool === "task"` | `SubagentStop` with `workerId`, `model` (`providerID/modelID`), `tokens`/`cacheReadTokens` from `client.session.messages`; pops the active-agent stack | `handleToolExecuteAfter`, `fetchSessionTokens` |
+| `tool.execute.before`, `tool === "task"` | `PreToolUse` with `tool:"Task"`, `workerId` from `args.subagent_type` or keyword/fallback routing, `agentDescription` from `args.description`; pushes the active-agent stack; may carry `fallbackOf`/`fallbackDepth` (see Fallback chains) | `handleToolExecuteBefore` |
+| `tool.execute.before`, `tool === "task"`, spawner is a non-empty active-agent stack entry and `decideSpawn` denies | `SpawnDenied` (activity record), then the call is **aborted** via a thrown `BlockingToolCallError` — no `PreToolUse`/`Task` record follows | `handleToolExecuteBefore` |
+| `tool.execute.before`, any other tool | `PreToolUse <mappedTool>`, attributed to the top of the active-agent stack (`"orchestrator"` if empty); MCP tools resolve `vendor`/`model`/`costModelClass` via `buildMcpBackendRouting`/`lookupMcpBackend`; an orchestrator direct-call nudge (Rule 1) is queued via `queueNudge` when `decideDirectToolCall` returns `"nudge"` | `handleToolExecuteBefore` |
+| `tool.execute.after`, `tool === "task"` | `SubagentStop` with `workerId`, `model` (`providerID/modelID`), `tokens`/`cacheReadTokens` from `client.session.messages`, `fallbackOf`/`fallbackDepth` when this dispatch was a fallback re-dispatch; pops the active-agent stack | `handleToolExecuteAfter`, `fetchSessionTokens` |
+| `tool.execute.after`, `tool === "task"`, rendered output text matches `isProviderFailure` | `FallbackTriggered` (activity record) plus a queued nudge instructing the orchestrator to re-dispatch on the next fallback model | `handleToolExecuteAfter` (p15-t1) |
+| `tool.execute.after`, `tool === "task"`, `workerId === "uefn-auditor"` or another specialist, review-gate state tracked per parent session | `ReviewGate` (activity record) with `reviewGateStatus` | `handleToolExecuteAfter` (best-effort heuristic — see Enforcement section, Rule 3) |
 | `event:session.idle`, session has no `parentID` | `Stop` | `handleSessionIdle` |
-| any handler throwing | `PluginError` (dropped by the mapper, logged once) | `writePluginError` |
+| `experimental.chat.system.transform` call, session has queued nudges | nudge text appended to `output.system` as `[TycoonAgents delegation nudge] ...` (delivered to the model, not logged as its own activity event) | `chatSystemTransform`, `drainNudges` |
+| any handler throwing (except a deliberate `BlockingToolCallError`) | `PluginError` (dropped by the mapper, logged once) | `writePluginError` |
 
 Tool-name normalization (`TOOL_NAME_MAP` in the plugin): `read→Read`,
 `edit→Edit`, `write→Write`, `bash→Bash`, `grep→Grep`, `glob→Glob`,
@@ -125,25 +137,47 @@ node standalone/src/cli.mjs watch . --provider opencode
 
 ## Registration: `.opencode/plugin/`
 
-Install the plugin by copying or symlinking it (plus its two runtime
+The OpenCode plugin is installed **only** by the standalone installer
+(`standalone/src/installHook.mjs`'s `OPENCODE_PLUGIN_FILES`,
+`installOpenCodePlugin()`) — there is no VS Code panel path for this; a VS
+Code user installs the OpenCode plugin by running the same standalone
+install command as any other user. (`src/host/vscode/panel.ts`'s installer
+copies only the Claude Code hook and its runtime deps into
+`.claude/tycoon/` — that is a separate, unrelated installation.)
+
+`installOpenCodePlugin()` copies or symlinks the plugin (plus its runtime
 dependencies) into the project's `.opencode/plugin/` directory (singular;
-verified against OpenCode 1.18.27):
+verified against OpenCode 1.18.27). `OPENCODE_PLUGIN_FILES` lists:
 
 ```
 <project>/.opencode/plugin/tycoon-opencode-plugin.ts
 <project>/.opencode/plugin/agentBackend.js
 <project>/.opencode/plugin/modelAliases.js
+<project>/.opencode/plugin/delegationEnforcement.js
+<project>/.opencode/plugin/fallbackChain.js
 ```
 
-`agentBackend.js` and `modelAliases.js` are the compiled
-`src/core/agentBackend.ts` / `src/core/modelAliases.ts` outputs, copied next
-to the hook/plugin by `scripts/copy-hook-runtime.mjs` (run after `tsc -p .`
-in both `vscode:prepublish` and normal dev builds) so a packaged install
-always has a same-directory copy without requiring `out/src/core` on disk.
-The plugin loads `agentBackend.js` via
-`require(path.join(__dirname, "agentBackend.js"))` and logs a stderr warning
-(no crash) if it's missing — MCP backend routing and per-agent
-model/vendor resolution are then disabled but activity capture continues.
+`agentBackend.js`, `modelAliases.js`, `delegationEnforcement.js`, and
+`fallbackChain.js` are the compiled `src/core/agentBackend.ts` /
+`src/core/modelAliases.ts` / `src/core/delegationEnforcement.ts` /
+`src/core/fallbackChain.ts` outputs, copied next to the hook/plugin by
+`scripts/copy-hook-runtime.mjs` (run after `tsc -p .` in both
+`vscode:prepublish` and normal dev builds) so a packaged install always has
+a same-directory copy without requiring `out/src/core` on disk. The plugin
+loads each via `require(path.join(__dirname, "<file>.js"))` and logs a
+stderr warning (no crash) if one is missing:
+
+- `agentBackend.js` missing → MCP backend routing and per-agent
+  model/vendor resolution are disabled, activity capture continues.
+- `delegationEnforcement.js` missing → direct-tool-call nudges, keyword
+  routing fallback, and the leaf-spawn guard are disabled (every decision
+  falls back to "allow"), activity capture continues.
+- `fallbackChain.js` missing (same lazy-require pattern, see Fallback
+  chains below) → provider-failure fallback dispatch is disabled.
+
+`installOpenCodePlugin()` (`standalone/src/installHook.mjs`) refuses to
+overwrite a destination file that already exists with different content
+unless `--force` is passed — it never silently clobbers a hand-edited copy.
 
 OpenCode auto-installs `@opencode-ai/plugin`'s types for editor support, but
 the plugin file itself must not import that package (or any other) at
@@ -175,6 +209,72 @@ surface here is the official `claude` CLI running under the user's own
 login; TycoonAgents itself never stores or handles credentials. See
 `docs/AGENT-BACKENDS.md` for the pricing-key (`costModelClass`) and
 `endpointEnv`/`apiKeyEnv` reference.
+
+---
+
+## Enforcement
+
+`hooks/tycoon-opencode-plugin.ts` enforces the same four delegation rules as
+`hooks/tycoon-claude-hook.cjs`, backed by the shared, pure decision functions
+in `src/core/delegationEnforcement.ts` (`decideDirectToolCall`,
+`matchAgentFromKeywords`, `decideSpawn`, `startReviewGate`/
+`advanceReviewGate`/`isReviewGateTerminal`). What actually delivers each rule
+to a live OpenCode session was probed against OpenCode 1.18.27
+(`docs/opencode-probe-findings.md`, "Enforcement mechanisms"):
+
+| Rule | Mechanism in OpenCode 1.18.27 | Parity vs. the Claude hook |
+|---|---|---|
+| 1. Direct-tool nudge (orchestrator calling Grep/Glob/Edit/Write, or >2 direct Reads/turn) | `experimental.chat.system.transform` — confirmed **GO**: `output.system` pushed here is echoed by the model on its next turn. The plugin queues the message via `queueNudge`/`pendingNudgesBySession` in `handleToolExecuteBefore` and drains it in `chatSystemTransform` | **full** — byte-identical message text, delivered to the model, not just logged |
+| 2. Keyword-based agent routing (no/unresolvable `subagent_type` on a `task` call) | Plain in-process function call, no OpenCode-specific mechanism needed — `matchAgentFromKeywords` reads `.claude/tycoon/agent-keywords.json` the same way on both hosts | **full** |
+| 3. Single-pass review gate (one `uefn-auditor` review, one fix round, then stop) | **Best-effort**: OpenCode's `task` output is a rendered `<task>` string with no typed verdict field, so `handleToolExecuteAfter` regex-matches it for a rejection marker and drives the same state machine as the doctrine. Logged-only parity vs. the Claude hook, which has no code path for this rule at all (doctrine lives only in `CLAUDE.md` prose) — see `docs/ENFORCEMENT-PARITY-BENCHMARK.md` Rule 4/4b | **logged-only** |
+| 4. Leaf workers never spawn | Throwing `BlockingToolCallError` inside `tool.execute.before` — confirmed **GO**: it aborts the `task` call and the thrown message is surfaced to the model as the tool's error output (`hooks/tycoon-opencode-plugin.ts`'s `handleToolExecuteBefore`, rethrown uncaught by the top-level `tool.execute.before` entrypoint) | **full** — both hosts now structurally block the spawn, not just log it |
+
+`permission.ask` was probed and **does not fire** in a real non-interactive
+`opencode run` (only the informational `event:"permission.asked"` bus event
+does) — it is intentionally not wired into any rule above.
+
+`args.model` rewrite on a fallback re-dispatch (see Fallback chains below)
+is **best-effort only**: the probe never confirmed OpenCode observes a hook
+mutating `input.args` before executing the tool, so the plugin sets it
+anyway (`handleToolExecuteBefore`) but relies on the queued nudge text, not
+the mutation, to actually get the orchestrator to re-dispatch on the right
+model.
+
+To reproduce or extend the parity results: `docs/ENFORCEMENT-PARITY-BENCHMARK.md`
+("How to run it") — `npm run test` runs `test/delegationEnforcement.test.ts`
+and `test/enforcementParity.test.ts` alongside the full suite, or run them
+directly with `node --test out/test/delegationEnforcement.test.js
+out/test/enforcementParity.test.js`.
+
+---
+
+## Fallback chains
+
+When a spawned worker's `task` output matches a provider-failure pattern
+(`isProviderFailure` in the shared `fallbackChain` module, loaded lazily from
+`fallbackChain.js` next to the plugin), `handleToolExecuteAfter` records the
+failure, resolves the next model in that agent's configured fallback chain,
+and queues a re-dispatch instruction into the orchestrator's next turn via
+the same `chatSystemTransform` nudge path used for Rule 1. The chain itself —
+schema, precedence, and how `.claude/tycoon/routing.json` /
+`.opencode/tycoon-routing.generated.json` populate it — is documented in
+`docs/ROUTING-PROFILE.md`; this section only covers what the OpenCode
+provider does with it at runtime.
+
+A `FallbackTriggered` activity line looks like:
+
+```json
+{"event":"FallbackTriggered","provider":"opencode","at":1788550700000,"workerId":"coding-specialist","slotId":"coding-specialist","sessionId":"ses_...","failedModel":"anthropic/claude-sonnet-4-6","nextModel":"openai/gpt-5.4-mini","reason":"...provider failure text (truncated to 300 chars)...","message":"...fallback re-dispatch instruction..."}
+```
+
+The matching `PreToolUse`/`SubagentStop` pair for the re-dispatched attempt
+carries `fallbackOf` (the original agent/slot id) and `fallbackDepth` (1-based
+position in the chain) so the delegation panel can show it as a fallback
+retry rather than a fresh, unrelated spawn. What the orchestrator itself
+sees is only the queued nudge text delivered via
+`experimental.chat.system.transform` on its next turn — there is no typed
+"fallback happened" signal surfaced to the model beyond that instruction
+string.
 
 ---
 
@@ -251,9 +351,11 @@ bug.
 - **Unconfigured model providers:** OpenCode rejects a `model:` id whose
   provider isn't configured in that install at runtime — remap the affected
   agent via `.claude/tycoon/opencode-models.json`.
-- **Subagent task tool:** OpenCode denies the `task` tool inside subagent
-  sessions by default, so a subagent spawned under OpenCode cannot itself
-  spawn further subagents unless that permission is explicitly granted.
+- **Subagent task tool:** as of plan p15-t0 this is a deliberate, structural
+  block, not just an OpenCode default — a subagent's `task` call is detected
+  via the active-agent stack and aborted by the plugin itself
+  (`BlockingToolCallError`, see Enforcement Rule 4 above), independent of
+  whatever permission OpenCode would otherwise apply.
 - **Anthropic subscription auth unavailable in OpenCode:** per the probe
   findings, OpenCode supports API key, Bedrock, Vertex, Zen, or Copilot auth
   only — a Claude agent run natively through OpenCode is `costModelClass:
@@ -273,3 +375,18 @@ bug.
 `createPlugin(deps)` factory directly against literal payloads captured in
 `docs/opencode-probe-findings.md`, without going through OpenCode's actual
 plugin registration shape.
+
+---
+
+## Version notes
+
+The enforcement mechanisms documented above (`experimental.chat.system.transform`
+GO, thrown-error abort GO, `permission.ask` NO-GO) were observed live against
+**OpenCode 1.18.27** only (`docs/opencode-probe-findings.md`, "Enforcement
+mechanisms"). These are behavioral facts about a specific OpenCode build, not
+a documented public contract — **re-probe on every OpenCode upgrade** before
+trusting this doc's Enforcement section against a newer version. The
+throwaway probe plugin used for the original probe,
+`standalone/spike/opencode-enforcement-probe-plugin.ts`, is the starting
+point for re-probing: copy it to `.opencode/plugin/`, drive it with
+`opencode run`, and diff its findings against this doc.

@@ -245,6 +245,14 @@ test('mergeHookIntoSettings: applying twice in a row — second call is changed=
 // installOpenCodePlugin — separate opt-in, .opencode/plugin/ only (p7-t2).
 // ---------------------------------------------------------------------------
 
+test('OPENCODE_PLUGIN_FILES includes fallbackChain.js (required by the Claude/OpenCode fallback branches)', () => {
+  assert.ok(
+    OPENCODE_PLUGIN_FILES.includes('fallbackChain.js'),
+    'fallbackChain.js must be copied — it is lazy-required at runtime by ' +
+      'tycoon-claude-hook.cjs\'s PostToolUse/Task fallback branch and by tycoon-opencode-plugin.ts',
+  );
+});
+
 test('installOpenCodePlugin: copies the three plugin files into .opencode/plugin/', () => {
   const dir = mkTempDir();
   try {

@@ -5741,6 +5741,11 @@ export class TycoonPanel {
         const agentBackendSrc = resolveRuntimeFile("agentBackend.js");
         const modelAliasesSrc = resolveRuntimeFile("modelAliases.js");
         const delegationEnforcementSrc = resolveRuntimeFile("delegationEnforcement.js");
+        // fallbackChain.js is lazy-required at runtime by tycoon-claude-hook.cjs's
+        // PostToolUse/Task fallback branch — must ship alongside delegationEnforcement.js
+        // or that branch silently no-ops in VS Code installs (the require() is
+        // wrapped in try/catch, so its absence fails open, never throws).
+        const fallbackChainSrc = resolveRuntimeFile("fallbackChain.js");
         if (agentBackendSrc) {
           fs.copyFileSync(agentBackendSrc, path.join(tycoonDir, "agentBackend.js"));
         }
@@ -5749,6 +5754,9 @@ export class TycoonPanel {
         }
         if (delegationEnforcementSrc) {
           fs.copyFileSync(delegationEnforcementSrc, path.join(tycoonDir, "delegationEnforcement.js"));
+        }
+        if (fallbackChainSrc) {
+          fs.copyFileSync(fallbackChainSrc, path.join(tycoonDir, "fallbackChain.js"));
         }
       } catch {
         /* best-effort; hook falls back to legacy behavior when absent */

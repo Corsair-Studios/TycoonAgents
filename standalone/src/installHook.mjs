@@ -127,6 +127,7 @@ export const OPENCODE_PLUGIN_FILES = Object.freeze([
   'agentBackend.js',
   'modelAliases.js',
   'delegationEnforcement.js',
+  'fallbackChain.js',
 ]);
 
 /**
