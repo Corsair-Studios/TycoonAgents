@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { buildRoutingView } from '../src/core/routingHostOps';
 
 /*
  * jsdom runtime test for the Routing panel in media/main.js (plan p13-t1,
@@ -658,4 +659,103 @@ test('Layering: #menu-popover and #routing-modal sit above #metrics-panel', () =
   const stageAreaIdx = panelTs.indexOf('id="stage-area"');
   assert.ok(appIdx !== -1 && popoverIdx !== -1 && stageAreaIdx !== -1, 'panel.ts should declare #app, #menu-popover and #stage-area');
   assert.ok(popoverIdx > appIdx && popoverIdx < stageAreaIdx, '#menu-popover must be a direct #app child declared before #stage-area, not nested inside it');
+});
+
+test('Routing panel: real buildRoutingView payload — every agent row select equals payload backend vendor/transport (bug repro)', async () => {
+  const src = readFileSync(MAIN_JS_PATH, 'utf8');
+
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+    url: 'https://webview.local/',
+  });
+  const win: any = dom.window;
+  const doc = win.document;
+
+  const ids = scanElementIds(src);
+  for (const id of ids) {
+    if (RUNTIME_CREATED_IDS.has(id)) continue;
+    if (doc.getElementById(id)) continue;
+    const el = doc.createElement(tagForId(id));
+    el.id = id;
+    doc.body.appendChild(el);
+  }
+  let stage = doc.getElementById('stage');
+  if (!stage || stage.tagName.toLowerCase() !== 'canvas') {
+    if (stage) stage.remove();
+    stage = doc.createElement('canvas');
+    stage.id = 'stage';
+    doc.body.appendChild(stage);
+  }
+  stage.width = 1066;
+  stage.height = 760;
+
+  const posted: any[] = [];
+  let stateStore: any = {};
+  win.acquireVsCodeApi = () => ({
+    postMessage: (mmm: any) => posted.push(mmm),
+    getState: () => stateStore,
+    setState: (s: any) => { stateStore = s; },
+  });
+
+  win.requestAnimationFrame = (cb: any) => { return 1; };
+  win.cancelAnimationFrame = () => {};
+  win.Image = makeFakeImage(win);
+  win.HTMLCanvasElement.prototype.getContext = function (this: any) {
+    if (!this.__ctxStub) this.__ctxStub = makeCtxStub(this);
+    return this.__ctxStub;
+  };
+  win.HTMLCanvasElement.prototype.toDataURL = function () {
+    return 'data:image/png;base64,iVBORw0KGgo=';
+  };
+
+  const errors: any[] = [];
+  win.addEventListener('error', (e: any) => {
+    errors.push(e && (e.error || e.message) ? e.error || e.message : e);
+  });
+  win.onerror = (msg: any, _s: any, _l: any, _c: any, err: any) => {
+    errors.push(err || msg);
+  };
+
+  function assertNoErrors(step: string) {
+    assert.equal(errors.length, 0, `[${step}] main.js threw:\n${errors.map((e) => (e && e.stack) || String(e)).join('\n---\n')}`);
+  }
+  async function flush() {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  }
+  function dispatch(data: any) {
+    win.dispatchEvent(new win.MessageEvent('message', { data }));
+  }
+
+  vm.runInContext(src, dom.getInternalVMContext(), { filename: 'media/main.js' });
+  try {
+    await flush();
+    assertNoErrors('boot');
+
+    const menuRoutingBtn = doc.getElementById('menu-routing');
+    menuRoutingBtn.click();
+    await flush();
+
+    // Real payload straight from the host implementation, against this
+    // repo's own .claude/agents — the same shape panel.ts/server.mjs post.
+    const payload: any = buildRoutingView({ root: process.cwd(), env: process.env as any });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('real routing payload render');
+
+    for (const a of payload.agents) {
+      const row = doc.querySelector(`.routing-agent-row[data-agent-id="${a.id}"]`);
+      assert.ok(row, `row should render for agent ${a.id}`);
+      const vendorSel = row.querySelector('.routing-vendor-select') as any;
+      const transportSel = Array.from(row.querySelectorAll('select')).find(
+        (s: any) => s !== vendorSel && !s.className.includes('routing-model-select')
+      ) as any;
+      assert.ok(vendorSel, `vendor select should render for ${a.id}`);
+      assert.ok(transportSel, `transport select should render for ${a.id}`);
+      assert.equal(vendorSel.value, a.backend.vendor, `${a.id}: vendor select should equal payload backend.vendor`);
+      assert.equal(transportSel.value, a.backend.transport, `${a.id}: transport select should equal payload backend.transport`);
+    }
+  } finally {
+    win.close();
+  }
 });

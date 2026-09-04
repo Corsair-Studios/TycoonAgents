@@ -5937,6 +5937,7 @@ button.theme-review-preview:focus-visible::after {
   width: min(760px, 92vw);
   max-height: 84vh;
   overflow-y: auto;
+  overflow-x: hidden; /* backstop — the fields below are sized to fit, this just guards regressions */
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
@@ -5990,9 +5991,10 @@ button.theme-review-preview:focus-visible::after {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px 10px;
+  min-width: 0;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 560px) {
   .routing-slot-fields {
     grid-template-columns: 1fr;
   }
@@ -6004,6 +6006,12 @@ button.theme-review-preview:focus-visible::after {
   gap: 3px;
   min-width: 0;
   font-size: 11px;
+}
+
+/* Model always gets the full slot-fields width — sharing a 2-col cell with
+   Vendor is what truncated "anthropic/claude-..." (item 3 cleanup). */
+.routing-field-row--full {
+  grid-column: 1 / -1;
 }
 
 .routing-field-row label {
@@ -6022,8 +6030,10 @@ button.theme-review-preview:focus-visible::after {
   border: 1px solid var(--border);
   border-radius: 4px;
   width: 100%;
+  min-width: 0;
   box-sizing: border-box;
   max-width: 100%;
+  text-overflow: ellipsis;
 }
 
 .routing-slot-meta {
@@ -6035,7 +6045,8 @@ button.theme-review-preview:focus-visible::after {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  min-width: 160px;
+  min-width: 0;
+  width: 100%;
   font-size: 11px;
 }
 
@@ -6054,6 +6065,10 @@ button.theme-review-preview:focus-visible::after {
   border: 1px solid var(--border);
   border-radius: 4px;
   text-transform: uppercase;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  text-overflow: ellipsis;
 }
 
 .routing-env-dot {
@@ -6077,26 +6092,29 @@ button.theme-review-preview:focus-visible::after {
   opacity: 0.5;
 }
 
+/* Plain-word text now (was an uppercase FRONTMATTER/ALIAS jargon pill) —
+   item 1 cleanup: sits as a muted line under the agent name, not its own
+   column. */
 .routing-source-chip {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.routing-source-chip--routing {
+  color: var(--accent);
+}
+
+.routing-source-chip--fallback {
   display: inline-block;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 1px 6px;
   border-radius: 10px;
-  border: 1px solid var(--border);
-  color: var(--muted);
-}
-
-.routing-source-chip--routing {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.routing-source-chip--fallback {
+  border: 1px solid var(--status-error, #c0392b);
   color: var(--status-error, #c0392b);
-  border-color: var(--status-error, #c0392b);
-  margin-left: 4px;
+  margin-left: 6px;
 }
 
 .routing-fallback-count {
@@ -6110,38 +6128,76 @@ button.theme-review-preview:focus-visible::after {
   margin-top: 4px;
 }
 
-/* Each agent renders as a two-row block: row 1 (.routing-agent-row) is
-   Agent | Source | Slot; row 2 (.routing-agent-fallback-row) is a single
-   colspan cell holding the fallback-chain editor. table-layout: fixed +
-   percentage widths on row 1's cells keep the block from ever overflowing
-   the panel at its typical ~740px width — the old 4-column layout (with a
-   320px-min-width Slot cell plus a Fallback column) is what overflowed. */
-.routing-agents-table {
-  width: 100%;
-  table-layout: fixed;
+/* Two columns only — Agent (name/description/source line) and Slot (fields).
+   Each agent is one .routing-agent-card: the name+slot grid plus the
+   fallback-chain editor beneath it, indented so it visibly belongs to THIS
+   card, with a divider + gap before the next card (item 2/3/4 cleanup).
+   minmax(0, ...) on every track is what keeps a long select/model id from
+   ever forcing the grid — and the modal — wider than its container. */
+.routing-agents-header,
+.routing-agent-row {
+  display: grid;
+  grid-template-columns: minmax(0, 34%) minmax(0, 1fr);
+  gap: 10px;
 }
 
-.routing-agents-table td,
-.routing-agents-table th {
-  vertical-align: top;
-  word-break: break-word;
+.routing-agents-header {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
 }
 
-.routing-agent-name-td {
-  width: 26%;
+.routing-agents-list {
+  display: flex;
+  flex-direction: column;
 }
 
-.routing-source-td {
-  width: 16%;
-}
-
-.routing-slot-td {
-  width: 58%;
+.routing-agent-card {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
   min-width: 0;
 }
 
-.routing-agent-fallback-row td {
-  padding-top: 2px;
+.routing-agent-card:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.routing-agent-name-td,
+.routing-slot-td {
+  min-width: 0;
+}
+
+.routing-agent-source-line {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Indented under the Slot column so the fallback chain + "+ Add fallback"
+   button read as belonging to the card above, not the next agent's card
+   (item 2 fix). */
+.routing-agent-fallback-row {
+  margin-top: 8px;
+  padding-left: calc(34% + 10px);
+  min-width: 0;
+}
+
+@media (max-width: 560px) {
+  .routing-agents-header,
+  .routing-agent-row {
+    grid-template-columns: 1fr;
+  }
+  .routing-agent-fallback-row {
+    padding-left: 0;
+  }
 }
 
 .routing-agent-desc {

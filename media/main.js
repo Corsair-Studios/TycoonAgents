@@ -16840,7 +16840,10 @@
 
     // Model: preset select-with-free-text, or a bare free-text input for Custom endpoint.
     var modelRow = document.createElement("div");
-    modelRow.className = "routing-field-row";
+    // Full row width, always — a model id (e.g. "anthropic/claude-sonnet-
+    // 4-6") is the field most likely to overflow a shared 2-col grid cell;
+    // sharing a row with Vendor is what truncated it (item 3 cleanup).
+    modelRow.className = "routing-field-row routing-field-row--full";
     var modelLabel = document.createElement("label");
     modelLabel.textContent = "Model";
     modelRow.appendChild(modelLabel);
@@ -17030,10 +17033,21 @@
     return details;
   }
 
+  // Plain-word labels for RoutingSource — no FRONTMATTER/ALIAS jargon chips.
+  // Renders as a small muted text line under the agent name (item 1 cleanup);
+  // class name kept as "routing-source-chip" (styled as plain text now, not
+  // a pill) so existing DOM lookups by that class keep working.
+  var ROUTING_SOURCE_LABELS = {
+    routing: "model from routing.json",
+    frontmatter: "model from agent file",
+    alias: "model from Claude alias",
+    default: "default",
+  };
+
   function routingSourceChip(source) {
     var chip = document.createElement("span");
     chip.className = "routing-source-chip routing-source-chip--" + (source || "default");
-    chip.textContent = source || "default";
+    chip.textContent = ROUTING_SOURCE_LABELS[source] || ROUTING_SOURCE_LABELS.default;
     return chip;
   }
 
@@ -17215,13 +17229,13 @@
     agents.forEach(function (a) {
       var row = routingBodyEl.querySelector('.routing-agent-row[data-agent-id="' + String(a.id).replace(/"/g, '\\"') + '"]');
       if (!row) return;
-      var sourceTd = row.children[1];
-      if (!sourceTd) return;
-      sourceTd.querySelectorAll(".routing-source-chip--fallback, .routing-fallback-count").forEach(function (el) {
+      var sourceLine = row.querySelector(".routing-agent-source-line");
+      if (!sourceLine) return;
+      sourceLine.querySelectorAll(".routing-source-chip--fallback, .routing-fallback-count").forEach(function (el) {
         el.remove();
       });
       var chip = buildRoutingFallbackChip(a.id);
-      if (chip) sourceTd.appendChild(chip);
+      if (chip) sourceLine.appendChild(chip);
     });
 
     var oldTotals = routingBodyEl.querySelector("#routing-totals-section");
@@ -17266,7 +17280,7 @@
     var orchSection = buildSection("Orchestrator");
     if (!routingDraft.orchestrator) routingDraft.orchestrator = {};
     var orchMeta = document.createElement("div");
-    orchMeta.className = "routing-slot-meta";
+    orchMeta.className = "routing-slot-meta routing-agent-source-line";
     if (payload.orchestrator) {
       var orchChip = routingSourceChip(payload.orchestrator.source);
       orchMeta.appendChild(orchChip);
@@ -17285,29 +17299,39 @@
       noAgents.textContent = "No agents found.";
       agentsSection.appendChild(noAgents);
     } else {
-      var table = document.createElement("table");
-      table.className = "metrics-table routing-agents-table";
-      var thead = document.createElement("thead");
-      var headRow = document.createElement("tr");
-      ["Agent", "Source", "Slot"].forEach(function (h) {
-        var th = document.createElement("th");
-        th.textContent = h;
-        headRow.appendChild(th);
+      // Card list, not a <table> — each agent is one .routing-agent-card
+      // (name+source line | slot fields, plus the fallback editor full-width
+      // beneath, indented so it visibly belongs to the card above it) with
+      // a divider + vertical gap before the next card (item 2 cleanup).
+      // Only two columns now: Agent and Slot — the old "Source" column
+      // (FRONTMATTER/ALIAS jargon) moved into a muted line under the name
+      // (item 1); .routing-agent-row/.routing-agent-fallback-row class names
+      // are kept (now divs, not <tr>s) so existing DOM lookups still work.
+      var header = document.createElement("div");
+      header.className = "routing-agents-header";
+      ["Agent", "Slot"].forEach(function (h) {
+        var span = document.createElement("span");
+        span.textContent = h;
+        header.appendChild(span);
       });
-      thead.appendChild(headRow);
-      table.appendChild(thead);
+      agentsSection.appendChild(header);
 
-      var tbody = document.createElement("tbody");
+      var list = document.createElement("div");
+      list.className = "routing-agents-list";
       agents.forEach(function (a) {
         if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
         var slot = routingDraft.agents[a.id];
 
-        // Row 1: name/description, source chip, slot editor fields.
-        var row = document.createElement("tr");
+        var card = document.createElement("div");
+        card.className = "routing-agent-card";
+        card.setAttribute("data-agent-id", a.id);
+
+        // Row: name/description/source line, slot editor fields.
+        var row = document.createElement("div");
         row.className = "routing-agent-row";
         row.setAttribute("data-agent-id", a.id);
 
-        var nameTd = document.createElement("td");
+        var nameTd = document.createElement("div");
         nameTd.className = "routing-agent-name-td";
         var nameStrong = document.createElement("strong");
         nameStrong.textContent = a.name || a.id;
@@ -17319,36 +17343,32 @@
           desc.title = a.description; // full text on hover once the 3-line clamp cuts it off
           nameTd.appendChild(desc);
         }
+        var sourceLine = document.createElement("div");
+        sourceLine.className = "routing-agent-source-line";
+        sourceLine.appendChild(routingSourceChip(a.source));
+        var fallbackChip = buildRoutingFallbackChip(a.id);
+        if (fallbackChip) sourceLine.appendChild(fallbackChip);
+        nameTd.appendChild(sourceLine);
         row.appendChild(nameTd);
 
-        var sourceTd = document.createElement("td");
-        sourceTd.className = "routing-source-td";
-        sourceTd.appendChild(routingSourceChip(a.source));
-        var fallbackChip = buildRoutingFallbackChip(a.id);
-        if (fallbackChip) sourceTd.appendChild(fallbackChip);
-        row.appendChild(sourceTd);
-
-        var slotTd = document.createElement("td");
+        var slotTd = document.createElement("div");
         slotTd.className = "routing-slot-td";
         slotTd.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal));
         row.appendChild(slotTd);
 
-        tbody.appendChild(row);
+        card.appendChild(row);
 
-        // Row 2: full-width fallback-chain editor beneath the slot fields
-        // (issue: a 4th "Fallback" column overflowed the panel width).
-        var fbRow = document.createElement("tr");
+        // Fallback-chain editor, full-width beneath the row, indented within
+        // the card so it reads as belonging to THIS agent, not the next one.
+        var fbRow = document.createElement("div");
         fbRow.className = "routing-agent-fallback-row";
         fbRow.setAttribute("data-agent-id", a.id);
-        var fbTd = document.createElement("td");
-        fbTd.className = "routing-fallback-td";
-        fbTd.colSpan = 3;
-        fbTd.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal));
-        fbRow.appendChild(fbTd);
-        tbody.appendChild(fbRow);
+        fbRow.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal));
+        card.appendChild(fbRow);
+
+        list.appendChild(card);
       });
-      table.appendChild(tbody);
-      agentsSection.appendChild(table);
+      agentsSection.appendChild(list);
     }
     routingBodyEl.appendChild(agentsSection);
     routingBodyEl.appendChild(buildRoutingTotalsBlock());
