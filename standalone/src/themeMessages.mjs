@@ -57,6 +57,7 @@
 //
 // Node built-ins only. No vscode import, direct or transitive.
 
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -82,6 +83,83 @@ function summarizeThemeApproval(items) {
     _themeApprovalModule = require(THEME_APPROVAL_JS);
   }
   return _themeApprovalModule.summarizeThemeApproval(items);
+}
+
+// ── Badge-unlock / rebirth-state persistence (project-plan task p9-t6) ────
+// panel.ts persists these to two files at the root of VS Code's
+// globalStorage (badge-unlocks.json / rebirth-state.json), keyed by
+// `${projectScopeKey}|${themeId}` (src/host/vscode/progressScope.ts, pure —
+// no vscode import in that file itself). The standalone's equivalent of
+// globalStorage is an `appData` handle from appData.mjs (server.mjs already
+// wires one up for theme-image settings — see `themeImageAppData`) — these
+// functions persist through THAT SAME handle's readJson/writeJson under the
+// identical two filenames, so a machine that runs both hosts against the
+// same appData dir would share state (not required today, just consistent).
+const PROGRESS_SCOPE_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'progressScope.js');
+const BADGE_UNLOCKS_FILE = 'badge-unlocks.json';
+const REBIRTH_STATE_FILE = 'rebirth-state.json';
+
+let _progressScopeModule;
+function progressScopeModule() {
+  if (!_progressScopeModule) {
+    if (!fsSync.existsSync(PROGRESS_SCOPE_JS)) {
+      throw new Error(
+        `[tycoonagents-standalone] progressScope: ${PROGRESS_SCOPE_JS} not found. The compiled \`out/\` ` +
+          'directory is missing or stale — run `npx tsc -p .` from the repo root first, then restart the ' +
+          'standalone server.',
+      );
+    }
+    _progressScopeModule = require(PROGRESS_SCOPE_JS);
+  }
+  return _progressScopeModule;
+}
+
+/** Standalone analog of panel.ts's `getUnlockedBadges` — reads the
+ * appData-backed badge-unlocks store, scoped to `(projectRoot, themeId)`.
+ * Returns `[]` on a missing/invalid `appData`, `projectRoot`, or `themeId`,
+ * or when nothing has been unlocked yet — never throws. */
+export function getUnlockedBadgesStandalone(appData, projectRoot, themeId) {
+  if (!appData || typeof appData.readJson !== 'function' || !themeId) return [];
+  const { projectScopeKey, readCompositeWithMigration } = progressScopeModule();
+  const store = appData.readJson(BADGE_UNLOCKS_FILE, {}) || {};
+  const { value } = readCompositeWithMigration(store, projectScopeKey(projectRoot), themeId);
+  return Array.isArray(value) ? value : [];
+}
+
+/** Standalone analog of panel.ts's `addUnlockedBadge` — appends `badgeId`
+ * to the scoped list (idempotent: a duplicate id is a no-op write-skip).
+ * Silently no-ops on a missing/invalid `appData`, `themeId`, or `badgeId`. */
+export function addUnlockedBadgeStandalone(appData, projectRoot, themeId, badgeId) {
+  if (!appData || typeof appData.writeJson !== 'function' || !themeId || !badgeId) return;
+  const { projectScopeKey, readCompositeWithMigration, writeComposite } = progressScopeModule();
+  const scopeKey = projectScopeKey(projectRoot);
+  const store = appData.readJson(BADGE_UNLOCKS_FILE, {}) || {};
+  const { value } = readCompositeWithMigration(store, scopeKey, themeId);
+  const existing = Array.isArray(value) ? value : [];
+  if (existing.includes(badgeId)) return;
+  appData.writeJson(BADGE_UNLOCKS_FILE, writeComposite(store, scopeKey, themeId, [...existing, badgeId]));
+}
+
+/** Standalone analog of panel.ts's `getRebirthState` — reads the
+ * appData-backed rebirth-state store, scoped to `(projectRoot, themeId)`.
+ * Returns `null` on a missing/invalid `appData`/`projectRoot`/`themeId`, or
+ * when no rebirth state has been saved yet — never throws. */
+export function getRebirthStateStandalone(appData, projectRoot, themeId) {
+  if (!appData || typeof appData.readJson !== 'function' || !themeId) return null;
+  const { projectScopeKey, readCompositeWithMigration } = progressScopeModule();
+  const store = appData.readJson(REBIRTH_STATE_FILE, {}) || {};
+  const { value } = readCompositeWithMigration(store, projectScopeKey(projectRoot), themeId);
+  return value && typeof value === 'object' ? value : null;
+}
+
+/** Standalone analog of panel.ts's `saveRebirthState` — replaces the scoped
+ * entry wholesale (not merged). Silently no-ops on a missing/invalid
+ * `appData`, `themeId`, or non-object `state`. */
+export function saveRebirthStateStandalone(appData, projectRoot, themeId, state) {
+  if (!appData || typeof appData.writeJson !== 'function' || !themeId || !state || typeof state !== 'object') return;
+  const { projectScopeKey, writeComposite } = progressScopeModule();
+  const store = appData.readJson(REBIRTH_STATE_FILE, {}) || {};
+  appData.writeJson(REBIRTH_STATE_FILE, writeComposite(store, projectScopeKey(projectRoot), themeId, state));
 }
 
 // ── Review-image recovery (project-plan task p9-t4) ─────────────────────
@@ -335,7 +413,16 @@ export async function handleListThemes(store, broadcast) {
 /** Mirrors panel.ts's _activateTheme(): THEME_INITIALIZED on success,
  * THEME_GENERATION_ERROR with the same "Theme not found." message on a
  * missing/incomplete theme. */
-export async function handleSelectTheme(store, broadcast, themeId) {
+/**
+ * @param {object} [progress] optional `{ appData, projectRoot }` — when
+ * `appData` (an appData.mjs handle) is supplied, `unlocked_badge_ids` and
+ * `rebirth_state` are read from the real persisted stores (see
+ * getUnlockedBadgesStandalone/getRebirthStateStandalone above), scoped to
+ * `projectRoot`. Omitted (or `appData` absent) falls back to the prior
+ * `[]`/`null` safe defaults — `savedBuildProgress` has no persistence wired
+ * up yet either way (still out of scope; unrelated to badges/rebirth).
+ */
+export async function handleSelectTheme(store, broadcast, themeId, progress = {}) {
   const loaded = await loadThemeFromStore(store, themeId);
   if (!loaded) {
     broadcast('message', {
@@ -344,16 +431,17 @@ export async function handleSelectTheme(store, broadcast, themeId) {
     });
     return;
   }
+  const { appData, projectRoot } = progress || {};
   broadcast('message', {
     type: MSG_WIRE.THEME_INITIALIZED,
     payload: {
       manifest: loaded.manifest,
       frames: loaded.frames,
       is_editor_mode: false,
-      // No per-theme badge/rebirth/build-progress persistence in the
-      // standalone yet (see module header) — safe defaults only.
-      unlocked_badge_ids: [],
-      rebirth_state: null,
+      unlocked_badge_ids: getUnlockedBadgesStandalone(appData, projectRoot, themeId),
+      rebirth_state: getRebirthStateStandalone(appData, projectRoot, themeId),
+      // No per-theme build-progress persistence in the standalone yet (see
+      // module header) — safe default only.
       savedBuildProgress: 0,
     },
   });

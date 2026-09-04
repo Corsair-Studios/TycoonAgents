@@ -25,10 +25,28 @@ import {
   handleSelectTheme,
   handleDeleteTheme,
   handleGetThemeImageReview,
+  getUnlockedBadgesStandalone,
+  addUnlockedBadgeStandalone,
+  getRebirthStateStandalone,
+  saveRebirthStateStandalone,
 } from '../src/themeMessages.mjs';
 
 function mkTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-thememsg-'));
+}
+
+/** In-memory stand-in for an appData.mjs handle (readJson/writeJson), so
+ * these tests don't need a real appData dir on disk. */
+function fakeAppData() {
+  const files = new Map();
+  return {
+    readJson(name, fallback = null) {
+      return files.has(name) ? files.get(name) : fallback;
+    },
+    writeJson(name, value) {
+      files.set(name, value);
+    },
+  };
 }
 
 function jsonBytes(value) {
@@ -432,4 +450,78 @@ test('handleGetThemeImageReview (bundled survivors_vs_zombies theme): a board-sh
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ── Badge-unlock / rebirth-state persistence (p9-t6 scope addition) ────────
+
+test('addUnlockedBadgeStandalone: unlock -> persisted -> next handleSelectTheme carries it in unlocked_badge_ids', async () => {
+  const root = mkTempRoot();
+  try {
+    const store = createFsThemeFileStore(root);
+    await seedTheme(store, 'neon_dojo', { displayName: 'Neon Dojo' });
+    const appData = fakeAppData();
+    const projectRoot = 'C:/fake/project';
+
+    assert.deepEqual(getUnlockedBadgesStandalone(appData, projectRoot, 'neon_dojo'), []);
+    addUnlockedBadgeStandalone(appData, projectRoot, 'neon_dojo', 'first_blood');
+    assert.deepEqual(getUnlockedBadgesStandalone(appData, projectRoot, 'neon_dojo'), ['first_blood']);
+
+    // Idempotent: unlocking the same badge again does not duplicate it.
+    addUnlockedBadgeStandalone(appData, projectRoot, 'neon_dojo', 'first_blood');
+    assert.deepEqual(getUnlockedBadgesStandalone(appData, projectRoot, 'neon_dojo'), ['first_blood']);
+
+    addUnlockedBadgeStandalone(appData, projectRoot, 'neon_dojo', 'rebirth_1');
+    assert.deepEqual(getUnlockedBadgesStandalone(appData, projectRoot, 'neon_dojo'), ['first_blood', 'rebirth_1']);
+
+    const calls = [];
+    await handleSelectTheme(store, fakeBroadcast(calls), 'neon_dojo', { appData, projectRoot });
+    assert.equal(calls[0].data.type, MSG_WIRE.THEME_INITIALIZED);
+    assert.deepEqual(calls[0].data.payload.unlocked_badge_ids, ['first_blood', 'rebirth_1']);
+
+    // Scoped per project: a different projectRoot sees no unlocks.
+    assert.deepEqual(getUnlockedBadgesStandalone(appData, 'C:/other/project', 'neon_dojo'), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('saveRebirthStateStandalone: rebirth state round-trips through appData and into handleSelectTheme', async () => {
+  const root = mkTempRoot();
+  try {
+    const store = createFsThemeFileStore(root);
+    await seedTheme(store, 'castle_kingdom');
+    const appData = fakeAppData();
+    const projectRoot = 'C:/fake/project';
+
+    assert.equal(getRebirthStateStandalone(appData, projectRoot, 'castle_kingdom'), null);
+
+    const state = { count: 2, baseline: { gold: 100 }, requiredRebirthBadgeIds: ['boss_1'] };
+    saveRebirthStateStandalone(appData, projectRoot, 'castle_kingdom', state);
+    assert.deepEqual(getRebirthStateStandalone(appData, projectRoot, 'castle_kingdom'), state);
+
+    // A later save replaces (not merges) the prior state.
+    const nextState = { count: 3, baseline: { gold: 500 }, requiredRebirthBadgeIds: [] };
+    saveRebirthStateStandalone(appData, projectRoot, 'castle_kingdom', nextState);
+    assert.deepEqual(getRebirthStateStandalone(appData, projectRoot, 'castle_kingdom'), nextState);
+
+    const calls = [];
+    await handleSelectTheme(store, fakeBroadcast(calls), 'castle_kingdom', { appData, projectRoot });
+    assert.deepEqual(calls[0].data.payload.rebirth_state, nextState);
+
+    // Scoped per project: a different projectRoot sees no rebirth state.
+    assert.equal(getRebirthStateStandalone(appData, 'C:/other/project', 'castle_kingdom'), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('getUnlockedBadgesStandalone/getRebirthStateStandalone: missing appData/projectRoot/themeId fail safe to []/null, never throw', () => {
+  assert.deepEqual(getUnlockedBadgesStandalone(undefined, 'root', 'theme'), []);
+  assert.deepEqual(getUnlockedBadgesStandalone(fakeAppData(), 'root', undefined), []);
+  assert.equal(getRebirthStateStandalone(undefined, 'root', 'theme'), null);
+  assert.equal(getRebirthStateStandalone(fakeAppData(), 'root', undefined), null);
+  // No-op writes must not throw either.
+  addUnlockedBadgeStandalone(undefined, 'root', 'theme', 'badge');
+  saveRebirthStateStandalone(undefined, 'root', 'theme', { a: 1 });
+  saveRebirthStateStandalone(fakeAppData(), 'root', 'theme', null);
 });

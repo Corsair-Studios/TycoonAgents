@@ -67,6 +67,8 @@ import {
   handleDeleteTheme,
   handleGetThemeImageReview,
   listThemesFromStore,
+  addUnlockedBadgeStandalone,
+  saveRebirthStateStandalone,
 } from './themeMessages.mjs';
 import { exportThemeArchiveFromStore, importThemeArchiveToStore } from './themeArchive.mjs';
 import { configureThemeFileStore } from './themeGenerationBridge.mjs';
@@ -85,7 +87,7 @@ import {
   handleRenameThemeCharacter,
   handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
-import { handleRestorePlanBackup } from './projectPlanMessages.mjs';
+import { handleRestorePlanBackup, postPlanState, computePlanState } from './projectPlanMessages.mjs';
 import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, postFeedback } from './sharedLogic.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -173,6 +175,45 @@ let _catalogSummaryModule;
 function catalogSummaryModule() {
   if (!_catalogSummaryModule) _catalogSummaryModule = requireCompiledOrThrow(CATALOG_SUMMARY_JS, 'catalogSummary');
   return _catalogSummaryModule;
+}
+
+// ── Delegation-doctrine / Project-Plan-toggle side-effect bridges ──────────
+// Same "pure, no vscode import" posture as the four modules above — used by
+// the Settings write handlers (setDelegationMode/setReviewEnabled/
+// setSessionJournalEntries/SET_PROJECT_PLAN_ENABLED) below to replicate
+// panel.ts's persistence + CLAUDE.md doctrine + lead/reviewer agent
+// install/remove side effects byte-for-byte against the SAME
+// .claude/tycoon/execution.json file the VS Code host reads/writes.
+const DELEGATION_DOCTRINE_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'delegationDoctrine.js');
+const UEFN_DETECT_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'uefnDetect.js');
+const CODE_RULES_DOCTRINE_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'codeRulesDoctrine.js');
+const AGENT_ROSTER_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'claude-code', 'agentRoster.js');
+const AGENT_BACKEND_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'agentBackend.js');
+
+let _delegationDoctrineModule;
+function delegationDoctrineModule() {
+  if (!_delegationDoctrineModule) _delegationDoctrineModule = requireCompiledOrThrow(DELEGATION_DOCTRINE_JS, 'delegationDoctrine');
+  return _delegationDoctrineModule;
+}
+let _uefnDetectModule;
+function uefnDetectModule() {
+  if (!_uefnDetectModule) _uefnDetectModule = requireCompiledOrThrow(UEFN_DETECT_JS, 'uefnDetect');
+  return _uefnDetectModule;
+}
+let _codeRulesDoctrineModule;
+function codeRulesDoctrineModule() {
+  if (!_codeRulesDoctrineModule) _codeRulesDoctrineModule = requireCompiledOrThrow(CODE_RULES_DOCTRINE_JS, 'codeRulesDoctrine');
+  return _codeRulesDoctrineModule;
+}
+let _agentRosterModule;
+function agentRosterModule() {
+  if (!_agentRosterModule) _agentRosterModule = requireCompiledOrThrow(AGENT_ROSTER_JS, 'agentRoster');
+  return _agentRosterModule;
+}
+let _agentBackendModule;
+function agentBackendModule() {
+  if (!_agentBackendModule) _agentBackendModule = requireCompiledOrThrow(AGENT_BACKEND_JS, 'agentBackend');
+  return _agentBackendModule;
 }
 
 // ── MIME map (media/ only ships a handful of extensions today) ─────────────
@@ -386,22 +427,8 @@ function buildBootHandshakeMessages() {
     { eventName: 'message', data: buildInstallStatePayload() },
     { eventName: 'message', data: buildPacksPayload() },
     { eventName: 'message', data: { type: 'engineStatus', chips: [] } },
-    {
-      eventName: 'message',
-      data: {
-        type: 'PLAN_STATE',
-        enabled: false,
-        plan: null,
-        archivedPlans: [],
-        planReadable: true,
-        planError: '',
-        hasBackup: false,
-      },
-    },
-    {
-      eventName: 'message',
-      data: { type: 'OFFLOAD_OFFER_STATE', dismissed: false, accepted: false, providerAvailable: false },
-    },
+    { eventName: 'message', data: computePlanState(primaryProjectRoot) },
+    { eventName: 'message', data: computeOffloadOfferState(primaryProjectRoot) },
   ];
 }
 
@@ -495,7 +522,10 @@ function handleBrowserMessage(msg) {
       });
       break;
     case THEME_MSG_WIRE.SELECT_THEME:
-      handleSelectTheme(themeStore, broadcast, payload.theme_id).catch((err) => {
+      handleSelectTheme(themeStore, broadcast, payload.theme_id, {
+        appData: themeImageAppData,
+        projectRoot: primaryProjectRoot,
+      }).catch((err) => {
         console.error('[tycoonagents-standalone] SELECT_THEME failed:', err);
       });
       break;
@@ -553,6 +583,27 @@ function handleBrowserMessage(msg) {
       break;
     case THEME_MSG_WIRE.CANCEL_THEME_GENERATION:
       handleCancelThemeGeneration(broadcast);
+      break;
+    // ── Badge unlock / rebirth persistence (p9-t6 scope addition) ───────
+    // Standalone analogs of panel.ts's BADGE_UNLOCKED (~line 1509,
+    // addUnlockedBadge) and SAVE_REBIRTH_STATE (~line 1518,
+    // saveRebirthState) handlers — persisted through the SAME appData
+    // handle SELECT_THEME/handleReadyThemeBoot read from (themeImageAppData),
+    // scoped to (primaryProjectRoot, theme_id) via progressScope.js. No
+    // reply is expected by media/main.js for either message.
+    case 'BADGE_UNLOCKED':
+      try {
+        addUnlockedBadgeStandalone(themeImageAppData, primaryProjectRoot, payload.theme_id, payload.badge_id);
+      } catch (err) {
+        console.error('[tycoonagents-standalone] BADGE_UNLOCKED failed:', err);
+      }
+      break;
+    case 'SAVE_REBIRTH_STATE':
+      try {
+        saveRebirthStateStandalone(themeImageAppData, primaryProjectRoot, payload.theme_id, payload.state);
+      } catch (err) {
+        console.error('[tycoonagents-standalone] SAVE_REBIRTH_STATE failed:', err);
+      }
       break;
     // ── Theme review-EDITOR + recovery messages (pC-t2) ─────────────────
     case THEME_MSG_WIRE.SET_THEME_ITEM_NAMES:
@@ -674,30 +725,43 @@ function handleBrowserMessage(msg) {
       broadcast('message', buildMcpPayload());
       break;
     case 'REQUEST_PLAN':
-      // main.js's "PLAN_STATE" handler defaults every field via Boolean()/
-      // Array.isArray()/`|| null`/`!== false` — Project Plan is an optional
-      // feature the standalone doesn't wire up yet, so `enabled: false`
-      // with no plan is the correct off-state, not a stub.
-      broadcast('message', {
-        type: 'PLAN_STATE',
-        enabled: false,
-        plan: null,
-        archivedPlans: [],
-        planReadable: true,
-        planError: '',
-        hasBackup: false,
-      });
+      // Standalone analog of panel.ts's _postPlanState (~line 8029) — reuses
+      // projectPlanMessages.mjs's postPlanState (already wired for
+      // RESTORE_PLAN_BACKUP below), which reads the REAL
+      // .claude/tycoon/plan.json via the compiled projectPlan.js bridge.
+      postPlanState(primaryProjectRoot, broadcast);
       break;
     case 'REQUEST_OFFLOAD_OFFER_STATE':
-      // main.js's "OFFLOAD_OFFER_STATE" handler: every field is Boolean()-
-      // guarded and `providerAvailable` is documented to fail CLOSED on any
-      // falsy/missing value, so declining the offer entirely here is safe.
-      broadcast('message', {
-        type: 'OFFLOAD_OFFER_STATE',
-        dismissed: false,
-        accepted: false,
-        providerAvailable: false,
-      });
+      // Standalone analog of panel.ts's _postOffloadOfferState (~line 8152).
+      handlePostOffloadOfferState();
+      break;
+    case 'setDelegationMode':
+      // Standalone analog of panel.ts's _handleSetDelegationMode (~line
+      // 6112).
+      handleSetDelegationModeStandalone(msg.delegation_mode);
+      break;
+    case 'setReviewEnabled':
+      // Standalone analog of panel.ts's _handleSetReviewEnabled (~line
+      // 6196).
+      handleSetReviewEnabledStandalone(Boolean(msg.enabled));
+      break;
+    case 'setSessionJournalEntries':
+      // Standalone analog of panel.ts's _handleSetSessionJournalEntries
+      // (~line 6282).
+      handleSetSessionJournalEntriesStandalone(Number(msg.entries));
+      break;
+    case 'SET_PROJECT_PLAN_ENABLED':
+      // Standalone analog of panel.ts's MSG.SET_PROJECT_PLAN_ENABLED branch
+      // (~line 2575).
+      handleSetProjectPlanEnabledStandalone(Boolean(msg.enabled));
+      break;
+    case 'projectPlanAction':
+      // Standalone analog of panel.ts's _handleInstallProjectPlanSkill
+      // (~line 4349) — the Settings screen's "Reinstall / Repair skill"
+      // button. Re-stages media/skills/project-plan into
+      // <project>/.claude/skills/project-plan via the SAME content-diff
+      // copy handleInstallPack's skills step uses (stageSkillTreeStandalone).
+      handleProjectPlanActionStandalone();
       break;
     // ── Submit feedback (spec: docs/FEEDBACK-PIPELINE-SPEC.md §5) ────────
     // Standalone analog of panel.ts's _handleSubmitFeedback /
@@ -1274,15 +1338,282 @@ function handleInstallPack(payload) {
 }
 
 /**
- * Standalone analog of panel.ts's _handleGetSettings payload (~line 6888-
- * 6908 `MSG.SETTINGS`). The standalone has no per-project `.claude/agents/`
- * roster editor, hook-diagnostic pass, or CLAUDE.md context-budget scan
- * wired up yet, so every field below reports its honest "nothing to show"
- * default rather than a guess — matching main.js's own `||`/Array.isArray/
- * Boolean-guarded reads (renderSettings(), media/main.js:16239 onward) so
- * none of them throw client-side. `hook.installed` mirrors the `checkInstall`
- * case above (`installed: true` — the standalone process itself IS the
- * running hook host, there is no separate install step).
+ * Standalone analog of panel.ts's `_buildDoctrineRoster` (~line 5562-5623):
+ * derives the CLAUDE.md "Specialist roster" table rows from the project's
+ * ACTUAL `.claude/agents/*.md` files + `agent-keywords.json` routing, using
+ * the same compiled pure helpers (agentRoster.js's loadAgentRoster,
+ * packCatalog.js's agentMarkdownTier, agentBackend.js's
+ * readAgentFrontmatter/parseAgentBackend, delegationDoctrine.js's
+ * formatVendorModelLabel). Returns `[]` (triggering
+ * renderDelegationDoctrine's hardcoded default) when the agents dir is
+ * missing/empty, same as panel.ts.
+ */
+function buildDoctrineRosterStandalone(root) {
+  const agentsDir = path.join(root, '.claude', 'agents');
+  const { loadAgentRoster } = agentRosterModule();
+  const rosterFiles = loadAgentRoster(agentsDir);
+  if (rosterFiles.length === 0) return [];
+
+  const keywordsConfig = readKeywordsConfigStandalone(root);
+  const keywordAgents =
+    keywordsConfig && typeof keywordsConfig.agents === 'object' && keywordsConfig.agents !== null
+      ? keywordsConfig.agents
+      : {};
+  const EXCLUDED_IDS = new Set(['orchestrator', 'primary-agent']);
+  const { agentMarkdownTier } = packCatalogModule();
+  const { formatVendorModelLabel } = delegationDoctrineModule();
+  const { readAgentFrontmatter, parseAgentBackend } = agentBackendModule();
+
+  const rows = [];
+  for (const agent of rosterFiles) {
+    if (EXCLUDED_IDS.has(agent.id)) continue;
+
+    let agentText;
+    try {
+      agentText = fs.readFileSync(path.join(agentsDir, `${agent.id}.md`), 'utf8');
+    } catch {
+      agentText = undefined;
+    }
+
+    let tier;
+    try {
+      tier = agentText !== undefined ? agentMarkdownTier(agentText) : undefined;
+    } catch {
+      tier = undefined;
+    }
+    if (tier === 'lead' || tier === 'reviewer') continue;
+
+    const entry = keywordAgents[agent.id];
+    const pattern = entry && typeof entry.pattern === 'string' ? entry.pattern.trim() : '';
+    const taskTypes =
+      pattern !== ''
+        ? pattern.split('|').map((s) => s.trim()).filter(Boolean).join(', ')
+        : agent.description ?? 'General tasks';
+
+    let vendorLabel;
+    try {
+      if (agentText !== undefined) {
+        const frontmatter = readAgentFrontmatter(agentText);
+        const backend = parseAgentBackend(frontmatter);
+        vendorLabel = formatVendorModelLabel(backend);
+      }
+    } catch {
+      vendorLabel = undefined;
+    }
+
+    rows.push({ id: agent.id, taskTypes, vendorLabel });
+  }
+  return rows;
+}
+
+/** Standalone analog of panel.ts's `_resolveReviewAgentId` (~line 5642-5649). */
+function resolveReviewAgentIdStandalone(root) {
+  const agentsDir = path.join(root, '.claude', 'agents');
+  const { loadAgentRoster } = agentRosterModule();
+  const rosterFiles = loadAgentRoster(agentsDir);
+  const hasId = (id) => rosterFiles.some((a) => a.id === id);
+  if (hasId('reviewer')) return 'reviewer';
+  if (hasId('uefn-auditor')) return 'uefn-auditor';
+  return undefined;
+}
+
+/** Standalone analog of panel.ts's `_installAgentFiles` (~line 5918-5945). */
+function installAgentFilesStandalone(root, agentsToInstall) {
+  const { buildAgentMarkdown, agentMarkdownTier } = packCatalogModule();
+  const { setKeywordPattern } = agentConfigModule();
+  let cfg = readKeywordsConfigStandalone(root);
+  for (const a of agentsToInstall) {
+    const agentPath = path.join(root, '.claude', 'agents', `${a.id}.md`);
+    try {
+      if (!fs.existsSync(agentPath)) {
+        fs.mkdirSync(path.join(root, '.claude', 'agents'), { recursive: true });
+        fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+      } else {
+        const existing = fs.readFileSync(agentPath, 'utf8');
+        let existingTier;
+        try {
+          existingTier = agentMarkdownTier(existing);
+        } catch {
+          existingTier = undefined;
+        }
+        if (existingTier === a.tier) {
+          const desired = buildAgentMarkdown(a);
+          if (existing !== desired) fs.writeFileSync(agentPath, desired);
+        }
+        // else: foreign/legacy same-named file — never overwritten.
+      }
+    } catch {
+      /* best-effort per-file; keyword routing still proceeds below */
+    }
+    cfg = setKeywordPattern(cfg, a.id, a.keywords);
+  }
+  const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+  fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+  fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+}
+
+/** Standalone analog of panel.ts's `_removeAgentFiles` (~line 5965-5997). */
+function removeAgentFilesStandalone(root, agentsToRemove, expectedTier) {
+  const { agentMarkdownTier } = packCatalogModule();
+  const { removeKeywordPattern } = agentConfigModule();
+  for (const a of agentsToRemove) {
+    const agentPath = path.join(root, '.claude', 'agents', `${a.id}.md`);
+    if (fs.existsSync(agentPath)) {
+      let tier;
+      try {
+        tier = agentMarkdownTier(fs.readFileSync(agentPath, 'utf8'));
+      } catch {
+        tier = undefined;
+      }
+      if (tier === expectedTier) {
+        try {
+          fs.unlinkSync(agentPath);
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+  }
+  let cfg = readKeywordsConfigStandalone(root);
+  for (const a of agentsToRemove) cfg = removeKeywordPattern(cfg, a.id);
+  const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+  try {
+    fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+    fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+  } catch {
+    /* best-effort: keywords file is non-critical for removal */
+  }
+}
+
+function installLeadAgentsStandalone(root) {
+  installAgentFilesStandalone(root, packCatalogModule().LEAD_AGENTS);
+}
+function removeLeadAgentsStandalone(root) {
+  removeAgentFilesStandalone(root, packCatalogModule().LEAD_AGENTS, 'lead');
+}
+function installReviewerAgentStandalone(root) {
+  installAgentFilesStandalone(root, packCatalogModule().REVIEWER_AGENTS);
+}
+function removeReviewerAgentStandalone(root) {
+  removeAgentFilesStandalone(root, packCatalogModule().REVIEWER_AGENTS, 'reviewer');
+}
+
+/** Standalone analog of panel.ts's (unexported) `readProjectPlanEnabled`. */
+function readProjectPlanEnabledStandalone(root) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(root, '.claude', 'tycoon', 'execution.json'), 'utf8'));
+    return parsed !== null && typeof parsed === 'object' && parsed.projectPlanEnabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Standalone analog of panel.ts's `_settingsReferencesHook`/
+ * `_hooksInstalledForRoot` (~line 4627-4671) — used only to gate the
+ * CLAUDE.md refresh SET_PROJECT_PLAN_ENABLED performs, exactly like
+ * panel.ts gates it.
+ */
+function settingsReferencesHookStandalone(settingsPath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  } catch {
+    return false;
+  }
+  const hooks = parsed && typeof parsed === 'object' ? parsed.hooks : undefined;
+  if (hooks === undefined || hooks === null || typeof hooks !== 'object') return false;
+  for (const eventKey of Object.keys(hooks)) {
+    const entries = hooks[eventKey];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const inner = entry && typeof entry === 'object' ? entry.hooks : undefined;
+      if (!Array.isArray(inner)) continue;
+      for (const h of inner) {
+        const cmd = h && typeof h === 'object' ? h.command : undefined;
+        if (typeof cmd === 'string' && cmd.includes('tycoon-claude-hook.cjs')) return true;
+      }
+    }
+  }
+  return false;
+}
+function hooksInstalledForRootStandalone(root) {
+  return (
+    settingsReferencesHookStandalone(path.join(root, '.claude', 'settings.local.json')) ||
+    settingsReferencesHookStandalone(path.join(root, '.claude', 'settings.json'))
+  );
+}
+
+/**
+ * Standalone analog of panel.ts's `_buildClaudeMdDoctrine` (~line 5664-
+ * 5684): full managed CLAUDE.md doctrine (delegation section + code-rules
+ * section), splicing into `existingContent`.
+ */
+function buildClaudeMdDoctrineStandalone(existingContent, mode, reviewEnabled, root, sessionJournalEntries = 0) {
+  const { renderDelegationDoctrine, upsertDelegationSection } = delegationDoctrineModule();
+  const { renderCodeRules, upsertCodeRulesSection } = codeRulesDoctrineModule();
+  const { detectUefnProject } = uefnDetectModule();
+  const roster = buildDoctrineRosterStandalone(root);
+  const isUefn = detectUefnProject(root).detected;
+  const reviewAgentId = resolveReviewAgentIdStandalone(root);
+  const projectPlanEnabled = readProjectPlanEnabledStandalone(root);
+  const withDelegation = upsertDelegationSection(
+    existingContent,
+    renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId, sessionJournalEntries, projectPlanEnabled),
+  );
+  return upsertCodeRulesSection(withDelegation, renderCodeRules(isUefn));
+}
+
+/**
+ * Standalone analog of the delegation-section-only CLAUDE.md refresh
+ * `_handleSetDelegationMode`/`_handleSetReviewEnabled`/
+ * `_handleSetSessionJournalEntries` each perform directly (NOT via
+ * `_buildClaudeMdDoctrine` — those three handlers upsert ONLY the
+ * `<!-- tycoon:delegation -->` section, never the code-rules section; only
+ * the SET_PROJECT_PLAN_ENABLED path touches code rules too). Returns a
+ * `claudeMdError` string on failure, `undefined` on success — mirrors
+ * panel.ts's `claudeMdError` field exactly.
+ */
+function refreshDelegationSectionStandalone(root, mode, reviewEnabled, sessionJournalEntries) {
+  const { renderDelegationDoctrine, upsertDelegationSection } = delegationDoctrineModule();
+  try {
+    const claudeMdPath = path.join(root, 'CLAUDE.md');
+    let existingClaudeMd = null;
+    try {
+      existingClaudeMd = fs.readFileSync(claudeMdPath, 'utf8');
+    } catch {
+      existingClaudeMd = null;
+    }
+    const updated = upsertDelegationSection(
+      existingClaudeMd,
+      renderDelegationDoctrine(
+        mode,
+        reviewEnabled,
+        buildDoctrineRosterStandalone(root),
+        resolveReviewAgentIdStandalone(root),
+        sessionJournalEntries,
+        readProjectPlanEnabledStandalone(root),
+      ),
+    );
+    fs.writeFileSync(claudeMdPath, updated);
+    return undefined;
+  } catch (err) {
+    return String(err);
+  }
+}
+
+/**
+ * Standalone analog of panel.ts's `_handleGetSettings` payload (~line 6888-
+ * 6908 `MSG.SETTINGS`). `delegation_mode`/`reviewEnabled`/
+ * `sessionJournalEntries` are read from the SAME `.claude/tycoon/
+ * execution.json` the VS Code host reads/writes (via delegationDoctrine.js's
+ * `readExecutionConfig`, defaults matching panel.ts's own `?? true`/`?? 0`).
+ * `agents` is populated from the project's `.claude/agents/*.md` roster via
+ * the same `loadAgentRoster` + `shortFromModelId` + keyword-config lookup
+ * panel.ts's `_handleGetSettings` uses. `delegationHealth`/`hookHealth`/
+ * `contextBudget`/`foreignManagedBlocks` remain honest "nothing to show"
+ * stubs — no per-project hook-diagnostic pass or context-budget scan is
+ * wired up in the standalone yet (out of this task's scope).
  */
 function buildStandaloneSettingsPayload() {
   let lastActivityAt = null;
@@ -1295,12 +1626,53 @@ function buildStandaloneSettingsPayload() {
       lastActivityAt = null;
     }
   }
+
+  let delegation_mode = 'flat';
+  let reviewEnabled = true;
+  let sessionJournalEntries = 0;
+  let agents = [];
+  if (primaryProjectRoot) {
+    try {
+      const { readExecutionConfig } = delegationDoctrineModule();
+      const execCfg = readExecutionConfig(path.join(primaryProjectRoot, '.claude'));
+      delegation_mode = execCfg.delegation_mode;
+      reviewEnabled = execCfg.reviewEnabled ?? true;
+      sessionJournalEntries = execCfg.sessionJournalEntries ?? 0;
+    } catch (err) {
+      console.error('[tycoonagents-standalone] buildStandaloneSettingsPayload: readExecutionConfig failed:', err);
+    }
+    try {
+      const { loadAgentRoster } = agentRosterModule();
+      const { shortFromModelId } = agentConfigModule();
+      const agentsDir = path.join(primaryProjectRoot, '.claude', 'agents');
+      const keywordsConfig = readKeywordsConfigStandalone(primaryProjectRoot);
+      const keywordAgents =
+        keywordsConfig && typeof keywordsConfig.agents === 'object' && keywordsConfig.agents !== null
+          ? keywordsConfig.agents
+          : {};
+      agents = loadAgentRoster(agentsDir).map((agent) => {
+        const entry = keywordAgents[agent.id];
+        const keywords = entry && typeof entry.pattern === 'string' ? entry.pattern : '';
+        return {
+          id: agent.id,
+          name: agent.name,
+          model: shortFromModelId(agent.model) ?? null,
+          isOrchestrator: agent.id === 'orchestrator',
+          keywords,
+        };
+      });
+    } catch (err) {
+      console.error('[tycoonagents-standalone] buildStandaloneSettingsPayload: agent roster read failed:', err);
+      agents = [];
+    }
+  }
+
   return {
     hook: { installed: true, lastActivityAt },
-    agents: [],
-    delegation_mode: 'flat',
-    reviewEnabled: true,
-    sessionJournalEntries: 0,
+    agents,
+    delegation_mode,
+    reviewEnabled,
+    sessionJournalEntries,
     delegationHealth: {
       directSearches: 0,
       directReads: 0,
@@ -1314,6 +1686,350 @@ function buildStandaloneSettingsPayload() {
     contextBudget: null,
     foreignManagedBlocks: [],
   };
+}
+
+/**
+ * Standalone analog of panel.ts's _handleSetDelegationMode (~line 6112).
+ * Persists `delegation_mode` into `.claude/tycoon/execution.json`,
+ * installs/removes the LEAD_AGENTS `.md` files + keyword routing, and
+ * upserts the managed CLAUDE.md `<!-- tycoon:delegation -->` section — same
+ * three side effects as the VS Code host, against the same on-disk files.
+ * Replies `settingsUpdated` then re-broadcasts fresh `settings`.
+ */
+function handleSetDelegationModeStandalone(rawMode) {
+  const mode = rawMode === 'team_leads' ? 'team_leads' : 'flat';
+  const root = primaryProjectRoot;
+  if (!root) {
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: false,
+      id: 'delegation-mode',
+      field: 'delegationMode',
+      error: 'No project root resolved',
+    });
+    return;
+  }
+  try {
+    const { writeExecutionConfig, readExecutionConfig } = delegationDoctrineModule();
+    writeExecutionConfig(path.join(root, '.claude'), { delegation_mode: mode });
+    if (mode === 'team_leads') installLeadAgentsStandalone(root);
+    else removeLeadAgentsStandalone(root);
+
+    const execCfg = readExecutionConfig(path.join(root, '.claude'));
+    const claudeMdError = refreshDelegationSectionStandalone(
+      root,
+      mode,
+      execCfg.reviewEnabled ?? true,
+      execCfg.sessionJournalEntries ?? 0,
+    );
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: true,
+      id: 'delegation-mode',
+      field: 'delegationMode',
+      delegation_mode: mode,
+      ...(claudeMdError !== undefined ? { claudeMdError } : {}),
+    });
+  } catch (err) {
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: false,
+      id: 'delegation-mode',
+      field: 'delegationMode',
+      error: String(err),
+    });
+    return;
+  }
+  broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+}
+
+/**
+ * Standalone analog of panel.ts's _handleSetReviewEnabled (~line 6196).
+ * Persists `reviewEnabled`, installs/removes the REVIEWER_AGENTS `.md`
+ * file(s), and upserts the managed CLAUDE.md delegation section using
+ * whatever `delegation_mode` is already on disk.
+ */
+function handleSetReviewEnabledStandalone(enabled) {
+  const root = primaryProjectRoot;
+  if (!root) {
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: false,
+      id: 'review-enabled',
+      field: 'reviewEnabled',
+      error: 'No project root resolved',
+    });
+    return;
+  }
+  try {
+    const { writeExecutionConfig, readExecutionConfig } = delegationDoctrineModule();
+    writeExecutionConfig(path.join(root, '.claude'), { reviewEnabled: enabled });
+    if (enabled) installReviewerAgentStandalone(root);
+    else removeReviewerAgentStandalone(root);
+
+    const execCfg = readExecutionConfig(path.join(root, '.claude'));
+    const claudeMdError = refreshDelegationSectionStandalone(
+      root,
+      execCfg.delegation_mode,
+      enabled,
+      execCfg.sessionJournalEntries ?? 0,
+    );
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: true,
+      id: 'review-enabled',
+      field: 'reviewEnabled',
+      reviewEnabled: enabled,
+      ...(claudeMdError !== undefined ? { claudeMdError } : {}),
+    });
+  } catch (err) {
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: false,
+      id: 'review-enabled',
+      field: 'reviewEnabled',
+      error: String(err),
+    });
+    return;
+  }
+  broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+}
+
+/**
+ * Standalone analog of panel.ts's _handleSetSessionJournalEntries (~line
+ * 6282). Clamps to an integer 0-5 (defensive, mirrors panel.ts), persists
+ * it, appends `.claude/session-journal.json` to `.gitignore` when enabling
+ * into an already-git-tracked project, and upserts the managed CLAUDE.md
+ * delegation section.
+ */
+function handleSetSessionJournalEntriesStandalone(entries) {
+  const root = primaryProjectRoot;
+  if (!root) {
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: false,
+      id: 'session-journal-entries',
+      field: 'sessionJournalEntries',
+      error: 'No project root resolved',
+    });
+    return;
+  }
+  const clamped = Math.min(5, Math.max(0, Math.trunc(Number.isFinite(entries) ? entries : 0)));
+  try {
+    const { writeExecutionConfig, readExecutionConfig } = delegationDoctrineModule();
+    writeExecutionConfig(path.join(root, '.claude'), { sessionJournalEntries: clamped });
+
+    if (clamped > 0) {
+      const hasGit = fs.existsSync(path.join(root, '.git')) || fs.existsSync(path.join(root, '.gitignore'));
+      if (hasGit) {
+        const gitignorePath = path.join(root, '.gitignore');
+        let existing = '';
+        try {
+          existing = fs.readFileSync(gitignorePath, 'utf8');
+        } catch {
+          existing = '';
+        }
+        if (!existing.includes('.claude/session-journal.json')) {
+          const sep = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+          fs.writeFileSync(
+            gitignorePath,
+            `${existing}${sep}# TycoonAgents runtime artifacts\n.claude/session-journal.json\n`,
+          );
+        }
+      }
+    }
+
+    const execCfg = readExecutionConfig(path.join(root, '.claude'));
+    const claudeMdError = refreshDelegationSectionStandalone(
+      root,
+      execCfg.delegation_mode,
+      execCfg.reviewEnabled ?? true,
+      clamped,
+    );
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: true,
+      id: 'session-journal-entries',
+      field: 'sessionJournalEntries',
+      sessionJournalEntries: clamped,
+      ...(claudeMdError !== undefined ? { claudeMdError } : {}),
+    });
+  } catch (err) {
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: false,
+      id: 'session-journal-entries',
+      field: 'sessionJournalEntries',
+      error: String(err),
+    });
+    return;
+  }
+  broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+}
+
+/**
+ * Standalone analog of panel.ts's MSG.SET_PROJECT_PLAN_ENABLED branch
+ * (~line 2575): persists `projectPlanEnabled` into the SAME
+ * `.claude/tycoon/execution.json` (writeProjectPlanEnabled's
+ * read-modify-write merge preserves delegation_mode/reviewEnabled/
+ * sessionJournalEntries), auto-installs the project-plan skill when
+ * enabling, refreshes the FULL managed CLAUDE.md doctrine (delegation +
+ * code-rules sections) when hooks are installed for this root, then reposts
+ * fresh PLAN_STATE via postPlanState.
+ */
+function handleSetProjectPlanEnabledStandalone(enabled) {
+  const root = primaryProjectRoot;
+  if (!root) {
+    broadcast('message', {
+      type: 'PLAN_STATE',
+      enabled: false,
+      plan: null,
+      archivedPlans: [],
+      planReadable: true,
+      hasBackup: false,
+    });
+    return;
+  }
+
+  const configPath = path.join(root, '.claude', 'tycoon', 'execution.json');
+  let existing = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (parsed !== null && typeof parsed === 'object') existing = parsed;
+  } catch {
+    existing = {};
+  }
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({ ...existing, projectPlanEnabled: enabled }, null, 2));
+
+  if (enabled === true) {
+    try {
+      const { failed } = stageSkillTreeStandalone('project-plan', root);
+      if (failed.length > 0) {
+        console.error(
+          '[tycoonagents-standalone] project-plan skill install (via enable toggle) had failures:',
+          failed,
+        );
+      }
+    } catch (err) {
+      console.error('[tycoonagents-standalone] project-plan skill install (via enable toggle) failed:', err);
+    }
+  }
+
+  if (hooksInstalledForRootStandalone(root)) {
+    try {
+      const { readExecutionConfig } = delegationDoctrineModule();
+      const { delegation_mode, reviewEnabled, sessionJournalEntries } = readExecutionConfig(path.join(root, '.claude'));
+      const claudeMdPath = path.join(root, 'CLAUDE.md');
+      let existingClaudeMd = null;
+      try {
+        existingClaudeMd = fs.readFileSync(claudeMdPath, 'utf8');
+      } catch {
+        existingClaudeMd = null;
+      }
+      const updated = buildClaudeMdDoctrineStandalone(
+        existingClaudeMd,
+        delegation_mode,
+        reviewEnabled ?? true,
+        root,
+        sessionJournalEntries ?? 0,
+      );
+      if (existingClaudeMd === null || updated !== existingClaudeMd) fs.writeFileSync(claudeMdPath, updated);
+    } catch (err) {
+      console.error('[tycoonagents-standalone] CLAUDE.md refresh after Project Plan toggle failed:', err);
+    }
+  }
+
+  postPlanState(root, broadcast);
+}
+
+/**
+ * Standalone analog of panel.ts's _handleInstallProjectPlanSkill (~line
+ * 4349) — the Settings screen's "Reinstall / Repair skill" button. Reuses
+ * `stageSkillTreeStandalone` (the SAME content-diff recursive copy
+ * `handleInstallPack`'s skills step uses) to copy media/skills/project-plan
+ * into `<root>/.claude/skills/project-plan`. Never shows a native modal or
+ * writes to the clipboard (no such channel in a headless server) — those
+ * are documented no-ops, not silent omissions.
+ */
+function handleProjectPlanActionStandalone() {
+  const root = primaryProjectRoot;
+  if (!root) {
+    broadcast('message', { type: 'projectPlanDone', ok: false, error: 'No project root resolved' });
+    return;
+  }
+  try {
+    const { staged, updated, failed } = stageSkillTreeStandalone('project-plan', root);
+    const dest = path.join(root, '.claude', 'skills', 'project-plan');
+    let destOk;
+    try {
+      destOk = fs.existsSync(dest) && fs.readdirSync(dest).length > 0;
+    } catch {
+      destOk = false;
+    }
+    if (!destOk || failed.length > 0) {
+      const error =
+        failed.length > 0
+          ? `Failed to copy: ${failed.map((f) => `${f.path} (${f.error})`).join('; ')}`
+          : 'destination empty after copy';
+      broadcast('message', { type: 'projectPlanDone', ok: false, error });
+      return;
+    }
+    void staged;
+    void updated;
+    broadcast('message', { type: 'projectPlanDone', ok: true });
+  } catch (err) {
+    broadcast('message', { type: 'projectPlanDone', ok: false, error: String(err) });
+  }
+}
+
+/**
+ * Standalone analog of panel.ts's _postOffloadOfferState (~line 8152), as a
+ * PURE payload computation (no broadcast) so both the explicit
+ * REQUEST_OFFLOAD_OFFER_STATE handler AND buildBootHandshakeMessages()'s
+ * per-connection replay compute the identical LIVE payload instead of the
+ * replay path hardcoding a stale stub. `dismissed`/`accepted` read from
+ * `.claude/tycoon/execution.json`'s `offloadOfferDismissed`/
+ * `offloadOfferAccepted` booleans (same file/merge pattern as the Project
+ * Plan toggle above); `providerAvailable` is true only when the project's
+ * `.mcp.json` has an `mcpServers.codex` entry — fails CLOSED (false) on any
+ * missing/unreadable/ambiguous case, same as panel.ts's
+ * `offloadProviderAvailable`.
+ */
+function computeOffloadOfferState(root) {
+  if (!root) return { type: 'OFFLOAD_OFFER_STATE', dismissed: false, accepted: false, providerAvailable: false };
+  const configPath = path.join(root, '.claude', 'tycoon', 'execution.json');
+  let cfg = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (parsed !== null && typeof parsed === 'object') cfg = parsed;
+  } catch {
+    cfg = {};
+  }
+  const dismissed = cfg.offloadOfferDismissed === true;
+  const accepted = cfg.offloadOfferAccepted === true;
+
+  let providerAvailable = false;
+  try {
+    const { hasMcpServer } = mcpCatalogModule();
+    const mcpPath = path.join(root, '.mcp.json');
+    let mcpConfig = {};
+    try {
+      const parsedMcp = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+      if (parsedMcp !== null && typeof parsedMcp === 'object') mcpConfig = parsedMcp;
+    } catch {
+      mcpConfig = {};
+    }
+    providerAvailable = hasMcpServer(mcpConfig, 'codex');
+  } catch {
+    providerAvailable = false;
+  }
+
+  return { type: 'OFFLOAD_OFFER_STATE', dismissed, accepted, providerAvailable };
+}
+
+function handlePostOffloadOfferState() {
+  broadcast('message', computeOffloadOfferState(primaryProjectRoot));
 }
 
 /**
@@ -1336,7 +2052,10 @@ async function handleReadyThemeBoot(store, broadcastFn) {
     broadcastFn('message', { type: THEME_MSG_WIRE.THEME_NONE, payload: {} });
     return;
   }
-  await handleSelectTheme(store, broadcastFn, themes[0].theme_id);
+  await handleSelectTheme(store, broadcastFn, themes[0].theme_id, {
+    appData: themeImageAppData,
+    projectRoot: primaryProjectRoot,
+  });
 }
 
 // ── Static file serving (media/ in place, path-traversal guarded) ──────────

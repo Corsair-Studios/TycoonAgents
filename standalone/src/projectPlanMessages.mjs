@@ -50,21 +50,20 @@ function readProjectPlanEnabled(root) {
   }
 }
 
-/** Mirrors panel.ts's `_postPlanState()` exactly (same enabled/missing/ok/corrupt
+/**
+ * Pure computation of the PLAN_STATE payload (no broadcast) — mirrors
+ * panel.ts's `_postPlanState()` exactly (same enabled/missing/ok/corrupt
  * branches, same plan.json -> plan.json.bak backup-on-good-read, same
- * archivePlanIfComplete call, same PLAN_STATE payload shape). */
-export function postPlanState(root, broadcast) {
+ * archivePlanIfComplete call, same PLAN_STATE payload shape). Exported
+ * separately from `postPlanState` so server.mjs's boot-handshake replay
+ * (buildBootHandshakeMessages(), sent to every NEW /events connection) can
+ * compute the SAME live payload a REQUEST_PLAN round-trip would, instead of
+ * a hardcoded stale stub.
+ */
+export function computePlanState(root) {
   try {
     if (!root || root === '' || !readProjectPlanEnabled(root)) {
-      broadcast('message', {
-        type: MSG_WIRE.PLAN_STATE,
-        enabled: false,
-        plan: null,
-        archivedPlans: [],
-        planReadable: true,
-        hasBackup: false,
-      });
-      return;
+      return { type: MSG_WIRE.PLAN_STATE, enabled: false, plan: null, archivedPlans: [], planReadable: true, hasBackup: false };
     }
 
     const planPath = planBridge.projectPlanFilePath(root);
@@ -79,22 +78,21 @@ export function postPlanState(root, broadcast) {
         console.warn('[tycoonagents-standalone] failed to write plan.json.bak backup:', err);
       }
       const archivedPlans = planBridge.readArchivedPlans(root);
-      broadcast('message', {
+      return {
         type: MSG_WIRE.PLAN_STATE,
         enabled: true,
         plan: result.plan,
         archivedPlans,
         planReadable: true,
         hasBackup: fs.existsSync(backupPath),
-      });
-      return;
+      };
     }
 
     if (result.status === 'corrupt') {
       console.warn('[tycoonagents-standalone] plan.json is corrupt, leaving it untouched:', result.error);
     }
     const archivedPlans = planBridge.readArchivedPlans(root);
-    broadcast('message', {
+    return {
       type: MSG_WIRE.PLAN_STATE,
       enabled: true,
       plan: null,
@@ -102,10 +100,17 @@ export function postPlanState(root, broadcast) {
       planReadable: result.status !== 'corrupt',
       ...(result.status === 'corrupt' ? { planError: result.error } : {}),
       hasBackup: fs.existsSync(backupPath),
-    });
+    };
   } catch (err) {
-    console.error('[tycoonagents-standalone] postPlanState failed unexpectedly:', err);
+    console.error('[tycoonagents-standalone] computePlanState failed unexpectedly:', err);
+    return { type: MSG_WIRE.PLAN_STATE, enabled: false, plan: null, archivedPlans: [], planReadable: true, hasBackup: false };
   }
+}
+
+/** Broadcasts `computePlanState(root)` as a `message` SSE event — mirrors
+ * panel.ts's `_postPlanState()` posting side. */
+export function postPlanState(root, broadcast) {
+  broadcast('message', computePlanState(root));
 }
 
 /** Mirrors panel.ts's MSG.RESTORE_PLAN_BACKUP branch: best-effort copy

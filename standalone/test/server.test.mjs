@@ -62,6 +62,76 @@ async function collectSseEvent(reader, matchType, maxChunks = 50) {
   throw new Error(`collectSseEvent: no "${matchType}" event seen within ${maxChunks} SSE reads`);
 }
 
+/**
+ * Stateful SSE event reader: unlike collectSseEvent/collectSseEventMatching
+ * (each of which owns a fresh, function-local `buffer` and so silently
+ * DISCARDS any bytes read past the event they matched), this keeps its
+ * buffer across calls to `.next()`. Needed whenever a single handler call
+ * broadcasts TWO events back-to-back with no intervening `fetch()` POST
+ * (e.g. `settingsUpdated` immediately followed by a fresh `settings`
+ * broadcast) — those two events can legitimately arrive in the SAME
+ * underlying TCP chunk, and a plain collectSseEvent call for the first one
+ * would throw away the second one's already-buffered bytes, leaving a
+ * later collectSseEvent call for it hanging until its own maxChunks budget
+ * times out. Existing tests that chain multiple collectSseEvent calls on
+ * one reader avoid this by always issuing a NEW POST /message between
+ * calls (a real network round trip reliably separates the flushes); use
+ * this collector instead whenever that's not the case.
+ */
+function createSseCollector(reader) {
+  let buffer = '';
+  async function next(matchType, predicate = () => true, maxChunks = 100) {
+    for (let i = 0; i < maxChunks; i++) {
+      let sepIndex;
+      while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, sepIndex);
+        buffer = buffer.slice(sepIndex + 2);
+        const dataLine = rawEvent.split('\n').find((line) => line.startsWith('data: '));
+        if (dataLine) {
+          const data = JSON.parse(dataLine.slice('data: '.length));
+          if (data.type === matchType && predicate(data)) return data;
+        }
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += Buffer.from(value).toString('utf8');
+    }
+    throw new Error(`createSseCollector.next: no matching "${matchType}" event seen within ${maxChunks} SSE reads`);
+  }
+  return { next };
+}
+
+/**
+ * Like collectSseEvent, but keeps reading past same-`matchType` events that
+ * don't satisfy `predicate` instead of returning the first one. Needed for
+ * boot-handshake-replayed types (PLAN_STATE, OFFLOAD_OFFER_STATE) that
+ * `initialMessageProviders`/`sseClients` (server.mjs module-level state
+ * shared by every startServer() instance in ONE test process) can also
+ * emit for a DIFFERENT, concurrently-running test's server, onto a client
+ * that only asked for THIS test's connection — see server.mjs's own
+ * per-connection boot-handshake replay loop. Filtering on content, not just
+ * type, makes these assertions correct regardless of that cross-talk.
+ */
+async function collectSseEventMatching(reader, matchType, predicate, maxChunks = 100) {
+  let buffer = '';
+  for (let i = 0; i < maxChunks; i++) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += Buffer.from(value).toString('utf8');
+    let sepIndex;
+    while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+      const dataLine = rawEvent.split('\n').find((line) => line.startsWith('data: '));
+      if (dataLine) {
+        const data = JSON.parse(dataLine.slice('data: '.length));
+        if (data.type === matchType && predicate(data)) return data;
+      }
+    }
+  }
+  throw new Error(`collectSseEventMatching: no matching "${matchType}" event seen within ${maxChunks} SSE reads`);
+}
+
 function mkTempProject(prefix = 'tycoon-standalone-server-test-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -966,6 +1036,334 @@ test('POST /message {type: "confirmFeedbackSend"} -> network failure replies fee
     assert.equal(retryResult.ok, true);
   } finally {
     globalThis.fetch = originalFetch;
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+// ── p9-t6: Settings write handlers, PLAN_STATE, OFFLOAD_OFFER_STATE, skill repair ──
+
+test('POST /message {type: "setDelegationMode", delegation_mode: "team_leads"} -> persists execution.json, installs LEAD_AGENTS, replies settingsUpdated + fresh settings', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    // A single setDelegationMode handler call broadcasts settingsUpdated
+    // then a fresh settings — both can land in the SAME SSE chunk, so a
+    // persistent-buffer collector is required (see createSseCollector's doc
+    // comment) rather than two independent collectSseEvent calls.
+    const sse = createSseCollector(reader);
+    const updatedPromise = sse.next('settingsUpdated');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'setDelegationMode', delegation_mode: 'team_leads' }),
+    });
+    assert.equal(messageRes.status, 202);
+    const updated = await updatedPromise;
+    assert.equal(updated.ok, true);
+    assert.equal(updated.field, 'delegationMode');
+    assert.equal(updated.delegation_mode, 'team_leads');
+
+    const execCfg = JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json'), 'utf8'));
+    assert.equal(execCfg.delegation_mode, 'team_leads');
+
+    const { LEAD_AGENTS } = require('../../out/src/host/vscode/packCatalog.js');
+    for (const a of LEAD_AGENTS) {
+      assert.ok(fs.existsSync(path.join(projectRoot, '.claude', 'agents', `${a.id}.md`)), `${a.id}.md must be installed`);
+    }
+
+    const settings = await sse.next('settings');
+    assert.equal(settings.payload.delegation_mode, 'team_leads');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "setReviewEnabled", enabled: false} -> persists execution.json and removes REVIEWER_AGENTS', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+
+    const enabledPromise = collectSseEvent(reader, 'settingsUpdated');
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'setReviewEnabled', enabled: true }),
+    });
+    await enabledPromise;
+    const { REVIEWER_AGENTS } = require('../../out/src/host/vscode/packCatalog.js');
+    for (const a of REVIEWER_AGENTS) {
+      assert.ok(fs.existsSync(path.join(projectRoot, '.claude', 'agents', `${a.id}.md`)));
+    }
+
+    const disabledPromise = collectSseEvent(reader, 'settingsUpdated');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'setReviewEnabled', enabled: false }),
+    });
+    assert.equal(messageRes.status, 202);
+    const disabled = await disabledPromise;
+    assert.equal(disabled.ok, true);
+    assert.equal(disabled.reviewEnabled, false);
+
+    const execCfg = JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json'), 'utf8'));
+    assert.equal(execCfg.reviewEnabled, false);
+    for (const a of REVIEWER_AGENTS) {
+      assert.equal(fs.existsSync(path.join(projectRoot, '.claude', 'agents', `${a.id}.md`)), false, `${a.id}.md must be removed`);
+    }
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "setSessionJournalEntries", entries: 99} -> clamps to 5, persists, and updates CLAUDE.md delegation section', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const updatedPromise = collectSseEvent(reader, 'settingsUpdated');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'setSessionJournalEntries', entries: 99 }),
+    });
+    assert.equal(messageRes.status, 202);
+    const updated = await updatedPromise;
+    assert.equal(updated.ok, true);
+    assert.equal(updated.sessionJournalEntries, 5, 'must clamp to the max of 5');
+
+    const execCfg = JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json'), 'utf8'));
+    assert.equal(execCfg.sessionJournalEntries, 5);
+
+    const claudeMd = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf8');
+    assert.match(claudeMd, /tycoon:delegation/);
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "SET_PROJECT_PLAN_ENABLED", enabled: true} -> persists projectPlanEnabled, installs the skill, and replies PLAN_STATE', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    // Match on enabled:true AND plan:null specifically (not just type)
+    // because server.mjs's `initialMessageProviders`/`sseClients` are
+    // module-level state shared by every startServer() instance in this
+    // ONE test process — a concurrently-running test's own PLAN_STATE
+    // broadcast can otherwise be mistaken for this toggle's own reply. See
+    // collectSseEventMatching's doc comment.
+    const planStatePromise = collectSseEventMatching(reader, 'PLAN_STATE', (d) => d.enabled === true && d.plan === null);
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'SET_PROJECT_PLAN_ENABLED', enabled: true }),
+    });
+    assert.equal(messageRes.status, 202);
+    const planState = await planStatePromise;
+    assert.equal(planState.enabled, true);
+    assert.equal(planState.plan, null, 'no plan.json written yet');
+
+    const execCfg = JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json'), 'utf8'));
+    assert.equal(execCfg.projectPlanEnabled, true);
+
+    const skillDest = path.join(projectRoot, '.claude', 'skills', 'project-plan');
+    assert.ok(fs.existsSync(skillDest) && fs.readdirSync(skillDest).length > 0, 'project-plan skill must be staged');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('REQUEST_PLAN reflects a real .claude/tycoon/plan.json fixture (phases/tasks/gate) once enabled', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  fs.mkdirSync(path.join(projectRoot, '.claude', 'tycoon'), { recursive: true });
+  fs.writeFileSync(
+    path.join(projectRoot, '.claude', 'tycoon', 'execution.json'),
+    JSON.stringify({ projectPlanEnabled: true }),
+  );
+  const fixturePlan = {
+    version: 1,
+    title: 'Test plan',
+    phases: [
+      {
+        id: 'p1',
+        num: 1,
+        name: 'Phase one',
+        goal: 'Test goal',
+        gate: 'pending',
+        taskIds: ['p1-t1'],
+      },
+    ],
+    tasks: [
+      {
+        id: 'p1-t1',
+        phaseId: 'p1',
+        title: 'Task one',
+        detail: 'Do the thing',
+        acceptanceCriteria: ['it works'],
+        status: 'pending',
+        verifyAttempts: 0,
+      },
+    ],
+    currentPhaseId: 'p1',
+    currentTaskId: 'p1-t1',
+  };
+  fs.writeFileSync(path.join(projectRoot, '.claude', 'tycoon', 'plan.json'), JSON.stringify(fixturePlan, null, 2));
+
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    // Match on the fixture's own title (not just type/enabled) — see
+    // collectSseEventMatching's doc comment on cross-talk from concurrently
+    // running tests sharing server.mjs's module-level SSE state.
+    const planStatePromise = collectSseEventMatching(reader, 'PLAN_STATE', (d) => d.plan && d.plan.title === 'Test plan');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'REQUEST_PLAN' }),
+    });
+    assert.equal(messageRes.status, 202);
+    const planState = await planStatePromise;
+    assert.equal(planState.enabled, true);
+    assert.equal(planState.planReadable, true);
+    assert.ok(planState.plan, 'plan must be present');
+    assert.equal(planState.plan.title, 'Test plan');
+    assert.equal(planState.plan.phases[0].id, 'p1');
+    assert.equal(planState.plan.tasks[0].id, 'p1-t1');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "projectPlanAction"} -> re-stages media/skills/project-plan and replies projectPlanDone {ok:true}', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const donePromise = collectSseEvent(reader, 'projectPlanDone');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'projectPlanAction' }),
+    });
+    assert.equal(messageRes.status, 202);
+    const done = await donePromise;
+    assert.equal(done.ok, true, `repair must succeed: ${done.error}`);
+
+    const srcDir = path.join(REPO_ROOT, 'media', 'skills', 'project-plan');
+    const destDir = path.join(projectRoot, '.claude', 'skills', 'project-plan');
+    const srcFiles = fs.readdirSync(srcDir).filter((f) => fs.statSync(path.join(srcDir, f)).isFile());
+    for (const f of srcFiles) {
+      assert.equal(
+        fs.readFileSync(path.join(destDir, f), 'utf8'),
+        fs.readFileSync(path.join(srcDir, f), 'utf8'),
+        `${f} must be byte-identical after repair`,
+      );
+    }
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('REQUEST_OFFLOAD_OFFER_STATE reflects execution.json flags and .mcp.json codex entry (fails closed when absent)', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+
+    // Drain the boot-handshake's own unconditional OFFLOAD_OFFER_STATE
+    // replay (sent to every new /events connection) before the explicit
+    // REQUEST below — otherwise its reply queues up as a second unread
+    // event and the LATER collectSseEvent call (after the .mcp.json/
+    // execution.json writes) would consume this stale leftover instead of
+    // the fresh one its own REQUEST produced.
+    const bootOffer = await collectSseEvent(reader, 'OFFLOAD_OFFER_STATE');
+    assert.equal(bootOffer.dismissed, false);
+    assert.equal(bootOffer.accepted, false);
+    assert.equal(bootOffer.providerAvailable, false);
+
+    const offerPromise1 = collectSseEvent(reader, 'OFFLOAD_OFFER_STATE');
+    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'REQUEST_OFFLOAD_OFFER_STATE' }) });
+    const offer1 = await offerPromise1;
+    assert.equal(offer1.dismissed, false);
+    assert.equal(offer1.accepted, false);
+    assert.equal(offer1.providerAvailable, false);
+
+    fs.writeFileSync(
+      path.join(projectRoot, '.mcp.json'),
+      JSON.stringify({ mcpServers: { codex: { command: 'codex', args: ['mcp-server'] } } }),
+    );
+    fs.mkdirSync(path.join(projectRoot, '.claude', 'tycoon'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, '.claude', 'tycoon', 'execution.json'),
+      JSON.stringify({ offloadOfferDismissed: true, offloadOfferAccepted: true }),
+    );
+
+    // Match on all three flags together (not just type) — see
+    // collectSseEventMatching's doc comment on cross-talk from concurrently
+    // running tests sharing server.mjs's module-level SSE state.
+    const offerPromise2 = collectSseEventMatching(
+      reader,
+      'OFFLOAD_OFFER_STATE',
+      (d) => d.dismissed === true && d.accepted === true && d.providerAvailable === true,
+    );
+    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'REQUEST_OFFLOAD_OFFER_STATE' }) });
+    const offer2 = await offerPromise2;
+    assert.equal(offer2.dismissed, true);
+    assert.equal(offer2.accepted, true);
+    assert.equal(offer2.providerAvailable, true);
+  } finally {
     controller.abort();
     await runtime.close();
   }
