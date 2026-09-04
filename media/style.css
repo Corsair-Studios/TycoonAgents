@@ -6080,6 +6080,23 @@ button.theme-review-preview:focus-visible::after {
   border-color: var(--accent);
 }
 
+.routing-source-chip--fallback {
+  color: var(--status-error, #c0392b);
+  border-color: var(--status-error, #c0392b);
+  margin-left: 4px;
+}
+
+.routing-fallback-count {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-left: 4px;
+}
+
+.routing-totals-table {
+  margin-top: 4px;
+}
+
 .routing-agents-table td,
 .routing-agents-table th {
   vertical-align: top;

@@ -12440,6 +12440,12 @@
       // Update metrics panel
       renderMetrics(state.agentMetrics);
       renderDelegationStats(state.modeStats, msg.toolCompliance);
+      // Routing view (p13-t3, audit fix): if open, repaint ONLY its fallback
+      // chips + Totals block in place — NOT a full renderRoutingModal()
+      // rebuild, which would steal focus/caret from a slot input mid-typing
+      // and collapse any open fallback-chain <details>. See
+      // updateRoutingViewLive's doc comment.
+      updateRoutingViewLive();
     } else if (msg && msg.type === "skills") {
       renderSkillsList(msg.skills, msg.error);
       // Skills/MCP/Packs installed state feeds buildUefnHealthSummaryRow's
@@ -14294,6 +14300,38 @@
    *   localTimeRows: Array<{agent:string, vendor:string, model:string, activeMs:number}>
    * }}
    */
+  /**
+   * Append one labeled rollup row (rendered as `<tr><td colspan=N>` with a
+   * bold label span + plain value text) to `tbodyEl`. Shared by
+   * renderMetricsTable's footer and the Routing view's Totals block
+   * (p13-t3) so the two never compute or render a rollup row differently.
+   * Output is identical to the previous renderMetricsTable-local closure —
+   * only the tbody/colspan became explicit parameters.
+   * @param {HTMLElement} tbodyEl
+   * @param {number} colSpan
+   * @param {string} labelText
+   * @param {string} valueText
+   * @param {string} [title]
+   */
+  function appendFooterRow(tbodyEl, colSpan, labelText, valueText, title) {
+    const tr = document.createElement("tr");
+    tr.className = "metrics-footer-row";
+    tr.style.borderTop = "1px solid var(--border)";
+    const td = document.createElement("td");
+    td.colSpan = colSpan;
+    td.style.whiteSpace = "normal";
+    td.style.fontSize = "11px";
+    td.style.color = "var(--muted)";
+    if (title) td.title = title;
+    const strong = document.createElement("span");
+    strong.style.color = "var(--fg, inherit)";
+    strong.textContent = labelText;
+    td.appendChild(strong);
+    td.appendChild(document.createTextNode(valueText));
+    tr.appendChild(td);
+    tbodyEl.appendChild(tr);
+  }
+
   function buildMetricsRollup(agentMetrics) {
     const items = Array.isArray(agentMetrics) ? agentMetrics : [];
 
@@ -14812,27 +14850,10 @@
     const rollup = buildMetricsRollup(metrics);
     const FOOTER_COLSPAN = 6;
 
-    function appendFooterRow(labelText, valueText, title) {
-      const tr = document.createElement("tr");
-      tr.className = "metrics-footer-row";
-      tr.style.borderTop = "1px solid var(--border)";
-      const td = document.createElement("td");
-      td.colSpan = FOOTER_COLSPAN;
-      td.style.whiteSpace = "normal";
-      td.style.fontSize = "11px";
-      td.style.color = "var(--muted)";
-      if (title) td.title = title;
-      const strong = document.createElement("span");
-      strong.style.color = "var(--fg, inherit)";
-      strong.textContent = labelText;
-      td.appendChild(strong);
-      td.appendChild(document.createTextNode(valueText));
-      tr.appendChild(td);
-      tbodyEl.appendChild(tr);
-    }
-
     for (const v of rollup.byVendor) {
       appendFooterRow(
+        tbodyEl,
+        FOOTER_COLSPAN,
         `${v.vendor} total — `,
         `${fmtTokens(v.tokens)} tokens, ${v.costLabel} (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
         "Sum of tokens and estimated cost for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
@@ -14841,6 +14862,8 @@
 
     for (const c of rollup.byCostClass) {
       appendFooterRow(
+        tbodyEl,
+        FOOTER_COLSPAN,
         `${c.costModelClass} total — `,
         `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
         "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
@@ -14849,6 +14872,8 @@
 
     if (rollup.fallbackCount > 0) {
       appendFooterRow(
+        tbodyEl,
+        FOOTER_COLSPAN,
         "Fallbacks fired — ",
         `${rollup.fallbackCount}`,
         "Number of times a task was re-dispatched to a fallback model/provider after its originally assigned agent could not run it."
@@ -14857,6 +14882,8 @@
 
     for (const row of rollup.localTimeRows) {
       appendFooterRow(
+        tbodyEl,
+        FOOTER_COLSPAN,
         `${row.agent} (local · time-based) — `,
         `active ${fmtMs(row.activeMs)}`,
         "This local model reported no token count, so cost/tokens can't be estimated — active time is shown instead of a fabricated token-equivalent."
@@ -17010,6 +17037,106 @@
     return chip;
   }
 
+  /**
+   * Build the fallback-status chip for one Routing table row (p13-t3),
+   * using the SAME agentMetrics the Metrics board reads (currentScopeMetrics(),
+   * no duplicated lookup logic). Returns null when the agent has neither run
+   * on a fallback nor ever fired one — callers append nothing in that case.
+   *
+   * agentMetrics carries one entry per agent id (see AgentMetric in
+   * src/core/state.ts), so "latest" is simply the item whose id matches.
+   * @param {string} agentId
+   * @returns {HTMLElement|null}
+   */
+  function buildRoutingFallbackChip(agentId) {
+    var metrics = currentScopeMetrics();
+    var item = Array.isArray(metrics) ? metrics.find(function (m) { return m && m.id === agentId; }) : null;
+    if (!item) return null;
+
+    if (item.fallbackOf) {
+      var chip = document.createElement("span");
+      chip.className = "routing-source-chip routing-source-chip--fallback";
+      chip.textContent = "ran on fallback";
+      chip.title =
+        "last run fell back from " + item.fallbackOf + " to " + (item.model || "unknown") +
+        " (depth " + (item.fallbackDepth || 0) + ")";
+      return chip;
+    }
+
+    if (item.fallbackCount > 0) {
+      var countEl = document.createElement("span");
+      countEl.className = "routing-fallback-count";
+      countEl.textContent = item.fallbackCount + " fallback" + (item.fallbackCount === 1 ? "" : "s");
+      countEl.title = agentId + " has fired " + item.fallbackCount + " fallback dispatch" + (item.fallbackCount === 1 ? "" : "es") + " (not on the most recent run).";
+      return countEl;
+    }
+
+    return null;
+  }
+
+  /**
+   * Render the Routing view's "Totals" block: per-vendor / per-cost-class
+   * rollup rows plus the fallbacks-fired line, computed by
+   * buildMetricsRollup() on the SAME agentMetrics the Metrics board uses
+   * (currentScopeMetrics()) — no duplicated calculation. Reuses
+   * appendFooterRow() so a rollup row looks and reads identically in both
+   * places.
+   * @returns {HTMLElement}
+   */
+  function buildRoutingTotalsBlock() {
+    var section = buildSection("Totals");
+    section.id = "routing-totals-section";
+    var metrics = currentScopeMetrics();
+    var rollup = buildMetricsRollup(metrics);
+
+    var table = document.createElement("table");
+    table.className = "metrics-table routing-totals-table";
+    var tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    var COLSPAN = 1;
+
+    if (!rollup.byVendor.length && !rollup.byCostClass.length && !rollup.fallbackCount) {
+      var emptyRow = document.createElement("p");
+      emptyRow.className = "settings-empty";
+      emptyRow.textContent = "No routing activity recorded yet.";
+      section.appendChild(emptyRow);
+      return section;
+    }
+
+    for (const v of rollup.byVendor) {
+      appendFooterRow(
+        tbody,
+        COLSPAN,
+        `${v.vendor} total — `,
+        `${fmtTokens(v.tokens)} tokens, ${v.costLabel} (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
+        "Sum of tokens and estimated cost for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
+      );
+    }
+
+    for (const c of rollup.byCostClass) {
+      appendFooterRow(
+        tbody,
+        COLSPAN,
+        `${c.costModelClass} total — `,
+        `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
+        "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
+      );
+    }
+
+    if (rollup.fallbackCount > 0) {
+      appendFooterRow(
+        tbody,
+        COLSPAN,
+        "Fallbacks fired — ",
+        `${rollup.fallbackCount}`,
+        "Number of times a task was re-dispatched to a fallback model/provider after its originally assigned agent could not run it."
+      );
+    }
+
+    section.appendChild(table);
+    return section;
+  }
+
   /** Create the Routing modal's DOM skeleton once (lazily, on first open). */
   function ensureRoutingModal() {
     if (routingModalEl) return;
@@ -17040,10 +17167,70 @@
 
     routingBodyEl = document.createElement("div");
     routingBodyEl.id = "routing-modal-body";
+    // Re-apply a chip/Totals update that updateRoutingViewLive deferred
+    // (routingUpdatePending) because focus was inside the body — "focusout"
+    // bubbles and fires once focus actually leaves routingBodyEl (or the
+    // whole document), unlike "blur" which doesn't bubble.
+    routingBodyEl.addEventListener("focusout", function () {
+      if (!routingUpdatePending) return;
+      setTimeout(function () {
+        if (routingUpdatePending) updateRoutingViewLive();
+      }, 0);
+    });
     dialog.appendChild(routingBodyEl);
 
     routingModalEl.appendChild(dialog);
     document.body.appendChild(routingModalEl);
+  }
+
+  // Set when a live `state` update arrives while the Routing view is open
+  // AND focus sits inside routingBodyEl (mid-edit) — the in-place update is
+  // skipped in that case (see updateRoutingViewLive) so it can't steal focus
+  // out from under a field the user is actively typing into. The blur
+  // handler registered in ensureRoutingModal re-applies it once focus
+  // leaves.
+  var routingUpdatePending = false;
+
+  /**
+   * In-place refresh of the Routing view's fallback chips + Totals block
+   * only, called on every `state` message while the view is open (p13-t3
+   * audit fix). Deliberately does NOT touch routingBodyEl's slot inputs or
+   * fallback-chain <details> elements — a full renderRoutingModal() rebuild
+   * there would drop focus/caret out of a field mid-typing and collapse any
+   * open <details>. Skips entirely (deferring via routingUpdatePending)
+   * while focus is inside routingBodyEl, so a keystroke never gets
+   * interrupted by a chip/totals repaint either.
+   */
+  function updateRoutingViewLive() {
+    if (!routingModalEl || routingModalEl.hasAttribute("hidden") || !routingBodyEl) return;
+    if (!lastRoutingPayload) return;
+
+    if (document.activeElement && routingBodyEl.contains(document.activeElement)) {
+      routingUpdatePending = true;
+      return;
+    }
+    routingUpdatePending = false;
+
+    var agents = lastRoutingPayload.agents || [];
+    agents.forEach(function (a) {
+      var row = routingBodyEl.querySelector('.routing-agent-row[data-agent-id="' + String(a.id).replace(/"/g, '\\"') + '"]');
+      if (!row) return;
+      var sourceTd = row.children[1];
+      if (!sourceTd) return;
+      sourceTd.querySelectorAll(".routing-source-chip--fallback, .routing-fallback-count").forEach(function (el) {
+        el.remove();
+      });
+      var chip = buildRoutingFallbackChip(a.id);
+      if (chip) sourceTd.appendChild(chip);
+    });
+
+    var oldTotals = routingBodyEl.querySelector("#routing-totals-section");
+    var newTotals = buildRoutingTotalsBlock();
+    if (oldTotals) {
+      oldTotals.replaceWith(newTotals);
+    } else {
+      routingBodyEl.appendChild(newTotals);
+    }
   }
 
   /** Full re-render of the Routing modal body from lastRoutingPayload + routingDraft. */
@@ -17132,6 +17319,8 @@
 
         var sourceTd = document.createElement("td");
         sourceTd.appendChild(routingSourceChip(a.source));
+        var fallbackChip = buildRoutingFallbackChip(a.id);
+        if (fallbackChip) sourceTd.appendChild(fallbackChip);
         row.appendChild(sourceTd);
 
         var slotTd = document.createElement("td");
@@ -17149,6 +17338,7 @@
       agentsSection.appendChild(table);
     }
     routingBodyEl.appendChild(agentsSection);
+    routingBodyEl.appendChild(buildRoutingTotalsBlock());
 
     // ── Actions ──
     var actionsSection = buildSection("Profile");

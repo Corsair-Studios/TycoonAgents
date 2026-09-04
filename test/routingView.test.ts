@@ -333,3 +333,274 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
     win.close();
   }
 });
+
+test('Routing panel: fallback chip, Totals block, and state-update preserves an unsaved edit (p13-t3)', async () => {
+  const src = readFileSync(MAIN_JS_PATH, 'utf8');
+
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+    url: 'https://webview.local/',
+  });
+  const win: any = dom.window;
+  const doc = win.document;
+
+  const ids = scanElementIds(src);
+  for (const id of ids) {
+    if (RUNTIME_CREATED_IDS.has(id)) continue;
+    if (doc.getElementById(id)) continue;
+    const el = doc.createElement(tagForId(id));
+    el.id = id;
+    doc.body.appendChild(el);
+  }
+  let stage = doc.getElementById('stage');
+  if (!stage || stage.tagName.toLowerCase() !== 'canvas') {
+    if (stage) stage.remove();
+    stage = doc.createElement('canvas');
+    stage.id = 'stage';
+    doc.body.appendChild(stage);
+  }
+  stage.width = 1066;
+  stage.height = 760;
+
+  const posted: any[] = [];
+  let stateStore: any = {};
+  win.acquireVsCodeApi = () => ({
+    postMessage: (mmm: any) => posted.push(mmm),
+    getState: () => stateStore,
+    setState: (s: any) => {
+      stateStore = s;
+    },
+  });
+
+  const rafQueue: Array<(ts: number) => void> = [];
+  win.requestAnimationFrame = (cb: (ts: number) => void) => {
+    rafQueue.push(cb);
+    return rafQueue.length;
+  };
+  win.cancelAnimationFrame = () => {};
+  win.Image = makeFakeImage(win);
+  win.HTMLCanvasElement.prototype.getContext = function (this: any) {
+    if (!this.__ctxStub) this.__ctxStub = makeCtxStub(this);
+    return this.__ctxStub;
+  };
+  win.HTMLCanvasElement.prototype.toDataURL = function () {
+    return 'data:image/png;base64,iVBORw0KGgo=';
+  };
+
+  const errors: any[] = [];
+  win.addEventListener('error', (e: any) => {
+    errors.push(e && (e.error || e.message) ? e.error || e.message : e);
+  });
+  win.onerror = (msg: any, _s: any, _l: any, _c: any, err: any) => {
+    errors.push(err || msg);
+  };
+
+  function assertNoErrors(step: string) {
+    assert.equal(errors.length, 0, `[${step}] main.js threw:\n${errors.map((e) => (e && e.stack) || String(e)).join('\n---\n')}`);
+  }
+
+  async function flush() {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  }
+
+  function dispatch(data: any) {
+    win.dispatchEvent(new win.MessageEvent('message', { data }));
+  }
+
+  /** Dispatch a `state` message carrying the given agentMetrics (matches
+   * cacheReadPricing.test.ts's dispatchMetrics fixture shape). */
+  function dispatchMetrics(agentMetrics: any[]) {
+    dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 0,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics,
+      },
+    });
+  }
+
+  vm.runInContext(src, dom.getInternalVMContext(), { filename: 'media/main.js' });
+  try {
+    await flush();
+    assertNoErrors('boot');
+
+    const menuRoutingBtn = doc.getElementById('menu-routing');
+    assert.ok(menuRoutingBtn, 'the DOM fixture should carry a static #menu-routing element');
+    menuRoutingBtn.click();
+    await flush();
+    assertNoErrors('open routing modal');
+
+    const payload = buildRoutingPayload();
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    // ── agentMetrics fixture: coding-specialist ran on fallback this time;
+    // search-retrieval has fired fallbacks before but its last run was clean ──
+    dispatchMetrics([
+      {
+        id: 'coding-specialist',
+        name: 'coding-specialist',
+        status: 'idle',
+        taskCount: 1,
+        mcpCount: 0,
+        activeMs: 1000,
+        tokens: 500,
+        vendor: 'openai',
+        model: 'gpt-5.4-mini',
+        costModelClass: 'metered',
+        fallbackOf: 'anthropic/sonnet',
+        fallbackDepth: 1,
+        fallbackCount: 1,
+      },
+      {
+        id: 'search-retrieval',
+        name: 'search-retrieval',
+        status: 'idle',
+        taskCount: 2,
+        mcpCount: 0,
+        activeMs: 2000,
+        tokens: 300,
+        vendor: 'anthropic',
+        model: 'haiku',
+        costModelClass: 'subscription',
+        fallbackCount: 3,
+      },
+    ]);
+    await flush();
+    assertNoErrors('agentMetrics dispatch');
+
+    // ── Fallback chip on the row that ran on fallback ──
+    const codingRow = doc.querySelector('.routing-agent-row[data-agent-id="coding-specialist"]') as any;
+    assert.ok(codingRow, 'coding-specialist row should render');
+    const fbChip = codingRow.querySelector('.routing-source-chip--fallback');
+    assert.ok(fbChip, 'coding-specialist should show a "ran on fallback" chip');
+    assert.equal(fbChip.textContent, 'ran on fallback');
+    assert.equal(
+      fbChip.getAttribute('title'),
+      'last run fell back from anthropic/sonnet to gpt-5.4-mini (depth 1)',
+      'chip tooltip should name the fallback source, destination model, and depth'
+    );
+
+    // ── Muted count chip on the row with prior fallbacks but a clean last run ──
+    const searchRow = doc.querySelector('.routing-agent-row[data-agent-id="search-retrieval"]') as any;
+    assert.ok(searchRow, 'search-retrieval row should render');
+    const countChip = searchRow.querySelector('.routing-fallback-count');
+    assert.ok(countChip, 'search-retrieval should show a muted fallback count');
+    assert.equal(countChip.textContent, '3 fallbacks');
+    assert.ok(!searchRow.querySelector('.routing-source-chip--fallback'), 'search-retrieval should not show the "ran on fallback" chip');
+
+    // ── Totals block: vendor rows + fallbacks-fired line, from buildMetricsRollup ──
+    const totalsRows = Array.from(doc.querySelectorAll('.routing-totals-table .metrics-footer-row')) as any[];
+    const totalsText = totalsRows.map((r) => r.textContent).join(' | ');
+    assert.ok(totalsText.includes('openai total'), 'Totals block should list an openai vendor row');
+    assert.ok(totalsText.includes('anthropic total'), 'Totals block should list an anthropic vendor row');
+    assert.ok(totalsText.includes('metered total'), 'Totals block should list a metered cost-class row');
+    assert.ok(totalsText.includes('subscription total'), 'Totals block should list a subscription cost-class row');
+    assert.ok(totalsText.includes('Fallbacks fired'), 'Totals block should list the fallbacks-fired line');
+    assert.ok(totalsText.includes('4'), 'fallbacks-fired total should sum both agents\' fallbackCount (1 + 3 = 4)');
+
+    // ── State update while editing preserves the unsaved slot input value ──
+    const codingSlotTd = codingRow.querySelector('.routing-slot-td');
+    let modelInput = codingSlotTd.querySelector('.routing-model-input, .routing-model-select') as any;
+    assert.ok(modelInput, 'coding-specialist slot should render a model field');
+    if (modelInput.tagName.toLowerCase() === 'select') {
+      const opt = Array.from(modelInput.options).find((o: any) => o.value && o.value !== modelInput.value) as any;
+      assert.ok(opt, 'model select should have a non-current option to switch to');
+      modelInput.value = opt.value;
+      modelInput.dispatchEvent(new win.Event('change', { bubbles: true }));
+    } else {
+      modelInput.value = 'my-custom-edit';
+      modelInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+    }
+    const editedValue = modelInput.value;
+
+    // A fresh `state` push (e.g. another agent finishing a task) must
+    // re-render chips/totals without discarding this edit.
+    dispatchMetrics([
+      {
+        id: 'coding-specialist',
+        name: 'coding-specialist',
+        status: 'idle',
+        taskCount: 2,
+        mcpCount: 0,
+        activeMs: 2000,
+        tokens: 700,
+        vendor: 'openai',
+        model: 'gpt-5.4-mini',
+        costModelClass: 'metered',
+        fallbackOf: 'anthropic/sonnet',
+        fallbackDepth: 1,
+        fallbackCount: 1,
+      },
+    ]);
+    await flush();
+    assertNoErrors('state update while editing');
+
+    const codingRowAfter = doc.querySelector('.routing-agent-row[data-agent-id="coding-specialist"]') as any;
+    assert.ok(codingRowAfter, 'coding-specialist row should still render after the state update');
+    const modelInputAfter = codingRowAfter.querySelector('.routing-slot-td').querySelector('.routing-model-input, .routing-model-select') as any;
+    assert.ok(modelInputAfter, 'model field should still render after the state update');
+    assert.equal(modelInputAfter.value, editedValue, 'unsaved slot edit should survive a state re-render');
+
+    // ── Focus/caret and an open fallback <details> must survive a state
+    // update too (audit fix: updateRoutingViewLive must not rebuild the
+    // table while the view is open) ──
+    const fallbackDetails = codingRowAfter.querySelector('.routing-fallback-details') as any;
+    assert.ok(fallbackDetails, 'coding-specialist fallback-chain <details> should render');
+    fallbackDetails.setAttribute('open', '');
+
+    let textInput = codingRowAfter.querySelector('.routing-slot-td input[type="text"]') as any;
+    if (!textInput) {
+      // Force a free-text model field so there's a real caret-bearing input
+      // to focus: switch to Custom endpoint's vendor.
+      const vendorSel = codingRowAfter.querySelector('.routing-vendor-select') as any;
+      vendorSel.value = 'custom-endpoint';
+      vendorSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+      await flush();
+      textInput = doc.querySelector('.routing-agent-row[data-agent-id="coding-specialist"] .routing-slot-td input[type="text"]') as any;
+    }
+    assert.ok(textInput, 'coding-specialist slot should expose a focusable text input');
+    textInput.value = 'partial-typing';
+    textInput.focus();
+    textInput.setSelectionRange(3, 5);
+    assert.equal(doc.activeElement, textInput, 'text input should hold focus before the state update');
+
+    dispatchMetrics([
+      {
+        id: 'coding-specialist',
+        name: 'coding-specialist',
+        status: 'idle',
+        taskCount: 3,
+        mcpCount: 0,
+        activeMs: 3000,
+        tokens: 900,
+        vendor: 'openai',
+        model: 'gpt-5.4-mini',
+        costModelClass: 'metered',
+        fallbackOf: 'anthropic/sonnet',
+        fallbackDepth: 1,
+        fallbackCount: 1,
+      },
+    ]);
+    await flush();
+    assertNoErrors('state update while focused mid-typing');
+
+    assert.equal(doc.activeElement, textInput, 'focused input should keep focus across a state update while its element is unchanged');
+    assert.equal(textInput.value, 'partial-typing', 'in-progress typed value should be untouched');
+    assert.equal(textInput.selectionStart, 3, 'caret/selection start should be preserved');
+    assert.equal(textInput.selectionEnd, 5, 'caret/selection end should be preserved');
+
+    const fallbackDetailsAfter = doc.querySelector('.routing-agent-row[data-agent-id="coding-specialist"] .routing-fallback-details') as any;
+    assert.ok(fallbackDetailsAfter, 'fallback <details> should still render after the state update');
+    assert.equal(fallbackDetailsAfter, fallbackDetails, 'fallback <details> element identity should be unchanged (no table rebuild)');
+    assert.ok(fallbackDetailsAfter.hasAttribute('open'), 'an open fallback <details> must stay open across a state update');
+  } finally {
+    win.close();
+  }
+});
