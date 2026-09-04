@@ -250,6 +250,7 @@ defeating the point of the system either way. When in doubt, delegate.
 
 | Specialist | Task types | Vendor / model |
 | --- | --- | --- |
+| claude-worker | claude-cli, subscription-worker | Anthropic · anthropic/claude-sonnet-4-6 (subscription) |
 | codex-reviewer | codex, foreign-review, cross-vendor, second-opinion, adversarial-review | OpenAI · openai/gpt-5.4-mini (subscription) |
 | coding-specialist | implement, code, fix, bug, refactor, create, add, update, function, class, method, logic, algorithm, typescript | Anthropic · anthropic/sonnet |
 | gemini-reviewer | gemini, foreign-review, cross-vendor, second-opinion, adversarial-review | Google · google/gemini-2.5-pro |

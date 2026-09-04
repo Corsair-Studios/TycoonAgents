@@ -304,4 +304,139 @@ test('generate-opencode-config: full contract', { skip: !scriptExists() && 'scri
 
     fs.rmSync(root, { recursive: true, force: true });
   });
+
+  await t.test('routing.json: a covered agent\'s slot wins over frontmatter and opencode-models.json', () => {
+    const root = setupFixtureRoot();
+    fs.writeFileSync(
+      path.join(root, '.claude', 'tycoon', 'routing.json'),
+      JSON.stringify({
+        version: 1,
+        agents: {
+          'ccc-overridden': { model: 'anthropic/claude-opus-9' },
+          'bbb-backend-block': { transport: 'mcp', mcpServer: 'kimi', tools: ['kimi-exec'], model: 'moonshot/kimi-k2' },
+        },
+        orchestrator: { model: 'anthropic/claude-opus-9' },
+      }, null, 2),
+      'utf8',
+    );
+
+    const result = runGenerator(root);
+    assert.equal(result.status, 0, `generator should exit 0; stderr: ${result.stderr}`);
+
+    // routing.json wins over opencode-models.json for ccc-overridden.
+    {
+      const { frontmatter } = parseFrontmatter(readGenerated(root, 'ccc-overridden'));
+      assert.match(frontmatter, /model:\s*anthropic\/claude-opus-9/);
+    }
+
+    // routing.json wins over frontmatter backend.model for bbb-backend-block,
+    // and the MCP preamble reflects the profile's server/tool, not the
+    // frontmatter's.
+    {
+      const { frontmatter, body } = parseFrontmatter(readGenerated(root, 'bbb-backend-block'));
+      assert.match(frontmatter, /model:\s*moonshot\/kimi-k2/);
+      assert.match(body, /`kimi` MCP server/);
+      assert.match(body, /`kimi-exec` tool/);
+    }
+
+    // agent absent from the profile keeps old behaviour (bare alias -> anthropic/<canonical>).
+    {
+      const { frontmatter } = parseFrontmatter(readGenerated(root, 'aaa-bare-alias'));
+      assert.match(frontmatter, new RegExp(`model:\\s*${EXPECT_HAIKU_MODEL.replace('/', '\\/')}`));
+    }
+
+    const generatedRoutingPath = path.join(root, '.opencode', 'tycoon-routing.generated.json');
+    assert.ok(fs.existsSync(generatedRoutingPath), 'tycoon-routing.generated.json must be written when the profile resolves entries');
+    const generatedRouting = JSON.parse(fs.readFileSync(generatedRoutingPath, 'utf8'));
+    assert.equal(generatedRouting.agents['ccc-overridden'].model, 'anthropic/claude-opus-9');
+    assert.equal(generatedRouting.agents['bbb-backend-block'].model, 'moonshot/kimi-k2');
+    assert.equal(generatedRouting.orchestrator.model, 'anthropic/claude-opus-9');
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  await t.test('routing.json: invalid profile exits 2 with error text and writes nothing', () => {
+    const root = setupFixtureRoot();
+    fs.writeFileSync(
+      path.join(root, '.claude', 'tycoon', 'routing.json'),
+      JSON.stringify({ version: 1, agents: { 'ccc-overridden': { transport: 'ssh' } } }, null, 2),
+      'utf8',
+    );
+
+    const before = fs.existsSync(path.join(root, '.opencode', 'agents'))
+      ? fs.readdirSync(path.join(root, '.opencode', 'agents'))
+      : [];
+    assert.deepEqual(before, [], 'no .opencode/agents output should exist before running');
+
+    const result = runGenerator(root);
+    assert.equal(result.status, 2, `invalid routing.json must exit 2; stdout: ${result.stdout}`);
+    assert.match(result.stdout + result.stderr, /transport/, 'error output should name the invalid field');
+    assert.ok(!fs.existsSync(path.join(root, '.opencode', 'agents')), 'no output must be written on an invalid profile');
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  await t.test('--migrate-models writes routing.json seeded from opencode-models.json and continues the run', () => {
+    const root = setupFixtureRoot();
+    assert.ok(!fs.existsSync(path.join(root, '.claude', 'tycoon', 'routing.json')));
+
+    const result = runGenerator(root, ['--migrate-models']);
+    assert.equal(result.status, 0, `--migrate-models run should exit 0; stderr: ${result.stderr}`);
+
+    const routingPath = path.join(root, '.claude', 'tycoon', 'routing.json');
+    assert.ok(fs.existsSync(routingPath), 'routing.json must be created');
+    const migrated = JSON.parse(fs.readFileSync(routingPath, 'utf8'));
+    assert.equal(migrated.version, 1);
+    assert.equal(migrated.agents['ccc-overridden'].model, 'openai/gpt-5');
+
+    // The migrated profile then applies on this same run (it wins over opencode-models.json,
+    // which happens to be the same value here, but proves the profile path executed).
+    const { frontmatter } = parseFrontmatter(readGenerated(root, 'ccc-overridden'));
+    assert.match(frontmatter, /model:\s*openai\/gpt-5\b/);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  await t.test('deprecation notice printed when opencode-models.json exists and routing.json does not', () => {
+    const root = setupFixtureRoot();
+    const result = runGenerator(root);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /deprecat/i, 'a deprecation notice should be printed');
+    assert.match(result.stdout, /--migrate-models/);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  await t.test('--check covers tycoon-routing.generated.json: idempotent, and drift is reported', () => {
+    const root = setupFixtureRoot();
+    fs.writeFileSync(
+      path.join(root, '.claude', 'tycoon', 'routing.json'),
+      JSON.stringify({ version: 1, agents: { 'ccc-overridden': { model: 'anthropic/claude-opus-9' } } }, null, 2),
+      'utf8',
+    );
+
+    const gen = runGenerator(root);
+    assert.equal(gen.status, 0);
+
+    const check1 = runGenerator(root, ['--check']);
+    assert.equal(check1.status, 0, `--check should be 0 when up to date; stderr: ${check1.stderr}`);
+
+    // Second full run must be byte-identical (idempotency) including the generated routing file.
+    const generatedRoutingPath = path.join(root, '.opencode', 'tycoon-routing.generated.json');
+    const before = fs.readFileSync(generatedRoutingPath, 'utf8');
+    const gen2 = runGenerator(root);
+    assert.equal(gen2.status, 0);
+    assert.equal(fs.readFileSync(generatedRoutingPath, 'utf8'), before, 'tycoon-routing.generated.json must be byte-identical across runs');
+
+    // Drift: change the profile, --check must report the generated routing file as changed.
+    fs.writeFileSync(
+      path.join(root, '.claude', 'tycoon', 'routing.json'),
+      JSON.stringify({ version: 1, agents: { 'ccc-overridden': { model: 'anthropic/claude-opus-10' } } }, null, 2),
+      'utf8',
+    );
+    const check2 = runGenerator(root, ['--check']);
+    assert.equal(check2.status, 1);
+    assert.match(check2.stdout + check2.stderr, /tycoon-routing\.generated\.json/);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 });

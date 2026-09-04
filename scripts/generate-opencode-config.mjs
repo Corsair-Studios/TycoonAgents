@@ -26,15 +26,44 @@
 //
 // --- alias -> id rule ---
 // Model resolution, in priority order:
-//   1. <root>/.claude/tycoon/opencode-models.json { agentName: 'provider/model' }
-//      overrides everything, when present for this agent's name.
-//   2. backend.model from the agent's `backend:` frontmatter block, when it
+//   1. .claude/tycoon/routing.json (the routing profile, see
+//      docs/ROUTING-PROFILE.md and src/core/routingProfile.js) — for any
+//      agent it covers, resolveAgentSlot(profile, name) wins outright,
+//      overriding both opencode-models.json and frontmatter for that agent.
+//      A slot with transport: 'mcp' also overrides the MCP preamble source
+//      (see below), even if the agent's own frontmatter has no backend
+//      block. If routing.json is present but invalid, every error is
+//      printed and the script exits 2 without writing anything — it never
+//      generates output from a broken profile.
+//   2. <root>/.claude/tycoon/opencode-models.json { agentName: 'provider/model' }
+//      — DEPRECATED, retained only as a manual escape hatch for agents the
+//      routing profile doesn't cover. When opencode-models.json exists and
+//      routing.json does not, a one-line deprecation notice is printed
+//      suggesting `--migrate-models`, which seeds a routing.json from it
+//      (agents map with `model` only) and then continues the run.
+//   3. backend.model from the agent's `backend:` frontmatter block, when it
 //      already contains a '/' (already provider/model form).
-//   3. A bare top-level `model:` alias (opus/sonnet/haiku/fable/...) resolved
+//   4. A bare top-level `model:` alias (opus/sonnet/haiku/fable/...) resolved
 //      via modelAliases.resolveModelAlias to a canonical id, emitted as
 //      `anthropic/<id>`.
-//   4. Otherwise the `model:` field is omitted entirely from the output.
-// Note: OpenCode rejects a `model:` whose provider is not configured in that OpenCode install (e.g. openai/... without an OpenAI key); use .claude/tycoon/opencode-models.json to remap such agents to a configured provider.
+//   5. Otherwise the `model:` field is omitted entirely from the output.
+// Note: OpenCode rejects a `model:` whose provider is not configured in that OpenCode install (e.g. openai/... without an OpenAI key); use .claude/tycoon/routing.json (or the deprecated opencode-models.json) to remap such agents to a configured provider.
+//
+// --- orchestrator mode:primary model (routing.json only) ---
+// If routing.json's top-level `orchestrator.model` resolves, it is not
+// applied to individual agent files (mode:primary is still driven by each
+// agent's own role/tier frontmatter, unchanged) — it is recorded in
+// .opencode/tycoon-routing.generated.json's `orchestrator.model` field for
+// the OpenCode plugin to consume.
+//
+// --- fallback chains (recorded, not executed here — see p15) ---
+// A routing.json slot's `fallback` array is not executed by this generator
+// (fallback *execution* is p15's job). Each covered agent's resolved model
+// and fallback chain (as provider/model strings, in order) are written to
+// <root>/.opencode/tycoon-routing.generated.json as
+// { agents: { <name>: { model, fallback: [...] } }, orchestrator: { model } },
+// deterministically, so the OpenCode plugin can read fallback chains later.
+// This file participates in --check like every other generated artifact.
 //
 // --- description rule ---
 // `description:` is ALWAYS emitted. Priority order:
@@ -85,9 +114,20 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 function loadCoreModules() {
   const agentBackendPath = path.join(REPO_ROOT, "out", "src", "core", "agentBackend.js");
   const modelAliasesPath = path.join(REPO_ROOT, "out", "src", "core", "modelAliases.js");
+  const routingProfilePath = path.join(REPO_ROOT, "out", "src", "core", "routingProfile.js");
   const { readAgentFrontmatter, parseAgentBackend } = require(agentBackendPath);
   const { resolveModelAlias } = require(modelAliasesPath);
-  return { readAgentFrontmatter, parseAgentBackend, resolveModelAlias };
+  const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend } = require(routingProfilePath);
+  return { readAgentFrontmatter, parseAgentBackend, resolveModelAlias, loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend };
+}
+
+// Resolve a RoutingSlot's `model` field (provider/model or bare alias) to
+// the same 'provider/model' string form the rest of the generator expects.
+function resolveSlotModel(slot, resolveModelAlias) {
+  if (!slot || typeof slot.model !== "string" || slot.model === "") return undefined;
+  if (slot.model.includes("/")) return slot.model;
+  const resolved = resolveModelAlias(slot.model);
+  return resolved ? `anthropic/${resolved}` : undefined;
 }
 
 // require() shim for an ESM entrypoint.
@@ -97,15 +137,18 @@ const require = createRequire(import.meta.url);
 function parseArgs(argv) {
   let root = process.cwd();
   let check = false;
+  let migrateModels = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--root") {
       root = argv[++i];
     } else if (arg === "--check") {
       check = true;
+    } else if (arg === "--migrate-models") {
+      migrateModels = true;
     }
   }
-  return { root: path.resolve(root), check };
+  return { root: path.resolve(root), check, migrateModels };
 }
 
 function yamlScalar(value) {
@@ -133,7 +176,10 @@ function loadModelOverrides(root) {
   }
 }
 
-function resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias }) {
+function resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias, slotModel }) {
+  if (slotModel) {
+    return slotModel;
+  }
   if (Object.prototype.hasOwnProperty.call(overrides, agentName)) {
     return overrides[agentName];
   }
@@ -304,16 +350,56 @@ function buildAgentsMd(root) {
   return existing + sep + managedBlock + "\n";
 }
 
+function migrateModelsToRoutingProfile(root, overrides) {
+  const routingPath = path.join(root, ".claude", "tycoon", "routing.json");
+  const agents = {};
+  for (const [name, model] of Object.entries(overrides)) {
+    agents[name] = { model };
+  }
+  const profile = { version: 1, agents };
+  fs.mkdirSync(path.dirname(routingPath), { recursive: true });
+  fs.writeFileSync(routingPath, JSON.stringify(profile, null, 2) + "\n", "utf8");
+  return routingPath;
+}
+
 function main() {
-  const { root, check } = parseArgs(process.argv.slice(2));
-  const { readAgentFrontmatter, parseAgentBackend, resolveModelAlias } = loadCoreModules();
+  const { root, check, migrateModels } = parseArgs(process.argv.slice(2));
+  const {
+    readAgentFrontmatter,
+    parseAgentBackend,
+    resolveModelAlias,
+    loadRoutingProfile,
+    resolveAgentSlot,
+    resolveOrchestratorSlot,
+    routingSlotToBackend,
+  } = loadCoreModules();
 
   const agentsDir = path.join(root, ".claude", "agents");
   const outDir = path.join(root, ".opencode", "agents");
   const overrides = loadModelOverrides(root);
+  const overridesPath = path.join(root, ".claude", "tycoon", "opencode-models.json");
+  const routingJsonPath = path.join(root, ".claude", "tycoon", "routing.json");
+
+  if (migrateModels && !fs.existsSync(routingJsonPath)) {
+    const written = migrateModelsToRoutingProfile(root, overrides);
+    console.log(`--migrate-models: wrote ${path.relative(root, written)} seeded from ${path.relative(root, overridesPath)}`);
+  } else if (fs.existsSync(overridesPath) && !fs.existsSync(routingJsonPath)) {
+    console.log(
+      "deprecation notice: .claude/tycoon/opencode-models.json is deprecated in favor of .claude/tycoon/routing.json; run with --migrate-models to generate one automatically."
+    );
+  }
+
+  const { profile: routingProfile, errors: routingErrors } = loadRoutingProfile(root);
+  if (routingErrors.length > 0) {
+    for (const err of routingErrors) {
+      console.error(err);
+    }
+    process.exit(2);
+  }
 
   const changed = [];
   const writes = [];
+  const generatedRouting = { agents: {} };
 
   if (fs.existsSync(agentsDir)) {
     const files = fs
@@ -339,11 +425,38 @@ function main() {
           ? frontmatter["name"]
           : path.basename(file, ".md");
 
-      const model = resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias });
+      const slot = resolveAgentSlot(routingProfile, agentName);
+      const slotModel = resolveSlotModel(slot, resolveModelAlias);
 
-      const doc = buildAgentDoc({ agentName, frontmatter, backend, model, body });
+      const model = resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias, slotModel });
+
+      // A routing-profile slot wins over frontmatter's backend for MCP
+      // preamble purposes too, so an agent moved to MCP transport purely via
+      // routing.json still gets the preamble.
+      const effectiveBackend = slot && slot.transport ? routingSlotToBackend(slot) : backend;
+
+      const doc = buildAgentDoc({ agentName, frontmatter, backend: effectiveBackend, model, body });
       const destPath = path.join(outDir, `${agentName}.md`);
       writes.push({ destPath, content: doc });
+
+      if (slot) {
+        const entry = {};
+        if (slotModel) entry.model = slotModel;
+        if (Array.isArray(slot.fallback) && slot.fallback.length > 0) {
+          entry.fallback = slot.fallback.map((fb) => resolveSlotModel(fb, resolveModelAlias)).filter(Boolean);
+        }
+        if (Object.keys(entry).length > 0) {
+          generatedRouting.agents[agentName] = entry;
+        }
+      }
+    }
+  }
+
+  const orchestratorSlot = resolveOrchestratorSlot(routingProfile);
+  if (orchestratorSlot) {
+    const orchestratorModel = resolveSlotModel(orchestratorSlot, resolveModelAlias);
+    if (orchestratorModel) {
+      generatedRouting.orchestrator = { model: orchestratorModel };
     }
   }
 
@@ -351,6 +464,16 @@ function main() {
   const agentsMdPath = path.join(root, "AGENTS.md");
   const agentsMdContent = buildAgentsMd(root);
   writes.push({ destPath: agentsMdPath, content: agentsMdContent });
+
+  // tycoon-routing.generated.json: written whenever the routing profile
+  // resolved at least one agent/orchestrator entry, for the OpenCode plugin
+  // (p15) to read fallback chains from later. Deterministic key ordering
+  // via JSON.stringify's insertion order (agents inserted in the same
+  // sorted-file-list order as everything else).
+  if (Object.keys(generatedRouting.agents).length > 0 || generatedRouting.orchestrator) {
+    const generatedRoutingPath = path.join(root, ".opencode", "tycoon-routing.generated.json");
+    writes.push({ destPath: generatedRoutingPath, content: JSON.stringify(generatedRouting, null, 2) + "\n" });
+  }
 
   for (const { destPath, content } of writes) {
     const existing = fs.existsSync(destPath) ? fs.readFileSync(destPath, "utf8") : null;
