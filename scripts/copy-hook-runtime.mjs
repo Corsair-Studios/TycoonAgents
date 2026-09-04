@@ -14,7 +14,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const srcDir = join(root, "out", "src", "core");
 const destDir = join(root, "hooks");
 
-const files = ["agentBackend.js", "modelAliases.js", "delegationEnforcement.js"];
+const files = ["agentBackend.js", "modelAliases.js", "delegationEnforcement.js", "fallbackChain.js"];
 
 mkdirSync(destDir, { recursive: true });
 

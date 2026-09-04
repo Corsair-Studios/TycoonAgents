@@ -158,6 +158,54 @@ function getModelAliasesModule() {
   return _modelAliasesModule;
 }
 
+// Plan p15-t1: fallback-chain resolver, shared with hooks/tycoon-opencode-
+// plugin.ts (src/core/fallbackChain.ts, compiled + copied next to this hook
+// by scripts/copy-hook-runtime.mjs, same lazy/guarded pattern as
+// agentBackend.js above). Missing means fallback dispatch is simply
+// disabled — every non-failure code path elsewhere in this hook is
+// unaffected.
+let _fallbackChainModule; // undefined = not yet attempted, null = load failed
+function getFallbackChainModule() {
+  if (_fallbackChainModule === undefined) {
+    try {
+      _fallbackChainModule = require(path.join(__dirname, "fallbackChain.js"));
+    } catch {
+      _fallbackChainModule = null; // silent: absence just disables fallback dispatch
+    }
+  }
+  return _fallbackChainModule;
+}
+
+// Per-process FallbackState. tycoon-claude-hook.cjs is a short-lived CLI
+// process invoked fresh per hook event (unlike the long-lived OpenCode
+// plugin process), so failure counts cannot be held in memory across calls;
+// they are persisted to a small JSON sidecar under .claude/tycoon/ instead,
+// keyed by session id, and reloaded/saved on each PostToolUse invocation
+// that touches it. Bounded by simple size cap + oldest-eviction, mirroring
+// the OpenCode plugin's in-memory Map cap.
+const FALLBACK_STATE_MAX_SESSIONS = 200;
+function loadFallbackStateFile(tycoonDir) {
+  const file = path.join(tycoonDir, "fallback-state.json");
+  try {
+    const raw = fs.readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function saveFallbackStateFile(tycoonDir, data) {
+  const file = path.join(tycoonDir, "fallback-state.json");
+  try {
+    const keys = Object.keys(data);
+    while (keys.length > FALLBACK_STATE_MAX_SESSIONS) {
+      delete data[keys.shift()];
+    }
+    fs.mkdirSync(tycoonDir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(data), "utf8");
+  } catch { /* never let persistence failure break the hook */ }
+}
+
 function getShorthandModel() {
   const mod = getModelAliasesModule();
   return (mod && mod.MODEL_ALIASES) || SHORTHAND_MODEL;
@@ -1539,6 +1587,94 @@ function main(raw) {
   }
 
   // -------------------------------------------------------------------------
+  // PostToolUse (plan p15-t1): a registered backend MCP tool call (the
+  // generic mcp__<server>__<tool> map built by buildMcpBackendRouting, same
+  // map the PreToolUse branch above uses for vendor/model attribution)
+  // whose result matches isProviderFailure gets a FallbackTriggered
+  // activity record and an additionalContext instruction telling the
+  // orchestrator to re-dispatch the same task on the next fallback chain
+  // entry. This does NOT touch any existing hook output for a non-failure
+  // PostToolUse — there was no PostToolUse handling in this hook before
+  // this addition, so nothing here can regress an existing byte-identical
+  // output (see test/tycoonClaudeHook*.test.ts, unchanged by this task).
+  // -------------------------------------------------------------------------
+  if (hookEvent === "PostToolUse") {
+    try {
+      const fallbackChain = getFallbackChainModule();
+      if (fallbackChain && toolName && toolName.indexOf("mcp__") === 0) {
+        const mcpRouting = buildMcpBackendRouting(agentsDir);
+        const mcpBackend = lookupMcpBackend(mcpRouting, toolName);
+        if (mcpBackend && mcpBackend.agentId) {
+          const toolResponseText =
+            typeof payload.tool_response === "string"
+              ? payload.tool_response
+              : (payload.tool_response && JSON.stringify(payload.tool_response)) || "";
+          if (fallbackChain.isProviderFailure(toolResponseText)) {
+            const slotId = mcpBackend.agentId;
+            const sessionId = typeof payload.session_id === "string" ? payload.session_id : "unknown-session";
+            const resolvedRouting = readJsonSafe(
+              path.join(tycoonDir, "routing.resolved.json")
+            );
+            const chainRaw =
+              (resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[slotId] &&
+                resolvedRouting.agents[slotId].fallback) || [];
+            const chain = Array.isArray(chainRaw) ? chainRaw : [];
+
+            const stateData = loadFallbackStateFile(tycoonDir);
+            const perSession = stateData[sessionId] || {};
+            const attemptsSoFar = (perSession[slotId] && perSession[slotId].attemptsSoFar) || 0;
+            const newAttempts = attemptsSoFar + 1;
+            perSession[slotId] = { attemptsSoFar: newAttempts };
+            stateData[sessionId] = perSession;
+            saveFallbackStateFile(tycoonDir, stateData);
+
+            const result = fallbackChain.resolveNextFallback({
+              slotId,
+              chain,
+              attemptsSoFar: newAttempts - 1,
+            });
+            const instruction = fallbackChain.buildFallbackInstruction({
+              workerId: slotId,
+              failedProvider: mcpBackend.vendor,
+              failedModel: mcpBackend.model,
+              reason: toolResponseText.slice(0, 300),
+              result,
+              chainLength: chain.length,
+            });
+
+            /** @type {Record<string, unknown>} */
+            const fallbackRecord = {
+              event: "FallbackTriggered",
+              workerId: slotId,
+              slotId,
+              failedModel: mcpBackend.model,
+              nextModel: result.slot && result.slot.model,
+              reason: toolResponseText.slice(0, 300),
+              at,
+            };
+            if (payload.session_id) fallbackRecord.sessionId = payload.session_id;
+            try {
+              fs.appendFileSync(activityFile, JSON.stringify(fallbackRecord) + "\n", "utf8");
+            } catch { /* ignore */ }
+
+            try {
+              process.stdout.write(JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: "PostToolUse",
+                  additionalContext: instruction,
+                },
+              }));
+            } catch { /* never let output construction break the hook */ }
+          }
+        }
+      }
+    } catch {
+      // Fail open: any error in fallback detection must never break the hook.
+    }
+    process.exit(0);
+  }
+
+  // -------------------------------------------------------------------------
   // Stop: end of the main turn. Finalize the orchestrator with its per-turn
   // token delta + model so its row shows real usage (not 0).
   // -------------------------------------------------------------------------
@@ -1555,6 +1691,20 @@ function main(raw) {
     try {
       fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
     } catch { /* ignore */ }
+    // p15-t1: the turn is ending — evict this session's tracked fallback
+    // failures from the persisted sidecar, mirroring the OpenCode plugin's
+    // in-memory FallbackState.endSession on root-session idle. Fail-open:
+    // any error here must never affect the Stop record already written
+    // above or any other hook output.
+    try {
+      if (payload.session_id) {
+        const stateData = loadFallbackStateFile(tycoonDir);
+        if (Object.prototype.hasOwnProperty.call(stateData, payload.session_id)) {
+          delete stateData[payload.session_id];
+          saveFallbackStateFile(tycoonDir, stateData);
+        }
+      }
+    } catch { /* fail open: never affect Stop's own output */ }
     process.exit(0);
   }
 

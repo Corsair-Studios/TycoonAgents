@@ -66,6 +66,80 @@ interface DelegationEnforcementModule {
   isReviewGateTerminal: (state: { status: string; reviewsRun: number }) => boolean;
 }
 
+interface FallbackChainModule {
+  isProviderFailure: (text: string | undefined | null) => boolean;
+  resolveNextFallback: (input: {
+    slotId: string;
+    chain: { model?: string; vendor?: string }[];
+    attemptsSoFar: number;
+  }) => { slot: { model?: string; vendor?: string } | null; index: number; exhausted: boolean };
+  buildFallbackInstruction: (input: {
+    workerId: string;
+    failedProvider?: string;
+    failedModel?: string;
+    reason: string;
+    result: { slot: { model?: string; vendor?: string } | null; index: number; exhausted: boolean };
+    chainLength: number;
+  }) => string;
+  FallbackState: new () => {
+    recordFailure: (
+      sessionId: string,
+      slotId: string,
+      chain: { model?: string; vendor?: string }[],
+      failedModel?: string,
+      reason?: string
+    ) => { attemptsSoFar: number; chain: { model?: string; vendor?: string }[] };
+    getNext: (
+      sessionId: string,
+      slotId: string
+    ) => { slot: { model?: string; vendor?: string } | null; index: number; exhausted: boolean } | undefined;
+    getRecord: (
+      sessionId: string,
+      slotId: string
+    ) => { attemptsSoFar: number; chain: { model?: string; vendor?: string }[] } | undefined;
+    endSession: (sessionId: string) => void;
+  };
+}
+
+let fallbackChainModule: FallbackChainModule | null | undefined; // undefined = not attempted
+
+function getFallbackChainModule(): FallbackChainModule | null {
+  if (fallbackChainModule === undefined) {
+    try {
+      // Resolves to out/src/core/fallbackChain.js when compiled and copied
+      // alongside this plugin (see scripts/copy-hook-runtime.mjs); absent in
+      // an unbuilt dev checkout or a packaged install missing it — both fall
+      // back to "no fallback wiring" (activity still logs normally).
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      fallbackChainModule = require(path.join(__dirname, "fallbackChain.js")) as FallbackChainModule;
+    } catch {
+      fallbackChainModule = null;
+      try {
+        process.stderr.write(
+          "[tycoon-opencode-plugin] fallbackChain.js not available next to the plugin — provider-failure fallback dispatch is disabled.\n"
+        );
+      } catch {
+        /* never let a warning break the plugin */
+      }
+    }
+  }
+  return fallbackChainModule;
+}
+
+// Reads .opencode/tycoon-routing.generated.json (written by
+// scripts/generate-opencode-config.mjs) for a given agent's resolved
+// fallback chain: { agents: { <name>: { model, fallback: string[] } },
+// orchestrator: { model } } — fallback entries are "provider/model" strings,
+// converted here into the {model} shape resolveNextFallback expects.
+function readFallbackChainForAgent(directory: string, agentId: string): { model?: string }[] {
+  const generated = readJsonSafe<{ agents?: Record<string, { model?: string; fallback?: string[] }> }>(
+    path.join(directory, ".opencode", "tycoon-routing.generated.json")
+  );
+  const entry = generated?.agents?.[agentId];
+  if (!entry || !Array.isArray(entry.fallback)) return [];
+  return entry.fallback.map((model) => ({ model }));
+}
+
 let delegationEnforcementModule: DelegationEnforcementModule | null | undefined; // undefined = not attempted
 
 function getDelegationEnforcementModule(): DelegationEnforcementModule | null {
@@ -107,7 +181,8 @@ type OpenCodeHookEventName =
   | "Stop"
   | "PluginError"
   | "SpawnDenied"
-  | "ReviewGate";
+  | "ReviewGate"
+  | "FallbackTriggered";
 
 interface OpenCodeHookRecord {
   event: OpenCodeHookEventName;
@@ -129,6 +204,11 @@ interface OpenCodeHookRecord {
   matchedKeyword?: string;
   reviewGateStatus?: string;
   message?: string;
+  /** FallbackTriggered-only fields. */
+  failedModel?: string;
+  nextModel?: string;
+  slotId?: string;
+  reason?: string;
 }
 
 interface ActiveAgentEntry {
@@ -559,6 +639,8 @@ export function createPlugin(deps: PluginDeps) {
     agents?: Record<string, { pattern?: string }>;
   }>(path.join(tycoonDir, "agent-keywords.json"));
   const delegationEnforcement = getDelegationEnforcementModule();
+  const fallbackChain = getFallbackChainModule();
+  const fallbackState = fallbackChain ? new fallbackChain.FallbackState() : null;
 
   // (1) Orchestrator direct-tool-call nudge: per-turn Read counter, reset on
   // each new root-session UserPromptSubmit (see recordUserPromptSubmit
@@ -721,6 +803,10 @@ export function createPlugin(deps: PluginDeps) {
     // longer needed, so evict it now rather than waiting for the size cap
     // below to reclaim it (see reviewGateByParentSession's declaration).
     reviewGateByParentSession.delete(sessionId);
+    // p15-t1: same eviction for tracked fallback failures — a session that
+    // never fails should never accumulate fallback state, and one that does
+    // fail shouldn't leak it past session end.
+    fallbackState?.endSession(sessionId);
   }
 
   async function handleToolExecuteBefore(input: {
@@ -809,6 +895,21 @@ export function createPlugin(deps: PluginDeps) {
 
       const agentDescription = typeof args["description"] === "string" ? (args["description"] as string) : undefined;
       const backend = workerId ? readAgentBackendFromFile(agentsDir, workerId) : {};
+
+      // p15-t1: on a re-dispatch of a slot that previously failed in this
+      // session, rewrite the model to the next fallback chain entry. Setting
+      // input.args.model here is BEST-EFFORT — docs/opencode-probe-findings.md
+      // never confirmed args mutation from a hook is observed by OpenCode's
+      // own tool execution; the instruction text queued via queueNudge (in
+      // handleToolExecuteAfter below) is the mechanism actually relied on to
+      // get the orchestrator to re-dispatch on the right model.
+      if (fallbackState && workerId && sessionId) {
+        const next = fallbackState.getNext(sessionId, workerId);
+        if (next && !next.exhausted && next.slot?.model) {
+          args["model"] = next.slot.model;
+          input.args = args;
+        }
+      }
 
       const parentEntry = sessionId ? undefined : peekActiveAgent(activeAgentFile) ?? undefined;
       const parentId = parentEntry?.agentId && parentEntry.agentId !== "none" ? parentEntry.agentId : undefined;
@@ -922,6 +1023,49 @@ export function createPlugin(deps: PluginDeps) {
     if (tokens !== undefined) record.tokens = tokens;
     if (cacheReadTokens !== undefined) record.cacheReadTokens = cacheReadTokens;
     appendActivity(activityFile, record);
+
+    // p15-t1: provider-failure fallback. A task's rendered <task> output
+    // string is the only observable result surface for a `task` tool call
+    // (docs/opencode-probe-findings.md (a) — no typed success/error field),
+    // so a provider failure is detected the same way the review-gate
+    // heuristic above reads text out of that string: pattern-match it with
+    // the SAME isProviderFailure patterns the Claude hook and the
+    // codex/gemini/kimi reviewer agents use.
+    const rootSessionId = metadata.parentSessionId ?? input.sessionID;
+    if (fallbackChain && fallbackState && workerId !== "unknown" && rootSessionId) {
+      const outputText = typeof output?.output === "string" ? output.output : "";
+      if (fallbackChain.isProviderFailure(outputText)) {
+        const chain = readFallbackChainForAgent(directory, workerId);
+        const failureRecord = fallbackState.recordFailure(rootSessionId, workerId, chain, model, outputText.slice(0, 300));
+        const result = fallbackChain.resolveNextFallback({
+          slotId: workerId,
+          chain,
+          attemptsSoFar: failureRecord.attemptsSoFar - 1,
+        });
+        const instruction = fallbackChain.buildFallbackInstruction({
+          workerId,
+          failedProvider: model?.split("/")[0],
+          failedModel: model?.split("/").slice(1).join("/") || model,
+          reason: outputText.slice(0, 300) || "provider failure detected",
+          result,
+          chainLength: chain.length,
+        });
+        const nextModel = result.slot?.model;
+        appendActivity(activityFile, {
+          event: "FallbackTriggered",
+          provider: "opencode",
+          at: now(),
+          workerId,
+          slotId: workerId,
+          sessionId: rootSessionId,
+          failedModel: model,
+          nextModel,
+          reason: outputText.slice(0, 300),
+          message: instruction,
+        });
+        queueNudge(rootSessionId, instruction);
+      }
+    }
 
     // (3) Single review-gate pass equivalent — BEST-EFFORT (see the
     // reviewGateByParentSession comment in createPlugin above for why this

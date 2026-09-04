@@ -22,6 +22,11 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   { event: "PreToolUse", matcher: "Task|Agent|Skill" },
   { event: "PreToolUse", matcher: "Read|Write|Edit|Grep|Glob|Bash" },
   { event: "PreToolUse", matcher: "mcp__.*" },
+  // p15-t1: detects a provider failure (quota/unavailable/unreachable) on a
+  // registered backend MCP tool result and injects the fallback-chain
+  // re-dispatch instruction — see hooks/tycoon-claude-hook.cjs's PostToolUse
+  // branch and src/core/fallbackChain.ts.
+  { event: "PostToolUse", matcher: "mcp__.*" },
   { event: "SubagentStop", matcher: "" },
   { event: "Stop", matcher: "" },
   { event: "TaskCompleted", matcher: "" },

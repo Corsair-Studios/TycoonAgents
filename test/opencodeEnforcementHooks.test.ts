@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 const PLUGIN_SRC_PATH = join(process.cwd(), "hooks", "tycoon-opencode-plugin.ts");
 const DELEGATION_ENFORCEMENT_JS = join(process.cwd(), "out", "src", "core", "delegationEnforcement.js");
+const FALLBACK_CHAIN_JS = join(process.cwd(), "out", "src", "core", "fallbackChain.js");
 
 function compilePlugin(): string {
   const moduleDir = mkdtempSync(join(tmpdir(), "tycoon-opencode-enforce-"));
@@ -44,6 +45,7 @@ function compilePlugin(): string {
   // — copy the real compiled module next to the scratch plugin file, exactly
   // as scripts/copy-hook-runtime.mjs does for a real install.
   writeFileSync(join(moduleDir, "delegationEnforcement.js"), readFileSync(DELEGATION_ENFORCEMENT_JS, "utf8"), "utf8");
+  writeFileSync(join(moduleDir, "fallbackChain.js"), readFileSync(FALLBACK_CHAIN_JS, "utf8"), "utf8");
   return modulePath;
 }
 
@@ -184,4 +186,125 @@ test("a leaf worker's direct Read call is never nudged (mirrors the Claude hook'
   const output: { system: string[] } = { system: [] };
   await plugin.chatSystemTransform({ sessionID: "leaf-session-2" }, output);
   assert.equal(output.system.length, 0, "a leaf's own direct tool calls must not be nudged");
+});
+
+// ---------------------------------------------------------------------------
+// p15-t1: provider-failure fallback dispatch.
+// ---------------------------------------------------------------------------
+
+function writeRoutingGenerated(directory: string, agentId: string, fallback: string[]): void {
+  mkdirSync(join(directory, ".opencode"), { recursive: true });
+  writeFileSync(
+    join(directory, ".opencode", "tycoon-routing.generated.json"),
+    JSON.stringify({ agents: { [agentId]: { model: "anthropic/sonnet", fallback } }, orchestrator: {} }, null, 2),
+    "utf8"
+  );
+}
+
+test("provider failure on a slot with a 2-deep fallback chain queues an instruction naming fallback[0], then fallback[1] on a second failure, then exhaustion on a third", async () => {
+  const mod = requireFreshPlugin();
+  const directory = setupDirectory();
+  writeRoutingGenerated(directory, "coding-specialist", ["openai/gpt-5.4-mini", "moonshot/kimi-k2"]);
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+
+  await plugin.toolExecuteBefore({
+    tool: "task",
+    sessionID: "root-session",
+    args: { subagent_type: "coding-specialist", description: "implement thing" },
+  });
+
+  await plugin.toolExecuteAfter(
+    { tool: "task", sessionID: "root-session", args: { subagent_type: "coding-specialist" } },
+    {
+      metadata: {
+        parentSessionId: "root-session",
+        sessionId: "child-session-1",
+        model: { providerID: "anthropic", modelID: "sonnet" },
+      },
+      output: "<task>Error: usage limit reached for this account</task>",
+    }
+  );
+
+  let records = readActivity(plugin._paths.activityFile);
+  let triggered = records.filter((r) => r.event === "FallbackTriggered");
+  assert.equal(triggered.length, 1, "expected one FallbackTriggered record after the first failure");
+  assert.equal(triggered[0].nextModel, "openai/gpt-5.4-mini");
+  assert.match(String(triggered[0].message), /fallback 1 of 2/);
+
+  const out1: { system: string[] } = { system: [] };
+  await plugin.chatSystemTransform({ sessionID: "root-session" }, out1);
+  assert.equal(out1.system.length, 1);
+  assert.match(out1.system[0], /openai\/gpt-5\.4-mini/);
+
+  // A second re-dispatch on the same slot fails again -> fallback[1].
+  await plugin.toolExecuteBefore({
+    tool: "task",
+    sessionID: "root-session",
+    args: { subagent_type: "coding-specialist", description: "retry implement thing" },
+  });
+  await plugin.toolExecuteAfter(
+    { tool: "task", sessionID: "root-session", args: { subagent_type: "coding-specialist" } },
+    {
+      metadata: {
+        parentSessionId: "root-session",
+        sessionId: "child-session-2",
+        model: { providerID: "openai", modelID: "gpt-5.4-mini" },
+      },
+      output: "<task>Error: rate limit exceeded</task>",
+    }
+  );
+  records = readActivity(plugin._paths.activityFile);
+  triggered = records.filter((r) => r.event === "FallbackTriggered");
+  assert.equal(triggered.length, 2);
+  assert.equal(triggered[1].nextModel, "moonshot/kimi-k2");
+  assert.match(String(triggered[1].message), /fallback 2 of 2/);
+
+  // A third failure exhausts the chain.
+  await plugin.toolExecuteAfter(
+    { tool: "task", sessionID: "root-session", args: { subagent_type: "coding-specialist" } },
+    {
+      metadata: {
+        parentSessionId: "root-session",
+        sessionId: "child-session-3",
+        model: { providerID: "moonshot", modelID: "kimi-k2" },
+      },
+      output: "<task>Error: 401 Unauthorized</task>",
+    }
+  );
+  records = readActivity(plugin._paths.activityFile);
+  triggered = records.filter((r) => r.event === "FallbackTriggered");
+  assert.equal(triggered.length, 3);
+  assert.equal(triggered[2].nextModel, undefined);
+  assert.match(String(triggered[2].message), /exhausted/i);
+});
+
+test("a successful task result produces no FallbackTriggered record and no fallback nudge", async () => {
+  const mod = requireFreshPlugin();
+  const directory = setupDirectory();
+  writeRoutingGenerated(directory, "coding-specialist", ["openai/gpt-5.4-mini"]);
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+
+  await plugin.toolExecuteBefore({
+    tool: "task",
+    sessionID: "root-session-ok",
+    args: { subagent_type: "coding-specialist", description: "implement thing" },
+  });
+  await plugin.toolExecuteAfter(
+    { tool: "task", sessionID: "root-session-ok", args: { subagent_type: "coding-specialist" } },
+    {
+      metadata: {
+        parentSessionId: "root-session-ok",
+        sessionId: "child-session-ok",
+        model: { providerID: "anthropic", modelID: "sonnet" },
+      },
+      output: "<task>Done: implemented the thing.</task>",
+    }
+  );
+
+  const records = readActivity(plugin._paths.activityFile);
+  assert.equal(records.some((r) => r.event === "FallbackTriggered"), false);
+
+  const out: { system: string[] } = { system: [] };
+  await plugin.chatSystemTransform({ sessionID: "root-session-ok" }, out);
+  assert.equal(out.system.length, 0);
 });
