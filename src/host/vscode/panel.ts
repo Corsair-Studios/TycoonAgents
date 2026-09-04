@@ -47,6 +47,7 @@ import {
   type DoctrineRosterAgent,
 } from "./delegationDoctrine";
 import { readAgentFrontmatter, parseAgentBackend } from "../../core/agentBackend";
+import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv } from "../../core/routingHostOps";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
@@ -1088,6 +1089,24 @@ export class TycoonPanel {
             this._handleInstallHooks(this._coerceDelegationMode(parsedInstallHooks.data.delegation_mode));
           } else {
             console.error("TycoonAgents: installHooks payload rejected:", parsedInstallHooks.error.message);
+          }
+        } else if (message.type === MSG.GET_ROUTING) {
+          this._handleGetRouting();
+        } else if (message.type === MSG.SAVE_ROUTING) {
+          const parsedSaveRouting = MSG_SCHEMAS.SAVE_ROUTING.safeParse(message);
+          if (parsedSaveRouting.success) {
+            this._handleSaveRouting(parsedSaveRouting.data.profile);
+          } else {
+            console.error("TycoonAgents: saveRouting payload rejected:", parsedSaveRouting.error.message);
+          }
+        } else if (message.type === MSG.CLEAR_ROUTING) {
+          this._handleClearRouting();
+        } else if (message.type === MSG.PROBE_ENV) {
+          const parsedProbeEnv = MSG_SCHEMAS.PROBE_ENV.safeParse(message);
+          if (parsedProbeEnv.success) {
+            this._handleProbeEnv(parsedProbeEnv.data.names);
+          } else {
+            console.error("TycoonAgents: probeEnv payload rejected:", parsedProbeEnv.error.message);
           }
         } else if (message.type === MSG.GET_SETTINGS) {
           this._handleGetSettings();
@@ -6797,6 +6816,40 @@ export class TycoonPanel {
     return this._cachedToolCompliance;
   }
 
+  /** Post the current routing view (see src/core/routingHostOps.ts's RoutingView). */
+  private _handleGetRouting(): void {
+    const root = this._projectRoot();
+    const view = buildRoutingView({ root, env: process.env });
+    void this._panel.webview.postMessage({ type: MSG.ROUTING, payload: view });
+  }
+
+  /**
+   * Validate + write a new routing profile, run both generators, then
+   * re-post a fresh MSG.ROUTING (mirrors _handleSetAgentModel's re-post
+   * pattern). scriptsDir is this extension's own install root — the
+   * generator scripts live at `<extensionPath>/scripts/*.mjs`.
+   */
+  private _handleSaveRouting(profile: unknown): void {
+    const root = this._projectRoot();
+    const result = saveRoutingProfile({ root, profile, scriptsDir: this._extensionUri.fsPath });
+    void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
+    this._handleGetRouting();
+  }
+
+  /** Delete routing.json and rerun both generators, then re-post a fresh MSG.ROUTING. */
+  private _handleClearRouting(): void {
+    const root = this._projectRoot();
+    const result = clearRoutingProfile({ root, scriptsDir: this._extensionUri.fsPath });
+    void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
+    this._handleGetRouting();
+  }
+
+  /** Boolean-only env-var presence probe (never a value) for the Routing screen's credential indicators. */
+  private _handleProbeEnv(names: string[]): void {
+    const result = probeEnv(names, process.env);
+    void this._panel.webview.postMessage({ type: MSG.ENV_PROBE, payload: result });
+  }
+
   /** Post the current settings snapshot (hook + per-agent model/keywords). */
   private _handleGetSettings(): void {
     const root = this._projectRoot();
@@ -8324,6 +8377,7 @@ export class TycoonPanel {
       <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
       <button class="menu-item" role="menuitem" id="menu-uefn">UEFN / Verse</button>
       <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
+      <button class="menu-item" role="menuitem" id="menu-routing">Routing</button>
       <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
       <button class="menu-item" role="menuitem" id="menu-about">About</button>
       ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ""}

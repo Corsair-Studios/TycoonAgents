@@ -97,6 +97,27 @@ Already implemented host-side in `src/extension/main.ts` via `sendTelemetryUpdat
 | `NORMALIZE_THEME_CHARACTER` | `{ theme_id: string, item_id: string, image_provider: "gemini" | "openai" }` | Regenerate a character board on a provider-enforced 1:1 canvas, retain it as an exact 512×512 PNG, then fit its square frames to the shared production scale. The replacement returns to pending review. During active generation, only the character currently awaiting review can be normalized. |
 | `RETRY_THEME_IMAGE` | `{ theme_id: string, item_id: string, feedback?: string, mode: "augment" | "replace" | "retry", image_provider: "gemini" | "openai", character_name?: string }` | Generate or regenerate one image and update the corresponding saved frame keys. `retry` reuses the saved prompt verbatim and requires no feedback. This also recovers an unfinished item with no image after a run stops. During an active run, only the exact item waiting at the review gate is eligible. Character retries may rename the character in the same action. |
 
+## Routing Panel (p13-t1/t2/t4)
+
+Host-agnostic implementation: `src/core/routingHostOps.ts` (`buildRoutingView`/`saveRoutingProfile`/`clearRoutingProfile`/`probeEnv`), compiled to `out/src/core/routingHostOps.js` and required directly by both hosts — `src/host/vscode/panel.ts` (`_handleGetRouting`/`_handleSaveRouting`/`_handleClearRouting`/`_handleProbeEnv`) and `standalone/src/server.mjs` (`handleBrowserMessage`'s `getRouting`/`saveRouting`/`clearRouting`/`probeEnv` cases). Wire strings live in `src/host/vscode/messages.ts`'s `MSG` object; the standalone matches them as literal strings (same posture as every other case in its switch). Backend/RoutingSlot/RoutingProfile shapes are `src/core/agentBackend.ts`/`src/core/routingProfile.ts`'s existing types; `src/shared/types.ts` carries a dependency-free mirror of the wire payload for callers that don't want to pull in `fs`/`child_process`.
+
+### Inbound Messages (Webview → Host)
+
+| type | payload | description |
+|------|---------|-------------|
+| `getRouting` | _(none)_ | Request the current routing view: the parsed profile (or `null`), every agent's effective backend and how it was resolved, the orchestrator's effective backend, an env-presence probe, and vendor/model presets. |
+| `saveRouting` | `{ profile: RoutingProfile }` | Validate (structurally, and for secret-shaped keys, via the same `loadRoutingProfile` round-trip the profile loader itself runs) and atomically write `.claude/tycoon/routing.json`, then run both generators (`scripts/apply-routing-profile.mjs`, `scripts/generate-opencode-config.mjs`) in `--check`-then-write order. An invalid or secret-carrying profile writes nothing. |
+| `clearRouting` | _(none)_ | Delete `.claude/tycoon/routing.json` (a no-op if already absent) and rerun both generators so every agent falls back to its own frontmatter/alias/default. |
+| `probeEnv` | `{ names: string[] }` | Boolean-only presence check for the given env var NAMES (never values). Names not matching `/^[A-Z][A-Z0-9_]{0,63}$/` are silently dropped from the reply. |
+
+### Outbound Messages (Host → Webview) — Routing
+
+| type | payload | description |
+|------|---------|-------------|
+| `routing` | `{ profile: RoutingProfile \| null, path: string, errors: string[], orchestrator: { id, backend, source }, agents: Array<{ id, name, description?, backend, source }>, envProbe: Record<string, boolean>, presets: { vendors: string[], models: Array<{ id, vendor, costModelClass, label }> }, lastApplied: { claude?: string, opencode?: string } }` | Reply to `getRouting`, and re-posted fresh after a successful `saveRouting`/`clearRouting`. `source` is one of `"routing" \| "frontmatter" \| "alias" \| "default"`, matching the exact precedence `apply-routing-profile.mjs`/`generate-opencode-config.mjs` use: a `routing.json` entry wins outright, then the agent's own `backend:` frontmatter block, then a bare `model:` alias, then the anthropic/`unknown` built-in default. `lastApplied` reflects the last time each generator's REAL (non-`--check`) run exited 0, from `.claude/tycoon/routing-applied.json`. |
+| `routingSaved` | `{ ok: boolean, errors: string[], check: { claude: {code, output}, opencode: {code, output} }, write: { claude: {code, output}, opencode: {code, output} } }` | Reply to `saveRouting`/`clearRouting`, immediately followed by a fresh `routing` reply. `errors` is non-empty (and `check`/`write` are empty placeholders) when the profile itself was rejected before either generator ran. |
+| `envProbe` | `Record<string, boolean>` | Reply to `probeEnv`. |
+
 ### Outbound Messages (Host → Webview)
 
 | type | payload | description |

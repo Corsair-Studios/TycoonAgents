@@ -5906,3 +5906,250 @@ button.theme-review-preview:focus-visible::after {
   0%   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(0.94); }
 }
+
+/* ── Routing panel (plan p13-t1) ──────────────────────────────────────── */
+/* Mirrors #about-modal's backdrop/dialog/title structure exactly. */
+#routing-modal[hidden] {
+  display: none;
+}
+
+#routing-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#routing-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+#routing-dialog {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px 24px;
+  width: min(760px, 92vw);
+  max-height: 84vh;
+  overflow-y: auto;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#routing-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+#routing-modal-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+#routing-modal-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.routing-errors {
+  border: 1px solid var(--status-error, #c0392b);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.routing-error-line {
+  font-size: 12px;
+  color: var(--status-error, #c0392b);
+  margin: 2px 0;
+}
+
+.routing-slot-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.routing-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 120px;
+  font-size: 11px;
+}
+
+.routing-field-row label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+}
+
+.routing-field-row select,
+.routing-field-row input[type="text"] {
+  font-size: 12px;
+  padding: 3px 6px;
+  background: var(--surface-2, var(--surface));
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.routing-slot-meta {
+  display: flex;
+  gap: 6px;
+}
+
+.routing-env-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 160px;
+  font-size: 11px;
+}
+
+.routing-env-field label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+}
+
+.routing-env-input {
+  font-size: 12px;
+  padding: 3px 6px;
+  background: var(--surface-2, var(--surface));
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.routing-env-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 2px;
+}
+
+.routing-env-dot--set {
+  background: var(--status-active, #2ecc71);
+}
+
+.routing-env-dot--unset {
+  background: var(--status-error, #c0392b);
+}
+
+.routing-env-dot--unknown {
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.routing-source-chip {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.routing-source-chip--routing {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.routing-agents-table td,
+.routing-agents-table th {
+  vertical-align: top;
+}
+
+.routing-slot-td {
+  min-width: 320px;
+}
+
+.routing-agent-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.routing-fallback-details summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.routing-fallback-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.routing-fallback-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.routing-fallback-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.routing-inline-link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+.routing-inline-link-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.routing-inline-link-btn--danger {
+  color: var(--status-error, #c0392b);
+}
+
+.routing-add-fallback-btn {
+  margin-top: 4px;
+}
+
+.routing-actions-row {
+  flex-direction: row;
+  gap: 8px;
+}
+
+.routing-clear-btn {
+  color: var(--status-error, #c0392b);
+}

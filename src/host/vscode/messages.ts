@@ -311,6 +311,19 @@ export const MSG = {
   REQUEST_OFFLOAD_OFFER_STATE: "REQUEST_OFFLOAD_OFFER_STATE",
   OFFLOAD_OFFER_STATE: "OFFLOAD_OFFER_STATE",
   SET_OFFLOAD_OFFER_DISMISSED: "SET_OFFLOAD_OFFER_DISMISSED",
+
+  // ---- Routing panel (p13-t1/t2/t4) --------------------------------------
+  // Host-agnostic implementation lives in src/core/routingHostOps.ts
+  // (buildRoutingView/saveRoutingProfile/clearRoutingProfile/probeEnv),
+  // shared verbatim by panel.ts and standalone/src/server.mjs. See
+  // docs/IPC-CONTRACT.md's Routing section for the full payload shapes.
+  GET_ROUTING: "getRouting",
+  ROUTING: "routing",
+  SAVE_ROUTING: "saveRouting",
+  ROUTING_SAVED: "routingSaved",
+  CLEAR_ROUTING: "clearRouting",
+  PROBE_ENV: "probeEnv",
+  ENV_PROBE: "envProbe",
 } as const;
 
 /** Union of every wire string this module knows about (either direction). */
@@ -380,6 +393,14 @@ export const MSG_SCHEMAS = {
   SET_SESSION_JOURNAL_ENTRIES: z
     .object({ entries: z.number().int().min(0).max(5) })
     .passthrough(),
+
+  // ---- Routing panel (p13-t1/t2/t4) ---------------------------------------
+  // `profile` is validated structurally by routingHostOps.saveRoutingProfile
+  // itself (round-trip through loadRoutingProfile) — here we only require
+  // it to be a plain object so a malformed payload can't crash the handler
+  // before reaching that validation.
+  SAVE_ROUTING: z.object({ profile: z.record(z.unknown()) }).passthrough(),
+  PROBE_ENV: z.object({ names: z.array(z.string()) }).passthrough(),
 
   // ---- theme: stage tuning / background / manual image upload -------------
   SAVE_STAGE_TUNING: z

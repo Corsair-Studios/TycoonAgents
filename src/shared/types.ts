@@ -226,3 +226,78 @@ export interface ProjectPlan {
   currentPhaseId: string | null;
   currentTaskId: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Routing panel (plan p13-t1/t2/t4) — wire-shape mirror of
+// src/core/routingHostOps.ts's RoutingView/Backend/RoutingSlot types for
+// hosts/webviews that want a plain data-only contract without importing
+// core (which pulls in fs/child_process). Keep in sync with
+// routingHostOps.ts and docs/IPC-CONTRACT.md's Routing section by hand —
+// this file intentionally stays dependency-free.
+// ---------------------------------------------------------------------------
+
+export type RoutingTransport = 'claude-native' | 'mcp' | 'openai-compatible';
+export type RoutingCostModelClass = 'metered' | 'subscription' | 'local';
+export type RoutingSource = 'routing' | 'frontmatter' | 'alias' | 'default';
+
+export interface RoutingBackend {
+  vendor: string;
+  transport: RoutingTransport;
+  mcpServer?: string;
+  tools?: string[];
+  model: string;
+  costModelClass: RoutingCostModelClass;
+  endpointEnv?: string;
+  apiKeyEnv?: string;
+}
+
+export interface RoutingSlot {
+  vendor?: string;
+  transport?: RoutingTransport;
+  mcpServer?: string;
+  tools?: string[];
+  model?: string;
+  costModelClass?: RoutingCostModelClass;
+  endpointEnv?: string;
+  credentialEnv?: string;
+  fallback?: RoutingSlot[];
+}
+
+export interface RoutingProfile {
+  version: 1;
+  orchestrator?: RoutingSlot;
+  agents: Record<string, RoutingSlot>;
+  defaults?: Partial<RoutingSlot>;
+}
+
+export interface RoutingAgentEntry {
+  id: string;
+  name: string;
+  description?: string;
+  backend: RoutingBackend;
+  source: RoutingSource;
+}
+
+export interface RoutingOrchestratorEntry {
+  id: string;
+  backend: RoutingBackend;
+  source: RoutingSource;
+}
+
+export interface RoutingModelPreset {
+  id: string;
+  vendor: string;
+  costModelClass: RoutingCostModelClass;
+  label: string;
+}
+
+export interface RoutingViewPayload {
+  profile: RoutingProfile | null;
+  path: string;
+  errors: string[];
+  orchestrator: RoutingOrchestratorEntry;
+  agents: RoutingAgentEntry[];
+  envProbe: Record<string, boolean>;
+  presets: { vendors: string[]; models: RoutingModelPreset[] };
+  lastApplied: { claude?: string; opencode?: string };
+}

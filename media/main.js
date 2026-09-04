@@ -2985,6 +2985,20 @@
     themesModalCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
   }
 
+  // ── Routing modal entry point ───────────────────────────────────────────
+  // #menu-routing ships in panel.ts's static HTML template (both hosts serve
+  // it) — bind to it directly, guarded, the same way menuThemesBtn is.
+  var menuRoutingBtn = document.getElementById("menu-routing");
+  if (menuRoutingBtn) {
+    menuRoutingBtn.addEventListener("click", () => {
+      closeMenu();
+      ensureRoutingModal();
+      renderRoutingModal();
+      openModal(routingModalEl, routingCloseBtnEl);
+      vscode.postMessage({ type: ROUTING_MSG.GET });
+    });
+  }
+
   if (themesFooterCloseBtn) {
     themesFooterCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
   }
@@ -12498,6 +12512,12 @@
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();
+    } else if (msg && msg.type === ROUTING_MSG.ROUTING) {
+      handleRoutingPayload(msg.payload || null);
+    } else if (msg && msg.type === ROUTING_MSG.SAVED) {
+      handleRoutingSaved(msg);
+    } else if (msg && msg.type === ROUTING_MSG.PROBE_REPLY) {
+      handleEnvProbeReply(msg);
     } else if (msg && msg.type === "settingsUpdated") {
       handleSettingsUpdated(msg);
     } else if (msg && msg.type === "pathOverrideResult") {
@@ -16606,6 +16626,640 @@
 
     bodyEl.appendChild(feedbackSection);
     updateFeedbackCharCounter();
+  }
+
+  // ── Routing panel (plan p13-t1, webview half) ───────────────────────────
+  // Wire strings mirror src/host/vscode/messages.ts's routing block byte-for-
+  // byte, the same way every other handler in this file matches messages.ts
+  // literals by hand (main.js has no MSG constant object of its own to
+  // import from — see the `settings`/`getSettings` pair above for the
+  // existing pattern this follows).
+  var ROUTING_MSG = {
+    GET: "getRouting",
+    ROUTING: "routing",
+    SAVE: "saveRouting",
+    SAVED: "routingSaved",
+    CLEAR: "clearRouting",
+    PROBE: "probeEnv",
+    PROBE_REPLY: "envProbe",
+  };
+
+  var ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+  var SLOT_SCALAR_FIELDS = ["vendor", "transport", "mcpServer", "model", "costModelClass", "endpointEnv", "credentialEnv"];
+
+  var lastRoutingPayload = null; // last "routing" push from host: { profile, path, errors, orchestrator, agents, envProbe, presets, lastApplied }
+  var routingDraft = null;       // working copy: { orchestrator: slot|null, agents: { [id]: slot } }
+  var routingEnvProbe = {};      // merged env-var name -> boolean (set) cache, seeded from payload.envProbe + probeEnv replies
+  var routingSaving = false;
+  var routingLastResult = null;  // last routingSaved payload, for the collapsed check/write output block
+  var routingModalEl = null, routingBackdropEl = null, routingCloseBtnEl = null, routingBodyEl = null;
+
+  function cloneSlotFromBackend(backend) {
+    if (!backend) return {};
+    var slot = { vendor: backend.vendor, transport: backend.transport, model: backend.model, costModelClass: backend.costModelClass };
+    if (backend.mcpServer) slot.mcpServer = backend.mcpServer;
+    if (Array.isArray(backend.tools) && backend.tools.length) slot.tools = backend.tools.slice();
+    if (backend.endpointEnv) slot.endpointEnv = backend.endpointEnv;
+    if (backend.apiKeyEnv) slot.credentialEnv = backend.apiKeyEnv; // Backend.apiKeyEnv -> RoutingSlot.credentialEnv
+    return slot;
+  }
+
+  /** Deep-copy a RoutingSlot (or slot-shaped object) including its fallback chain, dropping empty string fields. */
+  function cloneRoutingSlot(slot) {
+    if (!slot) return {};
+    var out = {};
+    SLOT_SCALAR_FIELDS.forEach(function (k) {
+      if (slot[k] !== undefined && slot[k] !== "") out[k] = slot[k];
+    });
+    if (Array.isArray(slot.tools) && slot.tools.length) out.tools = slot.tools.slice();
+    out.fallback = Array.isArray(slot.fallback) ? slot.fallback.slice(0, 3).map(cloneRoutingSlot) : [];
+    return out;
+  }
+
+  /** Strip empty/undefined fields + empty fallback arrays for the outgoing profile. Never a key that looks like a secret — only env var NAMES ever land here. */
+  function cleanRoutingSlot(slot) {
+    if (!slot) return undefined;
+    var out = {};
+    SLOT_SCALAR_FIELDS.forEach(function (k) {
+      if (slot[k] !== undefined && slot[k] !== null && slot[k] !== "") out[k] = slot[k];
+    });
+    if (Array.isArray(slot.tools) && slot.tools.length) out.tools = slot.tools.slice();
+    if (Array.isArray(slot.fallback) && slot.fallback.length) {
+      var fb = slot.fallback.slice(0, 3).map(cleanRoutingSlot).filter(Boolean);
+      if (fb.length) out.fallback = fb;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  /** Build the editable working copy from a fresh "routing" payload. */
+  function buildRoutingDraft(payload) {
+    var draft = { orchestrator: null, agents: {} };
+    var profile = payload && payload.profile;
+    if (payload && payload.orchestrator) {
+      draft.orchestrator = cloneRoutingSlot((profile && profile.orchestrator) || cloneSlotFromBackend(payload.orchestrator.backend));
+    }
+    var agents = (payload && payload.agents) || [];
+    agents.forEach(function (a) {
+      var existing = profile && profile.agents && profile.agents[a.id];
+      draft.agents[a.id] = cloneRoutingSlot(existing || cloneSlotFromBackend(a.backend));
+    });
+    return draft;
+  }
+
+  function sanitizeEnvName(raw) {
+    return String(raw || "").toUpperCase().replace(/[^A-Z0-9_]/g, "");
+  }
+
+  function updateRoutingEnvDots(name) {
+    var known = Object.prototype.hasOwnProperty.call(routingEnvProbe, name);
+    var set = !!routingEnvProbe[name];
+    document.querySelectorAll('.routing-env-dot[data-env-name="' + name.replace(/"/g, '\\"') + '"]').forEach(function (dot) {
+      dot.classList.remove("routing-env-dot--set", "routing-env-dot--unset", "routing-env-dot--unknown");
+      dot.classList.add(known ? (set ? "routing-env-dot--set" : "routing-env-dot--unset") : "routing-env-dot--unknown");
+      dot.title = known ? (set ? name + " is set" : name + " is not set") : name + " not probed yet";
+    });
+  }
+
+  function probeEnvName(name) {
+    if (!name || !ENV_NAME_RE.test(name)) return;
+    vscode.postMessage({ type: ROUTING_MSG.PROBE, names: [name] });
+  }
+
+  /** An env-var name input (never a value) + its live set/unset dot. */
+  function buildEnvNameField(labelText, value, onChange) {
+    var wrap = document.createElement("div");
+    wrap.className = "routing-env-field";
+    var label = document.createElement("label");
+    label.textContent = labelText;
+    wrap.appendChild(label);
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "routing-env-input";
+    input.value = value || "";
+    input.placeholder = "env var NAME, never the value";
+    input.addEventListener("input", function () {
+      var clean = sanitizeEnvName(input.value);
+      if (clean !== input.value) input.value = clean;
+      onChange(clean);
+    });
+    input.addEventListener("blur", function () {
+      if (input.value) probeEnvName(input.value);
+    });
+    wrap.appendChild(input);
+    var dot = document.createElement("span");
+    dot.className = "routing-env-dot routing-env-dot--unknown";
+    dot.setAttribute("data-env-name", value || "");
+    wrap.appendChild(dot);
+    // Paint from the cache directly (not via updateRoutingEnvDots' DOM query,
+    // which only finds dots already attached to the document — this one
+    // isn't yet, since the caller hasn't inserted `wrap` anywhere).
+    if (value && Object.prototype.hasOwnProperty.call(routingEnvProbe, value)) {
+      dot.classList.remove("routing-env-dot--unknown");
+      dot.classList.add(routingEnvProbe[value] ? "routing-env-dot--set" : "routing-env-dot--unset");
+      dot.title = routingEnvProbe[value] ? value + " is set" : value + " is not set";
+    }
+    // Keep data-env-name in sync so updateRoutingEnvDots can find this dot after edits.
+    input.addEventListener("input", function () {
+      dot.setAttribute("data-env-name", input.value);
+      dot.classList.remove("routing-env-dot--set", "routing-env-dot--unset");
+      dot.classList.add("routing-env-dot--unknown");
+    });
+    return wrap;
+  }
+
+  var ROUTING_VENDOR_CUSTOM = "custom-endpoint";
+
+  /**
+   * Render the editor for one RoutingSlot (orchestrator, an agent row, or a
+   * fallback entry). `opts.presets` is payload.presets. `onStructural` is
+   * called (with no args) when a change should re-render the whole modal
+   * (vendor/transport switches, which change which fields are visible);
+   * scalar edits mutate `slot` in place with no re-render.
+   */
+  function buildSlotEditorFields(slot, presets, onStructural) {
+    var frag = document.createElement("div");
+    frag.className = "routing-slot-fields";
+
+    // Vendor (+ the "Custom endpoint" preset)
+    var vendorRow = document.createElement("div");
+    vendorRow.className = "routing-field-row";
+    var vendorLabel = document.createElement("label");
+    vendorLabel.textContent = "Vendor";
+    vendorRow.appendChild(vendorLabel);
+    var vendorSel = document.createElement("select");
+    vendorSel.className = "routing-vendor-select";
+    var vendorOptions = (presets && presets.vendors) || [];
+    [""].concat(vendorOptions).forEach(function (v) {
+      var opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = v || "(none)";
+      if (v === slot.vendor) opt.selected = true;
+      vendorSel.appendChild(opt);
+    });
+    var customOpt = document.createElement("option");
+    customOpt.value = ROUTING_VENDOR_CUSTOM;
+    customOpt.textContent = "Custom endpoint…";
+    if (slot.vendor === ROUTING_VENDOR_CUSTOM) customOpt.selected = true;
+    vendorSel.appendChild(customOpt);
+    vendorSel.addEventListener("change", function () {
+      slot.vendor = vendorSel.value;
+      if (vendorSel.value === ROUTING_VENDOR_CUSTOM) slot.transport = "openai-compatible";
+      onStructural();
+    });
+    vendorRow.appendChild(vendorSel);
+    frag.appendChild(vendorRow);
+
+    var isCustom = slot.vendor === ROUTING_VENDOR_CUSTOM;
+
+    // Model: preset select-with-free-text, or a bare free-text input for Custom endpoint.
+    var modelRow = document.createElement("div");
+    modelRow.className = "routing-field-row";
+    var modelLabel = document.createElement("label");
+    modelLabel.textContent = "Model";
+    modelRow.appendChild(modelLabel);
+    var models = ((presets && presets.models) || []).filter(function (m) {
+      return !slot.vendor || slot.vendor === ROUTING_VENDOR_CUSTOM || m.vendor === slot.vendor;
+    });
+    var matchesPreset = models.some(function (m) { return m.id === slot.model; });
+    if (isCustom || (!matchesPreset && slot.model)) {
+      var modelInput = document.createElement("input");
+      modelInput.type = "text";
+      modelInput.className = "routing-model-input";
+      modelInput.placeholder = "model id";
+      modelInput.value = slot.model || "";
+      modelInput.addEventListener("input", function () { slot.model = modelInput.value; });
+      modelRow.appendChild(modelInput);
+      if (!isCustom) {
+        var backToPreset = document.createElement("button");
+        backToPreset.type = "button";
+        backToPreset.className = "routing-inline-link-btn";
+        backToPreset.textContent = "Choose from list";
+        backToPreset.addEventListener("click", function () { slot.model = ""; onStructural(); });
+        modelRow.appendChild(backToPreset);
+      }
+    } else {
+      var modelSel = document.createElement("select");
+      modelSel.className = "routing-model-select";
+      var blankOpt = document.createElement("option");
+      blankOpt.value = "";
+      blankOpt.textContent = "(none)";
+      if (!slot.model) blankOpt.selected = true;
+      modelSel.appendChild(blankOpt);
+      models.forEach(function (m) {
+        var opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.label || m.id;
+        if (m.id === slot.model) opt.selected = true;
+        modelSel.appendChild(opt);
+      });
+      var customModelOpt = document.createElement("option");
+      customModelOpt.value = "__custom__";
+      customModelOpt.textContent = "Custom…";
+      modelSel.appendChild(customModelOpt);
+      modelSel.addEventListener("change", function () {
+        if (modelSel.value === "__custom__") { slot.model = ""; onStructural(); return; }
+        slot.model = modelSel.value;
+      });
+      modelRow.appendChild(modelSel);
+    }
+    frag.appendChild(modelRow);
+
+    // Transport
+    var transportRow = document.createElement("div");
+    transportRow.className = "routing-field-row";
+    var transportLabel = document.createElement("label");
+    transportLabel.textContent = "Transport";
+    transportRow.appendChild(transportLabel);
+    var transportSel = document.createElement("select");
+    transportSel.disabled = isCustom; // Custom endpoint forces openai-compatible.
+    ["claude-native", "mcp", "openai-compatible"].forEach(function (t) {
+      var opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = t;
+      if (t === slot.transport) opt.selected = true;
+      transportSel.appendChild(opt);
+    });
+    transportSel.addEventListener("change", function () { slot.transport = transportSel.value; onStructural(); });
+    transportRow.appendChild(transportSel);
+    frag.appendChild(transportRow);
+
+    // Cost model class
+    var costRow = document.createElement("div");
+    costRow.className = "routing-field-row";
+    var costLabel = document.createElement("label");
+    costLabel.textContent = "Cost class";
+    costRow.appendChild(costLabel);
+    var costSel = document.createElement("select");
+    ["metered", "subscription", "local"].forEach(function (c) {
+      var opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      if (c === slot.costModelClass) opt.selected = true;
+      costSel.appendChild(opt);
+    });
+    costSel.addEventListener("change", function () { slot.costModelClass = costSel.value; });
+    costRow.appendChild(costSel);
+    frag.appendChild(costRow);
+
+    // Credential env (always available — a slot may need auth regardless of transport).
+    frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }));
+
+    // Endpoint env (only meaningful for openai-compatible / Custom endpoint).
+    if (slot.transport === "openai-compatible" || isCustom) {
+      frag.appendChild(buildEnvNameField("Endpoint env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }));
+    }
+
+    if (slot.transport === "mcp") {
+      var mcpRow = document.createElement("div");
+      mcpRow.className = "routing-field-row";
+      var mcpLabel = document.createElement("label");
+      mcpLabel.textContent = "MCP server";
+      mcpRow.appendChild(mcpLabel);
+      var mcpInput = document.createElement("input");
+      mcpInput.type = "text";
+      mcpInput.value = slot.mcpServer || "";
+      mcpInput.addEventListener("input", function () { slot.mcpServer = mcpInput.value; });
+      mcpRow.appendChild(mcpInput);
+      frag.appendChild(mcpRow);
+    }
+
+    return frag;
+  }
+
+  /** Fallback chain editor: up to 3 entries, add/remove/reorder. */
+  function buildFallbackEditor(slot, presets, onStructural) {
+    if (!Array.isArray(slot.fallback)) slot.fallback = [];
+    var details = document.createElement("details");
+    details.className = "plan-task-details routing-fallback-details";
+    var summary = document.createElement("summary");
+    summary.textContent = "Fallback chain (" + slot.fallback.length + ")";
+    details.appendChild(summary);
+
+    var list = document.createElement("div");
+    list.className = "routing-fallback-list";
+    slot.fallback.forEach(function (fbSlot, idx) {
+      var item = document.createElement("div");
+      item.className = "routing-fallback-item";
+      var head = document.createElement("div");
+      head.className = "routing-fallback-item-head";
+      var title = document.createElement("span");
+      title.textContent = "Fallback #" + (idx + 1);
+      head.appendChild(title);
+
+      var upBtn = document.createElement("button");
+      upBtn.type = "button";
+      upBtn.className = "routing-inline-link-btn";
+      upBtn.textContent = "↑";
+      upBtn.disabled = idx === 0;
+      upBtn.addEventListener("click", function () {
+        var tmp = slot.fallback[idx - 1];
+        slot.fallback[idx - 1] = slot.fallback[idx];
+        slot.fallback[idx] = tmp;
+        onStructural();
+      });
+      head.appendChild(upBtn);
+
+      var downBtn = document.createElement("button");
+      downBtn.type = "button";
+      downBtn.className = "routing-inline-link-btn";
+      downBtn.textContent = "↓";
+      downBtn.disabled = idx === slot.fallback.length - 1;
+      downBtn.addEventListener("click", function () {
+        var tmp = slot.fallback[idx + 1];
+        slot.fallback[idx + 1] = slot.fallback[idx];
+        slot.fallback[idx] = tmp;
+        onStructural();
+      });
+      head.appendChild(downBtn);
+
+      var removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", function () {
+        slot.fallback.splice(idx, 1);
+        onStructural();
+      });
+      head.appendChild(removeBtn);
+
+      item.appendChild(head);
+      item.appendChild(buildSlotEditorFields(fbSlot, presets, onStructural));
+      list.appendChild(item);
+    });
+    details.appendChild(list);
+
+    var addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "skill-btn settings-btn routing-add-fallback-btn";
+    addBtn.textContent = "+ Add fallback";
+    addBtn.disabled = slot.fallback.length >= 3;
+    addBtn.addEventListener("click", function () {
+      if (slot.fallback.length >= 3) return;
+      slot.fallback.push({});
+      onStructural();
+    });
+    details.appendChild(addBtn);
+
+    return details;
+  }
+
+  function routingSourceChip(source) {
+    var chip = document.createElement("span");
+    chip.className = "routing-source-chip routing-source-chip--" + (source || "default");
+    chip.textContent = source || "default";
+    return chip;
+  }
+
+  /** Create the Routing modal's DOM skeleton once (lazily, on first open). */
+  function ensureRoutingModal() {
+    if (routingModalEl) return;
+    routingModalEl = document.createElement("div");
+    routingModalEl.id = "routing-modal";
+    routingModalEl.setAttribute("role", "dialog");
+    routingModalEl.setAttribute("aria-modal", "true");
+    routingModalEl.setAttribute("aria-labelledby", "routing-modal-title");
+    routingModalEl.setAttribute("hidden", "");
+
+    routingBackdropEl = document.createElement("div");
+    routingBackdropEl.id = "routing-backdrop";
+    routingModalEl.appendChild(routingBackdropEl);
+
+    var dialog = document.createElement("div");
+    dialog.id = "routing-dialog";
+    routingCloseBtnEl = document.createElement("button");
+    routingCloseBtnEl.id = "routing-modal-close";
+    routingCloseBtnEl.setAttribute("aria-label", "Close dialog");
+    routingCloseBtnEl.innerHTML = "&times;";
+    routingCloseBtnEl.addEventListener("click", function () { closeModal(routingModalEl); });
+    dialog.appendChild(routingCloseBtnEl);
+
+    var title = document.createElement("h2");
+    title.id = "routing-modal-title";
+    title.textContent = "Routing";
+    dialog.appendChild(title);
+
+    routingBodyEl = document.createElement("div");
+    routingBodyEl.id = "routing-modal-body";
+    dialog.appendChild(routingBodyEl);
+
+    routingModalEl.appendChild(dialog);
+    document.body.appendChild(routingModalEl);
+  }
+
+  /** Full re-render of the Routing modal body from lastRoutingPayload + routingDraft. */
+  function renderRoutingModal() {
+    if (!routingBodyEl) return;
+    routingBodyEl.innerHTML = "";
+
+    if (!lastRoutingPayload) {
+      var loading = document.createElement("p");
+      loading.className = "settings-empty";
+      loading.textContent = "Loading routing…";
+      routingBodyEl.appendChild(loading);
+      return;
+    }
+    if (!routingDraft) routingDraft = buildRoutingDraft(lastRoutingPayload);
+
+    var payload = lastRoutingPayload;
+    var presets = payload.presets || { vendors: [], models: [] };
+
+    if (Array.isArray(payload.errors) && payload.errors.length) {
+      var errBox = document.createElement("div");
+      errBox.className = "routing-errors";
+      payload.errors.forEach(function (e) {
+        var p = document.createElement("p");
+        p.className = "routing-error-line";
+        p.textContent = e;
+        errBox.appendChild(p);
+      });
+      routingBodyEl.appendChild(errBox);
+    }
+
+    // ── Orchestrator ──
+    var orchSection = buildSection("Orchestrator");
+    if (!routingDraft.orchestrator) routingDraft.orchestrator = {};
+    var orchMeta = document.createElement("div");
+    orchMeta.className = "routing-slot-meta";
+    if (payload.orchestrator) {
+      var orchChip = routingSourceChip(payload.orchestrator.source);
+      orchMeta.appendChild(orchChip);
+    }
+    orchSection.appendChild(orchMeta);
+    orchSection.appendChild(buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal));
+    orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal));
+    routingBodyEl.appendChild(orchSection);
+
+    // ── Per-agent table ──
+    var agentsSection = buildSection("Agents");
+    var agents = payload.agents || [];
+    if (!agents.length) {
+      var noAgents = document.createElement("p");
+      noAgents.className = "settings-empty";
+      noAgents.textContent = "No agents found.";
+      agentsSection.appendChild(noAgents);
+    } else {
+      var table = document.createElement("table");
+      table.className = "metrics-table routing-agents-table";
+      var thead = document.createElement("thead");
+      var headRow = document.createElement("tr");
+      ["Agent", "Source", "Slot", "Fallback"].forEach(function (h) {
+        var th = document.createElement("th");
+        th.textContent = h;
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      var tbody = document.createElement("tbody");
+      agents.forEach(function (a) {
+        if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
+        var slot = routingDraft.agents[a.id];
+        var row = document.createElement("tr");
+        row.className = "routing-agent-row";
+        row.setAttribute("data-agent-id", a.id);
+
+        var nameTd = document.createElement("td");
+        var nameStrong = document.createElement("strong");
+        nameStrong.textContent = a.name || a.id;
+        nameTd.appendChild(nameStrong);
+        if (a.description) {
+          var desc = document.createElement("div");
+          desc.className = "routing-agent-desc";
+          desc.textContent = a.description;
+          nameTd.appendChild(desc);
+        }
+        row.appendChild(nameTd);
+
+        var sourceTd = document.createElement("td");
+        sourceTd.appendChild(routingSourceChip(a.source));
+        row.appendChild(sourceTd);
+
+        var slotTd = document.createElement("td");
+        slotTd.className = "routing-slot-td";
+        slotTd.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal));
+        row.appendChild(slotTd);
+
+        var fbTd = document.createElement("td");
+        fbTd.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal));
+        row.appendChild(fbTd);
+
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+      agentsSection.appendChild(table);
+    }
+    routingBodyEl.appendChild(agentsSection);
+
+    // ── Actions ──
+    var actionsSection = buildSection("Profile");
+    var actionsRow = document.createElement("div");
+    actionsRow.className = "settings-row routing-actions-row";
+
+    var saveBtn = document.createElement("button");
+    saveBtn.id = "routing-save-btn";
+    saveBtn.className = "skill-btn settings-btn";
+    saveBtn.textContent = routingSaving ? "Saving…" : "Save";
+    saveBtn.disabled = routingSaving;
+    saveBtn.addEventListener("click", saveRoutingProfile);
+    actionsRow.appendChild(saveBtn);
+
+    var revertBtn = document.createElement("button");
+    revertBtn.id = "routing-revert-btn";
+    revertBtn.className = "skill-btn settings-btn";
+    revertBtn.textContent = "Revert";
+    revertBtn.disabled = routingSaving;
+    revertBtn.addEventListener("click", function () {
+      routingDraft = buildRoutingDraft(lastRoutingPayload);
+      renderRoutingModal();
+    });
+    actionsRow.appendChild(revertBtn);
+
+    var clearBtn = document.createElement("button");
+    clearBtn.id = "routing-clear-btn";
+    clearBtn.className = "skill-btn settings-btn routing-clear-btn";
+    clearBtn.textContent = "Clear profile";
+    clearBtn.disabled = routingSaving;
+    clearBtn.addEventListener("click", function () {
+      routingSaving = true;
+      renderRoutingModal();
+      vscode.postMessage({ type: ROUTING_MSG.CLEAR });
+    });
+    actionsRow.appendChild(clearBtn);
+
+    actionsSection.appendChild(actionsRow);
+
+    if (routingLastResult) {
+      var resultDetails = document.createElement("details");
+      resultDetails.className = "plan-task-details";
+      var resultSummary = document.createElement("summary");
+      resultSummary.textContent = routingLastResult.ok ? "Save succeeded — check/write output" : "Save failed — check/write output";
+      resultDetails.appendChild(resultSummary);
+      if (Array.isArray(routingLastResult.errors) && routingLastResult.errors.length) {
+        var resErrList = document.createElement("ul");
+        routingLastResult.errors.forEach(function (e) {
+          var li = document.createElement("li");
+          li.textContent = e;
+          resErrList.appendChild(li);
+        });
+        resultDetails.appendChild(resErrList);
+      }
+      var pre = document.createElement("pre");
+      pre.className = "feedback-preview-json";
+      pre.textContent = JSON.stringify({ check: routingLastResult.check, write: routingLastResult.write }, null, 2);
+      resultDetails.appendChild(pre);
+      actionsSection.appendChild(resultDetails);
+    }
+
+    routingBodyEl.appendChild(actionsSection);
+  }
+
+  function assembleRoutingProfile() {
+    var profile = { version: 1, agents: {} };
+    var existingProfile = lastRoutingPayload && lastRoutingPayload.profile;
+    if (existingProfile && existingProfile.defaults) profile.defaults = existingProfile.defaults;
+    var orch = cleanRoutingSlot(routingDraft.orchestrator);
+    if (orch) profile.orchestrator = orch;
+    Object.keys(routingDraft.agents || {}).forEach(function (id) {
+      var cleaned = cleanRoutingSlot(routingDraft.agents[id]);
+      if (cleaned) profile.agents[id] = cleaned;
+    });
+    return profile;
+  }
+
+  function saveRoutingProfile() {
+    if (routingSaving) return;
+    routingSaving = true;
+    routingLastResult = null;
+    renderRoutingModal();
+    vscode.postMessage({ type: ROUTING_MSG.SAVE, profile: assembleRoutingProfile() });
+  }
+
+  function handleRoutingPayload(payload) {
+    lastRoutingPayload = payload || null;
+    routingDraft = buildRoutingDraft(payload);
+    if (payload && payload.envProbe && typeof payload.envProbe === "object") {
+      Object.keys(payload.envProbe).forEach(function (name) {
+        routingEnvProbe[name] = !!payload.envProbe[name];
+      });
+    }
+    renderRoutingModal();
+  }
+
+  function handleRoutingSaved(msg) {
+    // Flat on the message (not under payload) — both panel.ts's
+    // _handleSaveRouting/_handleClearRouting and server.mjs's saveRouting/
+    // clearRouting cases post `{ type: MSG.ROUTING_SAVED, ...result }`.
+    routingSaving = false;
+    routingLastResult = msg ? { ok: msg.ok, errors: msg.errors, check: msg.check, write: msg.write } : null;
+    renderRoutingModal();
+  }
+
+  function handleEnvProbeReply(msg) {
+    var probe = (msg && msg.payload) || {};
+    Object.keys(probe).forEach(function (name) {
+      routingEnvProbe[name] = !!probe[name];
+      updateRoutingEnvDots(name);
+    });
   }
 
   /** Render all settings sections into #setup-config from lastSettings. */

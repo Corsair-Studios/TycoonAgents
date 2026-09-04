@@ -189,6 +189,17 @@ const UEFN_DETECT_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'uef
 const CODE_RULES_DOCTRINE_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'codeRulesDoctrine.js');
 const AGENT_ROSTER_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'claude-code', 'agentRoster.js');
 const AGENT_BACKEND_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'agentBackend.js');
+// Routing panel (p13-t1/t2/t4) host-agnostic bridge — same "pure, no vscode
+// import" posture as the modules above. scriptsDir for both generators is
+// REPO_ROOT itself (this process already resolves it at startup), matching
+// panel.ts's use of context.extensionPath as ITS install root.
+const ROUTING_HOST_OPS_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'routingHostOps.js');
+
+let _routingHostOpsModule;
+function routingHostOpsModule() {
+  if (!_routingHostOpsModule) _routingHostOpsModule = requireCompiledOrThrow(ROUTING_HOST_OPS_JS, 'routingHostOps');
+  return _routingHostOpsModule;
+}
 
 let _delegationDoctrineModule;
 function delegationDoctrineModule() {
@@ -691,6 +702,50 @@ function handleBrowserMessage(msg) {
       // Standalone analog of panel.ts's _handleInstallPack (~line 3768-
       // 3982) — see handleInstallPack() below for what is/isn't replicated.
       handleInstallPack(msg);
+      break;
+    case 'getRouting':
+      // Standalone analog of panel.ts's _handleGetRouting.
+      try {
+        const { buildRoutingView } = routingHostOpsModule();
+        const view = buildRoutingView({ root: primaryProjectRoot || process.cwd(), env: process.env });
+        broadcast('message', { type: 'routing', payload: view });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] getRouting failed:', err);
+      }
+      break;
+    case 'saveRouting':
+      // Standalone analog of panel.ts's _handleSaveRouting.
+      try {
+        const { saveRoutingProfile, buildRoutingView } = routingHostOpsModule();
+        const root = primaryProjectRoot || process.cwd();
+        const result = saveRoutingProfile({ root, profile: payload.profile, scriptsDir: REPO_ROOT });
+        broadcast('message', { type: 'routingSaved', ...result });
+        broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] saveRouting failed:', err);
+      }
+      break;
+    case 'clearRouting':
+      // Standalone analog of panel.ts's _handleClearRouting.
+      try {
+        const { clearRoutingProfile, buildRoutingView } = routingHostOpsModule();
+        const root = primaryProjectRoot || process.cwd();
+        const result = clearRoutingProfile({ root, scriptsDir: REPO_ROOT });
+        broadcast('message', { type: 'routingSaved', ...result });
+        broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] clearRouting failed:', err);
+      }
+      break;
+    case 'probeEnv':
+      // Standalone analog of panel.ts's _handleProbeEnv.
+      try {
+        const { probeEnv } = routingHostOpsModule();
+        const names = Array.isArray(payload.names) ? payload.names : [];
+        broadcast('message', { type: 'envProbe', payload: probeEnv(names, process.env) });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] probeEnv failed:', err);
+      }
       break;
     case 'getSettings':
       // Standalone analog of panel.ts's _handleGetSettings (~line 6783-
@@ -2599,6 +2654,7 @@ function buildHostHtml() {
         <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
         <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
         <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
+        <button class="menu-item" role="menuitem" id="menu-routing">Routing</button>
         <button class="menu-item" role="menuitem" id="menu-about">About</button>
         <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
         ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ''}
