@@ -14252,6 +14252,99 @@
   }
 
   /**
+   * Roll a cumulative agentMetrics array up into per-vendor and
+   * per-costModelClass totals, a fallback-dispatch count, and a list of
+   * "local, time-based" rows for local-model items that carry no token
+   * count (local runtimes often don't report tokens at all, so a 0-token
+   * local agent must show its active time rather than a fabricated/zero
+   * token-equivalent).
+   *
+   * Cost/vendor/model attribution always uses the ITEM'S OWN
+   * vendor/model/costModelClass — i.e. whichever provider actually ran —
+   * never `fallbackOf` (the originally assigned agent id). A
+   * fallback-tagged item's tokens and cost land under the vendor/class
+   * that executed it.
+   *
+   * Pure: never mutates `agentMetrics` or any of its entries.
+   * @param {Array<{id?:string, vendor?:string, model?:string, costModelClass?:string, tokens?:number, cacheReadTokens?:number, activeMs?:number, fallbackOf?:string, fallbackDepth?:number, fallbackCount?:number, name?:string}>|undefined} agentMetrics
+   * @returns {{
+   *   byVendor: Array<{vendor:string, tokens:number, costUsd:number|null, costLabel:string, agents:number}>,
+   *   byCostClass: Array<{costModelClass:string, tokens:number, costUsd:number|null, costLabel:string}>,
+   *   fallbackCount: number,
+   *   localTimeRows: Array<{agent:string, vendor:string, model:string, activeMs:number}>
+   * }}
+   */
+  function buildMetricsRollup(agentMetrics) {
+    const items = Array.isArray(agentMetrics) ? agentMetrics : [];
+
+    const vendorMap = new Map(); // vendor -> { tokens, costUsd, agents }
+    const classMap = new Map(); // costModelClass -> { tokens, costUsd }
+    let fallbackCount = 0;
+    const localTimeRows = [];
+
+    for (const item of items) {
+      if (!item) continue;
+
+      fallbackCount += item.fallbackCount > 0 ? item.fallbackCount : 0;
+
+      const vendor = item.vendor || "unknown";
+      const model = item.model || "";
+      const cls = costModelClass(model, item.costModelClass);
+      const tokens = (item.tokens ?? 0) + (item.cacheReadTokens ?? 0);
+      const cost = estCostUSDWithCache(item.tokens, item.cacheReadTokens, model, item.costModelClass);
+
+      let vEntry = vendorMap.get(vendor);
+      if (!vEntry) {
+        vEntry = { tokens: 0, costUsd: null, agents: 0 };
+        vendorMap.set(vendor, vEntry);
+      }
+      vEntry.tokens += tokens;
+      vEntry.agents += 1;
+      if (cost != null) vEntry.costUsd = (vEntry.costUsd ?? 0) + cost;
+
+      let cEntry = classMap.get(cls);
+      if (!cEntry) {
+        cEntry = { tokens: 0, costUsd: null };
+        classMap.set(cls, cEntry);
+      }
+      cEntry.tokens += tokens;
+      if (cost != null) cEntry.costUsd = (cEntry.costUsd ?? 0) + cost;
+
+      if (cls === "local" && !(tokens > 0)) {
+        localTimeRows.push({
+          agent: item.name || item.id || "agent",
+          vendor,
+          model,
+          activeMs: item.activeMs ?? 0,
+        });
+      }
+    }
+
+    function costLabelFor(cls, costUsd) {
+      if (cls === "subscription") return "quota";
+      if (cls === "local") return "local";
+      return fmtUSD(costUsd);
+    }
+
+    const byVendor = Array.from(vendorMap.entries()).map(([vendor, v]) => ({
+      vendor,
+      tokens: v.tokens,
+      costUsd: v.costUsd,
+      costLabel: v.costUsd != null ? fmtUSD(v.costUsd) : "—",
+      agents: v.agents,
+    }));
+
+    const byCostClass = Array.from(classMap.entries()).map(([costModelClass, c]) => ({
+      costModelClass,
+      tokens: c.tokens,
+      costUsd: c.costUsd,
+      costLabel: costLabelFor(costModelClass, c.costUsd),
+    }));
+
+    return { byVendor, byCostClass, fallbackCount, localTimeRows };
+  }
+
+  /**
    * True when `id` has the shape of a genuine resolved Claude model id (e.g.
    * "claude-opus-5", "claude-sonnet-4-6") rather than arbitrary/garbled hook
    * data. Hook-observed model ids are untrusted input (they come from
@@ -14687,6 +14780,67 @@
       for (const id of openReportAgentIds) {
         if (!presentIds.has(id)) openReportAgentIds.delete(id);
       }
+    }
+
+    // Footer rollup: per-vendor / per-cost-class totals, a fallback count,
+    // and "local · time-based" rows for local-model items with no token
+    // count (p15-t3). Appended after the per-agent rows, inside the same
+    // #metrics-tbody, so the existing row/cell CSS (#metrics-table tbody
+    // tr/td) applies with no new stylesheet needed. #metrics-table has 6
+    // columns (Agent / Tokens-per-min badge / Tasks / MCP / Time / Tokens),
+    // so every footer row spans all 6 via a single labeled cell.
+    const rollup = buildMetricsRollup(metrics);
+    const FOOTER_COLSPAN = 6;
+
+    function appendFooterRow(labelText, valueText, title) {
+      const tr = document.createElement("tr");
+      tr.className = "metrics-footer-row";
+      tr.style.borderTop = "1px solid var(--border)";
+      const td = document.createElement("td");
+      td.colSpan = FOOTER_COLSPAN;
+      td.style.whiteSpace = "normal";
+      td.style.fontSize = "11px";
+      td.style.color = "var(--muted)";
+      if (title) td.title = title;
+      const strong = document.createElement("span");
+      strong.style.color = "var(--fg, inherit)";
+      strong.textContent = labelText;
+      td.appendChild(strong);
+      td.appendChild(document.createTextNode(valueText));
+      tr.appendChild(td);
+      tbodyEl.appendChild(tr);
+    }
+
+    for (const v of rollup.byVendor) {
+      appendFooterRow(
+        `${v.vendor} total — `,
+        `${fmtTokens(v.tokens)} tokens, ${v.costLabel} (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
+        "Sum of tokens and estimated cost for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
+      );
+    }
+
+    for (const c of rollup.byCostClass) {
+      appendFooterRow(
+        `${c.costModelClass} total — `,
+        `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
+        "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
+      );
+    }
+
+    if (rollup.fallbackCount > 0) {
+      appendFooterRow(
+        "Fallbacks fired — ",
+        `${rollup.fallbackCount}`,
+        "Number of times a task was re-dispatched to a fallback model/provider after its originally assigned agent could not run it."
+      );
+    }
+
+    for (const row of rollup.localTimeRows) {
+      appendFooterRow(
+        `${row.agent} (local · time-based) — `,
+        `active ${fmtMs(row.activeMs)}`,
+        "This local model reported no token count, so cost/tokens can't be estimated — active time is shown instead of a fabricated token-equivalent."
+      );
     }
 
     // Append the pricing disclaimer once, after the table. renderMetrics()
