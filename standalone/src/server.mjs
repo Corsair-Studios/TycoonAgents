@@ -2646,19 +2646,29 @@ function buildHostHtml() {
   <!-- App shell: stage on top, resize handle, metrics panel on bottom -->
   <div id="app">
 
+    <!-- Hamburger menu: scaffold for future panel controls. Direct child of
+         #app (NOT #stage-area) on purpose: #stage-area is position:relative
+         plus overflow:hidden, which creates its own stacking context, so no
+         z-index on the button/popover could ever out-rank #metrics-panel (a
+         later, unrelated sibling of #stage-area inside #app) — the popover
+         was getting sliced off under the metrics panel. #app is the
+         positioning context for both (position:fixed; inset:0), and
+         #stage-area is #app's first child with no offset before it, so
+         top/right stay pixel-identical here to when this lived inside
+         #stage-area. See #menu-btn/#menu-popover in media/style.css. -->
+    <button id="menu-btn" aria-label="Open menu" aria-expanded="false" aria-haspopup="true">&#9776;</button>
+    <div id="menu-popover" role="menu" hidden>
+      <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
+      <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
+      <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
+      <button class="menu-item" role="menuitem" id="menu-routing">Routing</button>
+      <button class="menu-item" role="menuitem" id="menu-about">About</button>
+      <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
+      ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ''}
+    </div>
+
     <!-- Stage area: placeholder for future characters / background -->
     <div id="stage-area">
-      <!-- Hamburger menu: scaffold for future panel controls -->
-      <button id="menu-btn" aria-label="Open menu" aria-expanded="false" aria-haspopup="true">&#9776;</button>
-      <div id="menu-popover" role="menu" hidden>
-        <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
-        <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
-        <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
-        <button class="menu-item" role="menuitem" id="menu-routing">Routing</button>
-        <button class="menu-item" role="menuitem" id="menu-about">About</button>
-        <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
-        ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ''}
-      </div>
       <!-- Badge HUD: lower-right gold medallion, shown/updated by media/main.js -->
       <button id="badge-hud-btn" class="badge-hud" hidden aria-label="Badges" title="Badges — click to view your unlocked badges">
         <svg class="badge-hud-svg" viewBox="0 0 52 52" aria-hidden="true" focusable="false">

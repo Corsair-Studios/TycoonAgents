@@ -174,38 +174,41 @@ function safeParseAgentBackend(fm: Record<string, unknown>): Backend {
 // presets
 // ---------------------------------------------------------------------------
 
-const ALIAS_LABELS: Record<string, string> = {
-  opus: "Opus",
-  sonnet: "Sonnet",
-  haiku: "Haiku",
-  fable: "Fable",
-};
-
+/**
+ * Preset MODEL entries for the routing picker (p13-t4 audit fix). Each entry
+ * is a model, never an agent — the id/label are the model id the pack would
+ * actually route to (e.g. "anthropic/claude-sonnet-4-6", "openai/gpt-5.4-mini"),
+ * not the agent name that happens to use it today (FOREIGN_LLM_AGENTS carries
+ * "Claude Worker"/"Codex Reviewer"/etc., which is agent-shaped, not model-
+ * shaped — using agent.name as the label made the MODEL select render agent
+ * names). Deduplicated by id since more than one alias/agent can resolve to
+ * the same underlying model. A short top-level `model:` alias (opus/sonnet/
+ * haiku/fable) shows its resolved full id, with the alias noted in
+ * parentheses only when the resolved id actually differs from the alias
+ * (fable resolves to "claude-fable-5"; opus/sonnet/haiku resolve to
+ * themselves in MODEL_ALIASES today).
+ */
 function buildPresets(): RoutingPresets {
   const vendors = new Set<string>(["anthropic"]);
-  const models: RoutingModelPreset[] = [];
+  const modelsById = new Map<string, RoutingModelPreset>();
 
   for (const alias of Object.keys(MODEL_ALIASES)) {
-    models.push({
-      id: `anthropic/${resolveModelAlias(alias)}`,
-      vendor: "anthropic",
-      costModelClass: "metered",
-      label: ALIAS_LABELS[alias] ?? alias,
-    });
+    const resolved = resolveModelAlias(alias) ?? alias;
+    const id = `anthropic/${resolved}`;
+    if (modelsById.has(id)) continue;
+    const label = resolved === alias ? id : `${id} (${alias})`;
+    modelsById.set(id, { id, vendor: "anthropic", costModelClass: "metered", label });
   }
 
   for (const agent of FOREIGN_LLM_AGENTS) {
     if (!agent.backend) continue;
     vendors.add(agent.backend.vendor);
-    models.push({
-      id: agent.backend.model,
-      vendor: agent.backend.vendor,
-      costModelClass: agent.backend.costModelClass,
-      label: agent.name,
-    });
+    const id = agent.backend.model;
+    if (modelsById.has(id)) continue;
+    modelsById.set(id, { id, vendor: agent.backend.vendor, costModelClass: agent.backend.costModelClass, label: id });
   }
 
-  return { vendors: Array.from(vendors), models };
+  return { vendors: Array.from(vendors), models: Array.from(modelsById.values()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -332,9 +335,19 @@ export function buildRoutingView(opts: BuildRoutingViewOptions): RoutingView {
   } else {
     orchestrator = {
       id: "",
-      backend: { vendor: "anthropic", transport: "claude-native", model: "unknown", costModelClass: "metered" },
+      backend: { vendor: "anthropic", transport: "claude-native", model: "", costModelClass: "metered" },
       source: "default",
     };
+  }
+  // p13 audit fix: a "default" orchestrator (no routing.json slot, and either
+  // no orchestrator.md at all or one with neither `model:` nor `backend:`)
+  // must never surface the literal "unknown"/"anthropic/unknown" placeholder
+  // parseAgentBackend() falls back to for a bare agent file — the Routing
+  // view showed that as model "unknown" with a stray "Choose from list"
+  // hint. Blank it out instead so the panel renders an empty, honest
+  // "no model configured" field.
+  if (orchestrator.source === "default" && (orchestrator.backend.model === "unknown" || orchestrator.backend.model === "anthropic/unknown")) {
+    orchestrator = { ...orchestrator, backend: { ...orchestrator.backend, model: "" } };
   }
 
   return {

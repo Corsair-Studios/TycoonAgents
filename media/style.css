@@ -5982,17 +5982,27 @@ button.theme-review-preview:focus-visible::after {
   margin: 2px 0;
 }
 
+/* Grid (not flex) so slot fields wrap predictably at 2 columns and never
+   force the row wider than the panel (issue: the old flex layout let a
+   4th "Fallback" table column push the whole table past ~740px). Narrow
+   panels/viewports collapse to a single column below. */
 .routing-slot-fields {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+
+@media (max-width: 480px) {
+  .routing-slot-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .routing-field-row {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  min-width: 120px;
+  min-width: 0;
   font-size: 11px;
 }
 
@@ -6011,6 +6021,9 @@ button.theme-review-preview:focus-visible::after {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
+  width: 100%;
+  box-sizing: border-box;
+  max-width: 100%;
 }
 
 .routing-slot-meta {
@@ -6097,19 +6110,48 @@ button.theme-review-preview:focus-visible::after {
   margin-top: 4px;
 }
 
+/* Each agent renders as a two-row block: row 1 (.routing-agent-row) is
+   Agent | Source | Slot; row 2 (.routing-agent-fallback-row) is a single
+   colspan cell holding the fallback-chain editor. table-layout: fixed +
+   percentage widths on row 1's cells keep the block from ever overflowing
+   the panel at its typical ~740px width — the old 4-column layout (with a
+   320px-min-width Slot cell plus a Fallback column) is what overflowed. */
+.routing-agents-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
 .routing-agents-table td,
 .routing-agents-table th {
   vertical-align: top;
+  word-break: break-word;
+}
+
+.routing-agent-name-td {
+  width: 26%;
+}
+
+.routing-source-td {
+  width: 16%;
 }
 
 .routing-slot-td {
-  min-width: 320px;
+  width: 58%;
+  min-width: 0;
+}
+
+.routing-agent-fallback-row td {
+  padding-top: 2px;
 }
 
 .routing-agent-desc {
   font-size: 11px;
   color: var(--muted);
   margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .routing-fallback-details summary {

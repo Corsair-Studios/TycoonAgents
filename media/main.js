@@ -17289,7 +17289,7 @@
       table.className = "metrics-table routing-agents-table";
       var thead = document.createElement("thead");
       var headRow = document.createElement("tr");
-      ["Agent", "Source", "Slot", "Fallback"].forEach(function (h) {
+      ["Agent", "Source", "Slot"].forEach(function (h) {
         var th = document.createElement("th");
         th.textContent = h;
         headRow.appendChild(th);
@@ -17301,11 +17301,14 @@
       agents.forEach(function (a) {
         if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
         var slot = routingDraft.agents[a.id];
+
+        // Row 1: name/description, source chip, slot editor fields.
         var row = document.createElement("tr");
         row.className = "routing-agent-row";
         row.setAttribute("data-agent-id", a.id);
 
         var nameTd = document.createElement("td");
+        nameTd.className = "routing-agent-name-td";
         var nameStrong = document.createElement("strong");
         nameStrong.textContent = a.name || a.id;
         nameTd.appendChild(nameStrong);
@@ -17313,11 +17316,13 @@
           var desc = document.createElement("div");
           desc.className = "routing-agent-desc";
           desc.textContent = a.description;
+          desc.title = a.description; // full text on hover once the 3-line clamp cuts it off
           nameTd.appendChild(desc);
         }
         row.appendChild(nameTd);
 
         var sourceTd = document.createElement("td");
+        sourceTd.className = "routing-source-td";
         sourceTd.appendChild(routingSourceChip(a.source));
         var fallbackChip = buildRoutingFallbackChip(a.id);
         if (fallbackChip) sourceTd.appendChild(fallbackChip);
@@ -17328,11 +17333,19 @@
         slotTd.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal));
         row.appendChild(slotTd);
 
-        var fbTd = document.createElement("td");
-        fbTd.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal));
-        row.appendChild(fbTd);
-
         tbody.appendChild(row);
+
+        // Row 2: full-width fallback-chain editor beneath the slot fields
+        // (issue: a 4th "Fallback" column overflowed the panel width).
+        var fbRow = document.createElement("tr");
+        fbRow.className = "routing-agent-fallback-row";
+        fbRow.setAttribute("data-agent-id", a.id);
+        var fbTd = document.createElement("td");
+        fbTd.className = "routing-fallback-td";
+        fbTd.colSpan = 3;
+        fbTd.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal));
+        fbRow.appendChild(fbTd);
+        tbody.appendChild(fbRow);
       });
       table.appendChild(tbody);
       agentsSection.appendChild(table);

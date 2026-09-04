@@ -234,3 +234,71 @@ test("clearRoutingProfile: no routing.json present is a no-op on disk, still rer
   const result = clearRoutingProfile({ root, scriptsDir });
   assert.equal(result.ok, true, JSON.stringify(result));
 });
+
+// ---------------------------------------------------------------------------
+// presets (p13-t4 audit fix: MODEL entries, never agent names)
+// ---------------------------------------------------------------------------
+
+test("buildRoutingView: presets are MODEL entries (id/label = model id), not FOREIGN_LLM_AGENTS agent names", () => {
+  const root = tmpRoot();
+  const view = buildRoutingView({ root, env: {} });
+
+  const byId = new Map(view.presets.models.map((m) => [m.id, m]));
+
+  // Known foreign-LLM model ids (mirrors FOREIGN_LLM_AGENTS' backend.model in
+  // src/host/vscode/packCatalog.ts) must be present, labeled by their model
+  // id — never an agent display name like "Claude Worker"/"Codex Reviewer".
+  const claudeWorker = byId.get("anthropic/claude-sonnet-4-6");
+  assert.ok(claudeWorker, "anthropic/claude-sonnet-4-6 preset should be present");
+  assert.equal(claudeWorker?.label, "anthropic/claude-sonnet-4-6");
+  assert.equal(claudeWorker?.vendor, "anthropic");
+
+  const codex = byId.get("openai/gpt-5.4-mini");
+  assert.ok(codex, "openai/gpt-5.4-mini preset should be present");
+  assert.equal(codex?.label, "openai/gpt-5.4-mini");
+
+  for (const m of view.presets.models) {
+    assert.ok(
+      !/reviewer|worker|specialist|orchestrator/i.test(m.label),
+      `preset label "${m.label}" looks like an agent name, not a model id`,
+    );
+  }
+
+  // No duplicate ids.
+  const ids = view.presets.models.map((m) => m.id);
+  assert.equal(new Set(ids).size, ids.length, "preset model ids should be deduplicated");
+
+  // fable resolves to a different id than its alias -> alias shown in parens.
+  const fable = byId.get("anthropic/claude-fable-5");
+  assert.ok(fable, "anthropic/claude-fable-5 preset (fable alias) should be present");
+  assert.equal(fable?.label, "anthropic/claude-fable-5 (fable)");
+});
+
+// ---------------------------------------------------------------------------
+// orchestrator "default" source must never surface the literal "unknown"
+// (p13 audit fix)
+// ---------------------------------------------------------------------------
+
+test("buildRoutingView: orchestrator with no orchestrator.md at all -> source default, model blank (never 'unknown')", () => {
+  const root = tmpRoot();
+  // No agent files at all -> orchestratorFileId stays undefined.
+  const view = buildRoutingView({ root, env: {} });
+  assert.equal(view.orchestrator.source, "default");
+  assert.equal(view.orchestrator.backend.model, "");
+});
+
+test("buildRoutingView: orchestrator.md with neither model: nor backend: -> source default, model blank (never 'unknown')", () => {
+  const root = tmpRoot();
+  writeAgent(root, "orchestrator.md", ["name: orchestrator", "role: orchestrator"]);
+  const view = buildRoutingView({ root, env: {} });
+  assert.equal(view.orchestrator.source, "default");
+  assert.equal(view.orchestrator.backend.model, "");
+});
+
+test("buildRoutingView: orchestrator.md with a bare model: alias -> resolved model surfaces, source alias", () => {
+  const root = tmpRoot();
+  writeAgent(root, "orchestrator.md", ["name: orchestrator", "role: orchestrator", "model: opus"]);
+  const view = buildRoutingView({ root, env: {} });
+  assert.equal(view.orchestrator.source, "alias");
+  assert.equal(view.orchestrator.backend.model, "anthropic/opus");
+});

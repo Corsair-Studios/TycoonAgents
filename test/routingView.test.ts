@@ -551,7 +551,7 @@ test('Routing panel: fallback chip, Totals block, and state-update preserves an 
     // ── Focus/caret and an open fallback <details> must survive a state
     // update too (audit fix: updateRoutingViewLive must not rebuild the
     // table while the view is open) ──
-    const fallbackDetails = codingRowAfter.querySelector('.routing-fallback-details') as any;
+    const fallbackDetails = doc.querySelector('.routing-agent-fallback-row[data-agent-id="coding-specialist"] .routing-fallback-details') as any;
     assert.ok(fallbackDetails, 'coding-specialist fallback-chain <details> should render');
     fallbackDetails.setAttribute('open', '');
 
@@ -596,11 +596,66 @@ test('Routing panel: fallback chip, Totals block, and state-update preserves an 
     assert.equal(textInput.selectionStart, 3, 'caret/selection start should be preserved');
     assert.equal(textInput.selectionEnd, 5, 'caret/selection end should be preserved');
 
-    const fallbackDetailsAfter = doc.querySelector('.routing-agent-row[data-agent-id="coding-specialist"] .routing-fallback-details') as any;
+    const fallbackDetailsAfter = doc.querySelector('.routing-agent-fallback-row[data-agent-id="coding-specialist"] .routing-fallback-details') as any;
     assert.ok(fallbackDetailsAfter, 'fallback <details> should still render after the state update');
     assert.equal(fallbackDetailsAfter, fallbackDetails, 'fallback <details> element identity should be unchanged (no table rebuild)');
     assert.ok(fallbackDetailsAfter.hasAttribute('open'), 'an open fallback <details> must stay open across a state update');
   } finally {
     win.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Layering (p13 audit fix): the hamburger menu popover and every modal
+// (Routing included) must paint above the bottom "AGENT METRICS" panel
+// (#metrics-panel), never sliced off under it. #metrics-panel itself carries
+// no z-index (default/auto, unpositioned) so any positioned popover/modal
+// automatically out-ranks it; this test pins the numbers so a future edit
+// can't silently drop #menu-popover/#routing-modal back below it.
+// ---------------------------------------------------------------------------
+
+function cssRuleBlock(css: string, selector: string): string {
+  // Matches the selector as its own line (start of line, optional
+  // leading/trailing whitespace, optional trailing comma for a
+  // multi-selector rule like "#uefn-modal,\n#feedback-modal {").
+  // (?![\w-]) after the selector name avoids matching a longer selector that
+  // merely starts with the same text (e.g. "#routing-modal" must not match
+  // the "#routing-modal[hidden]" rule that precedes it in the file).
+  const re = new RegExp('^' + selector.replace(/[.#]/g, '\\$&') + '(?![\\w\\-\\[:.])[,\\s\\S]*?\\{', 'm');
+  const m = re.exec(css);
+  assert.ok(m, `expected to find a "${selector}" rule in style.css`);
+  const braceOpen = css.indexOf('{', (m as RegExpExecArray).index);
+  const braceClose = css.indexOf('}', braceOpen);
+  return css.slice(braceOpen + 1, braceClose);
+}
+
+function zIndexOf(css: string, selector: string): number {
+  const block = cssRuleBlock(css, selector);
+  const m = block.match(/z-index\s*:\s*(-?\d+)/);
+  return m ? Number(m[1]) : 0; // no declared z-index -> default stacking (0/auto)
+}
+
+test('Layering: #menu-popover and #routing-modal sit above #metrics-panel', () => {
+  const css = readFileSync(join(process.cwd(), 'media', 'style.css'), 'utf8');
+
+  const metricsZ = zIndexOf(css, '#metrics-panel');
+  const popoverZ = zIndexOf(css, '#menu-popover');
+  const routingModalZ = zIndexOf(css, '#routing-modal');
+  const uefnModalZ = zIndexOf(css, '#uefn-modal');
+
+  assert.ok(popoverZ > metricsZ, `#menu-popover z-index (${popoverZ}) must be greater than #metrics-panel's (${metricsZ})`);
+  assert.ok(routingModalZ > metricsZ, `#routing-modal z-index (${routingModalZ}) must be greater than #metrics-panel's (${metricsZ})`);
+  assert.ok(uefnModalZ > metricsZ, `#uefn-modal z-index (${uefnModalZ}) must be greater than #metrics-panel's (${metricsZ})`);
+
+  // The popover's DOM parent must be #app (not #stage-area), matching
+  // panel.ts's markup — living inside #stage-area's clipped/positioned
+  // stacking context is what originally trapped its z-index below
+  // #metrics-panel (a later, unrelated sibling of #stage-area inside #app)
+  // no matter how high the number went (issue #27).
+  const panelTs = readFileSync(join(process.cwd(), 'src', 'host', 'vscode', 'panel.ts'), 'utf8');
+  const appIdx = panelTs.indexOf('id="app"');
+  const popoverIdx = panelTs.indexOf('id="menu-popover"');
+  const stageAreaIdx = panelTs.indexOf('id="stage-area"');
+  assert.ok(appIdx !== -1 && popoverIdx !== -1 && stageAreaIdx !== -1, 'panel.ts should declare #app, #menu-popover and #stage-area');
+  assert.ok(popoverIdx > appIdx && popoverIdx < stageAreaIdx, '#menu-popover must be a direct #app child declared before #stage-area, not nested inside it');
 });
