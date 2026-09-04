@@ -297,6 +297,18 @@ export async function runCli(argv) {
           }
           throw err;
         }
+
+        if (!flags.includes('--no-agents')) {
+          try {
+            printSeedAgentsResult(seedAgents(dir));
+          } catch (err) {
+            if (err instanceof SeedAgentsError) {
+              console.error(err.message);
+              return 1;
+            }
+            throw err;
+          }
+        }
         return 0;
       }
 

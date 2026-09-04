@@ -124,6 +124,15 @@ test('install-hook via runCli seeds the roster by default; --no-agents skips it'
   assert.ok(fs.existsSync(path.join(dir2, '.claude', 'settings.local.json')));
 });
 
+test('install-hook --opencode also seeds the roster by default', async () => {
+  const dir = mkTempDir();
+  const code = await runCli(['install-hook', dir, '--opencode']);
+  assert.equal(code, 0);
+  assert.ok(fs.existsSync(path.join(dir, '.opencode', 'plugin')), 'opencode plugin installed');
+  assert.equal(agentFiles(dir).length, EXPECTED_IDS.length, 'agent roster seeded alongside the opencode plugin');
+  assert.ok(fs.existsSync(path.join(dir, '.claude', 'tycoon', 'agent-keywords.json')));
+});
+
 test('seed-agents subcommand runs only the seeding (no settings.local.json)', async () => {
   const dir = mkTempDir();
   const code = await runCli(['seed-agents', dir]);

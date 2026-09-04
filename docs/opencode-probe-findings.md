@@ -313,3 +313,141 @@ were updated to match. `hooks/tycoon-claude-hook.cjs` was not touched.
   the same turn as the flagged call, since `chat.system.transform` runs once
   per model completion and there is no earlier hook available to intercept
   mid-turn.
+
+## M4 smoke (routing profile, docs-only) — 2026-09-04
+
+**Verdict: FAIL.** Reproduced from a clean `D:\ACode\TycoonAgents-smoke`
+clone, commit `56a3e83` (main HEAD), following only
+`docs/ROUTING-PROFILE.md` and `docs/OPENCODE-PROVIDER.md`.
+
+### Setup
+- `git fetch`/`reset --hard FETCH_HEAD` to `56a3e83`, `git clean -fdx -e
+  node_modules`, `npm ci` (exit 0), `npm run build` (`tsc -p .` +
+  `copy:hookruntime`, exit 0).
+- Wrote `.claude/tycoon/routing.json`: `orchestrator` = `opencode/big-pickle`
+  (vendor `opencode`, transport `openai-compatible`, `costModelClass:
+  "local"`, `endpointEnv: "OPENCODE_ENDPOINT_URL"`); `agents.kimi-reviewer`
+  on `moonshot/kimi-k2` with `endpointEnv: "KIMI_ENDPOINT_URL"`,
+  `credentialEnv: "KIMI_API_KEY"` (names only, no values), and a 2-entry
+  `fallback` chain (`openai/gpt-5.4-mini` via `mcp`/`codex`, then
+  `anthropic/claude-sonnet-4-6` native).
+
+### Commands run
+- `node scripts/apply-routing-profile.mjs` — exit 0, but printed: `agent
+  "kimi-reviewer" is in routing.json but no .claude/agents/kimi-reviewer.md
+  file exists; skipped` and `routing.json declares an orchestrator slot but
+  no .claude/agents/*.md file has role/tier: orchestrator; skipped`.
+- `node scripts/apply-routing-profile.mjs --check` — exit 0, same two
+  warnings (nothing to apply, so "already applied" trivially).
+- `node scripts/generate-opencode-config.mjs` — exit 0, wrote `AGENTS.md`
+  and `.opencode/tycoon-routing.generated.json`.
+- `node scripts/generate-opencode-config.mjs --check` — exit 0.
+
+### The gap
+**A fresh clone of this repository has no `.claude/agents/*.md` files at
+all** (`git ls-files .claude/agents/` is empty at `56a3e83`; only
+`.opencode/agents/*.md` is tracked). Both `docs/ROUTING-PROFILE.md` and
+`docs/OPENCODE-PROVIDER.md` assume `.claude/agents/<id>.md` already exists
+("For every agent id in `profile.agents` with a matching
+`.claude/agents/<id>.md`...") but neither document says how a project
+obtains those files in the first place — there is no init/scaffold command
+named in either doc. Quoting the gap: ROUTING-PROFILE.md line ~225, "For
+every agent id in `profile.agents` with a matching `.claude/agents/<id>.md`,
+the script resolves the slot" — silently presumes the file exists.
+
+### Verification results
+- `.claude/agents/kimi-reviewer.md` managed backend block: **does not
+  exist** — file never created (script warns and skips, by design; it
+  "never creates agent files").
+- `.claude/tycoon/routing.resolved.json`: written, but `agents: {}` (empty)
+  — no fallback chain recorded, only the orchestrator backend.
+- `.opencode/agents/kimi-reviewer.md`: `model: moonshot/kimi-k2` — matches
+  routing.json's value, but **coincidentally**: this file was already
+  committed with that model before the test ran, and
+  `generate-opencode-config.mjs` also requires a `.claude/agents/kimi-reviewer.md`
+  source to translate from, which doesn't exist, so it left the file
+  untouched (documented "never deletes/never touches a file with no
+  `.claude/agents` source" behavior). This is not routing.json taking
+  effect.
+- `.opencode/tycoon-routing.generated.json`: `{"agents":{},"orchestrator":
+  {"model":"opencode/big-pickle"}}` — orchestrator model present, **no
+  fallback chain anywhere** in the file.
+- `AGENTS.md` managed block: present, contains the four-rule enforcement
+  doctrine text as documented.
+- `--check` on both scripts: exits 0 (no-op, since nothing was applied).
+- Secret scan of `.claude/tycoon/routing.resolved.json`,
+  `.opencode/tycoon-routing.generated.json`, `.opencode/agents/kimi-reviewer.md`,
+  `AGENTS.md`: no literal key/token/URL value found — only env var names,
+  consistent with the no-secrets rule.
+
+### Conclusion
+The orchestrator slot half-applies (recorded in `routing.resolved.json` and
+`.opencode/tycoon-routing.generated.json`'s `model` field only, no
+fallback). The agent slot (`kimi-reviewer`, with its fallback chain) does
+not reach either host's generated config at all in a fresh clone, because
+both generators key off `.claude/agents/<id>.md` and this repository does
+not ship or document how to create those files. This is a documentation
+gap, not a bug in the scripts (both fail open with an explicit warning
+rather than crashing or silently succeeding) — no code or docs were
+modified to work around it, per the test brief.
+
+### M4 smoke attempt 2 — 2026-09-04
+
+**Verdict: PASS.** Reproduced from a refreshed `D:\ACode\TycoonAgents-smoke`
+clone, commit `a59188c` (main HEAD, includes "feat(standalone): seed the
+agent roster on install-hook; document the roster prerequisite"), following
+only `docs/ROUTING-PROFILE.md` and `docs/OPENCODE-PROVIDER.md`.
+
+**Setup:** `git fetch`/`reset --hard FETCH_HEAD` to `a59188c`, `git clean
+-fdx -e node_modules`, `npm ci` (exit 0), `npm run build` (exit 0). Ran
+`node standalone/src/cli.mjs install-hook . --opencode` (exit 0) — this only
+installed the OpenCode plugin into `.opencode/plugin/`, it did **not** seed
+`.claude/agents/*.md` despite ROUTING-PROFILE.md's claim that install-hook
+"seeds the roster along with the Claude Code hook... whether or not you also
+pass `--opencode`." Doc gap, quoted: ROUTING-PROFILE.md, "Prerequisite: the
+agent roster" — "`node standalone/src/cli.mjs install-hook <dir>` seeds
+`.claude/agents/*.md`... whether or not you also pass `--opencode`" — not
+reproduced; `.claude/agents/` did not exist after that command. Ran the
+documented fallback, `node standalone/src/cli.mjs seed-agents .`, which
+worked (exit 0, seeded `search-retrieval.md`, `primary-agent.md`,
+`coding-specialist.md`, `ux-ui-designer.md`, `reviewer.md`,
+`agent-keywords.json`) and unblocked the rest of the test.
+
+**routing.json used:** `orchestrator` = `opencode/big-pickle` (vendor
+`opencode`, `openai-compatible`, `costModelClass: "local"`, `endpointEnv:
+"OPENCODE_ENDPOINT_URL"`); `agents.coding-specialist` on `moonshot/kimi-k2`
+(`endpointEnv: "SMOKE_LOCAL_ENDPOINT_URL"`, `credentialEnv:
+"SMOKE_LOCAL_API_KEY"`, names only) with a 2-entry `fallback`
+(`anthropic/claude-sonnet-4-6` native, then `openai/gpt-5.4-mini` via
+`mcp`/`codex`).
+
+**Commands + exit codes:** `apply-routing-profile.mjs --check` (exit 1,
+listed `coding-specialist.md` + `routing.resolved.json` as pending, plus the
+expected orchestrator-skip warning since no `.md` declares
+`role/tier: orchestrator`) → `apply-routing-profile.mjs` (exit 0) →
+`--check` again (exit 0, no diff). `generate-opencode-config.mjs --check`
+(exit 1, listed 5 `.opencode/agents/*.md` + `AGENTS.md` +
+`tycoon-routing.generated.json`) → apply (exit 0) → `--check` again (exit 0).
+
+**Verification:** `.claude/agents/coding-specialist.md` carries the managed
+`backend:` block (`# managed-by: tycoon-routing`, vendor `moonshot`, model
+`moonshot/kimi-k2`, `endpointEnv`/`apiKeyEnv` names only) and top-level
+`model: moonshot/kimi-k2`. `.claude/tycoon/routing.resolved.json` has
+`agents.coding-specialist.backend` plus the full 2-entry `fallback` array,
+and `orchestrator.backend` for `opencode/big-pickle`. `.opencode/agents/coding-specialist.md`
+has `model: moonshot/kimi-k2`, matching. `.opencode/tycoon-routing.generated.json`
+has `agents.coding-specialist.model` + `fallback: ["anthropic/claude-sonnet-4-6",
+"openai/gpt-5.4-mini"]`, and `orchestrator.model: "opencode/big-pickle"`.
+`AGENTS.md` managed block contains the four-rule enforcement doctrine
+verbatim. Secret scan of all five generated/written files: only env-var
+*names* (`OPENCODE_ENDPOINT_URL`, `SMOKE_LOCAL_ENDPOINT_URL`,
+`SMOKE_LOCAL_API_KEY`) present, no literal values.
+
+**Open issues:** the install-hook roster-seeding claim in both
+ROUTING-PROFILE.md and OPENCODE-PROVIDER.md ("Prerequisite: the agent
+roster") does not hold when `--opencode` is passed — only the plain
+`seed-agents` command (or `install-hook` without `--opencode`, untested this
+run) reliably seeds the roster. No code or docs were changed to work around
+this, per the test brief. The orchestrator slot remains correctly skipped
+(no seeded agent declares `role/tier: orchestrator`), matching documented
+behavior, not a new gap.
