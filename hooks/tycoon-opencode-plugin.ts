@@ -209,6 +209,9 @@ interface OpenCodeHookRecord {
   nextModel?: string;
   slotId?: string;
   reason?: string;
+  /** p15-t2: set on a Task PreToolUse/SubagentStop pair only when this dispatch is a fallback re-dispatch. */
+  fallbackOf?: string;
+  fallbackDepth?: number;
 }
 
 interface ActiveAgentEntry {
@@ -218,6 +221,9 @@ interface ActiveAgentEntry {
   subagentType?: string;
   parentId?: string;
   sessionId?: string;
+  /** p15-t2: remembered from the spawning Task call so the matching SubagentStop can carry the same tag. */
+  fallbackOf?: string;
+  fallbackDepth?: number;
 }
 
 interface ActiveAgentFile {
@@ -903,11 +909,25 @@ export function createPlugin(deps: PluginDeps) {
       // own tool execution; the instruction text queued via queueNudge (in
       // handleToolExecuteAfter below) is the mechanism actually relied on to
       // get the orchestrator to re-dispatch on the right model.
+      let fallbackOf: string | undefined;
+      let fallbackDepth: number | undefined;
+      let fallbackModel: string | undefined;
+      let fallbackVendor: string | undefined;
       if (fallbackState && workerId && sessionId) {
         const next = fallbackState.getNext(sessionId, workerId);
         if (next && !next.exhausted && next.slot?.model) {
           args["model"] = next.slot.model;
           input.args = args;
+          // p15-t2: tag this dispatch as a fallback re-dispatch — the record
+          // (and the matching SubagentStop, via the active-agent stack entry
+          // below) must carry the ORIGINAL slot id, the 1-based chain
+          // position, and the fallback model's own vendor/model, not the
+          // originally assigned primary's.
+          fallbackOf = workerId;
+          fallbackDepth = next.index + 1;
+          fallbackModel = next.slot.model;
+          const slashIdx = fallbackModel.indexOf("/");
+          fallbackVendor = slashIdx > 0 ? fallbackModel.slice(0, slashIdx) : undefined;
         }
       }
 
@@ -921,6 +941,8 @@ export function createPlugin(deps: PluginDeps) {
           subagentType: workerId,
           parentId,
           sessionId,
+          fallbackOf,
+          fallbackDepth,
         });
       }
 
@@ -936,9 +958,22 @@ export function createPlugin(deps: PluginDeps) {
         routingMethod,
         matchedKeyword,
       };
-      if (backend.vendor) record.vendor = backend.vendor;
-      if (backend.model) record.model = backend.model;
-      if (backend.costModelClass) record.costModelClass = backend.costModelClass;
+      if (fallbackOf !== undefined) {
+        // Fallback dispatch: model/vendor come from the chain entry that
+        // actually runs, not the assigned primary. costModelClass is not
+        // tracked per fallback-chain entry anywhere upstream (routing
+        // generator only records "provider/model" strings), so the agent's
+        // own declared costModelClass is kept as the best-effort value.
+        record.fallbackOf = fallbackOf;
+        record.fallbackDepth = fallbackDepth;
+        if (fallbackVendor) record.vendor = fallbackVendor;
+        if (fallbackModel) record.model = fallbackModel;
+        if (backend.costModelClass) record.costModelClass = backend.costModelClass;
+      } else {
+        if (backend.vendor) record.vendor = backend.vendor;
+        if (backend.model) record.model = backend.model;
+        if (backend.costModelClass) record.costModelClass = backend.costModelClass;
+      }
       appendActivity(activityFile, record);
       return;
     }
@@ -994,14 +1029,14 @@ export function createPlugin(deps: PluginDeps) {
       model?: { providerID?: string; modelID?: string };
     };
     const childSessionId = metadata.sessionId;
+    // Pop the stack entry once (popActiveAgent mutates the file) and reuse
+    // its fields for both workerId resolution and the fallbackOf/fallbackDepth
+    // tag (p15-t2) — a second pop call would find nothing and silently lose them.
+    const poppedEntry = childSessionId ? popActiveAgent(activeAgentFile, { sessionId: childSessionId }) : null;
     const workerId =
       (typeof input.args?.["subagent_type"] === "string" ? (input.args["subagent_type"] as string) : undefined) ??
-      (childSessionId ? popActiveAgent(activeAgentFile, { sessionId: childSessionId })?.agentId : undefined) ??
+      poppedEntry?.agentId ??
       "unknown";
-
-    // Pop the stack entry now regardless of which branch resolved workerId
-    // above (popActiveAgent is idempotent against an already-missing entry).
-    if (childSessionId) popActiveAgent(activeAgentFile, { sessionId: childSessionId, workerId });
 
     const model =
       metadata.model?.providerID && metadata.model?.modelID
@@ -1022,6 +1057,10 @@ export function createPlugin(deps: PluginDeps) {
     if (model) record.model = model;
     if (tokens !== undefined) record.tokens = tokens;
     if (cacheReadTokens !== undefined) record.cacheReadTokens = cacheReadTokens;
+    if (poppedEntry?.fallbackOf !== undefined) {
+      record.fallbackOf = poppedEntry.fallbackOf;
+      record.fallbackDepth = poppedEntry.fallbackDepth;
+    }
     appendActivity(activityFile, record);
 
     // p15-t1: provider-failure fallback. A task's rendered <task> output

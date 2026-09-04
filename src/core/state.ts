@@ -50,6 +50,16 @@ export interface AgentMetric {
   vendor?: string;
   /** Backend cost model class ("metered" | "subscription" | "local"), from the same backend match as `vendor` (p2-t5). Undefined when never reported. */
   costModelClass?: "metered" | "subscription" | "local";
+  /**
+   * Originally assigned slot id (agent id) for the most recent fallback
+   * re-dispatch of this agent, per FallbackState (src/core/fallbackChain.ts,
+   * p15-t2). Undefined when this agent has never run on a fallback model.
+   */
+  fallbackOf?: string;
+  /** 1-based index into the fallback chain for the most recent fallback dispatch. Undefined when never fallen back. */
+  fallbackDepth?: number;
+  /** Total number of fallback re-dispatches recorded for this agent. Always present (default 0) so the webview can sum it. */
+  fallbackCount: number;
   /** One-line description of this agent's role. */
   description?: string;
   /** Agent tier from .md frontmatter, e.g. "lead" (Team Lead Mode). Undefined for flat agents. */
@@ -226,6 +236,9 @@ function upsertMetric(
     model: undefined,
     vendor: undefined,
     costModelClass: undefined,
+    fallbackOf: undefined,
+    fallbackDepth: undefined,
+    fallbackCount: 0,
     description: undefined,
     tier: undefined,
     parentId: undefined,
@@ -431,6 +444,9 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           delegationMode: event.delegationMode ?? m.delegationMode,
           vendor: event.vendor ?? m.vendor,
           costModelClass: event.costModelClass ?? m.costModelClass,
+          fallbackOf: event.fallbackOf ?? m.fallbackOf,
+          fallbackDepth: event.fallbackDepth ?? m.fallbackDepth,
+          fallbackCount: event.fallbackOf !== undefined ? m.fallbackCount + 1 : m.fallbackCount,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,

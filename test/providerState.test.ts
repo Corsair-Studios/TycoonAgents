@@ -988,6 +988,7 @@ describe("computeDelegationModeStats", () => {
       status: "idle",
       taskCount: 0,
       mcpCount: 0,
+      fallbackCount: 0,
       activeMs: 0,
       tokens: 0,
       cacheReadTokens: 0,

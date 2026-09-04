@@ -103,6 +103,8 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
             ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
             ...(record.vendor !== undefined ? { vendor: record.vendor } : {}),
             ...(record.costModelClass !== undefined ? { costModelClass: record.costModelClass } : {}),
+            ...(record.fallbackOf !== undefined ? { fallbackOf: record.fallbackOf } : {}),
+            ...(record.fallbackDepth !== undefined ? { fallbackDepth: record.fallbackDepth } : {}),
           },
         ];
       }

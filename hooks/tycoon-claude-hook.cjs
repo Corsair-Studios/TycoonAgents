@@ -1202,6 +1202,10 @@ function main(raw) {
     }
 
     if (popped && popped.model) record.model = popped.model;
+    if (popped && popped.fallbackOf !== undefined) {
+      record.fallbackOf = popped.fallbackOf;
+      record.fallbackDepth = popped.fallbackDepth;
+    }
 
     const { tokens, cacheReadTokens } = extractSubagentTokens(payload);
     if (tokens !== undefined && tokens > 0) record.tokens = tokens;
@@ -1382,9 +1386,53 @@ function main(raw) {
       // Priority: explicit Task model -> agent .md frontmatter model -> MODEL_DEFAULTS.
       // resolveModel applies SHORTHAND to any provided value and falls back to
       // MODEL_DEFAULTS[agentId] when the value is falsy.
-      const model = resolveModel(rawModel || readAgentModel(agentsDir, agentId), agentId);
+      let model = resolveModel(rawModel || readAgentModel(agentsDir, agentId), agentId);
       const agentDescription = readAgentDescription(agentsDir, agentId);
       const tier = readAgentTier(agentsDir, agentId);
+
+      // p15-t2: this dispatch is a fallback re-dispatch iff FallbackState
+      // (persisted per-session at .claude/tycoon/fallback-state.json) has a
+      // recorded failure for this agentId in this session. When so, stamp
+      // fallbackOf/fallbackDepth and swap model/vendor/costModelClass to the
+      // chain entry that actually runs — resolved from
+      // .claude/tycoon/routing.resolved.json's agents[agentId].fallback
+      // (Backend[], written by scripts/apply-routing-profile.mjs), not the
+      // assigned primary. Fail-open: any missing state/routing file just
+      // means no fallback fields are added (today's behavior).
+      let fallbackOf;
+      let fallbackDepth;
+      let fallbackVendor;
+      let fallbackCostModelClass;
+      try {
+        const fallbackChain = getFallbackChainModule();
+        const sessId = typeof payload.session_id === "string" ? payload.session_id : undefined;
+        if (fallbackChain && sessId) {
+          const stateData = loadFallbackStateFile(tycoonDir);
+          const perSession = stateData[sessId] || {};
+          const attemptsSoFar = (perSession[agentId] && perSession[agentId].attemptsSoFar) || 0;
+          if (attemptsSoFar > 0) {
+            const resolvedRouting = readJsonSafe(path.join(tycoonDir, "routing.resolved.json"));
+            const chainRaw =
+              (resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[agentId] &&
+                resolvedRouting.agents[agentId].fallback) || [];
+            const chain = Array.isArray(chainRaw) ? chainRaw : [];
+            const result = fallbackChain.resolveNextFallback({
+              slotId: agentId,
+              chain,
+              attemptsSoFar: attemptsSoFar - 1,
+            });
+            if (!result.exhausted && result.slot) {
+              fallbackOf = agentId;
+              fallbackDepth = result.index + 1;
+              if (result.slot.model) model = result.slot.model;
+              fallbackVendor = result.slot.vendor;
+              fallbackCostModelClass = result.slot.costModelClass;
+            }
+          }
+        }
+      } catch {
+        // Fail open: any error here must never break normal spawn attribution.
+      }
 
       // Parent attribution: the spawning payload carries the SAME
       // payload.agent_id discriminator as any other tool call made from
@@ -1420,7 +1468,7 @@ function main(raw) {
         ? parentEntry.agentId
         : undefined;
 
-      const stackEntry = { agentId, model, timestamp: at, subagentType, parentId };
+      const stackEntry = { agentId, model, timestamp: at, subagentType, parentId, fallbackOf, fallbackDepth };
       pushActiveAgent(activeAgentFile, stackEntry);
 
       /** @type {Record<string, unknown>} */
@@ -1439,6 +1487,12 @@ function main(raw) {
       if (parentId) record.parentId = parentId;
       if (delegationMode) record.delegationMode = delegationMode;
       if (payload.session_id) record.sessionId = payload.session_id;
+      if (fallbackOf !== undefined) {
+        record.fallbackOf = fallbackOf;
+        record.fallbackDepth = fallbackDepth;
+        if (fallbackVendor) record.vendor = fallbackVendor;
+        if (fallbackCostModelClass) record.costModelClass = fallbackCostModelClass;
+      }
 
       try {
         fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");

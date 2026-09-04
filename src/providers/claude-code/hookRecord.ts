@@ -30,6 +30,10 @@ export interface HookRecord {
   sessionId?: string;        // Claude Code session id (hooks/tycoon-claude-hook.cjs: payload.session_id).
                               // Used to scope "this session" views (Delegation Health dual view). Absent on
                               // records from hook versions predating this field.
+  fallbackOf?: string;       // PreToolUse Task/SubagentStop only: originally assigned slot id (agent id) when
+                              // this dispatch is a fallback re-dispatch, per FallbackState (src/core/fallbackChain.ts).
+                              // Absent (never present as any falsy value) on non-fallback records.
+  fallbackDepth?: number;    // 1-based index into the fallback chain for this dispatch. Present iff fallbackOf is.
   report?: string;           // SubagentStop only: the subagent's final assistant-message text, extracted
                               // from its transcript (lastAssistantTextFromTranscript in the hook script).
                               // Capped at ~2000 chars with an explicit "… [truncated]" suffix when longer;
