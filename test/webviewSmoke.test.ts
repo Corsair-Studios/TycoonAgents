@@ -806,14 +806,39 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
 
       // Every agentMetrics entry (orchestrator, build-lead, coding-specialist,
       // ux-ui-designer) renders as its own top-level <tr>, in array order —
-      // nobody is hidden, nobody is merged into an aggregate.
-      const rows = [...tbody.querySelectorAll('tr')];
+      // nobody is hidden, nobody is merged into an aggregate. Footer rollup
+      // rows (per-vendor / per-cost-class totals etc., added by commit
+      // 52311fc's buildMetricsRollup) are appended into the SAME #metrics-tbody
+      // after the agent rows and are tagged with the "metrics-footer-row"
+      // class (see appendFooterRow in renderMetricsTable) — exclude them here
+      // so this stays an assertion about agent rows only.
+      const allRows = [...tbody.querySelectorAll('tr')];
+      const footerRows = allRows.filter((r: any) => r.classList.contains('metrics-footer-row'));
+      const rows = allRows.filter((r: any) => !r.classList.contains('metrics-footer-row'));
       assert.equal(rows.length, 4, 'all 4 agents (lead + workers + orchestrator) should render as top-level rows');
       const names = rows.map((r: any) => r.querySelector('td.col-name').textContent);
       assert.deepEqual(
         names,
         ['Orchestrator', 'Build Lead', 'Coding Specialist', 'UX UI Designer'],
         'rows preserve agentMetrics order with no grouping by lead'
+      );
+
+      // Positive assertion on the footer: buildTeamStatePayload's 4 agents
+      // all carry no `vendor` field, so buildMetricsRollup's byVendor bucket
+      // collapses them into a single "unknown" vendor total row — exactly
+      // one distinct vendor in this fixture, exactly one per-vendor footer
+      // row. Vendor rows are distinguished from per-cost-class footer rows
+      // (both can read "unknown total —" since the class bucket is ALSO
+      // "unknown" here) by their distinct `title` tooltip text set in
+      // appendFooterRow's per-vendor call (media/main.js renderMetricsTable).
+      const vendorFooterRows = footerRows.filter((r: any) => {
+        const cell = r.querySelector('td');
+        return cell && (cell.title || '').includes('belongs to this vendor');
+      });
+      assert.equal(
+        vendorFooterRows.length,
+        1,
+        'exactly one per-vendor footer row for the single distinct vendor ("unknown") present in the fixture'
       );
 
       // The lead's own row shows only ITS OWN tokens (800), never a rollup
