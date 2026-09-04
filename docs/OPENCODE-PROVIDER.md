@@ -327,6 +327,17 @@ source file, so the same agent roster runs under OpenCode
   truncated to 200 chars at a word boundary; falls back to the agent name.
 - `--check` writes nothing and exits 1 listing paths that would change (0 if
   already up to date) — used in CI to catch a stale generated roster.
+- **`opencode.json` provider merge** — for every distinct
+  `transport: "openai-compatible"` vendor in the resolved routing profile
+  (agent slots, orchestrator, and fallback-chain entries), the script merges
+  a `provider.<vendor>` entry into `opencode.json` (`npm:
+  "@ai-sdk/openai-compatible"`, `options.baseURL`/`options.apiKey` as
+  `{env:VAR}` placeholders per OpenCode's documented config substitution,
+  `models` keyed by every model routed to that vendor), marked
+  `tycoonManaged: true` so re-runs only ever touch entries it owns and never
+  a hand-authored provider with the same id. See
+  `docs/ROUTING-PROFILE.md`'s "Custom OpenAI-compatible endpoints" section
+  for a worked example.
 
 ### AGENTS.md managed block
 

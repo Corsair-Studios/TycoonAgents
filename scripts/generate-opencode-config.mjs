@@ -98,6 +98,39 @@
 //
 // Deterministic: no timestamps, no non-deterministic ordering. Two runs
 // against the same source tree produce byte-identical output.
+//
+// --- opencode.json provider merge (p13-t5) ---
+// For every distinct `transport: "openai-compatible"` vendor across the
+// resolved slots (per-agent slots, the orchestrator slot, and every entry
+// in each slot's `fallback` chain), a provider entry is merged into
+// <root>/opencode.json: { provider: { <vendor>: { npm, name, options: {
+// baseURL, apiKey? }, models: { <model>: { name } }, tycoonManaged: true } } }.
+// `models` accumulates every model routed to that vendor (primary + all
+// fallback entries). baseURL/apiKey are ALWAYS `{env:<VAR>}` placeholders —
+// never a literal URL or key value — using OpenCode's documented env-var
+// substitution syntax.
+//
+// Verified against OpenCode 1.18.27's published config JSON schema
+// (https://opencode.ai/config.json, fetched 2026-09-04) and its config docs
+// (https://opencode.ai/docs/config/): the schema's `provider.<id>` shape
+// accepts `npm` (string), `name` (string), `options` (object, with
+// `baseURL`/`apiKey` string fields used by the openai-compatible npm
+// package), and `models` (object keyed by model id, each allowing at least
+// `name`). The schema itself does not special-case `{env:...}` syntax
+// (options.baseURL/apiKey are typed as plain strings), but the docs
+// describe `{env:VARIABLE_NAME}` substitution as applying throughout
+// opencode.json, with a worked example of `"apiKey": "{env:ANTHROPIC_API_KEY}"`
+// inside a provider's `options` block — the exact shape used here.
+//
+// Merge rules: opencode.json may already contain user-authored content,
+// preserved byte-for-byte outside the provider entries this script owns.
+// Each managed entry carries `"tycoonManaged": true` so re-runs replace only
+// entries we wrote; an existing same-id provider entry WITHOUT that marker
+// is left untouched and a warning is printed. When a previously-managed
+// vendor no longer appears in the resolved profile, its entry is removed.
+// If opencode.json doesn't exist, it's created with
+// `"$schema": "https://opencode.ai/config.json"`. Output uses sorted keys
+// for determinism and participates in --check like every other artifact.
 // ---------------------------------------------------------------------------
 
 import fs from "node:fs";
@@ -393,6 +426,148 @@ function buildAgentsMd(root) {
   return existing + sep + managedBlock + "\n";
 }
 
+const OPENAI_COMPATIBLE_NPM_PACKAGE = "@ai-sdk/openai-compatible";
+
+// Walk every resolved slot (agent slots, orchestrator slot, and each slot's
+// fallback chain, recursively) and collect one entry per distinct
+// `transport: "openai-compatible"` vendor. `slot.model` is expected in
+// "<vendor>/<modelId>" form (matching the rest of routing.json's
+// convention, e.g. "moonshot/kimi-k2"); the vendor prefix is stripped to
+// get the bare model id used as the opencode.json models-map key.
+function collectOpenAICompatibleVendors(profile) {
+  const vendors = new Map();
+
+  function consider(slot) {
+    if (!slot) return;
+
+    if (slot.transport === "openai-compatible" && slot.vendor && typeof slot.model === "string" && slot.model !== "") {
+      const modelId = slot.model.startsWith(`${slot.vendor}/`)
+        ? slot.model.slice(slot.vendor.length + 1)
+        : slot.model;
+
+      let entry = vendors.get(slot.vendor);
+      if (!entry) {
+        entry = { models: new Set(), endpointEnv: undefined, credentialEnv: undefined };
+        vendors.set(slot.vendor, entry);
+      }
+      if (slot.endpointEnv && !entry.endpointEnv) entry.endpointEnv = slot.endpointEnv;
+      if (slot.credentialEnv && !entry.credentialEnv) entry.credentialEnv = slot.credentialEnv;
+      entry.models.add(modelId);
+    }
+
+    // Walk the fallback chain regardless of the parent slot's own
+    // transport — a claude-native primary can still fall back to an
+    // openai-compatible vendor.
+    if (Array.isArray(slot.fallback)) {
+      for (const fb of slot.fallback) consider(fb);
+    }
+  }
+
+  if (profile) {
+    for (const agentId of Object.keys(profile.agents || {}).sort()) {
+      consider(profile.agents[agentId]);
+    }
+    if (profile.orchestrator) consider(profile.orchestrator);
+  }
+
+  return vendors;
+}
+
+// Deterministic JSON serialization: object keys sorted recursively so two
+// runs over logically-identical data produce byte-identical output
+// regardless of insertion order (arrays keep their order).
+function canonicalStringify(value, indent = 0) {
+  const pad = "  ".repeat(indent);
+  const padInner = "  ".repeat(indent + 1);
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    const items = value.map((v) => padInner + canonicalStringify(v, indent + 1));
+    return "[\n" + items.join(",\n") + "\n" + pad + "]";
+  }
+  const keys = Object.keys(value).sort();
+  if (keys.length === 0) return "{}";
+  const lines = keys.map((k) => `${padInner}${JSON.stringify(k)}: ${canonicalStringify(value[k], indent + 1)}`);
+  return "{\n" + lines.join(",\n") + "\n" + pad + "}";
+}
+
+// Build the merged opencode.json content (as a string, or null when nothing
+// needs to change and no file needs to be created). Prints a warning to
+// stderr for every same-id provider entry that already exists in the file
+// without our `tycoonManaged` marker; such entries are left untouched.
+function buildOpencodeJson(root, computedVendors) {
+  const opencodeJsonPath = path.join(root, "opencode.json");
+  let existing = null;
+  if (fs.existsSync(opencodeJsonPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(opencodeJsonPath, "utf8"));
+    } catch (err) {
+      console.error(`opencode.json: failed to parse existing file, leaving it untouched: ${err.message}`);
+      return null;
+    }
+  }
+
+  if (existing === null && computedVendors.size === 0) {
+    return null;
+  }
+
+  const config = existing && typeof existing === "object" ? { ...existing } : {};
+  if (!config["$schema"]) {
+    config["$schema"] = "https://opencode.ai/config.json";
+  }
+  const provider = config["provider"] && typeof config["provider"] === "object" ? { ...config["provider"] } : {};
+
+  const computedVendorIds = new Set(computedVendors.keys());
+
+  // Remove managed entries whose vendor no longer appears in the profile.
+  for (const key of Object.keys(provider)) {
+    if (provider[key] && provider[key]["tycoonManaged"] === true && !computedVendorIds.has(key)) {
+      delete provider[key];
+    }
+  }
+
+  for (const [vendor, entry] of computedVendors) {
+    const existingEntry = provider[vendor];
+    if (existingEntry && existingEntry["tycoonManaged"] !== true) {
+      console.warn(
+        `opencode.json: provider "${vendor}" already exists without a tycoonManaged marker; leaving it untouched (routing.json also wants to manage this vendor id).`
+      );
+      continue;
+    }
+
+    const models = {};
+    for (const modelId of [...entry.models].sort()) {
+      models[modelId] = { name: modelId };
+    }
+
+    const options = {};
+    if (entry.endpointEnv) {
+      options.baseURL = `{env:${entry.endpointEnv}}`;
+    }
+    if (entry.credentialEnv) {
+      options.apiKey = `{env:${entry.credentialEnv}}`;
+    }
+
+    provider[vendor] = {
+      npm: OPENAI_COMPATIBLE_NPM_PACKAGE,
+      name: vendor,
+      options,
+      models,
+      tycoonManaged: true,
+    };
+  }
+
+  if (Object.keys(provider).length > 0) {
+    config["provider"] = provider;
+  } else {
+    delete config["provider"];
+  }
+
+  return canonicalStringify(config) + "\n";
+}
+
 function migrateModelsToRoutingProfile(root, overrides) {
   const routingPath = path.join(root, ".claude", "tycoon", "routing.json");
   const agents = {};
@@ -516,6 +691,16 @@ function main() {
   if (Object.keys(generatedRouting.agents).length > 0 || generatedRouting.orchestrator) {
     const generatedRoutingPath = path.join(root, ".opencode", "tycoon-routing.generated.json");
     writes.push({ destPath: generatedRoutingPath, content: JSON.stringify(generatedRouting, null, 2) + "\n" });
+  }
+
+  // opencode.json: merge in a provider entry for every distinct
+  // openai-compatible vendor across the resolved profile (agents,
+  // orchestrator, fallback chains). See the module header comment above
+  // ("opencode.json provider merge (p13-t5)").
+  const computedVendors = collectOpenAICompatibleVendors(routingProfile);
+  const opencodeJsonContent = buildOpencodeJson(root, computedVendors);
+  if (opencodeJsonContent !== null) {
+    writes.push({ destPath: path.join(root, "opencode.json"), content: opencodeJsonContent });
   }
 
   for (const { destPath, content } of writes) {

@@ -77,3 +77,6 @@ media/uefn-bridge/tag_inspect_report.json
 standalone/spike/probe-log.jsonl
 .opencode/plugin/probe-log.jsonl
 .opencode/plugin/enforcement-probe-log.jsonl
+
+# Holds a private invite link — never commit
+design-doc/remotevm.txt

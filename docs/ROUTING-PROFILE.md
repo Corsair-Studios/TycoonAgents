@@ -415,6 +415,89 @@ Code orchestrator at all) still gets the same doctrine enforced. See
 `docs/ENFORCEMENT-PARITY-BENCHMARK.md` for the benchmark proving the ported
 OpenCode enforcement produces the same decisions as the Claude-hook original.
 
+## Custom OpenAI-compatible endpoints (Ollama, vLLM, LM Studio)
+
+A `transport: "openai-compatible"` slot names a vendor and a fully-qualified
+`vendor/model` string (same convention as every other slot), plus
+`endpointEnv` (and optionally `credentialEnv`) naming the environment
+variables that hold the endpoint URL and API key — never the values
+themselves (see "The no-secrets rule" above). For the OpenCode side,
+`scripts/generate-opencode-config.mjs` turns every distinct
+openai-compatible vendor across the resolved profile (agent slots, the
+orchestrator slot, and every entry in each slot's `fallback` chain) into a
+provider entry in `opencode.json`, using OpenCode's own `{env:VAR_NAME}`
+config substitution syntax so the literal endpoint/key never lands in a
+committed file.
+
+### Worked example: a remote Ollama on a tailnet
+
+`routing.json`:
+
+```jsonc
+{
+  "version": 1,
+  "agents": {
+    "coding-specialist": {
+      "vendor": "ollama-windows",
+      "transport": "openai-compatible",
+      "model": "ollama-windows/qwen3.6:latest",
+      "costModelClass": "local",
+      "endpointEnv": "OLLAMA_BASE_URL"
+    }
+  }
+}
+```
+
+Environment variables to export before running OpenCode (placeholder host —
+substitute your own tailnet address; OpenCode's OpenAI-compatible provider
+requires *some* string for `apiKey` even against a keyless local server, so
+export a dummy value if your endpoint doesn't check it):
+
+```sh
+export OLLAMA_BASE_URL="http://<host>:11434/v1"
+export OLLAMA_API_KEY="unused"   # only if you also set credentialEnv
+```
+
+Generated `opencode.json` (via `npm run opencode:config`):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama-windows": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "ollama-windows",
+      "options": {
+        "baseURL": "{env:OLLAMA_BASE_URL}"
+      },
+      "models": {
+        "qwen3.6:latest": { "name": "qwen3.6:latest" }
+      },
+      "tycoonManaged": true
+    }
+  }
+}
+```
+
+Only entries carrying `"tycoonManaged": true` are ever replaced or removed
+by the generator; a hand-authored `provider.ollama-windows` entry without
+that marker is left alone (a warning is printed instead of overwriting it).
+
+### The Claude Code side is different
+
+`hooks/openai-compatible-mcp.cjs` (the MCP bridge a Claude-side agent calls
+into for an openai-compatible backend) reads a single global endpoint —
+`OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` — not a per-vendor
+variable. To route the *same* slot through the Claude path, set
+`endpointEnv: "OPENAI_COMPAT_BASE_URL"` (and `credentialEnv:
+"OPENAI_COMPAT_API_KEY"` if needed) instead of a vendor-specific name.
+This is a real limitation, not an oversight: Claude Code can reach only one
+openai-compatible endpoint at a time this way, while OpenCode's
+`opencode.json` supports one provider block per vendor. A profile mixing
+both hosts should pick the vendor-specific env names for OpenCode-only
+slots and reserve `OPENAI_COMPAT_*` for whichever single slot needs to work
+from the Claude side too.
+
 ## Files written by the routing system
 
 | File | Written by | Read by |
