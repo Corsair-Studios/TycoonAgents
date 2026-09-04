@@ -76,3 +76,4 @@ media/uefn-bridge/tag_inspect_report.json
 # OpenCode hook-probe spike output (runtime-generated, never commit)
 standalone/spike/probe-log.jsonl
 .opencode/plugin/probe-log.jsonl
+.opencode/plugin/enforcement-probe-log.jsonl

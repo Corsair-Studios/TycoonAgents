@@ -598,6 +598,59 @@ export function createPlugin(deps: PluginDeps) {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Enforcement mechanisms confirmed live against OpenCode 1.18.27 (plan
+  // p15-t0; see docs/opencode-probe-findings.md "Enforcement mechanisms"):
+  //
+  //   (1) Throwing inside tool.execute.before ABORTS the tool call and the
+  //       thrown error's message is surfaced to the model as the tool's
+  //       error output (observed verbatim in a real `opencode run`). Used
+  //       below to make the leaf-worker spawn guard an ACTUAL block, not a
+  //       log-only record.
+  //   (2) experimental.chat.system.transform's `output.system` array is
+  //       appended to the live system prompt for the NEXT model turn in
+  //       that session (observed: the model echoed injected text back).
+  //       Used below to deliver the orchestrator direct-tool-call nudge
+  //       INTO the model's context instead of only into the activity log.
+  //
+  // permission.ask was probed and did NOT fire in a real non-interactive
+  // `opencode run` (only the informational `event: "permission.asked"` bus
+  // event fired) — it is NOT wired here. See the findings doc.
+  //
+  // BlockingToolCallError is thrown ONLY for a deliberate, doctrine-driven
+  // block (spawn-guard deny) and is rethrown as-is by the toolExecuteBefore
+  // wrapper below; every other error from handleToolExecuteBefore is caught
+  // and logged (fail open), matching every other hook in this plugin.
+  // ---------------------------------------------------------------------------
+  class BlockingToolCallError extends Error {}
+
+  // Per-session queue of doctrine nudge strings waiting to be delivered into
+  // the model's system prompt on its NEXT turn (chat.system.transform runs
+  // once per model call, so a nudge produced by a tool call earlier in the
+  // same turn is delivered on the following turn — there is no earlier hook
+  // this plugin can use to inject mid-turn). Drained (not peeked) on read so
+  // a nudge is delivered exactly once.
+  const pendingNudgesBySession = new Map<string, string[]>();
+  const PENDING_NUDGE_MAX_SESSIONS = 64;
+  function queueNudge(sessionId: string | undefined, message: string): void {
+    if (!sessionId) return;
+    const existing = pendingNudgesBySession.get(sessionId) ?? [];
+    existing.push(message);
+    pendingNudgesBySession.set(sessionId, existing);
+    while (pendingNudgesBySession.size > PENDING_NUDGE_MAX_SESSIONS) {
+      const oldestKey = pendingNudgesBySession.keys().next().value;
+      if (oldestKey === undefined) break;
+      pendingNudgesBySession.delete(oldestKey);
+    }
+  }
+  function drainNudges(sessionId: string | undefined): string[] {
+    if (!sessionId) return [];
+    const queued = pendingNudgesBySession.get(sessionId);
+    if (!queued || queued.length === 0) return [];
+    pendingNudgesBySession.delete(sessionId);
+    return queued;
+  }
+
   const isDuplicateSubmit = makeSubmitDedupe();
   // sessionID -> true once its first user message.updated has fired, so a
   // later user message.updated in the SAME root session (a later turn) still
@@ -688,17 +741,13 @@ export function createPlugin(deps: PluginDeps) {
       // this `task` call originated from (or on behalf of) a worker, not
       // the root orchestrator session.
       //
-      // BEST-EFFORT / instrumentation only: per
-      // docs/opencode-probe-findings.md section (c), OpenCode's own
-      // per-session `permission` deny-list already blocks a subagent
-      // session from calling `task` at all — no `tool.execute.before` for
-      // `task` is even observed to fire on a denied child session, and no
-      // throw-to-block mechanism for tool.execute.before is documented or
-      // observed for OpenCode 1.18.27. So this guard cannot itself deny the
-      // call the way the Claude hook's stdout permissionDecision:"deny"
-      // does; it only logs a SpawnDenied-equivalent record (for parity with
-      // the Claude hook's activity trail) on the rare host/version where
-      // the permission default doesn't already cover it. It never throws.
+      // ACTUAL BLOCK (plan p15-t0): throwing a BlockingToolCallError below
+      // aborts this `task` call and surfaces decision.message to the model
+      // as the tool's error output — confirmed live against OpenCode
+      // 1.18.27 in a real `opencode run` (see
+      // docs/opencode-probe-findings.md "Enforcement mechanisms"). This is
+      // now equivalent in effect to the Claude hook's stdout
+      // permissionDecision:"deny", not merely a logged record.
       // -----------------------------------------------------------------
       const spawnerEntry = peekActiveAgent(activeAgentFile);
       const spawnerAgentId = spawnerEntry && spawnerEntry.agentId !== "none" ? spawnerEntry.agentId : "";
@@ -722,6 +771,11 @@ export function createPlugin(deps: PluginDeps) {
             sessionId,
             message: decision.message,
           });
+          // GO mechanism (1): throwing here actually aborts the `task` call
+          // and surfaces decision.message to the model as the tool's error
+          // output (confirmed live — see docs/opencode-probe-findings.md).
+          // Rethrown verbatim by the toolExecuteBefore wrapper below.
+          throw new BlockingToolCallError(decision.message ?? delegationEnforcement.LEAF_WORKER_DENY_MESSAGE);
         }
       }
 
@@ -816,6 +870,11 @@ export function createPlugin(deps: PluginDeps) {
       if (decision.nextReadCount !== undefined) orchestratorTurnReads = decision.nextReadCount;
       if (decision.action === "nudge" && decision.message) {
         record.message = decision.message;
+        // GO mechanism (2): queue this nudge for delivery into the model's
+        // own system prompt on its next turn via chat.system.transform
+        // (confirmed live — see docs/opencode-probe-findings.md). Previously
+        // this nudge only ever reached the activity log, never the model.
+        queueNudge(sessionId, decision.message);
       }
     }
 
@@ -932,6 +991,12 @@ export function createPlugin(deps: PluginDeps) {
       try {
         await handleToolExecuteBefore(input);
       } catch (err) {
+        // A BlockingToolCallError is a DELIBERATE doctrine block (spawn-guard
+        // deny) — rethrow it so OpenCode aborts the tool call and surfaces
+        // its message to the model (confirmed live behavior). Every other
+        // error is unexpected plugin failure and must fail open, exactly
+        // like every other hook in this file.
+        if (err instanceof BlockingToolCallError) throw err;
         writePluginError(activityFile, now(), err);
       }
     },
@@ -941,6 +1006,26 @@ export function createPlugin(deps: PluginDeps) {
     ) => {
       try {
         await handleToolExecuteAfter(input, output);
+      } catch (err) {
+        writePluginError(activityFile, now(), err);
+      }
+    },
+    // GO mechanism (2): deliver any queued orchestrator nudges into the
+    // model's own system prompt for its next turn. Never throws — an absent
+    // or malformed `output.system` (older OpenCode, or a host that changes
+    // the shape) is a no-op, not a crash, matching the fail-open posture of
+    // every other hook here.
+    chatSystemTransform: async (
+      input: { sessionID?: string },
+      output: { system?: string[] }
+    ) => {
+      try {
+        const nudges = drainNudges(input?.sessionID);
+        if (nudges.length === 0) return;
+        if (!Array.isArray(output?.system)) return;
+        for (const message of nudges) {
+          output.system.push(`[TycoonAgents delegation nudge] ${message}`);
+        }
       } catch (err) {
         writePluginError(activityFile, now(), err);
       }
@@ -970,6 +1055,13 @@ const TycoonOpenCodePlugin = async (ctx: { client?: OpenCodeClientLike; director
       input: { tool: string; sessionID: string; callID: string },
       output: { args: Record<string, unknown> }
     ) => {
+      // Deliberately NOT wrapped in try/catch here: a BlockingToolCallError
+      // thrown out of plugin.toolExecuteBefore (spawn-guard deny) MUST
+      // propagate to OpenCode so it aborts the tool call — that propagation
+      // is the actual enforcement mechanism (see docs/opencode-probe-findings.md
+      // "Enforcement mechanisms"). plugin.toolExecuteBefore itself already
+      // catches and logs every non-blocking error, so nothing else can
+      // reach here.
       await plugin.toolExecuteBefore({ ...input, args: output?.args });
     },
     "tool.execute.after": async (
@@ -977,6 +1069,15 @@ const TycoonOpenCodePlugin = async (ctx: { client?: OpenCodeClientLike; director
       output: { title: string; metadata: Record<string, unknown>; output: string }
     ) => {
       await plugin.toolExecuteAfter(input, output);
+    },
+    // GO mechanism (2) — absent on older OpenCode builds; OpenCode simply
+    // never calls a hook key it doesn't support, so no version guard is
+    // needed here (fail open by omission).
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string; model?: unknown },
+      output: { system: string[] }
+    ) => {
+      await plugin.chatSystemTransform(input, output);
     },
   };
 };

@@ -242,14 +242,16 @@ test("Rule 2 [full parity]: task text with no explicit agent is keyword-routed t
 });
 
 // ---------------------------------------------------------------------------
-// Rule 3 (logged-only parity): a leaf worker attempts to spawn. The Claude
-// hook structurally BLOCKS it (stdout permissionDecision:"deny"); the
-// OpenCode plugin cannot block tool.execute.before (see the plugin's own
-// comment at the `task` guard) — it only logs a SpawnDenied-equivalent
-// record. Both must use the identical LEAF_WORKER_DENY_MESSAGE text.
+// Rule 3 (full parity as of plan p15-t0): a leaf worker attempts to spawn.
+// The Claude hook structurally BLOCKS it (stdout permissionDecision:"deny");
+// the OpenCode plugin now ALSO structurally blocks it, by throwing a
+// BlockingToolCallError from tool.execute.before — confirmed live against
+// OpenCode 1.18.27 that a thrown error aborts the tool call and surfaces its
+// message to the model (see docs/opencode-probe-findings.md "Enforcement
+// mechanisms"). Both must use the identical LEAF_WORKER_DENY_MESSAGE text.
 // ---------------------------------------------------------------------------
 
-test("Rule 3 [enforcement parity: logged-only]: leaf-worker spawn attempt is BLOCKED by the Claude hook and LOGGED (not blocked) by the OpenCode plugin, with the identical deny message", async () => {
+test("Rule 3 [enforcement parity: full]: leaf-worker spawn attempt is BLOCKED by both the Claude hook and the OpenCode plugin, with the identical deny message", async () => {
   const root = setupProject();
   try {
     const { stdout } = runHook(root, {
@@ -283,28 +285,35 @@ test("Rule 3 [enforcement parity: logged-only]: leaf-worker spawn attempt is BLO
       sessionID: "rule3-parent-session",
       args: { subagent_type: "coding-specialist", description: "do a thing" },
     });
-    await plugin.toolExecuteBefore({
-      tool: "task",
-      sessionID: "rule3-session", // nested call "from" the pushed worker
-      args: { subagent_type: "coding-specialist", description: "leaf tries to spawn" },
-    });
+    let thrown: unknown;
+    try {
+      await plugin.toolExecuteBefore({
+        tool: "task",
+        sessionID: "rule3-session", // nested call "from" the pushed worker
+        args: { subagent_type: "coding-specialist", description: "leaf tries to spawn" },
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown, "expected the plugin's tool.execute.before to throw and block the nested spawn");
+    assert.equal((thrown as Error).message, LEAF_WORKER_DENY_MESSAGE, "thrown error message must match the hook's deny message exactly");
 
     const pluginRecords = readPluginActivity(plugin._paths.activityFile);
     const denial = pluginRecords.find((r) => r.event === "SpawnDenied");
-    assert.ok(denial, "expected a plugin SpawnDenied record (logged-only — OpenCode's own permission deny-list is what actually blocks the call in production)");
+    assert.ok(denial, "expected a plugin SpawnDenied activity record alongside the thrown block");
     assert.equal(denial!.message, LEAF_WORKER_DENY_MESSAGE, "plugin's logged deny message must match the hook's exactly");
 
-    // Unlike the Claude hook, the plugin's tool.execute.before has no
-    // mechanism to prevent the nested `task` call from proceeding — it still
-    // records a normal PreToolUse spawn record alongside the SpawnDenied log.
-    // This IS the documented structural gap (see the plugin's own comment at
-    // the guard) rather than a parity bug.
-    const nestedSpawnStillLogged = pluginRecords.some(
+    // The nested `task` call must NOT also produce a normal spawn record —
+    // the throw aborts it before that record is written, matching the
+    // Claude hook's own "no normal PreToolUse record for a denied spawn"
+    // behavior.
+    const nestedSpawnLogged = pluginRecords.some(
       (r) => r.event === "PreToolUse" && r.tool === "Task" && r.sessionId === "rule3-session"
     );
-    assert.ok(
-      nestedSpawnStillLogged,
-      "documents the structural gap: the plugin logs but cannot block the nested spawn (OpenCode's own permission deny-list is the actual blocker in production)"
+    assert.equal(
+      nestedSpawnLogged,
+      false,
+      "the plugin must not also produce a normal spawn record for a denied spawn"
     );
     rmSync(pluginRoot3, { recursive: true, force: true });
   } finally {

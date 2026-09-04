@@ -181,3 +181,135 @@ No dedicated `GET /state` REST route exists in `standalone/src/server.mjs` (stat
 Standalone server killed after the run; port 4311 confirmed free (no LISTENING entry in `netstat -ano`, only stale TIME_WAIT). Clone folder left in place at `D:/ACode/TycoonAgents-smoke`, no push, no commit.
 
 Verdict: M5 smoke PASS. No failing step.
+
+## Enforcement mechanisms (plan p15-t0)
+
+Probed live against OpenCode 1.18.27 (`opencode --version`), OpenCode Zen
+model `opencode/big-pickle`, via a throwaway plugin at
+`standalone/spike/opencode-enforcement-probe-plugin.ts`, temporarily copied
+to `.opencode/plugin/` and run with `opencode run --model opencode/big-pickle
+"<prompt>"`. Typings confirmed against `@opencode-ai/plugin@1.18.27` and
+`@opencode-ai/sdk@1.18.27` (`npm pack`'d into a scratch dir — this machine's
+global OpenCode install ships only the compiled binary, no `.d.ts` files).
+
+### (a) `permission.ask` — NO-GO (untestable in the mode that matters; hook never observed to fire)
+
+`Hooks["permission.ask"]` exists in the typings: `(input: Permission, output:
+{status: "ask"|"deny"|"allow"}) => Promise<void>`. Registered a handler that
+sets `output.status = "deny"` for any read/grep-titled permission.
+
+With no project `permission` config, OpenCode auto-approved bash/read calls
+and neither the informational `permission.asked` bus event nor the
+`permission.ask` hook fired at all (the run in section (c)/(b) below never
+touched this path).
+
+Forcing `opencode.json`'s `permission.read = "ask"` and running `opencode run
+"Read the file package.json..."` non-interactively produced:
+
+```
+! permission requested: read (package.json); auto-rejecting
+✗ Read package.json failed
+Error: The user rejected permission to use this specific tool call.
+```
+
+The probe's log captured only the bus notification, never the typed hook:
+
+```json
+{"hook":"event:permission.asked","at":1788550653185,"payload":{"id":"per_06ded2500001CWJ1lrWN9BujQm","sessionID":"ses_f9212f41bffeVtIM7vV5QyzZgn","permission":"read","patterns":["package.json"],"metadata":{},"always":["*"],"tool":{"messageID":"msg_06ded0e09001n3mEL2fYDBle0D","callID":"call_688f3aa71e9946a4a5a18593"}}}
+```
+
+No `permission.ask:input` or `permission.ask:decision` line ever appeared in
+the probe log for this or any other run in this session. **Verdict: the
+typed `permission.ask` hook did not fire in a real `opencode run` in this
+version — OpenCode's own non-interactive "auto-reject" path decides before
+any plugin hook is consulted.** This is UNRESOLVED as "does it fire in the
+interactive TUI" (not tested — `opencode run` is the only mode this spike
+could drive non-interactively within the bounded timeout), but for the
+non-interactive path TycoonAgents actually runs in (`opencode run`,
+scripted/CI use), it is a **NO-GO**: not wired.
+
+### (b) prompt/system injection via `experimental.chat.system.transform` — GO
+
+`Hooks["experimental.chat.system.transform"]` exists: `(input: {sessionID?,
+model}, output: {system: string[]}) => Promise<void>`. Registered a handler
+that pushes `` `INJECTED DOCTRINE: TYCOON_PROBE_MARKER_7Q2X. If you see this,
+end your final reply with the literal token TYCOON_PROBE_MARKER_7Q2X.` ``.
+
+Ran `opencode run --model opencode/big-pickle "Run the bash command 'echo
+hello-probe' and tell me its output. Then end your reply."` The model's
+final reply (verbatim, via `opencode run`'s stdout):
+
+```
+The literal token the command produced was `PROBE_DELIBERATE_THROW_FROM_BEFORE_HOOK` (not `hello-probe`).
+
+TYCOON_PROBE_MARKER_7Q2X
+```
+
+The probe log confirms the hook fired on every model turn in the session
+(`systemCountBefore: 1` -> `systemCountAfter: 2`) and the model followed the
+injected instruction. **Verdict: GO.** Text pushed into `output.system`
+genuinely reaches the model's context.
+
+### (c) throwing inside `tool.execute.before` — GO (this is the actual block mechanism, not `permission.ask`)
+
+Registered a handler that throws `new Error("PROBE_DELIBERATE_THROW_FROM_BEFORE_HOOK")`
+for any `bash` tool call. Same run as (b) above. Observed sequence in the
+probe log:
+
+```json
+{"hook":"tool.execute.before","payload":{"tool":"bash","sessionID":"ses_f92135cf9ffeq7CYg2bELOGQBc","callID":"chatcmpl-tool-8d9a48360d0f53d8"}}
+{"hook":"tool.execute.before:about-to-throw","payload":{"tool":"bash"}}
+{"hook":"event:message.part.updated","payload":{"part":{"type":"tool","tool":"bash","state":{"status":"error","input":{"command":"echo hello-probe"},"error":"PROBE_DELIBERATE_THROW_FROM_BEFORE_HOOK", ...}}}}
+```
+
+`opencode run`'s own stdout for that call:
+
+```
+✗ echo hello-probe failed
+Error: PROBE_DELIBERATE_THROW_FROM_BEFORE_HOOK
+```
+
+The bash command never ran (no `hello-probe` output anywhere), the tool part
+transitioned straight to `status: "error"` with the thrown message as
+`error`, and — critically — the model's next turn read that error message
+and reported it as the "actual" output, proving the thrown text reaches the
+model as the tool result, not just the TUI/CLI display. **Verdict: GO.**
+This, not `permission.ask`, is the real blocking primitive on OpenCode
+1.18.27.
+
+### What got wired (hooks/tycoon-opencode-plugin.ts)
+
+- Leaf-worker spawn guard (`decideSpawn`, the `task` branch of
+  `handleToolExecuteBefore`): a `deny` decision now throws a
+  `BlockingToolCallError(decision.message)` in addition to logging the
+  existing `SpawnDenied` activity record. The top-level
+  `"tool.execute.before"` entrypoint does NOT wrap `plugin.toolExecuteBefore`
+  in try/catch, so this propagates to OpenCode and aborts the call; the
+  inner wrapper still catches and logs every OTHER error, so an unrelated
+  plugin bug still fails open exactly as before.
+- Orchestrator direct-tool-call nudge (`decideDirectToolCall`): a `nudge`
+  decision is now also queued per-session (`pendingNudgesBySession`) and
+  delivered into that session's next model turn via a new
+  `"experimental.chat.system.transform"` hook (`plugin.chatSystemTransform`),
+  prefixed `[TycoonAgents delegation nudge]`. Queue is drained (not peeked)
+  so a nudge delivers exactly once; absent/malformed `output.system` is a
+  no-op, matching this plugin's fail-open posture everywhere else.
+- `permission.ask` is NOT wired — see (a) above.
+
+Coverage: `test/opencodeEnforcementHooks.test.ts` (new) exercises both wired
+mechanisms directly against `createPlugin()`. `test/enforcementParity.test.ts`
+Rule 3 was updated from "logged-only" to "full" parity (the plugin now
+throws and blocks, matching the Claude hook). `docs/ENFORCEMENT-PARITY-BENCHMARK.md`
+and `scripts/generate-opencode-config.mjs`'s `OPENCODE_ENFORCEMENT_DOCTRINE`
+were updated to match. `hooks/tycoon-claude-hook.cjs` was not touched.
+
+### Open issues
+
+- `permission.ask` firing in the **interactive TUI** (not `opencode run`)
+  was not tested — bounded to non-interactive scenarios per the brief. If a
+  future spike confirms it fires there, it could give a second, narrower
+  block surface (only for tools under a `permission: "ask"` config rule).
+- The direct-tool-call nudge is delivered on the model's NEXT turn, not
+  the same turn as the flagged call, since `chat.system.transform` runs once
+  per model completion and there is no earlier hook available to intercept
+  mid-turn.

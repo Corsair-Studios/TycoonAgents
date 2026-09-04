@@ -319,9 +319,11 @@ of whether you (the orchestrator model) recall the delegation rules above.
 
 1. **Direct-tool nudge.** If you call Grep, Glob, Edit, or Write yourself, or
    Read more than 2 files in one turn, the plugin logs a compliance message
-   to \`activity.jsonl\`, visible in the delegation panel; it is not injected
-   into your context, so this rule is self-enforced — never make those
-   direct calls; route them via the task tool to the right specialist.
+   to \`activity.jsonl\`, visible in the delegation panel, AND delivers that
+   same message into your own system prompt on your next turn — you will see
+   a line starting \`[TycoonAgents delegation nudge]\`. Do not wait for it:
+   never make those direct calls in the first place; route them via the task
+   tool to the right specialist.
 2. **Keyword agent routing.** Agent selection for a task tool call follows
    \`.claude/tycoon/agent-keywords.json\` in this priority order: an explicit
    agent name in your call wins outright; otherwise the task text is matched
@@ -334,13 +336,14 @@ of whether you (the orchestrator model) recall the delegation rules above.
    round, report the outcome — do not loop further reviews.
 4. **Leaf workers never spawn.** Any agent invoked via the task tool is a
    leaf: it must do its assigned work with its own tools and must not call
-   the task tool itself. OpenCode denies a leaf's recursive task call, and
-   the plugin logs it as \`SpawnDenied\` with the message "Blocked: you are a
-   leaf worker — workers do not spawn sub-agents. Do the work yourself with
-   your own tools, chunked into bounded sequential calls if it is long (see
-   your brief). This block is structural (TycoonAgents leaf-worker rule)."
-   If you are a spawned agent and see that message, stop trying to delegate
-   and finish the task directly.
+   the task tool itself. The plugin structurally blocks a leaf's recursive
+   task call — the call is aborted and you will see its error output:
+   "Blocked: you are a leaf worker — workers do not spawn sub-agents. Do the
+   work yourself with your own tools, chunked into bounded sequential calls
+   if it is long (see your brief). This block is structural (TycoonAgents
+   leaf-worker rule)." If you are a spawned agent and see that message, stop
+   trying to delegate and finish the task directly — retrying the task tool
+   will fail the same way every time.
 `;
 
 function buildAgentsMd(root) {
