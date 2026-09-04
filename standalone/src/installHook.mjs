@@ -126,6 +126,7 @@ export const OPENCODE_PLUGIN_FILES = Object.freeze([
   'tycoon-opencode-plugin.ts',
   'agentBackend.js',
   'modelAliases.js',
+  'delegationEnforcement.js',
 ]);
 
 /**

@@ -24,12 +24,90 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
+// Delegation enforcement (plan p14-t1): pure decision functions ported from
+// hooks/tycoon-claude-hook.cjs, shared via src/core/delegationEnforcement.ts
+// (compiled to out/src/core/delegationEnforcement.js) so both hosts use the
+// SAME algorithms. Loaded lazily/defensively — an unbuilt out/ (dev checkout
+// that hasn't run `npm run compile`, or a packaged install missing it for any
+// reason) must never crash the plugin; every call site below falls back to
+// "allow" when this module isn't available.
+//
+// Depth rule for this plugin (orchestrator vs. leaf), used by every decision
+// below: OpenCode gives no explicit "is this the top-level agent" flag on
+// tool.execute.before/after (see docs/opencode-probe-findings.md — no such
+// field observed), so depth is DERIVED from the active-agent stack this
+// plugin already maintains (peekActiveAgent): an EMPTY stack means the call
+// came from the root/orchestrator session; a non-empty stack means the call
+// came from (or on behalf of) the worker on top. This mirrors the Claude
+// hook's own rule (an empty/missing payload.agent_id means "orchestrator").
+// ---------------------------------------------------------------------------
+
+interface DelegationEnforcementModule {
+  matchAgentFromKeywords: (
+    searchText: string,
+    keywordsConfig: { fallback_agent?: string; agents?: Record<string, { pattern?: string }> } | null | undefined
+  ) => { agentId: string; matchedKeyword: string } | null;
+  decideDirectToolCall: (
+    toolName: string,
+    readCountSoFar: number
+  ) => { action: "allow" | "nudge" | "deny"; message?: string; nextReadCount?: number };
+  decideSpawn: (ctx: {
+    spawnerAgentId: string;
+    spawnerAgentType: string;
+    delegationMode: string;
+    spawnerIsLead: boolean;
+  }) => { action: "allow" | "nudge" | "deny"; message?: string };
+  LEAF_WORKER_DENY_MESSAGE: string;
+  startReviewGate: () => { status: string; reviewsRun: number };
+  advanceReviewGate: (
+    state: { status: string; reviewsRun: number },
+    approved: boolean
+  ) => { status: string; reviewsRun: number };
+  isReviewGateTerminal: (state: { status: string; reviewsRun: number }) => boolean;
+}
+
+let delegationEnforcementModule: DelegationEnforcementModule | null | undefined; // undefined = not attempted
+
+function getDelegationEnforcementModule(): DelegationEnforcementModule | null {
+  if (delegationEnforcementModule === undefined) {
+    try {
+      // Resolves to out/src/core/delegationEnforcement.js when compiled and
+      // copied alongside this plugin (see scripts/copy-hook-runtime.mjs);
+      // absent in a dev checkout that hasn't built out/, or a packaged
+      // install missing it — both fall back to "allow" everywhere below.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      delegationEnforcementModule = require(path.join(
+        __dirname,
+        "delegationEnforcement.js"
+      )) as DelegationEnforcementModule;
+    } catch {
+      delegationEnforcementModule = null;
+      try {
+        process.stderr.write(
+          "[tycoon-opencode-plugin] delegationEnforcement.js not available next to the plugin — direct-tool-call nudges, keyword routing fallback, and the leaf-spawn guard are disabled.\n"
+        );
+      } catch {
+        /* never let a warning break the plugin */
+      }
+    }
+  }
+  return delegationEnforcementModule;
+}
+
+// ---------------------------------------------------------------------------
 // Types (kept local — no cross-package import at runtime; shapes mirror
 // src/providers/claude-code/hookRecord.ts's HookRecord as closely as an
 // OpenCode-sourced record can).
 // ---------------------------------------------------------------------------
 
-type OpenCodeHookEventName = "UserPromptSubmit" | "PreToolUse" | "SubagentStop" | "Stop" | "PluginError";
+type OpenCodeHookEventName =
+  | "UserPromptSubmit"
+  | "PreToolUse"
+  | "SubagentStop"
+  | "Stop"
+  | "PluginError"
+  | "SpawnDenied"
+  | "ReviewGate";
 
 interface OpenCodeHookRecord {
   event: OpenCodeHookEventName;
@@ -46,6 +124,11 @@ interface OpenCodeHookRecord {
   parentId?: string;
   sessionId?: string;
   error?: string;
+  /** SpawnDenied/ReviewGate-only fields. */
+  routingMethod?: string;
+  matchedKeyword?: string;
+  reviewGateStatus?: string;
+  message?: string;
 }
 
 interface ActiveAgentEntry {
@@ -464,6 +547,56 @@ export function createPlugin(deps: PluginDeps) {
   const activityFile = path.join(activityDir, "activity.jsonl");
   const activeAgentFile = path.join(activityDir, "active-agent.json");
   const agentsDir = path.join(directory, ".claude", "agents");
+  const tycoonDir = path.join(directory, ".claude", "tycoon");
+
+  // (2) Keyword-based agent routing: same config file, same matching
+  // algorithm (via delegationEnforcementModule) as
+  // hooks/tycoon-claude-hook.cjs's matchAgentFromKeywords. Read once per
+  // plugin instantiation — same lifetime assumption pushActiveAgent/etc.
+  // already make about agentsDir being effectively static for the session.
+  const keywordsConfig = readJsonSafe<{
+    fallback_agent?: string;
+    agents?: Record<string, { pattern?: string }>;
+  }>(path.join(tycoonDir, "agent-keywords.json"));
+  const delegationEnforcement = getDelegationEnforcementModule();
+
+  // (1) Orchestrator direct-tool-call nudge: per-turn Read counter, reset on
+  // each new root-session UserPromptSubmit (see recordUserPromptSubmit
+  // below), mirroring the Claude hook's orchestrator-turn-reads.json but
+  // kept in-memory here — this plugin is a single long-lived process per
+  // OpenCode session, unlike the hook's short-lived per-event CLI process.
+  let orchestratorTurnReads = 0;
+
+  // (3) Single review-gate pass equivalent: BEST-EFFORT. OpenCode's probed
+  // event surface (docs/opencode-probe-findings.md) carries no signal that
+  // distinguishes "a review agent's SubagentStop" from any other worker's —
+  // there is no observed event marking "review requested" or "review
+  // verdict". This tracks review-gate state per parent session using the
+  // SAME state machine as the doctrine (src/core/delegationEnforcement.ts's
+  // startReviewGate/advanceReviewGate: one review, one fix-and-recheck
+  // round, then stop cycling) keyed by which worker last stopped: a
+  // non-"uefn-auditor" specialist finishing arms "awaiting_review"; the next
+  // "uefn-auditor" SubagentStop for the same parent session advances the
+  // gate. This is a heuristic wired to the SAME SubagentStop signal already
+  // used for attribution, not a new OpenCode capability, and could
+  // misattribute review pairing if an unrelated worker is spawned
+  // interleaved with the review — acceptable for a best-effort v1.
+  const reviewGateByParentSession = new Map<string, { status: string; reviewsRun: number }>();
+  // Defensive size cap: entries are normally evicted promptly (see
+  // handleSessionIdle's delete on root-session Stop, above), but a session
+  // that never fires session.idle (crashed process, killed terminal, a host
+  // that doesn't emit it) would otherwise leak forever in this long-lived
+  // plugin process. Map iteration order is insertion order, so dropping from
+  // the front evicts the oldest entries first (approximate LRU).
+  const REVIEW_GATE_MAX_ENTRIES = 64;
+  function setReviewGate(parentSessionId: string, state: { status: string; reviewsRun: number }): void {
+    reviewGateByParentSession.set(parentSessionId, state);
+    while (reviewGateByParentSession.size > REVIEW_GATE_MAX_ENTRIES) {
+      const oldestKey = reviewGateByParentSession.keys().next().value;
+      if (oldestKey === undefined) break;
+      reviewGateByParentSession.delete(oldestKey);
+    }
+  }
 
   const isDuplicateSubmit = makeSubmitDedupe();
   // sessionID -> true once its first user message.updated has fired, so a
@@ -481,6 +614,9 @@ export function createPlugin(deps: PluginDeps) {
 
   function recordUserPromptSubmit(sessionId: string) {
     if (isDuplicateSubmit(sessionId, now())) return;
+    // New turn: reset the orchestrator's direct-read counter, mirroring the
+    // Claude hook's resetOrchestratorTurnReads on UserPromptSubmit.
+    orchestratorTurnReads = 0;
     appendActivity(activityFile, {
       event: "UserPromptSubmit",
       provider: "opencode",
@@ -528,6 +664,10 @@ export function createPlugin(deps: PluginDeps) {
       at: now(),
       sessionId,
     });
+    // The root session is ending — its review-gate entry (if any) is no
+    // longer needed, so evict it now rather than waiting for the size cap
+    // below to reclaim it (see reviewGateByParentSession's declaration).
+    reviewGateByParentSession.delete(sessionId);
   }
 
   async function handleToolExecuteBefore(input: {
@@ -541,7 +681,78 @@ export function createPlugin(deps: PluginDeps) {
     const args = input?.args ?? {};
 
     if (rawTool === "task") {
-      const workerId = typeof args["subagent_type"] === "string" ? (args["subagent_type"] as string) : undefined;
+      // -----------------------------------------------------------------
+      // (4) Leaf-worker spawn guard — equivalent of tycoon-claude-hook.cjs's
+      // PreToolUse isSpawn guard. Depth is derived from the active-agent
+      // stack (see the module-level comment above): a non-empty stack means
+      // this `task` call originated from (or on behalf of) a worker, not
+      // the root orchestrator session.
+      //
+      // BEST-EFFORT / instrumentation only: per
+      // docs/opencode-probe-findings.md section (c), OpenCode's own
+      // per-session `permission` deny-list already blocks a subagent
+      // session from calling `task` at all — no `tool.execute.before` for
+      // `task` is even observed to fire on a denied child session, and no
+      // throw-to-block mechanism for tool.execute.before is documented or
+      // observed for OpenCode 1.18.27. So this guard cannot itself deny the
+      // call the way the Claude hook's stdout permissionDecision:"deny"
+      // does; it only logs a SpawnDenied-equivalent record (for parity with
+      // the Claude hook's activity trail) on the rare host/version where
+      // the permission default doesn't already cover it. It never throws.
+      // -----------------------------------------------------------------
+      const spawnerEntry = peekActiveAgent(activeAgentFile);
+      const spawnerAgentId = spawnerEntry && spawnerEntry.agentId !== "none" ? spawnerEntry.agentId : "";
+      if (delegationEnforcement && spawnerAgentId) {
+        // team_leads tier is not modeled in this plugin (OPEN ISSUE — see
+        // report): every spawner is treated as a non-lead leaf, matching
+        // the Claude hook's default ("flat" delegation mode) posture.
+        const decision = delegationEnforcement.decideSpawn({
+          spawnerAgentId,
+          spawnerAgentType: spawnerEntry?.subagentType ?? spawnerAgentId,
+          delegationMode: "flat",
+          spawnerIsLead: false,
+        });
+        if (decision.action === "deny") {
+          appendActivity(activityFile, {
+            event: "SpawnDenied",
+            provider: "opencode",
+            at: now(),
+            tool: "Task",
+            workerId: spawnerAgentId,
+            sessionId,
+            message: decision.message,
+          });
+        }
+      }
+
+      let workerId = typeof args["subagent_type"] === "string" ? (args["subagent_type"] as string) : undefined;
+      let routingMethod = workerId ? "explicit" : "fallback";
+      let matchedKeyword: string | undefined;
+      // (2) Keyword-based fallback routing, mirroring the Claude hook's
+      // Priority 2 (matchAgentFromKeywords over description+prompt) for the
+      // case where OpenCode's own `task` call carries no explicit
+      // subagent_type (or one that doesn't resolve to a known agent file).
+      if (delegationEnforcement && keywordsConfig) {
+        const needsKeywordFallback =
+          !workerId || (agentsDir && !fs.existsSync(path.join(agentsDir, workerId + ".md")));
+        if (needsKeywordFallback) {
+          const description = typeof args["description"] === "string" ? (args["description"] as string) : "";
+          const prompt = typeof args["prompt"] === "string" ? (args["prompt"] as string).slice(0, 500) : "";
+          const match = delegationEnforcement.matchAgentFromKeywords(
+            `${description} ${prompt}`.toLowerCase(),
+            keywordsConfig
+          );
+          if (match) {
+            workerId = match.agentId;
+            matchedKeyword = match.matchedKeyword;
+            routingMethod = "keyword";
+          } else if (!workerId) {
+            workerId = keywordsConfig.fallback_agent || "primary-agent";
+            routingMethod = "fallback";
+          }
+        }
+      }
+
       const agentDescription = typeof args["description"] === "string" ? (args["description"] as string) : undefined;
       const backend = workerId ? readAgentBackendFromFile(agentsDir, workerId) : {};
 
@@ -567,6 +778,8 @@ export function createPlugin(deps: PluginDeps) {
         agentDescription,
         sessionId,
         parentId: sessionId, // parent SESSION id per findings (payload[0].sessionID = parent)
+        routingMethod,
+        matchedKeyword,
       };
       if (backend.vendor) record.vendor = backend.vendor;
       if (backend.model) record.model = backend.model;
@@ -592,6 +805,20 @@ export function createPlugin(deps: PluginDeps) {
       if (mcpBackend.model) record.model = mcpBackend.model;
       if (mcpBackend.costModelClass) record.costModelClass = mcpBackend.costModelClass;
     }
+
+    // (1) Orchestrator direct-tool-call compliance nudge — equivalent of
+    // tycoon-claude-hook.cjs's computeComplianceNudge. Only ever computed
+    // for the orchestrator (empty active-agent stack); a spawned worker is
+    // a leaf and is SUPPOSED to call these tools directly, so it is never
+    // nagged, matching the Claude hook's own guard.
+    if (delegationEnforcement && workerId === "orchestrator") {
+      const decision = delegationEnforcement.decideDirectToolCall(mappedTool, orchestratorTurnReads);
+      if (decision.nextReadCount !== undefined) orchestratorTurnReads = decision.nextReadCount;
+      if (decision.action === "nudge" && decision.message) {
+        record.message = decision.message;
+      }
+    }
+
     appendActivity(activityFile, record);
   }
 
@@ -636,6 +863,46 @@ export function createPlugin(deps: PluginDeps) {
     if (tokens !== undefined) record.tokens = tokens;
     if (cacheReadTokens !== undefined) record.cacheReadTokens = cacheReadTokens;
     appendActivity(activityFile, record);
+
+    // (3) Single review-gate pass equivalent — BEST-EFFORT (see the
+    // reviewGateByParentSession comment in createPlugin above for why this
+    // is heuristic rather than driven by a dedicated OpenCode signal). Keyed
+    // by the PARENT session (the orchestrator's session), since that is the
+    // stable id shared by every specialist spawned from the same turn.
+    const parentSessionId = metadata.parentSessionId ?? input.sessionID;
+    if (delegationEnforcement && parentSessionId && workerId !== "unknown") {
+      if (workerId === "uefn-auditor") {
+        const gate = reviewGateByParentSession.get(parentSessionId);
+        if (gate && !delegationEnforcement.isReviewGateTerminal(gate)) {
+          // No structured approve/reject signal is observable from a task
+          // tool's plain-text `output` (see docs/opencode-probe-findings.md
+          // (a) — output is a rendered <task> string, not typed). Treat the
+          // review as requesting changes only when its report text contains
+          // an explicit rejection marker; otherwise treat it as approved —
+          // matching the doctrine's "single pass" intent (progress, don't
+          // stall) even though the verdict signal itself is best-effort.
+          const outputText = typeof output?.output === "string" ? output.output : "";
+          const approved = !/\b(changes requested|not approved|requires? (a )?fix)\b/i.test(outputText);
+          const next = delegationEnforcement.advanceReviewGate(gate, approved);
+          setReviewGate(parentSessionId, next);
+          appendActivity(activityFile, {
+            event: "ReviewGate",
+            provider: "opencode",
+            at: now(),
+            sessionId: parentSessionId,
+            reviewGateStatus: next.status,
+          });
+        }
+      } else {
+        // A non-review specialist finished: arm "awaiting_review" for this
+        // parent session if no gate is active yet (a gate already in
+        // progress, e.g. mid fix-and-recheck round, is left alone).
+        const existing = reviewGateByParentSession.get(parentSessionId);
+        if (!existing || delegationEnforcement.isReviewGateTerminal(existing)) {
+          setReviewGate(parentSessionId, delegationEnforcement.startReviewGate());
+        }
+      }
+    }
   }
 
   return {

@@ -5740,11 +5740,15 @@ export class TycoonPanel {
         };
         const agentBackendSrc = resolveRuntimeFile("agentBackend.js");
         const modelAliasesSrc = resolveRuntimeFile("modelAliases.js");
+        const delegationEnforcementSrc = resolveRuntimeFile("delegationEnforcement.js");
         if (agentBackendSrc) {
           fs.copyFileSync(agentBackendSrc, path.join(tycoonDir, "agentBackend.js"));
         }
         if (modelAliasesSrc) {
           fs.copyFileSync(modelAliasesSrc, path.join(tycoonDir, "modelAliases.js"));
+        }
+        if (delegationEnforcementSrc) {
+          fs.copyFileSync(delegationEnforcementSrc, path.join(tycoonDir, "delegationEnforcement.js"));
         }
       } catch {
         /* best-effort; hook falls back to legacy behavior when absent */
