@@ -17,8 +17,10 @@
 // Node built-ins only — standalone/package.json ships zero dependencies.
 
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { installHook, installOpenCodePlugin, InstallHookError } from './installHook.mjs';
+import { seedAgents, SeedAgentsError } from './seedAgents.mjs';
 import { startServer, ServerStartError } from './server.mjs';
 import { ProjectRootError } from './projectRoots.mjs';
 import { resolveProviderId } from './sharedLogic.mjs';
@@ -38,6 +40,21 @@ function printUsage() {
       '                               Never touches settings.local.json. --force',
       '                               overwrites a destination file that differs from',
       '                               the repo copy (default: refuse and error).',
+      '                               --no-agents               Skip seeding the',
+      '                               core agent roster (.claude/agents/*.md +',
+      '                               .claude/tycoon/agent-keywords.json) that',
+      '                               install-hook otherwise seeds by default — see',
+      '                               `seed-agents` below.',
+      '  seed-agents <dir>           Idempotently seed the core agent roster',
+      '                               (search-retrieval, primary-agent,',
+      '                               coding-specialist, ux-ui-designer, reviewer)',
+      '                               into <dir>/.claude/agents/*.md, and',
+      '                               <dir>/.claude/tycoon/agent-keywords.json if',
+      '                               missing — the same roster a fresh VS Code',
+      '                               install writes in direct-delegation mode.',
+      '                               Never overwrites an existing file. Also run',
+      '                               automatically by `install-hook` unless',
+      '                               --no-agents is passed.',
       '  watch <dir> [<dir2> ...]    Start the live agent visualization server for',
       '                               <dir> (a project containing, or that will',
       '                               contain, .claude/tycoon/) and open it in your',
@@ -226,6 +243,27 @@ export async function runWatchCommand(rest, { env = process.env, cwd = process.c
 }
 
 /**
+ * Prints one line per file `seedAgents` actually wrote, plus a one-line
+ * summary — shared by `install-hook`'s auto-seed step and the standalone
+ * `seed-agents` command so their output is identical either way.
+ * @param {{ agentsDir: string, keywordsPath: string, seededAgents: string[],
+ *   skippedAgents: string[], seededKeywords: boolean }} result
+ */
+function printSeedAgentsResult(result) {
+  const { agentsDir, keywordsPath, seededAgents, skippedAgents, seededKeywords } = result;
+  for (const id of seededAgents) {
+    console.log(`TycoonAgents: seeded ${path.join(agentsDir, `${id}.md`)}`);
+  }
+  if (seededKeywords) {
+    console.log(`TycoonAgents: seeded ${keywordsPath}`);
+  }
+  console.log(
+    `TycoonAgents: agent roster — ${seededAgents.length} seeded, ${skippedAgents.length} already present` +
+      (seededKeywords ? ', agent-keywords.json seeded.' : ', agent-keywords.json already present or up to date.'),
+  );
+}
+
+/**
  * @param {string[]} argv `process.argv.slice(2)`.
  * @returns {Promise<number>} process exit code.
  */
@@ -268,6 +306,37 @@ export async function runCli(argv) {
           ? `TycoonAgents: hook registered in ${settingsPath}`
           : `TycoonAgents: hook already registered in ${settingsPath} (no changes).`,
       );
+
+      if (!flags.includes('--no-agents')) {
+        try {
+          printSeedAgentsResult(seedAgents(dir));
+        } catch (err) {
+          if (err instanceof SeedAgentsError) {
+            console.error(err.message);
+            return 1;
+          }
+          throw err;
+        }
+      }
+      return 0;
+    }
+
+    case 'seed-agents': {
+      const dir = rest.find((a) => typeof a === 'string' && !a.startsWith('-'));
+      if (!dir) {
+        console.error('tycoonagents-standalone seed-agents: missing <dir> argument.');
+        printUsage();
+        return 1;
+      }
+      try {
+        printSeedAgentsResult(seedAgents(dir));
+      } catch (err) {
+        if (err instanceof SeedAgentsError) {
+          console.error(err.message);
+          return 1;
+        }
+        throw err;
+      }
       return 0;
     }
 
@@ -297,7 +366,10 @@ async function main() {
     process.exitCode = code;
   } catch (err) {
     const message =
-      err instanceof InstallHookError || err instanceof ProjectRootError || err instanceof ServerStartError
+      err instanceof InstallHookError ||
+      err instanceof SeedAgentsError ||
+      err instanceof ProjectRootError ||
+      err instanceof ServerStartError
         ? err.message
         : err instanceof Error
           ? err.message

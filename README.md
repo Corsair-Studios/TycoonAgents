@@ -102,7 +102,7 @@ A provider abstraction so agent activity can come from Claude Code, other agent 
 
 ### Using OpenCode as the provider
 
-TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of Claude Code, via the same provider abstraction.
+TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of Claude Code, via the same provider abstraction. This depends on the `.claude/agents/*.md` agent roster existing first — it is not committed (`.claude/` is gitignored); seed it via the VS Code panel's Install/Repair hooks, or `node standalone/src/cli.mjs install-hook <dir>` / `seed-agents <dir>` on OpenCode-only setups — see "Prerequisite: the agent roster" in [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md).
 
 1. **Build** — from the repo root:
 
@@ -114,7 +114,7 @@ TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of C
 
 2. **Select the provider** — VS Code setting `tycoonagents.provider: "opencode"`, or the `TYCOON_PROVIDER=opencode` environment variable (which always overrides the setting), or `--provider opencode` in the standalone host.
 3. **Generate the roster** — `npm run opencode:config` writes an OpenCode-flavored agent config from the same specialist roster the VS Code extension seeds.
-4. **Register the plugin** — copy `hooks/tycoon-opencode-plugin.ts`, `hooks/agentBackend.js`, and `hooks/modelAliases.js` into your project's `.opencode/plugin/` directory (OpenCode loads `.ts` plugins from there); the standalone host can do this for you — see [`standalone/README.md`](standalone/README.md#opencode-plugin-registration).
+4. **Register the plugin** — copy `hooks/tycoon-opencode-plugin.ts`, `hooks/agentBackend.js`, `hooks/modelAliases.js`, `hooks/delegationEnforcement.js`, and `hooks/fallbackChain.js` into your project's `.opencode/plugin/` directory (OpenCode loads `.ts` plugins from there); the standalone host can do this for you — see [`standalone/README.md`](standalone/README.md#opencode-plugin-registration).
 5. **Run a session** in OpenCode as usual — the plugin appends hook records to the same activity log the Claude Code hook writes to. On a headless or remote machine, set `TYCOON_STANDALONE_NO_OPEN=1` so the standalone does not try to launch a browser.
 6. **What the panel shows** — the same live agent visualization and metrics, sourced from OpenCode's events instead of Claude Code's.
 

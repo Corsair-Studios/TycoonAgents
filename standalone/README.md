@@ -42,6 +42,8 @@ npm install      # no-op today; standalone ships zero dependencies
 npm test         # optional: run the standalone's own test suite
 
 # Register the Claude Code hook in a project (idempotent — safe to re-run)
+# Also seeds .claude/agents/*.md and .claude/tycoon/agent-keywords.json when
+# missing (never overwrites an existing file) — see "Agent roster seeding" below.
 node src/cli.mjs install-hook <path-to-project>
 
 # Start the server and open it in your browser
@@ -103,9 +105,32 @@ Precedence for project targets: explicit CLI directory argument(s) > `TYCOON_STA
 node src/cli.mjs watch . --provider opencode
 ```
 
+## Agent roster seeding
+
+`.claude/agents/*.md` is not committed to the repo (`.claude/` is
+gitignored), so a fresh clone has no roster. `install-hook` seeds it by
+default — with or without `--opencode` — writing `.claude/agents/*.md` and
+`.claude/tycoon/agent-keywords.json` whenever they're missing; it never
+overwrites a file that already exists. Pass `--no-agents` to skip seeding
+(e.g. when you manage the roster yourself), or run the seeding step alone
+without touching the hook or plugin:
+
+```sh
+node src/cli.mjs seed-agents <path-to-project>
+```
+
+`docs/ROUTING-PROFILE.md` and `docs/OPENCODE-PROVIDER.md` depend on this
+roster existing before their routing scripts can resolve agent backends.
+
+This seeds only the core worker roster (`search-retrieval`,
+`primary-agent`, `coding-specialist`, `ux-ui-designer`) plus a reviewer,
+matching a fresh VS Code install. Foreign-LLM reviewers (`codex-reviewer`,
+`gemini-reviewer`, `kimi-reviewer`) come from the multi-llm pack, installed
+from the panel's Packs view.
+
 ## OpenCode plugin registration
 
-`install-hook`'s `--opencode` flag is a **separate opt-in** from the default Claude Code hook install: it idempotently copies the TycoonAgents OpenCode plugin (`hooks/tycoon-opencode-plugin.ts`, `hooks/agentBackend.js`, `hooks/modelAliases.js`) into `<dir>/.opencode/plugin/` (the directory OpenCode 1.18.27 loads `.ts` plugins from) instead of touching `.claude/settings.local.json`.
+`install-hook`'s `--opencode` flag is a **separate opt-in** from the default Claude Code hook install: it idempotently copies the TycoonAgents OpenCode plugin (`hooks/tycoon-opencode-plugin.ts`, `hooks/agentBackend.js`, `hooks/modelAliases.js`, `hooks/delegationEnforcement.js`, `hooks/fallbackChain.js`) into `<dir>/.opencode/plugin/` (the directory OpenCode 1.18.27 loads `.ts` plugins from) instead of touching `.claude/settings.local.json`.
 
 ```sh
 node src/cli.mjs install-hook <path-to-project> --opencode

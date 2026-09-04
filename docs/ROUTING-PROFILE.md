@@ -9,6 +9,39 @@ highest-priority source. It is entirely optional: a project with no
 See `src/core/routingProfile.ts` for the loader/validator implementation and
 `design-docs/routing-profile-prd.md` for the full PRD and milestone plan.
 
+## Prerequisite: the agent roster
+
+Everything below assumes `.claude/agents/<id>.md` files already exist for
+the agents named in `routing.json`. That roster is **not** committed to the
+repo (`.claude/` is gitignored) — a fresh clone has none. There are two ways
+to create it:
+
+- **VS Code**: open the TycoonAgents panel and run **Install/Repair hooks**;
+  it seeds the roster along with the Claude Code hook.
+- **Standalone / OpenCode-only** (no VS Code): from the repo root,
+  `node standalone/src/cli.mjs install-hook <dir>` seeds
+  `.claude/agents/*.md` and `.claude/tycoon/agent-keywords.json` when
+  missing (never overwriting a file that already exists), whether or not
+  you also pass `--opencode`. Pass `--no-agents` to skip roster seeding, or
+  run `node standalone/src/cli.mjs seed-agents <dir>` to seed the roster
+  only, without touching the hook or plugin registration.
+
+Either path seeds only the core worker roster (`search-retrieval`,
+`primary-agent`, `coding-specialist`, `ux-ui-designer`) plus a reviewer,
+matching a fresh VS Code install. Foreign-LLM reviewers such as
+`codex-reviewer`, `gemini-reviewer`, and `kimi-reviewer` come from the
+multi-llm pack, installed separately from the panel's Packs view (works in
+both VS Code and the standalone panel).
+
+`scripts/apply-routing-profile.mjs` (below) never creates agent files: an
+agent id in `routing.json` with no matching `.claude/agents/<id>.md` is
+silently skipped with a warning — `agent "<id>" is in routing.json but no
+.claude/agents/<id>.md file exists; skipped` — and a declared orchestrator
+slot with no `.md` file carrying `role: orchestrator` or
+`tier: orchestrator` is skipped the same way: `routing.json declares an
+orchestrator slot but no .claude/agents/*.md file has role/tier:
+orchestrator; skipped`. Seed the roster first if you see either message.
+
 ## File location
 
 `<project>/.claude/tycoon/routing.json`, one per project.
@@ -133,6 +166,11 @@ additive.
   `agents.kimi-reviewer.transport: invalid value "ssh" — allowed: claude-native, mcp, openai-compatible`).
 
 ## Full example
+
+`kimi-reviewer` below is a foreign-LLM reviewer from the multi-llm pack (see
+"Prerequisite: the agent roster" above) — install that pack from the panel's
+Packs view before this profile can resolve it; the seeded core roster alone
+does not include it.
 
 ```jsonc
 {

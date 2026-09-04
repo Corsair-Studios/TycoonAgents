@@ -135,6 +135,31 @@ node standalone/src/cli.mjs watch . --provider opencode
 
 ---
 
+## Prerequisite: the agent roster
+
+Routing and backend resolution below reads `.claude/agents/<id>.md`
+frontmatter for every agent — including under OpenCode, where the plugin
+reuses the same files (see "Backend routing" below). That roster is **not**
+committed (`.claude/` is gitignored), so a fresh clone or a machine that has
+only ever run OpenCode has none yet. Create it one of two ways:
+
+- **VS Code**: open the TycoonAgents panel and run **Install/Repair hooks**.
+- **Standalone / OpenCode-only**: `node standalone/src/cli.mjs install-hook
+  <dir>` (with or without `--opencode`) seeds `.claude/agents/*.md` and
+  `.claude/tycoon/agent-keywords.json` when missing, without overwriting
+  existing files; pass `--no-agents` to skip seeding, or run
+  `node standalone/src/cli.mjs seed-agents <dir>` to seed the roster alone.
+
+Either path seeds only the core worker roster plus a reviewer, matching a
+fresh VS Code install. Foreign-LLM reviewers (`codex-reviewer`,
+`gemini-reviewer`, `kimi-reviewer`) come from the multi-llm pack, installed
+from the panel's Packs view (VS Code or standalone).
+
+Both `scripts/apply-routing-profile.mjs` and the OpenCode plugin's routing
+skip any agent id with no roster file rather than failing — see
+`docs/ROUTING-PROFILE.md`'s "Prerequisite" section for the exact skip
+messages.
+
 ## Registration: `.opencode/plugin/`
 
 The OpenCode plugin is installed **only** by the standalone installer
