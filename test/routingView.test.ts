@@ -1055,3 +1055,64 @@ test('Routing panel: Endpoint env Set value input is plain text, not password', 
     win.close();
   }
 });
+
+test('Routing panel: Custom endpoint provider name field sets slot.vendor and round-trips', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload();
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    // ── Choose Custom endpoint, type a provider name ──
+    const vendorSelect = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    vendorSelect.value = 'custom-endpoint';
+    vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assertNoErrors('custom endpoint select');
+
+    const nameInput = doc.querySelector('.routing-slot-fields .routing-vendor-name-input') as any;
+    assert.ok(nameInput, 'Custom endpoint should reveal a Provider name input');
+    nameInput.value = 'ollama-windows';
+    nameInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+    await flush();
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+    const saveMsg = posted.filter((m) => m && m.type === 'saveRouting').pop();
+    assert.ok(saveMsg, 'Save should post a saveRouting message');
+    assert.equal(saveMsg.profile.orchestrator.vendor, 'ollama-windows', 'typed provider name should become slot.vendor');
+    assert.equal(saveMsg.profile.orchestrator.transport, 'openai-compatible', 'transport should stay forced to openai-compatible under Custom endpoint');
+
+    dispatch({ type: 'routingSaved', ok: true, errors: [], check: {}, write: {} });
+    await flush();
+
+    // ── Re-open with a payload whose orchestrator vendor is a custom, non-preset id ──
+    const reopenPayload = buildRoutingPayload({
+      orchestrator: {
+        id: 'orchestrator',
+        backend: { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'llama3', costModelClass: 'local' },
+        source: 'file',
+      },
+    });
+    dispatch({ type: 'routing', payload: reopenPayload });
+    await flush();
+    assertNoErrors('reopen with custom vendor payload');
+
+    const vendorSelectAfter = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    assert.equal(vendorSelectAfter.value, 'custom-endpoint', 'a non-preset vendor should select the Custom endpoint option');
+    const nameInputAfter = doc.querySelector('.routing-slot-fields .routing-vendor-name-input') as any;
+    assert.ok(nameInputAfter, 'Provider name input should render when reopened with a custom vendor');
+    assert.equal(nameInputAfter.value, 'ollama-windows', 'Provider name input should be prefilled with the saved vendor');
+
+    // ── Blur with an empty name defaults to "custom-endpoint" ──
+    nameInputAfter.value = '';
+    nameInputAfter.dispatchEvent(new win.Event('input', { bubbles: true }));
+    nameInputAfter.dispatchEvent(new win.Event('blur', { bubbles: true }));
+    await flush();
+    assert.equal(nameInputAfter.value, 'custom-endpoint', 'blurring an empty provider name should default to custom-endpoint');
+  } finally {
+    win.close();
+  }
+});

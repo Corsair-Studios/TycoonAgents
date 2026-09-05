@@ -16932,10 +16932,12 @@
       if (v === slot.vendor) opt.selected = true;
       vendorSel.appendChild(opt);
     });
+    var isCustom = !!slot.vendor && vendorOptions.indexOf(slot.vendor) === -1;
+
     var customOpt = document.createElement("option");
     customOpt.value = ROUTING_VENDOR_CUSTOM;
     customOpt.textContent = "Custom endpoint…";
-    if (slot.vendor === ROUTING_VENDOR_CUSTOM) customOpt.selected = true;
+    if (isCustom) customOpt.selected = true;
     vendorSel.appendChild(customOpt);
     vendorSel.addEventListener("change", function () {
       slot.vendor = vendorSel.value;
@@ -16945,7 +16947,31 @@
     vendorRow.appendChild(vendorSel);
     frag.appendChild(vendorRow);
 
-    var isCustom = slot.vendor === ROUTING_VENDOR_CUSTOM;
+    if (isCustom) {
+      var nameRow = document.createElement("div");
+      nameRow.className = "routing-field-row";
+      var nameLabel = document.createElement("label");
+      nameLabel.textContent = "Provider name";
+      nameRow.appendChild(nameLabel);
+      var nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.className = "routing-vendor-name-input";
+      nameInput.placeholder = "e.g. ollama-windows";
+      nameInput.value = slot.vendor === ROUTING_VENDOR_CUSTOM ? "" : slot.vendor;
+      nameInput.addEventListener("input", function () {
+        var clean = nameInput.value.toLowerCase().replace(/[^a-z0-9_.-]/g, "");
+        if (clean !== nameInput.value) nameInput.value = clean;
+        slot.vendor = clean || ROUTING_VENDOR_CUSTOM;
+      });
+      nameInput.addEventListener("blur", function () {
+        if (!nameInput.value) {
+          nameInput.value = ROUTING_VENDOR_CUSTOM;
+          slot.vendor = ROUTING_VENDOR_CUSTOM;
+        }
+      });
+      nameRow.appendChild(nameInput);
+      frag.appendChild(nameRow);
+    }
 
     // Model: preset select-with-free-text, or a bare free-text input for Custom endpoint.
     var modelRow = document.createElement("div");
