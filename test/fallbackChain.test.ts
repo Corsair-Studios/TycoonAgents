@@ -28,6 +28,16 @@ test("isProviderFailure matches the documented quota/unavailable/unreachable pat
   assert.equal(isProviderFailure("connect ECONNREFUSED 127.0.0.1:443"), true);
   assert.equal(isProviderFailure("chat tool failed: socket hang up"), true);
   assert.equal(isProviderFailure("verdict: provider-unavailable"), true);
+  // p15-t1 attempt 5: OpenCode's own connection-failure wording, observed
+  // live against a dead OLLAMA_BASE_URL (docs/opencode-probe-findings.md
+  // "Remote VM smoke, attempt 5").
+  assert.equal(
+    isProviderFailure(
+      "Subagent failed (task_id: ses_f902f9840ffequHtUb2asqVyj5): Cannot connect to API: Unable to connect. Is the computer able to access the url?"
+    ),
+    true
+  );
+  assert.equal(isProviderFailure('{"name":"APIError","data":{"message":"..."}}'), true);
 });
 
 test("isProviderFailure does not flag ordinary success/failure text unrelated to provider outages", () => {

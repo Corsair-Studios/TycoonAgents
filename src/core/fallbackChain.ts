@@ -58,6 +58,15 @@ const PROVIDER_FAILURE_PATTERNS: RegExp[] = [
   /ECONNREFUSED/i,
   /\bfailed:/i,
   /provider-unavailable/i,
+  // p15-t1 attempt 5: OpenCode's own connection-failure wording, observed
+  // live against a dead OLLAMA_BASE_URL (docs/opencode-probe-findings.md
+  // "Remote VM smoke, attempt 5") — the task tool's error text and the
+  // underlying session.error event both read "Cannot connect to API:
+  // Unable to connect. Is the computer able to access the url?" with
+  // error.name "APIError". None of the patterns above matched it.
+  /cannot connect to api/i,
+  /unable to connect/i,
+  /\bAPIError\b/,
 ];
 
 export function isProviderFailure(text: string | undefined | null): boolean {

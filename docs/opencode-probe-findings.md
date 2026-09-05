@@ -705,3 +705,81 @@ downstream connection failure inside a spawned Task is surfaced to the
 user as an error rather than triggering `FallbackTriggered` and a
 second dispatch to `opencode/big-pickle`. Fallback-on-connection-failure
 is not implemented (or not wired into this call path) as of this attempt.
+
+## Remote VM smoke, attempt 5
+
+**Root cause found.** Installed the throwaway spike probe
+(`standalone/spike/opencode-probe-plugin.ts`) alongside the real plugin in
+`.opencode/plugin/` and reran attempt 4's exact dead-URL scenario
+(`OLLAMA_BASE_URL` set to `http://127.0.0.1:9/v1`, 6-min budget). The probe
+log (`.opencode/plugin/probe-log.jsonl`) shows **`tool.execute.after` never
+fires at all** for this failure — only one `tool.execute.before` line is
+recorded for the whole run, zero `tool.execute.after` lines. The observable
+failure surface is entirely in the bus `event` hook:
+
+```
+{"hook":"event:session.error","payload":{"sessionID":"ses_f902f9840ffequHtUb2asqVyj5","error":{"name":"APIError","data":{"message":"Cannot connect to API: Unable to connect. Is the computer able to access the url?","isRetryable":true,"metadata":{"url":"http://127.0.0.1:9/v1/chat/completions"}}}}}
+```
+```
+{"hook":"event:dispatch","payload":{"event":{"type":"message.part.updated","properties":{"sessionID":"ses_f902fa833ffe52xzQ1sSVYh9g9","part":{"type":"tool","tool":"task","callID":"call_80b09179b224489eb96670da","state":{"status":"error","input":{"description":"Ready check","prompt":"Reply with exactly the word READY","subagent_type":"coding-specialist"},"error":"Subagent failed (task_id: ses_f902f9840ffequHtUb2asqVyj5): Cannot connect to API: Unable to connect. Is the computer able to access the url?","metadata":{"parentSessionId":"ses_f902fa833ffe52xzQ1sSVYh9g9","sessionId":"ses_f902f9840ffequHtUb2asqVyj5","model":{"providerID":"ollama-windows","modelID":"qwen3.8:27b"}}}}}}}}
+```
+
+`session.error` fires on the CHILD session but carries no
+`subagent_type`/workerId. The `message.part.updated` tool part carries
+both the error text (`state.error`) AND `state.metadata`/`state.input`
+(parentSessionId, child sessionId, model, subagent_type) — the only event
+with everything needed to route a fallback. Removed the probe after
+capturing this.
+
+Also found: `isProviderFailure`'s pattern list (`src/core/fallbackChain.ts`)
+did not match this text at all — none of `usage limit`/`401`/`403`/`quota`/
+`rate limit`/`RESOURCE_EXHAUSTED`/`OPENAI_COMPAT_BASE_URL`/`ECONNREFUSED`/
+`failed:`/`provider-unavailable` matched "Cannot connect to API: Unable to
+connect." — a second, independent gap from the missing hook.
+
+**Fix.** `hooks/tycoon-opencode-plugin.ts`: extracted the FallbackTriggered
+logic (recordFailure/resolveNextFallback/buildFallbackInstruction/queueNudge)
+into `maybeTriggerFallback()`, called from two sites now: (1) the existing
+`handleToolExecuteAfter` path for a task that returns error TEXT inside a
+successful rendered output, and (2) a new `handleTaskToolErrorPart()` wired
+into `dispatchEvent` for `message.part.updated`, which checks
+`part.type==="tool" && part.tool==="task" && part.state.status==="error"`
+and reads `state.error`/`state.metadata`/`state.input.subagent_type` —
+this is the path that actually fires for a real connection failure. It also
+emits the `SubagentStop` record that would otherwise never be written for
+this case (tool.execute.after never runs). `src/core/fallbackChain.ts`:
+added `/cannot connect to api/i`, `/unable to connect/i`, `/\bAPIError\b/`
+to `PROVIDER_FAILURE_PATTERNS`.
+
+**Live verification, PASS.** Reinstalled via `standalone/src/cli.mjs
+install-hook .. --opencode --no-agents --force`, kept `OLLAMA_BASE_URL`
+dead, reran the identical prompt (completed in ~2.5 min). New activity
+lines:
+
+```
+{"event":"SubagentStop","provider":"opencode","workerId":"coding-specialist","sessionId":"ses_f902b98ecffeEsrBsrzwPknfjQ","model":"ollama-windows/qwen3.8:27b"}
+{"event":"FallbackTriggered","provider":"opencode","workerId":"coding-specialist","slotId":"coding-specialist","failedModel":"ollama-windows/qwen3.8:27b","nextModel":"opencode/big-pickle","reason":"Subagent failed (task_id: ses_f902b88e2ffesdWkXDaAkM131n): Cannot connect to API: Unable to connect. Is the computer able to access the url?","message":"agent coding-specialist failed on provider/model ollama-windows/qwen3.8:27b: ... Re-dispatch the same task to coding-specialist; it now runs on opencode/big-pickle (fallback 1 of 1)."}
+{"event":"PreToolUse","provider":"opencode","tool":"Task","workerId":"coding-specialist","fallbackOf":"coding-specialist","fallbackDepth":1,"vendor":"opencode","model":"opencode/big-pickle"}
+{"event":"SubagentStop","provider":"opencode","workerId":"coding-specialist","fallbackOf":"coding-specialist","fallbackDepth":1}
+{"event":"FallbackTriggered", ... ,"message":"... All fallback options for this slot are exhausted — report the failure to the user instead of retrying again."}
+```
+
+**PASS: fallback fires with `fallbackOf`.** The orchestrator re-dispatched
+`coding-specialist` a second time on `opencode/big-pickle`
+(`fallbackOf:"coding-specialist","fallbackDepth":1`, `vendor:"opencode"`) —
+confirmed via the CLI's own transcript too, which showed two "Coding
+specialist ready check failed" attempts before reporting exhaustion to the
+user. The second attempt also failed (this VM's network path to `zen`/
+`big-pickle` is apparently unreachable in this offline scenario too), so
+end-to-end success (a READY reply) was not observed, but the mechanism
+under test — detect-on-`message.part.updated`, FallbackTriggered,
+re-dispatch with fallbackOf/fallbackDepth and the fallback model — is
+confirmed live and working, closing attempt 4's defect.
+
+Not separately tested: the interactive TUI's behavior on this same failure
+(only `opencode run` was exercised, matching attempts 2-4) — UNRESOLVED,
+not cheap to test in this environment.
+
+**Restore, PASS.** `OLLAMA_BASE_URL` store file rewritten to
+`http://windows-2025.tail24845.ts.net:11434/v1`; `diff` against the
+pre-test backup byte-identical; `curl .../models` returned HTTP 200.

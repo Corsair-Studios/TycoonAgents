@@ -1093,6 +1093,127 @@ export function createPlugin(deps: PluginDeps) {
     appendActivity(activityFile, record);
   }
 
+  // p15-t1 attempt 5: shared fallback-trigger logic, extracted so it can be
+  // driven from either observable failure surface — a successful-but-failed
+  // task's rendered output text (handleToolExecuteAfter, below), or the
+  // bus `message.part.updated` event carrying a tool part in state
+  // "error" (handled in dispatchEvent), which is the path that actually
+  // fires for a real provider/connection failure (confirmed live —
+  // docs/opencode-probe-findings.md "Remote VM smoke, attempt 5":
+  // tool.execute.after never fires in that case at all).
+  async function maybeTriggerFallback(
+    workerId: string,
+    rootSessionId: string | undefined,
+    model: string | undefined,
+    errorText: string
+  ): Promise<void> {
+    if (!fallbackChain || !fallbackState || workerId === "unknown" || !rootSessionId) return;
+    if (!fallbackChain.isProviderFailure(errorText)) return;
+    const chain = readFallbackChainForAgent(directory, workerId);
+    const failureRecord = fallbackState.recordFailure(rootSessionId, workerId, chain, model, errorText.slice(0, 300));
+    const result = fallbackChain.resolveNextFallback({
+      slotId: workerId,
+      chain,
+      attemptsSoFar: failureRecord.attemptsSoFar - 1,
+    });
+    const instruction = fallbackChain.buildFallbackInstruction({
+      workerId,
+      failedProvider: model?.split("/")[0],
+      failedModel: model?.split("/").slice(1).join("/") || model,
+      reason: errorText.slice(0, 300) || "provider failure detected",
+      result,
+      chainLength: chain.length,
+    });
+    const nextModel = result.slot?.model;
+    appendActivity(activityFile, {
+      event: "FallbackTriggered",
+      provider: "opencode",
+      at: now(),
+      workerId,
+      slotId: workerId,
+      sessionId: rootSessionId,
+      failedModel: model,
+      nextModel,
+      reason: errorText.slice(0, 300),
+      message: instruction,
+    });
+    queueNudge(rootSessionId, instruction);
+  }
+
+  // p15-t1 attempt 5: this is the path that ACTUALLY fires for a real
+  // provider/connection failure. Live payload (docs/opencode-probe-findings.md
+  // "Remote VM smoke, attempt 5"):
+  //   event.type === "message.part.updated", properties.part = {
+  //     type: "tool", tool: "task", callID, sessionID: <root>,
+  //     state: { status: "error",
+  //       error: "Subagent failed (task_id: ses_...): Cannot connect to
+  //               API: Unable to connect. Is the computer able to access
+  //               the url?",
+  //       metadata: { parentSessionId, sessionId: <child>, model: {...} },
+  //       input: { description, prompt, subagent_type } } }
+  // and, moments earlier, a plain session.error event on the CHILD session
+  // with error.name "APIError" and error.data.message the same text — but
+  // that event carries no subagent_type/workerId, so the tool part above
+  // (which has both the error text AND state.metadata/input) is the
+  // reliable signal. tool.execute.after never fires at all in this case.
+  async function handleTaskToolErrorPart(properties: Record<string, unknown> | undefined): Promise<void> {
+    const part = properties?.["part"] as
+      | {
+          type?: string;
+          tool?: string;
+          sessionID?: string;
+          state?: {
+            status?: string;
+            error?: string;
+            input?: Record<string, unknown>;
+            metadata?: { parentSessionId?: string; sessionId?: string; model?: { providerID?: string; modelID?: string } };
+          };
+        }
+      | undefined;
+    if (!part || part.type !== "tool" || part.tool !== "task") return;
+    const state = part.state;
+    if (!state || state.status !== "error") return;
+    const errorText = typeof state.error === "string" ? state.error : "";
+    if (!errorText) return;
+
+    const metadata = state.metadata ?? {};
+    const childSessionId = metadata.sessionId;
+    const rootSessionId = metadata.parentSessionId ?? part.sessionID;
+    const model =
+      metadata.model?.providerID && metadata.model?.modelID
+        ? `${metadata.model.providerID}/${metadata.model.modelID}`
+        : undefined;
+
+    // Resolve workerId the same way handleToolExecuteAfter does: prefer the
+    // explicit subagent_type from the tool call's own input, fall back to
+    // the active-agent stack entry pushed for this child session.
+    const poppedEntry = childSessionId ? popActiveAgent(activeAgentFile, { sessionId: childSessionId }) : null;
+    const workerId =
+      (typeof state.input?.["subagent_type"] === "string" ? (state.input["subagent_type"] as string) : undefined) ??
+      poppedEntry?.agentId ??
+      "unknown";
+
+    // tool.execute.after never fires for this failure (confirmed live), so
+    // this is also the only place a SubagentStop gets recorded for it —
+    // without it the active-agent stack entry above would still be popped
+    // but no activity line would ever note the subagent's end.
+    const record: OpenCodeHookRecord = {
+      event: "SubagentStop",
+      provider: "opencode",
+      at: now(),
+      workerId,
+      sessionId: rootSessionId,
+    };
+    if (model) record.model = model;
+    if (poppedEntry?.fallbackOf !== undefined) {
+      record.fallbackOf = poppedEntry.fallbackOf;
+      record.fallbackDepth = poppedEntry.fallbackDepth;
+    }
+    appendActivity(activityFile, record);
+
+    await maybeTriggerFallback(workerId, rootSessionId, model, errorText);
+  }
+
   async function handleToolExecuteAfter(
     input: { tool?: string; sessionID?: string; callID?: string; args?: Record<string, unknown> },
     output: { title?: string; metadata?: Record<string, unknown>; output?: string }
@@ -1140,47 +1261,18 @@ export function createPlugin(deps: PluginDeps) {
     appendActivity(activityFile, record);
 
     // p15-t1: provider-failure fallback. A task's rendered <task> output
-    // string is the only observable result surface for a `task` tool call
-    // (docs/opencode-probe-findings.md (a) — no typed success/error field),
-    // so a provider failure is detected the same way the review-gate
-    // heuristic above reads text out of that string: pattern-match it with
-    // the SAME isProviderFailure patterns the Claude hook and the
-    // codex/gemini/kimi reviewer agents use.
+    // string is the only observable result surface for a SUCCESSFUL `task`
+    // tool call (docs/opencode-probe-findings.md (a) — no typed
+    // success/error field), so a provider failure that still produced
+    // output text is detected the same way the review-gate heuristic above
+    // reads text out of that string. NOTE (attempt 5): for an actual
+    // provider/connection failure, OpenCode never calls tool.execute.after
+    // at all — see maybeTriggerFallback's other call site in the
+    // message.part.updated dispatch handler below, which is the path that
+    // actually fires for that case.
     const rootSessionId = metadata.parentSessionId ?? input.sessionID;
-    if (fallbackChain && fallbackState && workerId !== "unknown" && rootSessionId) {
-      const outputText = typeof output?.output === "string" ? output.output : "";
-      if (fallbackChain.isProviderFailure(outputText)) {
-        const chain = readFallbackChainForAgent(directory, workerId);
-        const failureRecord = fallbackState.recordFailure(rootSessionId, workerId, chain, model, outputText.slice(0, 300));
-        const result = fallbackChain.resolveNextFallback({
-          slotId: workerId,
-          chain,
-          attemptsSoFar: failureRecord.attemptsSoFar - 1,
-        });
-        const instruction = fallbackChain.buildFallbackInstruction({
-          workerId,
-          failedProvider: model?.split("/")[0],
-          failedModel: model?.split("/").slice(1).join("/") || model,
-          reason: outputText.slice(0, 300) || "provider failure detected",
-          result,
-          chainLength: chain.length,
-        });
-        const nextModel = result.slot?.model;
-        appendActivity(activityFile, {
-          event: "FallbackTriggered",
-          provider: "opencode",
-          at: now(),
-          workerId,
-          slotId: workerId,
-          sessionId: rootSessionId,
-          failedModel: model,
-          nextModel,
-          reason: outputText.slice(0, 300),
-          message: instruction,
-        });
-        queueNudge(rootSessionId, instruction);
-      }
-    }
+    const outputText = typeof output?.output === "string" ? output.output : "";
+    await maybeTriggerFallback(workerId, rootSessionId, model, outputText);
 
     // (3) Single review-gate pass equivalent — BEST-EFFORT (see the
     // reviewGateByParentSession comment in createPlugin above for why this
@@ -1236,6 +1328,8 @@ export function createPlugin(deps: PluginDeps) {
           handleMessageUpdated(properties);
         } else if (type === "session.idle") {
           handleSessionIdle(properties);
+        } else if (type === "message.part.updated") {
+          await handleTaskToolErrorPart(properties);
         }
       } catch (err) {
         writePluginError(activityFile, now(), err);

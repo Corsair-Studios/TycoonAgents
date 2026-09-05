@@ -339,3 +339,63 @@ test("a successful task result produces no FallbackTriggered record and no fallb
   await plugin.chatSystemTransform({ sessionID: "root-session-ok" }, out);
   assert.equal(out.system.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// p15-t1 attempt 5: a real provider/connection failure never calls
+// tool.execute.after at all (confirmed live — docs/opencode-probe-findings.md
+// "Remote VM smoke, attempt 5"). The only observable surface is the bus
+// `message.part.updated` event carrying the task tool's part in state
+// "error", so the plugin must detect and fallback from THAT event, not
+// toolExecuteAfter.
+// ---------------------------------------------------------------------------
+
+test("a task tool part reported via message.part.updated with state 'error' triggers fallback, since tool.execute.after never fires for that case", async () => {
+  const mod = requireFreshPlugin();
+  const directory = setupDirectory();
+  writeRoutingGenerated(directory, "coding-specialist", ["opencode/big-pickle"]);
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+
+  await plugin.toolExecuteBefore({
+    tool: "task",
+    sessionID: "root-session-err",
+    args: { subagent_type: "coding-specialist", description: "Ready check", prompt: "Reply with exactly the word READY" },
+  });
+
+  // Literal shape observed live (attempt 5): message.part.updated with a
+  // tool part whose state.status is "error" and state.error carries the
+  // rendered failure text; tool.execute.after is never called.
+  await plugin.dispatchEvent({
+    type: "message.part.updated",
+    properties: {
+      part: {
+        type: "tool",
+        tool: "task",
+        callID: "call_80b09179b224489eb96670da",
+        sessionID: "root-session-err",
+        state: {
+          status: "error",
+          error:
+            "Subagent failed (task_id: ses_f902f9840ffequHtUb2asqVyj5): Cannot connect to API: Unable to connect. Is the computer able to access the url?",
+          input: { description: "Ready check", prompt: "Reply with exactly the word READY", subagent_type: "coding-specialist" },
+          metadata: {
+            parentSessionId: "root-session-err",
+            sessionId: "child-session-err",
+            model: { providerID: "ollama-windows", modelID: "qwen3.8:27b" },
+          },
+        },
+      },
+    },
+  });
+
+  const records = readActivity(plugin._paths.activityFile);
+  const triggered = records.filter((r) => r.event === "FallbackTriggered");
+  assert.equal(triggered.length, 1, "expected FallbackTriggered from the message.part.updated error path");
+  assert.equal(triggered[0].nextModel, "opencode/big-pickle");
+  assert.match(String(triggered[0].message), /fallback 1 of 1/);
+  assert.equal(records.some((r) => r.event === "SubagentStop" && r.workerId === "coding-specialist"), true);
+
+  const out: { system: string[] } = { system: [] };
+  await plugin.chatSystemTransform({ sessionID: "root-session-err" }, out);
+  assert.equal(out.system.length, 1);
+  assert.match(out.system[0], /opencode\/big-pickle/);
+});

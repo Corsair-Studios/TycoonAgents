@@ -309,7 +309,10 @@ in `src/core/fallbackChain.ts`:
 - `isProviderFailure(text)` — matches `PROVIDER_FAILURE_PATTERNS` (usage
   limit, spend cap, out of credits, 401/403/Unauthorized, quota, rate limit,
   `RESOURCE_EXHAUSTED`, `OPENAI_COMPAT_BASE_URL`, `ECONNREFUSED`, `failed:`,
-  `provider-unavailable`) against a tool result body.
+  `provider-unavailable`, and — added after a live dead-URL smoke test,
+  `docs/opencode-probe-findings.md` "Remote VM smoke, attempt 5" —
+  `cannot connect to api`, `unable to connect`, `APIError`) against a tool
+  result body.
 - `resolveNextFallback({ slotId, chain, attemptsSoFar })` — pure lookup of
   the next `RoutingSlot` in the chain, or `{ exhausted: true }` past the end.
 - `FallbackState` — per-session, per-slotId attempt counter (`recordFailure`,
@@ -336,20 +339,49 @@ in `src/core/fallbackChain.ts`:
   orchestrator's next turn. `fallback-state.json` is evicted on session end
   the same way the rest of that hook's per-session state is (see the hook's
   `Stop` handling).
-- **OpenCode** (`hooks/tycoon-opencode-plugin.ts`): on a `Task` re-dispatch,
-  if `FallbackState.getNext(sessionId, workerId)` returns a non-exhausted
-  entry, the plugin best-effort rewrites `input.args.model` to the next
-  chain entry's model (`args.model` mutation is **not confirmed** to be
-  observed by OpenCode's own tool execution — see
-  `docs/opencode-probe-findings.md`), stamps `fallbackOf`/`fallbackDepth` on
-  the pushed active-agent stack entry, and separately queues the
-  human-readable instruction text via `queueNudge`, delivered into the
-  model's system prompt on its **next** turn through
+- **OpenCode** (`hooks/tycoon-opencode-plugin.ts`): detection has TWO
+  distinct entry points, because `tool.execute.after` for the `task` tool
+  **never fires at all** when a subagent hits a real provider/connection
+  failure (confirmed live — `docs/opencode-probe-findings.md` "Remote VM
+  smoke, attempt 5"; only one `tool.execute.before` and zero
+  `tool.execute.after` lines were recorded for a whole run against a dead
+  `OLLAMA_BASE_URL`). Both entry points call the same extracted
+  `maybeTriggerFallback()`:
+  1. `handleToolExecuteAfter` — for a task that returns error TEXT inside a
+     *successful* rendered `<task>` output (the original, pre-attempt-5
+     path).
+  2. `handleTaskToolErrorPart`, wired into the plugin's bus `event` hook for
+     `message.part.updated` — the path that actually fires for a real
+     connection failure. It reads a tool part with
+     `part.type === "tool" && part.tool === "task" && part.state.status ===
+     "error"`, taking the error text from `state.error` and
+     `workerId`/model/session ids from `state.input.subagent_type` and
+     `state.metadata` (`parentSessionId`, `sessionId`, `model`). This is
+     also where the `SubagentStop` record gets written for a failed
+     dispatch, since `tool.execute.after` never runs to write it otherwise.
+
+  Either path: `FallbackState.getNext(sessionId, workerId)` on the next
+  `Task` re-dispatch returns a non-exhausted entry, the plugin best-effort
+  rewrites `input.args.model` to the next chain entry's model (`args.model`
+  mutation is **not confirmed** to be observed by OpenCode's own tool
+  execution — see `docs/opencode-probe-findings.md`), stamps
+  `fallbackOf`/`fallbackDepth` on the pushed active-agent stack entry, and
+  separately queues the human-readable instruction text via `queueNudge`,
+  delivered into the model's system prompt on its **next** turn through
   `experimental.chat.system.transform` (`chatSystemTransform`) — there is no
   earlier hook this plugin can use to inject mid-turn. `FallbackTriggered`
-  is appended to the activity log from `handleToolExecuteAfter`/the
-  `SubagentStop`-equivalent path once the popped active-agent entry carries
-  `fallbackOf`.
+  is appended to the activity log from whichever of the two paths above
+  detected the failure.
+
+  Live-confirmed (attempt 5, `opencode run` only — the interactive TUI was
+  not tested, cheap-test criterion not met): with `OLLAMA_BASE_URL` dead,
+  the orchestrator DID re-dispatch `coding-specialist` a second time on
+  `opencode/big-pickle` with `fallbackOf`/`fallbackDepth:1` after the first
+  failure, and correctly reported chain exhaustion after the second
+  fallback also failed (this VM's `zen`/`big-pickle` path was also
+  unreachable in that offline scenario, so end-to-end success was not
+  observed, but the detect → FallbackTriggered → re-dispatch mechanism is
+  confirmed working).
 
 **What a user sees in the panel:** the metrics rollup
 (`buildMetricsRollup`, `media/main.js:14277`) sums each agent's
