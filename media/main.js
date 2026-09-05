@@ -17049,6 +17049,11 @@
       modelSel.addEventListener("change", function () {
         if (modelSel.value === "__custom__") { slot.model = ""; onStructural(); return; }
         slot.model = modelSel.value;
+        var pickedPreset = models.filter(function (m) { return m.id === modelSel.value; })[0];
+        if (pickedPreset && pickedPreset.costModelClass && costSel) {
+          slot.costModelClass = pickedPreset.costModelClass;
+          costSel.value = pickedPreset.costModelClass;
+        }
       });
       modelRow.appendChild(modelSel);
     }
@@ -17093,17 +17098,19 @@
     costRow.appendChild(costSel);
     frag.appendChild(costRow);
 
-    // Credential env (always available — a slot may need auth regardless of transport).
-    frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
-
-    // Endpoint env (only meaningful for openai-compatible / Custom endpoint).
+    // Endpoint + credential env. For openai-compatible / Custom endpoint,
+    // endpoint comes first and both fields carry connection-specific labels;
+    // other transports only need the credential field.
     if (slot.transport === "openai-compatible" || isCustom) {
-      frag.appendChild(buildEnvNameField("Endpoint env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv"));
+      frag.appendChild(buildEnvNameField("Endpoint URL env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv"));
+      frag.appendChild(buildEnvNameField("API key env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
+    } else {
+      frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
     }
 
     var envNote = document.createElement("div");
     envNote.className = "routing-env-note";
-    envNote.textContent = "Values are stored per user in the TycoonAgents app-data folder, never in this project.";
+    envNote.textContent = "Names here; the values are stored per user in the TycoonAgents app-data folder, never in this project.";
     frag.appendChild(envNote);
 
     if (slot.transport === "mcp") {

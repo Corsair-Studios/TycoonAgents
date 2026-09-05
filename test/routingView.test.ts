@@ -388,8 +388,8 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
   const transportSelectAfter = doc.querySelector('.routing-slot-fields select[disabled]') as any;
   assert.ok(transportSelectAfter, 'transport select should be disabled/forced under Custom endpoint');
   assert.equal(transportSelectAfter.value, 'openai-compatible');
-  const endpointField = Array.from(doc.querySelectorAll('.routing-env-field label')).find((l: any) => l.textContent === 'Endpoint env');
-  assert.ok(endpointField, 'Custom endpoint should reveal an Endpoint env field');
+  const endpointField = Array.from(doc.querySelectorAll('.routing-env-field label')).find((l: any) => l.textContent === 'Endpoint URL env');
+  assert.ok(endpointField, 'Custom endpoint should reveal an Endpoint URL env field');
 
   // ── Fallback editor caps at 3 ──
   const fallbackDetails = doc.querySelector('.routing-fallback-details') as any;
@@ -1035,9 +1035,9 @@ test('Routing panel: Endpoint env Set value input is plain text, not password', 
     assertNoErrors('custom endpoint select');
 
     const endpointLabel = Array.from(doc.querySelectorAll('.routing-env-field label')).find(
-      (l: any) => l.textContent === 'Endpoint env'
+      (l: any) => l.textContent === 'Endpoint URL env'
     ) as any;
-    assert.ok(endpointLabel, 'Endpoint env field should render under Custom endpoint');
+    assert.ok(endpointLabel, 'Endpoint URL env field should render under Custom endpoint');
     const endpointField = endpointLabel.closest('.routing-env-field');
     const endpointNameInput = endpointField.querySelector('.routing-env-input') as any;
     endpointNameInput.value = 'MY_ENDPOINT';
@@ -1341,7 +1341,7 @@ test('Routing panel: reported scenario — Coding Specialist Custom endpoint, en
     costSel.dispatchEvent(new win.Event('change', { bubbles: true }));
     await flush();
 
-    const endpointLabel = Array.from(card2.querySelectorAll('.routing-env-field label')).find((l: any) => l.textContent === 'Endpoint env') as any;
+    const endpointLabel = Array.from(card2.querySelectorAll('.routing-env-field label')).find((l: any) => l.textContent === 'Endpoint URL env') as any;
     const endpointField = endpointLabel.closest('.routing-env-field');
     const endpointInput = endpointField.querySelector('.routing-env-input') as any;
     endpointInput.value = 'OLLAMA_BASE_URL';
@@ -1356,7 +1356,7 @@ test('Routing panel: reported scenario — Coding Specialist Custom endpoint, en
     (Array.from(endpointField.querySelectorAll('.routing-set-value-inline button')).find((b: any) => b.textContent === 'Save') as any).click();
     await flush();
 
-    const credLabel = Array.from(card2.querySelectorAll('.routing-env-field label')).find((l: any) => l.textContent === 'Credential env') as any;
+    const credLabel = Array.from(card2.querySelectorAll('.routing-env-field label')).find((l: any) => l.textContent === 'API key env') as any;
     const credField = credLabel.closest('.routing-env-field');
     const credInput = credField.querySelector('.routing-env-input') as any;
     credInput.value = 'OLLAMA_API_KEY';
@@ -1501,6 +1501,90 @@ test('Routing panel: failed save -> close -> reopen -> a fresh routing payload r
 
     const vendorSelectAfter = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
     assert.equal(vendorSelectAfter.value, 'openai', 'the fresh routing payload must rebuild the draft, not be suppressed by the stale prior-session failure flag');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: picking a preset model sets cost class from the preset, in place', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      orchestrator: {
+        id: 'orchestrator',
+        backend: { vendor: 'opencode', transport: 'claude-native', model: '', costModelClass: 'metered' },
+        source: 'default',
+      },
+      presets: {
+        vendors: ['anthropic', 'opencode'],
+        models: [{ id: 'opencode/big-pickle', vendor: 'opencode', costModelClass: 'subscription', label: 'big pickle' }],
+      },
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const modelSelect = doc.querySelector('.routing-slot-fields .routing-model-select') as any;
+    assert.ok(modelSelect, 'orchestrator model select should render');
+    const costSelect = doc.querySelector('.routing-slot-fields select[data-field-key="orchestrator.costModelClass"]') as any;
+    assert.equal(costSelect.value, 'metered', 'starts at the fixture cost class');
+
+    modelSelect.value = 'opencode/big-pickle';
+    modelSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assertNoErrors('select big-pickle preset');
+
+    assert.equal(costSelect.value, 'subscription', 'selecting the big-pickle preset should update cost class in place');
+    assert.equal(
+      doc.querySelector('.routing-slot-fields .routing-model-select'),
+      modelSelect,
+      'the fix must update the existing cost class select in place, not rebuild the whole slot'
+    );
+
+    // Manual override sticks...
+    costSelect.value = 'local';
+    costSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assert.equal(costSelect.value, 'local', 'manual cost class change should be respected');
+
+    // ...until the same preset is re-selected, which re-applies its class.
+    modelSelect.value = '';
+    modelSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    modelSelect.value = 'opencode/big-pickle';
+    modelSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assert.equal(costSelect.value, 'subscription', 're-selecting the preset re-applies its cost class over the manual override');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: openai-compatible slot renders Endpoint URL env before API key env', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      orchestrator: {
+        id: 'orchestrator',
+        backend: { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'qwen3.6:latest', costModelClass: 'local', endpointEnv: 'OLLAMA_BASE_URL', credentialEnv: 'OLLAMA_API_KEY' },
+        source: 'default',
+      },
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const outerSlot = doc.querySelector('.routing-slot-fields') as any;
+    const labels = Array.from(outerSlot.querySelectorAll(':scope > .routing-env-field label')).map((l: any) => l.textContent);
+    assert.deepEqual(labels, ['Endpoint URL env', 'API key env'], 'endpoint field must render before the credential field, both relabeled');
+
+    const inputs = Array.from(outerSlot.querySelectorAll(':scope > .routing-env-field .routing-env-input')) as any[];
+    inputs.forEach((inp) => assert.equal(inp.placeholder, 'env var NAME, never the value'));
+
+    const note = outerSlot.querySelector(':scope > .routing-env-note') as any;
+    assert.equal(
+      note.textContent,
+      'Names here; the values are stored per user in the TycoonAgents app-data folder, never in this project.'
+    );
   } finally {
     win.close();
   }
