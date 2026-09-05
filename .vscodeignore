@@ -55,3 +55,27 @@ media/uefn-bridge/**
 # Throwaway OpenCode hook-probe spike (plan p3-t1) — never ship.
 standalone/spike/**
 .opencode/**
+
+# Local machine-managed OpenCode provider config — never ship (bug: was
+# bundled into 0.0.576's VSIX). Root file only; unrelated nested
+# opencode.json fixtures under test/ etc. are excluded already via test/**.
+opencode.json
+
+# Local routing snapshots that sometimes land under .claude/tycoon — already
+# covered by .claude/** above, restated here for clarity/audit.
+.claude/tycoon/routing*.json
+
+# --- Routing generator scripts must ship in the VSIX ---------------------
+# The VS Code Routing screen's Save (src/core/routingHostOps.ts ->
+# saveRoutingProfile) spawns `node <extensionInstallPath>/scripts/<name>.mjs`
+# at runtime, so these two scripts and the compiled modules they
+# createRequire() at runtime (out/src/core/agentBackend.js -> modelAliases.js,
+# routingProfile.js, localEnvStore.js) must be present in the packaged
+# extension even though out/** and scripts/** are excluded above for
+# everything else (the extension itself runs from bundled out/extension.js).
+!scripts/apply-routing-profile.mjs
+!scripts/generate-opencode-config.mjs
+!out/src/core/agentBackend.js
+!out/src/core/modelAliases.js
+!out/src/core/routingProfile.js
+!out/src/core/localEnvStore.js
