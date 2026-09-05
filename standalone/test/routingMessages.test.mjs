@@ -122,9 +122,13 @@ test('POST /message {type: "saveRouting"} -> writes routing.json, replies routin
         'coding-specialist': { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/opus', costModelClass: 'subscription' },
       },
     };
+    // Flat on the message — matches media/main.js's actual
+    // vscode.postMessage({ type: ROUTING_MSG.SAVE, profile }) shape and
+    // panel.ts's MSG_SCHEMAS.SAVE_ROUTING.safeParse(message) (the whole
+    // message, not message.payload).
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
-      body: JSON.stringify({ type: 'saveRouting', payload: { profile } }),
+      body: JSON.stringify({ type: 'saveRouting', profile }),
     });
     assert.equal(res.status, 202);
 
@@ -189,9 +193,11 @@ test('POST /message {type: "probeEnv"} -> replies envProbe with booleans only, d
     const reader = eventsRes.body.getReader();
     const probePromise = collectSseEvent(reader, 'envProbe');
 
+    // Flat, per MSG_SCHEMAS.PROBE_ENV.safeParse(message) — see saveRouting
+    // note above.
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
-      body: JSON.stringify({ type: 'probeEnv', payload: { names: ['PATH', 'not-a-valid-name'] } }),
+      body: JSON.stringify({ type: 'probeEnv', names: ['PATH', 'not-a-valid-name'] }),
     });
     assert.equal(res.status, 202);
 
@@ -200,6 +206,100 @@ test('POST /message {type: "probeEnv"} -> replies envProbe with booleans only, d
     assert.equal(typeof probe.payload.PATH.env, 'boolean');
     assert.equal(typeof probe.payload.PATH.stored, 'boolean');
     assert.ok(!('not-a-valid-name' in probe.payload));
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "setLocalEnvValue"} with flat name/value (real wire shape) actually sets the value, not "invalid env var name"', async () => {
+  // Regression test for the bug where server.mjs read payload.name/
+  // payload.value (a THEME_MSG_WIRE-only wrapper) instead of the flat
+  // message fields media/main.js actually posts, so every setLocalEnvValue
+  // silently failed with 'invalid env var name: ""'.
+  const projectRoot = mkTempProject();
+  const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-appdata-'));
+  // setLocalEnvValue's storage path (src/core/localEnvStore.ts's
+  // resolveStoreDir) reads real process.env directly rather than the `env`
+  // object threaded through startServer — mutate process.env for the
+  // duration of this test (restored in `finally`) so the write lands in the
+  // temp dir, never the real machine's app-data secrets store.
+  const prevDataDir = process.env.TYCOON_STANDALONE_DATA_DIR;
+  process.env.TYCOON_STANDALONE_DATA_DIR = appDataDir;
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: appDataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const probePromise = collectSseEvent(reader, 'envProbe');
+
+    const res = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'setLocalEnvValue', name: 'OLLAMA_API_KEY', value: 'sk-test-value' }),
+    });
+    assert.equal(res.status, 202);
+
+    const probe = await probePromise;
+    assert.ok(probe.payload.OLLAMA_API_KEY, 'reply should carry an entry for the name actually set, not undefined');
+    assert.equal(probe.payload.OLLAMA_API_KEY.stored, true, 'the value should have actually been stored, not dropped as an invalid empty name');
+  } finally {
+    controller.abort();
+    await runtime.close();
+    if (prevDataDir === undefined) delete process.env.TYCOON_STANDALONE_DATA_DIR;
+    else process.env.TYCOON_STANDALONE_DATA_DIR = prevDataDir;
+    fs.rmSync(appDataDir, { recursive: true, force: true });
+  }
+});
+
+test('POST /message {type: "saveRouting"} with a custom-endpoint agent (flat wire shape) writes routing.json and resolves ollama-windows', async () => {
+  // End-to-end reproduction of the reported scenario: Coding Specialist ->
+  // Custom endpoint -> ollama-windows / qwen3.6:latest / local / env names /
+  // one fallback entry, sent the way media/main.js actually posts it (flat
+  // on the message).
+  const projectRoot = mkTempProject();
+  writeFixtureAgent(projectRoot, 'coding-specialist.md', ['name: coding-specialist', 'model: sonnet']);
+  const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const collector = createSseCollector(eventsRes.body.getReader());
+
+    const profile = {
+      version: 1,
+      agents: {
+        'coding-specialist': {
+          vendor: 'ollama-windows',
+          transport: 'openai-compatible',
+          model: 'qwen3.6:latest',
+          costModelClass: 'local',
+          endpointEnv: 'OLLAMA_BASE_URL',
+          credentialEnv: 'OLLAMA_API_KEY',
+          fallback: [{ vendor: 'opencode', model: 'opencode/big-pickle' }],
+        },
+      },
+    };
+    const res = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'saveRouting', profile }),
+    });
+    assert.equal(res.status, 202);
+
+    const saved = await collector.next('routingSaved');
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    const written = JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'tycoon', 'routing.json'), 'utf8'));
+    assert.deepEqual(written, profile);
+
+    const routing = await collector.next('routing', (d) =>
+      d.payload.agents.some((a) => a.id === 'coding-specialist' && a.source === 'routing'),
+    );
+    const agent = routing.payload.agents.find((a) => a.id === 'coding-specialist');
+    assert.equal(agent.backend.vendor, 'ollama-windows');
+    assert.equal(agent.backend.model, 'qwen3.6:latest');
   } finally {
     controller.abort();
     await runtime.close();

@@ -2993,6 +2993,11 @@
     menuRoutingBtn.addEventListener("click", () => {
       closeMenu();
       ensureRoutingModal();
+      // A stale suppression from a previous session's failed save must
+      // never survive a close/reopen — the fresh getRouting reply below
+      // is a deliberate resync, not the automatic post-failure re-push it
+      // exists to guard against.
+      routingSuppressNextRebuild = false;
       renderRoutingModal();
       openModal(routingModalEl, routingCloseBtnEl);
       vscode.postMessage({ type: ROUTING_MSG.GET });
@@ -16680,6 +16685,14 @@
   var routingDraft = null;       // working copy: { orchestrator: slot|null, agents: { [id]: slot } }
   var routingEnvProbe = {};      // merged env-var name -> {env: boolean, stored: boolean} cache, seeded from payload.envProbe + envProbe replies
   var routingSaving = false;
+  // Set by handleRoutingSaved when the host reports ok:false. The server
+  // always follows a saveRouting/clearRouting reply with a fresh "routing"
+  // push reflecting on-disk state — on a failed save that state is
+  // unchanged, and rebuilding routingDraft from it would silently discard
+  // every field the user just typed with no visible error. Consumed
+  // (cleared) by the next handleRoutingPayload call so it only suppresses
+  // that one immediate post-failure push, not every future one.
+  var routingSuppressNextRebuild = false;
   var routingLastResult = null;  // last routingSaved payload, for the collapsed check/write output block
   var routingModalEl = null, routingBackdropEl = null, routingCloseBtnEl = null, routingBodyEl = null, routingContentEl = null;
   var routingSaveBtnEl = null, routingRevertBtnEl = null, routingClearBtnEl = null;
@@ -16870,7 +16883,7 @@
   /** An env-var name input (never a value) + its live status/Set-value controls.
    * `kind` is "credential" (password-type Set value input) or "endpoint"
    * (plain text — a URL is not a secret). */
-  function buildEnvNameField(labelText, value, onChange, kind) {
+  function buildEnvNameField(labelText, value, onChange, kind, fieldKey) {
     var wrap = document.createElement("div");
     wrap.className = "routing-env-field";
     wrap.setAttribute("data-env-name", value || "");
@@ -16883,6 +16896,7 @@
     input.className = "routing-env-input";
     input.value = value || "";
     input.placeholder = "env var NAME, never the value";
+    if (fieldKey) input.setAttribute("data-field-key", fieldKey);
     wrap.appendChild(input);
 
     var statusArea = document.createElement("span");
@@ -16911,8 +16925,15 @@
    * called (with no args) when a change should re-render the whole modal
    * (vendor/transport switches, which change which fields are visible);
    * scalar edits mutate `slot` in place with no re-render.
+   *
+   * `fieldKeyPrefix` (e.g. "orchestrator", "agent:coding-specialist",
+   * "agent:coding-specialist.fallback[0]") tags each interactive field with
+   * a stable `data-field-key` attribute so renderRoutingModal can restore
+   * focus/selection across a full rebuild (see the focus-preservation note
+   * on renderRoutingModal).
    */
-  function buildSlotEditorFields(slot, presets, onStructural) {
+  function buildSlotEditorFields(slot, presets, onStructural, fieldKeyPrefix) {
+    var keyPrefix = fieldKeyPrefix || "";
     var frag = document.createElement("div");
     frag.className = "routing-slot-fields";
 
@@ -16924,6 +16945,7 @@
     vendorRow.appendChild(vendorLabel);
     var vendorSel = document.createElement("select");
     vendorSel.className = "routing-vendor-select";
+    vendorSel.setAttribute("data-field-key", keyPrefix + ".vendor");
     var vendorOptions = (presets && presets.vendors) || [];
     [""].concat(vendorOptions).forEach(function (v) {
       var opt = document.createElement("option");
@@ -16956,6 +16978,7 @@
       var nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.className = "routing-vendor-name-input";
+      nameInput.setAttribute("data-field-key", keyPrefix + ".vendorName");
       nameInput.placeholder = "e.g. ollama-windows";
       nameInput.value = slot.vendor === ROUTING_VENDOR_CUSTOM ? "" : slot.vendor;
       nameInput.addEventListener("input", function () {
@@ -16990,6 +17013,7 @@
       var modelInput = document.createElement("input");
       modelInput.type = "text";
       modelInput.className = "routing-model-input";
+      modelInput.setAttribute("data-field-key", keyPrefix + ".model");
       modelInput.placeholder = "model id";
       modelInput.value = slot.model || "";
       modelInput.addEventListener("input", function () { slot.model = modelInput.value; });
@@ -17005,6 +17029,7 @@
     } else {
       var modelSel = document.createElement("select");
       modelSel.className = "routing-model-select";
+      modelSel.setAttribute("data-field-key", keyPrefix + ".model");
       var blankOpt = document.createElement("option");
       blankOpt.value = "";
       blankOpt.textContent = "(none)";
@@ -17036,6 +17061,7 @@
     transportLabel.textContent = "Transport";
     transportRow.appendChild(transportLabel);
     var transportSel = document.createElement("select");
+    transportSel.setAttribute("data-field-key", keyPrefix + ".transport");
     transportSel.disabled = isCustom; // Custom endpoint forces openai-compatible.
     ["claude-native", "mcp", "openai-compatible"].forEach(function (t) {
       var opt = document.createElement("option");
@@ -17055,6 +17081,7 @@
     costLabel.textContent = "Cost class";
     costRow.appendChild(costLabel);
     var costSel = document.createElement("select");
+    costSel.setAttribute("data-field-key", keyPrefix + ".costModelClass");
     ["metered", "subscription", "local"].forEach(function (c) {
       var opt = document.createElement("option");
       opt.value = c;
@@ -17067,11 +17094,11 @@
     frag.appendChild(costRow);
 
     // Credential env (always available — a slot may need auth regardless of transport).
-    frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential"));
+    frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
 
     // Endpoint env (only meaningful for openai-compatible / Custom endpoint).
     if (slot.transport === "openai-compatible" || isCustom) {
-      frag.appendChild(buildEnvNameField("Endpoint env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint"));
+      frag.appendChild(buildEnvNameField("Endpoint env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv"));
     }
 
     var envNote = document.createElement("div");
@@ -17087,6 +17114,7 @@
       mcpRow.appendChild(mcpLabel);
       var mcpInput = document.createElement("input");
       mcpInput.type = "text";
+      mcpInput.setAttribute("data-field-key", keyPrefix + ".mcpServer");
       mcpInput.value = slot.mcpServer || "";
       mcpInput.addEventListener("input", function () { slot.mcpServer = mcpInput.value; });
       mcpRow.appendChild(mcpInput);
@@ -17096,11 +17124,20 @@
     return frag;
   }
 
-  /** Fallback chain editor: up to 3 entries, add/remove/reorder. */
-  function buildFallbackEditor(slot, presets, onStructural) {
+  /**
+   * Fallback chain editor: up to 3 entries, add/remove/reorder.
+   * `agentKey` ("orchestrator" or an agent id) tags the <details> with
+   * `data-agent-id` so renderRoutingModal can find it again after a rebuild
+   * and restore whether it was open. `fieldKeyPrefix` is the same prefix
+   * buildSlotEditorFields uses for this slot, used to build each fallback
+   * entry's own field keys.
+   */
+  function buildFallbackEditor(slot, presets, onStructural, agentKey, fieldKeyPrefix) {
     if (!Array.isArray(slot.fallback)) slot.fallback = [];
+    var keyPrefix = fieldKeyPrefix || "";
     var details = document.createElement("details");
     details.className = "plan-task-details routing-fallback-details";
+    details.setAttribute("data-agent-id", agentKey || "orchestrator");
     var summary = document.createElement("summary");
     summary.textContent = "Fallback chain (" + slot.fallback.length + ")";
     details.appendChild(summary);
@@ -17153,7 +17190,7 @@
       head.appendChild(removeBtn);
 
       item.appendChild(head);
-      item.appendChild(buildSlotEditorFields(fbSlot, presets, onStructural));
+      item.appendChild(buildSlotEditorFields(fbSlot, presets, onStructural, keyPrefix + ".fallback[" + idx + "]"));
       list.appendChild(item);
     });
     details.appendChild(list);
@@ -17326,7 +17363,12 @@
     routingCloseBtnEl.id = "routing-modal-close";
     routingCloseBtnEl.setAttribute("aria-label", "Close dialog");
     routingCloseBtnEl.innerHTML = "&times;";
-    routingCloseBtnEl.addEventListener("click", function () { closeModal(routingModalEl); });
+    routingCloseBtnEl.addEventListener("click", function () {
+      // Same staleness guard as the open path: don't let a suppression
+      // armed by this session's failed save bleed into a future reopen.
+      routingSuppressNextRebuild = false;
+      closeModal(routingModalEl);
+    });
     header.appendChild(routingCloseBtnEl);
 
     dialog.appendChild(header);
@@ -17448,9 +17490,66 @@
     }
   }
 
+  /**
+   * Snapshot every `.routing-fallback-details`'s open/closed state (keyed by
+   * its `data-agent-id`, "orchestrator" included) plus which field currently
+   * has focus (by `data-field-key`, with its selection range for a text
+   * input) so a full rebuild can restore both afterward. Root cause of the
+   * "fallback details collapses on every edit" bug: nearly every field
+   * change here (vendor switch, transport switch, add/remove/reorder
+   * fallback, "Custom…"/"Choose from list") calls `onStructural`, which IS
+   * `renderRoutingModal` itself — a full innerHTML rebuild with no memory of
+   * which <details> were open or which input had focus. Some of those
+   * really do need a full rebuild (e.g. switching vendor to Custom reveals a
+   * new "Provider name" field), so instead of trying to avoid the rebuild,
+   * this snapshots UI state before it and restores it after.
+   */
+  function snapshotRoutingUiState() {
+    var openMap = {};
+    if (routingContentEl) {
+      routingContentEl.querySelectorAll(".routing-fallback-details").forEach(function (d) {
+        var key = d.getAttribute("data-agent-id") || "orchestrator";
+        openMap[key] = !!d.open;
+      });
+    }
+    var focus = null;
+    var active = document.activeElement;
+    if (active && routingContentEl && routingContentEl.contains(active)) {
+      var fieldKey = active.getAttribute && active.getAttribute("data-field-key");
+      if (fieldKey) {
+        focus = { fieldKey: fieldKey };
+        if (typeof active.selectionStart === "number") {
+          focus.selectionStart = active.selectionStart;
+          focus.selectionEnd = active.selectionEnd;
+        }
+      }
+    }
+    return { openMap: openMap, focus: focus };
+  }
+
+  function restoreRoutingUiState(snapshot) {
+    if (!snapshot || !routingContentEl) return;
+    routingContentEl.querySelectorAll(".routing-fallback-details").forEach(function (d) {
+      var key = d.getAttribute("data-agent-id") || "orchestrator";
+      if (Object.prototype.hasOwnProperty.call(snapshot.openMap, key)) {
+        d.open = snapshot.openMap[key];
+      }
+    });
+    if (snapshot.focus) {
+      var el = routingContentEl.querySelector('[data-field-key="' + snapshot.focus.fieldKey.replace(/"/g, '\\"') + '"]');
+      if (el) {
+        el.focus();
+        if (typeof snapshot.focus.selectionStart === "number" && typeof el.setSelectionRange === "function") {
+          try { el.setSelectionRange(snapshot.focus.selectionStart, snapshot.focus.selectionEnd); } catch (e) { /* not a text-selectable input */ }
+        }
+      }
+    }
+  }
+
   /** Full re-render of the Routing modal body from lastRoutingPayload + routingDraft. */
   function renderRoutingModal() {
     if (!routingContentEl) return;
+    var uiSnapshot = snapshotRoutingUiState();
     routingContentEl.innerHTML = "";
 
     if (!lastRoutingPayload) {
@@ -17463,7 +17562,20 @@
     if (!routingDraft) routingDraft = buildRoutingDraft(lastRoutingPayload);
 
     var payload = lastRoutingPayload;
-    var presets = payload.presets || { vendors: [], models: [] };
+    var rawPresets = payload.presets || { vendors: [], models: [] };
+    // Every vendor present in presets.models, plus any vendor already on the
+    // current payload's orchestrator/agents — so a saved profile's vendor
+    // (e.g. a custom "ollama-windows" endpoint) is always selectable, never
+    // silently missing from the dropdown. Dedup + sorted.
+    var vendorSet = {};
+    (rawPresets.vendors || []).forEach(function (v) { vendorSet[v] = true; });
+    (rawPresets.models || []).forEach(function (m) { if (m && m.vendor) vendorSet[m.vendor] = true; });
+    function collectBackendVendor(backend) {
+      if (backend && backend.vendor) vendorSet[backend.vendor] = true;
+    }
+    collectBackendVendor(payload.orchestrator && payload.orchestrator.backend);
+    (payload.agents || []).forEach(function (a) { collectBackendVendor(a && a.backend); });
+    var presets = { vendors: Object.keys(vendorSet).sort(), models: rawPresets.models || [] };
 
     if (Array.isArray(payload.errors) && payload.errors.length) {
       var errBox = document.createElement("div");
@@ -17487,8 +17599,8 @@
       orchMeta.appendChild(orchChip);
     }
     orchSection.appendChild(orchMeta);
-    orchSection.appendChild(buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal));
-    orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal));
+    orchSection.appendChild(buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator"));
+    orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator", "orchestrator"));
     routingContentEl.appendChild(orchSection);
 
     // ── Per-agent table ──
@@ -17554,7 +17666,7 @@
 
         var slotTd = document.createElement("div");
         slotTd.className = "routing-slot-td";
-        slotTd.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal));
+        slotTd.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id));
         row.appendChild(slotTd);
 
         card.appendChild(row);
@@ -17564,7 +17676,7 @@
         var fbRow = document.createElement("div");
         fbRow.className = "routing-agent-fallback-row";
         fbRow.setAttribute("data-agent-id", a.id);
-        fbRow.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal));
+        fbRow.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
         card.appendChild(fbRow);
 
         list.appendChild(card);
@@ -17582,6 +17694,28 @@
     }
     if (routingRevertBtnEl) routingRevertBtnEl.disabled = routingSaving;
     if (routingClearBtnEl) routingClearBtnEl.disabled = routingSaving;
+
+    if (routingLastResult && routingLastResult.ok === false) {
+      // Visible banner — the collapsed <details> below is easy to miss
+      // entirely, which is how a failed save used to look identical to a
+      // silent success (the draft would just revert with no explanation).
+      var banner = document.createElement("div");
+      banner.className = "routing-error-banner";
+      banner.setAttribute("role", "alert");
+      var bannerTitle = document.createElement("strong");
+      bannerTitle.textContent = "Save failed — your changes were kept, nothing was written.";
+      banner.appendChild(bannerTitle);
+      if (Array.isArray(routingLastResult.errors) && routingLastResult.errors.length) {
+        var bannerList = document.createElement("ul");
+        routingLastResult.errors.forEach(function (e) {
+          var li = document.createElement("li");
+          li.textContent = e;
+          bannerList.appendChild(li);
+        });
+        banner.appendChild(bannerList);
+      }
+      routingContentEl.appendChild(banner);
+    }
 
     if (routingLastResult) {
       var resultDetails = document.createElement("details");
@@ -17604,6 +17738,8 @@
       resultDetails.appendChild(pre);
       routingContentEl.appendChild(resultDetails);
     }
+
+    restoreRoutingUiState(uiSnapshot);
   }
 
   function assembleRoutingProfile() {
@@ -17621,15 +17757,42 @@
 
   function saveRoutingProfile() {
     if (routingSaving) return;
+    var profile;
+    try {
+      profile = assembleRoutingProfile();
+    } catch (err) {
+      // Assembling from routingDraft threw (e.g. a malformed custom-vendor
+      // or fallback entry) before anything was posted — surface it the same
+      // way a host-reported save failure is surfaced instead of silently
+      // doing nothing, so the user isn't left staring at an inert Save
+      // button with no idea why.
+      routingSaving = false;
+      routingLastResult = {
+        ok: false,
+        errors: ["could not assemble routing profile: " + (err && err.message ? err.message : String(err))],
+        check: {},
+        write: {},
+      };
+      renderRoutingModal();
+      return;
+    }
     routingSaving = true;
     routingLastResult = null;
     renderRoutingModal();
-    vscode.postMessage({ type: ROUTING_MSG.SAVE, profile: assembleRoutingProfile() });
+    vscode.postMessage({ type: ROUTING_MSG.SAVE, profile: profile });
   }
 
   function handleRoutingPayload(payload) {
     lastRoutingPayload = payload || null;
-    routingDraft = buildRoutingDraft(payload);
+    if (routingSuppressNextRebuild) {
+      // The save/clear that just failed already left routingDraft (the
+      // user's in-progress edits) untouched — keep it. Still refresh the
+      // env-probe cache and re-render so the failure banner + totals reflect
+      // the latest host state, just without clobbering the draft.
+      routingSuppressNextRebuild = false;
+    } else {
+      routingDraft = buildRoutingDraft(payload);
+    }
     if (payload && payload.envProbe && typeof payload.envProbe === "object") {
       Object.keys(payload.envProbe).forEach(function (name) {
         routingEnvProbe[name] = normalizeEnvProbeEntry(payload.envProbe[name]);
@@ -17644,6 +17807,7 @@
     // clearRouting cases post `{ type: MSG.ROUTING_SAVED, ...result }`.
     routingSaving = false;
     routingLastResult = msg ? { ok: msg.ok, errors: msg.errors, check: msg.check, write: msg.write } : null;
+    if (msg && msg.ok === false) routingSuppressNextRebuild = true;
     renderRoutingModal();
   }
 

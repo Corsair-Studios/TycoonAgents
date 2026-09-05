@@ -6175,6 +6175,25 @@ button.theme-review-preview:focus-visible::after {
   margin-top: 2px;
 }
 
+.routing-error-banner {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #e0555580;
+  border-radius: 6px;
+  background: #e0555520;
+  color: inherit;
+  font-size: 12px;
+}
+
+.routing-error-banner strong {
+  display: block;
+}
+
+.routing-error-banner ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
 /* Plain-word text now (was an uppercase FRONTMATTER/ALIAS jargon pill) —
    item 1 cleanup: sits as a muted line under the agent name, not its own
    column. */

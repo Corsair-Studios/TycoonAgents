@@ -234,6 +234,24 @@ test("saveRoutingProfile: a profile containing an apiKey-shaped field is rejecte
   assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
 });
 
+test("saveRoutingProfile: an undefined profile is rejected up front with a named error, never written as literal 'undefined' JSON", () => {
+  // Regression guard: JSON.stringify(undefined) returns the bare JS value
+  // `undefined`, and string-concatenating that with "\n" silently coerces
+  // to the text "undefined\n" instead of throwing — the old naive
+  // serialization check let that sail through as if it were valid JSON. A
+  // caller passing through a mis-wired transport (profile read off the
+  // wrong message field) should get an explicit, named error instead of an
+  // opaque "validation failed" JSON-parse error much later.
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+
+  const result = saveRoutingProfile({ root, profile: undefined as any, scriptsDir });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /missing or not an object/i.test(e)), JSON.stringify(result.errors));
+  assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
+});
+
 test("saveRoutingProfile: missing generator scripts fails loudly, listing the paths tried, no writes", () => {
   const root = tmpRoot();
   const missingScriptsDir = fs.mkdtempSync(path.join(os.tmpdir(), "routing-empty-scripts-"));
@@ -324,6 +342,19 @@ test("buildRoutingView: presets are MODEL entries (id/label = model id), not FOR
   const fable = byId.get("anthropic/claude-fable-5");
   assert.ok(fable, "anthropic/claude-fable-5 preset (fable alias) should be present");
   assert.equal(fable?.label, "anthropic/claude-fable-5 (fable)");
+});
+
+test("buildRoutingView: presets include the opencode Zen vendor and big-pickle model", () => {
+  const root = tmpRoot();
+  const view = buildRoutingView({ root, env: {} });
+
+  assert.ok(view.presets.vendors.includes("opencode"), "vendors should include opencode");
+
+  const bigPickle = view.presets.models.find((m) => m.id === "opencode/big-pickle");
+  assert.ok(bigPickle, "opencode/big-pickle preset should be present");
+  assert.equal(bigPickle?.vendor, "opencode");
+  assert.equal(bigPickle?.costModelClass, "subscription");
+  assert.equal(bigPickle?.label, "opencode/big-pickle (Zen, free)");
 });
 
 // ---------------------------------------------------------------------------

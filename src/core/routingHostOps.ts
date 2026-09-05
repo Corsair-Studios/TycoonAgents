@@ -244,6 +244,26 @@ function buildPresets(): RoutingPresets {
     modelsById.set(id, { id, vendor: agent.backend.vendor, costModelClass: agent.backend.costModelClass, label: id });
   }
 
+  // OpenCode's Zen provider — the standalone's default orchestrator model
+  // when OpenCode is the host (see docs/opencode-probe-findings.md,
+  // .opencode/agents/orchestrator.md). Free tier, so costModelClass is
+  // "subscription" (renders as "quota", no $/token figure) rather than
+  // "metered". This is a model natively known to an OpenCode host (Zen is
+  // built into OpenCode itself, not an external endpoint), so it needs no
+  // MCP bridge or openai-compatible provider entry — generate-opencode-
+  // config.mjs's computeOpencodeProviderVendors() only writes an
+  // opencode.json provider block for transport "openai-compatible" slots,
+  // which would incorrectly try to (re)configure Zen as if it were an
+  // external npm provider. "claude-native" is reused here as the generic
+  // "handled natively by the host, no bridge required" transport.
+  vendors.add("opencode");
+  modelsById.set("opencode/big-pickle", {
+    id: "opencode/big-pickle",
+    vendor: "opencode",
+    costModelClass: "subscription",
+    label: "opencode/big-pickle (Zen, free)",
+  });
+
   return { vendors: Array.from(vendors), models: Array.from(modelsById.values()) };
 }
 
@@ -470,6 +490,23 @@ export interface SaveRoutingProfileOptions {
 export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRoutingResult {
   const { root, profile } = opts;
   const nodeBin = opts.nodeBin ?? process.execPath;
+
+  // Guard against a missing/malformed profile up front: JSON.stringify(undefined)
+  // returns the bare JS value `undefined`, which string-concatenation then
+  // silently coerces to the text "undefined\n" instead of throwing — that
+  // text is valid-looking enough to sail past the naive serialization check
+  // below and only fail much later (an opaque "validation failed" JSON parse
+  // error). A caller passing through a mis-wired transport (e.g. reading the
+  // profile off the wrong field of an inbound message) should get an
+  // explicit error naming the real cause instead.
+  if (profile === undefined || profile === null || typeof profile !== "object") {
+    return {
+      ok: false,
+      errors: [`routing profile is missing or not an object (got ${profile === null ? "null" : typeof profile})`],
+      check: EMPTY_SAVE_RESULT_SCRIPTS,
+      write: EMPTY_SAVE_RESULT_SCRIPTS,
+    };
+  }
 
   const json = (() => {
     try {

@@ -1088,7 +1088,11 @@ test('Routing panel: Custom endpoint provider name field sets slot.vendor and ro
     dispatch({ type: 'routingSaved', ok: true, errors: [], check: {}, write: {} });
     await flush();
 
-    // ── Re-open with a payload whose orchestrator vendor is a custom, non-preset id ──
+    // ── Re-open with a payload whose orchestrator vendor is a saved, non-
+    // preset id (e.g. a previously-configured custom endpoint) — that vendor
+    // must now render as a plain selectable option (never dropped/blank),
+    // per the "vendor select lists every vendor found on the current
+    // payload's agents/orchestrator" fix. ──
     const reopenPayload = buildRoutingPayload({
       orchestrator: {
         id: 'orchestrator',
@@ -1098,20 +1102,405 @@ test('Routing panel: Custom endpoint provider name field sets slot.vendor and ro
     });
     dispatch({ type: 'routing', payload: reopenPayload });
     await flush();
-    assertNoErrors('reopen with custom vendor payload');
+    assertNoErrors('reopen with a payload-declared vendor');
 
     const vendorSelectAfter = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
-    assert.equal(vendorSelectAfter.value, 'custom-endpoint', 'a non-preset vendor should select the Custom endpoint option');
-    const nameInputAfter = doc.querySelector('.routing-slot-fields .routing-vendor-name-input') as any;
-    assert.ok(nameInputAfter, 'Provider name input should render when reopened with a custom vendor');
-    assert.equal(nameInputAfter.value, 'ollama-windows', 'Provider name input should be prefilled with the saved vendor');
+    assert.equal(vendorSelectAfter.value, 'ollama-windows', 'a vendor already present on the payload should be selectable directly, not dropped into Custom endpoint');
+    const optionValues = Array.from(vendorSelectAfter.options).map((o: any) => o.value);
+    assert.ok(optionValues.includes('ollama-windows'), 'ollama-windows should be a real <option> in the vendor select');
 
-    // ── Blur with an empty name defaults to "custom-endpoint" ──
+    // ── A genuinely never-seen vendor still goes through the Custom
+    // endpoint flow, and blurring an empty provider name defaults to
+    // "custom-endpoint" ──
+    vendorSelectAfter.value = 'custom-endpoint';
+    vendorSelectAfter.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    const nameInputAfter = doc.querySelector('.routing-slot-fields .routing-vendor-name-input') as any;
+    assert.ok(nameInputAfter, 'Provider name input should render under Custom endpoint');
     nameInputAfter.value = '';
     nameInputAfter.dispatchEvent(new win.Event('input', { bubbles: true }));
     nameInputAfter.dispatchEvent(new win.Event('blur', { bubbles: true }));
     await flush();
     assert.equal(nameInputAfter.value, 'custom-endpoint', 'blurring an empty provider name should default to custom-endpoint');
+  } finally {
+    win.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 1: opencode vendor preset + vendor-select completeness
+// ---------------------------------------------------------------------------
+
+test('Routing panel: opencode vendor is present in the vendor select with big-pickle in the model list', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      presets: {
+        vendors: ['anthropic', 'openai', 'google', 'opencode'],
+        models: [
+          { id: 'sonnet', vendor: 'anthropic', costModelClass: 'subscription', label: 'Claude Sonnet' },
+          { id: 'opencode/big-pickle', vendor: 'opencode', costModelClass: 'subscription', label: 'opencode/big-pickle (Zen, free)' },
+        ],
+      },
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const vendorSelect = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    const vendorOptionValues = Array.from(vendorSelect.options).map((o: any) => o.value);
+    assert.ok(vendorOptionValues.includes('opencode'), 'opencode should be a selectable vendor');
+
+    vendorSelect.value = 'opencode';
+    vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assertNoErrors('select opencode vendor');
+
+    // The prior model ("sonnet") doesn't match any opencode-vendor preset,
+    // so the field falls back to free-text with a "Choose from list" link —
+    // click it to get back to the preset select.
+    const backToPreset = doc.querySelector('.routing-slot-fields .routing-inline-link-btn') as any;
+    assert.ok(backToPreset, '"Choose from list" link should render once the current model no longer matches a preset');
+    backToPreset.click();
+    await flush();
+    assertNoErrors('choose from list after opencode vendor switch');
+
+    const modelSelect = doc.querySelector('.routing-slot-fields .routing-model-select') as any;
+    assert.ok(modelSelect, 'a model select should render for the opencode vendor');
+    const modelOptionValues = Array.from(modelSelect.options).map((o: any) => o.value);
+    assert.ok(modelOptionValues.includes('opencode/big-pickle'), 'opencode/big-pickle should be a model option once opencode is selected');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: a payload agent with vendor "ollama-windows" makes that vendor selectable', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      agents: [
+        {
+          id: 'coding-specialist',
+          name: 'coding-specialist',
+          backend: { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'llama3', costModelClass: 'local' },
+          source: 'file',
+        },
+      ],
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const agentRow = doc.querySelector('.routing-agent-row[data-agent-id="coding-specialist"]') as any;
+    assert.ok(agentRow, 'coding-specialist row should render');
+    const vendorSelect = agentRow.querySelector('.routing-vendor-select') as any;
+    assert.equal(vendorSelect.value, 'ollama-windows', 'the agent\'s own vendor should render as itself, not Custom endpoint');
+    const optionValues = Array.from(vendorSelect.options).map((o: any) => o.value);
+    assert.ok(optionValues.includes('ollama-windows'), 'ollama-windows should be a real <option> in this agent\'s vendor select');
+
+    // The orchestrator's own (unrelated) vendor select must also offer
+    // ollama-windows now that it appears anywhere on the payload.
+    const orchVendorSelect = doc.querySelector('#routing-modal-body .routing-slot-fields .routing-vendor-select') as any;
+    const orchOptionValues = Array.from(orchVendorSelect.options).map((o: any) => o.value);
+    assert.ok(orchOptionValues.includes('ollama-windows'), 'ollama-windows should be offered on every slot\'s vendor select, not just the agent that uses it');
+  } finally {
+    win.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2: fallback <details> stays open across a structural re-render
+// ---------------------------------------------------------------------------
+
+test('Routing panel: an open fallback <details> stays open after a model select change inside it', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      agents: [
+        {
+          id: 'coding-specialist',
+          name: 'coding-specialist',
+          backend: { vendor: 'anthropic', transport: 'claude-native', model: 'sonnet', costModelClass: 'subscription' },
+          source: 'default',
+        },
+      ],
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const fbRow = doc.querySelector('.routing-agent-fallback-row[data-agent-id="coding-specialist"]') as any;
+    const details = fbRow.querySelector('.routing-fallback-details') as any;
+    assert.ok(details, 'fallback-chain details should render');
+
+    // Add one fallback entry first (a structural change) so there's a model
+    // select inside the details to edit.
+    details.open = true;
+    const addBtn = details.querySelector('.routing-add-fallback-btn') as any;
+    addBtn.click();
+    await flush();
+    assertNoErrors('add fallback entry');
+
+    const detailsAfterAdd = doc.querySelector('.routing-agent-fallback-row[data-agent-id="coding-specialist"] .routing-fallback-details') as any;
+    assert.ok(detailsAfterAdd.open, 'fallback details should stay open right after adding an entry');
+
+    detailsAfterAdd.open = true;
+    const fallbackModelSelect = detailsAfterAdd.querySelector('.routing-fallback-list .routing-model-select') as any;
+    assert.ok(fallbackModelSelect, 'the new fallback entry should expose a model select');
+    const otherOpt = Array.from(fallbackModelSelect.options).find((o: any) => o.value && o.value !== fallbackModelSelect.value) as any;
+    assert.ok(otherOpt, 'model select should have another option to switch to');
+    fallbackModelSelect.value = otherOpt.value;
+    fallbackModelSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assertNoErrors('change fallback model select');
+
+    const detailsAfterModelChange = doc.querySelector('.routing-agent-fallback-row[data-agent-id="coding-specialist"] .routing-fallback-details') as any;
+    assert.ok(detailsAfterModelChange.open, 'fallback details must stay open after a model select change inside it');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: switching an agent to Custom vendor keeps its open fallback details open', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      agents: [
+        {
+          id: 'coding-specialist',
+          name: 'coding-specialist',
+          backend: { vendor: 'anthropic', transport: 'claude-native', model: 'sonnet', costModelClass: 'subscription' },
+          source: 'default',
+        },
+      ],
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const details = doc.querySelector('.routing-agent-fallback-row[data-agent-id="coding-specialist"] .routing-fallback-details') as any;
+    details.open = true;
+
+    const agentRow = doc.querySelector('.routing-agent-row[data-agent-id="coding-specialist"]') as any;
+    const vendorSelect = agentRow.querySelector('.routing-vendor-select') as any;
+    vendorSelect.value = 'custom-endpoint';
+    vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assertNoErrors('switch coding-specialist vendor to Custom endpoint');
+
+    const agentRowAfter = doc.querySelector('.routing-agent-row[data-agent-id="coding-specialist"]') as any;
+    const nameInput = agentRowAfter.querySelector('.routing-vendor-name-input') as any;
+    assert.ok(nameInput, 'Provider name field should appear once vendor is set to Custom endpoint');
+
+    const detailsAfter = doc.querySelector('.routing-agent-fallback-row[data-agent-id="coding-specialist"] .routing-fallback-details') as any;
+    assert.ok(detailsAfter, 'this agent\'s fallback details should still render');
+    assert.ok(detailsAfter.open, 'this agent\'s fallback details should stay open across the vendor -> Custom endpoint re-render');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: reported scenario — Coding Specialist Custom endpoint, env names, Set value, one fallback -> saveRouting posts the full profile', async () => {
+  // End-to-end reproduction of the reported bug: Custom endpoint -> provider
+  // name ollama-windows, model qwen3.6:latest, cost class local, endpoint
+  // env OLLAMA_BASE_URL + Set value, credential env OLLAMA_API_KEY + Set
+  // value, one fallback entry, then Save. Asserts the Set value flow posts
+  // the name actually typed (not stale/empty) and Save posts the whole
+  // assembled profile.
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      presets: {
+        vendors: ['anthropic', 'opencode'],
+        models: [{ id: 'opencode/big-pickle', vendor: 'opencode', label: 'big pickle' }],
+      },
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const card = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const vendorSelect = card.querySelector('.routing-vendor-select') as any;
+    vendorSelect.value = 'custom-endpoint';
+    vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    let card2 = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const nameInput = card2.querySelector('.routing-vendor-name-input') as any;
+    nameInput.value = 'ollama-windows';
+    nameInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+    await flush();
+
+    const modelInput = card2.querySelector('.routing-model-input') as any;
+    modelInput.value = 'qwen3.6:latest';
+    modelInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+    await flush();
+
+    const costSel = card2.querySelector('select[data-field-key="agent:coding-specialist.costModelClass"]') as any;
+    costSel.value = 'local';
+    costSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    const endpointLabel = Array.from(card2.querySelectorAll('.routing-env-field label')).find((l: any) => l.textContent === 'Endpoint env') as any;
+    const endpointField = endpointLabel.closest('.routing-env-field');
+    const endpointInput = endpointField.querySelector('.routing-env-input') as any;
+    endpointInput.value = 'OLLAMA_BASE_URL';
+    endpointInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+    await flush();
+    const endpointSetBtn = endpointField.querySelector('.routing-set-value-btn') as any;
+    assert.equal(endpointSetBtn.disabled, false, 'Endpoint env Set value should be enabled for a freshly typed valid name');
+    endpointSetBtn.click();
+    await flush();
+    const endpointInline = endpointField.querySelector('.routing-set-value-input') as any;
+    endpointInline.value = 'http://localhost:11434';
+    (Array.from(endpointField.querySelectorAll('.routing-set-value-inline button')).find((b: any) => b.textContent === 'Save') as any).click();
+    await flush();
+
+    const credLabel = Array.from(card2.querySelectorAll('.routing-env-field label')).find((l: any) => l.textContent === 'Credential env') as any;
+    const credField = credLabel.closest('.routing-env-field');
+    const credInput = credField.querySelector('.routing-env-input') as any;
+    credInput.value = 'OLLAMA_API_KEY';
+    credInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+    await flush();
+    const credSetBtn = credField.querySelector('.routing-set-value-btn') as any;
+    assert.equal(credSetBtn.disabled, false, 'Credential env Set value should be enabled for a freshly typed valid name');
+    credSetBtn.click();
+    await flush();
+    const credInline = credField.querySelector('.routing-set-value-input') as any;
+    credInline.value = 'sk-xxx';
+    (Array.from(credField.querySelectorAll('.routing-set-value-inline button')).find((b: any) => b.textContent === 'Save') as any).click();
+    await flush();
+    assertNoErrors('Set value flow for endpoint + credential env');
+
+    const setMsgs = posted.filter((m) => m && m.type === 'setLocalEnvValue');
+    assert.equal(setMsgs.length, 2, 'both Set value clicks should post setLocalEnvValue');
+    assert.deepEqual(setMsgs.map((m) => m.name).sort(), ['OLLAMA_API_KEY', 'OLLAMA_BASE_URL'], 'the posted names must be the ones actually typed, never empty/stale');
+
+    const details = card2.closest('.routing-agent-card').querySelector('.routing-fallback-details') as any;
+    (details.querySelector('.routing-add-fallback-btn') as any).click();
+    await flush();
+
+    const cardAfter = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const fbVendorSel = cardAfter.querySelector('.routing-fallback-item .routing-vendor-select') as any;
+    fbVendorSel.value = 'opencode';
+    fbVendorSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    const cardAfter2 = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const fbModelSel = cardAfter2.querySelector('.routing-fallback-item .routing-model-select') as any;
+    fbModelSel.value = 'opencode/big-pickle';
+    fbModelSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+    assertNoErrors('Save the custom-endpoint profile');
+
+    const saveMsg = posted.filter((m) => m && m.type === 'saveRouting').pop();
+    assert.ok(saveMsg, 'Save should post a saveRouting message');
+    const agentProfile = saveMsg.profile.agents['coding-specialist'];
+    assert.equal(agentProfile.vendor, 'ollama-windows');
+    assert.equal(agentProfile.model, 'qwen3.6:latest');
+    assert.equal(agentProfile.costModelClass, 'local');
+    assert.equal(agentProfile.endpointEnv, 'OLLAMA_BASE_URL');
+    assert.equal(agentProfile.credentialEnv, 'OLLAMA_API_KEY');
+    assert.equal(agentProfile.fallback.length, 1);
+    assert.equal(agentProfile.fallback[0].vendor, 'opencode');
+    assert.equal(agentProfile.fallback[0].model, 'opencode/big-pickle');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: routingSaved ok:false shows a visible error banner and keeps the user\'s draft (no silent revert)', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload();
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const vendorSelect = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    vendorSelect.value = 'custom-endpoint';
+    vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    const nameInput = doc.querySelector('.routing-slot-fields .routing-vendor-name-input') as any;
+    nameInput.value = 'ollama-windows';
+    nameInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+    await flush();
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+
+    dispatch({ type: 'routingSaved', ok: false, errors: ['routing profile is missing or not an object (got undefined)'], check: {}, write: {} });
+    await flush();
+    assertNoErrors('routingSaved ok:false');
+
+    const banner = doc.querySelector('.routing-error-banner');
+    assert.ok(banner, 'a visible error banner should render when routingSaved.ok is false');
+    assert.ok(banner.textContent.includes('missing or not an object'), 'the banner should surface the host-reported error text');
+
+    // The host then re-pushes its unchanged-on-disk "routing" view, as it
+    // always does after a saveRouting reply — this must NOT wipe out the
+    // user's still-unsaved "ollama-windows" edit.
+    dispatch({ type: 'routing', payload: buildRoutingPayload() });
+    await flush();
+    assertNoErrors('post-failure routing re-push');
+
+    const vendorSelectAfter = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    assert.equal(vendorSelectAfter.value, 'custom-endpoint', 'the draft must survive the post-failure routing re-push, not revert to the disk-resolved vendor');
+    const nameInputAfter = doc.querySelector('.routing-slot-fields .routing-vendor-name-input') as any;
+    assert.equal(nameInputAfter.value, 'ollama-windows', 'the typed provider name must survive too');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: failed save -> close -> reopen -> a fresh routing payload rebuilds the draft (suppression does not leak across sessions)', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload();
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const vendorSelect = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    vendorSelect.value = 'custom-endpoint';
+    vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+
+    dispatch({ type: 'routingSaved', ok: false, errors: ['routing profile is missing or not an object (got undefined)'], check: {}, write: {} });
+    await flush();
+    assertNoErrors('routingSaved ok:false');
+
+    // Close the modal, then reopen it — this must clear the
+    // routingSuppressNextRebuild flag so it does not swallow the fresh
+    // getRouting reply's routing payload below.
+    (doc.getElementById('routing-modal-close') as any).click();
+    await flush();
+    (doc.getElementById('menu-routing') as any).click();
+    await flush();
+    assertNoErrors('close + reopen routing modal');
+
+    const reopenPayload = buildRoutingPayload({
+      orchestrator: {
+        id: 'orchestrator',
+        backend: { vendor: 'openai', transport: 'claude-native', model: 'gpt-5.4-mini', costModelClass: 'metered' },
+        source: 'file',
+      },
+    });
+    dispatch({ type: 'routing', payload: reopenPayload });
+    await flush();
+    assertNoErrors('fresh routing payload after reopen');
+
+    const vendorSelectAfter = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    assert.equal(vendorSelectAfter.value, 'openai', 'the fresh routing payload must rebuild the draft, not be suppressed by the stale prior-session failure flag');
   } finally {
     win.close();
   }

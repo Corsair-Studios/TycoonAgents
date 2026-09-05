@@ -714,11 +714,15 @@ function handleBrowserMessage(msg) {
       }
       break;
     case 'saveRouting':
-      // Standalone analog of panel.ts's _handleSaveRouting.
+      // Standalone analog of panel.ts's _handleSaveRouting. media/main.js
+      // posts { type, profile } flat on the message (matching panel.ts's
+      // MSG_SCHEMAS.SAVE_ROUTING.safeParse(message) shape) — NOT nested
+      // under `payload` (that wrapper is for the THEME_MSG_WIRE cases
+      // above). Reading payload.profile here silently saved `undefined`.
       try {
         const { saveRoutingProfile, buildRoutingView } = routingHostOpsModule();
         const root = primaryProjectRoot || process.cwd();
-        const result = saveRoutingProfile({ root, profile: payload.profile, scriptsDir: REPO_ROOT });
+        const result = saveRoutingProfile({ root, profile: msg.profile, scriptsDir: REPO_ROOT });
         broadcast('message', { type: 'routingSaved', ...result });
         broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
       } catch (err) {
@@ -738,10 +742,12 @@ function handleBrowserMessage(msg) {
       }
       break;
     case 'probeEnv':
-      // Standalone analog of panel.ts's _handleProbeEnv.
+      // Standalone analog of panel.ts's _handleProbeEnv. media/main.js posts
+      // { type, names } flat (MSG_SCHEMAS.PROBE_ENV.safeParse(message)) —
+      // not payload.names.
       try {
         const { probeEnv } = routingHostOpsModule();
-        const names = Array.isArray(payload.names) ? payload.names : [];
+        const names = Array.isArray(msg.names) ? msg.names : [];
         broadcast('message', { type: 'envProbe', payload: probeEnv(names, process.env) });
       } catch (err) {
         console.error('[tycoonagents-standalone] probeEnv failed:', err);
@@ -750,21 +756,24 @@ function handleBrowserMessage(msg) {
     case 'setLocalEnvValue':
       // Standalone analog of panel.ts's _handleSetLocalEnvValue (p13-t6).
       // The value is never logged or broadcast — only the resulting
-      // envProbe entry for `name`.
+      // envProbe entry for `name`. media/main.js posts { type, name, value }
+      // flat (MSG_SCHEMAS.SET_LOCAL_ENV_VALUE.safeParse(message)) — not
+      // nested under payload.
       try {
         const { setLocalEnvValue } = routingHostOpsModule();
-        const entry = setLocalEnvValue(String(payload.name || ''), String(payload.value ?? ''), process.env);
-        broadcast('message', { type: 'envProbe', payload: { [payload.name]: entry } });
+        const entry = setLocalEnvValue(String(msg.name || ''), String(msg.value ?? ''), process.env);
+        broadcast('message', { type: 'envProbe', payload: { [msg.name]: entry } });
       } catch (err) {
         console.error('[tycoonagents-standalone] setLocalEnvValue failed:', err instanceof Error ? err.message : err);
       }
       break;
     case 'clearLocalEnvValue':
       // Standalone analog of panel.ts's _handleClearLocalEnvValue (p13-t6).
+      // Flat { type, name } — see setLocalEnvValue note above.
       try {
         const { clearLocalEnvValue } = routingHostOpsModule();
-        const entry = clearLocalEnvValue(String(payload.name || ''), process.env);
-        broadcast('message', { type: 'envProbe', payload: { [payload.name]: entry } });
+        const entry = clearLocalEnvValue(String(msg.name || ''), process.env);
+        broadcast('message', { type: 'envProbe', payload: { [msg.name]: entry } });
       } catch (err) {
         console.error('[tycoonagents-standalone] clearLocalEnvValue failed:', err instanceof Error ? err.message : err);
       }
