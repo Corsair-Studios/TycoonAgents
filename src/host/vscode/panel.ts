@@ -47,6 +47,12 @@ import {
   type DoctrineRosterAgent,
 } from "./delegationDoctrine";
 import { readAgentFrontmatter, parseAgentBackend } from "../../core/agentBackend";
+import {
+  describeProviderSelection,
+  writeProviderSelection,
+  PROVIDER_IDS,
+  type ProviderId,
+} from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue } from "../../core/routingHostOps";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
@@ -573,6 +579,22 @@ export class TycoonPanel {
    */
   private readonly _bundledThemesReady: Promise<unknown> | undefined;
   private readonly _secrets: vscode.SecretStorage;
+  /**
+   * p13-t7: optional live-swap hook wired in by extension.ts's openCmd.
+   * When present, `_handleSetHarness` calls it after writing the new
+   * provider id to execution.json; a `true` return means the running
+   * Provider was disposed and replaced without a reload (requiresRestart:
+   * false in the next SETTINGS payload). Undefined/false means the change
+   * only takes effect on the extension's next activation.
+   */
+  private _providerSwap: ((id: ProviderId) => boolean) | undefined;
+  /** Reports which provider id is ACTUALLY running right now (wired in
+   * alongside _providerSwap) — separate from the file/setting/env-derived
+   * `effective` value, which can move independently (e.g. a hand-edited
+   * execution.json, or a swap that failed and left the old one running).
+   * `_buildHarnessSettings` diffs the two into `mismatch`/`requiresRestart`
+   * on every SETTINGS build, not just right after a swap in this window. */
+  private _getRunningProviderId: (() => ProviderId | undefined) | undefined;
   private _disposables: vscode.Disposable[] = [];
   private _runtimeDisposable: { dispose(): void } | undefined;
   private _enginePollInterval: NodeJS.Timeout | undefined;
@@ -737,6 +759,14 @@ export class TycoonPanel {
    * so a stale model never gets stamped onto outgoing state.
    */
   private _rosterModelCache: Map<string, string> | undefined;
+
+  /** p13-t7: wires the live-swap callback in from extension.ts (avoids a
+   * circular import between extension.ts and panel.ts — extension.ts already
+   * imports TycoonPanel, so panel.ts cannot import back from it). */
+  public setProviderSwap(fn: (id: ProviderId) => boolean, getRunning: () => ProviderId | undefined): void {
+    this._providerSwap = fn;
+    this._getRunningProviderId = getRunning;
+  }
 
   public static createOrShow(
     extensionUri: vscode.Uri,
@@ -1130,6 +1160,13 @@ export class TycoonPanel {
             this._handleSetAgentModel(parsedSetAgentModel.data.id, parsedSetAgentModel.data.model);
           } else {
             console.error("TycoonAgents: setAgentModel payload rejected:", parsedSetAgentModel.error.message);
+          }
+        } else if (message.type === MSG.SET_HARNESS) {
+          const parsedSetHarness = MSG_SCHEMAS.SET_HARNESS.safeParse(message);
+          if (parsedSetHarness.success) {
+            this._handleSetHarness(parsedSetHarness.data.provider);
+          } else {
+            console.error("TycoonAgents: setHarness payload rejected:", parsedSetHarness.error.message);
           }
         } else if (message.type === MSG.SET_DELEGATION_MODE) {
           const parsedSetDelegationMode = MSG_SCHEMAS.SET_DELEGATION_MODE.safeParse(message);
@@ -7014,8 +7051,68 @@ export class TycoonPanel {
         hookHealth,
         contextBudget,
         foreignManagedBlocks,
+        harness: this._buildHarnessSettings(root),
       },
     });
+  }
+
+  /** Builds the `harness` slice of the SETTINGS payload (p13-t7): which
+   * Provider ("claude-code" | "opencode") is effective, what layer decided
+   * it, and whether a change can apply live. */
+  private _buildHarnessSettings(root: string): {
+    effective: ProviderId;
+    source: "env" | "setting" | "execution" | "default";
+    fileValue: ProviderId | undefined;
+    running: ProviderId | undefined;
+    mismatch: boolean;
+    options: { id: ProviderId; label: string }[];
+    requiresRestart: boolean;
+  } {
+    const settingValue = vscode.workspace.getConfiguration("tycoonagents").get<string>("provider");
+    const description = describeProviderSelection({ settingValue, cwd: root });
+    // Undefined only before any provider has ever started in this window
+    // (no _getRunningProviderId wired yet) — treat that as "matches", since
+    // there's nothing running to conflict with `effective` yet.
+    const running = this._getRunningProviderId?.();
+    const mismatch = running !== undefined && running !== description.effective;
+    return {
+      ...description,
+      running,
+      mismatch,
+      options: [
+        { id: "claude-code", label: "Claude Code" },
+        { id: "opencode", label: "OpenCode" },
+      ],
+      requiresRestart: mismatch,
+    };
+  }
+
+  /** Handles MSG.SET_HARNESS: writes the chosen provider id into
+   * .claude/tycoon/execution.json (the lowest-precedence, file-backed
+   * layer — env/setting still win if present), attempts a live swap via
+   * `_providerSwap` when wired in, then re-posts SETTINGS either way. The
+   * re-posted payload's `running`/`mismatch` (via `_getRunningProviderId`)
+   * reflect the swap's real outcome — no separate flag to keep in sync. */
+  private _handleSetHarness(providerId: string): void {
+    if (!(PROVIDER_IDS as readonly string[]).includes(providerId)) {
+      console.error(`TycoonAgents: setHarness rejected unknown provider id "${providerId}".`);
+      return;
+    }
+    const root = this._projectRoot();
+    try {
+      writeProviderSelection(root, providerId);
+    } catch (err) {
+      console.error("TycoonAgents: writeProviderSelection failed:", err instanceof Error ? err.message : err);
+      return;
+    }
+    if (this._providerSwap) {
+      try {
+        this._providerSwap(providerId as ProviderId);
+      } catch (err) {
+        console.error("TycoonAgents: live provider swap failed:", err instanceof Error ? err.message : err);
+      }
+    }
+    this._handleGetSettings();
   }
 
   /** Write the chosen model into an agent's markdown frontmatter. */

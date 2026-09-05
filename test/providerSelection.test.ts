@@ -10,7 +10,12 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { resolveProviderId, PROVIDER_IDS } from "../src/core/providerSelection";
+import {
+  resolveProviderId,
+  PROVIDER_IDS,
+  describeProviderSelection,
+  writeProviderSelection,
+} from "../src/core/providerSelection";
 
 async function makeProjectDir(executionJson?: unknown): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "tycoon-provider-selection-"));
@@ -106,4 +111,61 @@ test("createProvider('opencode', ...) returns an OpenCodeProvider", async () => 
   const provider = createProvider("opencode", path.join(os.tmpdir(), "activity.jsonl"));
   assert.ok(provider instanceof OpenCodeProvider);
   assert.equal(provider.id, "opencode");
+});
+
+// --- describeProviderSelection / writeProviderSelection (p13-t7) --------
+
+test("describeProviderSelection: default with nothing set", async () => {
+  const dir = await makeProjectDir();
+  const d = describeProviderSelection({ env: {}, cwd: dir });
+  assert.deepEqual(d, { effective: "claude-code", source: "default", fileValue: undefined });
+});
+
+test("describeProviderSelection: execution.json wins over default and is reported as fileValue", async () => {
+  const dir = await makeProjectDir({ provider: "opencode" });
+  const d = describeProviderSelection({ env: {}, cwd: dir });
+  assert.deepEqual(d, { effective: "opencode", source: "execution", fileValue: "opencode" });
+});
+
+test("describeProviderSelection: settingValue beats execution.json but fileValue still reflects the file", async () => {
+  const dir = await makeProjectDir({ provider: "opencode" });
+  const d = describeProviderSelection({ settingValue: "claude-code", env: {}, cwd: dir });
+  assert.deepEqual(d, { effective: "claude-code", source: "setting", fileValue: "opencode" });
+});
+
+test("describeProviderSelection: env beats setting and execution.json", async () => {
+  const dir = await makeProjectDir({ provider: "opencode" });
+  const d = describeProviderSelection({
+    settingValue: "opencode",
+    env: { TYCOON_PROVIDER: "claude-code" },
+    cwd: dir,
+  });
+  assert.equal(d.effective, "claude-code");
+  assert.equal(d.source, "env");
+  assert.equal(d.fileValue, "opencode");
+});
+
+test("describeProviderSelection: throws on unknown env value", async () => {
+  const dir = await makeProjectDir();
+  assert.throws(() => describeProviderSelection({ env: { TYCOON_PROVIDER: "bogus" }, cwd: dir }));
+});
+
+test("writeProviderSelection: creates execution.json when absent", async () => {
+  const dir = await makeProjectDir();
+  writeProviderSelection(dir, "opencode");
+  const raw = await fsp.readFile(path.join(dir, ".claude", "tycoon", "execution.json"), "utf8");
+  assert.deepEqual(JSON.parse(raw), { provider: "opencode" });
+});
+
+test("writeProviderSelection: preserves other keys", async () => {
+  const dir = await makeProjectDir({ provider: "claude-code", delegation_mode: "team_leads" });
+  writeProviderSelection(dir, "opencode");
+  const raw = await fsp.readFile(path.join(dir, ".claude", "tycoon", "execution.json"), "utf8");
+  assert.deepEqual(JSON.parse(raw), { provider: "opencode", delegation_mode: "team_leads" });
+});
+
+test("writeProviderSelection: throws on an unknown provider id and writes nothing", async () => {
+  const dir = await makeProjectDir();
+  assert.throws(() => writeProviderSelection(dir, "bogus"));
+  await assert.rejects(fsp.readFile(path.join(dir, ".claude", "tycoon", "execution.json"), "utf8"));
 });

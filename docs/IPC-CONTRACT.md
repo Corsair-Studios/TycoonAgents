@@ -120,6 +120,73 @@ Host-agnostic implementation: `src/core/routingHostOps.ts` (`buildRoutingView`/`
 | `routingSaved` | `{ ok: boolean, errors: string[], check: { claude: {code, output}, opencode: {code, output} }, write: { claude: {code, output}, opencode: {code, output} } }` | Reply to `saveRouting`/`clearRouting`, immediately followed by a fresh `routing` reply. `errors` is non-empty (and `check`/`write` are empty placeholders) when the profile itself was rejected before either generator ran. |
 | `envProbe` | `Record<string, { env: boolean, stored: boolean }>` | Reply to `probeEnv`/`setLocalEnvValue`/`clearLocalEnvValue` (p13-t6). `env` is a real `process.env` var; `stored` is a per-user value saved via `localEnvStore` (`<per-user app data dir>/secrets/<NAME>`, mode 0600, never in a project or git). The value itself is never present in this payload. |
 
+## Harness Selection (p13-t7)
+
+The Settings screen's "Which tool runs your agents?" dropdown. Host-agnostic
+resolve/describe/write logic lives in `src/core/providerSelection.ts`
+(`resolveProviderId`, `describeProviderSelection`, `writeProviderSelection`),
+compiled to `out/src/core/providerSelection.js` and required directly by
+`standalone/src/server.mjs` the same way `routingHostOps.js` is. The
+`settings` payload (see `_handleGetSettings`/`buildStandaloneSettingsPayload`)
+gains a `harness` field:
+
+```
+harness: {
+  effective: "claude-code" | "opencode",
+  source: "env" | "setting" | "execution" | "default",
+  fileValue: "claude-code" | "opencode" | undefined,  // current execution.json value, even if overridden
+  running: "claude-code" | "opencode" | undefined,    // the provider id ACTUALLY running right now
+  mismatch: boolean,                                  // running !== effective
+  options: [{ id: "claude-code", label: "Claude Code" }, { id: "opencode", label: "OpenCode" }],
+  requiresRestart: boolean,                           // == mismatch on both hosts
+}
+```
+
+`running` and `effective` are independent: `effective` is recomputed fresh
+from env/setting/execution.json on every `settings` build, while `running`
+reflects whatever provider process is actually feeding events right now —
+they can diverge whenever a file/setting change hasn't been (or couldn't be)
+applied live yet, including on a freshly reopened panel/session where the
+execution.json was hand-edited (or edited from another window) since the
+provider last started. `mismatch` (`running !== effective`, `undefined`
+`running` — nothing has started yet in this window — counts as no mismatch)
+drives the "Restart to apply" hint on EVERY `settings` build, not only right
+after a `setHarness` round-trip in the current window.
+
+`SET_HARNESS` ("setHarness") — inbound, `{ provider: string }` — writes only
+the `provider` key into `.claude/tycoon/execution.json` (creating it if
+absent, preserving every other key) via `writeProviderSelection`, then
+re-posts `settings`. The webview (`media/main.js`'s `renderSettings`, harness
+dropdown ~line 18087) disables the select and shows "Overridden by
+TYCOON_PROVIDER" / "Overridden by the tycoonagents.provider VS Code setting"
+when `harness.source` is `"env"`/`"setting"` — writing while a
+higher-precedence layer wins would silently do nothing. It shows "Restart to
+apply" whenever `harness.mismatch` (or `requiresRestart`) is true.
+
+**Live swap, per host:**
+- **VS Code** (`src/host/vscode/extension.ts`/`panel.ts`): `extension.ts`
+  keeps `swapRuntime`/`swapActivityFile`/`currentProviderId` module state
+  set when the provider first starts, and exposes `trySwapProvider(id)` and
+  `getRunningProviderId()`, wired into the panel via
+  `TycoonPanel.setProviderSwap(trySwapProvider, getRunningProviderId)`
+  (avoids a circular import — `extension.ts` already imports `TycoonPanel`).
+  `trySwapProvider` constructs and starts the NEW provider FIRST against the
+  same long-lived `Runtime`; only once that succeeds does it stop the old
+  one and update `currentProviderId` — a factory/start failure leaves the
+  previous provider running untouched and returns `false`. Panel's
+  `_buildHarnessSettings` computes `running`/`mismatch` from
+  `_getRunningProviderId()` vs. the freshly-resolved `effective` on every
+  call, not from a one-shot flag set only inside `_handleSetHarness`.
+- **Standalone** (`standalone/src/server.mjs`): the watcher/provider is
+  resolved once at process startup into module-level `startupProviderId`
+  (see `cli.mjs`'s `--provider`, which sets `TYCOON_PROVIDER` before
+  `sharedLogic`/`resolveProviderId` ever load) and never reconstructed
+  mid-process — `running` is always `startupProviderId`. `setHarness`
+  writes the file and replies with `requiresRestart: mismatch` (true once
+  the file's `effective` value diverges from what's actually running); a
+  session started with `--provider`/`TYCOON_PROVIDER` reports
+  `harness.source: "env"` and the dropdown stays disabled.
+
 ### Outbound Messages (Host → Webview)
 
 | type | payload | description |

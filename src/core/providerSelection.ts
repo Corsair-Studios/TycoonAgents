@@ -101,3 +101,67 @@ export function resolveProviderId(options: ResolveProviderIdOptions): ProviderId
 
   return "claude-code";
 }
+
+export type ProviderSelectionSource = "env" | "setting" | "execution" | "default";
+
+export interface ProviderSelectionDescription {
+  effective: ProviderId;
+  source: ProviderSelectionSource;
+  /** The raw `provider` value currently on disk in execution.json, if any (even if it lost precedence). */
+  fileValue: ProviderId | undefined;
+}
+
+/** Like resolveProviderId, but also reports which layer won and what's
+ * currently on disk, for the Settings UI's "Which tool runs your agents?"
+ * dropdown. Throws under the same conditions resolveProviderId does. */
+export function describeProviderSelection(options: {
+  settingValue?: string | undefined;
+  env?: NodeJS.ProcessEnv;
+  cwd: string;
+}): ProviderSelectionDescription {
+  const env = options.env ?? process.env;
+  const fromExecutionConfigRaw = readExecutionConfigProvider(options.cwd);
+  const fileValue = isProviderId(fromExecutionConfigRaw) ? fromExecutionConfigRaw : undefined;
+
+  const envValue = env["TYCOON_PROVIDER"];
+  if (envValue !== undefined && envValue !== "") {
+    if (!isProviderId(envValue)) throw invalidProviderError(envValue, "the TYCOON_PROVIDER environment variable");
+    return { effective: envValue, source: "env", fileValue };
+  }
+
+  if (options.settingValue !== undefined && options.settingValue !== "") {
+    if (!isProviderId(options.settingValue)) {
+      throw invalidProviderError(options.settingValue, 'the "tycoonagents.provider" VS Code setting');
+    }
+    return { effective: options.settingValue, source: "setting", fileValue };
+  }
+
+  if (fromExecutionConfigRaw !== undefined) {
+    if (!isProviderId(fromExecutionConfigRaw)) {
+      throw invalidProviderError(fromExecutionConfigRaw, path.join(options.cwd, ".claude", "tycoon", "execution.json"));
+    }
+    return { effective: fromExecutionConfigRaw, source: "execution", fileValue };
+  }
+
+  return { effective: "claude-code", source: "default", fileValue };
+}
+
+/** Writes only the `provider` key into <cwd>/.claude/tycoon/execution.json,
+ * creating the file/directories if absent and preserving every other key
+ * already there. Throws on an unrecognized provider id. */
+export function writeProviderSelection(cwd: string, providerId: string): void {
+  if (!isProviderId(providerId)) throw invalidProviderError(providerId, "writeProviderSelection");
+  const dir = path.join(cwd, ".claude", "tycoon");
+  const execPath = path.join(dir, "execution.json");
+  let parsed: Record<string, unknown> = {};
+  try {
+    const raw = fs.readFileSync(execPath, "utf8");
+    const existing: unknown = JSON.parse(raw);
+    if (existing && typeof existing === "object") parsed = existing as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+  parsed["provider"] = providerId;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(execPath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+}

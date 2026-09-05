@@ -145,6 +145,26 @@ Standalone usage:
 node standalone/src/cli.mjs watch . --provider opencode
 ```
 
+### Settings UI (p13-t7)
+
+Both hosts expose a "Which tool runs your agents?" dropdown in Settings
+(Claude Code / OpenCode), backed by two more functions in the same module:
+
+- `describeProviderSelection({ settingValue, env, cwd })` — like
+  `resolveProviderId`, but also reports which layer decided it
+  (`effective`/`source`/`fileValue`), so the UI can disable the dropdown and
+  explain why when `TYCOON_PROVIDER` or the VS Code setting already wins.
+- `writeProviderSelection(cwd, providerId)` — writes only the `provider` key
+  into `.claude/tycoon/execution.json`, preserving every other key.
+
+The VS Code host can apply a change live (disposes the running `Provider`
+and constructs the other one via the existing factory against the same
+`Runtime`, no reload) — see `src/host/vscode/extension.ts`'s
+`trySwapProvider`. The standalone host cannot: its watcher/provider is fixed
+at process startup, so a change there always requires a restart. Full wire
+contract (the `harness` settings field, `SET_HARNESS` message) is in
+`docs/IPC-CONTRACT.md`'s "Harness Selection (p13-t7)" section.
+
 ---
 
 ## Prerequisite: the agent roster

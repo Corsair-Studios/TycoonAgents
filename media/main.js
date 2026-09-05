@@ -18084,6 +18084,63 @@
       setupConfigEl.appendChild(uefnHealthRow);
     }
 
+    // ── 1.4b. Harness selection (p13-t7) ──
+    // "Which tool runs your agents?" dropdown. lastSettings.harness is
+    // `{ effective, source, fileValue, options, requiresRestart }` — see
+    // panel.ts's _buildHarnessSettings / server.mjs's
+    // buildStandaloneHarnessSettings. Disabled (with a hint) when a
+    // higher-precedence layer (env var or the VS Code setting) already
+    // decides it, since picking a different value here would silently do
+    // nothing.
+    if (lastSettings.harness) {
+      const harness = lastSettings.harness;
+      const harnessSection = buildSection("Agent harness");
+      const harnessRow = document.createElement("div");
+      harnessRow.className = "settings-row feedback-field";
+      harnessRow.dataset.agentRow = "harness";
+      const harnessLabel = document.createElement("label");
+      harnessLabel.textContent = "Which tool runs your agents?";
+      harnessLabel.setAttribute("for", "settings-harness-select");
+      harnessRow.appendChild(harnessLabel);
+      const harnessSelect = document.createElement("select");
+      harnessSelect.id = "settings-harness-select";
+      const harnessOptions = Array.isArray(harness.options)
+        ? harness.options
+        : [
+            { id: "claude-code", label: "Claude Code" },
+            { id: "opencode", label: "OpenCode" },
+          ];
+      harnessOptions.forEach((opt) => {
+        const optEl = document.createElement("option");
+        optEl.value = opt.id;
+        optEl.textContent = opt.label;
+        if (opt.id === harness.effective) optEl.selected = true;
+        harnessSelect.appendChild(optEl);
+      });
+      const overridden = harness.source === "env" || harness.source === "setting";
+      harnessSelect.disabled = overridden;
+      harnessSelect.addEventListener("change", () => {
+        harnessSelect.disabled = true;
+        vscode.postMessage({ type: "setHarness", provider: harnessSelect.value });
+      });
+      harnessRow.appendChild(harnessSelect);
+      const harnessHint = document.createElement("p");
+      harnessHint.className = "delegation-mode-footnote";
+      if (overridden) {
+        harnessHint.textContent =
+          harness.source === "env"
+            ? "Overridden by TYCOON_PROVIDER"
+            : "Overridden by the tycoonagents.provider VS Code setting";
+      } else if (harness.mismatch || harness.requiresRestart) {
+        harnessHint.textContent = "Restart to apply";
+      } else {
+        harnessHint.textContent = "Applies immediately.";
+      }
+      harnessRow.appendChild(harnessHint);
+      harnessSection.appendChild(harnessRow);
+      setupConfigEl.appendChild(harnessSection);
+    }
+
     // ── 1.5. Delegation style (Team Lead Mode, Phase 2) ──
     // Same radio block + exact copy as the pre-install setup-view picker
     // (#delegation-mode-group in the HTML), rebuilt here so it reflects the

@@ -995,6 +995,110 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('settings-delegation-health-removed');
     });
 
+    // ── Step 10c: Harness selection dropdown (p13-t7) ────────────────────────
+    // "Which tool runs your agents?" — renders a <select> bound to
+    // harness.effective, disabled with a hint when harness.source is
+    // "env"/"setting" (a higher-precedence layer already decides it), and
+    // shows "Restart to apply" whenever harness.mismatch is true — driven
+    // purely off the payload, not off any prior setHarness round-trip in
+    // this window (audit fix: a stale/hand-edited execution.json must show
+    // the hint on first render too).
+    await t.test('10c. harness dropdown: renders, reflects effective, disables on override, shows restart hint on mismatch', async () => {
+      const baseSettings = {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+      };
+
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'opencode',
+            source: 'execution',
+            fileValue: 'opencode',
+            running: 'opencode',
+            mismatch: false,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'opencode', label: 'OpenCode' },
+            ],
+            requiresRestart: false,
+          },
+        },
+      });
+      await flush();
+      const setupConfig = doc.getElementById('setup-config');
+      const select = setupConfig.querySelector('#settings-harness-select') as any;
+      assert.ok(select, 'harness <select> should render');
+      assert.equal(select.value, 'opencode', 'select must reflect harness.effective');
+      assert.equal(select.disabled, false, 'not overridden -> select must be enabled');
+      assert.ok(!(setupConfig.textContent || '').includes('Restart to apply'), 'no mismatch -> no restart hint');
+
+      // Overridden by env: disabled with the TYCOON_PROVIDER hint.
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'claude-code',
+            source: 'env',
+            fileValue: 'opencode',
+            running: 'claude-code',
+            mismatch: false,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'opencode', label: 'OpenCode' },
+            ],
+            requiresRestart: false,
+          },
+        },
+      });
+      await flush();
+      const envSelect = doc.getElementById('setup-config').querySelector('#settings-harness-select') as any;
+      assert.equal(envSelect.disabled, true, 'source "env" -> select must be disabled');
+      assert.ok(
+        (doc.getElementById('setup-config').textContent || '').includes('Overridden by TYCOON_PROVIDER'),
+        'must show the TYCOON_PROVIDER override hint'
+      );
+
+      // Mismatch (running differs from effective, no override): restart hint shows.
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'opencode',
+            source: 'execution',
+            fileValue: 'opencode',
+            running: 'claude-code',
+            mismatch: true,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'opencode', label: 'OpenCode' },
+            ],
+            requiresRestart: true,
+          },
+        },
+      });
+      await flush();
+      const mismatchConfig = doc.getElementById('setup-config');
+      assert.equal(
+        (mismatchConfig.querySelector('#settings-harness-select') as any).disabled,
+        false,
+        'mismatch alone (no env/setting override) must not disable the select'
+      );
+      assert.ok(
+        (mismatchConfig.textContent || '').includes('Restart to apply'),
+        'harness.mismatch true must show the restart hint on this render, with no prior setHarness in this session'
+      );
+      assertNoErrors('harness-dropdown');
+    });
+
     // ── Step 11: Archived Plans section (0.0.340+) ───────────────────────────
     // PLAN_STATE now carries archivedPlans; the webview must render a
     // titled, read-only section listing each entry when non-empty, and

@@ -194,6 +194,12 @@ const AGENT_BACKEND_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'agentBacken
 // REPO_ROOT itself (this process already resolves it at startup), matching
 // panel.ts's use of context.extensionPath as ITS install root.
 const ROUTING_HOST_OPS_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'routingHostOps.js');
+const PROVIDER_SELECTION_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'providerSelection.js');
+let _providerSelectionModule;
+function providerSelectionModule() {
+  if (!_providerSelectionModule) _providerSelectionModule = requireCompiledOrThrow(PROVIDER_SELECTION_JS, 'providerSelection');
+  return _providerSelectionModule;
+}
 
 let _routingHostOpsModule;
 function routingHostOpsModule() {
@@ -316,6 +322,17 @@ let themeStore;
 // happens to be dispatched from this same switch (see that module's header
 // for why). Never touched by any theme handler.
 let primaryProjectRoot;
+
+// `startupProviderId` is set by startServer() below to whichever provider id
+// resolveProviderId() picked AT STARTUP (env/setting/execution.json at that
+// moment) — the standalone never reconstructs a Provider mid-process (see
+// buildStandaloneHarnessSettings's "no live swap" note), so this is the
+// actual running selection for the harness settings' `running` field, kept
+// separate from `effective` (recomputed fresh on every getSettings/setHarness
+// so the UI can show a pending file change even though it hasn't taken
+// effect yet). Falls back to 'claude-code' if resolution throws (e.g. a
+// corrupt execution.json) so startup itself never fails over this.
+let startupProviderId = 'claude-code';
 
 // `themeImageConfigGetter` is set by startServer() below to a closure over
 // THAT call's own `env`/`appData` (never raw process.env — see
@@ -778,6 +795,29 @@ function handleBrowserMessage(msg) {
         console.error('[tycoonagents-standalone] clearLocalEnvValue failed:', err instanceof Error ? err.message : err);
       }
       break;
+    case 'setHarness': {
+      // Standalone analog of panel.ts's _handleSetHarness (p13-t7). Writes
+      // the `provider` key into execution.json when TYCOON_PROVIDER isn't
+      // already forcing a value (matches describeProviderSelection's
+      // precedence — writing while env wins would silently do nothing
+      // useful, so we still write but the reply's harness.source stays
+      // 'env' and the UI keeps the dropdown disabled either way); no live
+      // swap exists for the standalone watcher, so requiresRestart is
+      // always true (see buildStandaloneHarnessSettings).
+      const root = primaryProjectRoot;
+      if (!root) {
+        console.error('[tycoonagents-standalone] setHarness: no project root resolved');
+        break;
+      }
+      try {
+        const { writeProviderSelection } = providerSelectionModule();
+        writeProviderSelection(root, String(msg.provider || ''));
+      } catch (err) {
+        console.error('[tycoonagents-standalone] setHarness failed:', err instanceof Error ? err.message : err);
+      }
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    }
     case 'getSettings':
       // Standalone analog of panel.ts's _handleGetSettings (~line 6783-
       // 6909). main.js's renderSettings() (media/main.js:16239) only shows
@@ -1771,6 +1811,37 @@ function buildStandaloneSettingsPayload() {
     hookHealth: { healthy: true, issueCount: 0 },
     contextBudget: null,
     foreignManagedBlocks: [],
+    harness: buildStandaloneHarnessSettings(),
+  };
+}
+
+/**
+ * Standalone analog of panel.ts's _buildHarnessSettings (p13-t7). The
+ * standalone process never has a VS Code `tycoonagents.provider` setting,
+ * so only TYCOON_PROVIDER (set directly, or by cli.mjs's --provider flag —
+ * see parseWatchArgs) and the execution.json `provider` key are in play.
+ */
+function buildStandaloneHarnessSettings() {
+  const { describeProviderSelection } = providerSelectionModule();
+  const cwd = primaryProjectRoot || process.cwd();
+  const description = describeProviderSelection({ cwd });
+  const running = startupProviderId;
+  const mismatch = running !== description.effective;
+  return {
+    ...description,
+    running,
+    mismatch,
+    options: [
+      { id: 'claude-code', label: 'Claude Code' },
+      { id: 'opencode', label: 'OpenCode' },
+    ],
+    // The watcher/provider was resolved once at process startup (see
+    // `startupProviderId` and cli.mjs) and never reconstructed mid-process,
+    // so any change only takes effect on the next `tycoonagents-standalone`
+    // restart — mirrors `mismatch` (recomputed each call from the freshest
+    // execution.json) rather than an unconditional true, so a fresh session
+    // whose file already matches what's running doesn't show a stale hint.
+    requiresRestart: mismatch,
   };
 }
 
@@ -3510,6 +3581,12 @@ export async function startServer({
   // CURRENT call's primary root, never a stale prior instance's — same
   // posture as themeStore/themeImagesRootDir below.
   primaryProjectRoot = primary.root;
+  try {
+    startupProviderId = resolveProviderId({ env, projectDir: primary.root });
+  } catch (err) {
+    console.error('[tycoonagents-standalone] resolveProviderId at startup failed, defaulting to claude-code:', err instanceof Error ? err.message : err);
+    startupProviderId = 'claude-code';
+  }
 
   const server = createStandaloneServer();
 

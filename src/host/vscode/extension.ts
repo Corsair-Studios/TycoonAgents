@@ -17,9 +17,64 @@ import { seedBundledThemes, type SeedResult } from "./bundledThemeSeeds";
 import { resolveProjectRoot } from "./progressScope";
 import { initLog, log } from "./log";
 import { resolveProviderId } from "../../core/providerSelection";
+import type { ProviderId } from "../../core/providerSelection";
 import { createProvider } from "./providerFactory";
 
 let provider: Provider | undefined;
+// p13-t7: module state captured once the panel/provider are first started,
+// so trySwapProvider (wired into TycoonPanel via setProviderSwap) can
+// dispose the running Provider and construct the other one without an
+// extension reload. Both are set together with `provider` in the openCmd
+// handler below and never partially populated.
+let swapRuntime: Runtime | undefined;
+let swapActivityFile: string | undefined;
+// The provider id actually feeding `provider` right now (set alongside it,
+// both on initial start and on every successful trySwapProvider). Read by
+// getRunningProviderId, wired into TycoonPanel via setProviderSwap so the
+// Settings harness payload can report `running` separately from `effective`
+// (the file/setting/env-derived value, which may already have moved on).
+let currentProviderId: ProviderId | undefined;
+
+function getRunningProviderId(): ProviderId | undefined {
+  return currentProviderId;
+}
+
+/**
+ * Attempts to replace the running Provider with one for `newId` in place.
+ * Construct-and-start the NEW provider FIRST, and only stop the old one once
+ * the new one is confirmed running — so a failure (factory throw, or the new
+ * provider's start() throwing) leaves the OLD provider running rather than
+ * neither. Returns false (no live swap happened; the old provider, if any,
+ * is still running unchanged) when the extension hasn't started a provider
+ * yet in this window (swapRuntime/swapActivityFile unset) or the new
+ * provider failed to construct/start — the caller falls back to reporting
+ * requiresRestart via the running/effective mismatch.
+ */
+function trySwapProvider(newId: ProviderId): boolean {
+  if (swapRuntime === undefined || swapActivityFile === undefined) return false;
+  const oldProvider = provider;
+  let newProvider: Provider;
+  try {
+    newProvider = createProvider(newId, swapActivityFile);
+    newProvider.start((e) => swapRuntime!.ingest(e));
+  } catch (err) {
+    console.error(
+      "TycoonAgents: live provider swap failed (new provider did not start; keeping the previous one running):",
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+  // New provider is up — safe to retire the old one now.
+  try {
+    oldProvider?.stop();
+  } catch (err) {
+    console.error("TycoonAgents: stopping the previous provider after a live swap failed:", err instanceof Error ? err.message : err);
+  }
+  provider = newProvider;
+  currentProviderId = newId;
+  log(`TycoonAgents: live-swapped provider to "${newId}".`);
+  return true;
+}
 
 /**
  * Resolves when the first-run bundled-theme seed has finished (or was skipped
@@ -54,7 +109,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Command: open (or reveal) the TycoonAgents panel
   const openCmd = vscode.commands.registerCommand("tycoonagents.open", () => {
-    TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri, context.secrets, bundledThemesReady);
+    const panel = TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri, context.secrets, bundledThemesReady);
+    panel.setProviderSwap(trySwapProvider, getRunningProviderId);
 
     // Start the Claude Code provider if not already running
     if (!provider) {
@@ -103,6 +159,9 @@ export function activate(context: vscode.ExtensionContext): void {
       log(`TycoonAgents: using provider "${providerId}".`);
       provider = createProvider(providerId, activityFile);
       provider.start((e) => runtime.ingest(e));
+      swapRuntime = runtime;
+      swapActivityFile = activityFile;
+      currentProviderId = providerId;
 
       // Stop provider when the panel is disposed
       const checkDispose = setInterval(() => {
@@ -187,6 +246,9 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   provider?.stop();
   provider = undefined;
+  swapRuntime = undefined;
+  swapActivityFile = undefined;
+  currentProviderId = undefined;
   demoDisposable?.dispose();
   demoDisposable = undefined;
   deactivateTheater();

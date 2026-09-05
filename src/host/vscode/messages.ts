@@ -91,6 +91,11 @@ export const MSG = {
   SETTINGS: "settings",
   SETTINGS_UPDATED: "settingsUpdated",
   SET_AGENT_MODEL: "setAgentModel",
+  // p13-t7: writes the `provider` key in .claude/tycoon/execution.json (the
+  // Settings screen's "Which tool runs your agents?" dropdown), then the
+  // host re-posts SETTINGS. Disabled client-side when settings.harness.source
+  // is "env" or "setting" (a higher-precedence layer already decides it).
+  SET_HARNESS: "setHarness",
   SET_DELEGATION_MODE: "setDelegationMode",
   // Sibling of SET_DELEGATION_MODE: the optional "Review pass" toggle
   // composes with either delegation_mode rather than being a third mode.
@@ -379,6 +384,9 @@ export const MSG_SCHEMAS = {
   SET_AGENT_MODEL: z
     .object({ id: z.string().min(1), model: z.string().min(1) })
     .passthrough(),
+
+  // p13-t7: { provider: "claude-code" | "opencode" }.
+  SET_HARNESS: z.object({ provider: z.string().min(1) }).passthrough(),
 
   SET_AGENT_KEYWORDS: z
     .object({ id: z.string().min(1), pattern: z.string() })
