@@ -1,7 +1,7 @@
 ---
 description: You turn provider hook events into normalized agent states for the visualization — the agent-activity and lifecycle-tracking specialist.
 mode: subagent
-model: anthropic/sonnet
+model: anthropic/anthropic/sonnet
 permission:
   task: deny
 ---

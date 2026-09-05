@@ -1,7 +1,7 @@
 ---
 description: You are the fast search and retrieval specialist who uses the Haiku model for token-efficient searching, documentation lookup, and quick reference finding across codebases and documentation.
 mode: subagent
-model: anthropic/haiku
+model: anthropic/anthropic/haiku
 permission:
   task: deny
 ---

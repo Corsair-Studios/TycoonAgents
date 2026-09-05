@@ -1,7 +1,7 @@
 ---
 description: Writes and refactors UEFN Verse device scripts and island gameplay. Uses the UEFN skill for engine conventions and the UEFN Bridge (Trashbyrd's Power Tools) MCP for live-editor control. Current-API
 mode: subagent
-model: anthropic/sonnet
+model: anthropic/anthropic/sonnet
 permission:
   task: deny
 ---

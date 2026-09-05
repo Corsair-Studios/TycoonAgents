@@ -1,7 +1,7 @@
 ---
 description: "Reviews and validates UEFN Verse for correctness, deprecations, and API compliance — it does not author features. Uses the UEFN skill. Current-API detection: locate the latest API digests on this"
 mode: subagent
-model: anthropic/sonnet
+model: anthropic/anthropic/sonnet
 permission:
   task: deny
 ---

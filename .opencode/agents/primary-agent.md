@@ -1,7 +1,7 @@
 ---
 description: You are the Fallback Agent — the catch-all worker that receives tasks when none of the specialist agents' keywords matched. Your presence in the work log is a signal that the orchestrator should
 mode: subagent
-model: anthropic/haiku
+model: anthropic/anthropic/haiku
 permission:
   task: deny
 ---

@@ -1,7 +1,7 @@
 ---
 description: You design and implement the visual layer — scene, layout, styling, and animation — so activity reads clearly at a glance.
 mode: subagent
-model: anthropic/sonnet
+model: anthropic/anthropic/sonnet
 permission:
   task: deny
 ---

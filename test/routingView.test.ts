@@ -1748,3 +1748,135 @@ test('Routing panel: openai-compatible slot renders Endpoint URL env before API 
     win.close();
   }
 });
+
+test('Routing panel: a new fallback entry starts with transport claude-native, not inherited from the parent', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      orchestrator: {
+        id: 'orchestrator',
+        backend: { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'qwen3.6:latest', costModelClass: 'local', endpointEnv: 'OLLAMA_BASE_URL', credentialEnv: 'OLLAMA_API_KEY' },
+        source: 'default',
+      },
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const addBtn = doc.querySelector('.routing-add-fallback-btn') as any;
+    assert.ok(addBtn, '+ Add fallback button should render for the orchestrator');
+    addBtn.click();
+    await flush();
+    assertNoErrors('add fallback');
+
+    const fallbackTransportSel = doc.querySelector('.routing-fallback-item select[data-field-key$=".fallback[0].transport"]') as any;
+    assert.ok(fallbackTransportSel, 'the new fallback entry should render its own transport select');
+    assert.equal(fallbackTransportSel.value, 'claude-native', 'a fresh fallback entry must start claude-native, not the openai-compatible parent transport');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: switching a fallback vendor away from Custom endpoint resets transport to claude-native', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      presets: {
+        vendors: ['anthropic', 'openai', 'opencode'],
+        models: [
+          { id: 'sonnet', vendor: 'anthropic', costModelClass: 'subscription', label: 'Claude Sonnet' },
+          { id: 'opencode/big-pickle', vendor: 'opencode', costModelClass: 'subscription', label: 'opencode/big-pickle (Zen, free)' },
+        ],
+      },
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const addBtn = doc.querySelector('.routing-add-fallback-btn') as any;
+    addBtn.click();
+    await flush();
+
+    // Switch the new fallback entry to Custom endpoint first (openai-compatible)...
+    const fbVendorSel = doc.querySelector('.routing-fallback-item .routing-vendor-select') as any;
+    fbVendorSel.value = 'custom-endpoint';
+    fbVendorSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assertNoErrors('fallback custom endpoint select');
+
+    let fbTransportSel = doc.querySelector('.routing-fallback-item select[data-field-key$=".fallback[0].transport"]') as any;
+    assert.equal(fbTransportSel.value, 'openai-compatible', 'Custom endpoint should force openai-compatible');
+
+    // ...then switch it to the "opencode" preset vendor. Transport must reset
+    // to claude-native rather than leaking the stale openai-compatible value
+    // (the reported defect: opencode / opencode/big-pickle saved with
+    // transport still "openai-compatible").
+    const fbVendorSelAfter = doc.querySelector('.routing-fallback-item .routing-vendor-select') as any;
+    fbVendorSelAfter.value = 'opencode';
+    fbVendorSelAfter.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assertNoErrors('fallback vendor switch to opencode');
+
+    fbTransportSel = doc.querySelector('.routing-fallback-item select[data-field-key$=".fallback[0].transport"]') as any;
+    assert.equal(fbTransportSel.value, 'claude-native', 'switching to a non-custom preset vendor must reset transport to claude-native');
+
+    const fbModelSel = doc.querySelector('.routing-fallback-item .routing-model-select') as any;
+    fbModelSel.value = 'opencode/big-pickle';
+    fbModelSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+    const saveMsg = posted.filter((m) => m && m.type === 'saveRouting').pop();
+    assert.ok(saveMsg, 'Save should post a saveRouting message');
+    const savedFallback = saveMsg.profile.orchestrator.fallback[0];
+    assert.equal(savedFallback.vendor, 'opencode');
+    assert.equal(savedFallback.transport, 'claude-native', 'saved fallback entry must not carry a stray openai-compatible transport');
+    assert.equal(savedFallback.model, 'opencode/big-pickle');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: save-time coercion resets a stray openai-compatible transport on a preset vendor with no endpoint env, and notes it on the dirty marker', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({
+      profile: {
+        version: 1,
+        agents: {
+          'coding-specialist': { vendor: 'opencode', transport: 'openai-compatible', model: 'opencode/big-pickle', costModelClass: 'subscription' },
+        },
+      },
+      presets: {
+        vendors: ['anthropic', 'openai', 'google', 'opencode'],
+        models: [
+          { id: 'sonnet', vendor: 'anthropic', costModelClass: 'subscription', label: 'Claude Sonnet' },
+          { id: 'opencode/big-pickle', vendor: 'opencode', costModelClass: 'subscription', label: 'opencode/big-pickle (Zen, free)' },
+        ],
+      },
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render (pre-corrupted profile)');
+
+    const dirtyMarker = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"] .routing-source-chip--dirty') as any;
+    assert.ok(dirtyMarker, 'a stray-transport slot already present in the profile should render as dirty');
+    assert.ok(
+      dirtyMarker.title && dirtyMarker.title.includes('claude-native'),
+      'the dirty marker tooltip should explain the transport coercion'
+    );
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+    const saveMsg = posted.filter((m) => m && m.type === 'saveRouting').pop();
+    assert.ok(saveMsg, 'Save should post a saveRouting message');
+    const saved = saveMsg.profile.agents['coding-specialist'];
+    assert.equal(saved.transport, 'claude-native', 'a non-custom vendor with no endpointEnv must never save as openai-compatible');
+    assert.equal(saved.vendor, 'opencode');
+  } finally {
+    win.close();
+  }
+});

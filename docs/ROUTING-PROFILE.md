@@ -558,3 +558,21 @@ is rewritten to contain only the agents still in the profile.
 `routing.json` and rerunning both generator scripts, so clearing a profile
 from the Routing panel fully reverts the managed frontmatter and the
 OpenCode provider config, not just the routing.json file itself.
+
+### Hand-written `backend:` blocks are backed up before being overwritten
+
+If an agent that already has a hand-written `backend:` block (no
+`# managed-by: tycoon-routing` marker — e.g. a multi-llm reviewer agent like
+`gemini-reviewer.md` with its `vendor`/`mcpServer`/`tools` wiring) is also
+targeted by `routing.json`, applying the profile stamps a managed block over
+it as usual — but first snapshots the original block's raw lines into
+`.claude/tycoon/routing.backup.json`, keyed by agent id, alongside a sha256
+of the file at snapshot time. A backup entry is written once per agent id and
+never overwritten by a later apply (a later apply only ever finds the
+already-managed block, so there's nothing new to snapshot) — so applying
+twice and then unapplying still restores the *original* hand-written block,
+not an intermediate managed one. On unapply, an agent id with a backup entry
+gets its original block restored in place of the managed one; an agent id
+with no backup entry (it never had a hand-written block) is stripped as
+before. `routing.backup.json` is included in `apply-routing-profile.mjs
+--check`'s diff set alongside `routing.resolved.json`.

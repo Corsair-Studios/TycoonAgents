@@ -1,7 +1,7 @@
 ---
 description: You write and maintain the test suite — specs, coverage, and fixtures — keeping tests deterministic and meaningful.
 mode: subagent
-model: anthropic/sonnet
+model: anthropic/anthropic/sonnet
 permission:
   task: deny
 ---

@@ -28,6 +28,25 @@
 //   value is left as-is).
 // - A `# managed-by: tycoon-routing` comment line is emitted as the first
 //   line of the backend block so a later run can find/replace it.
+// - Data-loss guard: when a managed block is about to overwrite an existing
+//   `backend:` block that has NO managed-by marker (i.e. hand-written, such
+//   as the multi-llm reviewer agents' vendor/mcpServer/tools wiring), the
+//   original block's raw lines are snapshotted into
+//   <root>/.claude/tycoon/routing.backup.json, keyed by agent id, alongside
+//   a sha256 of the file at snapshot time. A backup entry, once recorded for
+//   an agent id, is never overwritten by a later apply (a later apply only
+//   ever sees the now-managed block, so there is nothing hand-written left
+//   to snapshot) — this is what makes "apply twice then unapply" still
+//   restore the original. On unapply (an agent dropped from the profile, or
+//   the whole profile cleared), the managed block is replaced with the
+//   backed-up original lines when a backup entry exists for that id, or
+//   stripped outright (today's behavior) when it does not. Backup entries
+//   are never deleted by this script; restoring an already-hand-written
+//   block from the backup makes the file byte-identical to before the
+//   overwrite, so a subsequent apply sees the same hand-written block again
+//   and treats it as already backed up (a no-op). This keeps `--check` and
+//   full regeneration deterministic: routing.backup.json's own diff is
+//   included in `--check`'s change set like routing.resolved.json's.
 // - Agents in the profile with no matching .md file are warned and skipped
 //   (this script never creates agent files).
 // - Files with no YAML frontmatter block at all are reported and left
@@ -47,6 +66,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -179,6 +199,113 @@ function rewriteFrontmatterLines(fmLines, newBackendLines, newTopModel) {
 }
 
 const MANAGED_MARKER = "# managed-by: tycoon-routing";
+const BACKUP_FILENAME = path.join(".claude", "tycoon", "routing.backup.json");
+
+// Locate ANY top-level `backend:` block (managed or hand-written). Returns
+// { start, end } (end exclusive) or undefined if there is no backend block.
+// Used to snapshot a hand-written block before it gets overwritten by a
+// managed one, so unapply can restore it later (see saveBackupEntry /
+// restoreOrStripManagedBackendBlock below).
+function findAnyBackendBlockRange(fmLines) {
+  for (let i = 0; i < fmLines.length; i++) {
+    const line = fmLines[i].replace(/\r$/, "");
+    const topMatch = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (topMatch && !/^\s/.test(line) && topMatch[1] === "backend") {
+      let j = i + 1;
+      while (j < fmLines.length && /^\s+\S/.test(fmLines[j])) j++;
+      return { start: i, end: j };
+    }
+  }
+  return undefined;
+}
+
+function sha256(text) {
+  return crypto.createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+// Load <root>/.claude/tycoon/routing.backup.json (shape:
+// { agents: { <id>: { lines: string[], hash: string } } }), or an empty doc
+// if the file is missing/unreadable/malformed.
+function loadBackupDoc(root) {
+  const backupPath = path.join(root, BACKUP_FILENAME);
+  try {
+    const raw = fs.readFileSync(backupPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && parsed.agents && typeof parsed.agents === "object") {
+      return parsed;
+    }
+  } catch {
+    // missing or invalid — start fresh.
+  }
+  return { agents: {} };
+}
+
+function writeBackupDoc(root, doc) {
+  const backupPath = path.join(root, BACKUP_FILENAME);
+  fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+  const sortedAgents = {};
+  for (const id of Object.keys(doc.agents).sort()) sortedAgents[id] = doc.agents[id];
+  fs.writeFileSync(backupPath, JSON.stringify({ agents: sortedAgents }, null, 2) + "\n", "utf8");
+}
+
+// Before overwriting a file's backend block with a managed one, snapshot the
+// CURRENT block into backupDoc.agents[agentId] — but only if it is a
+// hand-written block (no managed-by marker as its first child line) AND no
+// backup entry already exists for this agent id. This is what makes the
+// backup survive repeated applies: once an entry is recorded, a later apply
+// (which only ever sees the now-managed block) never overwrites it.
+function findTopLevelModelLine(fmLines) {
+  for (const rawLine of fmLines) {
+    const line = rawLine.replace(/\r$/, "");
+    const m = line.match(/^(model):\s*(.*)$/);
+    if (m && !/^\s/.test(line)) return line;
+  }
+  return undefined;
+}
+
+function snapshotHandWrittenBlockIfAny(backupDoc, agentId, rawFileText, fmLines) {
+  const range = findAnyBackendBlockRange(fmLines);
+  if (!range) return;
+  const firstChild = range.start + 1 < range.end ? fmLines[range.start + 1].replace(/\r$/, "").trim() : undefined;
+  if (firstChild === MANAGED_MARKER) return; // already managed — nothing hand-written to save.
+  if (backupDoc.agents[agentId]) return; // already have a snapshot for this agent.
+  const lines = fmLines.slice(range.start, range.end).map((l) => l.replace(/\r$/, ""));
+  // Also snapshot the top-level `model:` line (or its absence) as it stood
+  // right before this same apply may rewrite it (routingSlotToBackend's
+  // slotTopLevelModel path) — otherwise unapply would restore the backend:
+  // block but leave a stale rewritten top-level model behind.
+  const topModelLine = findTopLevelModelLine(fmLines);
+  backupDoc.agents[agentId] = { lines, hash: sha256(rawFileText), topModelLine: topModelLine ?? null };
+}
+
+// Strip a managed `backend:` block from raw file text on unapply. If
+// backupDoc holds a snapshot for agentId, the original hand-written block
+// (and the original top-level `model:` line, restored/removed to match) is
+// restored in its place instead of being removed outright. Returns undefined
+// if there is nothing to do (no frontmatter, or no managed block present).
+function restoreOrStripManagedBackendBlock(raw, backupDoc, agentId) {
+  const split = splitFrontmatter(raw);
+  if (!split.hasFrontmatter) return undefined;
+  const range = findManagedBackendBlockRange(split.fmLines);
+  if (!range) return undefined;
+  const backupEntry = agentId ? backupDoc.agents[agentId] : undefined;
+  const replacement = backupEntry ? backupEntry.lines : [];
+  let fmLines = [...split.fmLines.slice(0, range.start), ...replacement, ...split.fmLines.slice(range.end)];
+  if (backupEntry) {
+    const currentModelIdx = fmLines.findIndex((l) => /^model:\s*.*$/.test(l.replace(/\r$/, "")) && !/^\s/.test(l));
+    if (backupEntry.topModelLine) {
+      if (currentModelIdx >= 0) {
+        fmLines[currentModelIdx] = backupEntry.topModelLine;
+      } else {
+        fmLines.push(backupEntry.topModelLine);
+      }
+    } else if (currentModelIdx >= 0) {
+      fmLines.splice(currentModelIdx, 1);
+    }
+  }
+  const newFmLines = fmLines;
+  return `---${split.eol}${newFmLines.join(split.eol)}${split.eol}---${split.eol}${split.rest}`;
+}
 
 // Find a top-level `backend:` block whose FIRST indented child line is the
 // managed-by marker. Returns { start, end } (end exclusive) covering the
@@ -200,19 +327,6 @@ function findManagedBackendBlockRange(fmLines) {
     }
   }
   return undefined;
-}
-
-// Strip a managed `backend:` block (marker-guarded) from raw file text,
-// leaving every other line untouched. Returns undefined if there is nothing
-// to strip (no frontmatter, or no managed block present) so the caller can
-// tell "nothing changed" apart from "changed back to identical content".
-function stripManagedBackendBlock(raw) {
-  const split = splitFrontmatter(raw);
-  if (!split.hasFrontmatter) return undefined;
-  const range = findManagedBackendBlockRange(split.fmLines);
-  if (!range) return undefined;
-  const newFmLines = [...split.fmLines.slice(0, range.start), ...split.fmLines.slice(range.end)];
-  return `---${split.eol}${newFmLines.join(split.eol)}${split.eol}---${split.eol}${split.rest}`;
 }
 
 // Determine if the given frontmatter lines mark this agent as the
@@ -251,10 +365,12 @@ function main() {
   const deletes = []; // filePath list for pure removals (e.g. routing.resolved.json when no profile)
 
   if (!profile) {
-    // No routing.json present at all: unapply — strip any managed backend
-    // block from every agent file (a hand-written backend block, i.e. one
-    // with no managed-by marker, is left untouched), and remove
-    // routing.resolved.json entirely.
+    // No routing.json present at all: unapply — restore each file's
+    // original hand-written backend block from routing.backup.json if one
+    // was ever recorded for that agent id, else strip the managed block
+    // outright (today's behavior), and remove routing.resolved.json
+    // entirely.
+    const backupDocNoProfile = loadBackupDoc(root);
     let agentFilesNoProfile = [];
     try {
       agentFilesNoProfile = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
@@ -263,8 +379,9 @@ function main() {
     }
     for (const file of agentFilesNoProfile) {
       const filePath = path.join(agentsDir, file);
+      const agentId = file.replace(/\.md$/, "");
       const raw = fs.readFileSync(filePath, "utf8");
-      const stripped = stripManagedBackendBlock(raw);
+      const stripped = restoreOrStripManagedBackendBlock(raw, backupDocNoProfile, agentId);
       if (stripped !== undefined && stripped !== raw) {
         wouldChange.push(filePath);
         writes.push({ filePath, content: stripped });
@@ -313,6 +430,8 @@ function main() {
   }
 
   const resolvedAgents = {};
+  const backupDoc = loadBackupDoc(root);
+  let backupDocChanged = false;
 
   for (const agentId of Object.keys(profile.agents)) {
     const file = idToFile.get(agentId);
@@ -330,6 +449,9 @@ function main() {
       untouched.push(filePath);
       continue;
     }
+    const backupCountBefore = Object.keys(backupDoc.agents).length;
+    snapshotHandWrittenBlockIfAny(backupDoc, agentId, raw, split.fmLines);
+    if (Object.keys(backupDoc.agents).length !== backupCountBefore) backupDocChanged = true;
     const newBackendLines = renderBackendBlockLines(backend);
     const topModel = slotTopLevelModel(slot);
     const newFmLines = rewriteFrontmatterLines(split.fmLines, newBackendLines, topModel);
@@ -374,6 +496,10 @@ function main() {
 
     if (orchestratorFile) {
       orchestratorFileResolved = orchestratorFile.filePath;
+      const orchestratorId = orchestratorFile.file.replace(/\.md$/, "");
+      const backupCountBeforeOrch = Object.keys(backupDoc.agents).length;
+      snapshotHandWrittenBlockIfAny(backupDoc, orchestratorId, orchestratorFile.raw, orchestratorFile.split.fmLines);
+      if (Object.keys(backupDoc.agents).length !== backupCountBeforeOrch) backupDocChanged = true;
       const newBackendLines = renderBackendBlockLines(backend);
       const topModel = slotTopLevelModel(orchestratorSlot);
       const newFmLines = rewriteFrontmatterLines(orchestratorFile.split.fmLines, newBackendLines, topModel);
@@ -408,7 +534,8 @@ function main() {
     } catch {
       continue;
     }
-    const stripped = stripManagedBackendBlock(raw);
+    const droppedId = file.replace(/\.md$/, "");
+    const stripped = restoreOrStripManagedBackendBlock(raw, backupDoc, droppedId);
     if (stripped !== undefined && stripped !== raw) {
       wouldChange.push(filePath);
       writes.push({ filePath, content: stripped });
@@ -434,6 +561,11 @@ function main() {
     wouldChange.push(resolvedOutPath);
   }
 
+  const backupOutPath = path.join(root, BACKUP_FILENAME);
+  if (backupDocChanged) {
+    wouldChange.push(backupOutPath);
+  }
+
   for (const w of warnings) {
     console.warn(w);
   }
@@ -454,6 +586,9 @@ function main() {
   }
   fs.mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
   fs.writeFileSync(resolvedOutPath, resolvedJson, "utf8");
+  if (backupDocChanged) {
+    writeBackupDoc(root, backupDoc);
+  }
 
   process.exit(0);
 }

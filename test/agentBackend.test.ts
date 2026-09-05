@@ -18,6 +18,32 @@ test("parseAgentBackend: no backend block defaults to anthropic claude-native me
   });
 });
 
+test("parseAgentBackend: no backend block, slashed top-level model (openai/gpt-5.4-mini) is kept verbatim with vendor derived from its prefix", () => {
+  const result = parseAgentBackend({ model: "openai/gpt-5.4-mini" });
+  assert.deepEqual(result, {
+    vendor: "openai",
+    transport: "claude-native",
+    model: "openai/gpt-5.4-mini",
+    costModelClass: "metered",
+  });
+});
+
+test("parseAgentBackend: no backend block, slashed top-level model with an anthropic prefix does not double-prefix", () => {
+  const result = parseAgentBackend({ model: "anthropic/claude-sonnet-4-6" });
+  assert.deepEqual(result, {
+    vendor: "anthropic",
+    transport: "claude-native",
+    model: "anthropic/claude-sonnet-4-6",
+    costModelClass: "metered",
+  });
+});
+
+test("parseAgentBackend: no backend block, slashed top-level model with an unrecognized vendor prefix uses that prefix as vendor", () => {
+  const result = parseAgentBackend({ model: "moonshot/kimi-k2" });
+  assert.equal(result.vendor, "moonshot");
+  assert.equal(result.model, "moonshot/kimi-k2");
+});
+
 test("parseAgentBackend: no backend block and no model falls back to 'unknown'", () => {
   const result = parseAgentBackend({});
   assert.equal(result.model, "anthropic/unknown");

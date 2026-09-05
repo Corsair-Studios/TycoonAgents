@@ -1,7 +1,7 @@
 ---
 description: You handle VS Code extension specifics — activation and lifecycle, the webview panel, message passing, commands, and settings.
 mode: subagent
-model: anthropic/sonnet
+model: anthropic/anthropic/sonnet
 permission:
   task: deny
 ---

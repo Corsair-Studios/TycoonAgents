@@ -127,6 +127,20 @@ export function parseAgentBackend(frontmatter: Record<string, unknown>): Backend
   const topLevelModel = typeof frontmatter["model"] === "string" ? (frontmatter["model"] as string) : undefined;
 
   if (rawBackend === undefined || rawBackend === null) {
+    // A model value that already contains "/" is a provider/model id, not a
+    // bare alias (opus/sonnet/haiku/fable) — keep it verbatim and derive the
+    // vendor from its prefix instead of re-prefixing with "anthropic/",
+    // which would otherwise double up (e.g. "openai/gpt-5.4-mini" becoming
+    // "anthropic/openai/gpt-5.4-mini").
+    if (topLevelModel && topLevelModel.includes("/")) {
+      const prefix = topLevelModel.slice(0, topLevelModel.indexOf("/"));
+      return {
+        vendor: prefix || "anthropic",
+        transport: "claude-native",
+        model: topLevelModel,
+        costModelClass: "metered",
+      };
+    }
     const resolved = resolveModelAlias(topLevelModel) || topLevelModel || "unknown";
     return {
       vendor: "anthropic",

@@ -314,9 +314,11 @@ test('precedence: routing.json wins, then opencode-models.json, then frontmatter
   // Step 2: remove routing.json -> opencode-models.json still wins in
   // OpenCode output for precedence-claude (never covered by routing.json
   // any more); apply-routing-profile now UNAPPLIES (p-gap2): with no
-  // routing.json present it strips the managed `# managed-by: tycoon-routing`
-  // backend block it wrote in step 1 and removes routing.resolved.json,
-  // rather than leaving stale managed state behind.
+  // routing.json present it restores the original hand-written backend
+  // block that step 1's apply overwrote (precedence-claude.md started with
+  // its own frontmatter backend block, backed up on first apply) and
+  // removes routing.resolved.json, rather than leaving stale managed state
+  // behind.
   fs.rmSync(path.join(root, '.claude', 'tycoon', 'routing.json'));
   const resolvedJsonPath = path.join(root, '.claude', 'tycoon', 'routing.resolved.json');
   assert.equal(fs.existsSync(resolvedJsonPath), true, 'sanity: routing.resolved.json exists after step 1');
@@ -327,8 +329,9 @@ test('precedence: routing.json wins, then opencode-models.json, then frontmatter
 
   assert.equal(readOpencodeAgentModel(root, 'precedence-claude'), 'anthropic/claude-overrides-model');
   const claudeAgentAfter = fs.readFileSync(path.join(root, '.claude', 'agents', 'precedence-claude.md'), 'utf8');
-  assert.doesNotMatch(claudeAgentAfter, /managed-by: tycoon-routing/, 'apply-routing-profile must strip its managed backend block when routing.json is absent');
-  assert.doesNotMatch(claudeAgentAfter, /backend:/);
+  assert.doesNotMatch(claudeAgentAfter, /managed-by: tycoon-routing/, 'apply-routing-profile must remove its managed marker when routing.json is absent');
+  assert.match(claudeAgentAfter, /backend:/, 'original hand-written backend block is restored from routing.backup.json, not left blank');
+  assert.match(claudeAgentAfter, /model: anthropic\/claude-frontmatter-model/, 'restored block matches the pre-apply frontmatter original');
   // No routing.json => the previously-written routing.resolved.json is removed.
   assert.equal(fs.existsSync(resolvedJsonPath), false, 'apply-routing-profile must remove routing.resolved.json when routing.json is absent');
 

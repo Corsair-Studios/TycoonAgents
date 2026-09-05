@@ -89,6 +89,30 @@ test("buildRoutingView: no routing.json -> frontmatter/alias/default sources, no
   assert.ok(view.presets.vendors.includes("anthropic"));
 });
 
+test("buildRoutingView: a slashed model: alias with no backend block is kept verbatim, never double-prefixed", () => {
+  const root = tmpRoot();
+  writeAgent(root, "claude-worker.md", ["name: claude-worker", "model: anthropic/claude-sonnet-4-6"]);
+  writeAgent(root, "codex-reviewer.md", ["name: codex-reviewer", "model: openai/gpt-5.4-mini"]);
+
+  const view = buildRoutingView({ root, env: {} });
+  const byId = new Map(view.agents.map((a) => [a.id, a]));
+
+  const claudeWorker = byId.get("claude-worker");
+  assert.equal(claudeWorker?.backend.model, "anthropic/claude-sonnet-4-6");
+  assert.equal(claudeWorker?.backend.vendor, "anthropic");
+
+  const codexReviewer = byId.get("codex-reviewer");
+  assert.equal(codexReviewer?.backend.model, "openai/gpt-5.4-mini");
+  assert.equal(codexReviewer?.backend.vendor, "openai");
+
+  // No agent (or the orchestrator) should ever surface a double-slashed
+  // model id like "anthropic/anthropic/claude-sonnet-4-6".
+  const allModels = view.agents.map((a) => a.backend.model).concat([view.orchestrator.backend.model]);
+  allModels.forEach((m) => {
+    assert.equal((m.match(/\//g) || []).length <= 1, true, `model id should never carry two slashes: ${m}`);
+  });
+});
+
 test("buildRoutingView: routing.json entry wins outright over frontmatter/alias", () => {
   const root = tmpRoot();
   writeAgent(root, "coding-specialist.md", ["name: coding-specialist", "model: sonnet"]);

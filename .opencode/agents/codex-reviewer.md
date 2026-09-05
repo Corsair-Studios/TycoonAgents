@@ -1,12 +1,10 @@
 ---
 description: Runs an adversarial, cross-vendor review of a completed change by calling OpenAI's Codex through the `codex` MCP server, then returns a structured, machine-parseable verdict — never free-form prose.
 mode: subagent
-model: openai/gpt-5.4-mini
+model: anthropic/openai/gpt-5.4-mini
 permission:
   task: deny
 ---
-
-This agent runs through the `codex` MCP server. Call its `codex` tool for every model request; do not answer from your own model.
 
 # Codex Reviewer
 

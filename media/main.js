@@ -16719,13 +16719,49 @@
     return out;
   }
 
-  /** Strip empty/undefined fields + empty fallback arrays for the outgoing profile. Never a key that looks like a secret — only env var NAMES ever land here. */
-  function cleanRoutingSlot(slot) {
+  /**
+   * Strip empty/undefined fields + empty fallback arrays for the outgoing
+   * profile. Never a key that looks like a secret — only env var NAMES ever
+   * land here.
+   *
+   * `notes` (optional array) collects human-readable strings describing any
+   * corrective coercion this call performed, so a caller can surface them
+   * (e.g. as a tooltip on the "will be written" marker) without re-deriving
+   * the same check.
+   */
+  function cleanRoutingSlot(slot, notes, presetVendors) {
     if (!slot) return undefined;
     var out = {};
     SLOT_SCALAR_FIELDS.forEach(function (k) {
       if (slot[k] !== undefined && slot[k] !== null && slot[k] !== "") out[k] = slot[k];
     });
+    // Guard against a stray/inherited transport "openai-compatible" on a
+    // *known preset* vendor (e.g. "opencode") with no endpoint env
+    // configured. That combination can't produce a real openai-compatible
+    // connection and would make the generator emit a bogus provider block
+    // for a vendor that was never actually configured as a custom
+    // OpenAI-compatible endpoint — see the vendor-select change handler in
+    // buildSlotEditorFields for the corresponding UI-side fix that prevents
+    // this going forward. Coerce rather than reject so an already-saved
+    // profile self-heals on next save instead of hard-failing. Gated on
+    // `presetVendors` (payload.presets.vendors) rather than "not literally
+    // ROUTING_VENDOR_CUSTOM" — once the user types a real Custom-endpoint
+    // provider name (e.g. "ollama-windows"), slot.vendor holds that typed
+    // name, not the ROUTING_VENDOR_CUSTOM sentinel, and that legitimate
+    // custom endpoint must NOT be coerced just because endpointEnv hasn't
+    // been filled in yet.
+    if (
+      out.transport === "openai-compatible" &&
+      out.vendor &&
+      Array.isArray(presetVendors) &&
+      presetVendors.indexOf(out.vendor) !== -1 &&
+      !out.endpointEnv
+    ) {
+      out.transport = "claude-native";
+      if (Array.isArray(notes)) {
+        notes.push('transport reset to claude-native — "openai-compatible" on vendor "' + out.vendor + '" had no endpoint env set');
+      }
+    }
     // For custom/openai-compatible vendors the field editor collects a bare
     // model id (e.g. "qwen3.6:latest") since the vendor is already selected
     // separately — but the generators (and the routing.json schema) expect
@@ -16739,7 +16775,7 @@
     }
     if (Array.isArray(slot.tools) && slot.tools.length) out.tools = slot.tools.slice();
     if (Array.isArray(slot.fallback) && slot.fallback.length) {
-      var fb = slot.fallback.slice(0, 3).map(cleanRoutingSlot).filter(Boolean);
+      var fb = slot.fallback.slice(0, 3).map(function (fbSlot) { return cleanRoutingSlot(fbSlot, notes, presetVendors); }).filter(Boolean);
       if (fb.length) out.fallback = fb;
     }
     return Object.keys(out).length ? out : undefined;
@@ -16974,7 +17010,19 @@
     vendorSel.appendChild(customOpt);
     vendorSel.addEventListener("change", function () {
       slot.vendor = vendorSel.value;
-      if (vendorSel.value === ROUTING_VENDOR_CUSTOM) slot.transport = "openai-compatible";
+      if (vendorSel.value === ROUTING_VENDOR_CUSTOM) {
+        slot.transport = "openai-compatible";
+      } else if (!(slot.transport === "mcp" && slot.mcpServer)) {
+        // Switching to any non-custom preset vendor (e.g. away from Custom
+        // endpoint, or between presets) resets transport to claude-native
+        // rather than leaving behind a stale value from whatever vendor was
+        // selected before — a leftover "openai-compatible" on a preset
+        // vendor with no endpoint env would emit a bogus provider block for
+        // it (see cleanRoutingSlot's matching save-time coercion). An
+        // existing mcp slot that already names an mcpServer is preserved,
+        // since that's a deliberate, valid combination for any vendor.
+        slot.transport = "claude-native";
+      }
       onStructural();
     });
     vendorRow.appendChild(vendorSel);
@@ -17236,7 +17284,15 @@
     addBtn.disabled = slot.fallback.length >= 3;
     addBtn.addEventListener("click", function () {
       if (slot.fallback.length >= 3) return;
-      slot.fallback.push({});
+      // A new fallback entry starts with transport claude-native explicitly
+      // (never inherited from the parent slot) — pushing {} left `transport`
+      // undefined, which the vendor <select>'s default-first-option display
+      // made LOOK like claude-native while the parent's actual transport
+      // (e.g. openai-compatible from a Custom-endpoint parent) could still
+      // leak through once a vendor was picked, since nothing had explicitly
+      // reset it. See the vendorSel change handler above for the matching
+      // reset-on-vendor-change fix.
+      slot.fallback.push({ transport: "claude-native" });
       onStructural();
     });
     details.appendChild(addBtn);
@@ -17696,10 +17752,12 @@
         var fallbackChip = buildRoutingFallbackChip(a.id);
         if (fallbackChip) sourceLine.appendChild(fallbackChip);
         var agentWasInProfile = !!(payload.profile && payload.profile.agents && payload.profile.agents[a.id]);
-        if (shouldIncludeRoutingSlot(cleanRoutingSlot(slot), agentWasInProfile, a.backend)) {
+        var slotCoercionNotes = [];
+        if (shouldIncludeRoutingSlot(cleanRoutingSlot(slot, slotCoercionNotes, (payload.presets && payload.presets.vendors) || []), agentWasInProfile, a.backend)) {
           var dirtyMarker = document.createElement("span");
           dirtyMarker.className = "routing-source-chip routing-source-chip--dirty";
           dirtyMarker.textContent = "will be written to routing.json";
+          if (slotCoercionNotes.length) dirtyMarker.title = slotCoercionNotes.join("; ");
           sourceLine.appendChild(dirtyMarker);
         }
         nameTd.appendChild(sourceLine);
@@ -17785,7 +17843,8 @@
 
   /** Canonical cleaned-slot shape for a resolved Backend, for dirty-comparison against a draft slot. */
   function backendToCleanSlot(backend) {
-    return cleanRoutingSlot(cloneSlotFromBackend(backend)) || {};
+    var presetVendors = (lastRoutingPayload && lastRoutingPayload.presets && lastRoutingPayload.presets.vendors) || [];
+    return cleanRoutingSlot(cloneSlotFromBackend(backend), undefined, presetVendors) || {};
   }
 
   /** True when `cleanedSlot` (already run through cleanRoutingSlot) differs from `backend`'s own effective shape. */
@@ -17816,7 +17875,8 @@
     var existingProfile = payload && payload.profile;
     if (existingProfile && existingProfile.defaults) profile.defaults = existingProfile.defaults;
 
-    var orchCleaned = cleanRoutingSlot(routingDraft.orchestrator);
+    var presetVendors = (payload && payload.presets && payload.presets.vendors) || [];
+    var orchCleaned = cleanRoutingSlot(routingDraft.orchestrator, undefined, presetVendors);
     var orchWasInProfile = !!(existingProfile && existingProfile.orchestrator);
     var orchBackend = payload && payload.orchestrator && payload.orchestrator.backend;
     // Never write an orchestrator slot with no model — buildRoutingView
@@ -17829,7 +17889,7 @@
 
     var agents = (payload && payload.agents) || [];
     agents.forEach(function (a) {
-      var cleaned = cleanRoutingSlot(routingDraft.agents[a.id]);
+      var cleaned = cleanRoutingSlot(routingDraft.agents[a.id], undefined, presetVendors);
       var wasInProfile = !!(existingProfile && existingProfile.agents && existingProfile.agents[a.id]);
       if (shouldIncludeRoutingSlot(cleaned, wasInProfile, a.backend)) {
         profile.agents[a.id] = cleaned;
