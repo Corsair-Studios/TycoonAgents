@@ -123,6 +123,44 @@ booleans.
   `agents[agentId]` (agent-specific fields win). Returns `null` when the
   agent has no entry in `agents` and `defaults.model` is unset — meaning the
   profile has nothing to say about that agent.
+
+### `defaults` precedence and same-vendor inheritance
+
+`defaults` is the lowest-precedence slot: it is merged first, and any field
+the agent's own `agents[id]` entry sets overrides the matching `defaults`
+field outright — this is a plain shallow field merge, not a deep one, so an
+agent entry that sets only `model` still inherits every other unset field
+(`vendor`, `transport`, `endpointEnv`, `credentialEnv`, ...) from `defaults`
+untouched. That is what makes a "model-only override" work: point one agent
+at a different model on the **same** custom endpoint/vendor as the default
+by writing an `agents[id]` entry containing nothing but `model`, and its
+`endpointEnv`/`credentialEnv` come from `defaults` automatically. Overriding
+`vendor` (or `transport`) on the agent entry breaks that inheritance for the
+fields it changes, since those usually imply a different endpoint/credential
+than the default's.
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "vendor": "opencode",
+    "transport": "openai-compatible",
+    "model": "custom/team-default-70b",
+    "endpointEnv": "TEAM_ENDPOINT_URL",
+    "credentialEnv": "TEAM_API_KEY"
+  },
+  "agents": {
+    "coding-specialist": { "model": "custom/team-default-70b-fast" }
+  }
+}
+```
+
+Here `coding-specialist` resolves to `vendor: "opencode"`, `transport:
+"openai-compatible"`, `endpointEnv: "TEAM_ENDPOINT_URL"`, and `credentialEnv:
+"TEAM_API_KEY"` all inherited from `defaults`, with only `model` swapped for
+its own entry. Any agent with no entry in `agents` at all resolves to
+`defaults` verbatim (`resolveAgentSlot` returns the merge of `defaults` and
+an empty `{}`, provided `defaults.model` is set — see below).
 - `resolveOrchestratorSlot(profile)` — merges `defaults` then `orchestrator`.
   Returns `null` when neither is present.
 - `routingSlotToBackend(slot)` — adapts a resolved slot to the existing

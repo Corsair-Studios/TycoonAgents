@@ -2988,19 +2988,30 @@
   // ── Routing modal entry point ───────────────────────────────────────────
   // #menu-routing ships in panel.ts's static HTML template (both hosts serve
   // it) — bind to it directly, guarded, the same way menuThemesBtn is.
+  // Factored into openRoutingModal() (p17-t4) so the Settings screen's
+  // harness "needs a default route" hint can trigger the exact same
+  // open sequence as the menu item, not a divergent copy.
+  function openRoutingModal() {
+    closeMenu();
+    ensureRoutingModal();
+    // A stale suppression from a previous session's failed save must
+    // never survive a close/reopen — the fresh getRouting reply below
+    // is a deliberate resync, not the automatic post-failure re-push it
+    // exists to guard against.
+    routingSuppressNextRebuild = false;
+    // Fresh open of the modal — any prior session's Override expansions no
+    // longer apply (coordinator review fix: this reset must NOT also run on
+    // every live "routing" repush while the modal stays open, see
+    // handleRoutingPayload).
+    routingExpandedAgents = {};
+    renderRoutingModal();
+    openModal(routingModalEl, routingCloseBtnEl);
+    vscode.postMessage({ type: ROUTING_MSG.GET });
+  }
   var menuRoutingBtn = document.getElementById("menu-routing");
   if (menuRoutingBtn) {
     menuRoutingBtn.addEventListener("click", () => {
-      closeMenu();
-      ensureRoutingModal();
-      // A stale suppression from a previous session's failed save must
-      // never survive a close/reopen — the fresh getRouting reply below
-      // is a deliberate resync, not the automatic post-failure re-push it
-      // exists to guard against.
-      routingSuppressNextRebuild = false;
-      renderRoutingModal();
-      openModal(routingModalEl, routingCloseBtnEl);
-      vscode.postMessage({ type: ROUTING_MSG.GET });
+      openRoutingModal();
     });
   }
 
@@ -16696,6 +16707,19 @@
   var routingLastResult = null;  // last routingSaved payload, for the collapsed check/write output block
   var routingModalEl = null, routingBackdropEl = null, routingCloseBtnEl = null, routingBodyEl = null, routingContentEl = null;
   var routingSaveBtnEl = null, routingRevertBtnEl = null, routingClearBtnEl = null;
+  // Agent ids the user has explicitly expanded via "Override" (p17-t3) —
+  // a provenance:"default" agent card renders collapsed until its id is in
+  // here. Reset whenever routingDraft is rebuilt from a fresh payload (see
+  // handleRoutingPayload) so a reload doesn't leave stale expansions.
+  var routingExpandedAgents = {};
+  // Agent id -> the resolved-default slot (RoutingSlot shape, uncleaned) an
+  // Override started from, for provenance:"default" agents only. Used by
+  // assembleRoutingProfile to emit a sparse per-agent entry (only the
+  // fields the user actually changed) instead of the full resolved backend
+  // (coordinator review fix, p17-t3). Rebuilt in buildRoutingDraft; entries
+  // for expanded agents are carried across a live rebuild in
+  // handleRoutingPayload the same way routingDraft.agents[id] is.
+  var routingDefaultBaseline = {};
 
   function cloneSlotFromBackend(backend) {
     if (!backend) return {};
@@ -16783,17 +16807,66 @@
 
   /** Build the editable working copy from a fresh "routing" payload. */
   function buildRoutingDraft(payload) {
-    var draft = { orchestrator: null, agents: {} };
+    var draft = { orchestrator: null, agents: {}, defaults: {} };
     var profile = payload && payload.profile;
     if (payload && payload.orchestrator) {
       draft.orchestrator = cloneRoutingSlot((profile && profile.orchestrator) || cloneSlotFromBackend(payload.orchestrator.backend));
     }
+    // Top-level `defaults` slot (p17-t3) — same shape as an agent slot, no
+    // fallback-to-a-resolved-backend the way orchestrator/agents get, since
+    // there is no "effective backend" for defaults on its own: an empty
+    // object just means no defaults are configured yet.
+    draft.defaults = cloneRoutingSlot((payload && payload.defaults) || {});
+    routingDefaultBaseline = {};
     var agents = (payload && payload.agents) || [];
     agents.forEach(function (a) {
       var existing = profile && profile.agents && profile.agents[a.id];
       draft.agents[a.id] = cloneRoutingSlot(existing || cloneSlotFromBackend(a.backend));
+      if (a.provenance === "default") {
+        // Baseline = the resolved-default slot itself, uncleaned — diffed
+        // against the (also uncleaned-until-save) draft slot in
+        // assembleRoutingProfile so an Override that only touched `model`
+        // saves just `{ model }`.
+        routingDefaultBaseline[a.id] = cloneRoutingSlot(cloneSlotFromBackend(a.backend));
+      }
     });
     return draft;
+  }
+
+  /**
+   * Sparse per-agent entry for a provenance:"default" agent (coordinator
+   * review fix, p17-t3): only fields where the fully-cleaned draft slot
+   * differs from the fully-cleaned baseline (the resolved-default slot the
+   * Override started from) are emitted — a model-only edit saves
+   * `{ model: "..." }`, not the full resolved backend. Returns undefined
+   * when nothing differs (Override was opened and closed with no edit).
+   */
+  function diffSlotFromDefaultBaseline(slot, baseline, presetVendors) {
+    var full = cleanRoutingSlot(slot, undefined, presetVendors);
+    if (!full) return undefined;
+    var base = cleanRoutingSlot(baseline, undefined, presetVendors) || {};
+    var out = {};
+    SLOT_SCALAR_FIELDS.forEach(function (k) {
+      if (full[k] !== undefined && full[k] !== base[k]) out[k] = full[k];
+    });
+    if (Array.isArray(full.tools) && full.tools.length && JSON.stringify(full.tools) !== JSON.stringify(base.tools || [])) {
+      out.tools = full.tools;
+    }
+    var fFallback = Array.isArray(full.fallback) ? full.fallback : [];
+    var bFallback = Array.isArray(base.fallback) ? base.fallback : [];
+    if (fFallback.length && JSON.stringify(fFallback) !== JSON.stringify(bFallback)) {
+      out.fallback = fFallback;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  /** True when a cloned/cleaned RoutingSlot carries any actual field (p17-t3). */
+  function slotHasContent(slot) {
+    if (!slot) return false;
+    for (var i = 0; i < SLOT_SCALAR_FIELDS.length; i++) {
+      if (slot[SLOT_SCALAR_FIELDS[i]]) return true;
+    }
+    return Array.isArray(slot.fallback) && slot.fallback.length > 0;
   }
 
   function sanitizeEnvName(raw) {
@@ -17693,6 +17766,28 @@
     orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator", "orchestrator"));
     routingContentEl.appendChild(orchSection);
 
+    // ── Defaults (p17-t3) ── one slot applied to every agent that has
+    // neither its own routing.json entry nor a hand-written backend block.
+    var defaultsSection = buildSection("Default for all agents");
+    var defaultsHelp = document.createElement("p");
+    defaultsHelp.className = "routing-defaults-help";
+    defaultsHelp.textContent = "Agents without their own route use this. Agents with a hand-written backend keep it.";
+    defaultsSection.appendChild(defaultsHelp);
+    if (!routingDraft.defaults) routingDraft.defaults = {};
+    defaultsSection.appendChild(buildSlotEditorFields(routingDraft.defaults, presets, renderRoutingModal, "defaults"));
+    defaultsSection.appendChild(buildFallbackEditor(routingDraft.defaults, presets, renderRoutingModal, "defaults", "defaults"));
+    var clearDefaultsBtn = document.createElement("button");
+    clearDefaultsBtn.type = "button";
+    clearDefaultsBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
+    clearDefaultsBtn.textContent = "Clear defaults";
+    clearDefaultsBtn.disabled = !slotHasContent(routingDraft.defaults);
+    clearDefaultsBtn.addEventListener("click", function () {
+      routingDraft.defaults = {};
+      renderRoutingModal();
+    });
+    defaultsSection.appendChild(clearDefaultsBtn);
+    routingContentEl.appendChild(defaultsSection);
+
     // ── Per-agent table ──
     var agentsSection = buildSection("Agents");
     var agents = payload.agents || [];
@@ -17721,6 +17816,7 @@
 
       var list = document.createElement("div");
       list.className = "routing-agents-list";
+      var hasDefaults = slotHasContent(payload.defaults);
       agents.forEach(function (a) {
         if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
         var slot = routingDraft.agents[a.id];
@@ -17748,6 +17844,47 @@
         }
         var sourceLine = document.createElement("div");
         sourceLine.className = "routing-agent-source-line";
+
+        if (a.handWrittenBackend) {
+          var handWrittenNote = document.createElement("span");
+          handWrittenNote.className = "routing-source-chip routing-source-chip--handwritten";
+          handWrittenNote.textContent = "hand-written backend";
+          handWrittenNote.title = "This agent's own frontmatter has a hand-written backend: block — defaults never apply to it.";
+          sourceLine.appendChild(handWrittenNote);
+        }
+
+        // Collapsed "inherits default" card (p17-t3): only while the agent
+        // has no per-agent draft override in progress and the user hasn't
+        // clicked Override this session. Any other provenance (explicit,
+        // frontmatter) or a hand-written backend always shows the full
+        // editor.
+        var collapsedForDefault = a.provenance === "default" && !routingExpandedAgents[a.id];
+
+        if (collapsedForDefault) {
+          var inheritLabel = document.createElement("span");
+          inheritLabel.className = "routing-source-chip";
+          var vendorLabel = (a.backend && a.backend.vendor) || "?";
+          var modelLabel = (a.backend && a.backend.model) || "?";
+          inheritLabel.textContent = "Inherits default · " + vendorLabel + "/" + modelLabel;
+          sourceLine.appendChild(inheritLabel);
+
+          var overrideBtn = document.createElement("button");
+          overrideBtn.type = "button";
+          overrideBtn.className = "routing-inline-link-btn routing-override-btn";
+          overrideBtn.textContent = "Override";
+          overrideBtn.addEventListener("click", function () {
+            routingExpandedAgents[a.id] = true;
+            renderRoutingModal();
+          });
+          sourceLine.appendChild(overrideBtn);
+
+          nameTd.appendChild(sourceLine);
+          row.appendChild(nameTd);
+          card.appendChild(row);
+          list.appendChild(card);
+          return; // no slot/fallback editor while collapsed
+        }
+
         sourceLine.appendChild(routingSourceChip(a.source));
         var fallbackChip = buildRoutingFallbackChip(a.id);
         if (fallbackChip) sourceLine.appendChild(fallbackChip);
@@ -17760,6 +17897,39 @@
           if (slotCoercionNotes.length) dirtyMarker.title = slotCoercionNotes.join("; ");
           sourceLine.appendChild(dirtyMarker);
         }
+
+        // "Use default" (p17-t3): only for an explicit per-agent entry while
+        // defaults exist — removes the per-agent entry on save so the agent
+        // falls back to defaults. Not shown for provenance "default" itself
+        // (nothing to remove) or a hand-written backend (defaults never
+        // apply to it anyway).
+        if (a.provenance === "explicit" && hasDefaults && !a.handWrittenBackend) {
+          var useDefaultBtn = document.createElement("button");
+          useDefaultBtn.type = "button";
+          useDefaultBtn.className = "routing-inline-link-btn routing-use-default-btn";
+          useDefaultBtn.textContent = "Use default";
+          useDefaultBtn.addEventListener("click", function () {
+            routingDraft.agents[a.id] = {};
+            delete routingExpandedAgents[a.id];
+            renderRoutingModal();
+          });
+          sourceLine.appendChild(useDefaultBtn);
+        }
+        // A previously-default agent the user expanded via Override, with no
+        // edits yet — offer a way back to collapsed without saving first.
+        if (a.provenance === "default" && routingExpandedAgents[a.id]) {
+          var revertBtn = document.createElement("button");
+          revertBtn.type = "button";
+          revertBtn.className = "routing-inline-link-btn routing-use-default-btn";
+          revertBtn.textContent = "Use default";
+          revertBtn.addEventListener("click", function () {
+            routingDraft.agents[a.id] = {};
+            delete routingExpandedAgents[a.id];
+            renderRoutingModal();
+          });
+          sourceLine.appendChild(revertBtn);
+        }
+
         nameTd.appendChild(sourceLine);
         row.appendChild(nameTd);
 
@@ -17873,9 +18043,15 @@
     var profile = { version: 1, agents: {} };
     var payload = lastRoutingPayload;
     var existingProfile = payload && payload.profile;
-    if (existingProfile && existingProfile.defaults) profile.defaults = existingProfile.defaults;
-
     var presetVendors = (payload && payload.presets && payload.presets.vendors) || [];
+
+    // Defaults (p17-t3): driven entirely by the live draft, not the loaded
+    // profile — so editing the Default card's fields, or hitting Clear
+    // defaults (which sets routingDraft.defaults = {}), round-trips
+    // correctly. cleanRoutingSlot drops it to undefined for an empty draft.
+    var defaultsCleaned = cleanRoutingSlot(routingDraft.defaults, undefined, presetVendors);
+    if (defaultsCleaned) profile.defaults = defaultsCleaned;
+
     var orchCleaned = cleanRoutingSlot(routingDraft.orchestrator, undefined, presetVendors);
     var orchWasInProfile = !!(existingProfile && existingProfile.orchestrator);
     var orchBackend = payload && payload.orchestrator && payload.orchestrator.backend;
@@ -17889,8 +18065,15 @@
 
     var agents = (payload && payload.agents) || [];
     agents.forEach(function (a) {
-      var cleaned = cleanRoutingSlot(routingDraft.agents[a.id], undefined, presetVendors);
       var wasInProfile = !!(existingProfile && existingProfile.agents && existingProfile.agents[a.id]);
+      if (a.provenance === "default" && !wasInProfile && routingDefaultBaseline[a.id]) {
+        // Sparse Override save (coordinator review fix): only fields that
+        // differ from the resolved-default baseline, never the full backend.
+        var diffCleaned = diffSlotFromDefaultBaseline(routingDraft.agents[a.id], routingDefaultBaseline[a.id], presetVendors);
+        if (diffCleaned) profile.agents[a.id] = diffCleaned;
+        return;
+      }
+      var cleaned = cleanRoutingSlot(routingDraft.agents[a.id], undefined, presetVendors);
       if (shouldIncludeRoutingSlot(cleaned, wasInProfile, a.backend)) {
         profile.agents[a.id] = cleaned;
       }
@@ -17934,7 +18117,23 @@
       // the latest host state, just without clobbering the draft.
       routingSuppressNextRebuild = false;
     } else {
+      // Preserve routingExpandedAgents (and its agents' in-progress draft +
+      // baseline) across a live payload push — only openRoutingModal()
+      // resets it, on a genuinely fresh open. Without this, a "routing"
+      // repush that arrives while an Override card is expanded but not yet
+      // saved would silently re-collapse it and drop the unsaved edit.
+      var prevDraft = routingDraft;
+      var prevBaseline = routingDefaultBaseline;
       routingDraft = buildRoutingDraft(payload);
+      Object.keys(routingExpandedAgents).forEach(function (id) {
+        if (!routingExpandedAgents[id]) return;
+        if (prevDraft && prevDraft.agents && Object.prototype.hasOwnProperty.call(prevDraft.agents, id)) {
+          routingDraft.agents[id] = prevDraft.agents[id];
+        }
+        if (prevBaseline && Object.prototype.hasOwnProperty.call(prevBaseline, id)) {
+          routingDefaultBaseline[id] = prevBaseline[id];
+        }
+      });
     }
     if (payload && payload.envProbe && typeof payload.envProbe === "object") {
       Object.keys(payload.envProbe).forEach(function (name) {
@@ -17952,6 +18151,13 @@
     routingLastResult = msg ? { ok: msg.ok, errors: msg.errors, check: msg.check, write: msg.write } : null;
     if (msg && msg.ok === false) routingSuppressNextRebuild = true;
     renderRoutingModal();
+    // p17-t4: a successful save can change routing.json's `defaults` slot,
+    // which the Settings screen's harness.needsDefaultRoute hint depends on
+    // (see renderHarnessSection) — refetch settings so a filled-in default
+    // makes the hint disappear without requiring a panel reload.
+    if (msg && msg.ok !== false) {
+      vscode.postMessage({ type: "getSettings" });
+    }
   }
 
   function handleEnvProbeReply(msg) {
@@ -18138,6 +18344,29 @@
       }
       harnessRow.appendChild(harnessHint);
       harnessSection.appendChild(harnessRow);
+
+      // p17-t4: nudge toward the Routing view's "Default for all agents"
+      // card when running OpenCode with no default model set and at least
+      // one agent riding bare frontmatter — see computeNeedsDefaultRoute in
+      // src/core/routingHostOps.ts (shared by both host settings builders).
+      // Recomputed on every settings payload, so it disappears on its own
+      // once a default is saved (handleRoutingSaved refetches settings).
+      if (harness.needsDefaultRoute) {
+        const defaultRouteHint = document.createElement("p");
+        defaultRouteHint.className = "delegation-mode-footnote settings-harness-default-route-hint";
+        defaultRouteHint.textContent =
+          "OpenCode runs each agent on its routed model. Set a default model your OpenCode install can reach. ";
+        const openRoutingLink = document.createElement("button");
+        openRoutingLink.type = "button";
+        openRoutingLink.className = "link-button";
+        openRoutingLink.textContent = "Open Routing";
+        openRoutingLink.addEventListener("click", () => {
+          openRoutingModal();
+        });
+        defaultRouteHint.appendChild(openRoutingLink);
+        harnessSection.appendChild(defaultRouteHint);
+      }
+
       setupConfigEl.appendChild(harnessSection);
     }
 

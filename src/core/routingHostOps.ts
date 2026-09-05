@@ -37,7 +37,9 @@ import {
   resolveAgentSlot,
   resolveOrchestratorSlot,
   routingSlotToBackend,
+  hasHandWrittenBackendBlock,
   type RoutingProfile,
+  type RoutingSlot,
 } from "./routingProfile";
 import { readAgentFrontmatter, parseAgentBackend, type Backend } from "./agentBackend";
 import { resolveModelAlias, MODEL_ALIASES } from "./modelAliases";
@@ -57,12 +59,33 @@ const ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 export type RoutingSource = "routing" | "frontmatter" | "alias" | "default";
 
+/**
+ * Where an agent's effective backend actually came from, for the panel to
+ * label a row (p17-t1). Distinct from `source` (routing/frontmatter/alias/
+ * default, which is about backend-resolution precedence between routing.json
+ * and frontmatter): `provenance` distinguishes an explicit
+ * `agents[agentId]` entry from one resolved purely via `defaults`.
+ *  - "explicit"    — profile.agents[id] resolved this agent (source "routing").
+ *  - "default"     — no agents[id] entry; profile.defaults resolved it instead
+ *                     (source "routing").
+ *  - "frontmatter" — routing.json did not resolve this agent at all; backend
+ *                     came from the agent's own file (source "frontmatter",
+ *                     "alias", or "default").
+ */
+export type RoutingProvenance = "explicit" | "default" | "frontmatter";
+
 export interface RoutingAgentView {
   id: string;
   name: string;
   description?: string;
   backend: Backend;
   source: RoutingSource;
+  provenance: RoutingProvenance;
+  /** True when this agent's own frontmatter has a hand-written `backend:`
+   *  block (no tycoon-routing managed-by marker) — such agents are excluded
+   *  from `defaults` expansion (see resolveAgentSlot's hasHandWrittenBackend
+   *  option in src/core/routingProfile.ts). */
+  handWrittenBackend: boolean;
 }
 
 export interface RoutingOrchestratorView {
@@ -94,6 +117,10 @@ export interface RoutingView {
   errors: string[];
   orchestrator: RoutingOrchestratorView;
   agents: RoutingAgentView[];
+  /** The profile's top-level `defaults` slot (verbatim), or undefined when
+   *  the profile has none / no profile is loaded — so the panel can render
+   *  and edit the "route everything through one backend" control directly. */
+  defaults?: Partial<RoutingSlot>;
   envProbe: Record<string, EnvProbeEntry>;
   presets: RoutingPresets;
   lastApplied: RoutingLastApplied;
@@ -353,15 +380,20 @@ export function buildRoutingView(opts: BuildRoutingViewOptions): RoutingView {
       orchestratorFrontmatter = fm;
     }
 
-    const routingSlot = resolveAgentSlot(profile, id);
+    const handWrittenBackend = hasHandWrittenBackendBlock(content);
+    const isExplicitEntry = profile?.agents[id] !== undefined;
+    const routingSlot = resolveAgentSlot(profile, id, { hasHandWrittenBackend: handWrittenBackend });
     let backend: Backend;
     let source: RoutingSource;
+    let provenance: RoutingProvenance;
     if (routingSlot) {
       backend = routingSlotToBackend(routingSlot);
       source = "routing";
+      provenance = isExplicitEntry ? "explicit" : "default";
     } else {
       backend = safeParseAgentBackend(fm);
       source = classifyFrontmatterSource(fm);
+      provenance = "frontmatter";
     }
     collectEnvNames(backend, envNames);
 
@@ -372,6 +404,8 @@ export function buildRoutingView(opts: BuildRoutingViewOptions): RoutingView {
       description: rosterEntry?.description,
       backend,
       source,
+      provenance,
+      handWrittenBackend,
     });
   }
 
@@ -412,10 +446,32 @@ export function buildRoutingView(opts: BuildRoutingViewOptions): RoutingView {
     errors,
     orchestrator,
     agents,
+    defaults: profile?.defaults,
     envProbe: probeEnv(Array.from(envNames), env),
     presets: buildPresets(),
     lastApplied: readLastApplied(root),
   };
+}
+
+/**
+ * p17-t4: shared computation used by both hosts' harness-settings payload
+ * builders (VS Code's panel.ts `_buildHarnessSettings` and standalone's
+ * `buildStandaloneHarnessSettings`) to decide whether the Settings screen
+ * should nudge the user toward the Routing view's "Default for all agents"
+ * card. True only when ALL of:
+ *   - the effective harness is "opencode" (OpenCode has no subscription
+ *     fallback the way claude-code does — every agent needs a real route);
+ *   - the routing view has no usable `defaults` slot (no model set); and
+ *   - at least one agent is running purely off its own frontmatter (never
+ *     touched routing.json) rather than a hand-written `backend:` block —
+ *     those agents (e.g. the MCP reviewers) intentionally keep their own
+ *     backend and don't need a default route.
+ */
+export function computeNeedsDefaultRoute(effectiveHarness: string, view: Pick<RoutingView, "defaults" | "agents">): boolean {
+  if (effectiveHarness !== "opencode") return false;
+  const hasDefaultModel = typeof view.defaults?.model === "string" && view.defaults.model.trim() !== "";
+  if (hasDefaultModel) return false;
+  return view.agents.some((a) => a.provenance === "frontmatter" && !a.handWrittenBackend);
 }
 
 // ---------------------------------------------------------------------------

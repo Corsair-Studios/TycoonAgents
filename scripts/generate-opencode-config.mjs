@@ -453,6 +453,31 @@ function buildAgentsMd(root) {
   return existing + sep + managedBlock + "\n";
 }
 
+// True when `mdText` (a full .claude/agents/<id>.md file's text) has a
+// top-level `backend:` frontmatter block with no
+// `# managed-by: tycoon-routing` marker as its first indented child line —
+// i.e. a hand-written block, which `defaults` must never override (p17-t1).
+// Duplicates src/core/routingProfile.ts's hasHandWrittenBackendBlock()
+// (also used by scripts/apply-routing-profile.mjs, which already has its
+// own fmLines-based variant) rather than importing across scripts.
+function hasHandWrittenBackendBlock(mdText) {
+  const normalized = mdText.replace(/\r\n?/g, "\n");
+  const match = normalized.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return false;
+  const lines = match[1].split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const topMatch = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (topMatch && !/^\s/.test(line) && topMatch[1] === "backend") {
+      let j = i + 1;
+      while (j < lines.length && /^\s+\S/.test(lines[j])) j++;
+      const firstChild = i + 1 < j ? lines[i + 1].trim() : undefined;
+      return firstChild !== "# managed-by: tycoon-routing";
+    }
+  }
+  return false;
+}
+
 const OPENAI_COMPATIBLE_NPM_PACKAGE = "@ai-sdk/openai-compatible";
 
 // Walk every resolved slot (agent slots, orchestrator slot, and each slot's
@@ -461,7 +486,19 @@ const OPENAI_COMPATIBLE_NPM_PACKAGE = "@ai-sdk/openai-compatible";
 // "<vendor>/<modelId>" form (matching the rest of routing.json's
 // convention, e.g. "moonshot/kimi-k2"); the vendor prefix is stripped to
 // get the bare model id used as the opencode.json models-map key.
-function collectOpenAICompatibleVendors(profile) {
+// `resolveAgentSlot`/`resolveOrchestratorSlot` are passed in (rather than
+// imported at module scope) so this stays a pure function of its inputs,
+// matching the rest of this file's loadCoreModules() convention.
+// `agentIds` carries every agent file id found on disk (not just
+// profile.agents keys) so an id that resolves purely via `defaults` (no
+// explicit agents[id] entry) still gets its vendor registered, per p17-t1
+// item 3 ("a custom endpoint declared once in defaults is registered
+// once"). Each slot passed to `consider` is the fully RESOLVED slot
+// (defaults already merged per resolveAgentSlot's same-vendor-inheritance
+// rule), not the raw profile.agents[id] object, so a per-agent entry that
+// only overrides `model` and omits transport/endpointEnv/credentialEnv
+// still contributes its inherited connection details here.
+function collectOpenAICompatibleVendors(profile, resolveAgentSlot, resolveOrchestratorSlot, agentHandWritten) {
   const vendors = new Map();
 
   function consider(slot) {
@@ -491,10 +528,17 @@ function collectOpenAICompatibleVendors(profile) {
   }
 
   if (profile) {
-    for (const agentId of Object.keys(profile.agents || {}).sort()) {
-      consider(profile.agents[agentId]);
+    const ids = agentHandWritten instanceof Map ? Array.from(agentHandWritten.keys()) : Object.keys(profile.agents || {});
+    for (const agentId of ids.sort()) {
+      const handWritten = agentHandWritten instanceof Map ? agentHandWritten.get(agentId) === true : false;
+      consider(resolveAgentSlot(profile, agentId, { hasHandWrittenBackend: handWritten }));
     }
-    if (profile.orchestrator) consider(profile.orchestrator);
+    consider(resolveOrchestratorSlot(profile));
+    // Defaults slot itself: an agent resolved purely via `defaults` produces
+    // the identical entry above already, but a defaults slot with no
+    // eligible agent at all (e.g. every agent has a hand-written backend)
+    // must still register its endpoint once.
+    if (profile.defaults) consider(profile.defaults);
   }
 
   return vendors;
@@ -778,6 +822,7 @@ function main() {
   const changed = [];
   const writes = [];
   const generatedRouting = { agents: {} };
+  const agentHandWritten = new Map();
 
   if (fs.existsSync(agentsDir)) {
     const files = fs
@@ -803,7 +848,9 @@ function main() {
           ? frontmatter["name"]
           : path.basename(file, ".md");
 
-      const slot = resolveAgentSlot(routingProfile, agentName);
+      const handWritten = hasHandWrittenBackendBlock(mdText);
+      agentHandWritten.set(agentName, handWritten);
+      const slot = resolveAgentSlot(routingProfile, agentName, { hasHandWrittenBackend: handWritten });
       const slotModel = resolveSlotModel(slot, resolveModelAlias);
 
       const model = resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias, slotModel });
@@ -857,7 +904,7 @@ function main() {
   // openai-compatible vendor across the resolved profile (agents,
   // orchestrator, fallback chains). See the module header comment above
   // ("opencode.json provider merge (p13-t5)").
-  const computedVendors = collectOpenAICompatibleVendors(routingProfile);
+  const computedVendors = collectOpenAICompatibleVendors(routingProfile, resolveAgentSlot, resolveOrchestratorSlot, agentHandWritten);
   const opencodeJsonContent = buildOpencodeJson(root, computedVendors);
   if (opencodeJsonContent !== null) {
     writes.push({ destPath: path.join(root, "opencode.json"), content: opencodeJsonContent });

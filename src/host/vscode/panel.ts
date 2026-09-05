@@ -53,7 +53,7 @@ import {
   PROVIDER_IDS,
   type ProviderId,
 } from "../../core/providerSelection";
-import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue } from "../../core/routingHostOps";
+import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
@@ -7067,6 +7067,7 @@ export class TycoonPanel {
     mismatch: boolean;
     options: { id: ProviderId; label: string }[];
     requiresRestart: boolean;
+    needsDefaultRoute: boolean;
   } {
     const settingValue = vscode.workspace.getConfiguration("tycoonagents").get<string>("provider");
     const description = describeProviderSelection({ settingValue, cwd: root });
@@ -7075,6 +7076,20 @@ export class TycoonPanel {
     // there's nothing running to conflict with `effective` yet.
     const running = this._getRunningProviderId?.();
     const mismatch = running !== undefined && running !== description.effective;
+    // p17-t4: nudge toward the Routing view's "Default for all agents" card
+    // when OpenCode is effective and at least one agent is riding bare
+    // frontmatter with no routing.json defaults to fall back on. Computed
+    // via the shared routingHostOps helper (also used by the standalone
+    // server) so both hosts agree on the condition. Never throws — an
+    // unreadable/missing agents dir just yields an empty view, which
+    // computeNeedsDefaultRoute treats as "nothing to nudge about".
+    let needsDefaultRoute = false;
+    try {
+      const view = buildRoutingView({ root, env: process.env });
+      needsDefaultRoute = computeNeedsDefaultRoute(description.effective, view);
+    } catch {
+      needsDefaultRoute = false;
+    }
     return {
       ...description,
       running,
@@ -7084,6 +7099,7 @@ export class TycoonPanel {
         { id: "opencode", label: "OpenCode" },
       ],
       requiresRestart: mismatch,
+      needsDefaultRoute,
     };
   }
 

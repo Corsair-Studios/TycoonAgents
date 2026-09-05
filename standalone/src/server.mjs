@@ -1827,6 +1827,19 @@ function buildStandaloneHarnessSettings() {
   const description = describeProviderSelection({ cwd });
   const running = startupProviderId;
   const mismatch = running !== description.effective;
+  // p17-t4: same needsDefaultRoute condition as panel.ts's
+  // _buildHarnessSettings, computed via the shared routingHostOps helper so
+  // both hosts agree. buildRoutingView/computeNeedsDefaultRoute never throw,
+  // but primaryProjectRoot can be unset early in startup — guard anyway so
+  // a settings poll never fails the whole payload over this.
+  let needsDefaultRoute = false;
+  try {
+    const { buildRoutingView, computeNeedsDefaultRoute } = routingHostOpsModule();
+    const view = buildRoutingView({ root: cwd, env: process.env });
+    needsDefaultRoute = computeNeedsDefaultRoute(description.effective, view);
+  } catch (err) {
+    console.error('[tycoonagents-standalone] needsDefaultRoute computation failed:', err instanceof Error ? err.message : err);
+  }
   return {
     ...description,
     running,
@@ -1842,6 +1855,7 @@ function buildStandaloneHarnessSettings() {
     // execution.json) rather than an unconditional true, so a fresh session
     // whose file already matches what's running doesn't show a stale hint.
     requiresRestart: mismatch,
+    needsDefaultRoute,
   };
 }
 

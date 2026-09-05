@@ -329,6 +329,19 @@ function findManagedBackendBlockRange(fmLines) {
   return undefined;
 }
 
+// True when `fmLines` (a file's raw frontmatter lines) has a top-level
+// `backend:` block that was NOT written by this script — i.e. it has no
+// `# managed-by: tycoon-routing` marker as its first indented child line.
+// Reuses findAnyBackendBlockRange/MANAGED_MARKER, the same detection this
+// file already uses for the hand-written-block backup guard, so an agent
+// with a hand-written backend is excluded from `defaults` expansion below.
+function hasHandWrittenBackendBlock(fmLines) {
+  const range = findAnyBackendBlockRange(fmLines);
+  if (!range) return false;
+  const firstChild = range.start + 1 < range.end ? fmLines[range.start + 1].replace(/\r$/, "").trim() : undefined;
+  return firstChild !== MANAGED_MARKER;
+}
+
 // Determine if the given frontmatter lines mark this agent as the
 // orchestrator (role: orchestrator or tier: orchestrator, flat key match).
 function isOrchestratorFrontmatter(fmLines) {
@@ -433,22 +446,69 @@ function main() {
   const backupDoc = loadBackupDoc(root);
   let backupDocChanged = false;
 
-  for (const agentId of Object.keys(profile.agents)) {
+  // Pre-scan for the orchestrator's own agent id (if any) so `defaults`
+  // expansion below never double-processes it — the orchestrator slot is
+  // resolved and written separately below via resolveOrchestratorSlot,
+  // which already merges `defaults` unconditionally (matching
+  // resolveOrchestratorSlot's existing contract; the hand-written-backend
+  // exclusion only applies to resolveAgentSlot per p17-t1).
+  let orchestratorIdPre;
+  for (const file of agentFiles) {
+    let raw;
+    try {
+      raw = fs.readFileSync(path.join(agentsDir, file), "utf8");
+    } catch {
+      continue;
+    }
+    const split = splitFrontmatter(raw);
+    if (!split.hasFrontmatter) continue;
+    if (isOrchestratorFrontmatter(split.fmLines)) {
+      orchestratorIdPre = file.replace(/\.md$/, "");
+      break;
+    }
+  }
+
+  // Agents to process: every explicit `agents[id]` entry, plus — when
+  // `profile.defaults.model` is set — every other agent file whose
+  // frontmatter has NO hand-written `backend:` block (a managed block, or no
+  // block at all, both count as eligible). This is the "route the whole
+  // roster with one edit" expansion (p17-t1 decision 2026-09-05).
+  const agentIdsToProcess = new Set(Object.keys(profile.agents));
+  const defaultsHasModel = !!(profile.defaults && typeof profile.defaults.model === "string" && profile.defaults.model !== "");
+  if (defaultsHasModel) {
+    for (const id of idToFile.keys()) {
+      if (agentIdsToProcess.has(id) || id === orchestratorIdPre) continue;
+      const file = idToFile.get(id);
+      let raw;
+      try {
+        raw = fs.readFileSync(path.join(agentsDir, file), "utf8");
+      } catch {
+        continue;
+      }
+      const split = splitFrontmatter(raw);
+      if (!split.hasFrontmatter) continue;
+      if (hasHandWrittenBackendBlock(split.fmLines)) continue;
+      agentIdsToProcess.add(id);
+    }
+  }
+
+  for (const agentId of agentIdsToProcess) {
     const file = idToFile.get(agentId);
     if (!file) {
       warnings.push(`agent "${agentId}" is in routing.json but no .claude/agents/${agentId}.md file exists; skipped`);
       continue;
     }
-    const slot = resolveAgentSlot(profile, agentId);
-    if (!slot) continue;
-    const backend = routingSlotToBackend(slot);
+    const isExplicitAgent = Object.prototype.hasOwnProperty.call(profile.agents, agentId);
     const filePath = path.join(agentsDir, file);
     const raw = fs.readFileSync(filePath, "utf8");
     const split = splitFrontmatter(raw);
     if (!split.hasFrontmatter) {
-      untouched.push(filePath);
+      if (isExplicitAgent) untouched.push(filePath);
       continue;
     }
+    const slot = resolveAgentSlot(profile, agentId, { hasHandWrittenBackend: hasHandWrittenBackendBlock(split.fmLines) });
+    if (!slot) continue;
+    const backend = routingSlotToBackend(slot);
     const backupCountBefore = Object.keys(backupDoc.agents).length;
     snapshotHandWrittenBlockIfAny(backupDoc, agentId, raw, split.fmLines);
     if (Object.keys(backupDoc.agents).length !== backupCountBefore) backupDocChanged = true;
@@ -518,7 +578,7 @@ function main() {
   // may still carry a managed backend block from an earlier apply — strip
   // it. A hand-written backend block (no managed-by marker) is left alone.
   const activePaths = new Set();
-  for (const agentId of Object.keys(profile.agents)) {
+  for (const agentId of agentIdsToProcess) {
     const file = idToFile.get(agentId);
     if (file) activePaths.add(path.join(agentsDir, file));
   }

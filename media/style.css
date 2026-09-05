@@ -6358,6 +6358,48 @@ button.theme-review-preview:focus-visible::after {
   color: var(--status-error, #c0392b);
 }
 
+/* Settings harness hint button (media/main.js ~18251-18274) — inline text
+   link matching .routing-inline-link-btn's look: no background/border,
+   accent color, underline only on hover. */
+.link-button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  text-decoration: none;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.link-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Default-for-all-agents card (p17-t3). */
+.routing-defaults-help {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.routing-clear-defaults-btn {
+  margin-top: 8px;
+}
+
+.routing-source-chip--handwritten {
+  margin-right: 6px;
+}
+
+.routing-override-btn,
+.routing-use-default-btn {
+  margin-left: 6px;
+}
+
 .routing-add-fallback-btn {
   margin-top: 4px;
 }

@@ -224,24 +224,75 @@ export function loadRoutingProfile(projectRoot: string): LoadRoutingProfileResul
   return { profile, path: filePath, errors: [] };
 }
 
+/**
+ * Merge `defaults` (`base`) under a more specific slot (`override`).
+ *
+ * - Any field `override` sets always wins outright.
+ * - `vendor` and `costModelClass` carry over from `base` whenever `override`
+ *   omits them, regardless of vendor match (costModelClass is vendor-
+ *   agnostic; an omitted vendor simply means "use the defaults vendor").
+ * - `transport`, `endpointEnv`, `credentialEnv`, and `fallback` carry over
+ *   from `base` ONLY when `override` omits (or matches) `base.vendor` — a
+ *   per-agent entry naming a DIFFERENT vendor than defaults must never
+ *   inherit connection details (endpoint/credential/transport/fallback)
+ *   meant for a different backend.
+ */
 function mergeSlots(base: Partial<RoutingSlot> | undefined, override: RoutingSlot | undefined): RoutingSlot | null {
   if (!base && !override) return null;
-  const merged: RoutingSlot = { ...(base ?? {}), ...(override ?? {}) };
+  if (!override) return { ...(base as RoutingSlot) };
+  const merged: RoutingSlot = { ...override };
+  if (base) {
+    const sameVendor = override.vendor === undefined || override.vendor === base.vendor;
+    if (merged.vendor === undefined && base.vendor !== undefined) merged.vendor = base.vendor;
+    if (merged.costModelClass === undefined && base.costModelClass !== undefined) {
+      merged.costModelClass = base.costModelClass;
+    }
+    if (sameVendor) {
+      if (merged.transport === undefined && base.transport !== undefined) merged.transport = base.transport;
+      if (merged.endpointEnv === undefined && base.endpointEnv !== undefined) merged.endpointEnv = base.endpointEnv;
+      if (merged.credentialEnv === undefined && base.credentialEnv !== undefined) {
+        merged.credentialEnv = base.credentialEnv;
+      }
+      if (merged.fallback === undefined && base.fallback !== undefined) merged.fallback = base.fallback;
+    }
+  }
   return merged;
+}
+
+export interface ResolveAgentSlotOptions {
+  /**
+   * True when this agent's frontmatter has a hand-written `backend:` block
+   * (one with no `# managed-by: tycoon-routing` marker as its first child
+   * line — see hasHandWrittenBackendBlock()). When true, `defaults` is never
+   * applied to this agent unless it also has an explicit `agents[agentId]`
+   * entry in the profile (which always wins regardless of this flag).
+   * Defaults to false so existing callers that don't pass this option keep
+   * today's behavior (defaults apply to every agent with no explicit entry).
+   */
+  hasHandWrittenBackend?: boolean;
 }
 
 /**
  * Resolve the effective slot for `agentId`: defaults merged with
  * `agents[agentId]` (agent-specific fields win). Returns null when the agent
- * has no entry in the profile and `defaults.model` is not set — i.e. there
- * is nothing this profile can resolve for that agent, so the caller should
- * fall back to agent frontmatter.
+ * has no entry in the profile and either `defaults.model` is not set, or the
+ * agent has a hand-written `backend:` block (see ResolveAgentSlotOptions) —
+ * i.e. there is nothing this profile can resolve for that agent, so the
+ * caller should fall back to agent frontmatter.
  */
-export function resolveAgentSlot(profile: RoutingProfile | null, agentId: string): RoutingSlot | null {
+export function resolveAgentSlot(
+  profile: RoutingProfile | null,
+  agentId: string,
+  options: ResolveAgentSlotOptions = {}
+): RoutingSlot | null {
   if (!profile) return null;
   const agentSlot = profile.agents[agentId];
-  if (!agentSlot && !profile.defaults?.model) return null;
-  return mergeSlots(profile.defaults, agentSlot);
+  if (agentSlot) {
+    return mergeSlots(profile.defaults, agentSlot);
+  }
+  if (options.hasHandWrittenBackend) return null;
+  if (!profile.defaults?.model) return null;
+  return mergeSlots(profile.defaults, undefined);
 }
 
 /**
@@ -264,6 +315,36 @@ export function resolveOrchestratorSlot(profile: RoutingProfile | null): Routing
  * for an agent with no `backend:` block, so a partial slot degrades
  * gracefully rather than producing an invalid Backend.
  */
+const MANAGED_BACKEND_MARKER = "# managed-by: tycoon-routing";
+
+/**
+ * True when `rawFileText` (a full .claude/agents/<id>.md file's text) has a
+ * top-level `backend:` frontmatter block that was NOT written by
+ * apply-routing-profile.mjs — i.e. it either has no
+ * `# managed-by: tycoon-routing` marker as its first indented child line, or
+ * has no `backend:` block at all counts as "no hand-written block" (false).
+ * Mirrors scripts/apply-routing-profile.mjs's findAnyBackendBlockRange +
+ * MANAGED_MARKER check exactly, so generators can call this on raw
+ * frontmatter text instead of duplicating the regex logic.
+ */
+export function hasHandWrittenBackendBlock(rawFileText: string): boolean {
+  const normalized = rawFileText.replace(/\r\n?/g, "\n");
+  const match = normalized.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return false;
+  const lines = match[1].split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const topMatch = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (topMatch && !/^\s/.test(line) && topMatch[1] === "backend") {
+      let j = i + 1;
+      while (j < lines.length && /^\s+\S/.test(lines[j])) j++;
+      const firstChild = i + 1 < j ? lines[i + 1].trim() : undefined;
+      return firstChild !== MANAGED_BACKEND_MARKER;
+    }
+  }
+  return false;
+}
+
 export function routingSlotToBackend(slot: RoutingSlot): Backend {
   const result: Backend = {
     vendor: slot.vendor ?? "anthropic",

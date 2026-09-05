@@ -165,6 +165,35 @@ at process startup, so a change there always requires a restart. Full wire
 contract (the `harness` settings field, `SET_HARNESS` message) is in
 `docs/IPC-CONTRACT.md`'s "Harness Selection (p13-t7)" section.
 
+### First run on OpenCode
+
+1. In Settings, pick **OpenCode** from the "Which tool runs your agents?"
+   dropdown.
+2. Open **Routing** and fill in the **Default for all agents** card: vendor
+   and model. If you pick **Custom endpoint**, also enter a provider name
+   plus the endpoint URL and API key — those are entered once and stored
+   per user under the app-data secrets folder, never written into the
+   project.
+3. Optionally, override individual agents from the same Routing screen.
+   A model-only override inherits the default's endpoint and key
+   automatically, so you only need to name the model.
+4. Run the ready test to confirm every agent resolves to a real route.
+
+Mainstream vendors — Anthropic, OpenAI, Google, and OpenCode Zen — use
+OpenCode's own `opencode auth login` credentials and need no endpoint or
+API key fields here at all. Agents that ship a hand-written `backend:`
+block in their frontmatter (the MCP reviewers, e.g. `codex-reviewer`,
+`gemini-reviewer`, `kimi-reviewer`) keep that backend regardless of the
+default — they were already wired to a specific vendor/transport on
+purpose and are not swept into `defaults` resolution.
+
+The Settings screen's harness dropdown surfaces a hint — "OpenCode runs
+each agent on its routed model. Set a default model your OpenCode install
+can reach." with a link straight into Routing — whenever OpenCode is
+selected, no `defaults` model is set, and at least one agent is still
+running off its own frontmatter alone. Saving a default from the Routing
+view makes the hint disappear on the next Settings refresh.
+
 ---
 
 ## Prerequisite: the agent roster
