@@ -78,12 +78,15 @@ test("leaf-worker spawn is blocked: tool.execute.before throws with LEAF_WORKER_
   const directory = setupDirectory();
   const plugin = mod.createPlugin({ directory, now: () => 1 });
 
-  // Push a worker onto the active-agent stack so the next task call is
-  // treated as originating from a non-empty (leaf) spawner.
-  await plugin.toolExecuteBefore({
-    tool: "task",
-    sessionID: "parent-session",
-    args: { subagent_type: "coding-specialist", description: "top-level task" },
+  // Register a real OpenCode child session (parentID known) — depth is
+  // derived from OpenCode's own session tree, not the shared stack.
+  await plugin.dispatchEvent({
+    type: "session.created",
+    properties: { info: { id: "root-session", agent: "build" } },
+  });
+  await plugin.dispatchEvent({
+    type: "session.created",
+    properties: { info: { id: "leaf-session", parentID: "root-session", agent: "coding-specialist" } },
   });
 
   let thrown: unknown;
@@ -109,10 +112,27 @@ test("leaf-worker spawn is blocked: tool.execute.before throws with LEAF_WORKER_
   );
 });
 
-test("orchestrator (empty active-agent stack) is never spawn-blocked", async () => {
+test("orchestrator (root OpenCode session, no OpenCode-owned parent) is never spawn-blocked even with a foreign entry on the shared stack", async () => {
   const mod = requireFreshPlugin();
   const directory = setupDirectory();
   const plugin = mod.createPlugin({ directory, now: () => 1 });
+
+  // Simulate a Claude Code worker already on the shared active-agent.json
+  // stack (as hooks/tycoon-claude-hook.cjs would leave it) — this must NOT
+  // cause a root OpenCode session to be misread as nested.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const activeAgentFile = plugin._paths.activeAgentFile;
+  fs.mkdirSync(path.dirname(activeAgentFile), { recursive: true });
+  fs.writeFileSync(
+    activeAgentFile,
+    JSON.stringify({
+      version: 1,
+      agentId: "testing-specialist",
+      timestamp: 1,
+      stack: [{ agentId: "testing-specialist", timestamp: 1, provider: "claude-code" }],
+    })
+  );
 
   await assert.doesNotReject(
     plugin.toolExecuteBefore({
@@ -122,7 +142,14 @@ test("orchestrator (empty active-agent stack) is never spawn-blocked", async () 
     })
   );
   const records = readActivity(plugin._paths.activityFile);
-  assert.ok(records.some((r) => r.event === "PreToolUse" && r.tool === "Task"));
+  const spawnRecord = records.find((r: any) => r.event === "PreToolUse" && r.tool === "Task");
+  assert.ok(spawnRecord, "expected a normal PreToolUse/Task record");
+  assert.equal(spawnRecord.workerId, "coding-specialist", "workerId must be the requested subagent, not the foreign stack entry");
+  assert.equal(
+    records.some((r: any) => r.event === "SpawnDenied"),
+    false,
+    "a root OpenCode session must never be denied because of another provider's stack entry"
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -175,11 +202,15 @@ test("a leaf worker's direct Read call is never nudged (mirrors the Claude hook'
   const directory = setupDirectory();
   const plugin = mod.createPlugin({ directory, now: () => 1 });
 
-  // Push a worker so the stack is non-empty (this call is from a leaf).
-  await plugin.toolExecuteBefore({
-    tool: "task",
-    sessionID: "parent-session-2",
-    args: { subagent_type: "coding-specialist", description: "top-level task" },
+  // Register a real OpenCode child session so this call is a genuine leaf
+  // by OpenCode's own session tree, not merely a non-empty shared stack.
+  await plugin.dispatchEvent({
+    type: "session.created",
+    properties: { info: { id: "parent-session-2", agent: "build" } },
+  });
+  await plugin.dispatchEvent({
+    type: "session.created",
+    properties: { info: { id: "leaf-session-2", parentID: "parent-session-2", agent: "coding-specialist" } },
   });
   await plugin.toolExecuteBefore({ tool: "grep", sessionID: "leaf-session-2", args: {} });
 

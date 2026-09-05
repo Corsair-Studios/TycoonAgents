@@ -1,10 +1,12 @@
 ---
 description: Runs delegated implementation and review work through the user's OWN `claude` CLI login (a Claude Max/Pro subscription) via the `claude-cli` MCP server, instead of the orchestrator's metered API key.
 mode: subagent
-model: anthropic/anthropic/claude-sonnet-4-6
+model: anthropic/claude-sonnet-4-6
 permission:
   task: deny
 ---
+
+This agent runs through the `claude-cli` MCP server. Call its `claude` tool for every model request; do not answer from your own model.
 
 # Claude Worker
 

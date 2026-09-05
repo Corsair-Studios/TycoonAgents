@@ -273,17 +273,20 @@ test("Rule 3 [enforcement parity: full]: leaf-worker spawn attempt is BLOCKED by
       "the Claude hook must not also produce a normal spawn record for a denied spawn"
     );
 
-    // Drive the plugin's SAME scenario: first push "coding-specialist" onto
-    // the active-agent stack (so the spawner is non-empty / a leaf, per the
-    // plugin's depth-derivation rule), then attempt a nested task spawn from
-    // that same session.
+    // Drive the plugin's SAME scenario: register a real OpenCode child
+    // session (parentID known) — depth is derived from OpenCode's own
+    // session tree, not the shared active-agent stack — then attempt a task
+    // spawn FROM that child session.
     const pluginRoot3 = setupProject();
     const { mod } = requireFreshPlugin();
     const plugin = mod.createPlugin({ directory: pluginRoot3, now: () => 1 });
-    await plugin.toolExecuteBefore({
-      tool: "task",
-      sessionID: "rule3-parent-session",
-      args: { subagent_type: "coding-specialist", description: "do a thing" },
+    await plugin.dispatchEvent({
+      type: "session.created",
+      properties: { info: { id: "rule3-parent-session", agent: "build" } },
+    });
+    await plugin.dispatchEvent({
+      type: "session.created",
+      properties: { info: { id: "rule3-session", parentID: "rule3-parent-session", agent: "coding-specialist" } },
     });
     let thrown: unknown;
     try {

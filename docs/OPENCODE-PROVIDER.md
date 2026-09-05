@@ -68,8 +68,8 @@ entrypoint (`ctx => Hooks`) implementing four hooks:
 |---|---|---|
 | `event:message.updated`, first root-session (`no parentID`) `role:"user"` message | `UserPromptSubmit` | `handleMessageUpdated`; deduped against a `session.created` for the same session within 1s (`handleSessionCreated`, `makeSubmitDedupe`) |
 | `tool.execute.before`, `tool === "task"` | `PreToolUse` with `tool:"Task"`, `workerId` from `args.subagent_type` or keyword/fallback routing, `agentDescription` from `args.description`; pushes the active-agent stack; may carry `fallbackOf`/`fallbackDepth` (see Fallback chains) | `handleToolExecuteBefore` |
-| `tool.execute.before`, `tool === "task"`, spawner is a non-empty active-agent stack entry and `decideSpawn` denies | `SpawnDenied` (activity record), then the call is **aborted** via a thrown `BlockingToolCallError` — no `PreToolUse`/`Task` record follows | `handleToolExecuteBefore` |
-| `tool.execute.before`, any other tool | `PreToolUse <mappedTool>`, attributed to the top of the active-agent stack (`"orchestrator"` if empty); MCP tools resolve `vendor`/`model`/`costModelClass` via `buildMcpBackendRouting`/`lookupMcpBackend`; an orchestrator direct-call nudge (Rule 1) is queued via `queueNudge` when `decideDirectToolCall` returns `"nudge"` | `handleToolExecuteBefore` |
+| `tool.execute.before`, `tool === "task"`, the CALLING session is a known OpenCode child session (has a recorded `parentID` from its own `session.created`) and `decideSpawn` denies | `SpawnDenied` (activity record), then the call is **aborted** via a thrown `BlockingToolCallError` — no `PreToolUse`/`Task` record follows | `handleToolExecuteBefore` |
+| `tool.execute.before`, any other tool | `PreToolUse <mappedTool>`, attributed to the OpenCode agent name of the calling session (`"orchestrator"` when that session has no recorded OpenCode parent); MCP tools resolve `vendor`/`model`/`costModelClass` via `buildMcpBackendRouting`/`lookupMcpBackend`; an orchestrator direct-call nudge (Rule 1) is queued via `queueNudge` when `decideDirectToolCall` returns `"nudge"` | `handleToolExecuteBefore` |
 | `tool.execute.after`, `tool === "task"` | `SubagentStop` with `workerId`, `model` (`providerID/modelID`), `tokens`/`cacheReadTokens` from `client.session.messages`, `fallbackOf`/`fallbackDepth` when this dispatch was a fallback re-dispatch; pops the active-agent stack | `handleToolExecuteAfter`, `fetchSessionTokens` |
 | `tool.execute.after`, `tool === "task"`, rendered output text matches `isProviderFailure` | `FallbackTriggered` (activity record) plus a queued nudge instructing the orchestrator to re-dispatch on the next fallback model | `handleToolExecuteAfter` (p15-t1) |
 | `tool.execute.after`, `tool === "task"`, `workerId === "uefn-auditor"` or another specialist, review-gate state tracked per parent session | `ReviewGate` (activity record) with `reviewGateStatus` | `handleToolExecuteAfter` (best-effort heuristic — see Enforcement section, Rule 3) |
@@ -401,9 +401,16 @@ bug.
   agent via `.claude/tycoon/opencode-models.json`.
 - **Subagent task tool:** as of plan p15-t0 this is a deliberate, structural
   block, not just an OpenCode default — a subagent's `task` call is detected
-  via the active-agent stack and aborted by the plugin itself
-  (`BlockingToolCallError`, see Enforcement Rule 4 above), independent of
-  whatever permission OpenCode would otherwise apply.
+  and aborted by the plugin itself (`BlockingToolCallError`, see Enforcement
+  Rule 4 above), independent of whatever permission OpenCode would otherwise
+  apply. Depth (orchestrator vs. leaf) is derived ONLY from OpenCode's own
+  session tree — `session.created`'s `parentID`/`agent` fields on the
+  CALLING session, tracked in-memory as they arrive — never from the shared
+  `active-agent.json` stack, which both this plugin and
+  `hooks/tycoon-claude-hook.cjs` write to and which can carry another
+  provider's worker; a fix landed after a live run showed a Claude Code
+  worker on that shared stack causing an OpenCode root session's own `task`
+  call to be misread as nested and denied.
 - **Anthropic subscription auth unavailable in OpenCode:** per the probe
   findings, OpenCode supports API key, Bedrock, Vertex, Zen, or Copilot auth
   only — a Claude agent run natively through OpenCode is `costModelClass:

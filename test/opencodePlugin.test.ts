@@ -330,6 +330,13 @@ test("tool.execute.before for a non-task tool maps its name and attributes to th
   assert.equal(records[0].tool, "Read");
   assert.equal(records[0].workerId, "orchestrator");
 
+  // Register the spawned worker's session as a real OpenCode child session
+  // (parentID known) — attribution is derived from OpenCode's own session
+  // tree, not from merely having pushed a task spawn.
+  await plugin.dispatchEvent({
+    type: "session.created",
+    properties: { info: { id: "ses_child", parentID: "ses_root", agent: "probe-sub" } },
+  });
   await plugin.toolExecuteBefore({
     tool: "task",
     sessionID: "ses_root",
@@ -360,6 +367,32 @@ test("session.idle on a root session maps to Stop", async () => {
   const stop = records.find((r) => r.event === "Stop");
   assert.ok(stop);
   assert.equal(stop!.sessionId, "ses_root");
+});
+
+test("session.idle evicts the session-tree tracking maps for the idle session and its children", async () => {
+  const { mod } = requireFreshPlugin();
+  const directory = setupDirectory();
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+
+  await plugin.dispatchEvent({
+    type: "session.created",
+    properties: { info: { id: "ses_parent3", agent: "build" } },
+  });
+  await plugin.dispatchEvent({
+    type: "session.created",
+    properties: { info: { id: "ses_child3", parentID: "ses_parent3", agent: "coding-specialist" } },
+  });
+
+  const before = plugin._debugSessionMapSizes();
+  assert.equal(before.sessionParent, 2);
+  assert.equal(before.sessionAgentName, 2);
+
+  // The parent going idle must evict both itself and its tracked child.
+  await plugin.dispatchEvent({ type: "session.idle", properties: { sessionID: "ses_parent3" } });
+
+  const after = plugin._debugSessionMapSizes();
+  assert.equal(after.sessionParent, 0, "expected the parent and child to be evicted from sessionParent");
+  assert.equal(after.sessionAgentName, 0, "expected the parent and child to be evicted from sessionAgentName");
 });
 
 // ---------------------------------------------------------------------------

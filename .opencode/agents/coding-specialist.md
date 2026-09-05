@@ -1,7 +1,7 @@
 ---
 description: You handle code implementation — writing, editing, refactoring, and fixing bugs. You produce clean, focused, tested changes.
 mode: subagent
-model: "ollama-windows/qwen3.6:latest"
+model: "ollama-windows/qwen3.8:27b"
 permission:
   task: deny
 ---

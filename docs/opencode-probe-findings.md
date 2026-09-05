@@ -451,3 +451,257 @@ run) reliably seeds the roster. No code or docs were changed to work around
 this, per the test brief. The orchestrator slot remains correctly skipped
 (no seeded agent declares `role/tier: orchestrator`), matching documented
 behavior, not a new gap.
+
+## Remote VM smoke (p13-t5)
+
+**Environment.** OpenCode 1.18.27. Store file
+`C:\Users\majes\AppData\Roaming\TycoonAgents\secrets\OLLAMA_BASE_URL` =
+`http://windows-2025.tail24845.ts.net:11434/v1`, confirmed reachable both
+before and after this run (`curl .../models` lists `qwen3.8:27b`). Panel
+running at `http://127.0.0.1:4174`.
+
+**Step 1 — global config path.** `opencode models` (run from repo root)
+already lists `ollama-windows/qwen3.8:27b`, sourced from the *project*
+`opencode.json` (`provider.ollama-windows.models`), not from
+`%APPDATA%\opencode\opencode.json`. `%USERPROFILE%\.config\opencode\opencode.json`
+is a plain Node project directory (package.json/node_modules), and its
+`opencode.jsonc` is `{"$schema": ...}` only — no provider block. **Finding:**
+the generator's target path `%APPDATA%\opencode\opencode.json` is never read
+by OpenCode at all on this machine; only the project-root `opencode.json` is
+consulted, and that file has no `options.baseURL`/`apiKey` block (they exist
+only in the unread APPDATA file), so a genuine remote OpenCode session has no
+verified path to the tailnet endpoint. Did not copy anything into
+`%USERPROFILE%\.config\opencode\opencode.json` since it holds no
+`opencode.json` config, and copying there would not fix the missing
+`options` block anyway — recorded as a finding per the brief's own fallback
+instruction, no repo file changed.
+
+**Step 2/3 — live delegation, FAIL.** `.claude/tycoon/activity.jsonl` was at
+74571 lines before. Ran (repo root, 9 min timeout):
+`opencode run "@coding-specialist Reply with exactly the word READY and nothing else."`
+→ completed in 7s, banner `> build · big-pickle`, output `READY`. This is
+OpenCode's own default primary agent/model, not `coding-specialist`/
+`ollama-windows`. `@mention` syntax does not select a subagent for `opencode run`.
+Retried with the documented flag: `opencode run --agent coding-specialist "Reply with exactly the word READY and nothing else."`
+→ stderr: `! agent "coding-specialist" is a subagent, not a primary agent. Falling back to default agent`, banner again `> build · big-pickle`, output `READY`.
+`.opencode/agents/coding-specialist.md` frontmatter confirms
+`mode: subagent`, which `opencode run` (a top-level CLI entry point) refuses
+to run directly — subagents are only invocable from inside a running primary
+session's task tool, not via `opencode run --agent`. **No PreToolUse/task or
+SubagentStop line for `coding-specialist` was ever written** — activity.jsonl
+grew from 74571 to 74580 lines, but every new line is `workerId":"orchestrator"`
+or this Claude Code session's own `search-retrieval` delegation, unrelated to
+OpenCode. `ollama-windows/qwen3.8:27b` was never invoked; no local-model
+tokens were spent.
+
+**Panel query.** No GET `/state` endpoint exists.
+`standalone/src/server.mjs` (grep for `pathname ===`) only exposes
+`GET /`, `GET /events` (SSE), and `POST /message` with a type-switch
+dispatcher (`getRouting`, `getEngineStatus`, etc.) — there is no REST
+snapshot route and no `agentMetrics` GET handler. `curl .../state` → 404
+("Not found"). Not queried further since there is nothing to query: no
+delegation event occurred to appear in panel state regardless.
+
+**Step 4 — fallback, not run.** Skipped per brief's own escape hatch
+("If OpenCode's own error handling ends the run before a re-dispatch, say so
+plainly — nothing inferred"): step 2 never reached `ollama-windows` in the
+first place (wrong agent invoked, `build`/`big-pickle` throughout), so there
+is no live path whose failure a fallback could react to. Pointing
+`OLLAMA_BASE_URL` at a dead port would only reproduce the same
+`build`/`big-pickle` run — it would not exercise `fallbackChain.js` at all.
+Store file left untouched (still the tailnet URL); no restore needed.
+Verified unchanged with `curl` after the run: `.../models` still lists
+`qwen3.8:27b`.
+
+**Verdict.**
+- Global config path resolves correctly for model listing (project
+  `opencode.json`), but **FAIL** for the generator's documented target: the
+  `%APPDATA%\opencode\opencode.json` file OpenCode is supposed to read is
+  never consulted, so its `options.baseURL/apiKey` never reach a real
+  session.
+- Live delegation to `coding-specialist`/`ollama-windows/qwen3.8:27b`
+  recorded in activity.jsonl with vendor/model/local: **FAIL** — no such
+  event exists; `opencode run` cannot invoke a `mode: subagent` agent at all,
+  by either `@mention` or `--agent`.
+- Fallback fires with `fallbackOf`: **NOT TESTED** (no primary dispatch to
+  fail from; see above).
+- Defect, exact evidence: `opencode run --agent coding-specialist "..."`
+  emits `! agent "coding-specialist" is a subagent, not a primary agent.
+  Falling back to default agent` and silently substitutes `build`/`big-pickle`
+  — the CLI path assumed by this test (and, if the panel shells out the same
+  way, by the panel's own OpenCode delegation) cannot reach any
+  `mode: subagent` roster entry, including `coding-specialist`.
+
+### Remote VM smoke, attempt 2
+
+Ran from repo root, `~/.config/opencode/opencode.json` using `{file:}` refs
+into `%APPDATA%\TycoonAgents\secrets\`. `activity.jsonl` baseline: 74632
+lines.
+
+**Step 1 — delegation.** `opencode run "You are the orchestrator. Do NOT
+answer yourself. Call the task tool with subagent coding-specialist and the
+prompt 'Reply with exactly the word READY'. Then return the subagent's reply
+verbatim."` (9 min budget, `build`/`big-pickle`) succeeded on the first try —
+no `--agent build` retry needed: output showed `Reply READY verbatim
+Coding-Specialist Agent` then `READY`. **PASS** (delegation via task tool,
+contra attempt 1).
+
+**Step 2 — activity.jsonl / panel evidence: FAIL.** `activity.jsonl` grew by
+only 2 lines, both `PreToolUse`/Bash from this Claude session's own
+`search-retrieval` worker — no `provider:"opencode"` line, no `Task` spawn
+for `coding-specialist`, no `SubagentStop`. `grep -c '"provider":"opencode"'`
+stayed at 6, all pre-existing lines from the prior probe session
+(`ses_f99e6db17ffe...`, timestamp 1788419335531). SSE on
+`http://127.0.0.1:4174/events` (12s capture) confirms: the panel's
+`coding-specialist` entry is the **Claude** worker (`model:"sonnet"`,
+`taskCount:667`, unrelated `lastReport`) — no `vendor:"ollama-windows"`,
+`model:"qwen3.8:27b"`, or `costModelClass:"local"` anywhere in the state
+payload. Root cause found: `hooks/tycoon-opencode-plugin.ts` is not
+registered anywhere — neither `opencode.json` nor
+`~/.config/opencode/opencode.json` has a `plugin` field, and the file does
+not live under `.opencode/plugin/` (OpenCode's auto-load convention), so the
+plugin never loads and never writes activity lines for `opencode run`
+invocations, even when delegation itself works correctly.
+
+**Step 3 — fallback: FAIL (error surfaced, no re-dispatch).** Wrote
+`http://127.0.0.1:9/v1` into the `OLLAMA_BASE_URL` store file, reran the
+identical prompt (6 min budget). Output: `Reply with exactly READY` then
+`✗ ... failed` then `Error: Subagent failed (task_id: ...): Cannot connect to
+API: Unable to connect. Is the computer able to access the url?` — the
+primary printed the raw connection error and stopped; it did not re-dispatch
+to `opencode/big-pickle` or any other model. `activity.jsonl` grew by only 1
+line in this window (unrelated), no `FallbackTriggered` line, no second
+`Task` spawn, no `fallbackOf` field anywhere. Confirms brief's escape
+hatch: "If OpenCode surfaces the provider error to the primary and the
+primary does not re-dispatch, say exactly that" — that is exactly what
+happened.
+
+**Step 4 — restore: PASS.** `OLLAMA_BASE_URL` store file rewritten to
+`http://windows-2025.tail24845.ts.net:11434/v1` and verified byte-identical
+via `diff`.
+
+**Verdict.** Delegation mechanics now work (task tool, not @mention) — this
+closes attempt 1's defect. Two new/still-open defects: (1) activity logging
+for OpenCode-side delegation is dead — the plugin file exists but is never
+loaded by either config, so no vendor/model/costModelClass ever reaches
+`activity.jsonl` or the panel for real `opencode run` sessions; (2) OpenCode
+has no automatic fallback-on-provider-failure — a dead `OLLAMA_BASE_URL`
+surfaces a raw connection error to the user and ends the run, it does not
+trigger `fallbackChain.js` or re-dispatch to `opencode/big-pickle`.
+
+### Remote VM smoke, attempt 3
+
+Plugin now installed at `.opencode/plugin/tycoon-opencode-plugin.ts` (plus
+`agentBackend.js`, `modelAliases.js`, `delegationEnforcement.js`,
+`fallbackChain.js`). `activity.jsonl` baseline: 74650 lines. Store file
+confirmed correct before start (`http://windows-2025.tail24845.ts.net:11434/v1`).
+
+**Step 1 — plugin load: PASS.** `opencode run "say hi"` (2 min budget) →
+`activity.jsonl` grew 74650→74656 (6 lines), 3 tagged
+`"provider":"opencode"` (`UserPromptSubmit` x2, `Stop`). Confirms the plugin
+now loads and logs, closing attempt 2's dead-plugin defect.
+
+**Step 2 — live delegation: FAIL (new regression).** Ran the attempt-2
+working prompt verbatim (9 min budget). Result differed from attempt 2:
+```
+• Coding specialist ready check
+✗ Coding specialist ready check failed
+Error: Blocked: you are a leaf worker — workers do not spawn sub-agents. Do the
+work yourself with your own tools, chunked into bounded sequential calls if it
+is long (see your brief). This block is structural (TycoonAgents leaf-worker rule).
+```
+`activity.jsonl` line (74657-74661) confirms:
+`{"event":"SpawnDenied","provider":"opencode","tool":"Task","workerId":"testing-specialist","message":"Blocked: you are a leaf worker — workers do not spawn sub-agents. ... structural (TycoonAgents leaf-worker rule)."}`
+followed by `Stop`. No Task-spawn PreToolUse, no SubagentStop, no
+`model`/`vendor`/`costModelClass` fields — the Task call for
+`coding-specialist` never reached model routing at all;
+`delegationEnforcement.js` rejected it before dispatch. SSE capture of
+`http://127.0.0.1:4174/events` (~20s) shows only the pre-existing, stale
+`coding-specialist` agentMetrics entry (`lastActivityAt:1787298815492`,
+Claude-worker data, unrelated to this run) — no new entry, no
+`ollama-windows`/`qwen3.8:27b`/`local` anywhere. Defect: the plugin
+mis-attributes the OpenCode CLI session's own workerId as
+`testing-specialist` (a leaf-worker role from this Claude session's
+delegation context, not the OpenCode orchestrator), so `delegationEnforcement.js`
+structurally blocks every Task-tool call from `opencode run`, regressing
+attempt 2's working delegation path.
+
+**Step 3 — fallback: NOT TESTED (blocked upstream).** Store file set to
+`http://127.0.0.1:9/v1`, reran the identical prompt (6 min budget). Same
+`SpawnDenied`/leaf-worker block, verbatim, before any model dispatch:
+`activity.jsonl` (74667-74671) shows the identical `SpawnDenied` message,
+then `Stop` — zero `FallbackTriggered` lines added (`grep -c
+FallbackTriggered` stayed at the pre-existing 7, all historical). No
+`fallbackOf` or `opencode/big-pickle` anywhere. The chain stops at the
+leaf-worker structural block, before `ollama-windows` is ever contacted —
+so `fallbackChain.js` is never exercised in this attempt, one step earlier
+than attempt 2's failure point (which reached the model and got a
+connection error).
+
+**Step 4 — restore: PASS.** `OLLAMA_BASE_URL` store file rewritten to
+`http://windows-2025.tail24845.ts.net:11434/v1`; verified byte-identical via
+`diff` and reachable via `curl .../models` (HTTP 200).
+
+**Verdict.** Plugin loading is fixed (Step 1 PASS, closes attempt 2's dead
+plugin defect). Delegation itself regressed: attempt 2's exact prompt now
+fails at `delegationEnforcement.js`'s leaf-worker check
+(`SpawnDenied`, `workerId":"testing-specialist"`) before reaching
+`coding-specialist`/`ollama-windows` at all, so neither the model-routing
+evidence nor the fallback chain could be exercised this attempt. Fallback
+(Step 3) is therefore NOT TESTED, not FAIL — the precondition (a live
+Task spawn reaching a model) never occurred.
+
+## Remote VM smoke, attempt 4
+
+**Change since attempt 3.** `.opencode/plugin/tycoon-opencode-plugin.ts` now
+derives orchestrator-vs-leaf from OpenCode's own session tree, ignoring
+Claude's entries in `active-agent.json` — closes attempt 3's `SpawnDenied`
+(a concurrent Claude worker on the shared stack blocked the spawn).
+
+**Step 1 — live delegation, PASS.** Baseline `activity.jsonl` = 74721 lines.
+Ran `opencode run "You are the orchestrator. Do NOT answer yourself. Call
+the task tool with subagent coding-specialist and the prompt 'Reply with
+exactly the word READY'. Then return the subagent's reply verbatim."`
+(9-min timeout, completed well inside it). CLI printed `READY` verbatim.
+New `provider":"opencode"` lines (74722-74729):
+
+```
+{"event":"PreToolUse","provider":"opencode","tool":"Task","workerId":"coding-specialist","routingMethod":"explicit","vendor":"ollama-windows","model":"ollama-windows/qwen3.8:27b","costModelClass":"local"}
+{"event":"SubagentStop","provider":"opencode","workerId":"coding-specialist","model":"ollama-windows/qwen3.8:27b","tokens":12199}
+```
+
+No `SpawnDenied` anywhere in the new lines. A ~20s SSE capture of
+`http://127.0.0.1:4174/events` confirmed the `coding-specialist` state
+entry: `"model":"ollama-windows/qwen3.8:27b","vendor":"ollama-windows",
+"costModelClass":"local","fallbackCount":0,"activeMs":107489062,
+"tokens":36160275` (metrics are the panel's session-cumulative counters,
+not per-call deltas; the per-call `tokens:12199` comes from the
+`SubagentStop` activity line above). Criterion PASS: no SpawnDenied,
+correct vendor/model/costModelClass.
+
+**Step 2 — fallback, primary does not re-dispatch.** Set the store file to
+`http://127.0.0.1:9/v1`, reran the identical prompt (6-min timeout,
+finished in ~75s). CLI output: `Error: Subagent failed (task_id:
+ses_f903326efffeNi9aUgkIyzLmOX): Cannot connect to API: Unable to connect.
+Is the computer able to access the url?` — the orchestrator surfaced the
+raw connection error and stopped; it did not answer the READY prompt
+itself and did not re-dispatch a second Task call. New activity lines were
+only `UserPromptSubmit`, the `PreToolUse` Task spawn (same
+`ollama-windows/qwen3.8:27b`), and `Stop` — zero `FallbackTriggered`, no
+`fallbackOf`, no `opencode/big-pickle` anywhere in the new lines. **Exact
+defect: the primary receives the connection error and does not re-dispatch
+at all** — no second spawn on any model, fallback or otherwise; the
+`fallbackChain.js` path is never entered because nothing there catches the
+subagent's connection failure and redirects it.
+
+**Step 3 — restore, PASS.** `OLLAMA_BASE_URL` store file rewritten to
+`http://windows-2025.tail24845.ts.net:11434/v1`; `diff` against the
+pre-test backup byte-identical; `curl .../models` returned HTTP 200.
+
+**Verdict.** Attempt 3's `SpawnDenied` regression is fixed — Step 1 is a
+clean PASS with correct vendor/model/costModelClass and no SpawnDenied.
+Step 2 is a genuine FAIL, distinct from attempt 2/3's findings: a
+downstream connection failure inside a spawned Task is surfaced to the
+user as an error rather than triggering `FallbackTriggered` and a
+second dispatch to `opencode/big-pickle`. Fallback-on-connection-failure
+is not implemented (or not wired into this call path) as of this attempt.

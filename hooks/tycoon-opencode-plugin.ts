@@ -32,14 +32,21 @@ import * as path from "node:path";
 // reason) must never crash the plugin; every call site below falls back to
 // "allow" when this module isn't available.
 //
-// Depth rule for this plugin (orchestrator vs. leaf), used by every decision
-// below: OpenCode gives no explicit "is this the top-level agent" flag on
-// tool.execute.before/after (see docs/opencode-probe-findings.md — no such
-// field observed), so depth is DERIVED from the active-agent stack this
-// plugin already maintains (peekActiveAgent): an EMPTY stack means the call
-// came from the root/orchestrator session; a non-empty stack means the call
-// came from (or on behalf of) the worker on top. This mirrors the Claude
-// hook's own rule (an empty/missing payload.agent_id means "orchestrator").
+// Depth rule for this plugin (orchestrator vs. leaf): depth is derived
+// SOLELY from OpenCode's own session tree, never from the shared
+// active-agent.json stack (that file is written by BOTH this plugin and
+// hooks/tycoon-claude-hook.cjs, so a Claude worker pushed onto it must never
+// be read as "this OpenCode session is nested"). `session.created` payloads
+// (docs/opencode-probe-findings.md) carry `info.parentID` for every child
+// session and `info.agent` for its agent name; this plugin tracks both in
+// `sessionParent`/`sessionAgentName` as those events arrive. A `task` call
+// (or any other tool call) is a LEAF call only when its OWN calling
+// `sessionID` is a known OpenCode child session (has a recorded parentID);
+// a root session with no recorded parent is the orchestrator regardless of
+// what is on the shared stack. Entries THIS plugin pushes onto the shared
+// stack (for the panel) are tagged `provider: "opencode"` and matched by
+// `sessionId` — never treated as authoritative for the depth decision
+// itself, and never matched against entries another provider pushed.
 // ---------------------------------------------------------------------------
 
 interface DelegationEnforcementModule {
@@ -224,6 +231,10 @@ interface ActiveAgentEntry {
   /** p15-t2: remembered from the spawning Task call so the matching SubagentStop can carry the same tag. */
   fallbackOf?: string;
   fallbackDepth?: number;
+  /** Tags an entry THIS plugin pushed, so depth/attribution logic never
+   *  matches an entry another provider (e.g. hooks/tycoon-claude-hook.cjs)
+   *  pushed onto the same shared stack file. */
+  provider?: "opencode";
 }
 
 interface ActiveAgentFile {
@@ -748,8 +759,57 @@ export function createPlugin(deps: PluginDeps) {
   const seenRootSessions = new Set<string>();
   // Track parentID per sessionID so session.idle can tell Stop from
   // SubagentStop without re-deriving it (OpenCode's session.idle payload
-  // carries only sessionID — see findings section (d)/(a)).
+  // carries only sessionID — see findings section (d)/(a)). This is also
+  // the SAME map the leaf-depth decision below reads: a sessionID present
+  // here with a truthy value is a real OpenCode child session.
   const sessionParent = new Map<string, string | undefined>();
+  // OpenCode's own agent name for each session (session.created's
+  // info.agent), used to stamp the real OpenCode worker name on spawn
+  // decisions/records instead of anything read off the shared stack.
+  const sessionAgentName = new Map<string, string>();
+  // Both maps are long-lived-process state (see the review-gate/pending-nudge
+  // maps above for the same concern): evicted promptly on session.idle
+  // (evictSessionTree, below), plus this size cap as a backstop for a
+  // session that never idles (crashed process, killed terminal, a host that
+  // doesn't emit session.idle). Map iteration order is insertion order, so
+  // dropping from the front evicts the oldest entries first (approximate LRU).
+  const SESSION_MAP_MAX_ENTRIES = 256;
+  function capSessionMaps(): void {
+    while (sessionParent.size > SESSION_MAP_MAX_ENTRIES) {
+      const oldestKey = sessionParent.keys().next().value;
+      if (oldestKey === undefined) break;
+      sessionParent.delete(oldestKey);
+      sessionAgentName.delete(oldestKey);
+    }
+    while (sessionAgentName.size > SESSION_MAP_MAX_ENTRIES) {
+      const oldestKey = sessionAgentName.keys().next().value;
+      if (oldestKey === undefined) break;
+      sessionAgentName.delete(oldestKey);
+    }
+  }
+  // Evicts a session (and any tracked children of it) from both maps —
+  // called on session.idle so a finished session's tracking doesn't
+  // accumulate for the life of this long-lived plugin process.
+  function evictSessionTree(sessionId: string): void {
+    sessionParent.delete(sessionId);
+    sessionAgentName.delete(sessionId);
+    for (const [childId, parentId] of sessionParent) {
+      if (parentId === sessionId) {
+        sessionParent.delete(childId);
+        sessionAgentName.delete(childId);
+      }
+    }
+  }
+
+  // Depth rule (see module-level comment above): a call is a leaf call only
+  // when its OWN calling session is a known OpenCode child session. Fails
+  // open to "not a leaf" (orchestrator) when the session isn't tracked yet
+  // (e.g. plugin process started mid-session) — never misclassifies a root
+  // session as nested just because something else is on the shared stack.
+  function isOpenCodeChildSession(sessionId: string | undefined): boolean {
+    if (!sessionId) return false;
+    return Boolean(sessionParent.get(sessionId));
+  }
 
   const mcpRouting = buildMcpBackendRouting(agentsDir);
 
@@ -767,10 +827,12 @@ export function createPlugin(deps: PluginDeps) {
   }
 
   function handleSessionCreated(properties: Record<string, unknown> | undefined) {
-    const info = properties?.["info"] as { id?: string; parentID?: string } | undefined;
+    const info = properties?.["info"] as { id?: string; parentID?: string; agent?: string } | undefined;
     const sessionId = info?.id;
     if (!sessionId) return;
     sessionParent.set(sessionId, info?.parentID);
+    if (typeof info?.agent === "string") sessionAgentName.set(sessionId, info.agent);
+    capSessionMaps();
     if (!info?.parentID) {
       recordUserPromptSubmit(sessionId);
     }
@@ -793,6 +855,10 @@ export function createPlugin(deps: PluginDeps) {
       ((properties?.["info"] as { id?: string } | undefined)?.id);
     if (!sessionId) return;
     const parentId = sessionParent.get(sessionId);
+    // Evict this session (and any tracked children of it) regardless of
+    // whether it's root or a subagent session — a finished session's
+    // tracking must not accumulate for the life of this long-lived process.
+    evictSessionTree(sessionId);
     if (parentId) {
       // SubagentStop for a subagent session going idle without a matching
       // tool.execute.after (defensive path — the primary SubagentStop path
@@ -841,15 +907,21 @@ export function createPlugin(deps: PluginDeps) {
       // now equivalent in effect to the Claude hook's stdout
       // permissionDecision:"deny", not merely a logged record.
       // -----------------------------------------------------------------
-      const spawnerEntry = peekActiveAgent(activeAgentFile);
-      const spawnerAgentId = spawnerEntry && spawnerEntry.agentId !== "none" ? spawnerEntry.agentId : "";
+      // Depth comes ONLY from OpenCode's own session tree (see module-level
+      // comment): the CALLING session (this `task` call's own sessionID)
+      // must itself be a known OpenCode child session to count as a leaf.
+      // The shared active-agent.json stack is never consulted here, so an
+      // entry another provider (e.g. Claude Code) pushed can never cause a
+      // root OpenCode session to be misread as nested.
+      const isLeafCaller = isOpenCodeChildSession(sessionId);
+      const spawnerAgentId = isLeafCaller ? sessionAgentName.get(sessionId!) || "unknown-opencode-worker" : "";
       if (delegationEnforcement && spawnerAgentId) {
         // team_leads tier is not modeled in this plugin (OPEN ISSUE — see
         // report): every spawner is treated as a non-lead leaf, matching
         // the Claude hook's default ("flat" delegation mode) posture.
         const decision = delegationEnforcement.decideSpawn({
           spawnerAgentId,
-          spawnerAgentType: spawnerEntry?.subagentType ?? spawnerAgentId,
+          spawnerAgentType: spawnerAgentId,
           delegationMode: "flat",
           spawnerIsLead: false,
         });
@@ -943,6 +1015,7 @@ export function createPlugin(deps: PluginDeps) {
           sessionId,
           fallbackOf,
           fallbackDepth,
+          provider: "opencode",
         });
       }
 
@@ -978,8 +1051,11 @@ export function createPlugin(deps: PluginDeps) {
       return;
     }
 
-    const top = peekActiveAgent(activeAgentFile);
-    const workerId = top && top.agentId !== "none" ? top.agentId : "orchestrator";
+    // Attribution likewise comes from OpenCode's own session tree, not the
+    // shared stack — see the module-level depth-rule comment.
+    const workerId = isOpenCodeChildSession(sessionId)
+      ? sessionAgentName.get(sessionId!) || "unknown-opencode-worker"
+      : "orchestrator";
     const mappedTool = mapToolName(rawTool);
     const record: OpenCodeHookRecord = {
       event: "PreToolUse",
@@ -1215,6 +1291,10 @@ export function createPlugin(deps: PluginDeps) {
     },
     // Exposed for tests / debugging.
     _paths: { activityFile, activeAgentFile, activityDir },
+    // Exposed for tests only: sizes of the session-tree tracking maps, to
+    // assert they shrink on session.idle rather than leaking for the life
+    // of this long-lived plugin process.
+    _debugSessionMapSizes: () => ({ sessionParent: sessionParent.size, sessionAgentName: sessionAgentName.size }),
   };
 }
 
