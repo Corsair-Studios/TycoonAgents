@@ -42,6 +42,7 @@ import {
 import { readAgentFrontmatter, parseAgentBackend, type Backend } from "./agentBackend";
 import { resolveModelAlias, MODEL_ALIASES } from "./modelAliases";
 import { loadAgentRoster } from "../providers/claude-code/agentRoster";
+import { hasValue as localEnvHasValue, setValue as localEnvSetValue, clearValue as localEnvClearValue } from "./localEnvStore";
 // FOREIGN_LLM_AGENTS is the existing, canonical foreign-vendor/model table
 // (mirrors media/mcp/catalog.json's "codex"/"gemini"/"openai-compatible"/
 // "claude-cli" MCP server entries) — reused here rather than inventing a
@@ -93,7 +94,7 @@ export interface RoutingView {
   errors: string[];
   orchestrator: RoutingOrchestratorView;
   agents: RoutingAgentView[];
-  envProbe: Record<string, boolean>;
+  envProbe: Record<string, EnvProbeEntry>;
   presets: RoutingPresets;
   lastApplied: RoutingLastApplied;
 }
@@ -120,19 +121,54 @@ const EMPTY_SAVE_RESULT_SCRIPTS = {
 // env probing
 // ---------------------------------------------------------------------------
 
+/** One env var's presence, split by source (p13-t6): a real process env var, vs. a per-user stored value. */
+export interface EnvProbeEntry {
+  env: boolean;
+  stored: boolean;
+}
+
 /**
- * Boolean-only presence probe for a list of env var NAMES (never values).
- * Any name not matching ENV_NAME_PATTERN is silently omitted from the
- * result rather than throwing — a malformed name from an untrusted webview
- * payload must never crash the host.
+ * Presence-only probe for a list of env var NAMES (never values), split by
+ * source — `env` (a real process env var) and `stored` (a per-user value
+ * saved via localEnvStore, outside any project). Any name not matching
+ * ENV_NAME_PATTERN is silently omitted from the result rather than
+ * throwing — a malformed name from an untrusted webview payload must never
+ * crash the host.
  */
-export function probeEnv(names: string[], env: NodeJS.ProcessEnv): Record<string, boolean> {
-  const result: Record<string, boolean> = {};
+export function probeEnv(names: string[], env: NodeJS.ProcessEnv): Record<string, EnvProbeEntry> {
+  const result: Record<string, EnvProbeEntry> = {};
   for (const name of names) {
     if (typeof name !== "string" || !ENV_NAME_PATTERN.test(name)) continue;
-    result[name] = typeof env[name] === "string" && env[name] !== "";
+    result[name] = {
+      env: typeof env[name] === "string" && env[name] !== "",
+      stored: localEnvHasValue(name),
+    };
   }
   return result;
+}
+
+/**
+ * Validate + persist a locally-stored env value (p13-t6). Returns a fresh
+ * probe entry for `name` so the caller can post an updated envProbe without
+ * ever echoing the value itself back to the webview or a log line.
+ */
+export function setLocalEnvValue(name: string, value: string, env: NodeJS.ProcessEnv): EnvProbeEntry {
+  if (typeof name !== "string" || !ENV_NAME_PATTERN.test(name)) {
+    throw new Error(`setLocalEnvValue: invalid env var name: ${JSON.stringify(name)}`);
+  }
+  localEnvSetValue(name, value);
+  return { env: typeof env[name] === "string" && env[name] !== "", stored: localEnvHasValue(name) };
+}
+
+/** Remove a locally-stored env value (p13-t6) and return a fresh probe entry for `name`. */
+export function clearLocalEnvValue(name: string, env: NodeJS.ProcessEnv): EnvProbeEntry {
+  if (typeof name === "string" && ENV_NAME_PATTERN.test(name)) {
+    localEnvClearValue(name);
+  }
+  return {
+    env: typeof name === "string" && typeof env[name] === "string" && env[name] !== "",
+    stored: typeof name === "string" ? localEnvHasValue(name) : false,
+  };
 }
 
 function collectEnvNames(backend: Backend | undefined, out: Set<string>): void {

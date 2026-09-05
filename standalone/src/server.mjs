@@ -747,6 +747,28 @@ function handleBrowserMessage(msg) {
         console.error('[tycoonagents-standalone] probeEnv failed:', err);
       }
       break;
+    case 'setLocalEnvValue':
+      // Standalone analog of panel.ts's _handleSetLocalEnvValue (p13-t6).
+      // The value is never logged or broadcast — only the resulting
+      // envProbe entry for `name`.
+      try {
+        const { setLocalEnvValue } = routingHostOpsModule();
+        const entry = setLocalEnvValue(String(payload.name || ''), String(payload.value ?? ''), process.env);
+        broadcast('message', { type: 'envProbe', payload: { [payload.name]: entry } });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] setLocalEnvValue failed:', err instanceof Error ? err.message : err);
+      }
+      break;
+    case 'clearLocalEnvValue':
+      // Standalone analog of panel.ts's _handleClearLocalEnvValue (p13-t6).
+      try {
+        const { clearLocalEnvValue } = routingHostOpsModule();
+        const entry = clearLocalEnvValue(String(payload.name || ''), process.env);
+        broadcast('message', { type: 'envProbe', payload: { [payload.name]: entry } });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] clearLocalEnvValue failed:', err instanceof Error ? err.message : err);
+      }
+      break;
     case 'getSettings':
       // Standalone analog of panel.ts's _handleGetSettings (~line 6783-
       // 6909). main.js's renderSettings() (media/main.js:16239) only shows

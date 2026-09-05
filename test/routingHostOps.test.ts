@@ -14,6 +14,8 @@ import {
   saveRoutingProfile,
   clearRoutingProfile,
   probeEnv,
+  setLocalEnvValue,
+  clearLocalEnvValue,
 } from "../src/core/routingHostOps";
 
 function tmpRoot(): string {
@@ -113,7 +115,7 @@ test("buildRoutingView: orchestrator resolved from role:/tier: orchestrator fron
   assert.equal(view.orchestrator.backend.model, "anthropic/opus");
 });
 
-test("buildRoutingView: envProbe reflects only names actually referenced by a resolved backend", () => {
+test("buildRoutingView: envProbe reflects only names actually referenced by a resolved backend, split by env/stored", () => {
   const root = tmpRoot();
   writeAgent(root, "kimi.md", [
     "name: kimi",
@@ -127,22 +129,72 @@ test("buildRoutingView: envProbe reflects only names actually referenced by a re
     "  apiKeyEnv: OPENAI_COMPAT_API_KEY",
   ]);
   const view = buildRoutingView({ root, env: { OPENAI_COMPAT_API_KEY: "set" } });
-  assert.deepEqual(view.envProbe, { OPENAI_COMPAT_BASE_URL: false, OPENAI_COMPAT_API_KEY: true });
+  assert.deepEqual(view.envProbe, {
+    OPENAI_COMPAT_BASE_URL: { env: false, stored: false },
+    OPENAI_COMPAT_API_KEY: { env: true, stored: false },
+  });
 });
 
 // ---------------------------------------------------------------------------
-// probeEnv
+// probeEnv / setLocalEnvValue / clearLocalEnvValue
+//
+// These probe/mutate localEnvStore, which resolves its dir from
+// process.env.TYCOON_STANDALONE_DATA_DIR (never the `env` object passed to
+// probeEnv itself) — see src/core/localEnvStore.ts's resolveStoreDir(). So
+// every test here scopes process.env.TYCOON_STANDALONE_DATA_DIR to a fresh
+// temp dir and restores it afterward, to guarantee nothing touches this
+// machine's real per-user app-data directory.
 // ---------------------------------------------------------------------------
 
+function withIsolatedStoreDir<T>(fn: () => T): T {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "routing-host-ops-store-"));
+  const prev = process.env.TYCOON_STANDALONE_DATA_DIR;
+  process.env.TYCOON_STANDALONE_DATA_DIR = dir;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.TYCOON_STANDALONE_DATA_DIR;
+    else process.env.TYCOON_STANDALONE_DATA_DIR = prev;
+  }
+}
+
 test("probeEnv: rejects malformed names, probes only well-formed ones, never reads values into output", () => {
-  const result = probeEnv(["GOOD_NAME", "bad-name", "1BAD", "", "OK2"], {
-    GOOD_NAME: "secret-value",
-    OK2: "",
+  withIsolatedStoreDir(() => {
+    const result = probeEnv(["GOOD_NAME", "bad-name", "1BAD", "", "OK2"], {
+      GOOD_NAME: "secret-value",
+      OK2: "",
+    });
+    assert.deepEqual(result, {
+      GOOD_NAME: { env: true, stored: false },
+      OK2: { env: false, stored: false },
+    });
+    assert.ok(!("bad-name" in result));
+    assert.ok(!("1BAD" in result));
+    assert.ok(!JSON.stringify(result).includes("secret-value"));
   });
-  assert.deepEqual(result, { GOOD_NAME: true, OK2: false });
-  assert.ok(!("bad-name" in result));
-  assert.ok(!("1BAD" in result));
-  assert.ok(!JSON.stringify(result).includes("secret-value"));
+});
+
+test("setLocalEnvValue/clearLocalEnvValue: round-trip through probeEnv's `stored` flag, value never in the reply", () => {
+  withIsolatedStoreDir(() => {
+    const setEntry = setLocalEnvValue("MY_ENDPOINT_URL", "https://secret.example/v1", {});
+    assert.deepEqual(setEntry, { env: false, stored: true });
+    assert.ok(!JSON.stringify(setEntry).includes("secret.example"));
+
+    const probed = probeEnv(["MY_ENDPOINT_URL"], {});
+    assert.deepEqual(probed, { MY_ENDPOINT_URL: { env: false, stored: true } });
+
+    const clearEntry = clearLocalEnvValue("MY_ENDPOINT_URL", {});
+    assert.deepEqual(clearEntry, { env: false, stored: false });
+
+    const probedAfterClear = probeEnv(["MY_ENDPOINT_URL"], {});
+    assert.deepEqual(probedAfterClear, { MY_ENDPOINT_URL: { env: false, stored: false } });
+  });
+});
+
+test("setLocalEnvValue: rejects a malformed name", () => {
+  withIsolatedStoreDir(() => {
+    assert.throws(() => setLocalEnvValue("not-valid", "x", {}));
+  });
 });
 
 // ---------------------------------------------------------------------------

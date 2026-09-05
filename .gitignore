@@ -21,6 +21,7 @@ media/skills/design-doc/design-doc-cli.mjs
 # (built artifacts; source is src/core/agentBackend.ts and src/core/modelAliases.ts).
 hooks/agentBackend.js
 hooks/modelAliases.js
+hooks/localEnvStore.js
 
 # Environment / secrets
 .env

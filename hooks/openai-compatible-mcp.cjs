@@ -73,6 +73,55 @@
 const http = require("http");
 const https = require("https");
 const readline = require("readline");
+const path = require("path");
+const fs = require("fs");
+
+// ---------------------------------------------------------------------------
+// p13-t6: local-store fallback for OPENAI_COMPAT_BASE_URL /
+// OPENAI_COMPAT_API_KEY. process.env is checked FIRST (unchanged behavior);
+// only when a var is unset do we fall back to the per-user secret store
+// (src/core/localEnvStore.ts, compiled). Resolution order for the compiled
+// module, fail-open at every step (a hook must never crash a chat call
+// because the store is unavailable):
+//   1. hooks/localEnvStore.js — a copy shipped alongside this hook (see
+//      scripts/copy-hook-runtime.mjs), same posture as agentBackend.js/
+//      modelAliases.js already copied there.
+//   2. ../out/src/core/localEnvStore.js — a dev checkout that built but
+//      hasn't run copy-hook-runtime yet.
+// The stored value is never logged.
+// ---------------------------------------------------------------------------
+let _localEnvStore;
+let _localEnvStoreTried = false;
+function localEnvStore() {
+  if (_localEnvStoreTried) return _localEnvStore;
+  _localEnvStoreTried = true;
+  const candidates = [path.join(__dirname, "localEnvStore.js"), path.join(__dirname, "..", "out", "src", "core", "localEnvStore.js")];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        _localEnvStore = require(candidate);
+        return _localEnvStore;
+      }
+    } catch {
+      // Try the next candidate — a broken/missing compiled module must
+      // never crash the MCP server.
+    }
+  }
+  return undefined;
+}
+
+/** process.env[name] first, else the per-user local store, else undefined. Never throws, never logs the value. */
+function resolveEnvOrLocal(name) {
+  const fromEnv = process.env[name];
+  if (typeof fromEnv === "string" && fromEnv !== "") return fromEnv;
+  try {
+    const store = localEnvStore();
+    if (store && typeof store.getValue === "function") return store.getValue(name);
+  } catch {
+    // fail-open
+  }
+  return undefined;
+}
 
 const SERVER_NAME = "openai-compatible-mcp";
 const SERVER_VERSION = "1.0.0";
@@ -192,7 +241,7 @@ function postJson(urlString, body, apiKey) {
 }
 
 async function handleChatTool(args) {
-  const baseUrl = process.env.OPENAI_COMPAT_BASE_URL;
+  const baseUrl = resolveEnvOrLocal("OPENAI_COMPAT_BASE_URL");
   if (!baseUrl) {
     return {
       isError: true,
@@ -218,7 +267,7 @@ async function handleChatTool(args) {
   if (typeof args.max_tokens === "number") requestBody.max_tokens = args.max_tokens;
 
   const url = buildChatUrl(baseUrl);
-  const apiKey = process.env.OPENAI_COMPAT_API_KEY || undefined;
+  const apiKey = resolveEnvOrLocal("OPENAI_COMPAT_API_KEY") || undefined;
 
   let res;
   try {

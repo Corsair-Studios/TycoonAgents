@@ -112,29 +112,54 @@
 //
 // Verified against OpenCode 1.18.27's published config JSON schema
 // (https://opencode.ai/config.json, fetched 2026-09-04) and its config docs
-// (https://opencode.ai/docs/config/): the schema's `provider.<id>` shape
-// accepts `npm` (string), `name` (string), `options` (object, with
-// `baseURL`/`apiKey` string fields used by the openai-compatible npm
-// package), and `models` (object keyed by model id, each allowing at least
-// `name`). The schema itself does not special-case `{env:...}` syntax
-// (options.baseURL/apiKey are typed as plain strings), but the docs
-// describe `{env:VARIABLE_NAME}` substitution as applying throughout
-// opencode.json, with a worked example of `"apiKey": "{env:ANTHROPIC_API_KEY}"`
-// inside a provider's `options` block — the exact shape used here.
+// (https://opencode.ai/docs/config/, fetched 2026-09-04): the schema's
+// `provider.<id>` shape accepts `npm` (string), `name` (string), `options`
+// (object, with `baseURL`/`apiKey` string fields used by the
+// openai-compatible npm package), and `models` (object keyed by model id,
+// each allowing at least `name`). The docs state configs are "merged
+// together, not replaced" and that "Project config has the highest
+// precedence among standard config files — it overrides both global and
+// remote configs" (a key present in BOTH is taken from the project file; a
+// key present only in global survives). The docs also document a
+// `{file:path/to/file}` substitution — "Use {file:path/to/file} to
+// substitute the contents of a file", with a worked
+// `apiKey: "{file:~/.secrets/openai-key}"` example — alongside the existing
+// `{env:VARIABLE_NAME}` form.
 //
-// Merge rules: opencode.json may already contain user-authored content,
+// p13-t6 DECISION (user, 2026-09-04): an endpoint URL / API key entered in
+// the Routing screen is stored per-user, outside any project (see
+// src/core/localEnvStore.ts), so git can never see it. Consequently this
+// script now writes TWO opencode.json files:
+//   1. PROJECT <root>/opencode.json — the managed provider entry carries
+//      ONLY `npm`/`name`/`models` (no `options` at all). This file is
+//      git-tracked, so it must never carry a path or a literal secret, and
+//      per the merge rule above, omitting `options` here means the
+//      project file cannot override whatever `options` the global file
+//      sets for the same provider id.
+//   2. GLOBAL <resolveGlobalOpencodeConfigDir()>/opencode.json (normally
+//      ~/.config/opencode/opencode.json, %APPDATA%/opencode/opencode.json
+//      on win32, overridable via OPENCODE_CONFIG_DIR — mirrors the
+//      discovery ladder in src/providers/opencode/discovery.ts) — the
+//      SAME managed provider entry, but WITH `options`: baseURL is
+//      `{file:<store path>}` when localEnvStore has a stored value for
+//      `endpointEnv`, else `{env:<endpointEnv>}`; apiKey follows the same
+//      rule for `credentialEnv`. Never a literal URL or key value.
+//
+// Merge rules (both files): may already contain user-authored content,
 // preserved byte-for-byte outside the provider entries this script owns.
 // Each managed entry carries `"tycoonManaged": true` so re-runs replace only
 // entries we wrote; an existing same-id provider entry WITHOUT that marker
 // is left untouched and a warning is printed. When a previously-managed
 // vendor no longer appears in the resolved profile, its entry is removed.
-// If opencode.json doesn't exist, it's created with
+// If a file doesn't exist, it's created with
 // `"$schema": "https://opencode.ai/config.json"`. Output uses sorted keys
-// for determinism and participates in --check like every other artifact.
+// for determinism and participates in --check like every other artifact
+// (a global-file diff is reported the same way as a project-file diff).
 // ---------------------------------------------------------------------------
 
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -542,13 +567,138 @@ function buildOpencodeJson(root, computedVendors) {
       models[modelId] = { name: modelId };
     }
 
+    // PROJECT file: no `options` at all (p13-t6) — endpoint URLs/API keys
+    // never land in a git-tracked file. The global file (see
+    // buildGlobalOpencodeJson below) carries the `options` for this same
+    // provider id.
+    provider[vendor] = {
+      npm: OPENAI_COMPATIBLE_NPM_PACKAGE,
+      name: vendor,
+      models,
+      tycoonManaged: true,
+    };
+  }
+
+  if (Object.keys(provider).length > 0) {
+    config["provider"] = provider;
+  } else {
+    delete config["provider"];
+  }
+
+  return canonicalStringify(config) + "\n";
+}
+
+// ---------------------------------------------------------------------------
+// Global opencode.json (p13-t6): the managed provider entry's `options`
+// (baseURL/apiKey) live HERE, never in the project file. Resolution order
+// per option, matching the localEnvStore contract (src/core/localEnvStore.ts):
+// a per-user stored value (entered in the Routing screen) wins as a
+// `{file:<store path>}` reference; otherwise falls back to the existing
+// `{env:<NAME>}` placeholder.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the global OpenCode config directory. OPENCODE_CONFIG_DIR always
+ * wins (matches src/providers/opencode/discovery.ts's override, and
+ * scripts/apply-routing-profile.mjs's convention of accepting the same
+ * override names project-wide). Otherwise: ~/.config/opencode on
+ * mac/linux, %APPDATA%/opencode on win32 (falling back to ~/.config/opencode
+ * if APPDATA is unset) — the documented global location
+ * (https://opencode.ai/docs/config/: "Place your global OpenCode config in
+ * ~/.config/opencode/opencode.json"). Unlike discovery.ts's
+ * candidateConfigDirs(), this does NOT probe <projectDir>/.opencode or
+ * require the directory to already exist — a project-local dir is not the
+ * GLOBAL config, and this generator must be able to create the global dir
+ * on first run.
+ */
+function resolveGlobalOpencodeConfigDir(env, platform) {
+  if (env.OPENCODE_CONFIG_DIR) return env.OPENCODE_CONFIG_DIR;
+  const home = env.HOME || env.USERPROFILE || os.homedir();
+  if (platform === "win32" && env.APPDATA) {
+    return path.join(env.APPDATA, "opencode");
+  }
+  return path.join(home, ".config", "opencode");
+}
+
+// Best-effort load of the compiled localEnvStore (src/core/localEnvStore.ts
+// -> out/src/core/localEnvStore.js). Fail-open: a missing/unbuilt module
+// just means every option falls back to `{env:...}` — this script must
+// never crash because the extension hasn't been compiled in this checkout.
+function tryLoadLocalEnvStore() {
+  const candidate = path.join(REPO_ROOT, "out", "src", "core", "localEnvStore.js");
+  try {
+    if (fs.existsSync(candidate)) return require(candidate);
+  } catch {
+    // fall through
+  }
+  return undefined;
+}
+
+function optionValueFor(envName, localEnvStore) {
+  if (!envName) return undefined;
+  try {
+    if (localEnvStore && typeof localEnvStore.hasValue === "function" && localEnvStore.hasValue(envName)) {
+      const p = localEnvStore.filePath(envName);
+      if (p) return `{file:${p}}`;
+    }
+  } catch {
+    // fail-open to the {env:...} form below
+  }
+  return `{env:${envName}}`;
+}
+
+/**
+ * Build the merged GLOBAL opencode.json content (string), or null when
+ * nothing needs to change and no file needs to be created. Same
+ * tycoonManaged marker/merge/removal rules as buildOpencodeJson(), but
+ * writes `options` (baseURL/apiKey) using optionValueFor()'s
+ * {file:...}-over-{env:...} rule.
+ */
+function buildGlobalOpencodeJson(globalConfigPath, computedVendors, localEnvStore) {
+  let existing = null;
+  if (fs.existsSync(globalConfigPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(globalConfigPath, "utf8"));
+    } catch (err) {
+      console.error(`${globalConfigPath}: failed to parse existing file, leaving it untouched: ${err.message}`);
+      return null;
+    }
+  }
+
+  if (existing === null && computedVendors.size === 0) {
+    return null;
+  }
+
+  const config = existing && typeof existing === "object" ? { ...existing } : {};
+  if (!config["$schema"]) {
+    config["$schema"] = "https://opencode.ai/config.json";
+  }
+  const provider = config["provider"] && typeof config["provider"] === "object" ? { ...config["provider"] } : {};
+
+  const computedVendorIds = new Set(computedVendors.keys());
+  for (const key of Object.keys(provider)) {
+    if (provider[key] && provider[key]["tycoonManaged"] === true && !computedVendorIds.has(key)) {
+      delete provider[key];
+    }
+  }
+
+  for (const [vendor, entry] of computedVendors) {
+    const existingEntry = provider[vendor];
+    if (existingEntry && existingEntry["tycoonManaged"] !== true) {
+      console.warn(
+        `${globalConfigPath}: provider "${vendor}" already exists without a tycoonManaged marker; leaving it untouched (routing.json also wants to manage this vendor id).`
+      );
+      continue;
+    }
+
+    const models = {};
+    for (const modelId of [...entry.models].sort()) {
+      models[modelId] = { name: modelId };
+    }
+
     const options = {};
-    if (entry.endpointEnv) {
-      options.baseURL = `{env:${entry.endpointEnv}}`;
-    }
-    if (entry.credentialEnv) {
-      options.apiKey = `{env:${entry.credentialEnv}}`;
-    }
+    if (entry.endpointEnv) options.baseURL = optionValueFor(entry.endpointEnv, localEnvStore);
+    if (entry.credentialEnv) options.apiKey = optionValueFor(entry.credentialEnv, localEnvStore);
 
     provider[vendor] = {
       npm: OPENAI_COMPATIBLE_NPM_PACKAGE,
@@ -703,8 +853,21 @@ function main() {
     writes.push({ destPath: path.join(root, "opencode.json"), content: opencodeJsonContent });
   }
 
-  for (const { destPath, content } of writes) {
+  // GLOBAL opencode.json (p13-t6): same computed vendors, but with
+  // `options` (baseURL/apiKey), written to the per-user OpenCode config
+  // dir rather than the project — see buildGlobalOpencodeJson()'s header.
+  const globalConfigDir = resolveGlobalOpencodeConfigDir(process.env, process.platform);
+  const globalConfigPath = path.join(globalConfigDir, "opencode.json");
+  const localEnvStoreModule = tryLoadLocalEnvStore();
+  const globalOpencodeJsonContent = buildGlobalOpencodeJson(globalConfigPath, computedVendors, localEnvStoreModule);
+  if (globalOpencodeJsonContent !== null) {
+    writes.push({ destPath: globalConfigPath, content: globalOpencodeJsonContent, isGlobal: true });
+  }
+
+  const isGlobalPath = new Set();
+  for (const { destPath, content, isGlobal } of writes) {
     const existing = fs.existsSync(destPath) ? fs.readFileSync(destPath, "utf8") : null;
+    if (isGlobal) isGlobalPath.add(destPath);
     if (existing !== content) {
       changed.push(destPath);
       if (!check) {
@@ -717,14 +880,14 @@ function main() {
   if (check) {
     if (changed.length > 0) {
       for (const p of changed) {
-        console.log(path.relative(root, p));
+        console.log(isGlobalPath.has(p) ? p : path.relative(root, p));
       }
       process.exit(1);
     }
     process.exit(0);
   } else {
     for (const p of changed) {
-      console.log(`wrote ${path.relative(root, p)}`);
+      console.log(`wrote ${isGlobalPath.has(p) ? p : path.relative(root, p)}`);
     }
   }
 }

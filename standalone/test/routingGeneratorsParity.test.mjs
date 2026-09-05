@@ -36,8 +36,18 @@ function writeRoutingProfile(root, profileObj) {
   fs.writeFileSync(path.join(dir, 'routing.json'), JSON.stringify(profileObj, null, 2), 'utf8');
 }
 
+// p13-t6: the generator also writes a GLOBAL opencode.json to
+// OPENCODE_CONFIG_DIR. Pin it to a directory keyed off `root` (not the real
+// per-user OpenCode config dir) so repeat calls against the SAME root share
+// one global dir (required for --check/idempotency parity), while every
+// test root still gets its own isolated global dir and nothing here ever
+// touches this machine's real global OpenCode config.
 function runOpencode(root, extraArgs = []) {
-  return spawnSync('node', [OPENCODE_SCRIPT, '--root', root, ...extraArgs], { encoding: 'utf8' });
+  const globalConfigDir = path.join(root, '.opencode-global-config-test');
+  return spawnSync('node', [OPENCODE_SCRIPT, '--root', root, ...extraArgs], {
+    encoding: 'utf8',
+    env: { ...process.env, OPENCODE_CONFIG_DIR: globalConfigDir },
+  });
 }
 
 function runApply(root, extraArgs = []) {

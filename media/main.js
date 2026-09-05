@@ -16669,6 +16669,8 @@
     CLEAR: "clearRouting",
     PROBE: "probeEnv",
     PROBE_REPLY: "envProbe",
+    SET_LOCAL: "setLocalEnvValue",
+    CLEAR_LOCAL: "clearLocalEnvValue",
   };
 
   var ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -16676,7 +16678,7 @@
 
   var lastRoutingPayload = null; // last "routing" push from host: { profile, path, errors, orchestrator, agents, envProbe, presets, lastApplied }
   var routingDraft = null;       // working copy: { orchestrator: slot|null, agents: { [id]: slot } }
-  var routingEnvProbe = {};      // merged env-var name -> boolean (set) cache, seeded from payload.envProbe + probeEnv replies
+  var routingEnvProbe = {};      // merged env-var name -> {env: boolean, stored: boolean} cache, seeded from payload.envProbe + envProbe replies
   var routingSaving = false;
   var routingLastResult = null;  // last routingSaved payload, for the collapsed check/write output block
   var routingModalEl = null, routingBackdropEl = null, routingCloseBtnEl = null, routingBodyEl = null, routingContentEl = null;
@@ -16738,13 +16740,24 @@
     return String(raw || "").toUpperCase().replace(/[^A-Z0-9_]/g, "");
   }
 
+  /**
+   * Normalize one envProbe cache entry. The host now replies with
+   * {env: boolean, stored: boolean} (env set in the process's real
+   * environment vs. a value stored locally on this machine by
+   * setLocalEnvValue). A bare boolean (older host build, or a defensive
+   * fallback) is treated as {env: bool, stored: false}.
+   */
+  function normalizeEnvProbeEntry(v) {
+    if (v && typeof v === "object") return { env: !!v.env, stored: !!v.stored };
+    return { env: !!v, stored: false };
+  }
+
+  /** Re-render the status area (dot + Set value/Clear buttons) of every
+   * .routing-env-field currently in the DOM for this env var name. */
   function updateRoutingEnvDots(name) {
-    var known = Object.prototype.hasOwnProperty.call(routingEnvProbe, name);
-    var set = !!routingEnvProbe[name];
-    document.querySelectorAll('.routing-env-dot[data-env-name="' + name.replace(/"/g, '\\"') + '"]').forEach(function (dot) {
-      dot.classList.remove("routing-env-dot--set", "routing-env-dot--unset", "routing-env-dot--unknown");
-      dot.classList.add(known ? (set ? "routing-env-dot--set" : "routing-env-dot--unset") : "routing-env-dot--unknown");
-      dot.title = known ? (set ? name + " is set" : name + " is not set") : name + " not probed yet";
+    document.querySelectorAll('.routing-env-field[data-env-name="' + name.replace(/"/g, '\\"') + '"]').forEach(function (wrap) {
+      var area = wrap.querySelector(".routing-env-status");
+      if (area) refreshEnvStatusArea(area, name, wrap.getAttribute("data-env-kind") || "credential");
     });
   }
 
@@ -16753,10 +16766,115 @@
     vscode.postMessage({ type: ROUTING_MSG.PROBE, names: [name] });
   }
 
-  /** An env-var name input (never a value) + its live set/unset dot. */
-  function buildEnvNameField(labelText, value, onChange) {
+  /**
+   * Build/refresh the dot + "Set value…"/"Clear stored value" controls for
+   * one env var name. Rebuilt from scratch on every call (cheap — a handful
+   * of nodes) so it always reflects the current routingEnvProbe cache.
+   */
+  function refreshEnvStatusArea(area, name, kind) {
+    area.innerHTML = "";
+    var known = !!(name && Object.prototype.hasOwnProperty.call(routingEnvProbe, name));
+    var state = known ? routingEnvProbe[name] : { env: false, stored: false };
+
+    var dot = document.createElement("span");
+    var dotClass, dotTitle;
+    if (!name || !known) {
+      dotClass = "routing-env-dot--unknown";
+      dotTitle = name ? name + " not probed yet" : "enter an env var name";
+    } else if (state.env) {
+      dotClass = "routing-env-dot--set";
+      dotTitle = "set in environment";
+    } else if (state.stored) {
+      dotClass = "routing-env-dot--stored";
+      dotTitle = "stored locally on this machine";
+    } else {
+      dotClass = "routing-env-dot--unset";
+      dotTitle = "not set";
+    }
+    dot.className = "routing-env-dot " + dotClass;
+    dot.title = dotTitle;
+    dot.setAttribute("data-env-name", name || "");
+    area.appendChild(dot);
+
+    var validName = !!(name && ENV_NAME_RE.test(name));
+
+    var setBtn = document.createElement("button");
+    setBtn.type = "button";
+    setBtn.className = "routing-inline-link-btn routing-set-value-btn";
+    setBtn.textContent = "Set value…";
+    setBtn.disabled = !validName;
+    setBtn.addEventListener("click", function () {
+      openSetValueInline(area, name, kind);
+    });
+    area.appendChild(setBtn);
+
+    if (state.stored) {
+      var clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-value-btn";
+      clearBtn.textContent = "Clear stored value";
+      clearBtn.addEventListener("click", function () {
+        vscode.postMessage({ type: ROUTING_MSG.CLEAR_LOCAL, name: name });
+      });
+      area.appendChild(clearBtn);
+    }
+  }
+
+  /**
+   * Open (or close, if already open) an inline Save/Cancel value editor next
+   * to the Set value… button. The typed value never touches a JS variable
+   * beyond the single postMessage call — it's read straight off the input
+   * and the input is cleared/removed immediately after posting, so it never
+   * lingers in the DOM or in memory.
+   */
+  function openSetValueInline(area, name, kind) {
+    var existing = area.querySelector(".routing-set-value-inline");
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    var inline = document.createElement("span");
+    inline.className = "routing-set-value-inline";
+
+    var input = document.createElement("input");
+    input.type = kind === "credential" ? "password" : "text";
+    input.className = "routing-set-value-input";
+    input.placeholder = kind === "credential" ? "value" : "https://…";
+    inline.appendChild(input);
+
+    var saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "routing-inline-link-btn";
+    saveBtn.textContent = "Save";
+    saveBtn.addEventListener("click", function () {
+      vscode.postMessage({ type: ROUTING_MSG.SET_LOCAL, name: name, value: input.value });
+      input.value = "";
+      inline.remove();
+    });
+    inline.appendChild(saveBtn);
+
+    var cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "routing-inline-link-btn";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", function () {
+      input.value = "";
+      inline.remove();
+    });
+    inline.appendChild(cancelBtn);
+
+    area.appendChild(inline);
+    input.focus();
+  }
+
+  /** An env-var name input (never a value) + its live status/Set-value controls.
+   * `kind` is "credential" (password-type Set value input) or "endpoint"
+   * (plain text — a URL is not a secret). */
+  function buildEnvNameField(labelText, value, onChange, kind) {
     var wrap = document.createElement("div");
     wrap.className = "routing-env-field";
+    wrap.setAttribute("data-env-name", value || "");
+    wrap.setAttribute("data-env-kind", kind || "credential");
     var label = document.createElement("label");
     label.textContent = labelText;
     wrap.appendChild(label);
@@ -16765,32 +16883,22 @@
     input.className = "routing-env-input";
     input.value = value || "";
     input.placeholder = "env var NAME, never the value";
+    wrap.appendChild(input);
+
+    var statusArea = document.createElement("span");
+    statusArea.className = "routing-env-status";
+    wrap.appendChild(statusArea);
+    refreshEnvStatusArea(statusArea, value, kind);
+
     input.addEventListener("input", function () {
       var clean = sanitizeEnvName(input.value);
       if (clean !== input.value) input.value = clean;
       onChange(clean);
+      wrap.setAttribute("data-env-name", clean);
+      refreshEnvStatusArea(statusArea, clean, kind);
     });
     input.addEventListener("blur", function () {
       if (input.value) probeEnvName(input.value);
-    });
-    wrap.appendChild(input);
-    var dot = document.createElement("span");
-    dot.className = "routing-env-dot routing-env-dot--unknown";
-    dot.setAttribute("data-env-name", value || "");
-    wrap.appendChild(dot);
-    // Paint from the cache directly (not via updateRoutingEnvDots' DOM query,
-    // which only finds dots already attached to the document — this one
-    // isn't yet, since the caller hasn't inserted `wrap` anywhere).
-    if (value && Object.prototype.hasOwnProperty.call(routingEnvProbe, value)) {
-      dot.classList.remove("routing-env-dot--unknown");
-      dot.classList.add(routingEnvProbe[value] ? "routing-env-dot--set" : "routing-env-dot--unset");
-      dot.title = routingEnvProbe[value] ? value + " is set" : value + " is not set";
-    }
-    // Keep data-env-name in sync so updateRoutingEnvDots can find this dot after edits.
-    input.addEventListener("input", function () {
-      dot.setAttribute("data-env-name", input.value);
-      dot.classList.remove("routing-env-dot--set", "routing-env-dot--unset");
-      dot.classList.add("routing-env-dot--unknown");
     });
     return wrap;
   }
@@ -16933,12 +17041,17 @@
     frag.appendChild(costRow);
 
     // Credential env (always available — a slot may need auth regardless of transport).
-    frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }));
+    frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential"));
 
     // Endpoint env (only meaningful for openai-compatible / Custom endpoint).
     if (slot.transport === "openai-compatible" || isCustom) {
-      frag.appendChild(buildEnvNameField("Endpoint env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }));
+      frag.appendChild(buildEnvNameField("Endpoint env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint"));
     }
+
+    var envNote = document.createElement("div");
+    envNote.className = "routing-env-note";
+    envNote.textContent = "Values are stored per user in the TycoonAgents app-data folder, never in this project.";
+    frag.appendChild(envNote);
 
     if (slot.transport === "mcp") {
       var mcpRow = document.createElement("div");
@@ -17493,7 +17606,7 @@
     routingDraft = buildRoutingDraft(payload);
     if (payload && payload.envProbe && typeof payload.envProbe === "object") {
       Object.keys(payload.envProbe).forEach(function (name) {
-        routingEnvProbe[name] = !!payload.envProbe[name];
+        routingEnvProbe[name] = normalizeEnvProbeEntry(payload.envProbe[name]);
       });
     }
     renderRoutingModal();
@@ -17511,7 +17624,7 @@
   function handleEnvProbeReply(msg) {
     var probe = (msg && msg.payload) || {};
     Object.keys(probe).forEach(function (name) {
-      routingEnvProbe[name] = !!probe[name];
+      routingEnvProbe[name] = normalizeEnvProbeEntry(probe[name]);
       updateRoutingEnvDots(name);
     });
   }

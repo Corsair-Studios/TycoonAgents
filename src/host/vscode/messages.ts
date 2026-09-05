@@ -324,6 +324,11 @@ export const MSG = {
   CLEAR_ROUTING: "clearRouting",
   PROBE_ENV: "probeEnv",
   ENV_PROBE: "envProbe",
+  // p13-t6: per-user, outside-any-project stored endpoint URL / API key
+  // values. The value itself is never echoed back or logged — only a
+  // fresh ENV_PROBE reply for the affected name.
+  SET_LOCAL_ENV_VALUE: "setLocalEnvValue",
+  CLEAR_LOCAL_ENV_VALUE: "clearLocalEnvValue",
 } as const;
 
 /** Union of every wire string this module knows about (either direction). */
@@ -401,6 +406,8 @@ export const MSG_SCHEMAS = {
   // before reaching that validation.
   SAVE_ROUTING: z.object({ profile: z.record(z.unknown()) }).passthrough(),
   PROBE_ENV: z.object({ names: z.array(z.string()) }).passthrough(),
+  SET_LOCAL_ENV_VALUE: z.object({ name: z.string().min(1), value: z.string() }).passthrough(),
+  CLEAR_LOCAL_ENV_VALUE: z.object({ name: z.string().min(1) }).passthrough(),
 
   // ---- theme: stage tuning / background / manual image upload -------------
   SAVE_STAGE_TUNING: z

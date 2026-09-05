@@ -196,7 +196,9 @@ test('POST /message {type: "probeEnv"} -> replies envProbe with booleans only, d
     assert.equal(res.status, 202);
 
     const probe = await probePromise;
-    assert.equal(typeof probe.payload.PATH, 'boolean');
+    assert.equal(typeof probe.payload.PATH, 'object');
+    assert.equal(typeof probe.payload.PATH.env, 'boolean');
+    assert.equal(typeof probe.payload.PATH.stored, 'boolean');
     assert.ok(!('not-a-valid-name' in probe.payload));
   } finally {
     controller.abort();

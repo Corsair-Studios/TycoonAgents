@@ -6138,6 +6138,43 @@ button.theme-review-preview:focus-visible::after {
   opacity: 0.5;
 }
 
+.routing-env-dot--stored {
+  background: var(--accent, #4a90d9);
+}
+
+.routing-env-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.routing-set-value-inline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.routing-set-value-input {
+  font-size: 12px;
+  padding: 3px 6px;
+  background: var(--surface-2, var(--surface));
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 0;
+  max-width: 160px;
+  box-sizing: border-box;
+}
+
+.routing-env-note {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 /* Plain-word text now (was an uppercase FRONTMATTER/ALIAS jargon pill) —
    item 1 cleanup: sits as a muted line under the agent name, not its own
    column. */

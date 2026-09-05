@@ -47,7 +47,7 @@ import {
   type DoctrineRosterAgent,
 } from "./delegationDoctrine";
 import { readAgentFrontmatter, parseAgentBackend } from "../../core/agentBackend";
-import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv } from "../../core/routingHostOps";
+import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue } from "../../core/routingHostOps";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
@@ -1107,6 +1107,20 @@ export class TycoonPanel {
             this._handleProbeEnv(parsedProbeEnv.data.names);
           } else {
             console.error("TycoonAgents: probeEnv payload rejected:", parsedProbeEnv.error.message);
+          }
+        } else if (message.type === MSG.SET_LOCAL_ENV_VALUE) {
+          const parsedSetLocalEnvValue = MSG_SCHEMAS.SET_LOCAL_ENV_VALUE.safeParse(message);
+          if (parsedSetLocalEnvValue.success) {
+            this._handleSetLocalEnvValue(parsedSetLocalEnvValue.data.name, parsedSetLocalEnvValue.data.value);
+          } else {
+            console.error("TycoonAgents: setLocalEnvValue payload rejected:", parsedSetLocalEnvValue.error.message);
+          }
+        } else if (message.type === MSG.CLEAR_LOCAL_ENV_VALUE) {
+          const parsedClearLocalEnvValue = MSG_SCHEMAS.CLEAR_LOCAL_ENV_VALUE.safeParse(message);
+          if (parsedClearLocalEnvValue.success) {
+            this._handleClearLocalEnvValue(parsedClearLocalEnvValue.data.name);
+          } else {
+            console.error("TycoonAgents: clearLocalEnvValue payload rejected:", parsedClearLocalEnvValue.error.message);
           }
         } else if (message.type === MSG.GET_SETTINGS) {
           this._handleGetSettings();
@@ -6848,6 +6862,30 @@ export class TycoonPanel {
   private _handleProbeEnv(names: string[]): void {
     const result = probeEnv(names, process.env);
     void this._panel.webview.postMessage({ type: MSG.ENV_PROBE, payload: result });
+  }
+
+  /**
+   * Store a per-user, outside-any-project value for `name` (p13-t6) and
+   * reply with a fresh envProbe entry for just that name — the value
+   * itself is NEVER echoed back or logged.
+   */
+  private _handleSetLocalEnvValue(name: string, value: string): void {
+    try {
+      const entry = setLocalEnvValue(name, value, process.env);
+      void this._panel.webview.postMessage({ type: MSG.ENV_PROBE, payload: { [name]: entry } });
+    } catch (err) {
+      console.error("TycoonAgents: setLocalEnvValue failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  /** Clear a per-user stored value for `name` (p13-t6) and reply with a fresh envProbe entry. */
+  private _handleClearLocalEnvValue(name: string): void {
+    try {
+      const entry = clearLocalEnvValue(name, process.env);
+      void this._panel.webview.postMessage({ type: MSG.ENV_PROBE, payload: { [name]: entry } });
+    } catch (err) {
+      console.error("TycoonAgents: clearLocalEnvValue failed:", err instanceof Error ? err.message : err);
+    }
   }
 
   /** Post the current settings snapshot (hook + per-agent model/keywords). */

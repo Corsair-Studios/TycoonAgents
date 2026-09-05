@@ -833,3 +833,225 @@ test('Routing panel: real buildRoutingView payload — every agent row select eq
     win.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// p13-t6 (webview half): env status {env, stored} shape, Set/Clear local
+// value flow, and the bare-boolean back-compat path.
+// ---------------------------------------------------------------------------
+
+async function bootRoutingModal() {
+  const src = readFileSync(MAIN_JS_PATH, 'utf8');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+    url: 'https://webview.local/',
+  });
+  const win: any = dom.window;
+  const doc = win.document;
+
+  const ids = scanElementIds(src);
+  for (const id of ids) {
+    if (RUNTIME_CREATED_IDS.has(id)) continue;
+    if (doc.getElementById(id)) continue;
+    const el = doc.createElement(tagForId(id));
+    el.id = id;
+    doc.body.appendChild(el);
+  }
+  let stage = doc.getElementById('stage');
+  if (!stage || stage.tagName.toLowerCase() !== 'canvas') {
+    if (stage) stage.remove();
+    stage = doc.createElement('canvas');
+    stage.id = 'stage';
+    doc.body.appendChild(stage);
+  }
+  stage.width = 1066;
+  stage.height = 760;
+
+  const posted: any[] = [];
+  let stateStore: any = {};
+  win.acquireVsCodeApi = () => ({
+    postMessage: (mmm: any) => posted.push(mmm),
+    getState: () => stateStore,
+    setState: (s: any) => {
+      stateStore = s;
+    },
+  });
+
+  win.requestAnimationFrame = (cb: any) => 1;
+  win.cancelAnimationFrame = () => {};
+  win.Image = makeFakeImage(win);
+  win.HTMLCanvasElement.prototype.getContext = function (this: any) {
+    if (!this.__ctxStub) this.__ctxStub = makeCtxStub(this);
+    return this.__ctxStub;
+  };
+  win.HTMLCanvasElement.prototype.toDataURL = function () {
+    return 'data:image/png;base64,iVBORw0KGgo=';
+  };
+
+  const errors: any[] = [];
+  win.addEventListener('error', (e: any) => {
+    errors.push(e && (e.error || e.message) ? e.error || e.message : e);
+  });
+  win.onerror = (msg: any, _s: any, _l: any, _c: any, err: any) => {
+    errors.push(err || msg);
+  };
+
+  function assertNoErrors(step: string) {
+    assert.equal(errors.length, 0, `[${step}] main.js threw:\n${errors.map((e) => (e && e.stack) || String(e)).join('\n---\n')}`);
+  }
+  async function flush() {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  }
+  function dispatch(data: any) {
+    win.dispatchEvent(new win.MessageEvent('message', { data }));
+  }
+
+  vm.runInContext(src, dom.getInternalVMContext(), { filename: 'media/main.js' });
+  await flush();
+  assertNoErrors('boot');
+
+  const menuRoutingBtn = doc.getElementById('menu-routing');
+  menuRoutingBtn.click();
+  await flush();
+  assertNoErrors('open routing modal');
+
+  return { win, doc, posted, dispatch, flush, assertNoErrors };
+}
+
+test('Routing panel: {env, stored} probe reply renders stored state + Clear button', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({ envProbe: { ANTHROPIC_API_KEY: { env: false, stored: true } } });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const field = doc.querySelector('.routing-env-field[data-env-name="ANTHROPIC_API_KEY"]') as any;
+    assert.ok(field, 'credential env field should render for ANTHROPIC_API_KEY');
+    const dot = field.querySelector('.routing-env-dot');
+    assert.ok(dot.className.includes('routing-env-dot--stored'), 'stored:true, env:false should render the stored dot state');
+    assert.equal(dot.title, 'stored locally on this machine');
+    const clearBtn = field.querySelector('.routing-clear-value-btn');
+    assert.ok(clearBtn, '"Clear stored value" button should render when stored is true');
+
+    // A fresh probe reply with {env:false, stored:false} should drop the button.
+    dispatch({ type: 'envProbe', payload: { ANTHROPIC_API_KEY: { env: false, stored: false } } });
+    await flush();
+    const fieldAfter = doc.querySelector('.routing-env-field[data-env-name="ANTHROPIC_API_KEY"]') as any;
+    assert.ok(!fieldAfter.querySelector('.routing-clear-value-btn'), 'Clear button should disappear once stored is false');
+    assert.ok(fieldAfter.querySelector('.routing-env-dot').className.includes('routing-env-dot--unset'));
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: bare-boolean envProbe (back-compat) still renders set/unset', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({ envProbe: { ANTHROPIC_API_KEY: true } });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render (bare boolean)');
+
+    const field = doc.querySelector('.routing-env-field[data-env-name="ANTHROPIC_API_KEY"]') as any;
+    assert.ok(field, 'credential env field should render');
+    const dot = field.querySelector('.routing-env-dot');
+    assert.ok(dot.className.includes('routing-env-dot--set'), 'bare boolean true should be treated as {env:true, stored:false}');
+    assert.ok(!field.querySelector('.routing-clear-value-btn'), 'a bare-boolean true must not be treated as stored');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: Set value flow posts setLocalEnvValue and never leaves the value in the DOM', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload({ envProbe: { ANTHROPIC_API_KEY: { env: false, stored: false } } });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const field = doc.querySelector('.routing-env-field[data-env-name="ANTHROPIC_API_KEY"]') as any;
+    assert.ok(field, 'credential env field should render');
+    const setBtn = field.querySelector('.routing-set-value-btn') as any;
+    assert.ok(setBtn, 'Set value… button should render');
+    assert.equal(setBtn.disabled, false, 'Set value should be enabled for a valid env name');
+    setBtn.click();
+    await flush();
+
+    const inlineInput = field.querySelector('.routing-set-value-input') as any;
+    assert.ok(inlineInput, 'an inline value input should appear');
+    assert.equal(inlineInput.type, 'password', 'credential field Set value input should be type=password');
+    inlineInput.value = 'sk-super-secret-value';
+
+    const saveBtn = Array.from(field.querySelectorAll('.routing-set-value-inline button')).find(
+      (b: any) => b.textContent === 'Save'
+    ) as any;
+    assert.ok(saveBtn, 'Save button should render in the inline editor');
+    saveBtn.click();
+    await flush();
+    assertNoErrors('save local value');
+
+    const setMsg = posted.filter((m) => m && m.type === 'setLocalEnvValue').pop();
+    assert.ok(setMsg, 'Save should post {type: "setLocalEnvValue"}');
+    assert.equal(setMsg.name, 'ANTHROPIC_API_KEY');
+    assert.equal(setMsg.value, 'sk-super-secret-value');
+
+    // The input must be gone from the DOM, and no element anywhere should
+    // still carry the typed secret.
+    assert.ok(!field.querySelector('.routing-set-value-input'), 'the password input should be removed after save');
+    const bodyHtml = doc.getElementById('routing-modal-body').innerHTML;
+    assert.ok(!bodyHtml.includes('sk-super-secret-value'), 'the typed value must not remain anywhere in the routing modal DOM');
+
+    // A subsequent envProbe reply marking it stored should show the Clear button.
+    dispatch({ type: 'envProbe', payload: { ANTHROPIC_API_KEY: { env: false, stored: true } } });
+    await flush();
+    const fieldAfter = doc.querySelector('.routing-env-field[data-env-name="ANTHROPIC_API_KEY"]') as any;
+    assert.ok(fieldAfter.querySelector('.routing-clear-value-btn'), 'Clear stored value should appear once the host confirms stored:true');
+
+    fieldAfter.querySelector('.routing-clear-value-btn').click();
+    await flush();
+    const clearMsg = posted.filter((m) => m && m.type === 'clearLocalEnvValue').pop();
+    assert.ok(clearMsg, 'Clear should post {type: "clearLocalEnvValue"}');
+    assert.equal(clearMsg.name, 'ANTHROPIC_API_KEY');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: Endpoint env Set value input is plain text, not password', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const payload = buildRoutingPayload();
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    // Switch orchestrator to Custom endpoint to reveal the Endpoint env field.
+    const vendorSelect = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    vendorSelect.value = 'custom-endpoint';
+    vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    assertNoErrors('custom endpoint select');
+
+    const endpointLabel = Array.from(doc.querySelectorAll('.routing-env-field label')).find(
+      (l: any) => l.textContent === 'Endpoint env'
+    ) as any;
+    assert.ok(endpointLabel, 'Endpoint env field should render under Custom endpoint');
+    const endpointField = endpointLabel.closest('.routing-env-field');
+    const endpointNameInput = endpointField.querySelector('.routing-env-input') as any;
+    endpointNameInput.value = 'MY_ENDPOINT';
+    endpointNameInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+    await flush();
+
+    const setBtn = endpointField.querySelector('.routing-set-value-btn') as any;
+    assert.ok(setBtn, 'Endpoint env Set value… button should render');
+    setBtn.click();
+    await flush();
+    const inlineInput = endpointField.querySelector('.routing-set-value-input') as any;
+    assert.ok(inlineInput, 'endpoint inline input should appear');
+    assert.equal(inlineInput.type, 'text', 'endpoint env value is a URL, not a secret — should render as type=text');
+  } finally {
+    win.close();
+  }
+});

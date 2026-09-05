@@ -92,10 +92,22 @@ function setupFixtureRoot() {
   return root;
 }
 
-function runGenerator(root, extraArgs = []) {
-  return spawnSync(process.execPath, [SCRIPT_PATH, '--root', root, ...extraArgs], {
+// p13-t6: the generator ALSO writes a GLOBAL opencode.json (per-user
+// OpenCode config dir, normally ~/.config/opencode) carrying the same
+// managed provider's `options`. Every invocation here pins
+// OPENCODE_CONFIG_DIR to a fresh temp dir so no test ever touches this
+// machine's real global OpenCode config.
+function mkGlobalConfigDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-opencode-global-'));
+}
+
+function runGenerator(root, extraArgs = [], globalConfigDir = mkGlobalConfigDir()) {
+  const result = spawnSync(process.execPath, [SCRIPT_PATH, '--root', root, ...extraArgs], {
     encoding: 'utf8',
+    env: { ...process.env, OPENCODE_CONFIG_DIR: globalConfigDir },
   });
+  result.globalConfigDir = globalConfigDir;
+  return result;
 }
 
 function scriptExists() {
@@ -104,6 +116,10 @@ function scriptExists() {
 
 function readOpencodeJson(root) {
   return JSON.parse(fs.readFileSync(path.join(root, 'opencode.json'), 'utf8'));
+}
+
+function readGlobalOpencodeJson(globalConfigDir) {
+  return JSON.parse(fs.readFileSync(path.join(globalConfigDir, 'opencode.json'), 'utf8'));
 }
 
 test('generate-opencode-config: opencode.json provider merge', { skip: !scriptExists() && 'script not yet present' }, async (t) => {
@@ -128,8 +144,9 @@ test('generate-opencode-config: opencode.json provider merge', { skip: !scriptEx
     assert.equal(provider.npm, '@ai-sdk/openai-compatible');
     assert.equal(provider.name, 'ollama-windows');
     assert.equal(provider.tycoonManaged, true);
-    assert.equal(provider.options.baseURL, '{env:OLLAMA_BASE_URL}');
-    assert.equal(provider.options.apiKey, '{env:OLLAMA_API_KEY}');
+    // p13-t6: the PROJECT file carries no `options` at all — endpoint/key
+    // config lives only in the global file (see below).
+    assert.equal(provider.options, undefined, 'project opencode.json must never carry an `options` block');
     assert.ok(provider.models['qwen3.6:latest'], 'primary slot model must be present');
     assert.ok(provider.models['llama3.1:8b'], 'fallback-chain model must be present');
     assert.equal(provider.models['qwen3.6:latest'].name, 'qwen3.6:latest');
@@ -137,7 +154,17 @@ test('generate-opencode-config: opencode.json provider merge', { skip: !scriptEx
     // No provider entry for the claude-native vendor.
     assert.ok(!config.provider.anthropic, 'claude-native slots must not get a provider entry');
 
+    // GLOBAL file: same managed entry, but WITH options as {env:...}
+    // placeholders (no local store value written in this fixture).
+    const globalConfig = readGlobalOpencodeJson(result.globalConfigDir);
+    const globalProvider = globalConfig.provider['ollama-windows'];
+    assert.ok(globalProvider, 'global opencode.json must carry the same provider id');
+    assert.equal(globalProvider.options.baseURL, '{env:OLLAMA_BASE_URL}');
+    assert.equal(globalProvider.options.apiKey, '{env:OLLAMA_API_KEY}');
+    assert.deepEqual(globalProvider.models, provider.models);
+
     fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(result.globalConfigDir, { recursive: true, force: true });
   });
 
   await t.test('preserves existing opencode.json content and an unmanaged same-id provider, with a warning', () => {
@@ -167,9 +194,11 @@ test('generate-opencode-config: opencode.json provider merge', { skip: !scriptEx
 
   await t.test('a managed vendor entry is removed once it drops out of the profile', () => {
     const root = setupFixtureRoot();
-    const first = runGenerator(root);
+    const globalConfigDir = mkGlobalConfigDir();
+    const first = runGenerator(root, [], globalConfigDir);
     assert.equal(first.status, 0);
     assert.ok(readOpencodeJson(root).provider['ollama-windows']);
+    assert.ok(readGlobalOpencodeJson(globalConfigDir).provider['ollama-windows']);
 
     // Remove the openai-compatible slot and its fallback from the profile.
     writeRouting(root, {
@@ -184,35 +213,44 @@ test('generate-opencode-config: opencode.json provider merge', { skip: !scriptEx
       },
     });
 
-    const second = runGenerator(root);
+    const second = runGenerator(root, [], globalConfigDir);
     assert.equal(second.status, 0, `second run should exit 0; stderr: ${second.stderr}`);
     const config = readOpencodeJson(root);
     assert.ok(!config.provider || !config.provider['ollama-windows'], 'managed entry must be removed when its vendor disappears');
+    const globalConfig = readGlobalOpencodeJson(globalConfigDir);
+    assert.ok(!globalConfig.provider || !globalConfig.provider['ollama-windows'], 'global managed entry must also be removed');
 
     fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(globalConfigDir, { recursive: true, force: true });
   });
 
-  await t.test('two runs produce a byte-identical opencode.json', () => {
+  await t.test('two runs produce a byte-identical opencode.json (project and global)', () => {
     const root = setupFixtureRoot();
-    const first = runGenerator(root);
+    const globalConfigDir = mkGlobalConfigDir();
+    const first = runGenerator(root, [], globalConfigDir);
     assert.equal(first.status, 0);
     const before = fs.readFileSync(path.join(root, 'opencode.json'), 'utf8');
+    const globalBefore = fs.readFileSync(path.join(globalConfigDir, 'opencode.json'), 'utf8');
 
-    const second = runGenerator(root);
+    const second = runGenerator(root, [], globalConfigDir);
     assert.equal(second.status, 0);
     const after = fs.readFileSync(path.join(root, 'opencode.json'), 'utf8');
+    const globalAfter = fs.readFileSync(path.join(globalConfigDir, 'opencode.json'), 'utf8');
 
-    assert.equal(after, before, 'opencode.json must be byte-identical across runs');
+    assert.equal(after, before, 'project opencode.json must be byte-identical across runs');
+    assert.equal(globalAfter, globalBefore, 'global opencode.json must be byte-identical across runs');
 
     fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(globalConfigDir, { recursive: true, force: true });
   });
 
   await t.test('--check detects drift in opencode.json', () => {
     const root = setupFixtureRoot();
-    const gen = runGenerator(root);
+    const globalConfigDir = mkGlobalConfigDir();
+    const gen = runGenerator(root, [], globalConfigDir);
     assert.equal(gen.status, 0);
 
-    const check1 = runGenerator(root, ['--check']);
+    const check1 = runGenerator(root, ['--check'], globalConfigDir);
     assert.equal(check1.status, 0, `--check should be 0 when up to date; stderr: ${check1.stderr}`);
 
     // Introduce drift: add a second model to the profile for the same vendor.
@@ -236,9 +274,10 @@ test('generate-opencode-config: opencode.json provider merge', { skip: !scriptEx
       },
     });
 
-    const check2 = runGenerator(root, ['--check']);
+    const check2 = runGenerator(root, ['--check'], globalConfigDir);
     assert.equal(check2.status, 1, '--check must report drift after the profile changes');
     assert.match(check2.stdout + check2.stderr, /opencode\.json/);
+    fs.rmSync(globalConfigDir, { recursive: true, force: true });
 
     fs.rmSync(root, { recursive: true, force: true });
   });

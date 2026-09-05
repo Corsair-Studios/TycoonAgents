@@ -483,6 +483,33 @@ Only entries carrying `"tycoonManaged": true` are ever replaced or removed
 by the generator; a hand-authored `provider.ollama-windows` entry without
 that marker is left alone (a warning is printed instead of overwriting it).
 
+### Per-user local values (p13-t6) split the provider entry across TWO files
+
+An endpoint URL or API key entered in the Routing screen is stored per-user,
+outside any project, via `src/core/localEnvStore.ts` (`<per-user app data
+dir>/secrets/<NAME>`, mode 0600) — never in `routing.json`, never in
+`opencode.json`, never in git. To keep that guarantee, `scripts/
+generate-opencode-config.mjs` now writes the managed provider entry into
+**two** files:
+
+- **PROJECT** `<root>/opencode.json` (git-tracked): the entry carries only
+  `npm`/`name`/`models` — no `options` at all.
+- **GLOBAL** `<OpenCode global config dir>/opencode.json` (normally
+  `~/.config/opencode/opencode.json`, `%APPDATA%/opencode/opencode.json` on
+  win32, overridable via `OPENCODE_CONFIG_DIR`): the SAME entry, but with
+  `options.baseURL`/`options.apiKey` set to `{file:<store path>}` when a
+  value is stored, else the existing `{env:<NAME>}` placeholder.
+
+This relies on OpenCode's documented config-merge behavior (verified
+against the OpenCode 1.18.27 docs, https://opencode.ai/docs/config/,
+2026-09-04): config files are "merged together, not replaced", and project
+config "overrides both global and remote configs" only for keys it actually
+sets. Since the project file never sets `options` for a tycoon-managed
+provider, the global file's `options` survive untouched — a fresh checkout
+with no global config yet still runs (the provider is simply unconfigured
+until the global file exists), and nothing endpoint/key-shaped ever reaches
+a commit.
+
 ### The Claude Code side is different
 
 `hooks/openai-compatible-mcp.cjs` (the MCP bridge a Claude-side agent calls
@@ -496,7 +523,10 @@ openai-compatible endpoint at a time this way, while OpenCode's
 `opencode.json` supports one provider block per vendor. A profile mixing
 both hosts should pick the vendor-specific env names for OpenCode-only
 slots and reserve `OPENAI_COMPAT_*` for whichever single slot needs to work
-from the Claude side too.
+from the Claude side too. As of p13-t6, the hook checks `process.env` FIRST
+and falls back to the same per-user `localEnvStore` the Routing screen
+writes to, so a value entered there (and not exported as a real env var)
+still reaches the Claude path.
 
 ## Files written by the routing system
 
