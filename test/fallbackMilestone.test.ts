@@ -148,6 +148,34 @@ test("PRD M2 (1): after a provider failure, the next task dispatch's PreToolUse/
   assert.equal(redispatch.fallbackDepth, 1, "first fallback re-dispatch is chain position 1");
   assert.equal(redispatch.model, "openai/gpt-5.4-mini", "re-dispatch model must be fallback[0], not the dead primary");
   assert.equal(redispatch.vendor, "openai", "re-dispatch vendor must match fallback[0]'s own vendor, not the primary's");
+
+  // The matching SubagentStop for this re-dispatch must agree with the
+  // spawn on model/vendor, even when OpenCode's own session metadata still
+  // reports the ORIGINAL primary (anthropic/sonnet) rather than the
+  // fallback model that actually ran — this is the bug: a stop record
+  // observed with model "ollama-windows/qwen3.8:27b" while the matching
+  // spawn said "opencode/big-pickle".
+  await plugin.toolExecuteAfter(
+    { tool: "task", sessionID: "root-session", args: { subagent_type: "coding-specialist" } },
+    {
+      metadata: {
+        parentSessionId: "root-session",
+        sessionId: "child-session-2",
+        model: { providerID: "anthropic", modelID: "sonnet" },
+      },
+      output: "<task>done</task>",
+    }
+  );
+  records = readActivity(plugin._paths.activityFile);
+  const stopRecords = records.filter((r) => r.event === "SubagentStop");
+  const fallbackStop = stopRecords.find((r) => r.fallbackOf === "coding-specialist");
+  assert.ok(fallbackStop, "fallback re-dispatch must produce a SubagentStop record");
+  assert.equal(
+    fallbackStop!.model,
+    redispatch.model,
+    "SubagentStop model must match the fallback model the matching PreToolUse spawn used, not OpenCode's session metadata"
+  );
+  assert.equal(fallbackStop!.vendor, redispatch.vendor, "SubagentStop vendor must match the spawn's vendor");
   } finally {
     rmSync(directory, { recursive: true, force: true });
     rmSync(moduleDir, { recursive: true, force: true });

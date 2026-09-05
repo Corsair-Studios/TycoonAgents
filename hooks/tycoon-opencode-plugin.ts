@@ -224,7 +224,15 @@ interface OpenCodeHookRecord {
 interface ActiveAgentEntry {
   agentId: string;
   timestamp: number;
+  /** Stamped from the SAME resolution the spawning PreToolUse record used
+   *  (fallback-adjusted model/vendor when fallbackOf is set, else the
+   *  agent's own backend), so the matching SubagentStop/error-part record
+   *  can read them back instead of re-deriving from OpenCode's own session
+   *  metadata (which reports the originally assigned model, not the
+   *  fallback model that actually ran). */
   model?: string;
+  vendor?: string;
+  costModelClass?: "metered" | "subscription" | "local";
   subagentType?: string;
   parentId?: string;
   sessionId?: string;
@@ -1006,10 +1014,22 @@ export function createPlugin(deps: PluginDeps) {
       const parentEntry = sessionId ? undefined : peekActiveAgent(activeAgentFile) ?? undefined;
       const parentId = parentEntry?.agentId && parentEntry.agentId !== "none" ? parentEntry.agentId : undefined;
 
+      // Same model/vendor resolution the record below uses: fallback-adjusted
+      // when this is a fallback re-dispatch, else the agent's own backend.
+      // Stamped onto the pushed entry so the matching SubagentStop (or
+      // error-part) reads back the model that ACTUALLY ran, not whatever
+      // OpenCode's own session metadata reports for the original assignment.
+      const pushedModel = fallbackOf !== undefined ? fallbackModel : backend.model;
+      const pushedVendor = fallbackOf !== undefined ? fallbackVendor : backend.vendor;
+      const pushedCostModelClass = backend.costModelClass;
+
       if (workerId) {
         pushActiveAgent(activeAgentFile, {
           agentId: workerId,
           timestamp: now(),
+          model: pushedModel,
+          vendor: pushedVendor,
+          costModelClass: pushedCostModelClass,
           subagentType: workerId,
           parentId,
           sessionId,
@@ -1179,7 +1199,7 @@ export function createPlugin(deps: PluginDeps) {
     const metadata = state.metadata ?? {};
     const childSessionId = metadata.sessionId;
     const rootSessionId = metadata.parentSessionId ?? part.sessionID;
-    const model =
+    const metadataModel =
       metadata.model?.providerID && metadata.model?.modelID
         ? `${metadata.model.providerID}/${metadata.model.modelID}`
         : undefined;
@@ -1193,6 +1213,14 @@ export function createPlugin(deps: PluginDeps) {
       poppedEntry?.agentId ??
       "unknown";
 
+    // Prefer the model/vendor stamped on the spawn's active-agent entry —
+    // for a fallback re-dispatch OpenCode's own session metadata still
+    // reports the originally assigned model, not the fallback model that
+    // actually ran, which would make the Stop record disagree with the
+    // matching PreToolUse spawn. Fall back to metadata only when no pushed
+    // entry has a model (e.g. entry lost to a restart).
+    const model = poppedEntry?.model ?? metadataModel;
+
     // tool.execute.after never fires for this failure (confirmed live), so
     // this is also the only place a SubagentStop gets recorded for it —
     // without it the active-agent stack entry above would still be popped
@@ -1205,6 +1233,8 @@ export function createPlugin(deps: PluginDeps) {
       sessionId: rootSessionId,
     };
     if (model) record.model = model;
+    if (poppedEntry?.vendor) record.vendor = poppedEntry.vendor;
+    if (poppedEntry?.costModelClass) record.costModelClass = poppedEntry.costModelClass;
     if (poppedEntry?.fallbackOf !== undefined) {
       record.fallbackOf = poppedEntry.fallbackOf;
       record.fallbackDepth = poppedEntry.fallbackDepth;
@@ -1235,10 +1265,15 @@ export function createPlugin(deps: PluginDeps) {
       poppedEntry?.agentId ??
       "unknown";
 
-    const model =
+    const metadataModel =
       metadata.model?.providerID && metadata.model?.modelID
         ? `${metadata.model.providerID}/${metadata.model.modelID}`
         : undefined;
+    // See handleTaskToolErrorPart: prefer the model stamped on the spawn's
+    // active-agent entry so a fallback re-dispatch's Stop record agrees
+    // with its matching PreToolUse spawn instead of OpenCode's own session
+    // metadata (which still reports the originally assigned model).
+    const model = poppedEntry?.model ?? metadataModel;
 
     const { tokens, cacheReadTokens } = childSessionId
       ? await fetchSessionTokens(client, childSessionId)
@@ -1252,6 +1287,8 @@ export function createPlugin(deps: PluginDeps) {
       sessionId: metadata.parentSessionId ?? input.sessionID,
     };
     if (model) record.model = model;
+    if (poppedEntry?.vendor) record.vendor = poppedEntry.vendor;
+    if (poppedEntry?.costModelClass) record.costModelClass = poppedEntry.costModelClass;
     if (tokens !== undefined) record.tokens = tokens;
     if (cacheReadTokens !== undefined) record.cacheReadTokens = cacheReadTokens;
     if (poppedEntry?.fallbackOf !== undefined) {

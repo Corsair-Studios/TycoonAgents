@@ -196,6 +196,58 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
     running OpenCode as the harness.
   </p>
 
+  <div class="section-head">
+    <div class="s-title">&sect; 3.7 &middot; Routing: choosing models per agent</div>
+    <div class="s-caption">the Routing view</div>
+  </div>
+  <p>
+    Once a front is running, the Routing view lets you send different agents
+    to different vendors, models, or local endpoints without editing files by
+    hand.
+  </p>
+  <ol>
+    <li>In <strong>Settings</strong>, use <strong>&ldquo;Which tool runs your
+    agents?&rdquo;</strong> to pick the harness (Claude Code or OpenCode).</li>
+    <li>Open the <strong>Routing</strong> view from the panel menu.</li>
+    <li>Fill in the <strong>orchestrator</strong> slot at the top the same
+    way as any agent row below.</li>
+    <li>For a per-agent model, pick <strong>Vendor</strong> then choose a
+    preset from the <strong>Model</strong> dropdown.</li>
+    <li>For a local or VM-hosted OpenAI-compatible server, pick
+    <strong>Custom endpoint&hellip;</strong> as the vendor: give it a
+    <strong>Provider name</strong> (e.g. <code>ollama-windows</code>), the
+    <strong>Model</strong> id exactly as your endpoint serves it, and
+    <strong>Cost class</strong> <code>local</code>. Set the
+    <strong>Endpoint URL env</strong> and <strong>API key env</strong> fields
+    to environment variable <em>names</em> only, then click
+    <strong>Set value&hellip;</strong> next to each to store the actual
+    URL/key &mdash; both are saved under the TycoonAgents per-user app-data
+    folder, never in the project, and each shows a dot reading &ldquo;stored
+    locally&rdquo; once set. <strong>Clear stored value</strong> removes
+    one.</li>
+    <li>Expand <strong>&ldquo;Fallback chain (N)&rdquo;</strong> and
+    <strong>&ldquo;+ Add fallback&rdquo;</strong> to add ordered fallback
+    slots (e.g. <code>opencode/big-pickle</code>, then a
+    subscription-backed slot).</li>
+    <li><strong>Save</strong> writes the resolved slots to
+    <code>routing.json</code>, applies managed <code>backend:</code> blocks
+    to agent files, and adds a secret-free provider entry to
+    <code>opencode.json</code> plus your user-level OpenCode config (file
+    references only) &mdash; any slot about to change shows a &ldquo;will be
+    written to routing.json&rdquo; marker first.</li>
+    <li><strong>Clear profile</strong> removes the routing profile and its
+    generated blocks but keeps everything you stored via Set
+    value&hellip;.</li>
+    <li>Each agent row shows its <strong>&ldquo;model from &hellip;&rdquo;</strong>
+    source line, a <strong>&ldquo;ran on fallback&rdquo;</strong> chip when it
+    last ran on a fallback entry, and the view's Totals block rolls up
+    per-vendor and per-cost-class counts.</li>
+  </ol>
+  <p>
+    See <code>docs/ROUTING-PROFILE.md</code> for the full
+    <code>routing.json</code> schema.
+  </p>
+
   <div class="nav-links">
     <div class="nav-prev"><a href="ch-02.html">&larr; Chapter 02</a></div>
     <div class="nav-index"><a href="index.html">Handbook Index</a></div>

@@ -118,6 +118,20 @@ TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of C
 5. **Run a session** in OpenCode as usual — the plugin appends hook records to the same activity log the Claude Code hook writes to. On a headless or remote machine, set `TYCOON_STANDALONE_NO_OPEN=1` so the standalone does not try to launch a browser.
 6. **What the panel shows** — the same live agent visualization and metrics, sourced from OpenCode's events instead of Claude Code's.
 
+### Routing walkthrough
+
+1. In **Settings**, use **"Which tool runs your agents?"** to pick the harness (Claude Code or OpenCode).
+2. Open the **Routing** view from the panel menu.
+3. Fill in the **orchestrator** slot at the top the same way as any agent row below.
+4. For a per-agent model, pick **Vendor** then choose a preset from the **Model** dropdown.
+5. For a local or VM-hosted OpenAI-compatible server, pick **Custom endpoint…** as the vendor: give it a **Provider name** (e.g. `ollama-windows`), the **Model** id exactly as your endpoint serves it, and **Cost class** `local`. Set the **Endpoint URL env** and **API key env** fields to environment variable *names* only, then click **Set value…** next to each to store the actual URL/key — both are saved under the TycoonAgents per-user app-data folder, never in the project, and each shows a dot reading "stored locally" once set. **Clear stored value** removes one.
+6. Expand **"Fallback chain (N)"** and **"+ Add fallback"** to add ordered fallback slots (e.g. `opencode/big-pickle`, then a subscription-backed slot).
+7. **Save** writes the resolved slots to `routing.json`, applies managed `backend:` blocks to agent files, and adds a secret-free provider entry to `opencode.json` plus your user-level OpenCode config (file references only) — any slot about to change shows a "will be written to routing.json" marker first.
+8. **Clear profile** removes the routing profile and its generated blocks but keeps everything you stored via Set value….
+9. Each agent row shows its **"model from …"** source line, a **"ran on fallback"** chip when it last ran on a fallback entry, and the view's **Totals** block rolls up per-vendor and per-cost-class counts.
+
+See [`docs/ROUTING-PROFILE.md`](docs/ROUTING-PROFILE.md) for the full `routing.json` schema.
+
 See [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md) for the full IPC contract and mapping details. Note: Anthropic/OpenAI models used through OpenCode are billed per API token, not through a Claude/Codex subscription — subscription access reaches OpenCode only via the vendor CLIs (see `docs/OPENCODE-PROVIDER.md`).
 
 ## UEFN pack

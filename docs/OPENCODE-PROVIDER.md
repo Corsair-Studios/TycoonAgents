@@ -342,6 +342,10 @@ source file, so the same agent roster runs under OpenCode
 (`npm run opencode:config`, i.e. `node scripts/generate-opencode-config.mjs
 [--root <dir>] [--check]`). Never deletes files — a hand-written
 `.opencode/agents/*.md` with no `.claude/agents` source is left untouched.
+`.opencode/agents/`, `.opencode/tycoon-routing.generated.json`, and
+`.opencode/plugin/` are gitignored, per-machine generated output — a fresh
+clone has none of them; run this script (or `install-hook --opencode`) to
+produce them locally.
 
 - **Mode rule** — `mode: 'primary'` when the source frontmatter has
   `role: orchestrator` or `tier: orchestrator`; `'subagent'` otherwise.

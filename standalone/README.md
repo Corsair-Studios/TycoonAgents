@@ -105,6 +105,12 @@ Precedence for project targets: explicit CLI directory argument(s) > `TYCOON_STA
 node src/cli.mjs watch . --provider opencode
 ```
 
+Passing `--provider` disables the panel's "Which tool runs your agents?" harness dropdown — the flag (or `TYCOON_PROVIDER`, which always wins over it) is the source of truth for a standalone run.
+
+### Routing walkthrough
+
+The standalone panel's Routing view is the same one described in the main [`README.md`](../README.md#routing-walkthrough): pick the harness in Settings (skipped when `--provider` is passed), open Routing, fill in the orchestrator slot, assign per-agent models from presets or a **Custom endpoint…** vendor for a local/VM OpenAI-compatible server (Provider name, Model id as served, Cost class `local`, then **Set value…** on the Endpoint URL env / API key env fields to store the URL and key per-user, outside the project), add a fallback chain via **"+ Add fallback"**, then **Save**. `install-hook` must have already seeded `.claude/agents/*.md` (see "Agent roster seeding" below) before Routing can resolve any agent slot. **Clear profile** reverts the managed files but keeps stored endpoint/key values. See [`docs/ROUTING-PROFILE.md`](../docs/ROUTING-PROFILE.md) for the schema.
+
 ## Agent roster seeding
 
 `.claude/agents/*.md` is not committed to the repo (`.claude/` is
