@@ -136,10 +136,12 @@
 //      per the merge rule above, omitting `options` here means the
 //      project file cannot override whatever `options` the global file
 //      sets for the same provider id.
-//   2. GLOBAL <resolveGlobalOpencodeConfigDir()>/opencode.json (normally
-//      ~/.config/opencode/opencode.json, %APPDATA%/opencode/opencode.json
-//      on win32, overridable via OPENCODE_CONFIG_DIR — mirrors the
-//      discovery ladder in src/providers/opencode/discovery.ts) — the
+//   2. GLOBAL <resolveGlobalOpencodeConfigDir()>/opencode.json — always
+//      ~/.config/opencode/opencode.json, Windows included (confirmed via
+//      `opencode debug paths` against a live OpenCode 1.18.27 install;
+//      %APPDATA%/opencode is never read), overridable via
+//      OPENCODE_CONFIG_DIR — mirrors the discovery ladder in
+//      src/providers/opencode/discovery.ts — the
 //      SAME managed provider entry, but WITH `options`: baseURL is
 //      `{file:<store path>}` when localEnvStore has a stored value for
 //      `endpointEnv`, else `{env:<endpointEnv>}`; apiKey follows the same
@@ -601,22 +603,30 @@ function buildOpencodeJson(root, computedVendors) {
  * Resolve the global OpenCode config directory. OPENCODE_CONFIG_DIR always
  * wins (matches src/providers/opencode/discovery.ts's override, and
  * scripts/apply-routing-profile.mjs's convention of accepting the same
- * override names project-wide). Otherwise: ~/.config/opencode on
- * mac/linux, %APPDATA%/opencode on win32 (falling back to ~/.config/opencode
- * if APPDATA is unset) — the documented global location
- * (https://opencode.ai/docs/config/: "Place your global OpenCode config in
- * ~/.config/opencode/opencode.json"). Unlike discovery.ts's
- * candidateConfigDirs(), this does NOT probe <projectDir>/.opencode or
- * require the directory to already exist — a project-local dir is not the
- * GLOBAL config, and this generator must be able to create the global dir
- * on first run.
+ * override names project-wide). Otherwise: ~/.config/opencode on every
+ * platform, Windows included — confirmed empirically against a live
+ * OpenCode 1.18.27 install on Windows via `opencode debug paths`, which
+ * reported `config  C:\Users\<user>\.config\opencode` (NOT
+ * %APPDATA%\opencode). `opencode debug config` corroborated this: a
+ * managed provider entry with `options.{apiKey,baseURL}` placed in
+ * ~/.config/opencode/opencode.json resolved its `{file:...}` refs into the
+ * live values in the merged output, and `opencode run --model
+ * ollama-windows/qwen3.8:27b "Reply with exactly the word READY"` returned
+ * "READY" — proving the endpoint resolves from this path. The same entry
+ * placed only at %APPDATA%\opencode\opencode.json was never read (`opencode
+ * models` showed only the model declared by the project-level
+ * opencode.json, which carries no `options`). So OpenCode's Windows global
+ * config is XDG-style (~/.config/opencode), matching the documented
+ * cross-platform path (https://opencode.ai/docs/config/: "Place your global
+ * OpenCode config in ~/.config/opencode/opencode.json") — %APPDATA% is not
+ * used at all. Unlike discovery.ts's candidateConfigDirs(), this does NOT
+ * probe <projectDir>/.opencode or require the directory to already exist —
+ * a project-local dir is not the GLOBAL config, and this generator must be
+ * able to create the global dir on first run.
  */
 function resolveGlobalOpencodeConfigDir(env, platform) {
   if (env.OPENCODE_CONFIG_DIR) return env.OPENCODE_CONFIG_DIR;
   const home = env.HOME || env.USERPROFILE || os.homedir();
-  if (platform === "win32" && env.APPDATA) {
-    return path.join(env.APPDATA, "opencode");
-  }
   return path.join(home, ".config", "opencode");
 }
 
@@ -862,6 +872,42 @@ function main() {
   const globalOpencodeJsonContent = buildGlobalOpencodeJson(globalConfigPath, computedVendors, localEnvStoreModule);
   if (globalOpencodeJsonContent !== null) {
     writes.push({ destPath: globalConfigPath, content: globalOpencodeJsonContent, isGlobal: true });
+  }
+
+  // Migration: earlier versions of this script (incorrectly) treated
+  // %APPDATA%\opencode as the Windows global config dir. OpenCode itself
+  // never reads that location (confirmed via `opencode debug paths`); the
+  // real global dir is ~/.config/opencode on every platform. If a stale
+  // %APPDATA%\opencode\opencode.json exists with tycoonManaged entries,
+  // strip only those entries (never touching any user-authored content)
+  // so a machine upgrading from the old behavior doesn't keep two
+  // divergent copies of the managed provider around.
+  if (process.platform === "win32" && process.env.APPDATA && !process.env.OPENCODE_CONFIG_DIR) {
+    const staleGlobalPath = path.join(process.env.APPDATA, "opencode", "opencode.json");
+    if (path.resolve(staleGlobalPath) !== path.resolve(globalConfigPath) && fs.existsSync(staleGlobalPath)) {
+      try {
+        const staleExisting = JSON.parse(fs.readFileSync(staleGlobalPath, "utf8"));
+        const staleProvider =
+          staleExisting && typeof staleExisting === "object" && staleExisting["provider"] && typeof staleExisting["provider"] === "object"
+            ? staleExisting["provider"]
+            : null;
+        if (staleProvider) {
+          let removedAny = false;
+          for (const key of Object.keys(staleProvider)) {
+            if (staleProvider[key] && staleProvider[key]["tycoonManaged"] === true) {
+              delete staleProvider[key];
+              removedAny = true;
+            }
+          }
+          if (removedAny) {
+            const staleContent = JSON.stringify(staleExisting, null, 2) + "\n";
+            writes.push({ destPath: staleGlobalPath, content: staleContent, isGlobal: true });
+          }
+        }
+      } catch (err) {
+        console.error(`${staleGlobalPath}: failed to parse for migration cleanup, leaving it untouched: ${err.message}`);
+      }
+    }
   }
 
   const isGlobalPath = new Set();

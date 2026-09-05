@@ -105,6 +105,18 @@ on `PATH` (platform-appropriate extensions), then
 dir resolves, listing every location tried and naming both override
 variables — never a silent empty/success result.
 
+**Note on the real global config path (Windows):** the discovery ladder
+above still probes `%APPDATA%/opencode` and `%LOCALAPPDATA%/opencode` as
+candidates (harmless — they're additional signals, not the only one), but
+the config directory OpenCode 1.18.27 actually reads on Windows is
+`~/.config/opencode` (i.e. `%USERPROFILE%\.config\opencode`), confirmed via
+`opencode debug paths` and `opencode debug config` on 2026-09-04 — OpenCode
+never reads `%APPDATA%\opencode\opencode.json`. `scripts/
+generate-opencode-config.mjs`'s `resolveGlobalOpencodeConfigDir()` writes
+only to `~/.config/opencode` (after `OPENCODE_CONFIG_DIR`) for this reason;
+see `docs/ROUTING-PROFILE.md`'s GLOBAL opencode.json section for the full
+migration note.
+
 `isProjectPluginInstalled(projectDir)` (same file) checks for
 `.opencode/plugin/tycoon-opencode-plugin.(ts|js)` and is used only to warn
 the user that OpenCode activity won't be captured without the plugin

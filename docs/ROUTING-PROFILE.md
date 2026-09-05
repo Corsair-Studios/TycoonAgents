@@ -494,9 +494,16 @@ generate-opencode-config.mjs` now writes the managed provider entry into
 
 - **PROJECT** `<root>/opencode.json` (git-tracked): the entry carries only
   `npm`/`name`/`models` — no `options` at all.
-- **GLOBAL** `<OpenCode global config dir>/opencode.json` (normally
-  `~/.config/opencode/opencode.json`, `%APPDATA%/opencode/opencode.json` on
-  win32, overridable via `OPENCODE_CONFIG_DIR`): the SAME entry, but with
+- **GLOBAL** `<OpenCode global config dir>/opencode.json` — always
+  `~/.config/opencode/opencode.json`, Windows included, overridable via
+  `OPENCODE_CONFIG_DIR`. Confirmed empirically against a live OpenCode
+  1.18.27 install on Windows (2026-09-04): `opencode debug paths` reports
+  `config  C:\Users\<user>\.config\opencode`, and `%APPDATA%\opencode` is
+  never read — the generator's earlier win32 special-case (writing to
+  `%APPDATA%/opencode/opencode.json`) was wrong and has been removed; a
+  stale entry left there by that older behavior is migrated (its
+  `tycoonManaged` provider entries removed, everything else left intact)
+  the next time the generator runs. The SAME managed entry, but with
   `options.baseURL`/`options.apiKey` set to `{file:<store path>}` when a
   value is stored, else the existing `{env:<NAME>}` placeholder.
 

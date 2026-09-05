@@ -290,4 +290,102 @@ test('generate-opencode-config: opencode.json provider merge', { skip: !scriptEx
 
     fs.rmSync(root, { recursive: true, force: true });
   });
+
+  // Windows global path (empirically confirmed against a live OpenCode
+  // 1.18.27 install via `opencode debug paths`/`opencode debug config`):
+  // the real global config dir is ~/.config/opencode on every platform,
+  // NOT %APPDATA%/opencode. These tests fake USERPROFILE/HOME and APPDATA
+  // to isolated temp dirs and unset OPENCODE_CONFIG_DIR so the default
+  // resolution path runs without touching this machine's real config.
+  await t.test('default global path (no OPENCODE_CONFIG_DIR) writes to ~/.config/opencode, not %APPDATA%', () => {
+    const root = setupFixtureRoot();
+    const fakeHome = mkTempRoot('tycoon-opencode-fakehome-');
+    const fakeAppData = mkTempRoot('tycoon-opencode-fakeappdata-');
+    const localEnvStoreDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-opencode-localenv-'));
+
+    const { OPENCODE_CONFIG_DIR: _drop, ...envWithoutOverride } = process.env;
+    const result = spawnSync(process.execPath, [SCRIPT_PATH, '--root', root], {
+      encoding: 'utf8',
+      env: {
+        ...envWithoutOverride,
+        USERPROFILE: fakeHome,
+        HOME: fakeHome,
+        APPDATA: fakeAppData,
+        TYCOON_STANDALONE_DATA_DIR: localEnvStoreDataDir,
+      },
+    });
+    assert.equal(result.status, 0, `generator failed: ${result.stderr}`);
+
+    const expectedPath = path.join(fakeHome, '.config', 'opencode', 'opencode.json');
+    assert.ok(fs.existsSync(expectedPath), `expected global config at ${expectedPath}`);
+    const config = JSON.parse(fs.readFileSync(expectedPath, 'utf8'));
+    assert.ok(config.provider['ollama-windows'], 'managed provider entry present at ~/.config/opencode');
+
+    const staleAppDataPath = path.join(fakeAppData, 'opencode', 'opencode.json');
+    assert.ok(!fs.existsSync(staleAppDataPath), '%APPDATA%/opencode/opencode.json must not be created by default');
+
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(fakeAppData, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  await t.test('migration strips stale tycoonManaged entries from old %APPDATA%/opencode/opencode.json', () => {
+    const root = setupFixtureRoot();
+    const fakeHome = mkTempRoot('tycoon-opencode-fakehome-');
+    const fakeAppData = mkTempRoot('tycoon-opencode-fakeappdata-');
+    const localEnvStoreDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-opencode-localenv-'));
+
+    // Seed a stale %APPDATA%/opencode/opencode.json as an earlier run of
+    // this script (pre-fix) would have left it: a tycoonManaged entry plus
+    // unrelated user-authored content that must be preserved.
+    const staleDir = path.join(fakeAppData, 'opencode');
+    fs.mkdirSync(staleDir, { recursive: true });
+    const staleAppDataPath = path.join(staleDir, 'opencode.json');
+    fs.writeFileSync(
+      staleAppDataPath,
+      JSON.stringify(
+        {
+          $schema: 'https://opencode.ai/config.json',
+          provider: {
+            'ollama-windows': {
+              name: 'ollama-windows',
+              npm: '@ai-sdk/openai-compatible',
+              models: { 'qwen3.6:latest': { name: 'qwen3.6:latest' } },
+              options: { baseURL: '{env:OLLAMA_BASE_URL}' },
+              tycoonManaged: true,
+            },
+            'user-added-vendor': { name: 'user-added-vendor', npm: 'some-other-npm' },
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    const { OPENCODE_CONFIG_DIR: _drop, ...envWithoutOverride } = process.env;
+    const result = spawnSync(process.execPath, [SCRIPT_PATH, '--root', root], {
+      encoding: 'utf8',
+      env: {
+        ...envWithoutOverride,
+        USERPROFILE: fakeHome,
+        HOME: fakeHome,
+        APPDATA: fakeAppData,
+        TYCOON_STANDALONE_DATA_DIR: localEnvStoreDataDir,
+      },
+    });
+    assert.equal(result.status, 0, `generator failed: ${result.stderr}`);
+
+    const staleAfter = JSON.parse(fs.readFileSync(staleAppDataPath, 'utf8'));
+    assert.ok(!staleAfter.provider['ollama-windows'], 'stale tycoonManaged entry must be removed from %APPDATA%');
+    assert.ok(staleAfter.provider['user-added-vendor'], 'unrelated user-authored provider entry must survive migration');
+
+    const newPath = path.join(fakeHome, '.config', 'opencode', 'opencode.json');
+    const newConfig = JSON.parse(fs.readFileSync(newPath, 'utf8'));
+    assert.ok(newConfig.provider['ollama-windows'], 'managed entry must now live at ~/.config/opencode');
+
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(fakeAppData, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 });
