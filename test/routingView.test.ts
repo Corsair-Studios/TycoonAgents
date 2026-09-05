@@ -249,33 +249,74 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
   assert.ok(modal, 'routing modal should exist');
   assert.notEqual(modal.hasAttribute('hidden'), true, 'routing modal should be visible after open');
 
-  // ── Sticky header (p13 audit fix): the title + close button must live in
-  // a sticky header that is the FIRST CHILD of the scroll container
-  // (#routing-modal-body), not of the dialog — so they stay pinned to the
-  // upper-right no matter how far the body beneath is scrolled. ──
+  // ── Fixed header/footer around a single scroll region (defect fix): the
+  // scrollbar must span ONLY the middle content — #routing-dialog is a
+  // column flex container with the header first, #routing-modal-body (the
+  // sole overflow-y:auto element) in the middle, and the footer
+  // .routing-actions-row last, both outside the scroll container. ──
+  const dialog = doc.getElementById('routing-dialog');
+  assert.ok(dialog, '#routing-dialog should exist');
   const scrollContainer = doc.getElementById('routing-modal-body');
   assert.ok(scrollContainer, '#routing-modal-body (the scroll container) should exist');
   const header = doc.getElementById('routing-modal-header');
   assert.ok(header, '#routing-modal-header should exist');
-  assert.ok(header.classList.contains('routing-modal-header'), 'header should carry the .routing-modal-header sticky class');
+  assert.ok(header.classList.contains('routing-modal-header'), 'header should carry the .routing-modal-header class');
   assert.equal(
-    scrollContainer.firstElementChild,
+    dialog.firstElementChild,
     header,
-    '#routing-modal-header must be the first child of #routing-modal-body (the scroll container)'
+    '#routing-modal-header must be the first child of #routing-dialog (fixed at top, outside the scroll container)'
   );
   assert.ok(header.contains(doc.getElementById('routing-modal-title')), 'header should contain the title');
   assert.ok(header.contains(doc.getElementById('routing-modal-close')), 'header should contain the close button');
 
+  const footer = dialog.lastElementChild as any;
+  assert.ok(footer, '#routing-dialog should have a last child (the fixed footer)');
+  assert.ok(footer.classList.contains('routing-actions-row'), 'the fixed footer must carry .routing-actions-row');
+  assert.notEqual(footer, scrollContainer, 'the footer must not be the scroll container');
+  assert.notEqual(footer, header, 'the footer must not be the header');
+  ['routing-save-btn', 'routing-revert-btn', 'routing-clear-btn'].forEach((id) => {
+    const btn = doc.getElementById(id);
+    assert.ok(btn, `#${id} should render`);
+    assert.ok(footer.contains(btn), `#${id} should live in the fixed footer, not the scrolling body`);
+    assert.ok(!scrollContainer.contains(btn), `#${id} must not be inside the scroll container`);
+  });
+
   const css = readFileSync(join(process.cwd(), 'media', 'style.css'), 'utf8');
   assert.match(
     css,
-    /\.routing-modal-header\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/,
-    '.routing-modal-header should be position: sticky; top: 0'
+    /#routing-modal-body\s*\{[^}]*overflow-y:\s*auto;/,
+    '#routing-modal-body should be the overflow-y: auto scroll container'
+  );
+  // Only #routing-modal-body may declare overflow-y: auto/scroll — the
+  // scrollbar must never span the header/footer.
+  const overflowYRuleRe = /([.#][\w-]+)\s*\{[^}]*overflow-y:\s*(auto|scroll)/g;
+  let overflowMatch: RegExpExecArray | null;
+  const overflowYSelectors: string[] = [];
+  while ((overflowMatch = overflowYRuleRe.exec(css)) !== null) overflowYSelectors.push(overflowMatch[1]);
+  assert.deepEqual(
+    overflowYSelectors.filter((s) => s.indexOf('routing') !== -1),
+    ['#routing-modal-body'],
+    'only #routing-modal-body should declare overflow-y: auto/scroll in the routing panel'
   );
   assert.match(
     css,
-    /#routing-modal-body\s*\{[^}]*overflow-y:\s*auto;/,
-    '#routing-modal-body (not the dialog) should be the overflow-y: auto scroll container'
+    /#routing-modal-body\s*\{[^}]*padding:\s*0;/,
+    '#routing-modal-body (the scroll container) should carry zero padding — horizontal padding moves to #routing-modal-content so the scrollbar sits flush against the dialog edge'
+  );
+  assert.match(
+    css,
+    /#routing-modal-content\s*\{[^}]*padding:\s*[^;]*32px[^;]*;/,
+    '#routing-modal-content (the inner wrapper) should carry the horizontal padding'
+  );
+  assert.doesNotMatch(
+    css,
+    /\.routing-modal-header\s*\{[^}]*position:\s*sticky/,
+    '.routing-modal-header no longer needs position: sticky — it is a fixed dialog sibling of the scroll container, not inside it'
+  );
+  assert.doesNotMatch(
+    css,
+    /\.routing-actions-row\s*\{[^}]*position:\s*sticky/,
+    '.routing-actions-row no longer needs position: sticky — it is a fixed footer, not inside the scroll container'
   );
 
   const rows = doc.querySelectorAll('.routing-agent-row');
@@ -321,8 +362,11 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
   }
   assert.doesNotThrow(() => walk(parsed));
 
-  // Save button disabled while a save is in flight (before the routingSaved reply lands).
-  assert.equal(saveBtn.disabled, false, 'save completes synchronously in this harness; button re-enables once the flow completes below');
+  // Save button lives in the fixed footer (created once, never recreated by
+  // renderRoutingModal) so this same reference reflects disabled-while-
+  // saving state directly: still disabled here since routingSaved hasn't
+  // landed yet.
+  assert.equal(saveBtn.disabled, true, 'Save button should stay disabled while a save is in flight');
 
   // ── routingSaved + a fresh routing reply ──
   // Flat on the message (no payload wrapper) — matches panel.ts's
@@ -330,6 +374,7 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
   // clearRouting cases: `{ type: MSG.ROUTING_SAVED, ...result }`.
   dispatch({ type: 'routingSaved', ok: true, errors: [], check: { claude: { code: 0, output: 'ok' }, opencode: { code: 0, output: 'ok' } }, write: { claude: { code: 0, output: 'ok' }, opencode: { code: 0, output: 'ok' } } });
   await flush();
+  assert.equal(saveBtn.disabled, false, 'Save button should re-enable once the routingSaved reply lands');
   dispatch({ type: 'routing', payload });
   await flush();
   assertNoErrors('routingSaved + refresh');

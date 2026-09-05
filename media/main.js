@@ -16680,6 +16680,7 @@
   var routingSaving = false;
   var routingLastResult = null;  // last routingSaved payload, for the collapsed check/write output block
   var routingModalEl = null, routingBackdropEl = null, routingCloseBtnEl = null, routingBodyEl = null, routingContentEl = null;
+  var routingSaveBtnEl = null, routingRevertBtnEl = null, routingClearBtnEl = null;
 
   function cloneSlotFromBackend(backend) {
     if (!backend) return {};
@@ -17165,25 +17166,13 @@
     routingBackdropEl.id = "routing-backdrop";
     routingModalEl.appendChild(routingBackdropEl);
 
+    // #routing-dialog is a column flex container: [header (flex:none)]
+    // [#routing-modal-body (flex:1; overflow-y:auto) — the ONLY scroll
+    // region] [footer .routing-actions-row (flex:none)]. Header and footer
+    // sit outside the scroll container so they stay put — no
+    // position:sticky needed — while the body between them scrolls.
     var dialog = document.createElement("div");
     dialog.id = "routing-dialog";
-
-    // routingBodyEl is the scroll container (dialog itself no longer
-    // scrolls — see #routing-dialog CSS). Its first child is a sticky
-    // header carrying the title + close button, so both stay pinned to the
-    // upper-right regardless of how far the content below is scrolled.
-    routingBodyEl = document.createElement("div");
-    routingBodyEl.id = "routing-modal-body";
-    // Re-apply a chip/Totals update that updateRoutingViewLive deferred
-    // (routingUpdatePending) because focus was inside the body — "focusout"
-    // bubbles and fires once focus actually leaves routingBodyEl (or the
-    // whole document), unlike "blur" which doesn't bubble.
-    routingBodyEl.addEventListener("focusout", function () {
-      if (!routingUpdatePending) return;
-      setTimeout(function () {
-        if (routingUpdatePending) updateRoutingViewLive();
-      }, 0);
-    });
 
     var header = document.createElement("div");
     header.id = "routing-modal-header";
@@ -17201,13 +17190,66 @@
     routingCloseBtnEl.addEventListener("click", function () { closeModal(routingModalEl); });
     header.appendChild(routingCloseBtnEl);
 
-    routingBodyEl.appendChild(header);
+    dialog.appendChild(header);
+
+    // routingBodyEl is the ONLY scroll container. Horizontal padding lives
+    // on routingContentEl (the inner wrapper) instead of here, so the
+    // scrollbar itself sits flush against the dialog's right edge.
+    routingBodyEl = document.createElement("div");
+    routingBodyEl.id = "routing-modal-body";
+    // Re-apply a chip/Totals update that updateRoutingViewLive deferred
+    // (routingUpdatePending) because focus was inside the body — "focusout"
+    // bubbles and fires once focus actually leaves routingBodyEl (or the
+    // whole document), unlike "blur" which doesn't bubble.
+    routingBodyEl.addEventListener("focusout", function () {
+      if (!routingUpdatePending) return;
+      setTimeout(function () {
+        if (routingUpdatePending) updateRoutingViewLive();
+      }, 0);
+    });
 
     routingContentEl = document.createElement("div");
     routingContentEl.id = "routing-modal-content";
     routingBodyEl.appendChild(routingContentEl);
 
     dialog.appendChild(routingBodyEl);
+
+    // Fixed footer — Save/Revert/Clear must always stay visible so the user
+    // knows to save, regardless of scroll position. Created once here;
+    // renderRoutingModal only updates button state/text.
+    var footer = document.createElement("div");
+    footer.id = "routing-modal-footer";
+    footer.className = "routing-actions-row";
+
+    routingSaveBtnEl = document.createElement("button");
+    routingSaveBtnEl.id = "routing-save-btn";
+    routingSaveBtnEl.className = "skill-btn settings-btn";
+    routingSaveBtnEl.textContent = "Save";
+    routingSaveBtnEl.addEventListener("click", saveRoutingProfile);
+    footer.appendChild(routingSaveBtnEl);
+
+    routingRevertBtnEl = document.createElement("button");
+    routingRevertBtnEl.id = "routing-revert-btn";
+    routingRevertBtnEl.className = "skill-btn settings-btn";
+    routingRevertBtnEl.textContent = "Revert";
+    routingRevertBtnEl.addEventListener("click", function () {
+      routingDraft = buildRoutingDraft(lastRoutingPayload);
+      renderRoutingModal();
+    });
+    footer.appendChild(routingRevertBtnEl);
+
+    routingClearBtnEl = document.createElement("button");
+    routingClearBtnEl.id = "routing-clear-btn";
+    routingClearBtnEl.className = "skill-btn settings-btn routing-clear-btn";
+    routingClearBtnEl.textContent = "Clear profile";
+    routingClearBtnEl.addEventListener("click", function () {
+      routingSaving = true;
+      renderRoutingModal();
+      vscode.postMessage({ type: ROUTING_MSG.CLEAR });
+    });
+    footer.appendChild(routingClearBtnEl);
+
+    dialog.appendChild(footer);
 
     routingModalEl.appendChild(dialog);
     document.body.appendChild(routingModalEl);
@@ -17393,43 +17435,14 @@
     routingContentEl.appendChild(agentsSection);
     routingContentEl.appendChild(buildRoutingTotalsBlock());
 
-    // ── Actions ──
-    var actionsSection = buildSection("Profile");
-    var actionsRow = document.createElement("div");
-    actionsRow.className = "settings-row routing-actions-row";
-
-    var saveBtn = document.createElement("button");
-    saveBtn.id = "routing-save-btn";
-    saveBtn.className = "skill-btn settings-btn";
-    saveBtn.textContent = routingSaving ? "Saving…" : "Save";
-    saveBtn.disabled = routingSaving;
-    saveBtn.addEventListener("click", saveRoutingProfile);
-    actionsRow.appendChild(saveBtn);
-
-    var revertBtn = document.createElement("button");
-    revertBtn.id = "routing-revert-btn";
-    revertBtn.className = "skill-btn settings-btn";
-    revertBtn.textContent = "Revert";
-    revertBtn.disabled = routingSaving;
-    revertBtn.addEventListener("click", function () {
-      routingDraft = buildRoutingDraft(lastRoutingPayload);
-      renderRoutingModal();
-    });
-    actionsRow.appendChild(revertBtn);
-
-    var clearBtn = document.createElement("button");
-    clearBtn.id = "routing-clear-btn";
-    clearBtn.className = "skill-btn settings-btn routing-clear-btn";
-    clearBtn.textContent = "Clear profile";
-    clearBtn.disabled = routingSaving;
-    clearBtn.addEventListener("click", function () {
-      routingSaving = true;
-      renderRoutingModal();
-      vscode.postMessage({ type: ROUTING_MSG.CLEAR });
-    });
-    actionsRow.appendChild(clearBtn);
-
-    actionsSection.appendChild(actionsRow);
+    // ── Fixed footer button state (buttons themselves live outside the
+    // scroll container — created once in ensureRoutingModal) ──
+    if (routingSaveBtnEl) {
+      routingSaveBtnEl.textContent = routingSaving ? "Saving…" : "Save";
+      routingSaveBtnEl.disabled = routingSaving;
+    }
+    if (routingRevertBtnEl) routingRevertBtnEl.disabled = routingSaving;
+    if (routingClearBtnEl) routingClearBtnEl.disabled = routingSaving;
 
     if (routingLastResult) {
       var resultDetails = document.createElement("details");
@@ -17450,10 +17463,8 @@
       pre.className = "feedback-preview-json";
       pre.textContent = JSON.stringify({ check: routingLastResult.check, write: routingLastResult.write }, null, 2);
       resultDetails.appendChild(pre);
-      actionsSection.appendChild(resultDetails);
+      routingContentEl.appendChild(resultDetails);
     }
-
-    routingContentEl.appendChild(actionsSection);
   }
 
   function assembleRoutingProfile() {

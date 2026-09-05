@@ -5908,10 +5908,12 @@ button.theme-review-preview:focus-visible::after {
 }
 
 /* ── Routing panel (plan p13-t1) ──────────────────────────────────────── */
-/* Backdrop mirrors #about-modal; the scroll/header split below mirrors
-   #themes-dialog/#themes-scroll (sticky header pinned above a scrolling
-   body) rather than #about-modal, since the whole dialog scrolling
-   let the title/close button scroll away with the content. */
+/* #routing-dialog is a column flex container: header (flex:none) at top,
+   #routing-modal-body (flex:1; overflow-y:auto) — the ONLY scroll region —
+   in the middle, and the footer .routing-actions-row (flex:none) pinned at
+   the bottom. Header and footer sit outside the scroll container, so they
+   need no position:sticky, and the scrollbar only ever spans the middle
+   content — never the header or the Save/Revert/Clear row. */
 #routing-modal[hidden] {
   display: none;
 }
@@ -5936,38 +5938,34 @@ button.theme-review-preview:focus-visible::after {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 0 32px 24px;
+  padding: 0;
   width: min(760px, 92vw);
-  max-height: 84vh;
-  overflow: hidden; /* the dialog itself no longer scrolls — #routing-modal-body does */
+  max-height: 84vh; /* keeps the fixed footer within the viewport */
+  overflow: hidden; /* the dialog itself never scrolls — #routing-modal-body does */
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
 }
 
-/* #routing-modal-body is the scroll container (not the dialog, not the
-   page). Its first child, #routing-modal-header, is sticky so the title +
-   close button stay pinned to the upper-right no matter how far the
-   content below has scrolled. */
+/* #routing-modal-body is the ONLY scroll container — header and footer
+   live outside it as dialog siblings (flex:none), so the scrollbar spans
+   just the middle content. No horizontal padding here: it lives on
+   #routing-modal-content instead, so the scrollbar sits flush against the
+   dialog's right edge instead of inset from it. */
 #routing-modal-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden; /* backstop — the fields below are sized to fit, this just guards regressions */
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  padding: 0;
 }
 
 .routing-modal-header {
-  position: sticky;
-  top: 0;
-  z-index: 6;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: 0 -32px;
   padding: 28px 32px 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -5997,20 +5995,22 @@ button.theme-review-preview:focus-visible::after {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Inner content wrapper — carries the horizontal padding that used to sit
+   on #routing-modal-body, so the scroll container's own edge (and its
+   scrollbar) stays flush with the dialog's right edge. */
 #routing-modal-content {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 20px 32px 24px;
 }
 
-/* Save/Revert/Clear action row — no other modal in this file has an
-   analogous bottom action bar to mirror, so it's pinned sticky-bottom here
-   so it stays reachable without scrolling to the very end of the dialog. */
+/* Save/Revert/Clear footer — a dialog sibling of #routing-modal-body
+   (flex:none), always visible regardless of scroll position so the user
+   always knows to save. No position:sticky needed since it's outside the
+   scroll container entirely. */
 .routing-actions-row {
-  position: sticky;
-  bottom: 0;
-  z-index: 5;
-  margin: 0 -32px;
+  flex: none;
   padding: 10px 32px;
   background: var(--surface);
   border-top: 1px solid var(--border);
