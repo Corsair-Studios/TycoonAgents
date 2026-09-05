@@ -16726,6 +16726,17 @@
     SLOT_SCALAR_FIELDS.forEach(function (k) {
       if (slot[k] !== undefined && slot[k] !== null && slot[k] !== "") out[k] = slot[k];
     });
+    // For custom/openai-compatible vendors the field editor collects a bare
+    // model id (e.g. "qwen3.6:latest") since the vendor is already selected
+    // separately — but the generators (and the routing.json schema) expect
+    // "provider/model" form. Assemble it here, once, at the outgoing edge,
+    // rather than mutating slot.model while the user is still editing (that
+    // would break the "display bare text" round-trip in buildSlotEditorFields
+    // below). A model that already contains "/" (loaded from an existing
+    // profile, untouched) is left as-is.
+    if (out.transport === "openai-compatible" && out.model && out.vendor && out.model.indexOf("/") === -1) {
+      out.model = out.vendor + "/" + out.model;
+    }
     if (Array.isArray(slot.tools) && slot.tools.length) out.tools = slot.tools.slice();
     if (Array.isArray(slot.fallback) && slot.fallback.length) {
       var fb = slot.fallback.slice(0, 3).map(cleanRoutingSlot).filter(Boolean);
@@ -17009,13 +17020,29 @@
       return !slot.vendor || slot.vendor === ROUTING_VENDOR_CUSTOM || m.vendor === slot.vendor;
     });
     var matchesPreset = models.some(function (m) { return m.id === slot.model; });
-    if (isCustom || (!matchesPreset && slot.model)) {
+    // Free-text branch: Custom-endpoint vendor, an unrecognized non-empty
+    // model, OR the preset select's own "Custom…" option was just picked
+    // (slot._modelCustomEdit, set below) — that pick clears slot.model to ""
+    // specifically to open this branch, and gating on `slot.model` being
+    // truthy alone used to send that case straight back into the preset
+    // SELECT branch instead (the "Custom…" pick silently failed to open the
+    // free-text field for a non-custom vendor with no model chosen yet).
+    if (isCustom || (!matchesPreset && (slot.model || slot._modelCustomEdit))) {
       var modelInput = document.createElement("input");
       modelInput.type = "text";
       modelInput.className = "routing-model-input";
       modelInput.setAttribute("data-field-key", keyPrefix + ".model");
       modelInput.placeholder = "model id";
-      modelInput.value = slot.model || "";
+      // For an openai-compatible/custom vendor, the stored model may already
+      // carry a "vendor/" prefix (assembled at save time — see
+      // cleanRoutingSlot) from a previously-saved profile; show the bare
+      // text here so re-editing doesn't force the user to retype/strip it,
+      // and so a no-op edit round-trips byte-identically.
+      var displayModel = slot.model || "";
+      if (slot.vendor && displayModel.indexOf(slot.vendor + "/") === 0) {
+        displayModel = displayModel.slice(slot.vendor.length + 1);
+      }
+      modelInput.value = displayModel;
       modelInput.addEventListener("input", function () { slot.model = modelInput.value; });
       modelRow.appendChild(modelInput);
       if (!isCustom) {
@@ -17023,7 +17050,7 @@
         backToPreset.type = "button";
         backToPreset.className = "routing-inline-link-btn";
         backToPreset.textContent = "Choose from list";
-        backToPreset.addEventListener("click", function () { slot.model = ""; onStructural(); });
+        backToPreset.addEventListener("click", function () { slot.model = ""; slot._modelCustomEdit = false; onStructural(); });
         modelRow.appendChild(backToPreset);
       }
     } else {
@@ -17047,7 +17074,7 @@
       customModelOpt.textContent = "Custom…";
       modelSel.appendChild(customModelOpt);
       modelSel.addEventListener("change", function () {
-        if (modelSel.value === "__custom__") { slot.model = ""; onStructural(); return; }
+        if (modelSel.value === "__custom__") { slot.model = ""; slot._modelCustomEdit = true; onStructural(); return; }
         slot.model = modelSel.value;
         var pickedPreset = models.filter(function (m) { return m.id === modelSel.value; })[0];
         if (pickedPreset && pickedPreset.costModelClass && costSel) {
@@ -17668,6 +17695,13 @@
         sourceLine.appendChild(routingSourceChip(a.source));
         var fallbackChip = buildRoutingFallbackChip(a.id);
         if (fallbackChip) sourceLine.appendChild(fallbackChip);
+        var agentWasInProfile = !!(payload.profile && payload.profile.agents && payload.profile.agents[a.id]);
+        if (shouldIncludeRoutingSlot(cleanRoutingSlot(slot), agentWasInProfile, a.backend)) {
+          var dirtyMarker = document.createElement("span");
+          dirtyMarker.className = "routing-source-chip routing-source-chip--dirty";
+          dirtyMarker.textContent = "will be written to routing.json";
+          sourceLine.appendChild(dirtyMarker);
+        }
         nameTd.appendChild(sourceLine);
         row.appendChild(nameTd);
 
@@ -17749,15 +17783,57 @@
     restoreRoutingUiState(uiSnapshot);
   }
 
+  /** Canonical cleaned-slot shape for a resolved Backend, for dirty-comparison against a draft slot. */
+  function backendToCleanSlot(backend) {
+    return cleanRoutingSlot(cloneSlotFromBackend(backend)) || {};
+  }
+
+  /** True when `cleanedSlot` (already run through cleanRoutingSlot) differs from `backend`'s own effective shape. */
+  function slotDiffersFromBackend(cleanedSlot, backend) {
+    return JSON.stringify(cleanedSlot || {}) !== JSON.stringify(backendToCleanSlot(backend));
+  }
+
+  /**
+   * Whether one slot belongs in the outgoing profile (p13 sparse-save fix):
+   * an agent/orchestrator the user never touched must not be materialized
+   * into routing.json just because opening the Routing view seeded a draft
+   * for every row. Included when either (a) it was already present in the
+   * loaded profile — editing a previously-routed agent back to its
+   * frontmatter/alias values keeps it explicit rather than silently
+   * dropping it — or (b) the draft now differs from the resolved backend
+   * the row started from.
+   */
+  function shouldIncludeRoutingSlot(cleanedSlot, wasInProfile, backend) {
+    if (!cleanedSlot) return false;
+    if (wasInProfile) return true;
+    if (!backend) return true; // nothing to diff against — err toward keeping an explicit edit
+    return slotDiffersFromBackend(cleanedSlot, backend);
+  }
+
   function assembleRoutingProfile() {
     var profile = { version: 1, agents: {} };
-    var existingProfile = lastRoutingPayload && lastRoutingPayload.profile;
+    var payload = lastRoutingPayload;
+    var existingProfile = payload && payload.profile;
     if (existingProfile && existingProfile.defaults) profile.defaults = existingProfile.defaults;
-    var orch = cleanRoutingSlot(routingDraft.orchestrator);
-    if (orch) profile.orchestrator = orch;
-    Object.keys(routingDraft.agents || {}).forEach(function (id) {
-      var cleaned = cleanRoutingSlot(routingDraft.agents[id]);
-      if (cleaned) profile.agents[id] = cleaned;
+
+    var orchCleaned = cleanRoutingSlot(routingDraft.orchestrator);
+    var orchWasInProfile = !!(existingProfile && existingProfile.orchestrator);
+    var orchBackend = payload && payload.orchestrator && payload.orchestrator.backend;
+    // Never write an orchestrator slot with no model — buildRoutingView
+    // deliberately blanks a "default" orchestrator's model to "" rather
+    // than a placeholder, and that blank must not round-trip into a
+    // materialized (and effectively meaningless) routing.json entry.
+    if (orchCleaned && orchCleaned.model && shouldIncludeRoutingSlot(orchCleaned, orchWasInProfile, orchBackend)) {
+      profile.orchestrator = orchCleaned;
+    }
+
+    var agents = (payload && payload.agents) || [];
+    agents.forEach(function (a) {
+      var cleaned = cleanRoutingSlot(routingDraft.agents[a.id]);
+      var wasInProfile = !!(existingProfile && existingProfile.agents && existingProfile.agents[a.id]);
+      if (shouldIncludeRoutingSlot(cleaned, wasInProfile, a.backend)) {
+        profile.agents[a.id] = cleaned;
+      }
     });
     return profile;
   }

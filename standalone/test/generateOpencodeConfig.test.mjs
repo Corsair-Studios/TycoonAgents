@@ -131,9 +131,17 @@ function setupFixtureRoot() {
   return root;
 }
 
+// Test isolation: the generator writes a GLOBAL opencode.json under
+// OPENCODE_CONFIG_DIR and reads localEnvStore (src/core/localEnvStore.ts,
+// scoped by TYCOON_STANDALONE_DATA_DIR) for endpoint/key placeholders.
+// Without these overrides it would touch this machine's real per-user
+// OpenCode config and secret store — pin both to fresh temp dirs.
 function runGenerator(root, extraArgs = []) {
+  const globalConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-opencode-config-global-'));
+  const localEnvStoreDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-opencode-config-localenv-'));
   return spawnSync(process.execPath, [SCRIPT_PATH, '--root', root, ...extraArgs], {
     encoding: 'utf8',
+    env: { ...process.env, OPENCODE_CONFIG_DIR: globalConfigDir, TYCOON_STANDALONE_DATA_DIR: localEnvStoreDataDir },
   });
 }
 

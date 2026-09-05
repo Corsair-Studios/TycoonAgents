@@ -542,3 +542,19 @@ still reaches the Claude path.
 
 `opencode-models.json` is not written by the routing system — see Migration
 above; it is a pre-`routing.json` hand-authored escape hatch, read only.
+
+## Clearing a profile removes managed blocks (unapply)
+
+`scripts/apply-routing-profile.mjs` unapplies as well as applies: for any
+`.claude/agents/<id>.md` whose id is no longer covered by `routing.json`
+(the agent was dropped from `profile.agents`, or `routing.json` itself is
+absent), the script strips that file's `backend:` block **only if** it
+starts with the `# managed-by: tycoon-routing` marker — a hand-written
+`backend:` block with no marker is always left alone. All other frontmatter
+keys and the body are restored byte-for-byte (CRLF preserved). When
+`routing.json` is absent, `routing.resolved.json` is deleted; otherwise it
+is rewritten to contain only the agents still in the profile.
+`clearRoutingProfile` (`src/core/routingHostOps.ts`) drives this by deleting
+`routing.json` and rerunning both generator scripts, so clearing a profile
+from the Routing panel fully reverts the managed frontmatter and the
+OpenCode provider config, not just the routing.json file itself.

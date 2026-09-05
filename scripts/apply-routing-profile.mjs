@@ -178,6 +178,43 @@ function rewriteFrontmatterLines(fmLines, newBackendLines, newTopModel) {
   return out;
 }
 
+const MANAGED_MARKER = "# managed-by: tycoon-routing";
+
+// Find a top-level `backend:` block whose FIRST indented child line is the
+// managed-by marker. Returns { start, end } (end exclusive) covering the
+// `backend:` line itself through its last indented child line, or undefined
+// if there is no backend block, or it exists but was hand-written (no
+// marker) — that block must never be touched.
+function findManagedBackendBlockRange(fmLines) {
+  for (let i = 0; i < fmLines.length; i++) {
+    const line = fmLines[i].replace(/\r$/, "");
+    const topMatch = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (topMatch && !/^\s/.test(line) && topMatch[1] === "backend") {
+      let j = i + 1;
+      while (j < fmLines.length && /^\s+\S/.test(fmLines[j])) j++;
+      const firstChild = i + 1 < j ? fmLines[i + 1].replace(/\r$/, "").trim() : undefined;
+      if (firstChild === MANAGED_MARKER) {
+        return { start: i, end: j };
+      }
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+// Strip a managed `backend:` block (marker-guarded) from raw file text,
+// leaving every other line untouched. Returns undefined if there is nothing
+// to strip (no frontmatter, or no managed block present) so the caller can
+// tell "nothing changed" apart from "changed back to identical content".
+function stripManagedBackendBlock(raw) {
+  const split = splitFrontmatter(raw);
+  if (!split.hasFrontmatter) return undefined;
+  const range = findManagedBackendBlockRange(split.fmLines);
+  if (!range) return undefined;
+  const newFmLines = [...split.fmLines.slice(0, range.start), ...split.fmLines.slice(range.end)];
+  return `---${split.eol}${newFmLines.join(split.eol)}${split.eol}---${split.eol}${split.rest}`;
+}
+
 // Determine if the given frontmatter lines mark this agent as the
 // orchestrator (role: orchestrator or tier: orchestrator, flat key match).
 function isOrchestratorFrontmatter(fmLines) {
@@ -206,19 +243,60 @@ function main() {
     process.exit(2);
   }
 
-  if (!profile) {
-    // No routing.json present at all: nothing to do, nothing to write.
-    if (check) {
-      console.log("No routing.json present; nothing to apply.");
-    }
-    process.exit(0);
-  }
-
   const agentsDir = path.join(root, ".claude", "agents");
   const wouldChange = [];
   const writes = []; // { filePath, content }
   const warnings = [];
   const untouched = []; // files with no frontmatter block
+  const deletes = []; // filePath list for pure removals (e.g. routing.resolved.json when no profile)
+
+  if (!profile) {
+    // No routing.json present at all: unapply — strip any managed backend
+    // block from every agent file (a hand-written backend block, i.e. one
+    // with no managed-by marker, is left untouched), and remove
+    // routing.resolved.json entirely.
+    let agentFilesNoProfile = [];
+    try {
+      agentFilesNoProfile = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+    } catch {
+      agentFilesNoProfile = [];
+    }
+    for (const file of agentFilesNoProfile) {
+      const filePath = path.join(agentsDir, file);
+      const raw = fs.readFileSync(filePath, "utf8");
+      const stripped = stripManagedBackendBlock(raw);
+      if (stripped !== undefined && stripped !== raw) {
+        wouldChange.push(filePath);
+        writes.push({ filePath, content: stripped });
+      }
+    }
+    const resolvedOutPath = path.join(root, ".claude", "tycoon", "routing.resolved.json");
+    if (fs.existsSync(resolvedOutPath)) {
+      wouldChange.push(resolvedOutPath);
+      deletes.push(resolvedOutPath);
+    }
+
+    if (check) {
+      if (wouldChange.length > 0) {
+        for (const f of wouldChange) console.log(f);
+        process.exit(1);
+      }
+      console.log("No routing.json present; nothing to apply.");
+      process.exit(0);
+    }
+
+    for (const { filePath, content } of writes) {
+      fs.writeFileSync(filePath, content, "utf8");
+    }
+    for (const f of deletes) {
+      try {
+        fs.unlinkSync(f);
+      } catch {
+        // already gone — fine.
+      }
+    }
+    process.exit(0);
+  }
 
   let agentFiles = [];
   try {
@@ -272,6 +350,7 @@ function main() {
   // Orchestrator slot: find the agent file whose frontmatter declares
   // role/tier orchestrator, if any.
   let resolvedOrchestrator;
+  let orchestratorFileResolved;
   const orchestratorSlot = resolveOrchestratorSlot(profile);
   if (orchestratorSlot) {
     let orchestratorFile;
@@ -294,6 +373,7 @@ function main() {
       : { backend };
 
     if (orchestratorFile) {
+      orchestratorFileResolved = orchestratorFile.filePath;
       const newBackendLines = renderBackendBlockLines(backend);
       const topModel = slotTopLevelModel(orchestratorSlot);
       const newFmLines = rewriteFrontmatterLines(orchestratorFile.split.fmLines, newBackendLines, topModel);
@@ -304,6 +384,34 @@ function main() {
       }
     } else {
       warnings.push("routing.json declares an orchestrator slot but no .claude/agents/*.md file has role/tier: orchestrator; skipped");
+    }
+  }
+
+  // Unapply pass: any agent file that was NOT written this run (i.e. its id
+  // is not in the profile, and it isn't the resolved orchestrator's file)
+  // may still carry a managed backend block from an earlier apply — strip
+  // it. A hand-written backend block (no managed-by marker) is left alone.
+  const activePaths = new Set();
+  for (const agentId of Object.keys(profile.agents)) {
+    const file = idToFile.get(agentId);
+    if (file) activePaths.add(path.join(agentsDir, file));
+  }
+  if (orchestratorSlot && orchestratorFileResolved) {
+    activePaths.add(orchestratorFileResolved);
+  }
+  for (const file of agentFiles) {
+    const filePath = path.join(agentsDir, file);
+    if (activePaths.has(filePath)) continue;
+    let raw;
+    try {
+      raw = fs.readFileSync(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    const stripped = stripManagedBackendBlock(raw);
+    if (stripped !== undefined && stripped !== raw) {
+      wouldChange.push(filePath);
+      writes.push({ filePath, content: stripped });
     }
   }
 

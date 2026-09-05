@@ -305,6 +305,64 @@ test("clearRoutingProfile: no routing.json present is a no-op on disk, still rer
   assert.equal(result.ok, true, JSON.stringify(result));
 });
 
+// Real-script integration (not the fake stand-ins above): clearRoutingProfile
+// must actually invoke scripts/apply-routing-profile.mjs so a previously
+// applied `# managed-by: tycoon-routing` backend block is stripped from the
+// agent frontmatter, and generate-opencode-config.mjs also drops the managed
+// provider entry. REPO_ROOT resolves from this compiled test's own location
+// (out/test/routingHostOps.test.js -> ../.. = repo root), independent of
+// `root` (a throwaway fixture dir), matching apply-routing-profile.mjs's own
+// script-relative core-module resolution.
+const REPO_ROOT = path.resolve(__dirname, "..", "..");
+
+test("clearRoutingProfile (real scripts): strips the managed backend block and regenerates opencode.json without the managed provider", () => {
+  const root = tmpRoot();
+  writeAgent(root, "worker.md", ["name: worker", "description: A worker agent.", "tier: worker"]);
+  writeRouting(root, {
+    version: 1,
+    agents: {
+      worker: {
+        vendor: "anthropic",
+        transport: "claude-native",
+        model: "sonnet",
+        costModelClass: "subscription",
+      },
+    },
+  });
+
+  const prevDataDir = process.env.TYCOON_STANDALONE_DATA_DIR;
+  const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
+  const dataDir = tmpRoot();
+  const opencodeConfigDir = tmpRoot();
+  process.env.TYCOON_STANDALONE_DATA_DIR = dataDir;
+  process.env.OPENCODE_CONFIG_DIR = opencodeConfigDir;
+  try {
+    const saved = saveRoutingProfile({
+      root,
+      scriptsDir: REPO_ROOT,
+      profile: { version: 1, agents: { worker: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" } } },
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+    const appliedContent = fs.readFileSync(path.join(root, ".claude", "agents", "worker.md"), "utf8");
+    assert.match(appliedContent, /managed-by: tycoon-routing/);
+    assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.resolved.json")), true);
+
+    const result = clearRoutingProfile({ root, scriptsDir: REPO_ROOT });
+    assert.equal(result.ok, true, JSON.stringify(result));
+
+    const clearedContent = fs.readFileSync(path.join(root, ".claude", "agents", "worker.md"), "utf8");
+    assert.doesNotMatch(clearedContent, /managed-by: tycoon-routing/, "clearRoutingProfile must run apply-routing-profile.mjs to strip the managed block");
+    assert.doesNotMatch(clearedContent, /backend:/);
+    assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
+    assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.resolved.json")), false, "routing.resolved.json must be removed on clear");
+  } finally {
+    if (prevDataDir === undefined) delete process.env.TYCOON_STANDALONE_DATA_DIR;
+    else process.env.TYCOON_STANDALONE_DATA_DIR = prevDataDir;
+    if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // presets (p13-t4 audit fix: MODEL entries, never agent names)
 // ---------------------------------------------------------------------------

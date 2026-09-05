@@ -146,8 +146,14 @@ test('seeded roster feeds scripts/generate-opencode-config.mjs into .opencode/ag
   const code = await runCli(['seed-agents', dir]);
   assert.equal(code, 0);
 
+  // Test isolation: pin OPENCODE_CONFIG_DIR and the localEnvStore app-data
+  // dir (TYCOON_STANDALONE_DATA_DIR) to fresh temp dirs so this never
+  // touches the machine's real global OpenCode config or secret store.
+  const globalConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-seed-opencode-global-'));
+  const localEnvStoreDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-seed-opencode-localenv-'));
   const result = spawnSync(process.execPath, [GEN_OPENCODE_SCRIPT, '--root', dir], {
     encoding: 'utf8',
+    env: { ...process.env, OPENCODE_CONFIG_DIR: globalConfigDir, TYCOON_STANDALONE_DATA_DIR: localEnvStoreDataDir },
   });
   assert.equal(result.status, 0, `generate-opencode-config.mjs failed: ${result.stderr}`);
 

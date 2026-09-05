@@ -101,10 +101,19 @@ function mkGlobalConfigDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-opencode-global-'));
 }
 
+// Test isolation: the generator also reads localEnvStore (src/core/localEnvStore.ts)
+// for endpoint/key placeholder values, which lives under the SAME per-user
+// app-data dir as TYCOON_STANDALONE_DATA_DIR (see resolveAppDataDir parity,
+// standalone/src/appData.mjs). Without this override the generator falls
+// through to the real per-user store (e.g. a populated OLLAMA_BASE_URL /
+// OLLAMA_API_KEY on the host machine) and produces {file:<real path>}
+// placeholders instead of the expected {env:VAR} ones — pin both dirs to
+// fresh temps so no test here can ever reach real machine state.
 function runGenerator(root, extraArgs = [], globalConfigDir = mkGlobalConfigDir()) {
+  const localEnvStoreDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-opencode-localenv-'));
   const result = spawnSync(process.execPath, [SCRIPT_PATH, '--root', root, ...extraArgs], {
     encoding: 'utf8',
-    env: { ...process.env, OPENCODE_CONFIG_DIR: globalConfigDir },
+    env: { ...process.env, OPENCODE_CONFIG_DIR: globalConfigDir, TYCOON_STANDALONE_DATA_DIR: localEnvStoreDataDir },
   });
   result.globalConfigDir = globalConfigDir;
   return result;

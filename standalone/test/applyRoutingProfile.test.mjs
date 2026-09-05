@@ -319,6 +319,102 @@ test('CRLF agent file: backend block round-trips, parses correctly, keeps CRLF, 
   assert.equal(afterSecond, after, 'second run must be byte-identical (idempotent)');
 });
 
+test('removing an agent from the profile strips only that agent\'s managed backend block, keeps the other', () => {
+  const root = setupFixtureRoot();
+  const first = run(['--root', root]);
+  assert.equal(first.status, 0, first.stderr);
+
+  // Rewrite routing.json without 'existing-backend' (drop it from the profile).
+  writeRoutingProfile(root, {
+    version: 1,
+    orchestrator: {
+      vendor: 'opencode',
+      transport: 'openai-compatible',
+      model: 'opencode/big-pickle',
+      costModelClass: 'local',
+      endpointEnv: 'OPENCODE_ENDPOINT_URL',
+    },
+    agents: {
+      'no-backend': {
+        vendor: 'anthropic',
+        transport: 'claude-native',
+        model: 'sonnet',
+        costModelClass: 'subscription',
+      },
+    },
+  });
+
+  const second = run(['--root', root]);
+  assert.equal(second.status, 0, second.stderr);
+
+  const removedContent = fs.readFileSync(path.join(root, '.claude', 'agents', 'existing-backend.md'), 'utf8');
+  assert.doesNotMatch(removedContent, /backend:/, 'managed backend block must be removed for the dropped agent');
+  assert.doesNotMatch(removedContent, /managed-by: tycoon-routing/);
+  assert.match(removedContent, /description: Has a backend block already\./, 'other frontmatter keys preserved');
+  assert.match(removedContent, /# Existing Backend\n\nSome body text\.\nSecond line\.\n$/, 'body preserved byte-for-byte');
+
+  const keptContent = fs.readFileSync(path.join(root, '.claude', 'agents', 'no-backend.md'), 'utf8');
+  assert.match(keptContent, /managed-by: tycoon-routing/, 'kept agent still carries its managed block');
+
+  const resolvedPath = path.join(root, '.claude', 'tycoon', 'routing.resolved.json');
+  const doc = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
+  assert.equal(doc.agents['existing-backend'], undefined);
+  assert.ok(doc.agents['no-backend']);
+});
+
+test('clearing the profile (no routing.json) removes all managed blocks, leaves unmanaged backend blocks untouched, and restores byte-identical content', () => {
+  const root = mkTempRoot();
+
+  // Agent with a HAND-WRITTEN backend block (no managed-by marker) — must
+  // never be touched by unapply.
+  const handWrittenLines = [
+    'name: hand-written',
+    'description: Has a hand-authored backend block.',
+    'backend:',
+    '  vendor: anthropic',
+    '  transport: claude-native',
+    '  model: opus',
+    '  costModelClass: metered',
+  ];
+  writeAgent(root, 'hand-written.md', handWrittenLines, '# Hand Written\n\nBody.');
+  const handWrittenBefore = fs.readFileSync(path.join(root, '.claude', 'agents', 'hand-written.md'), 'utf8');
+
+  // Agent starting with NO backend block; fixture snapshot for comparison
+  // after apply -> clear round trip.
+  writeAgent(root, 'plain.md', ['name: plain', 'description: No backend yet.', 'model: sonnet', 'tier: worker'], '# Plain\n\nBody text.\nSecond line.');
+  const plainBefore = fs.readFileSync(path.join(root, '.claude', 'agents', 'plain.md'), 'utf8');
+
+  writeRoutingProfile(root, {
+    version: 1,
+    agents: {
+      plain: { vendor: 'anthropic', transport: 'claude-native', model: 'sonnet', costModelClass: 'subscription' },
+    },
+  });
+
+  const applied = run(['--root', root]);
+  assert.equal(applied.status, 0, applied.stderr);
+  const plainApplied = fs.readFileSync(path.join(root, '.claude', 'agents', 'plain.md'), 'utf8');
+  assert.match(plainApplied, /managed-by: tycoon-routing/);
+
+  // hand-written.md was never targeted by the profile, so it should be
+  // untouched by the apply run itself.
+  assert.equal(fs.readFileSync(path.join(root, '.claude', 'agents', 'hand-written.md'), 'utf8'), handWrittenBefore);
+
+  // Now clear the profile.
+  fs.unlinkSync(path.join(root, '.claude', 'tycoon', 'routing.json'));
+  const cleared = run(['--root', root]);
+  assert.equal(cleared.status, 0, cleared.stderr);
+
+  const plainAfterClear = fs.readFileSync(path.join(root, '.claude', 'agents', 'plain.md'), 'utf8');
+  assert.equal(plainAfterClear, plainBefore, 'plain.md must be byte-identical to its pre-apply fixture after clear');
+
+  const handWrittenAfterClear = fs.readFileSync(path.join(root, '.claude', 'agents', 'hand-written.md'), 'utf8');
+  assert.equal(handWrittenAfterClear, handWrittenBefore, 'a hand-written backend block (no marker) must never be touched');
+  assert.match(handWrittenAfterClear, /model: opus/);
+
+  assert.equal(fs.existsSync(path.join(root, '.claude', 'tycoon', 'routing.resolved.json')), false, 'routing.resolved.json must be removed on clear');
+});
+
 test('no routing.json present: exits 0, writes nothing', () => {
   const root = mkTempRoot();
   writeAgent(root, 'some-agent.md', ['name: some-agent', 'model: sonnet'], '# Some Agent\n\nBody.');

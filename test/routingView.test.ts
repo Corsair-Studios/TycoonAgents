@@ -1400,13 +1400,172 @@ test('Routing panel: reported scenario — Coding Specialist Custom endpoint, en
     assert.ok(saveMsg, 'Save should post a saveRouting message');
     const agentProfile = saveMsg.profile.agents['coding-specialist'];
     assert.equal(agentProfile.vendor, 'ollama-windows');
-    assert.equal(agentProfile.model, 'qwen3.6:latest');
+    assert.equal(agentProfile.model, 'ollama-windows/qwen3.6:latest', 'a custom/openai-compatible model with no "/" must be assembled as vendor/model at save time');
     assert.equal(agentProfile.costModelClass, 'local');
     assert.equal(agentProfile.endpointEnv, 'OLLAMA_BASE_URL');
     assert.equal(agentProfile.credentialEnv, 'OLLAMA_API_KEY');
     assert.equal(agentProfile.fallback.length, 1);
     assert.equal(agentProfile.fallback[0].vendor, 'opencode');
     assert.equal(agentProfile.fallback[0].model, 'opencode/big-pickle');
+    assert.deepEqual(Object.keys(saveMsg.profile.agents), ['coding-specialist'], 'only the edited agent should be materialized into the profile (sparse save)');
+    assert.equal(saveMsg.profile.orchestrator, undefined, 'the untouched orchestrator must not be written to the profile');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: sparse save — untouched agents and orchestrator are omitted, a previously-routed agent stays included', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    // search-retrieval already has an explicit routing.json entry (matches
+    // its own frontmatter/default values byte-for-byte); coding-specialist
+    // has no profile entry and gets edited; orchestrator is untouched.
+    const payload = buildRoutingPayload({
+      profile: {
+        version: 1,
+        agents: {
+          'search-retrieval': { vendor: 'anthropic', transport: 'claude-native', model: 'haiku', costModelClass: 'subscription' },
+        },
+      },
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const card = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const costSel = card.querySelector('select[data-field-key="agent:coding-specialist.costModelClass"]') as any;
+    costSel.value = 'local';
+    costSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+    assertNoErrors('save');
+
+    const saveMsg = posted.filter((m) => m && m.type === 'saveRouting').pop();
+    assert.ok(saveMsg, 'Save should post a saveRouting message');
+    assert.deepEqual(
+      Object.keys(saveMsg.profile.agents).sort(),
+      ['coding-specialist', 'search-retrieval'],
+      'the edited agent and the already-routed agent are kept; the untouched one is not materialized'
+    );
+    assert.equal(saveMsg.profile.orchestrator, undefined, 'an untouched orchestrator must never be written');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: re-opening a saved profile and saving without edits round-trips byte-identically', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    const savedAgentSlot = {
+      vendor: 'ollama-windows',
+      transport: 'openai-compatible',
+      model: 'ollama-windows/qwen3.6:latest',
+      costModelClass: 'local',
+      endpointEnv: 'OLLAMA_BASE_URL',
+      credentialEnv: 'OLLAMA_API_KEY',
+      fallback: [{ vendor: 'opencode', transport: 'claude-native', model: 'opencode/big-pickle', costModelClass: 'subscription' }],
+    };
+    const payload = buildRoutingPayload({
+      profile: { version: 1, agents: { 'coding-specialist': savedAgentSlot } },
+      agents: [
+        {
+          id: 'coding-specialist',
+          name: 'coding-specialist',
+          description: 'implement, code, fix',
+          backend: { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'ollama-windows/qwen3.6:latest', costModelClass: 'local', endpointEnv: 'OLLAMA_BASE_URL', apiKeyEnv: 'OLLAMA_API_KEY' },
+          source: 'routing',
+        },
+        {
+          id: 'search-retrieval',
+          name: 'search-retrieval',
+          backend: { vendor: 'anthropic', transport: 'claude-native', model: 'haiku', costModelClass: 'subscription' },
+          source: 'frontmatter',
+        },
+      ],
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+    assertNoErrors('save with no edits');
+
+    const saveMsg = posted.filter((m) => m && m.type === 'saveRouting').pop();
+    assert.ok(saveMsg, 'Save should post a saveRouting message');
+    // deepEqual (assert/strict) fails cross-realm array/object literals
+    // (main.js runs inside a vm context, a different realm from this test
+    // file) even when structurally identical — compare via JSON instead.
+    assert.equal(
+      JSON.stringify(saveMsg.profile.agents['coding-specialist']),
+      JSON.stringify(savedAgentSlot),
+      'a no-op re-save of a loaded profile must round-trip byte-identically'
+    );
+    assert.deepEqual(Object.keys(saveMsg.profile.agents), ['coding-specialist'], 'the untouched search-retrieval row must not be materialized');
+  } finally {
+    win.close();
+  }
+});
+
+test('Routing panel: editing a previously-routed agent back to its frontmatter values keeps it in the profile', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootRoutingModal();
+  try {
+    // coding-specialist has an explicit routing.json entry pointing at a
+    // custom vendor; the user dials it back to match its own frontmatter
+    // default (anthropic/sonnet, subscription) — rule (a) says it stays in
+    // the profile since it was already present, even though it now equals
+    // the resolved-backend shape.
+    const payload = buildRoutingPayload({
+      profile: {
+        version: 1,
+        agents: {
+          'coding-specialist': { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'ollama-windows/qwen3.6:latest', costModelClass: 'local', endpointEnv: 'OLLAMA_BASE_URL', credentialEnv: 'OLLAMA_API_KEY' },
+        },
+      },
+      agents: [
+        {
+          id: 'coding-specialist',
+          name: 'coding-specialist',
+          description: 'implement, code, fix',
+          backend: { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'ollama-windows/qwen3.6:latest', costModelClass: 'local', endpointEnv: 'OLLAMA_BASE_URL', apiKeyEnv: 'OLLAMA_API_KEY' },
+          source: 'routing',
+        },
+      ],
+    });
+    dispatch({ type: 'routing', payload });
+    await flush();
+    assertNoErrors('routing payload render');
+
+    const card = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const vendorSelect = card.querySelector('.routing-vendor-select') as any;
+    vendorSelect.value = 'anthropic';
+    vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    let card2 = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const transportSelect = card2.querySelector('select[data-field-key="agent:coding-specialist.transport"]') as any;
+    transportSelect.value = 'claude-native';
+    transportSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    card2 = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const costSel = card2.querySelector('select[data-field-key="agent:coding-specialist.costModelClass"]') as any;
+    costSel.value = 'subscription';
+    costSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    const saveBtn = doc.getElementById('routing-save-btn') as any;
+    saveBtn.click();
+    await flush();
+    assertNoErrors('save reverted-to-frontmatter values');
+
+    const saveMsg = posted.filter((m) => m && m.type === 'saveRouting').pop();
+    assert.ok(saveMsg, 'Save should post a saveRouting message');
+    assert.ok(saveMsg.profile.agents['coding-specialist'], 'a previously-routed agent stays in the profile even once its values match the resolved backend again');
   } finally {
     win.close();
   }

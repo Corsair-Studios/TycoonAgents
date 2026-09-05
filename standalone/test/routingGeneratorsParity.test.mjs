@@ -44,9 +44,13 @@ function writeRoutingProfile(root, profileObj) {
 // touches this machine's real global OpenCode config.
 function runOpencode(root, extraArgs = []) {
   const globalConfigDir = path.join(root, '.opencode-global-config-test');
+  // Test isolation: pin the localEnvStore app-data dir (src/core/localEnvStore.ts)
+  // to a temp dir under `root` too, so a populated real per-user store
+  // (e.g. OLLAMA_BASE_URL/OLLAMA_API_KEY) on this machine can never leak in.
+  const localEnvStoreDataDir = path.join(root, '.tycoon-localenv-test');
   return spawnSync('node', [OPENCODE_SCRIPT, '--root', root, ...extraArgs], {
     encoding: 'utf8',
-    env: { ...process.env, OPENCODE_CONFIG_DIR: globalConfigDir },
+    env: { ...process.env, OPENCODE_CONFIG_DIR: globalConfigDir, TYCOON_STANDALONE_DATA_DIR: localEnvStoreDataDir },
   });
 }
 
@@ -261,8 +265,9 @@ test('precedence: routing.json wins, then opencode-models.json, then frontmatter
   const root = setupPrecedenceRoot();
 
   // NOTE: apply-routing-profile rewrites the backend: block of every agent
-  // named in profile.agents that has a matching file — permanently, since it
-  // has no notion of "revert when routing.json is removed". So
+  // named in profile.agents that has a matching file, and now unapplies
+  // (strips) that managed block when the agent drops out of the profile or
+  // routing.json is removed entirely (p-gap2) — see step 2 below. So
   // precedence-open (used to exercise the OpenCode-generator-only
   // routing.json > opencode-models.json > frontmatter chain) is deliberately
   // kept OUT of routing.json's agents map for this whole test: only
@@ -308,13 +313,13 @@ test('precedence: routing.json wins, then opencode-models.json, then frontmatter
 
   // Step 2: remove routing.json -> opencode-models.json still wins in
   // OpenCode output for precedence-claude (never covered by routing.json
-  // any more); apply-routing-profile makes no change at all (no routing.json
-  // => no-op), checked against precedence-claude's file as apply-routing-
-  // profile last left it in step 1.
+  // any more); apply-routing-profile now UNAPPLIES (p-gap2): with no
+  // routing.json present it strips the managed `# managed-by: tycoon-routing`
+  // backend block it wrote in step 1 and removes routing.resolved.json,
+  // rather than leaving stale managed state behind.
   fs.rmSync(path.join(root, '.claude', 'tycoon', 'routing.json'));
-  const claudeAgentBefore = fs.readFileSync(path.join(root, '.claude', 'agents', 'precedence-claude.md'), 'utf8');
   const resolvedJsonPath = path.join(root, '.claude', 'tycoon', 'routing.resolved.json');
-  const resolvedJsonBefore = fs.readFileSync(resolvedJsonPath, 'utf8');
+  assert.equal(fs.existsSync(resolvedJsonPath), true, 'sanity: routing.resolved.json exists after step 1');
 
   assert.equal(runOpencode(root).status, 0);
   const rApplyNoRouting = runApply(root);
@@ -322,10 +327,10 @@ test('precedence: routing.json wins, then opencode-models.json, then frontmatter
 
   assert.equal(readOpencodeAgentModel(root, 'precedence-claude'), 'anthropic/claude-overrides-model');
   const claudeAgentAfter = fs.readFileSync(path.join(root, '.claude', 'agents', 'precedence-claude.md'), 'utf8');
-  assert.equal(claudeAgentAfter, claudeAgentBefore, 'apply-routing-profile must not touch .claude/agents when routing.json is absent');
-  // No routing.json => no-op: it neither rewrites nor deletes the
-  // previously-written routing.resolved.json from step 1.
-  assert.equal(fs.readFileSync(resolvedJsonPath, 'utf8'), resolvedJsonBefore, 'apply-routing-profile must not rewrite routing.resolved.json when routing.json is absent');
+  assert.doesNotMatch(claudeAgentAfter, /managed-by: tycoon-routing/, 'apply-routing-profile must strip its managed backend block when routing.json is absent');
+  assert.doesNotMatch(claudeAgentAfter, /backend:/);
+  // No routing.json => the previously-written routing.resolved.json is removed.
+  assert.equal(fs.existsSync(resolvedJsonPath), false, 'apply-routing-profile must remove routing.resolved.json when routing.json is absent');
 
   // Step 3: remove opencode-models.json too -> frontmatter model used
   // (checked on precedence-open, which was never covered by routing.json
