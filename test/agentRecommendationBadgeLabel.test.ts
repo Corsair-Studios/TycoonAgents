@@ -197,6 +197,58 @@ function bootMainJs() {
   return { win, doc, dispatch, getState: () => stateStore, errors };
 }
 
+/**
+ * Fixture routing payload for agentsPayloadWithOverModelAgent()'s fixed
+ * agent set (orchestrator + search-retrieval). The per-agent recommendation
+ * badge (.rec-apply, buildUnifiedAgentCard, media/main.js ~17925-17936) now
+ * lives inside the Agents modal (renderRoutingModal, media/main.js
+ * ~18087-18260) and only renders once BOTH a "settings" and a "routing"
+ * message have landed and the modal is open (see media/main.js:12534-12545)
+ * — mirrors test/routingView.test.ts's buildRoutingPayload.
+ */
+function routingPayloadFixture() {
+  return {
+    profile: null,
+    path: ".claude/tycoon/routing.json",
+    errors: [],
+    orchestrator: {
+      id: "orchestrator",
+      backend: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+      source: "default",
+    },
+    agents: [
+      {
+        id: "search-retrieval",
+        name: "search-retrieval",
+        backend: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" },
+        source: "default",
+      },
+    ],
+    envProbe: {},
+    presets: { vendors: ["anthropic"], models: [] },
+    lastApplied: {},
+  };
+}
+
+/** Opens the Agents modal (formerly Routing; #menu-routing kept, label now "Agents"), feeds it a routing payload, then pushes the given settings payload — required before any `.rec-apply` badge query. */
+function pushSettings(doc: any, dispatch: (d: any) => void, payload: any) {
+  // Only open the modal (and re-push the routing payload) once per boot: a
+  // second click re-runs openRoutingModal()'s own renderRoutingModal() call,
+  // which would consume the one-render `justSetAgentModelId` suppression
+  // flag (media/main.js ~18232) a beat early and mask the real assertion
+  // under test in the suppression-window spec below.
+  const modal = doc.getElementById("routing-modal");
+  if (!modal || modal.hasAttribute("hidden")) {
+    const menuRoutingBtn = doc.getElementById("menu-routing");
+    if (menuRoutingBtn) menuRoutingBtn.click();
+  }
+  if (!doc.__routingPayloadPushed) {
+    doc.__routingPayloadPushed = true;
+    dispatch({ type: "routing", payload: routingPayloadFixture() });
+  }
+  dispatch({ type: "settings", payload });
+}
+
 /** Settings payload with an agent whose model outranks its SUGGESTED_MAX floor. */
 function agentsPayloadWithOverModelAgent() {
   return {
@@ -232,7 +284,7 @@ test("recommendation badge button: visible label names the destination model, ne
       ],
     },
   });
-  dispatch({ type: "settings", payload: agentsPayloadWithOverModelAgent() });
+  pushSettings(doc, dispatch, agentsPayloadWithOverModelAgent());
 
   const applyBtn = doc.querySelector(".rec-apply");
   assert.ok(applyBtn, "expected a recommendation apply button to render for an agent above its SUGGESTED_MAX floor");
@@ -265,7 +317,7 @@ test("recommendation badge: suppressed for one render immediately after the user
       ],
     },
   });
-  dispatch({ type: "settings", payload: agentsPayloadWithOverModelAgent() });
+  pushSettings(doc, dispatch, agentsPayloadWithOverModelAgent());
 
   // Sanity: badge renders on a normal (non-just-picked) settings render.
   assert.ok(doc.querySelector(".rec-apply"), "recommendation should render before the user touches the radio");
@@ -281,11 +333,11 @@ test("recommendation badge: suppressed for one render immediately after the user
   // Host re-pushes settings right after (same shape -- model unchanged in
   // this stub since postMessage is a no-op, but that's fine: the point is
   // the flag suppresses the render regardless of the resulting model).
-  dispatch({ type: "settings", payload: agentsPayloadWithOverModelAgent() });
+  pushSettings(doc, dispatch, agentsPayloadWithOverModelAgent());
   assert.equal(doc.querySelector(".rec-apply"), null, "recommendation badge must be suppressed on the render immediately following the user's own explicit pick");
 
   // And it must return on the NEXT render after that (flag is read-once).
-  dispatch({ type: "settings", payload: agentsPayloadWithOverModelAgent() });
+  pushSettings(doc, dispatch, agentsPayloadWithOverModelAgent());
   assert.ok(doc.querySelector(".rec-apply"), "recommendation should reappear on the render after the suppressed one");
 
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);

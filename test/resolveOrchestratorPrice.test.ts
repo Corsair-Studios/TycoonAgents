@@ -222,6 +222,46 @@ function agentsPayload() {
   };
 }
 
+/**
+ * Fixture routing payload for agentsPayload()'s fixed agent set (orchestrator
+ * + coding-specialist). The per-agent "vs. orch." settings chip
+ * (buildUnifiedAgentCard's .agent-stats, media/main.js ~17894) now lives
+ * inside the Agents modal (renderRoutingModal, media/main.js ~18087-18260)
+ * and only renders once BOTH a "settings" and a "routing" message have
+ * landed and the modal is open (see media/main.js:12534-12545) — mirrors
+ * test/routingView.test.ts's buildRoutingPayload.
+ */
+function routingPayloadFixture() {
+  return {
+    profile: null,
+    path: ".claude/tycoon/routing.json",
+    errors: [],
+    orchestrator: {
+      id: "orchestrator",
+      backend: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+      source: "default",
+    },
+    agents: [
+      {
+        id: "coding-specialist",
+        name: "coding-specialist",
+        backend: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" },
+        source: "default",
+      },
+    ],
+    envProbe: {},
+    presets: { vendors: ["anthropic"], models: [] },
+    lastApplied: {},
+  };
+}
+
+/** Opens the Agents modal (formerly Routing; #menu-routing kept, label now "Agents") and feeds it a routing payload — required before any `.agent-stats`/vs-orch chip query. */
+function openAgentsModal(doc: any, dispatch: (d: any) => void) {
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  if (menuRoutingBtn) menuRoutingBtn.click();
+  dispatch({ type: "routing", payload: routingPayloadFixture() });
+}
+
 /** Dispatch a `state` message with the given agentMetrics array (cumulative, all-time). */
 function dispatchMetrics(dispatch: (d: any) => void, agentMetrics: any[]) {
   dispatch({
@@ -321,6 +361,7 @@ test("delegation hero: NEGATIVE ANCHOR -- orchestrator entry present but model u
 
 test("settings 'vs. orch.' stat chip: NEGATIVE ANCHOR -- no orchestrator metrics entry -> chip renders '—', never a computed ratio/NaN/Infinity", () => {
   const { doc, dispatch, errors } = bootMainJs();
+  openAgentsModal(doc, dispatch);
   dispatchMetrics(dispatch, [
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, activeMs: 5000, taskCount: 4 },
   ]);

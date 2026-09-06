@@ -127,3 +127,56 @@ test('parseAppDirectChildIds: throws (does not silently return empty) when #app 
   const fixtureWithoutApp = `<div id="other">\n    <div id="thing"></div>\n</div>`;
   assert.throws(() => parseAppDirectChildIds(fixtureWithoutApp, 'fixture'), /Could not locate the #app block/);
 });
+
+// ---------------------------------------------------------------------------
+// p19-t3: the Settings "Agents" and "Keyword routing" sections moved into
+// what used to be the Routing modal — #menu-routing's id is kept (webview
+// message wiring and every existing test's `getElementById("menu-routing")`
+// depend on it), but its VISIBLE label changed from "Routing" to "Agents"
+// in both hosts' static markup. A future edit could silently revert one
+// template's label without the other (or without media/main.js's own
+// `title.textContent = "Agents"` for the modal heading it builds) — this
+// guard makes that drift loud.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the visible label text of `<button ... id="menu-routing">LABEL</button>`
+ * from a template's source text.
+ *
+ * @param {string} sourceText raw template source text
+ * @param {string} label file label for error messages
+ * @returns {string} the button's inner text
+ * @throws {Error} if #menu-routing can't be found — fail loudly, not silently.
+ */
+function parseMenuRoutingLabel(sourceText, label) {
+  const m = sourceText.match(/<button[^>]*\bid="menu-routing"[^>]*>([^<]*)<\/button>/);
+  if (!m) {
+    throw new Error(
+      `[templateParity.test.mjs] Could not locate a '<button ... id="menu-routing">...</button>' element in ` +
+        `${label}. Either the element moved/was restructured, or its id changed. Update the regex in ` +
+        'parseMenuRoutingLabel() to match the new shape.',
+    );
+  }
+  return m[1].trim();
+}
+
+test('#menu-routing renders the label "Agents" (not "Routing") in the standalone template', () => {
+  const label = parseMenuRoutingLabel(fs.readFileSync(SERVER_MJS_PATH, 'utf8'), 'standalone/src/server.mjs');
+  assert.equal(label, 'Agents', '#menu-routing kept its id (webview wiring depends on it) but its visible label must read "Agents"');
+});
+
+test('#menu-routing renders the label "Agents" (not "Routing") in the VS Code template', () => {
+  const label = parseMenuRoutingLabel(fs.readFileSync(PANEL_TS_PATH, 'utf8'), 'src/host/vscode/panel.ts');
+  assert.equal(label, 'Agents', '#menu-routing kept its id (webview wiring depends on it) but its visible label must read "Agents"');
+});
+
+test('#menu-routing label is byte-identical between both templates', () => {
+  const standaloneLabel = parseMenuRoutingLabel(fs.readFileSync(SERVER_MJS_PATH, 'utf8'), 'standalone/src/server.mjs');
+  const vscodeLabel = parseMenuRoutingLabel(fs.readFileSync(PANEL_TS_PATH, 'utf8'), 'src/host/vscode/panel.ts');
+  assert.equal(standaloneLabel, vscodeLabel, `#menu-routing label drifted between templates: standalone="${standaloneLabel}" vscode="${vscodeLabel}"`);
+});
+
+test('parseMenuRoutingLabel: throws (does not silently return empty) when #menu-routing is absent', () => {
+  const fixtureWithoutButton = `<button id="menu-settings">Settings</button>`;
+  assert.throws(() => parseMenuRoutingLabel(fixtureWithoutButton, 'fixture'), /Could not locate/);
+});

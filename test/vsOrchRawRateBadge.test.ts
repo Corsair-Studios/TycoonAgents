@@ -222,6 +222,47 @@ function agentsPayload() {
   };
 }
 
+/**
+ * Fixture routing payload for agentsPayload()'s fixed agent set (orchestrator +
+ * coding-specialist). The per-agent "vs. orch." settings chip
+ * (buildUnifiedAgentCard's .agent-stats, media/main.js ~17894) now lives
+ * inside the Agents modal (renderRoutingModal, media/main.js ~18087-18260)
+ * and only renders once BOTH a "settings" and a "routing" message have
+ * landed and the modal is open (see media/main.js:12534-12545) — mirrors
+ * test/routingView.test.ts's buildRoutingPayload.
+ */
+function routingPayloadFixture() {
+  return {
+    profile: null,
+    path: ".claude/tycoon/routing.json",
+    errors: [],
+    orchestrator: {
+      id: "orchestrator",
+      backend: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+      source: "default",
+    },
+    agents: [
+      {
+        id: "coding-specialist",
+        name: "coding-specialist",
+        backend: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" },
+        source: "default",
+      },
+    ],
+    envProbe: {},
+    presets: { vendors: ["anthropic"], models: [] },
+    lastApplied: {},
+  };
+}
+
+/** Opens the Agents modal (formerly Routing; #menu-routing kept, label now "Agents"), feeds it a routing payload, then pushes the given settings payload — required before any `.agent-stats`/vs-orch chip query. */
+function pushSettings(doc: any, dispatch: (d: any) => void, payload: any) {
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  if (menuRoutingBtn) menuRoutingBtn.click();
+  dispatch({ type: "routing", payload: routingPayloadFixture() });
+  dispatch({ type: "settings", payload });
+}
+
 /** Dispatch a `state` message with the given agentMetrics array (cumulative, all-time). */
 function dispatchMetrics(dispatch: (d: any) => void, agentMetrics: any[]) {
   dispatch({
@@ -316,7 +357,7 @@ test("metrics row badge: Sonnet worker under Opus orchestrator renders '2.5x che
           taskCount: 4,
         },
       ]);
-      dispatch({ type: "settings", payload: agentsPayload() });
+      pushSettings(doc, dispatch, agentsPayload());
 
       const text = rowBadgeText(doc, "Coding Specialist");
       assert.equal(
@@ -354,7 +395,7 @@ test("metrics row badge: Haiku worker under Opus orchestrator renders '5x cheape
         taskCount: 4,
       },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Coding Specialist");
     assert.equal(
@@ -378,7 +419,7 @@ test("metrics row badge: Opus worker under Opus orchestrator renders 'same cost'
       { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: cache, activeMs: 1000, taskCount: 1 },
       { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "opus", tokens: 100000, cacheReadTokens: cache, activeMs: 5000, taskCount: 4 },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Coding Specialist");
     assert.equal(text, "same cost", `cache=${cache}: expected 'same cost' (ratio==1), got '${text}'`);
@@ -398,7 +439,7 @@ test("metrics row badge: Fable worker under Opus orchestrator renders '2x pricie
       { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: cache, activeMs: 1000, taskCount: 1 },
       { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "fable", tokens: 100000, cacheReadTokens: cache, activeMs: 5000, taskCount: 4 },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Coding Specialist");
     assert.equal(text, "2× pricier", `cache=${cache}: expected '2× pricier' (raw 20/10 fable/opus rate ratio), got '${text}'`);
@@ -417,7 +458,7 @@ test("metrics row badge: orchestrator's own row always renders 'baseline', regar
       { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: cache, activeMs: 1000, taskCount: 1 },
       { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: cache, activeMs: 5000, taskCount: 4 },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Orchestrator");
     assert.equal(text, "baseline", `cache=${cache}: orchestrator's own row must always read 'baseline', got '${text}'`);
@@ -435,7 +476,7 @@ test("metrics row badge: unknown worker model prices via DEFAULT_PRICE_KEY (unkn
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "some-unknown-model-xyz", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
   // Post pricing-refactor: modelPricePerMtok never returns null for a
@@ -454,7 +495,7 @@ test("metrics row badge: NEGATIVE ANCHOR -- unpriced orchestrator model renders 
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: null, tokens: 500, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
   assert.equal(text, "—", `expected '—' when the orchestrator model is unpriced, got '${text}'`);
@@ -480,7 +521,7 @@ test("metrics row badge: Sonnet orchestrator + Haiku worker crosses the >=1.05 b
       { id: "orchestrator", name: "Orchestrator", status: "idle", model: "sonnet", tokens: 2000, cacheReadTokens: cache, activeMs: 1000, taskCount: 1 },
       { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "haiku", tokens: 100000, cacheReadTokens: cache, activeMs: 5000, taskCount: 4 },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Coding Specialist");
     assert.equal(text, "2× cheaper", `cache=${cache}: expected '2× cheaper' (raw 4/2 sonnet/haiku ratio, >=1.05 branch), got '${text}'`);
@@ -495,7 +536,7 @@ test("metrics row badge: Haiku orchestrator + Sonnet worker crosses the <=0.95 b
       { id: "orchestrator", name: "Orchestrator", status: "idle", model: "haiku", tokens: 2000, cacheReadTokens: cache, activeMs: 1000, taskCount: 1 },
       { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: cache, activeMs: 5000, taskCount: 4 },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Coding Specialist");
     assert.equal(text, "2× pricier", `cache=${cache}: expected '2× pricier' (raw 2/4 haiku/sonnet ratio, <=0.95 branch), got '${text}'`);
@@ -537,7 +578,7 @@ test("settings 'vs. orch.' chip: Sonnet worker under Opus orchestrator renders '
         taskCount: 4,
       },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
 
     const text = chipVsOrchText(doc, "Coding Specialist");
     assert.equal(
@@ -555,7 +596,7 @@ test("settings 'vs. orch.' chip: orchestrator's own card always renders 'baselin
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 2_073_200_000, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Orchestrator");
   assert.equal(text, "baseline", `expected 'baseline' for the orchestrator's own chip, got '${text}'`);
@@ -568,7 +609,7 @@ test("settings 'vs. orch.' chip: unknown worker model prices via DEFAULT_PRICE_K
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "some-unknown-model-xyz", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
   // See the row-badge test above: DEFAULT_PRICE_KEY ($3/Mtok) now prices
@@ -595,7 +636,7 @@ test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchange
       { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
       { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: workerModel, tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
     const text = rowBadgeText(doc, "Coding Specialist");
     assert.equal(text, expected, `worker model=${workerModel}: expected '${expected}', got '${text}'`);
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
@@ -614,7 +655,7 @@ test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchange
       { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
       { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: workerModel, tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
     ]);
-    dispatch({ type: "settings", payload: agentsPayload() });
+    pushSettings(doc, dispatch, agentsPayload());
     const text = chipVsOrchText(doc, "Coding Specialist");
     assert.equal(text, expected, `worker model=${workerModel}: expected '${expected}', got '${text}'`);
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
@@ -637,7 +678,7 @@ test("PHASE 3: subscription-class model (gpt-5.4-mini) never renders a numeric r
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "gpt-5.4-mini", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
   assert.equal(text, "flat-rate", `expected 'flat-rate' for subscription-class model, got '${text}'`);
@@ -651,7 +692,7 @@ test("PHASE 3: subscription-class model (codex-auto-review) never renders a nume
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "codex-auto-review", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
   assert.equal(text, "flat-rate", `expected 'flat-rate' for subscription-class model, got '${text}'`);
@@ -665,7 +706,7 @@ test("PHASE 3: subscription-class agent's row renders no dollar figure anywhere 
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "gpt-5.4-mini", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const rows = [...doc.querySelectorAll("#metrics-tbody tr")];
   const row = rows.find((r: any) => r.textContent && r.textContent.toLowerCase().includes("coding specialist"));
@@ -685,7 +726,7 @@ test("PHASE 3: local-class model (ollama:llama3) never renders a fabricated pric
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "ollama:llama3", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
   assert.equal(text, "local", `expected 'local' for local-class model, got '${text}'`);
@@ -700,7 +741,7 @@ test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated p
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "lmstudio-qwen2.5", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
   assert.equal(text, "local", `expected 'local' for local-class model, got '${text}'`);
@@ -721,7 +762,7 @@ test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) price
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "mistral-7b", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
   // DEFAULT_PRICE_KEY prices "metered but unrecognized" models rather than
@@ -739,7 +780,7 @@ test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) price
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "mistral-7b", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
-  dispatch({ type: "settings", payload: agentsPayload() });
+  pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
   assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);

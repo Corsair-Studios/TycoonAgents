@@ -2900,7 +2900,7 @@ function buildHostHtml() {
       <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
       <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
       <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
-      <button class="menu-item" role="menuitem" id="menu-routing">Routing</button>
+      <button class="menu-item" role="menuitem" id="menu-routing">Agents</button>
       <button class="menu-item" role="menuitem" id="menu-about">About</button>
       <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
       ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ''}

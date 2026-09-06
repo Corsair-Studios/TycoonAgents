@@ -281,9 +281,49 @@ function stateWithOrchestratorMetric(model: string | null) {
   };
 }
 
-/** Drives real main.js: state (populates lastMetrics) then settings (renders the orchestrator row). Returns the rendered row's text pieces. */
+/**
+ * Fixture routing payload for agentsPayload()'s fixed agent set (orchestrator +
+ * coding-specialist). The orchestrator card that renders `.orchestrator-model-warning`
+ * (buildOrchestratorSimpleCard) now lives inside the Agents modal
+ * (renderRoutingModal, media/main.js ~18087-18260) and only renders once BOTH a
+ * "settings" and a "routing" message have landed and the modal is open (see
+ * media/main.js:12534-12545) — mirrors test/routingView.test.ts's buildRoutingPayload.
+ */
+function routingPayloadFixture() {
+  return {
+    profile: null,
+    path: ".claude/tycoon/routing.json",
+    errors: [],
+    orchestrator: {
+      id: "orchestrator",
+      backend: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+      source: "default",
+    },
+    agents: [
+      {
+        id: "coding-specialist",
+        name: "coding-specialist",
+        backend: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" },
+        source: "default",
+      },
+    ],
+    envProbe: {},
+    presets: { vendors: ["anthropic"], models: [] },
+    lastApplied: {},
+  };
+}
+
+/** Opens the Agents modal (formerly Routing; #menu-routing kept, label now "Agents") and feeds it a routing payload — required before any `[data-agent-row]`/orchestrator card query. */
+function openAgentsModal(doc: any, dispatch: (d: any) => void) {
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  if (menuRoutingBtn) menuRoutingBtn.click();
+  dispatch({ type: "routing", payload: routingPayloadFixture() });
+}
+
+/** Drives real main.js: state (populates lastMetrics), opens the Agents modal with a routing payload, then settings (renders the orchestrator row). Returns the rendered row's text pieces. */
 function renderOrchestratorRow(model: string | null | undefined) {
   const { doc, dispatch } = bootMainJs();
+  openAgentsModal(doc, dispatch);
   if (model !== undefined) {
     dispatch(stateWithOrchestratorMetric(model));
   } else {
@@ -381,6 +421,7 @@ test("orchestrator model label: NEGATIVE ANCHOR -- no orchestrator metric observ
 
 test("orchestrator model label: NEGATIVE ANCHOR -- empty agentMetrics array -> 'Unknown yet', NEVER 'Opus' (real code)", () => {
   const { doc, dispatch } = bootMainJs();
+  openAgentsModal(doc, dispatch);
   dispatch({
     type: "state",
     state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {}, agentMetrics: [] },
@@ -415,6 +456,7 @@ test("orchestrator model label: null model on an observed orchestrator entry als
 
 test("orchestrator model help text differs between observed and unknown states (real code)", () => {
   const { doc, dispatch } = bootMainJs();
+  openAgentsModal(doc, dispatch);
   dispatch(stateWithOrchestratorMetric("claude-sonnet-5"));
   dispatch({ type: "settings", payload: agentsPayload() });
   const observedHelp = doc.querySelector('[data-agent-row="orchestrator"] .orchestrator-model-help');
@@ -422,6 +464,7 @@ test("orchestrator model help text differs between observed and unknown states (
   assert.ok(!observedHelp.textContent.includes("Run a task to populate this"));
 
   const { doc: doc2, dispatch: dispatch2 } = bootMainJs();
+  openAgentsModal(doc2, dispatch2);
   dispatch2({
     type: "state",
     state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {}, agentMetrics: [] },

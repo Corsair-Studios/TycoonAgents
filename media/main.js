@@ -12534,6 +12534,15 @@
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();
+      // p19-t1: a new settings payload can flip lastSettings.routing.visible
+      // (harness switch, Use-multiple-LLMs toggle) while the Agents screen
+      // is open — re-render it too so density switches live. Guarded like
+      // updateRoutingViewLive: only while the modal actually exists and is
+      // visible, and only once lastRoutingPayload/routingDraft exist (a
+      // "settings" push can arrive before the first "routing" reply).
+      if (routingModalEl && !routingModalEl.hasAttribute("hidden") && lastRoutingPayload) {
+        renderRoutingModal();
+      }
     } else if (msg && msg.type === ROUTING_MSG.ROUTING) {
       handleRoutingPayload(msg.payload || null);
     } else if (msg && msg.type === ROUTING_MSG.SAVED) {
@@ -15672,29 +15681,6 @@
     return null;
   }
 
-  /**
-   * Compute the routing fallback note for the keyword-routing section.
-   * `light` drives the traffic-light dot: green = healthy, red = high
-   * fallback rate, yellow = not enough data yet.
-   * @returns {{text:string, kind:"amber"|"info", light:"green"|"yellow"|"red"}}
-   */
-  function fallbackNote() {
-    const total = lastMetrics.reduce((sum, m) => sum + ((m && m.taskCount) || 0), 0);
-    if (total < 5) return { text: "Routing health: not enough data", kind: "info", light: "yellow" };
-    const primary = metricsFor("primary-agent");
-    const primaryTasks = (primary && primary.taskCount) || 0;
-    const ratio = primaryTasks / total;
-    if (ratio > 0.2) {
-      const pct = Math.round(ratio * 100);
-      return {
-        text: `High fallback rate (${pct}%): tune keywords so work routes to specialists.`,
-        kind: "amber",
-        light: "red",
-      };
-    }
-    return { text: "Routing healthy", kind: "info", light: "green" };
-  }
-
   /** Build a section wrapper with a heading. */
   function buildSection(title) {
     const section = document.createElement("section");
@@ -16706,7 +16692,7 @@
   var routingSuppressNextRebuild = false;
   var routingLastResult = null;  // last routingSaved payload, for the collapsed check/write output block
   var routingModalEl = null, routingBackdropEl = null, routingCloseBtnEl = null, routingBodyEl = null, routingContentEl = null;
-  var routingSaveBtnEl = null, routingRevertBtnEl = null, routingClearBtnEl = null;
+  var routingSaveBtnEl = null, routingRevertBtnEl = null, routingClearBtnEl = null, routingFooterCloseBtnEl = null;
   // Agent ids the user has explicitly expanded via "Override" (p17-t3) —
   // a provenance:"default" agent card renders collapsed until its id is in
   // here. Reset whenever routingDraft is rebuilt from a fresh payload (see
@@ -17519,7 +17505,7 @@
 
     var title = document.createElement("h2");
     title.id = "routing-modal-title";
-    title.textContent = "Routing";
+    title.textContent = "Agents";
     header.appendChild(title);
 
     routingCloseBtnEl = document.createElement("button");
@@ -17592,6 +17578,21 @@
       vscode.postMessage({ type: ROUTING_MSG.CLEAR });
     });
     footer.appendChild(routingClearBtnEl);
+
+    // Simple-density footer (p19-t1): tier/keyword/remove actions already
+    // post immediately, so there's nothing to save — just Close. Hidden by
+    // default; renderRoutingModal toggles this vs. the three buttons above
+    // per density.
+    routingFooterCloseBtnEl = document.createElement("button");
+    routingFooterCloseBtnEl.id = "routing-footer-close-btn";
+    routingFooterCloseBtnEl.className = "skill-btn settings-btn";
+    routingFooterCloseBtnEl.textContent = "Close";
+    routingFooterCloseBtnEl.hidden = true;
+    routingFooterCloseBtnEl.addEventListener("click", function () {
+      routingSuppressNextRebuild = false;
+      closeModal(routingModalEl);
+    });
+    footer.appendChild(routingFooterCloseBtnEl);
 
     dialog.appendChild(footer);
 
@@ -17709,6 +17710,396 @@
     }
   }
 
+  /**
+   * Read-only "Session model" card for the orchestrator, rendered at the top
+   * of the Agents screen in both densities (p19-t1). Ported verbatim from
+   * the old Settings agents-loop orchestrator branch — keeps the
+   * `[data-agent-row="orchestrator"]` hook and every warning/help string.
+   */
+  /**
+   * `.agent-stats` chip row (vs. orch., tasks, MCP, vendor, billing) shared
+   * by the orchestrator card and every other agent's unified card — ported
+   * verbatim from the old Settings agents-loop so the orchestrator keeps
+   * its "vs. orch. baseline" chip after the p19-t1 move.
+   */
+  function buildAgentStatsRow(a, m) {
+    const stats = document.createElement("div");
+    stats.className = "agent-stats";
+    const chip = (label, value) => {
+      const c = document.createElement("span");
+      c.className = "stat-chip";
+      c.textContent = `${label} ${value}`;
+      return c;
+    };
+    let chipVsOrchText;
+    if (a.isOrchestrator) {
+      chipVsOrchText = "baseline";
+    } else {
+      const chipModel = m ? (m.model || a.model) : a.model;
+      const chipCostModelClass = (m && m.costModelClass) || a.costModelClass || null;
+      const chipAgentRate = modelPricePerMtok(chipModel, chipCostModelClass);
+      const chipOrchestratorPrice = resolveOrchestratorModelRate(lastMetrics);
+      chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice, chipCostModelClass);
+    }
+    const vsOrchChip = chip("vs. orch.", chipVsOrchText);
+    vsOrchChip.title = "How much cheaper this agent's model is per token than the orchestrator's (metered models only) — flat-rate subscription and local models have no comparable per-token rate, so they show their billing class instead of a ratio.";
+    stats.appendChild(vsOrchChip);
+    stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
+    stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));
+    const cardVendor = a.vendor || (m && m.vendor) || null;
+    if (cardVendor && cardVendor !== "anthropic") {
+      stats.appendChild(chip("vendor", vendorLabelFor(cardVendor)));
+    }
+    const cardCostClass = a.costModelClass || (m && m.costModelClass) || null;
+    if (cardCostClass === "subscription") {
+      stats.appendChild(chip("billing", "quota"));
+    } else if (cardCostClass === "local") {
+      stats.appendChild(chip("billing", "local"));
+    }
+    return stats;
+  }
+
+  function buildOrchestratorSimpleCard(agent) {
+    const m = metricsFor(agent.id);
+    const row = document.createElement("div");
+    row.className = "settings-row agent-row";
+    row.dataset.agentRow = "orchestrator";
+    row.setAttribute("data-agent-id", agent.id);
+
+    const head = document.createElement("div");
+    head.className = "agent-row-head";
+    const nameEl = document.createElement("span");
+    nameEl.className = "agent-name";
+    nameEl.textContent = agent.name || agent.id;
+    head.appendChild(nameEl);
+
+    const observedFamily = modelFamily(m && m.model);
+    const ro = document.createElement("span");
+    ro.className = "agent-model-readonly";
+    if (observedFamily === "Sonnet" || observedFamily === "Haiku") {
+      ro.className += " agent-model-readonly--bad";
+    } else if (observedFamily === "Opus" || observedFamily === "Fable") {
+      ro.className += " agent-model-readonly--good";
+    }
+    ro.textContent = observedFamily ? `Session model: ${observedFamily}` : "Session model: Unknown yet";
+    head.appendChild(ro);
+    row.appendChild(head);
+
+    row.appendChild(buildAgentStatsRow({ ...agent, isOrchestrator: true }, m));
+
+    const roHelp = document.createElement("p");
+    roHelp.className = "delegation-mode-option-help orchestrator-model-help";
+    roHelp.textContent = observedFamily
+      ? "Read from Claude Code's session model — set via /model, VS Code chat settings, or ANTHROPIC_MODEL. Not a TycoonAgents setting, so there's no picker here."
+      : "Read from Claude Code's session model (set via /model, VS Code chat settings, or ANTHROPIC_MODEL) once observed from activity — not a TycoonAgents setting. Run a task to populate this.";
+    row.appendChild(roHelp);
+
+    if (observedFamily === "Sonnet" || observedFamily === "Haiku") {
+      const warn = document.createElement("p");
+      warn.className = "orchestrator-model-warning";
+      warn.textContent =
+        `TycoonAgents expects Opus or above as the orchestrator — it distills and delegates cheap work to Sonnet/Haiku workers. Running the orchestrator itself on ${observedFamily} removes those savings. Fix: run /model opus.`;
+      row.appendChild(warn);
+    } else if (!observedFamily && agentActivityObserved && orchestratorModelGraceElapsed) {
+      const warn = document.createElement("p");
+      warn.className = "orchestrator-model-warning orchestrator-model-warning--info";
+      warn.textContent =
+        "TycoonAgents hasn't detected the orchestrator's model yet. This is read from Claude Code's session model, not a TycoonAgents setting — check it with /model, the VS Code chat model selector, or the ANTHROPIC_MODEL environment variable. TycoonAgents expects Opus or above for the orchestrator, since it distills and delegates cheap work to smaller models. Detection populates once agent activity has been observed, so running a task may resolve this.";
+      row.appendChild(warn);
+    }
+
+    showOrchestratorModelBanner(observedFamily);
+    return row;
+  }
+
+  /**
+   * Unified agent card (p19-t1). Simple density = the original Settings
+   * agent card: tier radios/backend line/routed chip, keyword editor, stats
+   * chips, recommendation badge, Remove. Full density appends the routing
+   * slot editor, fallback editor, and provenance/override controls (needs
+   * the matching entry from the routing payload's `agents[]`, passed as
+   * `routingAgent`; simple density never touches it).
+   */
+  function buildUnifiedAgentCard(a, routingAgent, density, presets, payload, routingDraft, hasDefaults) {
+    const m = metricsFor(a.id);
+    const card = document.createElement("div");
+    card.className = "routing-agent-card";
+    card.setAttribute("data-agent-id", a.id);
+
+    const row = document.createElement("div");
+    row.className = "settings-row agent-row";
+    row.dataset.agentRow = a.id;
+    row.setAttribute("data-agent-id", a.id);
+
+    const head = document.createElement("div");
+    head.className = "agent-row-head";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "agent-name";
+    nameEl.textContent = a.name || a.id;
+    head.appendChild(nameEl);
+
+    if (density === "full" && routingAgent && routingAgent.description) {
+      const desc = document.createElement("span");
+      desc.className = "routing-agent-desc";
+      desc.textContent = routingAgent.description;
+      desc.title = routingAgent.description;
+      head.appendChild(desc);
+    }
+
+    // p18-t2: route-aware model row. Three shapes, mutually exclusive:
+    //  1. claudeTier set        -> the radios as before, that tier checked.
+    //  2. handWrittenBackend    -> a static "Backend: <vendor> via MCP" line.
+    //  3. routed to a non-Claude vendor -> a "Routed to <vendor>/<model>" chip.
+    const buildModelRadioGroup = () => {
+      const group = document.createElement("div");
+      group.className = "model-radio-group";
+      const groupName = `model-${a.id}`;
+      for (const model of ["fable", "opus", "sonnet", "haiku"]) {
+        const lbl = document.createElement("label");
+        lbl.className = "model-radio";
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = groupName;
+        input.value = model;
+        if (a.claudeTier === model) input.checked = true;
+        input.addEventListener("change", () => {
+          if (input.checked) {
+            justSetAgentModelId = a.id;
+            vscode.postMessage({ type: "setAgentModel", id: a.id, model });
+          }
+        });
+        const span = document.createElement("span");
+        span.textContent = model.charAt(0).toUpperCase() + model.slice(1);
+        lbl.appendChild(input);
+        lbl.appendChild(span);
+        group.appendChild(lbl);
+      }
+      return group;
+    };
+
+    const routingVisibleNow = !lastSettings || !lastSettings.routing || lastSettings.routing.visible !== false;
+
+    if (a.claudeTier) {
+      head.appendChild(buildModelRadioGroup());
+    } else {
+      const buildUseClaudeDisclosure = () => {
+        const details = document.createElement("details");
+        details.className = "use-claude-tier-disclosure";
+        const summary = document.createElement("summary");
+        summary.className = "link-button";
+        summary.textContent = "Use Claude tier…";
+        details.appendChild(summary);
+        details.appendChild(buildModelRadioGroup());
+        return details;
+      };
+
+      if (a.handWrittenBackend) {
+        const backendLine = document.createElement("span");
+        backendLine.className = "agent-backend-line";
+        backendLine.textContent = `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP`;
+        head.appendChild(backendLine);
+        head.appendChild(buildUseClaudeDisclosure());
+      } else {
+        const routedRow = document.createElement("span");
+        routedRow.className = "stat-chip agent-routed-chip";
+        const routedModel = a.resolvedModel || a.model || "unknown model";
+        routedRow.textContent = `Routed to ${vendorLabelFor(a.vendor || "unknown")}/${routedModel}`;
+        head.appendChild(routedRow);
+        if (routingVisibleNow && density !== "full") {
+          const editLink = document.createElement("button");
+          editLink.type = "button";
+          editLink.className = "link-button";
+          editLink.textContent = "Edit in Routing";
+          editLink.addEventListener("click", () => {
+            routingExpandedAgents[a.id] = true;
+            renderRoutingModal();
+          });
+          head.appendChild(editLink);
+        }
+        head.appendChild(buildUseClaudeDisclosure());
+      }
+    }
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "skill-btn skill-btn--remove agent-remove-btn";
+    removeBtn.textContent = "Remove";
+    removeBtn.dataset.removeAgentId = a.id;
+    removeBtn.addEventListener("click", () => {
+      removeBtn.disabled = true;
+      removeBtn.textContent = "Removing…";
+      vscode.postMessage({ type: "removeAgent", id: a.id });
+    });
+    head.appendChild(removeBtn);
+    row.appendChild(head);
+
+    // Stats
+    row.appendChild(buildAgentStatsRow(a, m));
+
+    // Recommendation badge
+    const suppressRecFor = justSetAgentModelId;
+    const rec = suppressRecFor === a.id ? null : recommendationFor(a, m);
+    if (rec) {
+      const badge = document.createElement("div");
+      badge.className = `rec-badge rec-${rec.kind} rec-badge--detached`;
+      const txt = document.createElement("span");
+      txt.className = "rec-text";
+      txt.textContent = rec.text;
+      badge.appendChild(txt);
+      if (rec.suggest) {
+        const targetLabel = rec.suggest.charAt(0).toUpperCase() + rec.suggest.slice(1);
+        const apply = document.createElement("button");
+        apply.className = "skill-btn settings-btn rec-apply";
+        apply.textContent = `Switch to ${targetLabel}`;
+        apply.addEventListener("click", () => {
+          vscode.postMessage({ type: "setAgentModel", id: a.id, model: rec.suggest });
+        });
+        badge.appendChild(apply);
+      }
+      row.appendChild(badge);
+    }
+
+    card.appendChild(row);
+
+    // Keyword editor row (moved from the old "Keyword routing" section).
+    const kwRow = document.createElement("div");
+    kwRow.className = "settings-row keyword-row";
+    kwRow.setAttribute("data-agent-id", a.id);
+    const kwLbl = document.createElement("label");
+    kwLbl.className = "keyword-label";
+    kwLbl.textContent = "Keywords";
+    kwRow.appendChild(kwLbl);
+    const kwInputWrap = document.createElement("div");
+    kwInputWrap.className = "keyword-input-wrap";
+    const kwInput = document.createElement("input");
+    kwInput.type = "text";
+    kwInput.className = "keyword-input";
+    kwInput.value = a.keywords || "";
+    kwInput.placeholder = "kw1|kw2|kw3";
+    if (!a.keywords || String(a.keywords).trim() === "") {
+      kwInput.title = "No routing keywords set — routing to this agent is disabled";
+      kwInput.style.borderColor = "var(--status-error)";
+    }
+    const kwSaveBtn = document.createElement("button");
+    kwSaveBtn.className = "skill-btn settings-btn";
+    kwSaveBtn.textContent = "Save";
+    kwSaveBtn.addEventListener("click", () => {
+      vscode.postMessage({ type: "setAgentKeywords", id: a.id, pattern: kwInput.value });
+    });
+    kwInputWrap.appendChild(kwInput);
+    kwInputWrap.appendChild(kwSaveBtn);
+    kwRow.appendChild(kwInputWrap);
+    card.appendChild(kwRow);
+
+    if (density !== "full" || !routingAgent) {
+      return card;
+    }
+
+    // ── Full density: routing slot editor, fallback editor, provenance ──
+    if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
+    const slot = routingDraft.agents[a.id];
+
+    const routingRow = document.createElement("div");
+    routingRow.className = "routing-agent-row";
+    routingRow.setAttribute("data-agent-id", a.id);
+
+    const nameTd = document.createElement("div");
+    nameTd.className = "routing-agent-name-td";
+    const sourceLine = document.createElement("div");
+    sourceLine.className = "routing-agent-source-line";
+
+    if (routingAgent.handWrittenBackend) {
+      const handWrittenNote = document.createElement("span");
+      handWrittenNote.className = "routing-source-chip routing-source-chip--handwritten";
+      handWrittenNote.textContent = "hand-written backend";
+      handWrittenNote.title = "This agent's own frontmatter has a hand-written backend: block — defaults never apply to it.";
+      sourceLine.appendChild(handWrittenNote);
+    }
+
+    const collapsedForDefault = routingAgent.provenance === "default" && !routingExpandedAgents[a.id];
+
+    if (collapsedForDefault) {
+      const inheritLabel = document.createElement("span");
+      inheritLabel.className = "routing-source-chip";
+      const vendorLabel = (routingAgent.backend && routingAgent.backend.vendor) || "?";
+      const modelLabel = (routingAgent.backend && routingAgent.backend.model) || "?";
+      inheritLabel.textContent = "Inherits default · " + vendorLabel + "/" + modelLabel;
+      sourceLine.appendChild(inheritLabel);
+
+      const overrideBtn = document.createElement("button");
+      overrideBtn.type = "button";
+      overrideBtn.className = "routing-inline-link-btn routing-override-btn";
+      overrideBtn.textContent = "Override";
+      overrideBtn.addEventListener("click", () => {
+        routingExpandedAgents[a.id] = true;
+        renderRoutingModal();
+      });
+      sourceLine.appendChild(overrideBtn);
+
+      nameTd.appendChild(sourceLine);
+      routingRow.appendChild(nameTd);
+      card.appendChild(routingRow);
+      return card;
+    }
+
+    sourceLine.appendChild(routingSourceChip(routingAgent.source));
+    const fallbackChip = buildRoutingFallbackChip(a.id);
+    if (fallbackChip) sourceLine.appendChild(fallbackChip);
+    const agentWasInProfile = !!(payload.profile && payload.profile.agents && payload.profile.agents[a.id]);
+    const slotCoercionNotes = [];
+    if (shouldIncludeRoutingSlot(cleanRoutingSlot(slot, slotCoercionNotes, (payload.presets && payload.presets.vendors) || []), agentWasInProfile, routingAgent.backend)) {
+      const dirtyMarker = document.createElement("span");
+      dirtyMarker.className = "routing-source-chip routing-source-chip--dirty";
+      dirtyMarker.textContent = "will be written to routing.json";
+      if (slotCoercionNotes.length) dirtyMarker.title = slotCoercionNotes.join("; ");
+      sourceLine.appendChild(dirtyMarker);
+    }
+
+    if (routingAgent.provenance === "explicit" && hasDefaults && !routingAgent.handWrittenBackend) {
+      const useDefaultBtn = document.createElement("button");
+      useDefaultBtn.type = "button";
+      useDefaultBtn.className = "routing-inline-link-btn routing-use-default-btn";
+      useDefaultBtn.textContent = "Use default";
+      useDefaultBtn.addEventListener("click", () => {
+        routingDraft.agents[a.id] = {};
+        delete routingExpandedAgents[a.id];
+        renderRoutingModal();
+      });
+      sourceLine.appendChild(useDefaultBtn);
+    }
+    if (routingAgent.provenance === "default" && routingExpandedAgents[a.id]) {
+      const revertBtn = document.createElement("button");
+      revertBtn.type = "button";
+      revertBtn.className = "routing-inline-link-btn routing-use-default-btn";
+      revertBtn.textContent = "Use default";
+      revertBtn.addEventListener("click", () => {
+        routingDraft.agents[a.id] = {};
+        delete routingExpandedAgents[a.id];
+        renderRoutingModal();
+      });
+      sourceLine.appendChild(revertBtn);
+    }
+
+    nameTd.appendChild(sourceLine);
+    routingRow.appendChild(nameTd);
+
+    const slotTd = document.createElement("div");
+    slotTd.className = "routing-slot-td";
+    slotTd.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id));
+    routingRow.appendChild(slotTd);
+
+    card.appendChild(routingRow);
+
+    const fbRow = document.createElement("div");
+    fbRow.className = "routing-agent-fallback-row";
+    fbRow.setAttribute("data-agent-id", a.id);
+    fbRow.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
+    card.appendChild(fbRow);
+
+    return card;
+  }
+
   /** Full re-render of the Routing modal body from lastRoutingPayload + routingDraft. */
   function renderRoutingModal() {
     if (!routingContentEl) return;
@@ -17725,6 +18116,12 @@
     if (!routingDraft) routingDraft = buildRoutingDraft(lastRoutingPayload);
 
     var payload = lastRoutingPayload;
+    // Density (p19-t1): full when the routing view is meant to be visible
+    // (OpenCode harness or the "Use multiple LLMs" toggle — see
+    // describeRoutingVisibility), else simple — the pre-routing Settings
+    // agent cards with no vendor/transport/endpoint/fallback controls.
+    var routingInfoNow = (lastSettings && lastSettings.routing) || { visible: true };
+    var density = routingInfoNow.visible === false ? "simple" : "full";
     var rawPresets = payload.presets || { vendors: [], models: [] };
     // Every vendor present in presets.models, plus any vendor already on the
     // current payload's orchestrator/agents — so a saved profile's vendor
@@ -17752,217 +18149,131 @@
       routingContentEl.appendChild(errBox);
     }
 
-    // ── Orchestrator ──
+    // ── Orchestrator (p19-t1: read-only session-model card in both
+    // densities; full-only slot/fallback editor appended below it) ──
+    var orchestratorAgent = ((lastSettings && lastSettings.agents) || []).find(function (ag) { return ag.isOrchestrator; });
     var orchSection = buildSection("Orchestrator");
-    if (!routingDraft.orchestrator) routingDraft.orchestrator = {};
-    var orchMeta = document.createElement("div");
-    orchMeta.className = "routing-slot-meta routing-agent-source-line";
-    if (payload.orchestrator) {
-      var orchChip = routingSourceChip(payload.orchestrator.source);
-      orchMeta.appendChild(orchChip);
+    if (orchestratorAgent) orchSection.appendChild(buildOrchestratorSimpleCard(orchestratorAgent));
+    if (density === "full") {
+      if (!routingDraft.orchestrator) routingDraft.orchestrator = {};
+      var orchMeta = document.createElement("div");
+      orchMeta.className = "routing-slot-meta routing-agent-source-line";
+      if (payload.orchestrator) {
+        var orchChip = routingSourceChip(payload.orchestrator.source);
+        orchMeta.appendChild(orchChip);
+      }
+      orchSection.appendChild(orchMeta);
+      orchSection.appendChild(buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator"));
+      orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator", "orchestrator"));
     }
-    orchSection.appendChild(orchMeta);
-    orchSection.appendChild(buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator"));
-    orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator", "orchestrator"));
-    routingContentEl.appendChild(orchSection);
+    if (orchestratorAgent || density === "full") {
+      routingContentEl.appendChild(orchSection);
+    }
 
-    // ── Defaults (p17-t3) ── one slot applied to every agent that has
-    // neither its own routing.json entry nor a hand-written backend block.
-    var defaultsSection = buildSection("Default for all agents");
-    var defaultsHelp = document.createElement("p");
-    defaultsHelp.className = "routing-defaults-help";
-    defaultsHelp.textContent = "Agents without their own route use this. Agents with a hand-written backend keep it.";
-    defaultsSection.appendChild(defaultsHelp);
-    if (!routingDraft.defaults) routingDraft.defaults = {};
-    defaultsSection.appendChild(buildSlotEditorFields(routingDraft.defaults, presets, renderRoutingModal, "defaults"));
-    defaultsSection.appendChild(buildFallbackEditor(routingDraft.defaults, presets, renderRoutingModal, "defaults", "defaults"));
-    var clearDefaultsBtn = document.createElement("button");
-    clearDefaultsBtn.type = "button";
-    clearDefaultsBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
-    clearDefaultsBtn.textContent = "Clear defaults";
-    clearDefaultsBtn.disabled = !slotHasContent(routingDraft.defaults);
-    clearDefaultsBtn.addEventListener("click", function () {
-      routingDraft.defaults = {};
-      renderRoutingModal();
-    });
-    defaultsSection.appendChild(clearDefaultsBtn);
-    routingContentEl.appendChild(defaultsSection);
+    // ── Defaults (p17-t3) — full density only. One slot applied to every
+    // agent that has neither its own routing.json entry nor a hand-written
+    // backend block.
+    if (density === "full") {
+      var defaultsSection = buildSection("Default for all agents");
+      var defaultsHelp = document.createElement("p");
+      defaultsHelp.className = "routing-defaults-help";
+      defaultsHelp.textContent = "Agents without their own route use this. Agents with a hand-written backend keep it.";
+      defaultsSection.appendChild(defaultsHelp);
+      if (!routingDraft.defaults) routingDraft.defaults = {};
+      defaultsSection.appendChild(buildSlotEditorFields(routingDraft.defaults, presets, renderRoutingModal, "defaults"));
+      defaultsSection.appendChild(buildFallbackEditor(routingDraft.defaults, presets, renderRoutingModal, "defaults", "defaults"));
+      var clearDefaultsBtn = document.createElement("button");
+      clearDefaultsBtn.type = "button";
+      clearDefaultsBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
+      clearDefaultsBtn.textContent = "Clear defaults";
+      clearDefaultsBtn.disabled = !slotHasContent(routingDraft.defaults);
+      clearDefaultsBtn.addEventListener("click", function () {
+        routingDraft.defaults = {};
+        renderRoutingModal();
+      });
+      defaultsSection.appendChild(clearDefaultsBtn);
+      routingContentEl.appendChild(defaultsSection);
+    }
 
-    // ── Per-agent table ──
+    // ── Per-agent cards (unified: simple or full density) ──
+    // Iterate the routing payload's agents (always present once a "routing"
+    // reply has landed, including in every existing test fixture) as the
+    // primary list, merging in the matching lastSettings.agents entry (name,
+    // claudeTier, keywords, vendor/model, stats) when the host has also
+    // pushed a "settings" payload — falling back to a stub built from the
+    // routing entry alone so the card still renders correctly without it.
     var agentsSection = buildSection("Agents");
-    var agents = payload.agents || [];
-    if (!agents.length) {
+    var settingsAgentsById = {};
+    ((lastSettings && lastSettings.agents) || []).forEach(function (ag) {
+      if (!ag.isOrchestrator) settingsAgentsById[ag.id] = ag;
+    });
+    var routingAgentList = payload.agents || [];
+    if (!routingAgentList.length) {
       var noAgents = document.createElement("p");
       noAgents.className = "settings-empty";
       noAgents.textContent = "No agents found.";
       agentsSection.appendChild(noAgents);
     } else {
-      // Card list, not a <table> — each agent is one .routing-agent-card
-      // (name+source line | slot fields, plus the fallback editor full-width
-      // beneath, indented so it visibly belongs to the card above it) with
-      // a divider + vertical gap before the next card (item 2 cleanup).
-      // Only two columns now: Agent and Slot — the old "Source" column
-      // (FRONTMATTER/ALIAS jargon) moved into a muted line under the name
-      // (item 1); .routing-agent-row/.routing-agent-fallback-row class names
-      // are kept (now divs, not <tr>s) so existing DOM lookups still work.
-      var header = document.createElement("div");
-      header.className = "routing-agents-header";
-      ["Agent", "Slot"].forEach(function (h) {
-        var span = document.createElement("span");
-        span.textContent = h;
-        header.appendChild(span);
-      });
-      agentsSection.appendChild(header);
+      if (density === "full") {
+        var header = document.createElement("div");
+        header.className = "routing-agents-header";
+        ["Agent", "Slot"].forEach(function (h) {
+          var span = document.createElement("span");
+          span.textContent = h;
+          header.appendChild(span);
+        });
+        agentsSection.appendChild(header);
+      }
 
       var list = document.createElement("div");
       list.className = "routing-agents-list";
       var hasDefaults = slotHasContent(payload.defaults);
-      agents.forEach(function (a) {
-        if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
-        var slot = routingDraft.agents[a.id];
-
-        var card = document.createElement("div");
-        card.className = "routing-agent-card";
-        card.setAttribute("data-agent-id", a.id);
-
-        // Row: name/description/source line, slot editor fields.
-        var row = document.createElement("div");
-        row.className = "routing-agent-row";
-        row.setAttribute("data-agent-id", a.id);
-
-        var nameTd = document.createElement("div");
-        nameTd.className = "routing-agent-name-td";
-        var nameStrong = document.createElement("strong");
-        nameStrong.textContent = a.name || a.id;
-        nameTd.appendChild(nameStrong);
-        if (a.description) {
-          var desc = document.createElement("div");
-          desc.className = "routing-agent-desc";
-          desc.textContent = a.description;
-          desc.title = a.description; // full text on hover once the 3-line clamp cuts it off
-          nameTd.appendChild(desc);
-        }
-        var sourceLine = document.createElement("div");
-        sourceLine.className = "routing-agent-source-line";
-
-        if (a.handWrittenBackend) {
-          var handWrittenNote = document.createElement("span");
-          handWrittenNote.className = "routing-source-chip routing-source-chip--handwritten";
-          handWrittenNote.textContent = "hand-written backend";
-          handWrittenNote.title = "This agent's own frontmatter has a hand-written backend: block — defaults never apply to it.";
-          sourceLine.appendChild(handWrittenNote);
-        }
-
-        // Collapsed "inherits default" card (p17-t3): only while the agent
-        // has no per-agent draft override in progress and the user hasn't
-        // clicked Override this session. Any other provenance (explicit,
-        // frontmatter) or a hand-written backend always shows the full
-        // editor.
-        var collapsedForDefault = a.provenance === "default" && !routingExpandedAgents[a.id];
-
-        if (collapsedForDefault) {
-          var inheritLabel = document.createElement("span");
-          inheritLabel.className = "routing-source-chip";
-          var vendorLabel = (a.backend && a.backend.vendor) || "?";
-          var modelLabel = (a.backend && a.backend.model) || "?";
-          inheritLabel.textContent = "Inherits default · " + vendorLabel + "/" + modelLabel;
-          sourceLine.appendChild(inheritLabel);
-
-          var overrideBtn = document.createElement("button");
-          overrideBtn.type = "button";
-          overrideBtn.className = "routing-inline-link-btn routing-override-btn";
-          overrideBtn.textContent = "Override";
-          overrideBtn.addEventListener("click", function () {
-            routingExpandedAgents[a.id] = true;
-            renderRoutingModal();
-          });
-          sourceLine.appendChild(overrideBtn);
-
-          nameTd.appendChild(sourceLine);
-          row.appendChild(nameTd);
-          card.appendChild(row);
-          list.appendChild(card);
-          return; // no slot/fallback editor while collapsed
-        }
-
-        sourceLine.appendChild(routingSourceChip(a.source));
-        var fallbackChip = buildRoutingFallbackChip(a.id);
-        if (fallbackChip) sourceLine.appendChild(fallbackChip);
-        var agentWasInProfile = !!(payload.profile && payload.profile.agents && payload.profile.agents[a.id]);
-        var slotCoercionNotes = [];
-        if (shouldIncludeRoutingSlot(cleanRoutingSlot(slot, slotCoercionNotes, (payload.presets && payload.presets.vendors) || []), agentWasInProfile, a.backend)) {
-          var dirtyMarker = document.createElement("span");
-          dirtyMarker.className = "routing-source-chip routing-source-chip--dirty";
-          dirtyMarker.textContent = "will be written to routing.json";
-          if (slotCoercionNotes.length) dirtyMarker.title = slotCoercionNotes.join("; ");
-          sourceLine.appendChild(dirtyMarker);
-        }
-
-        // "Use default" (p17-t3): only for an explicit per-agent entry while
-        // defaults exist — removes the per-agent entry on save so the agent
-        // falls back to defaults. Not shown for provenance "default" itself
-        // (nothing to remove) or a hand-written backend (defaults never
-        // apply to it anyway).
-        if (a.provenance === "explicit" && hasDefaults && !a.handWrittenBackend) {
-          var useDefaultBtn = document.createElement("button");
-          useDefaultBtn.type = "button";
-          useDefaultBtn.className = "routing-inline-link-btn routing-use-default-btn";
-          useDefaultBtn.textContent = "Use default";
-          useDefaultBtn.addEventListener("click", function () {
-            routingDraft.agents[a.id] = {};
-            delete routingExpandedAgents[a.id];
-            renderRoutingModal();
-          });
-          sourceLine.appendChild(useDefaultBtn);
-        }
-        // A previously-default agent the user expanded via Override, with no
-        // edits yet — offer a way back to collapsed without saving first.
-        if (a.provenance === "default" && routingExpandedAgents[a.id]) {
-          var revertBtn = document.createElement("button");
-          revertBtn.type = "button";
-          revertBtn.className = "routing-inline-link-btn routing-use-default-btn";
-          revertBtn.textContent = "Use default";
-          revertBtn.addEventListener("click", function () {
-            routingDraft.agents[a.id] = {};
-            delete routingExpandedAgents[a.id];
-            renderRoutingModal();
-          });
-          sourceLine.appendChild(revertBtn);
-        }
-
-        nameTd.appendChild(sourceLine);
-        row.appendChild(nameTd);
-
-        var slotTd = document.createElement("div");
-        slotTd.className = "routing-slot-td";
-        slotTd.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id));
-        row.appendChild(slotTd);
-
-        card.appendChild(row);
-
-        // Fallback-chain editor, full-width beneath the row, indented within
-        // the card so it reads as belonging to THIS agent, not the next one.
-        var fbRow = document.createElement("div");
-        fbRow.className = "routing-agent-fallback-row";
-        fbRow.setAttribute("data-agent-id", a.id);
-        fbRow.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
-        card.appendChild(fbRow);
-
+      routingAgentList.forEach(function (routingAgent) {
+        var a = settingsAgentsById[routingAgent.id] || {
+          id: routingAgent.id,
+          name: routingAgent.name,
+          keywords: "",
+          claudeTier: null,
+          handWrittenBackend: routingAgent.handWrittenBackend,
+          vendor: routingAgent.backend && routingAgent.backend.vendor,
+          resolvedModel: routingAgent.backend && routingAgent.backend.model,
+          model: routingAgent.backend && routingAgent.backend.model,
+          costModelClass: null,
+        };
+        var card = buildUnifiedAgentCard(a, routingAgent, density, presets, payload, routingDraft, hasDefaults);
         list.appendChild(card);
       });
+      // Read-once flag (see buildUnifiedAgentCard): cleared after every
+      // agent in this render pass has had a chance to check it, so a stale
+      // id never survives past the render it was meant to suppress.
+      justSetAgentModelId = null;
       agentsSection.appendChild(list);
     }
     routingContentEl.appendChild(agentsSection);
-    routingContentEl.appendChild(buildRoutingTotalsBlock());
+    if (density === "full") {
+      routingContentEl.appendChild(buildRoutingTotalsBlock());
+    }
 
     // ── Fixed footer button state (buttons themselves live outside the
-    // scroll container — created once in ensureRoutingModal) ──
+    // scroll container — created once in ensureRoutingModal). Simple
+    // density has no Save/Revert/Clear (tier/keyword/remove actions already
+    // post immediately) — only the Close button shows.
     if (routingSaveBtnEl) {
+      routingSaveBtnEl.hidden = density !== "full";
       routingSaveBtnEl.textContent = routingSaving ? "Saving…" : "Save";
       routingSaveBtnEl.disabled = routingSaving;
     }
-    if (routingRevertBtnEl) routingRevertBtnEl.disabled = routingSaving;
-    if (routingClearBtnEl) routingClearBtnEl.disabled = routingSaving;
+    if (routingRevertBtnEl) {
+      routingRevertBtnEl.hidden = density !== "full";
+      routingRevertBtnEl.disabled = routingSaving;
+    }
+    if (routingClearBtnEl) {
+      routingClearBtnEl.hidden = density !== "full";
+      routingClearBtnEl.disabled = routingSaving;
+    }
+    if (routingFooterCloseBtnEl) {
+      routingFooterCloseBtnEl.hidden = density === "full";
+    }
 
     if (routingLastResult && routingLastResult.ok === false) {
       // Visible banner — the collapsed <details> below is easy to miss
@@ -18182,7 +18493,6 @@
       return;
     }
 
-    const agents = lastSettings.agents || [];
     const hook = lastSettings.hook || { installed: false, lastActivityAt: null };
 
     // ── 1. Hook health ──
@@ -18360,7 +18670,7 @@
         const openRoutingLink = document.createElement("button");
         openRoutingLink.type = "button";
         openRoutingLink.className = "link-button";
-        openRoutingLink.textContent = "Open Routing";
+        openRoutingLink.textContent = "Open Agents";
         openRoutingLink.addEventListener("click", () => {
           openRoutingModal();
         });
@@ -18403,8 +18713,16 @@
     const multiLlmHelpSpan = document.createElement("span");
     multiLlmHelpSpan.className = "delegation-mode-option-help";
     multiLlmHelpSpan.textContent = harnessIsOpencode
-      ? "Routing is always available when OpenCode runs your agents"
-      : "Show the Routing screen to run agents on other vendors, local models, or custom endpoints.";
+      ? "Routing is always available when OpenCode runs your agents. "
+      : "Shows the full routing editor on the Agents screen to run agents on other vendors, local models, or custom endpoints. ";
+    const multiLlmOpenLink = document.createElement("button");
+    multiLlmOpenLink.type = "button";
+    multiLlmOpenLink.className = "link-button";
+    multiLlmOpenLink.textContent = "Open Agents";
+    multiLlmOpenLink.addEventListener("click", () => {
+      openRoutingModal();
+    });
+    multiLlmHelpSpan.appendChild(multiLlmOpenLink);
     multiLlmBody.appendChild(multiLlmLabelSpan);
     multiLlmBody.appendChild(multiLlmHelpSpan);
     multiLlmOptLabel.appendChild(multiLlmCheckbox);
@@ -18432,14 +18750,11 @@
     }
     setupConfigEl.appendChild(multiLlmSection);
 
-    // ── 1.4d. Menu "Routing" entry gate ──
-    // #menu-routing is static markup (both hosts' HTML template); toggle its
-    // visibility here on every settings render since it lives outside this
-    // rebuilt tree.
-    const menuRoutingBtnEl = document.getElementById("menu-routing");
-    if (menuRoutingBtnEl) {
-      menuRoutingBtnEl.hidden = !routingInfo.visible;
-    }
+    // ── 1.4d. Menu "Agents" entry (p19-t1) ──
+    // #menu-routing (label now "Agents") is static markup (both hosts' HTML
+    // template) and is always visible — the Agents screen itself picks
+    // simple vs. full density from routingInfo.visible, so there is no
+    // gating to apply here any more.
 
     // ── 1.5. Delegation style (Team Lead Mode, Phase 2) ──
     // Same radio block + exact copy as the pre-install setup-view picker
@@ -18637,362 +18952,6 @@
     planSection.appendChild(planInstallBtn);
     setupConfigEl.appendChild(planSection);
 
-    // ── 2. Agents ──
-    const agentsSection = buildSection("Agents");
-    // Orchestrator row renders first, then the rest in their existing
-    // relative order. `agents` is host-supplied (lastSettings.agents) and
-    // may be reused elsewhere, so derive a new ordered array rather than
-    // mutating it in place (e.g. via .sort(), which would sort in-place).
-    // If no agent is flagged isOrchestrator, orchestratorAgents is empty and
-    // orderedAgents === the original relative order — loop still renders
-    // every agent correctly.
-    const orchestratorAgents = agents.filter((agent) => agent.isOrchestrator);
-    const otherAgents = agents.filter((agent) => !agent.isOrchestrator);
-    const orderedAgents = [...orchestratorAgents, ...otherAgents];
-    for (const agent of orderedAgents) {
-      const m = metricsFor(agent.id);
-      const row = document.createElement("div");
-      row.className = "settings-row agent-row";
-      row.dataset.agentRow = agent.id;
-
-      const head = document.createElement("div");
-      head.className = "agent-row-head";
-
-      const nameEl = document.createElement("span");
-      nameEl.className = "agent-name";
-      nameEl.textContent = agent.name || agent.id;
-      head.appendChild(nameEl);
-
-      if (agent.isOrchestrator) {
-        // Issue #24/#25: show the ACTUAL observed orchestrator model, read
-        // straight from the metrics entry (m.model) — never from this
-        // agent's markdown frontmatter (the session model doesn't obey it)
-        // and never defaulted to Opus when nothing has been observed yet.
-        // `m` is metricsFor(agent.id) from the loop above. modelFamily()
-        // (existing helper, ~line 13185) returns "Opus"/"Sonnet"/"Haiku"/
-        // "Fable" or null — reused as-is rather than adding a competing
-        // matcher.
-        const observedFamily = modelFamily(m && m.model);
-        const ro = document.createElement("span");
-        // Base class always applied; a colour modifier is layered on top for
-        // the two detected-and-judged states so the model text itself reads
-        // red (too small) or green (Opus/Fable, both intended orchestrator
-        // tiers — Fable ranks above Opus in this project's cost lens, so it
-        // is never a warning state). The not-detected state keeps the plain
-        // --muted italic look (no colour verdict to render yet). Colour is
-        // never the only signal: the accompanying warning/help text below
-        // spells out the same verdict in words for the bad and unknown
-        // states, and the good state's own text names the model, so it reads
-        // fine without colour too.
-        ro.className = "agent-model-readonly";
-        if (observedFamily === "Sonnet" || observedFamily === "Haiku") {
-          ro.className += " agent-model-readonly--bad";
-        } else if (observedFamily === "Opus" || observedFamily === "Fable") {
-          ro.className += " agent-model-readonly--good";
-        }
-        ro.textContent = observedFamily
-          ? `Session model: ${observedFamily}`
-          : "Session model: Unknown yet";
-        head.appendChild(ro);
-        row.appendChild(head);
-
-        const roHelp = document.createElement("p");
-        roHelp.className = "delegation-mode-option-help orchestrator-model-help";
-        roHelp.textContent = observedFamily
-          ? "Read from Claude Code's session model — set via /model, VS Code chat settings, or ANTHROPIC_MODEL. Not a TycoonAgents setting, so there's no picker here."
-          : "Read from Claude Code's session model (set via /model, VS Code chat settings, or ANTHROPIC_MODEL) once observed from activity — not a TycoonAgents setting. Run a task to populate this.";
-        row.appendChild(roHelp);
-
-        if (observedFamily === "Sonnet" || observedFamily === "Haiku") {
-          const warn = document.createElement("p");
-          warn.className = "orchestrator-model-warning";
-          warn.textContent =
-            `TycoonAgents expects Opus or above as the orchestrator — it distills and delegates cheap work to Sonnet/Haiku workers. Running the orchestrator itself on ${observedFamily} removes those savings. Fix: run /model opus.`;
-          row.appendChild(warn);
-        } else if (!observedFamily && agentActivityObserved && orchestratorModelGraceElapsed) {
-          // Mutually exclusive with the Sonnet/Haiku warning above (that one
-          // means "detected and too small"; this one means "never detected
-          // at all") — purely derived from observedFamily/agentActivityObserved/
-          // orchestratorModelGraceElapsed each render, so it disappears the
-          // moment a model is observed on a later settings push. Gated on
-          // both flags so it never appears on a cold start, mid-warm-up, or
-          // a panel open with no activity this session (see the "state"
-          // handler and grace timer above).
-          const warn = document.createElement("p");
-          warn.className = "orchestrator-model-warning orchestrator-model-warning--info";
-          warn.textContent =
-            "TycoonAgents hasn't detected the orchestrator's model yet. This is read from Claude Code's session model, not a TycoonAgents setting — check it with /model, the VS Code chat model selector, or the ANTHROPIC_MODEL environment variable. TycoonAgents expects Opus or above for the orchestrator, since it distills and delegates cheap work to smaller models. Detection populates once agent activity has been observed, so running a task may resolve this.";
-          row.appendChild(warn);
-        }
-
-        showOrchestratorModelBanner(observedFamily);
-      } else {
-        // p18-t2: route-aware model row. Three shapes, mutually exclusive:
-        //  1. claudeTier set        -> the radios as before, that tier checked.
-        //  2. handWrittenBackend    -> a static "Backend: <vendor> via <transport>"
-        //     line (agent's own MCP/backend block; no Claude tier applies).
-        //  3. routed to a non-Claude vendor -> a "Routed to <vendor>/<model>"
-        //     chip + "Edit in Routing" link (only when routing.visible).
-        // Cases 2 and 3 both get a "Use Claude tier…" disclosure that reveals
-        // the same radio group, so switching back to Claude is always possible.
-        const buildModelRadioGroup = () => {
-          const group = document.createElement("div");
-          group.className = "model-radio-group";
-          const groupName = `model-${agent.id}`;
-          // Most-advanced first, left to right: Fable > Opus > Sonnet > Haiku.
-          for (const model of ["fable", "opus", "sonnet", "haiku"]) {
-            const lbl = document.createElement("label");
-            lbl.className = "model-radio";
-            const input = document.createElement("input");
-            input.type = "radio";
-            input.name = groupName;
-            input.value = model;
-            if (agent.claudeTier === model) input.checked = true;
-            input.addEventListener("change", () => {
-              if (input.checked) {
-                // Suppress this agent's recommendation badge on the very next
-                // re-render so a "Could run on X" suggestion never appears in
-                // the same instant as, and right next to, the pick the user
-                // just made themselves. See justSetAgentModelId doc above.
-                justSetAgentModelId = agent.id;
-                vscode.postMessage({ type: "setAgentModel", id: agent.id, model });
-              }
-            });
-            const span = document.createElement("span");
-            span.textContent = model.charAt(0).toUpperCase() + model.slice(1);
-            lbl.appendChild(input);
-            lbl.appendChild(span);
-            group.appendChild(lbl);
-          }
-          return group;
-        };
-
-        const routingVisible = !lastSettings.routing || lastSettings.routing.visible !== false;
-
-        if (agent.claudeTier) {
-          head.appendChild(buildModelRadioGroup());
-        } else {
-          const buildUseClaudeDisclosure = () => {
-            const details = document.createElement("details");
-            details.className = "use-claude-tier-disclosure";
-            const summary = document.createElement("summary");
-            summary.className = "link-button";
-            summary.textContent = "Use Claude tier…";
-            details.appendChild(summary);
-            details.appendChild(buildModelRadioGroup());
-            return details;
-          };
-
-          if (agent.handWrittenBackend) {
-            const backendLine = document.createElement("span");
-            backendLine.className = "agent-backend-line";
-            const transport = agent.vendor ? "MCP" : "MCP";
-            backendLine.textContent = `Backend: ${vendorLabelFor(agent.vendor || "unknown")} via ${transport}`;
-            head.appendChild(backendLine);
-            head.appendChild(buildUseClaudeDisclosure());
-          } else {
-            const routedRow = document.createElement("span");
-            routedRow.className = "stat-chip agent-routed-chip";
-            const routedModel = agent.resolvedModel || agent.model || "unknown model";
-            routedRow.textContent = `Routed to ${vendorLabelFor(agent.vendor || "unknown")}/${routedModel}`;
-            head.appendChild(routedRow);
-            if (routingVisible) {
-              const editLink = document.createElement("button");
-              editLink.type = "button";
-              editLink.className = "link-button";
-              editLink.textContent = "Edit in Routing";
-              editLink.addEventListener("click", () => {
-                openRoutingModal();
-              });
-              head.appendChild(editLink);
-            }
-            head.appendChild(buildUseClaudeDisclosure());
-          }
-        }
-
-        // Per-agent RED Remove button. Non-orchestrator agents only (the
-        // orchestrator is core and has no model radios / no remove). The host
-        // shows the native "are you sure?" confirm and re-posts the roster on
-        // success, so the webview only requests the removal + shows a pending
-        // state; handleAgentRemoved() restores/reflects the outcome.
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "skill-btn skill-btn--remove agent-remove-btn";
-        removeBtn.textContent = "Remove";
-        removeBtn.dataset.removeAgentId = agent.id;
-        removeBtn.addEventListener("click", () => {
-          removeBtn.disabled = true;
-          removeBtn.textContent = "Removing…";
-          vscode.postMessage({ type: "removeAgent", id: agent.id });
-        });
-        head.appendChild(removeBtn);
-        row.appendChild(head);
-      }
-
-      // Stats from matched metrics
-      const stats = document.createElement("div");
-      stats.className = "agent-stats";
-      // Dimensionless cost-ratio badge vs. the orchestrator's own model price
-      // (same lens as the metrics table's "vs. orch." column) — falls back to
-      // the settings-configured agent.model if the metrics record has none yet.
-      const chip = (label, value) => {
-        const c = document.createElement("span");
-        c.className = "stat-chip";
-        c.textContent = `${label} ${value}`;
-        return c;
-      };
-      let chipVsOrchText;
-      if (agent.isOrchestrator) {
-        chipVsOrchText = "baseline";
-      } else {
-        const chipModel = m ? (m.model || agent.model) : agent.model;
-        const chipCostModelClass = (m && m.costModelClass) || agent.costModelClass || null;
-        const chipAgentRate = modelPricePerMtok(chipModel, chipCostModelClass);
-        // Raw model-rate helper, matching the metrics table's "vs. orch."
-        // badge — see resolveOrchestratorModelRate's doc for why this is
-        // deliberately not resolveOrchestratorPrice's blended rate. Shared
-        // vsOrchLabel keeps this chip and the row badge from ever disagreeing.
-        const chipOrchestratorPrice = resolveOrchestratorModelRate(lastMetrics);
-        chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice, chipCostModelClass);
-      }
-      const vsOrchChip = chip("vs. orch.", chipVsOrchText);
-      vsOrchChip.title = "How much cheaper this agent's model is per token than the orchestrator's (metered models only) — flat-rate subscription and local models have no comparable per-token rate, so they show their billing class instead of a ratio.";
-      stats.appendChild(vsOrchChip);
-      stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
-      stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));
-      // Vendor / cost-class chips (label-only, reusing the same .stat-chip
-      // style as the chips above) — guarded, since older records/agents
-      // lacking these fields render exactly as before.
-      const cardVendor = agent.vendor || (m && m.vendor) || null;
-      if (cardVendor && cardVendor !== "anthropic") {
-        stats.appendChild(chip("vendor", vendorLabelFor(cardVendor)));
-      }
-      const cardCostClass = agent.costModelClass || (m && m.costModelClass) || null;
-      if (cardCostClass === "subscription") {
-        stats.appendChild(chip("billing", "quota"));
-      } else if (cardCostClass === "local") {
-        stats.appendChild(chip("billing", "local"));
-      }
-      row.appendChild(stats);
-
-      // Recommendation badge. Suppressed for exactly one render right after
-      // the user has just explicitly picked this agent's model themselves —
-      // see justSetAgentModelId doc above. The flag is read-once: whether or
-      // not it matched this agent, it must not leak into later renders.
-      const suppressRecFor = justSetAgentModelId;
-      if (agent === orderedAgents[orderedAgents.length - 1]) {
-        // Last agent in this render pass — clear after use regardless of
-        // match so a stale id never survives past the render it was meant
-        // to affect. (Cleared here rather than eagerly at read time so every
-        // agent in this same pass still gets to check it.)
-        justSetAgentModelId = null;
-      }
-      const rec = suppressRecFor === agent.id ? null : recommendationFor(agent, m);
-      if (rec) {
-        const badge = document.createElement("div");
-        badge.className = `rec-badge rec-${rec.kind} rec-badge--detached`;
-        const txt = document.createElement("span");
-        txt.className = "rec-text";
-        txt.textContent = rec.text;
-        badge.appendChild(txt);
-        if (rec.suggest) {
-          // Deliberately NOT labeled "Apply": this button does not confirm
-          // the selection the user just made in the radio group above — it
-          // OVERRIDES it with a different, system-suggested model. "Apply"
-          // reads as confirmation in this context and caused a real bug
-          // (user picks Sonnet, sees "Apply" next to it, clicks it assuming
-          // it applies their pick, and it silently reverts to the cheaper
-          // suggested model instead). The visible label names the actual
-          // destination model so the action is self-describing regardless
-          // of which agent/model this renders for, and the accessible name
-          // mirrors the visible text via textContent (no separate aria-label
-          // needed — the label already says exactly what happens).
-          const targetLabel = rec.suggest.charAt(0).toUpperCase() + rec.suggest.slice(1);
-          const apply = document.createElement("button");
-          apply.className = "skill-btn settings-btn rec-apply";
-          apply.textContent = `Switch to ${targetLabel}`;
-          apply.addEventListener("click", () => {
-            vscode.postMessage({ type: "setAgentModel", id: agent.id, model: rec.suggest });
-          });
-          badge.appendChild(apply);
-        }
-        row.appendChild(badge);
-      }
-
-      agentsSection.appendChild(row);
-    }
-    setupConfigEl.appendChild(agentsSection);
-
-    // ── 3. Keyword routing ──
-    // Agents (non-orchestrator) whose keywords field is empty/whitespace —
-    // keyword routing can never match them until the user sets a pattern.
-    // Separate signal from the task-count-based "Routing health" line above.
-    function unconfiguredKeywordAgents() {
-      return (lastSettings.agents || []).filter(function (a) {
-        return a && !a.isOrchestrator && (!a.keywords || String(a.keywords).trim() === "");
-      });
-    }
-
-    const routingSection = buildSection("Keyword routing");
-    const note = fallbackNote();
-    const noteEl = document.createElement("div");
-    noteEl.className = `routing-note rec-${note.kind}`;
-    const light = document.createElement("span");
-    light.className = `routing-light routing-light--${note.light}`;
-    const noteText = document.createElement("span");
-    noteText.className = "routing-note-text";
-    noteText.textContent = note.text;
-    noteEl.appendChild(light);
-    noteEl.appendChild(noteText);
-    routingSection.appendChild(noteEl);
-
-    for (const agent of agents) {
-      if (agent.isOrchestrator) continue;
-      const row = document.createElement("div");
-      row.className = "settings-row keyword-row";
-      row.dataset.agentRow = agent.id;
-
-      const lbl = document.createElement("label");
-      lbl.className = "keyword-label";
-      lbl.textContent = agent.name || agent.id;
-      row.appendChild(lbl);
-
-      const inputWrap = document.createElement("div");
-      inputWrap.className = "keyword-input-wrap";
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "keyword-input";
-      input.value = agent.keywords || "";
-      input.placeholder = "kw1|kw2|kw3";
-      if (!agent.keywords || String(agent.keywords).trim() === "") {
-        input.title = "No routing keywords set — routing to this agent is disabled";
-        input.style.borderColor = "var(--status-error)";
-      }
-      const saveBtn = document.createElement("button");
-      saveBtn.className = "skill-btn settings-btn";
-      saveBtn.textContent = "Save";
-      saveBtn.addEventListener("click", () => {
-        vscode.postMessage({ type: "setAgentKeywords", id: agent.id, pattern: input.value });
-      });
-      inputWrap.appendChild(input);
-      inputWrap.appendChild(saveBtn);
-      row.appendChild(inputWrap);
-
-      routingSection.appendChild(row);
-    }
-
-    const unconfiguredAgents = unconfiguredKeywordAgents();
-    if (unconfiguredAgents.length > 0) {
-      const unconfiguredEl = document.createElement("div");
-      unconfiguredEl.className = "rec-badge rec-amber";
-      const unconfiguredText = document.createElement("span");
-      unconfiguredText.className = "rec-text";
-      const names = unconfiguredAgents.map(function (a) { return a.name || a.id; }).join(", ");
-      unconfiguredText.textContent = `⚠ ${unconfiguredAgents.length} agent${unconfiguredAgents.length === 1 ? "" : "s"} have no routing keywords — keyword routing to them is disabled until set: ${names}.`;
-      unconfiguredEl.appendChild(unconfiguredText);
-      routingSection.appendChild(unconfiguredEl);
-    }
-    setupConfigEl.appendChild(routingSection);
 
     // ── 3c. Context budget ──
     const budgetSection = buildSection("Context budget");

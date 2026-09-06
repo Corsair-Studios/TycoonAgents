@@ -555,7 +555,7 @@ that marker is left alone (a warning is printed instead of overwriting it).
 
 ### Per-user local values (p13-t6) split the provider entry across TWO files
 
-An endpoint URL or API key entered in the Routing screen is stored per-user,
+An endpoint URL or API key entered in the Agents screen (full density) is stored per-user,
 outside any project, via `src/core/localEnvStore.ts` (`<per-user app data
 dir>/secrets/<NAME>`, mode 0600) — never in `routing.json`, never in
 `opencode.json`, never in git. To keep that guarantee, `scripts/
@@ -601,7 +601,7 @@ openai-compatible endpoint at a time this way, while OpenCode's
 both hosts should pick the vendor-specific env names for OpenCode-only
 slots and reserve `OPENAI_COMPAT_*` for whichever single slot needs to work
 from the Claude side too. As of p13-t6, the hook checks `process.env` FIRST
-and falls back to the same per-user `localEnvStore` the Routing screen
+and falls back to the same per-user `localEnvStore` the Agents screen
 writes to, so a value entered there (and not exported as a real env var)
 still reaches the Claude path.
 
@@ -633,7 +633,7 @@ keys and the body are restored byte-for-byte (CRLF preserved). When
 is rewritten to contain only the agents still in the profile.
 `clearRoutingProfile` (`src/core/routingHostOps.ts`) drives this by deleting
 `routing.json` and rerunning both generator scripts, so clearing a profile
-from the Routing panel fully reverts the managed frontmatter and the
+from the Agents screen fully reverts the managed frontmatter and the
 OpenCode provider config, not just the routing.json file itself.
 
 ### Hand-written `backend:` blocks are backed up before being overwritten
@@ -654,9 +654,9 @@ with no backup entry (it never had a hand-written block) is stripped as
 before. `routing.backup.json` is included in `apply-routing-profile.mjs
 --check`'s diff set alongside `routing.resolved.json`.
 
-## One fact, two views: Settings vs Routing
+## One fact, two views: simple vs full density
 
-Settings › Agents and the Routing screen edit the same underlying fact —
+The Agents screen's simple and full densities edit the same underlying fact —
 each agent's effective model — they just present it differently
 (`src/core/agentSettingsRoute.ts`).
 
@@ -683,20 +683,23 @@ force. Clicking a tier radio on an unrouted agent (`routeSource`
 `model:` frontmatter directly, as it always has — `routing.json` is left
 untouched.
 
-### Routing visibility
+### Agents screen visibility
 
-The Routing screen, its Settings menu entry, and the OpenCode hint (see
-`docs/OPENCODE-PROVIDER.md`) only appear when the effective harness is
+The Agents screen (menu entry "Agents", always visible) switches to full
+density — the routing slot editor, provenance labels, Override/Use default,
+and the Default for all agents card — when the effective harness is
 OpenCode, or **Use multiple LLMs** is turned on in Settings under Claude
-Code (`describeRoutingVisibility`). That toggle persists as
-`useMultipleLlms` in `.claude/tycoon/execution.json`, alongside the
-`provider` key (`readUseMultipleLlms`/`writeUseMultipleLlms`,
-`src/core/providerSelection.ts`).
+Code (`describeRoutingVisibility`); otherwise it renders the simple density
+(name, Claude tier radios, keyword chips/editor, stats, Remove). That
+toggle persists as `useMultipleLlms` in `.claude/tycoon/execution.json`,
+alongside the `provider` key
+(`readUseMultipleLlms`/`writeUseMultipleLlms`, `src/core/providerSelection.ts`).
 
-Hiding Routing never deletes `routing.json` — it only hides the screen. If
-a profile is still active (a non-empty `agents` map or a set `defaults`
-model) while Routing is hidden, Settings shows `Routing profile active ·
-N agents routed` with a **Show** action that flips `useMultipleLlms` back
+Switching back to simple density never deletes `routing.json` — it only
+hides the routing controls. If a profile is still active (a non-empty
+`agents` map or a set `defaults` model) while density is simple, Settings
+shows `Routing profile active · N agents routed` with a **Show** action
+that flips `useMultipleLlms` back
 on.
 
 Under Claude Code, Task subagents always run Claude models regardless of

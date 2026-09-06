@@ -241,9 +241,43 @@ function stateWithOrchestratorModel(model: string) {
   };
 }
 
+/**
+ * Fixture routing payload for agentsPayload()'s fixed agent set
+ * (orchestrator only). The orchestrator card that calls
+ * showOrchestratorModelBanner (buildOrchestratorSimpleCard) now lives inside
+ * the Agents modal (renderRoutingModal, media/main.js ~18087-18260) and only
+ * renders once BOTH a "settings" and a "routing" message have landed and the
+ * modal is open (see media/main.js:12534-12545) — mirrors
+ * test/routingView.test.ts's buildRoutingPayload.
+ */
+function routingPayloadFixture() {
+  return {
+    profile: null,
+    path: ".claude/tycoon/routing.json",
+    errors: [],
+    orchestrator: {
+      id: "orchestrator",
+      backend: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+      source: "default",
+    },
+    agents: [],
+    envProbe: {},
+    presets: { vendors: ["anthropic"], models: [] },
+    lastApplied: {},
+  };
+}
+
+/** Opens the Agents modal (formerly Routing; #menu-routing kept, label now "Agents") and feeds it a routing payload — required before any orchestrator-card query. */
+function openAgentsModal(doc: any, dispatch: (d: any) => void) {
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  if (menuRoutingBtn) menuRoutingBtn.click();
+  dispatch({ type: "routing", payload: routingPayloadFixture() });
+}
+
 /** Loads the orchestrator settings row (which itself calls showOrchestratorModelBanner) for the given observed model, sharing the given state box. */
 function loadWithModel(model: string, stateBox?: { value: Record<string, unknown> }) {
   const boot = bootMainJs(stateBox);
+  openAgentsModal(boot.doc, boot.dispatch);
   boot.dispatch(stateWithOrchestratorModel(model));
   boot.dispatch({ type: "settings", payload: agentsPayload() });
   return boot;
@@ -275,6 +309,7 @@ test("banner: does NOT render for Fable (real code)", () => {
 
 test("banner: does NOT render in the Unknown state (no orchestrator metric observed) (real code)", () => {
   const boot = bootMainJs();
+  openAgentsModal(boot.doc, boot.dispatch);
   boot.dispatch({
     type: "state",
     state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {}, agentMetrics: [] },

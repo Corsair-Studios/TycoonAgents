@@ -168,19 +168,19 @@ contract (the `harness` settings field, `SET_HARNESS` message) is in
 ### First run on OpenCode
 
 1. In Settings, pick **OpenCode** from the "Which tool runs your agents?"
-   dropdown. Choosing OpenCode makes the **Routing** screen (and its Settings
-   menu entry) visible automatically — Claude Code users who want the same
+   dropdown. Choosing OpenCode makes the **Agents** menu entry (always
+   visible) render in full density — Claude Code users who want the same
    view without switching harness turn on **Use multiple LLMs** in Settings
-   instead; either one reveals Routing, and turning it back off never
-   deletes an existing `routing.json`.
-2. Open **Routing** and fill in the **Default for all agents** card: vendor
+   instead; either one switches Agents to full density, and turning it back
+   off never deletes an existing `routing.json`.
+2. Open **Agents** and fill in the **Default for all agents** card: vendor
    and model. If you pick **Custom endpoint**, also enter a provider name
    plus the endpoint URL and API key — those are entered once and stored
    per user under the app-data secrets folder, never written into the
    project.
-3. Optionally, override individual agents from the same Routing screen.
-   A model-only override inherits the default's endpoint and key
-   automatically, so you only need to name the model.
+3. Optionally, click **Override** on individual agent cards in the same
+   Agents screen. A model-only override inherits the default's endpoint and
+   key automatically, so you only need to name the model.
 4. Run the ready test to confirm every agent resolves to a real route.
 
 Mainstream vendors — Anthropic, OpenAI, Google, and OpenCode Zen — use
@@ -193,10 +193,10 @@ purpose and are not swept into `defaults` resolution.
 
 The Settings screen's harness dropdown surfaces a hint — "OpenCode runs
 each agent on its routed model. Set a default model your OpenCode install
-can reach." with a link straight into Routing — whenever OpenCode is
+can reach." with a link straight into Agents — whenever OpenCode is
 selected, no `defaults` model is set, and at least one agent is still
-running off its own frontmatter alone. Saving a default from the Routing
-view makes the hint disappear on the next Settings refresh.
+running off its own frontmatter alone. Saving a default from the Agents
+screen makes the hint disappear on the next Settings refresh.
 
 ---
 
